@@ -2,7 +2,12 @@
 
 const assert = require('assert');
 const path = require('node:path');
-const { startWorker, registerWorkerDataProvider } = require('#js/server/threads/manageThreads');
+const {
+	startWorker,
+	registerWorkerDataProvider,
+	markDatabaseDropForWorkerStarts,
+	clearDatabaseDropForWorkerStarts,
+} = require('#js/server/threads/manageThreads');
 
 const FIXTURE = path.join(__dirname, 'workerData-fixture.js');
 // Providers registered here filter on this worker name so they can never leak values into
@@ -111,6 +116,45 @@ describe('registerWorkerDataProvider', () => {
 		} finally {
 			unregister();
 			if (worker) {
+				worker.wasShutdown = true;
+				await worker.terminate();
+			}
+		}
+	});
+
+	it('passes active database-drop markers to workers created during the barrier', async function () {
+		this.timeout(30000);
+		const databaseName = 'worker-start-drop-test';
+		const originator = 42;
+		const attemptId = 'attempt-42';
+		const workers = [];
+		const startFixture = () =>
+			new Promise((resolve, reject) => {
+				const worker = startWorker(FIXTURE, {
+					name: WORKER_NAME,
+					autoRestart: false,
+					onStarted(spawned) {
+						spawned.on('message', (message) => {
+							if (message.type === 'workerData-report') resolve(message);
+						});
+						spawned.once('error', reject);
+					},
+				});
+				workers.push(worker);
+			});
+		markDatabaseDropForWorkerStarts(databaseName, originator, attemptId);
+		try {
+			clearDatabaseDropForWorkerStarts(databaseName, originator + 1, attemptId);
+			const report = await startFixture();
+			assert.deepEqual(report.databaseDropMarkers, [[databaseName, { originator, attemptId }]]);
+			clearDatabaseDropForWorkerStarts(databaseName, originator, 'another-attempt');
+			assert.deepEqual((await startFixture()).databaseDropMarkers, [[databaseName, { originator, attemptId }]]);
+			clearDatabaseDropForWorkerStarts(databaseName, originator, attemptId);
+			const clearedReport = await startFixture();
+			assert.equal(clearedReport.databaseDropMarkers, undefined);
+		} finally {
+			clearDatabaseDropForWorkerStarts(databaseName, originator, attemptId);
+			for (const worker of workers) {
 				worker.wasShutdown = true;
 				await worker.terminate();
 			}

@@ -45,6 +45,36 @@ export type FullTextDefinition = {
 	highlighting?: FullTextHighlighting;
 };
 
+export type FullTextStorageDefinition = Pick<
+	FullTextDefinition,
+	'analyzer' | 'stopWords' | 'positions' | 'surfaceTerms'
+> & {
+	fields: Array<Pick<FullTextSource, 'name' | 'weight'>>;
+};
+
+export function fullTextStorageDefinition(definition: FullTextDefinition): FullTextStorageDefinition {
+	return {
+		fields: definition.fields.map(({ name, weight }) => ({ name, weight })),
+		analyzer: definition.analyzer,
+		stopWords: definition.stopWords,
+		positions: definition.positions,
+		surfaceTerms: definition.surfaceTerms,
+	};
+}
+
+export function fullTextStorageKey(
+	definitions: readonly FullTextDefinition[],
+	generations: Readonly<Record<string, string>> = {}
+): string {
+	return JSON.stringify(
+		definitions.map((definition) => ({
+			name: definition.name,
+			generation: generations[definition.name],
+			definition: fullTextStorageDefinition(definition),
+		}))
+	);
+}
+
 type SchemaAttribute = {
 	name: string;
 	type?: string;

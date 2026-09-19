@@ -6,6 +6,9 @@ const { loadGQLSchema } = require('#src/resources/graphql');
 const { compileFullTextDefinitions } = require('#src/resources/fullTextSchema');
 const { closeDatabase, getDatabases, resetDatabases, table } = require('#src/resources/databases');
 
+const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+const rocksOnly = isLMDB ? it.skip : it;
+
 function descriptor(Table) {
 	return Table.dbisDB.getSync(`${Table.tableName}/${Table.primaryKey}`) ?? Table.dbisDB.getSync(`${Table.tableName}/`);
 }
@@ -13,7 +16,7 @@ function descriptor(Table) {
 describe('@fullText table declaration', () => {
 	before(() => setupTestDBPath());
 
-	it('compiles defaults into table-level derived-index metadata', async () => {
+	rocksOnly('compiles defaults into table-level derived-index metadata', async () => {
 		await loadGQLSchema(`
 			type FullTextProduct
 				@table(audit: true)
@@ -52,7 +55,7 @@ describe('@fullText table declaration', () => {
 		assert.strictEqual(Table.indices.search, undefined);
 	});
 
-	it('accepts configurable structural options, synonyms, and opt-in highlighting', async () => {
+	rocksOnly('accepts configurable structural options, synonyms, and opt-in highlighting', async () => {
 		await loadGQLSchema(`
 			type FullTextOptions
 				@table(audit: true)
@@ -82,7 +85,7 @@ describe('@fullText table declaration', () => {
 		});
 	});
 
-	it('supports multiple indexes and stores them canonically by name', async () => {
+	rocksOnly('supports multiple indexes and stores them canonically by name', async () => {
 		await loadGQLSchema(`
 			type FullTextMultiple
 				@table(audit: true)
@@ -102,7 +105,7 @@ describe('@fullText table declaration', () => {
 		);
 	});
 
-	it('persists declaration changes only on the canonical table descriptor', async () => {
+	rocksOnly('persists declaration changes only on the canonical table descriptor', async () => {
 		const declaration = (weight) => `
 			type FullTextPersistence
 				@table(audit: true)
@@ -123,7 +126,7 @@ describe('@fullText table declaration', () => {
 		assert.strictEqual(descriptor(Table).fullTextIndexes[0].fields[0].weight, 4);
 	});
 
-	it('reloads declarations from the catalog after a worker-style database reset', async () => {
+	rocksOnly('reloads declarations from the catalog after a worker-style database reset', async () => {
 		const databaseName = 'fulltext_schema_restart';
 		await loadGQLSchema(`
 			type FullTextRestart
@@ -174,7 +177,7 @@ describe('@fullText table declaration', () => {
 		);
 	});
 
-	it('removes the persisted declaration when the schema removes it', async () => {
+	rocksOnly('removes the persisted declaration when the schema removes it', async () => {
 		await loadGQLSchema(`
 			type FullTextRemoval
 				@table(audit: true)
@@ -341,7 +344,7 @@ describe('@fullText table declaration', () => {
 		);
 	});
 
-	it('checks the durable audit setting before adding a declaration', async () => {
+	rocksOnly('checks the durable audit setting before adding a declaration', async () => {
 		const Table = table({
 			table: 'FullTextDurableAudit',
 			database: 'test',
@@ -375,7 +378,7 @@ describe('@fullText table declaration', () => {
 		);
 	});
 
-	it('preserves dynamic record data with the same name as an index', async () => {
+	rocksOnly('preserves dynamic record data with the same name as an index', async () => {
 		await loadGQLSchema(`
 			type FullTextDynamicCollision @table(audit: true) {
 				id: ID @primaryKey
@@ -449,32 +452,6 @@ describe('@fullText table declaration', () => {
 		);
 	});
 
-	it('does not take the LMDB writer lock for an unchanged declaration', async function () {
-		if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb') this.skip();
-		const declaration = `
-			type FullTextNoopReload
-				@table(audit: true)
-				@fullText(name: "search", fields: [{ name: "text" }]) {
-				id: ID @primaryKey
-				text: String
-			}
-		`;
-		await loadGQLSchema(declaration);
-		const rootStore = tables.FullTextNoopReload.primaryStore.rootStore;
-		const originalTransactionSync = rootStore.transactionSync;
-		let transactions = 0;
-		rootStore.transactionSync = function (...args) {
-			transactions++;
-			return originalTransactionSync.apply(this, args);
-		};
-		try {
-			await loadGQLSchema(declaration);
-		} finally {
-			rootStore.transactionSync = originalTransactionSync;
-		}
-		assert.strictEqual(transactions, 0);
-	});
-
 	it('persists computed metadata used to reject invalid peer sources', async () => {
 		await loadGQLSchema(`
 			type FullTextComputedMetadata @table(audit: true) {
@@ -495,7 +472,7 @@ describe('@fullText table declaration', () => {
 		assert.strictEqual(Table.dbisDB.getSync('FullTextComputedMetadata/derived').computed, true);
 	});
 
-	it('prevents removing a source while an index references it', async () => {
+	rocksOnly('prevents removing a source while an index references it', async () => {
 		await loadGQLSchema(`
 			type FullTextRemoveSource
 				@table(audit: true)
@@ -560,7 +537,7 @@ describe('@fullText table declaration', () => {
 		assert.strictEqual((await Table.get('one')).value, 'stored');
 	});
 
-	it('revalidates retained declarations when a non-schema caller changes a source', () => {
+	rocksOnly('revalidates retained declarations when a non-schema caller changes a source', () => {
 		const Table = table({
 			table: 'FullTextRetainedSourceValidation',
 			database: 'test',

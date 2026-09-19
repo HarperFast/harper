@@ -6,13 +6,25 @@ const hdbTerms = require('../../utility/hdbTerms.ts');
 const cleanLmdbMap =
 	require('../../utility/lmdb/cleanLMDBMap.ts').default || require('../../utility/lmdb/cleanLMDBMap.ts');
 const userSchema = require('../../security/user.ts');
-const { validateEvent } = require('../threads/itc.js');
+const { validateEvent, sendItcEvent } = require('../threads/itc.js');
+const { workerDatabaseShutdownHasStarted, waitForWorkerDatabasesToClose } = require('../threads/manageThreads.js');
+const ITCEventObject = require('./utility/ITCEventObject.js');
 const harperBridge =
 	require('../../dataLayer/harperBridge/harperBridge.ts').default ||
 	require('../../dataLayer/harperBridge/harperBridge.ts');
 const process = require('process');
 const { isMainThread, threadId, workerData } = require('node:worker_threads');
-const { resetDatabases, closeDatabase, reloadBranchAt } = require('../../resources/databases.ts');
+const {
+	resetDatabases,
+	closeDatabaseForRestore,
+	databaseUsesRocksDB,
+	prepareDatabaseForDrop,
+	finishDatabaseDrop,
+	cancelDatabaseDrop,
+	reloadBranchAt,
+	quarantineTableAfterSchemaRescanFailure,
+} = require('../../resources/databases.ts');
+const { PREPARE_DATABASE_DROP_OPERATION, CANCEL_DATABASE_DROP_OPERATION } = require('../../utility/signalling.ts');
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
@@ -38,19 +50,110 @@ const serverItcHandlers = {
  * @returns {Promise<void>}
  */
 const schemaListeners = [];
+let schemaEventsInFlight = 0;
+let schemaEventsSettled = Promise.resolve();
+let settleSchemaEvents;
 async function schemaHandler(event) {
+	if (workerDatabaseShutdownHasStarted()) {
+		assertSchemaEventSafeDuringWorkerShutdown(event.message);
+		await waitForWorkerDatabasesToClose();
+		return;
+	}
+	if (schemaEventsInFlight++ === 0)
+		schemaEventsSettled = new Promise((resolve) => {
+			settleSchemaEvents = resolve;
+		});
+	try {
+		let failure;
+		try {
+			await handleSchemaEvent(event);
+		} catch (error) {
+			failure = error;
+		} finally {
+			if (isMainThread && event.message?.relaySchemaChangeFromMain) {
+				const message = { ...event.message };
+				delete message.relaySchemaChangeFromMain;
+				try {
+					await sendItcEvent(new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message), {
+						includeJobWorkers: true,
+						preserveOriginator: true,
+					});
+				} catch (relayError) {
+					failure = failure
+						? new AggregateError([failure, relayError], 'Local and peer schema-change handling failed')
+						: relayError;
+				}
+			}
+		}
+		if (failure) throw failure;
+	} finally {
+		if (--schemaEventsInFlight === 0) {
+			settleSchemaEvents();
+			settleSchemaEvents = undefined;
+		}
+	}
+}
+
+function assertSchemaEventSafeDuringWorkerShutdown(message) {
+	if (
+		message?.operation === PREPARE_DATABASE_DROP_OPERATION &&
+		message.schema &&
+		!databaseUsesRocksDB(message.schema)
+	) {
+		const error = new Error(
+			`Cannot prepare LMDB database '${message.schema}' for drop while this worker is shutting down`
+		);
+		error.code = 'ERR_LMDB_DROP_DURING_WORKER_SHUTDOWN';
+		throw error;
+	}
+}
+
+function waitForSchemaEventsToSettle() {
+	return schemaEventsSettled;
+}
+
+async function handleSchemaEvent(event) {
 	const validate = validateEvent(event);
 	if (validate) {
 		hdbLogger.error(validate);
 		return;
 	}
-
 	hdbLogger.trace(`ITC schemaHandler received schema event:`, event);
+	if (event.message?.operation === PREPARE_DATABASE_DROP_OPERATION && event.message.schema) {
+		if (typeof event.message.dropAttemptId !== 'string' || !event.message.dropAttemptId)
+			throw new Error('Database drop preparation is missing its attempt id');
+		await prepareDatabaseForDrop(event.message.schema, event.message.originator, event.message.dropAttemptId);
+		return;
+	}
+	if (event.message?.operation === CANCEL_DATABASE_DROP_OPERATION && event.message.schema) {
+		if (typeof event.message.dropAttemptId !== 'string' || !event.message.dropAttemptId)
+			throw new Error('Database drop cancellation is missing its attempt id');
+		await cancelDatabaseDrop(
+			event.message.schema,
+			event.message.originator,
+			event.message.dropAttemptId,
+			event.message.preserveInterruptedDrop === true
+		);
+		return;
+	}
+	if (
+		(event.message?.operation === hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA ||
+			event.message?.operation === hdbTerms.OPERATIONS_ENUM.DROP_TABLE) &&
+		event.message.schema
+	) {
+		if (typeof event.message.dropAttemptId === 'string' && event.message.dropAttemptId)
+			finishDatabaseDrop(event.message.schema, event.message.originator, event.message.dropAttemptId);
+	}
 	// restore_backup: this thread must release its store handles so the restore can purge and
 	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
 	// the restoring marker is present, and reloads it on the completion signal (marker gone).
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {
-		closeDatabase(event.message.schema);
+		try {
+			await closeDatabaseForRestore(event.message.schema);
+		} catch (error) {
+			hdbLogger.error(`Could not quiesce database '${event.message.schema}' for restore`, error);
+			return;
+		}
 	}
 	await cleanLmdbMap(event.message);
 	await syncSchemaMetadata(event.message);
@@ -75,21 +178,38 @@ schemaHandler.addListener = function (listener) {
  * @returns {Promise<void>}
  */
 async function syncSchemaMetadata(msg) {
+	const databaseName = msg.database ?? msg.schema;
 	try {
 		// A change to a scope-private branch is not a change to any database in the global map, so the
 		// rescan below has nothing to find; a thread holding that branch open reloads it instead.
 		if (msg.branchPath) {
-			// No write barrier here: the symbol-keyed put below has never been one (harper#2522).
 			reloadBranchAt(msg.branchPath);
 			return;
 		}
 		// TODO: Eventually should indicate which database/table changed so we don't have to scan everything
 		let databases = resetDatabases();
-		if (msg.table && msg.database)
-			// wait for a write to finish to ensure all writes have been written
-			await databases[msg.database][msg.table].put(Symbol.for('write-verify'), null);
-	} catch (e) {
-		hdbLogger.error(e);
+		const Table = databaseName && msg.table ? databases[databaseName]?.[msg.table] : undefined;
+		if (
+			!Table &&
+			msg.table &&
+			msg.operation !== hdbTerms.OPERATIONS_ENUM.DROP_TABLE &&
+			msg.operation !== hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA
+		)
+			throw new Error(`Schema rescan did not load ${databaseName}.${msg.table}`);
+	} catch (error) {
+		let failure = error;
+		if (!msg.branchPath && databaseName && msg.table) {
+			try {
+				await quarantineTableAfterSchemaRescanFailure(databaseName, msg.table);
+			} catch (closeError) {
+				failure = new AggregateError(
+					[error, closeError],
+					`Schema rescan and derived-index shutdown failed for ${databaseName}.${msg.table}`
+				);
+			}
+		}
+		hdbLogger.error(failure);
+		throw failure;
 	}
 }
 
@@ -299,4 +419,6 @@ module.exports = serverItcHandlers;
 // `userHandler.addListener(fn)` / `schemaHandler.addListener(fn)`.
 module.exports.userHandler = userHandler;
 module.exports.schemaHandler = schemaHandler;
+module.exports.assertSchemaEventSafeDuringWorkerShutdown = assertSchemaEventSafeDuringWorkerShutdown;
 module.exports.resourceHandler = resourceHandler;
+module.exports.waitForSchemaEventsToSettle = waitForSchemaEventsToSettle;

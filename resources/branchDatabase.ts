@@ -12,6 +12,7 @@ import {
 	BRANCH_REMOVING_SUFFIX,
 	BRANCH_ROOT_DIR,
 	type BranchDatabase,
+	closeBranchDatabaseAtPath,
 	database,
 	databases,
 	getDatabases,
@@ -486,6 +487,9 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 							strandedRoots: () => (blobRootsStranded = true),
 						});
 					}
+					// A prior replay failure can leave this thread's handle registered when its
+					// derived-index writer could not quiesce.
+					if (await closeBranchDatabaseAtPath(branchPath)) retakeBranchIdentity(storeName);
 					releaseBranchIdentity(storeName);
 					branch = openBranchDatabase(branchPath, baseName, storeName, blobRoots);
 					// The branch's column families write with the WAL disabled, so writes since its last
@@ -504,7 +508,7 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 					// The branch is closed first — it holds the path and store identity a retry needs — and
 					// a close failure must not leave the claim wedged in CREATING for the whole deadline.
 					try {
-						branch?.close();
+						await branch?.close();
 					} catch (closeError) {
 						logger.warn(`Error closing branch at ${branchPath} after a failed open`, closeError);
 					}
@@ -531,6 +535,7 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 			);
 		}
 		warnAboutUnusedBlobRoots(branchPath, storeName, published.blobRoots);
+		if (await closeBranchDatabaseAtPath(branchPath)) retakeBranchIdentity(storeName);
 		// Released immediately before the open, with no `await` in between, so nothing can slip into the
 		// gap -- and so `openBranchDatabase`'s check stays strict rather than being taught to ignore a
 		// reservation, which would also make it ignore a DIFFERENT branch holding the same name.
@@ -575,7 +580,7 @@ export async function closeBranchAt(branchPath: string): Promise<void> {
 	const pending = branchesByPath.get(branchPath);
 	branchesByPath.delete(branchPath);
 	const opened = await pending?.catch(() => null);
-	opened?.branch.close();
+	await opened?.branch.close();
 }
 
 /**
@@ -737,7 +742,7 @@ async function removeBranchAt(branchPath: string): Promise<void> {
 	const pending = branchesByPath.get(branchPath);
 	branchesByPath.delete(branchPath);
 	const opened = (await pending?.catch(() => null)) ?? null;
-	opened?.branch.close();
+	await opened?.branch.close();
 	await destroyBranchStorage(branchPath, opened);
 }
 

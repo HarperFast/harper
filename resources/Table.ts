@@ -15,6 +15,7 @@ import { type Database } from 'lmdb';
 import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
+import { threadId } from 'node:worker_threads';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping, getNodeNameForId } from './nodeIdMapping.ts';
 import lodash from 'lodash';
@@ -70,7 +71,15 @@ import {
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc.js';
-import { databases, table } from './databases.ts';
+import {
+	databases,
+	table,
+	beginDatabaseDrop,
+	finishDatabaseDrop,
+	markDatabaseDropDestructive,
+	markDatabaseDropLocalSchemaClosed,
+	cancelDatabaseDrop,
+} from './databases.ts';
 import { notifyReplicatedApplyFailure } from './replicatedApplyFailure.ts';
 import {
 	searchByIndex,
@@ -611,6 +620,7 @@ export function makeTable(options) {
 		cacheControl,
 		isBranch,
 		fullTextIndexes = [],
+		fullTextIndexGenerations = {},
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
@@ -914,9 +924,16 @@ export function makeTable(options) {
 		static tableName = tableName;
 		static tableId = tableId;
 		static indices = indices;
-		static derivedIndexRuntime: { close(): Promise<void> } | undefined;
+		static derivedIndexRuntime:
+			| {
+					close(): Promise<void>;
+					canReuse?(): boolean;
+					readinessOverride?(id: string): unknown;
+			  }
+			| undefined;
 		static schemaChangeOperation: Promise<void> | undefined;
 		static fullTextIndexes: FullTextDefinition[] = fullTextIndexes;
+		static fullTextIndexGenerations: { [name: string]: string } = fullTextIndexGenerations;
 		static audit = audit;
 		static databasePath = databasePath;
 		static databaseName = databaseName;
@@ -1908,6 +1925,55 @@ export function makeTable(options) {
 
 		static async dropTable() {
 			TableResource.assertSchemaMutable('drop a table');
+			const acceptWorkerDatabaseClose = isRocksDB;
+			// Table destruction uses the database-level quiescence barrier. DDL is rare, and closing the
+			// database on peers reuses the worker-start fence while guaranteeing the designated native
+			// derived-index writer has released this table before its source column families are dropped.
+			const attemptId = beginDatabaseDrop(databaseName);
+			const dropMessage = (operation: string) =>
+				Object.assign(new SchemaEventMsg(process.pid, operation, databaseName, tableName), {
+					dropAttemptId: attemptId,
+				});
+			try {
+				await signalling.signalSchemaChangeToPeers(
+					dropMessage(signalling.PREPARE_DATABASE_DROP_OPERATION),
+					signalling.databaseDropSignalOptions(acceptWorkerDatabaseClose)
+				);
+				await TableResource.#dropTablePrepared(
+					() => markDatabaseDropLocalSchemaClosed(databaseName, threadId, attemptId),
+					() => markDatabaseDropDestructive(databaseName, threadId, attemptId)
+				);
+				finishDatabaseDrop(databaseName, threadId, attemptId);
+				await signalling.signalSchemaChange(dropMessage(OPERATIONS_ENUM.DROP_TABLE), {
+					relayFromMain: true,
+				});
+			} catch (error) {
+				const cancellationErrors: unknown[] = [];
+				let preserveInterruptedDrop = false;
+				try {
+					preserveInterruptedDrop = await cancelDatabaseDrop(databaseName, threadId, attemptId);
+				} catch (cancelError) {
+					cancellationErrors.push(cancelError);
+				}
+				try {
+					await signalling.signalSchemaChangeToPeers(
+						Object.assign(dropMessage(signalling.CANCEL_DATABASE_DROP_OPERATION), { preserveInterruptedDrop }),
+						signalling.databaseDropSignalOptions(acceptWorkerDatabaseClose)
+					);
+				} catch (cancelError) {
+					cancellationErrors.push(cancelError);
+				}
+				if (cancellationErrors.length) {
+					throw signalling.aggregateSchemaChangeErrors(
+						[error, ...cancellationErrors],
+						`Table drop '${databaseName}.${tableName}' failed to cancel cleanly`
+					);
+				}
+				throw error;
+			}
+		}
+
+		static async #dropTablePrepared(markLocalSchemaClosed: () => void, markDestructive: () => void) {
 			// Release post-commit derived-index delivery before any destructive work: the runner's
 			// backend must have quiesced before its stores and native file are destroyed, and a
 			// same-name recreate must not race an owner still applying to the old generation.
@@ -1920,6 +1986,25 @@ export function makeTable(options) {
 			};
 			await quiesceDerivedIndexes();
 			const rootStore = primaryStore.rootStore;
+			markLocalSchemaClosed();
+			droppingTable = true;
+			delete databases[databaseName][tableName];
+			if (pendingSourceCommits.size) {
+				const pending = [...pendingSourceCommits];
+				let timer: NodeJS.Timeout;
+				const timedOut = Symbol('timedOut');
+				const result = await Promise.race([
+					Promise.allSettled(pending),
+					new Promise<typeof timedOut>((resolve) => {
+						timer = setTimeout(() => resolve(timedOut), LOCK_TIMEOUT);
+					}),
+				]);
+				clearTimeout(timer);
+				if (result === timedOut)
+					throw new Error(
+						`dropTable() timed out after ${LOCK_TIMEOUT}ms waiting for ${pending.length} in-flight source-populated cache write(s) on ${tableName} to settle; refusing to drop the column families out from under a write that may still be staged.`
+					);
+			}
 			if (databaseName === databasePath) {
 				// Persist a drop tombstone on the primary catalog entry BEFORE any
 				// destructive work. If the process dies or a column family drop fails
@@ -1964,57 +2049,12 @@ export function makeTable(options) {
 					if (typeof tombstoneWrite?.then === 'function') await tombstoneWrite;
 				}
 			}
+			// Peers may complete a durable tombstone during cancellation, so publish the destructive
+			// marker only after every coordinator-side source transaction has settled.
+			markDestructive();
 			// LMDB can await its tombstone write above. Re-capture in case a schema refresh installed
 			// another handle during that wait; the live-catalog removal below is synchronous.
 			await quiesceDerivedIndexes();
-			// A get() against a sourcedFrom table resolves to its caller before the resolved
-			// record's cache write has committed (see getFromSource) - the write lands "in the
-			// background" for latency reasons. Flip this BEFORE removing the table from the
-			// schema below: getFromSource() checks it and skips caching (treats the load as
-			// noCacheStore) for any call it admits from here on, including one that slipped in
-			// through a stale reference to this Table between the two steps.
-			droppingTable = true;
-			// Remove the table from the in-memory schema immediately so concurrent
-			// requests get "table does not exist" instead of racing the column
-			// family drops below. If a drop fails past this point the table stays
-			// invisible, and the tombstone guarantees the drop completes on the
-			// next startup (or on a same-name create).
-			delete databases[databaseName][tableName];
-			// The above stops new source-fill writes from starting, but a write from a get()
-			// that already returned to its caller may still be in flight. Dropping the column
-			// families out from under that write is a genuine invariant violation, not just a
-			// benign race: RocksDB rejects the still-open write batch with "Invalid column
-			// family specified in write batch" (or "Could not access column family N"), which
-			// can also abort this drop before it removes the tombstoned catalog rows - leaving
-			// the table stuck "dropping" for completeInterruptedDrop to retry (and fail
-			// identically) on every subsequent load (harper#1381). Drain any in-flight commits
-			// before the blob sweep below (so it observes every row a drain-caught write just
-			// committed) and before touching a single column family.
-			//
-			// Bounded, and fails CLOSED: the tracked promise covers the whole source round-trip
-			// plus the local commit (see getFromSource), so a hung/slow source or a slow commit
-			// (e.g. a large blob write) could otherwise wedge this drop forever. Rather than
-			// give up and drop anyway - which would reopen exactly the race this drain exists to
-			// close, just less often - a timeout FAILS the drop. The tombstone written above is
-			// already durable, so completeInterruptedDrop picks the drop back up on the next
-			// load, once the stuck write has had time to finish.
-			if (pendingSourceCommits.size) {
-				const pending = [...pendingSourceCommits];
-				let timer: NodeJS.Timeout;
-				const timedOut = Symbol('timedOut');
-				const result = await Promise.race([
-					Promise.allSettled(pending),
-					new Promise<typeof timedOut>((resolve) => {
-						timer = setTimeout(() => resolve(timedOut), LOCK_TIMEOUT);
-					}),
-				]);
-				clearTimeout(timer);
-				if (result === timedOut) {
-					throw new Error(
-						`dropTable() timed out after ${LOCK_TIMEOUT}ms waiting for ${pending.length} in-flight source-populated cache write(s) on ${tableName} to settle; refusing to drop the column families out from under a write that may still be staged. The drop tombstone is durable, so this will be retried on the next load.`
-					);
-				}
-			}
 			for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
 				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
 					deleteBlobsInObject(entry.value);
@@ -2027,9 +2067,8 @@ export function makeTable(options) {
 				// family that poisons same-name recreates, so a genuine drop failure
 				// must surface and leave the tombstoned catalog rows for the reconcile.
 				//
-				// A drop is broadcast to every worker thread, and each holds its own
-				// handle to the same underlying column family, so a concurrent worker
-				// (or completeInterruptedDrop) may already have dropped it - surfaced
+				// Older workers and interrupted-drop recovery may already have dropped the same
+				// underlying column family before this coordinated drop reached its barrier - surfaced
 				// as "Column family already dropped!". That is the intended end state,
 				// not a failure, so tolerate it. The catalog rows are removed only if
 				// this drop's tombstone is still the live primary row: a concurrent
@@ -2098,9 +2137,6 @@ export function makeTable(options) {
 				await primaryStore.close();
 				fs.unlinkSync(primaryStore.path);
 			}
-			signalling.signalSchemaChange(
-				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName)
-			);
 		}
 		// #section: read-path
 		/**
@@ -6899,6 +6935,11 @@ export function makeTable(options) {
 			return history.reverse();
 		}
 		static clear() {
+			if (TableResource.fullTextIndexes.length > 0)
+				throw new ClientError(
+					`Table.clear() is not supported on full-text table '${databaseName}.${tableName}' until whole-table invalidation is crash-safe`,
+					501
+				);
 			// clear the primary store and every secondary index dbi (same pattern used by
 			// runIndexing when rebuilding from scratch), so clear() doesn't leave stale
 			// index entries pointing at records that no longer exist.

@@ -170,6 +170,10 @@ export type DerivedIndexRunnerOptions = {
 
 export type DerivedIndexRegistration = {
 	backend: DerivedIndexBackend;
+	/** Shared readiness identity; defaults to the stable backend/ownership id. */
+	readinessId?: string;
+	/** False permanently retires a registration whose durable schema generation is no longer current. */
+	isCurrent?: () => boolean;
 	projections: ReadonlyMap<number, (record: unknown) => unknown>;
 	options?: DerivedIndexRunnerOptions;
 };
@@ -326,12 +330,12 @@ export class DerivedIndexRuntime {
 		}
 		runner.wake(true);
 		return () => {
+			const held = this.#heldRunners.get(registration.backend.id);
+			if (held?.runner === runner) return this.#retryHeldRelease(held);
 			if (this.#runners.get(registration.backend.id) === runner) {
 				this.#runners.delete(registration.backend.id);
 				this.#stopListeningIfIdle();
 			}
-			const held = this.#heldRunners.get(registration.backend.id);
-			if (held?.runner === runner) return this.#retryHeldRelease(held);
 			return this.#track(runner, runner.stop());
 		};
 	}
@@ -594,6 +598,7 @@ class DerivedIndexRunner {
 	#lastCaughtUpAt?: number;
 	#lagTimer?: NodeJS.Timeout;
 	#lockRetryTimer?: NodeJS.Timeout;
+	#heldReleaseRetryTimer?: NodeJS.Timeout;
 	#lagBudget: number;
 	#scheduled = false;
 	#skipNextNotify = false;
@@ -631,6 +636,7 @@ class DerivedIndexRunner {
 	#readinessBuffer: SharedReadinessBuffer;
 	#sharedViews: SharedViews;
 	#resetting?: Promise<void>;
+	#clearShutdownFailureOnRelease = false;
 	status: DerivedIndexRunnerStatus = { state: 'idle' };
 
 	get id() {
@@ -641,6 +647,7 @@ class DerivedIndexRunner {
 		if (!this.#heldLock) return this.#stopResult ?? Promise.resolve();
 		this.#heldLock = false;
 		this.#releaseFailure = undefined;
+		this.#clearShutdownFailureOnRelease = true;
 		this.#owned = true;
 		this.#release();
 		this.#stopResult = (this.#releasing ?? Promise.resolve()).then(() => {
@@ -671,7 +678,9 @@ class DerivedIndexRunner {
 			typeof root?.getSync === 'function' &&
 			typeof root?.removeSync === 'function';
 		this.#lagBudget = effectiveLagBudget(options);
-		this.#readinessBuffer = readinessBuffer(logStore, registration.backend.id, () => this.#notified());
+		this.#readinessBuffer = readinessBuffer(logStore, registration.readinessId ?? registration.backend.id, () =>
+			this.#notified()
+		);
 		this.#sharedViews = sharedViewsOf(this.#readinessBuffer);
 		try {
 			registration.backend.attach({
@@ -986,6 +995,7 @@ class DerivedIndexRunner {
 		this.#unreadSince = this.#options.now();
 		this.#reachedEndOfLog = false;
 		try {
+			if (!this.#continueIfCurrent()) return;
 			if (!reviving) this.#ownerEpoch = this.#mintEpoch();
 			this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
 			const condemned = this.#readCondemnation();
@@ -1165,6 +1175,7 @@ class DerivedIndexRunner {
 
 	#drain() {
 		if (!this.#owned || this.#stopped || this.#rebuilding) return;
+		if (!this.#continueIfCurrent()) return;
 		if (this.#canRebuild() && this.#takeSharedRebuildRequest()) {
 			if (this.#rebuildTimer) {
 				clearTimeout(this.#rebuildTimer);
@@ -1851,6 +1862,7 @@ class DerivedIndexRunner {
 
 	#startRebuild() {
 		if (!this.#owned || this.#rebuilding || this.#stopped) return;
+		if (!this.#continueIfCurrent()) return;
 		this.#rebuildRequested = false;
 		this.#takeSharedRebuildRequest();
 		this.#rebuilding = true;
@@ -1911,7 +1923,7 @@ class DerivedIndexRunner {
 	async #runRebuild(generation: number) {
 		const backend = this.#registration.backend;
 		await this.#quiesce(this.#ownerEpoch!);
-		if (!this.#live(generation)) return;
+		if (!this.#live(generation) || !this.#continueIfCurrent()) return;
 		this.#ownerEpoch = this.#mintEpoch();
 		this.status = { state: 'rebuilding', ownerEpoch: this.#ownerEpoch };
 		this.#publishReadiness('rebuilding');
@@ -1982,7 +1994,7 @@ class DerivedIndexRunner {
 
 	async #deliverRebuildChunk(chunk: Chunk, generation: number) {
 		while (true) {
-			if (!this.#live(generation)) return;
+			if (!this.#live(generation) || !this.#continueIfCurrent()) return;
 			const result = this.#deliver(chunk.batch);
 			if (result === undefined) {
 				if (this.#live(generation)) throw new Error('rebuild delivery was rejected');
@@ -2113,6 +2125,32 @@ class DerivedIndexRunner {
 		Atomics.store(words, READINESS_STATE, READINESS_STATES.indexOf(state));
 	}
 
+	#continueIfCurrent(): boolean {
+		try {
+			if (this.#registration.isCurrent?.() !== false) return true;
+			this.#retireStaleGeneration();
+		} catch (error) {
+			logger.warn?.(`Derived index '${this.id}' could not verify its durable generation; retrying`, error);
+			this.#lockBackoff = true;
+			this.#release();
+			this.#armLockRetry(this.#options.rebuildBackoffMilliseconds);
+		}
+		return false;
+	}
+
+	#retireStaleGeneration() {
+		const release = this.#heldLock ? this.retryRelease() : this.stop();
+		release.catch((error) => {
+			logger.warn?.(`Derived index '${this.id}' could not retire its stale generation; retrying`, error);
+			if (this.#heldReleaseRetryTimer) return;
+			this.#heldReleaseRetryTimer = setTimeout(() => {
+				this.#heldReleaseRetryTimer = undefined;
+				this.#retireStaleGeneration();
+			}, this.#options.rebuildBackoffMilliseconds);
+			this.#heldReleaseRetryTimer.unref?.();
+		});
+	}
+
 	#release() {
 		if (!this.#owned) return;
 		if (this.#idleTimer) {
@@ -2137,6 +2175,10 @@ class DerivedIndexRunner {
 		const unlock = () => {
 			this.#releasing = undefined;
 			this.#releasingSince = undefined;
+			if (this.#clearShutdownFailureOnRelease) {
+				this.#clearShutdownFailureOnRelease = false;
+				this.#publishReadiness('unknown');
+			}
 			try {
 				this.#logStore.unlock(this.#lockKey);
 			} catch (error) {
@@ -2200,18 +2242,51 @@ function readinessBuffer(
 }
 
 type SharedViews = {
+	buffer: SharedReadinessBuffer;
 	words: Int32Array;
 	epoch: BigInt64Array;
 };
 
-function sharedViewsOf(buffer: ArrayBufferLike): SharedViews {
+type RetainedSharedViews = {
+	views: SharedViews;
+	references: number;
+};
+
+function sharedViewsOf(buffer: SharedReadinessBuffer): SharedViews {
 	return {
+		buffer,
 		words: new Int32Array(buffer, 0, READINESS_WORDS),
 		epoch: new BigInt64Array(buffer, READINESS_EPOCH_OFFSET, 1),
 	};
 }
 
-const readinessViews = new WeakMap<object, Map<string, SharedViews>>();
+const readinessViews = new WeakMap<object, Map<string, RetainedSharedViews>>();
+
+function sharedReadinessViews(logStore: RocksTransactionLogStore, backendId: string): SharedViews {
+	const retained = readinessViews.get(logStore)?.get(backendId);
+	return retained?.views ?? sharedViewsOf(readinessBuffer(logStore, backendId));
+}
+
+/** Keep one readiness wrapper alive while a table generation can publish or query its state. */
+export function retainDerivedIndexReadiness(logStore: RocksTransactionLogStore, backendId: string): () => void {
+	let byBackend = readinessViews.get(logStore);
+	if (!byBackend) readinessViews.set(logStore, (byBackend = new Map()));
+	let retained = byBackend.get(backendId);
+	if (!retained) {
+		retained = { views: sharedViewsOf(readinessBuffer(logStore, backendId)), references: 0 };
+		byBackend.set(backendId, retained);
+	}
+	retained.references++;
+	let lease: RetainedSharedViews | undefined = retained;
+	return () => {
+		const retained = lease;
+		if (!retained) return;
+		lease = undefined;
+		if (--retained.references > 0) return;
+		if (byBackend.get(backendId) === retained) byBackend.delete(backendId);
+		if (byBackend.size === 0) readinessViews.delete(logStore);
+	};
+}
 
 function readReadiness({ words, epoch }: SharedViews): DerivedIndexReadiness {
 	const state = READINESS_STATES[Atomics.load(words, READINESS_STATE)] ?? 'unknown';
@@ -2230,11 +2305,20 @@ export function readDerivedIndexReadiness(
 	logStore: RocksTransactionLogStore,
 	backendId: string
 ): DerivedIndexReadiness {
-	let byBackend = readinessViews.get(logStore);
-	if (!byBackend) readinessViews.set(logStore, (byBackend = new Map()));
-	let views = byBackend.get(backendId);
-	if (!views) byBackend.set(backendId, (views = sharedViewsOf(readinessBuffer(logStore, backendId))));
-	return readReadiness(views);
+	return readReadiness(sharedReadinessViews(logStore, backendId));
+}
+
+/** Publish a lifecycle state before a runner exists, so every worker stops trusting stale readiness. */
+export function publishDerivedIndexReadiness(
+	logStore: RocksTransactionLogStore,
+	backendId: string,
+	state: DerivedIndexReadinessState,
+	reason: DerivedIndexReadinessReason = 'none'
+): void {
+	const { buffer, words } = sharedReadinessViews(logStore, backendId);
+	Atomics.store(words, READINESS_REASON, READINESS_REASONS.indexOf(reason));
+	Atomics.store(words, READINESS_STATE, READINESS_STATES.indexOf(state));
+	buffer.notify?.();
 }
 
 function isValidCursor(cursor: DerivedIndexCursor | undefined): cursor is DerivedIndexCursor {

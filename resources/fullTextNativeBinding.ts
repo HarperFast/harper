@@ -114,7 +114,8 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		info.lifecycleApiVersion !== FULLTEXT_LIFECYCLE_API_VERSION ||
 		info.mutationBatchApiVersion !== 3 ||
 		!Array.isArray(info.storageBackends) ||
-		!info.storageBackends.includes('native') ||
+		info.storageBackends.length !== 1 ||
+		info.storageBackends[0] !== 'native' ||
 		!info.limits ||
 		!Number.isSafeInteger(info.limits.maxCommitPayloadBytes) ||
 		info.limits.maxCommitPayloadBytes <= 0

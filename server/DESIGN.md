@@ -88,6 +88,17 @@ Once set, this terminal state prevents every worker replacement path and makes n
 calls fail with `ERR_HARPER_PROCESS_SHUTTING_DOWN`; scoped worker-type restarts do not set it.
 `shutdownWorkersNow()` remains an immediate teardown: its worker shutdown messages are best-effort,
 and it force-terminates the remaining worker set rather than waiting for application drain hooks.
+Those deliberate exits waive the unconfirmed-database-close fatal because the caller owns the
+process-level cleanup that follows. Immediate teardown is terminal-only; scoped callers must use
+`shutdownWorkers(name)` so database handles close before the process continues; the scoped immediate
+form throws `ERR_SCOPED_IMMEDIATE_SHUTDOWN_UNSAFE`.
+An ordinary worker shutdown, by contrast, closes every loaded RocksDB user database after application
+scopes settle. This releases native derived-index writers and rocksdb-js's process-global handle references
+without closing LMDB DBIs that surviving workers still use.
+The worker reports the close as pending before it begins and retries rejections. If the close rejects
+or never settles through the external termination backstop, Harper exits for a clean supervisor
+restart instead of terminating only the worker and leaking process-global state. Job workers use the
+same pending status and retry policy before they exit.
 
 A rolling restart serves the _old_ code until each worker is replaced, and where the OS grants
 `SO_REUSEPORT` the not-yet-replaced workers keep accepting connections for the whole restart — so a

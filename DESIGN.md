@@ -804,12 +804,34 @@ number into its write instruction synchronously and the native writer consumes i
 (`node_modules/lmdb/write.js`), so a pass suspended inside `await removeAuditEntry()` still has a
 delete pending against the primary and audit DBIs, and LMDB forbids closing a DBI an existing
 transaction has modified. `dropDatabase()` and the legacy arm of `Table.dropTable()` await it.
-`closeDatabase()` and branch `close()` are synchronous and cannot; what covers them is that every
+`closeDatabase()` cannot; what covers it is that every
 environment touch remaining in a resumed pass — cursor advance, cursor release, marker write, re-arm —
 re-checks `rootStore.status`, plus the fact that their production callers reach them only for RocksDB
 stores, whose pass is one synchronous `purgeLogs()` call with nothing suspended mid-removal.
+The asynchronous `closeDatabaseForRestore()` path is also the terminal worker-close path for RocksDB.
+It awaits the retirement barrier and every promise returned while closing table, metadata, and root
+stores; the pending-close retry pass uses that same awaited path, so an unloaded database cannot be
+reported closed while a previous asynchronous handle close is still settling. LMDB databases stay
+open during worker teardown: closing one worker's DBIs can invalidate handles still used by surviving
+workers. Both supported post-commit native runtimes require RocksDB: full-text activation rejects
+LMDB, and HNSW sets `postCommit` only for its RocksDB-only native plane. Only after every eligible
+RocksDB database closes may teardown publish the worker-wide close watermark.
+
+An already-closed child store is an idempotent success, which matters for LMDB because closing an
+environment can close DBIs that are still reachable from Harper's table graph. A synchronous legacy
+caller cannot await a promise-returning close, but it still attaches a rejection handler and retains
+the store in the pending-close registry so the next close attempt retries it rather than losing the
+failure or emitting an unhandled rejection.
 `resetDatabases()` closes LMDB roots with no retirement call at all, so that re-check is a routine
 path rather than a defensive one.
+
+Worker shutdown uses the same ten-minute database-quiescence budget as destructive schema barriers.
+Main conservatively marks handles unconfirmed before posting shutdown, but starts that budget only when
+the worker reports that database teardown has begun; a long-running job therefore cannot spend the
+close budget before it reaches its cleanup path.
+The ordinary short thread backstop may request termination while native handles are still closing,
+but it cannot terminate that worker; completion immediately restores the ordinary backstop, while an
+expired database-close deadline exits the process rather than stranding process-global RocksDB handles.
 
 The last-removed marker is retained until it commits. A rejected write is logged and carried to the
 next pass rather than dropped: a pass that deletes nothing never reaches the write again, so one
@@ -1831,8 +1853,10 @@ Three non-obvious mechanics keep that safe:
 - **The ITC close broadcast is best-effort, so closure is verified before the purge.** The SCHEMA
   broadcast (`signalSchemaChange`) resolves after remote handlers complete but times out at 30s
   "best-effort", swallows errors, and never reaches job-worker threads at all (their ports are
-  excluded from broadcasts to avoid re-entrant deadlocks). A destructive purge cannot trust it:
-  `restoreBackup` polls rocksdb-js `registryStatus()` (process-global across worker threads) until
+  excluded from broadcasts to avoid re-entrant deadlocks). Each reached handler first awaits every
+  derived-index quiescence handle and only then closes the database stores; a backend that cannot
+  prove shutdown therefore leaves the RocksDB handles open. A destructive purge still cannot trust
+  the broadcast alone: `restoreBackup` polls rocksdb-js `registryStatus()` (process-global across worker threads) until
   the database path has no open instance, and aborts with a 409 — _cleaning up the marker, since
   nothing was destroyed_ — if handles remain.
 - **Online restore is impossible for a database a component holds open — and that failure is
@@ -1857,9 +1881,13 @@ Three non-obvious mechanics keep that safe:
   itself a job, so before any `restore_backup` there is always at least one exited job worker that
   touched the database. Without cleanup those leaked handles keep `registryStatus()` non-zero and
   would fail the closure check even when no component holds the database. `jobProcess` therefore
-  calls `closeLoadedDatabases()` (`resources/databases.ts`) in its `finally`, closing every loaded
-  user database on that thread (the non-enumerable `system` DB is intentionally skipped), so an
-  exited job worker leaves no residual handle to be mistaken for a live holder.
+  retries `closeLoadedDatabases()` (`resources/databases.ts`) in its `finally`, and ordinary pool
+  workers run the same retrying teardown after servers and application scopes close. It closes every loaded
+  RocksDB user database on that thread (LMDB and the non-enumerable `system` DB are intentionally skipped), so an
+  exited worker leaves no residual handle to be mistaken for a live holder. Each worker reports the
+  close as pending before it begins, so a rejection or a close that never settles reaches the same
+  termination backstop. If the close does not finish, the main thread exits Harper for a clean
+  supervisor restart rather than force-terminating the worker and leaking process-global state.
 - **`dropDatabase` and `restore_backup` serialize on the same lock, not a check-then-act probe.**
   A drop's `destroy()` interleaving with a restore's purge-and-copy on the same directory would gut
   a "successful" restore (or vice versa). `dropDatabase` therefore _acquires_ the restore lock
@@ -2541,7 +2569,7 @@ The SQL and job paths are additive rather than exclusive: `verifyPermsAST` valid
 
 ## Derived-index runtime: committed-log delivery to native index backends (`resources/derivedIndexRuntime.ts`)
 
-A derived index (the native HNSW plane, a future Tantivy full-text index) is a materialized view
+A derived index (the native HNSW plane or a Tantivy full-text index) is a materialized view
 that lives outside the record transaction: its apply is native, costs 0.2–1.4 ms per mutation, and
 its durability barrier is an `msync` or a segment publish, none of which belong on the commit path.
 The runtime is the one Harper-side implementation of the delivery protocol in harper#2489: **the
@@ -2573,9 +2601,13 @@ anyway.
 
 ### Ownership and wake-up
 
-Each worker holds one `DerivedIndexRuntime` per RocksDB root store, with the same schema-derived
-registrations on every worker; the drain is lock-elected, registration is not. The runtime listens
-to the root store's `committed` event and coalesces wakes through `setImmediate`. The winner keeps a
+Each worker holds one `DerivedIndexRuntime` per RocksDB root store. HNSW keeps its existing model:
+every worker registers the schema-derived backend and the drain is lock-elected. Native full text
+uses designated registration instead: worker 0 owns shared-database writers, and the dedicated
+application worker that opened a private branch owns that branch's writers. Job workers and other
+pool workers install only the table-level readiness observer. They never open Tantivy writers.
+The runtime listens to the root store's `committed` event and coalesces wakes through `setImmediate`.
+The winner keeps a
 reusable aggregate iterator (`RocksTransactionLogStore.getRange` with `startByLog`, `exactStart`,
 `resumeAfterExactStart`, `includeLogName`) and drains for bounded count, bytes and wall time per
 turn. Ownership is sticky: the lock is not one record writers take, so holding it across turns
@@ -2681,6 +2713,173 @@ cannot be written issues no reset. The cursor's atomic durability mechanism is t
 (Tantivy publishes it with segment state; HNSW writes it after the plane barrier), which is why the
 cursor is backend-owned and validation is Harper's.
 
+### Schema activation
+
+`resources/derivedIndexes.ts` is the single schema-to-runtime registry for both HNSW and full text.
+HNSW registrations continue to run on every worker and use the runtime lock for election. Full-text
+registrations run only on the designated database or branch writer described above. The remaining
+workers still install the table registration and read generation-scoped readiness from shared
+memory, so cache eviction auditing and query availability do not depend on owning a writer. A table
+redefinition marks its previous installation closing before installing replacements, while
+asynchronous shutdown remains fenced behind the same backend lock. This also prevents a catalog
+rescan from leaving duplicate writers when the prior `Table` class is no longer reachable.
+
+Full-text activation reserves the table in `derivedIndexRegistry` before awaiting the native
+binding. That provisional registration makes cache eviction write its local-only audit marker even
+during startup or a failed native setup; the runner adds its own reference after activation, and
+both references are released with the table installation. Without the provisional reference, a
+reused native index could retain a document evicted while no runner was registered.
+Full-text readiness is generation-scoped while the writer lock remains target-scoped. The lock key
+deliberately excludes the generation: old and replacement schemas must serialize on the same native
+directory. The generation captured from the durable descriptor at activation is compared with the
+currently loaded table definition before inspection, reset, open, normal delivery, or each rebuild
+chunk. Schema rescan updates that table definition before rotating its installation, so the old
+registration stops admitting work without adding synchronous catalog reads to every drain chunk.
+The replacement waits for that shutdown and then acquires the same target lock; at most, the old
+generation finishes the chunk already in progress when the catalog change is published. A stale
+registration retires without touching the replacement generation's readiness, and a transient
+shutdown failure retains the lock and retries with backoff. A replacement generation therefore
+cannot inherit `ready` from the generation it supersedes, and an overlapping old worker cannot reset
+or write the replacement's native directory. Before a runner exists, its local
+installation masks shared readiness as `unknown`; native activation failure changes that local state
+to `unavailable` and prevents reuse, so a later schema load retries activation without poisoning a
+healthy peer. A table drop clears its installation only after shutdown proves quiescence; a rejected
+shutdown keeps the installation, its predecessor, and the ownership lock reachable so a retry must
+re-prove quiescence before destructive storage work begins. Removing the final derived target keeps
+that closing handle on the replacement table until the same proof completes. Online restore uses an
+asynchronous close path that obtains the same proof on every table before it releases RocksDB handles;
+a failed proof leaves those handles open, so the restore's existing closed-database check aborts before
+purging files.
+
+A database drop uses a stricter cross-worker barrier than ordinary schema broadcasts. The initiating
+worker first marks the database as dropping. A worker coordinator then fences the main thread before
+snapshotting the remaining peers; main owns production worker creation, so a worker started after
+that acknowledgement inherits the active marker in `workerData`, while workers already running join
+the second barrier snapshot. Every peer then quiesces all derived-index installations associated
+with its audit store, closes its handles, and
+acknowledges success. A handle-close failure produces a negative acknowledgement rather than being
+logged and treated as quiescent. A negative acknowledgement, timeout, or recipient exit before either
+acknowledgement or confirmed database-handle closure rejects the drop before destructive storage work.
+An exiting job or pool worker whose teardown already reported user-database process-global handles
+released and derived-index runtimes quiesced satisfies the barrier even if it exits before processing
+the message: it no longer has state that must be quiesced. The worker publishes that terminal close
+status directly to main and every sibling port. A close confirmation immediately settles any
+destructive acknowledgement already waiting on that port, and worker creation carries the latest
+confirmation into each inherited peer port, so a coordinator that starts after publication reaches
+the same decision. Terminal shutdown first stops admitting schema events, waits for any handler that
+was already running, then closes storage and publishes confirmation; no handler can reopen storage
+after the confirmation. Worker teardown confirmation covers RocksDB storage and native derived-index
+handles only. A RocksDB destructive barrier may therefore accept that confirmation in place of its own
+acknowledgement. An LMDB barrier may not: it still requires the worker to handle the preparation message,
+because proactively closing one worker's LMDB DBIs can invalidate handles on surviving workers.
+An LMDB preparation received after worker shutdown begins is rejected rather than acknowledged without
+closing those DBIs; the coordinator can retry after the exiting worker is gone.
+These destructive barrier acknowledgements
+use a bounded ten-minute window rather than schema gossip's 30-second default, because quiescing a large
+native writer can legitimately take longer than an ordinary cache rescan. Cancellation attempts the main
+thread and peer legs even when either leg rejects, then reports their errors together, so a failed main
+unfence cannot strand otherwise healthy peers. While marked, scans and on-demand lookup
+cannot reopen a peer's database; the coordinator keeps its already-open database loaded until
+derived-index quiescence succeeds. The marker enters its destructive phase immediately before storage
+teardown, and coordinator catalog scans then skip the path; the captured handles remain usable while
+a concurrent rescan cannot cold-open the directory between environment unregistration and native
+destruction. A peer cancellation revokes the attempt, waits for any in-flight preparation to stop
+quiescing, then reloads the database while the drop remains reversible. This prevents a stale preparation
+from closing a runtime created by cancellation. Once the coordinator has marked the attempt destructive,
+the cancellation message instead clears peer markers without rescanning; otherwise a peer could complete
+the tombstoned drop while the coordinator reports its destructive failure. The coordinator likewise
+reloads only when cancellation overtakes its own preparation. A failed destructive table or database
+drop therefore stays absent from memory with its durable tombstone intact until ordinary interrupted-drop
+recovery runs. Reloading as part of cancellation could erase that recovery evidence before the caller
+observes the failure.
+Cancellation and finish messages clear only the marker owned by their coordinator and attempt token,
+so a late message cannot clear a newer drop, including a retry from the same coordinator. The token
+also fences an older preparation that resumes after cancellation: it cannot close storage or rescan
+through its successor's marker. An active marker is never replaced by a different attempt; another
+local attempt or peer preparation receives 409. Simultaneous coordinators can therefore both fail and
+retry, but cannot close or cancel each other's prepared state. Successful deletion sends the schema
+event with the same token through main. Main clears its marker before relaying the event to its current
+worker set. Worker construction and registration are synchronous on main, so a worker either joins
+that relay or starts after the marker is gone; a worker cannot inherit the marker and miss the terminal
+recipient snapshot. The destructive barrier includes job workers even though ordinary schema gossip
+excludes them. A peer also records the coordinating
+thread and cancels every marker it owns if that thread exits before finish or cancellation arrives.
+That exit listener is registered beside the marker registry, before inherited markers are admitted;
+an inherited marker whose coordinator is already known dead is discarded during module load. A
+preparation delivered after the exit notification is rejected before it can install a marker, closing
+the opposite ordering of the same race. Peer cancellation is attempted even when the coordinator's
+local reload fails, so a local recovery error cannot strand every already-prepared peer. Finish and
+cancellation likewise still reach peers when the coordinator's own catalog rescan fails. A lost
+terminal event to a still-live, unresponsive peer deliberately remains fail-closed: conflicting
+preparations log the holding coordinator and return 409, and that peer may require a worker restart
+to clear the marker. Branch, job-worker, and ordinary pool-worker teardown await the same derived-index
+quiescence before closing their RocksDB handles; teardown waits for every branch close to settle before
+it reports any failure. Receipt of worker shutdown marks process-global handle release pending before
+component drains begin; a process exit remains the final safety boundary if any later teardown stage
+cannot complete. Strict acknowledgements preserve a peer's 409 only for an actual reported conflict;
+when both the main and peer legs report the same status, their aggregate preserves it. Timeouts,
+unconfirmed exits, mixed failures, and internal close failures remain server errors instead of being
+flattened into a retryable client conflict.
+For RocksDB, `RocksDatabase.destroy()` is the final native backstop: rocksdb-js claims the shared
+descriptor, closes its attached resources, and throws if any descriptor reference remains; it calls
+RocksDB's destructive API only after that reference check succeeds. Harper therefore does not add a
+second registry-polling protocol to database drop.
+
+Table drop reuses this database-level quiescence barrier rather than maintaining a second table-marker
+protocol. Every peer temporarily closes the database, which releases worker 0's native full-text writer;
+the coordinator removes the target from its live schema, stops admitting source-fill writes, and drains
+ones already admitted before it writes the durable tombstone or marks the barrier destructive. Until the
+destructive marker is published, cancellation reloads a coordinator whose live table was removed; after
+it, cancellation leaves the tombstone for interrupted-drop recovery. A peer can therefore never complete
+the coordinator's tombstone while a coordinator-side source transaction can still commit. The ordinary
+`drop_table` schema event carries the attempt token, clears the matching marker, and reloads the remaining
+tables. This deliberately trades a brief database-wide DDL pause for one attempt-fenced worker-start path
+and one cancellation protocol. Direct `Table.dropTable()` calls take the same path as the operations API,
+so component code cannot bypass native-writer quiescence.
+
+An `@fullText` index creates no RocksDB column family. Its native directory is rooted inside the
+database directory and selected by the lifecycle's hash of `<table>/<index>`. RocksDB remains the
+source of truth and its transaction logs remain the recovery stream; RocksDB managed backups do not
+copy Tantivy segments. Harper keeps an internal per-index token beside `fullTextIndexes` on the
+table's primary catalog descriptor; it is lifecycle metadata, not customer schema. The native source
+generation combines that token with the persisted table id. Dropping and recreating a table,
+removing and re-adding an index, or changing its native storage definition therefore forces
+replacement even when the table and index names are reused. A restart preserves the token and reuses
+compatible Tantivy files before replaying the audit tail. Schema publication recomputes the token map
+from the primary descriptor after acquiring the catalog lock, preserving a matching token another
+worker already published instead of cascading redundant rebuilds. Query-only
+synonym, highlighting, and per-field highlight settings persist without rebuilding Tantivy segments.
+For a table without a declared primary key, the bare `<table>/` catalog row is the same declaration
+carrier: definition changes, removals, and generation rotations are persisted there before the live
+runtime is replaced, so a reset cannot resurrect the prior index.
+
+Removing an index or dropping its table quiesces the writer but does not yet delete the native
+directory. Reusing the same index path resets incompatible state and reclaims it. Permanent removal
+requires the wrapper to add generation-conditional retirement; Harper must not use the current
+unconditional reset because a concurrent drop/recreate could delete the new table's index.
+
+Activation requires explicit table auditing and RocksDB. String and string-array sources are
+projected directly from the stored current record. Computed sources are rejected at activation
+until resolver semantics have a stable version that can participate in generation compatibility;
+otherwise a resolver change could reuse documents produced by the prior function. Blob remains an
+accepted schema source, but activation rejects it until the derived pipeline has the bounded
+asynchronous extraction lane that can read file-backed Blob content without blocking or indexing a
+placeholder. `Table.clear()` is rejected for a table with a full-text index until the lifecycle has
+a crash-safe, durable whole-table invalidation protocol; audited per-record deletes and whole-record
+cache evictions remain supported. Full-text indexing is eventually consistent by default: lag
+changes readiness and metrics but does not reject authoritative Harper writes. Missing, corrupt, or
+incompatible native state enters the rebuild path without taking the source table offline. A
+persisted table declaration that cannot supply the recovery contract itself—auditing, RocksDB, or a
+supported projection—is quarantined during catalog load because Harper cannot safely preserve replay
+coverage. Quarantine keeps that table unloaded and leaves other tables in the database available.
+It first quiesces the table's derived runtime, then closes its primary and secondary RocksDB handles;
+a failed close remains in the database-close retry registry rather than becoming unreachable.
+Because the quarantined table cannot accept writes, a valid local schema re-declaration may preserve
+the same native generation, then reuse-and-replay or rebuild according to the ordinary cursor checks.
+Operational writer, queue, and search limits are Harper-owned constants for this integration slice,
+not schema options; the Fulltext process-wide resource governor must replace them before release
+qualification.
+
 ### Bounded delivery
 
 A drain turn **collects** identities from the iterator — `(tableId, recordId, logVersion)` per
@@ -2761,7 +2960,12 @@ attempt count, rebuild request and lag-exceeded flag, then the `BigInt64` owner-
 word is read with a plain `Atomics.load`; nothing needs two of them atomically, so there is no
 sequence lock — the owner stores reason and attempts before state. The shared reason is a code,
 never a message. `readDerivedIndexReadiness(logStore, id)` reads it on any worker without a runtime;
-a query path uses it to choose between a 503 and an answer. `Atomics` over rocksdb-js's external
+a query path uses it to choose between a 503 and an answer. Each active table generation retains one
+external wrapper per store and readiness id until its installation closes; otherwise a failure before
+a runner exists can release the allocation and let a later reader re-seed it as `unknown`. Replacement
+installations reference-count the same wrapper so closing the old generation cannot release it under
+the new one.
+`Atomics` over rocksdb-js's external
 `ArrayBuffer` wrappers is the same dependency primary-key allocation (`Table.ts`), blob holds
 (`blob.ts`) and HNSW node ids already carry; wakes use the binding's `notify()`, never
 `Atomics.wait`. A successor publishes `ready` on acquisition one `setImmediate` before its lazy
@@ -2949,10 +3153,9 @@ estimated source bytes are a scheduling bound and allow one oversized batch when
 empty, matching HNSW and preventing one large record from permanently stalling the index. Exact
 wire limits belong to Fulltext.
 
-When schema registration is added, it must build the runtime projection from the same declared field
-list passed to Fulltext when the native schema is opened. Unknown projection fields are an integration
-error that the registration path must fail rather than silently drop. This slice does not register
-schemas.
+Schema registration builds the runtime projection from the same declared field list passed to
+Fulltext when the native schema is opened. Unknown projection fields are an integration error that
+the registration path fails rather than silently dropping.
 
 In one serialized drain, Harper passes one logical mutation batch to `applyMutationBatch()`. The
 wrapper owns FTMB encoding, frame partitioning, exact `maxBatchBytes` enforcement, native frame

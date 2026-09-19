@@ -3,10 +3,20 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { existsSync, mkdirSync, writeFileSync } = require('node:fs');
 const { dirname, join } = require('node:path');
-const { table, flushDatabases, dropDatabase, getDatabases, resetDatabases } = require('#src/resources/databases');
+const {
+	table,
+	flushDatabases,
+	dropDatabase,
+	getDatabases,
+	resetDatabases,
+	beginDatabaseDrop,
+	finishDatabaseDrop,
+} = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { beginRestore, completeRestore, RESTORE_META_DIR } = require('#src/dataLayer/restoreMarker');
+
+const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 describe('flushDatabases', () => {
 	before(async function () {
@@ -177,10 +187,16 @@ describe('dropDatabase restore serialization', () => {
 });
 
 describe('openBranchDatabase (scope-private graph, harper#643)', () => {
-	const { openBranchDatabase, closeBranchDatabases, databases } = require('#src/resources/databases');
+	const {
+		openBranchDatabase,
+		closeBranchDatabaseAtPath,
+		closeBranchDatabases,
+		databases,
+	} = require('#src/resources/databases');
 	const { cpSync, mkdtempSync, rmSync } = require('node:fs');
 	const { tmpdir } = require('node:os');
 	const { registryStatus } = require('@harperfast/rocksdb-js');
+	const { ownsDerivedIndexWriters } = require('#js/server/threads/manageThreads');
 
 	// the real observable for a released handle: rocksdb-js's registry is process-global and its
 	// refCount only drops to zero once every column family opened under a path has been closed
@@ -205,8 +221,8 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		await BranchSource.primaryStore.rootStore.createCheckpoint(checkpointDir);
 	});
 
-	afterEach(function () {
-		closeBranchDatabases();
+	afterEach(async function () {
+		await closeBranchDatabases();
 	});
 
 	after(function () {
@@ -245,14 +261,20 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		);
 	});
 
+	it('assigns branch derived-index writers to the main worker in single-thread mode', function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+
+		assert.strictEqual(ownsDerivedIndexWriters(branch.rootStore.path), true);
+	});
+
 	it('refuses a second open of the same directory rather than handing out a rival graph', function () {
 		openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
 		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'), /already open/);
 	});
 
-	it('closes what nothing else can: the store is gone from the env map after close', function () {
+	it('closes what nothing else can: the store is gone from the env map after close', async function () {
 		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
-		branch.close();
+		await branch.close();
 
 		assert.doesNotThrow(
 			() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'),
@@ -290,7 +312,7 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		);
 	});
 
-	it('refuses an on-demand database() open of a directory a branch owns', function () {
+	it('refuses an on-demand database() open of a directory a branch owns', async function () {
 		const { database } = require('#src/resources/databases');
 		// database() resolves an unconfigured name against the same root the base database sits in
 		const probeDir = join(dirname(databases.branchbase.BranchSource.primaryStore.rootStore.path), 'branchdbprobe');
@@ -305,34 +327,81 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 			assert.throws(() => database({ database: 'branchdbprobe' }), /scope-private branch/);
 			assert.strictEqual(branch.rootStore.status, 'open', 'the branch store must survive the refused open');
 		} finally {
-			branch?.close();
+			await branch?.close();
 			rmSync(probeDir, { recursive: true, force: true });
 		}
 	});
 
-	it('releases every native handle it opened, not just the root', function () {
+	it('releases every native handle it opened, not just the root', async function () {
 		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
 		const branchPath = branch.rootStore.path;
 		assert.ok(refCountFor(branchPath) > 0, 'the branch should hold native handles while open');
 
-		branch.close();
+		await branch.close();
 
 		assert.strictEqual(refCountFor(branchPath), 0, 'close() must release every column family it opened');
 	});
 
-	it('tolerates a repeated close', function () {
+	it('retains ownership and retries when a native branch handle fails to close', async function () {
 		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
-		branch.close();
-		assert.doesNotThrow(() => branch.close(), 'a second close must not close the store twice');
+		const branchPath = branch.rootStore.path;
+		let closeAttempts = 0;
+		branch.openedStores.push({
+			path: branchPath,
+			status: 'open',
+			close() {
+				closeAttempts++;
+				if (closeAttempts === 1) throw new Error('test root close failure');
+				this.status = 'closed';
+			},
+		});
+
+		await assert.rejects(branch.close(), (error) => {
+			assert.match(error.message, /Error closing column family/);
+			assert.match(error.cause.message, /test root close failure/);
+			return true;
+		});
+		assert.throws(
+			() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'),
+			/already open/,
+			'a failed close must retain the branch identity until its native handles are released'
+		);
+
+		await branch.close();
+		assert.strictEqual(closeAttempts, 2);
+		assert.strictEqual(refCountFor(branchPath), 0);
+	});
+
+	it('tolerates a repeated close', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		await branch.close();
+		await assert.doesNotReject(() => branch.close(), 'a second close must not close the store twice');
 		assert.strictEqual(refCountFor(branch.rootStore.path), 0, 'a second close must not double-release');
 	});
 
-	it('a stale handle closed twice does not tear down a later open of the same directory', function () {
+	it('retries a failed close by path before a branch is reopened', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		let closeAttempts = 0;
+		branch.tables.BranchSource.derivedIndexRuntime = {
+			close() {
+				closeAttempts++;
+				return closeAttempts === 1 ? Promise.reject(new Error('native writer did not stop')) : Promise.resolve();
+			},
+		};
+
+		await assert.rejects(branch.close(), /native writer did not stop/);
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'), /already open/);
+		assert.strictEqual(await closeBranchDatabaseAtPath(checkpointDir), true);
+		assert.strictEqual(closeAttempts, 2);
+		assert.doesNotThrow(() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'));
+	});
+
+	it('a stale handle closed twice does not tear down a later open of the same directory', async function () {
 		const stale = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
-		stale.close();
+		await stale.close();
 		const live = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
 
-		stale.close();
+		await stale.close();
 
 		assert.throws(
 			() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'),
@@ -342,13 +411,13 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		assert.ok(refCountFor(live.rootStore.path) > 0, 'the live branch must still hold its handles');
 	});
 
-	it('drops the memoized blob roots pinning the store', function () {
+	it('drops the memoized blob roots pinning the store', async function () {
 		const { databasePaths, getRootBlobPathsForDB } = require('#src/resources/blob');
 		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
 		getRootBlobPathsForDB(branch.rootStore);
 		assert.ok(databasePaths.has(branch.rootStore), 'resolving blob roots memoizes them against the store');
 
-		branch.close();
+		await branch.close();
 
 		assert.ok(!databasePaths.has(branch.rootStore), 'close() must drop the memoized blob roots');
 	});
@@ -381,7 +450,7 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 				'adoption would overwrite the store identity the branch blob roots resolve from'
 			);
 		} finally {
-			branch?.close();
+			await branch?.close();
 			rmSync(probeDir, { recursive: true, force: true });
 		}
 	});
@@ -399,7 +468,7 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 			await runReclamationHandlers();
 			assert.ok(queried.includes(branchPath), 'opening a branch registers a reclamation handler for its path');
 
-			branch.close();
+			await branch.close();
 			queried.length = 0;
 			await runReclamationHandlers();
 
@@ -480,7 +549,13 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 });
 
 describe('audit cleanup retirement on teardown', () => {
-	const { readMetaDb, databases } = require('#src/resources/databases');
+	const {
+		readMetaDb,
+		databases,
+		closeDatabaseForRestore,
+		quiesceTableDerivedIndexes,
+		quarantineTableAfterSchemaRescanFailure,
+	} = require('#src/resources/databases');
 	const { mkdtempSync, rmSync } = require('node:fs');
 	const { tmpdir } = require('node:os');
 	const { open } = require('lmdb');
@@ -668,6 +743,159 @@ describe('audit cleanup retirement on teardown', () => {
 		assert.strictEqual(databases.derivedindextableretry.DerivedIndexTableRetryProbe, undefined);
 	});
 
+	it('reopens sibling tables after a coordinated table drop', async function () {
+		const Removed = table({
+			table: 'Removed',
+			database: 'coordinatedtabledrop',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const Kept = table({
+			table: 'Kept',
+			database: 'coordinatedtabledrop',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await Promise.all([Removed.schemaChangeOperation, Kept.schemaChangeOperation]);
+
+		await Removed.dropTable();
+
+		assert.strictEqual(databases.coordinatedtabledrop.Removed, undefined);
+		assert.ok(databases.coordinatedtabledrop.Kept, 'the terminal signal must clear the barrier and reload siblings');
+		const attemptId = beginDatabaseDrop('coordinatedtabledrop');
+		finishDatabaseDrop('coordinatedtabledrop', undefined, attemptId);
+	});
+
+	it('quiesces a table when a schema rescan cannot establish its current generation', async function () {
+		const Probe = table({
+			table: 'DerivedIndexSchemaRescanProbe',
+			database: 'derivedindexschemarescan',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await Probe.schemaChangeOperation;
+		await new Promise(setImmediate);
+		let closeAttempts = 0;
+		Probe.derivedIndexRuntime = {
+			close() {
+				closeAttempts++;
+				return Promise.resolve();
+			},
+		};
+
+		await quiesceTableDerivedIndexes(
+			'derivedindexschemarescan',
+			'DerivedIndexSchemaRescanProbe',
+			'failed schema rescan'
+		);
+
+		assert.strictEqual(closeAttempts, 1);
+		assert.strictEqual(Probe.derivedIndexRuntime, undefined);
+	});
+
+	it('removes a table when schema verification cannot establish its derived-index generation', async function () {
+		const databaseName = 'derivedindexschemaquarantine';
+		const tableName = 'DerivedIndexSchemaQuarantineProbe';
+		const Probe = table({
+			table: tableName,
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await Probe.schemaChangeOperation;
+		let closeAttempts = 0;
+		Probe.derivedIndexRuntime = {
+			async close() {
+				closeAttempts++;
+			},
+		};
+
+		await quarantineTableAfterSchemaRescanFailure(databaseName, tableName);
+
+		assert.strictEqual(closeAttempts, 1);
+		assert.strictEqual(databases[databaseName][tableName], undefined);
+	});
+
+	it('retains a rejected asynchronous quarantine close for retry', async function () {
+		if (isLMDB) this.skip();
+		const databaseName = 'derivedindexschemaquarantineasyncretry';
+		const tableName = 'DerivedIndexSchemaQuarantineAsyncRetryProbe';
+		const Probe = table({
+			table: tableName,
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await Probe.schemaChangeOperation;
+		Probe.derivedIndexRuntime = { close: async () => {} };
+		const close = Probe.primaryStore.close.bind(Probe.primaryStore);
+		let closeAttempts = 0;
+		Probe.primaryStore.close = () => {
+			if (++closeAttempts === 1) return Promise.reject(new Error('test async quarantine close failure'));
+			return close();
+		};
+
+		await quarantineTableAfterSchemaRescanFailure(databaseName, tableName);
+		assert.strictEqual(databases[databaseName][tableName], undefined);
+		await closeDatabaseForRestore(databaseName);
+
+		assert.strictEqual(closeAttempts, 2, 'database teardown must retry the quarantined store handle');
+	});
+
+	it('retries quarantined derived-index shutdown before closing its stores', async function () {
+		if (isLMDB) this.skip();
+		const databaseName = 'derivedindexschemaquarantineruntimeretry';
+		const tableName = 'DerivedIndexSchemaQuarantineRuntimeRetryProbe';
+		const Probe = table({
+			table: tableName,
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await Probe.schemaChangeOperation;
+		let runtimeCloseAttempts = 0;
+		Probe.derivedIndexRuntime = {
+			async close() {
+				if (++runtimeCloseAttempts === 1) throw new Error('test runtime close failure');
+			},
+		};
+		const close = Probe.primaryStore.close.bind(Probe.primaryStore);
+		let storeCloseAttempts = 0;
+		Probe.primaryStore.close = () => {
+			storeCloseAttempts++;
+			return close();
+		};
+
+		await quarantineTableAfterSchemaRescanFailure(databaseName, tableName);
+		assert.strictEqual(runtimeCloseAttempts, 1);
+		assert.strictEqual(storeCloseAttempts, 0, 'stores must remain open while their native writer may still be live');
+		await closeDatabaseForRestore(databaseName);
+
+		assert.strictEqual(runtimeCloseAttempts, 2);
+		assert.strictEqual(storeCloseAttempts, 1);
+	});
+
+	it('leaves a quarantined LMDB store open for surviving workers', async function () {
+		if (!isLMDB) this.skip();
+		const databaseName = 'derivedindexschemaquarantinelmdb';
+		const tableName = 'DerivedIndexSchemaQuarantineLmdbProbe';
+		const Probe = table({
+			table: tableName,
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await Probe.schemaChangeOperation;
+		Probe.derivedIndexRuntime = { close: async () => {} };
+		const rootStore = Probe.primaryStore.rootStore;
+		const close = Probe.primaryStore.close.bind(Probe.primaryStore);
+		let closeAttempts = 0;
+		Probe.primaryStore.close = () => {
+			closeAttempts++;
+			return close();
+		};
+
+		await quarantineTableAfterSchemaRescanFailure(databaseName, tableName);
+
+		assert.strictEqual(databases[databaseName][tableName], undefined);
+		assert.strictEqual(closeAttempts, 0, 'quarantine must not close an LMDB DBI shared with surviving workers');
+		await closeDatabaseForRestore(databaseName);
+		assert.strictEqual(rootStore.status, 'closed', 'explicit database teardown should still close the LMDB root');
+	});
+
 	it('quiesces a replacement derived-index handle installed while a table drop waits', async function () {
 		const Probe = table({
 			table: 'DerivedIndexTableReplacementProbe',
@@ -703,6 +931,7 @@ describe('audit cleanup retirement on teardown', () => {
 	});
 
 	it('reactivates a quiesced derived index when another table prevents the database drop', async function () {
+		if (isLMDB) this.skip();
 		const Reactivated = table({
 			table: 'Reactivated',
 			database: 'derivedindexpartialdrop',

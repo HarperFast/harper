@@ -70,6 +70,29 @@ describe('Update Schema', () => {
 		const state_attribute = tables.SchemaChanges.attributes.find((a) => a.name === 'state');
 		assert(state_attribute.nullable !== false);
 	});
+	it('does not take the LMDB writer lock for an unchanged declaration', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb') this.skip();
+		const declaration = `
+			type SchemaNoopReload @table {
+				id: ID @primaryKey
+				text: String
+			}
+		`;
+		await loadGQLSchema(declaration);
+		const rootStore = tables.SchemaNoopReload.primaryStore.rootStore;
+		const originalTransactionSync = rootStore.transactionSync;
+		let transactions = 0;
+		rootStore.transactionSync = function (...args) {
+			transactions++;
+			return originalTransactionSync.apply(this, args);
+		};
+		try {
+			await loadGQLSchema(declaration);
+		} finally {
+			rootStore.transactionSync = originalTransactionSync;
+		}
+		assert.strictEqual(transactions, 0);
+	});
 	it('rejects moving the primary key on a table that already has records (studio#1199)', async function () {
 		// SchemaChanges is populated by the tests above and keyed by `id`. Moving @primaryKey to a
 		// different attribute must be rejected: the storage key isn't re-pointed, so it would leave

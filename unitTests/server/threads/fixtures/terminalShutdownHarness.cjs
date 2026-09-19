@@ -84,7 +84,6 @@ async function terminalShutdown() {
 	} catch (error) {
 		errorCode = error.code;
 	}
-
 	const workersAfterShutdown = workers.length;
 	for (const remainingWorker of workers.slice()) {
 		remainingWorker.wasShutdown = true;
@@ -170,15 +169,27 @@ async function scopedShutdown() {
 		name: 'terminal-shutdown-test',
 	});
 	await once(worker, 'message');
-	await shutdownWorkersNow('terminal-shutdown-test');
+	let errorCode;
+	try {
+		await shutdownWorkersNow('terminal-shutdown-test');
+	} catch (error) {
+		errorCode = error.code;
+	}
+	const shutdownStateUnchanged =
+		workers.length === 1 &&
+		workers[0] === worker &&
+		worker.wasShutdown !== true &&
+		worker.allowUnconfirmedDatabaseCloseExit !== true;
 	const allowedWorker = startWorker(require.resolve('./terminalShutdownWorker.cjs'), {
 		autoRestart: false,
 		name: 'allowed-after-scoped-shutdown',
 	});
 	await once(allowedWorker, 'message');
+	worker.wasShutdown = true;
+	await worker.terminate();
 	allowedWorker.wasShutdown = true;
 	await allowedWorker.terminate();
-	process.stdout.write(`${JSON.stringify({ workerCreationAllowed: true })}\n`);
+	process.stdout.write(`${JSON.stringify({ errorCode, shutdownStateUnchanged, workerCreationAllowed: true })}\n`);
 }
 
 const mode = process.argv[2];

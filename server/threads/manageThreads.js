@@ -24,6 +24,7 @@ const { resolvePreloadModules } = require('./resolvePreload.ts');
 const { resolveThreadHeapMemoryMb } = require('./threadHeapMemory.ts');
 const { getConfigPath } = require('../../config/configUtils.ts');
 const { resolveWatchTarget } = require('../../utility/watchPath.ts');
+const { DATABASE_QUIESCENCE_TIMEOUT_MS } = require('../../utility/databaseLifecycle.ts');
 const {
 	DIRECTORY_POLLING_FALLBACK_OPTIONS,
 	claimLostNativeWatchError,
@@ -77,6 +78,7 @@ const FORCE_EXIT = 'force-exit';
 // Worker -> main request to push out the force-terminate backstop while the worker gracefully drains
 // in-flight work (e.g. replication blob sends) before shutdown. Carries an absolute epoch deadline.
 const EXTEND_SHUTDOWN_DEADLINE = 'extend-shutdown-deadline';
+const WORKER_DATABASE_CLOSE_STATUS = 'worker-database-close-status';
 const REGISTER_PROCESS_GROUP = 'register-process-group';
 const UNREGISTER_PROCESS_GROUP = 'unregister-process-group';
 // Worker -> main: ask whether a dead owner thread's tracked process groups have been confirmed
@@ -91,6 +93,11 @@ let getRunningIsolatedApplications;
 let awaitProcessGroupTermination;
 // Worker-side backstop that force-exits if the graceful shutdown sequence doesn't finish in time.
 let selfExitTimer;
+let workerDatabaseClosePending = false;
+let workerDatabasesClosed = false;
+let workerDatabaseShutdownStarted = false;
+let workerDatabaseClosePromise = Promise.resolve();
+let resolveWorkerDatabaseClose;
 // An extended self-exit deadline requested by a drain (absolute epoch ms), honored regardless of whether
 // it is recorded before or after the SHUTDOWN handler arms the timer (the two race across listeners).
 let selfExitDrainDeadline = 0;
@@ -113,6 +120,7 @@ function armSelfExit(delay) {
 	if (selfExitTimer) clearTimeout(selfExitTimer);
 	selfExitTimer = setTimeout(() => {
 		harperLogger.warn('Thread did not voluntarily terminate', threadId);
+		if (workerDatabaseClosePending) return;
 		// Note that if this occurs, you may want to use this to debug what is currently running:
 		// require('why-is-node-running')();
 		realExit(0);
@@ -163,6 +171,7 @@ module.exports = {
 	markBranchStorePath,
 	ownsStoreMaintenance,
 	ownsStoreExpiration,
+	ownsDerivedIndexWriters,
 	workersForApplication,
 	stopWorker,
 	encodeRestartScope,
@@ -178,8 +187,14 @@ module.exports = {
 	setTerminateTimeout,
 	extendShutdownDeadline,
 	restoreShutdownDeadline,
+	reportWorkerDatabaseCloseStatus,
+	workerDatabasesAreClosed,
+	workerDatabaseShutdownHasStarted,
+	waitForWorkerDatabasesToClose,
 	beginProcessShutdown,
 	registerWorkerDataProvider,
+	markDatabaseDropForWorkerStarts,
+	clearDatabaseDropForWorkerStarts,
 	onThreadExit,
 	hasThreadExited,
 	notifyThreadExit,
@@ -238,9 +253,9 @@ function isApplicationPrimaryWorker(applicationName) {
 	return getWorkerIndex() === 0;
 }
 /**
- * Stores that exist only on this thread: the branch stores an isolated application opened in its
- * dedicated worker. Registered by openBranchDatabase, so the ownership predicates below can tell them
- * from the shared stores every thread has open.
+ * Branch stores opened on this thread. A shared application opens its branch in every pool worker;
+ * an isolated application opens it only in its dedicated worker. Registered by openBranchDatabase so
+ * ownership predicates can distinguish either case from the process-wide database graph.
  */
 const branchStorePaths = new Set();
 function markBranchStorePath(path, isBranch = true) {
@@ -260,6 +275,15 @@ function ownsStoreMaintenance(storePath) {
 function ownsStoreExpiration(storePath) {
 	if (workerData?.isolatedApplication !== undefined) return branchStorePaths.has(storePath);
 	return getWorkerIndex() === 0;
+}
+function ownsDerivedIndexWriters(storePath) {
+	if (branchStorePaths.has(storePath)) return workerData?.isolatedApplication !== undefined || getWorkerIndex() === 0;
+	return workerData?.isolatedApplication === undefined && getWorkerIndex() === 0;
+}
+
+function markWorkerDatabaseClosePending(worker) {
+	worker.databaseClosePending = true;
+	worker.databaseCloseConfirmed = false;
 }
 /**
  * Whether a singleton set up by APPLICATION CODE runs here (a caching table's `sourcedFrom`
@@ -282,6 +306,50 @@ function applicationWorkerIndex() {
 function workersForApplication(application) {
 	return workers.filter((worker) => worker.application === application);
 }
+
+function forceTerminateWorker(worker, databaseCloseDeadlineExpired = false) {
+	if (worker.databaseClosePending) {
+		if (!databaseCloseDeadlineExpired) {
+			worker.forceTerminateAfterDatabaseClose = true;
+			armWorkerDatabaseCloseSafety(worker);
+			return;
+		}
+		harperLogger.fatal(
+			`Worker ${worker.threadId} could not release process-global database handles; exiting Harper instead of force-terminating the worker`
+		);
+		realExit(1);
+	}
+	worker.forceTerminateAfterDatabaseClose = false;
+	harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
+	if (isBun) {
+		try {
+			worker.postMessage({ type: FORCE_EXIT });
+		} catch {}
+	} else {
+		worker.terminate();
+	}
+}
+
+function workerShutdownBackstopDelay(deadlineMs) {
+	if (deadlineMs === undefined) return threadTerminationTimeout * 2;
+	const { boundedTerminateDelay, getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
+	return boundedTerminateDelay(deadlineMs, Date.now(), threadTerminationTimeout * 2, getShutdownDrainCeilingMs());
+}
+
+function armWorkerDatabaseCloseSafety(worker) {
+	// A conservative pre-mark blocks unsafe termination, but the quiescence budget starts only
+	// when the worker reports that teardown has actually begun (a job may still be running).
+	if (worker.databaseCloseStartedAt === undefined) return;
+	const requestedBackstop = Date.now() + workerShutdownBackstopDelay(worker.shutdownDrainDeadline);
+	const deadline = Math.max(worker.databaseCloseStartedAt + DATABASE_QUIESCENCE_TIMEOUT_MS, requestedBackstop);
+	if (worker.databaseCloseSafetyTimer && worker.databaseCloseSafetyDeadline >= deadline) return;
+	if (worker.databaseCloseSafetyTimer) clearTimeout(worker.databaseCloseSafetyTimer);
+	worker.databaseCloseSafetyDeadline = deadline;
+	worker.databaseCloseSafetyTimer = setTimeout(
+		() => forceTerminateWorker(worker, true),
+		Math.max(0, deadline - Date.now())
+	).unref();
+}
 /**
  * Stop one worker for good: shut it down, honour the drain extension it may ask for, force it after
  * the same backstop the rolling restart uses (FORCE_EXIT on Bun, where terminate() segfaults), and
@@ -289,25 +357,18 @@ function workersForApplication(application) {
  */
 function stopWorker(worker) {
 	worker.wasShutdown = true;
+	// Main must assume this worker owns process-global handles before posting SHUTDOWN. A blocked
+	// event loop cannot report its own pending state, and force-terminating it would leak those handles.
+	markWorkerDatabaseClosePending(worker);
 	return new Promise((resolve) => {
 		const armTerminate = (delay) =>
 			setTimeout(() => {
-				harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
-				if (isBun) {
-					try {
-						worker.postMessage({ type: FORCE_EXIT });
-					} catch {}
-				} else {
-					worker.terminate();
-				}
+				forceTerminateWorker(worker);
 			}, delay).unref();
 		let timeout = armTerminate(threadTerminationTimeout * 2);
 		worker.extendTerminateDeadline = (deadlineMs) => {
 			clearTimeout(timeout);
-			const { boundedTerminateDelay, getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
-			timeout = armTerminate(
-				boundedTerminateDelay(deadlineMs, Date.now(), threadTerminationTimeout * 2, getShutdownDrainCeilingMs())
-			);
+			timeout = armTerminate(workerShutdownBackstopDelay(deadlineMs));
 		};
 		worker.on('exit', () => {
 			clearTimeout(timeout);
@@ -351,6 +412,7 @@ const RESERVED_WORKER_DATA_KEYS = [
 	'addPorts',
 	'addThreadIds',
 	'addPortIsJobWorkers',
+	'addPortDatabaseCloseConfirmed',
 	'workerIndex',
 	'workerCount',
 	'name',
@@ -388,6 +450,20 @@ function registerWorkerDataProvider(name, provider) {
 // setProperty() clones each value as it records it, so this provider cannot hit the log-and-skip
 // path below — which for this one would mean spawning the worker on the on-disk config.
 registerWorkerDataProvider('configOverrides', () => envMgr.getConfigOverrides());
+// A worker start must join an in-progress destructive barrier even when it missed the peer snapshot.
+const databaseDropsForWorkerStarts = new Map();
+registerWorkerDataProvider('databaseDropMarkers', () =>
+	databaseDropsForWorkerStarts.size ? [...databaseDropsForWorkerStarts] : undefined
+);
+function markDatabaseDropForWorkerStarts(databaseName, originator, attemptId) {
+	databaseDropsForWorkerStarts.set(databaseName, { originator, attemptId });
+}
+function clearDatabaseDropForWorkerStarts(databaseName, originator, attemptId) {
+	const marker = databaseDropsForWorkerStarts.get(databaseName);
+	if (originator !== undefined && marker?.originator !== originator) return;
+	if (attemptId !== undefined && marker?.attemptId !== attemptId) return;
+	databaseDropsForWorkerStarts.delete(databaseName);
+}
 function collectProvidedWorkerData(options) {
 	if (workerDataProviders.size === 0) return undefined;
 	let provided;
@@ -425,6 +501,23 @@ Object.defineProperty(server, 'workerCount', {
 		return workerData?.isolatedApplication !== undefined ? 1 : getWorkerCount();
 	},
 });
+onMessageByType(WORKER_DATABASE_CLOSE_STATUS, (message, worker) => {
+	if (!worker) return;
+	worker.databaseClosePending = message.pending === true;
+	worker.databaseCloseConfirmed = !worker.databaseClosePending;
+	if (worker.databaseClosePending) worker.databaseCloseStartedAt ??= Date.now();
+	if (worker.databaseCloseConfirmed) settleDatabaseClosedAcknowledgements(worker);
+	if (!parentPort) {
+		if (worker.databaseCloseSafetyTimer) clearTimeout(worker.databaseCloseSafetyTimer);
+		worker.databaseCloseSafetyTimer = undefined;
+		if (worker.databaseClosePending) armWorkerDatabaseCloseSafety(worker);
+		else {
+			worker.databaseCloseStartedAt = undefined;
+			worker.databaseCloseSafetyDeadline = undefined;
+			if (worker.forceTerminateAfterDatabaseClose) forceTerminateWorker(worker);
+		}
+	}
+});
 if (!parentPort) {
 	onMessageByType(REQUEST_THREAD_INFO, (message, worker) => {
 		if (worker) sendThreadInfo(worker);
@@ -455,7 +548,10 @@ if (!parentPort) {
 		worker.postMessage({ type: PROCESS_GROUP_TERMINATION_CONFIRMED, requestId: message.requestId });
 	});
 	onMessageByType(EXTEND_SHUTDOWN_DEADLINE, (message, worker) => {
-		worker?.extendTerminateDeadline?.(message.deadlineMs);
+		if (!worker) return;
+		worker.shutdownDrainDeadline = message.deadlineMs;
+		worker.extendTerminateDeadline?.(message.deadlineMs);
+		if (worker.databaseClosePending) armWorkerDatabaseCloseSafety(worker);
 	});
 }
 // postMessage type listeners that are registered in other ways or can be registered later
@@ -562,6 +658,9 @@ function startWorker(path, options = {}) {
 			addPorts: portsToSend,
 			addThreadIds: channelsToConnect.map((channel) => channel.existingPort.threadId),
 			addPortIsJobWorkers: channelsToConnect.map((channel) => channel.existingPort.isJobWorker === true),
+			addPortDatabaseCloseConfirmed: channelsToConnect.map(
+				(channel) => channel.existingPort.databaseCloseConfirmed === true
+			),
 			workerIndex: options.workerIndex,
 			workerCount: options.threadCount,
 			name: options.name,
@@ -600,6 +699,13 @@ function startWorker(path, options = {}) {
 		harperLogger.error(`Worker index ${options.workerIndex} error:`, error);
 	});
 	worker.on('exit', (_code) => {
+		if (worker.databaseCloseSafetyTimer) clearTimeout(worker.databaseCloseSafetyTimer);
+		if (worker.databaseClosePending && !worker.databaseCloseConfirmed && !worker.allowUnconfirmedDatabaseCloseExit) {
+			harperLogger.fatal(
+				`Worker ${worker.threadId} exited before confirming release of process-global database handles; exiting Harper`
+			);
+			realExit(1);
+		}
 		workers.splice(workers.indexOf(worker), 1);
 		if (
 			!processShuttingDown &&
@@ -813,6 +919,9 @@ async function restartWorkers(
 				}
 			}
 			harperLogger.trace('sending shutdown request to ', worker.threadId);
+			// Record the conservative state before posting: a blocked worker may never run its SHUTDOWN
+			// handler, but the ordinary restart backstop still must not strand process-global handles.
+			markWorkerDatabaseClosePending(worker);
 			try {
 				worker.postMessage({
 					restartNumber: module.exports.restartNumber,
@@ -843,15 +952,7 @@ async function restartWorkers(
 				// in case the exit inside the thread doesn't timeout, force it from the outside
 				const armTerminate = (delay) =>
 					setTimeout(() => {
-						harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
-						if (isBun) {
-							// worker.terminate() triggers a NAPI segfault in Bun; ask the worker to self-exit instead
-							try {
-								worker.postMessage({ type: FORCE_EXIT });
-							} catch {}
-						} else {
-							worker.terminate();
-						}
+						forceTerminateWorker(worker);
 					}, delay).unref();
 				let timeout = armTerminate(threadTerminationTimeout * 2);
 				// The worker can push this backstop out while it gracefully drains in-flight work (e.g. a
@@ -864,13 +965,7 @@ async function restartWorkers(
 					// Clamp the worker-requested deadline to the configured ceiling (and to a finite value) so a
 					// buggy/rogue message can't defer the force-kill unboundedly; a shrink (drain-done reset)
 					// passes through untouched. See boundedTerminateDelay for the arithmetic + its unit tests.
-					const { boundedTerminateDelay, getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
-					const delay = boundedTerminateDelay(
-						deadlineMs,
-						Date.now(),
-						threadTerminationTimeout * 2,
-						getShutdownDrainCeilingMs()
-					);
+					const delay = workerShutdownBackstopDelay(deadlineMs);
 					timeout = armTerminate(delay);
 					// The worker is telling us it has work still moving and how long it may take, so pass that
 					// on: a caller waiting on the restart must not treat a live drain as a stalled one.
@@ -981,8 +1076,18 @@ function beginProcessShutdown() {
 	processShuttingDown = true;
 }
 async function shutdownWorkersNow(name) {
-	if (name == null) beginProcessShutdown();
-	shutdownWorkers(name); // set the state of all the workers to shut down. this should finish the important stuff synchronously
+	if (name != null) {
+		const error = new Error(
+			`Immediate worker shutdown cannot be scoped to '${name}'; use shutdownWorkers(name) so database handles can close`
+		);
+		error.code = 'ERR_SCOPED_IMMEDIATE_SHUTDOWN_UNSAFE';
+		throw error;
+	}
+	beginProcessShutdown();
+	// The caller owns the process-level cleanup that follows, so these immediate exits are not
+	// evidence of an unexpected stranded-handle state.
+	for (const worker of workers) worker.allowUnconfirmedDatabaseCloseExit = true;
+	shutdownWorkers(); // set the state of all the workers to shut down. this should finish the important stuff synchronously
 	if (isBun) {
 		// worker.terminate() triggers a NAPI segfault in Bun; ask workers to self-exit instead
 		workers.forEach((worker) => {
@@ -1057,15 +1162,24 @@ async function broadcast(message, includeSelf) {
 
 const awaitingResponses = new Map();
 let nextId = 1;
+function settleDatabaseClosedAcknowledgements(port) {
+	for (const acknowledgement of [...awaitingResponses.values()]) {
+		if (acknowledgement.port === port && acknowledgement.acceptWorkerDatabaseClose) acknowledgement();
+	}
+}
 // Backstop so a wedged-but-alive worker (one whose event loop is blocked and never acks, yet
 // whose port hasn't closed) can't hang a mutating admin/DDL op forever. The durable write has
 // already succeeded by the time we broadcast, and the health monitor restarts a truly stuck
-// worker (its port close fires the same ack handlers), so on timeout we proceed best-effort.
+// worker (its port close fires the same ack handlers), so ordinary broadcasts proceed best-effort.
+// Destructive callers can opt into rejection when every live recipient must prove quiescence.
 const DEFAULT_ACK_TIMEOUT_MS = 30000;
-function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
-	return new Promise((resolve) => {
+function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS, options = {}) {
+	return new Promise((resolve, reject) => {
 		let waitingCount = 0;
 		let timer;
+		let timingOut = false;
+		let buildingRecipients = true;
+		const errors = [];
 		// Tracks the handlers still awaiting an ack for THIS broadcast. Doubles as an
 		// idempotency guard: a port's handler runs at most once whether it's driven by an ack,
 		// the close listener, or the timeout below.
@@ -1075,20 +1189,32 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 				clearTimeout(timer);
 				timer = undefined;
 			}
+			if (options.rejectOnError && errors.length) {
+				const error = new Error(errors.map((entry) => entry.message || String(entry)).join('; '));
+				const statusCode = errors[0]?.statusCode;
+				if (Number.isInteger(statusCode) && errors.every((entry) => entry.statusCode === statusCode))
+					error.statusCode = statusCode;
+				error.cause = new AggregateError(errors, 'Worker acknowledgement failures');
+				reject(error);
+				return;
+			}
 			resolve();
 		};
 		for (let port of connectedPorts) {
-			// Job workers run a single isolated task and exit; they don't participate in
-			// schema-change gossip. Including them causes a deadlock: the broadcast waits for
-			// the job worker's ACK while the job worker's event loop is busy waiting for the
-			// same broadcast to complete (re-entrant schema change triggered by the job op).
-			if (!isEligibleBroadcastRecipient(port)) continue;
+			if (options.onlyThreadId !== undefined && port.threadId !== options.onlyThreadId) continue;
+			if (options.excludeThreadId !== undefined && port.threadId === options.excludeThreadId) continue;
+			// Ordinary schema gossip excludes single-task job workers. Destructive barriers opt
+			// them in after first fencing the main thread that owns production worker creation.
+			if (!options.includeJobWorkers && !isEligibleBroadcastRecipient(port)) continue;
+			if (options.acceptWorkerDatabaseClose && port.databaseCloseConfirmed) continue;
+			let ackHandler;
 			try {
 				let requestId = nextId++;
-				const ackHandler = () => {
+				ackHandler = (error) => {
 					if (!pending.delete(ackHandler)) return; // already settled for this port
 					awaitingResponses.delete(requestId);
-					if (--waitingCount === 0) {
+					if (error) errors.push(error);
+					if (--waitingCount === 0 && !timingOut && !buildingRecipients) {
 						finish();
 					}
 					if (port !== parentPort && --port.refCount === 0) {
@@ -1096,6 +1222,8 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 					}
 				};
 				ackHandler.port = port;
+				ackHandler.rejectOnClose = options.rejectOnError;
+				ackHandler.acceptWorkerDatabaseClose = options.acceptWorkerDatabaseClose;
 				pending.add(ackHandler);
 				port.ref();
 				port.refCount = (port.refCount || 0) + 1;
@@ -1106,35 +1234,46 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 					port.on(port.close ? 'close' : 'exit', () => {
 						for (let [, ackHandler] of awaitingResponses) {
 							if (ackHandler.port === port) {
-								ackHandler();
+								ackHandler(
+									ackHandler.rejectOnClose && !(ackHandler.acceptWorkerDatabaseClose && port.databaseCloseConfirmed)
+										? new Error(`Worker thread ${port.threadId} exited before acknowledging the operation`)
+										: undefined
+								);
 							}
 						}
 					});
 				}
-				port.postMessage(message);
 				waitingCount++;
+				port.postMessage(message);
 			} catch (error) {
 				harperLogger.error(`Unable to send message to worker`, error);
+				if (ackHandler) ackHandler(options.rejectOnError ? error : undefined);
+				else if (options.rejectOnError) errors.push(error);
 			}
 		}
-		if (waitingCount === 0) return resolve();
+		buildingRecipients = false;
+		if (waitingCount === 0) return finish();
 		if (timeout > 0) {
 			timer = setTimeout(() => {
 				timer = undefined;
+				timingOut = true;
 				const stuck = [];
 				for (let ackHandler of [...pending]) {
 					stuck.push(ackHandler.port);
 					ackHandler(); // same cleanup path as an ack/close; drives waitingCount to 0 and resolves
 				}
+				const detail = `ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.map((port) => port?.threadId).join(', ')} within ${timeout}ms`;
 				harperLogger.warn(
-					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.map((port) => port?.threadId).join(', ')} within ${timeout}ms; proceeding best-effort`
+					`${detail}${options.rejectOnError ? '; refusing the operation' : '; proceeding best-effort'}`
 				);
+				if (options.rejectOnError) errors.push(new Error(detail));
 				if (isMainThread) for (let port of stuck) logStuckWorkerDiagnostics(port);
 				else if (parentPort) {
 					// Only main holds the Worker objects (and tids), so a worker-originated timeout is sampled there.
 					const threadIds = stuck.map((port) => port?.threadId).filter((threadId) => threadId > 0);
 					if (threadIds.length > 0) parentPort.postMessage({ type: STUCK_WORKER_REPORT, threadIds });
 				}
+				finish();
 			}, timeout);
 			timer.unref?.();
 		}
@@ -1349,6 +1488,7 @@ if (parentPort && workerData?.addPorts) {
 	for (let i = 0, l = workerData.addPorts.length; i < l; i++) {
 		let port = workerData.addPorts[i];
 		port.threadId = workerData.addThreadIds[i];
+		port.databaseCloseConfirmed = workerData.addPortDatabaseCloseConfirmed?.[i] === true;
 		addPort(port, false, workerData.addPortIsJobWorkers?.[i]);
 	}
 	setInterval(() => {
@@ -1458,6 +1598,44 @@ if (parentPort && workerData?.addPorts) {
 			};
 	awaitProcessGroupTermination = (ownerThreadId) =>
 		pendingProcessGroupTerminations.get(ownerThreadId) ?? Promise.resolve();
+}
+
+function reportWorkerDatabaseCloseStatus(pending) {
+	setWorkerDatabaseCloseStatus(pending);
+	const message = { type: WORKER_DATABASE_CLOSE_STATUS, pending };
+	for (const port of connectedPorts) {
+		try {
+			port.postMessage(message);
+		} catch {}
+	}
+}
+function setWorkerDatabaseCloseStatus(pending) {
+	workerDatabaseShutdownStarted = true;
+	if (pending === true && !workerDatabaseClosePending) {
+		workerDatabaseClosePromise = new Promise((resolve) => {
+			resolveWorkerDatabaseClose = resolve;
+		});
+	}
+	workerDatabaseClosePending = pending === true;
+	workerDatabasesClosed = !workerDatabaseClosePending;
+	if (workerDatabasesClosed) {
+		resolveWorkerDatabaseClose?.();
+		resolveWorkerDatabaseClose = undefined;
+		if (parentPort) parentPort.unref();
+	} else if (parentPort) {
+		// Promises and native callbacks do not keep a worker alive. Hold the control port until
+		// database closure is confirmed so shutdown cannot strand process-global native handles.
+		parentPort.ref();
+	}
+}
+function workerDatabasesAreClosed() {
+	return workerDatabasesClosed;
+}
+function workerDatabaseShutdownHasStarted() {
+	return workerDatabaseShutdownStarted;
+}
+function waitForWorkerDatabasesToClose() {
+	return workerDatabaseClosePromise;
 }
 module.exports.getThreadInfo = getThreadInfo;
 module.exports.getRunningIsolatedApplications = getRunningIsolatedApplications;
@@ -1862,10 +2040,15 @@ function addPort(port, keepRef, isJobWorker) {
 			} else if (message.type === ADDED_PORT) {
 				message.port.threadId = message.threadId;
 				addPort(message.port, false, message.isJobWorker);
+				// The startup snapshot can race this peer's close confirmation. Publish the
+				// current state on the new channel so its coordinator cannot retain stale state.
+				try {
+					message.port.postMessage({ type: WORKER_DATABASE_CLOSE_STATUS, pending: !workerDatabasesClosed });
+				} catch {}
 			} else if (message.type === ACKNOWLEDGEMENT) {
 				let completion = awaitingResponses.get(message.id);
 				if (completion) {
-					completion();
+					completion(message.error);
 				}
 			} else if (message.type === REMOVE_PORT) {
 				const idx = connectedPorts.findIndex((p) => p.threadId === message.threadId);
@@ -1968,7 +2151,9 @@ if (isMainThread) {
 } else {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.SHUTDOWN, async (message) => {
 		module.exports.restartNumber = message.restartNumber;
-		parentPort.unref(); // remove this handle
+		// Hold the worker open immediately, but start the coordinator's quiescence budget only
+		// when closeLoadedDatabases actually begins.
+		setWorkerDatabaseCloseStatus(true);
 		armSelfExit(threadTerminationTimeout);
 	});
 	// In Bun, worker.terminate() triggers a NAPI segfault; the main thread sends FORCE_EXIT

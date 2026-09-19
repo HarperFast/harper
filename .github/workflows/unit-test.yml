@@ -88,8 +88,8 @@ jobs:
       # top-level suite no longer hides the rest (harper#2587, harper#2017) — `test:unit:lmdb`
       # still chains its own resources/apitests/bin runs with `&&`, so a failure there stops
       # at the first of those three. Per-step budgets are sized off measured Node 22 durations
-      # (the slowest leg): main ~2m15-2m30, apitests ~20-25s, resources ~4m30-5m25,
-      # lmdb ~1m55-2m05.
+      # (the slowest leg): main ~2m15-2m30, apitests ~20-25s, resources ~7m after
+      # full-text lifecycle coverage, lmdb ~1m55-2m05.
       - name: 'Unit tests: main'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
         timeout-minutes: 4
@@ -102,7 +102,7 @@ jobs:
 
       - name: 'Unit tests: resources'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
-        timeout-minutes: 7
+        timeout-minutes: 10
         run: npm run test:unit:resources
 
       - name: 'Unit tests: lmdb'

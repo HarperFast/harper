@@ -19,6 +19,7 @@ const {
 	getWorkerIndex,
 	extendShutdownDeadline,
 	restoreShutdownDeadline,
+	reportWorkerDatabaseCloseStatus,
 } = require('./manageThreads.js');
 const {
 	runShutdownDrains,
@@ -105,6 +106,26 @@ exports.listenOnDomainSocket = listenOnDomainSocket;
 exports.listenOnPorts = listenOnPorts;
 exports.startServers = startServers;
 exports.closeServers = closeServers;
+
+async function closeWorkerDatabases() {
+	reportWorkerDatabaseCloseStatus(true);
+	await require('../itc/serverHandlers.js').waitForSchemaEventsToSettle();
+	let failureLogged = false;
+	for (;;) {
+		try {
+			await require('../../resources/databases.ts').closeLoadedDatabases();
+			reportWorkerDatabaseCloseStatus(false);
+			return;
+		} catch (error) {
+			if (!failureLogged) {
+				failureLogged = true;
+				reportWorkerDatabaseCloseStatus(true);
+				harperLogger.warn('Could not release worker database handles; retrying until shutdown', error);
+			}
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+	}
+}
 
 function closeServers() {
 	if (isBun) {
@@ -230,9 +251,13 @@ function startServers() {
 							})
 							.then(() => closeServers())
 							.then(() => whenScopesClosed())
-							.then(() => require('../../resources/databases.ts').closeBranchDatabases())
+							.finally(closeWorkerDatabases)
 							.then(() => {
 								realExit(0);
+							})
+							.catch((error) => {
+								harperLogger.warn('Error releasing worker resources during shutdown', error);
+								realExit(1);
 							});
 						// Clean up per-thread UDS socket and metadata files
 						httpComponent.cleanupUdsFiles();

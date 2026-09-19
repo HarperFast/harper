@@ -14,28 +14,44 @@ module.exports = {
 };
 let serverItcHandlers;
 onMessageFromWorkers(async (event, sender) => {
-	serverItcHandlers = serverItcHandlers || require('../itc/serverHandlers.js');
-	validateEvent(event);
-	if (serverItcHandlers[event.type]) {
-		await serverItcHandlers[event.type](event);
+	let error;
+	let failed = false;
+	try {
+		serverItcHandlers = serverItcHandlers || require('../itc/serverHandlers.js');
+		validateEvent(event);
+		if (serverItcHandlers[event.type]) {
+			await serverItcHandlers[event.type](event);
+		}
+	} catch (caught) {
+		failed = true;
+		error = caught ?? new Error('Worker handler rejected without an error');
 	}
-	if (event.requestId && sender)
+	if (event.requestId && sender) {
 		sender.postMessage({
 			type: 'ack',
 			id: event.requestId,
+			...(failed
+				? {
+						error: {
+							message: error.message || String(error),
+							...(Number.isInteger(error.statusCode) ? { statusCode: error.statusCode } : {}),
+						},
+					}
+				: {}),
 		});
+	} else if (failed) throw error;
 });
 
 /**
  * Emits an ITC event to the ITC server.
  * @param event
  */
-function sendItcEvent(event) {
+function sendItcEvent(event, options = undefined) {
 	// Always stamp originator so handlers can send direct responses back.
 	// The main thread's threadId is 0 (worker_threads convention); parentPort.threadId
 	// is set to 0 in workers, so sendToThread(0, ...) routes back to main.
-	if (event.message) event.message.originator = threadId;
-	return broadcastWithAcknowledgement(event);
+	if (event.message && !options?.preserveOriginator) event.message.originator = threadId;
+	return broadcastWithAcknowledgement(event, options?.acknowledgementTimeoutMs, options);
 }
 
 /**

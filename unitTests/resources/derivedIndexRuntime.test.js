@@ -6,6 +6,9 @@ const {
 	DERIVED_INDEX_DEFERRED,
 	DerivedIndexBackendError,
 	DerivedIndexRuntime,
+	publishDerivedIndexReadiness,
+	readDerivedIndexReadiness,
+	retainDerivedIndexReadiness,
 } = require('#src/resources/derivedIndexRuntime');
 
 class FakeLogStore {
@@ -14,6 +17,7 @@ class FakeLogStore {
 		this.locks = new Set();
 		this.waiters = new Map();
 		this.sharedBuffers = new Map();
+		this.sharedBufferAllocations = new Map();
 		this.rangeCalls = [];
 		this.rootStore = new EventEmitter();
 		this.rootStore.listLogs = () => logNames.slice();
@@ -52,12 +56,14 @@ class FakeLogStore {
 	getUserSharedBuffer(key, defaultBuffer, options) {
 		let memory = this.sharedBuffers.get(key);
 		if (!memory) {
-			memory = { buffer: new SharedArrayBuffer(defaultBuffer.byteLength), callbacks: new Set() };
+			memory = { buffer: new SharedArrayBuffer(defaultBuffer.byteLength), callbacks: new Set(), wrappers: [] };
 			this.sharedBuffers.set(key, memory);
+			this.sharedBufferAllocations.set(key, (this.sharedBufferAllocations.get(key) ?? 0) + 1);
 		}
 		// Like the native binding: every lookup gets its own wrapper over one allocation, and notify()
 		// reaches every registered callback, including those of other runtimes sharing this store.
 		const wrapper = structuredClone(memory.buffer);
+		memory.wrappers.push(new WeakRef(wrapper));
 		const { callback } = options ?? {};
 		if (callback) memory.callbacks.add(callback);
 		wrapper.notify = () => {
@@ -67,6 +73,11 @@ class FakeLogStore {
 			if (callback) memory.callbacks.delete(callback);
 		};
 		return wrapper;
+	}
+
+	releaseUnheldSharedBuffers() {
+		for (const [key, memory] of this.sharedBuffers)
+			if (memory.wrappers.every((wrapper) => !wrapper.deref())) this.sharedBuffers.delete(key);
 	}
 }
 
@@ -139,6 +150,112 @@ const registration = (backend) => ({
 });
 
 describe('DerivedIndexRuntime', () => {
+	it('retains readiness until the last table-generation lease closes', async () => {
+		const store = new FakeLogStore(new Map());
+		const backendId = 'activation-failed-before-runner';
+		const key = `derived-index:${backendId}:readiness`;
+		const releaseOldGeneration = retainDerivedIndexReadiness(store, backendId);
+		const releaseNewGeneration = retainDerivedIndexReadiness(store, backendId);
+		publishDerivedIndexReadiness(store, backendId, 'unavailable', 'backend-failed');
+		const publishedWrapper = store.sharedBuffers.get(key).wrappers[0];
+
+		for (let attempt = 0; attempt < 20 && publishedWrapper.deref(); attempt++) {
+			await new Promise((resolve) => setImmediate(resolve));
+			global.gc?.();
+		}
+		store.releaseUnheldSharedBuffers();
+
+		assert.deepStrictEqual(readDerivedIndexReadiness(store, backendId), {
+			state: 'unavailable',
+			reason: 'backend-failed',
+			ownerEpoch: 0n,
+			rebuildAttempts: 0,
+		});
+		assert.strictEqual(store.sharedBufferAllocations.get(key), 1);
+
+		releaseOldGeneration();
+		global.gc?.();
+		store.releaseUnheldSharedBuffers();
+		assert.strictEqual(store.sharedBuffers.has(key), true);
+
+		releaseNewGeneration();
+		for (let attempt = 0; attempt < 20 && publishedWrapper.deref(); attempt++) {
+			await new Promise((resolve) => setImmediate(resolve));
+			global.gc?.();
+		}
+		store.releaseUnheldSharedBuffers();
+		assert.strictEqual(store.sharedBuffers.has(key), false);
+	});
+
+	it('retires a stale durable generation before inspecting or rebuilding its backend', async () => {
+		const store = new FakeLogStore(new Map());
+		const backend = new FakeBackend('generation-fence', cursor(10));
+		let inspections = 0;
+		backend.getDurableCursor = () => {
+			inspections++;
+			return cursor(10);
+		};
+		const { runtime } = runtimeFor(store, new Map());
+
+		runtime.register({ ...registration(backend), readinessId: 'generation-fence:g1', isCurrent: () => false });
+
+		await waitFor(() => store.locks.size === 0);
+		assert.strictEqual(inspections, 0);
+		assert.strictEqual(backend.deliveries.length, 0);
+		await runtime.stop();
+	});
+
+	it('releases ownership when its durable generation changes', async () => {
+		const store = new FakeLogStore(new Map());
+		const backend = new FakeBackend('generation-revocation', cursor(10));
+		let current = true;
+		let shutdowns = 0;
+		backend.shutdown = () => {
+			shutdowns++;
+		};
+		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 10_000 });
+		runtime.register({
+			...registration(backend),
+			readinessId: 'generation-revocation:g1',
+			isCurrent: () => current,
+		});
+		await waitFor(() => store.locks.size === 1);
+
+		current = false;
+		store.rootStore.emit('committed');
+
+		await waitFor(() => store.locks.size === 0);
+		assert.strictEqual(shutdowns, 1);
+		await runtime.stop();
+	});
+
+	it('retries a failed shutdown while retiring a stale generation', async () => {
+		const store = new FakeLogStore(new Map());
+		const backend = new FakeBackend('generation-revocation-retry', cursor(10));
+		let current = true;
+		let shutdowns = 0;
+		backend.shutdown = () => {
+			if (++shutdowns === 1) throw new Error('transient shutdown failure');
+		};
+		const { runtime } = runtimeFor(store, new Map(), {
+			idleGraceMilliseconds: 10_000,
+			rebuildBackoffMilliseconds: 1,
+		});
+		runtime.register({
+			...registration(backend),
+			readinessId: 'generation-revocation-retry:g1',
+			isCurrent: () => current,
+		});
+		await waitFor(() => store.locks.size === 1);
+
+		current = false;
+		store.rootStore.emit('committed');
+
+		await waitFor(() => store.locks.size === 0);
+		assert.strictEqual(shutdowns, 2);
+		await runtime.stop();
+	});
+
 	it('delivers authoritative projected state once per record and advances through unrelated transactions', async () => {
 		const store = new FakeLogStore(
 			new Map([

@@ -1,6 +1,16 @@
 import searchValidator from '../../validation/searchValidator.ts';
 import { handleHDBError, ClientError, hdbErrors } from '../../utility/errors/hdbError.ts';
-import { table, getDatabases, database, dropDatabase, type Table } from '../../resources/databases.ts';
+import {
+	table,
+	getDatabases,
+	database,
+	databaseUsesRocksDB,
+	dropDatabase,
+	beginDatabaseDrop,
+	finishDatabaseDrop,
+	cancelDatabaseDrop,
+	type Table,
+} from '../../resources/databases.ts';
 import insertUpdateValidate from './bridgeUtility/insertUpdateValidate.js';
 import SearchObject from '../SearchObject.ts';
 import {
@@ -31,6 +41,7 @@ import lmdbGetBackup from './lmdbBridge/lmdbMethods/lmdbGetBackup.js';
 import { createBackupStream, resolveSingleRootStore } from '../rocksdbBackup.ts';
 import { DeleteTransactionLogsBeforeResults } from './DeleteTransactionLogsBeforeResults.ts';
 import type { Readable } from 'node:stream';
+import { threadId } from 'node:worker_threads';
 
 const { HDB_ERROR_MSGS } = hdbErrors;
 const DEFAULT_DATABASE = 'data';
@@ -186,8 +197,45 @@ export class ResourceBridge extends BridgeMethods {
 	}
 
 	async dropSchema(dropSchemaObj) {
-		await dropDatabase(dropSchemaObj.schema);
-		signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, dropSchemaObj.schema));
+		const databaseName = dropSchemaObj.schema;
+		const acceptWorkerDatabaseClose = getDatabases()[databaseName] != null && databaseUsesRocksDB(databaseName);
+		const attemptId = beginDatabaseDrop(databaseName);
+		const dropMessage = (operation: string) =>
+			Object.assign(new SchemaEventMsg(process.pid, operation, databaseName), { dropAttemptId: attemptId });
+		try {
+			await signalling.signalSchemaChangeToPeers(
+				dropMessage(signalling.PREPARE_DATABASE_DROP_OPERATION),
+				signalling.databaseDropSignalOptions(acceptWorkerDatabaseClose)
+			);
+			await dropDatabase(databaseName);
+			finishDatabaseDrop(databaseName, threadId, attemptId);
+			await signalling.signalSchemaChange(dropMessage(OPERATIONS_ENUM.DROP_SCHEMA), {
+				relayFromMain: true,
+			});
+		} catch (error) {
+			const cancellationErrors: unknown[] = [];
+			let preserveInterruptedDrop = false;
+			try {
+				preserveInterruptedDrop = await cancelDatabaseDrop(databaseName, threadId, attemptId);
+			} catch (cancelError) {
+				cancellationErrors.push(cancelError);
+			}
+			try {
+				await signalling.signalSchemaChangeToPeers(
+					Object.assign(dropMessage(signalling.CANCEL_DATABASE_DROP_OPERATION), { preserveInterruptedDrop }),
+					signalling.databaseDropSignalOptions(acceptWorkerDatabaseClose)
+				);
+			} catch (cancelError) {
+				cancellationErrors.push(cancelError);
+			}
+			if (cancellationErrors.length) {
+				throw signalling.aggregateSchemaChangeErrors(
+					[error, ...cancellationErrors],
+					`Database drop '${databaseName}' failed to cancel cleanly`
+				);
+			}
+			throw error;
+		}
 	}
 
 	async updateRecords(updateObj) {
