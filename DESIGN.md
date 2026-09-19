@@ -2699,6 +2699,42 @@ cannot be written issues no reset. The cursor's atomic durability mechanism is t
 (Tantivy publishes it with segment state; HNSW writes it after the plane barrier), which is why the
 cursor is backend-owned and validation is Harper's.
 
+### Native full-text backend
+
+`resources/indexes/fullTextDerivedIndex.ts` adapts the shared runtime to
+`@harperfast/fulltext/native`; it does not implement another replay or ownership protocol. Harper
+turns each resolved mutation into one stable document id from `(tableId, writeKeyId(recordId))` and
+passes only the schema-selected string fields to the wrapper. The wrapper owns Tantivy schema and
+mutation validation, exact frame partitioning, its exclusive writer, segment publication, and file
+lifecycle. Harper keeps accepted runtime batches in a 64 MiB bounded queue and submits at most 256
+records or 5 ms of conversion work per turn, so the runtime's 4096-record chunk cannot become one
+long event-loop task. Wrapper rejections remove the previous document and count it as unindexable;
+they do not leave stale search content.
+
+The native commit payload contains Harper's exact derived-index cursor. A publish makes the Tantivy
+mutations and that payload visible together; only then does the adapter report durable progress.
+An apply or publish failure rollback-closes the writer, discards accepted-but-unpublished work, and
+wakes the runtime to replay from the last native payload. Writer open is lazy. `E_LOCK_BUSY` means a
+previous owner or lifecycle operation still holds the physical index, so the adapter retains its
+queue and retries on an unreferenced timer; it never resets for lock contention. Ownership handoff
+does not finish until close proves quiescence. If that proof fails, shutdown rejects and the runtime
+keeps its runner lock, preventing a second writer.
+
+Inspection is synchronous and writer-free. Missing, cursorless, incompatible, or malformed native
+state has no usable cursor and therefore enters the runtime's ordinary local rebuild from records.
+Reset first asks the wrapper to retire the live generation atomically, then reclaims only wrapper-
+validated retired paths. The native directory is node-local derived state: restarts reuse it and
+replay after its payload; replicas independently derive it from their own applied transaction log;
+backup and restore need only authoritative records and schema. A new or unusable directory serves no
+full-text queries until rebuild and catch-up publish `ready`.
+
+Tantivy files are not an opaque encrypted cache. They contain the document-id term dictionary,
+analyzed term dictionaries, postings, frequencies and optionally positions; `surfaceTerms: true`
+also stores the original projected strings needed for surface-term features. Operators must protect
+the full-text directory with the same filesystem controls as Harper data. Removing source records
+does not erase old segment bytes immediately; normal Tantivy merge/reclamation governs physical
+removal, and destroying an index uses the wrapper's retirement protocol.
+
 ### Bounded delivery
 
 A drain turn **collects** identities from the iterator — `(tableId, recordId, logVersion)` per
