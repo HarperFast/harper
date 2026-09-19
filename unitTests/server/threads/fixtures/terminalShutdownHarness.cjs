@@ -170,15 +170,22 @@ async function scopedShutdown() {
 		name: 'terminal-shutdown-test',
 	});
 	await once(worker, 'message');
-	await shutdownWorkersNow('terminal-shutdown-test');
+	let errorCode;
+	try {
+		await shutdownWorkersNow('terminal-shutdown-test');
+	} catch (error) {
+		errorCode = error.code;
+	}
 	const allowedWorker = startWorker(require.resolve('./terminalShutdownWorker.cjs'), {
 		autoRestart: false,
 		name: 'allowed-after-scoped-shutdown',
 	});
 	await once(allowedWorker, 'message');
+	worker.wasShutdown = true;
+	await worker.terminate();
 	allowedWorker.wasShutdown = true;
 	await allowedWorker.terminate();
-	process.stdout.write(`${JSON.stringify({ workerCreationAllowed: true })}\n`);
+	process.stdout.write(`${JSON.stringify({ errorCode, workerCreationAllowed: true })}\n`);
 }
 
 const mode = process.argv[2];

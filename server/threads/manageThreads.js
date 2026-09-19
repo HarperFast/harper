@@ -1074,11 +1074,18 @@ function beginProcessShutdown() {
 	processShuttingDown = true;
 }
 async function shutdownWorkersNow(name) {
-	if (name == null) beginProcessShutdown();
-	// This API deliberately tears the worker set down immediately; its caller owns the process-level
-	// cleanup that follows, so these exits are not evidence of an unexpected stranded-handle state.
+	if (name != null) {
+		const error = new Error(
+			`Immediate worker shutdown cannot be scoped to '${name}'; use shutdownWorkers() so database handles can close`
+		);
+		error.code = 'ERR_SCOPED_IMMEDIATE_SHUTDOWN_UNSAFE';
+		throw error;
+	}
+	beginProcessShutdown();
+	// Its caller owns the process-level cleanup that follows, so these immediate exits are not
+	// evidence of an unexpected stranded-handle state.
 	for (const worker of workers) worker.allowUnconfirmedDatabaseCloseExit = true;
-	shutdownWorkers(name); // set the state of all the workers to shut down. this should finish the important stuff synchronously
+	shutdownWorkers(); // set the state of all the workers to shut down. this should finish the important stuff synchronously
 	if (isBun) {
 		// worker.terminate() triggers a NAPI segfault in Bun; ask workers to self-exit instead
 		workers.forEach((worker) => {

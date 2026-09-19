@@ -75,8 +75,11 @@ describe('worker database-close safety status', function () {
 		const messages = [];
 		const worker = startStatusWorker(messages);
 		const channel = new MessageChannel();
+		const confirmedChannel = new MessageChannel();
 		const peerMessages = [];
+		const confirmedPeerMessages = [];
 		channel.port2.on('message', (message) => peerMessages.push(message));
+		confirmedChannel.port2.on('message', (message) => confirmedPeerMessages.push(message));
 		try {
 			await waitFor(() => messages.some((message) => message.type === 'fixture-ready'));
 			worker.postMessage({ type: 'added-port', port: channel.port1, threadId: 999 }, [channel.port1]);
@@ -88,8 +91,17 @@ describe('worker database-close safety status', function () {
 				peerMessages.some((message) => message.type === 'worker-database-close-status' && message.pending === false)
 			);
 			await waitFor(() => worker.databaseCloseConfirmed === true);
+			worker.postMessage({ type: 'added-port', port: confirmedChannel.port1, threadId: 1000 }, [
+				confirmedChannel.port1,
+			]);
+			await waitFor(() =>
+				confirmedPeerMessages.some(
+					(message) => message.type === 'worker-database-close-status' && message.pending === false
+				)
+			);
 		} finally {
 			channel.port2.close();
+			confirmedChannel.port2.close();
 			worker.wasShutdown = true;
 			await worker.terminate();
 		}

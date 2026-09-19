@@ -47,7 +47,10 @@ describe('terminal worker shutdown', function () {
 		});
 	});
 
-	it('allows worker creation after a scoped shutdown', async function () {
-		assert.deepEqual(await runHarness('scoped'), { workerCreationAllowed: true });
+	it('rejects scoped immediate shutdown without entering terminal state', async function () {
+		assert.deepEqual(await runHarness('scoped'), {
+			errorCode: 'ERR_SCOPED_IMMEDIATE_SHUTDOWN_UNSAFE',
+			workerCreationAllowed: true,
+		});
 	});
 });
