@@ -63,8 +63,7 @@ interface OpenBranch {
 	/** Reset on removal: the buffer outlives the directory, and a stale READY would make the next
 	 *  caller skip materialization and then fail to open a directory that is no longer there. */
 	claimState: BigInt64Array;
-	/** The store the claim word lives in, so the retained READY view is dropped with the base it
-	 *  belongs to rather than outliving it. */
+	/** Retention is keyed on the store, so a dropped-and-recreated base does not inherit the word. */
 	claimStore: object;
 	/** What the handle resolves blobs through, so teardown deletes exactly what this branch owns. */
 	blobRoots: string[];
@@ -90,13 +89,19 @@ const retainedClaims = new WeakMap<object, Map<string, BigInt64Array>>();
 function claimStateFor(baseName: string, branchPath: string): { store: object; state: BigInt64Array } {
 	const store = database({ database: baseName, table: undefined });
 	const retained = retainedClaims.get(store)?.get(branchPath);
-	if (retained) return { store, state: retained };
+	if (retained) {
+		// Ours to keep only while it still reads READY. Another thread may have released the claim or
+		// taken it since, and holding it past that would keep a dead creator's CREATING word allocated
+		// where it would otherwise be reclaimed and the branch become creatable again.
+		if (Atomics.load(retained, CLAIM_STATE) !== READY) forgetClaim(store, branchPath);
+		return { store, state: retained };
+	}
 	const seed = new BigInt64Array([UNCLAIMED, 0n]);
 	return { store, state: new BigInt64Array(store.getUserSharedBuffer(`branch-claim:${branchPath}`, seed.buffer)) };
 }
 
-/** Take ownership of a READY word from the handle that is giving it up, so the next load of this
- *  branch adopts it instead of re-taking the claim and repeating the boot replay. */
+/** Take ownership of a READY word from the handle giving it up, before the step that can fail: every
+ *  path that then releases the claim forgets the entry, so retaining early can only over-retain. */
 function retainReadyClaim(store: object, branchPath: string, state: BigInt64Array): void {
 	if (Atomics.load(state, CLAIM_STATE) !== READY) return;
 	let byPath = retainedClaims.get(store);
@@ -600,8 +605,8 @@ export async function closeBranchAt(branchPath: string): Promise<void> {
 	const pending = branchesByPath.get(branchPath);
 	branchesByPath.delete(branchPath);
 	const opened = await pending?.catch(() => null);
-	opened?.branch.close();
 	if (opened) retainReadyClaim(opened.claimStore, branchPath, opened.claimState);
+	opened?.branch.close();
 }
 
 /**
@@ -766,6 +771,7 @@ async function removeBranchAt(branchPath: string): Promise<void> {
 	const pending = branchesByPath.get(branchPath);
 	branchesByPath.delete(branchPath);
 	const opened = (await pending?.catch(() => null)) ?? null;
+	if (opened) retainReadyClaim(opened.claimStore, branchPath, opened.claimState);
 	opened?.branch.close();
 	await destroyBranchStorage(branchPath, opened);
 }

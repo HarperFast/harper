@@ -1847,6 +1847,15 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 	const { removeBranchesForApplication } = require('#src/resources/branchDatabase');
 	const { database } = require('#src/resources/databases');
 	const STORE = `${'cycleApp'.length}_cycleApp__cyclebase`;
+	// One view, held: a fresh one per read lets `getUserSharedBuffer` reclaim the word in between. Two
+	// words, as production seeds it: over a one-word allocation `reportClaimProgress` throws.
+	const claimView = (branchPath) =>
+		new BigInt64Array(
+			database({ database: 'cyclebase', table: undefined }).getUserSharedBuffer(
+				`branch-claim:${branchPath}`,
+				new BigInt64Array([0n, 0n]).buffer
+			)
+		);
 
 	before(async function () {
 		this.timeout(30000);
@@ -1897,15 +1906,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 	it('closes its own handle, then removes the branch, its blob roots and its claim', async function () {
 		this.timeout(30000);
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
-		// One retained view, and the two-word shape production seeds: a fresh view per call lets
-		// `getUserSharedBuffer` reclaim the word between the store and the assertion, and a one-word
-		// allocation would make `reportClaimProgress` throw on `CLAIM_PROGRESS`.
-		const claimState = new BigInt64Array(
-			database({ database: 'cyclebase', table: undefined }).getUserSharedBuffer(
-				`branch-claim:${branchPath}`,
-				new BigInt64Array([0n, 0n]).buffer
-			)
-		);
+		const claimState = claimView(branchPath);
 		await getOrCreateBranch('cyclebase', 'cycleApp');
 		// Not closed here: the removing thread loaded the application too, and its own handle is the one
 		// reference that is not evidence of a live reader.
@@ -1935,14 +1936,10 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		await getOrCreateBranch('cyclebase', 'claimGcApp');
 		await closeBranchAt(branchPath);
 
-		// Nothing may hold a view of the claim word from here until the assertion: `getUserSharedBuffer`
-		// frees a key's allocation only once every view of it has been collected, so a view taken now
-		// would pin it and the assertion would hold whether or not the branch layer kept one.
-		//
-		// The decoy is the window itself, made observable. It is written to a value its default does not
-		// carry and then left unreferenced, so reading the default back proves a collection has freed an
-		// unreferenced user shared buffer -- the exact event the claim word has to survive. Without it a
-		// GC that never came would read as a pass.
+		// No view of the claim word until the assertion: one taken here would pin the allocation and the
+		// assertion would hold whether or not the branch layer kept its own. The decoy makes the window
+		// observable instead -- reading its default back proves a collection has freed an unreferenced
+		// user shared buffer, so a GC that never came fails rather than passes.
 		const decoy = () =>
 			new BigInt64Array(
 				baseStore.getUserSharedBuffer(`branch-claim-probe:${branchPath}`, new BigInt64Array([7n, 0n]).buffer)
@@ -1959,9 +1956,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		}
 		assert.ok(windowOpened, 'the collection this test depends on never happened');
 
-		const claimState = new BigInt64Array(
-			baseStore.getUserSharedBuffer(`branch-claim:${branchPath}`, new BigInt64Array([0n, 0n]).buffer)
-		);
+		const claimState = claimView(branchPath);
 		assert.strictEqual(Atomics.load(claimState, 0), 2n, 'the READY word outlives the handle that set it');
 
 		// The retained word is only valid while the directory it describes is there, so the branch has
@@ -2020,15 +2015,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		const { rename: mv, mkdir: mkd } = require('node:fs/promises');
 		const { join } = require('node:path');
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
-		// One retained view, and the two-word shape production seeds: a fresh view per call lets
-		// `getUserSharedBuffer` reclaim the word between the store and the assertion, and a one-word
-		// allocation would make `reportClaimProgress` throw on `CLAIM_PROGRESS`.
-		const claimState = new BigInt64Array(
-			database({ database: 'cyclebase', table: undefined }).getUserSharedBuffer(
-				`branch-claim:${branchPath}`,
-				new BigInt64Array([0n, 0n]).buffer
-			)
-		);
+		const claimState = claimView(branchPath);
 		// Published by a previous boot, as the main thread sees a branch of an application it never loaded.
 		const staging = `${branchPath}.staging`;
 		await mkd(join(branchPath, '..'), { recursive: true });
