@@ -3653,6 +3653,50 @@ describeUnlessLmdbFilter('HNSW allow-set admission (#2688)', () => {
 		}
 	});
 
+	it('admits a key the two sides of the query decode differently', () => {
+		// The index scan decodes an int64 as the number ordered-binary encodes it as, while the
+		// traversal reports the BigInt its own decoder produced. Only storage identity matches the
+		// two, so a by-value allow-set has to fall through to it rather than rejecting the node.
+		const nodes = new Map();
+		let entryPoint;
+		const bigIntSafeStore = {
+			encoder: { useFloat32: false },
+			getSync(key) {
+				if (key === Symbol.for('entryPoint')) return entryPoint;
+				return nodes.get(typeof key === 'number' ? key : `k${String(key)}`);
+			},
+			put(key, value) {
+				if (key === Symbol.for('entryPoint')) return void (entryPoint = value);
+				nodes.set(typeof key === 'number' ? key : `k${String(key)}`, value);
+			},
+			remove(key) {
+				if (key === Symbol.for('entryPoint')) return void (entryPoint = undefined);
+				nodes.delete(typeof key === 'number' ? key : `k${String(key)}`);
+			},
+			*getRange({ start = 0, end = Infinity } = {}) {
+				for (const [k, v] of nodes) if (typeof k === 'number' && k >= start && k <= end) yield { key: k, value: v };
+			},
+			getKeys: () => [],
+			getUserSharedBuffer: (_name, buffer) => buffer,
+		};
+		const hnsw = new HierarchicalNavigableSmallWorld(bigIntSafeStore, {
+			distance: 'euclidean',
+			quantization: 'none',
+			optimizeRouting: 0,
+		});
+		for (let i = 0; i < 60; i++) hnsw.index(BigInt(i), [i], null, {});
+		const results = hnsw.search(
+			{ target: [0], comparator: 'sort', descending: false },
+			{ transaction: undefined },
+			{ filter: () => true, candidateKeys: plan([2, 4, 6, 8, 10]) }
+		);
+		assert.deepStrictEqual(
+			results.slice(0, 5).map((entry) => Number(entry.key)),
+			[2, 4, 6, 8, 10],
+			'a number allow-set must match the BigInt keys the graph reports'
+		);
+	});
+
 	it('an incomplete plan keeps the predicate behind the allow-set', () => {
 		const hnsw = buildLine(200);
 		const allowed = [];
