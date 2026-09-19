@@ -2,20 +2,18 @@
 
 require('../../testUtils');
 const assert = require('node:assert');
-const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../../testUtils');
 const { waitFor } = require('../../waitFor.js');
+const { setProperty } = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { databases } = require('#src/resources/databases');
 const { server } = require('#src/server/Server');
 const analytics = require('#src/resources/analytics/write');
 
 const PERIOD = 300;
 
-// A cycle refuses to run again until a whole period has elapsed since the last one, so a test
-// driving consecutive cycles has to let that cadence guard open between them.
-async function nextCycle() {
-	await delay(PERIOD + 50);
-	await analytics.runAggregationCycle(PERIOD, PERIOD);
+function runCycle() {
+	return analytics.runAggregationCycle(PERIOD, PERIOD);
 }
 
 function rawReport(id, path) {
@@ -50,9 +48,11 @@ describe('analytics aggregation cycle', () => {
 		this.timeout(30000);
 		setupTestDBPath();
 		server.hostname ||= 'aggregation-cycle-test';
-		// Create hdb_raw_analytics through the recording path rather than a cycle: a cycle would
-		// also set the resume marker to its own start time, putting the backlog these tests seed
-		// behind it before they begin.
+		// The first recorded action also starts the production scheduler, which shares the marker and
+		// the single-flight flag with the cycles driven here; an hour-long period keeps it from ticking.
+		setProperty(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD, 3600);
+		// Create hdb_raw_analytics through the recording path rather than a cycle, which would put the
+		// marker ahead of the backlog these tests seed.
 		analytics.setAnalyticsEnabled(true);
 		analytics.recordAction(1, 'db-write', 'Bootstrap');
 		await waitFor(() => databases.system?.hdb_raw_analytics ?? undefined, {
@@ -68,8 +68,9 @@ describe('analytics aggregation cycle', () => {
 	it('aggregates a backlog longer than one period across cycles', async function () {
 		this.timeout(30000);
 		// Three reports a period apart, all older than the cycle that first reads them — the shape a
-		// late tick leaves behind. One cycle can only roll up the first window, so the other two are
-		// aggregated only if the marker resumes from the last record the cycle consumed.
+		// late tick leaves behind. A cycle rolls up one window, and the consecutive cycles below are
+		// only permitted, and only reach windows two and three, if the marker resumes from the last
+		// record consumed.
 		const base = Date.now() - 6 * PERIOD;
 		await seedRawReports([
 			rawReport(base, 'AggWindow1'),
@@ -78,7 +79,7 @@ describe('analytics aggregation cycle', () => {
 		]);
 		nextRawKey = base + 2 * PERIOD + 3;
 
-		for (let cycle = 0; cycle < 3; cycle++) await nextCycle();
+		for (let cycle = 0; cycle < 3; cycle++) await runCycle();
 
 		assert.deepStrictEqual(aggregatedWritePaths(), ['AggWindow1', 'AggWindow2', 'AggWindow3']);
 	});
@@ -87,7 +88,7 @@ describe('analytics aggregation cycle', () => {
 		this.timeout(30000);
 		await seedRawReports([rawReport(nextRawKey, 'AggWindowConcurrent')]);
 
-		await Promise.all([analytics.runAggregationCycle(PERIOD, PERIOD), analytics.runAggregationCycle(PERIOD, PERIOD)]);
+		await Promise.all([runCycle(), runCycle()]);
 
 		const aggregated = aggregatedWritePaths().filter((path) => path === 'AggWindowConcurrent');
 		assert.deepStrictEqual(aggregated, ['AggWindowConcurrent']);
