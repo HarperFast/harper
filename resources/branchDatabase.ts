@@ -63,6 +63,9 @@ interface OpenBranch {
 	/** Reset on removal: the buffer outlives the directory, and a stale READY would make the next
 	 *  caller skip materialization and then fail to open a directory that is no longer there. */
 	claimState: BigInt64Array;
+	/** The store the claim word lives in, so the retained READY view is dropped with the base it
+	 *  belongs to rather than outliving it. */
+	claimStore: object;
 	/** What the handle resolves blobs through, so teardown deletes exactly what this branch owns. */
 	blobRoots: string[];
 }
@@ -71,16 +74,38 @@ interface OpenBranch {
 // READY at the same moment and would otherwise each try to open the directory the winner just opened.
 const branchesByPath = new Map<string, Promise<OpenBranch>>();
 
+// `getUserSharedBuffer` frees a key's allocation once no view of it survives a GC, and the next call
+// for that key re-seeds it from the default. Holding the READY view is therefore what gives the claim
+// word the boot lifetime the protocol assumes. Only READY is held, and only for a branch this process
+// closed without removing: a CREATING word stays owned by its creator and waiters alone, so an owner
+// that dies without releasing it is still reclaimed and the branch can be created again.
+const retainedClaims = new WeakMap<object, Map<string, BigInt64Array>>();
+
 /**
  * The claim word is process-local shared memory (in-process only, seeded UNCLAIMED each boot) and
  * must stay that way: the winner's tail replay runs exactly once per boot because every boot starts
  * from UNCLAIMED. A durable or cross-process claim would read READY on restart and silently skip
  * recovery.
  */
-function claimStateFor(baseName: string, branchPath: string): BigInt64Array {
-	const baseStore = database({ database: baseName, table: undefined });
+function claimStateFor(baseName: string, branchPath: string): { store: object; state: BigInt64Array } {
+	const store = database({ database: baseName, table: undefined });
+	const retained = retainedClaims.get(store)?.get(branchPath);
+	if (retained) return { store, state: retained };
 	const seed = new BigInt64Array([UNCLAIMED, 0n]);
-	return new BigInt64Array(baseStore.getUserSharedBuffer(`branch-claim:${branchPath}`, seed.buffer));
+	return { store, state: new BigInt64Array(store.getUserSharedBuffer(`branch-claim:${branchPath}`, seed.buffer)) };
+}
+
+/** Take ownership of a READY word from the handle that is giving it up, so the next load of this
+ *  branch adopts it instead of re-taking the claim and repeating the boot replay. */
+function retainReadyClaim(store: object, branchPath: string, state: BigInt64Array): void {
+	if (Atomics.load(state, CLAIM_STATE) !== READY) return;
+	let byPath = retainedClaims.get(store);
+	if (!byPath) retainedClaims.set(store, (byPath = new Map()));
+	byPath.set(branchPath, state);
+}
+
+function forgetClaim(store: object, branchPath: string): void {
+	retainedClaims.get(store)?.delete(branchPath);
 }
 
 export function reportClaimProgress(state: BigInt64Array): void {
@@ -432,7 +457,7 @@ function branchStoreName(appName: string, baseName: string): string {
 }
 
 async function openOrCreate(baseName: string, appName: string, branchPath: string): Promise<OpenBranch> {
-	const claimState = claimStateFor(baseName, branchPath);
+	const { store: claimStore, state: claimState } = claimStateFor(baseName, branchPath);
 	const storeName = branchStoreName(appName, baseName);
 	// Reserved before the claim, and so before materialization: cloning the blob tree REMOVES and
 	// replaces the root this identity resolves to, while `openBranchDatabase`'s own copy of this check
@@ -514,7 +539,7 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 					wakeWaiters(claimState);
 				}
 				handedOver = true;
-				return { branch, claimState, blobRoots };
+				return { branch, claimState, claimStore, blobRoots };
 			}
 			// Someone else holds it. A wait that settles on UNCLAIMED means they failed and released, so
 			// take another turn at being the one who creates it.
@@ -537,7 +562,7 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 		releaseBranchIdentity(storeName);
 		const adopted = openBranchDatabase(branchPath, baseName, storeName, published.blobRoots);
 		handedOver = true;
-		return { branch: adopted, claimState, blobRoots: published.blobRoots };
+		return { branch: adopted, claimState, claimStore, blobRoots: published.blobRoots };
 	} finally {
 		// `openBranchDatabase` takes the identity over for the life of the handle; anything short of
 		// that has to hand it back, or the application can never load again in this process.
@@ -576,6 +601,7 @@ export async function closeBranchAt(branchPath: string): Promise<void> {
 	branchesByPath.delete(branchPath);
 	const opened = await pending?.catch(() => null);
 	opened?.branch.close();
+	if (opened) retainReadyClaim(opened.claimStore, branchPath, opened.claimState);
 }
 
 /**
@@ -630,6 +656,7 @@ async function destroyBranchStorage(branchPath: string, opened: OpenBranch | nul
 	if (opened) {
 		retakeBranchIdentity(storeName);
 		releaseClaim(opened.claimState);
+		forgetClaim(opened.claimStore, branchPath);
 	} else {
 		try {
 			reserveBranchIdentity(storeName);
@@ -656,7 +683,9 @@ async function destroyBranchStorage(branchPath: string, opened: OpenBranch | nul
 		// only while the base exists: `claimStateFor` goes through `database()`, which recreates a dropped one
 		if (!opened && databases[basename(branchPath)]) {
 			try {
-				releaseClaim(claimStateFor(basename(branchPath), branchPath));
+				const { store, state } = claimStateFor(basename(branchPath), branchPath);
+				releaseClaim(state);
+				forgetClaim(store, branchPath);
 			} catch (error) {
 				logger.warn?.(`Could not release the branch claim for ${branchPath}`, error);
 			}
