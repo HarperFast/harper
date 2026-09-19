@@ -119,9 +119,10 @@ export function executeConditions(
 			// the index admits from, instead of loading and decoding a record at every visited node
 			// (#2688). The post-filter chain below stays whole, so the set only has to be a SUPERSET of
 			// the true matches — the index decides whether building it beats evaluating the predicate.
-			const candidateKeys = pushdownIndex.candidateKeyFilter
-				? planCandidateKeys(siblings, table, txn, !recordGuards)
-				: undefined;
+			const candidateKeys =
+				pushdownIndex.candidateKeyFilter && siblings.length > 0
+					? planCandidateKeys(siblings, table, txn, !recordGuards)
+					: undefined;
 			// Execute a COPY carrying the pushed-down predicate, never mutating the caller's condition
 			// object (which may be reused across requests with different users / guards).
 			const lead =
@@ -251,16 +252,14 @@ export interface CandidateKeyPlan {
 	/** Planner estimate of the matching record count; the index sizes its work budget from it. */
 	estimatedCount: number;
 	/**
-	 * True when the allow-set alone decides admission, so the index may drop the traversal predicate
-	 * entirely. It requires every pushed-down condition to be covered AND no opaque record guard
-	 * (`rowFilter` / `vectorFilter`) to be in play — those must stay residual during traversal.
+	 * The matching primary keys, with `complete` true when the set alone decides admission, so the
+	 * index may drop the traversal predicate. That needs every pushed-down condition covered, no
+	 * opaque record guard (`rowFilter` / `vectorFilter`), and every term actually scanned — a term
+	 * too wide for `maxKeys` is skipped rather than abandoning the whole set, leaving a narrower
+	 * superset that gates the predicate instead of replacing it. Null when even the narrowest term
+	 * overruns, which means the whole plan was not worth what it read.
 	 */
-	complete: boolean;
-	/**
-	 * The matching primary keys, or null when the scans read more than `maxKeys` index entries — the
-	 * caller then keeps the predicate rather than overrunning the budget it decided against.
-	 */
-	collect(maxKeys: number): Id[] | null;
+	collect(maxKeys: number): { keys: Id[]; complete: boolean } | null;
 }
 
 /** One indexed range scan: over this range the secondary index holds exactly the condition's matches. */
@@ -314,11 +313,14 @@ function planCandidateKeyScan(condition, table): CandidateKeyScan | undefined {
 	let exclusiveStart = false;
 	switch (comparator) {
 		case 'lt':
-			start = true;
+			// null, not searchByIndex's `true`: `true` sorts ABOVE null and false, so starting there
+			// would drop indexed rows the record predicate's compareKeys admits — an omission the
+			// post-filter cannot undo.
+			start = null;
 			end = value;
 			break;
 		case 'le':
-			start = true;
+			start = null;
 			end = value;
 			inclusiveEnd = true;
 			break;
@@ -358,20 +360,16 @@ function planCandidateKeyScan(condition, table): CandidateKeyScan | undefined {
 	return { index, range: { start, end, inclusiveEnd, exclusiveStart }, estimatedCount };
 }
 
-/**
- * Plan the sibling AND conditions of a filterable-index lead into range scans. Returns undefined
- * when nothing is plannable, so a query with no indexed sibling allocates nothing.
- */
+/** Plan the sibling AND conditions of a filterable-index lead into range scans. */
 function planCandidateKeys(conditions, table, transaction, guardFree: boolean): CandidateKeyPlan | undefined {
 	const terms: CandidateKeyTerm[] = [];
-	const complete = collectCandidateKeyTerms(conditions, table, terms) && guardFree;
+	const planned = collectCandidateKeyTerms(conditions, table, terms) && guardFree;
 	if (terms.length === 0) return undefined;
 	// AND terms intersect, so the narrowest one bounds the result; scanning is bounded separately.
 	const estimatedCount = terms.reduce((narrowest, term) => Math.min(narrowest, term.estimatedCount), Infinity);
 	return {
 		estimatedCount,
-		complete,
-		collect: (maxKeys) => collectCandidateKeys(terms, transaction, maxKeys),
+		collect: (maxKeys) => collectCandidateKeys(terms, transaction, maxKeys, planned),
 	};
 }
 
@@ -408,17 +406,33 @@ function collectCandidateKeyTerms(conditions, table, terms: CandidateKeyTerm[]):
 /**
  * Run the planned scans narrowest-estimate first, intersecting on storage key identity. `maxKeys`
  * bounds index entries READ, not keys retained — a wide later scan whose intersection is tiny still
- * reads its whole range, and that is the cost the caller budgeted against.
+ * reads its whole range, and that is the cost the caller budgeted against. A term whose estimate
+ * exceeds what is left of that budget is dropped instead: fewer AND terms is a wider superset, which
+ * the predicate then narrows, and spending the budget on it only to abandon the set is pure loss.
  */
-function collectCandidateKeys(terms: CandidateKeyTerm[], transaction, maxKeys: number): Id[] | null {
+function collectCandidateKeys(
+	terms: CandidateKeyTerm[],
+	transaction,
+	maxKeys: number,
+	planned: boolean
+): { keys: Id[]; complete: boolean } | null {
 	const ordered = terms.length > 1 ? terms.slice().sort((a, b) => a.estimatedCount - b.estimatedCount) : terms;
 	let matched: Map<unknown, Id> | undefined;
+	let complete = planned;
 	let scanned = 0;
 	for (const term of ordered) {
+		if (matched && term.estimatedCount > maxKeys - scanned) {
+			complete = false;
+			continue;
+		}
 		const next = new Map<unknown, Id>();
+		let overran = false;
 		for (const scan of term.scans) {
 			for (const { value: primaryKey } of scan.index.getRange({ ...scan.range, values: true, transaction })) {
-				if (++scanned > maxKeys) return null;
+				if (++scanned > maxKeys) {
+					overran = true;
+					break;
+				}
 				// writeKeyId, not flattenKey: the encoder the stores index by. flattenKey joins composite
 				// keys with NUL, which collapses ['a', 'b\0c'] and ['a\0b', 'c'] into one entry and would
 				// drop one of two real matches.
@@ -426,11 +440,18 @@ function collectCandidateKeys(terms: CandidateKeyTerm[], transaction, maxKeys: n
 				if (matched && !matched.has(identity)) continue;
 				next.set(identity, primaryKey);
 			}
+			if (overran) break;
+		}
+		// A half-scanned term is not a superset of its own matches, so it is dropped whole.
+		if (overran) {
+			if (!matched) return null;
+			complete = false;
+			break;
 		}
 		matched = next;
 		if (matched.size === 0) break;
 	}
-	return [...matched!.values()];
+	return { keys: [...matched!.values()], complete };
 }
 
 /**

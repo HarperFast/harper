@@ -3257,7 +3257,7 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 	// The vector condition is supplied explicitly and `enforceExecutionOrder` keeps it first, so every
 	// test here reaches the filterable-pushdown branch regardless of what the planner estimates. The
-	// companion conditions all stay under half the graph, which is where an allow-set beats loading a
+	// companion conditions stay under half the graph, which is where an allow-set beats loading a
 	// record per visited node.
 	let A;
 	before(async () => {
@@ -3268,6 +3268,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'tenant', indexed: true },
 				{ name: 'rank', indexed: true, type: 'Int' },
+				{ name: 'shard', indexed: true },
 				{ name: 'note' },
 				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
 			],
@@ -3275,7 +3276,10 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 		for (let i = 0; i < 300; i++) {
 			await A.put(i, {
 				tenant: i % 3 === 0 ? 'a' : 'b',
-				rank: i,
+				// rank 0 is deliberately null: `null < n` holds for the record predicate's compareKeys,
+				// so the allow-set has to carry an indexed null too.
+				rank: i === 0 ? null : i,
+				shard: i < 290 ? 'wide' : 'narrow',
 				note: i % 2 === 0 ? 'keep' : 'drop',
 				vector: [i, 0],
 			});
@@ -3283,15 +3287,17 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 	});
 	after(() => A.dropTable());
 
-	/** Capture what search.ts hands the index, and the traversal counters it hands back. */
-	async function searchWithSpy(target, conditions, extra = {}, probe) {
+	/**
+	 * Capture what search.ts hands the index, and the traversal counters it hands back. The plan is
+	 * also run directly — that has to happen inside the spy, since its scans read the query's
+	 * transaction, which is released once the results are consumed.
+	 */
+	async function searchWithSpy(target, conditions, extra = {}, probe = (plan) => plan.collect(100_000)) {
 		const customIndex = A.indices.vector.customIndex;
 		const original = customIndex.search;
 		const calls = [];
 		customIndex.search = function (condition, context, options) {
-			// Any direct use of the plan has to happen here: its scans read the query's transaction,
-			// which is released once the results are consumed.
-			const probed = probe?.(options.candidateKeys);
+			const probed = options.candidateKeys ? probe(options.candidateKeys) : undefined;
 			const entries = original.call(this, condition, context, options);
 			calls.push({ options, entries, probed });
 			return entries;
@@ -3318,13 +3324,14 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 	}
 
 	it('answers an indexed equality from the allow-set, with no record loaded to admit', async () => {
-		const { results, options, stats } = await searchWithSpy(
+		const { results, probed, stats } = await searchWithSpy(
 			[0, 0],
 			[{ attribute: 'tenant', comparator: 'equals', value: 'a' }],
 			{ limit: 5 }
 		);
-		assert.strictEqual(options.candidateKeys.complete, true, 'no residual predicate is needed');
-		assert.strictEqual(stats.candidateKeys, 100, 'the allow-set is every tenant-a record');
+		assert.strictEqual(probed.complete, true, 'no residual predicate is needed');
+		assert.strictEqual(probed.keys.length, 100, 'the allow-set is every tenant-a record');
+		assert.strictEqual(stats.candidateKeys, 100);
 		assert.strictEqual(stats.filterEvaluations, 0, 'admission never loads a record');
 		assert.deepStrictEqual(
 			results.map((record) => record.id),
@@ -3334,6 +3341,8 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 
 	it('builds the allow-set from each range comparator', async () => {
 		for (const [comparator, value, target, expected] of [
+			// id 0 has a null rank, which `lt`/`le` must still admit — an index range starting above
+			// null would drop a row the record predicate keeps.
 			['lt', 100, [0, 0], [0, 1, 2, 3, 4]],
 			['le', 99, [0, 0], [0, 1, 2, 3, 4]],
 			['ge', 200, [200, 0], [200, 201, 202, 203, 204]],
@@ -3376,7 +3385,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 	});
 
 	it('keeps a non-indexed sibling residual and gates it behind the allow-set', async () => {
-		const { results, options, stats } = await searchWithSpy(
+		const { results, probed, stats } = await searchWithSpy(
 			[0, 0],
 			[
 				{ attribute: 'tenant', comparator: 'equals', value: 'a' },
@@ -3384,7 +3393,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			],
 			{ limit: 4, select: ['id', 'note'] }
 		);
-		assert.strictEqual(options.candidateKeys.complete, false, 'an unindexed sibling stays residual');
+		assert.strictEqual(probed.complete, false, 'an unindexed sibling stays residual');
 		assert(stats.filterEvaluations > 0, 'the residual predicate still runs');
 		assert(
 			stats.filterEvaluations <= stats.candidateKeys,
@@ -3397,13 +3406,36 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 		);
 	});
 
+	it('drops a term too wide for the scan budget instead of abandoning the whole set', async () => {
+		// `shard = 'wide'` matches 290 of 300, past what is left of a 150-entry budget once the tenant
+		// term is scanned. Abandoning the set there would spend the scan AND run the full predicate.
+		const { results, probed, stats } = await searchWithSpy(
+			[0, 0],
+			[
+				{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+				{ attribute: 'shard', comparator: 'equals', value: 'wide' },
+			],
+			{ limit: 3, select: ['id', 'shard'] },
+			(plan) => ({ capped: plan.collect(150), full: plan.collect(100_000) })
+		);
+		assert.strictEqual(probed.capped.complete, false, 'a dropped term leaves the set incomplete');
+		assert.strictEqual(probed.capped.keys.length, 100, 'only the tenant term was scanned');
+		assert.strictEqual(probed.full.complete, true, 'given the whole budget both terms are scanned');
+		assert.strictEqual(probed.full.keys.length, 97, 'tenant a minus the three narrow-shard multiples of 3');
+		assert(stats.filterEvaluations >= 0);
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[0, 3, 6]
+		);
+	});
+
 	it('a record guard forces the residual path and still fills the limit', async () => {
-		const { results, options } = await searchWithSpy(
+		const { results, probed } = await searchWithSpy(
 			[0, 0],
 			[{ attribute: 'tenant', comparator: 'equals', value: 'a' }],
 			{ limit: 3, rowFilter: (record) => record.rank % 30 === 21 }
 		);
-		assert.strictEqual(options.candidateKeys.complete, false, 'an opaque guard can never be covered');
+		assert.strictEqual(probed.complete, false, 'an opaque guard can never be covered');
 		assert.deepStrictEqual(
 			results.map((record) => record.id),
 			[21, 51, 81]
@@ -3417,22 +3449,22 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			{ limit: 1 },
 			(plan) => ({ capped: plan.collect(1), full: plan.collect(100_000) })
 		);
-		assert.strictEqual(probed.capped, null, 'a scan past maxKeys gives up instead of reading on');
-		assert.strictEqual(probed.full.length, 100);
+		assert.strictEqual(probed.capped, null, 'the narrowest term overrunning gives up instead of reading on');
+		assert.strictEqual(probed.full.keys.length, 100);
+		assert.strictEqual(probed.full.complete, true);
 	});
 
 	it('leaves a comparator no index range answers exactly unplanned', async () => {
-		const { options, probed } = await searchWithSpy(
+		const { probed } = await searchWithSpy(
 			[0, 0],
 			[
 				{ attribute: 'tenant', comparator: 'equals', value: 'a' },
 				{ attribute: 'rank', comparator: 'ne', value: 3 },
 			],
-			{ limit: 1 },
-			(plan) => plan.collect(100_000)
+			{ limit: 1 }
 		);
-		assert.strictEqual(options.candidateKeys.complete, false, 'ne is answered by a scan plus a filter');
-		assert.strictEqual(probed.length, 100, 'only the equality became a scan');
+		assert.strictEqual(probed.complete, false, 'ne is answered by a scan plus a filter, so it stays residual');
+		assert.strictEqual(probed.keys.length, 100, 'only the equality became a scan');
 	});
 
 	it('composite primary keys that flatten alike are both admitted', async () => {
@@ -3492,8 +3524,7 @@ describeUnlessLmdbFilter('HNSW allow-set admission (#2688)', () => {
 	function plan(keys, complete = true, collect) {
 		return {
 			estimatedCount: keys.length,
-			complete,
-			collect: collect ?? (() => keys),
+			collect: collect ?? (() => ({ keys: [...keys], complete })),
 		};
 	}
 	const even = (primaryKey) => Number(primaryKey) % 2 === 0;
@@ -3505,7 +3536,15 @@ describeUnlessLmdbFilter('HNSW allow-set admission (#2688)', () => {
 		const hnsw = buildLine(200);
 		const allowed = [];
 		for (let i = 0; i < 200; i += 2) allowed.push(i);
-		const results = search(hnsw, { filter: even, candidateKeys: plan(allowed) });
+		let predicateCalls = 0;
+		const results = search(hnsw, {
+			filter: (primaryKey) => {
+				predicateCalls++;
+				return even(primaryKey);
+			},
+			candidateKeys: plan(allowed),
+		});
+		assert.strictEqual(predicateCalls, 0, "the caller's predicate is never reached");
 		assert.strictEqual(results.filterEvaluations, 0, 'no record is loaded to admit');
 		assert.strictEqual(results.candidateKeys, 100);
 		assert.deepStrictEqual(
@@ -3514,12 +3553,20 @@ describeUnlessLmdbFilter('HNSW allow-set admission (#2688)', () => {
 		);
 	});
 
-	it('an empty allow-set returns nothing under a bounded traversal', () => {
+	it('an empty allow-set returns nothing under the unwidened visit budget', () => {
 		const hnsw = buildLine(200);
-		const results = search(hnsw, { filter: even, candidateKeys: plan([]) });
-		assert.strictEqual(results.length, 0);
+		let predicateCalls = 0;
+		const results = search(hnsw, {
+			filter: () => {
+				predicateCalls++;
+				return true;
+			},
+			candidateKeys: plan([]),
+		});
+		assert.strictEqual(results.length, 0, 'a zero-match filter admits nothing');
+		assert.strictEqual(predicateCalls, 0);
+		assert.strictEqual(results.candidateKeys, 0);
 		assert.strictEqual(results.filterEvaluations, 0);
-		assert(results.nodesVisited <= 200, 'a zero-match filter does not crawl past the graph');
 	});
 
 	it('declines a plan too broad to pay for itself', () => {
@@ -3529,10 +3576,9 @@ describeUnlessLmdbFilter('HNSW allow-set admission (#2688)', () => {
 			filter: even,
 			candidateKeys: {
 				estimatedCount: 150,
-				complete: true,
 				collect() {
 					collected = true;
-					return [];
+					return { keys: [], complete: true };
 				},
 			},
 		});

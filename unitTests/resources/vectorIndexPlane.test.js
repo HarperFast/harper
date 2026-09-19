@@ -837,9 +837,9 @@ describe('HNSW native plane allow-set filtering (#2688)', function () {
 	function tenantOf(i) {
 		return i % 3 === 0 ? 'a' : 'b';
 	}
-	/** A CandidateKeyPlan over a known id set, so the plane's bitset path is exercised on its own. */
+	/** A CandidateKeyPlan over a known id set, so the plane's admission path is exercised on its own. */
 	function planFor(ids, complete = true) {
-		return { estimatedCount: ids.length, complete, collect: () => [...ids] };
+		return { estimatedCount: ids.length, collect: () => ({ keys: [...ids], complete }) };
 	}
 
 	before(async () => {
@@ -907,7 +907,7 @@ describe('HNSW native plane allow-set filtering (#2688)', function () {
 		const admitted = new Set(allowed);
 		assert.ok(
 			entries.every((entry) => admitted.has(entry.key)),
-			'the bitset alone decided admission'
+			'the allow-set alone decided admission'
 		);
 		assert.deepStrictEqual(
 			entries.slice(0, 4).map((entry) => entry.key),
@@ -978,7 +978,6 @@ describe('HNSW native plane allow-set filtering (#2688)', function () {
 					{}
 				)
 			);
-			assert.strictEqual(captured.options.candidateKeys.complete, true);
 			const entries = await captured.searched;
 			assert.strictEqual(entries.filterEvaluations, 0, 'the traversal loaded no record to admit');
 			assert.strictEqual(entries.candidateKeys, 100);

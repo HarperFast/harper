@@ -260,21 +260,20 @@ const MAX_LEVEL = 10; // should give good high-level skip list performance up to
 // islands are small (bounded by the deleted node's neighborhood), so a probe that visits this many
 // nodes without reaching the entry point is treated as connected-but-far and repaired conservatively.
 const PROBE_VISIT_LIMIT = 256;
-// Candidate keys one predicate visit pays for (#2688). Measured on 20k 768-d records with 9 KB
-// bodies: a key-only secondary-index scan entry costs ~0.37 us, and a predicate visit — a record
-// load plus decode — costs ~2.1 us warm, against the ~130 us the issue measured on a colder
-// document-with-sections corpus. Calibrated to the WARM ratio, which is the regression-safe end:
-// over-stating it would build allow-sets for broad filters the predicate already answers cheaply.
+// Candidate keys one predicate visit pays for: a key-only index-entry read against a record load
+// and decode. Measured warm at 0.37 us against 2.1 us, rounded up from that 5.7; the same load is
+// ~130 us cold, so the warm end is the regression-safe calibration — over-stating the ratio would
+// build allow-sets for broad filters the predicate already answers cheaply. See DESIGN.md.
 const KEYS_PER_PREDICATE_VISIT = 8;
 // Absolute ceiling on index entries one query may read building an allow-set, whatever the cost
 // model allows. The scan is synchronous, so this bounds both the event-loop stall and the retained
 // key set; past it the predicate path — which is incremental and budget-bounded — is the safer cost.
 const MAX_CANDIDATE_KEYS = 50_000;
-// Visit budget for an allow-set-admitted traversal, as a multiple of ef. Filling ef matches at
-// selectivity s costs ~ef/s visits, so the budget is that with slack rather than the fixed
-// filterExpansion, which exists to bound an admission test expensive enough to be worth bounding.
+// Filling ef matches at selectivity s costs ~ef/s visits; this is the slack over that.
 const ALLOW_SET_BUDGET_SLACK = 2;
-const ALLOW_SET_EXPANSION_MAX = 256;
+// How far an allow-set may widen the filterExpansion visit budget. A visit got cheaper, not free:
+// the JS graph still loads a node and computes a distance for each one, synchronously.
+const ALLOW_SET_BUDGET_MAX_WIDENING = 4;
 type Connection = {
 	id: number;
 	distance: number;
@@ -465,7 +464,7 @@ export class HierarchicalNavigableSmallWorld {
 	filterExpansion = 24;
 	// Whether the schema pinned filterExpansion. An explicit pin is an authoritative cost ceiling and
 	// keeps its exact meaning on every path; only an index that never set it gets the
-	// selectivity-derived budget an allow-set makes measurable (#2688).
+	// selectivity-derived budget an allow-set makes measurable.
 	filterExpansionConfigured = false;
 
 	idIncrementer: BigInt64Array | undefined;
@@ -858,14 +857,19 @@ export class HierarchicalNavigableSmallWorld {
 
 	/**
 	 * Run a candidate-key plan when its scans are cheaper than the predicate visits they replace, and
-	 * return the matching primary keys. Undefined means "take the predicate path": the plan was too
-	 * broad, it overran its scan budget, or the scan failed — none of which is a fault of the graph.
+	 * return the matching primary keys with whether they alone decide admission. Undefined means
+	 * "take the predicate path": the plan was too broad, its narrowest term overran the scan budget,
+	 * or the scan failed — none of which is a fault of the graph.
 	 */
-	private collectCandidateKeys(plan: CandidateKeyPlan, ef: number, predicateMaxVisits: number): Id[] | undefined {
+	private collectCandidateKeys(
+		plan: CandidateKeyPlan,
+		ef: number,
+		predicateMaxVisits: number
+	): { keys: Id[]; complete: boolean } | undefined {
 		const nodeCount = this.approximateNodeCount();
 		const estimated = Math.max(1, plan.estimatedCount);
 		// Filling ef matches at selectivity s costs ~ef/s visits, and s is estimated/nodeCount, so a
-		// broad filter needs few predicate visits however cheap the bit test that would replace them.
+		// broad filter needs few predicate visits however cheap the test that would replace them.
 		const predicateVisits = Math.min(predicateMaxVisits, (ef * nodeCount) / estimated);
 		let maxKeys = Math.min(Math.ceil(predicateVisits * KEYS_PER_PREDICATE_VISIT), MAX_CANDIDATE_KEYS);
 		// An allow-set over a large fraction of the graph is not a filter worth building.
@@ -883,17 +887,18 @@ export class HierarchicalNavigableSmallWorld {
 	}
 
 	/**
-	 * Visit budget for an allow-set-admitted traversal, as a multiple of ef. A configured
-	 * filterExpansion is an authoritative cost ceiling and wins; otherwise the budget comes from the
-	 * selectivity the allow-set makes measurable, which is both tighter than 24 for a broad filter and
-	 * far looser than it for a selective one. An empty allow-set gets the minimum, so a zero-match
-	 * filter returns an empty result after a bounded descent rather than crawling the graph.
+	 * Visit budget for a traversal an allow-set decides, derived from the selectivity the set makes
+	 * measurable rather than from filterExpansion — which exists to bound an admission test expensive
+	 * enough to be worth bounding, and this one is a set lookup. It only ever widens the
+	 * filterExpansion budget, never narrows it: a cheaper visit makes a tighter budget buy nothing
+	 * and cost recall. An empty set keeps that budget, so a zero-match filter returns empty after a
+	 * bounded descent rather than crawling the graph.
 	 */
-	private allowSetExpansion(allowed: number, configured: number | undefined): number {
-		if (configured !== undefined && configured > 0) return configured;
-		if (allowed <= 0) return 1;
+	private allowSetVisitBudget(allowed: number, predicateMaxVisits: number, budgetEf: number): number {
+		if (allowed <= 0) return predicateMaxVisits;
 		const selectivity = Math.min(1, allowed / Math.max(1, this.approximateNodeCount()));
-		return Math.min(ALLOW_SET_EXPANSION_MAX, Math.max(2, Math.ceil(ALLOW_SET_BUDGET_SLACK / selectivity)));
+		const derived = budgetEf * Math.ceil(ALLOW_SET_BUDGET_SLACK / selectivity);
+		return Math.min(Math.max(predicateMaxVisits, derived), predicateMaxVisits * ALLOW_SET_BUDGET_MAX_WIDENING);
 	}
 
 	attachDerivedHost(host: DerivedNativeIndexHost): void {
@@ -1903,9 +1908,9 @@ export class HierarchicalNavigableSmallWorld {
 			// meaningful; the caller pays for what it asked for.
 			minResults?: number;
 			// The sibling conditions search.ts could answer from secondary indexes (#2688). Turned into
-			// the traversal's admission set when that is cheaper than the predicate visits it replaces;
-			// a `complete` plan then replaces `filter` for the traversal entirely. Always optional — the
-			// predicate path is the fallback for every case this declines.
+			// the traversal's admission set when that is cheaper than the predicate visits it replaces,
+			// and a set covering every pushed-down condition then replaces `filter` outright. Always
+			// optional — the predicate path is the fallback for every case this declines.
 			candidateKeys?: CandidateKeyPlan;
 		} = {}
 	) {
@@ -1990,44 +1995,52 @@ export class HierarchicalNavigableSmallWorld {
 		const budgetEf = explicitEf || this.efSearchConfigured ? resolvedEf : Math.min(resolvedEf, AUTO_EF_MAX);
 		const predicateMaxVisits =
 			budgetEf * (filterExpansion && filterExpansion > 0 ? filterExpansion : this.filterExpansion);
-		// #2688: the keys an indexed companion condition selects, when reading them off the index costs
-		// less than the record loads the predicate would do instead. The plan is a superset of the true
-		// matches and the query's post-filter chain is unchanged, so this only moves work, not verdicts.
+		// The keys an indexed companion condition selects, when reading them off the index costs less
+		// than the record loads the predicate would do instead.
 		const allowedKeys =
 			filter && candidateKeys ? this.collectCandidateKeys(candidateKeys, resolvedEf, predicateMaxVisits) : undefined;
 		// A plan is only allowed to REPLACE the predicate when it covers every pushed-down condition and
 		// no opaque record guard is in play; anything else keeps the predicate behind the allow-set.
-		const allowDecides = Boolean(allowedKeys && candidateKeys!.complete);
+		const allowDecides = Boolean(allowedKeys?.complete);
 		const filterState: FilterState | undefined = filter
 			? {
 					maxVisits: predicateMaxVisits,
 					nodesVisited: 0,
 					filterEvaluations: 0,
-					candidateKeys: allowedKeys?.length,
+					candidateKeys: allowedKeys?.keys.length,
 				}
 			: undefined;
 		if (allowedKeys && filter && filterState) {
 			// Both traversals admit by primary key — the plane hands its predicate the key of every
-			// candidate — so the allow-set is a membership test in front of the record load, and a
-			// complete plan removes the load entirely. Nothing maps keys to node ids for the plane's
-			// own bitset filter: that lookup measures ~10 us against the ~2 us record load it would be
-			// replacing, so it costs more than the work it saves (see KEYS_PER_PREDICATE_VISIT).
-			const allowedIds = new Set(allowedKeys.map(writeKeyId));
+			// candidate — so the set is a membership test in front of the record load, and a complete
+			// plan removes the load entirely.
+			//
+			// Scalar keys are held by value and encoded keys by storage identity, checked in that
+			// order: a string or number key then costs one Set hit and no encoding, while anything
+			// else, and any pair the two representations disagree about, still resolves through
+			// writeKeyId exactly as the stores index it.
+			const allowedScalars = new Set<Id>();
+			const allowedIds = new Set<unknown>();
+			for (const primaryKey of allowedKeys.keys) {
+				const type = typeof primaryKey;
+				if (type === 'string' || type === 'number') allowedScalars.add(primaryKey);
+				allowedIds.add(writeKeyId(primaryKey));
+			}
+			const admits = (primaryKey: Id) => allowedScalars.has(primaryKey) || allowedIds.has(writeKeyId(primaryKey));
 			const residual = filter;
 			const state = filterState;
 			state.countsOwnEvaluations = true;
 			filter = allowDecides
-				? (primaryKey: Id) => allowedIds.has(writeKeyId(primaryKey))
+				? admits
 				: (primaryKey: Id) => {
-						if (!allowedIds.has(writeKeyId(primaryKey))) return false;
+						if (!admits(primaryKey)) return false;
 						state.filterEvaluations++;
 						return residual(primaryKey);
 					};
-			// Only a filter the allow-set DECIDES gets the selectivity-derived budget: an admitted visit
-			// on the residual path still costs a record decode, so that path keeps today's ceiling.
-			// Never BELOW the filterExpansion budget, only above it — a visit got cheaper, not dearer,
-			// so a narrower budget would buy nothing and cost recall (measured: a 20%-selective filter
-			// derives ef*10 against filterExpansion's ef*24, and lost 8 of 50 true neighbours).
+			// Only a filter the set DECIDES gets the derived budget: an admitted visit on the residual
+			// path still costs a record decode, so that path keeps today's ceiling. A configured
+			// filterExpansion is an authoritative cost ceiling and is used exactly as given, zero
+			// included.
 			if (allowDecides) {
 				const configured =
 					filterExpansion && filterExpansion > 0
@@ -2035,8 +2048,10 @@ export class HierarchicalNavigableSmallWorld {
 						: this.filterExpansionConfigured
 							? this.filterExpansion
 							: undefined;
-				const derived = budgetEf * this.allowSetExpansion(allowedIds.size, configured);
-				state.maxVisits = configured === undefined ? Math.max(predicateMaxVisits, derived) : derived;
+				state.maxVisits =
+					configured === undefined
+						? this.allowSetVisitBudget(allowedIds.size, predicateMaxVisits, budgetEf)
+						: budgetEf * configured;
 			}
 		}
 		const rerankK =
@@ -2428,7 +2443,7 @@ type FilterState = {
 	maxVisits: number;
 	nodesVisited: number;
 	filterEvaluations: number;
-	// The keys a candidate-key plan collected (#2688), present only when one ran.
+	// The keys a candidate-key plan collected, present only when one ran.
 	candidateKeys?: number;
 	// Set when the filter itself counts filterEvaluations, so admit() must not count again.
 	countsOwnEvaluations?: boolean;
