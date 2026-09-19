@@ -2018,15 +2018,15 @@ export class HierarchicalNavigableSmallWorld {
 			// String and number keys are held by value, so an all-scalar set decides a scalar key from
 			// the traversal without encoding either a hit or a miss. Everything else goes to storage
 			// identity, which is what folds a BigInt onto the number the stores index it as — the two
-			// sides of a query decode an int64 differently, so a key can arrive as either. A zero key
-			// keeps the whole set on that path too: Set membership is SameValueZero, which calls -0
-			// and 0 the same key, while the stores encode them apart.
+			// sides of a query decode an int64 differently, so a key can arrive as either. Zero goes
+			// there as well — Set membership is SameValueZero, which calls -0 and 0 the same key while
+			// the stores encode them apart — but only zero, not the set that happens to contain it.
 			const allowedScalars = new Set<Id>();
 			let byValue = true;
 			for (const primaryKey of allowedKeys.keys) {
 				const type = typeof primaryKey;
-				if (primaryKey === 0 || (type !== 'string' && type !== 'number')) byValue = false;
-				else allowedScalars.add(primaryKey);
+				if (type !== 'string' && type !== 'number') byValue = false;
+				else if (primaryKey !== 0) allowedScalars.add(primaryKey);
 			}
 			// Built on the first key the value set cannot decide, which in by-value mode is a key shape
 			// the collected set does not even contain.
@@ -2040,7 +2040,7 @@ export class HierarchicalNavigableSmallWorld {
 			};
 			const admits = byValue
 				? (primaryKey: Id) =>
-						typeof primaryKey === 'string' || typeof primaryKey === 'number'
+						typeof primaryKey === 'string' || (typeof primaryKey === 'number' && primaryKey !== 0)
 							? allowedScalars.has(primaryKey)
 							: encodedAdmits(primaryKey)
 				: (primaryKey: Id) => allowedScalars.has(primaryKey) || encodedAdmits(primaryKey);

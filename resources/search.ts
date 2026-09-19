@@ -203,7 +203,6 @@ function buildRecordGuards(recordAccess): ((record: any) => boolean)[] | undefin
 	return guards.length > 0 ? guards : undefined;
 }
 
-/** A condition's custom index when it participates in predicate-aware traversal (HNSW). */
 function filterablePushdownIndex(condition, table): any {
 	const attributeName = condition?.attribute ?? condition?.[0];
 	if (attributeName == null || table == null) return undefined;
@@ -262,13 +261,12 @@ export interface CandidateKeyPlan {
 	collect(maxKeys: number): { keys: Id[]; complete: boolean } | null;
 }
 
-/** A range over which the secondary index holds exactly the condition's matches. */
 interface CandidateKeyScan {
 	index: any;
 	range: any;
 	estimatedCount: number;
 }
-/** Scans whose union is one AND term. A single-element `scans` is a leaf condition. */
+/** Scans whose UNION is one AND term; a single-element `scans` is a leaf condition. */
 interface CandidateKeyTerm {
 	scans: CandidateKeyScan[];
 	estimatedCount: number;
