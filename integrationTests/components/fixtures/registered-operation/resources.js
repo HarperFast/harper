@@ -10,6 +10,11 @@ import { Readable } from 'node:stream';
 
 server.registerOperation({
 	name: 'component_registered_echo',
+	inputSchema: {
+		type: 'object',
+		properties: { value: { type: 'string' } },
+		required: ['value'],
+	},
 	// Named function expression so the handler's `.name` is deterministic for the
 	// verifyPerms/requiredPermissions lookup (not inferred as "execute").
 	execute: async function componentRegisteredEcho(op) {

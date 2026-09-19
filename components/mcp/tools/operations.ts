@@ -45,7 +45,6 @@ import {
 	type ToolDef,
 	type ToolResult,
 } from '../toolRegistry.ts';
-import { OPERATION_INPUT_SCHEMAS, PERMISSIVE_SCHEMA } from './schemas/operations.ts';
 import { OPERATION_DESCRIPTIONS } from './schemas/operationDescriptions.ts';
 
 // Resolved from Harper's server-helpers graph on demand. The map is built at
@@ -53,24 +52,35 @@ import { OPERATION_DESCRIPTIONS } from './schemas/operationDescriptions.ts';
 // `startOnMainThread` — the provider below re-reads it per request rather than
 // snapshotting (#1562).
 type OperationFunction = (json: object) => unknown | Promise<unknown>;
-type OperationFunctionMap = Map<string, { operation_function: OperationFunction }>;
+type OperationFunctionEntry = { inputSchema?: object };
+type OperationFunctionMap = Map<string, OperationFunctionEntry>;
 
 type ChooseOperation = (body: object) => OperationFunction;
 type ProcessLocalTransaction = (req: { body: object }, fn: OperationFunction) => Promise<unknown>;
 
 interface OperationsConfig {
 	allow?: readonly string[];
+	allowSchemaless?: readonly string[];
 	deny?: readonly string[];
 }
+type RemoteOperationSchema = { inputSchema?: object; issue?: 'missing' | 'inconsistent' };
 
 // Test seams. Avoids importing Harper's heavy server-helpers graph from unit
 // tests that only want to exercise the registration logic.
 let _opMapOverride: OperationFunctionMap | undefined;
+let _remoteSchemasOverride: Array<[string, RemoteOperationSchema]> | undefined;
 let _chooseOperationOverride: ChooseOperation | undefined;
 let _processLocalTransactionOverride: ProcessLocalTransaction | undefined;
+const warnedMissingSchemas = new Set<string>();
 
 export function _setOperationFunctionMapForTest(m: OperationFunctionMap | undefined): void {
 	_opMapOverride = m;
+	warnedMissingSchemas.clear();
+}
+export function _setRemoteOperationInputSchemasForTest(
+	schemas: Array<[string, RemoteOperationSchema]> | undefined
+): void {
+	_remoteSchemasOverride = schemas;
 }
 export function _setChooseOperationForTest(fn: ChooseOperation | undefined): void {
 	_chooseOperationOverride = fn;
@@ -83,6 +93,8 @@ function loadServerUtilities():
 	| {
 			OPERATION_FUNCTION_MAP?: OperationFunctionMap;
 			chooseOperation?: ChooseOperation;
+			getRemoteOperationInputSchema?: (name: string) => RemoteOperationSchema | undefined;
+			getRemoteOperationInputSchemas?: () => Array<[string, RemoteOperationSchema]>;
 			processLocalTransaction?: ProcessLocalTransaction;
 	  }
 	| undefined {
@@ -102,6 +114,18 @@ function getOperationFunctionMap(): OperationFunctionMap | undefined {
 	if (_opMapOverride) return _opMapOverride;
 	const utils = loadServerUtilities();
 	return utils?.OPERATION_FUNCTION_MAP;
+}
+
+function getRemoteOperationInputSchemas(): Array<[string, RemoteOperationSchema]> {
+	if (_remoteSchemasOverride) return _remoteSchemasOverride;
+	if (_opMapOverride) return [];
+	return loadServerUtilities()?.getRemoteOperationInputSchemas?.() ?? [];
+}
+
+function getRemoteOperationInputSchema(name: string): RemoteOperationSchema | undefined {
+	if (_remoteSchemasOverride) return _remoteSchemasOverride.find(([operationName]) => operationName === name)?.[1];
+	if (_opMapOverride) return undefined;
+	return loadServerUtilities()?.getRemoteOperationInputSchema?.(name);
 }
 
 function getChooseOperation(): ChooseOperation | undefined {
@@ -268,7 +292,7 @@ function matchesAny(operation: string, patterns: readonly string[] | undefined):
 	return false;
 }
 
-function isOperationAllowed(operation: string, config: OperationsConfig): boolean {
+export function isOperationAllowed(operation: string, config: OperationsConfig): boolean {
 	const usingDefaultAllow = !(config.allow && config.allow.length > 0);
 	if (usingDefaultAllow && DEFAULT_EXCLUDED.has(operation)) return false;
 	const allowList = usingDefaultAllow ? DEFAULT_ALLOW : config.allow;
@@ -279,21 +303,21 @@ function isOperationAllowed(operation: string, config: OperationsConfig): boolea
 
 function getOperationsConfig(): OperationsConfig {
 	const allow = env.get(CONFIG_PARAMS.MCP_OPERATIONS_ALLOW);
+	const allowSchemaless = env.get(CONFIG_PARAMS.MCP_OPERATIONS_ALLOWSCHEMALESS);
 	const deny = env.get(CONFIG_PARAMS.MCP_OPERATIONS_DENY);
 	return {
 		allow: Array.isArray(allow) ? (allow as readonly string[]) : undefined,
+		allowSchemaless: Array.isArray(allowSchemaless) ? (allowSchemaless as readonly string[]) : undefined,
 		deny: Array.isArray(deny) ? (deny as readonly string[]) : undefined,
 	};
 }
 
-function buildDescription(operationName: string, hasCuratedSchema: boolean): string {
-	const curated = OPERATION_DESCRIPTIONS[operationName];
+function buildDescription(operationName: string): string {
+	const curated = Object.hasOwn(OPERATION_DESCRIPTIONS, operationName)
+		? OPERATION_DESCRIPTIONS[operationName]
+		: undefined;
 	if (curated) return curated;
-	const base = `Harper operation '${operationName}'.`;
-	const schemaNote = hasCuratedSchema
-		? ' Arguments validated against the curated schema below.'
-		: ' Arguments forwarded as-is; the server validates and returns a structured error on rejection.';
-	return base + schemaNote;
+	return `Harper operation '${operationName}'. Arguments are described by its registered schema and validated by the operation handler.`;
 }
 
 /**
@@ -385,24 +409,49 @@ export function makeOperationToolHandler(operationName: string) {
  * function of the operation name (its schema, description, annotations, RBAC
  * predicate, and handler don't depend on the allow/deny config, which only
  * decides *whether* the op is exposed, checked per request in the provider).
- * `tools/list` isn't a hot path, so the provider rebuilds defs per call rather
- * than caching (no module-level state to leak or stale-cache across tests).
+ * `tools/list` isn't a hot path, so the provider rebuilds defs per call.
  */
-function buildOperationToolDef(operationName: string): ToolDef {
-	const inputSchema = OPERATION_INPUT_SCHEMAS[operationName] ?? PERMISSIVE_SCHEMA;
+function buildOperationToolDef(operationName: string, inputSchema: object): ToolDef {
 	const annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean } = {};
 	if (isReadOnly(operationName)) annotations.readOnlyHint = true;
 	if (isDestructive(operationName)) annotations.destructiveHint = true;
 	if (isIdempotent(operationName)) annotations.idempotentHint = true;
 	return {
 		name: operationName,
-		description: buildDescription(operationName, operationName in OPERATION_INPUT_SCHEMAS),
+		description: buildDescription(operationName),
 		inputSchema,
 		profile: 'operations',
 		...(Object.keys(annotations).length > 0 ? { annotations } : {}),
 		visibleTo: (user) => canRoleInvokeOperation(user, operationName),
 		handler: makeOperationToolHandler(operationName),
 	};
+}
+
+function buildRegisteredOperationToolDef(
+	operationName: string,
+	operation: OperationFunctionEntry,
+	config: OperationsConfig,
+	issue: RemoteOperationSchema['issue'] = 'missing'
+): ToolDef | undefined {
+	if (!operation.inputSchema) {
+		if (issue !== 'inconsistent' && matchesAny(operationName, config.allowSchemaless)) {
+			return buildOperationToolDef(operationName, { type: 'object' });
+		}
+		const warningKey = `${operationName}:${issue}`;
+		if (!warnedMissingSchemas.has(warningKey)) {
+			warnedMissingSchemas.add(warningKey);
+			const source = config.allow?.length ? ' is named by mcp.operations.allow but' : '';
+			const message =
+				issue === 'inconsistent'
+					? `MCP operations profile: '${operationName}' is registered by workers with different inputSchema values; withholding it until they agree`
+					: `MCP operations profile: '${operationName}'${source} was registered without inputSchema; pass inputSchema to server.registerOperation() or add it to mcp.operations.allowSchemaless`;
+			harperLogger.warn(message);
+		}
+		return undefined;
+	}
+	warnedMissingSchemas.delete(`${operationName}:missing`);
+	warnedMissingSchemas.delete(`${operationName}:inconsistent`);
+	return buildOperationToolDef(operationName, operation.inputSchema);
 }
 
 /**
@@ -419,17 +468,39 @@ const operationsToolProvider: ProfileToolProvider = {
 		}
 		const config = getOperationsConfig();
 		const defs: ToolDef[] = [];
-		for (const operationName of opMap.keys()) {
+		for (const [operationName, operation] of opMap) {
 			if (!isOperationAllowed(operationName, config)) continue;
-			defs.push(buildOperationToolDef(operationName));
+			const def = buildRegisteredOperationToolDef(operationName, operation, config);
+			if (def) defs.push(def);
+		}
+		for (const [operationName, remoteSchema] of getRemoteOperationInputSchemas()) {
+			if (opMap.has(operationName) || !isOperationAllowed(operationName, config)) continue;
+			const def = buildRegisteredOperationToolDef(
+				operationName,
+				{ inputSchema: remoteSchema.inputSchema },
+				config,
+				remoteSchema.issue
+			);
+			if (def) defs.push(def);
 		}
 		return defs;
 	},
 	get(operationName: string): ToolDef | undefined {
 		const opMap = getOperationFunctionMap();
-		if (!opMap || !opMap.has(operationName)) return undefined;
-		if (!isOperationAllowed(operationName, getOperationsConfig())) return undefined;
-		return buildOperationToolDef(operationName);
+		if (!opMap) return undefined;
+		let operation = opMap.get(operationName);
+		let issue: RemoteOperationSchema['issue'];
+		if (!operation) {
+			const remote = getRemoteOperationInputSchema(operationName);
+			if (remote) {
+				operation = { inputSchema: remote.inputSchema };
+				issue = remote.issue;
+			}
+		}
+		if (!operation) return undefined;
+		const config = getOperationsConfig();
+		if (!isOperationAllowed(operationName, config)) return undefined;
+		return buildRegisteredOperationToolDef(operationName, operation, config, issue);
 	},
 };
 
