@@ -28,7 +28,6 @@ const DEFAULT_MAX_OPEN_RETRY_MILLISECONDS = 5_000;
 const DEFAULT_CLOSE_TIMEOUT_MILLISECONDS = 35_000;
 const DEFAULT_MAX_APPLY_SLICE_RECORDS = 256;
 const APPLY_SLICE_MILLISECONDS = 5;
-const UNKNOWN_BATCH_BYTES_PER_RECORD = 1_024;
 const MAX_CONSECUTIVE_WRITER_FAILURES = 2;
 
 export interface FullTextDerivedIndexEngine {
@@ -262,11 +261,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			return DERIVED_INDEX_FAILED;
 		}
 		let bytes = batch.bytes;
-		if (bytes === 0)
-			bytes =
-				batch.records.length === 0
-					? 1
-					: Math.min(this.#maxQueuedBytes, Math.max(1, batch.records.length * UNKNOWN_BATCH_BYTES_PER_RECORD));
+		if (bytes === 0) bytes = batch.records.length === 0 ? 1 : this.#maxQueuedBytes;
 		else if (!Number.isSafeInteger(bytes) || bytes < 0) {
 			bytes = this.#maxQueuedBytes;
 			if (!this.#invalidEstimateWarned) {
@@ -330,8 +325,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			);
 		this.#shutdown = undefined;
 		this.#failed = false;
-		await this.#lifecycle.reset();
 		this.#durableCursor = undefined;
+		await this.#lifecycle.reset();
 		this.#assertSharedEpoch(ownerEpoch);
 		this.#activeEpoch = ownerEpoch;
 		this.#resetQueueState();
@@ -609,14 +604,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			closeOperation = engine.close(options);
 			this.#closeOperations.set(engine, closeOperation);
 			const installed = closeOperation;
-			void installed.then(
-				() => {
-					if (this.#closeOperations.get(engine) === installed) this.#closeOperations.delete(engine);
-				},
-				() => {
-					if (this.#closeOperations.get(engine) === installed) this.#closeOperations.delete(engine);
-				}
-			);
+			void installed.catch(() => {
+				if (this.#closeOperations.get(engine) === installed) this.#closeOperations.delete(engine);
+			});
 		}
 		const result = await withTimeout(
 			closeOperation,
@@ -768,15 +758,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 }
 
 export function toFullTextMutationBatch(batch: DerivedIndexBatch): FullTextMutationBatch {
-	return toFullTextMutationRecords(batch.records);
-}
-
-function toFullTextMutationRecords(
-	records: DerivedIndexBatch['records'],
-	start = 0,
-	end = records.length
-): FullTextMutationBatch {
-	return toFullTextMutationSlice(records, start, end - start, Number.POSITIVE_INFINITY).batch;
+	return toFullTextMutationSlice(batch.records, 0, batch.records.length, Number.POSITIVE_INFINITY).batch;
 }
 
 function toFullTextMutationSlice(
@@ -793,8 +775,8 @@ function toFullTextMutationSlice(
 		const record = records[index];
 		if (record.recordId == null || typeof record.recordId === 'symbol') continue;
 		const id = `${record.tableId}.${toBufferKey(record.recordId).toString('base64url')}`;
-		if (record.state.kind === 'record' && record.state.projection != null)
-			upserts.push({ id, fields: fullTextFields(record.state.projection) });
+		const fields = record.state.kind === 'record' && fullTextFields(record.state.projection);
+		if (fields && Object.keys(fields).length > 0) upserts.push({ id, fields });
 		else deletes.push(id);
 		if ((index - start + 1) % 16 === 0 && performance.now() >= deadline) {
 			index++;
@@ -1016,6 +998,7 @@ function withTimeout<T>(promise: Promise<T>, milliseconds: number, timeoutError:
 		promise,
 		new Promise<never>((_resolve, reject) => {
 			timer = setTimeout(() => reject(timeoutError()), milliseconds);
+			timer.unref?.();
 		}),
 	]).finally(() => clearTimeout(timer));
 }

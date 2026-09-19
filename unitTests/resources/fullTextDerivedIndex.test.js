@@ -472,7 +472,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
-	it('uses a per-record estimate when rebuild batches have no byte sizes', async () => {
+	it('retains only one unknown-size rebuild batch at a time', async () => {
 		let releaseApply;
 		const engine = new FakeEngine();
 		engine.applyWait = new Promise((resolve) => (releaseApply = resolve));
@@ -486,7 +486,6 @@ describe('FullTextDerivedIndexBackend', () => {
 			undefined,
 			0
 		);
-		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
 		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
 		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_DEFERRED);
 		await waitFor(() => engine.applied.length === 1);
@@ -747,6 +746,24 @@ describe('FullTextDerivedIndexBackend', () => {
 		await retry;
 	});
 
+	it('reuses a successful native close that settled after the shutdown timeout', async () => {
+		const engine = new FakeEngine();
+		const source = lifecycle({ state: 'missing' }, [engine]);
+		const { backend, setEpoch } = makeBackend(source, { closeTimeoutMilliseconds: 10 });
+		backend.deliver(batch(1n, [], cursor(20)));
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		let releaseClose;
+		engine.closeWait = new Promise((resolve) => (releaseClose = resolve));
+		await assert.rejects(backend.shutdown(1n), /did not prove quiescence/);
+		releaseClose();
+		await new Promise((resolve) => setImmediate(resolve));
+		await backend.shutdown(1n);
+		assert.strictEqual(engine.closes.length, 1);
+		setEpoch(2n);
+		await backend.reset(2n);
+	});
+
 	it('does not rescan for a cursor payload that cannot fit the native checkpoint', async () => {
 		const engine = new FakeEngine();
 		const source = lifecycle({ state: 'missing' }, [engine]);
@@ -893,6 +910,17 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(source.inspectCalls, 1);
 	});
 
+	it('clears its cached cursor before a native reset that fails', async () => {
+		const source = lifecycle({ state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(10)) });
+		const { backend, setEpoch } = makeBackend(source);
+		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(10).logs);
+		await backend.shutdown(1n);
+		setEpoch(2n);
+		source.resetError = new Error('reset outcome is unknown');
+		await assert.rejects(backend.reset(2n), /reset outcome is unknown/);
+		assert.strictEqual(backend.getDurableCursor(), undefined);
+	});
+
 	it('rejects reset while shutdown is still closing the writer', async () => {
 		let releaseClose;
 		const engine = new FakeEngine();
@@ -954,6 +982,14 @@ describe('FullTextDerivedIndexBackend', () => {
 	it('deletes the prior document when a projector omits the current record', () => {
 		const converted = toFullTextMutationBatch(
 			batch(1n, [mutation('a', { kind: 'record', version: 2, projection: undefined })])
+		);
+		assert.deepStrictEqual(converted.upserts, []);
+		assert.strictEqual(converted.deletes.length, 1);
+	});
+
+	it('deletes the prior document when the projection has no text values', () => {
+		const converted = toFullTextMutationBatch(
+			batch(1n, [mutation('a', { kind: 'record', version: 2, projection: { title: 42 } })])
 		);
 		assert.deepStrictEqual(converted.upserts, []);
 		assert.strictEqual(converted.deletes.length, 1);

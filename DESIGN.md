@@ -2709,10 +2709,15 @@ passes only the schema-selected string fields to the wrapper. The wrapper owns T
 mutation validation, exact frame partitioning, its exclusive writer, segment publication, and file
 lifecycle. Harper keeps accepted runtime batches in a 64 MiB bounded queue and submits at most 256
 records or 5 ms of conversion work per turn, so the runtime's 4096-record chunk cannot become one
-long event-loop task. Rebuild chunks without source-size estimates reserve 1 KiB per record instead
-of consuming the whole byte allowance. Wrapper rejections remove the previous document and count it
-as unindexable; they do not leave stale search content. A projector returning null deletes the prior
-document rather than indexing an empty replacement.
+long event-loop task. A rebuild chunk without a source-size estimate consumes the adapter's entire
+queue-byte allowance, ensuring that only one unknown-size chunk is retained at a time. Wrapper
+rejections remove the previous document and count it as unindexable; they do not leave stale search
+content. A projector returning null or no string-valued fields deletes the prior document rather
+than indexing an empty replacement.
+
+Every runtime flush is a native publication barrier. Full-text activation chooses and benchmarks the
+runtime flush thresholds; the adapter does not reinterpret a flush because the runtime uses durable
+cursor progress to bound replay work and transaction-log retention.
 
 The native commit payload contains Harper's exact derived-index cursor. A publish makes the Tantivy
 mutations and that payload visible together; only then does the adapter report durable progress.

@@ -1,8 +1,7 @@
 # Full-text derived-index integration on current main
 
-Status: draft — backend adapter and focused tests verified against current `main`; dependency pinning,
-activation, query integration, and packaged native CI remain open · Owner: Kyle · Last verified:
-2026-09-19
+Status: backend slice implemented and verified against current `main`; dependency pinning, activation,
+query integration, and packaged native CI are follow-up gates · Owner: Kyle · Last verified: 2026-09-19
 
 The canonical runtime architecture is the **Native full-text backend** section in `DESIGN.md`. This
 note records implementation sequencing, rejected alternatives, verification, and remaining gates; if
@@ -80,7 +79,9 @@ The backend PR will:
    encoding and decoding the native commit payload. A normal publication merges any coverage already
    stored in the durable payload because the runtime's `batch.through` clone intentionally omits it.
    The backend will not implement `publishCoverage` in this PR; query coverage arrives with the query
-   integration so idle indexes do not pay cursor-only Tantivy commits yet.
+   integration. Ordinary replay still publishes cursor-only progress for transactions that do not
+   change indexed records, because advancing the replay cursor prevents needless reprocessing and
+   protects transaction-log retention.
 6. Use the runtime's existing rebuild and condemnation protocol. Fulltext owns reset, invalid native
    generation classification, and retired-directory cleanup.
 7. Leave `derivedIndexRuntime.ts`, table/database lifecycle, and HNSW unchanged. The adapter derives
@@ -111,6 +112,11 @@ stays in the HNSW adapter; Tantivy-specific writer policy stays in the full-text
 The query PR will reuse the runtime's readiness and coverage model. Readiness answers whether the
 generation is usable; coverage answers whether it is sufficiently current for a request. The initial
 full-text policy can be strict without creating another freshness protocol.
+
+Activation will also choose and benchmark full-text-specific runtime flush thresholds. The backend
+honors every runtime flush as a native durability barrier; changing that meaning inside the adapter
+would violate the shared protocol. The thresholds therefore control the tradeoff between Tantivy
+publication cost, rebuild throughput, replay work after a crash, and transaction-log retention.
 
 ## Approaches considered
 
@@ -162,9 +168,11 @@ after both adapters have production measurements.
 
 ### Coverage timing: publish full-text query coverage now
 
-Rejected. `publishCoverage` activates committed-position sampling in the runtime and would require
-cursor-only Tantivy publications before a query consumes that proof. The backend preserves existing
-coverage in cursor payloads, but the query PR owns the policy and the extra publication cost.
+Rejected. `publishCoverage` activates additional committed-position sampling and publication so a
+query can prove freshness even when replay has no new transaction cursor to publish. The backend
+preserves existing coverage in cursor payloads, but the query PR owns that policy and its extra
+publication cost. This does not eliminate ordinary cursor-only publications while replay advances
+past unrelated transactions.
 
 ### Chosen: reconstruct the backend slice from current main
 
@@ -175,8 +183,8 @@ than hidden inside a conflict resolution.
 
 ## Verification
 
-- **Observed:** `npm run build`, the 66 focused backend/lifecycle/audited-RocksDB tests, and the complete
-  derived-index/HNSW resource shard (363 passing, 8 pending) pass in this worktree.
+- **Observed:** `npm run build`, the 69 focused backend/lifecycle/audited-RocksDB tests, and the complete
+  derived-index/HNSW resource shard (368 passing, 8 pending) pass in this worktree.
 - **Verified by tests:** the real `DerivedIndexRuntime` produces the same fake-native document set by
   transaction-log replay and authoritative rebuild. Separate converter tests cover Harper-internal
   symbol identities.
