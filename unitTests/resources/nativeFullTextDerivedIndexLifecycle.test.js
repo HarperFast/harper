@@ -7,6 +7,7 @@ const {
 	createNativeFullTextDerivedIndexBackend,
 	NativeFullTextDerivedIndexLifecycle,
 } = require('#src/resources/indexes/nativeFullTextDerivedIndexLifecycle');
+const { DERIVED_INDEX_ACCEPTED, DERIVED_INDEX_DEFERRED } = require('#src/resources/derivedIndexRuntime');
 
 const limits = {
 	indexingThreads: 1,
@@ -268,13 +269,22 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 	});
 
 	it('keeps native frame and retained-source queue limits independent', async () => {
+		const binding = new FakeNativeModule();
 		const backend = await createNativeFullTextDerivedIndexBackend({
-			...options(storePath, new FakeNativeModule(), {
+			...options(storePath, binding, {
 				limits: { ...limits, maxBatchBytes: 2048, maxQueuedBytes: 2048 },
 			}),
 			id: 'products-title',
 			maxQueuedBytes: 1024,
 		});
-		assert.strictEqual(backend.id, 'products-title');
+		backend.attach({
+			isOwnerEpoch: (epoch) => epoch === 1n,
+			getReadiness: () => ({ state: 'ready', ownerEpoch: 1n, rebuildAttempts: 0 }),
+		});
+		const batch = { ownerEpoch: 1n, transactions: [], records: [], bytes: 800 };
+		assert.strictEqual(backend.deliver(batch), DERIVED_INDEX_ACCEPTED);
+		assert.strictEqual(backend.deliver(batch), DERIVED_INDEX_DEFERRED);
+		await backend.shutdown(1n);
+		assert.strictEqual(binding.opens[0].limits.maxQueuedBytes, 2048);
 	});
 });

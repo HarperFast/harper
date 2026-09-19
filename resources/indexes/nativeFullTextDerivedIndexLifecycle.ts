@@ -46,6 +46,7 @@ export class NativeFullTextDerivedIndexLifecycle {
 			fields: options.fields.map((field) => ({ ...field })),
 			limits: { ...options.limits },
 		};
+		// Hashing bounds filenames for arbitrary store names; the index id remains in native metadata and logs.
 		this.#path = join(resolve(options.storePath), `${digest(options.storeName)}.fulltext`);
 		this.#generation = digest(options.sourceGeneration);
 	}
