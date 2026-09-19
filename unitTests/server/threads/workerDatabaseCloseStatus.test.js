@@ -177,7 +177,8 @@ describe('worker database-close safety status', function () {
 				assert.strictEqual(worker.databaseClosePending, true, 'main must mark handle closure pending before SHUTDOWN');
 				await new Promise((resolve) => setTimeout(resolve, 250));
 				assert.strictEqual(exited, false, 'the ordinary timeout terminated a worker that could still own handles');
-				assert.ok(worker.databaseCloseSafetyDeadline >= worker.databaseCloseStartedAt + DATABASE_QUIESCENCE_TIMEOUT_MS);
+				assert.strictEqual(worker.databaseCloseStartedAt, undefined, 'the close budget started before teardown began');
+				assert.strictEqual(worker.databaseCloseSafetyDeadline, undefined);
 			} catch (error) {
 				testError = error;
 			} finally {

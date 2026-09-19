@@ -65,6 +65,7 @@ export async function signalSchemaChange(message: any, options?: SchemaSignalOpt
 				localFailed = true;
 				localError = error ?? new Error('Local schema-change handler rejected without an error');
 			}
+			if (localFailed && message.operation === PREPARE_DATABASE_DROP_OPERATION) throw localError;
 			try {
 				await signalSchemaChangeToPeers(message, options);
 			} catch (peerError) {
@@ -91,6 +92,7 @@ export async function signalSchemaChangeToPeers(message: any, options?: SchemaSi
 		} catch (error) {
 			mainError = error ?? new Error('Main-thread schema-change handler rejected without an error');
 		}
+		if (mainError && message.operation === PREPARE_DATABASE_DROP_OPERATION) throw mainError;
 		const peerEvent = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, { ...message });
 		try {
 			await sendItcEvent(peerEvent, { ...options, excludeThreadId: 0 });

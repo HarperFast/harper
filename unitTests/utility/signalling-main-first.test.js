@@ -92,4 +92,42 @@ describe('main-first schema signalling', function () {
 			}
 		}
 	});
+
+	it('does not quiesce peers when the main PREPARE leg rejects', async function () {
+		const startReadyWorker = () => {
+			const messages = [];
+			let resolveReady;
+			const ready = new Promise((resolve) => (resolveReady = resolve));
+			const worker = startWorker(FIXTURE, {
+				name: 'http',
+				autoRestart: false,
+				onStarted(spawned) {
+					spawned.on('message', (message) => {
+						messages.push(message);
+						if (message.type === 'fixture-ready') resolveReady();
+					});
+				},
+			});
+			return { messages, ready, worker };
+		};
+		const coordinator = startReadyWorker();
+		const peer = startReadyWorker();
+		const workers = [coordinator.worker, peer.worker];
+		try {
+			await Promise.all([coordinator.ready, peer.ready]);
+			coordinator.worker.postMessage({ type: 'signal-prepare-with-invalid-main-leg' });
+			await waitFor(() => coordinator.messages.some((message) => message.type === 'signal-complete'));
+			assert.strictEqual(coordinator.messages.find((message) => message.type === 'signal-complete').rejected, true);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			assert.strictEqual(
+				peer.messages.some((message) => message.type === 'prepare-received'),
+				false
+			);
+		} finally {
+			for (const worker of workers) {
+				worker.wasShutdown = true;
+				await worker.terminate();
+			}
+		}
+	});
 });

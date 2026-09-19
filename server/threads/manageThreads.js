@@ -284,7 +284,6 @@ function ownsDerivedIndexWriters(storePath) {
 function markWorkerDatabaseClosePending(worker) {
 	worker.databaseClosePending = true;
 	worker.databaseCloseConfirmed = false;
-	worker.databaseCloseStartedAt ??= Date.now();
 }
 /**
  * Whether a singleton set up by APPLICATION CODE runs here (a caching table's `sourcedFrom`
@@ -338,7 +337,9 @@ function workerShutdownBackstopDelay(deadlineMs) {
 }
 
 function armWorkerDatabaseCloseSafety(worker) {
-	worker.databaseCloseStartedAt ??= Date.now();
+	// A conservative pre-mark blocks unsafe termination, but the quiescence budget starts only
+	// when the worker reports that teardown has actually begun (a job may still be running).
+	if (worker.databaseCloseStartedAt === undefined) return;
 	const requestedBackstop = Date.now() + workerShutdownBackstopDelay(worker.shutdownDrainDeadline);
 	const deadline = Math.max(worker.databaseCloseStartedAt + DATABASE_QUIESCENCE_TIMEOUT_MS, requestedBackstop);
 	if (worker.databaseCloseSafetyTimer && worker.databaseCloseSafetyDeadline >= deadline) return;
@@ -504,6 +505,7 @@ onMessageByType(WORKER_DATABASE_CLOSE_STATUS, (message, worker) => {
 	if (!worker) return;
 	worker.databaseClosePending = message.pending === true;
 	worker.databaseCloseConfirmed = !worker.databaseClosePending;
+	if (worker.databaseClosePending) worker.databaseCloseStartedAt ??= Date.now();
 	if (worker.databaseCloseConfirmed) settleDatabaseClosedAcknowledgements(worker);
 	if (!parentPort) {
 		if (worker.databaseCloseSafetyTimer) clearTimeout(worker.databaseCloseSafetyTimer);

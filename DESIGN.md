@@ -826,6 +826,9 @@ failure or emitting an unhandled rejection.
 path rather than a defensive one.
 
 Worker shutdown uses the same ten-minute database-quiescence budget as destructive schema barriers.
+Main conservatively marks handles unconfirmed before posting shutdown, but starts that budget only when
+the worker reports that database teardown has begun; a long-running job therefore cannot spend the
+close budget before it reaches its cleanup path.
 The ordinary short thread backstop may request termination while native handles are still closing,
 but it cannot terminate that worker; completion immediately restores the ordinary backstop, while an
 expired database-close deadline exits the process rather than stranding process-global RocksDB handles.

@@ -813,6 +813,7 @@ describe('audit cleanup retirement on teardown', () => {
 	});
 
 	it('retains a rejected asynchronous quarantine close for retry', async function () {
+		if (isLMDB) this.skip();
 		const databaseName = 'derivedindexschemaquarantineasyncretry';
 		const tableName = 'DerivedIndexSchemaQuarantineAsyncRetryProbe';
 		const Probe = table({
@@ -837,6 +838,7 @@ describe('audit cleanup retirement on teardown', () => {
 	});
 
 	it('retries quarantined derived-index shutdown before closing its stores', async function () {
+		if (isLMDB) this.skip();
 		const databaseName = 'derivedindexschemaquarantineruntimeretry';
 		const tableName = 'DerivedIndexSchemaQuarantineRuntimeRetryProbe';
 		const Probe = table({
@@ -865,6 +867,33 @@ describe('audit cleanup retirement on teardown', () => {
 
 		assert.strictEqual(runtimeCloseAttempts, 2);
 		assert.strictEqual(storeCloseAttempts, 1);
+	});
+
+	it('leaves a quarantined LMDB store open for surviving workers', async function () {
+		if (!isLMDB) this.skip();
+		const databaseName = 'derivedindexschemaquarantinelmdb';
+		const tableName = 'DerivedIndexSchemaQuarantineLmdbProbe';
+		const Probe = table({
+			table: tableName,
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await Probe.schemaChangeOperation;
+		Probe.derivedIndexRuntime = { close: async () => {} };
+		const rootStore = Probe.primaryStore.rootStore;
+		const close = Probe.primaryStore.close.bind(Probe.primaryStore);
+		let closeAttempts = 0;
+		Probe.primaryStore.close = () => {
+			closeAttempts++;
+			return close();
+		};
+
+		await quarantineTableAfterSchemaRescanFailure(databaseName, tableName);
+
+		assert.strictEqual(databases[databaseName][tableName], undefined);
+		assert.strictEqual(closeAttempts, 0, 'quarantine must not close an LMDB DBI shared with surviving workers');
+		await closeDatabaseForRestore(databaseName);
+		assert.strictEqual(rootStore.status, 'closed', 'explicit database teardown should still close the LMDB root');
 	});
 
 	it('quiesces a replacement derived-index handle installed while a table drop waits', async function () {

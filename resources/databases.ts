@@ -709,12 +709,21 @@ function clearDatabaseDropMarker(databaseName: string, originator?: number, atte
 }
 
 function releaseQuarantinedTable(databaseName: string, tableName: string, Table: any): Promise<void> {
-	const stores = [
-		...Object.entries(Table.indices || {}).map(([indexName, store]) => [store, `index ${tableName}.${indexName}`]),
-		[Table.primaryStore, `table ${tableName}`],
-	] as [any, string][];
+	// Closing an LMDB DBI in one worker can invalidate that slot in surviving workers. Quarantine
+	// removes its local table graph but leaves LMDB storage handles for process teardown.
+	const stores = (
+		Table.primaryStore?.rootStore instanceof RocksDatabase
+			? [
+					...Object.entries(Table.indices || {}).map(([indexName, store]) => [
+						store,
+						`index ${tableName}.${indexName}`,
+					]),
+					[Table.primaryStore, `table ${tableName}`],
+				]
+			: []
+	) as [any, string][];
 	let pendingCloses = pendingDatabaseStoreCloses.get(databaseName);
-	if (!pendingCloses) pendingDatabaseStoreCloses.set(databaseName, (pendingCloses = new Map()));
+	if (stores.length && !pendingCloses) pendingDatabaseStoreCloses.set(databaseName, (pendingCloses = new Map()));
 	for (const [store, description] of stores) if (store) pendingCloses.set(store, description);
 
 	const runtime = Table.derivedIndexRuntime;
@@ -732,7 +741,7 @@ function releaseQuarantinedTable(databaseName: string, tableName: string, Table:
 					logger.warn(`Error closing ${description} while quarantining ${databaseName}.${tableName}:`, error);
 				}
 			}
-			if (pendingCloses.size === 0 && pendingDatabaseStoreCloses.get(databaseName) === pendingCloses)
+			if (pendingCloses?.size === 0 && pendingDatabaseStoreCloses.get(databaseName) === pendingCloses)
 				pendingDatabaseStoreCloses.delete(databaseName);
 		})());
 	if (!runtime) return closeStores();
