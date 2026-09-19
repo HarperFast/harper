@@ -64,9 +64,11 @@ describe('analytics aggregation cycle', () => {
 		// cursor ahead of the backlog these tests seed.
 		analytics.setAnalyticsEnabled(true);
 		analytics.recordAction(1, 'db-write', 'Bootstrap');
-		await waitFor(() => databases.system?.hdb_raw_analytics ?? undefined, {
+		// The table object appears when the recording path creates it, which is before its own
+		// unawaited `put` is readable; these tests seed relative to that record's key.
+		await waitFor(() => (databases.system?.hdb_raw_analytics ? lastRawKey() : undefined), {
 			timeout: 10000,
-			message: 'hdb_raw_analytics was created',
+			message: 'the bootstrap raw report is readable',
 		});
 	});
 
