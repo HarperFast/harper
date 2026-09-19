@@ -66,38 +66,36 @@ The mechanism is pinned by the regression test below (fails on base, passes with
 | **Do less**         | Advance the marker to the window's own end, `firstForPeriod + toPeriod`, instead of the last record read.                                                      | Rejected. When raw records are sparse the window end is later than the last record, and a record written after this cycle's scan with a key below that end would still be skipped — the same defect with a smaller gap. There is no config knob for this and accept-and-detect (log a warning) does not restore the sample.                                                                         |
 | **Chosen**          | Resume the next cycle from the last raw record actually rolled up: `lastAggregationTime = lastTime ?? cycleStart`, with `cycleStart` captured before the scan. | Only option that makes the marker a statement about what was consumed rather than about when the cycle ended. Both gap producers close: an over-long backlog resumes at the break, and a record written during the cycle is above `cycleStart`.                                                                                                                                                     |
 
-**No change to the cadence guard is needed, and catch-up is self-limiting.** While the marker is
-behind by more than one period, `Date.now() - toPeriod < lastForPeriod` is false, so every
-half-period tick drains one more window — draining a stall of S seconds takes S seconds and then
-the guard resumes throttling to one cycle per period. An empty window falls back to `cycleStart`,
-preserving #1541's idle-cadence behavior.
+**Catch-up is self-limiting.** A cycle that stopped at its window edge tells the next one to skip
+the cadence guard, so every half-period tick drains one more window — draining a stall of S seconds
+takes about S seconds, and the guard resumes throttling to one cycle per period as soon as a cycle
+reaches the end of the backlog.
 
 ## Change
 
 `resources/analytics/write.ts`:
 
-- Capture `cycleStart = getNextMonotonicTime()` before the raw scan and set
-  `lastAggregationTime = lastTime ?? cycleStart` in place of `= now`, where `lastTime` is the last
-  raw key the cycle actually rolled up. `cycleStart` has to come from the sequencer that keys the
-  raw records, not from `Date.now()`: the sequencer recalibrates against the wall clock only every
-  60 s, so a raw key can fall below a `Date.now()` taken after it.
+- Split the one marker in two. `rawCursor` is the resume point into `hdb_raw_analytics` and moves
+  only to a record a cycle read; `lastAggregationTime` stays the cadence marker stamped `now` at the
+  end of every completed cycle, so #1541's idle behavior is unchanged.
+- A cycle that stops at its window edge sets `aggregationBehind`, and the next cycle skips the
+  cadence guard, so a backlog drains one window per half-period tick.
 - Guard `aggregation()` with a single-flight flag released in `finally`, so a tick cannot enter
   while the previous cycle is still scanning.
 
-Advancing to `cycleStart` on an empty window loses nothing — nothing exists after the marker, and
-`recordAnalytics` and the cycle share one main-thread sequencer, so a record written after
-`cycleStart` carries a higher key — and it keeps #1541's idle cadence.
-The rule is safe whether or not the raw `getRange` is a snapshot: a record that the scan did see
-sets `lastTime` to its own key, and one it did not see has a key above `cycleStart`.
+No wall-clock value may enter the cursor. `recordAnalytics` does not await its `primaryStore.put`,
+so a raw report can be uncommitted — and therefore invisible to the scan — while carrying a key
+older than any clock reading the cycle could take. That is why an empty scan leaves the cursor
+alone rather than advancing it to the cycle's start.
 
 `unitTests/resources/analytics/aggregationCycle.test.js` (new): drives the real cycle rather than a
-helper. With a test DB path and `hdb_raw_analytics` seeded with reports spanning more than one
-period, it runs `runAggregationCycle` (the existing `aggregation()`, exported for tests as
-`findLastAggregationTime` was) twice and asserts every seeded metric is present in `hdb_analytics`
-exactly once, and that a second cycle entered while the first is running does not re-aggregate the
-same window.
+helper. With a test DB path and `hdb_raw_analytics` seeded through `runAggregationCycle` (the
+existing `aggregation()`, exported for tests as `findLastAggregationTime` was), it pins three
+properties — an empty cycle does not pass a record seeded behind it, a backlog longer than one
+window drains across consecutive cycles, and a cycle entered while another runs does not
+re-aggregate the same window.
 
-`DESIGN.md`: record the marker invariant next to the aggregation description.
+`DESIGN.md`: record the cursor rules next to the aggregation description.
 
 ### Known limits, not addressed here
 
@@ -172,3 +170,15 @@ rows derived from the window, await the commit before advancing it, and serializ
 - **Durable/commit-tied cursor, and the unhandled rejection an aggregation error can raise** —
   still out of scope, for the reasons in the planning resolution above; the adjudicator classed both
   as pre-existing.
+
+## Review round 2 resolution
+
+- **An empty scan must not advance the resume point** — adopted, and it replaced the previous
+  revision's `lastTime ?? cycleStart`. A raw `put` is not awaited, so a report can be uncommitted
+  and unread while its key is below any clock reading the cycle takes; no wall-clock value is a safe
+  cursor. Splitting cadence from the cursor is the planning round's own suggestion, minus the
+  durability half, and it made `cycleStart` unnecessary. Catch-up moved onto an explicit
+  `aggregationBehind` flag, which the single cursor had been providing implicitly.
+- **A regression test for that branch** — added: a cycle that reads nothing, then a report seeded
+  behind it, then a cycle that must still aggregate it.
+- **Comment narration** — trimmed again in the source and the test.

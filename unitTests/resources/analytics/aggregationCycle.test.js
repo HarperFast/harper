@@ -2,6 +2,7 @@
 
 require('../../testUtils');
 const assert = require('node:assert');
+const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../../testUtils');
 const { waitFor } = require('../../waitFor.js');
 const { setProperty } = require('#src/utility/environment/environmentManager');
@@ -14,6 +15,11 @@ const PERIOD = 300;
 
 function runCycle() {
 	return analytics.runAggregationCycle(PERIOD, PERIOD);
+}
+
+// A cycle that consumed its whole backlog leaves the cadence guard closed for a period.
+function nextPeriod() {
+	return delay(PERIOD + 50);
 }
 
 function rawReport(id, path) {
@@ -31,6 +37,13 @@ function seedRawReports(reports) {
 	return Promise.all(reports.map((report) => rawAnalytics.primaryStore.put(report.id, report)));
 }
 
+function lastRawKey() {
+	let last;
+	for (const key of databases.system.hdb_raw_analytics.primaryStore.getKeys({ start: false, end: Infinity }))
+		last = key;
+	return last;
+}
+
 function aggregatedWritePaths() {
 	const paths = [];
 	for (const { value } of databases.system.hdb_analytics.primaryStore.getRange({ start: false, end: Infinity })) {
@@ -40,19 +53,15 @@ function aggregatedWritePaths() {
 }
 
 describe('analytics aggregation cycle', () => {
-	// The first raw key the backlog test leaves unaggregated. The concurrency test seeds there so
-	// its record is the first one the next cycle reads, whatever else is in the table.
-	let nextRawKey;
-
 	before(async function () {
 		this.timeout(30000);
 		setupTestDBPath();
 		server.hostname ||= 'aggregation-cycle-test';
-		// The first recorded action also starts the production scheduler, which shares the marker and
+		// The first recorded action also starts the production scheduler, which shares the cursor and
 		// the single-flight flag with the cycles driven here; an hour-long period keeps it from ticking.
 		setProperty(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD, 3600);
 		// Create hdb_raw_analytics through the recording path rather than a cycle, which would put the
-		// marker ahead of the backlog these tests seed.
+		// cursor ahead of the backlog these tests seed.
 		analytics.setAnalyticsEnabled(true);
 		analytics.recordAction(1, 'db-write', 'Bootstrap');
 		await waitFor(() => databases.system?.hdb_raw_analytics ?? undefined, {
@@ -65,28 +74,45 @@ describe('analytics aggregation cycle', () => {
 		analytics.setAnalyticsEnabled(false);
 	});
 
+	it('keeps its place when a cycle finds nothing to aggregate', async function () {
+		this.timeout(30000);
+		const bootstrapKey = lastRawKey();
+		await runCycle();
+		await nextPeriod();
+		// Nothing is left, so this cycle reads no record at all — and a raw report can be invisible to
+		// it for reasons other than being late, since `recordAnalytics` does not await its `put`.
+		await runCycle();
+
+		await seedRawReports([rawReport(bootstrapKey + 1, 'AggWindowLate')]);
+		await nextPeriod();
+		await runCycle();
+
+		assert.ok(aggregatedWritePaths().includes('AggWindowLate'), 'a report older than the empty cycle is aggregated');
+	});
+
 	it('aggregates a backlog longer than one period across cycles', async function () {
 		this.timeout(30000);
-		// Three reports a period apart, all older than the cycle that first reads them — the shape a
-		// late tick leaves behind. A cycle rolls up one window, and the consecutive cycles below are
-		// only permitted, and only reach windows two and three, if the marker resumes from the last
-		// record consumed.
-		const base = Date.now() - 6 * PERIOD;
+		// Three reports a period apart, the shape a late tick leaves behind. A cycle rolls up one
+		// window, and the two that follow it run back to back only because the first stopped with
+		// records still behind it.
+		const base = lastRawKey() + 1;
 		await seedRawReports([
 			rawReport(base, 'AggWindow1'),
 			rawReport(base + PERIOD + 1, 'AggWindow2'),
 			rawReport(base + 2 * PERIOD + 2, 'AggWindow3'),
 		]);
-		nextRawKey = base + 2 * PERIOD + 3;
 
+		await nextPeriod();
 		for (let cycle = 0; cycle < 3; cycle++) await runCycle();
 
-		assert.deepStrictEqual(aggregatedWritePaths(), ['AggWindow1', 'AggWindow2', 'AggWindow3']);
+		for (const path of ['AggWindow1', 'AggWindow2', 'AggWindow3'])
+			assert.ok(aggregatedWritePaths().includes(path), `${path} was aggregated`);
 	});
 
 	it('refuses a cycle that starts while another is running', async function () {
 		this.timeout(30000);
-		await seedRawReports([rawReport(nextRawKey, 'AggWindowConcurrent')]);
+		await seedRawReports([rawReport(lastRawKey() + 1, 'AggWindowConcurrent')]);
+		await nextPeriod();
 
 		await Promise.all([runCycle(), runCycle()]);
 
