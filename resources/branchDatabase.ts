@@ -90,9 +90,8 @@ function claimStateFor(baseName: string, branchPath: string): { store: object; s
 	const store = database({ database: baseName, table: undefined });
 	const retained = retainedClaims.get(store)?.get(branchPath);
 	if (retained) {
-		// Ours to keep only while it still reads READY. Another thread may have released the claim or
-		// taken it since, and holding it past that would keep a dead creator's CREATING word allocated
-		// where it would otherwise be reclaimed and the branch become creatable again.
+		// Ours only while it still reads READY: holding a word another thread has since released or
+		// re-taken would keep a dead creator's CREATING allocated where it would otherwise be reclaimed.
 		if (Atomics.load(retained, CLAIM_STATE) !== READY) forgetClaim(store, branchPath);
 		return { store, state: retained };
 	}
@@ -100,8 +99,9 @@ function claimStateFor(baseName: string, branchPath: string): { store: object; s
 	return { store, state: new BigInt64Array(store.getUserSharedBuffer(`branch-claim:${branchPath}`, seed.buffer)) };
 }
 
-/** Take ownership of a READY word from the handle giving it up, before the step that can fail: every
- *  path that then releases the claim forgets the entry, so retaining early can only over-retain. */
+/** Take ownership of a READY word from the handle giving it up, so the next load adopts the branch
+ *  rather than re-taking the claim and repeating the boot replay. Safe before a step that may throw:
+ *  every path that releases the claim forgets the entry. */
 function retainReadyClaim(store: object, branchPath: string, state: BigInt64Array): void {
 	if (Atomics.load(state, CLAIM_STATE) !== READY) return;
 	let byPath = retainedClaims.get(store);
