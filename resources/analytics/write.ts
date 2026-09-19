@@ -903,11 +903,8 @@ export function findLastAggregationTime(
 
 let aggregationRunning = false;
 
-/**
- * Run one aggregation cycle, refused while another is still in flight: the scheduler does not
- * await its callback, so overlapping cycles would roll up the same window twice. Exported for
- * testing.
- */
+/** Refused while a cycle is in flight: the scheduler does not await its callback, and two cycles
+ * reading the same marker roll the same window up twice. */
 export async function runAggregationCycle(fromPeriod, toPeriod = 60000) {
 	if (aggregationRunning) return;
 	aggregationRunning = true;
@@ -919,7 +916,7 @@ export async function runAggregationCycle(fromPeriod, toPeriod = 60000) {
 }
 
 async function aggregation(fromPeriod, toPeriod = 60000) {
-	const cycleStart = Date.now();
+	const cycleStart = getNextMonotonicTime();
 	const rawAnalyticsTable = getRawAnalyticsTable();
 	const analyticsTable = getAnalyticsTable();
 	const taskQueueLatency = (async () => {
@@ -943,7 +940,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	// via a bounded reverse scan (see findLastAggregationTime). Caching the seeded value keeps
 	// the next cycle O(1) even when this run early-returns below as "too recent"; a bound-hit
 	// (no match) leaves it undefined so we don't early-return, proceed to aggregate, and set the
-	// marker to `now` at the end of the cycle instead (#1538).
+	// marker from this cycle's own scan instead (#1538).
 	let lastForPeriod = lastAggregationTime;
 	if (lastForPeriod === undefined) {
 		lastForPeriod = findLastAggregationTime(analyticsTable.primaryStore, localNodeId);
@@ -1109,11 +1106,9 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	};
 	storeMetric(analyticsTable, cruMetric);
 	lastResourceUsage = resourceUsage;
-	// Resume from the last raw record this cycle actually rolled up. The scan covers one
-	// `toPeriod` window, so advancing to the cycle's end would skip the rest of a longer backlog
-	// and anything recorded while the cycle ran, and nothing reads those records again. An empty
-	// window has no record after the marker, so `cycleStart` cannot skip one and still keeps the
-	// period guard enforcing the configured cadence during idle stretches (#1538).
+	// Resume from the last raw record this cycle rolled up: the scan covers one `toPeriod` window
+	// and nothing reads below the marker again. An empty window has no record after the marker, so
+	// `cycleStart` skips none and still throttles the cadence over idle stretches (#1538).
 	lastAggregationTime = lastTime ?? cycleStart;
 
 	// `system` is set as non-enumerable on the object returned by getDatabases() so most

@@ -3149,8 +3149,12 @@ only advance to a record the cycle actually consumed: it used to be stamped with
 end-of-run `Date.now()`, which silently discarded both the remainder of a backlog longer than one
 window and every report written while the cycle ran, because nothing reads below the marker again.
 It is now `lastTime ?? cycleStart` — the last raw key rolled up, or the time the cycle began when
-the window was empty, which cannot skip a record because none exists after the marker and every
-later report carries a higher key.
+the window was empty. `cycleStart` comes from `getNextMonotonicTime()`, the same strictly
+increasing sequencer that keys the raw records, and both it and `recordAnalytics` run on the main
+thread: every report written after the cycle began therefore carries a key above the marker.
+`Date.now()` cannot be used for it — `startTime` inside that sequencer is only recalibrated every
+60 s, so a raw key can sit below a wall-clock reading taken after it, and a clock step in either
+direction either skips records or re-aggregates them.
 
 The same variable also throttles the cadence (`Date.now() - toPeriod < lastForPeriod` returns
 early), and the two uses agree: while the marker is behind, every half-period tick drains one more

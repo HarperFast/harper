@@ -76,14 +76,17 @@ preserving #1541's idle-cadence behavior.
 
 `resources/analytics/write.ts`:
 
-- Capture `cycleStart = Date.now()` before the raw scan and set
+- Capture `cycleStart = getNextMonotonicTime()` before the raw scan and set
   `lastAggregationTime = lastTime ?? cycleStart` in place of `= now`, where `lastTime` is the last
-  raw key the cycle actually rolled up.
+  raw key the cycle actually rolled up. `cycleStart` has to come from the sequencer that keys the
+  raw records, not from `Date.now()`: the sequencer recalibrates against the wall clock only every
+  60 s, so a raw key can fall below a `Date.now()` taken after it.
 - Guard `aggregation()` with a single-flight flag released in `finally`, so a tick cannot enter
   while the previous cycle is still scanning.
 
 Advancing to `cycleStart` on an empty window loses nothing — nothing exists after the marker, and
-any record written after `cycleStart` carries a higher key — and it keeps #1541's idle cadence.
+`recordAnalytics` and the cycle share one main-thread sequencer, so a record written after
+`cycleStart` carries a higher key — and it keeps #1541's idle cadence.
 The rule is safe whether or not the raw `getRange` is a snapshot: a record that the scan did see
 sets `lastTime` to its own key, and one it did not see has a key above `cycleStart`.
 
@@ -153,3 +156,19 @@ rows derived from the window, await the commit before advancing it, and serializ
   rejection `storeMetric` can produce.
 - **Cleanup constrained by the cursor, cursor-lag metric, alerting.** All downstream of a durable
   cursor; the same follow-up.
+
+## Review round 1 resolution
+
+- **`cycleStart` from `getNextMonotonicTime()`, not `Date.now()`** — adopted. All three graded legs
+  reported the clock mismatch (calibration truncation, forward step, backward step); the shared
+  sequencer closes all three, where clamping with `Math.max` closes only the backward step.
+- **Dead cadence delay in the regression test** — adopted. With the marker held back the guard is
+  already open, so the test now runs its cycles back to back and asserts the uninterrupted drain.
+- **Test starts the production scheduler** — adopted. The bootstrap `recordAction` starts it, so the
+  test pins `analytics.aggregatePeriod` to an hour first.
+- **Comment narration** — adopted in the source and the test. Not in this note: `docs/design/` is
+  where this repo keeps a design's planning history (see `audit-walk-retention-floor.md`, whose
+  revision line and `Planning round 1` section have the same shape).
+- **Durable/commit-tied cursor, and the unhandled rejection an aggregation error can raise** —
+  still out of scope, for the reasons in the planning resolution above; the adjudicator classed both
+  as pre-existing.
