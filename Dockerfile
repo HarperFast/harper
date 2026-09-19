@@ -88,9 +88,12 @@ RUN <<-EOF
   # dependencies.md) so npm consumers who never touch S3 skip their ~18MB, but the
   # official image should keep S3 export/import working out of the box. Installed
   # globally (siblings of harper under lib/node_modules), which is on Node's require
-  # walk from harper's own files the same as any other global sibling package. Pinned
-  # to the exact version the lockfile resolves for both so image builds stay
-  # reproducible; `-g` keeps this independent of harper's own package.json/shrinkwrap.
+  # walk from harper's own files the same as any other global sibling package. The
+  # top-level versions are pinned to match what the lockfile already resolves for
+  # them; this isn't a full shrinkwrap-style install, so their ranged transitives
+  # (e.g. @smithy/*) still re-resolve at build time like any other npm install --
+  # docker-smoke CI is what actually gates this working end to end. `-g` keeps this
+  # independent of harper's own package.json/npm-shrinkwrap.json.
   npm install -g --ignore-scripts --no-audit --no-fund @aws-sdk/client-s3@3.1116.0 @aws-sdk/lib-storage@3.1116.0
   npm cache clean --force
   mkdir -p "$NPM_CONFIG_PREFIX/bin"
