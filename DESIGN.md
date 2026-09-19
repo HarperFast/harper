@@ -2397,6 +2397,45 @@ multiplied by `filterExpansion`; explicit schema or per-query `ef` values remain
 Multiplying the budget by a caller's `limit` would turn a filtered vector query into a record-loading
 scan wearing an index's clothes.
 
+### Candidate-key allow-sets (#2688)
+
+A companion AND condition on an indexed attribute does not need a record to decide. `search.ts`
+plans those conditions — equality, `gt`/`ge`/`lt`/`le`, the `between` family, and nested AND/OR
+groups over them — into key-only secondary-index range scans (`planCandidateKeys`) and hands the
+vector index a `CandidateKeyPlan` alongside the pushed-down predicate. The index admits from the
+resulting key set, which both traversals can do directly: the JS graph holds each node's primary key,
+and the native plane hands its predicate the key of every candidate. When the plan covers every
+pushed-down condition and no opaque guard (`rowFilter` / `vectorFilter`) is in play, the predicate is
+dropped entirely and no record is loaded to admit; otherwise the set gates the residual predicate, so
+only a key the set already admits costs a record load.
+
+The post-filter chain is untouched — it still re-checks every condition on the result set — so the
+key set only has to be a SUPERSET of the true matches. That is what makes the mechanism safe to
+abandon at any point: a scan that overruns its budget, a sibling index that started rebuilding, or a
+plan the cost model declines all fall back to the predicate path with no change in results.
+
+Whether to build the set is a cost decision, not a switch. Building costs one index-entry read per
+matching record; the predicate costs a record load and decode per visited node, and filling `ef`
+matches at selectivity `s` takes about `ef / s` visits — so a broad filter is genuinely cheaper to
+answer with the predicate. `KEYS_PER_PREDICATE_VISIT` is that ratio, calibrated against measurements
+on 20k 768-d records with 9 KB bodies: 0.37 us per scanned index entry against 2.1 us per warm record
+load (the same load costs ~130 us on a cold document-with-sections corpus, so the warm figure is the
+regression-safe end of the range). `MAX_CANDIDATE_KEYS` and half the node count cap the scan
+absolutely, since it is synchronous.
+
+A node-id allow-bitset, which the plane's `search(vector, k, ef, filter)` takes and which would
+remove the predicate callback entirely, is deliberately NOT built: mapping a primary key to its node
+id costs ~9.9 us per key (`indexStore.getSync([KEY_PREFIX, pk])`, almost all of it encoding the
+composite key), which is five times the record load it would be avoiding. It becomes worth building
+once that lookup is cheap — a cached mapping, or a mapping key that is not a `[Symbol, value]` pair.
+
+The allow-set's selectivity is measurable, so the visit budget comes from it (`ef * ceil(2 / s)`)
+rather than from the fixed `filterExpansion`, which exists to bound an admission test expensive
+enough to be worth bounding. It only ever widens the budget, never narrows it: a visit got cheaper,
+not dearer, so a tighter budget buys nothing and costs recall (a 20%-selective filter derives `ef*10`
+against `filterExpansion`'s `ef*24`, and lost 8 of 50 true neighbours in measurement). A schema or
+per-query `filterExpansion` remains authoritative and is used exactly as given.
+
 Paging a vector search is best-effort, not a stable partition. Each page re-runs the approximate
 search at a different `ef` (`offset 0, limit 250` resolves 250; `offset 250, limit 200` resolves 450),
 and an HNSW candidate set at a larger `ef` is not guaranteed to be an ordered superset of the smaller
