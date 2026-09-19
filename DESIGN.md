@@ -2742,6 +2742,12 @@ the full-text directory with the same filesystem controls as Harper data. Removi
 does not erase old segment bytes immediately; normal Tantivy merge/reclamation governs physical
 removal, and destroying an index uses the wrapper's retirement protocol.
 
+The binding remains unloaded until a full-text declaration is activated. Before activation can
+construct this backend, Harper must exact-pin the Fulltext package, document the dependency in
+`dependencies.md`, and prove that its native prebuild loads on Linux, macOS, and Windows CI. A
+missing or incompatible binding is an activation error; Harper must not silently omit the declared
+index.
+
 ### Bounded delivery
 
 A drain turn **collects** identities from the iterator — `(tableId, recordId, logVersion)` per

@@ -1,6 +1,7 @@
 // Child-process fixture for the restart test in fullTextDerivedIndex.test.js. Mocha also discovers
 // this file, so keep all work behind the entry-point guard.
 if (require.main === module) {
+	if (!process.env.ROOTPATH) throw new Error('restart fixture requires the parent unit-test ROOTPATH');
 	const fs = require('node:fs');
 	const path = require('node:path');
 	const {

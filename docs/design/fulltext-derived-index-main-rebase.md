@@ -4,6 +4,10 @@ Status: draft — backend adapter and focused tests verified against current `ma
 activation, query integration, and packaged native CI remain open · Owner: Kyle · Last verified:
 2026-09-19
 
+The canonical runtime architecture is the **Native full-text backend** section in `DESIGN.md`. This
+note records implementation sequencing, rejected alternatives, verification, and remaining gates; if
+the two documents conflict, `DESIGN.md` is authoritative.
+
 ## TL;DR
 
 - Harper owns replay, ownership, readiness, rebuild, and schema/table lifecycle.
@@ -171,7 +175,7 @@ than hidden inside a conflict resolution.
 
 ## Verification
 
-- **Observed:** `npm run build`, the 64 focused backend/lifecycle/audited-RocksDB tests, and the complete
+- **Observed:** `npm run build`, the 66 focused backend/lifecycle/audited-RocksDB tests, and the complete
   derived-index/HNSW resource shard (363 passing, 8 pending) pass in this worktree.
 - **Verified by tests:** the real `DerivedIndexRuntime` produces the same fake-native document set by
   transaction-log replay and authoritative rebuild. Separate converter tests cover Harper-internal
@@ -181,7 +185,9 @@ than hidden inside a conflict resolution.
 - **Observed locally:** the adapter opened, applied, and published against the native module built from
   [Add exact native mutation batch partitioning #37](https://github.com/HarperFast/fulltext/pull/37).
   The lifecycle then reopened the native engine, searched the indexed document, reset the index, and
-  reclaimed its retired directory. This smoke is not yet a packaged dependency or CI gate.
+  reclaimed its retired directory. A separate multi-record native call verified the v3 contract:
+  `processed` counted both records while one invalid-field upsert appeared in `rejected` and was
+  replaced by a delete. These smokes are not yet a packaged dependency or CI gate.
 - **Untested:** a packaged native module across Linux, macOS, and Windows; HNSW and full-text active on
   the same audited table/root; actual-native deletion and rebuild after restart.
 

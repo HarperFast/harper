@@ -1,4 +1,9 @@
-import { DERIVED_INDEX_ACCEPTED, DERIVED_INDEX_DEFERRED, DERIVED_INDEX_FAILED } from '../derivedIndexRuntime.ts';
+import {
+	DERIVED_INDEX_ACCEPTED,
+	DERIVED_INDEX_DEFERRED,
+	DERIVED_INDEX_FAILED,
+	sameDerivedIndexPositions,
+} from '../derivedIndexRuntime.ts';
 import type {
 	DerivedIndexBackend,
 	DerivedIndexBackendHost,
@@ -148,6 +153,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#invalidEstimateWarned = false;
 	#consecutiveWriterFailures = 0;
 	#openRetryTimer?: NodeJS.Timeout;
+	#closeOperations = new WeakMap<FullTextDerivedIndexEngine, Promise<{ cleanupError?: unknown }>>();
 	#openRetryDelayMilliseconds: number;
 	#lockBusyWarned = false;
 	#terminalFailure?: FullTextDerivedIndexConfigurationError;
@@ -329,7 +335,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#assertSharedEpoch(ownerEpoch);
 		this.#activeEpoch = ownerEpoch;
 		this.#resetQueueState();
-		this.#terminalFailure = undefined;
 		this.#unindexableRecords = 0;
 		this.#unindexableWarned = false;
 	}
@@ -599,8 +604,22 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		engine: FullTextDerivedIndexEngine,
 		options: { mode: 'require-clean' | 'rollback' }
 	): Promise<void> {
+		let closeOperation = this.#closeOperations.get(engine);
+		if (!closeOperation) {
+			closeOperation = engine.close(options);
+			this.#closeOperations.set(engine, closeOperation);
+			const installed = closeOperation;
+			void installed.then(
+				() => {
+					if (this.#closeOperations.get(engine) === installed) this.#closeOperations.delete(engine);
+				},
+				() => {
+					if (this.#closeOperations.get(engine) === installed) this.#closeOperations.delete(engine);
+				}
+			);
+		}
 		const result = await withTimeout(
-			engine.close(options),
+			closeOperation,
 			this.#closeTimeoutMilliseconds,
 			() => new FullTextDerivedIndexError('Full-text native writer close timed out')
 		);
@@ -772,7 +791,7 @@ function toFullTextMutationSlice(
 	let index = start;
 	for (; index < limit; index++) {
 		const record = records[index];
-		if (typeof record.recordId === 'symbol') continue;
+		if (record.recordId == null || typeof record.recordId === 'symbol') continue;
 		const id = `${record.tableId}.${toBufferKey(record.recordId).toString('base64url')}`;
 		if (record.state.kind === 'record' && record.state.projection != null)
 			upserts.push({ id, fields: fullTextFields(record.state.projection) });
@@ -903,7 +922,10 @@ function sameCursor(left: DerivedIndexCursor | undefined, right: DerivedIndexCur
 	const leftLogs = Object.entries(left.logs);
 	const rightLogs = Object.entries(right.logs);
 	if (leftLogs.length !== rightLogs.length) return false;
-	return leftLogs.every(([name, timestamp]) => Object.hasOwn(right.logs, name) && right.logs[name] === timestamp);
+	if (!leftLogs.every(([name, timestamp]) => Object.hasOwn(right.logs, name) && right.logs[name] === timestamp))
+		return false;
+	if (!left.coverage || !right.coverage) return left.coverage === right.coverage;
+	return sameDerivedIndexPositions(left.coverage, right.coverage);
 }
 
 function normalizedCursor(cursor: DerivedIndexCursor): DerivedIndexCursor {

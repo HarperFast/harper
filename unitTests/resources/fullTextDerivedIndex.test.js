@@ -118,8 +118,10 @@ function nativeError(code, message) {
 }
 
 async function runRestartChild(directory, phase) {
+	assert(process.env.ROOTPATH, 'the restart child requires mocha.init.js to pin ROOTPATH');
 	const child = spawn(process.execPath, [path.join(__dirname, 'fullTextDerivedIndex-restart.js'), directory, phase], {
 		stdio: ['ignore', 'ignore', 'pipe'],
+		env: { ...process.env, ROOTPATH: process.env.ROOTPATH },
 	});
 	let stderr = '';
 	child.stderr.on('data', (chunk) => (stderr += chunk));
@@ -196,6 +198,18 @@ describe('FullTextDerivedIndexBackend', () => {
 			converted.upserts.map(({ fields }) => ({ ...fields })),
 			[{ title: 'visible' }]
 		);
+	});
+
+	it('omits nullish record identities before storage-key encoding', () => {
+		const converted = toFullTextMutationBatch(
+			batch(1n, [
+				mutation(null, { kind: 'record', version: 1, projection: { title: 'null' } }),
+				mutation(undefined, { kind: 'record', version: 1, projection: { title: 'undefined' } }),
+				mutation('visible', { kind: 'record', version: 1, projection: { title: 'visible' } }),
+			])
+		);
+		assert.strictEqual(converted.upserts.length, 1);
+		assert.strictEqual(converted.upserts[0].fields.title, 'visible');
 	});
 
 	it('does not submit a native mutation for a Harper-internal identity', async () => {
@@ -579,6 +593,28 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('adopts newer on-disk coverage even when log positions are unchanged', async () => {
+		const inspected = { ...cursor(10), coverage: { local: { sequence: 1, offset: 2 } } };
+		const actual = { ...cursor(10), coverage: { local: { sequence: 3, offset: 4 } } };
+		const first = new FakeEngine(encodeFullTextCursorPayload(actual));
+		const second = new FakeEngine(encodeFullTextCursorPayload(actual));
+		const { backend } = makeBackend(
+			lifecycle({ state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(inspected) }, [first, second])
+		);
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		backend.deliver(batch(1n, [], cursor(20)));
+		backend.flush();
+		await waitFor(() => changes.includes('accepted-work-lost'));
+		assert.deepStrictEqual({ ...backend.getDurableCursor().coverage }, actual.coverage);
+
+		backend.deliver(batch(1n, [], cursor(20)));
+		backend.flush();
+		await waitFor(() => second.publications.length === 1);
+		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(second.publications[0]).coverage }, actual.coverage);
+		await backend.shutdown(1n);
+	});
+
 	it('treats adopted durable progress as recovery between writer failures', async () => {
 		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
 		first.applyError = new Error('first writer failure');
@@ -692,7 +728,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(engine.closes.length, 3);
 	});
 
-	it('bounds native close and fails closed when quiescence cannot be proven', async () => {
+	it('bounds native close and reuses the in-flight close during a shutdown retry', async () => {
 		const engine = new FakeEngine();
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), {
 			closeTimeoutMilliseconds: 10,
@@ -700,9 +736,15 @@ describe('FullTextDerivedIndexBackend', () => {
 		backend.deliver(batch(1n, [], cursor(20)));
 		backend.flush();
 		await waitFor(() => engine.publications.length === 1);
-		engine.closeWait = new Promise(() => {});
+		let releaseClose;
+		engine.closeWait = new Promise((resolve) => (releaseClose = resolve));
 		await assert.rejects(backend.shutdown(1n), /did not prove quiescence/);
 		assert.strictEqual(engine.closes.length, 1);
+		const retry = backend.shutdown(1n);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(engine.closes.length, 1);
+		releaseClose();
+		await retry;
 	});
 
 	it('does not rescan for a cursor payload that cannot fit the native checkpoint', async () => {
