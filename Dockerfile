@@ -84,6 +84,14 @@ RUN <<-EOF
   # only affects this ephemeral extracted copy, not the published tarball.
   node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));delete p.devDependencies;fs.writeFileSync('package.json', JSON.stringify(p, null, 2));"
   npm install --omit=dev --ignore-scripts --no-audit --no-fund
+  # @aws-sdk/client-s3 and @aws-sdk/lib-storage are optional peerDependencies (see
+  # dependencies.md) so npm consumers who never touch S3 skip their ~18MB, but the
+  # official image should keep S3 export/import working out of the box. Installed
+  # globally (siblings of harper under lib/node_modules), which is on Node's require
+  # walk from harper's own files the same as any other global sibling package. Pinned
+  # to the exact version the lockfile resolves for both so image builds stay
+  # reproducible; `-g` keeps this independent of harper's own package.json/shrinkwrap.
+  npm install -g --ignore-scripts --no-audit --no-fund @aws-sdk/client-s3@3.1116.0 @aws-sdk/lib-storage@3.1116.0
   npm cache clean --force
   mkdir -p "$NPM_CONFIG_PREFIX/bin"
   ln -s ../lib/node_modules/harper/dist/bin/harper.js "$NPM_CONFIG_PREFIX/bin/harper"
