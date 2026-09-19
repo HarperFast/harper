@@ -440,7 +440,7 @@ export class HierarchicalNavigableSmallWorld {
 	filteredSearch = true;
 	// Signals that search() also accepts a CandidateKeyPlan and admits from it directly, so an indexed
 	// companion condition costs a key-only index scan per matching record instead of a record load and
-	// decode per visited node (#2688).
+	// decode per visited node. See DESIGN.md.
 	candidateKeyFilter = true;
 	indexStore: any;
 	M: number = 16; // max number of connections per layer
@@ -1907,8 +1907,8 @@ export class HierarchicalNavigableSmallWorld {
 			// (AUTO_EF_MAX) however large the limit was. Raising ef to cover the request keeps `limit`
 			// meaningful; the caller pays for what it asked for.
 			minResults?: number;
-			// The sibling conditions search.ts could answer from secondary indexes (#2688). Turned into
-			// the traversal's admission set when that is cheaper than the predicate visits it replaces,
+			// The sibling conditions search.ts could answer from secondary indexes. Turned into the
+			// traversal's admission set when that is cheaper than the predicate visits it replaces,
 			// and a set covering every pushed-down condition then replaces `filter` outright. Always
 			// optional — the predicate path is the fallback for every case this declines.
 			candidateKeys?: CandidateKeyPlan;
@@ -2015,18 +2015,25 @@ export class HierarchicalNavigableSmallWorld {
 			// candidate — so the set is a membership test in front of the record load, and a complete
 			// plan removes the load entirely.
 			//
-			// Scalar keys are held by value and encoded keys by storage identity, checked in that
-			// order: a string or number key then costs one Set hit and no encoding, while anything
-			// else, and any pair the two representations disagree about, still resolves through
-			// writeKeyId exactly as the stores index it.
+			// String and number keys are held by value, everything else by storage identity. When every
+			// key is scalar, a scalar key from the traversal is decided by value alone, so neither a
+			// hit nor a miss encodes anything; a non-scalar key still falls through to the encoded
+			// set, which is what folds a bigint onto the number the stores index it as.
 			const allowedScalars = new Set<Id>();
 			const allowedIds = new Set<unknown>();
+			let allScalar = true;
 			for (const primaryKey of allowedKeys.keys) {
 				const type = typeof primaryKey;
 				if (type === 'string' || type === 'number') allowedScalars.add(primaryKey);
+				else allScalar = false;
 				allowedIds.add(writeKeyId(primaryKey));
 			}
-			const admits = (primaryKey: Id) => allowedScalars.has(primaryKey) || allowedIds.has(writeKeyId(primaryKey));
+			const admits = allScalar
+				? (primaryKey: Id) =>
+						typeof primaryKey === 'string' || typeof primaryKey === 'number'
+							? allowedScalars.has(primaryKey)
+							: allowedIds.has(writeKeyId(primaryKey))
+				: (primaryKey: Id) => allowedScalars.has(primaryKey) || allowedIds.has(writeKeyId(primaryKey));
 			const residual = filter;
 			const state = filterState;
 			state.countsOwnEvaluations = true;

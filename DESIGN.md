@@ -2453,7 +2453,8 @@ not dearer, so a tighter budget buys nothing and costs recall (a 20%-selective f
 against `filterExpansion`'s `ef*24`, and lost 8 of 50 true neighbours in measurement). It widens by
 at most `ALLOW_SET_BUDGET_MAX_WIDENING`, because a visit is cheaper and not free — the JS graph still
 loads a node and computes a distance for each one, synchronously. A schema or per-query
-`filterExpansion` remains authoritative and is used exactly as given, `0` included.
+`filterExpansion` remains authoritative and is used exactly as given; a schema-configured `0`
+included, while a per-query `0` keeps its existing meaning of "unset".
 
 Paging a vector search is best-effort, not a stable partition. Each page re-runs the approximate
 search at a different `ef` (`offset 0, limit 250` resolves 250; `offset 250, limit 200` resolves 450),

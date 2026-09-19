@@ -3362,6 +3362,54 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 		}
 	});
 
+	it('counts the null block a lt/le range reads, so a mostly-null column is not mis-estimated', async () => {
+		const N = table({
+			table: 'HNSWAllowNulls',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'rank', indexed: true, type: 'Int' },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		try {
+			// 200 of 300 rows have a null rank. The range starts at null and reads that block first, so
+			// an estimate taken over `[true, 50)` would size the budget at 50 and overrun it on entry 51.
+			for (let i = 0; i < 300; i++) await N.put(i, { rank: i < 200 ? null : i, vector: [i, 0] });
+			const customIndex = N.indices.vector.customIndex;
+			const original = customIndex.search;
+			let plan;
+			customIndex.search = function (condition, context, options) {
+				plan = options.candidateKeys && options.candidateKeys.collect(100_000);
+				return original.call(this, condition, context, options);
+			};
+			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			try {
+				await fromAsync(
+					N.search(
+						{
+							conditions: [
+								{ attribute: 'vector', comparator: 'sort', ...sort },
+								{ attribute: 'rank', comparator: 'lt', value: 250 },
+							],
+							sort,
+							enforceExecutionOrder: true,
+							select: ['id'],
+							limit: 1,
+						},
+						{}
+					)
+				);
+			} finally {
+				customIndex.search = original;
+			}
+			assert.strictEqual(plan.keys.length, 250, 'the 200 nulls plus ranks 200-249');
+			assert.strictEqual(plan.complete, true);
+		} finally {
+			N.dropTable();
+		}
+	});
+
 	it('unions a nested OR group into one allow-set', async () => {
 		const { results, stats } = await searchWithSpy(
 			[0, 0],

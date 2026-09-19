@@ -117,7 +117,7 @@ export function executeConditions(
 			const recordFilters = recordGuards ? filters.concat(recordGuards) : filters;
 			// The sibling conditions a secondary-index range scan answers exactly can seed an allow-set
 			// the index admits from, instead of loading and decoding a record at every visited node
-			// (#2688). The post-filter chain below stays whole, so the set only has to be a SUPERSET of
+			// The post-filter chain below stays whole, so the set only has to be a SUPERSET of
 			// the true matches — the index decides whether building it beats evaluating the predicate.
 			const candidateKeys =
 				pushdownIndex.candidateKeyFilter && siblings.length > 0
@@ -242,8 +242,8 @@ function composeRecordFilter(recordFilters, table, context): (primaryKey: Id) =>
 }
 
 /**
- * The candidate-key plan a filterable custom index receives alongside its pushed-down predicate
- * (#2688): the sibling AND conditions this query can answer from secondary-index range scans alone.
+ * The candidate-key plan a filterable custom index receives alongside its pushed-down predicate:
+ * the sibling AND conditions this query can answer from secondary-index range scans alone.
  * The index admits from the keys instead of re-deriving the condition per visited node, so a
  * condition on an indexed attribute costs a key-only index-entry read per matching record rather
  * than a record load and decode per node the traversal reaches.
@@ -262,7 +262,7 @@ export interface CandidateKeyPlan {
 	collect(maxKeys: number): { keys: Id[]; complete: boolean } | null;
 }
 
-/** One indexed range scan: over this range the secondary index holds exactly the condition's matches. */
+/** One indexed range scan whose entries are exactly the condition's matches. */
 interface CandidateKeyScan {
 	index: any;
 	range: any;
@@ -355,8 +355,16 @@ function planCandidateKeyScan(condition, table): CandidateKeyScan | undefined {
 	)
 		return undefined;
 	if (condition.estimated_count === undefined) estimateCondition(table)(condition);
-	const estimatedCount = condition.estimated_count;
+	let estimatedCount = condition.estimated_count;
 	if (!(estimatedCount >= 0) || !Number.isFinite(estimatedCount)) return undefined;
+	// estimateRangeCondition measures the range searchByIndex would run, which starts at `true`. This
+	// one starts at `null`, so the null block — read first, and on a mostly-null column far larger
+	// than the rest of the range — has to be counted or the scan overruns a budget sized without it.
+	if (start === null) {
+		const nulls = index.getValuesCount?.(null);
+		if (!(nulls >= 0)) return undefined;
+		estimatedCount += nulls;
+	}
 	return { index, range: { start, end, inclusiveEnd, exclusiveStart }, estimatedCount };
 }
 
