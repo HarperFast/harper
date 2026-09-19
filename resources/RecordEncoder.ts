@@ -163,6 +163,10 @@ export class RecordObject {
 		return entryMap.get(this)?.expiresAt;
 	}
 }
+// msgpackr's RESERVE_START_SPACE option carries the reserved byte count in the LOW BYTE of the same
+// word as its flags (`encodeOptions & 0xff`, msgpackr `pack`), so the metadata prefix this encoder
+// reserves cannot exceed it.
+const MAX_RESERVED_START_SPACE = 255;
 export let lastValueEncoding: Buffer | undefined;
 let timestampNextEncoding = 0,
 	metadataInNextEncoding = -1,
@@ -355,6 +359,7 @@ export class RecordEncoder extends StructonEncoder {
 				const residencyId = residencyIdAtNextEncoding;
 				const nodeId = nodeIdAtNextEncoding;
 				const additionalAuditRefs = additionalAuditRefsNextEncoding;
+				let auditRefsToEncode = 0;
 				if (metadata >= 0) {
 					valueStart += 4; // make room for metadata bytes
 					metadataInNextEncoding = -1; // reset indicator to mean no metadata
@@ -380,7 +385,18 @@ export class RecordEncoder extends StructonEncoder {
 						}
 					}
 					if (additionalAuditRefs && additionalAuditRefs.length > 0) {
-						valueStart += 1 + additionalAuditRefs.length * 12; // 1 byte for count + 8 bytes version + 4 bytes nodeId per ref
+						// `valueStart` is OR'd into msgpackr's encode options below, where the reserved-space field
+						// is the LOW BYTE (RESERVE_START_SPACE): a valueStart over 255 wraps, so the record is
+						// written with a prefix neither side agrees on and decodes as garbage. The persisted ref
+						// count is one byte too. Refs are best-effort — a later in-order write drops them outright —
+						// so over budget the MIDDLE is dropped: the first entry is the addressable audit head when
+						// the record and log clocks diverge, and the last is the identity this write is matched on
+						// by the re-delivery guard, so neither end may go. (harper#2642)
+						auditRefsToEncode = Math.min(
+							additionalAuditRefs.length,
+							Math.floor((MAX_RESERVED_START_SPACE - valueStart - 1) / 12)
+						);
+						valueStart += 1 + auditRefsToEncode * 12; // 1 byte for count + 8 bytes version + 4 bytes nodeId per ref
 						additionalAuditRefsNextEncoding = undefined;
 					}
 				}
@@ -402,7 +418,7 @@ export class RecordEncoder extends StructonEncoder {
 					position += 8;
 				}
 				if (blobsWereEncoded) metadata |= HAS_BLOBS;
-				if (additionalAuditRefs && additionalAuditRefs.length > 0) metadata |= HAS_ADDITIONAL_AUDIT_REFS;
+				if (auditRefsToEncode > 0) metadata |= HAS_ADDITIONAL_AUDIT_REFS;
 				if (metadata >= 0) {
 					dataView.setUint32(position, metadata | (ACTION_32_BIT << 24)); // use the extended action byte
 					position += 4;
@@ -418,9 +434,15 @@ export class RecordEncoder extends StructonEncoder {
 						dataView.setUint32(position, nodeId);
 						position += 4;
 					}
-					if (additionalAuditRefs && additionalAuditRefs.length > 0) {
-						encoded[position++] = additionalAuditRefs.length;
-						for (const ref of additionalAuditRefs) {
+					if (auditRefsToEncode > 0) {
+						encoded[position++] = auditRefsToEncode;
+						// Written as [0, …tail]: the dropped window is the middle, and it is empty when nothing
+						// had to be dropped.
+						const dropFrom = 1;
+						const dropTo = additionalAuditRefs.length - auditRefsToEncode + 1;
+						for (let index = 0; index < additionalAuditRefs.length; index++) {
+							if (index >= dropFrom && index < dropTo) continue;
+							const ref = additionalAuditRefs[index];
 							dataView.setFloat64(position, ref.version);
 							position += 8;
 							dataView.setUint32(position, ref.nodeId);

@@ -108,6 +108,7 @@ import {
 	LOCAL_ONLY,
 	auditRetention,
 	removeAuditEntry,
+	getAuditFloor,
 	raiseAuditFloor,
 	boundedAuditPruneEnd,
 	isLockControlType,
@@ -135,7 +136,7 @@ import {
 	storedFieldsOnly,
 } from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
-import { rebuildUpdateBefore } from './crdt.ts';
+import { commutativeOpsOf, rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
@@ -3642,6 +3643,8 @@ export function makeTable(options) {
 						// existing timestamp, which means that we received updates out of order, and must resequence the application
 						// of the updates to the record to ensure consistency across the cluster
 						// TODO: can the previous version be older, but even more previous version be newer?
+						let belowAuditFloor = false;
+						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
 							// A re-delivered out-of-order write (full-copy audit-replay re-delivers writes) must not have
 							// its commutative ops re-folded. additionalAuditRefs is the record's own list of folded
@@ -3687,7 +3690,7 @@ export function makeTable(options) {
 							// Resolve the oldest retained entry once, for the same log the dedup reads.
 							let oldestRetainedAuditTime: number | undefined;
 							let oldestRetainedAuditTimeResolved = false;
-							const dedupVersionCouldBeRetained = (version: number): boolean => {
+							dedupVersionCouldBeRetained = (version: number): boolean => {
 								if (!isRocksDB) return true; // LMDB keeps its exact, unbounded lookup (keyed by local audit time)
 								if (!oldestRetainedAuditTimeResolved) {
 									oldestRetainedAuditTimeResolved = true;
@@ -3734,6 +3737,19 @@ export function makeTable(options) {
 									return; // duplicate already applied; avoid the resequencing walk
 								}
 							}
+							// The walk terminates at this write only by reaching an audit entry whose log key is at or below
+							// txnTime (the loop condition below), so below the floor it cannot: it runs the whole retained
+							// chain to an outcome the floor already determines (harper#2642). txnTime is the coordinate
+							// because it is the one that loop compares; txnLogKey addresses this write's own entry, a
+							// different question that dedupVersionCouldBeRetained already answers. An unknown floor is
+							// Infinity, which fails closed for a cursor check but has to fail OPEN here — walk rather than
+							// discard. RocksDB only: LMDB keeps its exact, unbounded reconciliation.
+							if (isRocksDB && precedesExisting < 0) {
+								const auditFloor = getAuditFloor(auditStore);
+								belowAuditFloor = Number.isFinite(auditFloor) && txnTime < auditFloor;
+							}
+						}
+						if (audit && !belowAuditFloor) {
 							// incremental CRDT updates are only available with audit logging on
 							const initialAuditHead = isRocksDB
 								? resolveAuditHead(id, existingEntry.version, existingEntry.nodeId, existingEntry.additionalAuditRefs)
@@ -3751,7 +3767,12 @@ export function makeTable(options) {
 								new Date(localTime)
 							);
 
-							let nodeId = initialAuditHead.nodeId;
+							// Normalized here and not at the lookup, because the two sources of an undefined nodeId do not
+							// mean the same thing: a record's own nodeId is resolved by the same expression as the id its
+							// audit entry is logged under, which applies `?? 0` (RecordEncoder), so absent means log 0;
+							// `previousNodeId` is never encoded, so absent there means the log is unknown and only the
+							// aggregate lookup can resolve a cross-origin predecessor.
+							let nodeId = initialAuditHead.nodeId ?? 0;
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
 							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = existingEntry.additionalAuditRefs
 								? existingEntry.additionalAuditRefs.map((ref) => ({ localTime: ref.version, nodeId: ref.nodeId }))
@@ -4015,6 +4036,31 @@ export function makeTable(options) {
 								write.skipped = true;
 								return;
 							}
+						} else if (belowAuditFloor) {
+							// The walk cannot reach this write, so it may contribute only what is order-independent: its
+							// commutative ops. Whether a plain field survives depends on what newer writes did to that key,
+							// which is what the purged history no longer answers, so applying one would resurrect state a
+							// newer put may have erased. Everything else loses to the strictly newer head: a full update, a
+							// head carrying no record (a delete or a residency-omitted record, which an op must not
+							// resurrect), and an op-less patch. Bare return, no writeCommit, so no audit record references
+							// the losing update's pre-saved blobs.
+							incrementalUpdateToApply = fullUpdate || existingRecord == null ? null : commutativeOpsOf(recordUpdate);
+							if (!incrementalUpdateToApply) {
+								write.skipped = true;
+								return;
+							}
+							// The surviving head's addressable log-key pointer lives in these, wherever the record and log
+							// clocks differ.
+							if (existingEntry.additionalAuditRefs) {
+								for (const ref of existingEntry.additionalAuditRefs) {
+									additionalAuditRefs.push(ref);
+								}
+							}
+							// Once the walk no longer runs, this ref is what the read-your-writes check above matches a
+							// re-delivery of these ops on. Best-effort, like every other guard here: the encoder bounds
+							// the persisted list, so an identity can age out of it (harper#1148's full-copy convergence
+							// is the backstop).
+							additionalAuditRefs.push({ version: txnLogKey, nodeId: options?.nodeId });
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
 							// was the same type. Assuming a full update this record update loses and there are no changes —
