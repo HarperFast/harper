@@ -92,8 +92,9 @@ RUN <<-EOF
   # top-level versions are pinned to match what the lockfile already resolves for
   # them; this isn't a full shrinkwrap-style install, so their ranged transitives
   # (e.g. @smithy/*) still re-resolve at build time like any other npm install --
-  # docker-smoke CI is what actually gates this working end to end. `-g` keeps this
-  # independent of harper's own package.json/npm-shrinkwrap.json.
+  # .github/workflows/docker-smoke.yml's "S3 SDK resolves from harper's installed
+  # path" step is what actually proves this resolves in the built image. `-g` keeps
+  # this independent of harper's own package.json/npm-shrinkwrap.json.
   npm install -g --ignore-scripts --no-audit --no-fund @aws-sdk/client-s3@3.1116.0 @aws-sdk/lib-storage@3.1116.0
   npm cache clean --force
   mkdir -p "$NPM_CONFIG_PREFIX/bin"
