@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789722823040,
+  "lastUpdate": 1789802697037,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -6152,6 +6152,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 966.51,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "David C",
+            "username": "DavidCockerill",
+            "email": "48922884+DavidCockerill@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8cef16e0561554e3689c81614d1f04d1aecc9e88",
+          "message": "Fix an infinite loop in subscription broadcast when a record key starts with `/` (#2689)\n\n* Stop the subscription key walk at the root so a leading-slash key cannot spin the worker\n\nnotifyFromTransactionData walks a changed record's key up its '/' hierarchy to\nnotify ancestor subscribers. For a key whose first character is '/', the walk\nreaches '/' and lastIndexOf('/', -1) clamps to index 0, so slice(0, 1) yields\n'/' again and the do/while never progresses. The loop is synchronous inside the\nsetImmediate notify pass and runs on every worker holding a subscription on the\ntable, so one committed record pegs every http worker at 100% CPU.\n\nThe walk now stops when the next key equals the current one, so a subscriber on\nthe root key is still notified once and the pass terminates.\n\nRefs #2687\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* Cover the leading-slash walk over Table.subscribe and record its termination invariant\n\nThe first regression test drives the same-thread aftercommit path with a fake\nstore. The seizure in the field came through the cross-thread 'committed' path\nthat Table.subscribe consumers use, so this adds a real-table case: a live\ncollection subscriber receives a put keyed '/shop/womens-clothing' and a control\nput, in order. DESIGN.md gains the invariant the walk must keep.\n\nRefs #2687\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* Drop the test preamble and cover '/' and '//x' for the root-key subscriber\n\nReview round 1 (Gemini) asked for the root-key case to carry the same key\nshapes as the whole-table case; Codex and Gemini both flagged the file-level\ncomment as narration the test names already carry.\n\nRefs #2687\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* End the real-table subscription, give its table a dedicated database, and correct the walk comment\n\nRound 2 found that Table.subscribe returns a Subscription whose cleanup is\nend(), not return(), so the test left its subscription registered on the\nshared 'test' database. The pre-existing comment above the walk listed\nunslashed ancestors the code never produces; it now names the keys the loop\nvisits. The DESIGN.md bullet no longer repeats the clamp detail the inline\ncomment carries.\n\nRefs #2687\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T04:27:08Z",
+          "url": "https://github.com/HarperFast/harper/commit/8cef16e0561554e3689c81614d1f04d1aecc9e88"
+        },
+        "date": 1789802695796,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6165.71,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 7994.02,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 8063.91,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 5954.22,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4380.57,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 8007.62,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 977,
             "unit": "ops/sec"
           }
         ]
