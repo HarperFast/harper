@@ -158,67 +158,18 @@ describe('RocksDB handle release', function () {
 		assert.strictEqual(refCountFor(rootStore.path), 0);
 	});
 
-	it('closeLoadedDatabases quiesces and closes non-RocksDB databases', async function () {
-		const databaseName = 'closerelease-non-rocks-derived';
-		let releaseClose;
-		const rootStore = {
-			path: join(testRoot, databaseName),
-			status: 'open',
-			dbisDb: {
-				status: 'closed',
-				close: () => {
-					throw new Error('an already-closed store must not be closed again');
-				},
-			},
-			close: () =>
-				new Promise((resolve) => {
-					releaseClose = () => {
-						rootStore.status = 'closed';
-						resolve();
-					};
-				}),
-		};
-		const fakeTable = {
-			primaryStore: { rootStore },
-			derivedIndexRuntime: { close: async () => {} },
-		};
-		getDatabases()[databaseName] = { pkg: fakeTable };
-		try {
-			let settled = false;
-			const closing = closeLoadedDatabases().then(() => (settled = true));
-			await new Promise(setImmediate);
-			assert.strictEqual(settled, false);
-			releaseClose();
-			await closing;
-			assert.strictEqual(fakeTable.derivedIndexRuntime, undefined);
-			assert.strictEqual(rootStore.status, 'closed');
-			assert.strictEqual(getDatabases()[databaseName], undefined);
-		} finally {
-			delete getDatabases()[databaseName];
-		}
-	});
+	it('closeLoadedDatabases leaves LMDB databases open for surviving workers', async function () {
+		const databaseName = 'closerelease-lmdb-survivor';
+		const rootStore = openRocksDb(databaseName);
+		if (rootStore instanceof RocksDatabase) return this.skip();
+		await getDatabases()[databaseName].pkg.schemaChangeOperation;
+		assert.strictEqual(rootStore.status, 'open', 'LMDB root should be open before worker teardown');
 
-	it('closeLoadedDatabases reports a non-RocksDB derived-index shutdown failure', async function () {
-		const databaseName = 'closerelease-non-rocks-derived-failure';
-		const fakeTable = {
-			primaryStore: { rootStore: {} },
-			derivedIndexRuntime: {
-				close: async () => {
-					throw new Error('derived shutdown failed');
-				},
-			},
-		};
-		getDatabases()[databaseName] = { pkg: fakeTable };
-		try {
-			await assert.rejects(closeLoadedDatabases(), (error) => {
-				assert.match(error.message, /Failed to close all loaded databases/);
-				assert.match(error.errors[0].message, /Failed to close database/);
-				assert.match(error.errors[0].cause.message, /derived shutdown failed/);
-				return true;
-			});
-		} finally {
-			delete getDatabases()[databaseName];
-		}
+		await closeLoadedDatabases();
+
+		assert.strictEqual(rootStore.status, 'open');
+		assert.strictEqual(getDatabases()[databaseName].pkg.primaryStore.rootStore, rootStore);
+		await closeDatabaseForRestore(databaseName);
 	});
 
 	it('tracks a rejected asynchronous close for a synchronous caller and retries it', async function () {

@@ -1925,6 +1925,7 @@ export function makeTable(options) {
 
 		static async dropTable() {
 			TableResource.assertSchemaMutable('drop a table');
+			const acceptWorkerDatabaseClose = isRocksDB;
 			// Table destruction uses the database-level quiescence barrier. DDL is rare, and closing the
 			// database on peers reuses the worker-start fence while guaranteeing the designated native
 			// derived-index writer has released this table before its source column families are dropped.
@@ -1935,7 +1936,7 @@ export function makeTable(options) {
 				});
 			try {
 				await signalling.signalSchemaChangeToPeers(dropMessage(signalling.PREPARE_DATABASE_DROP_OPERATION), {
-					acceptWorkerDatabaseClose: true,
+					acceptWorkerDatabaseClose,
 					acknowledgementTimeoutMs: signalling.DATABASE_DROP_ACKNOWLEDGEMENT_TIMEOUT_MS,
 					includeJobWorkers: true,
 					mainFirst: true,
@@ -1961,7 +1962,7 @@ export function makeTable(options) {
 					await signalling.signalSchemaChangeToPeers(
 						Object.assign(dropMessage(signalling.CANCEL_DATABASE_DROP_OPERATION), { preserveInterruptedDrop }),
 						{
-							acceptWorkerDatabaseClose: true,
+							acceptWorkerDatabaseClose,
 							acknowledgementTimeoutMs: signalling.DATABASE_DROP_ACKNOWLEDGEMENT_TIMEOUT_MS,
 							includeJobWorkers: true,
 							mainFirst: true,

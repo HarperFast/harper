@@ -808,15 +808,20 @@ transaction has modified. `dropDatabase()` and the legacy arm of `Table.dropTabl
 environment touch remaining in a resumed pass — cursor advance, cursor release, marker write, re-arm —
 re-checks `rootStore.status`, plus the fact that their production callers reach them only for RocksDB
 stores, whose pass is one synchronous `purgeLogs()` call with nothing suspended mid-removal.
-The asynchronous `closeDatabaseForRestore()` path is also the terminal worker-close path. It awaits
-the retirement barrier and every promise returned while closing table, metadata, and root stores;
-the pending-close retry pass uses that same awaited path, so an unloaded database cannot be reported
-closed while a previous asynchronous handle close is still settling. Only then may teardown publish
-the worker-wide close watermark. An already-closed child store is an
-idempotent success, which matters for LMDB because closing an environment can close DBIs that are
-still reachable from Harper's table graph. A synchronous legacy caller cannot await a promise-returning
-close, but it still attaches a rejection handler and retains the store in the pending-close registry so
-the next close attempt retries it rather than losing the failure or emitting an unhandled rejection.
+The asynchronous `closeDatabaseForRestore()` path is also the terminal worker-close path for RocksDB.
+It awaits the retirement barrier and every promise returned while closing table, metadata, and root
+stores; the pending-close retry pass uses that same awaited path, so an unloaded database cannot be
+reported closed while a previous asynchronous handle close is still settling. LMDB databases stay
+open during worker teardown: closing one worker's DBIs can invalidate handles still used by surviving
+workers. Full-text activation requires a RocksDB root, so that engine boundary still covers its native
+handles. Only after every eligible RocksDB database closes may teardown publish the worker-wide close
+watermark.
+
+An already-closed child store is an idempotent success, which matters for LMDB because closing an
+environment can close DBIs that are still reachable from Harper's table graph. A synchronous legacy
+caller cannot await a promise-returning close, but it still attaches a rejection handler and retains
+the store in the pending-close registry so the next close attempt retries it rather than losing the
+failure or emitting an unhandled rejection.
 `resetDatabases()` closes LMDB roots with no retirement call at all, so that re-check is a routine
 path rather than a defensive one.
 
@@ -1875,7 +1880,7 @@ Three non-obvious mechanics keep that safe:
   would fail the closure check even when no component holds the database. `jobProcess` therefore
   retries `closeLoadedDatabases()` (`resources/databases.ts`) in its `finally`, and ordinary pool
   workers run the same retrying teardown after servers and application scopes close. It closes every loaded
-  user database on that thread (the non-enumerable `system` DB is intentionally skipped), so an
+  RocksDB user database on that thread (LMDB and the non-enumerable `system` DB are intentionally skipped), so an
   exited worker leaves no residual handle to be mistaken for a live holder. Each worker reports the
   close as pending before it begins, so a rejection or a close that never settles reaches the same
   termination backstop. If the close does not finish, the main thread exits Harper for a clean
@@ -2760,8 +2765,10 @@ destructive acknowledgement already waiting on that port, and worker creation ca
 confirmation into each inherited peer port, so a coordinator that starts after publication reaches
 the same decision. Terminal shutdown first stops admitting schema events, waits for any handler that
 was already running, then closes storage and publishes confirmation; no handler can reopen storage
-after the confirmation. Worker teardown closes non-RocksDB storage handles as well as their derived-index
-runtimes, so its worker-wide confirmation is valid for a destructive barrier against any loaded database.
+after the confirmation. Worker teardown confirmation covers RocksDB storage and native derived-index
+handles only. A RocksDB destructive barrier may therefore accept that confirmation in place of its own
+acknowledgement. An LMDB barrier may not: it still requires the worker to handle the preparation message,
+because proactively closing one worker's LMDB DBIs can invalidate handles on surviving workers.
 These destructive barrier acknowledgements
 use a bounded ten-minute window rather than schema gossip's 30-second default, because quiescing a large
 native writer can legitimately take longer than an ordinary cache rescan. Cancellation attempts the main

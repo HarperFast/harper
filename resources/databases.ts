@@ -2687,9 +2687,10 @@ function closeDatabaseTables(
 }
 
 export async function closeDatabaseForRestore(databaseName: string, dropMarker?: DatabaseDropMarker): Promise<boolean> {
-	await closePendingDatabaseDerivedIndexes(databaseName);
+	// Capture before the first await; a catalog rescan can evict the only reference to a tableless root.
 	const dbTables = databases[databaseName];
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
+	await closePendingDatabaseDerivedIndexes(databaseName);
 	const closeWork = { operations: [], errors: [] } as { operations: Promise<void>[]; errors: unknown[] };
 	if (!dbTables) {
 		const closed = closeDatabaseTables(databaseName, undefined, definedRoot, true, closeWork);
@@ -2826,7 +2827,7 @@ export async function cancelDatabaseDropsFromThread(originator: number): Promise
 }
 
 /**
- * Close every user database this thread has open, releasing its storage and derived-index handles.
+ * Close every RocksDB user database this thread has open, releasing its storage and derived-index handles.
  *
  * rocksdb-js's registry is process-global across worker threads, and a thread that exits WITHOUT
  * closing leaks its handles (the process-global refCount never drops), while the only alternative,
@@ -2834,11 +2835,14 @@ export async function cancelDatabaseDropsFromThread(originator: number): Promise
  * and then exits — notably a job worker (jobProcess), which opens the whole database graph via
  * `getDatabases()` and exits when the job finishes — must close its handles explicitly, or those
  * handles linger process-wide (and, e.g., block an online `restore_backup` from confirming the
- * database is closed). The `system` database is intentionally left open: it is non-enumerable here
- * (skipped by the loop), is never restored online, and the exiting worker may still touch the job
- * table during teardown. Handle-close failures propagate after every database has been attempted,
- * so one wedged index cannot prevent unrelated native handles from being released and orderly
- * worker shutdown cannot claim that process-global references were released when they were not.
+ * database is closed). LMDB is deliberately excluded: closing one worker's DBIs can invalidate
+ * handles still used by another worker. Full-text activation requires a RocksDB root, so this
+ * engine boundary also covers its native handles. The `system` database is intentionally left
+ * open: it is non-enumerable here (skipped by the loop), is never restored online, and the exiting
+ * worker may still touch the job table during teardown. Handle-close failures propagate after every
+ * eligible database has been attempted, so one wedged index cannot prevent unrelated native handles
+ * from being released and orderly worker shutdown cannot claim that process-global references were
+ * released when they were not.
  *
  * Branches are invisible to the loop below but hold handles from the same registry, so this — the
  * thread's one teardown entry point — closes them too.
@@ -2854,6 +2858,15 @@ export async function closeLoadedDatabases(): Promise<void> {
 	for (const databaseName of Object.keys(databases)) {
 		const dbTables = databases[databaseName];
 		if (!dbTables) continue;
+		let isRocks = false;
+		for (const table of Object.values(dbTables)) {
+			if ((table as any)?.primaryStore?.rootStore instanceof RocksDatabase) {
+				isRocks = true;
+				break;
+			}
+		}
+		if (!isRocks && (definedDatabases?.get(databaseName) as any)?.rootStore instanceof RocksDatabase) isRocks = true;
+		if (!isRocks) continue;
 		try {
 			await closeDatabaseForRestore(databaseName);
 		} catch (error) {
