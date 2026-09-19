@@ -901,7 +901,25 @@ export function findLastAggregationTime(
 	return undefined;
 }
 
+let aggregationRunning = false;
+
+/**
+ * Run one aggregation cycle, refused while another is still in flight: the scheduler does not
+ * await its callback, so overlapping cycles would roll up the same window twice. Exported for
+ * testing.
+ */
+export async function runAggregationCycle(fromPeriod, toPeriod = 60000) {
+	if (aggregationRunning) return;
+	aggregationRunning = true;
+	try {
+		await aggregation(fromPeriod, toPeriod);
+	} finally {
+		aggregationRunning = false;
+	}
+}
+
 async function aggregation(fromPeriod, toPeriod = 60000) {
+	const cycleStart = Date.now();
 	const rawAnalyticsTable = getRawAnalyticsTable();
 	const analyticsTable = getAnalyticsTable();
 	const taskQueueLatency = (async () => {
@@ -937,7 +955,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	const aggregateActions = new Map();
 	const distributions = new Map();
 	const threadsToAverage = [];
-	let lastTime: number;
+	let lastTime: number | undefined;
 	for (const { key, value } of rawAnalyticsTable.primaryStore.getRange({
 		start: lastForPeriod || false,
 		exclusiveStart: true,
@@ -1091,13 +1109,12 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	};
 	storeMetric(analyticsTable, cruMetric);
 	lastResourceUsage = resourceUsage;
-	// Advance the O(1) last-aggregation marker to this cycle's time. The resource-usage metric
-	// just written is a composite-id record stamped `time: now`, so it is exactly what the
-	// reverse-scan seed would find as the newest matching record. Updating it every completed
-	// cycle — not only when there were raw updates — keeps the `Date.now() - toPeriod` period
-	// guard enforcing the configured cadence during idle stretches, matching the prior
-	// scan-based behavior rather than letting a stale marker run aggregation on every tick (#1538).
-	lastAggregationTime = now;
+	// Resume from the last raw record this cycle actually rolled up. The scan covers one
+	// `toPeriod` window, so advancing to the cycle's end would skip the rest of a longer backlog
+	// and anything recorded while the cycle ran, and nothing reads those records again. An empty
+	// window has no record after the marker, so `cycleStart` cannot skip one and still keeps the
+	// period guard enforcing the configured cadence during idle stretches (#1538).
+	lastAggregationTime = lastTime ?? cycleStart;
 
 	// `system` is set as non-enumerable on the object returned by getDatabases() so most
 	// callers skip it; for analytics we want it included, so build a view where it's enumerable.
@@ -1208,7 +1225,7 @@ function startScheduledTasks() {
 		const aggregateRetentionMs = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATERETENTIONMS) ?? AGGREGATE_EXPIRATION;
 		setInterval(
 			async () => {
-				await aggregation(analyticsDelay, AGGREGATE_PERIOD);
+				await runAggregationCycle(analyticsDelay, AGGREGATE_PERIOD);
 				await cleanup(getRawAnalyticsTable(), rawRetentionMs);
 				// 0 means "keep forever" — skip aggregate cleanup, matching storageInterval: 0 convention
 				if (aggregateRetentionMs) await cleanup(getAnalyticsTable(), aggregateRetentionMs);

@@ -3139,3 +3139,28 @@ took the whole pool down at once. A string does the same thing for the same reas
 included: an earlier attempt to give job workers the serving count instead broke the Windows
 integration shard with ECONNREFUSED across the job tests. A job worker that believes it is part of the
 pool behaves differently.
+
+## The analytics aggregation marker is a raw-record cursor, not a clock (`resources/analytics/write.ts`)
+
+`aggregation()` rolls up the raw reports in `hdb_raw_analytics` one `toPeriod` window at a time —
+it stops at `firstForPeriod + toPeriod` so one cycle's main-thread msgpackr decode stays bounded
+(#1538) — and `lastAggregationTime` is where the next cycle resumes, exclusive. It therefore may
+only advance to a record the cycle actually consumed: it used to be stamped with the cycle's
+end-of-run `Date.now()`, which silently discarded both the remainder of a backlog longer than one
+window and every report written while the cycle ran, because nothing reads below the marker again.
+It is now `lastTime ?? cycleStart` — the last raw key rolled up, or the time the cycle began when
+the window was empty, which cannot skip a record because none exists after the marker and every
+later report carries a higher key.
+
+The same variable also throttles the cadence (`Date.now() - toPeriod < lastForPeriod` returns
+early), and the two uses agree: while the marker is behind, every half-period tick drains one more
+window until it catches up, then the guard resumes one cycle per period.
+
+Cycles must not overlap. `setInterval` does not await its async callback, so `runAggregationCycle`
+holds a single-flight flag — two cycles reading the same marker roll the same window up twice and
+double every count in it.
+
+Still open: `findLastAggregationTime` seeds the marker after a restart from the newest stored
+analytics record, whose `time` is an end-of-cycle stamp, so a restart mid-drain can skip the rest
+of the backlog; and `storeMetric` discards `table.put()`'s result, so the marker advances past raw
+records whose aggregate rows failed to commit. Both need a durable cursor written with the rows.
