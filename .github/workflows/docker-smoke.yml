@@ -141,6 +141,44 @@ jobs:
           docker logs harper-smoke
           exit 1
 
+      # @aws-sdk/client-s3 and @aws-sdk/lib-storage are optional peerDependencies the
+      # Dockerfile preinstalls globally so S3 export/import keeps working out of the box
+      # in the official image -- but nothing above proves that install actually resolves.
+      # Anchors a createRequire at harper's own installed dist/utility/AWS/ directory (the
+      # directory awsSdkLoader.js ships in) and requires both packages from there, exactly
+      # the walk awsSdkLoader.ts's default requireFn performs, then asserts the three
+      # symbols AWSConnector.js/dataLayer/export.ts actually use are present.
+      - name: S3 SDK resolves from harper's installed path (default runtime)
+        run: |
+          npmRoot=$(docker exec harper-smoke npm root -g)
+          awsSdkLoaderDir="$npmRoot/harper/dist/utility/AWS"
+          docker exec harper-smoke node -e '
+            const { createRequire } = require("node:module");
+            const path = require("node:path");
+            const dir = process.argv[1];
+            const req = createRequire(path.join(dir, "awsSdkLoader.js"));
+            const missing = [];
+            let clientS3, libStorage;
+            try {
+              clientS3 = req("@aws-sdk/client-s3");
+            } catch (err) {
+              missing.push(`@aws-sdk/client-s3 did not resolve: ${err.message}`);
+            }
+            try {
+              libStorage = req("@aws-sdk/lib-storage");
+            } catch (err) {
+              missing.push(`@aws-sdk/lib-storage did not resolve: ${err.message}`);
+            }
+            if (clientS3 && typeof clientS3.S3 !== "function") missing.push("@aws-sdk/client-s3 is missing the S3 export");
+            if (clientS3 && typeof clientS3.GetObjectCommand !== "function") missing.push("@aws-sdk/client-s3 is missing the GetObjectCommand export");
+            if (libStorage && typeof libStorage.Upload !== "function") missing.push("@aws-sdk/lib-storage is missing the Upload export");
+            if (missing.length > 0) {
+              console.error("::error::S3 SDK failed to resolve from " + dir + ": " + missing.join("; "));
+              process.exit(1);
+            }
+            console.log("S3 SDK resolves from " + dir + ": S3, GetObjectCommand, Upload all present");
+          ' "$awsSdkLoaderDir"
+
       - name: Container logs (default runtime)
         if: always()
         run: docker logs harper-smoke 2>&1 || true
