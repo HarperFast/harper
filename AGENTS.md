@@ -126,7 +126,7 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 - **`build-tools/`** — build-pipeline scripts. Tests: `unitTests/build-tools/`; run `npm run test:unit:main` after changes.
 - **`dev/`** — single dev utility (`sync-commits.js`) for cross-repo commit syncing. Not runtime.
 - **`integrationTests/`** — end-to-end tests against a built distribution. Run with `npm run test:integration` / `npm run test:integration:all`. Subdirs mirror source. See `integrationTests/README.md`.
-- **`unitTests/`** — Mocha unit tests; subdir per source layer. Run with `npm run test:unit:<layer>`.
+- **`unitTests/`** — Mocha unit tests; subdir per source layer. Run with `npm run test:unit:<layer>`. **See [unitTests/AGENTS.md](unitTests/AGENTS.md)** for test-writing pitfalls (thread-global capture + absolute count).
 - **`static/`** — assets only: `defaultConfig.yaml`, `ascii_logo.txt`.
 
 ### Top-level docs to consult
