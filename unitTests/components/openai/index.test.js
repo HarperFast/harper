@@ -934,3 +934,38 @@ describe('registerOpenAIBackend', () => {
 		assert.strictEqual(b.name, 'openai');
 	});
 });
+
+describe('OpenAIBackend retry (#1594)', () => {
+	it('retries a 429 through #post and succeeds', async () => {
+		const fetch = mockFetch(({ callIndex }) =>
+			callIndex === 0
+				? new Response(JSON.stringify({ error: { message: 'rate limited' } }), {
+						status: 429,
+						headers: { 'retry-after': '0' }, // real sleep of 0ms keeps the test instant
+					})
+				: jsonResponse({ data: [{ embedding: [0.1] }] })
+		);
+		const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
+		const result = await b.embed('x', { accounting: ACCOUNTING });
+		assert.strictEqual(result.status, 'completed');
+		assert.strictEqual(fetch.calls.length, 2);
+	});
+
+	it('maxRetries: 0 disables retry and surfaces the upstream status', async () => {
+		const fetch = mockFetch(() => jsonResponse({ error: { message: 'rate limited' } }, { status: 429 }));
+		const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm', maxRetries: 0 }, fetch);
+		await assert.rejects(b.embed('x', { accounting: ACCOUNTING }), (err) => {
+			assert.ok(err instanceof OpenAIBackendError);
+			assert.strictEqual(err.upstreamStatus, 429);
+			return true;
+		});
+		assert.strictEqual(fetch.calls.length, 1);
+	});
+
+	it('does not retry a non-retriable status', async () => {
+		const fetch = mockFetch(() => jsonResponse({ error: { message: 'bad request' } }, { status: 400 }));
+		const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
+		await assert.rejects(b.embed('x', { accounting: ACCOUNTING }), OpenAIBackendError);
+		assert.strictEqual(fetch.calls.length, 1);
+	});
+});
