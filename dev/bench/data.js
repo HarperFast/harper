@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789809060501,
+  "lastUpdate": 1789809064852,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -22181,6 +22181,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 1950.5,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "David C",
+            "username": "DavidCockerill",
+            "email": "48922884+DavidCockerill@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8cef16e0561554e3689c81614d1f04d1aecc9e88",
+          "message": "Fix an infinite loop in subscription broadcast when a record key starts with `/` (#2689)\n\n* Stop the subscription key walk at the root so a leading-slash key cannot spin the worker\n\nnotifyFromTransactionData walks a changed record's key up its '/' hierarchy to\nnotify ancestor subscribers. For a key whose first character is '/', the walk\nreaches '/' and lastIndexOf('/', -1) clamps to index 0, so slice(0, 1) yields\n'/' again and the do/while never progresses. The loop is synchronous inside the\nsetImmediate notify pass and runs on every worker holding a subscription on the\ntable, so one committed record pegs every http worker at 100% CPU.\n\nThe walk now stops when the next key equals the current one, so a subscriber on\nthe root key is still notified once and the pass terminates.\n\nRefs #2687\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* Cover the leading-slash walk over Table.subscribe and record its termination invariant\n\nThe first regression test drives the same-thread aftercommit path with a fake\nstore. The seizure in the field came through the cross-thread 'committed' path\nthat Table.subscribe consumers use, so this adds a real-table case: a live\ncollection subscriber receives a put keyed '/shop/womens-clothing' and a control\nput, in order. DESIGN.md gains the invariant the walk must keep.\n\nRefs #2687\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* Drop the test preamble and cover '/' and '//x' for the root-key subscriber\n\nReview round 1 (Gemini) asked for the root-key case to carry the same key\nshapes as the whole-table case; Codex and Gemini both flagged the file-level\ncomment as narration the test names already carry.\n\nRefs #2687\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* End the real-table subscription, give its table a dedicated database, and correct the walk comment\n\nRound 2 found that Table.subscribe returns a Subscription whose cleanup is\nend(), not return(), so the test left its subscription registered on the\nshared 'test' database. The pre-existing comment above the walk listed\nunslashed ancestors the code never produces; it now names the keys the loop\nvisits. The DESIGN.md bullet no longer repeats the clamp detail the inline\ncomment carries.\n\nRefs #2687\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T04:27:08Z",
+          "url": "https://github.com/HarperFast/harper/commit/8cef16e0561554e3689c81614d1f04d1aecc9e88"
+        },
+        "date": 1789809063694,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 3697.26,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 3697.26,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 253.8,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 612.3,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 762.9,
             "unit": "ms"
           }
         ]
