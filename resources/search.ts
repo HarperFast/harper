@@ -116,9 +116,9 @@ export function executeConditions(
 			const filters = mapConditionsToFilters(siblings, true, firstSearch.estimated_count);
 			const recordFilters = recordGuards ? filters.concat(recordGuards) : filters;
 			// The sibling conditions a secondary-index range scan answers exactly can seed an allow-set
-			// the index admits from, instead of loading and decoding a record at every visited node
-			// The post-filter chain below stays whole, so the set only has to be a SUPERSET of
-			// the true matches — the index decides whether building it beats evaluating the predicate.
+			// the index admits from, instead of loading and decoding a record at every visited node.
+			// The post-filter chain below stays whole, so the set only has to be a SUPERSET of the true
+			// matches — the index decides whether building it beats evaluating the predicate.
 			const candidateKeys =
 				pushdownIndex.candidateKeyFilter && siblings.length > 0
 					? planCandidateKeys(siblings, table, txn, !recordGuards)
@@ -203,7 +203,7 @@ function buildRecordGuards(recordAccess): ((record: any) => boolean)[] | undefin
 	return guards.length > 0 ? guards : undefined;
 }
 
-/** A condition's custom index when it participates in predicate-aware traversal (HNSW), else undefined. */
+/** A condition's custom index when it participates in predicate-aware traversal (HNSW). */
 function filterablePushdownIndex(condition, table): any {
 	const attributeName = condition?.attribute ?? condition?.[0];
 	if (attributeName == null || table == null) return undefined;
@@ -262,7 +262,7 @@ export interface CandidateKeyPlan {
 	collect(maxKeys: number): { keys: Id[]; complete: boolean } | null;
 }
 
-/** One indexed range scan whose entries are exactly the condition's matches. */
+/** A range over which the secondary index holds exactly the condition's matches. */
 interface CandidateKeyScan {
 	index: any;
 	range: any;
@@ -292,8 +292,7 @@ const CANDIDATE_KEY_COMPARATORS = new Set([
 
 /**
  * Plan one leaf condition as an index range scan, or undefined when its matches cannot be read off
- * an index exactly. Mirrors searchByIndex's forward-order range construction — the two must agree,
- * or the "allow-set" would not be the set the same condition selects.
+ * an index exactly, or when the scan's size cannot be estimated.
  */
 function planCandidateKeyScan(condition, table): CandidateKeyScan | undefined {
 	if (condition.negated) return undefined;
@@ -357,18 +356,26 @@ function planCandidateKeyScan(condition, table): CandidateKeyScan | undefined {
 	if (condition.estimated_count === undefined) estimateCondition(table)(condition);
 	let estimatedCount = condition.estimated_count;
 	if (!(estimatedCount >= 0) || !Number.isFinite(estimatedCount)) return undefined;
-	// estimateRangeCondition measures the range searchByIndex would run, which starts at `true`. This
-	// one starts at `null`, so the null block — read first, and on a mostly-null column far larger
-	// than the rest of the range — has to be counted or the scan overruns a budget sized without it.
-	if (start === null) {
-		const nulls = index.getValuesCount?.(null);
-		if (!(nulls >= 0)) return undefined;
-		estimatedCount += nulls;
+	// estimateRangeCondition measures the range searchByIndex would run, which starts at `true`. Only
+	// lt/le widen below that, and the block they add is read FIRST and can dwarf the rest of the
+	// range, so it has to be counted or the scan overruns a budget sized without it. A statistical
+	// estimate, never getValuesCount: that one steps the whole block, which is the unbounded
+	// per-query cost this is here to avoid. The other comparators' own estimates already cover
+	// whatever they start at.
+	if (comparator === 'lt' || comparator === 'le') {
+		let belowTrue: number | undefined;
+		try {
+			belowTrue = index.estimateCount?.({ start: null, end: true })?.count;
+		} catch {
+			return undefined;
+		}
+		if (!(belowTrue >= 0)) return undefined;
+		estimatedCount += belowTrue;
 	}
 	return { index, range: { start, end, inclusiveEnd, exclusiveStart }, estimatedCount };
 }
 
-/** Plan the sibling AND conditions of a filterable-index lead into range scans. */
+/** Undefined when nothing among the siblings can be read off an index exactly. */
 function planCandidateKeys(conditions, table, transaction, guardFree: boolean): CandidateKeyPlan | undefined {
 	const terms: CandidateKeyTerm[] = [];
 	const planned = collectCandidateKeyTerms(conditions, table, terms) && guardFree;

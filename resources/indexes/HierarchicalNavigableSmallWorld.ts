@@ -2015,25 +2015,26 @@ export class HierarchicalNavigableSmallWorld {
 			// candidate — so the set is a membership test in front of the record load, and a complete
 			// plan removes the load entirely.
 			//
-			// String and number keys are held by value, everything else by storage identity. When every
-			// key is scalar, a scalar key from the traversal is decided by value alone, so neither a
-			// hit nor a miss encodes anything; a non-scalar key still falls through to the encoded
-			// set, which is what folds a bigint onto the number the stores index it as.
+			// String and number keys are held by value, so an all-scalar set decides a scalar key from
+			// the traversal without encoding either a hit or a miss. A zero key forces the encoded
+			// set: Set membership is SameValueZero, which calls -0 and 0 the same key, while the
+			// stores encode them differently — and the encoded set is also what folds a bigint onto
+			// the number the stores index it as.
 			const allowedScalars = new Set<Id>();
-			const allowedIds = new Set<unknown>();
-			let allScalar = true;
+			let byValue = true;
 			for (const primaryKey of allowedKeys.keys) {
 				const type = typeof primaryKey;
-				if (type === 'string' || type === 'number') allowedScalars.add(primaryKey);
-				else allScalar = false;
-				allowedIds.add(writeKeyId(primaryKey));
+				if (primaryKey === 0 || (type !== 'string' && type !== 'number')) byValue = false;
+				else allowedScalars.add(primaryKey);
 			}
-			const admits = allScalar
-				? (primaryKey: Id) =>
-						typeof primaryKey === 'string' || typeof primaryKey === 'number'
-							? allowedScalars.has(primaryKey)
-							: allowedIds.has(writeKeyId(primaryKey))
-				: (primaryKey: Id) => allowedScalars.has(primaryKey) || allowedIds.has(writeKeyId(primaryKey));
+			let admits: (primaryKey: Id) => boolean;
+			if (byValue) {
+				admits = (primaryKey: Id) => allowedScalars.has(primaryKey);
+			} else {
+				const allowedIds = new Set<unknown>();
+				for (const primaryKey of allowedKeys.keys) allowedIds.add(writeKeyId(primaryKey));
+				admits = (primaryKey: Id) => allowedScalars.has(primaryKey) || allowedIds.has(writeKeyId(primaryKey));
+			}
 			const residual = filter;
 			const state = filterState;
 			state.countsOwnEvaluations = true;
@@ -2057,7 +2058,7 @@ export class HierarchicalNavigableSmallWorld {
 							: undefined;
 				state.maxVisits =
 					configured === undefined
-						? this.allowSetVisitBudget(allowedIds.size, predicateMaxVisits, budgetEf)
+						? this.allowSetVisitBudget(allowedKeys.keys.length, predicateMaxVisits, budgetEf)
 						: budgetEf * configured;
 			}
 		}
@@ -2450,9 +2451,8 @@ type FilterState = {
 	maxVisits: number;
 	nodesVisited: number;
 	filterEvaluations: number;
-	// The keys a candidate-key plan collected, present only when one ran.
 	candidateKeys?: number;
-	// Set when the filter itself counts filterEvaluations, so admit() must not count again.
+	// The filter counts its own record-loading evaluations, so admit() must not count again.
 	countsOwnEvaluations?: boolean;
 };
 /**
