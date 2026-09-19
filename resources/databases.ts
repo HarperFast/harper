@@ -2283,6 +2283,19 @@ export function resolveDatabasePath(databaseName: string): string {
 	return join(resolveDatabaseStorageRoot(databaseName), databaseName);
 }
 
+/** Resolve a loaded database's engine without opening or creating it. */
+export function databaseUsesRocksDB(databaseName: string): boolean {
+	const dbTables = databases[databaseName];
+	if (dbTables)
+		for (const table of Object.values(dbTables)) {
+			const rootStore = (table as any)?.primaryStore?.rootStore;
+			if (rootStore) return rootStore instanceof RocksDatabase;
+		}
+	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
+	if (definedRoot) return definedRoot instanceof RocksDatabase;
+	return (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb';
+}
+
 /**
  * Get root store for a database
  * @param options
@@ -2836,8 +2849,9 @@ export async function cancelDatabaseDropsFromThread(originator: number): Promise
  * `getDatabases()` and exits when the job finishes — must close its handles explicitly, or those
  * handles linger process-wide (and, e.g., block an online `restore_backup` from confirming the
  * database is closed). LMDB is deliberately excluded: closing one worker's DBIs can invalidate
- * handles still used by another worker. Full-text activation requires a RocksDB root, so this
- * engine boundary also covers its native handles. The `system` database is intentionally left
+ * handles still used by another worker. Both supported post-commit native runtimes require RocksDB:
+ * full-text activation rejects LMDB, and HNSW sets `postCommit` only for its RocksDB-only native
+ * plane. The `system` database is intentionally left
  * open: it is non-enumerable here (skipped by the loop), is never restored online, and the exiting
  * worker may still touch the job table during teardown. Handle-close failures propagate after every
  * eligible database has been attempted, so one wedged index cannot prevent unrelated native handles
@@ -2856,17 +2870,7 @@ export async function closeLoadedDatabases(): Promise<void> {
 	}
 	// Snapshot the names first: closeDatabaseForRestore() deletes from `databases` as it goes.
 	for (const databaseName of Object.keys(databases)) {
-		const dbTables = databases[databaseName];
-		if (!dbTables) continue;
-		let isRocks = false;
-		for (const table of Object.values(dbTables)) {
-			if ((table as any)?.primaryStore?.rootStore instanceof RocksDatabase) {
-				isRocks = true;
-				break;
-			}
-		}
-		if (!isRocks && (definedDatabases?.get(databaseName) as any)?.rootStore instanceof RocksDatabase) isRocks = true;
-		if (!isRocks) continue;
+		if (!databaseUsesRocksDB(databaseName)) continue;
 		try {
 			await closeDatabaseForRestore(databaseName);
 		} catch (error) {

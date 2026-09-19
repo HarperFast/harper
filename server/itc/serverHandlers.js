@@ -17,6 +17,7 @@ const { isMainThread, threadId, workerData } = require('node:worker_threads');
 const {
 	resetDatabases,
 	closeDatabaseForRestore,
+	databaseUsesRocksDB,
 	prepareDatabaseForDrop,
 	finishDatabaseDrop,
 	cancelDatabaseDrop,
@@ -54,6 +55,7 @@ let schemaEventsSettled = Promise.resolve();
 let settleSchemaEvents;
 async function schemaHandler(event) {
 	if (workerDatabaseShutdownHasStarted()) {
+		assertSchemaEventSafeDuringWorkerShutdown(event.message);
 		await waitForWorkerDatabasesToClose();
 		return;
 	}
@@ -89,6 +91,20 @@ async function schemaHandler(event) {
 			settleSchemaEvents();
 			settleSchemaEvents = undefined;
 		}
+	}
+}
+
+function assertSchemaEventSafeDuringWorkerShutdown(message) {
+	if (
+		message?.operation === PREPARE_DATABASE_DROP_OPERATION &&
+		message.schema &&
+		!databaseUsesRocksDB(message.schema)
+	) {
+		const error = new Error(
+			`Cannot prepare LMDB database '${message.schema}' for drop while this worker is shutting down`
+		);
+		error.code = 'ERR_LMDB_DROP_DURING_WORKER_SHUTDOWN';
+		throw error;
 	}
 }
 
@@ -403,5 +419,6 @@ module.exports = serverItcHandlers;
 // `userHandler.addListener(fn)` / `schemaHandler.addListener(fn)`.
 module.exports.userHandler = userHandler;
 module.exports.schemaHandler = schemaHandler;
+module.exports.assertSchemaEventSafeDuringWorkerShutdown = assertSchemaEventSafeDuringWorkerShutdown;
 module.exports.resourceHandler = resourceHandler;
 module.exports.waitForSchemaEventsToSettle = waitForSchemaEventsToSettle;

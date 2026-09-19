@@ -4,6 +4,7 @@ import {
 	table,
 	getDatabases,
 	database,
+	databaseUsesRocksDB,
 	dropDatabase,
 	beginDatabaseDrop,
 	finishDatabaseDrop,
@@ -197,20 +198,15 @@ export class ResourceBridge extends BridgeMethods {
 
 	async dropSchema(dropSchemaObj) {
 		const databaseName = dropSchemaObj.schema;
-		const acceptWorkerDatabaseClose =
-			getDatabases()[databaseName] != null &&
-			database({ database: databaseName, table: null }) instanceof RocksDatabase;
+		const acceptWorkerDatabaseClose = getDatabases()[databaseName] != null && databaseUsesRocksDB(databaseName);
 		const attemptId = beginDatabaseDrop(databaseName);
 		const dropMessage = (operation: string) =>
 			Object.assign(new SchemaEventMsg(process.pid, operation, databaseName), { dropAttemptId: attemptId });
 		try {
-			await signalling.signalSchemaChangeToPeers(dropMessage(signalling.PREPARE_DATABASE_DROP_OPERATION), {
-				acceptWorkerDatabaseClose,
-				acknowledgementTimeoutMs: signalling.DATABASE_DROP_ACKNOWLEDGEMENT_TIMEOUT_MS,
-				includeJobWorkers: true,
-				mainFirst: true,
-				rejectOnError: true,
-			});
+			await signalling.signalSchemaChangeToPeers(
+				dropMessage(signalling.PREPARE_DATABASE_DROP_OPERATION),
+				signalling.databaseDropSignalOptions(acceptWorkerDatabaseClose)
+			);
 			await dropDatabase(databaseName);
 			finishDatabaseDrop(databaseName, threadId, attemptId);
 			await signalling.signalSchemaChange(dropMessage(OPERATIONS_ENUM.DROP_SCHEMA), {
@@ -227,13 +223,7 @@ export class ResourceBridge extends BridgeMethods {
 			try {
 				await signalling.signalSchemaChangeToPeers(
 					Object.assign(dropMessage(signalling.CANCEL_DATABASE_DROP_OPERATION), { preserveInterruptedDrop }),
-					{
-						acceptWorkerDatabaseClose,
-						acknowledgementTimeoutMs: signalling.DATABASE_DROP_ACKNOWLEDGEMENT_TIMEOUT_MS,
-						includeJobWorkers: true,
-						mainFirst: true,
-						rejectOnError: true,
-					}
+					signalling.databaseDropSignalOptions(acceptWorkerDatabaseClose)
 				);
 			} catch (cancelError) {
 				cancellationErrors.push(cancelError);

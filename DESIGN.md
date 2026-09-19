@@ -813,9 +813,9 @@ It awaits the retirement barrier and every promise returned while closing table,
 stores; the pending-close retry pass uses that same awaited path, so an unloaded database cannot be
 reported closed while a previous asynchronous handle close is still settling. LMDB databases stay
 open during worker teardown: closing one worker's DBIs can invalidate handles still used by surviving
-workers. Full-text activation requires a RocksDB root, so that engine boundary still covers its native
-handles. Only after every eligible RocksDB database closes may teardown publish the worker-wide close
-watermark.
+workers. Both supported post-commit native runtimes require RocksDB: full-text activation rejects
+LMDB, and HNSW sets `postCommit` only for its RocksDB-only native plane. Only after every eligible
+RocksDB database closes may teardown publish the worker-wide close watermark.
 
 An already-closed child store is an idempotent success, which matters for LMDB because closing an
 environment can close DBIs that are still reachable from Harper's table graph. A synchronous legacy
@@ -2769,6 +2769,8 @@ after the confirmation. Worker teardown confirmation covers RocksDB storage and 
 handles only. A RocksDB destructive barrier may therefore accept that confirmation in place of its own
 acknowledgement. An LMDB barrier may not: it still requires the worker to handle the preparation message,
 because proactively closing one worker's LMDB DBIs can invalidate handles on surviving workers.
+An LMDB preparation received after worker shutdown begins is rejected rather than acknowledged without
+closing those DBIs; the coordinator can retry after the exiting worker is gone.
 These destructive barrier acknowledgements
 use a bounded ten-minute window rather than schema gossip's 30-second default, because quiescing a large
 native writer can legitimately take longer than an ordinary cache rescan. Cancellation attempts the main

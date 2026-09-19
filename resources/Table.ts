@@ -1935,13 +1935,10 @@ export function makeTable(options) {
 					dropAttemptId: attemptId,
 				});
 			try {
-				await signalling.signalSchemaChangeToPeers(dropMessage(signalling.PREPARE_DATABASE_DROP_OPERATION), {
-					acceptWorkerDatabaseClose,
-					acknowledgementTimeoutMs: signalling.DATABASE_DROP_ACKNOWLEDGEMENT_TIMEOUT_MS,
-					includeJobWorkers: true,
-					mainFirst: true,
-					rejectOnError: true,
-				});
+				await signalling.signalSchemaChangeToPeers(
+					dropMessage(signalling.PREPARE_DATABASE_DROP_OPERATION),
+					signalling.databaseDropSignalOptions(acceptWorkerDatabaseClose)
+				);
 				await TableResource.#dropTablePrepared(
 					() => markDatabaseDropLocalSchemaClosed(databaseName, threadId, attemptId),
 					() => markDatabaseDropDestructive(databaseName, threadId, attemptId)
@@ -1961,13 +1958,7 @@ export function makeTable(options) {
 				try {
 					await signalling.signalSchemaChangeToPeers(
 						Object.assign(dropMessage(signalling.CANCEL_DATABASE_DROP_OPERATION), { preserveInterruptedDrop }),
-						{
-							acceptWorkerDatabaseClose,
-							acknowledgementTimeoutMs: signalling.DATABASE_DROP_ACKNOWLEDGEMENT_TIMEOUT_MS,
-							includeJobWorkers: true,
-							mainFirst: true,
-							rejectOnError: true,
-						}
+						signalling.databaseDropSignalOptions(acceptWorkerDatabaseClose)
 					);
 				} catch (cancelError) {
 					cancellationErrors.push(cancelError);

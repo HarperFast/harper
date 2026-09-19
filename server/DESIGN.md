@@ -90,9 +90,11 @@ calls fail with `ERR_HARPER_PROCESS_SHUTTING_DOWN`; scoped worker-type restarts 
 and it force-terminates the remaining worker set rather than waiting for application drain hooks.
 Those deliberate exits waive the unconfirmed-database-close fatal because the caller owns the
 process-level cleanup that follows. Immediate teardown is terminal-only; scoped callers must use
-`shutdownWorkers(name)` so database handles close before the process continues.
-An ordinary worker shutdown, by contrast, closes every loaded user database after application scopes
-settle. This releases native derived-index writers and rocksdb-js's process-global handle references.
+`shutdownWorkers(name)` so database handles close before the process continues; the scoped immediate
+form throws `ERR_SCOPED_IMMEDIATE_SHUTDOWN_UNSAFE`.
+An ordinary worker shutdown, by contrast, closes every loaded RocksDB user database after application
+scopes settle. This releases native derived-index writers and rocksdb-js's process-global handle references
+without closing LMDB DBIs that surviving workers still use.
 The worker reports the close as pending before it begins and retries rejections. If the close rejects
 or never settles through the external termination backstop, Harper exits for a clean supervisor
 restart instead of terminating only the worker and leaking process-global state. Job workers use the

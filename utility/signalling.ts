@@ -24,6 +24,16 @@ type SchemaSignalOptions = {
 	acknowledgementTimeoutMs?: number;
 };
 
+export function databaseDropSignalOptions(acceptWorkerDatabaseClose: boolean): SchemaSignalOptions {
+	return {
+		acceptWorkerDatabaseClose,
+		acknowledgementTimeoutMs: DATABASE_DROP_ACKNOWLEDGEMENT_TIMEOUT_MS,
+		includeJobWorkers: true,
+		mainFirst: true,
+		rejectOnError: true,
+	};
+}
+
 export function aggregateSchemaChangeErrors(errors: unknown[], message: string): AggregateError {
 	const failure: any = new AggregateError(errors, message);
 	const statusCode = (errors[0] as any)?.statusCode;
