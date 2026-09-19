@@ -3254,6 +3254,470 @@ describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => 
 	});
 });
 
+describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
+	// The vector condition is supplied explicitly and `enforceExecutionOrder` keeps it first, so every
+	// test here reaches the filterable-pushdown branch regardless of what the planner estimates. The
+	// companion conditions stay under half the graph, which is where an allow-set beats loading a
+	// record per visited node.
+	let A;
+	before(async () => {
+		A = table({
+			table: 'HNSWAllow',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tenant', indexed: true },
+				{ name: 'rank', indexed: true, type: 'Int' },
+				{ name: 'shard', indexed: true },
+				{ name: 'note' },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		for (let i = 0; i < 300; i++) {
+			await A.put(i, {
+				tenant: i % 3 === 0 ? 'a' : 'b',
+				// rank 0 is deliberately null: `null < n` holds for the record predicate's compareKeys,
+				// so the allow-set has to carry an indexed null too.
+				rank: i === 0 ? null : i,
+				shard: i < 290 ? 'wide' : 'narrow',
+				note: i % 2 === 0 ? 'keep' : 'drop',
+				vector: [i, 0],
+			});
+		}
+	});
+	after(() => A.dropTable());
+
+	/**
+	 * Capture what search.ts hands the index, and the traversal counters it hands back. The plan is
+	 * also run directly — that has to happen inside the spy, since its scans read the query's
+	 * transaction, which is released once the results are consumed.
+	 */
+	async function searchWithSpy(target, conditions, extra = {}, probe = (plan) => plan.collect(100_000)) {
+		const customIndex = A.indices.vector.customIndex;
+		const original = customIndex.search;
+		const calls = [];
+		customIndex.search = function (condition, context, options) {
+			const probed = options.candidateKeys ? probe(options.candidateKeys) : undefined;
+			const entries = original.call(this, condition, context, options);
+			calls.push({ options, entries, probed });
+			return entries;
+		};
+		const sort = { attribute: 'vector', target, distance: 'euclidean' };
+		try {
+			const results = await fromAsync(
+				A.search(
+					{
+						conditions: [{ attribute: 'vector', comparator: 'sort', ...sort }, ...conditions],
+						sort,
+						enforceExecutionOrder: true,
+						select: ['id'],
+						...extra,
+					},
+					{}
+				)
+			);
+			assert.strictEqual(calls.length, 1, 'the vector condition must be the query lead');
+			return { results, options: calls[0].options, stats: calls[0].entries, probed: calls[0].probed };
+		} finally {
+			customIndex.search = original;
+		}
+	}
+
+	it('answers an indexed equality from the allow-set, with no record loaded to admit', async () => {
+		const { results, probed, stats } = await searchWithSpy(
+			[0, 0],
+			[{ attribute: 'tenant', comparator: 'equals', value: 'a' }],
+			{ limit: 5 }
+		);
+		assert.strictEqual(probed.complete, true, 'no residual predicate is needed');
+		assert.strictEqual(probed.keys.length, 100, 'the allow-set is every tenant-a record');
+		assert.strictEqual(stats.candidateKeys, 100);
+		assert.strictEqual(stats.filterEvaluations, 0, 'admission never loads a record');
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[0, 3, 6, 9, 12]
+		);
+	});
+
+	it('builds the allow-set from each range comparator', async () => {
+		for (const [comparator, value, target, expected] of [
+			// id 0 has a null rank, which `lt`/`le` must still admit — an index range starting above
+			// null would drop a row the record predicate keeps.
+			['lt', 100, [0, 0], [0, 1, 2, 3, 4]],
+			['le', 99, [0, 0], [0, 1, 2, 3, 4]],
+			['ge', 200, [200, 0], [200, 201, 202, 203, 204]],
+			['gt', 199, [200, 0], [200, 201, 202, 203, 204]],
+			['between', [100, 199], [150.3, 0], [150, 151, 149, 152, 148]],
+		]) {
+			const { results, stats } = await searchWithSpy(target, [{ attribute: 'rank', comparator, value }], {
+				limit: 5,
+			});
+			assert.strictEqual(stats.filterEvaluations, 0, `${comparator} must be answered by the allow-set`);
+			assert.strictEqual(stats.candidateKeys, 100, `${comparator} selects 100 records`);
+			assert.deepStrictEqual(
+				results.map((record) => record.id),
+				expected,
+				`unexpected results for ${comparator}`
+			);
+		}
+	});
+
+	it('counts the null block a lt/le range reads, so a mostly-null column is not mis-estimated', async () => {
+		const N = table({
+			table: 'HNSWAllowNulls',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'rank', indexed: true, type: 'Int' },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		try {
+			// 200 of 300 rows have a null rank. The range starts at null and reads that block first, so
+			// an estimate taken over `[true, 50)` would size the budget at 50 and overrun it on entry 51.
+			for (let i = 0; i < 300; i++) await N.put(i, { rank: i < 200 ? null : i, vector: [i, 0] });
+			const customIndex = N.indices.vector.customIndex;
+			const original = customIndex.search;
+			let plan;
+			customIndex.search = function (condition, context, options) {
+				plan = options.candidateKeys && options.candidateKeys.collect(100_000);
+				return original.call(this, condition, context, options);
+			};
+			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			try {
+				await fromAsync(
+					N.search(
+						{
+							conditions: [
+								{ attribute: 'vector', comparator: 'sort', ...sort },
+								{ attribute: 'rank', comparator: 'lt', value: 250 },
+							],
+							sort,
+							enforceExecutionOrder: true,
+							select: ['id'],
+							limit: 1,
+						},
+						{}
+					)
+				);
+			} finally {
+				customIndex.search = original;
+			}
+			assert.strictEqual(plan.keys.length, 250, 'the 200 nulls plus ranks 200-249');
+			assert.strictEqual(plan.complete, true);
+		} finally {
+			N.dropTable();
+		}
+	});
+
+	it('unions a nested OR group into one allow-set', async () => {
+		const { results, stats } = await searchWithSpy(
+			[0, 0],
+			[
+				{
+					operator: 'or',
+					conditions: [
+						{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+						{ attribute: 'rank', comparator: 'equals', value: 7 },
+					],
+				},
+			],
+			{ limit: 6 }
+		);
+		assert.strictEqual(stats.filterEvaluations, 0);
+		assert.strictEqual(stats.candidateKeys, 101, 'rank 7 joins the 100 tenant-a records');
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[0, 3, 6, 7, 9, 12]
+		);
+	});
+
+	it('keeps a non-indexed sibling residual and gates it behind the allow-set', async () => {
+		const { results, probed, stats } = await searchWithSpy(
+			[0, 0],
+			[
+				{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+				{ attribute: 'note', comparator: 'equals', value: 'keep' },
+			],
+			{ limit: 4, select: ['id', 'note'] }
+		);
+		assert.strictEqual(probed.complete, false, 'an unindexed sibling stays residual');
+		assert(stats.filterEvaluations > 0, 'the residual predicate still runs');
+		assert(
+			stats.filterEvaluations <= stats.candidateKeys,
+			`the allow-set gates the residual (${stats.filterEvaluations} loads for ${stats.candidateKeys} keys)`
+		);
+		// note 'keep' is even, tenant 'a' is a multiple of 3 — so the multiples of 6.
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[0, 6, 12, 18]
+		);
+	});
+
+	it('drops a term too wide for the scan budget instead of abandoning the whole set', async () => {
+		// `shard = 'wide'` matches 290 of 300, past what is left of a 150-entry budget once the tenant
+		// term is scanned. Abandoning the set there would spend the scan AND run the full predicate.
+		const { results, probed, stats } = await searchWithSpy(
+			[0, 0],
+			[
+				{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+				{ attribute: 'shard', comparator: 'equals', value: 'wide' },
+			],
+			{ limit: 3, select: ['id', 'shard'] },
+			(plan) => ({ capped: plan.collect(150), full: plan.collect(100_000) })
+		);
+		assert.strictEqual(probed.capped.complete, false, 'a dropped term leaves the set incomplete');
+		assert.strictEqual(probed.capped.keys.length, 100, 'only the tenant term was scanned');
+		assert.strictEqual(probed.full.complete, true, 'given the whole budget both terms are scanned');
+		assert.strictEqual(probed.full.keys.length, 97, 'tenant a minus the three narrow-shard multiples of 3');
+		assert(stats.filterEvaluations >= 0);
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[0, 3, 6]
+		);
+	});
+
+	it('a record guard forces the residual path and still fills the limit', async () => {
+		const { results, probed } = await searchWithSpy(
+			[0, 0],
+			[{ attribute: 'tenant', comparator: 'equals', value: 'a' }],
+			{ limit: 3, rowFilter: (record) => record.rank % 30 === 21 }
+		);
+		assert.strictEqual(probed.complete, false, 'an opaque guard can never be covered');
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[21, 51, 81]
+		);
+	});
+
+	it('collect() aborts rather than overrunning the budget it was given', async () => {
+		const { probed } = await searchWithSpy(
+			[0, 0],
+			[{ attribute: 'tenant', comparator: 'equals', value: 'a' }],
+			{ limit: 1 },
+			(plan) => ({ capped: plan.collect(1), full: plan.collect(100_000) })
+		);
+		assert.strictEqual(probed.capped, null, 'the narrowest term overrunning gives up instead of reading on');
+		assert.strictEqual(probed.full.keys.length, 100);
+		assert.strictEqual(probed.full.complete, true);
+	});
+
+	it('leaves a comparator no index range answers exactly unplanned', async () => {
+		const { probed } = await searchWithSpy(
+			[0, 0],
+			[
+				{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+				{ attribute: 'rank', comparator: 'ne', value: 3 },
+			],
+			{ limit: 1 }
+		);
+		assert.strictEqual(probed.complete, false, 'ne is answered by a scan plus a filter, so it stays residual');
+		assert.strictEqual(probed.keys.length, 100, 'only the equality became a scan');
+	});
+
+	it('composite primary keys that flatten alike are both admitted', async () => {
+		const C = table({
+			table: 'HNSWAllowComposite',
+			database: 'test',
+			attributes: [
+				{ name: 'left', isPrimaryKey: true },
+				{ name: 'right', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'tenant', indexed: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		try {
+			// ['a', 'b\0c'] and ['a\0b', 'c'] join to the same string under flattenKey; only storage key
+			// identity keeps them apart, and collapsing them would lose one real match.
+			await C.put(['a', 'b\0c'], { name: 'first', tenant: 'a', vector: [1, 0] });
+			await C.put(['a\0b', 'c'], { name: 'second', tenant: 'a', vector: [2, 0] });
+			await C.put(['z', 'z'], { name: 'other', tenant: 'b', vector: [3, 0] });
+			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			const results = await fromAsync(
+				C.search(
+					{
+						conditions: [
+							{ attribute: 'vector', comparator: 'sort', ...sort },
+							{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+						],
+						sort,
+						enforceExecutionOrder: true,
+						select: ['name'],
+						limit: 5,
+					},
+					{}
+				)
+			);
+			assert.deepStrictEqual(
+				results.map((record) => record.name),
+				['first', 'second']
+			);
+		} finally {
+			C.dropTable();
+		}
+	});
+});
+
+describeUnlessLmdbFilter('HNSW allow-set admission (#2688)', () => {
+	function buildLine(count) {
+		const hnsw = new HierarchicalNavigableSmallWorld(newMockIndexStore(), {
+			distance: 'euclidean',
+			quantization: 'none',
+			optimizeRouting: 0,
+		});
+		for (let i = 0; i < count; i++) hnsw.index(i, [i], null, {});
+		return hnsw;
+	}
+	function plan(keys, complete = true, collect) {
+		return {
+			estimatedCount: keys.length,
+			collect: collect ?? (() => ({ keys: [...keys], complete })),
+		};
+	}
+	const even = (primaryKey) => Number(primaryKey) % 2 === 0;
+	function search(hnsw, options) {
+		return hnsw.search({ target: [0], comparator: 'sort', descending: false }, { transaction: undefined }, options);
+	}
+
+	it('a complete plan replaces the predicate entirely', () => {
+		const hnsw = buildLine(200);
+		const allowed = [];
+		for (let i = 0; i < 200; i += 2) allowed.push(i);
+		let predicateCalls = 0;
+		const results = search(hnsw, {
+			filter: (primaryKey) => {
+				predicateCalls++;
+				return even(primaryKey);
+			},
+			candidateKeys: plan(allowed),
+		});
+		assert.strictEqual(predicateCalls, 0, "the caller's predicate is never reached");
+		assert.strictEqual(results.filterEvaluations, 0, 'no record is loaded to admit');
+		assert.strictEqual(results.candidateKeys, 100);
+		assert.deepStrictEqual(
+			results.slice(0, 5).map((entry) => Number(entry.key)),
+			[0, 2, 4, 6, 8]
+		);
+	});
+
+	it('an empty allow-set returns nothing under the unwidened visit budget', () => {
+		const hnsw = buildLine(200);
+		let predicateCalls = 0;
+		const results = search(hnsw, {
+			filter: () => {
+				predicateCalls++;
+				return true;
+			},
+			candidateKeys: plan([]),
+		});
+		assert.strictEqual(results.length, 0, 'a zero-match filter admits nothing');
+		assert.strictEqual(predicateCalls, 0);
+		assert.strictEqual(results.candidateKeys, 0);
+		assert.strictEqual(results.filterEvaluations, 0);
+	});
+
+	it('declines a plan too broad to pay for itself', () => {
+		const hnsw = buildLine(200);
+		let collected = false;
+		const results = search(hnsw, {
+			filter: even,
+			candidateKeys: {
+				estimatedCount: 150,
+				collect() {
+					collected = true;
+					return { keys: [], complete: true };
+				},
+			},
+		});
+		assert.strictEqual(collected, false, 'a plan over half the graph is not worth scanning');
+		assert(results.filterEvaluations > 0, 'the predicate path ran instead');
+		assert(results.every((entry) => even(entry.key)));
+	});
+
+	it('takes the predicate path when the candidate scan overruns or fails', () => {
+		for (const collect of [
+			() => null,
+			() => {
+				throw new Error('the sibling index started rebuilding');
+			},
+		]) {
+			const hnsw = buildLine(200);
+			const results = search(hnsw, { filter: even, candidateKeys: plan([0, 2, 4], true, collect) });
+			assert(results.length > 0, 'a failed allow-set build must not fail the query');
+			assert(
+				results.every((entry) => even(entry.key)),
+				'the predicate still decides admission'
+			);
+			assert(results.filterEvaluations > 0, 'the predicate path ran');
+		}
+	});
+
+	it('admits a key the two sides of the query decode differently', () => {
+		// The index scan decodes an int64 as the number ordered-binary encodes it as, while the
+		// traversal reports the BigInt its own decoder produced. Only storage identity matches the
+		// two, so a by-value allow-set has to fall through to it rather than rejecting the node.
+		const nodes = new Map();
+		let entryPoint;
+		const bigIntSafeStore = {
+			encoder: { useFloat32: false },
+			getSync(key) {
+				if (key === Symbol.for('entryPoint')) return entryPoint;
+				return nodes.get(typeof key === 'number' ? key : `k${String(key)}`);
+			},
+			put(key, value) {
+				if (key === Symbol.for('entryPoint')) return void (entryPoint = value);
+				nodes.set(typeof key === 'number' ? key : `k${String(key)}`, value);
+			},
+			remove(key) {
+				if (key === Symbol.for('entryPoint')) return void (entryPoint = undefined);
+				nodes.delete(typeof key === 'number' ? key : `k${String(key)}`);
+			},
+			*getRange({ start = 0, end = Infinity } = {}) {
+				for (const [k, v] of nodes) if (typeof k === 'number' && k >= start && k <= end) yield { key: k, value: v };
+			},
+			getKeys: () => [],
+			getUserSharedBuffer: (_name, buffer) => buffer,
+		};
+		const hnsw = new HierarchicalNavigableSmallWorld(bigIntSafeStore, {
+			distance: 'euclidean',
+			quantization: 'none',
+			optimizeRouting: 0,
+		});
+		for (let i = 0; i < 60; i++) hnsw.index(BigInt(i), [i], null, {});
+		const results = hnsw.search(
+			{ target: [0], comparator: 'sort', descending: false },
+			{ transaction: undefined },
+			{ filter: () => true, candidateKeys: plan([2, 4, 6, 8, 10]) }
+		);
+		assert.deepStrictEqual(
+			results.slice(0, 5).map((entry) => Number(entry.key)),
+			[2, 4, 6, 8, 10],
+			'a number allow-set must match the BigInt keys the graph reports'
+		);
+	});
+
+	it('an incomplete plan keeps the predicate behind the allow-set', () => {
+		const hnsw = buildLine(200);
+		const allowed = [];
+		for (let i = 0; i < 40; i++) allowed.push(i);
+		let evaluated = 0;
+		const results = search(hnsw, {
+			filter: (primaryKey) => {
+				evaluated++;
+				return even(primaryKey);
+			},
+			candidateKeys: plan(allowed, false),
+		});
+		assert(evaluated > 0 && evaluated <= 40, `the predicate saw only allow-set members, got ${evaluated}`);
+		assert.strictEqual(results.filterEvaluations, evaluated);
+		assert.deepStrictEqual(
+			results.slice(0, 5).map((entry) => Number(entry.key)),
+			[0, 2, 4, 6, 8]
+		);
+	});
+});
+
 async function fromAsync(iterable) {
 	let results = [];
 	for await (let entry of iterable) {
