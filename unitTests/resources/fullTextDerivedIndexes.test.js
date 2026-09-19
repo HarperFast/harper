@@ -205,6 +205,7 @@ describe('@fullText derived-index activation', () => {
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'unavailable', 30_000);
 		assert.strictEqual(fullTextDerivedIndexReadiness(Product, 'search').reason, 'backend-failed');
 		const readinessId = fullTextDerivedIndexReadinessId(Product, Product.fullTextIndexes[0]);
+		global.gc?.();
 		await waitFor(() => readDerivedIndexReadiness(Product.auditStore, readinessId).state === 'unavailable', 30_000);
 		const sharedReadiness = readDerivedIndexReadiness(Product.auditStore, readinessId);
 		assert.strictEqual(sharedReadiness.state, 'unavailable');

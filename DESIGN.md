@@ -2960,7 +2960,12 @@ attempt count, rebuild request and lag-exceeded flag, then the `BigInt64` owner-
 word is read with a plain `Atomics.load`; nothing needs two of them atomically, so there is no
 sequence lock — the owner stores reason and attempts before state. The shared reason is a code,
 never a message. `readDerivedIndexReadiness(logStore, id)` reads it on any worker without a runtime;
-a query path uses it to choose between a 503 and an answer. `Atomics` over rocksdb-js's external
+a query path uses it to choose between a 503 and an answer. Each active table generation retains one
+external wrapper per store and readiness id until its installation closes; otherwise a failure before
+a runner exists can release the allocation and let a later reader re-seed it as `unknown`. Replacement
+installations reference-count the same wrapper so closing the old generation cannot release it under
+the new one.
+`Atomics` over rocksdb-js's external
 `ArrayBuffer` wrappers is the same dependency primary-key allocation (`Table.ts`), blob holds
 (`blob.ts`) and HNSW node ids already carry; wakes use the binding's `notify()`, never
 `Atomics.wait`. A successor publishes `ready` on acquisition one `setImmediate` before its lazy

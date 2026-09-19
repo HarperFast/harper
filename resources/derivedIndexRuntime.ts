@@ -2242,18 +2242,51 @@ function readinessBuffer(
 }
 
 type SharedViews = {
+	buffer: SharedReadinessBuffer;
 	words: Int32Array;
 	epoch: BigInt64Array;
 };
 
-function sharedViewsOf(buffer: ArrayBufferLike): SharedViews {
+type RetainedSharedViews = {
+	views: SharedViews;
+	references: number;
+};
+
+function sharedViewsOf(buffer: SharedReadinessBuffer): SharedViews {
 	return {
+		buffer,
 		words: new Int32Array(buffer, 0, READINESS_WORDS),
 		epoch: new BigInt64Array(buffer, READINESS_EPOCH_OFFSET, 1),
 	};
 }
 
-const readinessViews = new WeakMap<object, Map<string, SharedViews>>();
+const readinessViews = new WeakMap<object, Map<string, RetainedSharedViews>>();
+
+function sharedReadinessViews(logStore: RocksTransactionLogStore, backendId: string): SharedViews {
+	const retained = readinessViews.get(logStore)?.get(backendId);
+	return retained?.views ?? sharedViewsOf(readinessBuffer(logStore, backendId));
+}
+
+/** Keep one readiness wrapper alive while a table generation can publish or query its state. */
+export function retainDerivedIndexReadiness(logStore: RocksTransactionLogStore, backendId: string): () => void {
+	let byBackend = readinessViews.get(logStore);
+	if (!byBackend) readinessViews.set(logStore, (byBackend = new Map()));
+	let retained = byBackend.get(backendId);
+	if (!retained) {
+		retained = { views: sharedViewsOf(readinessBuffer(logStore, backendId)), references: 0 };
+		byBackend.set(backendId, retained);
+	}
+	retained.references++;
+	let lease: RetainedSharedViews | undefined = retained;
+	return () => {
+		const retained = lease;
+		if (!retained) return;
+		lease = undefined;
+		if (--retained.references > 0) return;
+		if (byBackend.get(backendId) === retained) byBackend.delete(backendId);
+		if (byBackend.size === 0) readinessViews.delete(logStore);
+	};
+}
 
 function readReadiness({ words, epoch }: SharedViews): DerivedIndexReadiness {
 	const state = READINESS_STATES[Atomics.load(words, READINESS_STATE)] ?? 'unknown';
@@ -2272,11 +2305,7 @@ export function readDerivedIndexReadiness(
 	logStore: RocksTransactionLogStore,
 	backendId: string
 ): DerivedIndexReadiness {
-	let byBackend = readinessViews.get(logStore);
-	if (!byBackend) readinessViews.set(logStore, (byBackend = new Map()));
-	let views = byBackend.get(backendId);
-	if (!views) byBackend.set(backendId, (views = sharedViewsOf(readinessBuffer(logStore, backendId))));
-	return readReadiness(views);
+	return readReadiness(sharedReadinessViews(logStore, backendId));
 }
 
 /** Publish a lifecycle state before a runner exists, so every worker stops trusting stale readiness. */
@@ -2286,8 +2315,7 @@ export function publishDerivedIndexReadiness(
 	state: DerivedIndexReadinessState,
 	reason: DerivedIndexReadinessReason = 'none'
 ): void {
-	const buffer = readinessBuffer(logStore, backendId);
-	const { words } = sharedViewsOf(buffer);
+	const { buffer, words } = sharedReadinessViews(logStore, backendId);
 	Atomics.store(words, READINESS_REASON, READINESS_REASONS.indexOf(reason));
 	Atomics.store(words, READINESS_STATE, READINESS_STATES.indexOf(state));
 	buffer.notify?.();

@@ -6,7 +6,12 @@ import type { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { createNativeFullTextDerivedIndexBackend } from './NativeFullTextDerivedIndexLifecycle.ts';
 import type { NativeFullTextModule } from './fullTextNativeBinding.ts';
 import { registerDerivedIndexTables } from './derivedIndexRegistry.ts';
-import { DerivedIndexRuntime, publishDerivedIndexReadiness, readDerivedIndexReadiness } from './derivedIndexRuntime.ts';
+import {
+	DerivedIndexRuntime,
+	publishDerivedIndexReadiness,
+	readDerivedIndexReadiness,
+	retainDerivedIndexReadiness,
+} from './derivedIndexRuntime.ts';
 import { HnswDerivedIndexBackend, type DerivedNativeIndex } from './indexes/hnswDerivedIndex.ts';
 import { fullTextStorageDefinition, type FullTextDefinition } from './fullTextSchema.ts';
 import { ownsDerivedIndexWriters } from '../server/threads/manageThreads.js';
@@ -113,6 +118,7 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 	let closeComplete = false;
 	let reusable = true;
 	const readinessOverrides = new Map<string, ReturnType<typeof readDerivedIndexReadiness>>();
+	const readinessReleases: Array<() => void> = [];
 	const installed: Installed = {
 		Table,
 		canReuse: () => reusable && !closing,
@@ -146,6 +152,7 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 				}
 				if (failures.length === 1) throw failures[0];
 				if (failures.length) throw new AggregateError(failures, 'derived index registrations failed to shut down');
+				for (const releaseReadiness of readinessReleases) releaseReadiness();
 				closeComplete = true;
 				if (registered.tables.get(Table.tableId) === installed) registered.tables.delete(Table.tableId);
 				if (registered.installations.get(Table.tableId) === installed) registered.installations.delete(Table.tableId);
@@ -159,6 +166,10 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 	registered.tables.set(Table.tableId, installed);
 	registered.installations.set(Table.tableId, installed);
 	try {
+		for (const definition of fullTextDefinitions)
+			readinessReleases.push(
+				retainDerivedIndexReadiness(Table.auditStore, fullTextDerivedIndexReadinessId(Table, definition))
+			);
 		for (const attribute of hnswAttributes) registerHnsw(Table, attribute, registered, install);
 		for (const definition of ownsDerivedIndexWriters(Table.primaryStore.rootStore.path) ? fullTextDefinitions : []) {
 			const readinessId = fullTextDerivedIndexReadinessId(Table, definition);
