@@ -71,7 +71,7 @@ describe('worker database-close safety status', function () {
 		}
 	});
 
-	it('publishes current close status when a peer channel is added after the startup snapshot', async function () {
+	it('publishes conservative then confirmed close status on a peer channel added after the startup snapshot', async function () {
 		const messages = [];
 		const worker = startStatusWorker(messages);
 		const channel = new MessageChannel();
@@ -79,12 +79,15 @@ describe('worker database-close safety status', function () {
 		channel.port2.on('message', (message) => peerMessages.push(message));
 		try {
 			await waitFor(() => messages.some((message) => message.type === 'fixture-ready'));
-			worker.postMessage({ type: 'fixture-confirm-database-close' });
-			await waitFor(() => worker.databaseCloseConfirmed === true);
 			worker.postMessage({ type: 'added-port', port: channel.port1, threadId: 999 }, [channel.port1]);
+			await waitFor(() =>
+				peerMessages.some((message) => message.type === 'worker-database-close-status' && message.pending === true)
+			);
+			worker.postMessage({ type: 'fixture-confirm-database-close' });
 			await waitFor(() =>
 				peerMessages.some((message) => message.type === 'worker-database-close-status' && message.pending === false)
 			);
+			await waitFor(() => worker.databaseCloseConfirmed === true);
 		} finally {
 			channel.port2.close();
 			worker.wasShutdown = true;
@@ -149,29 +152,37 @@ describe('worker database-close safety status', function () {
 		const worker = startStatusWorker(messages);
 		let exited = false;
 		let stopping;
+		let testError;
 		worker.once('exit', () => {
 			exited = true;
 		});
 		try {
-			await waitFor(() => messages.some((message) => message.type === 'fixture-ready'));
-			worker.postMessage({ type: 'fixture-block' });
-			await waitFor(() => messages.some((message) => message.type === 'fixture-blocking'));
-			stopping = stopWorker(worker);
-			assert.strictEqual(worker.databaseClosePending, true, 'main must mark handle closure pending before SHUTDOWN');
-			await new Promise((resolve) => setTimeout(resolve, 250));
-			assert.strictEqual(exited, false, 'the ordinary timeout terminated a worker that could still own handles');
-			assert.ok(worker.databaseCloseSafetyDeadline >= worker.databaseCloseStartedAt + DATABASE_QUIESCENCE_TIMEOUT_MS);
-		} finally {
-			if (!exited) {
-				worker.wasShutdown = true;
-				await worker.terminate();
-			}
-			await stopping;
 			try {
-				assert.deepStrictEqual(exitCodes, [1], 'an unconfirmed worker exit must terminate Harper');
+				await waitFor(() => messages.some((message) => message.type === 'fixture-ready'));
+				worker.postMessage({ type: 'fixture-block' });
+				await waitFor(() => messages.some((message) => message.type === 'fixture-blocking'));
+				stopping = stopWorker(worker);
+				assert.strictEqual(worker.databaseClosePending, true, 'main must mark handle closure pending before SHUTDOWN');
+				await new Promise((resolve) => setTimeout(resolve, 250));
+				assert.strictEqual(exited, false, 'the ordinary timeout terminated a worker that could still own handles');
+				assert.ok(worker.databaseCloseSafetyDeadline >= worker.databaseCloseStartedAt + DATABASE_QUIESCENCE_TIMEOUT_MS);
+			} catch (error) {
+				testError = error;
 			} finally {
-				Object.defineProperty(process, '_realExit', originalRealExit);
+				try {
+					if (!exited) {
+						worker.wasShutdown = true;
+						await worker.terminate();
+					}
+					await stopping;
+				} catch (error) {
+					testError ??= error;
+				}
 			}
+			if (testError) throw testError;
+			assert.deepStrictEqual(exitCodes, [1], 'an unconfirmed worker exit must terminate Harper');
+		} finally {
+			Object.defineProperty(process, '_realExit', originalRealExit);
 		}
 	});
 

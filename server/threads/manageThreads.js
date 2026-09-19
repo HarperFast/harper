@@ -698,7 +698,7 @@ function startWorker(path, options = {}) {
 	});
 	worker.on('exit', (_code) => {
 		if (worker.databaseCloseSafetyTimer) clearTimeout(worker.databaseCloseSafetyTimer);
-		if (worker.databaseClosePending && !worker.databaseCloseConfirmed) {
+		if (worker.databaseClosePending && !worker.databaseCloseConfirmed && !worker.allowUnconfirmedDatabaseCloseExit) {
 			harperLogger.fatal(
 				`Worker ${worker.threadId} exited before confirming release of process-global database handles; exiting Harper`
 			);
@@ -1075,6 +1075,9 @@ function beginProcessShutdown() {
 }
 async function shutdownWorkersNow(name) {
 	if (name == null) beginProcessShutdown();
+	// This API deliberately tears the worker set down immediately; its caller owns the process-level
+	// cleanup that follows, so these exits are not evidence of an unexpected stranded-handle state.
+	for (const worker of workers) worker.allowUnconfirmedDatabaseCloseExit = true;
 	shutdownWorkers(name); // set the state of all the workers to shut down. this should finish the important stuff synchronously
 	if (isBun) {
 		// worker.terminate() triggers a NAPI segfault in Bun; ask workers to self-exit instead
@@ -2027,7 +2030,9 @@ function addPort(port, keepRef, isJobWorker) {
 				addPort(message.port, false, message.isJobWorker);
 				// The startup snapshot can race this peer's close confirmation. Publish the
 				// current state on the new channel so its coordinator cannot retain stale state.
-				message.port.postMessage({ type: WORKER_DATABASE_CLOSE_STATUS, pending: workerDatabaseClosePending });
+				try {
+					message.port.postMessage({ type: WORKER_DATABASE_CLOSE_STATUS, pending: !workerDatabasesClosed });
+				} catch {}
 			} else if (message.type === ACKNOWLEDGEMENT) {
 				let completion = awaitingResponses.get(message.id);
 				if (completion) {
