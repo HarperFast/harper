@@ -3,17 +3,18 @@
 // dispatch/lib/reviewGate.mjs via ReviewApi). This check makes coverage REPORTING visible
 // on the PR itself at open/edit time. It deliberately cannot replicate the gate: CI never
 // sees the fleet review's verdict, so demanding coverage here is STRICTER than policy
-// (the gate waives coverage for clean reviews). Hence two modes:
+// (the gate waives coverage for clean reviews). Review coverage hence has two modes:
 //   report  (default) — always green; the check text and job summary carry the count
 //   enforce — red when a member-authored, AI-authored, non-trivial, non-draft PR reports <2
+// PR-format and framing-verdict policy are controlled independently by their own inputs.
 // Run from the JavaScript action in this directory, or locally:
 //   node .github/actions/review-coverage/ci-review-coverage.mjs --event <payload.json> [--mode enforce]
 
 import { appendFileSync, readFileSync, statSync } from 'node:fs';
 import { validateNormalizedPrFiles } from './collectPrFiles.mjs';
 import { evaluateCiCoverage } from './evaluateCiCoverage.mjs';
+import { evaluateFramingVerdict, parseFramingPaths } from './evaluateFramingVerdict.mjs';
 import { evaluatePrFormat } from './evaluatePrFormat.mjs';
-import { classifyPullRequest } from './prExemption.mjs';
 import { EASY_MAX_FILES, EASY_MAX_LINES } from './prExemption.mjs';
 import { COVERAGE_REQUIRED } from './reviewGate.mjs';
 
@@ -24,8 +25,8 @@ function arg(name, fallback = '') {
 	return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
 
-function readPrFiles(pr, formatMode, superseded) {
-	if (formatMode === 'off' || superseded || classifyPullRequest(pr).exempt) return null;
+function readPrFiles(superseded) {
+	if (superseded) return null;
 	const ready = arg('pr-files-ready', process.env.INPUT_PR_FILES_READY || '').toLowerCase() === 'true';
 	const file = arg('pr-files', process.env.INPUT_PR_FILES || '');
 	if (!ready || !file) return null;
@@ -42,7 +43,7 @@ function boundInt(flag, envVar, fallback) {
 	return value;
 }
 
-function main(mode, formatMode) {
+function main(mode, formatMode, framingMode) {
 	const eventPath = arg('event', process.env.GITHUB_EVENT_PATH ?? '');
 	if (!eventPath) throw new Error('no event payload (--event or GITHUB_EVENT_PATH)');
 	const event = JSON.parse(readFileSync(eventPath, 'utf8'));
@@ -56,13 +57,22 @@ function main(mode, formatMode) {
 		maxFiles: boundInt('easy-max-files', 'INPUT_EASY_MAX_FILES', EASY_MAX_FILES),
 	};
 	const r = evaluateCiCoverage(pr, { mode, required, easy });
+	let framingPaths = [];
+	let framingConfigurationProblem = '';
+	try {
+		framingPaths = parseFramingPaths(arg('framing-paths', process.env.INPUT_FRAMING_PATHS || ''));
+	} catch (error) {
+		framingConfigurationProblem = `invalid framing configuration (${error instanceof Error ? error.message : String(error)})`;
+	}
 	const superseded = arg('pr-files-superseded', process.env.INPUT_PR_FILES_SUPERSEDED || '').toLowerCase() === 'true';
 	let prFiles = null;
 	let evidenceProblem = '';
-	try {
-		prFiles = readPrFiles(pr, formatMode, superseded);
-	} catch (error) {
-		evidenceProblem = `PR-files evidence is unavailable (${error instanceof Error ? error.message : String(error)})`;
+	if (formatMode !== 'off' || framingPaths.length > 0) {
+		try {
+			prFiles = readPrFiles(superseded);
+		} catch (error) {
+			evidenceProblem = `PR-files evidence is unavailable (${error instanceof Error ? error.message : String(error)})`;
+		}
 	}
 	const format = evaluatePrFormat(pr, {
 		mode: formatMode,
@@ -72,6 +82,20 @@ function main(mode, formatMode) {
 		evidenceProblem,
 		superseded,
 	});
+	const framing = framingConfigurationProblem
+		? {
+				pass: framingMode !== 'enforce',
+				compliant: false,
+				exempt: '',
+				detail: framingConfigurationProblem,
+			}
+		: evaluateFramingVerdict(pr, {
+				mode: framingMode,
+				paths: framingPaths,
+				prFiles,
+				evidenceProblem,
+				superseded,
+			});
 
 	const lines = [
 		`### Cross-model review coverage — ${r.pass ? (r.exempt ? '✅ exempt' : r.compliant ? '✅' : '⚠️ report-only') : '❌'}`,
@@ -98,6 +122,16 @@ function main(mode, formatMode) {
 			'See `.github/actions/review-coverage/README.md` for the format and remediation.'
 		);
 	}
+	if (framingPaths.length > 0 || framingConfigurationProblem) {
+		lines.push(
+			'',
+			`### Framing verdict — ${framing.exempt ? '✅ exempt' : framing.compliant ? '✅' : framingMode === 'enforce' ? '❌' : '⚠️ report-only'}`,
+			'',
+			framing.exempt ? `_${framing.exempt}_` : framing.detail,
+			'',
+			'Configured core-shared paths require `Framing-Verdict: chosen-approach-sound`, or a non-clearing verdict recorded under `## For the human reviewer`.'
+		);
+	}
 	if (process.env.GITHUB_STEP_SUMMARY) {
 		try {
 			appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n');
@@ -110,6 +144,8 @@ function main(mode, formatMode) {
 		console.log(
 			`pr-format [${formatMode}]: ${format.exempt ? `exempt: ${format.exempt}` : format.compliant ? 'compliant' : format.problems.join('; ')}`
 		);
+	if (framingPaths.length > 0 || framingConfigurationProblem)
+		console.log(`framing-verdict [${framingMode}]: ${framing.exempt ? `exempt: ${framing.exempt}` : framing.detail}`);
 	if (r.pass && !r.exempt && !r.compliant)
 		console.error(
 			`::warning::${r.detail} — the dispatch gate will block at review time if the fleet's review finds issues`
@@ -126,25 +162,35 @@ function main(mode, formatMode) {
 	} else if (!format.compliant && !format.exempt) {
 		for (const problem of format.problems) console.error(`::warning::PR description: ${problem}`);
 	}
+	if (!framing.pass) {
+		console.error(`::error::Framing verdict: ${framing.detail}`);
+		process.exitCode = 1;
+	} else if (!framing.compliant && !framing.exempt) {
+		console.error(`::warning::Framing verdict: ${framing.detail}`);
+	}
 }
 
 const mode = arg('mode', process.env.INPUT_MODE || process.env.REVIEW_COVERAGE_MODE || 'report').toLowerCase();
 const formatMode = arg('format-mode', process.env.INPUT_FORMAT_MODE || 'off').toLowerCase();
+const framingMode = arg('framing-mode', process.env.INPUT_FRAMING_MODE || 'report').toLowerCase();
 if (!['report', 'enforce'].includes(mode)) {
 	console.error(`::error::review-coverage: unknown mode '${mode}' (report|enforce)`);
 	process.exitCode = 1;
 } else if (!['off', 'report', 'enforce'].includes(formatMode)) {
 	console.error(`::error::review-coverage: unknown format mode '${formatMode}' (off|report|enforce)`);
 	process.exitCode = 1;
+} else if (!['report', 'enforce'].includes(framingMode)) {
+	console.error(`::error::review-coverage: unknown framing mode '${framingMode}' (report|enforce)`);
+	process.exitCode = 1;
 } else {
 	try {
-		main(mode, formatMode);
+		main(mode, formatMode, framingMode);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(
-			`review-coverage: ${message}${mode === 'enforce' || formatMode === 'enforce' ? '' : ' (passing — report mode fails only on policy)'}`
+			`review-coverage: ${message}${mode === 'enforce' || formatMode === 'enforce' || framingMode === 'enforce' ? '' : ' (passing — report mode fails only on policy)'}`
 		);
-		if (mode === 'enforce' || formatMode === 'enforce') {
+		if (mode === 'enforce' || formatMode === 'enforce' || framingMode === 'enforce') {
 			console.error(`::error::review-coverage could not evaluate this PR (${message}) — enforce mode fails closed`);
 			process.exitCode = 1;
 		}
