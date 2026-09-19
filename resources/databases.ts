@@ -654,6 +654,10 @@ type DatabaseDropMarker = { originator: number; attemptId: string; localSchemaCl
 const databasesBeingDropped = new Map<string, DatabaseDropMarker>();
 const databaseDropPreparations = new Map<string, Promise<boolean>>();
 const pendingDatabaseStoreCloses = new Map<string, Map<any, string>>();
+const pendingDatabaseDerivedIndexCloses = new Map<
+	string,
+	Map<any, { tableName: string; closeStores(): Promise<void> }>
+>();
 manageThreads.onThreadExit((originator) => {
 	void cancelDatabaseDropsFromThread(originator).catch((error) =>
 		logger.error(`Could not cancel database drops owned by exited thread ${originator}`, error)
@@ -716,25 +720,59 @@ function releaseQuarantinedTable(databaseName: string, tableName: string, Table:
 	const runtime = Table.derivedIndexRuntime;
 	Table.derivedIndexRuntime = undefined;
 	Table.cleanup?.();
-	const closeStores = async () => {
-		for (const [store, description] of stores) {
-			if (!store) continue;
-			try {
-				await store.close?.();
-				pendingCloses.delete(store);
-			} catch (error) {
-				logger.warn(`Error closing ${description} while quarantining ${databaseName}.${tableName}:`, error);
+	let storesClosing: Promise<void> | undefined;
+	const closeStores = () =>
+		(storesClosing ??= (async () => {
+			for (const [store, description] of stores) {
+				if (!store) continue;
+				try {
+					await store.close?.();
+					pendingCloses.delete(store);
+				} catch (error) {
+					logger.warn(`Error closing ${description} while quarantining ${databaseName}.${tableName}:`, error);
+				}
 			}
-		}
-		if (pendingCloses.size === 0 && pendingDatabaseStoreCloses.get(databaseName) === pendingCloses)
-			pendingDatabaseStoreCloses.delete(databaseName);
-	};
+			if (pendingCloses.size === 0 && pendingDatabaseStoreCloses.get(databaseName) === pendingCloses)
+				pendingDatabaseStoreCloses.delete(databaseName);
+		})());
 	if (!runtime) return closeStores();
+	let pendingRuntimes = pendingDatabaseDerivedIndexCloses.get(databaseName);
+	if (!pendingRuntimes) pendingDatabaseDerivedIndexCloses.set(databaseName, (pendingRuntimes = new Map()));
+	pendingRuntimes.set(runtime, { tableName, closeStores });
 	return Promise.resolve()
 		.then(() => runtime.close())
-		.then(closeStores, (error) => {
-			logger.warn(`Error quiescing derived indexes while quarantining ${databaseName}.${tableName}:`, error);
-		});
+		.then(
+			async () => {
+				await closeStores();
+				pendingRuntimes.delete(runtime);
+				if (pendingRuntimes.size === 0 && pendingDatabaseDerivedIndexCloses.get(databaseName) === pendingRuntimes)
+					pendingDatabaseDerivedIndexCloses.delete(databaseName);
+			},
+			(error) => {
+				logger.warn(`Error quiescing derived indexes while quarantining ${databaseName}.${tableName}:`, error);
+			}
+		);
+}
+
+async function closePendingDatabaseDerivedIndexes(databaseName: string): Promise<void> {
+	const pending = pendingDatabaseDerivedIndexCloses.get(databaseName);
+	if (!pending?.size) return;
+	const failures: unknown[] = [];
+	for (const [runtime, entry] of pending) {
+		try {
+			await runtime.close();
+			await entry.closeStores();
+			pending.delete(runtime);
+		} catch (error) {
+			failures.push(
+				new Error(`Failed to quiesce quarantined table ${databaseName}.${entry.tableName}`, { cause: error })
+			);
+		}
+	}
+	if (pending.size === 0 && pendingDatabaseDerivedIndexCloses.get(databaseName) === pending)
+		pendingDatabaseDerivedIndexCloses.delete(databaseName);
+	if (failures.length === 1) throw failures[0];
+	if (failures.length) throw new AggregateError(failures, `Failed to quiesce quarantined tables in '${databaseName}'`);
 }
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
@@ -2539,6 +2577,14 @@ export async function dropDatabase(databaseName) {
  * progress, per the restore marker checks in the scan).
  */
 export function closeDatabase(databaseName: string, failOnCloseError = false): boolean {
+	if (pendingDatabaseDerivedIndexCloses.get(databaseName)?.size) {
+		const error = new Error(
+			`Database '${databaseName}' has quarantined derived indexes that require asynchronous shutdown`
+		);
+		if (failOnCloseError) throw error;
+		logger.warn(error.message);
+		return false;
+	}
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
 	return closeDatabaseTables(databaseName, databases[databaseName], definedRoot, failOnCloseError);
 }
@@ -2641,6 +2687,7 @@ function closeDatabaseTables(
 }
 
 export async function closeDatabaseForRestore(databaseName: string, dropMarker?: DatabaseDropMarker): Promise<boolean> {
+	await closePendingDatabaseDerivedIndexes(databaseName);
 	const dbTables = databases[databaseName];
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
 	const closeWork = { operations: [], errors: [] } as { operations: Promise<void>[]; errors: unknown[] };

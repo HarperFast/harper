@@ -2279,6 +2279,20 @@ export function readDerivedIndexReadiness(
 	return readReadiness(views);
 }
 
+/** Publish a lifecycle state before a runner exists, so every worker stops trusting stale readiness. */
+export function publishDerivedIndexReadiness(
+	logStore: RocksTransactionLogStore,
+	backendId: string,
+	state: DerivedIndexReadinessState,
+	reason: DerivedIndexReadinessReason = 'none'
+): void {
+	const buffer = readinessBuffer(logStore, backendId);
+	const { words } = sharedViewsOf(buffer);
+	Atomics.store(words, READINESS_REASON, READINESS_REASONS.indexOf(reason));
+	Atomics.store(words, READINESS_STATE, READINESS_STATES.indexOf(state));
+	buffer.notify?.();
+}
+
 function isValidCursor(cursor: DerivedIndexCursor | undefined): cursor is DerivedIndexCursor {
 	if (
 		!cursor ||

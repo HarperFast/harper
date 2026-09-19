@@ -836,6 +836,37 @@ describe('audit cleanup retirement on teardown', () => {
 		assert.strictEqual(closeAttempts, 2, 'database teardown must retry the quarantined store handle');
 	});
 
+	it('retries quarantined derived-index shutdown before closing its stores', async function () {
+		const databaseName = 'derivedindexschemaquarantineruntimeretry';
+		const tableName = 'DerivedIndexSchemaQuarantineRuntimeRetryProbe';
+		const Probe = table({
+			table: tableName,
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await Probe.schemaChangeOperation;
+		let runtimeCloseAttempts = 0;
+		Probe.derivedIndexRuntime = {
+			async close() {
+				if (++runtimeCloseAttempts === 1) throw new Error('test runtime close failure');
+			},
+		};
+		const close = Probe.primaryStore.close.bind(Probe.primaryStore);
+		let storeCloseAttempts = 0;
+		Probe.primaryStore.close = () => {
+			storeCloseAttempts++;
+			return close();
+		};
+
+		await quarantineTableAfterSchemaRescanFailure(databaseName, tableName);
+		assert.strictEqual(runtimeCloseAttempts, 1);
+		assert.strictEqual(storeCloseAttempts, 0, 'stores must remain open while their native writer may still be live');
+		await closeDatabaseForRestore(databaseName);
+
+		assert.strictEqual(runtimeCloseAttempts, 2);
+		assert.strictEqual(storeCloseAttempts, 1);
+	});
+
 	it('quiesces a replacement derived-index handle installed while a table drop waits', async function () {
 		const Probe = table({
 			table: 'DerivedIndexTableReplacementProbe',

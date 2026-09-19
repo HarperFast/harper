@@ -6,7 +6,7 @@ import type { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { createNativeFullTextDerivedIndexBackend } from './NativeFullTextDerivedIndexLifecycle.ts';
 import type { NativeFullTextModule } from './fullTextNativeBinding.ts';
 import { registerDerivedIndexTables } from './derivedIndexRegistry.ts';
-import { DerivedIndexRuntime, readDerivedIndexReadiness } from './derivedIndexRuntime.ts';
+import { DerivedIndexRuntime, publishDerivedIndexReadiness, readDerivedIndexReadiness } from './derivedIndexRuntime.ts';
 import { HnswDerivedIndexBackend, type DerivedNativeIndex } from './indexes/hnswDerivedIndex.ts';
 import { fullTextStorageDefinition, type FullTextDefinition } from './fullTextSchema.ts';
 import { ownsDerivedIndexWriters } from '../server/threads/manageThreads.js';
@@ -163,6 +163,7 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 		for (const definition of ownsDerivedIndexWriters(Table.primaryStore.rootStore.path) ? fullTextDefinitions : []) {
 			const readinessId = fullTextDerivedIndexReadinessId(Table, definition);
 			readinessOverrides.set(readinessId, { state: 'unknown', ownerEpoch: 0n, rebuildAttempts: 0 });
+			publishDerivedIndexReadiness(Table.auditStore, readinessId, 'unknown');
 			const setup = (async () => {
 				try {
 					await previousClose;
@@ -172,6 +173,7 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 				} catch (error) {
 					if (closing) return;
 					reusable = false;
+					publishDerivedIndexReadiness(Table.auditStore, readinessId, 'unavailable', 'backend-failed');
 					readinessOverrides.set(readinessId, {
 						state: 'unavailable',
 						reason: 'backend-failed',
@@ -383,7 +385,7 @@ function currentFullTextIndexGeneration(Table: any, indexName: string): string |
 	return `legacy:${JSON.stringify(fullTextStorageDefinition(definition))}`;
 }
 
-function fullTextDerivedIndexReadinessId(Table: any, definition: FullTextDefinition): string {
+export function fullTextDerivedIndexReadinessId(Table: any, definition: FullTextDefinition): string {
 	return `${fullTextDerivedIndexId(Table, definition.name)}:${Table.tableId}:${fullTextIndexGeneration(Table, definition)}`;
 }
 

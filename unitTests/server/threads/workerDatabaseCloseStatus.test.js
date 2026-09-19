@@ -68,6 +68,25 @@ describe('worker database-close safety status', function () {
 		}
 	});
 
+	it('keeps the worker alive for an unreferenced close callback after shutdown begins', async function () {
+		const messages = [];
+		const worker = startStatusWorker(messages);
+		try {
+			await waitFor(() => messages.some((message) => message.type === 'fixture-ready'));
+			worker.postMessage({ type: 'fixture-close-after-shutdown' });
+			await waitFor(() => messages.some((message) => message.type === 'fixture-close-after-shutdown-ready'));
+			worker.wasShutdown = true;
+			worker.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: 0 });
+			await waitFor(() => messages.some((message) => message.type === 'fixture-deferred-database-close-confirmed'), {
+				timeout: 5_000,
+				message: 'worker exited before its unreferenced database-close callback ran',
+			});
+			await waitFor(() => worker.databaseCloseConfirmed === true);
+		} finally {
+			await worker.terminate();
+		}
+	});
+
 	it('defers an expired ordinary shutdown backstop until database close is confirmed', async function () {
 		setTerminateTimeout(50);
 		const messages = [];

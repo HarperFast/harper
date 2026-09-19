@@ -502,7 +502,7 @@ Object.defineProperty(server, 'workerCount', {
 });
 onMessageByType(WORKER_DATABASE_CLOSE_STATUS, (message, worker) => {
 	if (!worker) return;
-	worker.databaseClosePending = message.failed === true;
+	worker.databaseClosePending = message.pending === true;
 	worker.databaseCloseConfirmed = !worker.databaseClosePending;
 	if (worker.databaseCloseConfirmed) settleDatabaseClosedAcknowledgements(worker);
 	if (!parentPort) {
@@ -1582,20 +1582,25 @@ if (parentPort && workerData?.addPorts) {
 		pendingProcessGroupTerminations.get(ownerThreadId) ?? Promise.resolve();
 }
 
-function reportWorkerDatabaseCloseStatus(failed) {
+function reportWorkerDatabaseCloseStatus(pending) {
 	workerDatabaseShutdownStarted = true;
-	if (failed === true && !workerDatabaseClosePending) {
+	if (pending === true && !workerDatabaseClosePending) {
 		workerDatabaseClosePromise = new Promise((resolve) => {
 			resolveWorkerDatabaseClose = resolve;
 		});
 	}
-	workerDatabaseClosePending = failed === true;
+	workerDatabaseClosePending = pending === true;
 	workerDatabasesClosed = !workerDatabaseClosePending;
 	if (workerDatabasesClosed) {
 		resolveWorkerDatabaseClose?.();
 		resolveWorkerDatabaseClose = undefined;
+		if (parentPort) parentPort.unref();
+	} else if (parentPort) {
+		// Promises and native callbacks do not keep a worker alive. Hold the control port until
+		// database closure is confirmed so shutdown cannot strand process-global native handles.
+		parentPort.ref();
 	}
-	const message = { type: WORKER_DATABASE_CLOSE_STATUS, failed };
+	const message = { type: WORKER_DATABASE_CLOSE_STATUS, pending };
 	for (const port of connectedPorts) {
 		try {
 			port.postMessage(message);
@@ -2123,7 +2128,6 @@ if (isMainThread) {
 		// From this point until closeLoadedDatabases succeeds, a worker-only exit can strand
 		// process-global RocksDB handles even if shutdown stalls before database cleanup begins.
 		reportWorkerDatabaseCloseStatus(true);
-		parentPort.unref(); // remove this handle
 		armSelfExit(threadTerminationTimeout);
 	});
 	// In Bun, worker.terminate() triggers a NAPI segfault; the main thread sends FORCE_EXIT

@@ -14,7 +14,7 @@ if (process.argv.includes('--schema-shutdown')) {
 }
 
 onMessageByType('worker-database-close-status', (message, port) => {
-	if (message.failed === false)
+	if (message.pending === false)
 		parentPort.postMessage({ type: 'peer-database-close-confirmed', threadId: port?.threadId });
 });
 

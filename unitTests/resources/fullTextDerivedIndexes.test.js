@@ -9,8 +9,10 @@ const {
 	assertFullTextActivationSupported,
 	fullTextDerivedIndexId,
 	fullTextDerivedIndexReadiness,
+	fullTextDerivedIndexReadinessId,
 	setFullTextNativeBindingForTests,
 } = require('#src/resources/derivedIndexes');
+const { readDerivedIndexReadiness } = require('#src/resources/derivedIndexRuntime');
 const { FullTextNativeTestBinding } = require('./fullTextNativeTestBinding');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -202,6 +204,12 @@ describe('@fullText derived-index activation', () => {
 
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'unavailable', 30_000);
 		assert.strictEqual(fullTextDerivedIndexReadiness(Product, 'search').reason, 'backend-failed');
+		const sharedReadiness = readDerivedIndexReadiness(
+			Product.auditStore,
+			fullTextDerivedIndexReadinessId(Product, Product.fullTextIndexes[0])
+		);
+		assert.strictEqual(sharedReadiness.state, 'unavailable');
+		assert.strictEqual(sharedReadiness.reason, 'backend-failed');
 
 		delete binding.runtimeInfo;
 		Product = table({
