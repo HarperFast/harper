@@ -38,6 +38,11 @@ parentPort.on('message', (message) => {
 		parentPort.postMessage({ type: 'fixture-database-close-confirmed', closed: workerDatabasesAreClosed() });
 		return;
 	}
+	if (message.type === 'fixture-begin-database-close') {
+		reportWorkerDatabaseCloseStatus(true);
+		parentPort.postMessage({ type: 'fixture-database-close-started' });
+		return;
+	}
 	if (message.type !== 'fixture-extend-shutdown-deadline') return;
 	extendShutdownDeadline(message.deadlineMs);
 	parentPort.postMessage({ type: 'fixture-deadline-extended' });

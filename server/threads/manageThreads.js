@@ -1601,6 +1601,15 @@ if (parentPort && workerData?.addPorts) {
 }
 
 function reportWorkerDatabaseCloseStatus(pending) {
+	setWorkerDatabaseCloseStatus(pending);
+	const message = { type: WORKER_DATABASE_CLOSE_STATUS, pending };
+	for (const port of connectedPorts) {
+		try {
+			port.postMessage(message);
+		} catch {}
+	}
+}
+function setWorkerDatabaseCloseStatus(pending) {
 	workerDatabaseShutdownStarted = true;
 	if (pending === true && !workerDatabaseClosePending) {
 		workerDatabaseClosePromise = new Promise((resolve) => {
@@ -1617,12 +1626,6 @@ function reportWorkerDatabaseCloseStatus(pending) {
 		// Promises and native callbacks do not keep a worker alive. Hold the control port until
 		// database closure is confirmed so shutdown cannot strand process-global native handles.
 		parentPort.ref();
-	}
-	const message = { type: WORKER_DATABASE_CLOSE_STATUS, pending };
-	for (const port of connectedPorts) {
-		try {
-			port.postMessage(message);
-		} catch {}
 	}
 }
 function workerDatabasesAreClosed() {
@@ -2148,9 +2151,9 @@ if (isMainThread) {
 } else {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.SHUTDOWN, async (message) => {
 		module.exports.restartNumber = message.restartNumber;
-		// From this point until closeLoadedDatabases succeeds, a worker-only exit can strand
-		// process-global RocksDB handles even if shutdown stalls before database cleanup begins.
-		reportWorkerDatabaseCloseStatus(true);
+		// Hold the worker open immediately, but start the coordinator's quiescence budget only
+		// when closeLoadedDatabases actually begins.
+		setWorkerDatabaseCloseStatus(true);
 		armSelfExit(threadTerminationTimeout);
 	});
 	// In Bun, worker.terminate() triggers a NAPI segfault; the main thread sends FORCE_EXIT

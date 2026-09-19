@@ -1986,8 +1986,6 @@ export function makeTable(options) {
 			};
 			await quiesceDerivedIndexes();
 			const rootStore = primaryStore.rootStore;
-			// Stop new source fills and remove the table from lookup before draining work already admitted.
-			// This is still reversible: cancellation reloads the live graph until markDestructive() runs.
 			markLocalSchemaClosed();
 			droppingTable = true;
 			delete databases[databaseName][tableName];

@@ -29,20 +29,25 @@ describe('worker database-close safety status', function () {
 		return worker;
 	}
 
-	it('reports process-global handles pending as soon as shutdown begins', async function () {
+	it('starts the database-close budget only when teardown begins', async function () {
 		const messages = [];
 		const worker = startStatusWorker(messages);
 		try {
 			await waitFor(() => messages.some((message) => message.type === 'fixture-ready'));
-			const shutdownStartedAt = Date.now();
 			worker.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: 0 });
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			assert.strictEqual(worker.databaseCloseStartedAt, undefined);
+			assert.strictEqual(worker.databaseCloseSafetyDeadline, undefined);
+
+			const closeStartedAt = Date.now();
+			worker.postMessage({ type: 'fixture-begin-database-close' });
 			await waitFor(() => worker.databaseClosePending === true, {
 				timeout: 5_000,
-				message: `shutdown did not report database handles pending; messages=${JSON.stringify(messages)}`,
+				message: `database teardown did not report handles pending; messages=${JSON.stringify(messages)}`,
 			});
 			assert.strictEqual(worker.databaseClosePending, true);
 			assert.ok(
-				worker.databaseCloseSafetyDeadline >= shutdownStartedAt + DATABASE_QUIESCENCE_TIMEOUT_MS,
+				worker.databaseCloseSafetyDeadline >= closeStartedAt + DATABASE_QUIESCENCE_TIMEOUT_MS,
 				`database-close deadline was shorter than the quiescence budget: ${worker.databaseCloseSafetyDeadline}`
 			);
 		} finally {
@@ -213,6 +218,7 @@ describe('worker database-close safety status', function () {
 				}
 
 				worker.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: 0 });
+				worker.postMessage({ type: 'fixture-begin-database-close' });
 				await waitFor(() => worker.databaseClosePending === true);
 
 				if (extensionOrder === 'after') {
