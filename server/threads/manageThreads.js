@@ -698,6 +698,12 @@ function startWorker(path, options = {}) {
 	});
 	worker.on('exit', (_code) => {
 		if (worker.databaseCloseSafetyTimer) clearTimeout(worker.databaseCloseSafetyTimer);
+		if (worker.databaseClosePending && !worker.databaseCloseConfirmed) {
+			harperLogger.fatal(
+				`Worker ${worker.threadId} exited before confirming release of process-global database handles; exiting Harper`
+			);
+			realExit(1);
+		}
 		workers.splice(workers.indexOf(worker), 1);
 		if (
 			!processShuttingDown &&
@@ -2019,6 +2025,9 @@ function addPort(port, keepRef, isJobWorker) {
 			} else if (message.type === ADDED_PORT) {
 				message.port.threadId = message.threadId;
 				addPort(message.port, false, message.isJobWorker);
+				// The startup snapshot can race this peer's close confirmation. Publish the
+				// current state on the new channel so its coordinator cannot retain stale state.
+				message.port.postMessage({ type: WORKER_DATABASE_CLOSE_STATUS, pending: workerDatabaseClosePending });
 			} else if (message.type === ACKNOWLEDGEMENT) {
 				let completion = awaitingResponses.get(message.id);
 				if (completion) {

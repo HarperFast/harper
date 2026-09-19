@@ -2850,7 +2850,7 @@ export async function closeLoadedDatabases(): Promise<void> {
 	} catch (error) {
 		closeErrors.push(new Error('Failed to close branch databases', { cause: error }));
 	}
-	// snapshot the names first: closeDatabase() deletes from `databases` as it goes
+	// Snapshot the names first: closeDatabaseForRestore() deletes from `databases` as it goes.
 	for (const databaseName of Object.keys(databases)) {
 		const dbTables = databases[databaseName];
 		if (!dbTables) continue;

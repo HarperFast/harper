@@ -2,6 +2,7 @@
 
 const assert = require('node:assert');
 const path = require('node:path');
+const { MessageChannel } = require('node:worker_threads');
 const { startWorker, setTerminateTimeout, stopWorker } = require('#js/server/threads/manageThreads');
 const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
 const { DATABASE_QUIESCENCE_TIMEOUT_MS } = require('#src/utility/databaseLifecycle');
@@ -45,6 +46,8 @@ describe('worker database-close safety status', function () {
 				`database-close deadline was shorter than the quiescence budget: ${worker.databaseCloseSafetyDeadline}`
 			);
 		} finally {
+			worker.postMessage({ type: 'fixture-confirm-database-close' });
+			await waitFor(() => worker.databaseCloseConfirmed === true);
 			worker.wasShutdown = true;
 			await worker.terminate();
 		}
@@ -63,6 +66,27 @@ describe('worker database-close safety status', function () {
 			});
 			assert.strictEqual(worker.databaseClosePending, false);
 		} finally {
+			worker.wasShutdown = true;
+			await worker.terminate();
+		}
+	});
+
+	it('publishes current close status when a peer channel is added after the startup snapshot', async function () {
+		const messages = [];
+		const worker = startStatusWorker(messages);
+		const channel = new MessageChannel();
+		const peerMessages = [];
+		channel.port2.on('message', (message) => peerMessages.push(message));
+		try {
+			await waitFor(() => messages.some((message) => message.type === 'fixture-ready'));
+			worker.postMessage({ type: 'fixture-confirm-database-close' });
+			await waitFor(() => worker.databaseCloseConfirmed === true);
+			worker.postMessage({ type: 'added-port', port: channel.port1, threadId: 999 }, [channel.port1]);
+			await waitFor(() =>
+				peerMessages.some((message) => message.type === 'worker-database-close-status' && message.pending === false)
+			);
+		} finally {
+			channel.port2.close();
 			worker.wasShutdown = true;
 			await worker.terminate();
 		}
@@ -115,6 +139,12 @@ describe('worker database-close safety status', function () {
 
 	it('does not force-terminate a blocked worker that cannot report database-close pending', async function () {
 		setTerminateTimeout(50);
+		const originalRealExit = Object.getOwnPropertyDescriptor(process, '_realExit');
+		const exitCodes = [];
+		Object.defineProperty(process, '_realExit', {
+			value: (code) => exitCodes.push(code),
+			configurable: true,
+		});
 		const messages = [];
 		const worker = startStatusWorker(messages);
 		let exited = false;
@@ -137,6 +167,11 @@ describe('worker database-close safety status', function () {
 				await worker.terminate();
 			}
 			await stopping;
+			try {
+				assert.deepStrictEqual(exitCodes, [1], 'an unconfirmed worker exit must terminate Harper');
+			} finally {
+				Object.defineProperty(process, '_realExit', originalRealExit);
+			}
 		}
 	});
 
@@ -166,6 +201,8 @@ describe('worker database-close safety status', function () {
 					message: `database-close deadline did not honor the drain extension; deadline=${worker.databaseCloseSafetyDeadline}`,
 				});
 			} finally {
+				worker.postMessage({ type: 'fixture-confirm-database-close' });
+				await waitFor(() => worker.databaseCloseConfirmed === true);
 				worker.wasShutdown = true;
 				await worker.terminate();
 			}
