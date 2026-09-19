@@ -1076,13 +1076,13 @@ function beginProcessShutdown() {
 async function shutdownWorkersNow(name) {
 	if (name != null) {
 		const error = new Error(
-			`Immediate worker shutdown cannot be scoped to '${name}'; use shutdownWorkers() so database handles can close`
+			`Immediate worker shutdown cannot be scoped to '${name}'; use shutdownWorkers(name) so database handles can close`
 		);
 		error.code = 'ERR_SCOPED_IMMEDIATE_SHUTDOWN_UNSAFE';
 		throw error;
 	}
 	beginProcessShutdown();
-	// Its caller owns the process-level cleanup that follows, so these immediate exits are not
+	// The caller owns the process-level cleanup that follows, so these immediate exits are not
 	// evidence of an unexpected stranded-handle state.
 	for (const worker of workers) worker.allowUnconfirmedDatabaseCloseExit = true;
 	shutdownWorkers(); // set the state of all the workers to shut down. this should finish the important stuff synchronously
