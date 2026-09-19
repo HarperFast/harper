@@ -747,21 +747,25 @@ describe('FullTextDerivedIndexBackend', () => {
 	});
 
 	it('reuses a successful native close that settled after the shutdown timeout', async () => {
-		const engine = new FakeEngine();
-		const source = lifecycle({ state: 'missing' }, [engine]);
+		const first = new FakeEngine();
+		const second = new FakeEngine(encodeFullTextCursorPayload(cursor(20)));
+		const source = lifecycle({ state: 'missing' }, [first, second]);
 		const { backend, setEpoch } = makeBackend(source, { closeTimeoutMilliseconds: 10 });
 		backend.deliver(batch(1n, [], cursor(20)));
 		backend.flush();
-		await waitFor(() => engine.publications.length === 1);
+		await waitFor(() => first.publications.length === 1);
 		let releaseClose;
-		engine.closeWait = new Promise((resolve) => (releaseClose = resolve));
+		first.closeWait = new Promise((resolve) => (releaseClose = resolve));
 		await assert.rejects(backend.shutdown(1n), /did not prove quiescence/);
 		releaseClose();
 		await new Promise((resolve) => setImmediate(resolve));
 		await backend.shutdown(1n);
-		assert.strictEqual(engine.closes.length, 1);
+		assert.strictEqual(first.closes.length, 1);
 		setEpoch(2n);
-		await backend.reset(2n);
+		assert.strictEqual(backend.deliver(batch(2n, [], cursor(30))), DERIVED_INDEX_ACCEPTED);
+		backend.flush();
+		await waitFor(() => second.publications.length === 1);
+		await backend.shutdown(2n);
 	});
 
 	it('does not rescan for a cursor payload that cannot fit the native checkpoint', async () => {

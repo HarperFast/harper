@@ -153,6 +153,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#consecutiveWriterFailures = 0;
 	#openRetryTimer?: NodeJS.Timeout;
 	#closeOperations = new WeakMap<FullTextDerivedIndexEngine, Promise<{ cleanupError?: unknown }>>();
+	#shutdownFailure?: FullTextDerivedIndexError;
 	#openRetryDelayMilliseconds: number;
 	#lockBusyWarned = false;
 	#terminalFailure?: FullTextDerivedIndexConfigurationError;
@@ -325,6 +326,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			);
 		this.#shutdown = undefined;
 		this.#failed = false;
+		this.#shutdownFailure = undefined;
 		this.#durableCursor = undefined;
 		await this.#lifecycle.reset();
 		this.#assertSharedEpoch(ownerEpoch);
@@ -584,13 +586,17 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			}
 			this.#engine = undefined;
 			this.#activeEpoch = undefined;
+			if (this.#shutdownFailure) {
+				this.#failed = false;
+				this.#shutdownFailure = undefined;
+			}
 			this.#resetQueueState();
 			if (this.#shutdown === request) this.#shutdown = undefined;
 			request.resolve();
 		} catch (error) {
 			if (this.#shutdown === request) this.#shutdown = undefined;
 			const failure = new FullTextDerivedIndexError('Full-text writer shutdown did not prove quiescence', error);
-			this.#markFailed(failure);
+			if (this.#markFailed(failure)) this.#shutdownFailure = failure;
 			request.reject(failure);
 		}
 	}
