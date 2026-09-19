@@ -877,8 +877,8 @@ async function storeNodeStorageMetric(analyticsTable: Table) {
 const MAX_LAST_AGGREGATION_SCAN = 1000;
 // Time of this node's last completed aggregation, tracked in O(1) across cycles within a process.
 let lastAggregationTime: number | undefined;
-// Resume point into the raw analytics table, distinct from the cadence marker above: it moves only
-// over records a cycle read, so it is not a clock and never passes an unread report.
+// Resume point into the raw analytics table: it moves only over records a cycle read, so it is not
+// a clock and never passes an unread report.
 let rawCursor: number | undefined;
 // A cycle stopped at its window edge with raw records still behind it, so the next one skips the
 // cadence guard and drains the next window.
@@ -944,8 +944,8 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	// first never touch the table. On the first cycle after boot we seed it once from the table
 	// via a bounded reverse scan (see findLastAggregationTime). Caching the seeded value keeps
 	// the next cycle O(1) even when this run early-returns below as "too recent"; a bound-hit
-	// (no match) leaves it undefined so we don't early-return, proceed to aggregate, and set the
-	// marker at the end of the cycle instead (#1538).
+	// (no match) leaves it undefined so we don't early-return, proceed to aggregate, and set both
+	// markers at the end of the cycle instead (#1538).
 	let lastForPeriod = lastAggregationTime;
 	if (lastForPeriod === undefined) {
 		lastForPeriod = findLastAggregationTime(analyticsTable.primaryStore, localNodeId);
@@ -954,8 +954,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 			rawCursor ??= lastForPeriod;
 		}
 	}
-	// was the last aggregation too recent to calculate a whole period? A cycle that stopped at its
-	// window edge left raw records behind, and draining them is what the cadence would delay.
+	// was the last aggregation too recent to calculate a whole period?
 	if (!aggregationBehind && lastForPeriod !== undefined && Date.now() - toPeriod < lastForPeriod) return;
 	let firstForPeriod;
 	const aggregateActions = new Map();
