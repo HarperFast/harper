@@ -30,18 +30,10 @@ const DEFAULT_MAX_APPLY_SLICE_RECORDS = 256;
 const APPLY_SLICE_MILLISECONDS = 5;
 const MAX_CONSECUTIVE_WRITER_FAILURES = 2;
 const TERMINAL_OPEN_ERROR_CODES = new Set([
-	'E_CLOSED',
 	'E_IDENTITY_MISMATCH',
 	'E_INCOMPLETE_CREATE',
 	'E_INDEX_CORRUPT',
 	'E_INDEX_FORMAT_INCOMPATIBLE',
-	'E_INVALID_ARGUMENT',
-	'E_NATIVE_ABI_MISMATCH',
-	'E_NATIVE_ADDON_NOT_FOUND',
-	'E_NATIVE_CAPABILITY_MISMATCH',
-	'E_NATIVE_PANIC',
-	'E_POISONED',
-	'E_QUIESCENCE_FAILED',
 	'E_SCHEMA_MISMATCH',
 ]);
 
@@ -231,15 +223,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	getDurableCursor(): DerivedIndexCursor | undefined {
 		this.#assertAttached();
 		if (!this.#cursorInspectedForAcquisition) {
-			try {
-				this.#durableCursor = this.#inspectDurableCursor();
-				this.#cursorInspectedForAcquisition = true;
-			} catch (error) {
-				if (!this.#durableCursor) throw error;
-				// A stale present cursor is reconciled against the writer before any publication.
-				this.#cursorInspectedForAcquisition = true;
-				logWarning(`Full-text derived index '${this.id}' could not refresh its durable cursor`, error);
-			}
+			this.#durableCursor = this.#inspectDurableCursor();
+			this.#cursorInspectedForAcquisition = true;
 		}
 		return this.#durableCursor;
 	}
@@ -257,7 +242,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			return;
 		}
 		try {
-			return decodeFullTextCursorPayload(inspection.committedPayload, this.#maxCursorPayloadBytes);
+			return decodeFullTextCursorPayload(inspection.committedPayload);
 		} catch {
 			logWarning(`Full-text derived index '${this.id}' has an invalid committed cursor; rebuilding`);
 		}
@@ -273,6 +258,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			return DERIVED_INDEX_FAILED;
 		}
 		if (!this.#host?.isOwnerEpoch(batch.ownerEpoch)) return DERIVED_INDEX_FAILED;
+		if (this.#terminalFailure) return DERIVED_INDEX_DEFERRED;
 		if (this.#settlingWriter || this.#lossPendingEpoch === batch.ownerEpoch) return DERIVED_INDEX_DEFERRED;
 		if (this.#shutdown) {
 			if (this.#shutdown.epoch === batch.ownerEpoch || this.#activeEpoch !== undefined) return DERIVED_INDEX_FAILED;
@@ -435,8 +421,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#failAndNotify(error);
 		} finally {
 			this.#draining = false;
-			if (this.#shutdown && !this.#shutdown.closing) void this.#closeForShutdown(this.#shutdown);
-			else if (!this.#failed && !this.#openRetryTimer && this.#commands.length > 0) this.#scheduleDrain();
+			if (!this.#failed && !this.#openRetryTimer && this.#commands.length > 0) this.#scheduleDrain();
+			else if (this.#shutdown && !this.#shutdown.closing) void this.#closeForShutdown(this.#shutdown);
 		}
 	}
 
@@ -449,7 +435,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		let actual: DerivedIndexCursor | undefined;
 		try {
 			this.#assertCommandEpoch(epoch);
-			actual = decodeFullTextCursorPayload(engine.committedPayload, this.#maxCursorPayloadBytes);
+			actual = decodeFullTextCursorPayload(engine.committedPayload);
 		} catch (error) {
 			await this.#closeUninstalledEngine(engine, error);
 			throw error;
@@ -558,10 +544,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			await this.#engine!.publish(payload);
 		} catch (error) {
 			const terminal = error instanceof FullTextDerivedIndexConfigurationError;
-			await this.#loseAcceptedWork(command.epoch, error, !terminal);
+			await this.#loseAcceptedWork(command.epoch, error);
 			if (terminal) {
 				this.#terminalFailure = error;
-				this.#failAndNotify(error);
+				logError('Full-text derived index cannot publish its durable cursor', error);
 			}
 			return false;
 		}
@@ -931,8 +917,7 @@ function fullTextFields(projection: unknown): Record<string, string | string[]> 
 		if (!Object.hasOwn(projection, name)) continue;
 		const value = (projection as Record<string, unknown>)[name];
 		if (typeof value === 'string') (fields ??= Object.create(null))[name] = value;
-		else if (Array.isArray(value) && value.every((entry) => typeof entry === 'string'))
-			(fields ??= Object.create(null))[name] = value;
+		else if (Array.isArray(value)) (fields ??= Object.create(null))[name] = value as string[];
 	}
 	return fields;
 }

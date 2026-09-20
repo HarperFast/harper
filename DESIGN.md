@@ -2705,8 +2705,8 @@ cursor is backend-owned and validation is Harper's.
 `@harperfast/fulltext/native`; it does not implement another replay or ownership protocol. Harper
 turns each resolved mutation into one stable document id from `tableId` and the record id's
 ordered-binary storage-key bytes, and
-passes only the schema-selected string fields to the wrapper. The wrapper owns Tantivy schema and
-mutation validation, exact frame partitioning, its exclusive writer, segment publication, and file
+passes only the schema-selected string and array fields to the wrapper. Harper does not rescan array
+contents; the wrapper owns value validation, Tantivy schema, exact frame partitioning, its exclusive writer, segment publication, and file
 lifecycle. Harper keeps accepted runtime batches in a 64 MiB bounded queue and submits at most 256
 records or 5 ms of conversion work per turn, so the runtime's 4096-record chunk cannot become one
 long event-loop task. A rebuild chunk without a source-size estimate consumes the adapter's entire
@@ -2724,22 +2724,26 @@ mutations and that payload visible together; only then does the adapter report d
 An apply or publish failure rollback-closes the writer, discards accepted-but-unpublished work, and
 wakes the runtime to replay from the last native payload. Writer open is lazy. After a small immediate
 attempt budget, open errors retry with exponential backoff to a five-second ceiling unless their stable
-code identifies a structural, compatibility, configuration, or terminal-process failure. Unknown
-codes retry by default, so a newly introduced transient wrapper error cannot silently become a
-destructive rebuild signal. Persistent writer unavailability emits one warning without native paths
+code proves the native generation is structurally incompatible or corrupt. Configuration, binding,
+process-state, and unknown codes retry by default: they may require operator action or restart, but do
+not prove the index files should be reset. Persistent writer unavailability emits one warning without native paths
 or record content. Ownership handoff does not finish until drain and close prove quiescence, and Harper
 bounds the whole wait at 35 seconds. If that proof fails, shutdown rejects and the runtime keeps its
 runner lock, preventing a second writer. The underlying native operation continues and a later operator
 retry attaches to the same shutdown rather than starting a competing close. A cursor that cannot fit
-the native commit-payload limit is a terminal configuration failure for that backend instance; rebuild
-reset is refused because rescanning records cannot shrink the cursor.
+the native commit-payload limit is terminal for that backend instance: accepted work is rollback-closed
+and reported lost, then further delivery stays deferred. The adapter does not report a permanent
+backend failure because condemnation and reset cannot shrink the cursor. Automatic reset is refused
+until configuration changes replace the backend instance. Inspection accepts any payload within
+Harper's fixed 64 KiB format bound, independent of the current publication limit, so lowering that
+limit never turns an already-valid native generation into rebuild work.
 
 Inspection is synchronous and writer-free. The first durable-cursor read in each ownership acquisition
 refreshes native state, while later reads in the same acquisition use the cache; every shutdown path
-invalidates it, including an owner that received no batch. A transient refresh failure may use a known
-valid checkpoint because writer-open reconciliation verifies it before publication. Missing,
-cursorless, incompatible, or malformed native state has no usable cursor and therefore enters the
-runtime's ordinary local rebuild from records.
+invalidates it, including an owner that received no batch. A refresh failure never falls back to a
+cached checkpoint because the runtime can publish `ready` before lazy writer-open reconciliation.
+Missing, cursorless, incompatible, or malformed native state has no usable cursor and therefore enters
+the runtime's ordinary local rebuild from records.
 Reset first asks the wrapper to retire the live generation atomically, then reclaims only wrapper-
 validated retired paths. The native directory is node-local derived state: restarts reuse it and
 replay after its payload; replicas independently derive it from their own applied transaction log;

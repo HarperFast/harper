@@ -93,10 +93,10 @@ The backend slice:
    its stable document key from `tableId` and the record id's ordered-binary storage-key bytes, rejects
    symbol identities, and pays that encoding only on the full-text path. No activation or query policy
    belongs here.
-8. Treats native writer-open errors as retryable unless their stable code identifies a structural,
-   compatibility, configuration, or terminal-process failure. Retries use exponential backoff to a
-   five-second ceiling and emit one content-free warning when writer unavailability persists. Per-record
-   encoding failures, including oversized fields and invalid field shapes, are returned by Fulltext's
+8. Treats native writer-open errors as retryable unless their stable code proves the generation is
+   structurally incompatible or corrupt. Retries use exponential backoff to a five-second ceiling and
+   emit one content-free warning when writer unavailability persists. Per-record
+   encoding failures, including oversized fields and invalid array contents, are returned by Fulltext's
    logical-batch API as rejected upserts, replaced by deletes, counted, and warned once without record
    values. Native paths and native error messages are not logged; adapter-authored messages and stable
    native error codes are.
@@ -140,20 +140,20 @@ within a bound without unlocking an unproven writer.
 The backend defers its first inspection until `getDurableCursor()` is called at acquisition, caches that
 result for the acquisition, and invalidates the cache on every shutdown path, including an owner that
 received no batch. This yields one synchronous native metadata read per acquisition rather than one per
-idle cursor poll. If refresh fails after a valid checkpoint was observed, the backend keeps that
-checkpoint for the acquisition; writer-open reconciliation verifies it before publication. An initial
-inspection failure still propagates because the shared protocol has no non-condemning unknown-cursor
-state. A reset keeps its deliberately cursorless result cached even when reset fails, because an unknown
-reset outcome must not rediscover and trust the pre-reset checkpoint. The current host contract exposes
-only `isOwnerEpoch(candidate)`, not the current epoch, so a backend cannot key this cache directly from
-`getDurableCursor()`; invalidation through the mandatory `shutdown(epoch)` boundary is the narrow
-equivalent.
+idle cursor poll. A refresh failure never uses the cached checkpoint: the shared runtime can publish
+`ready` before lazy writer-open reconciliation, so the adapter cannot prove that cached state still
+matches the files. Inspection failure propagates because the shared protocol has no non-condemning
+unknown-cursor state. A reset keeps its deliberately cursorless result cached even when reset fails,
+because an unknown reset outcome must not rediscover and trust the pre-reset checkpoint. The current
+host contract exposes only `isOwnerEpoch(candidate)`, not the current epoch, so a backend cannot key this
+cache directly from `getDurableCursor()`; invalidation through the mandatory `shutdown(epoch)` boundary
+is the narrow equivalent.
 
 Writer open keeps the existing small immediate retry burst. After that burst, every error uses the
-existing exponential retry timer unless its code belongs to the closed terminal set: schema, identity,
-or format incompatibility; invalid configuration; binding ABI or capability incompatibility; native
-panic or poison; or a closed Node environment. Unknown and newly introduced codes retry by default.
-This prevents a later transient wrapper code from silently becoming a destructive-rebuild signal. The
+existing exponential retry timer unless its code proves the native generation is structurally
+incompatible or corrupt: schema, identity, incomplete creation, index corruption, or format
+incompatibility. Configuration, binding, process-state, and unknown codes retry by default. They may
+require operator action or process restart, but they do not prove the files should be reset. The
 activation gate will assert the expected terminal and retryable codes against the packaged wrapper, and
 must not enable a write-lag rejection budget without exposing prolonged open retry in status.
 
@@ -165,14 +165,20 @@ native operation as cancelled or quiescent. This intentionally prices safety abo
 current shared protocol has no non-condemning `stalled` result, and resolving would let the same backend
 object reacquire with its prior epoch's engine and mutable queue still active.
 
-The record conversion loop avoids `Object.entries()` and the second `Object.keys()` emptiness scan. It
-preserves the existing own-enumerable-property rule and returns no field map when no indexable string
-field exists.
+The record conversion loop avoids `Object.entries()`, the second `Object.keys()` emptiness scan, and a
+duplicate scan of array contents. It preserves the own-enumerable-property rule and returns no field
+map when no string or array field exists. Fulltext validates array contents while performing the exact
+frame encoding it already owns; Harper does not repeat that work on the event loop.
 
 Wrapper rejection counts remain adapter-owned in this inert slice. Activation must add them to the
 operator-visible derived-index metrics before the index can be enabled; changing the shared runtime
 interface solely for an adapter that nothing constructs yet would widen this PR without making the
 metric observable.
+
+Committed cursor decoding uses Harper's fixed 64 KiB format bound rather than the current publication
+limit. Lowering the publication limit therefore preserves an existing valid checkpoint. If a future
+cursor cannot fit, the adapter rollback-closes accepted work, reports it lost once, and then defers
+delivery without condemning the generation; reset cannot make the cursor smaller.
 
 ### Stacked follow-ups
 
@@ -322,7 +328,7 @@ first indexable value.
 
 ## Verification
 
-- **Observed:** `npm run build` passes. All 151 focused backend, lifecycle, shared-runtime, native-backend,
+- **Observed:** `npm run build` passes. All 153 focused backend, lifecycle, shared-runtime, native-backend,
   and audited-RocksDB tests pass in this worktree. This includes two-owner checkpoint rotation and a
   runtime stop whose native writer-open promise remains unsettled past the handoff bound.
 - **Observed:** oxlint reports no warnings in the three changed implementation and test files. The
@@ -362,11 +368,11 @@ first indexable value.
 - Publish the wrapper from merged Fulltext `main`, then exact-pin it in Harper.
 - Add `dependencies.md` rationale and Linux, macOS, and Windows native-load CI. The packaged-native gate
   must verify mutation-batch v3 rejected-upsert counting and representative terminal/retryable open codes.
-- Define a non-condemning acquisition result for a transient initial inspection failure. The current
-  adapter safely falls back only after it has observed a valid checkpoint; without one, the shared
-  runtime treats an inspection throw as a backend failure. Full-text activation must not merge until
-  this protocol gap is resolved or the supported native inspection path is proven not to throw
-  transient failures.
+- Define a non-condemning acquisition result for a transient inspection failure. The adapter cannot
+  safely fall back to a cached checkpoint because the runtime may publish `ready` before lazy writer
+  reconciliation; the shared runtime currently treats the inspection throw as a backend failure.
+  Full-text activation must not merge until this protocol gap is resolved or the supported native
+  inspection path is proven not to throw transient failures.
 - Feed wrapper rejection counts into the existing operator-visible unindexable-record metric before
   activation.
 - Add activation, schema, and query coverage in separate reviewable slices.

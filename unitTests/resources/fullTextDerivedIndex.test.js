@@ -267,17 +267,17 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(source.inspectCalls, 2);
 	});
 
-	it('uses a last known checkpoint when acquisition inspection is temporarily unavailable', async () => {
+	it('does not trust a cached checkpoint when acquisition inspection is unavailable', async () => {
 		const source = lifecycle({ state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(10)) });
 		const { backend, setEpoch } = makeBackend(source);
-		const durable = backend.getDurableCursor();
+		backend.getDurableCursor();
 		await backend.shutdown(1n);
 		setEpoch(2n);
 		source.inspect = function () {
 			this.inspectCalls++;
 			throw new Error('temporary read failure');
 		};
-		assert.strictEqual(backend.getDurableCursor(), durable);
+		assert.throws(() => backend.getDurableCursor(), /state could not be inspected/);
 		assert.strictEqual(source.inspectCalls, 2);
 		await backend.shutdown(2n);
 	});
@@ -310,11 +310,19 @@ describe('FullTextDerivedIndexBackend', () => {
 			'E_BATCH_TOO_LARGE',
 			'E_CHECKPOINT_REQUIRED',
 			'E_CLOSE_FAILED',
+			'E_CLOSED',
 			'E_DIRTY_CLOSE',
 			'E_DUPLICATE_OPEN',
+			'E_INVALID_ARGUMENT',
 			'E_LOCK_BUSY',
+			'E_NATIVE_ABI_MISMATCH',
+			'E_NATIVE_ADDON_NOT_FOUND',
+			'E_NATIVE_CAPABILITY_MISMATCH',
 			'E_NATIVE_FAILURE',
+			'E_NATIVE_PANIC',
+			'E_POISONED',
 			'E_QUEUE_FULL',
+			'E_QUIESCENCE_FAILED',
 			'E_STORAGE',
 		]) {
 			const engine = new FakeEngine();
@@ -334,18 +342,10 @@ describe('FullTextDerivedIndexBackend', () => {
 
 	it('fails immediately for terminal writer-open codes', async () => {
 		for (const code of [
-			'E_CLOSED',
 			'E_IDENTITY_MISMATCH',
 			'E_INCOMPLETE_CREATE',
 			'E_INDEX_CORRUPT',
 			'E_INDEX_FORMAT_INCOMPATIBLE',
-			'E_INVALID_ARGUMENT',
-			'E_NATIVE_ABI_MISMATCH',
-			'E_NATIVE_ADDON_NOT_FOUND',
-			'E_NATIVE_CAPABILITY_MISMATCH',
-			'E_NATIVE_PANIC',
-			'E_POISONED',
-			'E_QUIESCENCE_FAILED',
 			'E_SCHEMA_MISMATCH',
 		]) {
 			const source = lifecycle({ state: 'missing' }, [nativeError(code, 'terminal')]);
@@ -449,6 +449,26 @@ describe('FullTextDerivedIndexBackend', () => {
 			[2, 2, 1]
 		);
 		await backend.shutdown(1n);
+	});
+
+	it('drains every bounded slice before completing shutdown', async () => {
+		const engine = new FakeEngine();
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), { maxApplySliceRecords: 2 });
+		backend.deliver(
+			batch(
+				1n,
+				['a', 'b', 'c', 'd', 'e'].map((id) => mutation(id, { kind: 'record', version: 1, projection: { title: id } })),
+				cursor(20)
+			)
+		);
+
+		await backend.shutdown(1n);
+		assert.deepStrictEqual(
+			engine.applied.map((applied) => applied.upserts.length + applied.deletes.length),
+			[2, 2, 1]
+		);
+		assert.strictEqual(engine.publications.length, 1);
+		assert.deepStrictEqual(engine.closes, [{ mode: 'require-clean' }]);
 	});
 
 	it('publishes the wrapper count of rejected upserts as unindexable', async () => {
@@ -859,7 +879,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(2n);
 	});
 
-	it('does not rescan for a cursor payload that cannot fit the native checkpoint', async () => {
+	it('parks without condemning when a cursor payload cannot fit the native checkpoint', async () => {
 		const engine = new FakeEngine();
 		const source = lifecycle({ state: 'missing' }, [engine]);
 		const { backend, setEpoch } = makeBackend(source, { maxCursorPayloadBytes: 48 });
@@ -877,13 +897,28 @@ describe('FullTextDerivedIndexBackend', () => {
 			)
 		);
 		backend.flush();
-		await waitFor(() => changes.includes('failed'));
+		await waitFor(() => changes.includes('accepted-work-lost'));
 		assert.strictEqual(engine.publications.length, 0);
 		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }]);
+		assert.strictEqual(backend.deliver(batch(1n, [], cursor(40))), DERIVED_INDEX_DEFERRED);
 		await backend.shutdown(1n);
 		setEpoch(2n);
 		await assert.rejects(backend.reset(2n), /configuration must change/);
 		assert.strictEqual(source.resetCalls, 0);
+	});
+
+	it('reuses a valid checkpoint after the publication limit is lowered', () => {
+		const durable = cursorForLogs([
+			['a', 10],
+			['b', 20],
+			['c', 30],
+		]);
+		const payload = encodeFullTextCursorPayload(durable);
+		assert(Buffer.byteLength(payload) > 48);
+		const { backend } = makeBackend(lifecycle({ state: 'checkpointed', committedPayload: payload }), {
+			maxCursorPayloadBytes: 48,
+		});
+		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, durable.logs);
 	});
 
 	it('releases a writer when close reports a non-fatal cleanup error', async () => {
@@ -1055,7 +1090,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert(changes.includes('failed'));
 	});
 
-	it('omits non-text projection values', () => {
+	it('leaves array field validation to the wrapper', () => {
 		const projection = Object.assign(Object.create({ inherited: 'ignored' }), {
 			title: 'shoe',
 			tags: ['red', 'sale'],
@@ -1071,7 +1106,10 @@ describe('FullTextDerivedIndexBackend', () => {
 				}),
 			])
 		);
-		assert.deepStrictEqual({ ...converted.upserts[0].fields }, { title: 'shoe', tags: ['red', 'sale'] });
+		assert.deepStrictEqual(
+			{ ...converted.upserts[0].fields },
+			{ title: 'shoe', tags: ['red', 'sale'], mixed: ['red', 12] }
+		);
 	});
 
 	it('deletes the prior document when a projector omits the current record', () => {
