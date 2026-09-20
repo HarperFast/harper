@@ -1,7 +1,8 @@
 # Full-text derived-index integration on current main
 
-Status: backend slice implemented and verified against current `main`; dependency pinning, activation,
-query integration, and packaged native CI are follow-up gates · Owner: Kyle · Last verified: 2026-09-19
+Status: backend slice implemented and verified against current Harper `main` and the merged Fulltext
+wrapper tree; dependency pinning, activation, query integration, and packaged native CI are follow-up
+gates · Owner: Kyle · Last verified: 2026-09-19
 
 The canonical runtime architecture is the **Native full-text backend** section in `DESIGN.md`. This
 note records implementation sequencing, rejected alternatives, verification, and remaining gates; if
@@ -24,8 +25,9 @@ transaction-log replay, ownership, readiness, rebuild policy, and schema lifecyc
 package remains Harper-agnostic and owns native mutation encoding, its single writer, publication,
 inspection, reset, and retired-directory reclamation.
 
-This first unit replaces [Add a full-text derived-index backend #2569](https://github.com/HarperFast/harper/pull/2569).
-Schema declaration and runtime activation remain stacked follow-ups. It depends on
+This first unit replaces the conflicted implementation in
+[Add a full-text derived-index backend #2569](https://github.com/HarperFast/harper/pull/2569).
+Schema declaration and runtime activation remain stacked follow-ups. Its required wrapper API landed in
 [Add exact native mutation batch partitioning #37](https://github.com/HarperFast/fulltext/pull/37).
 
 ## Current-main facts
@@ -42,7 +44,7 @@ Schema declaration and runtime activation remain stacked follow-ups. It depends 
   schema, replication, or table-lifecycle code. Harper's HNSW adapter supplies those policies.
 - Fulltext `main` provides native inspection, reset, lazy writer open, apply, publish, and rollback
   close. [Add exact native mutation batch partitioning #37](https://github.com/HarperFast/fulltext/pull/37)
-  adds exact logical mutation-batch partitioning, replacement deletes for
+  added exact logical mutation-batch partitioning, replacement deletes for
   rejected upserts, retired-directory reclamation, and the API version Harper's adapter expects.
 - The conflicted backend branch changes the shared runtime, table/database lifecycle, and HNSW
   adapter. Applying those files over current `main` would remove newer HNSW behavior.
@@ -57,44 +59,45 @@ native state made durable by the same publication barrier.
 
 ### Backend PR
 
-Rebuild [Add a full-text derived-index backend #2569](https://github.com/HarperFast/harper/pull/2569)
+The branch reconstructs
+[Add a full-text derived-index backend #2569](https://github.com/HarperFast/harper/pull/2569)
 from current `main` rather than resolving its conflicts commit by commit.
 
-The backend PR will:
+The backend slice:
 
-1. Add a `DerivedIndexBackend` adapter under `resources/indexes/` and a lazy optional Fulltext binding
+1. Adds a `DerivedIndexBackend` adapter under `resources/indexes/` and a lazy optional Fulltext binding
    modeled on the HNSW binding. The adapter reads `batch.records` by named property; it never spreads,
    enumerates, or serializes `DerivedIndexBatch`, whose `records` and `bytes` properties are deliberately
    non-enumerable.
-2. Queue each accepted runtime batch and apply it in bounded adapter-owned slices. Fulltext owns exact
+2. Queues each accepted runtime batch and applies it in bounded adapter-owned slices. Fulltext owns exact
    encoding, native frame partitioning, rejected-upsert replacement deletes, and writer state, but one
    native call never receives the entire 4,096-record runtime chunk. The cursor is publishable only
    after every slice from that runtime batch has completed.
-3. Inspect the selected Tantivy generation synchronously for the durable cursor before registration.
-   Open the exclusive writer lazily on first delivery or publication.
-4. Publish the Harper cursor as Tantivy's commit payload after accepted mutations. On apply or
+3. Inspects the selected Tantivy generation synchronously for the durable cursor before registration.
+   Opens the exclusive writer lazily on first delivery or publication.
+4. Publishes the Harper cursor as Tantivy's commit payload after accepted mutations. On apply or
    publication failure, rollback-close, discard queued work, and report accepted work lost so the
    runtime resumes from the durable payload.
-5. Preserve every field in the current `DerivedIndexCursor`, including optional coverage, when
+5. Preserves every field in the current `DerivedIndexCursor`, including optional coverage, when
    encoding and decoding the native commit payload. A normal publication merges any coverage already
    stored in the durable payload because the runtime's `batch.through` clone intentionally omits it.
-   The backend will not implement `publishCoverage` in this PR; query coverage arrives with the query
+   The backend does not implement `publishCoverage`; query coverage arrives with the query
    integration. Ordinary replay still publishes cursor-only progress for transactions that do not
    change indexed records, because advancing the replay cursor prevents needless reprocessing and
    protects transaction-log retention.
-6. Use the runtime's existing rebuild and condemnation protocol. Fulltext owns reset, invalid native
+6. Uses the runtime's existing rebuild and condemnation protocol. Fulltext owns reset, invalid native
    generation classification, and retired-directory cleanup.
-7. Leave `derivedIndexRuntime.ts`, table/database lifecycle, and HNSW unchanged. The adapter derives
+7. Leaves `derivedIndexRuntime.ts`, table/database lifecycle, and HNSW unchanged. The adapter derives
    its stable document key from `tableId` and the record id's ordered-binary storage-key bytes, rejects
    symbol identities, and pays that encoding only on the full-text path. No activation or query policy
    belongs here.
-8. Treat `E_LOCK_BUSY` as retryable ownership contention, never as a reason to reset. Retries use
+8. Treats `E_LOCK_BUSY` as retryable ownership contention, never as a reason to reset. Retries use
    exponential backoff to a five-second ceiling and emit one content-free warning when contention
    persists. Per-record encoding failures, including oversized fields and invalid field shapes, are
    returned by Fulltext's logical-batch API as rejected upserts, replaced by deletes, counted, and
    warned once without record values. Native paths and native error messages are not logged;
    adapter-authored messages and stable native error codes are.
-9. `shutdown(epoch)` queues a final barrier, drains accepted work, epoch-fences publication, and then
+9. Makes `shutdown(epoch)` queue a final barrier, drain accepted work, epoch-fence publication, and then
    settles the writer. Native close is bounded at the adapter boundary. Shutdown may reject
    only when quiescence cannot be proven; the runtime then deliberately holds the runner lock rather
    than allowing two native writers. Native close needs a bounded failure result so this state is
@@ -183,8 +186,11 @@ than hidden inside a conflict resolution.
 
 ## Verification
 
-- **Observed:** `npm run build`, the 69 focused backend/lifecycle/audited-RocksDB tests, and the complete
-  derived-index/HNSW resource shard (368 passing, 8 pending) pass in this worktree.
+- **Observed:** `npm run build` and all 69 focused backend, lifecycle, and audited-RocksDB tests pass in
+  this worktree.
+- **Observed:** the complete resources shard reaches 2,876 passing and 51 pending. Its three failures
+  reproduce unchanged on detached Harper `origin/main`: two condition-delete visibility assertions and
+  the range-read activity read-your-writes assertion.
 - **Verified by tests:** the real `DerivedIndexRuntime` produces the same fake-native document set by
   transaction-log replay and authoritative rebuild. Separate converter tests cover Harper-internal
   symbol identities.
@@ -196,15 +202,15 @@ than hidden inside a conflict resolution.
   reclaimed its retired directory. A separate multi-record native call verified the v3 contract:
   `processed` counted both records while one invalid-field upsert appeared in `rejected` and was
   replaced by a delete. These smokes are not yet a packaged dependency or CI gate.
+- **Verified by source diff:** the wrapper tree used for those local smokes is identical to merged
+  Fulltext `main` at
+  [`ecbb7a5`](https://github.com/HarperFast/fulltext/commit/ecbb7a51e5b0fa929079b1de54cb1018f94b83b6).
 - **Untested:** a packaged native module across Linux, macOS, and Windows; HNSW and full-text active on
   the same audited table/root; actual-native deletion and rebuild after restart.
 
 ## Known prerequisites
 
-- [Add exact native mutation batch partitioning #37](https://github.com/HarperFast/fulltext/pull/37)
-  must resolve its Windows Node 24 failure and merge before Harper can pin and exercise
-  the required native API in CI.
-- Before this stack becomes mergeable, Harper must exact-pin the published wrapper, document it in
+- Before the activation stack becomes mergeable, Harper must exact-pin the published wrapper, document it in
   `dependencies.md`, load it on Linux, macOS, and Windows CI, and verify the expected lifecycle and
   mutation-batch API versions. If a supported platform has no prebuild, activation fails clearly rather
   than silently omitting the index.
@@ -214,9 +220,7 @@ than hidden inside a conflict resolution.
 
 ## Open items
 
-- Merge and publish
-  [Add exact native mutation batch partitioning #37](https://github.com/HarperFast/fulltext/pull/37),
-  then exact-pin it in Harper.
+- Publish the wrapper from merged Fulltext `main`, then exact-pin it in Harper.
 - Add `dependencies.md` rationale and Linux, macOS, and Windows native-load CI.
 - Add activation, schema, and query coverage in separate reviewable slices.
 - Run the HNSW/full-text coexistence matrix before activation merges.
