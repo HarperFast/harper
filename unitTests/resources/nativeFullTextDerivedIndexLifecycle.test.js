@@ -234,6 +234,8 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			}),
 			/maxCursorPayloadBytes must not exceed 65536/
 		);
+		assert.strictEqual(binding.runtimeInfoCalls, 0);
+		assert.strictEqual(binding.reclaims.length, 0);
 		assert.strictEqual(binding.opens.length, 0);
 	});
 

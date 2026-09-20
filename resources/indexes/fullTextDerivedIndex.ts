@@ -253,8 +253,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		let inspection: FullTextDerivedIndexInspection;
 		try {
 			inspection = this.#lifecycle.inspect();
-		} catch (error) {
-			throw new FullTextDerivedIndexError('Full-text derived index state could not be inspected', error);
+		} catch {
+			throw new FullTextDerivedIndexError('Full-text derived index state could not be inspected');
 		}
 		if (inspection.state !== 'checkpointed') {
 			if (inspection.state === 'incompatible')
@@ -938,9 +938,11 @@ function log(level: 'warn' | 'error', message: string, error?: unknown): void {
 	const code = nativeErrorCode(error);
 	const detail = error instanceof FullTextDerivedIndexError ? error.message : code;
 	const name = error instanceof Error ? error.name : undefined;
-	logger[level]?.(
-		`${message}${detail || name ? ` (${detail ?? name}${code && detail !== code ? `; ${code}` : ''})` : ''}`
-	);
+	try {
+		logger[level]?.(
+			`${message}${detail || name ? ` (${detail ?? name}${code && detail !== code ? `; ${code}` : ''})` : ''}`
+		);
+	} catch {}
 }
 
 function nativeErrorCode(error: unknown): string | undefined {

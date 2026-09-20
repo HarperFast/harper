@@ -277,7 +277,10 @@ describe('FullTextDerivedIndexBackend', () => {
 		const { backend } = makeBackend(source);
 		assert.throws(
 			() => backend.getDurableCursor(),
-			(error) => error.name === 'FullTextDerivedIndexError' && /temporary read failure/.test(error.cause?.message)
+			(error) =>
+				error.name === 'FullTextDerivedIndexError' &&
+				error.message === 'Full-text derived index state could not be inspected' &&
+				error.cause === undefined
 		);
 		assert.strictEqual(backend.getDurableCursor(), undefined);
 		assert.strictEqual(source.inspectCalls, 2);

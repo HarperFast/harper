@@ -145,11 +145,11 @@ export class NativeFullTextDerivedIndexLifecycle {
 export async function createNativeFullTextDerivedIndexBackend(
 	options: NativeFullTextDerivedIndexBackendOptions
 ): Promise<FullTextDerivedIndexBackend> {
-	const lifecycle = new NativeFullTextDerivedIndexLifecycle({ ...options, indexId: options.id });
-	await lifecycle.initialize();
 	const maxCursorPayloadBytes = options.maxCursorPayloadBytes ?? HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES;
 	if (maxCursorPayloadBytes > HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES)
 		throw new RangeError(`Full-text maxCursorPayloadBytes must not exceed ${HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES}`);
+	const lifecycle = new NativeFullTextDerivedIndexLifecycle({ ...options, indexId: options.id });
+	await lifecycle.initialize();
 	if (maxCursorPayloadBytes > lifecycle.maxCommitPayloadBytes)
 		throw new RangeError('Full-text maxCursorPayloadBytes exceeds the native commit payload capacity');
 	return new FullTextDerivedIndexBackend({
@@ -167,5 +167,7 @@ function digest(value: string): string {
 function logWarning(message: string, error?: unknown): void {
 	const code =
 		error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
-	logger.warn?.(`${message}${code ? ` (${code})` : ''}`);
+	try {
+		logger.warn?.(`${message}${code ? ` (${code})` : ''}`);
+	} catch {}
 }
