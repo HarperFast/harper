@@ -178,8 +178,9 @@ object reacquire with its prior epoch's engine and mutable queue still active.
 Native reset uses the same bounded, lock-retaining policy. The adapter tracks one underlying reset per
 owner epoch; retry and shutdown callers attach to it instead of starting another destructive operation.
 If it does not settle, shutdown rejects and the runtime retains ownership. Wrapper-validated retired-
-directory reclamation remains best-effort and runs outside reset completion, so cleanup cannot wedge
-worker stop after the live generation has already been retired.
+directory reclamation remains best-effort, is serialized per lifecycle, and runs outside reset
+completion, so cleanup cannot race another reclamation or wedge worker stop after the live generation
+has already been retired.
 
 The record conversion loop avoids `Object.entries()`, the second `Object.keys()` emptiness scan, and a
 duplicate scan of array contents. It preserves the own-enumerable-property rule and returns no field

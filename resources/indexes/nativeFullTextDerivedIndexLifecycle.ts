@@ -35,6 +35,7 @@ export class NativeFullTextDerivedIndexLifecycle {
 	readonly #generation: string;
 	#binding?: NativeFullTextModule;
 	#maxCommitPayloadBytes?: number;
+	#reclaimOperation = Promise.resolve();
 
 	constructor(options: NativeFullTextDerivedIndexLifecycleOptions) {
 		if (!isAbsolute(options.storePath)) throw new TypeError('Full-text storePath must be absolute');
@@ -62,7 +63,7 @@ export class NativeFullTextDerivedIndexLifecycle {
 			limits: this.#options.limits,
 		});
 		this.#maxCommitPayloadBytes = getValidatedFullTextRuntimeInfo(binding).limits.maxCommitPayloadBytes;
-		void this.#reclaimRetired();
+		this.#queueReclaimRetired();
 	}
 
 	get maxCommitPayloadBytes(): number {
@@ -86,7 +87,11 @@ export class NativeFullTextDerivedIndexLifecycle {
 			path: this.#path,
 			indexId: this.#options.indexId,
 		});
-		void this.#reclaimRetired(result.state === 'reset' ? result.retiredPath : undefined);
+		this.#queueReclaimRetired(result.state === 'reset' ? result.retiredPath : undefined);
+	}
+
+	#queueReclaimRetired(retiredPath?: string): void {
+		this.#reclaimOperation = this.#reclaimOperation.then(() => this.#reclaimRetired(retiredPath));
 	}
 
 	async #reclaimRetired(retiredPath?: string): Promise<void> {

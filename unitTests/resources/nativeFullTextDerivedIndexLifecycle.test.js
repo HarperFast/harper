@@ -8,6 +8,7 @@ const {
 	NativeFullTextDerivedIndexLifecycle,
 } = require('#src/resources/indexes/nativeFullTextDerivedIndexLifecycle');
 const { DERIVED_INDEX_ACCEPTED, DERIVED_INDEX_DEFERRED } = require('#src/resources/derivedIndexRuntime');
+const { waitFor } = require('../waitFor');
 
 const limits = {
 	indexingThreads: 1,
@@ -172,6 +173,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		binding.resetResult = { state: 'reset', retiredPath: 'wrapper-owned' };
 		await lifecycle.initialize();
 		await lifecycle.reset();
+		await waitFor(() => binding.reclaims.length === 2);
 		assert.deepStrictEqual(binding.resets, [{ path: lifecycle.path, indexId: 'products-title' }]);
 		assert.deepStrictEqual(binding.reclaims, [
 			{ path: lifecycle.path, retiredPath: undefined },
@@ -185,21 +187,26 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		binding.resetResult = { state: 'reset', retiredPath: 'wrapper-owned' };
 		await lifecycle.initialize();
+		await waitFor(() => binding.reclaims.length === 1);
 		binding.reclaimWait = new Promise((resolve) => (finishReclaim = resolve));
 
 		await lifecycle.reset();
+		await waitFor(() => binding.reclaims.length === 2);
 		assert.deepStrictEqual(binding.reclaims.at(-1), { path: lifecycle.path, retiredPath: 'wrapper-owned' });
 		finishReclaim();
 	});
 
-	it('asks the wrapper to reclaim retired storage during initialization', async () => {
+	it('serializes best-effort retired storage reclamation', async () => {
 		let finishReclaim;
 		const binding = new FakeNativeModule();
 		binding.reclaimWait = new Promise((resolve) => (finishReclaim = resolve));
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await lifecycle.initialize();
 		assert.deepStrictEqual(binding.reclaims, [{ path: lifecycle.path, retiredPath: undefined }]);
+		await lifecycle.reset();
+		assert.strictEqual(binding.reclaims.length, 1);
 		finishReclaim();
+		await waitFor(() => binding.reclaims.length === 2);
 	});
 
 	it('preloads and validates the binding before returning a backend', async () => {

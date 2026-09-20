@@ -2749,7 +2749,7 @@ the runtime's ordinary local rebuild from records.
 Reset first asks the wrapper to retire the live generation atomically, then reclaims only wrapper-
 validated retired paths. The reset operation is tracked and bounded; shutdown attaches to the same
 operation and keeps the runner lock if it cannot prove settlement. Retired-path reclamation is
-best-effort and never extends that reset handoff. The native directory is node-local derived state: restarts reuse it and
+best-effort, serialized per lifecycle, and never extends that reset handoff. The native directory is node-local derived state: restarts reuse it and
 replay after its payload; replicas independently derive it from their own applied transaction log;
 backup and restore need only authoritative records and schema. A new or unusable directory serves no
 full-text queries until rebuild and catch-up publish `ready`.
