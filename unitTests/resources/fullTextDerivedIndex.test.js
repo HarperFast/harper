@@ -11,11 +11,7 @@ const {
 	encodeFullTextCursorPayload,
 	toFullTextMutationBatch,
 } = require('#src/resources/indexes/fullTextDerivedIndex');
-const {
-	DERIVED_INDEX_ACCEPTED,
-	DERIVED_INDEX_DEFERRED,
-	DERIVED_INDEX_FAILED,
-} = require('#src/resources/derivedIndexRuntime');
+const { DERIVED_INDEX_ACCEPTED, DERIVED_INDEX_DEFERRED } = require('#src/resources/derivedIndexRuntime');
 const { waitFor } = require('../waitFor');
 
 const cursor = (timestamp) => ({ format: 1, logs: { local: timestamp } });
@@ -96,6 +92,7 @@ function makeBackend(lifecycleValue, options = {}) {
 		openRetryMilliseconds: options.openRetryMilliseconds ?? 0,
 		maxOpenRetryMilliseconds: options.maxOpenRetryMilliseconds,
 		closeTimeoutMilliseconds: options.closeTimeoutMilliseconds,
+		shutdownTimeoutMilliseconds: options.shutdownTimeoutMilliseconds,
 		maxCursorPayloadBytes: options.maxCursorPayloadBytes,
 	});
 	backend.attach({
@@ -137,6 +134,13 @@ async function runRestartChild(directory, phase) {
 }
 
 describe('FullTextDerivedIndexBackend', () => {
+	it('keeps the whole handoff bound larger than the native close bound', () => {
+		assert.throws(
+			() => makeBackend(lifecycle(), { closeTimeoutMilliseconds: 10, shutdownTimeoutMilliseconds: 19 }),
+			/shutdownTimeoutMilliseconds must be at least twice closeTimeoutMilliseconds/
+		);
+	});
+
 	it('encodes bounded deterministic cursor payloads', () => {
 		const payload = encodeFullTextCursorPayload({ format: 1, logs: { z: 20, prototype: 15, a: 10 } });
 		assert.strictEqual(payload, '{"format":1,"cursor":{"format":1,"logs":{"a":10,"prototype":15,"z":20}}}');
@@ -698,16 +702,19 @@ describe('FullTextDerivedIndexBackend', () => {
 		const third = new FakeEngine(encodeFullTextCursorPayload(cursor(15)));
 		third.applyError = new Error('later writer failure');
 		const { backend } = makeBackend(
-			lifecycle({ state: 'checkpointed', committedPayload: first.committedPayload }, [first, advanced, third])
+			lifecycle({ state: 'checkpointed', committedPayload: first.committedPayload }, [first, advanced, third]),
+			{ openRetryMilliseconds: 50, maxOpenRetryMilliseconds: 50 }
 		);
 		const changes = [];
 		backend.onStateChange((change) => changes.push(change));
+		backend.getDurableCursor();
 		const value = batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20));
 		backend.deliver(value);
 		await waitFor(() => changes.filter((change) => change === 'accepted-work-lost').length === 1);
-		backend.deliver(value);
+		await waitFor(() => changes.filter((change) => change === 'changed').length === 1);
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
 		await waitFor(() => changes.filter((change) => change === 'accepted-work-lost').length === 2);
-		backend.deliver(value);
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
 		await waitFor(() => changes.filter((change) => change === 'accepted-work-lost').length === 3);
 		assert.strictEqual(changes.includes('failed'), false);
 		await backend.shutdown(1n);
@@ -729,23 +736,32 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
-	it('fails permanently after a repeated writer failure without durable progress', async () => {
+	it('backs off repeated writer failures without condemning a valid generation', async () => {
 		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
 		const second = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		const third = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
 		first.applyError = new Error('disk failure');
 		second.applyError = new Error('disk still failing');
 		const { backend } = makeBackend(
-			lifecycle({ state: 'checkpointed', committedPayload: first.committedPayload }, [first, second])
+			lifecycle({ state: 'checkpointed', committedPayload: first.committedPayload }, [first, second, third]),
+			{ openRetryMilliseconds: 50, maxOpenRetryMilliseconds: 50 }
 		);
 		const changes = [];
 		backend.onStateChange((change) => changes.push(change));
 		backend.getDurableCursor();
 		const value = batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20));
 		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
-		await waitFor(() => changes.includes('accepted-work-lost'));
+		await waitFor(() => changes.filter((change) => change === 'accepted-work-lost').length === 1);
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_DEFERRED);
+		await waitFor(() => changes.filter((change) => change === 'changed').length === 1);
 		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
-		await waitFor(() => changes.includes('failed'));
-		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_FAILED);
+		await waitFor(() => changes.filter((change) => change === 'accepted-work-lost').length === 2);
+		assert.strictEqual(changes.includes('failed'), false);
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_DEFERRED);
+		await waitFor(() => changes.filter((change) => change === 'changed').length === 2);
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
+		backend.flush();
+		await waitFor(() => third.publications.length === 1);
 		assert.deepStrictEqual(first.closes, [{ mode: 'rollback' }]);
 		assert.deepStrictEqual(second.closes, [{ mode: 'rollback' }]);
 		await backend.shutdown(1n);
@@ -773,7 +789,10 @@ describe('FullTextDerivedIndexBackend', () => {
 		const engine = new FakeEngine();
 		engine.applyError = new Error('apply failed');
 		engine.closeWait = new Promise((resolve) => (releaseClose = resolve));
-		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine, engine]));
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine, engine]), {
+			openRetryMilliseconds: 50,
+			maxOpenRetryMilliseconds: 50,
+		});
 		const changes = [];
 		backend.onStateChange((change) => changes.push(change));
 		const value = batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })]);
@@ -784,6 +803,8 @@ describe('FullTextDerivedIndexBackend', () => {
 		releaseClose();
 		await waitFor(() => changes.includes('accepted-work-lost'));
 		engine.closeWait = undefined;
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_DEFERRED);
+		await waitFor(() => changes.includes('changed'));
 		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
 		await backend.shutdown(1n);
 	});

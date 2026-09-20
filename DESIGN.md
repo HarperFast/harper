@@ -2721,14 +2721,16 @@ cursor progress to bound replay work and transaction-log retention.
 
 The native commit payload contains Harper's exact derived-index cursor. A publish makes the Tantivy
 mutations and that payload visible together; only then does the adapter report durable progress.
-An apply or publish failure rollback-closes the writer, discards accepted-but-unpublished work, and
-wakes the runtime to replay from the last native payload. Writer open is lazy. After a small immediate
-attempt budget, open errors retry with exponential backoff to a five-second ceiling unless their stable
+An ordinary apply or publish failure rollback-closes the writer, discards accepted-but-unpublished
+work, and wakes the runtime to replay from the last native payload after exponential backoff to a
+five-second ceiling. It does not condemn a structurally valid generation. A mutation-batch protocol
+violation remains permanent because retry cannot change the wrapper contract. Writer open is lazy.
+After a small immediate attempt budget, open errors use the same retry ceiling unless their stable
 code proves the native generation is structurally incompatible or corrupt. Configuration, binding,
 process-state, and unknown codes retry by default: they may require operator action or restart, but do
 not prove the index files should be reset. Persistent writer unavailability emits one warning without native paths
-or record content. Ownership handoff does not finish until drain and close prove quiescence, and Harper
-bounds the whole wait at 35 seconds. If that proof fails, shutdown rejects and the runtime keeps its
+or record content. Ownership handoff does not finish until drain and close prove quiescence. Harper
+gives native close its own 35-second bound and bounds the complete handoff at 70 seconds. If that proof fails, shutdown rejects and the runtime keeps its
 runner lock, preventing a second writer. The underlying native operation continues and a later operator
 retry attaches to the same shutdown rather than starting a competing close. A cursor that cannot fit
 the native commit-payload limit is terminal for that backend instance: accepted work is rollback-closed

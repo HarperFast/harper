@@ -28,7 +28,6 @@ const DEFAULT_MAX_OPEN_RETRY_MILLISECONDS = 5_000;
 const DEFAULT_CLOSE_TIMEOUT_MILLISECONDS = 35_000;
 const DEFAULT_MAX_APPLY_SLICE_RECORDS = 256;
 const APPLY_SLICE_MILLISECONDS = 5;
-const MAX_CONSECUTIVE_WRITER_FAILURES = 2;
 const TERMINAL_OPEN_ERROR_CODES = new Set([
 	'E_IDENTITY_MISMATCH',
 	'E_INCOMPLETE_CREATE',
@@ -81,6 +80,7 @@ export type FullTextDerivedIndexBackendOptions = {
 	openRetryMilliseconds?: number;
 	maxOpenRetryMilliseconds?: number;
 	closeTimeoutMilliseconds?: number;
+	shutdownTimeoutMilliseconds?: number;
 };
 
 type ApplyCommand = {
@@ -132,6 +132,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#openRetryMilliseconds: number;
 	#maxOpenRetryMilliseconds: number;
 	#closeTimeoutMilliseconds: number;
+	#shutdownTimeoutMilliseconds: number;
 	#host?: DerivedIndexBackendHost;
 	#wake?: (change?: DerivedIndexBackendStateChange) => void;
 	#engine?: FullTextDerivedIndexEngine;
@@ -158,12 +159,14 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#unindexableRecords = 0;
 	#stagedUnindexableRecords = 0;
 	#invalidEstimateWarned = false;
-	#consecutiveWriterFailures = 0;
 	#openRetryTimer?: NodeJS.Timeout;
+	#writerRetryTimer?: NodeJS.Timeout;
 	#closeOperations = new WeakMap<FullTextDerivedIndexEngine, Promise<{ cleanupError?: unknown }>>();
 	#shutdownFailure?: FullTextDerivedIndexError;
 	#openRetryDelayMilliseconds: number;
 	#openRetryWarned = false;
+	#writerRetryDelayMilliseconds: number;
+	#writerRetryWarned = false;
 	#terminalFailure?: FullTextDerivedIndexConfigurationError;
 	// A failed deliver() result and its delayed state callback report the same backend fault.
 	#failedDeliveryObserved = false;
@@ -211,7 +214,17 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			options.closeTimeoutMilliseconds ?? DEFAULT_CLOSE_TIMEOUT_MILLISECONDS,
 			'closeTimeoutMilliseconds'
 		);
+		this.#shutdownTimeoutMilliseconds = positiveInteger(
+			options.shutdownTimeoutMilliseconds ?? this.#closeTimeoutMilliseconds * 2,
+			'shutdownTimeoutMilliseconds'
+		);
+		if (this.#shutdownTimeoutMilliseconds < this.#closeTimeoutMilliseconds * 2)
+			throw new RangeError('shutdownTimeoutMilliseconds must be at least twice closeTimeoutMilliseconds');
 		this.#openRetryDelayMilliseconds = Math.max(1, this.#openRetryMilliseconds);
+		this.#writerRetryDelayMilliseconds = Math.min(
+			this.#maxOpenRetryMilliseconds,
+			Math.max(DEFAULT_OPEN_RETRY_MILLISECONDS, this.#openRetryMilliseconds)
+		);
 	}
 
 	attach(host: DerivedIndexBackendHost): void {
@@ -259,7 +272,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		}
 		if (!this.#host?.isOwnerEpoch(batch.ownerEpoch)) return DERIVED_INDEX_FAILED;
 		if (this.#terminalFailure) return DERIVED_INDEX_DEFERRED;
-		if (this.#settlingWriter || this.#lossPendingEpoch === batch.ownerEpoch) return DERIVED_INDEX_DEFERRED;
+		if (this.#settlingWriter || this.#writerRetryTimer || this.#lossPendingEpoch === batch.ownerEpoch)
+			return DERIVED_INDEX_DEFERRED;
 		if (this.#shutdown) {
 			if (this.#shutdown.epoch === batch.ownerEpoch || this.#activeEpoch !== undefined) return DERIVED_INDEX_FAILED;
 			this.#shutdown = undefined;
@@ -307,6 +321,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#cursorInspectedForAcquisition = false;
 		if (this.#shutdown?.epoch === ownerEpoch) return this.#boundedShutdown(this.#shutdown);
 		if (this.#activeEpoch !== ownerEpoch) return Promise.resolve();
+		this.#clearWriterRetry();
 		this.#queueBarrier(ownerEpoch);
 		let resolve: () => void;
 		let reject: (error: unknown) => void;
@@ -322,7 +337,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#boundedShutdown(request: ShutdownRequest): Promise<void> {
 		return withTimeout(
 			request.promise,
-			this.#closeTimeoutMilliseconds,
+			this.#shutdownTimeoutMilliseconds,
 			() => new FullTextDerivedIndexError('Full-text writer shutdown did not prove quiescence before timeout')
 		);
 	}
@@ -335,6 +350,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#draining ||
 			this.#settlingWriter ||
 			this.#openRetryTimer ||
+			this.#writerRetryTimer ||
 			this.#commands.length > 0 ||
 			this.#shutdown?.closing
 		)
@@ -383,7 +399,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	}
 
 	#scheduleDrain(): void {
-		if (this.#scheduled || this.#draining || (this.#openRetryTimer && !this.#shutdown)) return;
+		if (this.#scheduled || this.#draining || ((this.#openRetryTimer || this.#writerRetryTimer) && !this.#shutdown))
+			return;
 		this.#scheduled = true;
 		setImmediate(() => {
 			this.#scheduled = false;
@@ -421,7 +438,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#failAndNotify(error);
 		} finally {
 			this.#draining = false;
-			if (!this.#failed && !this.#openRetryTimer && this.#commands.length > 0) this.#scheduleDrain();
+			if (!this.#failed && !this.#openRetryTimer && !this.#writerRetryTimer && this.#commands.length > 0)
+				this.#scheduleDrain();
 			else if (this.#shutdown && !this.#shutdown.closing) void this.#closeForShutdown(this.#shutdown);
 		}
 	}
@@ -448,7 +466,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			);
 			this.#durableCursor = actual;
 			this.#cursorInspectedForAcquisition = true;
-			this.#consecutiveWriterFailures = 0;
+			this.#resetWriterRetryBackoff();
 			this.#discardCommands();
 			this.#rewindAcceptedWork();
 			this.#notify('accepted-work-lost');
@@ -498,7 +516,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				this.#recordApplyResult(result, mutationCount);
 			} catch (error) {
 				const permanentFailure = error instanceof FullTextDerivedIndexProtocolError;
-				await this.#loseAcceptedWork(command.epoch, error, !permanentFailure);
+				await this.#loseAcceptedWork(command.epoch, error, {
+					notify: !permanentFailure,
+					retry: !permanentFailure,
+				});
 				if (permanentFailure) this.#failAndNotify(error);
 				return false;
 			}
@@ -544,7 +565,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			await this.#engine!.publish(payload);
 		} catch (error) {
 			const terminal = error instanceof FullTextDerivedIndexConfigurationError;
-			await this.#loseAcceptedWork(command.epoch, error);
+			await this.#loseAcceptedWork(command.epoch, error, { retry: !terminal });
 			if (terminal) {
 				this.#terminalFailure = error;
 				logError('Full-text derived index cannot publish its durable cursor', error);
@@ -559,12 +580,16 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#durableCursor = cloneCursor(cursor);
 		this.#cursorInspectedForAcquisition = true;
 		this.#unindexableWarned = false;
-		this.#consecutiveWriterFailures = 0;
+		this.#resetWriterRetryBackoff();
 		if (!this.#shutdown) this.#notify('changed');
 		return true;
 	}
 
-	async #loseAcceptedWork(ownerEpoch: bigint, cause: unknown, notify = true): Promise<void> {
+	async #loseAcceptedWork(
+		ownerEpoch: bigint,
+		cause: unknown,
+		options: { notify?: boolean; retry?: boolean } = {}
+	): Promise<void> {
 		this.#lossPendingEpoch = ownerEpoch;
 		this.#discardCommands();
 		const engine = this.#engine;
@@ -583,16 +608,11 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#assertCommandEpoch(ownerEpoch);
 		this.#hasStagedMutations = false;
 		this.#stagedUnindexableRecords = 0;
-		if (!notify) {
+		if (options.notify === false) {
 			this.#lossPendingEpoch = undefined;
 			return;
 		}
-		this.#consecutiveWriterFailures++;
-		if (this.#consecutiveWriterFailures >= MAX_CONSECUTIVE_WRITER_FAILURES) {
-			this.#lossPendingEpoch = undefined;
-			this.#failAndNotify(new FullTextDerivedIndexError('Full-text writer failed repeatedly', cause));
-			return;
-		}
+		if (options.retry !== false) this.#scheduleWriterRetry(ownerEpoch, cause);
 		this.#notify('accepted-work-lost');
 	}
 
@@ -602,6 +622,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		const engine = this.#engine;
 		try {
 			this.#clearOpenRetry();
+			this.#clearWriterRetry();
 			if (engine) {
 				const mode =
 					this.#hasStagedMutations || this.#lastAppliedSequence > this.#lastPublishedSequence
@@ -697,6 +718,39 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#openRetryWarned = false;
 	}
 
+	#scheduleWriterRetry(ownerEpoch: bigint, error: unknown): void {
+		if (this.#writerRetryTimer || this.#shutdown || this.#failed || this.#terminalFailure) return;
+		const retryDelay = this.#writerRetryDelayMilliseconds;
+		this.#writerRetryDelayMilliseconds = Math.min(
+			this.#maxOpenRetryMilliseconds,
+			this.#writerRetryDelayMilliseconds * 2
+		);
+		if (retryDelay >= this.#maxOpenRetryMilliseconds && !this.#writerRetryWarned) {
+			this.#writerRetryWarned = true;
+			logWarning(`Full-text derived index '${this.id}' is retrying native writer work`, error);
+		}
+		this.#writerRetryTimer = setTimeout(() => {
+			this.#writerRetryTimer = undefined;
+			if (this.#activeEpoch === ownerEpoch && this.#host?.isOwnerEpoch(ownerEpoch)) this.#notify('changed');
+		}, retryDelay);
+		this.#writerRetryTimer.unref?.();
+	}
+
+	#clearWriterRetry(): void {
+		if (!this.#writerRetryTimer) return;
+		clearTimeout(this.#writerRetryTimer);
+		this.#writerRetryTimer = undefined;
+	}
+
+	#resetWriterRetryBackoff(): void {
+		this.#clearWriterRetry();
+		this.#writerRetryDelayMilliseconds = Math.min(
+			this.#maxOpenRetryMilliseconds,
+			Math.max(DEFAULT_OPEN_RETRY_MILLISECONDS, this.#openRetryMilliseconds)
+		);
+		this.#writerRetryWarned = false;
+	}
+
 	#discardCommands(): void {
 		this.#commands = [];
 		this.#retainedBatches = 0;
@@ -716,6 +770,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 
 	#resetQueueState(): void {
 		this.#resetOpenRetryBackoff();
+		this.#resetWriterRetryBackoff();
 		this.#commands = [];
 		this.#retainedBatches = 0;
 		this.#retainedBytes = 0;
@@ -729,7 +784,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#capacityDeferred = false;
 		this.#lossPendingEpoch = undefined;
 		this.#invalidEstimateWarned = false;
-		this.#consecutiveWriterFailures = 0;
 		this.#failedDeliveryObserved = false;
 	}
 

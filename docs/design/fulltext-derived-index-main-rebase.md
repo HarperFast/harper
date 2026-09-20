@@ -95,13 +95,16 @@ The backend slice:
    belongs here.
 8. Treats native writer-open errors as retryable unless their stable code proves the generation is
    structurally incompatible or corrupt. Retries use exponential backoff to a five-second ceiling and
-   emit one content-free warning when writer unavailability persists. Per-record
+   emit one content-free warning when writer unavailability persists. Ordinary apply and publish
+   failures rollback and use a separate exponential retry timer instead of condemning a valid
+   generation; only a mutation-batch protocol violation is permanent. Per-record
    encoding failures, including oversized fields and invalid array contents, are returned by Fulltext's
    logical-batch API as rejected upserts, replaced by deletes, counted, and warned once without record
    values. Native paths and native error messages are not logged; adapter-authored messages and stable
    native error codes are.
 9. Makes `shutdown(epoch)` queue a final barrier, drain accepted work, epoch-fence publication, and then
-   settles the writer. The whole shutdown wait and native close are bounded at the adapter boundary. Shutdown may reject
+   settles the writer. Native close has a 35-second bound and the complete handoff has a separate
+   70-second bound. Shutdown may reject
    only when quiescence cannot be proven; the runtime then deliberately holds the runner lock rather
    than allowing two native writers. A timeout does not cancel or forget native work; it makes the
    unproven state observable instead of hanging worker shutdown indefinitely.
@@ -157,11 +160,18 @@ require operator action or process restart, but they do not prove the files shou
 activation gate will assert the expected terminal and retryable codes against the packaged wrapper, and
 must not enable a write-lag rejection budget without exposing prolonged open retry in status.
 
+Ordinary apply and publish failures rollback the writer, report accepted work lost, and defer replay
+until a separate exponential retry timer fires. A successful publication resets that backoff. These
+failures do not prove the committed Tantivy generation is bad, so they never request condemnation or
+reset. A malformed mutation-batch result is different: it violates the pinned wrapper API contract and
+remains a permanent backend failure.
+
 Every `shutdown(epoch)` caller gets a bounded wait around the shared internal shutdown operation. A
 timeout rejects the handoff, which makes `DerivedIndexRuntime` retain its lock and report unavailable
 node-wide; recovery requires the native work to settle followed by operator retry, or process restart
 if it never settles. The underlying drain and close continue so the adapter never treats a timed-out
-native operation as cancelled or quiescent. This intentionally prices safety above availability: the
+native operation as cancelled or quiescent. The complete handoff defaults to twice the native-close
+bound, so close retains its own budget after ordinary drain work. This intentionally prices safety above availability: the
 current shared protocol has no non-condemning `stalled` result, and resolving would let the same backend
 object reacquire with its prior epoch's engine and mutable queue still active.
 
@@ -328,7 +338,7 @@ first indexable value.
 
 ## Verification
 
-- **Observed:** `npm run build` passes. All 153 focused backend, lifecycle, shared-runtime, native-backend,
+- **Observed:** `npm run build` passes. All 154 focused backend, lifecycle, shared-runtime, native-backend,
   and audited-RocksDB tests pass in this worktree. This includes two-owner checkpoint rotation and a
   runtime stop whose native writer-open promise remains unsettled past the handoff bound.
 - **Observed:** oxlint reports no warnings in the three changed implementation and test files. The
