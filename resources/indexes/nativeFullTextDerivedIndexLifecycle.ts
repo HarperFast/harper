@@ -56,13 +56,18 @@ export class NativeFullTextDerivedIndexLifecycle {
 		return this.#path;
 	}
 
-	async initialize(): Promise<void> {
+	async initialize(options: { reclaimRetired?: boolean } = {}): Promise<void> {
 		const binding = await this.#getBinding();
 		binding.validateNativeFullTextIndexOptions({
 			...this.#nativeOptions(),
 			limits: this.#options.limits,
 		});
 		this.#maxCommitPayloadBytes = getValidatedFullTextRuntimeInfo(binding).limits.maxCommitPayloadBytes;
+		if (options.reclaimRetired !== false) this.#queueReclaimRetired();
+	}
+
+	startRetiredStorageReclamation(): void {
+		this.#requireBinding();
 		this.#queueReclaimRetired();
 	}
 
@@ -149,9 +154,10 @@ export async function createNativeFullTextDerivedIndexBackend(
 	if (maxCursorPayloadBytes > HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES)
 		throw new RangeError(`Full-text maxCursorPayloadBytes must not exceed ${HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES}`);
 	const lifecycle = new NativeFullTextDerivedIndexLifecycle({ ...options, indexId: options.id });
-	await lifecycle.initialize();
+	await lifecycle.initialize({ reclaimRetired: false });
 	if (maxCursorPayloadBytes > lifecycle.maxCommitPayloadBytes)
 		throw new RangeError('Full-text maxCursorPayloadBytes exceeds the native commit payload capacity');
+	lifecycle.startRetiredStorageReclamation();
 	return new FullTextDerivedIndexBackend({
 		...options,
 		id: options.id,

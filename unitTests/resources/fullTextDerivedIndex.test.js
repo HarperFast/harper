@@ -812,6 +812,12 @@ describe('FullTextDerivedIndexBackend', () => {
 
 	it('does not publish a discarded cursor during immediate shutdown after publication failure', async () => {
 		const first = new FakeEngine();
+		first.applyResult = (value) => ({
+			processed: value.upserts.length,
+			rejected: [{ operation: 'upsert', index: 0, code: 'E_BATCH_TOO_LARGE' }],
+			encodedBytes: 16,
+			frames: 1,
+		});
 		first.publishError = new Error('publish failed');
 		const second = new FakeEngine();
 		const source = lifecycle({ state: 'missing' }, [first, second]);
@@ -824,6 +830,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 		assert.strictEqual(source.openCalls, 1);
 		assert.strictEqual(second.publications.length, 0);
+		assert.strictEqual(backend.getUnindexableRecords(), 0);
 		assert.strictEqual(backend.getDurableCursor(), undefined);
 	});
 
@@ -1128,7 +1135,10 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 		setEpoch(2n);
 		source.resetError = new Error('reset outcome is unknown');
-		await assert.rejects(backend.reset(2n), /reset outcome is unknown/);
+		await assert.rejects(
+			backend.reset(2n),
+			(error) => error.message === 'Full-text native reset failed' && error.cause === undefined
+		);
 		assert.strictEqual(backend.getDurableCursor(), undefined);
 	});
 

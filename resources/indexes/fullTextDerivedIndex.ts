@@ -112,8 +112,8 @@ type ShutdownRequest = {
 export class FullTextDerivedIndexError extends Error {
 	statusCode = 500;
 
-	constructor(message: string, cause?: unknown) {
-		super(message, cause === undefined ? undefined : { cause });
+	constructor(message: string) {
+		super(message);
 		this.name = 'FullTextDerivedIndexError';
 	}
 }
@@ -155,7 +155,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#failed = false;
 	#capacityDeferred = false;
 	#shutdown?: ShutdownRequest;
-	#unindexableWarned = false;
 	#unindexableRecords = 0;
 	#stagedUnindexableRecords = 0;
 	#invalidEstimateWarned = false;
@@ -380,8 +379,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#assertSharedEpoch(ownerEpoch);
 		if (this.#terminalFailure)
 			throw new FullTextDerivedIndexError(
-				'Full-text derived index configuration must change before rebuild can succeed',
-				this.#terminalFailure
+				'Full-text derived index configuration must change before rebuild can succeed'
 			);
 		this.#shutdown = undefined;
 		this.#failed = false;
@@ -400,12 +398,15 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	}
 
 	async #performReset(ownerEpoch: bigint): Promise<void> {
-		await this.#lifecycle.reset();
+		try {
+			await this.#lifecycle.reset();
+		} catch {
+			throw new FullTextDerivedIndexError('Full-text native reset failed');
+		}
 		this.#assertSharedEpoch(ownerEpoch);
 		this.#activeEpoch = ownerEpoch;
 		this.#resetQueueState();
 		this.#unindexableRecords = 0;
-		this.#unindexableWarned = false;
 	}
 
 	#boundedReset(operation: Promise<void>): Promise<void> {
@@ -505,15 +506,12 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#assertCommandEpoch(epoch);
 			actual = decodeFullTextCursorPayload(engine.committedPayload);
 		} catch (error) {
-			await this.#closeUninstalledEngine(engine, error);
+			await this.#closeUninstalledEngine(engine);
 			throw error;
 		}
 		if (!sameCursor(actual, this.#durableCursor)) {
 			this.#lossPendingEpoch = epoch;
-			await this.#closeUninstalledEngine(
-				engine,
-				new FullTextDerivedIndexError('Full-text cursor changed between inspection and writer open')
-			);
+			await this.#closeUninstalledEngine(engine);
 			this.#durableCursor = actual;
 			this.#cursorInspectedForAcquisition = true;
 			this.#resetWriterRetryBackoff();
@@ -526,16 +524,13 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		return true;
 	}
 
-	async #closeUninstalledEngine(engine: FullTextDerivedIndexEngine, cause: unknown): Promise<void> {
+	async #closeUninstalledEngine(engine: FullTextDerivedIndexEngine): Promise<void> {
 		this.#settlingWriter = true;
 		try {
 			await this.#closeEngine(engine, { mode: 'rollback' });
-		} catch (closeError) {
+		} catch {
 			this.#engine = engine;
-			throw new FullTextDerivedIndexError(
-				'Full-text writer could not close after lazy open failed',
-				new AggregateError([cause, closeError])
-			);
+			throw new FullTextDerivedIndexError('Full-text writer could not close after lazy open failed');
 		} finally {
 			this.#settlingWriter = false;
 		}
@@ -594,13 +589,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		)
 			throw new FullTextDerivedIndexProtocolError('Full-text engine returned an invalid mutation result');
 		const rejected = result.rejected.length;
-		if (rejected > 0 && !this.#unindexableWarned) {
-			this.#unindexableWarned = true;
-			logWarning(
-				`Full-text derived index '${this.id}' removed ${rejected} records rejected by native record or frame limits`,
-				undefined
-			);
-		}
 		this.#stagedUnindexableRecords += rejected;
 	}
 
@@ -625,11 +613,15 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#assertCommandEpoch(command.epoch);
 		this.#lastPublishedSequence = command.horizon;
 		this.#hasStagedMutations = false;
-		this.#unindexableRecords += this.#stagedUnindexableRecords;
+		const rejected = this.#stagedUnindexableRecords;
+		this.#unindexableRecords += rejected;
 		this.#stagedUnindexableRecords = 0;
+		if (rejected > 0)
+			logWarning(
+				`Full-text derived index '${this.id}' removed ${rejected} records rejected by native record or frame limits`
+			);
 		this.#durableCursor = cloneCursor(cursor);
 		this.#cursorInspectedForAcquisition = true;
-		this.#unindexableWarned = false;
 		this.#resetWriterRetryBackoff();
 		if (!this.#shutdown) this.#notify('changed');
 		return true;
@@ -644,15 +636,12 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#discardCommands();
 		const engine = this.#engine;
 		this.#engine = undefined;
-		if (!engine) throw new FullTextDerivedIndexError('Full-text writer is unavailable', cause);
+		if (!engine) throw new FullTextDerivedIndexError('Full-text writer is unavailable');
 		try {
 			await this.#closeEngine(engine, { mode: 'rollback' });
-		} catch (error) {
+		} catch {
 			this.#engine = engine;
-			throw new FullTextDerivedIndexError(
-				'Full-text writer could not prove quiescence after losing accepted work',
-				new AggregateError([cause, error])
-			);
+			throw new FullTextDerivedIndexError('Full-text writer could not prove quiescence after losing accepted work');
 		}
 		this.#rewindAcceptedWork();
 		this.#assertCommandEpoch(ownerEpoch);
@@ -690,9 +679,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#resetQueueState();
 			if (this.#shutdown === request) this.#shutdown = undefined;
 			request.resolve();
-		} catch (error) {
+		} catch {
 			if (this.#shutdown === request) this.#shutdown = undefined;
-			const failure = new FullTextDerivedIndexError('Full-text writer shutdown did not prove quiescence', error);
+			const failure = new FullTextDerivedIndexError('Full-text writer shutdown did not prove quiescence');
 			if (this.#markFailed(failure)) this.#shutdownFailure = failure;
 			request.reject(failure);
 		}
@@ -730,8 +719,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				return engine;
 			} catch (error) {
 				lastError = error;
-				if (isTerminalOpenError(error))
-					throw new FullTextDerivedIndexError('Full-text writer could not be opened', error);
+				if (isTerminalOpenError(error)) throw new FullTextDerivedIndexError('Full-text writer could not be opened');
 				if (attempt < this.#openAttempts && this.#openRetryMilliseconds > 0) {
 					await delay(this.#openRetryMilliseconds);
 					continue;
@@ -995,8 +983,8 @@ export function decodeFullTextCursorPayload(
 	let decoded: unknown;
 	try {
 		decoded = JSON.parse(payload);
-	} catch (error) {
-		throw new FullTextDerivedIndexError('Full-text cursor payload is not valid JSON', error);
+	} catch {
+		throw new FullTextDerivedIndexError('Full-text cursor payload is not valid JSON');
 	}
 	if (
 		!plainObject(decoded) ||

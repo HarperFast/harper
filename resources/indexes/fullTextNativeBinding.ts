@@ -83,9 +83,11 @@ export async function loadFullTextNativeBinding(): Promise<NativeFullTextModule>
 			if (!bindingWarningLogged) {
 				bindingWarningLogged = true;
 				const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-				logger.warn?.(
-					`The @harperfast/fulltext native module is unavailable${typeof code === 'string' ? ` (${code})` : ''}`
-				);
+				try {
+					logger.warn?.(
+						`The @harperfast/fulltext native module is unavailable${typeof code === 'string' ? ` (${code})` : ''}`
+					);
+				} catch {}
 			}
 		});
 	}

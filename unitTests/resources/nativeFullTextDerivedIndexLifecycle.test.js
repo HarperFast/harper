@@ -49,6 +49,7 @@ class FakeNativeModule {
 		this.resets = [];
 		this.validations = [];
 		this.reclaims = [];
+		this.maxCommitPayloadBytes = 64 * 1024;
 	}
 
 	async runtimeInfo() {
@@ -60,7 +61,7 @@ class FakeNativeModule {
 			lifecycleApiVersion: 1,
 			mutationBatchApiVersion: 3,
 			storageBackends: ['native'],
-			limits: { maxCommitPayloadBytes: 64 * 1024 },
+			limits: { maxCommitPayloadBytes: this.maxCommitPayloadBytes },
 		};
 	}
 
@@ -235,6 +236,22 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			/maxCursorPayloadBytes must not exceed 65536/
 		);
 		assert.strictEqual(binding.runtimeInfoCalls, 0);
+		assert.strictEqual(binding.reclaims.length, 0);
+		assert.strictEqual(binding.opens.length, 0);
+	});
+
+	it('rejects a cursor payload limit above a smaller native commit capacity without touching storage', async () => {
+		const binding = new FakeNativeModule();
+		binding.maxCommitPayloadBytes = 32 * 1024;
+		await assert.rejects(
+			createNativeFullTextDerivedIndexBackend({
+				...options(storePath, binding),
+				id: 'products-title',
+				maxCursorPayloadBytes: 48 * 1024,
+			}),
+			/native commit payload capacity/
+		);
+		assert.strictEqual(binding.runtimeInfoCalls, 1);
 		assert.strictEqual(binding.reclaims.length, 0);
 		assert.strictEqual(binding.opens.length, 0);
 	});
