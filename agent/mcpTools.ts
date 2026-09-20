@@ -20,6 +20,7 @@ import { addTool, canRoleInvokeOperation, type AuthedUser } from '../components/
 import { makeOperationToolHandler } from '../components/mcp/tools/operations.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import type { OperationDefinition } from '../server/serverHelpers/serverUtilities.ts';
+import { AGENT_OPERATION_INPUT_SCHEMAS } from './operationInputSchemas.ts';
 
 const log = harperLogger.loggerWithTag('agent');
 
@@ -36,55 +37,29 @@ const AGENT_MCP_TOOLS: Record<string, AgentMcpToolMeta> = {
 	agent_prompt: {
 		description:
 			'Send a prompt to the built-in Harper agent. Starts a new session, or continues one when session_id is given. Returns { session_id, status }; poll get_agent_session for the transcript and result.',
-		inputSchema: {
-			type: 'object',
-			properties: {
-				message: { type: 'string', description: 'The instruction/prompt for the agent.' },
-				session_id: { type: 'string', description: 'Optional existing session id to continue the conversation.' },
-			},
-			required: ['message'],
-		},
+		inputSchema: AGENT_OPERATION_INPUT_SCHEMAS.agent_prompt,
 		destructive: true, // the agent may take actions in response
 	},
 	get_agent_session: {
 		description:
 			'Read a built-in-agent session: its status, full transcript (messages, tool calls and results), and any pending approvals.',
-		inputSchema: {
-			type: 'object',
-			properties: { session_id: { type: 'string' } },
-			required: ['session_id'],
-		},
+		inputSchema: AGENT_OPERATION_INPUT_SCHEMAS.get_agent_session,
 		readOnly: true,
 	},
 	list_agent_sessions: {
 		description: 'List built-in-agent sessions, most recently updated first.',
-		inputSchema: {
-			type: 'object',
-			properties: { limit: { type: 'integer', minimum: 1, description: 'Max sessions to return (default 100).' } },
-		},
+		inputSchema: AGENT_OPERATION_INPUT_SCHEMAS.list_agent_sessions,
 		readOnly: true,
 	},
 	approve_agent_action: {
 		description:
 			'Approve or deny a pending agent tool call (when autoApprove is off), then resume the run. Get the approval_id from get_agent_session.pendingApprovals.',
-		inputSchema: {
-			type: 'object',
-			properties: {
-				session_id: { type: 'string' },
-				approval_id: { type: 'string' },
-				approved: { type: 'boolean', description: 'true to approve (default), false to deny.' },
-			},
-			required: ['session_id', 'approval_id'],
-		},
+		inputSchema: AGENT_OPERATION_INPUT_SCHEMAS.approve_agent_action,
 		destructive: true,
 	},
 	cancel_agent_run: {
 		description: 'Cancel an in-progress agent run for a session.',
-		inputSchema: {
-			type: 'object',
-			properties: { session_id: { type: 'string' } },
-			required: ['session_id'],
-		},
+		inputSchema: AGENT_OPERATION_INPUT_SCHEMAS.cancel_agent_run,
 		destructive: true,
 	},
 };

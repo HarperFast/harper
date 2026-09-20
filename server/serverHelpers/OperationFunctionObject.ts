@@ -4,10 +4,16 @@
 export class OperationFunctionObject {
 	operation_function: Function;
 	job_operation_function: Function | undefined;
+	inputSchema: object | undefined;
 	httpMethod?: string;
 
-	constructor(operation_function: Function, job_operation_function: Function = undefined) {
+	constructor(
+		operation_function: Function,
+		job_operation_function: Function = undefined,
+		inputSchema: object | undefined = undefined
+	) {
 		this.operation_function = operation_function;
 		this.job_operation_function = job_operation_function;
+		this.inputSchema = inputSchema;
 	}
 }

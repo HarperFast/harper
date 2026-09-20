@@ -47,11 +47,16 @@ import { contextStorage } from '../../resources/transaction.ts';
 import { isMainThread } from 'node:worker_threads';
 import {
 	announceRegisteredOperation,
+	getRemoteOperationInputSchema,
+	getRemoteOperationInputSchemas,
 	getRemoteOperationFunction,
 	setLocalOperationDispatch,
 } from './registeredOperations.ts';
+export { getRemoteOperationInputSchema, getRemoteOperationInputSchemas };
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
 import { stripSuppliedParsedSqlObject } from './requestSanitization.ts';
+import { OPERATION_INPUT_SCHEMAS } from './operationInputSchemas.ts';
+import { normalizeOperationInputSchema } from './validateOperationInputSchema.ts';
 
 const pSearchSearch = util.promisify(search.search);
 let pEvaluateSql: (sql: string) => Promise<any>;
@@ -168,6 +173,7 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 }
 
 export const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
+const BUILT_IN_OPERATION_NAMES = new Set(OPERATION_FUNCTION_MAP.keys());
 
 server.operation = operation;
 export type OperationDefinition = {
@@ -175,6 +181,8 @@ export type OperationDefinition = {
 	execute: (operation: any) => any | Promise<any>;
 	httpMethod?: 'DELETE' | 'GET' | 'HEAD' | 'OPTIONS' | 'PATCH' | 'POST' | 'PUT' | 'TRACE'; // method to use for REST
 	isJob?: boolean;
+	/** JSON Schema for protocol introspection; use this instead of legacy REST parametersSchema for MCP tools. */
+	inputSchema?: object;
 	parametersSchema?: any[];
 	// When set, the operation declares its authorization requirement to the central verifyPerms
 	// system so it participates in the role `operations` allowlist (grantable to a scoped role)
@@ -198,7 +206,7 @@ const declaredPermissionNames = new Set<string>();
 server.registerOperation = (operationDefinition: OperationDefinition) => {
 	// A throwaway deploy-validation load must not register (or announce) operations onto the live worker.
 	if (isDeployValidating()) return;
-	const { name, execute, requiresSuperUser } = operationDefinition;
+	const { name, execute, inputSchema, requiresSuperUser } = operationDefinition;
 	let handler = execute;
 	if (requiresSuperUser === undefined) {
 		// A re-registration that drops the flag must also drop the entry the earlier one installed, or
@@ -219,12 +227,21 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 		opAuth.registerOperationPermission(name, { requiresSu: requiresSuperUser });
 		declaredPermissionNames.add(name);
 	}
-	OPERATION_FUNCTION_MAP.set(name as any, new OperationFunctionObject(handler));
+	const schemaMetadata =
+		inputSchema ??
+		(!BUILT_IN_OPERATION_NAMES.has(name as any) && Object.hasOwn(OPERATION_INPUT_SCHEMAS, name)
+			? OPERATION_INPUT_SCHEMAS[name]
+			: undefined);
+	const normalizedSchema = normalizeOperationInputSchema(schemaMetadata);
+	if (normalizedSchema.error) {
+		operationLog.warn(`Operation '${name}' inputSchema ignored: ${normalizedSchema.error}`);
+	}
+	OPERATION_FUNCTION_MAP.set(name as any, new OperationFunctionObject(handler, undefined, normalizedSchema.schema));
 	// Components load per-worker, so a registration made there is invisible to the main-thread
 	// ops-API dispatcher (each thread has its own OPERATION_FUNCTION_MAP instance). Announce it
 	// so the main thread can forward calls here (#1736), and can mirror the role-allowlist mark that
 	// registerOperationPermission above made only in this thread's scope.
-	if (!isMainThread) announceRegisteredOperation(name, requiresSuperUser !== undefined);
+	if (!isMainThread) announceRegisteredOperation(name, requiresSuperUser !== undefined, normalizedSchema.schema);
 };
 
 // Register the durable MCP quota policy as a function (see components/mcp/quota.ts). Worker-local,
@@ -808,6 +825,10 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_STATUS, new OperationFunctionObject(status.get));
 	opFuncMap.set(terms.OPERATIONS_ENUM.SET_STATUS, new OperationFunctionObject(status.set));
 	opFuncMap.set(terms.OPERATIONS_ENUM.CLEAR_STATUS, new OperationFunctionObject(status.clear));
+
+	for (const [name, operation] of opFuncMap) {
+		operation.inputSchema = Object.hasOwn(OPERATION_INPUT_SCHEMAS, name) ? OPERATION_INPUT_SCHEMAS[name] : undefined;
+	}
 
 	return opFuncMap;
 }
