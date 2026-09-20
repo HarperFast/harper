@@ -91,7 +91,10 @@ export class NativeFullTextDerivedIndexLifecycle {
 	}
 
 	#queueReclaimRetired(retiredPath?: string): void {
-		this.#reclaimOperation = this.#reclaimOperation.then(() => this.#reclaimRetired(retiredPath));
+		const reclaim = () => this.#reclaimRetired(retiredPath);
+		this.#reclaimOperation = this.#reclaimOperation.then(reclaim, reclaim).catch((error) => {
+			logWarning(`Could not complete reclamation for full-text index '${this.#options.indexId}'`, error);
+		});
 	}
 
 	async #reclaimRetired(retiredPath?: string): Promise<void> {
