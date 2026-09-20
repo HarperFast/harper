@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789889115371,
+  "lastUpdate": 1789889118003,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -14658,6 +14658,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 45.72,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d732c746a5322eede432dc1f07d5aeb63ac69e4a",
+          "message": "Resume analytics aggregation from the last raw record it rolled up (#2692)\n\n* Resume analytics aggregation from the last raw record it rolled up\n\n`aggregation()` rolls up one `toPeriod` window of `hdb_raw_analytics` per cycle and then sets\n`lastAggregationTime` to the cycle's end-of-run `Date.now()`. The next cycle resumes from that\nmarker, exclusive, so every raw report between the end of the window and the end of the cycle was\nskipped for good: the remainder of a backlog left by a late tick, and anything recorded while the\ncycle itself was running.\n\nThe marker is now `lastTime ?? cycleStart` — the last raw key the cycle actually consumed, or the\ntime the cycle began when the window was empty, which cannot skip a record because none exists\nafter the marker and every later report carries a higher key. While the marker is behind, the\ncadence guard stops rejecting ticks, so each half-period tick drains one more window until it\ncatches up.\n\nThat catch-up makes overlapping cycles likelier, and `setInterval` does not await its async\ncallback, so cycles now run under a single-flight flag: two cycles reading the same marker roll\nthe same window up twice and double every count in it.\n\n`unitTests/resources/analytics/aggregationCycle.test.js` drives the real cycle over a seeded\nbacklog: on the previous marker rule the second and third windows are never aggregated, and\nwithout the flag the concurrent pair stores the same window twice.\n\nRefs https://github.com/HarperFast/harper-pro/actions/runs/35429157113\n\nDispatch-Task: main-red-kriszyp_harper-pro_8b570b7db_f0efc59e\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* Take the resume marker from the raw-key sequencer, and drop the test's dead cadence wait\n\nPre-push review, all three finding legs: `cycleStart` was `Date.now()` while raw records are keyed\nby `getNextMonotonicTime()`, whose wall-clock calibration is refreshed only every 60 s. A raw key\ncan therefore sit below a `Date.now()` read taken after it — and a clock step in either direction\neither skips records or re-aggregates them. Both the cycle and `recordAnalytics` run on the main\nthread, so taking `cycleStart` from the same sequencer makes every later key strictly higher.\n\nThe regression test waited a period between cycles for a cadence guard that a held-back marker\nalready leaves open; without the wait it asserts the drain the fix is for. Its bootstrap\n`recordAction` also starts the production scheduler, which shares the marker and the single-flight\nflag, so the period is pinned to an hour first.\n\nDispatch-Task: main-red-kriszyp_harper-pro_8b570b7db_f0efc59e\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* Keep the raw cursor out of the clock: an empty cycle must not advance it\n\nPre-push review round 2: `recordAnalytics` does not await its `primaryStore.put`, so a raw report\ncan be uncommitted — and invisible to the scan — while carrying a key below any clock reading the\ncycle takes. Advancing the resume point to the cycle's start after an empty scan therefore skipped\nthat report for good, which is the same defect this branch is fixing.\n\nSo the one marker becomes two. `rawCursor` is the resume point into `hdb_raw_analytics` and moves\nonly to a record a cycle read, never to a clock; `lastAggregationTime` goes back to being the\ncadence marker stamped at the end of every completed cycle, so #1538's idle behavior is untouched.\nThe catch-up drain that the shared marker used to provide implicitly is now explicit: a cycle that\nstops at its window edge sets `aggregationBehind`, and the next one skips the cadence guard.\n\nThe regression suite gains the branch that motivated this: a cycle that reads nothing, a report\nseeded behind it, and a cycle that must still aggregate it.\n\nDispatch-Task: main-red-kriszyp_harper-pro_8b570b7db_f0efc59e\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* Trim the comments to their invariants and correct the design note's chosen row\n\nPre-push review round 3 nits: the approaches table still named the superseded `cycleStart`\nfallback, the seed comment mentioned one marker where two are now seeded, and two phrases\ndescribed the change rather than the code.\n\nDispatch-Task: main-red-kriszyp_harper-pro_8b570b7db_f0efc59e\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* Correct the chosen-approach row and the seed comment for real this time\n\nThe round-3 edit to the approaches table never applied — the table had been reformatted with\naligned pipes, so the replacement matched nothing and the row still named the superseded\n`cycleStart` fallback. The seed comment also claimed both markers are stamped at the end of a\ncycle; only the cadence one is, since an empty scan leaves the cursor alone.\n\nDispatch-Task: main-red-kriszyp_harper-pro_8b570b7db_f0efc59e\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* Wait for the bootstrap raw report to be readable, not just for its table\n\nPre-push review round 5: the recording path creates `hdb_raw_analytics` before its own unawaited\n`put` is visible, so `lastRawKey()` could return undefined and the first test would seed at `NaN`.\n\nDispatch-Task: main-red-kriszyp_harper-pro_8b570b7db_f0efc59e\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T01:24:23Z",
+          "url": "https://github.com/HarperFast/harper/commit/d732c746a5322eede432dc1f07d5aeb63ac69e4a"
+        },
+        "date": 1789889117400,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 16.49,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 15.99,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 19.13,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 20.29,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 27.55,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 18.89,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 37.26,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 16.51,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 20.29,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 42.87,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 212.32,
             "unit": "ms"
           }
         ]
