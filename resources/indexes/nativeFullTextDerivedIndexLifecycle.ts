@@ -157,13 +157,14 @@ export async function createNativeFullTextDerivedIndexBackend(
 	await lifecycle.initialize({ reclaimRetired: false });
 	if (maxCursorPayloadBytes > lifecycle.maxCommitPayloadBytes)
 		throw new RangeError('Full-text maxCursorPayloadBytes exceeds the native commit payload capacity');
-	lifecycle.startRetiredStorageReclamation();
-	return new FullTextDerivedIndexBackend({
+	const backend = new FullTextDerivedIndexBackend({
 		...options,
 		id: options.id,
 		lifecycle,
 		maxCursorPayloadBytes,
 	});
+	lifecycle.startRetiredStorageReclamation();
+	return backend;
 }
 
 function digest(value: string): string {

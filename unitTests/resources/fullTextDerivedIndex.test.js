@@ -498,6 +498,25 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('yields between queued native apply batches even when every call settles immediately', async () => {
+		const engine = new FakeEngine();
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), {
+			maxApplySliceRecords: 256,
+			maxQueuedBatches: 16,
+		});
+		for (let batchIndex = 0; batchIndex < 16; batchIndex++) {
+			const records = Array.from({ length: 256 }, (_, recordIndex) => {
+				const id = `${batchIndex}-${recordIndex}`;
+				return mutation(id, { kind: 'record', version: 1, projection: { title: id } });
+			});
+			assert.strictEqual(backend.deliver(batch(1n, records)), DERIVED_INDEX_ACCEPTED);
+		}
+		const appliedAfterFirstTurn = await new Promise((resolve) => setImmediate(() => resolve(engine.applied.length)));
+		assert.strictEqual(appliedAfterFirstTurn, 1);
+		await backend.shutdown(1n);
+		assert.strictEqual(engine.applied.length, 16);
+	});
+
 	it('drains every bounded slice before completing shutdown', async () => {
 		const engine = new FakeEngine();
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), { maxApplySliceRecords: 2 });

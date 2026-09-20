@@ -256,6 +256,22 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		assert.strictEqual(binding.opens.length, 0);
 	});
 
+	it('validates backend options before starting retired storage reclamation', async () => {
+		const binding = new FakeNativeModule();
+		await assert.rejects(
+			createNativeFullTextDerivedIndexBackend({
+				...options(storePath, binding),
+				id: 'products-title',
+				closeTimeoutMilliseconds: 35_000,
+				shutdownTimeoutMilliseconds: 40_000,
+			}),
+			/shutdownTimeoutMilliseconds must be at least twice closeTimeoutMilliseconds/
+		);
+		assert.strictEqual(binding.runtimeInfoCalls, 1);
+		assert.strictEqual(binding.reclaims.length, 0);
+		assert.strictEqual(binding.opens.length, 0);
+	});
+
 	it('rejects a module without the native lifecycle contract', async () => {
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, { runtimeInfo: async () => ({}) }));
 		await assert.rejects(lifecycle.initialize(), /required Harper binding contract/);

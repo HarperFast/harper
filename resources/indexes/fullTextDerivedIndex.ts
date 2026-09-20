@@ -400,7 +400,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	async #performReset(ownerEpoch: bigint): Promise<void> {
 		try {
 			await this.#lifecycle.reset();
-		} catch {
+		} catch (error) {
+			logError('Full-text native reset failed', error);
 			throw new FullTextDerivedIndexError('Full-text native reset failed');
 		}
 		this.#assertSharedEpoch(ownerEpoch);
@@ -479,7 +480,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 							if (this.#capacityDeferred && !this.#failed) this.#notify('changed');
 						}
 					}
-					if (!complete) break;
+					if (!complete || next.batch.records.length > 0) break;
 				} else {
 					this.#commands.shift();
 					if (!(await this.#publish(next))) break;
@@ -528,8 +529,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#settlingWriter = true;
 		try {
 			await this.#closeEngine(engine, { mode: 'rollback' });
-		} catch {
+		} catch (error) {
 			this.#engine = engine;
+			logError('Full-text writer could not close after lazy open failed', error);
 			throw new FullTextDerivedIndexError('Full-text writer could not close after lazy open failed');
 		} finally {
 			this.#settlingWriter = false;
@@ -636,11 +638,15 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#discardCommands();
 		const engine = this.#engine;
 		this.#engine = undefined;
-		if (!engine) throw new FullTextDerivedIndexError('Full-text writer is unavailable');
+		if (!engine) {
+			logError('Full-text writer is unavailable', cause);
+			throw new FullTextDerivedIndexError('Full-text writer is unavailable');
+		}
 		try {
 			await this.#closeEngine(engine, { mode: 'rollback' });
-		} catch {
+		} catch (error) {
 			this.#engine = engine;
+			logError('Full-text writer could not prove quiescence after losing accepted work', error);
 			throw new FullTextDerivedIndexError('Full-text writer could not prove quiescence after losing accepted work');
 		}
 		this.#rewindAcceptedWork();
@@ -679,8 +685,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#resetQueueState();
 			if (this.#shutdown === request) this.#shutdown = undefined;
 			request.resolve();
-		} catch {
+		} catch (error) {
 			if (this.#shutdown === request) this.#shutdown = undefined;
+			logError('Full-text writer shutdown did not prove quiescence', error);
 			const failure = new FullTextDerivedIndexError('Full-text writer shutdown did not prove quiescence');
 			if (this.#markFailed(failure)) this.#shutdownFailure = failure;
 			request.reject(failure);
@@ -719,7 +726,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				return engine;
 			} catch (error) {
 				lastError = error;
-				if (isTerminalOpenError(error)) throw new FullTextDerivedIndexError('Full-text writer could not be opened');
+				if (isTerminalOpenError(error)) {
+					logError('Full-text writer could not be opened', error);
+					throw new FullTextDerivedIndexError('Full-text writer could not be opened');
+				}
 				if (attempt < this.#openAttempts && this.#openRetryMilliseconds > 0) {
 					await delay(this.#openRetryMilliseconds);
 					continue;
