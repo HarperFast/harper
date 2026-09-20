@@ -2722,18 +2722,24 @@ cursor progress to bound replay work and transaction-log retention.
 The native commit payload contains Harper's exact derived-index cursor. A publish makes the Tantivy
 mutations and that payload visible together; only then does the adapter report durable progress.
 An apply or publish failure rollback-closes the writer, discards accepted-but-unpublished work, and
-wakes the runtime to replay from the last native payload. Writer open is lazy. `E_LOCK_BUSY` means a
-previous owner or lifecycle operation still holds the physical index, so the adapter retains its
-queue and retries with exponential backoff to a five-second ceiling; it never resets for lock
-contention. Persistent contention emits one warning without native paths or record content.
-Ownership handoff does not finish until close proves quiescence, and Harper bounds that wait at 35
-seconds. If that proof fails, shutdown rejects and the runtime keeps its runner lock, preventing a
-second writer. A cursor that cannot fit the native commit-payload limit is a terminal configuration
-failure for that backend instance; rebuild reset is refused because rescanning records cannot shrink
-the cursor.
+wakes the runtime to replay from the last native payload. Writer open is lazy. After a small immediate
+attempt budget, open errors retry with exponential backoff to a five-second ceiling unless their stable
+code identifies a structural, compatibility, configuration, or terminal-process failure. Unknown
+codes retry by default, so a newly introduced transient wrapper error cannot silently become a
+destructive rebuild signal. Persistent writer unavailability emits one warning without native paths
+or record content. Ownership handoff does not finish until drain and close prove quiescence, and Harper
+bounds the whole wait at 35 seconds. If that proof fails, shutdown rejects and the runtime keeps its
+runner lock, preventing a second writer. The underlying native operation continues and a later operator
+retry attaches to the same shutdown rather than starting a competing close. A cursor that cannot fit
+the native commit-payload limit is a terminal configuration failure for that backend instance; rebuild
+reset is refused because rescanning records cannot shrink the cursor.
 
-Inspection is synchronous and writer-free. Missing, cursorless, incompatible, or malformed native
-state has no usable cursor and therefore enters the runtime's ordinary local rebuild from records.
+Inspection is synchronous and writer-free. The first durable-cursor read in each ownership acquisition
+refreshes native state, while later reads in the same acquisition use the cache; every shutdown path
+invalidates it, including an owner that received no batch. A transient refresh failure may use a known
+valid checkpoint because writer-open reconciliation verifies it before publication. Missing,
+cursorless, incompatible, or malformed native state has no usable cursor and therefore enters the
+runtime's ordinary local rebuild from records.
 Reset first asks the wrapper to retire the live generation atomically, then reclaims only wrapper-
 validated retired paths. The native directory is node-local derived state: restarts reuse it and
 replay after its payload; replicas independently derive it from their own applied transaction log;

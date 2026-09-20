@@ -29,6 +29,21 @@ const DEFAULT_CLOSE_TIMEOUT_MILLISECONDS = 35_000;
 const DEFAULT_MAX_APPLY_SLICE_RECORDS = 256;
 const APPLY_SLICE_MILLISECONDS = 5;
 const MAX_CONSECUTIVE_WRITER_FAILURES = 2;
+const TERMINAL_OPEN_ERROR_CODES = new Set([
+	'E_CLOSED',
+	'E_IDENTITY_MISMATCH',
+	'E_INCOMPLETE_CREATE',
+	'E_INDEX_CORRUPT',
+	'E_INDEX_FORMAT_INCOMPATIBLE',
+	'E_INVALID_ARGUMENT',
+	'E_NATIVE_ABI_MISMATCH',
+	'E_NATIVE_ADDON_NOT_FOUND',
+	'E_NATIVE_CAPABILITY_MISMATCH',
+	'E_NATIVE_PANIC',
+	'E_POISONED',
+	'E_QUIESCENCE_FAILED',
+	'E_SCHEMA_MISMATCH',
+]);
 
 export interface FullTextDerivedIndexEngine {
 	readonly committedPayload?: string;
@@ -129,6 +144,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#wake?: (change?: DerivedIndexBackendStateChange) => void;
 	#engine?: FullTextDerivedIndexEngine;
 	#durableCursor?: DerivedIndexCursor;
+	#cursorInspectedForAcquisition = false;
 	#activeEpoch?: bigint;
 	#commands: Command[] = [];
 	#retainedBatches = 0;
@@ -155,7 +171,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#closeOperations = new WeakMap<FullTextDerivedIndexEngine, Promise<{ cleanupError?: unknown }>>();
 	#shutdownFailure?: FullTextDerivedIndexError;
 	#openRetryDelayMilliseconds: number;
-	#lockBusyWarned = false;
+	#openRetryWarned = false;
 	#terminalFailure?: FullTextDerivedIndexConfigurationError;
 	// A failed deliver() result and its delayed state callback report the same backend fault.
 	#failedDeliveryObserved = false;
@@ -204,7 +220,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			'closeTimeoutMilliseconds'
 		);
 		this.#openRetryDelayMilliseconds = Math.max(1, this.#openRetryMilliseconds);
-		this.#durableCursor = this.#inspectDurableCursor();
 	}
 
 	attach(host: DerivedIndexBackendHost): void {
@@ -215,6 +230,17 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 
 	getDurableCursor(): DerivedIndexCursor | undefined {
 		this.#assertAttached();
+		if (!this.#cursorInspectedForAcquisition) {
+			try {
+				this.#durableCursor = this.#inspectDurableCursor();
+				this.#cursorInspectedForAcquisition = true;
+			} catch (error) {
+				if (!this.#durableCursor) throw error;
+				// A stale present cursor is reconciled against the writer before any publication.
+				this.#cursorInspectedForAcquisition = true;
+				logWarning(`Full-text derived index '${this.id}' could not refresh its durable cursor`, error);
+			}
+		}
 		return this.#durableCursor;
 	}
 
@@ -292,7 +318,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	}
 
 	shutdown(ownerEpoch: bigint): Promise<void> {
-		if (this.#shutdown?.epoch === ownerEpoch) return this.#shutdown.promise;
+		this.#cursorInspectedForAcquisition = false;
+		if (this.#shutdown?.epoch === ownerEpoch) return this.#boundedShutdown(this.#shutdown);
 		if (this.#activeEpoch !== ownerEpoch) return Promise.resolve();
 		this.#queueBarrier(ownerEpoch);
 		let resolve: () => void;
@@ -303,7 +330,15 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		});
 		this.#shutdown = { epoch: ownerEpoch, promise, resolve: resolve!, reject: reject!, closing: false };
 		this.#scheduleDrain();
-		return promise;
+		return this.#boundedShutdown(this.#shutdown);
+	}
+
+	#boundedShutdown(request: ShutdownRequest): Promise<void> {
+		return withTimeout(
+			request.promise,
+			this.#closeTimeoutMilliseconds,
+			() => new FullTextDerivedIndexError('Full-text writer shutdown did not prove quiescence before timeout')
+		);
 	}
 
 	async reset(ownerEpoch: bigint): Promise<void> {
@@ -328,6 +363,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#failed = false;
 		this.#shutdownFailure = undefined;
 		this.#durableCursor = undefined;
+		// An unknown reset outcome must never rediscover and trust the pre-reset checkpoint.
+		this.#cursorInspectedForAcquisition = true;
 		await this.#lifecycle.reset();
 		this.#assertSharedEpoch(ownerEpoch);
 		this.#activeEpoch = ownerEpoch;
@@ -424,6 +461,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				new FullTextDerivedIndexError('Full-text cursor changed between inspection and writer open')
 			);
 			this.#durableCursor = actual;
+			this.#cursorInspectedForAcquisition = true;
 			this.#consecutiveWriterFailures = 0;
 			this.#discardCommands();
 			this.#rewindAcceptedWork();
@@ -533,6 +571,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#unindexableRecords += this.#stagedUnindexableRecords;
 		this.#stagedUnindexableRecords = 0;
 		this.#durableCursor = cloneCursor(cursor);
+		this.#cursorInspectedForAcquisition = true;
 		this.#unindexableWarned = false;
 		this.#consecutiveWriterFailures = 0;
 		if (!this.#shutdown) this.#notify('changed');
@@ -586,6 +625,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			}
 			this.#engine = undefined;
 			this.#activeEpoch = undefined;
+			this.#cursorInspectedForAcquisition = false;
 			if (this.#shutdownFailure) {
 				this.#failed = false;
 				this.#shutdownFailure = undefined;
@@ -633,26 +673,24 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				return engine;
 			} catch (error) {
 				lastError = error;
-				if (nativeErrorCode(error) === 'E_LOCK_BUSY') {
-					this.#scheduleOpenRetry(ownerEpoch);
-					return;
-				}
+				if (isTerminalOpenError(error))
+					throw new FullTextDerivedIndexError('Full-text writer could not be opened', error);
 				if (attempt < this.#openAttempts && this.#openRetryMilliseconds > 0) {
 					await delay(this.#openRetryMilliseconds);
 					continue;
 				}
 			}
 		}
-		throw new FullTextDerivedIndexError('Full-text writer could not be opened', lastError);
+		this.#scheduleOpenRetry(ownerEpoch, lastError);
 	}
 
-	#scheduleOpenRetry(ownerEpoch: bigint): void {
+	#scheduleOpenRetry(ownerEpoch: bigint, error: unknown): void {
 		if (this.#openRetryTimer || this.#shutdown || this.#failed) return;
 		const retryDelay = this.#openRetryDelayMilliseconds;
 		this.#openRetryDelayMilliseconds = Math.min(this.#maxOpenRetryMilliseconds, retryDelay * 2);
-		if (retryDelay >= this.#maxOpenRetryMilliseconds && !this.#lockBusyWarned) {
-			this.#lockBusyWarned = true;
-			logWarning(`Full-text derived index '${this.id}' is waiting for its native writer lock`);
+		if (retryDelay >= this.#maxOpenRetryMilliseconds && !this.#openRetryWarned) {
+			this.#openRetryWarned = true;
+			logWarning(`Full-text derived index '${this.id}' is waiting for its native writer`, error);
 		}
 		this.#openRetryTimer = setTimeout(() => {
 			this.#openRetryTimer = undefined;
@@ -670,7 +708,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#resetOpenRetryBackoff(): void {
 		this.#clearOpenRetry();
 		this.#openRetryDelayMilliseconds = Math.max(1, this.#openRetryMilliseconds);
-		this.#lockBusyWarned = false;
+		this.#openRetryWarned = false;
 	}
 
 	#discardCommands(): void {
@@ -777,12 +815,18 @@ function toFullTextMutationSlice(
 	const deletes: string[] = [];
 	const limit = Math.min(start + maxRecords, records.length);
 	let index = start;
+	let previousTableId: number | undefined;
+	let tablePrefix = '';
 	for (; index < limit; index++) {
 		const record = records[index];
 		if (record.recordId == null || typeof record.recordId === 'symbol') continue;
-		const id = `${record.tableId}.${toBufferKey(record.recordId).toString('base64url')}`;
-		const fields = record.state.kind === 'record' && fullTextFields(record.state.projection);
-		if (fields && Object.keys(fields).length > 0) upserts.push({ id, fields });
+		if (record.tableId !== previousTableId) {
+			previousTableId = record.tableId;
+			tablePrefix = `${record.tableId}.`;
+		}
+		const id = tablePrefix + toBufferKey(record.recordId).toString('base64url');
+		const fields = record.state.kind === 'record' ? fullTextFields(record.state.projection) : undefined;
+		if (fields) upserts.push({ id, fields });
 		else deletes.push(id);
 		if ((index - start + 1) % 16 === 0 && performance.now() >= deadline) {
 			index++;
@@ -880,14 +924,22 @@ export function decodeFullTextCursorPayload(
 	return normalizedCursor(decoded.cursor as DerivedIndexCursor);
 }
 
-function fullTextFields(projection: unknown): Record<string, string | string[]> {
-	const fields: Record<string, string | string[]> = Object.create(null);
-	if (!projection || typeof projection !== 'object' || Array.isArray(projection)) return fields;
-	for (const [name, value] of Object.entries(projection)) {
-		if (typeof value === 'string') fields[name] = value;
-		else if (Array.isArray(value) && value.every((entry) => typeof entry === 'string')) fields[name] = value;
+function fullTextFields(projection: unknown): Record<string, string | string[]> | undefined {
+	if (!projection || typeof projection !== 'object' || Array.isArray(projection)) return;
+	let fields: Record<string, string | string[]> | undefined;
+	for (const name in projection) {
+		if (!Object.hasOwn(projection, name)) continue;
+		const value = (projection as Record<string, unknown>)[name];
+		if (typeof value === 'string') (fields ??= Object.create(null))[name] = value;
+		else if (Array.isArray(value) && value.every((entry) => typeof entry === 'string'))
+			(fields ??= Object.create(null))[name] = value;
 	}
 	return fields;
+}
+
+function isTerminalOpenError(error: unknown): boolean {
+	const code = nativeErrorCode(error);
+	return code !== undefined && TERMINAL_OPEN_ERROR_CODES.has(code);
 }
 
 function cloneCursor(cursor: DerivedIndexCursor | undefined): DerivedIndexCursor | undefined {

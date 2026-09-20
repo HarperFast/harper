@@ -6,6 +6,11 @@ const {
 	DERIVED_INDEX_DEFERRED,
 	DerivedIndexRuntime,
 } = require('#src/resources/derivedIndexRuntime');
+const {
+	FullTextDerivedIndexBackend,
+	decodeFullTextCursorPayload,
+	encodeFullTextCursorPayload,
+} = require('#src/resources/indexes/fullTextDerivedIndex');
 
 class FakeLogStore {
 	constructor(entriesByCursor, logNames = ['local']) {
@@ -133,6 +138,111 @@ const registration = (backend) => ({
 });
 
 describe('DerivedIndexRuntime', () => {
+	it('lets a successor full-text backend acquire from the checkpoint published by the prior owner', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		const shared = { payload: encodeFullTextCursorPayload(cursor(10)) };
+		const lifecycle = () => ({
+			inspectCalls: 0,
+			resetCalls: 0,
+			inspect() {
+				this.inspectCalls++;
+				return { state: 'checkpointed', committedPayload: shared.payload };
+			},
+			async open() {
+				return {
+					committedPayload: shared.payload,
+					async applyMutationBatch(batch) {
+						return {
+							processed: batch.upserts.length + batch.deletes.length,
+							rejected: [],
+							encodedBytes: 1,
+							frames: 1,
+						};
+					},
+					async publish(payload) {
+						shared.payload = payload;
+						this.committedPayload = payload;
+						return 1n;
+					},
+					async close() {
+						return {};
+					},
+				};
+			},
+			async reset() {
+				this.resetCalls++;
+			},
+		});
+		const firstLifecycle = lifecycle();
+		const secondLifecycle = lifecycle();
+		const firstBackend = new FullTextDerivedIndexBackend({ id: 'owner-rotation', lifecycle: firstLifecycle });
+		const secondBackend = new FullTextDerivedIndexBackend({ id: 'owner-rotation', lifecycle: secondLifecycle });
+		const records = new Map([['1:a', { version: 20, value: { title: 'a' } }]]);
+		const first = runtimeFor(store, records, { flushAfterMutations: 1, idleGraceMilliseconds: 25 }).runtime;
+		const second = runtimeFor(store, records, { flushAfterMutations: 1, idleGraceMilliseconds: 25 }).runtime;
+		first.register(registration(firstBackend));
+		second.register(registration(secondBackend));
+
+		await waitFor(() => secondLifecycle.inspectCalls === 1, {
+			message: 'the waiting backend must inspect after the first owner publishes and releases',
+		});
+		assert.deepStrictEqual(
+			{ ...decodeFullTextCursorPayload(shared.payload).logs },
+			cursor(20).logs,
+			'the first owner must publish before the successor acquires'
+		);
+		assert.strictEqual(secondLifecycle.resetCalls, 0);
+		await Promise.all([first.stop(), second.stop()]);
+	});
+
+	it('settles runtime stop when a full-text native open does not settle', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		let finishOpen;
+		let openCalls = 0;
+		const engine = {
+			committedPayload: encodeFullTextCursorPayload(cursor(10)),
+			closeCalls: 0,
+			async applyMutationBatch(batch) {
+				return {
+					processed: batch.upserts.length + batch.deletes.length,
+					rejected: [],
+					encodedBytes: 1,
+					frames: 1,
+				};
+			},
+			async publish(payload) {
+				this.committedPayload = payload;
+				return 1n;
+			},
+			async close() {
+				this.closeCalls++;
+				return {};
+			},
+		};
+		const backend = new FullTextDerivedIndexBackend({
+			id: 'bounded-stop',
+			lifecycle: {
+				inspect: () => ({ state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(10)) }),
+				open: () => {
+					openCalls++;
+					return new Promise((resolve) => (finishOpen = () => resolve(engine)));
+				},
+				reset: async () => {},
+			},
+			openAttempts: 1,
+			closeTimeoutMilliseconds: 10,
+		});
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]));
+		runtime.register(registration(backend));
+
+		await waitFor(() => openCalls === 1);
+		await assert.rejects(runtime.stop(), /shutdown failed.*did not prove quiescence/);
+		assert.strictEqual(store.locks.size, 1, 'the failed handoff must retain the runner lock');
+		assert.strictEqual(runtime.requestRebuild('bounded-stop'), true);
+		finishOpen();
+		await waitFor(() => engine.closeCalls === 1 && store.locks.size === 0);
+	});
+
 	it('delivers authoritative projected state once per record and advances through unrelated transactions', async () => {
 		const store = new FakeLogStore(
 			new Map([

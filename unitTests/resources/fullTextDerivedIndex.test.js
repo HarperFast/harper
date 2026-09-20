@@ -251,21 +251,35 @@ describe('FullTextDerivedIndexBackend', () => {
 		}
 	});
 
-	it('fails construction when initial native inspection cannot complete', () => {
+	it('retries acquisition inspection when the first native inspection cannot complete', () => {
 		const source = lifecycle();
-		const inspect = source.inspect;
 		source.inspect = function () {
-			if (this.inspectCalls++ === 0) throw new Error('temporary read failure');
-			this.inspectCalls--;
-			return inspect.call(this);
+			this.inspectCalls++;
+			if (this.inspectCalls === 1) throw new Error('temporary read failure');
+			return this.inspection;
 		};
+		const { backend } = makeBackend(source);
 		assert.throws(
-			() => makeBackend(source),
+			() => backend.getDurableCursor(),
 			(error) => error.name === 'FullTextDerivedIndexError' && /temporary read failure/.test(error.cause?.message)
 		);
-		const { backend } = makeBackend(source);
 		assert.strictEqual(backend.getDurableCursor(), undefined);
 		assert.strictEqual(source.inspectCalls, 2);
+	});
+
+	it('uses a last known checkpoint when acquisition inspection is temporarily unavailable', async () => {
+		const source = lifecycle({ state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(10)) });
+		const { backend, setEpoch } = makeBackend(source);
+		const durable = backend.getDurableCursor();
+		await backend.shutdown(1n);
+		setEpoch(2n);
+		source.inspect = function () {
+			this.inspectCalls++;
+			throw new Error('temporary read failure');
+		};
+		assert.strictEqual(backend.getDurableCursor(), durable);
+		assert.strictEqual(source.inspectCalls, 2);
+		await backend.shutdown(2n);
 	});
 
 	it('opens the writer lazily on its first accepted delivery', async () => {
@@ -287,20 +301,63 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
-	it('fails after exhausting the bounded writer-open retry budget', async () => {
-		const source = lifecycle({ state: 'missing' }, [
-			new Error('open failed'),
-			new Error('open failed'),
-			new Error('open failed'),
-		]);
-		const { backend } = makeBackend(source, { openAttempts: 3 });
-		const changes = [];
-		backend.onStateChange((change) => changes.push(change));
-		backend.deliver(batch(1n, [], cursor(20)));
-		backend.flush();
-		await waitFor(() => changes.includes('failed'));
-		assert.strictEqual(source.openCalls, 3);
-		await backend.shutdown(1n);
+	it('retries every non-terminal writer-open code and an unknown future code', async () => {
+		for (const code of [
+			undefined,
+			'E_FUTURE_TRANSIENT',
+			'E_BATCH_ACTIVE',
+			'E_BATCH_INCOMPLETE',
+			'E_BATCH_TOO_LARGE',
+			'E_CHECKPOINT_REQUIRED',
+			'E_CLOSE_FAILED',
+			'E_DIRTY_CLOSE',
+			'E_DUPLICATE_OPEN',
+			'E_LOCK_BUSY',
+			'E_NATIVE_FAILURE',
+			'E_QUEUE_FULL',
+			'E_STORAGE',
+		]) {
+			const engine = new FakeEngine();
+			const error = code ? nativeError(code, 'retryable') : new Error('unclassified');
+			const source = lifecycle({ state: 'missing' }, [error, engine]);
+			const { backend } = makeBackend(source, { openAttempts: 1 });
+			const changes = [];
+			backend.onStateChange((change) => changes.push(change));
+			backend.deliver(batch(1n, [], cursor(20)));
+			backend.flush();
+			await waitFor(() => engine.publications.length === 1);
+			assert.strictEqual(source.openCalls, 2, code);
+			assert.strictEqual(changes.includes('failed'), false, code);
+			await backend.shutdown(1n);
+		}
+	});
+
+	it('fails immediately for terminal writer-open codes', async () => {
+		for (const code of [
+			'E_CLOSED',
+			'E_IDENTITY_MISMATCH',
+			'E_INCOMPLETE_CREATE',
+			'E_INDEX_CORRUPT',
+			'E_INDEX_FORMAT_INCOMPATIBLE',
+			'E_INVALID_ARGUMENT',
+			'E_NATIVE_ABI_MISMATCH',
+			'E_NATIVE_ADDON_NOT_FOUND',
+			'E_NATIVE_CAPABILITY_MISMATCH',
+			'E_NATIVE_PANIC',
+			'E_POISONED',
+			'E_QUIESCENCE_FAILED',
+			'E_SCHEMA_MISMATCH',
+		]) {
+			const source = lifecycle({ state: 'missing' }, [nativeError(code, 'terminal')]);
+			const { backend } = makeBackend(source, { openAttempts: 3 });
+			const changes = [];
+			backend.onStateChange((change) => changes.push(change));
+			backend.deliver(batch(1n, [], cursor(20)));
+			backend.flush();
+			await waitFor(() => changes.includes('failed'));
+			assert.strictEqual(source.openCalls, 1, code);
+			await backend.shutdown(1n);
+		}
 	});
 
 	it('retries native writer lock contention without failing or rebuilding', async () => {
@@ -740,10 +797,44 @@ describe('FullTextDerivedIndexBackend', () => {
 		await assert.rejects(backend.shutdown(1n), /did not prove quiescence/);
 		assert.strictEqual(engine.closes.length, 1);
 		const retry = backend.shutdown(1n);
-		await new Promise((resolve) => setImmediate(resolve));
-		assert.strictEqual(engine.closes.length, 1);
 		releaseClose();
 		await retry;
+		assert.strictEqual(engine.closes.length, 1);
+	});
+
+	it('bounds the whole shutdown while a native apply remains unsettled', async () => {
+		let releaseApply;
+		const engine = new FakeEngine();
+		engine.applyWait = new Promise((resolve) => (releaseApply = resolve));
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), {
+			closeTimeoutMilliseconds: 10,
+		});
+		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
+		await waitFor(() => engine.applied.length === 1);
+		await assert.rejects(backend.shutdown(1n), /did not prove quiescence/);
+		assert.strictEqual(engine.closes.length, 0);
+		const retry = backend.shutdown(1n);
+		releaseApply();
+		await retry;
+		assert.strictEqual(engine.closes.length, 1);
+	});
+
+	it('bounds the whole shutdown while native writer open remains unsettled', async () => {
+		let finishOpen;
+		const engine = new FakeEngine();
+		const source = lifecycle({ state: 'missing' }, [
+			() => new Promise((resolve) => (finishOpen = () => resolve(engine))),
+		]);
+		const { backend } = makeBackend(source, { closeTimeoutMilliseconds: 10 });
+		backend.deliver(batch(1n, [], cursor(20)));
+		backend.flush();
+		await waitFor(() => typeof finishOpen === 'function');
+		await assert.rejects(backend.shutdown(1n), /did not prove quiescence/);
+		assert.strictEqual(engine.closes.length, 0);
+		const retry = backend.shutdown(1n);
+		finishOpen();
+		await retry;
+		assert.strictEqual(engine.closes.length, 1);
 	});
 
 	it('reuses a successful native close that settled after the shutdown timeout', async () => {
@@ -857,15 +948,15 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(2n);
 	});
 
-	it('retains its cached durable cursor across ownership changes', async () => {
+	it('refreshes its durable cursor after an ownership cycle without delivery', async () => {
 		const source = lifecycle({ state: 'missing' });
 		const { backend, setEpoch } = makeBackend(source);
 		assert.strictEqual(backend.getDurableCursor(), undefined);
 		await backend.shutdown(1n);
 		setEpoch(2n);
 		source.inspection = { state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(20)) };
-		assert.strictEqual(backend.getDurableCursor(), undefined);
-		assert.strictEqual(source.inspectCalls, 1);
+		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(20).logs);
+		assert.strictEqual(source.inspectCalls, 2);
 		await backend.shutdown(2n);
 	});
 
@@ -890,7 +981,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.deepStrictEqual(first.closes, [{ mode: 'require-clean' }]);
 		source.inspection = { state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(20)) };
 		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(20).logs);
-		assert.strictEqual(source.inspectCalls, 1);
+		assert.strictEqual(source.inspectCalls, 2);
 		setEpoch(2n);
 		assert.strictEqual(backend.deliver(batch(2n, [], cursor(30))), DERIVED_INDEX_ACCEPTED);
 		backend.flush();

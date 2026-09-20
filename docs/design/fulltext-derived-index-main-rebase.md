@@ -15,7 +15,9 @@ the two documents conflict, `DESIGN.md` is authoritative.
 - This slice adds an inert backend adapter without changing the shared runtime, HNSW, tables, or databases.
 - Native files are reused after restart; missing or incompatible files rebuild from Harper records before
   full-text queries become available.
-- Activation waits for an exact Fulltext package pin and cross-platform native-load CI.
+- Activation waits for an exact Fulltext package pin, cross-platform native-load CI, operator-visible
+  wrapper rejection metrics, and a non-condemning result for transient inspection failure without a
+  cached checkpoint.
 
 ## Intent
 
@@ -73,8 +75,8 @@ The backend slice:
    encoding, native frame partitioning, rejected-upsert replacement deletes, and writer state, but one
    native call never receives the entire 4,096-record runtime chunk. The cursor is publishable only
    after every slice from that runtime batch has completed.
-3. Inspects the selected Tantivy generation synchronously for the durable cursor before registration.
-   Opens the exclusive writer lazily on first delivery or publication.
+3. Inspects the selected Tantivy generation synchronously at the ownership-acquisition read and caches
+   that value only for the acquisition. Opens the exclusive writer lazily on first delivery or publication.
 4. Publishes the Harper cursor as Tantivy's commit payload after accepted mutations. On apply or
    publication failure, rollback-close, discard queued work, and report accepted work lost so the
    runtime resumes from the durable payload.
@@ -91,17 +93,86 @@ The backend slice:
    its stable document key from `tableId` and the record id's ordered-binary storage-key bytes, rejects
    symbol identities, and pays that encoding only on the full-text path. No activation or query policy
    belongs here.
-8. Treats `E_LOCK_BUSY` as retryable ownership contention, never as a reason to reset. Retries use
-   exponential backoff to a five-second ceiling and emit one content-free warning when contention
-   persists. Per-record encoding failures, including oversized fields and invalid field shapes, are
-   returned by Fulltext's logical-batch API as rejected upserts, replaced by deletes, counted, and
-   warned once without record values. Native paths and native error messages are not logged;
-   adapter-authored messages and stable native error codes are.
+8. Treats native writer-open errors as retryable unless their stable code identifies a structural,
+   compatibility, configuration, or terminal-process failure. Retries use exponential backoff to a
+   five-second ceiling and emit one content-free warning when writer unavailability persists. Per-record
+   encoding failures, including oversized fields and invalid field shapes, are returned by Fulltext's
+   logical-batch API as rejected upserts, replaced by deletes, counted, and warned once without record
+   values. Native paths and native error messages are not logged; adapter-authored messages and stable
+   native error codes are.
 9. Makes `shutdown(epoch)` queue a final barrier, drain accepted work, epoch-fence publication, and then
-   settles the writer. Native close is bounded at the adapter boundary. Shutdown may reject
+   settles the writer. The whole shutdown wait and native close are bounded at the adapter boundary. Shutdown may reject
    only when quiescence cannot be proven; the runtime then deliberately holds the runner lock rather
-   than allowing two native writers. Native close needs a bounded failure result so this state is
-   observable instead of hanging worker shutdown indefinitely.
+   than allowing two native writers. A timeout does not cancel or forget native work; it makes the
+   unproven state observable instead of hanging worker shutdown indefinitely.
+
+### Review-response investigation
+
+The final review exposed three lifecycle cases that the earlier tests did not model. The owning
+invariant is: each elected owner must discover the current native checkpoint before replay, temporary
+writer unavailability must not destroy a valid derived index, and an ownership handoff must settle
+within a bound without unlocking an unproven writer.
+
+- **Current behavior:** at Harper branch commit `28f970d25`, the two focused tests named “retains its
+  cached durable cursor across ownership changes” and “fails after exhausting the bounded writer-open
+  retry budget” pass. Those tests encode the defects: an idle backend keeps its construction-time
+  cursor after another owner publishes, and three ordinary open failures inside roughly 20 ms
+  permanently fail the backend.
+  The adapter does not exist on `origin/main`, so the fails-on-base comparison for the corrections uses
+  this pre-fix feature-branch commit rather than Harper `main`.
+- **Mechanism:** `DerivedIndexRuntime.#acquired()` asks `getDurableCursor()` before replay. HNSW reads
+  its durable cursor from storage on every call; the full-text adapter currently returns its cached
+  constructor value. `shutdown()` starts only after `#drain()` settles, so a native open, apply, or
+  publish promise that never settles also prevents the existing close timeout from running.
+- **Dependency evidence:** merged Fulltext commit
+  [`ecbb7a5`](https://github.com/HarperFast/fulltext/commit/ecbb7a51e5b0fa929079b1de54cb1018f94b83b6)
+  reports mutation-batch API v3. Its
+  [`AppliedFullTextMutationBatch.processed`](https://github.com/HarperFast/fulltext/blob/ecbb7a51e5b0fa929079b1de54cb1018f94b83b6/ts/native.ts#L115-L121)
+  contract and
+  [`applyMutationBatch`](https://github.com/HarperFast/fulltext/blob/ecbb7a51e5b0fa929079b1de54cb1018f94b83b6/ts/native.ts#L203-L294)
+  implementation count every consumed logical mutation, including a rejected upsert replaced by a
+  delete. Harper's strict equality check is therefore the v3 contract guard, not a second accepted
+  interpretation. The activation gate must still execute that contract against the packaged native
+  module in CI.
+
+### Review-response design
+
+The backend defers its first inspection until `getDurableCursor()` is called at acquisition, caches that
+result for the acquisition, and invalidates the cache on every shutdown path, including an owner that
+received no batch. This yields one synchronous native metadata read per acquisition rather than one per
+idle cursor poll. If refresh fails after a valid checkpoint was observed, the backend keeps that
+checkpoint for the acquisition; writer-open reconciliation verifies it before publication. An initial
+inspection failure still propagates because the shared protocol has no non-condemning unknown-cursor
+state. A reset keeps its deliberately cursorless result cached even when reset fails, because an unknown
+reset outcome must not rediscover and trust the pre-reset checkpoint. The current host contract exposes
+only `isOwnerEpoch(candidate)`, not the current epoch, so a backend cannot key this cache directly from
+`getDurableCursor()`; invalidation through the mandatory `shutdown(epoch)` boundary is the narrow
+equivalent.
+
+Writer open keeps the existing small immediate retry burst. After that burst, every error uses the
+existing exponential retry timer unless its code belongs to the closed terminal set: schema, identity,
+or format incompatibility; invalid configuration; binding ABI or capability incompatibility; native
+panic or poison; or a closed Node environment. Unknown and newly introduced codes retry by default.
+This prevents a later transient wrapper code from silently becoming a destructive-rebuild signal. The
+activation gate will assert the expected terminal and retryable codes against the packaged wrapper, and
+must not enable a write-lag rejection budget without exposing prolonged open retry in status.
+
+Every `shutdown(epoch)` caller gets a bounded wait around the shared internal shutdown operation. A
+timeout rejects the handoff, which makes `DerivedIndexRuntime` retain its lock and report unavailable
+node-wide; recovery requires the native work to settle followed by operator retry, or process restart
+if it never settles. The underlying drain and close continue so the adapter never treats a timed-out
+native operation as cancelled or quiescent. This intentionally prices safety above availability: the
+current shared protocol has no non-condemning `stalled` result, and resolving would let the same backend
+object reacquire with its prior epoch's engine and mutable queue still active.
+
+The record conversion loop avoids `Object.entries()` and the second `Object.keys()` emptiness scan. It
+preserves the existing own-enumerable-property rule and returns no field map when no indexable string
+field exists.
+
+Wrapper rejection counts remain adapter-owned in this inert slice. Activation must add them to the
+operator-visible derived-index metrics before the index can be enabled; changing the shared runtime
+interface solely for an adapter that nothing constructs yet would widen this PR without making the
+metric observable.
 
 ### Stacked follow-ups
 
@@ -184,11 +255,79 @@ change. It beats the other options because current HNSW remains unchanged, Fullt
 mechanisms, and later activation work can be reviewed separately against characterization tests rather
 than hidden inside a conflict resolution.
 
+### Different layer: add ownership acquisition and native-operation cancellation to the shared protocol
+
+Rejected. The existing protocol deliberately uses `getDurableCursor()` as the acquisition read, and
+HNSW already returns current storage there. Adding a new acquisition hook would change every backend to
+solve a cache local to this adapter. The Fulltext wrapper cannot safely cancel an admitted Tantivy
+operation or decide when Harper may release its cross-worker owner lock; Harper must bound the handoff.
+
+### Different layer: use the native writer lock as the only handoff authority
+
+Rejected for this adapter state machine. Fulltext does retain process-registry and Tantivy filesystem
+exclusion until a writer closes, so a different backend object cannot open concurrently. But resolving
+Harper shutdown before this backend settles permits the same worker and backend object to reacquire;
+its prior epoch's engine, drain, and queue are still live, while `DerivedIndexRuntime` interprets a
+resolved `shutdown()` as quiescence. Making native exclusion authoritative would require per-epoch
+detached engine contexts or a shared-runtime rule that prevents reacquisition until late settlement.
+Neither is an adapter-local timeout correction.
+
+### Different layer: add a non-condemning stalled state to `DerivedIndexBackend`
+
+Rejected for this inert slice. Today `failed` means condemn and rebuild, while a rejected `shutdown`
+means retain the runner lock and publish unavailable. A third state could distinguish valid-but-stalled
+native state, but it changes the shared runner state machine, readiness semantics, recovery API, and
+both backends' characterization surface. That work should be evaluated as a derived-index protocol
+change rather than introduced to activate no production index.
+
+### Deeper cause: make construction-time inspection authoritative for the backend object's lifetime
+
+Rejected. Backend objects exist independently in every worker while the native files are shared. A
+worker can be constructed before another worker publishes, so no construction-time value can satisfy
+the current-checkpoint invariant across ownership rotation.
+
+### Do less: tolerate stale inspection and let lazy writer open reconcile it
+
+Rejected. A stale present cursor wastes replay before writer-open reconciliation. A stale missing cursor
+never reaches writer open: the runtime condemns and resets the valid generation first.
+
+### Do less: surface wrapper rejections through the existing runtime metric now
+
+Deferred to activation. `DerivedIndexRunnerMetrics.unindexableRecords` already exists, and an optional
+backend counter could feed it without changing HNSW. This backend is not constructed in production,
+however, so changing the shared interface in this PR would not make the count observable. Activation
+must wire the counter before enabling full-text and includes that requirement in the open-item gate.
+
+### Open retry: fail after the immediate burst or retry a named allowlist
+
+Rejected. Three attempts over roughly 20 ms are not evidence that native state is invalid, and a named
+retry allowlist makes every future transient wrapper code destructive by default. Retry-by-default with
+a closed terminal set makes unknown failures stale the index rather than retire it; status and lag policy
+must expose a prolonged stall.
+
+### Shutdown expiry: resolve as detached, reject as unproven, or wait forever
+
+Resolving as detached is rejected because the current backend object can reacquire while its old epoch
+still owns mutable engine state. Waiting forever leaves worker handoff unbounded. The chosen rejection
+preserves the runtime's existing safety contract and makes the severe availability cost explicit; a
+future shared `stalled` state is the path to improving that cost without weakening mutual exclusion.
+
+### Chosen: keep recovery policy local to the full-text adapter
+
+Acquisition-scoped inspection, retry-by-default open classification, and a bounded unproven handoff
+preserve the shared protocol and HNSW implementation. The adapter is the first layer that knows both
+the native lifecycle error codes and Harper's owner epoch, so it is the narrowest layer that can enforce
+all three invariants. The conversion path also allocates its field map lazily, only after finding the
+first indexable value.
+
 ## Verification
 
-- **Observed:** `npm run build` and all 69 focused backend, lifecycle, and audited-RocksDB tests pass in
-  this worktree.
-- **Observed:** the complete resources shard reaches 2,876 passing and 51 pending. Its three failures
+- **Observed:** `npm run build` passes. All 151 focused backend, lifecycle, shared-runtime, native-backend,
+  and audited-RocksDB tests pass in this worktree. This includes two-owner checkpoint rotation and a
+  runtime stop whose native writer-open promise remains unsettled past the handoff bound.
+- **Observed:** oxlint reports no warnings in the three changed implementation and test files. The
+  repository-wide lint command reports 15 pre-existing warnings outside this diff and exits successfully.
+- **Observed:** the complete resources shard reaches 2,882 passing and 51 pending. Its three failures
   reproduce unchanged on detached Harper `origin/main`: two condition-delete visibility assertions and
   the range-read activity read-your-writes assertion.
 - **Verified by tests:** the real `DerivedIndexRuntime` produces the same fake-native document set by
@@ -221,7 +360,15 @@ than hidden inside a conflict resolution.
 ## Open items
 
 - Publish the wrapper from merged Fulltext `main`, then exact-pin it in Harper.
-- Add `dependencies.md` rationale and Linux, macOS, and Windows native-load CI.
+- Add `dependencies.md` rationale and Linux, macOS, and Windows native-load CI. The packaged-native gate
+  must verify mutation-batch v3 rejected-upsert counting and representative terminal/retryable open codes.
+- Define a non-condemning acquisition result for a transient initial inspection failure. The current
+  adapter safely falls back only after it has observed a valid checkpoint; without one, the shared
+  runtime treats an inspection throw as a backend failure. Full-text activation must not merge until
+  this protocol gap is resolved or the supported native inspection path is proven not to throw
+  transient failures.
+- Feed wrapper rejection counts into the existing operator-visible unindexable-record metric before
+  activation.
 - Add activation, schema, and query coverage in separate reviewable slices.
 - Run the HNSW/full-text coexistence matrix before activation merges.
 
