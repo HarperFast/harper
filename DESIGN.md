@@ -438,8 +438,8 @@ writes the release.
 **Two control entries, not four.** `LOCK_RELEASE = 12` and `LOCK_BARRIER = 13` are the lock action
 nibbles in `auditStore.ts`. `LOCK_REQUEST = 9` and `LOCK_GRANT = 10` belonged to the Ricart–Agrawala
 rule the design note replaces; that rule never shipped enabled, so those nibbles were **retired
-rather than migrated** — and 9 has since been taken by eviction, which is why a migration was never
-an option. Delegation request/grant/recall are unicast over the transport. The release stays on the
+rather than migrated** — and 9 has since been taken by eviction, 10 by the base-copy barrier (below),
+which is why a migration was never an option. Delegation request/grant/recall are unicast over the transport. The release stays on the
 replicated log because it is what orders a handoff behind the delegate's own data writes; the
 barrier (the recovery fence below) is on it because its log position is the whole point.
 
@@ -566,7 +566,8 @@ coalescing path, where a follower would otherwise inherit the leader's weaker ha
 **Routing and exclusion from record surfaces.** The replicated-event consumer in `Table.ts` dispatches
 the release entry to the table's `LockCoordinator` before it resolves a resource, so it never reaches
 `_writeUpdate`, and `stageWrite` keeps it off the per-key write chain. Every surface that reports
-audit entries as record activity filters it through `isLockControlType`: the subscriber listener
+audit entries as record activity filters it through `isControlEntryType` (the widened form of
+`isLockControlType`, which now also covers the base-copy barrier): the subscriber listener
 (ahead of the `rawEvents` branch, which otherwise forwards every type verbatim), the
 `subscribe({ startTime })` replay, the `previousCount` backfill, and `getHistory()`.
 `getHistoryOfRecord()` excludes it already by matching on record id.
@@ -602,9 +603,43 @@ key order. `writeLockBarrier(database, table, nonce)` in `recordLockCoordinator.
 this node's own commit through `Table.writeLockControlEntry`, never the transport's `writeControl`
 hook, since the caller is the transport and the fence must be a position in this origin's log — and
 resolves to the entry's log position; the transport supplies the nonce it will match the entry on.
-The coordinator ignores the entry on receipt, and every `isLockControlType` exclusion above covers it. `establishLockFreshness()` receives the wait remaining
+The coordinator ignores the entry on receipt, and every `isControlEntryType` exclusion above covers it. `establishLockFreshness()` receives the wait remaining
 on the lock deadline. The harper-pro operation and drain are harper-pro#822's; a recovery marker with
 no barrier fails closed.
+
+## The base-copy barrier is a position, and it consumes the last free action nibble
+
+`COPY_BARRIER = 10` (`auditStore.ts`) is a record-less, `LOCAL_ONLY` control entry written by
+`Table.writeCopyBarrier()`, which commits one in its own transaction and resolves to its transaction
+key. Replication's base copy commits one immediately before it starts and anchors its resume cursor
+on that key (harper-pro#876).
+
+**Why an entry and not a number.** A transaction's log key is fixed when the transaction is
+**created**; its log batch is appended when it **commits**. The transaction log is therefore written
+out of key order, so a numeric cursor is not a boundary in it: a transaction created before the cursor
+and committed after it sits behind the cursor numerically and after it physically, and a
+timestamp-filtered range drops it. The barrier's value is its **position** — everything still in
+flight when it commits appends after it — so a reader resuming with `exactStart` +
+`resumeAfterExactStart` past that entry sees those transactions, and a reader resuming at a number
+does not.
+
+**What it relies on.** rocksdb-js dispatches a database's commits on one thread, in order, so the
+barrier's commit resolving also means every entry already in the log is backed by visible data. That
+is an assumption about the storage engine, so harper-pro pins it with a test rather than a comment.
+`writeCopyBarrier()` refuses on LMDB: its audit range is key-ordered and `LMDBTransaction.commit()`
+fixes `txnTime` before awaited pre-commit work, so an older-keyed transaction can still land behind
+the barrier.
+
+**Why it is invisible.** `LOCAL_ONLY` means the replication sender skips it on a bitmask test over an
+already-decoded integer, so it never reaches a peer and needs no capability gate or version
+negotiation. Locally it has the same record-less shape as the lock control entries, so
+`isControlEntryType` excludes it everywhere an audit entry
+would otherwise surface as record activity. The two apply-path sites that dispatch on lock semantics
+keep the narrow predicate.
+
+**Nibble 10 was the last free one.** 1–7 are the record actions, 8 reload, 9 evict, 10 this barrier,
+11 `remoteSequenceUpdate`, 12/13 the lock control entries, 14/15 the width flags. A further entry type
+needs the extended form, not another nibble.
 
 ## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
 

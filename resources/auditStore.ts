@@ -879,11 +879,20 @@ const STRUCTURES = 7;
 // Whole-table "reload" marker: a control entry (no record) signalling that a table was bulk-reloaded
 // and subscribers should re-read it. Used after a copyApply base copy, whose per-row snapshot writes
 // carry no audit entry (harper-pro#489). The entry type lives in the low nibble of the action byte
-// (decoded via `action & 0xf`); 1–7 are the record actions above, 8 is reload, 9 is eviction, leaving 10–15 free for
-// future actions. Reload markers are always written LOCAL_ONLY so an unknown type never reaches a
-// peer; the lock control entries below deliberately are not, and rely on the capability gate instead.
+// (decoded via `action & 0xf`); 1–7 are the record actions above, 8 is reload, 9 is eviction, 10 the
+// base-copy barrier, 11 the remote sequence update and 12/13 the lock control entries, with 14/15 the
+// width flags — so there is no free nibble left, and a further type needs the extended form. Reload
+// markers are always written LOCAL_ONLY so an unknown type never reaches a peer; the lock control
+// entries below deliberately are not, and rely on the capability gate instead.
 const RELOAD = 8;
 const EVICT = 9;
+/**
+ * Base-copy boundary marker: a record-less, `LOCAL_ONLY` entry a leader commits immediately before a
+ * base copy, so the copy's resume cursor names a position in the log's APPEND order rather than a
+ * timestamp. Written by `Table.writeCopyBarrier()`; see DESIGN.md, "The base-copy barrier is a
+ * position", for why a number cannot serve (harper-pro#876).
+ */
+const COPY_BARRIER = 10;
 export const ACTION_32_BIT = 14;
 export const ACTION_64_BIT = 15;
 /** Used to indicate we have received a remote local time update */
@@ -899,8 +908,8 @@ export const REMOTE_SEQUENCE_UPDATE = 11;
  * so its own log position can serve as the §7.2 recovery fence (harper#2625). Nibbles 9 and 10
  * briefly held `lockRequest`/`lockGrant` for the Ricart–Agrawala arbitration rule that
  * `docs/record-lock-ownership.md` replaces; that rule never shipped enabled, so they were retired
- * rather than migrated — and 9 has since been taken by eviction. 10 is spare; 14/15 are the width
- * flags.
+ * rather than migrated — and 9 has since been taken by eviction, 10 by the base-copy barrier; 14/15
+ * are the width flags.
  */
 export const LOCK_RELEASE = 12;
 export const LOCK_BARRIER = 13;
@@ -945,6 +954,8 @@ const EVENT_TYPES = {
 	[LOCK_RELEASE]: 'lockRelease',
 	lockBarrier: LOCK_BARRIER | HAS_RECORD,
 	[LOCK_BARRIER]: 'lockBarrier',
+	copyBarrier: COPY_BARRIER,
+	[COPY_BARRIER]: 'copyBarrier',
 };
 /**
  * The LMDB audit entry states the presence of its leading 8-byte previousVersion field with that
@@ -991,14 +1002,25 @@ function isDecodableAction(action: number) {
 }
 
 /**
- * Cluster lock coordination entries. They ride the replicated audit stream but describe no record,
- * so every consumer that surfaces audit entries as record activity — subscriber fan-out, the
- * `startTime` replay, the `previousCount` backfill, the replicated-event sink — must exclude them.
+ * Cluster lock coordination entries specifically — the two types the apply path dispatches to
+ * `applyLockControlEvent` and the replication sender gates on peer capability. Use
+ * `isControlEntryType` instead to ask the broader question "does this entry describe no record".
  * An equality chain rather than a Set: this runs once per audit entry on the replay and fan-out
  * paths, where the common answer is false on the first comparison.
  */
 export function isLockControlType(type: unknown): boolean {
 	return type === 'lockRelease' || type === 'lockBarrier';
+}
+
+/**
+ * Entries that ride the audit stream but describe no record, so every consumer that surfaces audit
+ * entries as record activity — subscriber fan-out, the `startTime` replay, the `previousCount`
+ * backfill, the replicated-event sink — must exclude them. Broader than `isLockControlType`: the
+ * base-copy barrier has the same record-less shape and needs the same exclusions, but none of the
+ * lock semantics.
+ */
+export function isControlEntryType(type: unknown): boolean {
+	return isLockControlType(type) || type === 'copyBarrier';
 }
 const ORIGINATING_OPERATIONS = {
 	insert: 1,

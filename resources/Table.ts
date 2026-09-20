@@ -111,6 +111,7 @@ import {
 	getAuditFloor,
 	raiseAuditFloor,
 	boundedAuditPruneEnd,
+	isControlEntryType,
 	isLockControlType,
 } from './auditStore.ts';
 import { derivedIndexWriteRejection, hasDerivedIndexRegistration } from './derivedIndexRegistry.ts';
@@ -5490,7 +5491,7 @@ export function makeTable(options) {
 					try {
 						let type = auditRecord.type;
 						// Ahead of the rawEvents branch, which forwards every type verbatim.
-						if (isLockControlType(type)) return;
+						if (isControlEntryType(type)) return;
 						let value;
 						if (type === 'message' || request.rawEvents) {
 							// we only send the full message, this are individual messages that can be sent out of order
@@ -5582,7 +5583,7 @@ export function makeTable(options) {
 									if (!isActive()) return;
 								}
 								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
-								if (isLockControlType(auditRecord.type)) continue;
+								if (isControlEntryType(auditRecord.type)) continue;
 								const id = auditRecord.recordId;
 								if (thisId == null || isDescendantId(thisId, id)) {
 									const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.txnLogKey);
@@ -5620,7 +5621,7 @@ export function makeTable(options) {
 							}
 							try {
 								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
-								if (isLockControlType(auditRecord.type)) continue;
+								if (isControlEntryType(auditRecord.type)) continue;
 								const id = auditRecord.recordId;
 								if (thisId == null || isDescendantId(thisId, id)) {
 									// Bound entries INSPECTED for THIS scope, independent of `count` (entries
@@ -6044,6 +6045,50 @@ export function makeTable(options) {
 					},
 				});
 			});
+		}
+		/**
+		 * Commit the base-copy boundary marker and resolve to its transaction key (harper-pro#876).
+		 *
+		 * The key is what a cursor carries; the entry's POSITION is what makes it a boundary, because
+		 * every transaction still in flight here commits — and so appends — after it. See DESIGN.md,
+		 * "The base-copy barrier is a position".
+		 */
+		static async writeCopyBarrier(): Promise<number> {
+			// LMDB orders its audit range by key and fixes `txnTime` before awaited pre-commit work, so an
+			// older-keyed transaction can still land behind this entry: no boundary, so no barrier.
+			if (!isRocksDB)
+				throw new Error(`A base-copy barrier needs a RocksDB transaction log; ${tableName} is not on one`);
+			const nodeId = getThisNodeId(auditStore) ?? 0;
+			let barrierKey: number;
+			await Promise.resolve(
+				transaction({} as any, (txn: any) => {
+					const tableTxn = txnForContext({ transaction: txn } as any);
+					tableTxn.addWrite({
+						key: null,
+						store: primaryStore,
+						skipReplicationConfirmation: true,
+						commit: (txnTime: number, _existingEntry: any, _retry: any, nativeTransaction: any) => {
+							barrierKey = txnTime;
+							return auditStore.putSync(
+								null,
+								{
+									version: txnTime,
+									tableId,
+									recordId: null,
+									nodeId,
+									type: 'copyBarrier',
+									extendedType: LOCAL_ONLY,
+									structureVersion: 0, // carries none of the table's structures; see writeLockControlEntry
+								},
+								{ instructedWrite: true, transaction: nativeTransaction, nodeId, viaNodeId: nodeId }
+							);
+						},
+					});
+				})
+			);
+			if (!(barrierKey > 0) || !Number.isFinite(barrierKey))
+				throw new Error(`The base-copy barrier for ${tableName} committed without a log key`);
+			return barrierKey;
 		}
 		/**
 		 * Write one cluster record-lock control entry (harper#483 Phase 1). Not local-only: replicating
@@ -6963,7 +7008,7 @@ export function makeTable(options) {
 				end: endTime,
 			})) {
 				await rest(); // yield to other async operations
-				if (auditRecord.tableId !== tableId || auditRecord.type === 'evict' || isLockControlType(auditRecord.type))
+				if (auditRecord.tableId !== tableId || auditRecord.type === 'evict' || isControlEntryType(auditRecord.type))
 					continue;
 				yield {
 					id: auditRecord.recordId,
@@ -6997,7 +7042,7 @@ export function makeTable(options) {
 					if (
 						auditRecord.tableId === tableId &&
 						auditRecord.type !== 'evict' &&
-						!isLockControlType(auditRecord.type) &&
+						!isControlEntryType(auditRecord.type) &&
 						compareKeys(auditRecord.recordId, id) === 0
 					) {
 						history.splice(insertionPoint, 0, {
