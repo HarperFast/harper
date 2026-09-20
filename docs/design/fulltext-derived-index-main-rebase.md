@@ -175,6 +175,12 @@ bound, so close retains its own budget after ordinary drain work. This intention
 current shared protocol has no non-condemning `stalled` result, and resolving would let the same backend
 object reacquire with its prior epoch's engine and mutable queue still active.
 
+Native reset uses the same bounded, lock-retaining policy. The adapter tracks one underlying reset per
+owner epoch; retry and shutdown callers attach to it instead of starting another destructive operation.
+If it does not settle, shutdown rejects and the runtime retains ownership. Wrapper-validated retired-
+directory reclamation remains best-effort and runs outside reset completion, so cleanup cannot wedge
+worker stop after the live generation has already been retired.
+
 The record conversion loop avoids `Object.entries()`, the second `Object.keys()` emptiness scan, and a
 duplicate scan of array contents. It preserves the own-enumerable-property rule and returns no field
 map when no string or array field exists. Fulltext validates array contents while performing the exact
@@ -338,7 +344,7 @@ first indexable value.
 
 ## Verification
 
-- **Observed:** `npm run build` passes. All 154 focused backend, lifecycle, shared-runtime, native-backend,
+- **Observed:** `npm run build` passes. All 156 focused backend, lifecycle, shared-runtime, native-backend,
   and audited-RocksDB tests pass in this worktree. This includes two-owner checkpoint rotation and a
   runtime stop whose native writer-open promise remains unsettled past the handoff bound.
 - **Observed:** oxlint reports no warnings in the three changed implementation and test files. The

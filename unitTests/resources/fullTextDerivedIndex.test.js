@@ -76,6 +76,7 @@ function lifecycle(inspection = { state: 'missing' }, opens = []) {
 		async reset() {
 			this.resetCalls++;
 			if (this.resetError) throw this.resetError;
+			if (this.resetWait) await this.resetWait;
 		},
 	};
 }
@@ -1002,6 +1003,23 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(source.openCalls, 0);
 		assert.strictEqual(backend.getDurableCursor(), undefined);
 		await backend.shutdown(2n);
+	});
+
+	it('bounds a native reset and keeps shutdown attached to the same operation', async () => {
+		let finishReset;
+		const source = lifecycle();
+		source.resetWait = new Promise((resolve) => (finishReset = resolve));
+		const { backend } = makeBackend(source, {
+			closeTimeoutMilliseconds: 10,
+			shutdownTimeoutMilliseconds: 20,
+		});
+
+		await assert.rejects(backend.reset(1n), /native reset did not settle/);
+		assert.strictEqual(source.resetCalls, 1);
+		await assert.rejects(backend.shutdown(1n), /reset did not prove quiescence/);
+		finishReset();
+		await backend.shutdown(1n);
+		assert.strictEqual(source.resetCalls, 1);
 	});
 
 	it('refreshes its durable cursor after an ownership cycle without delivery', async () => {

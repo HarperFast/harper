@@ -231,6 +231,7 @@ describe('DerivedIndexRuntime', () => {
 			},
 			openAttempts: 1,
 			closeTimeoutMilliseconds: 10,
+			shutdownTimeoutMilliseconds: 250,
 		});
 		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]));
 		runtime.register(registration(backend));

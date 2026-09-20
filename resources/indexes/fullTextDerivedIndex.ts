@@ -168,6 +168,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#writerRetryDelayMilliseconds: number;
 	#writerRetryWarned = false;
 	#terminalFailure?: FullTextDerivedIndexConfigurationError;
+	#resetOperation?: Promise<void>;
+	#resetEpoch?: bigint;
 	// A failed deliver() result and its delayed state callback report the same backend fault.
 	#failedDeliveryObserved = false;
 
@@ -320,6 +322,15 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	shutdown(ownerEpoch: bigint): Promise<void> {
 		this.#cursorInspectedForAcquisition = false;
 		if (this.#shutdown?.epoch === ownerEpoch) return this.#boundedShutdown(this.#shutdown);
+		if (this.#resetOperation) {
+			if (this.#resetEpoch !== ownerEpoch)
+				return Promise.reject(new FullTextDerivedIndexError('Full-text reset belongs to another owner epoch'));
+			return withTimeout(
+				this.#resetOperation.then(() => this.shutdown(ownerEpoch)),
+				this.#shutdownTimeoutMilliseconds,
+				() => new FullTextDerivedIndexError('Full-text reset did not prove quiescence before shutdown timeout')
+			);
+		}
 		if (this.#activeEpoch !== ownerEpoch) return Promise.resolve();
 		this.#clearWriterRetry();
 		this.#queueBarrier(ownerEpoch);
@@ -344,6 +355,12 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 
 	async reset(ownerEpoch: bigint): Promise<void> {
 		this.#assertAttached();
+		if (this.#resetOperation) {
+			this.#assertSharedEpoch(ownerEpoch);
+			if (this.#resetEpoch !== ownerEpoch)
+				throw new FullTextDerivedIndexError('Full-text reset belongs to another owner epoch');
+			return this.#boundedReset(this.#resetOperation);
+		}
 		if (
 			this.#engine ||
 			this.#scheduled ||
@@ -367,12 +384,37 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#durableCursor = undefined;
 		// An unknown reset outcome must never rediscover and trust the pre-reset checkpoint.
 		this.#cursorInspectedForAcquisition = true;
+		const operation = this.#performReset(ownerEpoch);
+		this.#resetOperation = operation;
+		this.#resetEpoch = ownerEpoch;
+		void operation.then(
+			() => this.#clearResetOperation(operation),
+			() => this.#clearResetOperation(operation)
+		);
+		return this.#boundedReset(operation);
+	}
+
+	async #performReset(ownerEpoch: bigint): Promise<void> {
 		await this.#lifecycle.reset();
 		this.#assertSharedEpoch(ownerEpoch);
 		this.#activeEpoch = ownerEpoch;
 		this.#resetQueueState();
 		this.#unindexableRecords = 0;
 		this.#unindexableWarned = false;
+	}
+
+	#boundedReset(operation: Promise<void>): Promise<void> {
+		return withTimeout(
+			operation,
+			this.#shutdownTimeoutMilliseconds,
+			() => new FullTextDerivedIndexError('Full-text native reset did not settle before timeout')
+		);
+	}
+
+	#clearResetOperation(operation: Promise<void>): void {
+		if (this.#resetOperation !== operation) return;
+		this.#resetOperation = undefined;
+		this.#resetEpoch = undefined;
 	}
 
 	onStateChange(wake: (change?: DerivedIndexBackendStateChange) => void): () => void {

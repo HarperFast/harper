@@ -62,7 +62,7 @@ export class NativeFullTextDerivedIndexLifecycle {
 			limits: this.#options.limits,
 		});
 		this.#maxCommitPayloadBytes = getValidatedFullTextRuntimeInfo(binding).limits.maxCommitPayloadBytes;
-		await this.#reclaimRetired();
+		void this.#reclaimRetired();
 	}
 
 	get maxCommitPayloadBytes(): number {
@@ -86,7 +86,7 @@ export class NativeFullTextDerivedIndexLifecycle {
 			path: this.#path,
 			indexId: this.#options.indexId,
 		});
-		await this.#reclaimRetired(result.state === 'reset' ? result.retiredPath : undefined);
+		void this.#reclaimRetired(result.state === 'reset' ? result.retiredPath : undefined);
 	}
 
 	async #reclaimRetired(retiredPath?: string): Promise<void> {

@@ -101,6 +101,7 @@ class FakeNativeModule {
 
 	async reclaimRetiredNativeFullTextIndexes(reclaimOptions) {
 		this.reclaims.push(reclaimOptions);
+		if (this.reclaimWait) await this.reclaimWait;
 		return this.reclaimResult ?? { removed: 0, failed: 0 };
 	}
 }
@@ -178,11 +179,27 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		]);
 	});
 
-	it('asks the wrapper to reclaim retired storage during initialization', async () => {
+	it('does not block reset on best-effort retired storage reclamation', async () => {
+		let finishReclaim;
 		const binding = new FakeNativeModule();
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		binding.resetResult = { state: 'reset', retiredPath: 'wrapper-owned' };
+		await lifecycle.initialize();
+		binding.reclaimWait = new Promise((resolve) => (finishReclaim = resolve));
+
+		await lifecycle.reset();
+		assert.deepStrictEqual(binding.reclaims.at(-1), { path: lifecycle.path, retiredPath: 'wrapper-owned' });
+		finishReclaim();
+	});
+
+	it('asks the wrapper to reclaim retired storage during initialization', async () => {
+		let finishReclaim;
+		const binding = new FakeNativeModule();
+		binding.reclaimWait = new Promise((resolve) => (finishReclaim = resolve));
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await lifecycle.initialize();
 		assert.deepStrictEqual(binding.reclaims, [{ path: lifecycle.path, retiredPath: undefined }]);
+		finishReclaim();
 	});
 
 	it('preloads and validates the binding before returning a backend', async () => {
