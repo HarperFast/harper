@@ -7,6 +7,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { writeKeyId } = require('#src/resources/DatabaseTransaction');
 const {
 	FullTextDerivedIndexBackend,
+	HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES,
 	decodeFullTextCursorPayload,
 	encodeFullTextCursorPayload,
 	toFullTextMutationBatch,
@@ -139,6 +140,16 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.throws(
 			() => makeBackend(lifecycle(), { closeTimeoutMilliseconds: 10, shutdownTimeoutMilliseconds: 19 }),
 			/shutdownTimeoutMilliseconds must be at least twice closeTimeoutMilliseconds/
+		);
+	});
+
+	it('rejects a publication limit above the cursor inspection bound', () => {
+		assert.throws(
+			() =>
+				makeBackend(lifecycle(), {
+					maxCursorPayloadBytes: HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES + 1,
+				}),
+			/maxCursorPayloadBytes must not exceed 65536/
 		);
 	});
 
@@ -417,6 +428,34 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 		assert.strictEqual(source.openCalls, 2);
 		assert.strictEqual(changes.includes('failed'), false);
+	});
+
+	it('settles shutdown after an in-flight writer open rejects', async () => {
+		let releaseOpen;
+		const source = lifecycle({ state: 'missing' });
+		source.open = async function () {
+			this.openCalls++;
+			await new Promise((resolve) => (releaseOpen = resolve));
+			throw nativeError('E_LOCK_BUSY', 'busy');
+		};
+		const { backend, setEpoch } = makeBackend(source, {
+			openAttempts: 1,
+			closeTimeoutMilliseconds: 10,
+			shutdownTimeoutMilliseconds: 20,
+		});
+		backend.deliver(batch(1n, [], cursor(20)));
+		backend.flush();
+		await waitFor(() => typeof releaseOpen === 'function');
+		const stopping = backend.shutdown(1n);
+		releaseOpen();
+		try {
+			await stopping;
+		} finally {
+			setEpoch(2n);
+		}
+		const openCalls = source.openCalls;
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		assert.strictEqual(source.openCalls, openCalls, 'shutdown must stop retrying the writer open');
 	});
 
 	it('delegates one logical batch to the wrapper before publishing its cursor', async () => {

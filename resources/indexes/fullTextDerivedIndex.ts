@@ -192,10 +192,15 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			options.maxQueuedBytes ?? HARPER_FULLTEXT_DEFAULT_MAX_QUEUED_BYTES,
 			'maxQueuedBytes'
 		);
-		this.#maxCursorPayloadBytes = positiveInteger(
+		const maxCursorPayloadBytes = positiveInteger(
 			options.maxCursorPayloadBytes ?? HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES,
 			'maxCursorPayloadBytes'
 		);
+		if (maxCursorPayloadBytes > HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES)
+			throw new RangeError(
+				`Full-text maxCursorPayloadBytes must not exceed ${HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES}`
+			);
+		this.#maxCursorPayloadBytes = maxCursorPayloadBytes;
 		this.#maxApplySliceRecords = positiveInteger(
 			options.maxApplySliceRecords ?? DEFAULT_MAX_APPLY_SLICE_RECORDS,
 			'maxApplySliceRecords'
@@ -456,7 +461,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		try {
 			while (this.#commands.length > 0 && !this.#failed) {
 				const next = this.#commands[0];
-				if ((next.type === 'barrier' || next.batch.records.length > 0) && !(await this.#ensureEngine())) return;
+				if ((next.type === 'barrier' || next.batch.records.length > 0) && !(await this.#ensureEngine())) {
+					if (this.#shutdown) this.#discardCommands();
+					return;
+				}
 				if (this.#commands[0] !== next) continue;
 				if (next.type === 'apply') {
 					let complete = false;

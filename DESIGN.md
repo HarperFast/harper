@@ -2729,7 +2729,9 @@ After a small immediate attempt budget, open errors use the same retry ceiling u
 code proves the native generation is structurally incompatible or corrupt. Configuration, binding,
 process-state, and unknown codes retry by default: they may require operator action or restart, but do
 not prove the index files should be reset. Persistent writer unavailability emits one warning without native paths
-or record content. Ownership handoff does not finish until drain and close prove quiescence. Harper
+or record content. Ownership handoff does not finish until drain and close prove quiescence. A
+writer-open failure that lands after shutdown begins discards queued work before finalization so it
+cannot enter another retry drain. Harper
 gives native close its own 35-second bound and bounds the complete handoff at 70 seconds. If that proof fails, shutdown rejects and the runtime keeps its
 runner lock, preventing a second writer. The underlying native operation continues and a later operator
 retry attaches to the same shutdown rather than starting a competing close. A cursor that cannot fit
