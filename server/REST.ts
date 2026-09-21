@@ -586,6 +586,9 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			});
 			try {
 				await chainCompletion;
+				// before the route lookup: the same credential is a 401 over HTTP, so a rejected client
+				// must not learn from the close code whether the resource exists
+				assertNoDeferredCredentialRejection(request);
 				const url = request.url.slice(1);
 				const entry = resources.getMatch(url, 'ws');
 				recordActionBinary(Boolean(entry), 'connection', 'ws', 'connect');
@@ -593,7 +596,6 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 					// TODO: Ideally we would like to have a 404 response before upgrading to WebSocket protocol, probably
 					return ws.close(1011, toCloseReason(`No resource was found to handle ${request.pathname}`));
 				} else {
-					assertNoDeferredCredentialRejection(request);
 					request.handlerPath = entry.path;
 					recordAction(
 						(action) => ({
