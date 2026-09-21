@@ -163,6 +163,8 @@ For megafiles and complex subsystems, jump to the section index instead of readi
 
 **Minimal dependencies** — `dependencies.md` documents the rationale for every dependency. Adding a new dependency requires justification; implementing something ourselves is often preferred.
 
+**An error's class name is its error code, and it is public** — Harper's error taxonomy (`ClientError`, `ServerError`, and the rest of `utility/errors/hdbError.ts`) is a contract clients code against: the class name is documented, clients branch on it, and it guides support. So `errorToString`'s `ClassName: message` rendering is deliberate wherever a client reads it — terminal HTTP error bodies (`server/http.ts`), REST WebSocket close reasons — and `streamErrorRecord` (`server/serverHelpers/contentTypes.ts`) publishes the class name in its own `error` field for the same reason. Do not "sanitize" it away as an internal implementation detail, and treat renaming an error class as a breaking change. What must not reach a client is an internal fault's _message_ — see `AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL`, which replaces the text while keeping the code.
+
 ---
 
 ## Git / Worktree Setup — Read Before Any Git Operation
