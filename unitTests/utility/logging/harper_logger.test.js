@@ -1021,8 +1021,8 @@ describe('Test harper_logger module', () => {
 			assert.ok(!fs.readFileSync(firstPath, 'utf8').includes('after close'));
 
 			logger.closeLogFile();
-			// Also close the first sink: it was never reassigned away from, so nothing else closes
-			// its fd, and a still-open handle on Windows would fail the directory removal in after().
+			// The first sink's own 10s auto-close timer would fire after after() already removed
+			// the directory, so close it explicitly here instead.
 			logger.path = firstPath;
 			logger.closeLogFile();
 		});
