@@ -31,7 +31,7 @@ import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget';
 import { entryMap } from '../resources/RecordEncoder.ts';
 
-const { errorToString, errorForLog } = harperLogger;
+const { errorToClientMessage, errorForLog } = harperLogger;
 const etagBytes = new Uint8Array(8);
 const etagFloat = new Float64Array(etagBytes.buffer, 0, 1);
 
@@ -633,7 +633,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				ws.close(
 					HTTP_TO_WEBSOCKET_CLOSE_CODES[error.statusCode] || // try to return a helpful code
 						1011, // otherwise generic internal error
-					toCloseReason(errorToString(error))
+					toCloseReason(errorToClientMessage(error))
 				);
 			}
 			ws.close();

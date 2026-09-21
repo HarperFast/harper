@@ -52,6 +52,14 @@ describe('toCloseReason', () => {
 		assert.strictEqual(toCloseReason(''), '');
 	});
 
+	it('bounds a very long message without scanning all of it', () => {
+		const huge = 'x'.repeat(10_000_000);
+
+		const reason = toCloseReason(huge);
+
+		assert.strictEqual(Buffer.byteLength(reason, 'utf8'), LIMIT);
+	});
+
 	it('bounds a message an override controls, which is the reason this exists', () => {
 		const overrideMessage = `SSO session expired: ${'detail '.repeat(100)}`;
 

@@ -8,7 +8,10 @@ const MAX_CLOSE_REASON_BYTES = 123;
 /** Bounds `text` to what a close frame accepts, truncating on a code-point boundary. */
 export function toCloseReason(text: string | undefined): string {
 	const reason = text ?? '';
-	if (Buffer.byteLength(reason, 'utf8') <= MAX_CLOSE_REASON_BYTES) return reason;
+	// a UTF-16 code unit never encodes to fewer than one byte, so an over-long string is over the byte
+	// limit too — testing that first keeps an unbounded message off byteLength's whole-string scan
+	if (reason.length <= MAX_CLOSE_REASON_BYTES && Buffer.byteLength(reason, 'utf8') <= MAX_CLOSE_REASON_BYTES)
+		return reason;
 	let bytes = 0;
 	let end = 0;
 	// iterating the string yields whole code points, so a surrogate pair is never split
