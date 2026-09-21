@@ -894,3 +894,208 @@ describe('HNSW native plane file-primary delivery', function () {
 		assert.ok(!fs.existsSync(planePath));
 	});
 });
+
+describe('HNSW native plane allow-set filtering (#2688)', function () {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	if (!getPlaneBinding() || !('keyCap' in getPlaneBinding().prototype)) {
+		it.skip('skipped: the installed @harperfast/hnsw cannot store host keys', () => {});
+		return;
+	}
+	this.timeout(60_000);
+	const COUNT = 300;
+	const nativeDefaultSwitch = process.env.HNSW_NO_NATIVE_DEFAULT;
+	let AllowPlane;
+	const allowVectors = new Map();
+
+	function customIndex() {
+		return AllowPlane.indices.vector.customIndex;
+	}
+	/** ids 0…COUNT-1 laid along one axis, so the nearest neighbours of vector(i) are its id neighbours. */
+	function allowVector(i) {
+		const vector = new Array(DIMS).fill(0.01);
+		vector[0] = 1;
+		vector[1] = i / COUNT;
+		return vector;
+	}
+	function tenantOf(i) {
+		return i % 3 === 0 ? 'a' : 'b';
+	}
+	/** A CandidateKeyPlan over a known id set, so the plane's admission path is exercised on its own. */
+	function planFor(ids, complete = true) {
+		return { estimatedCount: ids.length, collect: () => ({ keys: [...ids], complete }) };
+	}
+
+	before(async () => {
+		delete process.env.HNSW_NO_NATIVE_DEFAULT;
+		setupTestDBPath();
+		setMainIsWorker(true);
+		AllowPlane = table({
+			table: 'PlaneAllow',
+			database: 'vector-plane-allow',
+			audit: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tenant', indexed: true },
+				{ name: 'note' },
+				{ name: 'vector', indexed: { type: 'HNSW' }, type: 'Array' },
+			],
+		});
+		assert.equal(
+			AllowPlane.attributes.find((attribute) => attribute.name === 'vector').indexed.nativePlane,
+			true,
+			'this suite must exercise the native plane'
+		);
+		await AllowPlane.indexingOperation;
+		for (let i = 0; i < COUNT; i++) {
+			const vector = allowVector(i);
+			allowVectors.set(i, vector);
+			await AllowPlane.put(i, { tenant: tenantOf(i), note: i % 2 === 0 ? 'keep' : 'drop', vector });
+		}
+		await waitFor(
+			() => {
+				if (!indexReady(AllowPlane)) return false;
+				let mappings = 0;
+				for (const { value } of AllowPlane.indices.vector.getRange()) if (typeof value?.id === 'number') mappings++;
+				return mappings >= COUNT;
+			},
+			{ timeout: 30_000, message: 'post-commit native delivery did not drain' }
+		);
+	});
+
+	after(async () => {
+		await AllowPlane?.dropTable();
+		if (nativeDefaultSwitch === undefined) delete process.env.HNSW_NO_NATIVE_DEFAULT;
+		else process.env.HNSW_NO_NATIVE_DEFAULT = nativeDefaultSwitch;
+	});
+
+	it('serves a complete plan without loading a record to admit', async () => {
+		const allowed = [];
+		for (let i = 0; i < COUNT; i += 3) allowed.push(i);
+		let predicateCalls = 0;
+		const entries = await customIndex().search(
+			{ target: allowVectors.get(0), comparator: 'sort', distance: 'cosine', ef: 100 },
+			{ transaction: undefined },
+			{
+				filter: () => {
+					predicateCalls++;
+					return true;
+				},
+				candidateKeys: planFor(allowed),
+			}
+		);
+		assert.strictEqual(predicateCalls, 0, "a fully covered filter never reaches the caller's predicate");
+		assert.strictEqual(entries.filterEvaluations, 0, 'no record is loaded to admit');
+		assert.strictEqual(entries.candidateKeys, allowed.length);
+		assert.ok(entries.length > 0);
+		const admitted = new Set(allowed);
+		assert.ok(
+			entries.every((entry) => admitted.has(entry.key)),
+			'the allow-set alone decided admission'
+		);
+		assert.deepStrictEqual(
+			entries.slice(0, 4).map((entry) => entry.key),
+			[0, 3, 6, 9]
+		);
+	});
+
+	it('gates the residual predicate behind the allow-set on an incomplete plan', async () => {
+		const allowed = [];
+		for (let i = 0; i < COUNT; i += 3) allowed.push(i);
+		const seen = [];
+		const entries = await customIndex().search(
+			{ target: allowVectors.get(0), comparator: 'sort', distance: 'cosine', ef: 100 },
+			{ transaction: undefined },
+			{
+				filter: (primaryKey) => {
+					seen.push(primaryKey);
+					return Number(primaryKey) % 2 === 0;
+				},
+				candidateKeys: planFor(allowed, false),
+			}
+		);
+		const admitted = new Set(allowed);
+		assert.ok(seen.length > 0, 'the residual predicate ran');
+		assert.ok(
+			seen.every((primaryKey) => admitted.has(primaryKey)),
+			'no key the allow-set excludes reaches a record load'
+		);
+		assert.ok(
+			entries.every((entry) => admitted.has(entry.key) && entry.key % 2 === 0),
+			'both terms hold on every result'
+		);
+	});
+
+	it('an empty allow-set returns nothing', async () => {
+		const entries = await customIndex().search(
+			{ target: allowVectors.get(0), comparator: 'sort', distance: 'cosine', ef: 100 },
+			{ transaction: undefined },
+			{ filter: () => true, candidateKeys: planFor([]) }
+		);
+		assert.strictEqual(entries.length, 0);
+		assert.strictEqual(entries.filterEvaluations, 0);
+	});
+
+	it('runs the whole Table.search route over the allow-set', async () => {
+		const sort = { attribute: 'vector', target: allowVectors.get(0), distance: 'cosine' };
+		const customIndexInstance = customIndex();
+		const original = customIndexInstance.search;
+		let captured;
+		customIndexInstance.search = function (condition, context, options) {
+			const searched = original.call(this, condition, context, options);
+			captured = { options, searched };
+			return searched;
+		};
+		try {
+			const results = await fromAsync(
+				AllowPlane.search(
+					{
+						conditions: [
+							{ attribute: 'vector', comparator: 'sort', ...sort },
+							{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+						],
+						sort,
+						enforceExecutionOrder: true,
+						select: ['id', 'tenant'],
+						limit: 5,
+					},
+					{}
+				)
+			);
+			const entries = await captured.searched;
+			assert.strictEqual(entries.filterEvaluations, 0, 'the traversal loaded no record to admit');
+			assert.strictEqual(entries.candidateKeys, 100);
+			assert.deepStrictEqual(
+				results.map((record) => record.id),
+				[0, 3, 6, 9, 12]
+			);
+			assert.ok(results.every((record) => record.tenant === 'a'));
+		} finally {
+			customIndexInstance.search = original;
+		}
+	});
+
+	it('a record guard keeps the predicate and still returns only authorized rows', async () => {
+		const sort = { attribute: 'vector', target: allowVectors.get(0), distance: 'cosine' };
+		const results = await fromAsync(
+			AllowPlane.search(
+				{
+					conditions: [
+						{ attribute: 'vector', comparator: 'sort', ...sort },
+						{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+					],
+					sort,
+					enforceExecutionOrder: true,
+					rowFilter: (record) => record.note === 'keep',
+					select: ['id', 'tenant', 'note'],
+					limit: 4,
+				},
+				{}
+			)
+		);
+		// tenant 'a' is a multiple of 3, note 'keep' is even — the multiples of 6.
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[0, 6, 12, 18]
+		);
+	});
+});
