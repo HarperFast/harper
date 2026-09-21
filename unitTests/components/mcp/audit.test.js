@@ -1,5 +1,5 @@
 const assert = require('node:assert');
-const { redactArgs, maskSessionId, emitAuditEntry } = require('#src/components/mcp/audit');
+const { redactArgs, redactArgsForTool, maskSessionId, emitAuditEntry } = require('#src/components/mcp/audit');
 
 describe('mcp/audit', () => {
 	describe('redactArgs', () => {
@@ -20,7 +20,7 @@ describe('mcp/audit', () => {
 			assert.equal(out.list[0].password, '[redacted]');
 		});
 
-		it('redacts secret-bearing exact field names (value/values/envelope) for secret-bearing tools', () => {
+		it('redacts secret-bearing exact field names for secret-bearing tools', () => {
 			// set_secret / set_env_value payloads must not reach the audit log via MCP —
 			// this mirrors the REST ops-log strip in processLocalTransaction. The exact-field
 			// masking is opt-in per tool (third arg), so it fires only for those operations.
@@ -29,6 +29,7 @@ describe('mcp/audit', () => {
 				value: 'plaintext-secret',
 				values: { A: '1' },
 				envelope: 'enc:v1:abc',
+				key: '-----BEGIN OPENSSH PRIVATE KEY-----',
 				search_value: 'find-me',
 			};
 			const out = redactArgs(input, 0, true);
@@ -36,7 +37,19 @@ describe('mcp/audit', () => {
 			assert.equal(out.value, '[redacted]');
 			assert.equal(out.values, '[redacted]');
 			assert.equal(out.envelope, '[redacted]');
+			assert.equal(out.key, '[redacted]');
 			assert.equal(out.search_value, 'find-me', 'exact-match only — search_value stays auditable');
+		});
+
+		it('redacts key for SSH-key tools without hiding generic key fields', () => {
+			const privateKey = '-----BEGIN OPENSSH PRIVATE KEY-----';
+			const input = { name: 'deploy', key: privateKey };
+
+			for (const tool of ['add_ssh_key', 'update_ssh_key']) {
+				assert.equal(redactArgsForTool(input, tool).key, '[redacted]');
+			}
+			assert.equal(redactArgsForTool(input, 'search_by_value').key, privateKey);
+			assert.equal(input.key, privateKey, 'redaction must not mutate the caller payload');
 		});
 
 		it('leaves generic value/values fields auditable for non-secret tools', () => {

@@ -6,7 +6,7 @@
  * (session id, profile, tool name).
  *
  * Argument summarization runs through a redaction step that drops anything
- * that looks like a credential (key/secret/password). Operators who need
+ * that looks like a credential (secret/password/token). Operators who need
  * stricter PII handling configure `mcp.audit.argumentRedactor` to a custom
  * function via a future component-author hook (v1.1).
  */
@@ -26,16 +26,17 @@ export interface AuditEntry {
 
 const REDACTION_PATTERN = /(secret|password|token|api[-_]?key|credentials?|auth)/i;
 // Exact field names that carry secret material without a credential-looking name: `value`/`values`
-// (set_secret plaintext, set_env_value .env secrets) and `envelope` (set_secret ciphertext). These
-// mirror the fields processLocalTransaction strips from the REST operations log — the MCP audit
-// path must not become a bypass. Exact-match so e.g. `search_value` stays auditable.
-const REDACTION_EXACT_FIELDS = /^(value|values|envelope)$/i;
+// (set_secret plaintext, set_env_value .env secrets), `envelope` (set_secret ciphertext), and `key`
+// (add_ssh_key / update_ssh_key private keys). These mirror the fields processLocalTransaction
+// strips from the REST operations log — the MCP audit path must not become a bypass. Exact-match
+// so e.g. `search_value` stays auditable.
+const REDACTION_EXACT_FIELDS = /^(value|values|envelope|key)$/i;
 // ...but only for the operations that actually put secrets in those generically-named fields.
 // `value`/`values` are common, non-secret params on many other operations (record data, config
 // values), so blanket-redacting them would gut the audit trail for unrelated tools. The global
 // REDACTION_PATTERN still applies to every tool; this just narrows the exact-field masking to the
 // secret-bearing ops. NOTE: extend this set if a new op ever carries a secret in a plain field.
-const EXACT_FIELD_TOOLS = new Set(['set_secret', 'set_env_value']);
+const EXACT_FIELD_TOOLS = new Set(['set_secret', 'set_env_value', 'add_ssh_key', 'update_ssh_key']);
 const REDACTION_PLACEHOLDER = '[redacted]';
 const MAX_REDACTION_DEPTH = 10;
 
@@ -63,6 +64,11 @@ export function redactArgs(value: unknown, depth = 0, redactExactFields = false)
 	return out;
 }
 
+/** Redact an MCP argument payload using the rules for the invoked tool. */
+export function redactArgsForTool(value: unknown, tool: string): unknown {
+	return redactArgs(value, 0, EXACT_FIELD_TOOLS.has(tool));
+}
+
 /** Mask a session id for logging — first 8 chars, suffix elided. */
 export function maskSessionId(id: string): string {
 	if (typeof id !== 'string' || id.length <= 8) return id;
@@ -79,7 +85,7 @@ export function emitAuditEntry(entry: AuditEntry): void {
 		const masked = {
 			...entry,
 			sessionId: maskSessionId(entry.sessionId),
-			args: redactArgs(entry.args, 0, EXACT_FIELD_TOOLS.has(entry.tool)),
+			args: redactArgsForTool(entry.args, entry.tool),
 		};
 		harperLogger.info({ category: 'mcp.audit', ...masked });
 	} catch (err) {
