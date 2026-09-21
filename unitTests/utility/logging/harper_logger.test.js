@@ -1013,8 +1013,6 @@ describe('Test harper_logger module', () => {
 			await waitFor(() => fs.existsSync(secondPath) && fs.readFileSync(secondPath, 'utf8').includes('into second'));
 
 			logger.closeLogFile();
-			// A stale closeLogFile (the bug) leaves the second fd open, so the next write follows
-			// this rename into movedSecondPath instead of opening a fresh file at secondPath.
 			fs.renameSync(secondPath, movedSecondPath);
 
 			logger.info('after close');
