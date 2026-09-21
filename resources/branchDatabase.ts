@@ -71,12 +71,11 @@ interface OpenBranch {
 // READY at the same moment and would otherwise each try to open the directory the winner just opened.
 const branchesByPath = new Map<string, Promise<OpenBranch>>();
 
-/** Every attach to one claim key, held for the life of the base store that owns the key.
- *  `getUserSharedBuffer` keeps its entry only while a caller still references the buffer, so
- *  without this the word is re-seeded by whichever caller attaches first after a collection --
- *  losing a READY claim, and taking the layout below from that caller's seed rather than from
- *  here. Scoped to the store so a dropped-and-reopened base gets the new arena every other
- *  thread is attaching to, rather than this thread's view of the old one. */
+/** This thread's view of each claim key. `getUserSharedBuffer` keeps its entry only while a caller
+ *  still references the buffer, so without a view held here the word is re-seeded by whichever
+ *  caller attaches first after a collection -- losing a published claim, and taking its width from
+ *  that caller's seed. Keyed on the base store so a dropped and reopened base attaches to the new
+ *  arena every other thread is on, rather than this thread's view of the old one. */
 const claimStatesByStore = new WeakMap<object, Map<string, BigInt64Array>>();
 
 /**
@@ -85,8 +84,9 @@ const claimStatesByStore = new WeakMap<object, Map<string, BigInt64Array>>();
  * from UNCLAIMED. A durable or cross-process claim would read READY on restart and silently skip
  * recovery.
  *
- * The two words are `CLAIM_STATE` and `CLAIM_PROGRESS`, and this is the only place that says so:
- * a second seed of a different width elsewhere would decide the layout whenever it attached first.
+ * Its two words are `CLAIM_STATE` and `CLAIM_PROGRESS`. Nowhere else may seed the key: a narrower
+ * seed that attached first would decide the width, and `claimDeadlineFor` would then read
+ * `CLAIM_PROGRESS` out of range.
  */
 export function claimStateFor(baseName: string, branchPath: string): BigInt64Array {
 	const baseStore = database({ database: baseName, table: undefined });
@@ -99,6 +99,10 @@ export function claimStateFor(baseName: string, branchPath: string): BigInt64Arr
 		states.set(branchPath, state);
 	}
 	return state;
+}
+
+function forgetClaimState(baseName: string, branchPath: string): void {
+	claimStatesByStore.get(database({ database: baseName, table: undefined }))?.delete(branchPath);
 }
 
 export function reportClaimProgress(state: BigInt64Array): void {
@@ -560,6 +564,10 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 		// `openBranchDatabase` takes the identity over for the life of the handle; anything short of
 		// that has to hand it back, or the application can never load again in this process.
 		if (!handedOver) {
+			// A load that gave up drops its view of anything but a published claim, so a CREATING word
+			// left behind by a thread killed before its catch ran can still be collected and re-seeded.
+			// Holding it would make every later load of this application wait out the deadline again.
+			if (Atomics.load(claimState, CLAIM_STATE) !== READY) forgetClaimState(baseName, branchPath);
 			if (blobRootsStranded) quarantineBranchIdentity(storeName);
 			else releaseBranchIdentity(storeName);
 		}
@@ -672,9 +680,12 @@ async function destroyBranchStorage(branchPath: string, opened: OpenBranch | nul
 			}
 		}
 		// only while the base exists: `claimStateFor` goes through `database()`, which recreates a dropped one
-		if (!opened && databases[basename(branchPath)]) {
+		if (databases[basename(branchPath)]) {
 			try {
-				releaseClaim(claimStateFor(basename(branchPath), branchPath));
+				if (!opened) releaseClaim(claimStateFor(basename(branchPath), branchPath));
+				// The branch this key named is gone, so nothing is left to lose by letting the word be
+				// collected; a recreate seeds the UNCLAIMED the release just wrote anyway.
+				forgetClaimState(basename(branchPath), branchPath);
 			} catch (error) {
 				logger.warn?.(`Could not release the branch claim for ${branchPath}`, error);
 			}

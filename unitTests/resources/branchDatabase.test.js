@@ -1872,6 +1872,7 @@ describeUnlessLmdb('the claim word outlives a collection (harper#644)', () => {
 	});
 
 	it('keeps one two-word buffer per key, whatever attaches after a collection', async function () {
+		if (typeof global.gc !== 'function') this.skip();
 		const branchPath = resolveBranchPath('claimbase', 'claimApp');
 		const store = database({ database: 'claimbase', table: undefined });
 		Atomics.store(claimStateFor('claimbase', branchPath), 1, 42n);
@@ -1945,8 +1946,8 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 	it('closes its own handle, then removes the branch, its blob roots and its claim', async function () {
 		this.timeout(30000);
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
-		// One view for the whole test: a fresh attach per assertion would read a re-seeded buffer if the
-		// entry were collected in between, and pass without the claim ever having been released.
+		// Held for the whole test: an attach per assertion could read a re-seeded buffer, and pass
+		// without the claim ever having been released.
 		const claimState = claimStateFor('cyclebase', branchPath);
 		await getOrCreateBranch('cyclebase', 'cycleApp');
 		// Not closed here: the removing thread loaded the application too, and its own handle is the one
