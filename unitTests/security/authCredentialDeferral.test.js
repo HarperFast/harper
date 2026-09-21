@@ -14,7 +14,6 @@ const { ClientError, ServerError } = require('#src/utility/errors/hdbError');
 const serverModule = require('#src/server/Server');
 const resourcesModule = require('#src/resources/Resources');
 const tokenAuthentication = require('#src/security/tokenAuthentication');
-const certificateVerification = require('#src/security/certificateVerification/index');
 const { databases } = require('#src/resources/databases');
 const { authentication } = require('#src/security/auth');
 
@@ -490,9 +489,7 @@ describe('#2703 principal resolution failures become decisions, not thrown error
 	const CERT_CN = 'svc.example.com';
 
 	const sessionTable = databases.system.hdb_session;
-	let originalSessionGet;
 	let originalGetUser;
-	let originalVerifyCertificate;
 	let originalValidateOperationToken;
 
 	let trace;
@@ -556,26 +553,22 @@ describe('#2703 principal resolution failures become decisions, not thrown error
 		return { request, response, thrown, body: response?.body ? JSON.parse(response.body) : undefined };
 	}
 
-	before(() => {
-		originalSessionGet = sessionTable.get;
+	before(async () => {
 		originalGetUser = serverModule.server.getUser;
-		originalVerifyCertificate = certificateVerification.verifyCertificate;
 		originalValidateOperationToken = tokenAuthentication.validateOperationToken;
 
-		sessionTable.get = async (id) => (id === SESSION_ID ? { id, user: SESSION_USER } : undefined);
+		await sessionTable.put({ id: SESSION_ID, user: SESSION_USER });
 		serverModule.server.getUser = async (username) => {
 			getUserCalls.push(username);
 			const outcome = getUserOutcomes.get(username);
 			if (outcome) throw outcome;
 			return { username, role: { permission: {} } };
 		};
-		certificateVerification.verifyCertificate = async () => ({ valid: true });
 	});
 
-	after(() => {
-		sessionTable.get = originalSessionGet;
+	after(async () => {
+		await sessionTable.delete(SESSION_ID);
 		serverModule.server.getUser = originalGetUser;
-		certificateVerification.verifyCertificate = originalVerifyCertificate;
 		tokenAuthentication.validateOperationToken = originalValidateOperationToken;
 	});
 

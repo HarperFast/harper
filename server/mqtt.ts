@@ -21,6 +21,7 @@ import { verifyCertificate } from '../security/certificateVerification/index.ts'
 import { registerShutdownDrain } from '../components/shutdownDrain.ts';
 import {
 	assertNoDeferredCredentialRejection,
+	getAuthenticationRejectedInPlace,
 	getDeferredCredentialRejection,
 } from '../security/deferredAuthentication.ts';
 
@@ -86,10 +87,10 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				});
 				authenticated.catch((error) => {
 					mqttLog.info?.('Closing MQTT WebSocket connection, authentication was rejected', error);
-					ws.close(
-						WEBSOCKET_UNAUTHORIZED_CLOSE_CODE,
-						getDeferredCredentialRejection(request)?.message ?? 'Unauthorized'
-					);
+					// read the records rather than the error: both hold a client-safe message, while an
+					// arbitrary chain rejection landing here would not
+					const rejection = getDeferredCredentialRejection(request) ?? getAuthenticationRejectedInPlace(request);
+					ws.close(WEBSOCKET_UNAUTHORIZED_CLOSE_CODE, rejection?.message ?? 'Unauthorized');
 				});
 				const { onMessage, onClose } = onSocket(
 					ws,
