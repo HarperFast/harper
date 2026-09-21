@@ -5,7 +5,11 @@ testUtils.preTestPrep();
 
 const { makeCallbackChain } = require('#src/server/middlewareChain');
 const { Headers } = require('#src/server/serverHelpers/Headers');
-const { credentialRejectionError, settleDeferredCredentialRejection } = require('#src/security/deferredAuthentication');
+const {
+	credentialRejectionError,
+	settleDeferredCredentialRejection,
+	assertNoDeferredCredentialRejection,
+} = require('#src/security/deferredAuthentication');
 const { ClientError, ServerError } = require('#src/utility/errors/hdbError');
 const serverModule = require('#src/server/Server');
 const resourcesModule = require('#src/resources/Resources');
@@ -718,6 +722,35 @@ describe('#2703 principal resolution failures become decisions, not thrown error
 
 			assert.ok(request.user, 'a certificate that names no user must not block Basic');
 			assert.ok(!getUserCalls.includes(CERT_CN), 'the certificate CN must not be resolved as a user');
+		});
+	});
+
+	// A WebSocket/MQTT upgrade only awaits the chain (server/REST.ts, server/mqtt.ts) and never reads
+	// its resolved value, so an in-place 401 is invisible to it unless it is recorded on the request.
+	describe('an in-place rejection still fails an upgrade closed', () => {
+		it('throws for an internal fault resolving a cookie session, with the generic message', async () => {
+			getUserOutcomes.set(SESSION_USER, new ServerError('user store unavailable'));
+
+			const { request } = await send(APP_OWNED, { cookie: SESSION_COOKIE });
+
+			assert.throws(
+				() => assertNoDeferredCredentialRejection(request),
+				(error) => error.statusCode === 401 && error.message === 'Login failed'
+			);
+		});
+
+		it('throws for an internal fault resolving a certificate identity', async () => {
+			getUserOutcomes.set(CERT_CN, new ServerError('user store unavailable'));
+
+			const { request } = await send(APP_OWNED, { mtls: true });
+
+			assert.throws(() => assertNoDeferredCredentialRejection(request), /Login failed/);
+		});
+
+		it('leaves a successfully authenticated upgrade alone', async () => {
+			const { request } = await send(APP_OWNED, { cookie: SESSION_COOKIE });
+
+			assert.doesNotThrow(() => assertNoDeferredCredentialRejection(request));
 		});
 	});
 

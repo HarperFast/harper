@@ -18,6 +18,7 @@ import {
 	deferCredentialRejection,
 	getDeferredCredentialRejection,
 	isCredentialRejection,
+	markAuthenticationRejectedInPlace,
 } from './deferredAuthentication.ts';
 import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
 import { hdbErrors } from '../utility/errors/hdbError.ts';
@@ -70,26 +71,17 @@ export function bypassAuth() {
 }
 
 /**
- * Turns a failed principal resolution into a decision, so it never escapes the middleware chain as
- * a thrown error (#2703). Every path in `authentication()` that resolves a principal routes its
- * failure through here.
- *
- * An internal fault, or any failure on the operations API where Harper owns every route, is decided
- * in place: the caller returns the descriptor through `applyResponseHeaders`. A rejected credential
- * on the app port is deferred instead and `undefined` returned, leaving the request undecided for
- * the layer that owns the route to settle.
+ * Turns a failed principal resolution into a decision, so it never escapes the chain as a throw.
+ * Returns a response descriptor for the caller to pass through `applyResponseHeaders`, or
+ * `undefined` once the rejection has been deferred for the route owner to settle (#2703).
  */
 function settleAuthFailure(request, error, strategy: string): { status: number; body: any } | undefined {
 	const internalFault = !isCredentialRejection(error);
 	if (request.isOperationsServer || internalFault) {
 		if (internalFault) authLogger.error('Authentication failed internally', errorForLog(error));
-		return {
-			status: 401,
-			body: serializeMessage(
-				{ error: internalFault ? AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL : error.message },
-				request
-			),
-		};
+		const message = internalFault ? AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL : error.message;
+		markAuthenticationRejectedInPlace(request, 401, message);
+		return { status: 401, body: serializeMessage({ error: message }, request) };
 	}
 	deferCredentialRejection(request, error, strategy);
 	return undefined;
@@ -214,6 +206,7 @@ export async function authentication(request, nextHandler) {
 				try {
 					mtlsUser = await server.getUser(username, null, request);
 				} catch (error) {
+					if (LOG_AUTH_FAILED) authAuditLog(username, AUTH_AUDIT_STATUS.FAILURE, 'mTLS');
 					const failureResponse = settleAuthFailure(request, error, 'mTLS');
 					if (failureResponse) return applyResponseHeaders(failureResponse);
 					mtlsCredentialDeferred = true;
@@ -231,9 +224,8 @@ export async function authentication(request, nextHandler) {
 		if (request.user) {
 			// already authenticated
 		} else if (mtlsCredentialDeferred) {
-			// the certificate named a user Harper rejected; that is this request's credential decision,
-			// so it must not fall through to Basic/Bearer, the cookie session, or the local bypass —
-			// a principal resolved here would be contradicted by the deferred rejection downstream
+			// a principal resolved from another credential here would be contradicted by the deferred
+			// certificate rejection downstream, so the certificate's decision stands alone
 		} else if (authorization) {
 			let cachedUser = authorizationCache.get(authorization);
 			// A cached Bearer identity must not outlive its token: expiry is the only revocation
@@ -333,6 +325,7 @@ export async function authentication(request, nextHandler) {
 				// or should this be cached in the session?
 				request.user = await server.getUser(session.user, null, request);
 			} catch (error) {
+				if (LOG_AUTH_FAILED) authAuditLog(session.user, AUTH_AUDIT_STATUS.FAILURE, 'Session');
 				const failureResponse = settleAuthFailure(request, error, 'Session');
 				if (failureResponse) return applyResponseHeaders(failureResponse);
 			}

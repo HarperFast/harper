@@ -189,8 +189,6 @@ suite(
 			equal(response.status, 401);
 		});
 
-		// #2703 — the cookie-session branch of authentication, through a component's own
-		// `server.getUser` override tagging its rejection with the public `credentialRejectionError`.
 		async function mintSessionCookie(user: string) {
 			const response = await fetch(`${restURL}/mint-session?user=${encodeURIComponent(user)}`);
 			equal(response.status, 200, `expected the fixture to mint a session: ${await response.text()}`);

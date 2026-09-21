@@ -16,9 +16,8 @@ export {
 	type ReplicatedApplyFailureListener,
 } from './resources/replicatedApplyFailure.ts';
 export { getContext, getResponse, getUser } from './security/jsLoader.ts';
-// Lets a `server.getUser` override declare that it rejected a credential rather than hitting an
-// internal fault, so authentication defers the request to its route owner instead of deciding it
-// in place with a generic 401 (#2703).
+// An untagged error from a `server.getUser` override is treated as an internal fault; these tag one
+// as a rejected credential, which authentication defers to the route owner instead (#2703).
 export { markCredentialRejection, credentialRejectionError } from './security/credentialRejection.ts';
 // Code-first schema authoring: declare a table as a TypeScript value; the returned
 // handle is the live, registered table class with per-verb shapes inferred from the definition.

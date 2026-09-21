@@ -65,7 +65,29 @@ export function settleDeferredCredentialRejection(
 	};
 }
 
+const REJECTED_IN_PLACE = Symbol('harper.authenticationRejectedInPlace');
+
+/**
+ * Records an authentication decision the middleware answered in place, with the client-safe message
+ * the HTTP response carries. A WebSocket or MQTT upgrade only awaits the chain and never reads its
+ * resolved value, so a returned 401 is invisible to it; without this record such an upgrade would
+ * continue with no principal on a fault that failed the equivalent HTTP request closed.
+ */
+export function markAuthenticationRejectedInPlace(request: any, status: number, message: string): void {
+	if (request?.[REJECTED_IN_PLACE]) return;
+	Object.defineProperty(request, REJECTED_IN_PLACE, {
+		value: Object.freeze({ status, message }),
+		enumerable: false,
+		configurable: false,
+		writable: false,
+	});
+}
+
+export function getAuthenticationRejectedInPlace(request: any): { status: number; message: string } | undefined {
+	return request?.[REJECTED_IN_PLACE];
+}
+
 export function assertNoDeferredCredentialRejection(request: any): void {
-	const deferred = getDeferredCredentialRejection(request);
-	if (deferred) throw new ClientError(deferred.message, deferred.status);
+	const rejected = getDeferredCredentialRejection(request) ?? getAuthenticationRejectedInPlace(request);
+	if (rejected) throw new ClientError(rejected.message, rejected.status);
 }
