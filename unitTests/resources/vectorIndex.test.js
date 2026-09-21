@@ -90,10 +90,9 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		verifyIntegrity();
 	});
 	// Inversions are a property of graph shape, and shape comes from level assignment —
-	// `Math.random()` in production — so the bound holds in distribution, not per run: CI drew 7
-	// against the cap of 6. Pinning the level stream, as the ROUTING_EF block below does, makes it
-	// a fact about named graphs, while the tests above keep checking symmetry and orphans, which
-	// must hold at any shape.
+	// `Math.random()` in production — so a bound on them holds in distribution, not per run.
+	// Pinning the level stream, as the ROUTING_EF block below does, makes it a fact about named
+	// graphs; the tests above keep checking symmetry and orphans, which must hold at any shape.
 	it('keeps cross-level distance inversions bounded on graphs with a pinned level assignment', async function () {
 		this.timeout(30000);
 		for (const seed of [0x9e3779b9, 0x85ebca6b, 0xc2b2ae35]) {
@@ -119,16 +118,23 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 			for (let i = 0; i < 200; i++) await pinned.put(i, { vector: vectorFor(i) });
 			// A seed names a graph only while each node takes exactly one draw.
 			assert.strictEqual(draws, 200, `seed ${name} no longer names the graph it was measured on`);
+			let inversions = verifyIntegrity(pinned.indices.vector);
 			assert(
-				verifyIntegrity(pinned.indices.vector) <= 3,
-				`expected at most 3 distance inversions for seed ${name} after inserts`
+				inversions <= 3,
+				`expected at most 3 distance inversions for seed ${name} after inserts, got ${inversions}`
 			);
 
+			// Re-puts of both a removed key (a fresh insert) and a surviving one (the update path,
+			// which carries the old level forward and rewrites reverse edges).
 			for (let i = 0; i < 200; i += 4) await pinned.delete(i);
 			for (let i = 0; i < 200; i += 8) await pinned.put(i, { vector: vectorFor(i * i + 1) });
+			for (let i = 2; i < 200; i += 8) await pinned.put(i, { vector: vectorFor(i * i + 1) });
+			// A surviving node's re-put carries its old level forward, so only the 25 re-inserts draw.
+			assert.strictEqual(draws, 225, `the mutation phase for seed ${name} no longer draws as measured`);
+			inversions = verifyIntegrity(pinned.indices.vector);
 			assert(
-				verifyIntegrity(pinned.indices.vector) <= 3,
-				`expected at most 3 distance inversions for seed ${name} after deletes and re-puts`
+				inversions <= 3,
+				`expected at most 3 distance inversions for seed ${name} after deletes and re-puts, got ${inversions}`
 			);
 		}
 	});
@@ -366,7 +372,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		for (let i = 0; i < i8.length; i++) out[i] = i8[i] * scale;
 		return out;
 	}
-	/** Returns the count of cross-level distance inversions; only pinned graphs assert a bound. */
+	/** Asserts the shape-independent graph properties and returns the cross-level inversion count. */
 	function verifyIntegrity(indexed = HNSWTest.indices.vector) {
 		// now verify integrity and proper distance/distancing across levels
 		let invertedSimiliarities = 0;
