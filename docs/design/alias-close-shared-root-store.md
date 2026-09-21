@@ -8,6 +8,9 @@ exit 139 (SIGSEGV) in the "Unit tests: lmdb" step, inside the
 [35648838471](https://github.com/HarperFast/harper/actions/runs/35648838471) (after test 2, both
 legs). Node.js v24 was green both times.
 
+Revision 2 — planning round 1 returned `better-alternative-exists`; what was adopted is recorded in
+[Planning round 1](#planning-round-1-resolution).
+
 ## The invariant this change enforces
 
 > **A physical root store's native handles are released by the last database name that references
@@ -61,38 +64,86 @@ RocksDB, where it reaches the same shared-root bookkeeping.
 
 ## Approaches considered
 
-| Axis                | Candidate                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Disposition                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Different layer** | Make lmdb-js safe against it: have `DbiWrap::close` skip `mdb_dbi_close` once its environment is closed.                                                                                                                                                                                                                                                                                                                                                                                    | Rejected. `DbiWrap` holds a raw `MDB_env*` with no liveness signal after `mdb_env_close` (`env.cpp:766`), so this needs a new native env-to-dbi registry plus an lmdb-js release, and it only removes the crash: harper would still close a store another name is reading from (the RocksDB probe above shows the same broken state without any native fault). Harper creates the sharing (`lmdbDatabaseEnvs`), so harper owns the invariant. |
-| **Deeper cause**    | Stop sharing: open one environment per database name instead of caching per path.                                                                                                                                                                                                                                                                                                                                                                                                           | Rejected. LMDB forbids opening the same file twice in one process (`mdb_env_open` caveats; lmdb-js's `envTracking` exists to hand every opener of a path one `MDB_env`), and #2683's blob-path stability depends on the names sharing one root store identity.                                                                                                                                                                                |
-| **Do less**         | Change the test: close only one alias, or skip the suite under LMDB.                                                                                                                                                                                                                                                                                                                                                                                                                        | Rejected. The two-name close is reachable in production through the `restore_backup` ITC handler on every worker of any deployment with a configured alias, so the test is exercising a shipped path, not a harness artifact.                                                                                                                                                                                                                 |
-| **Chosen**          | `closeDatabase` checks whether each of the name's root stores is still referenced by another loaded name (any other `databases` entry's table, or another `definedDatabases` entry). If so it drops only the name's registration. Per-name RocksDB column-family handles still close with the name (each open is its own refcount); LMDB table handles are environment-wide (`mdb_dbi_close` invalidates the slot for every wrapper), so they close with the environment, at the last name. | The only option that keeps the surviving name serving reads on both engines, keeps RocksDB refcounts balanced (a name's opens are matched by that name's closes), and needs no dependency change. `mdb_dbi_close` is optional by LMDB's contract, so leaving the first name's LMDB handles to the environment close is not a leak.                                                                                                            |
+| Axis                | Candidate                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Disposition                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Different layer** | Make lmdb-js safe against it: have `DbiWrap::close` skip `mdb_dbi_close` once its environment is closed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Rejected. `DbiWrap` holds a raw `MDB_env*` with no liveness signal after `mdb_env_close` (`env.cpp:766`), so this needs a new native env-to-dbi registry plus an lmdb-js release, and it only removes the crash: harper would still close a store another name is reading from (the RocksDB probe above shows the same broken state without any native fault). Harper creates the sharing (`lmdbDatabaseEnvs`), so harper owns the invariant. |
+| **Deeper cause**    | Stop sharing: open one environment per database name instead of caching per path.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Rejected. LMDB forbids opening the same file twice in one process (`mdb_env_open` caveats; lmdb-js's `envTracking` exists to hand every opener of a path one `MDB_env`), and #2683's blob-path stability depends on the names sharing one root store identity.                                                                                                                                                                                |
+| **Do less**         | Change the test: close only one alias, or skip the suite under LMDB.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Rejected. The two-name close is reachable in production through the `restore_backup` ITC handler on every worker of any deployment with a configured alias, so the test is exercising a shipped path, not a harness artifact.                                                                                                                                                                                                                 |
+| **Chosen**          | Two operations with different lifetimes. `closeDatabase(name)` is the logical release: it retires the name's table runtimes (`Table.cleanup()`), closes the RocksDB column-family handles the name opened (each open is its own refcount), drops the name's registration, and tears the root store down only when no other loaded name references it. LMDB table handles are never closed individually: `mdb_dbi_close` invalidates the environment-wide slot for every wrapper of it and is optional by LMDB's contract, so the environment close at the last name releases them. `closeDatabaseWithAliases(name)` is the physical close — every loaded name sharing a root store with `name` — and is what the `restore_backup` ITC handler now calls. | The only option that keeps the surviving name serving reads on both engines, keeps RocksDB refcounts balanced, leaves restore able to reach a physically closed store under any alias, and needs no dependency change.                                                                                                                                                                                                                        |
 
 ## Change
 
-`resources/databases.ts` — `closeDatabase`:
+`resources/databases.ts`:
 
-- Collect the name's root stores as today; for each, decide `shared` by scanning the other loaded
-  names' tables and the other defined-database entries for the same root store object.
-- Not shared: unchanged — stop audit cleanup, close table and index handles, close `dbisDb` and the
-  root store, unregister storage reclamation, drop the env-cache entry.
-- Shared: skip every root-store step; close the name's table and index handles only when the root
-  store is RocksDB; always drop the name from `databases` and clear its defined-database `rootStore`.
+- `closeDatabase(name)` — logical release, as described in _Chosen_. Root-store teardown (audit
+  cleanup stop, storage-reclamation unregistration, `dbisDb` and root close, env-cache entry) runs
+  only when no other loaded name references the root store. `closeStore` also attaches a rejection
+  handler to a promise-returning close (lmdb-js's), which the synchronous try/catch never saw.
+- `closeDatabaseWithAliases(name)` — physical close: closes every other loaded name sharing a root
+  store with `name`, then `name` itself, so the last close releases the native handles.
+- `collectRootStores(name)` / `isRootStoreReferencedElsewhere` — the per-name root-store set (tables
+  plus the defined-database entry for a tableless name), compared by object identity, never by path.
 
-`unitTests/resources/databaseAliasIdentity.test.js` — one new test, runs under both engines:
-load two names of one store, close the first, assert the shared root store is still `open` and the
-second name still reads a record written through the first, close the second, assert the root store
-is `closed`. On base the first assertion fails on both engines (the root's status flips on the first
-close), so the mechanism proof does not depend on allocator luck; the perturbed run above is the
-crash-level check.
+`server/itc/serverHandlers.js`: the `restore_backup` ITC handler calls `closeDatabaseWithAliases`
+so a restore of an aliased database reaches `verifyDatabaseClosed` with the store actually closed.
+
+`unitTests/resources/databaseAliasIdentity.test.js`, both engines unless noted:
+
+- Close either alias first: the removed name's `Table.cleanup()` ran once, the shared root store is
+  still `open`, the surviving name reads a record written through the other, and the last close
+  leaves the root `closed` with no `refCount > 0` entry in rocksdb-js's registry (RocksDB).
+- `closeDatabaseWithAliases` on one name removes both and closes the store.
+- `closeLoadedDatabases` (RocksDB only, as it is by design) with two names releases the store.
+- A child process (`databaseAliasIdentity-close.js`) closes two names in either order under
+  `MALLOC_PERTURB_=165` and must exit 0: on base it dies with `free(): invalid pointer`, so the
+  crash-level check is deterministic on glibc rather than allocator luck (other allocators ignore the
+  variable, so the test still passes there).
 
 ## Verification route
 
-- Fails-on-base: the new test against the base `dist`, and the `MALLOC_PERTURB_` run above on base
-  (aborts) versus the fix (passes).
+- Fails-on-base: with `origin/main`'s `databases.ts` and `serverHandlers.js` built into `dist`, the
+  two close-order tests and the physical-close test fail on both engines (cleanup count 0, root
+  `closed`/`closing` after the first close), and the child-process test fails under LMDB with
+  `free(): invalid pointer`; all pass with the fix.
 - Unit gates: `test:unit:resources` under RocksDB and under `HARPER_STORAGE_ENGINE=lmdb`, plus
   `test:unit:main`, on Node 26 (the CI leg that failed).
 - End to end: not observable end-to-end in the integration suite — the production trigger is the
   `restore_backup` ITC broadcast on a deployment with a configured alias, which no integration
-  fixture configures. The unit test drives `closeDatabase` itself, which is the whole path that
-  handler takes.
+  fixture configures. The unit test drives `closeDatabaseWithAliases` and checks the same registry
+  predicate `verifyDatabaseClosed` polls (`dataLayer/rocksdbBackup.ts:628`); an integration fixture
+  for aliased online restore is recorded as a follow-up.
+
+## Planning round 1 resolution
+
+Verdict: `better-alternative-exists`. The reviewer's design separated a logical name release from a
+physical store close, retired each removed name's table runtime, and dropped explicit LMDB child
+handle closes.
+
+**Adopted**
+
+- **Physical close for restore.** The first draft left the `restore_backup` ITC handler on
+  `closeDatabase(name)`, which under the new semantics would leave the store open under its other
+  names, and `verifyDatabaseClosed` would 409 (`dataLayer/rocksdbBackup.ts:624-640`). Base has the
+  same outcome today by a different route (the other name's column-family handles were never
+  closed), so this is a fix, not a regression avoided. `closeDatabaseWithAliases` added and used
+  there.
+- **`Table.cleanup()` on logical release.** Base never retired a closed name's timers, delete
+  callbacks, reclamation handler, or derived-index runtime (`resources/Table.ts:7044-7052`); they
+  merely observed a closed root. With the root staying open for the other name they would keep
+  running against it, so the release now calls `cleanup()` per table.
+- **No individual LMDB handle closes.** The first draft kept `mdb_dbi_close` on the last-name path.
+  It is optional, environment-wide, and unsafe while any other wrapper of the slot can still be
+  referenced, so LMDB handles now close only with the environment.
+- **Async close rejections.** lmdb-js's `close()` returns a promise; `closeStore` now attaches a
+  rejection handler instead of catching only synchronous throws.
+- **Tests.** Either close order, the physical close, worker-exit teardown, the registry predicate,
+  and a perturbed child process, per the _Change_ section.
+
+**Not adopted**
+
+- **End-to-end aliased `restore_backup` integration test.** Real work outside this fix's scope
+  (an integration fixture with a configured alias); recorded as a follow-up finding. The unit test
+  checks the same registry predicate restore polls.
+- **Tableless-alias test.** Two configured names at a path with no tables are two `.mdb` files under
+  LMDB (`resources/databases.ts:1945`), not one shared store, so the case is not constructible
+  there; the `definedDatabases` branch is covered by code reading, not a test.

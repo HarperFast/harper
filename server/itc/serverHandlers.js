@@ -15,7 +15,7 @@ const { isMainThread, threadId, workerData } = require('node:worker_threads');
 const {
 	databases,
 	resetDatabases,
-	closeDatabase,
+	closeDatabaseWithAliases,
 	reloadBranchAt,
 	markDropInProgress,
 } = require('../../resources/databases.ts');
@@ -52,11 +52,12 @@ async function schemaHandler(event) {
 	}
 
 	hdbLogger.trace(`ITC schemaHandler received schema event:`, event);
-	// restore_backup: this thread must release its store handles so the restore can purge and
-	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
-	// the restoring marker is present, and reloads it on the completion signal (marker gone).
+	// restore_backup: this thread must release its store handles — under every name that resolves
+	// to the database's path — so the restore can purge and rewrite the directory. The rescan below
+	// (resetDatabases) skips reloading it while the restoring marker is present, and reloads it on
+	// the completion signal (marker gone).
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {
-		closeDatabase(event.message.schema);
+		closeDatabaseWithAliases(event.message.schema);
 	}
 	await cleanLmdbMap(event.message);
 	await syncSchemaMetadata(event.message);

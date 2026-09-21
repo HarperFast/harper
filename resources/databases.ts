@@ -2211,49 +2211,58 @@ export async function dropDatabase(databaseName) {
 }
 
 /**
- * Close a RocksDB database's store handles on the current thread and unregister it, without
- * touching its files. Used by the restore_backup flow: every thread must release its handles so
- * `backups.restore()` can purge and rewrite the (fully closed) database directory. A subsequent
- * `resetDatabases()`/`getDatabases()` rescan reloads it (or skips it while a restore is in
- * progress, per the restore marker checks in the scan).
+ * Unregister one database name on the current thread and release what that name holds, without
+ * touching any files: its tables' process-wide registrations (timers, reclamation and delete
+ * callbacks, derived-index runtime) and, for RocksDB, the column-family handles it opened. The root
+ * store's native handles close with the last name that references it — another name resolving to
+ * the same path keeps the store open — so a caller that needs the store physically closed uses
+ * `closeDatabaseWithAliases`. A subsequent `resetDatabases()`/`getDatabases()` rescan reloads the
+ * name (or skips it while a restore is in progress, per the restore marker checks in the scan).
  */
 export function closeDatabase(databaseName: string): boolean {
 	const dbTables = databases[databaseName];
 	if (!dbTables) return false;
-	const rootStores = new Set<any>();
 	const closeStore = (store: any, description: string) => {
-		try {
-			store?.close?.();
-		} catch (error) {
+		const warn = (error: unknown) =>
 			logger.warn(`Error closing ${description} while closing database ${databaseName}:`, error);
+		try {
+			const closing = store?.close?.();
+			if (typeof closing?.catch === 'function') closing.catch(warn);
+		} catch (error) {
+			warn(error);
 		}
 	};
-	for (const tableName in dbTables) {
-		const table: any = dbTables[tableName];
-		if (!table?.primaryStore) continue;
-		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
+	const rootStores = collectRootStores(databaseName);
+	// a root store another loaded name still references (an alias of the same path) closes with its
+	// last name; this name releases only what it holds itself
+	const sharedRootStores = new Set<any>();
+	for (const rootStore of rootStores) {
+		if (isRootStoreReferencedElsewhere(rootStore, databaseName)) sharedRootStores.add(rootStore);
 	}
-	// a database with no tables (an empty schema, or one whose tables were all dropped) still holds
-	// an open root store, tracked only on the defined-database entry rather than any table — include
-	// it so its handles are released too (the Set dedupes it against the per-table root stores above)
-	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
-	if (definedRoot) rootStores.add(definedRoot);
 	// before any table store closes, so no further pass is admitted. This is synchronous, so it cannot
 	// await the drain barrier stopAuditCleanup() returns; what covers it is the in-pass status checks,
 	// plus the fact that its production callers reach it only for RocksDB databases, whose pass is one
 	// synchronous purgeLogs() call with nothing suspended mid-removal.
-	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
+	for (const rootStore of rootStores) {
+		if (!sharedRootStores.has(rootStore)) (rootStore as any).auditStore?.stopAuditCleanup?.();
+	}
 	for (const tableName in dbTables) {
 		const table: any = dbTables[tableName];
 		if (!table?.primaryStore) continue;
+		table.cleanup?.();
+		// a RocksDB column family handle is refcounted per open, so each name closes the ones it opened;
+		// an LMDB table handle is a slot of the environment (mdb_dbi_close invalidates it for every
+		// wrapper of it), so LMDB handles are released only by the environment close below
+		if (!(table.primaryStore.rootStore instanceof RocksDatabase)) continue;
 		for (const indexName in table.indices || {}) {
 			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
 		}
 		closeStore(table.primaryStore, `table ${tableName}`);
 	}
 	for (const rootStore of rootStores) {
+		if (sharedRootStores.has(rootStore)) continue;
 		removeStorageReclamation(rootStore.path);
-		closeStore(rootStore.dbisDb, 'attributes store');
+		if (rootStore instanceof RocksDatabase) closeStore(rootStore.dbisDb, 'attributes store');
 		closeStore(rootStore, 'root store');
 		lmdbDatabaseEnvs.delete(rootStore.path);
 		rocksdbDatabaseEnvs.delete(rootStore.path);
@@ -2268,6 +2277,46 @@ export function closeDatabase(databaseName: string): boolean {
 	}
 	delete databases[databaseName];
 	return true;
+}
+
+/**
+ * Close every loaded name that shares a root store with `databaseName`, `databaseName` included, so
+ * the store's native handles are actually released — what a restore needs before it replaces the
+ * files, where `closeDatabase` alone would leave the store open under its other names.
+ */
+export function closeDatabaseWithAliases(databaseName: string): boolean {
+	if (!databases[databaseName]) return false;
+	const rootStores = collectRootStores(databaseName);
+	for (const otherName of Object.keys(databases)) {
+		if (otherName === databaseName) continue;
+		for (const rootStore of collectRootStores(otherName)) {
+			if (rootStores.has(rootStore)) {
+				closeDatabase(otherName);
+				break;
+			}
+		}
+	}
+	return closeDatabase(databaseName);
+}
+
+function collectRootStores(databaseName: string): Set<RootDatabaseKind> {
+	const rootStores = new Set<RootDatabaseKind>();
+	for (const tableName in databases[databaseName]) {
+		const rootStore = (databases[databaseName][tableName] as any)?.primaryStore?.rootStore;
+		if (rootStore) rootStores.add(rootStore);
+	}
+	// a database with no tables (an empty schema, or one whose tables were all dropped) still holds
+	// an open root store, tracked only on the defined-database entry rather than any table
+	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
+	if (definedRoot) rootStores.add(definedRoot);
+	return rootStores;
+}
+
+function isRootStoreReferencedElsewhere(rootStore: RootDatabaseKind, databaseName: string): boolean {
+	for (const otherName in databases) {
+		if (otherName !== databaseName && collectRootStores(otherName).has(rootStore)) return true;
+	}
+	return false;
 }
 
 /**
