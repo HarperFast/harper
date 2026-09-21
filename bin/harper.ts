@@ -1,13 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 
-// Before any other import: libuv sizes its thread pool once, on first use, and the logger imported
-// below can touch the filesystem at require time. That pool is process-global — every worker thread
-// shares it — so it bounds how many native async tasks (HNSW searches, async fs, dns) can run at
-// once for the whole process, and its default of 4 does so regardless of threads.count. Size it to
-// the machine; a value already in the environment wins.
-import { availableParallelism } from 'node:os';
-process.env.UV_THREADPOOL_SIZE ??= String(Math.min(1024, Math.max(4, availableParallelism())));
+// Must stay the first import: it sizes libuv's thread pool, and the logger imported below can touch
+// the filesystem — initializing that pool at its default of 4 — before this module's own body runs.
+import './uvThreadPool.ts';
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
