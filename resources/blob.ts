@@ -1786,7 +1786,12 @@ function blobSaveDatabaseName(store: any): string | undefined {
 function assertBlobSaveAllowed(store: any): void {
 	const databaseName = blobSaveDatabaseName(store);
 	if (databaseName && blockedBlobSaveDatabases.has(databaseName)) {
-		throw new Error(`Cannot save a blob for database '${databaseName}' while it is being restored`);
+		// 503, not a bare Error: the block is lifted by the restore's `reload` phase, so this is a
+		// retry-after condition rather than a fault in the request.
+		throw new BlobReadError(
+			`Cannot save a blob for database '${databaseName}' while it is being restored`,
+			BLOB_UNAVAILABLE_STATUS
+		);
 	}
 }
 
