@@ -12,7 +12,7 @@ const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default
 const { getDatabases } = require('#src/resources/databases');
 const { handleHDBError } = require('#src/utility/errors/hdbError');
 const { PRIVATEKEY_PEM_NAME } = require('#src/utility/terms/certificates');
-const { materializePerPidRoot, removePerPidRoot } = require('./perPidRoot.js');
+const { materializePerPidRoot } = require('./perPidRoot.js');
 
 let envMgrInitSyncStub;
 
@@ -83,12 +83,6 @@ function preTestPrep(testConfigObj) {
 	// effect on the process's exit status.
 	process.prependListener('exit', (code) => {
 		if (code === 0) {
-			// Clean up explicitly rather than relying solely on the preload's own 'exit'
-			// listener: this one is prepended, so it runs first, and assigning exitCode
-			// (instead of calling process.exit(), per the comment above) lets the preload's
-			// listener still run too — this just guarantees the ~98 suites that call
-			// preTestPrep don't depend on load order for it.
-			removePerPidRoot();
 			process.exitCode = unhandledRejectionExitCode;
 		}
 	});
