@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789975880760,
+  "lastUpdate": 1789982248311,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -18927,6 +18927,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 277848,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "renovate[bot]",
+            "username": "renovate[bot]",
+            "email": "29139614+renovate[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "e633238113a95b8a8a6b0966a835a9f69b89a68f",
+          "message": "fix(deps): update dependency alasql to v4.19.1 (#2698)\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-09-21T06:11:27Z",
+          "url": "https://github.com/HarperFast/harper/commit/e633238113a95b8a8a6b0966a835a9f69b89a68f"
+        },
+        "date": 1789982245363,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 17638,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 16444,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 13992,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 20525632,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 6473,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 2652,
             "unit": "ops"
           }
         ]
