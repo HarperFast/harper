@@ -1017,6 +1017,34 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(source.resetCalls, 0);
 	});
 
+	it('keeps an oversized cursor terminal when its first rollback close fails', async () => {
+		const engine = new FakeEngine();
+		engine.closeError = new Error('writer still active');
+		const source = lifecycle({ state: 'missing' }, [engine]);
+		const { backend, setEpoch } = makeBackend(source, { maxCursorPayloadBytes: 48 });
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		backend.deliver(
+			batch(
+				1n,
+				[],
+				cursorForLogs([
+					['a', 10],
+					['b', 20],
+					['c', 30],
+				])
+			)
+		);
+		backend.flush();
+		await waitFor(() => changes.includes('failed'));
+
+		engine.closeError = undefined;
+		await backend.shutdown(1n);
+		setEpoch(2n);
+		await assert.rejects(backend.reset(2n), /configuration must change/);
+		assert.strictEqual(source.resetCalls, 0);
+	});
+
 	it('reuses a valid checkpoint after the publication limit is lowered', () => {
 		const durable = cursorForLogs([
 			['a', 10],
@@ -1119,6 +1147,17 @@ describe('FullTextDerivedIndexBackend', () => {
 		source.inspection = { state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(20)) };
 		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(20).logs);
 		assert.strictEqual(source.inspectCalls, 2);
+		await backend.shutdown(2n);
+	});
+
+	it('does not invalidate the current cursor cache for a stale epoch shutdown', async () => {
+		const source = lifecycle({ state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(10)) });
+		const { backend, setEpoch } = makeBackend(source);
+		backend.getDurableCursor();
+		setEpoch(2n);
+		await backend.shutdown(1n);
+		backend.getDurableCursor();
+		assert.strictEqual(source.inspectCalls, 1);
 		await backend.shutdown(2n);
 	});
 

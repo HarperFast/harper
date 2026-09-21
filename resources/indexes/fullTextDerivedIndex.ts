@@ -169,7 +169,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#terminalFailure?: FullTextDerivedIndexConfigurationError;
 	#resetOperation?: Promise<void>;
 	#resetEpoch?: bigint;
-	// A failed deliver() result and its delayed state callback report the same backend fault.
 	#failedDeliveryObserved = false;
 
 	constructor(options: FullTextDerivedIndexBackendOptions) {
@@ -252,7 +251,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		let inspection: FullTextDerivedIndexInspection;
 		try {
 			inspection = this.#lifecycle.inspect();
-		} catch {
+		} catch (error) {
+			logNativeError('Full-text derived index state could not be inspected', error);
 			throw new FullTextDerivedIndexError('Full-text derived index state could not be inspected');
 		}
 		if (inspection.state !== 'checkpointed') {
@@ -324,18 +324,25 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	}
 
 	shutdown(ownerEpoch: bigint): Promise<void> {
-		this.#cursorInspectedForAcquisition = false;
-		if (this.#shutdown?.epoch === ownerEpoch) return this.#boundedShutdown(this.#shutdown);
+		if (this.#shutdown?.epoch === ownerEpoch) {
+			this.#cursorInspectedForAcquisition = false;
+			return this.#boundedShutdown(this.#shutdown);
+		}
 		if (this.#resetOperation) {
 			if (this.#resetEpoch !== ownerEpoch)
 				return Promise.reject(new FullTextDerivedIndexError('Full-text reset belongs to another owner epoch'));
+			this.#cursorInspectedForAcquisition = false;
 			return withTimeout(
 				this.#resetOperation.then(() => this.shutdown(ownerEpoch)),
 				this.#shutdownTimeoutMilliseconds,
 				() => new FullTextDerivedIndexError('Full-text reset did not prove quiescence before shutdown timeout')
 			);
 		}
-		if (this.#activeEpoch !== ownerEpoch) return Promise.resolve();
+		if (this.#activeEpoch !== ownerEpoch) {
+			if (this.#host?.isOwnerEpoch(ownerEpoch)) this.#cursorInspectedForAcquisition = false;
+			return Promise.resolve();
+		}
+		this.#cursorInspectedForAcquisition = false;
 		this.#clearWriterRetry();
 		this.#queueBarrier(ownerEpoch);
 		let resolve: () => void;
@@ -605,11 +612,11 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			await this.#engine!.publish(payload);
 		} catch (error) {
 			const terminal = error instanceof FullTextDerivedIndexConfigurationError;
-			await this.#loseAcceptedWork(command.epoch, error, { retry: !terminal });
 			if (terminal) {
 				this.#terminalFailure = error;
 				logError('Full-text derived index cannot publish its durable cursor', error);
 			}
+			await this.#loseAcceptedWork(command.epoch, error, { retry: !terminal });
 			return false;
 		}
 		this.#assertCommandEpoch(command.epoch);
