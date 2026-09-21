@@ -25,6 +25,7 @@ import {
 	assertNoDeferredCredentialRejection,
 	settleDeferredCredentialRejection,
 } from '../security/deferredAuthentication.ts';
+import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget';
@@ -632,7 +633,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				ws.close(
 					HTTP_TO_WEBSOCKET_CLOSE_CODES[error.statusCode] || // try to return a helpful code
 						1011, // otherwise generic internal error
-					errorToString(error)
+					toCloseReason(errorToString(error))
 				);
 			}
 			ws.close();

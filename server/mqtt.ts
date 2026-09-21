@@ -19,6 +19,7 @@ import { forComponent as loggerForComponent } from '../utility/logging/harper_lo
 import { EventEmitter } from 'events';
 import { verifyCertificate } from '../security/certificateVerification/index.ts';
 import { registerShutdownDrain } from '../components/shutdownDrain.ts';
+import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
 import {
 	assertNoDeferredCredentialRejection,
 	getAuthenticationRejectedInPlace,
@@ -90,7 +91,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 					// read the records rather than the error: both hold a client-safe message, while an
 					// arbitrary chain rejection landing here would not
 					const rejection = getDeferredCredentialRejection(request) ?? getAuthenticationRejectedInPlace(request);
-					ws.close(WEBSOCKET_UNAUTHORIZED_CLOSE_CODE, rejection?.message ?? 'Unauthorized');
+					ws.close(WEBSOCKET_UNAUTHORIZED_CLOSE_CODE, toCloseReason(rejection?.message ?? 'Unauthorized'));
 				});
 				const { onMessage, onClose } = onSocket(
 					ws,

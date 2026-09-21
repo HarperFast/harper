@@ -6,7 +6,6 @@ export class PublicNotice extends tables.PublicNotice {
 	}
 }
 
-// the `harper` import above is load-bearing: it is what proves the tag is reachable from a component
 export const REJECTED_SESSION_USER = 'expired-staff';
 export const FAULTING_SESSION_USER = 'faulting-staff';
 

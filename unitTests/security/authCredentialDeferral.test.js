@@ -713,7 +713,8 @@ describe('#2703 principal resolution failures become decisions, not thrown error
 		it('leaves regular authentication to run when the certificate names no user', async () => {
 			const { request } = await send(APP_OWNED, { mtls: true, mtlsUser: null, authorization: HARPER_BASIC });
 
-			assert.ok(request.user, 'a certificate that names no user must not block Basic');
+			// the resolved principal must be the Basic user, not one derived from the certificate
+			assert.strictEqual(request.user?.username, 'harper_admin');
 			assert.ok(!getUserCalls.includes(CERT_CN), 'the certificate CN must not be resolved as a user');
 		});
 	});
