@@ -121,7 +121,7 @@ describe('Test SQL Engine', function () {
 
 	after(async function () {
 		sandbox.restore();
-		await tearDownMockDB(test_env, true);
+		await tearDownMockDB(test_env);
 		await cleanupCSVData();
 	});
 
