@@ -240,12 +240,11 @@ suite(
 			equal(response.status, 200, `the session user must still authenticate: ${response.text}`);
 		});
 
-		test('a throwing middleware renders its message without the internal class name', async () => {
+		test('a throwing middleware renders its class name as the error code', async () => {
 			const response = await get('/throw-from-middleware');
 
 			equal(response.status, 503);
-			equal(response.text, 'deliberate middleware failure');
-			ok(!/^\w*Error:/.test(response.text), `the error class name must not reach the body: ${response.text}`);
+			equal(response.text, 'Error: deliberate middleware failure');
 		});
 	}
 );

@@ -80,11 +80,15 @@ function settleAuthFailure(request, error, strategy: string): { status: number; 
 	if (request.isOperationsServer || internalFault) {
 		if (internalFault) authLogger.error('Authentication failed internally', errorForLog(error));
 		const message = internalFault ? AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL : error.message;
-		markAuthenticationRejectedInPlace(request, 401, message);
-		return { status: 401, body: serializeMessage({ error: message }, request) };
+		return rejectAuthenticationInPlace(request, message);
 	}
 	deferCredentialRejection(request, error, strategy);
 	return undefined;
+}
+
+function rejectAuthenticationInPlace(request, message: string): { status: number; body: any } {
+	markAuthenticationRejectedInPlace(request, 401, message);
+	return { status: 401, body: serializeMessage({ error: message }, request) };
 }
 
 // TODO: Make this not return a promise if it can be fulfilled synchronously (from cache)
@@ -184,10 +188,7 @@ export async function authentication(request, nextHandler) {
 					'for',
 					request.peerCertificate.subject.CN
 				);
-				return applyResponseHeaders({
-					status: 401,
-					body: serializeMessage({ error: 'Certificate revoked or verification failed' }, request),
-				});
+				return applyResponseHeaders(rejectAuthenticationInPlace(request, 'Certificate revoked or verification failed'));
 			}
 
 			// Alternative behavior: Instead of returning 401 above, we could just not set the user

@@ -48,7 +48,7 @@ import { throttle } from './throttle.ts';
 import { makeCallbackChain as buildCallbackChain, describeChains, type HttpEntry } from './middlewareChain.ts';
 import { WebSocketServer } from 'ws';
 
-const { errorToString, errorToClientMessage, errorForLog } = harperLogger;
+const { errorToString, errorForLog } = harperLogger;
 server.http = httpServer;
 server.request = onRequest;
 server.ws = onWebSocket;
@@ -838,7 +838,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 					}
 					nodeResponse.writeHead(status, toWriteHeadHeaders(headers));
 				} catch {} // silently ignore errors writing headers, because they may have been set already
-				nodeResponse.end(errorToClientMessage(error));
+				nodeResponse.end(errorToString(error));
 				logRequest(nodeRequest, status, requestId, performance.now() - startTime);
 				// a status code is interpreted as an expected error, so just info or warn, otherwise log as error
 				if (statusCode) {
@@ -1396,9 +1396,9 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 					}
 					// universal headers apply to error responses too; error-provided headers win
 					applyUniversalHeaders(headers);
-					return new Response(errorToClientMessage(error), { status, headers });
+					return new Response(errorToString(error), { status, headers });
 				}
-				return new Response(errorToClientMessage(error), { status });
+				return new Response(errorToString(error), { status });
 			}
 		};
 

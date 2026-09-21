@@ -1361,15 +1361,15 @@ Two consequences that are easy to miss:
   a rejected certificate identity stops resolution outright instead of falling through to Basic,
   the session, or the local bypass.
 
-## Client-visible error text never carries the internal class name (`utility/logging/harper_logger.ts`)
+## Client-visible error text keeps the class name as its error code (`utility/logging/harper_logger.ts`)
 
-`errorToString` renders `ClassName: message` to match console convention and is for **logs**.
-`errorToClientMessage` returns the message alone and is for anything a client reads: the terminal
-HTTP error bodies (`server/http.ts`) and the WebSocket close reasons. Both must never throw — they
-run while a response is already being produced, where a second throw abandons it. The stream record
-surfaces are deliberately different: `streamErrorRecord`
-(`server/serverHelpers/contentTypes.ts`) puts the class name in its own `error` field on purpose,
-and `integrationTests/server/stream-error-contract.test.ts` pins that wire format.
+`errorToString` renders `ClassName: message`; the class name is Harper's client-facing error code,
+used by documentation and support guidance. Terminal HTTP error bodies (`server/http.ts`) and
+REST WebSocket error close reasons preserve it. The renderer must never throw — those paths call it
+while a response is already being produced, where a second throw abandons the response. Stream
+records use the same convention in a structured form: `streamErrorRecord`
+(`server/serverHelpers/contentTypes.ts`) puts the class name in its `error` field, and
+`integrationTests/server/stream-error-contract.test.ts` pins that wire format.
 
 A close reason has a second constraint: `ws` throws a `RangeError` past 123 bytes, from inside a
 rejection handler where it surfaces as an unhandled rejection. Every `ws.close()` carrying a
