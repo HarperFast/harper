@@ -1841,10 +1841,58 @@ describe('the claim budget follows the winner (harper#644)', () => {
 	});
 });
 
+describeUnlessLmdb('the claim word outlives a collection (harper#644)', () => {
+	const { claimStateFor } = require('#src/resources/branchDatabase');
+
+	/**
+	 * Prove a collection actually reclaimed a `getUserSharedBuffer` entry, so the assertions below
+	 * cannot pass merely because nothing was collected. An entry is kept only while a caller still
+	 * references the buffer, so a throwaway key attached with two words and then dropped comes back
+	 * one word wide once it has gone.
+	 */
+	function attachedLength(store, key, words) {
+		return new BigInt64Array(store.getUserSharedBuffer(key, new BigInt64Array(words).buffer)).length;
+	}
+
+	async function sharedBuffersCollected(store) {
+		for (let attempt = 0; attempt < 10; attempt++) {
+			const witness = `branch-claim-collection-witness:${attempt}`;
+			attachedLength(store, witness, 2);
+			global.gc();
+			await new Promise((resolve) => setImmediate(resolve));
+			global.gc();
+			if (attachedLength(store, witness, 1) === 1) return true;
+		}
+		return false;
+	}
+
+	before(function () {
+		setupTestDBPath();
+		table({ table: 'Claim', database: 'claimbase', attributes: [{ name: 'id', isPrimaryKey: true }] });
+	});
+
+	it('keeps one two-word buffer per key, whatever attaches after a collection', async function () {
+		const branchPath = resolveBranchPath('claimbase', 'claimApp');
+		const store = database({ database: 'claimbase', table: undefined });
+		Atomics.store(claimStateFor('claimbase', branchPath), 1, 42n);
+
+		assert.ok(await sharedBuffersCollected(store), 'nothing was collected, so this test proves nothing');
+
+		// What any later attach would install if the claim word had been reclaimed: the narrower seed
+		// would decide the layout, and `claimDeadlineFor` would then load CLAIM_PROGRESS out of range.
+		const attached = new BigInt64Array(
+			store.getUserSharedBuffer(`branch-claim:${branchPath}`, new BigInt64Array([0n]).buffer)
+		);
+		assert.strictEqual(attached.length, 2, 'a one-word seed cannot take the claim key over');
+		assert.strictEqual(Atomics.load(attached, 1), 42n, 'and the progress the protocol recorded survived');
+		assert.strictEqual(claimStateFor('claimbase', branchPath).length, 2);
+	});
+});
+
 describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 	const { rmSync, mkdirSync, existsSync: exists } = require('node:fs');
 	const { getBlobPathsForDatabaseName, createBlob } = require('#src/resources/blob');
-	const { removeBranchesForApplication } = require('#src/resources/branchDatabase');
+	const { claimStateFor, removeBranchesForApplication } = require('#src/resources/branchDatabase');
 	const { database } = require('#src/resources/databases');
 	const STORE = `${'cycleApp'.length}_cycleApp__cyclebase`;
 
@@ -1897,17 +1945,13 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 	it('closes its own handle, then removes the branch, its blob roots and its claim', async function () {
 		this.timeout(30000);
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
-		const claimWord = () =>
-			new BigInt64Array(
-				database({ database: 'cyclebase', table: undefined }).getUserSharedBuffer(
-					`branch-claim:${branchPath}`,
-					new BigInt64Array([0n]).buffer
-				)
-			);
+		// One view for the whole test: a fresh attach per assertion would read a re-seeded buffer if the
+		// entry were collected in between, and pass without the claim ever having been released.
+		const claimState = claimStateFor('cyclebase', branchPath);
 		await getOrCreateBranch('cyclebase', 'cycleApp');
 		// Not closed here: the removing thread loaded the application too, and its own handle is the one
 		// reference that is not evidence of a live reader.
-		Atomics.store(claimWord(), 0, 2n); // READY, as the worker that created it left it
+		Atomics.store(claimState, 0, 2n); // READY, as the worker that created it left it
 
 		await removeBranchesForApplication('cycleApp');
 
@@ -1916,7 +1960,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 			getBlobPathsForDatabaseName(STORE).every((root) => !exists(root)),
 			'so are its blob roots'
 		);
-		assert.strictEqual(Atomics.load(claimWord(), 0), 0n, 'and the claim is released');
+		assert.strictEqual(Atomics.load(claimState, 0), 0n, 'and the claim is released');
 		assert.ok(exists(getBlobPathsForDatabaseName('cyclebase')[0]), "the base's blob root is untouched");
 
 		const redeployed = await getOrCreateBranch('cyclebase', 'cycleApp');
@@ -1973,13 +2017,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		const { rename: mv, mkdir: mkd } = require('node:fs/promises');
 		const { join } = require('node:path');
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
-		const claimWord = () =>
-			new BigInt64Array(
-				database({ database: 'cyclebase', table: undefined }).getUserSharedBuffer(
-					`branch-claim:${branchPath}`,
-					new BigInt64Array([0n]).buffer
-				)
-			);
+		const claimState = claimStateFor('cyclebase', branchPath);
 		// Published by a previous boot, as the main thread sees a branch of an application it never loaded.
 		const staging = `${branchPath}.staging`;
 		await mkd(join(branchPath, '..'), { recursive: true });
@@ -1989,12 +2027,12 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		for (const root of getBlobPathsForDatabaseName(STORE)) mkdirSync(root, { recursive: true });
 
 		// A loader that won the claim since must not be turned back into a waiter's opening.
-		Atomics.store(claimWord(), 0, 1n); // CREATING
+		Atomics.store(claimState, 0, 1n); // CREATING
 		await removeBranchesForApplication('cycleApp');
 		assert.strictEqual(exists(branchPath), false);
-		assert.strictEqual(Atomics.load(claimWord(), 0), 1n, 'a CREATING claim is left to its owner');
+		assert.strictEqual(Atomics.load(claimState, 0), 1n, 'a CREATING claim is left to its owner');
 
-		Atomics.store(claimWord(), 0, 2n); // READY, as the worker that created it left it
+		Atomics.store(claimState, 0, 2n); // READY, as the worker that created it left it
 		await mkd(join(branchPath, '..'), { recursive: true });
 		await database({ database: 'cyclebase', table: undefined }).createCheckpoint(staging);
 		await mv(staging, branchPath);
@@ -2005,7 +2043,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 			getBlobPathsForDatabaseName(STORE).every((root) => !exists(root)),
 			'and its roots with it'
 		);
-		assert.strictEqual(Atomics.load(claimWord(), 0), 0n, 'a READY claim is handed back');
+		assert.strictEqual(Atomics.load(claimState, 0), 0n, 'a READY claim is handed back');
 	});
 
 	it('knows whether an application has branch storage to lose, tombstones included', async function () {

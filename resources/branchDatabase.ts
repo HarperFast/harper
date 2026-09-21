@@ -71,16 +71,34 @@ interface OpenBranch {
 // READY at the same moment and would otherwise each try to open the directory the winner just opened.
 const branchesByPath = new Map<string, Promise<OpenBranch>>();
 
+/** Every attach to one claim key, held for the life of the base store that owns the key.
+ *  `getUserSharedBuffer` keeps its entry only while a caller still references the buffer, so
+ *  without this the word is re-seeded by whichever caller attaches first after a collection --
+ *  losing a READY claim, and taking the layout below from that caller's seed rather than from
+ *  here. Scoped to the store so a dropped-and-reopened base gets the new arena every other
+ *  thread is attaching to, rather than this thread's view of the old one. */
+const claimStatesByStore = new WeakMap<object, Map<string, BigInt64Array>>();
+
 /**
  * The claim word is process-local shared memory (in-process only, seeded UNCLAIMED each boot) and
  * must stay that way: the winner's tail replay runs exactly once per boot because every boot starts
  * from UNCLAIMED. A durable or cross-process claim would read READY on restart and silently skip
  * recovery.
+ *
+ * The two words are `CLAIM_STATE` and `CLAIM_PROGRESS`, and this is the only place that says so:
+ * a second seed of a different width elsewhere would decide the layout whenever it attached first.
  */
-function claimStateFor(baseName: string, branchPath: string): BigInt64Array {
+export function claimStateFor(baseName: string, branchPath: string): BigInt64Array {
 	const baseStore = database({ database: baseName, table: undefined });
-	const seed = new BigInt64Array([UNCLAIMED, 0n]);
-	return new BigInt64Array(baseStore.getUserSharedBuffer(`branch-claim:${branchPath}`, seed.buffer));
+	let states = claimStatesByStore.get(baseStore);
+	if (!states) claimStatesByStore.set(baseStore, (states = new Map()));
+	let state = states.get(branchPath);
+	if (!state) {
+		const seed = new BigInt64Array([UNCLAIMED, 0n]);
+		state = new BigInt64Array(baseStore.getUserSharedBuffer(`branch-claim:${branchPath}`, seed.buffer));
+		states.set(branchPath, state);
+	}
+	return state;
 }
 
 export function reportClaimProgress(state: BigInt64Array): void {
