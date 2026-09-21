@@ -8,19 +8,10 @@ import log from '../../utility/logging/harper_logger.ts';
 import { updateJob } from './jobs.ts';
 
 /**
- * Which Harper process owns a job row, and the boot pass that settles the rows whose owner is gone.
- *
- * A job runs in a worker thread and dies with its process, but nothing in the jobs subsystem ever
- * revisits a row afterwards: `jobRunner` writes IN_PROGRESS before launching the worker and the
- * worker writes COMPLETE/ERROR in its own `finally`, so a crash, a `restart`, or an orchestrator
- * replacing the container leaves the row at CREATED or IN_PROGRESS permanently. `get_job` then
- * reports a job that no longer exists as still running.
- *
- * Ownership is a per-process id rather than a pid: pids are reused, and a reused pid would make a
- * dead job look alive. The id is minted once on the main thread and inherited by every worker
- * through `process.env`, so all threads of one Harper process agree on it, while any restart —
- * self-relaunch or orchestrator — produces a new process and therefore a new id. The pid is carried
- * alongside it for diagnostics only.
+ * Ownership is a per-process id rather than a pid, because pids are reused and a reused pid would
+ * make a dead job look alive. It is minted on the main thread and inherited by workers through
+ * `process.env`, so every thread of one Harper process agrees on it while any restart produces a
+ * new one. The pid rides along for diagnostics only.
  */
 const JOB_OWNER_INSTANCE_ENV = 'HARPER_JOB_OWNER_INSTANCE';
 if (isMainThread) process.env[JOB_OWNER_INSTANCE_ENV] = randomUUID();
@@ -29,7 +20,6 @@ export const JOB_OWNER_INSTANCE_ID = process.env[JOB_OWNER_INSTANCE_ENV] ?? rand
 /** Stripped from `get_job` responses. */
 export const JOB_OWNER_ATTRIBUTES = ['owner_instance', 'owner_pid'] as const;
 
-/** Neither completed nor failed, so the owning process is still responsible for it. */
 const UNFINISHED_JOB_STATUSES = [hdbTerms.JOB_STATUS_ENUM.CREATED, hdbTerms.JOB_STATUS_ENUM.IN_PROGRESS];
 
 export function stampJobOwner(job: any): void {

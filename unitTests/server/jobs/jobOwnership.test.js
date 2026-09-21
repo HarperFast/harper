@@ -153,5 +153,21 @@ describe('jobOwnership', function () {
 			}
 			assert.strictEqual(job.id, id);
 		});
+
+		it('get_jobs_by_start_date does not expose it either', async function () {
+			const start = Date.now();
+			const id = await seedJob({ owner_instance: JOB_OWNER_INSTANCE_ID, owner_pid: process.pid });
+			seeded.push(id);
+
+			const result = await jobs.handleGetJobsByStartDate({
+				from_date: new Date(start - 60_000).toISOString(),
+				to_date: new Date(start + 60_000).toISOString(),
+			});
+			const job = result.find((row) => row.id === id);
+			assert.ok(job, 'the seeded job should be in the date range');
+			for (const attribute of JOB_OWNER_ATTRIBUTES) {
+				assert.ok(!(attribute in job), `${attribute} must not be returned to clients`);
+			}
+		});
 	});
 });

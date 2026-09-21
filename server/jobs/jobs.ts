@@ -39,11 +39,16 @@ export async function handleGetJob(jsonBody: any) {
 	if (jsonBody.id === undefined) throw new ClientError("'id' is required");
 	let result = await getJobById(jsonBody.id);
 	if (!hdbUtil.isEmptyOrZeroLength(result)) {
-		result[0] = { ...result[0] };
-		if (result[0].request !== undefined) delete result[0].request;
-		delete result[0]['__createdtime__'];
-		delete result[0]['__updatedtime__'];
-		for (const attribute of JOB_OWNER_ATTRIBUTES) delete result[0][attribute];
+		// Every row, not just the first: a lookup by id should yield at most one, but the owner
+		// attributes are internal bookkeeping and a leak here exposes process identity.
+		const rows = result as any[];
+		for (let index = 0; index < rows.length; index++) {
+			const job = (rows[index] = { ...rows[index] });
+			if (job.request !== undefined) delete job.request;
+			delete job['__createdtime__'];
+			delete job['__updatedtime__'];
+			for (const attribute of JOB_OWNER_ATTRIBUTES) delete job[attribute];
+		}
 	}
 
 	return result;
