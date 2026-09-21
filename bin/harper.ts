@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-// Must stay the first import: it sizes libuv's thread pool, and the logger imported below can touch
-// the filesystem — initializing that pool at its default of 4 — before this module's own body runs.
+// Must stay the first import — it sizes libuv's thread pool before anything below can initialize it.
 import './uvThreadPool.ts';
 
 import * as fs from 'node:fs';

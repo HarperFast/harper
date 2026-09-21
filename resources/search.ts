@@ -786,11 +786,9 @@ export function searchByIndex(
 							if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
 							freezeRecord(loadedEntry?.value);
 							recordRead(loadedEntry);
-							// `entry` is the index's own per-hit object (HNSW/full-text build one per
-							// result), so the loaded fields can be merged onto it in place. loadedEntry is
-							// the shared cached Entry and must not be mutated — assign FROM it, never onto
-							// it. Clear the supplied-entry marker first so it doesn't leak into the result
-							// (mirrors the destructure this replaces, which dropped it via ...otherProps).
+							// The hit is the index's own per-hit object (HNSW/full-text allocates one per
+							// result), so the loaded fields merge onto it in place; loadedEntry is the shared
+							// cached Entry. Clear the supplied-entry marker first so it doesn't leak into the result.
 							if (suppliedEntry !== undefined) delete entry.loadedEntry;
 							return Object.assign(entry, loadedEntry);
 						}
