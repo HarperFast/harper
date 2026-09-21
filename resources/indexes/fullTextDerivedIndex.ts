@@ -401,7 +401,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		try {
 			await this.#lifecycle.reset();
 		} catch (error) {
-			logError('Full-text native reset failed', error);
+			logNativeError('Full-text native reset failed', error);
 			throw new FullTextDerivedIndexError('Full-text native reset failed');
 		}
 		this.#assertSharedEpoch(ownerEpoch);
@@ -531,7 +531,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			await this.#closeEngine(engine, { mode: 'rollback' });
 		} catch (error) {
 			this.#engine = engine;
-			logError('Full-text writer could not close after lazy open failed', error);
+			logNativeError('Full-text writer could not close after lazy open failed', error);
 			throw new FullTextDerivedIndexError('Full-text writer could not close after lazy open failed');
 		} finally {
 			this.#settlingWriter = false;
@@ -639,14 +639,14 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		const engine = this.#engine;
 		this.#engine = undefined;
 		if (!engine) {
-			logError('Full-text writer is unavailable', cause);
+			logNativeError('Full-text writer is unavailable', cause);
 			throw new FullTextDerivedIndexError('Full-text writer is unavailable');
 		}
 		try {
 			await this.#closeEngine(engine, { mode: 'rollback' });
 		} catch (error) {
 			this.#engine = engine;
-			logError('Full-text writer could not prove quiescence after losing accepted work', error);
+			logNativeError('Full-text writer could not prove quiescence after losing accepted work', error);
 			throw new FullTextDerivedIndexError('Full-text writer could not prove quiescence after losing accepted work');
 		}
 		this.#rewindAcceptedWork();
@@ -685,7 +685,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			request.resolve();
 		} catch (error) {
 			if (this.#shutdown === request) this.#shutdown = undefined;
-			logError('Full-text writer shutdown did not prove quiescence', error);
+			logNativeError('Full-text writer shutdown did not prove quiescence', error);
 			const failure = new FullTextDerivedIndexError('Full-text writer shutdown did not prove quiescence');
 			if (this.#markFailed(failure)) this.#shutdownFailure = failure;
 			request.reject(failure);
@@ -711,7 +711,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			() => new FullTextDerivedIndexError('Full-text native writer close timed out')
 		);
 		if (result.cleanupError)
-			logWarning(`Full-text derived index '${this.id}' closed with a native cleanup error`, result.cleanupError);
+			logNativeWarning(`Full-text derived index '${this.id}' closed with a native cleanup error`, result.cleanupError);
 	}
 
 	async #open(ownerEpoch: bigint): Promise<FullTextDerivedIndexEngine | undefined> {
@@ -725,7 +725,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			} catch (error) {
 				lastError = error;
 				if (isTerminalOpenError(error)) {
-					logError('Full-text writer could not be opened', error);
+					logNativeError('Full-text writer could not be opened', error);
 					throw new FullTextDerivedIndexError('Full-text writer could not be opened');
 				}
 				if (attempt < this.#openAttempts && this.#openRetryMilliseconds > 0) {
@@ -743,7 +743,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#openRetryDelayMilliseconds = Math.min(this.#maxOpenRetryMilliseconds, retryDelay * 2);
 		if (retryDelay >= this.#maxOpenRetryMilliseconds && !this.#openRetryWarned) {
 			this.#openRetryWarned = true;
-			logWarning(`Full-text derived index '${this.id}' is waiting for its native writer`, error);
+			logNativeWarning(`Full-text derived index '${this.id}' is waiting for its native writer`, error);
 		}
 		this.#openRetryTimer = setTimeout(() => {
 			this.#openRetryTimer = undefined;
@@ -773,7 +773,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		);
 		if (retryDelay >= this.#maxOpenRetryMilliseconds && !this.#writerRetryWarned) {
 			this.#writerRetryWarned = true;
-			logWarning(`Full-text derived index '${this.id}' is retrying native writer work`, error);
+			logNativeWarning(`Full-text derived index '${this.id}' is retrying native writer work`, error);
 		}
 		this.#writerRetryTimer = setTimeout(() => {
 			this.#writerRetryTimer = undefined;
@@ -930,13 +930,21 @@ function logError(message: string, error?: unknown): void {
 	log('error', message, error);
 }
 
-function log(level: 'warn' | 'error', message: string, error?: unknown): void {
+function logNativeWarning(message: string, error?: unknown): void {
+	log('warn', message, error, true);
+}
+
+function logNativeError(message: string, error?: unknown): void {
+	log('error', message, error, true);
+}
+
+function log(level: 'warn' | 'error', message: string, error?: unknown, native = false): void {
 	const code = nativeErrorCode(error);
 	const detail = error instanceof FullTextDerivedIndexError ? error.message : code;
 	const name = error instanceof Error ? error.name : undefined;
 	const summary = `${message}${detail || name ? ` (${detail ?? name}${code && detail !== code ? `; ${code}` : ''})` : ''}`;
 	try {
-		if (error instanceof Error && code === undefined && !(error instanceof FullTextDerivedIndexError))
+		if (!native && error instanceof Error && code === undefined && !(error instanceof FullTextDerivedIndexError))
 			logger[level]?.(summary, error);
 		else logger[level]?.(summary);
 	} catch {}

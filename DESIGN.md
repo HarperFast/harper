@@ -2740,14 +2740,21 @@ retry attaches to the same shutdown rather than starting a competing close. A cu
 the native commit-payload limit is terminal for that backend instance: accepted work is rollback-closed
 and reported lost, then further delivery stays deferred. The adapter does not report a permanent
 backend failure because condemnation and reset cannot shrink the cursor. Automatic reset is refused
-until configuration changes replace the backend instance. Inspection accepts any payload within
-Harper's fixed 64 KiB format bound, independent of the current publication limit, so lowering that
-limit never turns an already-valid native generation into rebuild work.
+until configuration changes replace the backend instance. This terminal park keeps readiness
+non-terminal; when the derived-index lag policy is enabled, source writes remain rejected after the
+lag limit is crossed until the deployment is changed so the cursor fits and the backend is replaced,
+or the index is disabled. Inspection accepts any payload within Harper's fixed 64 KiB format bound,
+independent of the current publication limit, so lowering that limit never turns an already-valid
+native generation into rebuild work.
 
 Inspection is synchronous and writer-free. The first durable-cursor read in each ownership acquisition
 refreshes native state, while later reads in the same acquisition use the cache; every shutdown path
 invalidates it, including an owner that received no batch. A refresh failure never falls back to a
 cached checkpoint because the runtime can publish `ready` before lazy writer-open reconciliation.
+The synchronous backend contract has no retryable acquisition result, so an inspection exception
+deliberately fails closed: the runtime condemns the generation and rebuilds from authoritative
+records rather than trusting an unverified cursor. A transient filesystem error can therefore cost
+a full rescan; reintroducing asynchronous acquisition solely to avoid that trade is out of scope.
 Missing, cursorless, incompatible, or malformed native state has no usable cursor and therefore enters
 the runtime's ordinary local rebuild from records.
 Reset first asks the wrapper to retire the live generation atomically, then reclaims only wrapper-
