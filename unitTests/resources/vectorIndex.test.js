@@ -89,21 +89,17 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		await verifySearch(all[55]);
 		verifyIntegrity();
 	});
-	// Cross-level distance inversions are a property of graph SHAPE, and shape comes from level
-	// assignment — `Math.random()` in production. A bound asserted over the tests above therefore
-	// bounds one draw: 25 runs at a02efdb81 spread over 0-5 inversions and CI drew 7
-	// (run 35607636845, Node 26). The bound lives here instead, over graphs whose level stream is
-	// pinned with a mulberry32 PRNG, as the ROUTING_EF block below already does for the same
-	// reason; `verifyIntegrity` keeps walking the unpinned graphs above for symmetry and orphans,
-	// which must hold at ANY shape and are worth a different draw every run.
+	// Inversions are a property of graph shape, and shape comes from level assignment —
+	// `Math.random()` in production — so the bound holds in distribution, not per run: CI drew 7
+	// against the cap of 6. Pinning the level stream, as the ROUTING_EF block below does, makes it
+	// a fact about named graphs, while the tests above keep checking symmetry and orphans, which
+	// must hold at any shape.
 	it('keeps cross-level distance inversions bounded on graphs with a pinned level assignment', async function () {
 		this.timeout(30000);
-		// Measured 1, 0 and 1 at a02efdb81, identical across 11 runs. A seed names a graph only while
-		// each node takes exactly one draw, so an index change that moves these is a re-pin decision,
-		// not automatically a regression — the same trade the ROUTING_EF block documents.
 		for (const seed of [0x9e3779b9, 0x85ebca6b, 0xc2b2ae35]) {
+			const name = (seed >>> 0).toString(16);
 			const pinned = table({
-				table: 'HNSWInversionTest' + (seed >>> 0).toString(16),
+				table: 'HNSWInversionTest' + name,
 				database: 'test',
 				attributes: [
 					{ name: 'id', isPrimaryKey: true },
@@ -111,19 +107,28 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 				],
 			});
 			let state = seed;
+			let draws = 0;
 			pinned.indices.vector.customIndex.random = () => {
+				draws++;
 				state = (state + 0x6d2b79f5) | 0;
 				let t = Math.imul(state ^ (state >>> 15), 1 | state);
 				t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
 				return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 			};
-			for (let i = 0; i < 200; i++) {
-				await pinned.put(i, { vector: [i % 2, i % 3, i % 4, i % 5, i % 6, i % 7, i % 8, i % 9, i % 10, i % 11] });
-			}
-			const inversions = verifyIntegrity(pinned.indices.vector);
+			const vectorFor = (i) => [i % 2, i % 3, i % 4, i % 5, i % 6, i % 7, i % 8, i % 9, i % 10, i % 11];
+			for (let i = 0; i < 200; i++) await pinned.put(i, { vector: vectorFor(i) });
+			// A seed names a graph only while each node takes exactly one draw.
+			assert.strictEqual(draws, 200, `seed ${name} no longer names the graph it was measured on`);
 			assert(
-				inversions <= 6,
-				`expected at most 6 distance inversions for seed ${(seed >>> 0).toString(16)}, got ${inversions}`
+				verifyIntegrity(pinned.indices.vector) <= 3,
+				`expected at most 3 distance inversions for seed ${name} after inserts`
+			);
+
+			for (let i = 0; i < 200; i += 4) await pinned.delete(i);
+			for (let i = 0; i < 200; i += 8) await pinned.put(i, { vector: vectorFor(i * i + 1) });
+			assert(
+				verifyIntegrity(pinned.indices.vector) <= 3,
+				`expected at most 3 distance inversions for seed ${name} after deletes and re-puts`
 			);
 		}
 	});
@@ -361,8 +366,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		for (let i = 0; i < i8.length; i++) out[i] = i8[i] * scale;
 		return out;
 	}
-	/** Walks the graph for the properties that must hold at any shape, and returns the count of
-	 *  cross-level distance inversions, which is a property of the shape and so of the run. */
+	/** Returns the count of cross-level distance inversions; only pinned graphs assert a bound. */
 	function verifyIntegrity(indexed = HNSWTest.indices.vector) {
 		// now verify integrity and proper distance/distancing across levels
 		let invertedSimiliarities = 0;
