@@ -1173,6 +1173,7 @@ describe('redactForOperationLog', () => {
 		value: 'env-secret',
 		values: ['env-secret'],
 		envelope: 'enc:v1:sealed',
+		key: '-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-key-material\n-----END OPENSSH PRIVATE KEY-----',
 		// login (#1876) and exchange_oidc_token (#2171) both carry a live token here.
 		token: 'eyJhbGciOiJSUzI1NiJ9.identity.signature',
 		// refresh_operation_token carries the 30-day credential.
@@ -1191,14 +1192,30 @@ describe('redactForOperationLog', () => {
 		assert.ok(!/eyJ[A-Za-z0-9_-]/.test(JSON.stringify(clean)), 'no JWT-shaped value should survive');
 	});
 
+	it('leaves no private key behind', () => {
+		const clean = redactForOperationLog({ operation: 'add_ssh_key', ...CREDENTIAL_FIELDS });
+		assert.ok(!/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(JSON.stringify(clean)), 'no private key should survive');
+	});
+
+	it('strips the shared key field even when it contains an environment variable name', () => {
+		const clean = redactForOperationLog({
+			operation: 'set_env_value',
+			project: 'application',
+			key: 'DATABASE_URL',
+			value: 'postgres://secret',
+		});
+		assert.deepStrictEqual(clean, { operation: 'set_env_value', project: 'application' });
+	});
+
 	it('preserves everything else', () => {
 		const clean = redactForOperationLog({ operation: 'create_schema', schema: 'test', database: 'data' });
 		assert.deepStrictEqual(clean, { operation: 'create_schema', schema: 'test', database: 'data' });
 	});
 
 	it('does not mutate the request body', () => {
-		const body = { operation: 'exchange_oidc_token', token: 'live-credential' };
+		const body = { operation: 'add_ssh_key', key: CREDENTIAL_FIELDS.key, token: 'live-credential' };
 		redactForOperationLog(body);
+		assert.equal(body.key, CREDENTIAL_FIELDS.key, 'the handler still needs the SSH key it was sent');
 		assert.equal(body.token, 'live-credential', 'the handler still needs the field it was sent');
 	});
 

@@ -88,10 +88,12 @@ export type OperationFunctionName = ValueOf<typeof terms.OPERATIONS_ENUM>;
  * `credentials` carries a transient token on deploy_component (`registryAuth` is its pre-rename
  * name — still stripped, since this runs ahead of the validation that now rejects it). `value` /
  * `values` carry .env secrets from set_env_value; `value` / `envelope` carry secrets from
- * set_secret. `token` is the login-purpose token (login) and the CI identity token
- * (exchange_oidc_token), and is also stripped defensively — no operation declares a top-level `token`,
- * but validation allows unknown keys, so a mistyped `harper deploy setup token=…` must not log a live
- * credential. `refresh_token` is the 30-day credential (refresh_operation_token).
+ * set_secret. `key` carries private keys for Harper Pro's add_ssh_key / update_ssh_key; it also hides
+ * the same-named environment-variable field from operation logs. `token` is the login-purpose token
+ * (login) and the CI identity token (exchange_oidc_token), and is also stripped defensively — no
+ * operation declares a top-level `token`, but validation allows unknown keys, so a mistyped
+ * `harper deploy setup token=…` must not log a live credential. `refresh_token` is the 30-day
+ * credential (refresh_operation_token).
  *
  * Redaction runs *before* the handler, so a rejected request logs a still-spendable credential —
  * which is why a new secret-bearing field belongs here rather than left to the default (harper#1527
@@ -107,6 +109,7 @@ export const UNLOGGABLE_OPERATION_FIELDS = [
 	'value',
 	'values',
 	'envelope',
+	'key',
 	'token',
 	'refresh_token',
 ];
