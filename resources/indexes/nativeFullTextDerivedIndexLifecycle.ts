@@ -68,6 +68,7 @@ export class NativeFullTextDerivedIndexLifecycle {
 
 	startRetiredStorageReclamation(): void {
 		this.#requireBinding();
+		// Fulltext publishes unique retired paths and removes them with force, so workers may sweep concurrently.
 		this.#queueReclaimRetired();
 	}
 

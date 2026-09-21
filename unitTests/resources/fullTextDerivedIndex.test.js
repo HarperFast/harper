@@ -379,6 +379,26 @@ describe('FullTextDerivedIndexBackend', () => {
 		}
 	});
 
+	it('re-inspects shared native state after a failed owner shuts down cleanly', async () => {
+		const engine = new FakeEngine();
+		const source = lifecycle({ state: 'missing' }, [nativeError('E_INDEX_CORRUPT', 'terminal'), engine]);
+		const { backend, setEpoch } = makeBackend(source, { openAttempts: 1 });
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+
+		backend.deliver(batch(1n, [], cursor(10)));
+		backend.flush();
+		await waitFor(() => changes.includes('failed'));
+		await backend.shutdown(1n);
+
+		setEpoch(2n);
+		assert.strictEqual(backend.getDurableCursor(), undefined);
+		assert.strictEqual(backend.deliver(batch(2n, [], cursor(20))), DERIVED_INDEX_ACCEPTED);
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		await backend.shutdown(2n);
+	});
+
 	it('retries native writer lock contention without failing or rebuilding', async () => {
 		const engine = new FakeEngine();
 		const source = lifecycle({ state: 'missing' }, [nativeError('E_LOCK_BUSY', 'busy'), engine]);

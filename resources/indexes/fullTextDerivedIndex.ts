@@ -678,10 +678,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#engine = undefined;
 			this.#activeEpoch = undefined;
 			this.#cursorInspectedForAcquisition = false;
-			if (this.#shutdownFailure) {
-				this.#failed = false;
-				this.#shutdownFailure = undefined;
-			}
+			this.#failed = false;
+			this.#shutdownFailure = undefined;
 			this.#resetQueueState();
 			if (this.#shutdown === request) this.#shutdown = undefined;
 			request.resolve();
@@ -936,10 +934,11 @@ function log(level: 'warn' | 'error', message: string, error?: unknown): void {
 	const code = nativeErrorCode(error);
 	const detail = error instanceof FullTextDerivedIndexError ? error.message : code;
 	const name = error instanceof Error ? error.name : undefined;
+	const summary = `${message}${detail || name ? ` (${detail ?? name}${code && detail !== code ? `; ${code}` : ''})` : ''}`;
 	try {
-		logger[level]?.(
-			`${message}${detail || name ? ` (${detail ?? name}${code && detail !== code ? `; ${code}` : ''})` : ''}`
-		);
+		if (error instanceof Error && code === undefined && !(error instanceof FullTextDerivedIndexError))
+			logger[level]?.(summary, error);
+		else logger[level]?.(summary);
 	} catch {}
 }
 

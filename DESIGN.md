@@ -2723,7 +2723,9 @@ The native commit payload contains Harper's exact derived-index cursor. A publis
 mutations and that payload visible together; only then does the adapter report durable progress.
 An ordinary apply or publish failure rollback-closes the writer, discards accepted-but-unpublished
 work, and wakes the runtime to replay from the last native payload after exponential backoff to a
-five-second ceiling. It does not condemn a structurally valid generation. A mutation-batch protocol
+five-second ceiling. It does not condemn a structurally valid generation. During a rebuild, the same
+accepted-work-lost signal aborts that rebuild attempt; the runtime retires the partial generation and
+spends one of its bounded rebuild attempts before rescanning. A mutation-batch protocol
 violation remains permanent because retry cannot change the wrapper contract. Writer open is lazy.
 After a small immediate attempt budget, open errors use the same retry ceiling unless their stable
 code proves the native generation is structurally incompatible or corrupt. Configuration, binding,
