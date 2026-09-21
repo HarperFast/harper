@@ -662,6 +662,89 @@ describe('HNSW native plane file-primary delivery', function () {
 		await Keyed.dropTable();
 	});
 
+	it('sizes the plane layer-0 slot from nativePlaneLayer0Cap', async () => {
+		for (const [tableName, declared, expected] of [
+			['PlaneLayer0Default', undefined, 64],
+			['PlaneLayer0Declared', '128', 128],
+		]) {
+			const indexed = { type: 'HNSW', nativePlane: true, efConstruction: 200 };
+			if (declared !== undefined) indexed.nativePlaneLayer0Cap = declared;
+			const Sized = table({
+				table: tableName,
+				database: DB,
+				audit: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'vector', indexed, type: 'Array' },
+				],
+			});
+			await Sized.indexingOperation;
+			const index = Sized.indices.vector.customIndex;
+			const probe = makeVector(13);
+			await Sized.put('sized', { vector: probe });
+			await waitFor(() => indexReady(Sized) && index.getPlane() != null, {
+				timeout: 15_000,
+				message: `${tableName} never attached a plane`,
+			});
+			assert.equal(index.getPlane().layer0Cap, expected);
+			await Sized.dropTable();
+		}
+	});
+
+	it('rebuilds rather than reusing a plane whose header cap differs from the index', async () => {
+		const tableName = 'PlaneLayer0Mismatch';
+		const declare = (layer0Cap) => {
+			const indexed = { type: 'HNSW', nativePlane: true, efConstruction: 200 };
+			if (layer0Cap !== undefined) indexed.nativePlaneLayer0Cap = layer0Cap;
+			return table({
+				table: tableName,
+				database: DB,
+				audit: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'vector', indexed, type: 'Array' },
+				],
+			});
+		};
+		let Mismatch = declare(128);
+		await Mismatch.indexingOperation;
+		const probe = makeVector(17);
+		await Mismatch.put('mismatch', { vector: probe });
+		await waitFor(() => indexReady(Mismatch) && Mismatch.indices.vector.customIndex.getPlane() != null, {
+			timeout: 15_000,
+			message: 'the cap-128 plane never attached',
+		});
+		const planePath = Mismatch.indices.vector.customIndex.planeFilePath();
+		assert.equal(Mismatch.indices.vector.customIndex.getPlane().layer0Cap, 128);
+
+		// Drop the option from the PERSISTED declaration so redeclaring without it is not itself a
+		// structural change. Otherwise databases.ts reindexes before any plane is opened and the
+		// header comparison in getPlane never runs.
+		const descriptor = Mismatch.dbisDB.getSync(`${tableName}/vector`);
+		delete descriptor.indexed.nativePlaneLayer0Cap;
+		Mismatch.dbisDB.putSync(`${tableName}/vector`, descriptor);
+
+		resetDatabases();
+		Mismatch = declare(undefined);
+		const hit = await waitFor(
+			async () => {
+				const index = Mismatch.indices.vector.customIndex;
+				if (!indexReady(Mismatch)) return false;
+				const plane = index.getPlane();
+				if (plane?.layer0Cap !== 64) return false;
+				const found = await index.search(
+					{ target: probe, comparator: 'sort', distance: 'cosine', ef: EF },
+					{ transaction: undefined }
+				);
+				return [...found].some((entry) => entry.key === 'mismatch') && found;
+			},
+			{ timeout: 20_000, message: 'the mismatched plane never rebuilt at the configured cap' }
+		);
+		assert.ok(hit);
+		assert.ok(fs.existsSync(planePath));
+		await Mismatch.dropTable();
+	});
+
 	it('answers an empty index with no results instead of a rebuilding 503', async () => {
 		const EmptyTable = table({
 			table: 'PlaneEmpty',

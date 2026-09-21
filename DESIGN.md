@@ -2996,21 +2996,41 @@ One file per index, `<index store path>/<store name>.hnsw`, created sparse at `n
 slots (16M default; a structural, create-time header field — exhausting it makes the index
 unavailable until the value is raised and the index rebuilt). Header page: magic + format version
 (mismatch → rebuild, by contract), dims, quantization mode, `slot_size`/`layer0_cap`/`upper_cap`
-(derived from M/optimizeRouting at creation), entry point, atomic `id_high_water`, tag-guarded
+(`layer0_cap` from `nativePlaneLayer0Cap` at creation; `upper_cap` fixed at 64 by the crate), entry point, atomic `id_high_water`, tag-guarded
 freelist head, a transaction watermark advanced only after an `msync` barrier, and a clean-shutdown
 flag. Layer-0 slot: seqlock word, flags + level, `scale`/`invMag`, degree, int8 vector padded to a
 4-byte boundary, `u32` neighbour ids, then the record's msgpack-encoded primary key (format v8;
 `nativePlaneKeyCap` inline bytes, default 40; a longer key spills to an overflow arena after the
 upper region, reserved at max(128, 4 × keyCap) bytes per node — a table whose keys are mostly
-longer than 40 encoded bytes should raise `nativePlaneKeyCap` rather than live in the arena) — 1,344 B at 768-d with cap 128, 704 B at 128-d, the key fitting the cache-line padding.
+longer than 40 encoded bytes should raise `nativePlaneKeyCap` rather than live in the arena) — at the default degree cap of 64, 1,088 B at 768-d and 448 B at 128-d, the key fitting the cache-line padding.
 Upper layers (~6% of nodes) live in a fixed-entry region in the same file, per-entry seqlocked.
 Per-edge cached distances are dropped: recomputing costs ~50 ns natively, storing costs 8 B and
 ~40% of a node. Searches and predicate batches return each hit's key with it, so no lookup by node
 id remains on the query path.
 
-Degree cap is **128** for int8 (Kris, 2026-08-31, after measurement): cap 64 saved only 23.5% of
-the slot (the 768 B vector dominates) and lost 2.2 pts recall at 1M. It is a header field, so
-revising it is a rebuild, not a format change; a binary-code v2 slot reopens the question.
+Degree cap is the per-index `nativePlaneLayer0Cap`, **default 64** (supersedes the fixed 128 of
+2026-08-31, re-measured in [hnsw#14](https://github.com/HarperFast/hnsw/pull/14)): at 128-d and
+768-d int8, cap 64 holds recall@10 within ~0.5 pt of cap 128 at every ef ≥ 128 at 1M and 4M, and
+within ~0.3 pt at 768-d, at the same resident latency — while cutting the 128-d slot 704 → 448 B and
+the 768-d slot 1,344 → 1,088 B, which keeps a 4M-node plane resident under a 2 GB limit that makes
+the cap-128 plane thrash. A live 7.7M-node plane carries a mean layer-0 degree of 29
+([hnsw#7](https://github.com/HarperFast/hnsw/issues/7)), so the reserved slot was mostly padding.
+Cap 32 halves the slot again but trails cap 128 by 1.3–2.2 pts below ef 1024 at 4M and by 1.7 pts
+at 1M for 768-d vectors, so it is a declaration for narrow vectors on a plane that outgrows RAM,
+not a default. The cap is a create-time header field: `getPlane` compares it with the index's
+value on attach and invalidates a plane that disagrees rather than reusing or truncating it, so
+revising it is a rebuild, not a format change. A file-primary index builds no JS graph, so this is
+the only layer-0 maximum it has; the JS graph's own cap in `addConnection` governs
+non-`nativePlane` indexes only. A binary-code v2 slot reopens the question.
+
+Upgrading a plane built at 128 costs one rebuild per node, the first time a process opens it under
+the new default; no GA release line carries plane files, so this reaches 5.3 pre-releases only.
+Declaring `nativePlaneLayer0Cap: 128` does not avoid that rebuild — adding the property changes the
+attribute's canonical structural options, which reindexes the attribute by itself
+(`indexOptionsStructurallyChanged` in `resources/databases.ts`); it preserves the geometry only once
+it is already the persisted declaration. The default is not written into a descriptor that omits
+the option, so nodes upgrade independently: a mixed-version cluster has each node rebuild its own
+file as it reaches the new code, and no node invalidates another's.
 
 ### Concurrency
 
