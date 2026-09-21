@@ -101,6 +101,25 @@ const BACKUP_MARKER_REASONS: CaptureMarkerReasons = {
 	pending: 'blob was not yet complete when this backup was taken',
 };
 
+export async function* walkBlobFiles(root: string): AsyncGenerator<string> {
+	const stack: string[] = [root];
+	while (stack.length > 0) {
+		const dir = stack.pop() as string;
+		let entries;
+		try {
+			entries = await readdir(dir, { withFileTypes: true });
+		} catch (error: any) {
+			if (error.code === 'ENOENT') continue;
+			throw error;
+		}
+		for (const entry of entries) {
+			const path = join(dir, entry.name);
+			if (entry.isDirectory()) stack.push(path);
+			else if (entry.isFile()) yield path;
+		}
+	}
+}
+
 /** Put one blob file into the destination, returning how the entry was captured. */
 async function captureBlobFile(
 	srcPath: string,
@@ -151,34 +170,16 @@ export async function copyTree(
 	onProgress?: () => void
 ): Promise<{ substituted: number; captured: number; copied: number }> {
 	const counts = { substituted: 0, captured: 0, copied: 0 };
-	if (!existsSync(srcRoot)) return counts;
-	const stack: string[] = [srcRoot];
-	while (stack.length > 0) {
-		const dir = stack.pop() as string;
-		let entries;
-		try {
-			entries = await readdir(dir, { withFileTypes: true });
-		} catch (error: any) {
-			if (error.code === 'ENOENT') continue; // directory removed mid-walk
-			throw error;
+	for await (const srcPath of walkBlobFiles(srcRoot)) {
+		const destPath = join(destRoot, relative(srcRoot, srcPath));
+		if (classify) {
+			const disposition = await captureBlobFile(srcPath, destPath, reasons, counts);
+			if (disposition === 'pending' || disposition === 'gone') counts.substituted++;
+			else if (disposition === 'capture') counts.captured++;
+		} else {
+			await linkOrCopy(srcPath, destPath, counts);
 		}
-		for (const entry of entries) {
-			const srcPath = join(dir, entry.name);
-			if (entry.isDirectory()) {
-				stack.push(srcPath);
-			} else if (entry.isFile()) {
-				const destPath = join(destRoot, relative(srcRoot, srcPath));
-				if (classify) {
-					const disposition = await captureBlobFile(srcPath, destPath, reasons, counts);
-					if (disposition === 'pending' || disposition === 'gone') counts.substituted++;
-					else if (disposition === 'capture') counts.captured++;
-				} else {
-					await linkOrCopy(srcPath, destPath, counts);
-				}
-				onProgress?.();
-			}
-			// symlinks/other node types in a blob root are not expected and are intentionally skipped
-		}
+		onProgress?.();
 	}
 	return counts;
 }
@@ -338,21 +339,7 @@ export async function assertBlobSnapshotRestorable(
 /** Whether any configured blob root holds at least one file. Stops at the first one it finds. */
 export async function blobRootsHaveFiles(blobRoots: string[]): Promise<boolean> {
 	for (const root of blobRoots) {
-		const stack: string[] = [root];
-		while (stack.length > 0) {
-			const dir = stack.pop() as string;
-			let entries;
-			try {
-				entries = await readdir(dir, { withFileTypes: true });
-			} catch (error: any) {
-				if (error.code === 'ENOENT' || error.code === 'ENOTDIR') continue;
-				throw error;
-			}
-			for (const entry of entries) {
-				if (entry.isFile()) return true;
-				if (entry.isDirectory()) stack.push(join(dir, entry.name));
-			}
-		}
+		for await (const _ of walkBlobFiles(root)) return true;
 	}
 	return false;
 }

@@ -1,7 +1,7 @@
 'use strict';
 
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
-import { open, readdir, writeFile } from 'node:fs/promises';
+import { open, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -34,6 +34,7 @@ import {
 	purgeBlobSnapshots,
 	restoreBlobSnapshot,
 	snapshotBlobs,
+	walkBlobFiles,
 } from './blobBackup.ts';
 import {
 	deleteBackupManifest,
@@ -840,28 +841,11 @@ function writeWithBackpressure(dest: PassThrough, chunk: Buffer): Promise<void> 
 async function appendBlobEntries(pack: Pack, blobRoots: string[]): Promise<void> {
 	for (let index = 0; index < blobRoots.length; index++) {
 		const root = blobRoots[index];
-		if (!existsSync(root)) continue;
-		const stack: string[] = [root];
-		while (stack.length > 0) {
-			const dir = stack.pop() as string;
-			let entries;
-			try {
-				entries = await readdir(dir, { withFileTypes: true });
-			} catch (error: any) {
-				if (error.code === 'ENOENT') continue;
-				throw error;
-			}
-			for (const entry of entries) {
-				const filePath = join(dir, entry.name);
-				if (entry.isDirectory()) {
-					stack.push(filePath);
-				} else if (entry.isFile()) {
-					// tar entry names are always POSIX-separated; relative() yields `\` on Windows, which
-					// would otherwise become literal filename characters when extracted on POSIX
-					const relativePath = relative(root, filePath).split(sep).join('/');
-					await appendBlobEntry(pack, filePath, `blobs/${index}/${relativePath}`);
-				}
-			}
+		for await (const filePath of walkBlobFiles(root)) {
+			// tar entry names are always POSIX-separated; relative() yields `\` on Windows, which
+			// would otherwise become literal filename characters when extracted on POSIX
+			const relativePath = relative(root, filePath).split(sep).join('/');
+			await appendBlobEntry(pack, filePath, `blobs/${index}/${relativePath}`);
 		}
 	}
 }
