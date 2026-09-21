@@ -215,9 +215,14 @@ describe('restoreMarker', function () {
 
 		it('repairs a marker an interrupted write left empty, so the database stays blocked', function () {
 			// what a torn write under the pre-rename implementation left behind
+			mkdirSync(dbPath, { recursive: true });
 			mkdirSync(restoreMetaDir(dbPath), { recursive: true });
 			writeFileSync(restoringMarkerPath(dbPath), '');
-			assert.deepStrictEqual(scanBlockedRestores(tempDir), [], 'precondition: an empty marker blocks nothing');
+			assert.deepStrictEqual(
+				scanBlockedRestores(tempDir),
+				[[basename(dbPath), 'incomplete']],
+				'the startup scan must block the database without trusting the empty marker'
+			);
 
 			abandonRestore(beginRestore(dbPath));
 
@@ -228,9 +233,14 @@ describe('restoreMarker', function () {
 		it('repairs a marker whose database name was torn mid-write', function () {
 			// Non-empty but truncated. The scan resolves the name it reads back to a *different* metadata
 			// key, so a torn name blocks nothing at all while the real database loads.
+			mkdirSync(dbPath, { recursive: true });
 			mkdirSync(restoreMetaDir(dbPath), { recursive: true });
 			writeFileSync(restoringMarkerPath(dbPath), `${basename(dbPath).slice(0, 3)}`);
-			assert.deepStrictEqual(scanBlockedRestores(tempDir), [], 'precondition: a torn name blocks nothing');
+			assert.deepStrictEqual(
+				scanBlockedRestores(tempDir),
+				[[basename(dbPath), 'incomplete']],
+				'the startup scan must block the database without trusting the torn name'
+			);
 
 			abandonRestore(beginRestore(dbPath));
 

@@ -44,8 +44,8 @@ import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
  *   fsync) after the lock is acquired and before the destructive restore begins; deleted only after
  *   the restore completes successfully, while still holding the lock. Its *existence* means "a
  *   restore started and has not finished successfully". Its first line records the database
- *   directory name so the startup scan can map a marker back to the database it blocks without
- *   decoding the hashed key.
+ *   directory name as a fallback so the startup scan can map a marker whose database directory is
+ *   missing without decoding the hashed key.
  *
  *   The rename is what makes the marker trustworthy: the marker path only ever holds the previous
  *   content or the complete new content, so a torn write can never replace a valid marker with one
@@ -305,24 +305,34 @@ export function clearRestoreMarker(lock: RestoreLock): void {
 }
 
 /**
- * Scan a databases root's reserved `` `restore` `` metadata directory and report every database currently blocked from
- * loading, mapping each surviving marker back to its database name via the marker's first line.
+ * Scan a databases root's reserved `` `restore` `` metadata directory and report every database
+ * currently blocked from loading. Existing database entries are mapped to markers by their hashed
+ * keys, so corrupt marker contents cannot unblock them; the first line remains the fallback for a
+ * marker whose database directory is missing.
  * Returns `[dbName, state]` pairs for markers whose state is `in-progress` or `incomplete`
  * (a `clear` result means the marker was removed concurrently and the database is loadable).
  */
 export function scanBlockedRestores(databasesRoot: string): Array<[string, RestoreState]> {
 	const metaDir = join(databasesRoot, RESTORE_META_DIR);
 	if (!existsSync(metaDir)) return [];
+	const databaseNamesByMarker = new Map(
+		readdirSync(databasesRoot, { withFileTypes: true })
+			.filter((entry) => entry.name !== RESTORE_META_DIR)
+			.map((entry) => [restoreMetaKey(join(databasesRoot, entry.name)) + RESTORING_MARKER_SUFFIX, entry.name])
+	);
 	const blocked: Array<[string, RestoreState]> = [];
 	for (const entry of readdirSync(metaDir, { withFileTypes: true })) {
 		if (!entry.isFile() || !entry.name.endsWith(RESTORING_MARKER_SUFFIX)) continue;
-		let dbName: string;
-		try {
-			dbName = readFileSync(join(metaDir, entry.name), 'utf8').split('\n', 1)[0];
-		} catch {
-			continue; // marker removed concurrently
+		const markerPath = join(metaDir, entry.name);
+		let dbName = databaseNamesByMarker.get(entry.name);
+		if (!dbName) {
+			try {
+				dbName = readFileSync(markerPath, 'utf8').split('\n', 1)[0];
+			} catch {
+				continue; // marker removed concurrently
+			}
+			if (!dbName || restoringMarkerPath(join(databasesRoot, dbName)) !== markerPath) continue;
 		}
-		if (!dbName) continue;
 		const state = checkRestoreState(join(databasesRoot, dbName));
 		if (state !== 'clear') blocked.push([dbName, state]);
 	}
