@@ -136,12 +136,16 @@ function autoScaleEfConstruction(nodeCount: number): number {
 // this only has to be short enough that a table growing from empty picks up a larger ef promptly.
 const NODE_COUNT_TTL = 10_000;
 
-// Native traversal-plane geometry (DESIGN.md § Native HNSW plane). The layer-0 cap is derived from
-// M/optimizeRouting at creation to cover the JS graph's effective cap (grace overshoot above it
-// truncates by distance); a configuration deriving past this ceiling is refused as ineligible
-// rather than silently truncated. maxNodes is a fixed sparse reservation — pages materialize on
-// write — and ids at or past it are rejected by the crate, which disables the plane.
+// Native traversal-plane geometry (DESIGN.md § Native HNSW plane). A file-primary index builds no
+// JS graph, so the layer-0 cap is plane policy alone: `nativePlaneLayer0Cap` declares it, the crate
+// prunes layer-0 adjacency to it, and a plane file whose header disagrees is rebuilt, never reused.
+// maxNodes is a fixed sparse reservation — pages materialize on write — and ids at or past it are
+// rejected by the crate, which disables the plane.
+const PLANE_LAYER0_CAP = 64;
 const PLANE_LAYER0_CAP_MAX = 1024;
+// The connection count the crate builds with; nativePlane pins the index to it, and a layer-0 cap
+// below it could not hold a node's own forward edges.
+const PLANE_M = 16;
 const PLANE_MAX_NODES = 1 << 24;
 // Default inline primary-key bytes per plane slot (msgpack-encoded); 40 fits UUIDs inside the slot
 // padding. `nativePlaneKeyCap` raises it for tables whose keys are longer.
@@ -177,6 +181,14 @@ function nativePlaneMaxNodes(options: any): number {
 		throw new ClientError('nativePlaneMaxNodes must be a positive integer below 2^32-1');
 	}
 	return maxNodes;
+}
+
+function nativePlaneLayer0Cap(options: any): number {
+	const layer0Cap = numericOption('nativePlaneLayer0Cap', options?.nativePlaneLayer0Cap) ?? PLANE_LAYER0_CAP;
+	if (!Number.isSafeInteger(layer0Cap) || layer0Cap < PLANE_M || layer0Cap > PLANE_LAYER0_CAP_MAX) {
+		throw new ClientError(`nativePlaneLayer0Cap must be an integer between ${PLANE_M} and ${PLANE_LAYER0_CAP_MAX}`);
+	}
+	return layer0Cap;
 }
 
 function nativePlaneKeyCap(options: any): number {
@@ -291,6 +303,7 @@ export class HierarchicalNavigableSmallWorld {
 		'filterExpansion',
 		'nativePlaneMaxNodes',
 		'nativePlaneKeyCap',
+		'nativePlaneLayer0Cap',
 		'maxLagMilliseconds',
 	]);
 	static truthyStructuralOptions = new Set(['nativePlane']);
@@ -335,6 +348,7 @@ export class HierarchicalNavigableSmallWorld {
 		}
 		if (Object.hasOwn(options, 'nativePlaneMaxNodes')) nativePlaneMaxNodes(options);
 		if (Object.hasOwn(options, 'nativePlaneKeyCap')) nativePlaneKeyCap(options);
+		if (Object.hasOwn(options, 'nativePlaneLayer0Cap')) nativePlaneLayer0Cap(options);
 	}
 	static normalizeNativePlaneDeclaration(value: unknown): boolean | undefined {
 		if (value === undefined || value === null) return undefined;
@@ -360,9 +374,9 @@ export class HierarchicalNavigableSmallWorld {
 			options?.efConstruction === null ||
 			options?.mL === null ||
 			options?.optimizeRouting === null ||
-			(nativeM !== undefined && nativeM !== 16) ||
+			(nativeM !== undefined && nativeM !== PLANE_M) ||
 			(nativeEfConstruction !== undefined && nativeEfConstruction !== 200) ||
-			(nativeML !== undefined && nativeML !== 1 / Math.log(16)) ||
+			(nativeML !== undefined && nativeML !== 1 / Math.log(PLANE_M)) ||
 			(nativeOptimizeRouting !== undefined && nativeOptimizeRouting !== 0.5)
 		) {
 			throw new ClientError(
@@ -371,16 +385,18 @@ export class HierarchicalNavigableSmallWorld {
 		}
 		const maxNodes = nativePlaneMaxNodes(options);
 		const keyCap = nativePlaneKeyCap(options);
+		const layer0Cap = nativePlaneLayer0Cap(options);
 		if (options?.quantization === 'none' || options?.distance === 'euclidean' || options?.distance === 'dotProduct') {
 			throw new ClientError(
 				'nativePlane requires an int8-quantized cosine HNSW index; set nativePlane: false to use the JS index'
 			);
 		}
-		return { nativeM, nativeEfConstruction, nativeML, nativeOptimizeRouting, maxNodes, keyCap };
+		return { nativeM, nativeEfConstruction, nativeML, nativeOptimizeRouting, maxNodes, keyCap, layer0Cap };
 	}
 	static canRunNativePlane(rootStore: unknown, options: any, warnForMissingBinding = true): boolean {
 		nativePlaneMaxNodes(options);
 		nativePlaneKeyCap(options);
+		nativePlaneLayer0Cap(options);
 		if (!(rootStore instanceof RocksDatabase) || getPlaneBinding(warnForMissingBinding) == null) return false;
 		if (
 			options?.M === null ||
@@ -400,9 +416,9 @@ export class HierarchicalNavigableSmallWorld {
 			options?.quantization !== 'none' &&
 			options?.distance !== 'euclidean' &&
 			options?.distance !== 'dotProduct' &&
-			(configuredM === undefined || configuredM === 16) &&
+			(configuredM === undefined || configuredM === PLANE_M) &&
 			(configuredEfConstruction === undefined || configuredEfConstruction === 200) &&
-			(configuredML === undefined || configuredML === 1 / Math.log(16)) &&
+			(configuredML === undefined || configuredML === 1 / Math.log(PLANE_M)) &&
 			(configuredOptimizeRouting === undefined || configuredOptimizeRouting === 0.5);
 		if (!baseEligible) return false;
 		return true;
@@ -467,6 +483,7 @@ export class HierarchicalNavigableSmallWorld {
 	private filePrimary = false;
 	private nativePlaneMaxNodes = PLANE_MAX_NODES;
 	private nativePlaneKeyCap = PLANE_KEY_CAP;
+	private nativePlaneLayer0Cap = PLANE_LAYER0_CAP;
 	// Installed by attachDerivedIndexes on every worker: shared readiness of the index and the way
 	// to ask its owner for a rebuild. Only the owning worker's runtime ever destroys native state.
 	private derivedHost?: DerivedNativeIndexHost;
@@ -521,7 +538,7 @@ export class HierarchicalNavigableSmallWorld {
 			if (configuredFilterExpansion !== undefined) this.filterExpansion = configuredFilterExpansion;
 		}
 		if (options?.nativePlane) {
-			const { nativeM, nativeEfConstruction, nativeML, nativeOptimizeRouting, maxNodes, keyCap } =
+			const { nativeM, nativeEfConstruction, nativeML, nativeOptimizeRouting, maxNodes, keyCap, layer0Cap } =
 				HierarchicalNavigableSmallWorld.validateNativePlaneOptions(indexStore?.rootStore, options);
 			if (nativeM !== undefined) this.M = nativeM;
 			if (nativeML !== undefined) this.mL = nativeML;
@@ -529,11 +546,10 @@ export class HierarchicalNavigableSmallWorld {
 			this.efConstruction = nativeEfConstruction ?? 200;
 			this.nativePlaneMaxNodes = maxNodes;
 			this.nativePlaneKeyCap = keyCap;
+			this.nativePlaneLayer0Cap = layer0Cap;
 			// The plane stores int8 bins and computes asymmetric cosine only, so the flag is a
-			// no-op for float (quantization: "none") and non-cosine indexes; a graph whose derived
-			// layer-0 cap exceeds the plane maximum is refused rather than silently truncated.
-			this.planeEligible =
-				this.int8 && this.distance === cosineDistance && this.planeLayer0Cap() <= PLANE_LAYER0_CAP_MAX;
+			// no-op for float (quantization: "none") and non-cosine indexes.
+			this.planeEligible = this.int8 && this.distance === cosineDistance;
 			if (!this.planeEligible) {
 				throw new ClientError(
 					'nativePlane requires an int8-quantized cosine HNSW index; set nativePlane: false to use the JS index'
@@ -613,10 +629,21 @@ export class HierarchicalNavigableSmallWorld {
 					// Crash recovery is per-slot inside the crate. The clean flag is advisory;
 					// another worker may still be constructing this shared file.
 					const opened = Plane.open(filePath);
-					if (this.filePrimary && opened.keyCap !== this.nativePlaneKeyCap) {
-						// created under another nativePlaneKeyCap: rebuild to the configured layout
+					// A header that disagrees with the declaration is a different graph, not a
+					// repairable file. Ask the owner to rebuild rather than throwing into the
+					// unopenable-file path below: that one leaves the invalidated file in place, and a
+					// present file makes every query report "rebuilding" for a rebuild nobody started.
+					const geometryMismatch = !this.filePrimary
+						? undefined
+						: opened.keyCap !== this.nativePlaneKeyCap
+							? `keyCap ${opened.keyCap} differs from the configured ${this.nativePlaneKeyCap}`
+							: opened.layer0Cap !== this.nativePlaneLayer0Cap
+								? `layer0Cap ${opened.layer0Cap} differs from the configured ${this.nativePlaneLayer0Cap}`
+								: undefined;
+					if (geometryMismatch) {
 						opened.invalidateFile();
-						throw new Error(`plane keyCap ${opened.keyCap} differs from the configured ${this.nativePlaneKeyCap}`);
+						this.disablePlane(new Error(`plane ${geometryMismatch}`));
+						return null;
 					}
 					return (this.plane = opened);
 				} catch (openError) {
@@ -655,7 +682,7 @@ export class HierarchicalNavigableSmallWorld {
 				return (this.plane = Plane.create(
 					filePath,
 					dims,
-					this.planeLayer0Cap(),
+					this.nativePlaneLayer0Cap,
 					this.nativePlaneMaxNodes,
 					this.nativePlaneKeyCap
 				));
@@ -687,11 +714,6 @@ export class HierarchicalNavigableSmallWorld {
 
 	private derivedReadiness(): DerivedIndexReadiness['state'] {
 		return this.derivedHost?.readiness().state ?? 'unknown';
-	}
-
-	/** The JS graph's effective layer-0 cap for this configuration; sizes the plane's slots. */
-	private planeLayer0Cap(): number {
-		return this.optimizeRouting ? this.M << 3 : this.M << 1;
 	}
 
 	/**

@@ -956,6 +956,64 @@ describe('HNSW GraphQL numeric options', () => {
 			assert.equal(typeof customIndex('HnswNativeQuotedM').nativePlaneMaxNodes, 'number');
 		});
 
+		it('defaults nativePlaneLayer0Cap to 64 and validates its bounds', async () => {
+			const defaulted = await loadTable('HnswLayer0CapDefault', '(audit: true)', 'type: "HNSW", nativePlane: true');
+			assert.equal(defaulted.nativePlaneLayer0Cap, 64);
+			assert.equal(
+				Object.hasOwn(indexedOptions('HnswLayer0CapDefault'), 'nativePlaneLayer0Cap'),
+				false,
+				'the default must not be persisted into the declaration'
+			);
+
+			const quoted = await loadTable(
+				'HnswLayer0CapQuoted',
+				'(audit: true)',
+				'type: "HNSW", nativePlane: true, nativePlaneLayer0Cap: "128"'
+			);
+			assert.equal(quoted.nativePlaneLayer0Cap, 128);
+			assert.equal(indexedOptions('HnswLayer0CapQuoted').nativePlaneLayer0Cap, 128);
+			assert.equal(typeof indexedOptions('HnswLayer0CapQuoted').nativePlaneLayer0Cap, 'number');
+
+			for (const [tableName, value] of [
+				['HnswLayer0CapFloor', 16],
+				['HnswLayer0CapCeiling', 1024],
+			]) {
+				const index = await loadTable(
+					tableName,
+					'(audit: true)',
+					`type: "HNSW", nativePlane: true, nativePlaneLayer0Cap: ${value}`
+				);
+				assert.equal(index.nativePlaneLayer0Cap, value);
+			}
+
+			for (const [tableName, value] of [
+				['HnswLayer0CapUnderFloor', '15'],
+				['HnswLayer0CapOverCeiling', '1025'],
+				['HnswLayer0CapFractional', '64.5'],
+			]) {
+				await assert.rejects(
+					loadTable(tableName, '(audit: true)', `type: "HNSW", nativePlane: true, nativePlaneLayer0Cap: ${value}`),
+					(error) =>
+						error instanceof ClientError &&
+						error.message === 'nativePlaneLayer0Cap must be an integer between 16 and 1024'
+				);
+			}
+			await assert.rejects(
+				loadTable('HnswLayer0CapBlank', '(audit: true)', 'type: "HNSW", nativePlane: true, nativePlaneLayer0Cap: ""'),
+				/nativePlaneLayer0Cap must be a finite number/
+			);
+
+			// The floor is the plane's own pinned M, not the index's, so the option stays declarable
+			// on an index that does not run a plane.
+			const jsGraph = await loadTable(
+				'HnswLayer0CapNonNative',
+				'(audit: true)',
+				'type: "HNSW", nativePlane: false, M: 128, nativePlaneLayer0Cap: 64'
+			);
+			assert.equal(jsGraph.planeEligible, false);
+			assert.equal(jsGraph.M, 128);
+		});
+
 		it('accepts compatible legacy numeric spellings when native mode is enabled', async () => {
 			const tableName = 'HnswNativeLegacyGeometry';
 			await loadTable(tableName, '(audit: true)', 'type: "HNSW", nativePlane: false, M: 16, optimizeRouting: 0.5');
