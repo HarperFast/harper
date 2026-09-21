@@ -603,9 +603,8 @@ export function searchByIndex(
 							if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
 							freezeRecord(loadedEntry?.value);
 							recordRead(loadedEntry);
-							// `entry` is the index's own per-hit object (HNSW builds one from its typed-array
-							// result), so the loaded fields can be merged onto it in place. loadedEntry is the
-							// shared cached Entry and must not be mutated — assign FROM it, never onto it.
+							// The hit is the index's own per-hit object (HNSW allocates one per result), so the
+							// loaded fields merge onto it in place; loadedEntry is the shared cached Entry.
 							return Object.assign(entry, loadedEntry);
 						}
 						return entry;
