@@ -280,7 +280,7 @@ solved this exact problem for private npm registries and git hosts: the **`hdb_s
 (#1550), written by `set_secret`, which stores ciphertext only and never the submitted plaintext
 (`components/secretOperations.ts:5`), gated by per-node custody. `deploy_component` ingests a
 credential into it and then carries only a **reference** through the operation, resolving it to a
-token at the point of use (`components/operations.js:639-645`, `:736-746`;
+token at the point of use (`components/operations.js:639-645`, `:762-765`;
 `resolveCredentials`, `components/secretOperations.ts:491-495`). The pull source uses the same
 mechanism for the same reason, and that reason is the one that decides the design: **a reference is
 safe to persist in `hdb_job` and a token is not.** So the operator runs `set_secret` once, names
@@ -1014,7 +1014,7 @@ the target lacks any capability the archive declares.
 
 **An external compression dictionary is a capability, not provenance.** It was first written into
 the `source` block as a boolean, which was the wrong half of the manifest: the data cannot be read
-without a file the archive does not carry (`resources/databases.ts:3934-3939`), so a reader that
+without a file the archive does not carry (`resources/databases.ts:3909-3914`), so a reader that
 lacks one must refuse rather than note it. It is therefore a `requires` token —
 `external-compression-dictionary` — and an instance with no dictionary configured fails the
 capability check like any other missing capability. Provenance describes; only `requires` refuses,
