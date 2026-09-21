@@ -69,6 +69,32 @@ export function bypassAuth() {
 	bypassUser = { username: 'bypass', role: { role: 'super_user', permission: { super_user: true } } };
 }
 
+/**
+ * Turns a failed principal resolution into a decision, so it never escapes the middleware chain as
+ * a thrown error (#2703). Every path in `authentication()` that resolves a principal routes its
+ * failure through here.
+ *
+ * An internal fault, or any failure on the operations API where Harper owns every route, is decided
+ * in place: the caller returns the descriptor through `applyResponseHeaders`. A rejected credential
+ * on the app port is deferred instead and `undefined` returned, leaving the request undecided for
+ * the layer that owns the route to settle.
+ */
+function settleAuthFailure(request, error, strategy: string): { status: number; body: any } | undefined {
+	const internalFault = !isCredentialRejection(error);
+	if (request.isOperationsServer || internalFault) {
+		if (internalFault) authLogger.error('Authentication failed internally', errorForLog(error));
+		return {
+			status: 401,
+			body: serializeMessage(
+				{ error: internalFault ? AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL : error.message },
+				request
+			),
+		};
+	}
+	deferCredentialRejection(request, error, strategy);
+	return undefined;
+}
+
 // TODO: Make this not return a promise if it can be fulfilled synchronously (from cache)
 export async function authentication(request, nextHandler) {
 	const headers = request.headers.asObject; // we cheat and use the node headers object since it is a little faster
@@ -156,6 +182,7 @@ export async function authentication(request, nextHandler) {
 		)
 			authEventLog.error?.('Authorization error:', request._nodeRequest.socket.authorizationError);
 
+		let mtlsCredentialDeferred = false;
 		if (request.mtlsConfig && request.authorized && request.peerCertificate.subject) {
 			const verificationResult = await verifyCertificate(request.peerCertificate, request.mtlsConfig);
 			if (!verificationResult.valid) {
@@ -183,8 +210,18 @@ export async function authentication(request, nextHandler) {
 				// null means no user is defined from certificate, need regular authentication as well
 				if (username === undefined || username === 'Common Name' || username === 'CN')
 					username = request.peerCertificate.subject.CN;
-				request.user = await server.getUser(username, null, request);
-				authAuditLog(username, AUTH_AUDIT_STATUS.SUCCESS, 'mTLS');
+				let mtlsUser;
+				try {
+					mtlsUser = await server.getUser(username, null, request);
+				} catch (error) {
+					const failureResponse = settleAuthFailure(request, error, 'mTLS');
+					if (failureResponse) return applyResponseHeaders(failureResponse);
+					mtlsCredentialDeferred = true;
+				}
+				if (!mtlsCredentialDeferred) {
+					request.user = mtlsUser;
+					authAuditLog(username, AUTH_AUDIT_STATUS.SUCCESS, 'mTLS');
+				}
 			} else {
 				debug('HTTPS/WSS mTLS authorized connection (mTLS did not authorize a user)', 'from', request.ip);
 			}
@@ -193,6 +230,10 @@ export async function authentication(request, nextHandler) {
 		let newUser;
 		if (request.user) {
 			// already authenticated
+		} else if (mtlsCredentialDeferred) {
+			// the certificate named a user Harper rejected; that is this request's credential decision,
+			// so it must not fall through to Basic/Bearer, the cookie session, or the local bypass —
+			// a principal resolved here would be contradicted by the deferred rejection downstream
 		} else if (authorization) {
 			let cachedUser = authorizationCache.get(authorization);
 			// A cached Bearer identity must not outlive its token: expiry is the only revocation
@@ -214,7 +255,7 @@ export async function authentication(request, nextHandler) {
 				const strategy = authorization.slice(0, spaceIndex);
 				const credentials = authorization.slice(spaceIndex + 1);
 				let username, password;
-				let credentialRejection;
+				let credentialDeferred = false;
 				try {
 					switch (strategy) {
 						case 'Basic':
@@ -269,23 +310,12 @@ export async function authentication(request, nextHandler) {
 						}
 					}
 
-					const internalFault = !isCredentialRejection(err);
-					if (request.isOperationsServer || internalFault) {
-						if (internalFault) authLogger.error('Authentication failed internally', errorForLog(err));
-						return applyResponseHeaders({
-							status: 401,
-							body: serializeMessage(
-								{ error: internalFault ? AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL : err.message },
-								request
-							),
-						});
-					}
-					credentialRejection = err;
+					const failureResponse = settleAuthFailure(request, err, strategy);
+					if (failureResponse) return applyResponseHeaders(failureResponse);
+					credentialDeferred = true;
 				}
 
-				if (credentialRejection) {
-					deferCredentialRejection(request, credentialRejection, strategy);
-				} else {
+				if (!credentialDeferred) {
 					authorizationCache.set(authorization, newUser);
 					if (LOG_AUTH_SUCCESSFUL && newUser != null)
 						authAuditLog(newUser.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
@@ -299,8 +329,13 @@ export async function authentication(request, nextHandler) {
 
 			request.user = newUser;
 		} else if (session?.user) {
-			// or should this be cached in the session?
-			request.user = await server.getUser(session.user, null, request);
+			try {
+				// or should this be cached in the session?
+				request.user = await server.getUser(session.user, null, request);
+			} catch (error) {
+				const failureResponse = settleAuthFailure(request, error, 'Session');
+				if (failureResponse) return applyResponseHeaders(failureResponse);
+			}
 		} else if (
 			(AUTHORIZE_LOCAL && bypassUser) || // explicit bypass (test mode); also covers ::ffff:127.x addresses
 			(AUTHORIZE_LOCAL && (request.ip?.includes('127.0.0.') || request.ip == '::1')) ||

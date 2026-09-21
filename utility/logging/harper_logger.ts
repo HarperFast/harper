@@ -445,6 +445,7 @@ module.exports = {
 	// Test-only: applies a config without the process-wide watcher `updateLogSettings` builds.
 	_applyLogSettingsForTests: applyLogSettings,
 	errorToString,
+	errorToClientMessage,
 	errorForLog,
 	inspectForLog,
 	isErrorLike,
@@ -1276,6 +1277,27 @@ export function errorToString(error: any) {
 	}
 }
 
+const CLIENT_MESSAGE_FALLBACK = 'Internal error';
+
+/**
+ * Renders an error for a client-visible response body: the message alone. `errorToString`'s
+ * console convention of `ClassName: message` names an internal class, which the client cannot act
+ * on and we have no reason to disclose. Like `errorToString` this must never throw — the terminal
+ * HTTP error handlers call it while producing the response, where a second throw would abandon it.
+ */
+export function errorToClientMessage(error: any): string {
+	try {
+		const message = error?.message;
+		// an intentionally empty message is preserved; only a non-string one falls back
+		if (typeof message === 'string') return message;
+		if (typeof error === 'string') return error;
+		if (typeof error === 'number' || typeof error === 'boolean' || typeof error === 'bigint') return String(error);
+	} catch {
+		// hostile error (a throwing `message` getter, a revoked Proxy)
+	}
+	return CLIENT_MESSAGE_FALLBACK;
+}
+
 // Own-enumerable Error properties considered safe to surface in logs — common diagnostic fields
 // (HTTP status, Node error codes) that libraries and app code don't use to carry secrets, unlike
 // arbitrary properties (axios' `config`/`request` with an Authorization header), which stay
@@ -2094,6 +2116,7 @@ export default {
 	externalLogger,
 	AuthAuditLog,
 	errorToString,
+	errorToClientMessage,
 	errorForLog,
 	inspectForLog,
 	isErrorLike,

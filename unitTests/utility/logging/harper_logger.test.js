@@ -1960,6 +1960,55 @@ describe('Test harper_logger module', () => {
 		});
 	});
 
+	describe('Test errorToClientMessage function (harper#2703)', () => {
+		const { errorToClientMessage, errorToString } = harperLoggerModule;
+
+		it('renders the message without the class name errorToString prefixes', () => {
+			class ClientError extends Error {}
+			const error = new ClientError('SSO session expired');
+
+			assert.strictEqual(errorToString(error), 'ClientError: SSO session expired');
+			assert.strictEqual(errorToClientMessage(error), 'SSO session expired');
+		});
+
+		it('preserves an intentionally empty message', () => {
+			assert.strictEqual(errorToClientMessage(new Error('')), '');
+		});
+
+		it('renders thrown primitives', () => {
+			assert.strictEqual(errorToClientMessage('plain string throw'), 'plain string throw');
+			assert.strictEqual(errorToClientMessage(42), '42');
+			assert.strictEqual(errorToClientMessage(false), 'false');
+		});
+
+		it('falls back for a value carrying no usable message', () => {
+			assert.strictEqual(errorToClientMessage(null), 'Internal error');
+			assert.strictEqual(errorToClientMessage(undefined), 'Internal error');
+			assert.strictEqual(errorToClientMessage({}), 'Internal error');
+			assert.strictEqual(errorToClientMessage({ message: { toString: () => 'leak' } }), 'Internal error');
+		});
+
+		it('does not throw when the message getter throws', () => {
+			const hostile = {};
+			Object.defineProperty(hostile, 'message', {
+				get() {
+					throw new Error('hostile getter');
+				},
+			});
+
+			assert.doesNotThrow(() => errorToClientMessage(hostile));
+			assert.strictEqual(errorToClientMessage(hostile), 'Internal error');
+		});
+
+		it('does not throw for a revoked Proxy', () => {
+			const { proxy, revoke } = Proxy.revocable(new Error('gone'), {});
+			revoke();
+
+			assert.doesNotThrow(() => errorToClientMessage(proxy));
+			assert.strictEqual(errorToClientMessage(proxy), 'Internal error');
+		});
+	});
+
 	describe('Test isErrorLike function (harper#1982)', () => {
 		const { isErrorLike } = harperLoggerModule;
 
