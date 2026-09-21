@@ -4,9 +4,8 @@
 // first, before anything that can load a native addon (the logger loads one)
 import '../server/threads/nativeAddonGuard.ts';
 
-// Must stay the first import after the native-addon guard: it sizes libuv's thread pool, and the
-// logger imported below can touch the filesystem — initializing that pool at its default of 4 —
-// before this module's own body runs.
+// Must stay the first import after the native-addon guard — it sizes libuv's thread pool before
+// anything below can initialize it.
 import './uvThreadPool.ts';
 
 import * as fs from 'node:fs';
