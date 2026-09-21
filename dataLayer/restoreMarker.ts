@@ -248,8 +248,11 @@ function publishRestoringMarker(dbPath: string): void {
  */
 export function beginRestore(dbPath: string): RestoreLock {
 	const markerPath = restoringMarkerPath(dbPath);
-	const preexisting = existsSync(markerPath);
 	const lock = acquireRestoreLock(dbPath);
+	// Sampled while holding the lock, not before it: a restore that waited out an earlier one would
+	// otherwise carry the earlier run's "no marker" reading, and on its own pre-destruction failure
+	// clear the marker protecting a directory that run had already half-purged.
+	const preexisting = existsSync(markerPath);
 	try {
 		if (!preexisting || !markerIsIntact(markerPath, dbPath)) publishRestoringMarker(dbPath);
 		// An intact marker is kept, but its durability is not assumed: the publisher that wrote it may
