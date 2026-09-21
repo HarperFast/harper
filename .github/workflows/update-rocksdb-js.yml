@@ -27,7 +27,7 @@ jobs:
           LATEST_VERSION=$(npm view @harperfast/rocksdb-js@latest version)
           echo "latest=$LATEST_VERSION" >> $GITHUB_OUTPUT
 
-      - name: Setup Node.js ${{ matrix.node-version }}
+      - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
@@ -35,6 +35,14 @@ jobs:
 
       - name: Install latest rocksdb-js
         run: npm install --save-exact @harperfast/rocksdb-js@latest
+
+      # npm treats a 404 on an optionalDependency as success, so if a platform binding is not
+      # readable on the registry yet (they are published separately, and the last one can trail the
+      # parent by minutes) the install quietly omits it while leaving the parent's reference to it
+      # in place. The lockfile that gets committed is then one no `npm ci` can install, which is
+      # only discovered by the PR's own CI. Catch it here instead, while the fix is a re-run.
+      - name: Verify the lockfile installs
+        run: npm ci --dry-run
 
       - name: Stage changes
         id: stage-changes
