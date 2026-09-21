@@ -591,7 +591,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				recordActionBinary(Boolean(entry), 'connection', 'ws', 'connect');
 				if (!entry) {
 					// TODO: Ideally we would like to have a 404 response before upgrading to WebSocket protocol, probably
-					return ws.close(1011, `No resource was found to handle ${request.pathname}`);
+					return ws.close(1011, toCloseReason(`No resource was found to handle ${request.pathname}`));
 				} else {
 					assertNoDeferredCredentialRejection(request);
 					request.handlerPath = entry.path;
