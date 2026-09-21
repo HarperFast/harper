@@ -8,6 +8,17 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
 
+/** mulberry32: pins a graph's level assignment so its shape is a fact rather than a draw. */
+function mulberry32(seed) {
+	let state = seed;
+	return () => {
+		state = (state + 0x6d2b79f5) | 0;
+		let t = Math.imul(state ^ (state >>> 15), 1 | state);
+		t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+
 describe('HierarchicalNavigableSmallWorld indexing', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // don't try to test lmdb
 	let HNSWTest;
@@ -105,14 +116,11 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 					{ name: 'vector', indexed: { type: 'HNSW', optimizeRouting: 0.6 }, type: 'Array' },
 				],
 			});
-			let state = seed;
+			const level = mulberry32(seed);
 			let draws = 0;
 			pinned.indices.vector.customIndex.random = () => {
 				draws++;
-				state = (state + 0x6d2b79f5) | 0;
-				let t = Math.imul(state ^ (state >>> 15), 1 | state);
-				t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-				return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+				return level();
 			};
 			const vectorFor = (i) => [i % 2, i % 3, i % 4, i % 5, i % 6, i % 7, i % 8, i % 9, i % 10, i % 11];
 			for (let i = 0; i < 200; i++) await pinned.put(i, { vector: vectorFor(i) });
@@ -1013,14 +1021,11 @@ describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
 			],
 		});
-		let seedState = seed;
+		const level = mulberry32(seed);
 		let draws = 0;
 		T.indices.vector.customIndex.random = () => {
 			draws++;
-			seedState = (seedState + 0x6d2b79f5) | 0;
-			let t = Math.imul(seedState ^ (seedState >>> 15), 1 | seedState);
-			t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-			return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+			return level();
 		};
 		for (let i = 0; i < N; i++) {
 			const a = (i / N) * Math.PI * 2;
