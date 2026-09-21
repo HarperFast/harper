@@ -1,14 +1,12 @@
 'use strict';
 
-// Loads the sizing module the way bin/harper.ts does, then forces libuv to build its pool and
-// reports what it actually got. Driven by unitTests/bin/uvThreadPool.test.js.
+// Forces libuv to build its pool and reports what it got. Driven by unitTests/bin/uvThreadPool.test.js.
 require('#src/bin/uvThreadPool');
 
 const { readdirSync, readFileSync } = require('node:fs');
 const { readFile } = require('node:fs/promises');
 
-// The pool is created synchronously when the first task is submitted, so every worker thread
-// exists by the time this read resolves.
+// The pool is built synchronously on submit, so every worker exists by the time this resolves.
 readFile(__filename, 'utf8').then(() => {
 	let workers = 0;
 	if (process.platform === 'linux') {
