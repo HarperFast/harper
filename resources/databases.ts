@@ -2284,21 +2284,39 @@ export function closeDatabase(databaseName: string): boolean {
 /**
  * Close every loaded name that shares a root store with `databaseName`, `databaseName` included, so
  * the store's native handles are actually released — what a restore needs before it replaces the
- * files, where `closeDatabase` alone would leave the store open under its other names.
+ * files, where `closeDatabase` alone would leave the store open under its other names. Resolves once
+ * every table's derived-index runtime has proven its queued work quiescent and the stores are
+ * closed, so a flush still in flight cannot land after the files are gone.
  */
-export function closeDatabaseWithAliases(databaseName: string): boolean {
+export async function closeDatabaseWithAliases(databaseName: string): Promise<boolean> {
 	if (!databases[databaseName]) return false;
 	const rootStores = collectRootStores(databaseName);
+	const names = [databaseName];
 	for (const otherName of Object.keys(databases)) {
 		if (otherName === databaseName) continue;
 		for (const rootStore of collectRootStores(otherName)) {
 			if (rootStores.has(rootStore)) {
-				closeDatabase(otherName);
+				names.push(otherName);
 				break;
 			}
 		}
 	}
-	return closeDatabase(databaseName);
+	const stops: Promise<unknown>[] = [];
+	for (const name of names) {
+		for (const tableName in databases[name]) {
+			const runtime = (databases[name][tableName] as any)?.derivedIndexRuntime;
+			if (runtime?.close) {
+				stops.push(
+					Promise.resolve(runtime.close()).catch((error) =>
+						logger.warn(`Error stopping the derived-index runtime of ${name}.${tableName}:`, error)
+					)
+				);
+			}
+		}
+	}
+	await Promise.all(stops);
+	for (const name of names) closeDatabase(name);
+	return true;
 }
 
 function collectRootStores(databaseName: string): Set<RootDatabaseKind> {

@@ -262,7 +262,7 @@ describe('shared root-store database identity', function () {
 		loadedAliases = ['physicalalias', 'configuredalias'];
 		const rootStore = getDatabases().configuredalias[tableName].primaryStore.rootStore;
 
-		assert.strictEqual(closeDatabaseWithAliases('configuredalias'), true);
+		assert.strictEqual(await closeDatabaseWithAliases('configuredalias'), true);
 		loadedAliases = [];
 		assert.strictEqual(getDatabases().configuredalias, undefined);
 		assert.strictEqual(getDatabases().physicalalias, undefined);
