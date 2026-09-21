@@ -8,6 +8,17 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
 
+/** mulberry32: pins a graph's level assignment so its shape is a fact rather than a draw. */
+function mulberry32(seed) {
+	let state = seed;
+	return () => {
+		state = (state + 0x6d2b79f5) | 0;
+		let t = Math.imul(state ^ (state >>> 15), 1 | state);
+		t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+
 describe('HierarchicalNavigableSmallWorld indexing', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // don't try to test lmdb
 	let HNSWTest;
@@ -88,6 +99,52 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		}
 		await verifySearch(all[55]);
 		verifyIntegrity();
+	});
+	// Inversions are a property of graph shape, and shape comes from level assignment —
+	// `Math.random()` in production — so a bound on them holds in distribution, not per run.
+	// Pinning the level stream, as the ROUTING_EF block below does, makes it a fact about named
+	// graphs; the tests above keep checking symmetry and orphans, which must hold at any shape.
+	it('keeps cross-level distance inversions bounded on graphs with a pinned level assignment', async function () {
+		this.timeout(30000);
+		for (const seed of [0x9e3779b9, 0x85ebca6b, 0xc2b2ae35]) {
+			const name = (seed >>> 0).toString(16);
+			const pinned = table({
+				table: 'HNSWInversionTest' + name,
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'vector', indexed: { type: 'HNSW', optimizeRouting: 0.6 }, type: 'Array' },
+				],
+			});
+			const level = mulberry32(seed);
+			let draws = 0;
+			pinned.indices.vector.customIndex.random = () => {
+				draws++;
+				return level();
+			};
+			const vectorFor = (i) => [i % 2, i % 3, i % 4, i % 5, i % 6, i % 7, i % 8, i % 9, i % 10, i % 11];
+			for (let i = 0; i < 200; i++) await pinned.put(i, { vector: vectorFor(i) });
+			// A seed names a graph only while each node takes exactly one draw.
+			assert.strictEqual(draws, 200, `seed ${name} no longer names the graph it was measured on`);
+			let inversions = verifyIntegrity(pinned.indices.vector);
+			assert(
+				inversions <= 3,
+				`expected at most 3 distance inversions for seed ${name} after inserts, got ${inversions}`
+			);
+
+			// Re-puts of both a removed key (a fresh insert) and a surviving one (the update path,
+			// which carries the old level forward and rewrites reverse edges).
+			for (let i = 0; i < 200; i += 4) await pinned.delete(i);
+			for (let i = 0; i < 200; i += 8) await pinned.put(i, { vector: vectorFor(i * i + 1) });
+			for (let i = 2; i < 200; i += 8) await pinned.put(i, { vector: vectorFor(i * i + 1) });
+			// A surviving node's re-put carries its old level forward, so only the 25 re-inserts draw.
+			assert.strictEqual(draws, 225, `the mutation phase for seed ${name} no longer draws as measured`);
+			inversions = verifyIntegrity(pinned.indices.vector);
+			assert(
+				inversions <= 3,
+				`expected at most 3 distance inversions for seed ${name} after deletes and re-puts, got ${inversions}`
+			);
+		}
 	});
 	it('bad queries throw some errors', async () => {
 		assert.throws(
@@ -323,10 +380,11 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		for (let i = 0; i < i8.length; i++) out[i] = i8[i] * scale;
 		return out;
 	}
-	function verifyIntegrity() {
+	/** Asserts the shape-independent graph properties and returns the cross-level inversion count. */
+	function verifyIntegrity(indexed = HNSWTest.indices.vector) {
 		// now verify integrity and proper distance/distancing across levels
 		let invertedSimiliarities = 0;
-		for (let { key, value } of HNSWTest.indices.vector.getRange({})) {
+		for (let { key, value } of indexed.getRange({})) {
 			let lastDistance = 0;
 			let l = 0;
 			let connections;
@@ -341,7 +399,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 				let totalDistance = 0;
 				let asymmetries = 0;
 				for (let { id: neighborId } of connections) {
-					let neighborNode = HNSWTest.indices.vector.get(neighborId);
+					let neighborNode = indexed.get(neighborId);
 					// verify that the connection is symmetrical
 					let symmetrical = neighborNode?.[l].find(({ id }) => id === key);
 					if (!symmetrical) {
@@ -364,9 +422,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 				l++;
 			}
 		}
-		if (invertedSimiliarities > 6)
-			console.log('found', invertedSimiliarities, 'inversions of distance, which is more than desirable');
-		assert(invertedSimiliarities <= 6, `expected at most 6 distance inversions, got ${invertedSimiliarities}`);
+		return invertedSimiliarities;
 	}
 });
 describe('HNSW concurrent PUT race condition (issue #386)', () => {
@@ -965,14 +1021,11 @@ describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
 			],
 		});
-		let seedState = seed;
+		const level = mulberry32(seed);
 		let draws = 0;
 		T.indices.vector.customIndex.random = () => {
 			draws++;
-			seedState = (seedState + 0x6d2b79f5) | 0;
-			let t = Math.imul(seedState ^ (seedState >>> 15), 1 | seedState);
-			t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-			return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+			return level();
 		};
 		for (let i = 0; i < N; i++) {
 			const a = (i / N) * Math.PI * 2;
