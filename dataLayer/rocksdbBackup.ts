@@ -569,7 +569,6 @@ export async function restoreBackup(request: any) {
 	const allowEngineOnly = requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
 	await assertEngineOnlyRestoreAllowed(databaseName, blobRoots, {
 		backupHasBlobs: manifest.blobs,
-		inPlace: true,
 		allowEngineOnly,
 	});
 	const lock = beginRestoreForDatabase(databaseDir, databaseName);
@@ -583,6 +582,14 @@ export async function restoreBackup(request: any) {
 		// purging — restoring under an open instance would corrupt it. If handles remain, fail
 		// with a clear pointer to the offline CLI path rather than purging.
 		await verifyDatabaseClosed(databaseDir, databaseName);
+		// Re-check now that no writer is left: the preflight above ran while the database was still
+		// serving, so a blob written between the two would otherwise survive the purge and produce the
+		// mixed generation this guard exists to prevent. This is the check that is actually sound; the
+		// preflight is there to fail a doomed request before the database is taken down.
+		await assertEngineOnlyRestoreAllowed(databaseName, blobRoots, {
+			backupHasBlobs: manifest.blobs,
+			allowEngineOnly,
+		});
 		destructionStarted = true;
 		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
 		// restore blobs only for a backup that captured them (an engine-only backup leaves the live
@@ -1036,7 +1043,6 @@ export async function restoreBackupOffline(
 	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
 	await assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, blobRoots, {
 		backupHasBlobs: manifest.blobs,
-		inPlace: targetDatabase === undefined || targetDatabase === databaseName,
 		allowEngineOnly,
 	});
 	// Take the restore lock + marker BEFORE probing so a server that starts after this point sees the

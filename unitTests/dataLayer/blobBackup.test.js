@@ -398,33 +398,40 @@ describe('blobBackup', function () {
 	});
 
 	describe('assertEngineOnlyRestoreAllowed', function () {
-		const engineOnlyInPlace = { backupHasBlobs: false, inPlace: true, allowEngineOnly: false };
+		const engineOnly = { backupHasBlobs: false, allowEngineOnly: false };
 
 		it('refuses an engine-only in-place restore while blobs are present', async function () {
 			writeBlob(rootA, '001/002/003', 'alpha');
 			await assert.rejects(
-				assertEngineOnlyRestoreAllowed('somedb', [rootA], engineOnlyInPlace),
+				assertEngineOnlyRestoreAllowed('somedb', [rootA], engineOnly),
 				(error) => error.statusCode === 400 && /allow_engine_only/.test(error.message)
 			);
 		});
 
 		it('allows it once the operator opts in', async function () {
 			writeBlob(rootA, '001/002/003', 'alpha');
-			await assertEngineOnlyRestoreAllowed('somedb', [rootA], { ...engineOnlyInPlace, allowEngineOnly: true });
+			await assertEngineOnlyRestoreAllowed('somedb', [rootA], { ...engineOnly, allowEngineOnly: true });
 		});
 
 		it('allows it when the roots are empty, so nothing can disagree', async function () {
-			await assertEngineOnlyRestoreAllowed('somedb', [rootA], engineOnlyInPlace);
+			await assertEngineOnlyRestoreAllowed('somedb', [rootA], engineOnly);
 		});
 
-		it('allows a restore into a different database name', async function () {
+		it('refuses a named target whose blob roots still hold files', async function () {
+			// A target's blob roots live outside its database directory, so "no database of that name"
+			// does not mean "no blobs of that name" — a dropped database leaves them for a retention
+			// window. Exempting a restore because it names a different database reopened the very
+			// mixed generation this guard exists to prevent.
 			writeBlob(rootA, '001/002/003', 'alpha');
-			await assertEngineOnlyRestoreAllowed('somedb', [rootA], { ...engineOnlyInPlace, inPlace: false });
+			await assert.rejects(
+				assertEngineOnlyRestoreAllowed('somedb-copy', [rootA], engineOnly),
+				(error) => error.statusCode === 400 && /allow_engine_only/.test(error.message)
+			);
 		});
 
 		it('never applies to a backup that captured blobs', async function () {
 			writeBlob(rootA, '001/002/003', 'alpha');
-			await assertEngineOnlyRestoreAllowed('somedb', [rootA], { ...engineOnlyInPlace, backupHasBlobs: true });
+			await assertEngineOnlyRestoreAllowed('somedb', [rootA], { ...engineOnly, backupHasBlobs: true });
 		});
 	});
 });

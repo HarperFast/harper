@@ -373,9 +373,14 @@ export async function blobRootsHaveFiles(blobRoots: string[]): Promise<boolean> 
 export async function assertEngineOnlyRestoreAllowed(
 	databaseName: string,
 	blobRoots: string[],
-	{ backupHasBlobs, inPlace, allowEngineOnly }: { backupHasBlobs: boolean; inPlace: boolean; allowEngineOnly: boolean }
+	{ backupHasBlobs, allowEngineOnly }: { backupHasBlobs: boolean; allowEngineOnly: boolean }
 ): Promise<void> {
-	if (backupHasBlobs || !inPlace || allowEngineOnly) return;
+	if (backupHasBlobs || allowEngineOnly) return;
+	// Deliberately no in-place/target distinction: what makes a restore unsafe is blob files at the
+	// destination, and a destination's blob roots live outside its database directory, so "this name
+	// has no database directory" does not establish "this name has no blobs" — a dropped database
+	// leaves reclaimable blobs behind for a retention window. Asking the roots answers it directly,
+	// and a genuinely new target passes because its roots are missing or empty.
 	if (!(await blobRootsHaveFiles(blobRoots))) return;
 	throw new ClientError(
 		`Cannot restore an engine-only backup over database '${databaseName}': the backup captured no blobs, but the database still has blob files. ` +
