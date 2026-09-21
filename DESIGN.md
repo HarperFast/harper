@@ -1321,6 +1321,62 @@ in write batch", poisoning the whole database env until restart. The regression 
 of this is `unitTests/resources/dropTableGhost.test.js` (it fails by design on pre-fix
 bindings).
 
+## A component-facing export needs BOTH `index.ts` and `getHarperExports` (`index.ts`, `security/jsLoader.ts`)
+
+Adding `export { x } from './…'` to `index.ts` publishes `x` on the `harper` **package** but does
+not make `import { x } from 'harper'` work inside an application. A component loaded into a VM
+compartment resolves `harper` to a synthetic module built from `getHarperExports()`
+(`security/jsLoader.ts`) — a hand-maintained object literal, not a re-export of `index.ts`. Miss it
+and the component fails at load with `The requested module 'harper' does not provide an export
+named 'x'`, which no unit test sees because unit tests `require('#src/…')` directly. The two lists
+are unrelated code, so a new component-facing value has to be added to both, and the only thing
+that catches a miss is an integration fixture that actually imports it from `'harper'` (see
+`integrationTests/security/fixtures/deferred-credential-rejection/resources.js`). Export the value
+from the module that _defines_ it rather than re-exporting through `deferredAuthentication.ts` or
+similar, so a component-created value shares the defining module's private symbols — identity
+matters for `markCredentialRejection`, whose tag is checked with a module-private `Symbol`.
+
+## Authentication converts every principal-resolution failure into a decision (`security/auth.ts`)
+
+`authentication()` resolves a principal from three sources — an mTLS certificate CN, the
+`Authorization` header, and the `hdb_session` cookie — each through the overridable
+`server.getUser`. A failure from any of them must become a **decision**, never a throw: internal
+faults (and anything on the operations API, where Harper owns every route) are answered in place
+with the negotiated 401, and a tagged credential rejection is deferred so the route owner settles
+it. `settleAuthFailure()` is the single place that conversion happens; a new principal-resolving
+path must route through it. A throw that escapes instead unwinds the whole middleware chain to
+`server/http.ts`'s terminal handler and is rendered as a plain-text body (harper#2703).
+
+Two consequences that are easy to miss:
+
+- **A returned 401 is invisible to a WebSocket/MQTT upgrade.** `server/REST.ts` and `server/mqtt.ts`
+  only `await chainCompletion` and ignore its resolved value, so an in-place decision has to be
+  recorded on the request (`markAuthenticationRejectedInPlace`) for
+  `assertNoDeferredCredentialRejection` — which both already call — to fail the upgrade closed.
+  Converting a throw into a returned descriptor without that record turns a fail-closed upgrade
+  into one that proceeds with no principal.
+- **A deferred rejection outranks a later success.** Route owners call
+  `settleDeferredCredentialRejection` _before_ they look at `request.user`, so once a credential is
+  deferred, resolving a principal from a different credential produces a contradiction. That is why
+  a rejected certificate identity stops resolution outright instead of falling through to Basic,
+  the session, or the local bypass.
+
+## Client-visible error text never carries the internal class name (`utility/logging/harper_logger.ts`)
+
+`errorToString` renders `ClassName: message` to match console convention and is for **logs**.
+`errorToClientMessage` returns the message alone and is for anything a client reads: the terminal
+HTTP error bodies (`server/http.ts`) and the WebSocket close reasons. Both must never throw — they
+run while a response is already being produced, where a second throw abandons it. The stream record
+surfaces are deliberately different: `streamErrorRecord`
+(`server/serverHelpers/contentTypes.ts`) puts the class name in its own `error` field on purpose,
+and `integrationTests/server/stream-error-contract.test.ts` pins that wire format.
+
+A close reason has a second constraint: `ws` throws a `RangeError` past 123 bytes, from inside a
+rejection handler where it surfaces as an unhandled rejection. Every `ws.close()` carrying a
+dynamic reason must go through `toCloseReason()`
+(`server/serverHelpers/webSocketCloseReason.ts`) — including reasons built from a request path or
+from a `server.getUser` override's message, neither of which Harper bounds.
+
 ## Scoped tokens and synthetic-role identity (`security/tokenAuthentication.ts`, `security/impersonation.ts`)
 
 `create_authentication_tokens` with an inline `role` **object** mints a `sub: 'scoped-operation'`
