@@ -1,15 +1,9 @@
 'use strict';
 
-// libuv's thread pool is process-global, sized once from UV_THREADPOOL_SIZE on first use, and
-// defaults to 4 — a hard ceiling on concurrent native async work (HNSW plane searches, async fs,
-// dns) no matter how many threads Harper runs. bin/uvThreadPool.ts raises it at startup.
-//
-// The sizing only works if it runs before anything submits pool work, and that ordering is not
-// self-evident from bin/harper.ts: under ESM (the --conditions=typestrip dev/test path) a module's
-// imports are evaluated before its own body, so an assignment written inline at the top of
-// bin/harper.ts would have run *after* the logger and every other import. That is why the
-// assignment lives in a module imported first rather than in the entry point itself, and why the
-// first test below guards the import position.
+// libuv's pool is process-global and sized once, from UV_THREADPOOL_SIZE, when the first task is
+// submitted — so bin/uvThreadPool.ts only works if nothing submits before it runs. Under ESM a
+// module's imports are evaluated before its own body, which is why the assignment is a module
+// bin/harper.ts imports first rather than a line at the top of bin/harper.ts.
 
 const assert = require('node:assert');
 const { execFile } = require('node:child_process');
@@ -20,13 +14,15 @@ const { promisify } = require('node:util');
 const { PACKAGE_ROOT } = require('#src/utility/packageUtils');
 
 const execFileAsync = promisify(execFile);
-const HARNESS = require.resolve('./fixtures/uvThreadPoolHarness.cjs');
+const EXPECTED = Math.min(1024, Math.max(4, availableParallelism()));
 
-function runHarness(size) {
+function runHarness(harness, size) {
 	const env = { ...process.env };
 	if (size === undefined) delete env.UV_THREADPOOL_SIZE;
 	else env.UV_THREADPOOL_SIZE = size;
-	return execFileAsync(process.execPath, [HARNESS], { env }).then(({ stdout }) => JSON.parse(stdout));
+	return execFileAsync(process.execPath, [require.resolve(`./fixtures/${harness}`)], { env }).then(({ stdout }) =>
+		JSON.parse(stdout)
+	);
 }
 
 describe('libuv thread pool sizing', () => {
@@ -44,16 +40,24 @@ describe('libuv thread pool sizing', () => {
 
 	it('sizes the pool to the available parallelism', async function () {
 		this.timeout(30000);
-		const expected = Math.min(1024, Math.max(4, availableParallelism()));
-		const { size, workers } = await runHarness(undefined);
-		assert.equal(size, String(expected));
-		if (process.platform === 'linux') assert.equal(workers, expected);
+		const { size, workers } = await runHarness('uvThreadPoolHarness.cjs');
+		assert.equal(size, String(EXPECTED));
+		if (process.platform === 'linux') assert.equal(workers, EXPECTED);
 	});
 
 	it('leaves an explicit UV_THREADPOOL_SIZE alone', async function () {
 		this.timeout(30000);
-		const { size, workers } = await runHarness('3');
+		const { size, workers } = await runHarness('uvThreadPoolHarness.cjs', '3');
 		assert.equal(size, '3');
 		if (process.platform === 'linux') assert.equal(workers, 3);
+	});
+
+	// The thread count, not the environment variable, is what distinguishes this from the bug: with
+	// the imports in the other order the harness reports size 20 and workers 4.
+	it('wins the race against a later import under ESM', async function () {
+		this.timeout(30000);
+		if (process.platform !== 'linux') this.skip();
+		const { workers } = await runHarness('uvThreadPoolEsmHarness.mjs');
+		assert.equal(workers, EXPECTED);
 	});
 });
