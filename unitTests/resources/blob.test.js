@@ -36,6 +36,8 @@ const {
 	isBlobReceiveInFlight,
 	createPendingMarkerBarrier,
 	watchInProgressFile,
+	blockBlobSavesForRestore,
+	resumeBlobSavesAfterRestore,
 } = require('#src/resources/blob');
 const {
 	existsSync,
@@ -131,6 +133,32 @@ describe('Blob test', () => {
 		assert.equal(retrievedText, testString);
 		let slicedText = await record.blob.slice(0, 100).text();
 		assert.equal(slicedText, testString.slice(0, 100));
+	});
+	it('blocks new blob saves during restore and drains saves that already started', async () => {
+		const store = BlobTest.primaryStore.rootStore;
+		const databaseName = store.databaseName;
+		const source = new PassThrough();
+		const inFlightBlob = await createBlob(source);
+		const inFlight = decodeFromDatabase(() => saveBlob(inFlightBlob).saving, store);
+		let drained = false;
+		const barrier = blockBlobSavesForRestore(databaseName).then(() => {
+			drained = true;
+		});
+		try {
+			await new Promise(setImmediate);
+			assert.strictEqual(drained, false, 'the barrier must wait for an already-started file pipeline');
+
+			const blockedBlob = await createBlob(Buffer.alloc(20000, 'b'));
+			assert.throws(() => decodeFromDatabase(() => saveBlob(blockedBlob), store), /while it is being restored/);
+
+			source.end(Buffer.alloc(20000, 'a'));
+			await Promise.all([inFlight, barrier]);
+			assert.strictEqual(drained, true);
+		} finally {
+			resumeBlobSavesAfterRestore(databaseName);
+			source.destroy();
+		}
+		unlinkSync(getFilePathForBlob(inFlightBlob));
 	});
 	it('create a blob from a buffer and save it', async () => {
 		let random = randomBytes(25000);

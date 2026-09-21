@@ -75,13 +75,23 @@ Three non-obvious mechanics keep that safe:
   it and broadcasting a reload would surface the earlier attempt's partial/corrupt directory as
   healthy. Only a _fresh_ marker on a _previously healthy_ database that failed before destruction is
   safe to clear.
-- **The ITC close broadcast is best-effort, so closure is verified before the purge.** The SCHEMA
-  broadcast (`signalSchemaChange`) resolves after remote handlers complete but times out at 30s
-  "best-effort", swallows errors, and never reaches job-worker threads at all (their ports are
-  excluded from broadcasts to avoid re-entrant deadlocks). A destructive purge cannot trust it:
-  `restoreBackup` polls rocksdb-js `registryStatus()` (process-global across worker threads) until
-  the database path has no open instance, and aborts with a 409 — _cleaning up the marker, since
-  nothing was destroyed_ — if handles remain.
+- **The ITC close broadcast is normally best-effort, so closure is verified before the purge.** A
+  SCHEMA broadcast (`signalSchemaChange`) usually resolves after remote handlers complete but times
+  out at 30s "best-effort" and swallows errors. The restore `close` phase is stricter: it waits until
+  every eligible recipient acknowledges or its port closes, because proceeding past an unconfirmed
+  blob-save barrier would re-open the race the barrier exists to close. A destructive purge still
+  verifies closure independently: `restoreBackup` polls rocksdb-js `registryStatus()` (process-global
+  across worker threads) until the database path has no open instance, and aborts with a 409 —
+  _cleaning up the marker, since nothing was destroyed_ — if handles remain.
+- **The close acknowledgement is also a blob-write barrier.** A store handle can close while a
+  `saveBlob` file pipeline it started is still pending, because blob roots live outside RocksDB and
+  streamed saves settle independently of the record write. The restore signal therefore has
+  explicit `close` and `reload` phases: every worker blocks new saves for that database, awaits its
+  in-flight saves (including replication receives and in-place repairs), then closes the store and
+  acknowledges. Restore signals are the one schema broadcast that includes job workers; ordinary
+  gossip still excludes them to avoid re-entrant broadcast deadlocks. The block stays held through
+  the engine restore and the post-close blob-root check; the `reload` phase rescans first and only
+  then admits saves again.
 - **Online restore is impossible for a database a component holds open — and that failure is
   correct.** rocksdb-js's registry is process-global but records only a per-path refCount, with no
   attribution to a thread or component; Harper keeps no component→database ownership map. So when a

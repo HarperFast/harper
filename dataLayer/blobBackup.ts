@@ -339,13 +339,18 @@ export async function assertBlobSnapshotRestorable(
 /** Whether any configured blob root holds at least one file. Stops at the first one it finds. */
 export async function blobRootsHaveFiles(blobRoots: string[]): Promise<boolean> {
 	for (const root of blobRoots) {
-		for await (const _ of walkBlobFiles(root)) return true;
+		try {
+			for await (const _ of walkBlobFiles(root)) return true;
+		} catch (error: any) {
+			if (error.code === 'ENOTDIR') continue;
+			throw error;
+		}
 	}
 	return false;
 }
 
 /**
- * Refuse an in-place restore of an engine-only backup over a database that still has blobs.
+ * Refuse an engine-only restore when the destination database still has blobs.
  *
  * Restoring engine files while leaving the live blob roots alone produces a mixed generation:
  * rolled-back records addressing whichever blobs happen to be on disk now. The common outcome is a
@@ -354,8 +359,8 @@ export async function blobRootsHaveFiles(blobRoots: string[]): Promise<boolean> 
  * — `resources/blob.ts` `getNextFileId`), which resolves a restored record onto unrelated bytes.
  *
  * Purging the roots instead is not the answer — that strips blobs the restored records still
- * reference — so the operator has to choose, and the choice is recorded. A restore into a new
- * database name is unaffected: it has no pre-existing blobs to disagree with.
+ * reference — so the operator has to choose, and the choice is recorded. This applies equally to
+ * in-place and named-target restores; a genuinely new target passes because its roots are empty.
  */
 export async function assertEngineOnlyRestoreAllowed(
 	databaseName: string,
@@ -383,11 +388,11 @@ export async function assertEngineOnlyRestoreAllowed(
  *
  * A backup created with blobs excluded (or an older backup that predates blob snapshots) has no
  * snapshot directory: in that case the live blob roots are left untouched and a warning is logged,
- * since purging them would strip blobs the restored records may still reference. An in-place restore
- * only reaches that state when the operator accepted it (`assertEngineOnlyRestoreAllowed`) or the
- * roots are already empty. Roots are restored
- * by index into the *same* configured root; an incompatible root count is rejected up front (see
- * `assertBlobSnapshotRestorable`) rather than collapsed, so blobs are never mis-addressed.
+ * since purging them would strip blobs the restored records may still reference. A restore only
+ * reaches that state when the operator accepted it (`assertEngineOnlyRestoreAllowed`) or the
+ * destination roots are already empty. Roots are restored by index into the *same* configured root;
+ * an incompatible root count is rejected up front (see `assertBlobSnapshotRestorable`) rather than
+ * collapsed, so blobs are never mis-addressed.
  */
 export async function restoreBlobSnapshot(
 	backupDir: string,

@@ -1776,6 +1776,43 @@ export function createBlobFromStoredBody(
 // can be committed referencing fileIds whose blob files were never durably written.
 let pendingMigrationBlobSaves: Promise<void>[] | undefined;
 
+const blockedBlobSaveDatabases = new Set<string>();
+const inFlightBlobSaves = new Map<string, Set<Promise<void>>>();
+
+function blobSaveDatabaseName(store: any): string | undefined {
+	return typeof store?.databaseName === 'string' ? store.databaseName : undefined;
+}
+
+function assertBlobSaveAllowed(store: any): void {
+	const databaseName = blobSaveDatabaseName(store);
+	if (databaseName && blockedBlobSaveDatabases.has(databaseName)) {
+		throw new Error(`Cannot save a blob for database '${databaseName}' while it is being restored`);
+	}
+}
+
+function trackBlobSave(store: any, saving?: Promise<void>): void {
+	const databaseName = blobSaveDatabaseName(store);
+	if (!databaseName || !saving) return;
+	let saves = inFlightBlobSaves.get(databaseName);
+	if (!saves) inFlightBlobSaves.set(databaseName, (saves = new Set()));
+	saves.add(saving);
+	const remove = () => {
+		saves.delete(saving);
+		if (saves.size === 0) inFlightBlobSaves.delete(databaseName);
+	};
+	saving.then(remove, remove);
+}
+
+export async function blockBlobSavesForRestore(databaseName: string): Promise<void> {
+	blockedBlobSaveDatabases.add(databaseName);
+	const saves = inFlightBlobSaves.get(databaseName);
+	if (saves) await Promise.allSettled([...saves]);
+}
+
+export function resumeBlobSavesAfterRestore(databaseName: string): void {
+	blockedBlobSaveDatabases.delete(databaseName);
+}
+
 export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 	let storageInfo = storageInfoForBlob.get(blob);
 	if (!storageInfo) {
@@ -1794,6 +1831,7 @@ export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 		if (storageInfo.fileId) return storageInfo; // if there is any file id, we are already saving and can return the info
 		storageInfo.store = currentStore;
 	}
+	assertBlobSaveAllowed(storageInfo.store);
 	storageInfo.deleteOnFailure = deleteOnFailure;
 	if (blob.saveInRecord) {
 		if (!storageInfo.contentBuffer) {
@@ -1816,6 +1854,7 @@ export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 		// for native blobs, we have to read them from the stream
 		writeBlobWithStream(blob as any, Readable.from(blob.stream()), storageInfo);
 	}
+	trackBlobSave(storageInfo.store, storageInfo.saving);
 	// Track the in-flight save when a migration is collecting them. storageInfo.saving is set
 	// by writeBlobWithStream; writeBlobWithBuffer for small blobs may not produce one. The
 	// wrapping `.then(...)` removes resolved promises from the list so a long migration does not
@@ -2311,6 +2350,7 @@ export function repairBlobFile(
 		if (!storageInfo?.fileId || !storageInfo.store) return undefined;
 		if (storageInfo.start !== undefined || storageInfo.end !== undefined) return undefined;
 		store = storageInfo.store;
+		assertBlobSaveAllowed(store);
 		storageInfo.filePath ??= getFilePath(storageInfo);
 		const filePath = storageInfo.filePath;
 		const descriptorSize = (blob as { size?: number }).size;
@@ -2364,6 +2404,7 @@ export function repairBlobFile(
 			repairTargetPath: filePath,
 			repairTempLockKey,
 		});
+		trackBlobSave(store, repairStorageInfo.saving);
 		locksOwnedByWriter = true;
 		const settled = (repairStorageInfo.saving as Promise<void>).then(() => {
 			if (descriptorSize === undefined) (blob as { size?: number }).size = verifiedSize;

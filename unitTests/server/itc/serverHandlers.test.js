@@ -133,6 +133,43 @@ describe('Test hdbChildIpcHandler module', () => {
 			await schema_handler(test_event);
 			expect(log_error_stub).to.have.been.called;
 		});
+
+		it('waits for the blob-save barrier before closing a database for restore', async () => {
+			const calls = [];
+			let releaseDrain;
+			const draining = new Promise((resolve) => {
+				releaseDrain = resolve;
+			});
+			const restore = server_itc_handlers.__set__({
+				blockBlobSavesForRestore: async (databaseName) => {
+					calls.push(`block:${databaseName}`);
+					await draining;
+				},
+				resumeBlobSavesAfterRestore: (databaseName) => calls.push(`resume:${databaseName}`),
+				closeDatabase: (databaseName) => calls.push(`close:${databaseName}`),
+				cleanLmdbMap: async () => {},
+				syncSchemaMetadata: async () => {},
+			});
+			try {
+				const closing = schema_handler({
+					type: 'schema',
+					message: { originator: 12345, operation: 'restore_backup', schema: 'orders', restorePhase: 'close' },
+				});
+				await Promise.resolve();
+				expect(calls).to.deep.equal(['block:orders']);
+				releaseDrain();
+				await closing;
+				expect(calls).to.deep.equal(['block:orders', 'close:orders']);
+
+				await schema_handler({
+					type: 'schema',
+					message: { originator: 12345, operation: 'restore_backup', schema: 'orders', restorePhase: 'reload' },
+				});
+				expect(calls).to.deep.equal(['block:orders', 'close:orders', 'resume:orders']);
+			} finally {
+				restore();
+			}
+		});
 	});
 
 	describe('Test componentStatusRequestHandler function', () => {

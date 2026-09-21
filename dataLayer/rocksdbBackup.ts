@@ -575,18 +575,16 @@ export async function restoreBackup(request: any) {
 	const lock = beginRestoreForDatabase(databaseDir, databaseName);
 	let destructionStarted = false;
 	try {
-		// close the database across all worker threads (each thread also rescans, and the
-		// restoring marker keeps the scan from reloading it mid-restore)
-		await signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.RESTORE_BACKUP, databaseName));
+		// Block new blob saves, drain in-flight saves, and close the database across all worker threads.
+		// Each thread also rescans, and the restoring marker keeps it from reloading mid-restore.
+		await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'close'));
 		// A live component (or the system database) can hold its own handle on the database that
 		// Harper does not track and cannot close, so verify actual process-wide closure before
 		// purging — restoring under an open instance would corrupt it. If handles remain, fail
 		// with a clear pointer to the offline CLI path rather than purging.
 		await verifyDatabaseClosed(databaseDir, databaseName);
-		// Re-check now that no writer is left: the preflight above ran while the database was still
-		// serving, so a blob written between the two would otherwise survive the purge and produce the
-		// mixed generation this guard exists to prevent. This is the check that is actually sound; the
-		// preflight is there to fail a doomed request before the database is taken down.
+		// Re-check while every worker's blob-save barrier is held. The preflight above ran while the
+		// database was still serving, so it can only fail early; this is the sound admission check.
 		await assertEngineOnlyRestoreAllowed(databaseName, blobRoots, {
 			backupHasBlobs: manifest.blobs,
 			allowEngineOnly,
@@ -618,13 +616,19 @@ export async function restoreBackup(request: any) {
 		// nothing destructive happened and the marker was fresh — clear it and let every thread reload
 		// the intact database
 		completeRestore(lock);
-		await signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.RESTORE_BACKUP, databaseName));
+		await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload'));
 		throw error;
 	}
 	completeRestore(lock);
 	// signal again: with the marker gone, every thread's rescan reloads the restored database
-	await signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.RESTORE_BACKUP, databaseName));
+	await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload'));
 	return { database: databaseName, backup_id: backupId, ...(allowEngineOnly ? { allow_engine_only: true } : {}) };
+}
+
+function restoreSchemaEvent(databaseName: string, restorePhase: 'close' | 'reload') {
+	const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.RESTORE_BACKUP, databaseName);
+	message.restorePhase = restorePhase;
+	return message;
 }
 
 // After the close broadcast is acknowledged, every worker thread has released its Harper-managed
@@ -1055,6 +1059,12 @@ export async function restoreBackupOffline(
 			}
 			handle?.close();
 		}
+		// The marker now excludes new loaders and the probe excluded a live holder. Repeat the early
+		// preflight here so a blob created during the PID-file/probe window cannot survive the restore.
+		await assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, blobRoots, {
+			backupHasBlobs: manifest.blobs,
+			allowEngineOnly,
+		});
 		destructionStarted = true;
 		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
 		// restore blobs only for a backup that captured them (per the manifest, not snapshot presence)

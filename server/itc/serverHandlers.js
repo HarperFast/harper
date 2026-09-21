@@ -13,6 +13,7 @@ const harperBridge =
 const process = require('process');
 const { isMainThread, threadId, workerData } = require('node:worker_threads');
 const { resetDatabases, closeDatabase, reloadBranchAt } = require('../../resources/databases.ts');
+const { blockBlobSavesForRestore, resumeBlobSavesAfterRestore } = require('../../resources/blob.ts');
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
@@ -49,11 +50,21 @@ async function schemaHandler(event) {
 	// restore_backup: this thread must release its store handles so the restore can purge and
 	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
 	// the restoring marker is present, and reloads it on the completion signal (marker gone).
+	let resumeBlobSavesFor;
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {
-		closeDatabase(event.message.schema);
+		if (event.message.restorePhase === 'reload') {
+			resumeBlobSavesFor = event.message.schema;
+		} else {
+			await blockBlobSavesForRestore(event.message.schema);
+			closeDatabase(event.message.schema);
+		}
 	}
-	await cleanLmdbMap(event.message);
-	await syncSchemaMetadata(event.message);
+	try {
+		await cleanLmdbMap(event.message);
+		await syncSchemaMetadata(event.message);
+	} finally {
+		if (resumeBlobSavesFor) resumeBlobSavesAfterRestore(resumeBlobSavesFor);
+	}
 	for (let listener of schemaListeners) {
 		try {
 			listener(event?.message);

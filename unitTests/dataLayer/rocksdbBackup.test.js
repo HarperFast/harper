@@ -421,6 +421,17 @@ describe('rocksdbBackup', function () {
 			);
 		});
 
+		it('does not publish a complete backup when a configured blob root is not a directory', async function () {
+			this.timeout(30000);
+			writeBlobDbRecord();
+			const root = getBlobPathsForDatabaseName(BLOB_DB)[0];
+			mkdirSync(dirname(root), { recursive: true });
+			writeFileSync(root, 'not-a-directory');
+
+			await assert.rejects(createBackupOffline(BLOB_DB), (error) => error.code === 'ENOTDIR');
+			assert.deepStrictEqual(await listBackupsInDir(backupDirForDatabase(BLOB_DB)), []);
+		});
+
 		it('refuses an in-place restore of an engine-only backup while the database still has blobs', async function () {
 			this.timeout(30000);
 			writeBlobDbRecord();
