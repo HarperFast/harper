@@ -1,0 +1,14 @@
+# Regression anchor for harper#1887 (fixes #1629) — starts_with on an @indexed string vs astral-plane (U+10000+) continuation chars.
+#
+# `name` is the @indexed attribute under test (secondary index, ordered-binary-encoded keys,
+# byte-faithful — no NFC/NFD normalization anywhere in Harper).
+# `nameScan` is an UN-indexed mirror holding the exact same string. Querying starts_with on
+# `nameScan` as the SOLE condition has no index to use, so resources/search.ts::searchByIndex
+# is forced down the full-scan + JS-filter path (recordValue.startsWith(value)) — a clean
+# oracle for "is this row really on disk and does it really match the prefix", independent of
+# the indexed range machinery.
+type Catalog @table @export {
+	id: ID @primaryKey
+	name: String @indexed
+	nameScan: String
+}
