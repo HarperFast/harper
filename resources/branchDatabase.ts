@@ -71,11 +71,9 @@ interface OpenBranch {
 // READY at the same moment and would otherwise each try to open the directory the winner just opened.
 const branchesByPath = new Map<string, Promise<OpenBranch>>();
 
-/** This thread's view of each claim key. `getUserSharedBuffer` keeps its entry only while a caller
- *  still references the buffer, so without a view held here the word is re-seeded by whichever
- *  caller attaches first after a collection -- losing a published claim, and taking its width from
- *  that caller's seed. Keyed on the base store so a dropped and reopened base attaches to the new
- *  arena every other thread is on, rather than this thread's view of the old one. */
+/** `getUserSharedBuffer` keeps its entry only while a caller still references the buffer, so a
+ *  published claim survives a collection only while a view is held here. Keyed on the base store,
+ *  because a dropped and reopened base hands out a new arena. */
 const claimStatesByStore = new WeakMap<object, Map<string, BigInt64Array>>();
 
 /**
@@ -84,9 +82,8 @@ const claimStatesByStore = new WeakMap<object, Map<string, BigInt64Array>>();
  * from UNCLAIMED. A durable or cross-process claim would read READY on restart and silently skip
  * recovery.
  *
- * Its two words are `CLAIM_STATE` and `CLAIM_PROGRESS`. Nowhere else may seed the key: a narrower
- * seed that attached first would decide the width, and `claimDeadlineFor` would then read
- * `CLAIM_PROGRESS` out of range.
+ * Nowhere else may seed the key: the first seed in decides the width, and a narrower one leaves
+ * `claimDeadlineFor` reading `CLAIM_PROGRESS` out of range.
  */
 export function claimStateFor(baseName: string, branchPath: string): BigInt64Array {
 	const baseStore = database({ database: baseName, table: undefined });
@@ -564,9 +561,8 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 		// `openBranchDatabase` takes the identity over for the life of the handle; anything short of
 		// that has to hand it back, or the application can never load again in this process.
 		if (!handedOver) {
-			// A load that gave up drops its view of anything but a published claim, so a CREATING word
-			// left behind by a thread killed before its catch ran can still be collected and re-seeded.
-			// Holding it would make every later load of this application wait out the deadline again.
+			// Nothing but a published claim is worth holding: a CREATING word whose owner was killed
+			// before its catch ran is released by being collected, and `releaseClaim` resets only READY.
 			if (Atomics.load(claimState, CLAIM_STATE) !== READY) forgetClaimState(baseName, branchPath);
 			if (blobRootsStranded) quarantineBranchIdentity(storeName);
 			else releaseBranchIdentity(storeName);
@@ -683,8 +679,7 @@ async function destroyBranchStorage(branchPath: string, opened: OpenBranch | nul
 		if (databases[basename(branchPath)]) {
 			try {
 				if (!opened) releaseClaim(claimStateFor(basename(branchPath), branchPath));
-				// The branch this key named is gone, so nothing is left to lose by letting the word be
-				// collected; a recreate seeds the UNCLAIMED the release just wrote anyway.
+				// A recreate seeds the UNCLAIMED the release just wrote, so the word is no longer worth holding.
 				forgetClaimState(basename(branchPath), branchPath);
 			} catch (error) {
 				logger.warn?.(`Could not release the branch claim for ${branchPath}`, error);

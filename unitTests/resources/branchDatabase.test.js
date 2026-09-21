@@ -1844,12 +1844,8 @@ describe('the claim budget follows the winner (harper#644)', () => {
 describeUnlessLmdb('the claim word outlives a collection (harper#644)', () => {
 	const { claimStateFor } = require('#src/resources/branchDatabase');
 
-	/**
-	 * Prove a collection actually reclaimed a `getUserSharedBuffer` entry, so the assertions below
-	 * cannot pass merely because nothing was collected. An entry is kept only while a caller still
-	 * references the buffer, so a throwaway key attached with two words and then dropped comes back
-	 * one word wide once it has gone.
-	 */
+	/** A throwaway key that comes back narrower proves a collection actually reclaimed an entry, so
+	 *  the assertions below cannot pass merely because nothing was collected. */
 	function attachedLength(store, key, words) {
 		return new BigInt64Array(store.getUserSharedBuffer(key, new BigInt64Array(words).buffer)).length;
 	}
@@ -1879,8 +1875,7 @@ describeUnlessLmdb('the claim word outlives a collection (harper#644)', () => {
 
 		assert.ok(await sharedBuffersCollected(store), 'nothing was collected, so this test proves nothing');
 
-		// What any later attach would install if the claim word had been reclaimed: the narrower seed
-		// would decide the layout, and `claimDeadlineFor` would then load CLAIM_PROGRESS out of range.
+		// The narrower seed a reclaimed claim word would take its width from.
 		const attached = new BigInt64Array(
 			store.getUserSharedBuffer(`branch-claim:${branchPath}`, new BigInt64Array([0n]).buffer)
 		);
@@ -1946,7 +1941,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 	it('closes its own handle, then removes the branch, its blob roots and its claim', async function () {
 		this.timeout(30000);
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
-		// Held for the whole test: an attach per assertion could read a re-seeded buffer, and pass
+		// Held for the whole test: an attach per assertion could read a re-seeded buffer and pass
 		// without the claim ever having been released.
 		const claimState = claimStateFor('cyclebase', branchPath);
 		await getOrCreateBranch('cyclebase', 'cycleApp');
