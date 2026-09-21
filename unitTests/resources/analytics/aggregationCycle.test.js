@@ -53,15 +53,17 @@ function aggregatedWritePaths() {
 }
 
 // `storeMetric` does not await its `put`, so a rollup is readable some time after the cycle that
-// wrote it resolves — immediately under RocksDB, a few ms later under LMDB.
+// wrote it resolves — immediately under RocksDB, only once the commit lands under LMDB.
 function aggregatedWritePath(path, message = `${path} was aggregated`) {
-	return waitFor(() => aggregatedWritePaths().includes(path), { message });
+	return waitFor(() => aggregatedWritePaths().includes(path), { timeout: 10000, message });
 }
 
 describe('analytics aggregation cycle', () => {
-	// Rollups of this path, counted from the cycle itself: no wait on storage can establish that a
-	// second one will never arrive, and the listener runs synchronously inside the cycle.
-	let concurrentRollups = 0;
+	// Rollups of this path, taken from the cycle itself: no wait on storage can establish that a
+	// second one will never arrive, and the listener runs synchronously inside the cycle. Held by
+	// identity because `onAnalyticsAggregate` has no unregister — a listener registered twice in one
+	// process reports the same rollup twice, a real second cycle reports a second object.
+	const concurrentRollups = new Set();
 
 	before(async function () {
 		this.timeout(30000);
@@ -74,7 +76,7 @@ describe('analytics aggregation cycle', () => {
 		// cursor ahead of the backlog these tests seed.
 		analytics.setAnalyticsEnabled(true);
 		analytics.onAnalyticsAggregate((actions) => {
-			for (const action of actions) if (action.path === 'AggWindowConcurrent') concurrentRollups++;
+			for (const action of actions) if (action.path === 'AggWindowConcurrent') concurrentRollups.add(action);
 		});
 		analytics.recordAction(1, 'db-write', 'Bootstrap');
 		// The table object appears when the recording path creates it, which is before its own
@@ -128,9 +130,10 @@ describe('analytics aggregation cycle', () => {
 		await seedRawReports([rawReport(lastRawKey() + 1, 'AggWindowConcurrent')]);
 		await nextPeriod();
 
+		concurrentRollups.clear();
 		await Promise.all([runCycle(), runCycle()]);
 
-		assert.strictEqual(concurrentRollups, 1, 'the window was rolled up once');
+		assert.strictEqual(concurrentRollups.size, 1, 'the window was rolled up once');
 		await aggregatedWritePath('AggWindowConcurrent');
 		const aggregated = aggregatedWritePaths().filter((path) => path === 'AggWindowConcurrent');
 		assert.deepStrictEqual(aggregated, ['AggWindowConcurrent']);
