@@ -365,7 +365,9 @@ function readBody(request) {
 		const res = await udsRequest(socketPath, { pathName: '/boom' });
 		assert.strictEqual(res.status, 500);
 		assert.ok(res.statusMessage && res.statusMessage.length > 0, 'reason phrase must be non-empty');
-		assert.match(res.body.toString(), /kaboom/);
+		// the class name is the error code, and it must not depend on which runtime served the
+		// request — the Node and Bun terminal handlers render the same way (harper#2703)
+		assert.strictEqual(res.body.toString(), 'Error: kaboom');
 	});
 
 	it('emits a non-empty reason phrase for a less-common status code', async function () {
