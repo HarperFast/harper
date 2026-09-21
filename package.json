@@ -159,7 +159,7 @@
 		"globals": "^17.0.0",
 		"intercept-stdout": "0.1.2",
 		"mkcert": "^3.2.0",
-		"mocha": "^11.7.5",
+		"mocha": "^12.0.0",
 		"mqtt": "^5.15.1",
 		"on-finished": "^2.4.1",
 		"on-headers": "^1.1.0",
