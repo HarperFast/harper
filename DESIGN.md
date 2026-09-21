@@ -2699,6 +2699,85 @@ cannot be written issues no reset. The cursor's atomic durability mechanism is t
 (Tantivy publishes it with segment state; HNSW writes it after the plane barrier), which is why the
 cursor is backend-owned and validation is Harper's.
 
+### Native full-text backend
+
+`resources/indexes/fullTextDerivedIndex.ts` adapts the shared runtime to
+`@harperfast/fulltext/native`; it does not implement another replay or ownership protocol. Harper
+turns each resolved mutation into one stable document id from `tableId` and the record id's
+ordered-binary storage-key bytes, and
+passes only the schema-selected string and array fields to the wrapper. Harper does not rescan array
+contents; the wrapper owns value validation, Tantivy schema, exact frame partitioning, its exclusive writer, segment publication, and file
+lifecycle. Harper keeps accepted runtime batches in a 64 MiB bounded queue and submits at most 256
+records or 5 ms of conversion work per turn, so the runtime's 4096-record chunk cannot become one
+long event-loop task. A rebuild chunk without a source-size estimate consumes the adapter's entire
+queue-byte allowance, ensuring that only one unknown-size chunk is retained at a time. Wrapper
+rejections remove the previous document and count it as unindexable; they do not leave stale search
+content. A projector returning null or no string-valued fields deletes the prior document rather
+than indexing an empty replacement.
+
+Every runtime flush is a native publication barrier. Full-text activation chooses and benchmarks the
+runtime flush thresholds; the adapter does not reinterpret a flush because the runtime uses durable
+cursor progress to bound replay work and transaction-log retention.
+
+The native commit payload contains Harper's exact derived-index cursor. A publish makes the Tantivy
+mutations and that payload visible together; only then does the adapter report durable progress.
+An ordinary apply or publish failure rollback-closes the writer, discards accepted-but-unpublished
+work, and wakes the runtime to replay from the last native payload after exponential backoff to a
+five-second ceiling. It does not condemn a structurally valid generation. During a rebuild, the same
+accepted-work-lost signal aborts that rebuild attempt; the runtime retires the partial generation and
+spends one of its bounded rebuild attempts before rescanning. A mutation-batch protocol
+violation remains permanent because retry cannot change the wrapper contract. Writer open is lazy.
+After a small immediate attempt budget, open errors use the same retry ceiling unless their stable
+code proves the native generation is structurally incompatible or corrupt. Configuration, binding,
+process-state, and unknown codes retry by default: they may require operator action or restart, but do
+not prove the index files should be reset. Persistent writer unavailability emits one warning without native paths
+or record content. Ownership handoff does not finish until drain and close prove quiescence. A
+writer-open failure that lands after shutdown begins discards queued work before finalization so it
+cannot enter another retry drain. Harper
+gives native close its own 35-second bound and bounds the complete handoff at 70 seconds. If that proof fails, shutdown rejects and the runtime keeps its
+runner lock, preventing a second writer. The underlying native operation continues and a later operator
+retry attaches to the same shutdown rather than starting a competing close. A cursor that cannot fit
+the native commit-payload limit is terminal for that backend instance: accepted work is rollback-closed
+and reported lost, then further delivery stays deferred. The adapter does not report a permanent
+backend failure because condemnation and reset cannot shrink the cursor. Automatic reset is refused
+until configuration changes replace the backend instance. This terminal park keeps readiness
+non-terminal; when the derived-index lag policy is enabled, source writes remain rejected after the
+lag limit is crossed until the deployment is changed so the cursor fits and the backend is replaced,
+or the index is disabled. Inspection accepts any payload within Harper's fixed 64 KiB format bound,
+independent of the current publication limit, so lowering that limit never turns an already-valid
+native generation into rebuild work.
+
+Inspection is synchronous and writer-free. The first durable-cursor read in each ownership acquisition
+refreshes native state, while later reads in the same acquisition use the cache; every shutdown path
+invalidates it, including an owner that received no batch. A refresh failure never falls back to a
+cached checkpoint because the runtime can publish `ready` before lazy writer-open reconciliation.
+The synchronous backend contract has no retryable acquisition result, so an inspection exception
+deliberately fails closed: the runtime condemns the generation and rebuilds from authoritative
+records rather than trusting an unverified cursor. A transient filesystem error can therefore cost
+a full rescan; reintroducing asynchronous acquisition solely to avoid that trade is out of scope.
+Missing, cursorless, incompatible, or malformed native state has no usable cursor and therefore enters
+the runtime's ordinary local rebuild from records.
+Reset first asks the wrapper to retire the live generation atomically, then reclaims only wrapper-
+validated retired paths. The reset operation is tracked and bounded; shutdown attaches to the same
+operation and keeps the runner lock if it cannot prove settlement. Retired-path reclamation is
+best-effort, serialized per lifecycle, and never extends that reset handoff. The native directory is node-local derived state: restarts reuse it and
+replay after its payload; replicas independently derive it from their own applied transaction log;
+backup and restore need only authoritative records and schema. A new or unusable directory serves no
+full-text queries until rebuild and catch-up publish `ready`.
+
+Tantivy files are not an opaque encrypted cache. They contain the document-id term dictionary,
+analyzed term dictionaries, postings, frequencies and optionally positions; `surfaceTerms: true`
+also stores the original projected strings needed for surface-term features. Operators must protect
+the full-text directory with the same filesystem controls as Harper data. Removing source records
+does not erase old segment bytes immediately; normal Tantivy merge/reclamation governs physical
+removal, and destroying an index uses the wrapper's retirement protocol.
+
+The binding remains unloaded until a full-text declaration is activated. Before activation can
+construct this backend, Harper must exact-pin the Fulltext package, document the dependency in
+`dependencies.md`, and prove that its native prebuild loads on Linux, macOS, and Windows CI. A
+missing or incompatible binding is an activation error; Harper must not silently omit the declared
+index.
+
 ### Bounded delivery
 
 A drain turn **collects** identities from the iterator — `(tableId, recordId, logVersion)` per
