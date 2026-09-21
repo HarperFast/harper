@@ -2233,8 +2233,6 @@ export function closeDatabase(databaseName: string): boolean {
 		}
 	};
 	const rootStores = collectRootStores(databaseName);
-	// a root store another loaded name still references (an alias of the same path) closes with its
-	// last name; this name releases only what it holds itself
 	const sharedRootStores = new Set<any>();
 	for (const rootStore of rootStores) {
 		if (isRootStoreReferencedElsewhere(rootStore, databaseName)) sharedRootStores.add(rootStore);
@@ -2249,7 +2247,11 @@ export function closeDatabase(databaseName: string): boolean {
 	for (const tableName in dbTables) {
 		const table: any = dbTables[tableName];
 		if (!table?.primaryStore) continue;
-		table.cleanup?.();
+		try {
+			table.cleanup?.();
+		} catch (error) {
+			logger.warn(`Error retiring table ${tableName} while closing database ${databaseName}:`, error);
+		}
 		// a RocksDB column family handle is refcounted per open, so each name closes the ones it opened;
 		// an LMDB table handle is a slot of the environment (mdb_dbi_close invalidates it for every
 		// wrapper of it), so LMDB handles are released only by the environment close below
