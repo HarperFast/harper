@@ -632,9 +632,8 @@ export class HierarchicalNavigableSmallWorld {
 					// repairable file, and only the owner may destroy it: invalidating through this
 					// handle would write a path-based tombstone that could name a replacement the
 					// owner had already created.
-					const geometryMismatch = !this.filePrimary
-						? undefined
-						: opened.keyCap !== this.nativePlaneKeyCap
+					const geometryMismatch =
+						opened.keyCap !== this.nativePlaneKeyCap
 							? `keyCap ${opened.keyCap} differs from the configured ${this.nativePlaneKeyCap}`
 							: opened.layer0Cap !== this.nativePlaneLayer0Cap
 								? `layer0Cap ${opened.layer0Cap} differs from the configured ${this.nativePlaneLayer0Cap}`
