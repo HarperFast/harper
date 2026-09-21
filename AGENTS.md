@@ -102,17 +102,17 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 ### Source — covered above
 
-- **`components/`** — plugin/app loader. Entry: `Scope.ts`, `OptionsWatcher.ts`. Tests: `unitTests/components/`.
+- **`components/`** — plugin/app loader. Entry: `Scope.ts`, `OptionsWatcher.ts`. **See [components/DESIGN.md](components/DESIGN.md)** (deploys, load lifecycle) and [components/mcp/DESIGN.md](components/mcp/DESIGN.md). Tests: `unitTests/components/`.
 - **`server/`** — HTTP/WS/MQTT/etc. Entry: `operationsServer.ts` (boot), `http.ts` (native HTTP). **See [server/DESIGN.md](server/DESIGN.md).** Tests: `unitTests/server/`.
 - **`resources/`** — universal Resource abstraction; tables. Entry: `Resource.ts`, `Table.ts`. **See [resources/DESIGN.md](resources/DESIGN.md).** Tests: `unitTests/resources/`.
-- **`dataLayer/`** — legacy translation modules (`insert.js`, `search.js`, `update.js`). **Avoid for new code.** Tests: `unitTests/dataLayer/`.
-- **`config/`** — YAML config + hot reload. Entry: `configUtils.js`, `RootConfigWatcher.ts`. Tests: `unitTests/config/`.
-- **`utility/`** — logging, errors, helpers. Tests: `unitTests/utility/`.
+- **`dataLayer/`** — legacy translation modules (`insert.js`, `search.js`, `update.js`). **Avoid for new code.** Backup/restore and the version gate live here too: [dataLayer/DESIGN.md](dataLayer/DESIGN.md). Tests: `unitTests/dataLayer/`.
+- **`config/`** — YAML config + hot reload. Entry: `configUtils.js`, `RootConfigWatcher.ts`. **See [config/DESIGN.md](config/DESIGN.md).** Tests: `unitTests/config/`.
+- **`utility/`** — logging, errors, helpers. [utility/DESIGN.md](utility/DESIGN.md). Tests: `unitTests/utility/`.
 
 ### Other source folders
 
 - **`bin/`** — CLI entry points. `harper.js` is the executable; `run.js` initializes and runs the server; `cliOperations.js` translates CLI args → API operations. Tests: `unitTests/bin/`. **Don't look here for** business logic.
-- **`security/`** — auth, authz, certificate handling, context. Entry: `jsLoader.ts` exposes `getContext()`, `getResponse()`, `getUser()`; `user.ts` for User/Role; `certificateVerification/` for TLS validation; `data_objects/` for permission/role models. Tests: `unitTests/security/`.
+- **`security/`** — auth, authz, certificate handling, context. Entry: `jsLoader.ts` exposes `getContext()`, `getResponse()`, `getUser()`; `user.ts` for User/Role; `certificateVerification/` for TLS validation; `data_objects/` for permission/role models. **See [security/DESIGN.md](security/DESIGN.md).** Tests: `unitTests/security/`.
 - **`sqlTranslator/`** — SQL → internal operations via AlaSQL AST. Entry: `sqlTranslator/index.js` exports `evaluateSQL`, `processAST`, `convertSQLToAST`, `checkASTPermissions`. **Legacy — avoid for new code.** Tests: `unitTests/sqlTranslator/`.
 - **`validation/`** — input shape validation (Joi + `validate.js`). Entry: `validationWrapper.js`. **Not authorization** — that's in `security/`. Tests: `unitTests/validation/`.
 - **`upgrade/`** — version-upgrade orchestration. Entry: `directivesManager.js` exports `processDirectives()`. Per-version logic in `directives/`. Tests: `integrationTests/upgrade/`.
@@ -123,7 +123,7 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 - **`bin/`** — covered above (it's source).
 - **`benchmarks/`** — HNSW vector-search benchmark only (`hnsw-search.js`). Stand-alone; not part of CI.
-- **`build-tools/`** — build-pipeline scripts. Tests: `unitTests/build-tools/`; run `npm run test:unit:main` after changes.
+- **`build-tools/`** — build-pipeline scripts. [build-tools/DESIGN.md](build-tools/DESIGN.md) covers the published artifacts. Tests: `unitTests/build-tools/`; run `npm run test:unit:main` after changes.
 - **`dev/`** — single dev utility (`sync-commits.js`) for cross-repo commit syncing. Not runtime.
 - **`integrationTests/`** — end-to-end tests against a built distribution. Run with `npm run test:integration` / `npm run test:integration:all`. Subdirs mirror source. See `integrationTests/README.md`.
 - **`unitTests/`** — Mocha unit tests; subdir per source layer. Run with `npm run test:unit:<layer>`.
@@ -131,7 +131,7 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 ### Top-level docs to consult
 
-- **[DESIGN.md](DESIGN.md)** — running list of non-obvious internals (RecordObject prototype, getFromSource timing, blob orphan cleanup). Read this before debugging anything record-store-related.
+- **[DESIGN.md](DESIGN.md)** — index of every design note (one line each) and the rules for where a note goes. The notes themselves live in the `DESIGN.md` of the directory that owns the code; read the one for the directory you are touching.
 - **[dependencies.md](dependencies.md)** — rationale for every npm dependency. Required reading before adding a new package.
 - **[storage-format.md](storage-format.md)** — on-disk layout (RocksDB/LMDB).
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — contribution workflow.
@@ -142,12 +142,19 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 For megafiles and complex subsystems, jump to the section index instead of reading top-to-bottom:
 
-| If you are touching…                                   | Read first                                 |
-| ------------------------------------------------------ | ------------------------------------------ |
-| Anything in `resources/` (especially `Table.ts`)       | [resources/DESIGN.md](resources/DESIGN.md) |
-| HTTP/WS/MQTT, middleware ordering, content types       | [server/DESIGN.md](server/DESIGN.md)       |
-| Record-store internals (commit timing, blobs, encoder) | [DESIGN.md](DESIGN.md)                     |
-| Adding a dependency                                    | [dependencies.md](dependencies.md)         |
+| If you are touching…                                   | Read first                                                 |
+| ------------------------------------------------------ | ---------------------------------------------------------- |
+| Anything in `resources/` (especially `Table.ts`)       | [resources/DESIGN.md](resources/DESIGN.md)                 |
+| HTTP/WS/MQTT, middleware ordering, content types       | [server/DESIGN.md](server/DESIGN.md)                       |
+| Record-store internals (commit timing, blobs, encoder) | [resources/DESIGN.md](resources/DESIGN.md)                 |
+| `table.lock()`, record-lock ownership                  | [resources/record-locks.md](resources/record-locks.md)     |
+| Derived indexes, HNSW                                  | [resources/indexes/DESIGN.md](resources/indexes/DESIGN.md) |
+| Deploys, component load lifecycle                      | [components/DESIGN.md](components/DESIGN.md)               |
+| Config composition, env layers, hot reload             | [config/DESIGN.md](config/DESIGN.md)                       |
+| Backup/restore, system tables, version gate            | [dataLayer/DESIGN.md](dataLayer/DESIGN.md)                 |
+| Tokens, OIDC, TLS                                      | [security/DESIGN.md](security/DESIGN.md)                   |
+| Any other directory                                    | its `DESIGN.md`, via the index in [DESIGN.md](DESIGN.md)   |
+| Adding a dependency                                    | [dependencies.md](dependencies.md)                         |
 
 ---
 

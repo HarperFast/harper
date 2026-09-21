@@ -60,6 +60,7 @@
 		"package": "./build-tools/build.sh",
 		"lint": "oxlint --format stylish --deny-warnings .",
 		"lint:required": "oxlint --format stylish --quiet .",
+		"check:design-docs": "node build-tools/check-design-docs.mjs",
 		"lint:fix": "npm run lint -- --fix",
 		"format:check": "prettier --check .",
 		"format:write": "prettier --write .",
