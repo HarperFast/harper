@@ -79,10 +79,11 @@ RocksDB, where it reaches the same shared-root bookkeeping.
   cleanup stop, storage-reclamation unregistration, `dbisDb` and root close, env-cache entry) runs
   only when no other loaded name references the root store. `closeStore` also attaches a rejection
   handler to a promise-returning close (lmdb-js's), which the synchronous try/catch never saw.
-- `closeDatabaseWithAliases(name)` — physical close: awaits the derived-index runtime stop of every
-  table under every loaded name sharing a root store with `name` (the runtime's stop barrier is the
-  proof that nothing can still write), then closes those names, so the last close releases the native
-  handles with no flush in flight.
+- `closeDatabaseWithAliases(name)` — physical close: waits for the derived-index runtime of every
+  table under every loaded name sharing a root store with `name` to stop, then closes those names, so
+  the last close releases the native handles with no flush in flight. A stop that cannot prove its
+  queued work quiescent is logged and the close proceeds (the HNSW backend's own `close()` already
+  settles that way), so this is best effort, not a proof.
 - `collectRootStores(name)` / `isRootStoreReferencedElsewhere` — the per-name root-store set (tables
   plus the defined-database entry for a tableless name), compared by object identity, never by path.
 
@@ -138,7 +139,7 @@ handle closes.
   referenced, so LMDB handles now close only with the environment.
 - **Async close rejections.** lmdb-js's `close()` returns a promise; `closeStore` now attaches a
   rejection handler instead of catching only synchronous throws.
-- **Runtime stop before the stores close** (raised in code review rounds 1–2). `Table.cleanup()`
+- **Runtime stop before the stores close.** `Table.cleanup()`
   starts the derived-index runtime's stop without awaiting it, so a flush in flight could land after
   the stores closed — and, for a restore, after the files were replaced. `closeDatabase` stays
   synchronous (worker-exit teardown cannot await), but the physical close awaits every affected

@@ -2284,9 +2284,10 @@ export function closeDatabase(databaseName: string): boolean {
 /**
  * Close every loaded name that shares a root store with `databaseName`, `databaseName` included, so
  * the store's native handles are actually released — what a restore needs before it replaces the
- * files, where `closeDatabase` alone would leave the store open under its other names. Resolves once
- * every table's derived-index runtime has proven its queued work quiescent and the stores are
- * closed, so a flush still in flight cannot land after the files are gone.
+ * files, where `closeDatabase` alone would leave the store open under its other names. Waits for
+ * every table's derived-index runtime to stop before the stores close, so a flush still in flight
+ * does not land after the files are gone; a stop that cannot prove its queued work quiescent is
+ * logged and the close proceeds.
  */
 export async function closeDatabaseWithAliases(databaseName: string): Promise<boolean> {
 	if (!databases[databaseName]) return false;
