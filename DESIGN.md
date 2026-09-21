@@ -3010,8 +3010,8 @@ id remains on the query path.
 
 Degree cap is the per-index `nativePlaneLayer0Cap`, **default 64** (supersedes the fixed 128 of
 2026-08-31, re-measured in [hnsw#14](https://github.com/HarperFast/hnsw/pull/14)): at 128-d and
-768-d int8, cap 64 holds recall@10 within 0.5 pt of cap 128 at every ef ≥ 128 at 1M and 4M, and
-within 0.3 pt at 768-d, at the same resident latency — while cutting the 128-d slot 704 → 448 B and
+768-d int8, cap 64 holds recall@10 within ~0.5 pt of cap 128 at every ef ≥ 128 at 1M and 4M, and
+within ~0.3 pt at 768-d, at the same resident latency — while cutting the 128-d slot 704 → 448 B and
 the 768-d slot 1,344 → 1,088 B, which keeps a 4M-node plane resident under a 2 GB limit that makes
 the cap-128 plane thrash. A live 7.7M-node plane carries a mean layer-0 degree of 29
 ([hnsw#7](https://github.com/HarperFast/hnsw/issues/7)), so the reserved slot was mostly padding.

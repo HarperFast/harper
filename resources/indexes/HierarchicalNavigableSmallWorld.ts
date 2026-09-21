@@ -137,14 +137,13 @@ function autoScaleEfConstruction(nodeCount: number): number {
 const NODE_COUNT_TTL = 10_000;
 
 // Native traversal-plane geometry (DESIGN.md § Native HNSW plane). A file-primary index builds no
-// JS graph, so the layer-0 cap is plane policy alone: `nativePlaneLayer0Cap` declares it, the crate
-// prunes layer-0 adjacency to it, and a plane file whose header disagrees is rebuilt, never reused.
-// maxNodes is a fixed sparse reservation — pages materialize on write — and ids at or past it are
-// rejected by the crate, which disables the plane.
+// JS graph, so the plane header carries its only layer-0 maximum. maxNodes is a fixed sparse
+// reservation — pages materialize on write — and ids at or past it are rejected by the crate,
+// which disables the plane.
 const PLANE_LAYER0_CAP = 64;
 const PLANE_LAYER0_CAP_MAX = 1024;
-// The connection count the crate builds with; nativePlane pins the index to it, and a layer-0 cap
-// below it could not hold a node's own forward edges.
+// The crate's fixed connection count, which nativePlane pins the index to: a layer-0 cap below it
+// could not hold a node's own forward edges.
 const PLANE_M = 16;
 const PLANE_MAX_NODES = 1 << 24;
 // Default inline primary-key bytes per plane slot (msgpack-encoded); 40 fits UUIDs inside the slot
@@ -630,9 +629,9 @@ export class HierarchicalNavigableSmallWorld {
 					// another worker may still be constructing this shared file.
 					const opened = Plane.open(filePath);
 					// A header that disagrees with the declaration is a different graph, not a
-					// repairable file. Ask the owner to rebuild rather than throwing into the
-					// unopenable-file path below: that one leaves the invalidated file in place, and a
-					// present file makes every query report "rebuilding" for a rebuild nobody started.
+					// repairable file, and only the owner may destroy it: invalidating through this
+					// handle would write a path-based tombstone that could name a replacement the
+					// owner had already created.
 					const geometryMismatch = !this.filePrimary
 						? undefined
 						: opened.keyCap !== this.nativePlaneKeyCap
@@ -641,7 +640,6 @@ export class HierarchicalNavigableSmallWorld {
 								? `layer0Cap ${opened.layer0Cap} differs from the configured ${this.nativePlaneLayer0Cap}`
 								: undefined;
 					if (geometryMismatch) {
-						opened.invalidateFile();
 						this.disablePlane(new Error(`plane ${geometryMismatch}`));
 						return null;
 					}

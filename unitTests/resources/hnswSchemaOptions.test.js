@@ -1003,8 +1003,6 @@ describe('HNSW GraphQL numeric options', () => {
 				/nativePlaneLayer0Cap must be a finite number/
 			);
 
-			// The floor is the plane's own pinned M, not the index's, so the option stays declarable
-			// on an index that does not run a plane.
 			const jsGraph = await loadTable(
 				'HnswLayer0CapNonNative',
 				'(audit: true)',
