@@ -83,3 +83,18 @@ A handful of design points are non-obvious and easy to break:
   the audit log or ITC. Consequence: the subscribe **targeting** logic (`id`/`isCollection` derivation) is
   _bypassed_ by the seam and is therefore covered at the **integration** level (`sse-listchanged.test.ts` N3
   record / N4 collection), not in unit tests.
+
+- **Discovery filtering must mirror the dispatch gate's ORDER, not just its inputs.**
+  `canRoleInvokeOperation` (duplicated in `toolRegistry.ts` and `resources.ts`, backing both
+  `tools/list` and `harper://operations`) answers only the role-level question; per-target
+  schema/table checks still run at call time in `verifyPerms`. What it may **not** defer is the
+  `operations` allowlist. `verifyOperationsAllowlist` runs _ahead of every privilege
+  early-return_ in `verifyPerms` (harper#2176), super_user and structure_user included, so a
+  helper that short-circuits on a privilege flag advertises tools that then fail closed on call.
+  The helper is therefore allowlist-first: deny when an allowlist excludes the op, and only then
+  consult the flags. Membership resolves through `_expandedOperations ?? expandOperationsPerms`
+  because the allowlist stores **group** names (`read_only`, `standard_user`) that the dispatch
+  gate expands — a raw `includes` under-advertises every op a role holds only via a group. These
+  helpers are the class of code that goes stale silently: they were correct when written and were
+  invalidated by a change in a _different_ file, with no test failure to announce it. Whenever the
+  ordering in `verifyPerms` changes, re-check both copies.
