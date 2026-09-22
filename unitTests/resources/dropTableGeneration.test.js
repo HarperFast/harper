@@ -306,6 +306,33 @@ describe('dropTable generation-distinct stores', function () {
 			assert.deepStrictEqual(generationRows(), []);
 		});
 
+		it('journals an interrupted legacy catalog whose primary row carries its attribute name', async function () {
+			const Legacy = defineTable('GenLegacyPrimary');
+			const primary = dbisDb().getSync('GenLegacyPrimary/');
+			const { generation } = primary;
+			const primaryKey = 'GenLegacyPrimary/id';
+			const family = `${primaryKey}@${generation}`;
+			Legacy.primaryStore.dropSync();
+			const legacyStore = openRocksDatabase(rootStore().path, { name: family });
+			legacyStore.putSync(1, { id: 1, str: 'legacy' });
+			legacyStore.close();
+			primary.dropping = true;
+			primary.dropGeneration = generation;
+			dbisDb().removeSync('GenLegacyPrimary/');
+			dbisDb().putSync(primaryKey, { ...primary, key: primaryKey });
+			delete databases[TEST_DB].GenLegacyPrimary;
+
+			resetDatabases();
+
+			const journal = dbisDb().getSync(`${GENERATION_ROW_PREFIX}${generation}`);
+			assert.equal(journal.primaryStore, family);
+			assert.ok(journal.stores.includes(family));
+			await waitFor(() => !rootStore().columns.includes(family) && !generationRows().length, {
+				timeout: 15_000,
+				message: 'legacy named-primary generation was not reclaimed',
+			});
+		});
+
 		it('completes a tombstoned drop by exact store name, leaving a live same-name generation alone', async function () {
 			const Old = defineTable('GenTombstoneExact', [{ name: 'blob', type: 'Blob' }]);
 			const blob = await createBlob(Buffer.alloc(50_000, 4));

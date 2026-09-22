@@ -3942,6 +3942,12 @@ export async function sweepDroppedTableBlobs(
 	let failures = 0;
 	let batches = 0;
 	const pending = new Set<Promise<void>>();
+	let resolveProgress: () => void;
+	let progress = new Promise<void>((resolve) => (resolveProgress = resolve));
+	const notifyProgress = () => {
+		resolveProgress();
+		progress = new Promise<void>((resolve) => (resolveProgress = resolve));
+	};
 	const cancelled = () => options?.cancelled?.();
 	const track = (blob: Blob) => {
 		const completion = deleteBlobAndWait(blob)
@@ -3949,15 +3955,20 @@ export async function sweepDroppedTableBlobs(
 				failures++;
 				logger.warn(`Could not reclaim a blob file from dropped table ${label}`, error);
 			})
-			.finally(() => pending.delete(completion));
+			.finally(() => {
+				pending.delete(completion);
+				notifyProgress();
+			});
 		pending.add(completion);
 	};
 	const waitForProgress = async () => {
+		let timer: NodeJS.Timeout;
 		const poll = new Promise<void>((resolve) => {
-			const timer = setTimeout(resolve, 100);
+			timer = setTimeout(resolve, 100);
 			timer.unref?.();
 		});
-		await Promise.race([Promise.race(pending), poll]);
+		await Promise.race([progress, poll]);
+		clearTimeout(timer!);
 	};
 	try {
 		while (!cancelled()) {
@@ -4216,33 +4227,34 @@ function scheduleGenerationReclaim(rootStore: RocksDatabase, attributesDbi, data
 /** Finishes the durable logical state of a drop that stopped after writing its tombstone. */
 function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string, tableName: string) {
 	logger.debug(`Completing interrupted drop of table ${databaseName}.${tableName}`);
+	const catalogRows = [...attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })] as Array<{
+		key: string;
+		value: any;
+	}>;
+	const primaryEntry =
+		catalogRows.find(({ key, value }) => key === tableName + '/' && value?.isPrimaryKey) ??
+		catalogRows.find(({ value }) => value?.isPrimaryKey);
 	if (rootStore instanceof RocksDatabase) {
-		const primaryRow = attributesDbi.getSync(tableName + '/');
-		const stores = storeNamesFor(attributesDbi, tableName, primaryRow?.generation);
+		const primaryRow = primaryEntry?.value;
+		const stores = catalogRows.map(({ key }) => storeNameFor(key, primaryRow?.generation));
 		if (primaryRow && !primaryRow.dropGeneration) {
 			primaryRow.dropGeneration = randomUUID();
-			attributesDbi.putSync(tableName + '/', primaryRow);
+			attributesDbi.putSync(primaryEntry.key, primaryRow);
 		}
 		if (primaryRow) {
-			const primaryRows = [...attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })].filter(
-				({ value }) => value?.isPrimaryKey
-			);
-			const primaryCatalogKey =
-				primaryRows.find(({ key }) => key !== tableName + '/')?.key ??
-				primaryRows.find(({ key }) => key === tableName + '/')?.key;
 			recordRetiredGeneration(
 				attributesDbi,
 				tableName,
 				primaryRow.dropGeneration,
 				stores,
-				primaryCatalogKey ? storeNameFor(primaryCatalogKey, primaryRow.generation) : undefined
+				storeNameFor(primaryEntry.key, primaryRow.generation)
 			);
 		}
 	} else {
 		// LMDB reuses an existing named sub-database on open, so the stores must
 		// be dropped too; removing only the catalog rows would let a same-name
 		// recreate silently inherit the previous table's records.
-		for (const { key, value } of attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })) {
+		for (const { key, value } of catalogRows) {
 			const objectStorage =
 				value?.isPrimaryKey || (value?.indexed?.type && CUSTOM_INDEXES[value.indexed.type]?.useObjectStore);
 			const store = (rootStore as any).openDB(key, createOpenDBIObject(!objectStorage, objectStorage) as any);
@@ -4257,27 +4269,20 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 			}
 		}
 	}
-	// The primary catalog row (the `dropping` tombstone itself, keyed at exactly
-	// `tableName + '/'`) sorts first among these keys and so would be removed
-	// before the attribute rows that follow it. Removing it last instead means a
+	// The primary catalog row is the `dropping` tombstone. Removing it last means a
 	// removeSync failure partway through leaves the tombstone in place alongside
 	// whatever attribute rows didn't get removed yet, so a later retry still
 	// recognizes the table as mid-drop - instead of the tombstone vanishing
 	// first and stranding orphaned attribute rows that the next load would
 	// misread as a live (non-dropping) table.
-	const primaryCatalogKey = tableName + '/';
-	let removePrimaryLast = false;
-	for (const key of attributesDbi.getKeys({ start: tableName + '/', end: tableName + '0' })) {
-		if (key === primaryCatalogKey) {
-			removePrimaryLast = true;
-			continue;
-		}
+	for (const { key } of catalogRows) {
+		if (key === primaryEntry?.key) continue;
 		// removeSync (not remove): same reasoning as dropSync above - the async
 		// remove() rejects after this function has already returned, so a
 		// catalog-removal failure would bypass the retry accounting entirely.
 		(attributesDbi as any).removeSync(key);
 	}
-	if (removePrimaryLast) (attributesDbi as any).removeSync(primaryCatalogKey);
+	if (primaryEntry) (attributesDbi as any).removeSync(primaryEntry.key);
 }
 
 export function dropTableMeta({ table: tableName, database: databaseName }) {
