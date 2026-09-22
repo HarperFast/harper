@@ -47,6 +47,22 @@ describe('native derived-index query coverage', function () {
 			},
 			{ timeout: 15_000, message: 'native index did not certify current coverage' }
 		);
+	// Coverage past a write is certified only by a durability barrier, and the runtime's age-flush
+	// timer is re-armed from the previous barrier, so it can fire milliseconds after a write. A test
+	// that needs a coverage wait to outlive the transaction monitor holds the barrier until the
+	// monitor has acted. The gate never rejects: a rejected barrier reads as index failure.
+	const holdBarrier = () => {
+		const { flushDerived } = index;
+		const gate = Promise.withResolvers();
+		index.flushDerived = async function (...args) {
+			await gate.promise;
+			return flushDerived.apply(this, args);
+		};
+		return () => {
+			gate.resolve();
+			delete index.flushDerived;
+		};
+	};
 	before(async () => {
 		setupTestDBPath();
 		setMainIsWorker(true);
@@ -148,6 +164,7 @@ describe('native derived-index query coverage', function () {
 		await current();
 		setTxnExpiration(20);
 		const transaction = new DatabaseTransaction();
+		const releaseBarrier = holdBarrier();
 		try {
 			await Product.put('expired-read-wait', { vector });
 			const results = await Product.search(
@@ -160,9 +177,11 @@ describe('native derived-index query coverage', function () {
 			pending.catch(() => {});
 			await waitFor(() => transaction.transaction !== snapshot);
 			await Product.put('after-expired-snapshot', { vector });
+			releaseBarrier();
 			await assert.rejects(pending, { name: 'ReadSnapshotExpiredError', statusCode: 503 });
 			assert.equal(transaction.readTxnsUsed, 0);
 		} finally {
+			releaseBarrier();
 			transaction.abort();
 			setTxnExpiration(30_000);
 		}
@@ -171,6 +190,7 @@ describe('native derived-index query coverage', function () {
 		await current();
 		setTxnExpiration(20);
 		const transaction = new DatabaseTransaction();
+		const releaseBarrier = holdBarrier();
 		try {
 			await Product.put('write-timeout-wait', { vector });
 			await Other.put('uncommitted-wait', { value: 1 }, { transaction });
@@ -181,6 +201,7 @@ describe('native derived-index query coverage', function () {
 			const pending = Array.fromAsync(results);
 			pending.catch(() => {});
 			await waitFor(() => transaction.timedOut);
+			releaseBarrier();
 			await assert.rejects(pending, { statusCode: 422 });
 			await assert.rejects(
 				Promise.resolve().then(() => transaction.commit()),
@@ -188,6 +209,7 @@ describe('native derived-index query coverage', function () {
 			);
 			assert.equal(await Other.get('uncommitted-wait'), undefined);
 		} finally {
+			releaseBarrier();
 			transaction.abort();
 			setTxnExpiration(30_000);
 		}

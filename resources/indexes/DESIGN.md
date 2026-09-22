@@ -424,7 +424,10 @@ is the scheduler. It requests `flush('age')` when the first accepted batch since
 asynchronously, coalesces requests that arrive mid-barrier, and publishes `through` atomically with
 what the barrier made durable. Reaching the end of the log requests no extra barrier — arrivals
 spaced just beyond drain completion would otherwise pay one per write; the age timer is idle
-completion.
+completion. A request made while earlier work is still non-durable re-arms the timer from the
+request, and a later write keeps that timer, so a write's barrier lands anywhere in (0, 1 s]. A test
+that needs a coverage wait to outlive the transaction monitor must therefore hold `flushDerived`
+until the monitor has acted (`holdBarrier` in `unitTests/resources/derivedIndexCoverage.test.js`).
 
 ### Rebuild
 
