@@ -53,6 +53,7 @@ import {
 } from '../customResourceRegistry.ts';
 import { notifyPromptsListChanged, notifyResourcesListChanged, notifyToolsListChanged } from '../listChanged.ts';
 import { decodeCursor, encodeCursor } from '../pagination.ts';
+import { wrapToolResult } from './results.ts';
 import {
 	type AttributePermissionEntry,
 	type HarperAttribute,
@@ -472,17 +473,12 @@ function makeTarget(): InstanceType<RequestTargetCtor> {
 // should pass through to structuredContent as-is rather than being wrapped in a
 // derived `{ id }`/`{ deleted }` shape, which would corrupt custom Resource
 // responses and their author-declared output schemas (#1324).
+//
+// An array counts as an envelope here (it is the author's payload, not a scalar
+// to be wrapped in `{ id }`); `wrapToolResult` is what then makes it legal for
+// `structuredContent`.
 function isStructuredEnvelope(data: unknown): data is object {
 	return typeof data === 'object' && data !== null;
-}
-
-function wrapResult(data: unknown): ToolResult {
-	const text = typeof data === 'string' ? data : JSON.stringify(data ?? null);
-	const result: ToolResult = { content: [{ type: 'text', text }] };
-	if (data !== null && typeof data === 'object') {
-		result.structuredContent = data as object;
-	}
-	return result;
 }
 
 function wrapError(toolName: string, err: unknown): ToolResult {
@@ -537,7 +533,7 @@ function makeGetHandler(toolName: string, path: string, capturedClass: ResourceC
 			if (Array.isArray(a.get_attributes)) target.select = a.get_attributes as string[];
 			applyContractInputs(target, ResourceClass, a, 'get');
 			const data = await ResourceClass.get!(target, buildContext(context.user));
-			return wrapResult(data);
+			return wrapToolResult(data);
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
@@ -569,7 +565,7 @@ function makeSearchHandler(toolName: string, path: string, capturedClass: Resour
 			const page = hasMore ? rows.slice(0, limit) : rows;
 			const result: { rows: unknown[]; nextCursor?: string } = { rows: page };
 			if (hasMore) result.nextCursor = encodeCursor(offset + limit);
-			return wrapResult(result);
+			return wrapToolResult(result);
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
@@ -616,7 +612,7 @@ function makeCreateHandler(toolName: string, path: string, capturedClass: Resour
 			// scalar against a declared outputSchema with -32600. A custom Resource
 			// that returns a structured record/envelope (typically with a
 			// `static outputSchemas.create` override) is passed through unchanged (#1324).
-			return wrapResult(isStructuredEnvelope(data) ? data : { id: data });
+			return wrapToolResult(isStructuredEnvelope(data) ? data : { id: data });
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
@@ -647,7 +643,7 @@ function makeUpdateHandler(toolName: string, path: string, capturedClass: Resour
 			// derive{Update,Patch}OutputSchema. A custom Resource that returns a
 			// structured envelope (with a static outputSchemas override) passes
 			// through unchanged (#1324).
-			return wrapResult(isStructuredEnvelope(data) ? data : { ok: true });
+			return wrapToolResult(isStructuredEnvelope(data) ? data : { ok: true });
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
@@ -667,7 +663,7 @@ function makeDeleteHandler(toolName: string, path: string, capturedClass: Resour
 			// result carries structuredContent matching deriveDeleteOutputSchema. A
 			// custom Resource that returns a structured envelope (typically with a
 			// `static outputSchemas.delete` override) is passed through unchanged (#1324).
-			return wrapResult(isStructuredEnvelope(data) ? data : { deleted: Boolean(data) });
+			return wrapToolResult(isStructuredEnvelope(data) ? data : { deleted: Boolean(data) });
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
@@ -1201,7 +1197,7 @@ function makeCustomMethodHandler(toolName: string, path: string, capturedClass: 
 				serverRequest: context.serverRequest,
 			};
 			const data = await method.call(instance, args ?? {}, mcpContext);
-			return wrapResult(data ?? { ok: true });
+			return wrapToolResult(data ?? { ok: true });
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
