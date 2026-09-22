@@ -1,5 +1,4 @@
 const assert = require('node:assert');
-const sinon = require('sinon');
 const logger = require('#src/utility/logging/harper_logger');
 const { redactArgs, redactArgsForTool, maskSessionId, emitAuditEntry } = require('#src/components/mcp/audit');
 
@@ -149,11 +148,11 @@ describe('mcp/audit', () => {
 			);
 		});
 
-		// The redaction tests above call the helper directly; this pins that the emit path still
-		// reaches it, which a regression to a raw redactArgs call would otherwise pass.
+		// The redaction tests above call the helper directly; this one covers the emit path.
 		it('redacts the emitted args through the tool policy', () => {
 			const emitted = [];
-			const restore = sinon.stub(logger, 'info').callsFake((entry) => emitted.push(entry));
+			const originalInfo = logger.info;
+			logger.info = (entry) => emitted.push(entry);
 			try {
 				emitAuditEntry({
 					timestamp: new Date().toISOString(),
@@ -166,7 +165,7 @@ describe('mcp/audit', () => {
 					durationMs: 1,
 				});
 			} finally {
-				restore.restore();
+				logger.info = originalInfo;
 			}
 			assert.equal(emitted.length, 1);
 			assert.deepStrictEqual(emitted[0].args, { name: 'API_KEY', value: '[redacted]', values: '[redacted]' });
