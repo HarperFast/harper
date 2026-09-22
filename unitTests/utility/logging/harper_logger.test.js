@@ -988,6 +988,45 @@ describe('Test harper_logger module', () => {
 		});
 	});
 
+	describe('Test path setter keeps closeLogFile bound to the current file', () => {
+		const PATH_SETTER_TEST_DIR = path.join(__dirname, 'pathSetterCloseLogFileTest');
+
+		before(() => {
+			fs.mkdirpSync(PATH_SETTER_TEST_DIR);
+		});
+
+		after(() => {
+			fs.removeSync(PATH_SETTER_TEST_DIR);
+		});
+
+		it('closes the fd of the path the logger currently points at, not the one it was created with', async () => {
+			const firstPath = path.join(PATH_SETTER_TEST_DIR, 'first.log');
+			const secondPath = path.join(PATH_SETTER_TEST_DIR, 'second.log');
+			const movedSecondPath = path.join(PATH_SETTER_TEST_DIR, 'second.log.moved');
+			const logger = createLogger({ path: firstPath, level: 'info' });
+
+			logger.info('into first');
+			await waitFor(() => fs.existsSync(firstPath) && fs.readFileSync(firstPath, 'utf8').includes('into first'));
+
+			logger.path = secondPath;
+			logger.info('into second');
+			await waitFor(() => fs.existsSync(secondPath) && fs.readFileSync(secondPath, 'utf8').includes('into second'));
+
+			logger.closeLogFile();
+			fs.renameSync(secondPath, movedSecondPath);
+
+			logger.info('after close');
+			await waitFor(() => fs.existsSync(secondPath) && fs.readFileSync(secondPath, 'utf8').includes('after close'));
+			assert.ok(!fs.readFileSync(movedSecondPath, 'utf8').includes('after close'));
+			assert.ok(!fs.readFileSync(firstPath, 'utf8').includes('after close'));
+
+			logger.closeLogFile();
+			// The first sink's 10s close timer fires too late for after()'s directory removal.
+			logger.path = firstPath;
+			logger.closeLogFile();
+		});
+	});
+
 	describe('Test external/component logger rotation inheritance (#1877)', () => {
 		const ROTATION_TEST_DIR = path.join(__dirname, 'rotationInheritanceTest');
 		let loggersToCleanup, rotationCaseDir;

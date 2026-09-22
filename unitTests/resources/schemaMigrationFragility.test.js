@@ -21,6 +21,14 @@
  *
  * These tests are designed to FAIL if the fragility manifests, so they
  * function as both diagnostics and regression guards.
+ *
+ * The blocks that stand up their own root under envDir remove it on the way IN, never on the way
+ * out. On the way in the process is fresh and holds no handles on those files, so the removal is
+ * safe. On the way out the databases opened against the root are still open, and deleting their
+ * files leaves them writing into a directory that is gone — they then fail their flush whenever
+ * they finally close, which rocksdb-js surfaces at process exit as "Failed to flush database
+ * during close", attributed to no test. envDir is gitignored, so what a run leaves behind is local
+ * litter that the next run clears.
  */
 require('../testUtils');
 const assert = require('node:assert');
@@ -429,10 +437,6 @@ describe('schema-migration fragility: non-indexed attributes missing from table.
 		resetDatabases();
 	});
 
-	after(async () => {
-		await fs.remove(testRoot);
-	});
-
 	it('table.attributes includes all non-indexed fields after resetDatabases()', () => {
 		const tbl = getDatabases()[DB]?.[TABLE];
 		assert.ok(tbl, `${DB}.${TABLE} should be registered after resetDatabases()`);
@@ -541,9 +545,8 @@ describe('schema relationship catalog round-trip', () => {
 		await host.dbisDB.committed;
 	});
 
-	after(async () => {
+	after(() => {
 		closeDatabase(DB);
-		await fs.remove(testRoot);
 	});
 
 	it('persists normalized relationship definitions on the primary catalog descriptor', () => {
@@ -790,10 +793,6 @@ describe('schema relationship catalog on a legacy named primary descriptor', () 
 		await source.dbisDB.committed;
 	});
 
-	after(async () => {
-		await fs.remove(testRoot);
-	});
-
 	it('refuses a drop whose tombstone could not be durable without leaving one behind', async () => {
 		const dbisDB = source.dbisDB;
 		const originalPut = dbisDB.put;
@@ -891,10 +890,6 @@ describe('schema relationship catalog on a table with no declared primary key', 
 		await getDatabases()[DB].NoPrimaryKeySource.dbisDB.committed;
 	});
 
-	after(async () => {
-		await fs.remove(testRoot);
-	});
-
 	it('persists the relationship list even though no attribute row carries it', () => {
 		const source = getDatabases()[DB].NoPrimaryKeySource;
 		assert.strictEqual(source.primaryKey, undefined);
@@ -959,7 +954,11 @@ describe('schema-migration fragility: stale store reused after LMDB to RocksDB e
 	after(async () => {
 		if (originalEngine === undefined) delete process.env.HARPER_STORAGE_ENGINE;
 		else process.env.HARPER_STORAGE_ENGINE = originalEngine;
-		await fs.remove(testRoot);
+		// Releases only the registered descriptor: before() builds this block's premise by reopening
+		// the database on the other engine without closing the first handle, so more than one live
+		// descriptor points at these files by design. Hence no removal here either — see the note
+		// at the top of the file.
+		closeDatabase(DB);
 	});
 
 	it('starts from a stale LMDB-backed table while the data on disk is RocksDB', () => {

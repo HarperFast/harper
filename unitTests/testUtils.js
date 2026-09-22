@@ -12,7 +12,7 @@ const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default
 const { getDatabases } = require('#src/resources/databases');
 const { handleHDBError } = require('#src/utility/errors/hdbError');
 const { PRIVATEKEY_PEM_NAME } = require('#src/utility/terms/certificates');
-const { materializePerPidRoot, removePerPidRoot } = require('./perPidRoot.js');
+const { materializePerPidRoot } = require('./perPidRoot.js');
 
 let envMgrInitSyncStub;
 
@@ -83,12 +83,6 @@ function preTestPrep(testConfigObj) {
 	// effect on the process's exit status.
 	process.prependListener('exit', (code) => {
 		if (code === 0) {
-			// Clean up explicitly rather than relying solely on the preload's own 'exit'
-			// listener: this one is prepended, so it runs first, and assigning exitCode
-			// (instead of calling process.exit(), per the comment above) lets the preload's
-			// listener still run too — this just guarantees the ~98 suites that call
-			// preTestPrep don't depend on load order for it.
-			removePerPidRoot();
 			process.exitCode = unhandledRejectionExitCode;
 		}
 	});
@@ -198,12 +192,21 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
 }
 
 /**
- * Tears down a mock LMDB HDB environment/DB
+ * Tears down a mock HDB environment/DB: drops the tables it is given and clears the schema caches.
+ *
+ * It deliberately does NOT remove the per-PID root. Removing the root removes the files of every
+ * database the process has open, not just the tables passed in — `system`, `dev`, and whatever
+ * else the suite touched, each still held dozens of handles deep (`registryStatus()` reports
+ * refCounts in the tens after this runs). Those stores go on writing into unlinked files and then
+ * fail their flush whenever they finally close, which rocksdb-js reports as "Failed to flush
+ * database during close": an uncaught throw out of the exit listener, attributed to no test.
+ * Dropping the tables is what the callers actually want; the root itself is removed at process
+ * exit, after the databases have closed (see the afterAll hook in mocha.init.js).
+ *
  * @param envs
- * @param partial_teardown
  * @returns {Promise<void>}
  */
-async function tearDownMockDB(envs = undefined, partial_teardown = false) {
+async function tearDownMockDB(envs = undefined) {
 	try {
 		if (envs !== undefined) {
 			for (const Table of envs) {
@@ -215,7 +218,6 @@ async function tearDownMockDB(envs = undefined, partial_teardown = false) {
 
 		delete global.hdb_schema;
 		global.lmdb_map = undefined;
-		if (!partial_teardown) await fs.remove(PID_DIR_PATH);
 	} catch (err) {
 		console.error('Error tearing down mock DB used for unit tests');
 		console.error(err);

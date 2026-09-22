@@ -803,6 +803,7 @@ export function createLogger(options: any = {} as any) {
 			logFilePath = path;
 			if (!logFilePath) return;
 			logToFile = getFileLogger(logFilePath, logger.rotation, isExternalInstance, rotationPolicy());
+			logger.closeLogFile = logToFile.closeLogFile;
 			rotationPolicyApplied();
 			if (isExternalInstance) writeToLogFile = logToFile;
 		},

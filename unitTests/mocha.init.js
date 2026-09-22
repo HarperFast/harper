@@ -58,6 +58,14 @@ module.exports.mochaHooks = {
 	},
 	afterAll() {
 		runFinished = true;
+		// Register the root removal here, not in the preload below: 'exit' listeners fire in
+		// registration order, and the one that flushes and closes every open database
+		// (RocksTransactionLogStore's shutdown()) is registered when the data layer loads —
+		// after the preload, before this hook. Removing the root any earlier deletes the
+		// database files out from under that flush, which rocksdb-js reports as
+		// "Failed to flush database during close: IO error ... 000NNN.log" — a throw out of an
+		// exit listener, so the run exits 7 with every test passing.
+		if (isMainThread) process.on('exit', removePerPidRoot);
 	},
 };
 
@@ -108,10 +116,9 @@ if (isMainThread) {
 			}
 		}
 	}
-	// preTestPrep() also calls removePerPidRoot() from its own prepended 'exit' listener
-	// (belt-and-suspenders for suites that call it), but suites that never call preTestPrep
-	// still need cleanup, which is what this listener covers
-	process.on('exit', removePerPidRoot);
+	// The removal itself is registered from the afterAll root hook above, which every suite
+	// gets, so that it runs after the database shutdown listener rather than before it. A run
+	// that dies before afterAll leaves its root behind for the sweep above to reclaim.
 }
 materializePerPidRoot();
 process.env.ROOTPATH = PID_DIR_PATH;
