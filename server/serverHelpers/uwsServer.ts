@@ -24,6 +24,7 @@ import { UwsRequest, UwsRequestBody } from './Request.ts';
 import { Headers } from './Headers.ts';
 import { when } from '../../utility/when.ts';
 import { ClientError } from '../../utility/errors/hdbError.ts';
+import { errorToString } from '../../utility/logging/harper_logger.ts';
 
 // uWS has no npm package; it's installed from a GitHub tag and is platform/ABI-specific.
 // Imported lazily so harper builds/loads on platforms without a uWS binary.
@@ -160,7 +161,9 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 					res.cork(() => {
 						res.writeStatus(statusText(status));
 						res.writeHeader('content-type', 'text/plain');
-						res.end(String((error && error.message) || error));
+						// the same renderer as the Node and Bun terminal handlers: the class name is the
+						// error code a client branches on, and it must not depend on the runtime
+						res.end(errorToString(error));
 					});
 				}
 			);

@@ -135,3 +135,41 @@ debounce. `loadAndWatch` latches its mtime before the callback for chokidar/poll
 the latch back on a synchronous throw or a rejected callback promise (equality-guarded so a stale
 rejection cannot unlatch a newer reload) — the latch means "last successfully applied", so the
 periodic poll can heal a lost `hdb_certificate` write instead of deduplicating it forever.
+
+## A component-facing export needs BOTH `index.ts` and `getHarperExports` (`security/jsLoader.ts`, `index.ts`)
+
+Adding `export { x } from './…'` to `index.ts` publishes `x` on the `harper` **package** but does not
+make `import { x } from 'harper'` work inside an application. A component loaded into a VM compartment
+resolves `harper` to a synthetic module built from `getHarperExports()` — a hand-maintained object
+literal, not a re-export of `index.ts` — so a value added to only one list fails at component load with
+`The requested module 'harper' does not provide an export named 'x'`. No unit test sees that, because
+unit tests `require('#src/…')` directly; only a fixture that imports from `'harper'` does
+(`integrationTests/security/fixtures/deferred-credential-rejection/resources.js`, harper#2703).
+
+Export the value from the module that _defines_ it rather than re-exporting it through an intermediate,
+so a component-created value shares that module's private symbols. `markCredentialRejection` depends on
+this: its tag is a module-private `Symbol` that `isCredentialRejection` checks by identity.
+
+## Authentication converts every principal-resolution failure into a decision (`security/auth.ts`)
+
+`authentication()` resolves a principal from three sources — an mTLS certificate CN, the `Authorization`
+header, and the `hdb_session` cookie — each through the overridable `server.getUser`. A failure from any
+of them must become a **decision**, never a throw: an internal fault (and anything on the operations API,
+where Harper owns every route) is answered in place, and a tagged credential rejection is deferred so the
+layer owning the route settles it. A throw that escapes instead unwinds the whole middleware chain to
+`server/http.ts`'s terminal handler and renders as a plain-text body, which is what harper#2703 reported.
+`settleAuthFailure()` performs the conversion; `rejectAuthenticationInPlace()` is the only way to answer
+in place, and a new principal-resolving path must route through them.
+
+Two consequences that are easy to miss:
+
+- **A returned 401 is invisible to a WebSocket or MQTT upgrade.** `server/REST.ts` and `server/mqtt.ts`
+  only `await chainCompletion` and discard its resolved value, so an in-place decision has to be recorded
+  on the request (`markAuthenticationRejectedInPlace`) for `assertNoDeferredCredentialRejection` — which
+  both already call — to fail the upgrade closed. Converting a throw into a returned descriptor without
+  that record turns a fail-closed upgrade into one that proceeds with no principal. The certificate
+  revocation exit is the case that was missed first.
+- **A deferred rejection outranks a later success.** Route owners call
+  `settleDeferredCredentialRejection` _before_ they read `request.user`, so once a credential is deferred,
+  resolving a principal from a different credential is a contradiction. Hence a rejected certificate
+  identity stops resolution outright instead of falling through to Basic, the session, or the local bypass.

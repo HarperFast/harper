@@ -617,3 +617,22 @@ took the whole pool down at once. A string does the same thing for the same reas
 included: an earlier attempt to give job workers the serving count instead broke the Windows
 integration shard with ECONNREFUSED across the job tests. A job worker that believes it is part of the
 pool behaves differently.
+
+## A WebSocket close reason must be bounded to 123 bytes (`server/serverHelpers/webSocketCloseReason.ts`)
+
+`ws` throws a `RangeError` when a close reason exceeds 123 bytes — the control-frame payload minus the
+status code — and every close site Harper has reaches it from a rejection handler, where that throw
+surfaces as an unhandled rejection rather than a failed close. Two of the reasons are outside Harper's
+control: a `server.getUser` override's rejection text, and `request.pathname` in REST's no-resource
+close. So every `ws.close()` carrying a dynamic reason goes through `toCloseReason()`, which truncates
+on a code-point boundary (harper#2703).
+
+The `ClassName: message` in a close reason is deliberate and not something to sanitize: the class name is
+Harper's error code, and `errorToString` is the correct renderer for client-visible error text — see
+AGENTS.md, "An error's class name is its error code". Only an internal fault's _message_ is replaced, by
+`AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL`. The three terminal HTTP handlers (Node and Bun in
+`server/http.ts`, uWS in `server/serverHelpers/uwsServer.ts`) must agree on that rendering; uWS rendered
+the bare message until harper#2703, so the same error carried an error code on two runtimes and not the third.
+
+REST settles a credential rejection _before_ its route lookup, so a rejected client gets the unauthorized
+close rather than `1011 No resource was found` — which would otherwise disclose whether the resource exists.

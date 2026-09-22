@@ -25,6 +25,7 @@ import {
 	assertNoDeferredCredentialRejection,
 	settleDeferredCredentialRejection,
 } from '../security/deferredAuthentication.ts';
+import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget';
@@ -585,14 +586,16 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			});
 			try {
 				await chainCompletion;
+				// before the route lookup: the same credential is a 401 over HTTP, so a rejected client
+				// must not learn from the close code whether the resource exists
+				assertNoDeferredCredentialRejection(request);
 				const url = request.url.slice(1);
 				const entry = resources.getMatch(url, 'ws');
 				recordActionBinary(Boolean(entry), 'connection', 'ws', 'connect');
 				if (!entry) {
 					// TODO: Ideally we would like to have a 404 response before upgrading to WebSocket protocol, probably
-					return ws.close(1011, `No resource was found to handle ${request.pathname}`);
+					return ws.close(1011, toCloseReason(`No resource was found to handle ${request.pathname}`));
 				} else {
-					assertNoDeferredCredentialRejection(request);
 					request.handlerPath = entry.path;
 					recordAction(
 						(action) => ({
@@ -632,7 +635,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				ws.close(
 					HTTP_TO_WEBSOCKET_CLOSE_CODES[error.statusCode] || // try to return a helpful code
 						1011, // otherwise generic internal error
-					errorToString(error)
+					toCloseReason(errorToString(error))
 				);
 			}
 			ws.close();
