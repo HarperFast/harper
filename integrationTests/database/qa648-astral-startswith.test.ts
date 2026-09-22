@@ -42,6 +42,13 @@
  * Fails-on-base: with #1887 absent, test (a) goes red (the four immediate-astral rows are
  * missing from the indexed result while the scan returns them); the controls stay green.
  *
+ * Bun coverage (harper#2750): this anchor also pins ordered-binary 1.6.2. Under Bun, 1.6.1 built its
+ * `readString` with `new Function`, whose body compiles in global scope, so the generated reader could
+ * not resolve the module-level `finishUtf8` helper and threw `ReferenceError: finishUtf8 is not
+ * defined` while DECODING any key byte >= 0x80 -- every non-ASCII value, not just astral ones. Harper
+ * surfaced that as a truncated result set with HTTP 200 and nothing in hdb.log. Every non-ASCII row
+ * below therefore exercises the Bun key decoder as well as the #1887 bound arithmetic.
+ *
  * Originating QA scenario: QA-648 (promote candidate P-427).
  */
 import { suite, test, before, after } from 'node:test';
