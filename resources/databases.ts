@@ -1166,6 +1166,7 @@ function initStores(
 		let tableDef = tablesToLoad.get(tableName);
 		if (!tableDef) tablesToLoad.set(tableName, (tableDef = { attributes: [] }));
 		if (attribute_name == null || value.isPrimaryKey) tableDef.primary = value;
+		if (value.dropping) tableDef.tombstone = value;
 		if (attribute_name != null) tableDef.attributes.push(value);
 		Object.defineProperty(value, 'key', { value: key, configurable: true });
 	}
@@ -1181,7 +1182,8 @@ function initStores(
 	// it, because creating over a half-dropped table would resurrect its catalog
 	// rows. There a failure propagates to the caller as its own single error.
 	for (const [tableName, tableDef] of tablesToLoad) {
-		if (!tableDef.primary?.dropping) {
+		const tombstone = tableDef.tombstone ?? tableDef.primary;
+		if (!tombstone?.dropping) {
 			// No tombstone, so any budget this table spent belongs to a drop that
 			// has since been resolved - by the create path, which completes
 			// interrupted drops itself and never passes through here. Leaving the
@@ -1192,7 +1194,7 @@ function initStores(
 			clearInterruptedDropEntries(path, tableName);
 			continue;
 		}
-		const generation = tableDef.primary?.dropGeneration;
+		const generation = tombstone.dropGeneration;
 		if (generation && dropsInProgress.has(generation)) {
 			definedTables?.delete(tableName);
 			tablesToLoad.delete(tableName);
@@ -4203,13 +4205,25 @@ function resetGenerationReclaimDelay(rootStore: RocksDatabase): void {
 	if (state) state.delay = 2000;
 }
 function scheduleGenerationReclaim(rootStore: RocksDatabase, attributesDbi, databaseName: string): void {
+	const journalKeys = Array.from(
+		attributesDbi.getKeys({ start: GENERATION_ROW_PREFIX, end: GENERATION_ROW_END }),
+		(key) => String(key)
+	).join('\0');
 	let state = scheduledGenerationReclaims.get(rootStore);
 	if (!state) {
-		state = { delay: 2000, attributesDbi, databaseName };
+		state = { delay: 2000, attributesDbi, databaseName, journalKeys };
 		scheduledGenerationReclaims.set(rootStore, state);
 	} else {
 		state.attributesDbi = attributesDbi;
 		state.databaseName = databaseName;
+		if (state.journalKeys !== undefined && state.journalKeys !== journalKeys) {
+			state.delay = 2000;
+			if (state.timer) {
+				clearTimeout(state.timer);
+				state.timer = undefined;
+			}
+		}
+		state.journalKeys = journalKeys;
 	}
 	if (state.timer) return;
 	state.timer = setTimeout(() => {
@@ -4231,23 +4245,25 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 		key: string;
 		value: any;
 	}>;
+	const bareEntry = catalogRows.find(({ key }) => key === tableName + '/');
 	const primaryEntry =
-		catalogRows.find(({ key, value }) => key === tableName + '/' && value?.isPrimaryKey) ??
-		catalogRows.find(({ value }) => value?.isPrimaryKey);
+		(bareEntry?.value?.isPrimaryKey ? bareEntry : undefined) ?? catalogRows.find(({ value }) => value?.isPrimaryKey);
+	const tombstoneEntry = bareEntry ?? primaryEntry;
 	if (rootStore instanceof RocksDatabase) {
-		const primaryRow = primaryEntry?.value;
-		const stores = catalogRows.map(({ key }) => storeNameFor(key, primaryRow?.generation));
-		if (primaryRow && !primaryRow.dropGeneration) {
-			primaryRow.dropGeneration = randomUUID();
-			attributesDbi.putSync(primaryEntry.key, primaryRow);
+		const tombstone = tombstoneEntry?.value;
+		const generation = tombstone?.generation ?? primaryEntry?.value?.generation;
+		const stores = catalogRows.map(({ key }) => storeNameFor(key, generation));
+		if (tombstone && !tombstone.dropGeneration) {
+			tombstone.dropGeneration = randomUUID();
+			attributesDbi.putSync(tombstoneEntry.key, tombstone);
 		}
-		if (primaryRow) {
+		if (tombstone) {
 			recordRetiredGeneration(
 				attributesDbi,
 				tableName,
-				primaryRow.dropGeneration,
+				tombstone.dropGeneration,
 				stores,
-				storeNameFor(primaryEntry.key, primaryRow.generation)
+				primaryEntry ? storeNameFor(primaryEntry.key, generation) : undefined
 			);
 		}
 	} else {
@@ -4269,20 +4285,20 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 			}
 		}
 	}
-	// The primary catalog row is the `dropping` tombstone. Removing it last means a
+	// Remove the row carrying the `dropping` tombstone last, so a
 	// removeSync failure partway through leaves the tombstone in place alongside
 	// whatever attribute rows didn't get removed yet, so a later retry still
 	// recognizes the table as mid-drop - instead of the tombstone vanishing
 	// first and stranding orphaned attribute rows that the next load would
 	// misread as a live (non-dropping) table.
 	for (const { key } of catalogRows) {
-		if (key === primaryEntry?.key) continue;
+		if (key === tombstoneEntry?.key) continue;
 		// removeSync (not remove): same reasoning as dropSync above - the async
 		// remove() rejects after this function has already returned, so a
 		// catalog-removal failure would bypass the retry accounting entirely.
 		(attributesDbi as any).removeSync(key);
 	}
-	if (primaryEntry) (attributesDbi as any).removeSync(primaryEntry.key);
+	if (tombstoneEntry) (attributesDbi as any).removeSync(tombstoneEntry.key);
 }
 
 export function dropTableMeta({ table: tableName, database: databaseName }) {

@@ -333,6 +333,36 @@ describe('dropTable generation-distinct stores', function () {
 			});
 		});
 
+		it('keeps a migrated bare tombstone until after its named primary descriptor is removed', async function () {
+			const Migrated = defineTable('GenMigratedPrimary');
+			const bare = dbisDb().getSync('GenMigratedPrimary/');
+			const { generation } = bare;
+			const primaryKey = 'GenMigratedPrimary/id';
+			const family = `${primaryKey}@${generation}`;
+			Migrated.primaryStore.dropSync();
+			const migratedStore = openRocksDatabase(rootStore().path, { name: family });
+			migratedStore.putSync(1, { id: 1, str: 'migrated' });
+			migratedStore.close();
+			dbisDb().putSync(primaryKey, { ...bare, key: primaryKey });
+			dbisDb().putSync('GenMigratedPrimary/', {
+				...bare,
+				isPrimaryKey: false,
+				dropping: true,
+				dropGeneration: generation,
+			});
+			delete databases[TEST_DB].GenMigratedPrimary;
+
+			resetDatabases();
+
+			const journal = dbisDb().getSync(`${GENERATION_ROW_PREFIX}${generation}`);
+			assert.equal(journal.primaryStore, family);
+			assert.ok(journal.stores.includes(family));
+			await waitFor(() => !rootStore().columns.includes(family) && !generationRows().length, {
+				timeout: 15_000,
+				message: 'migrated named-primary generation was not reclaimed',
+			});
+		});
+
 		it('completes a tombstoned drop by exact store name, leaving a live same-name generation alone', async function () {
 			const Old = defineTable('GenTombstoneExact', [{ name: 'blob', type: 'Blob' }]);
 			const blob = await createBlob(Buffer.alloc(50_000, 4));
