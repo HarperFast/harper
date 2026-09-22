@@ -6,6 +6,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
+const { INVALIDATED } = require('#src/resources/Table');
 const { waitFor } = require('../waitFor.js');
 
 // LMDB keys its log by local time, so a stored tombstone carries no origin log key to tie a later
@@ -13,7 +14,7 @@ const { waitFor } = require('../waitFor.js');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 describe('Re-delivered replicated deletes (harper-pro#826)', () => {
-	let Nodes, auditStore;
+	let Nodes, Unindexed, auditStore;
 
 	// Each applied transaction needs its own log key: a second transaction at an existing key would
 	// hide the first from auditStore.get.
@@ -31,13 +32,13 @@ describe('Re-delivered replicated deletes (harper-pro#826)', () => {
 		return entries;
 	}
 
-	// One receive-side apply transaction, committed under the origin's log key.
-	function applyFrame(logKey, writes) {
+	function applyFrame(logKey, writes, TableClass = Nodes) {
 		const context = { source: {}, sourceApply: true, timestamp: logKey };
 		return transaction(context, async () => {
 			for (const { type, id, record, version = logKey, nodeId = 1 } of writes) {
-				const resource = await Nodes.getResource(id, context);
+				const resource = await TableClass.getResource(id, context);
 				if (type === 'delete') resource._writeDelete(id, { nodeId, version });
+				else if (type === 'invalidate') resource._writeInvalidate(id, undefined, { nodeId, version });
 				else resource._writeUpdate(id, record, true, { isNotification: true, nodeId, version });
 			}
 		});
@@ -61,6 +62,13 @@ describe('Re-delivered replicated deletes (harper-pro#826)', () => {
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'name', indexed: true },
 			],
+			audit: true,
+		});
+		// no indexed attributes, so an invalidation stores a null stub
+		Unindexed = table({
+			table: 'RedeliveredDeletesUnindexed',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 			audit: true,
 		});
 		auditStore = Nodes.primaryStore.rootStore.auditStore;
@@ -166,6 +174,20 @@ describe('Re-delivered replicated deletes (harper-pro#826)', () => {
 			assert.equal(Nodes.primaryStore.getEntry(id).value?.name, expectLive ? 'composite-' + id : undefined);
 			assert.deepEqual(await indexedIds('composite-' + id), expectLive ? [id] : []);
 			assert.deepEqual(await indexedIds('before-' + id), []);
+		});
+	}
+
+	for (const [name, writes] of [
+		['invalidate, delete', (id) => [{ type: 'invalidate', id }, del(id)]],
+		['delete, invalidate, delete', (id) => [del(id), { type: 'invalidate', id }, del(id)]],
+	]) {
+		it(`deletes the null stub an invalidation left earlier in a [${name}] transaction`, async function () {
+			const id = name.replaceAll(', ', '-');
+			await applyFrame(originClock(), [put(id, 'present')], Unindexed);
+			await applyFrame(originClock(), writes(id), Unindexed);
+			const entry = Unindexed.primaryStore.getEntry(id);
+			assert.equal(entry.value, null);
+			assert.equal(entry.metadataFlags & INVALIDATED, 0, 'the key must hold a tombstone, not an invalidated stub');
 		});
 	}
 

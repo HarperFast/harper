@@ -4354,6 +4354,7 @@ export function makeTable(options) {
 				commit: (txnTime, existingEntry, retry, transaction: any) => {
 					write.stagedEntry = undefined; // reset per round; set below once the removal is applied
 					write.superseded = false; // reset per round, as in the update path
+					write.skipped = false;
 					// what a preceding write in this transaction left for this key is what gets removed
 					// from the indices here, not the pre-transaction record (harper#1968)
 					const priorStagedOp = priorStagedWrite(write);
@@ -4374,16 +4375,18 @@ export function makeTable(options) {
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
 						return;
 					}
-					// The key already holds no record because this same write removed it: a re-delivered
-					// replicated delete. Re-logging it is new log tail every peer forwards and re-logs in turn,
-					// which a mesh amplifies without bound (harper-pro#826). Staged either way, so a later
-					// write in this transaction still sees the key as deleted in program order.
+					// A re-delivery of this same delete (see resources/DESIGN.md) stages its removal and logs
+					// nothing. Only the immediately preceding write can vouch for the key's state: an invalidate
+					// or relocate writes a null stub without publishing it to the chain.
 					const stagedRemoval = { value: undefined, localTime: txnLogKey, nodeId: options?.nodeId };
-					if (
-						existingRecord == null &&
-						isAuditEntryWrite(priorStaged ?? existingEntry, { txnLogKey, nodeId: options?.nodeId })
-					) {
+					const removal = write.priorWrite
+						? write.priorWrite.stagedEntry
+						: existingEntry?.metadataFlags & INVALIDATED
+							? undefined
+							: existingEntry;
+					if (existingRecord == null && isAuditEntryWrite(removal, { txnLogKey, nodeId: options?.nodeId })) {
 						write.stagedEntry = stagedRemoval;
+						write.skipped = true;
 						return;
 					}
 					updateIndices(id, existingRecord, null, transaction && { transaction });
