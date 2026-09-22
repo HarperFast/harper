@@ -1245,29 +1245,11 @@ describe('redactForOperationLog', () => {
 	});
 });
 
-// `operationLog` (serverUtilities.ts:35) is `harperLogger.loggerWithTag('operation')`, captured at
-// module load. `loggerWithTag`'s `logger = mainLogger` default parameter reads harper_logger's
-// module-scope `mainLogger` at that instant, so the resulting closure is bound to whichever logger
-// object existed when serverUtilities was first required — long before this file's `before` hooks
-// run. Stubbing `logger.info` afterwards (see `info_log_stub` above) never touches it, which is
-// exactly why that older test can only pass vacuously.
-//
-// `pinLogConfig` calls `initLogSettings(true)`, which replaces harper_logger's module-scope
-// `mainLogger` with a fresh logger pointed at a real temp file — but that alone still doesn't
-// reach the operationLog closure already captured. Reloading serverUtilities *after* pinning does:
-// the reload re-runs `harperLogger.loggerWithTag('operation')`, and this time `mainLogger` resolves
-// to the pinned logger, so the reloaded module's operationLog actually writes to the file this test
-// reads. This is the same call site production uses (processLocalTransaction -> operationLog.info),
-// so a removed `redactForOperationLog(...)` call shows up here as the raw secret landing in the log.
-//
-// `processLocalTransaction`'s log-level gate reads `harperLogger.logLevel`, a plain property on the
-// object this file's `logger` require also holds — not the live `get logLevel()` accessor harper_logger.ts
-// defines on its (separately-exported, but not what `require()`/a default import actually resolves to)
-// ES `export default`. That property is a one-time snapshot taken when harper_logger.ts first loaded in
-// this process, before any `pinLogConfig`/`initLogSettings(true)` call, and neither of those update it
-// (they mutate the module-scope binding a stale second `exports` reference tracks, not this object's
-// property) — so it stays whatever level the process booted with regardless of pinning. Set it directly.
+// operationLog is captured at serverUtilities module load, so it must be reloaded after
+// pinLogConfig() to bind against the pinned logger instead of whatever logger existed first.
 describe('processLocalTransaction call-site redaction (real log file)', function () {
+	const { server } = require('#src/server/Server');
+
 	function requireUncached(modulePath) {
 		delete require.cache[require.resolve(modulePath)];
 		return require(modulePath);
@@ -1277,13 +1259,17 @@ describe('processLocalTransaction call-site redaction (real log file)', function
 	let freshServerUtilities;
 	let logPath;
 	let originalLogLevel;
+	let realOperation;
+	let realRegisterOperation;
+	let realSetMcpQuotaHandler;
 
 	before(function () {
 		restoreLogConfig = pinLogConfig({ level: 'info' });
 		originalLogLevel = logger.logLevel;
 		logger.logLevel = 'info';
-		// Reload after pinning so this instance's module-load-time operationLog binds to the
-		// pinned mainLogger instead of whatever logger existed when the file was first required.
+		realOperation = server.operation;
+		realRegisterOperation = server.registerOperation;
+		realSetMcpQuotaHandler = server.setMcpQuotaHandler;
 		freshServerUtilities = requireUncached('#src/server/serverHelpers/serverUtilities');
 		logPath = logger.getLogFilePath();
 	});
@@ -1291,11 +1277,13 @@ describe('processLocalTransaction call-site redaction (real log file)', function
 	after(function () {
 		logger.logLevel = originalLogLevel;
 		restoreLogConfig?.();
-		// The reload above left the shared `server` singleton's operation/registerOperation hooks
-		// (and registeredOperations' local dispatch) pointed at a module instance bound to the
-		// now-deleted pinned log directory. Reload once more against the restored real logger so
-		// later suites in this process don't write into a temp dir pinLogConfig already removed.
-		requireUncached('#src/server/serverHelpers/serverUtilities');
+		server.operation = realOperation;
+		server.registerOperation = realRegisterOperation;
+		server.setMcpQuotaHandler = realSetMcpQuotaHandler;
+		registeredOperations.setLocalOperationDispatch({
+			chooseOperation: serverUtilities.chooseOperation,
+			processLocalTransaction: serverUtilities.processLocalTransaction,
+		});
 	});
 
 	it('fails if the call site stops redacting: the raw SSH key must not reach the log', async function () {
@@ -1306,19 +1294,16 @@ describe('processLocalTransaction call-site redaction (real log file)', function
 
 		await freshServerUtilities.processLocalTransaction({ body }, async () => ({ ok: true }));
 
-		// The logger buffers/flushes on a timer (see audit.test.js), so poll for this entry
-		// specifically rather than reading immediately after the offset is taken.
-		const written = await waitFor(() => {
-			if (!existsSync(logPath)) return undefined;
-			const tail = readFileSync(logPath, 'utf8').slice(offset);
-			return tail.includes(marker) ? tail : undefined;
-		});
+		const written = await waitFor(
+			() => {
+				if (!existsSync(logPath)) return undefined;
+				const tail = readFileSync(logPath, 'utf8').slice(offset);
+				return tail.includes(marker) ? tail : undefined;
+			},
+			{ message: 'operation log entry for call-site redaction test was never written' }
+		);
 
-		// Proves a real log entry for this request was found (not a vacuous pass from nothing
-		// being logged at all): the non-secret marker must be present...
 		assert.ok(written.includes(marker), 'the operation log entry for this request must be present');
-		// ...while the raw private key must not be, which is exactly what breaks if
-		// serverUtilities.ts's processLocalTransaction stops calling redactForOperationLog().
 		assert.ok(!written.includes('CALL-SITE-REDACTION-SECRET'), 'the raw SSH key must not reach the operation log');
 	});
 });
