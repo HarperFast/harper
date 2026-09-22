@@ -183,11 +183,15 @@ describe('dropTable generation-distinct stores', function () {
 		const oldGeneration = First.storageGeneration;
 		const oldTableId = First.tableId;
 		let broadcast;
-		schemaHandler.addListener((message) => {
+		const removeListener = schemaHandler.addListener((message) => {
 			if (message.table === 'GenDelayedDrop' && message.dropTableId === oldTableId) broadcast = message;
 		});
-		await First.dropTable();
-		await waitFor(() => broadcast, { timeout: 5_000, message: 'drop broadcast did not carry the table identity' });
+		try {
+			await First.dropTable();
+			await waitFor(() => broadcast, { timeout: 5_000, message: 'drop broadcast did not carry the table identity' });
+		} finally {
+			removeListener();
+		}
 		assert.equal(broadcast.dropTableId, oldTableId);
 		if (!IS_LMDB) assert.equal(broadcast.dropGeneration, oldGeneration);
 		const Replacement = defineTable('GenDelayedDrop');

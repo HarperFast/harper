@@ -4092,17 +4092,22 @@ function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseNam
 }
 
 const generationBlobSweeps = new WeakMap<RocksDatabase, Map<string, Promise<void>>>();
-function finishGenerationBlobSweep(
+async function finishGenerationBlobSweep(
 	rootStore: RocksDatabase,
 	attributesDbi,
 	databaseName: string,
 	key: string,
 	row: GenerationRow,
 	failures: number
-): void {
-	if (!tryUpdateAttributesLock(rootStore)) {
-		scheduleGenerationReclaim(rootStore, attributesDbi, databaseName);
-		return;
+): Promise<void> {
+	let delay = 10;
+	while (!tryUpdateAttributesLock(rootStore)) {
+		if (rootStore.status === 'closed') return;
+		await new Promise<void>((resolve) => {
+			const timer = setTimeout(resolve, delay);
+			timer.unref?.();
+		});
+		delay = Math.min(delay * 2, 1000);
 	}
 	try {
 		const latest: GenerationRow | undefined = attributesDbi.getSync(key);
@@ -4177,11 +4182,11 @@ function scheduleGenerationBlobSweep(
 					error
 				);
 				if (String(rootStore.status) !== 'closed')
-					finishGenerationBlobSweep(rootStore, attributesDbi, databaseName, key, row, 1);
+					await finishGenerationBlobSweep(rootStore, attributesDbi, databaseName, key, row, 1);
 				return;
 			}
 			if (result.cancelled || String(rootStore.status) === 'closed') return;
-			finishGenerationBlobSweep(rootStore, attributesDbi, databaseName, key, row, result.failures);
+			await finishGenerationBlobSweep(rootStore, attributesDbi, databaseName, key, row, result.failures);
 		})
 		.catch((error) => {
 			logger.warn(

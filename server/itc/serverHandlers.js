@@ -71,6 +71,10 @@ async function schemaHandler(event) {
 
 schemaHandler.addListener = function (listener) {
 	schemaListeners.push(listener);
+	return () => {
+		const index = schemaListeners.indexOf(listener);
+		if (index !== -1) schemaListeners.splice(index, 1);
+	};
 };
 
 /**
