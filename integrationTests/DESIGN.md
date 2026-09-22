@@ -29,7 +29,8 @@ the package it came from — regenerating it with `npm pack` alone would silentl
 
 Nothing enforces this across fixtures, and two suites still violate it: `mqtt/mqtt.test.ts` and
 `components/acl-connect.test.ts` deploy fixtures whose manifests pin `@harperdb/acl-connect` and
-`jsonwebtoken` with no committed `node_modules`, so a `UND_ERR_HEADERS_TIMEOUT` there is this same
-flake rather than a new bug. For the redirector archive specifically,
-`components/redirector.test.ts` asserts the instance log contains
-`already has node_modules; skipping install` and no `[redirector:spawn:npm]` line.
+`jsonwebtoken` with no committed `node_modules`, so a hang in either deploy is worth checking
+against the instance log's `spawn:npm` line before it is diagnosed as a new bug.
+
+For the redirector archive specifically, `components/redirector.test.ts` asserts the instance log
+contains `already has node_modules; skipping install` and no `[redirector:spawn:npm]` line.
