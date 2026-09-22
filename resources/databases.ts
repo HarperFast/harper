@@ -539,7 +539,7 @@ export function recordRetiredGeneration(
 	generation: string,
 	stores: string[],
 	primaryStore?: string
-): void {
+): string[] {
 	const key = generationRowKey(generation);
 	const existing: GenerationRow | undefined = attributesDbi.getSync(key);
 	const merged = [...new Set([...(existing?.stores ?? []), ...stores])];
@@ -549,7 +549,7 @@ export function recordRetiredGeneration(
 		merged.length === existing.stores?.length &&
 		primaryStore === existing.primaryStore
 	)
-		return;
+		return merged;
 	attributesDbi.putSync(key, {
 		...existing,
 		table: tableName,
@@ -558,6 +558,7 @@ export function recordRetiredGeneration(
 		stores: merged,
 		primaryStore,
 	});
+	return merged;
 }
 export function storeNamesFor(attributesDbi, tableName: string, generation: string | undefined): string[] {
 	const names: string[] = [];
@@ -4031,11 +4032,13 @@ function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseNam
 				if (!value?.generation || !value.table) {
 					logger.warn(`Removing a malformed generation journal row ${String(key)} in ${databaseName}`);
 					attributesDbi.remove(key);
+					resetGenerationReclaimDelay(rootStore);
 					continue;
 				}
 				const live = attributesDbi.getSync(value.table + '/');
 				if (value.phase === 'creating' && live?.generation === value.generation && !live.dropping) {
 					attributesDbi.remove(key);
+					resetGenerationReclaimDelay(rootStore);
 					continue;
 				}
 				const suffix = '@' + value.generation;
@@ -4092,7 +4095,7 @@ function finishGenerationBlobSweep(
 				return;
 			}
 			logger.error(
-				`Dropping retired generation ${row.generation} of ${databaseName}.${row.table} after ${attempts} blob sweep attempts left ${failures} error(s); orphan cleanup will handle any remaining files`
+				`Dropping retired generation ${row.generation} of ${databaseName}.${row.table} after ${attempts} blob sweep attempts left ${failures} error(s); any remaining files require operator cleanup`
 			);
 		}
 		const suffix = '@' + latest.generation;

@@ -2169,7 +2169,7 @@ export function makeTable(options) {
 					await signalling.signalSchemaChange(message);
 					const removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
 						const stores = storeNamesFor(dbisDb, tableName, generation);
-						recordRetiredGeneration(
+						const retiredStores = recordRetiredGeneration(
 							dbisDb,
 							tableName,
 							dropGeneration,
@@ -2177,20 +2177,29 @@ export function makeTable(options) {
 							primaryStore.name ?? storeNameFor(primaryCatalogKey, generation)
 						);
 						const columns = new Set<string>((rootStore as any).columns);
+						const droppedStores = new Set<string>();
 						for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
 							const attributeName = key.slice(tableName.length + 1);
 							const store = key === primaryCatalogKey ? primaryStore : indices[attributeName];
 							if (!store) {
 								const columnName = storeNameFor(key, generation);
-								if (columns.has(columnName)) dropColumnFamily(rootStore, columnName);
+								if (columns.has(columnName)) {
+									dropColumnFamily(rootStore, columnName);
+									droppedStores.add(columnName);
+								}
 								continue;
 							}
 							try {
 								store.customIndex?.resetDerivedStorage?.();
 								store.dropSync();
+								droppedStores.add(store.name);
 							} catch (error) {
 								ignoreAlreadyDropped(error);
 							}
+						}
+						for (const columnName of retiredStores) {
+							if (!droppedStores.has(columnName) && (rootStore as any).columns.includes(columnName))
+								dropColumnFamily(rootStore, columnName);
 						}
 						const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
 						if (
