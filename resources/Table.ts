@@ -112,6 +112,7 @@ import {
 	raiseAuditFloor,
 	boundedAuditPruneEnd,
 	isLockControlType,
+	isAuditEntryWrite,
 } from './auditStore.ts';
 import { derivedIndexWriteRejection, hasDerivedIndexRegistration } from './derivedIndexRegistry.ts';
 import {
@@ -4373,6 +4374,18 @@ export function makeTable(options) {
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
 						return;
 					}
+					// The key already holds no record because this same write removed it: a re-delivered
+					// replicated delete. Re-logging it is new log tail every peer forwards and re-logs in turn,
+					// which a mesh amplifies without bound (harper-pro#826). Staged either way, so a later
+					// write in this transaction still sees the key as deleted in program order.
+					const stagedRemoval = { value: undefined, localTime: txnLogKey, nodeId: options?.nodeId };
+					if (
+						existingRecord == null &&
+						isAuditEntryWrite(priorStaged ?? existingEntry, { txnLogKey, nodeId: options?.nodeId })
+					) {
+						write.stagedEntry = stagedRemoval;
+						return;
+					}
 					updateIndices(id, existingRecord, null, transaction && { transaction });
 					if (audit || trackDeletes) {
 						updateRecord(
@@ -4401,7 +4414,7 @@ export function makeTable(options) {
 						// Only RocksDB's remove() takes an options object; on LMDB the 2nd arg is ifVersion, and its writes already join the batched txn.
 						removeEntry(primaryStore, existingEntry, isRocksDB && transaction ? { transaction } : undefined);
 					}
-					write.stagedEntry = { value: undefined }; // the key holds no record for the rest of this transaction
+					write.stagedEntry = stagedRemoval; // the key holds no record for the rest of this transaction
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					// the removal supersedes the nearest record an earlier write in this transaction stored
 					// (older ones were already marked by their staged successors), so its saved blobs are
