@@ -5,7 +5,14 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
-const { table, database, databases, resetDatabases, openRocksDatabase } = require('#src/resources/databases');
+const {
+	table,
+	database,
+	databases,
+	resetDatabases,
+	openRocksDatabase,
+	setDroppedBlobSweepBatchMsForTesting,
+} = require('#src/resources/databases');
 const { createBlob, getFilePathForBlob } = require('#src/resources/blob');
 const { logger } = require('#src/utility/logging/logger');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
@@ -214,9 +221,12 @@ describe('dropTable generation-distinct stores', function () {
 
 		it('reclaims a retired generation whose family survived a crash, then lets a same-name create start clean', async function () {
 			const Doomed = defineTable('GenCrashRetired', [{ name: 'blob', type: 'Blob' }]);
-			const blob = await createBlob(Buffer.alloc(50_000, 3));
-			await Doomed.put({ id: 1, str: 'old', blob });
-			const blobPath = getFilePathForBlob((await Doomed.get(1)).blob);
+			const blobPaths = [];
+			for (let id = 1; id <= 3; id++) {
+				const blob = await createBlob(Buffer.alloc(50_000, id));
+				await Doomed.put({ id, str: 'old', blob });
+				blobPaths.push(getFilePathForBlob((await Doomed.get(id)).blob));
+			}
 			const { generation } = dbisDb().getSync('GenCrashRetired/');
 			const family = Doomed.primaryStore.name;
 			// the drop died after writing its journal row and removing the catalog rows, before the
@@ -231,20 +241,28 @@ describe('dropTable generation-distinct stores', function () {
 			delete databases[TEST_DB].GenCrashRetired;
 			assert.ok(rootStore().columns.includes(family));
 
-			resetDatabases();
+			let Fresh;
+			setDroppedBlobSweepBatchMsForTesting(-1);
+			try {
+				resetDatabases();
+				await new Promise((resolve) => setImmediate(resolve));
 
-			assert.ok(rootStore().columns.includes(family), 'the family remains durable while blob deletion is pending');
-			assert.equal(generationRows().length, 1, 'the journal remains durable while blob deletion is pending');
-			await waitFor(() => !fs.existsSync(blobPath), {
-				timeout: 15_000,
-				message: 'restart recovery did not release the retired generation blob',
-			});
-			resetDatabases();
-
-			assert.ok(!rootStore().columns.includes(family), 'a later load reclaims the surviving family');
-			assert.deepStrictEqual(generationRows(), [], 'the journal row is removed once the family is gone');
-			const Fresh = defineTable('GenCrashRetired');
-			assert.equal(await Fresh.get(1), undefined);
+				assert.ok(rootStore().columns.includes(family), 'the family remains durable while blob deletion is pending');
+				assert.equal(generationRows().length, 1, 'the journal remains durable while blob deletion is pending');
+				Fresh = defineTable('GenCrashRetired');
+				assert.notEqual(Fresh.primaryStore.name, family, 'a recreate while the sweep yields gets a fresh family');
+				assert.equal(await Fresh.get(1), undefined);
+				await waitFor(() => blobPaths.every((path) => !fs.existsSync(path)), {
+					timeout: 15_000,
+					message: 'restart recovery did not release the retired generation blob',
+				});
+				await waitFor(() => !rootStore().columns.includes(family) && generationRows().length === 0, {
+					timeout: 15_000,
+					message: 'restart recovery did not retire the generation after its blob unlink completed',
+				});
+			} finally {
+				setDroppedBlobSweepBatchMsForTesting(undefined);
+			}
 			await Fresh.dropTable();
 		});
 
@@ -267,8 +285,10 @@ describe('dropTable generation-distinct stores', function () {
 		});
 
 		it('completes a tombstoned drop by exact store name, leaving a live same-name generation alone', async function () {
-			const Old = defineTable('GenTombstoneExact');
-			await Old.put({ id: 1, str: 'old' });
+			const Old = defineTable('GenTombstoneExact', [{ name: 'blob', type: 'Blob' }]);
+			const blob = await createBlob(Buffer.alloc(50_000, 4));
+			await Old.put({ id: 1, str: 'old', blob });
+			const blobPath = getFilePathForBlob((await Old.get(1)).blob);
 			const oldFamily = Old.primaryStore.name;
 			const meta = dbisDb().getSync('GenTombstoneExact/');
 			meta.dropping = true;
@@ -278,11 +298,15 @@ describe('dropTable generation-distinct stores', function () {
 			// the create path completes the interrupted drop under the lock, then creates fresh
 			const Fresh = defineTable('GenTombstoneExact');
 			assert.notEqual(Fresh.primaryStore.name, oldFamily);
-			assert.ok(!rootStore().columns.includes(oldFamily), 'the tombstoned generation is reclaimed');
+			assert.ok(rootStore().columns.includes(oldFamily), 'the readable family remains until its blobs are swept');
 			assert.ok(rootStore().columns.includes(Fresh.primaryStore.name));
 			await Fresh.put({ id: 2, str: 'new' });
 			// a later load must not sweep the live generation by table-name prefix
 			resetDatabases();
+			await waitFor(() => !fs.existsSync(blobPath) && !rootStore().columns.includes(oldFamily), {
+				timeout: 15_000,
+				message: 'the tombstoned generation was not swept before its family was reclaimed',
+			});
 			const Reloaded = databases[TEST_DB].GenTombstoneExact;
 			assert.ok(rootStore().columns.includes(Reloaded.primaryStore.name));
 			assert.equal((await Reloaded.get(2)).str, 'new');

@@ -55,10 +55,10 @@ import {
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
 import {
 	databasePaths,
+	deleteBlobAndWait,
 	deleteBlobsInObject,
 	deleteRootBlobPathsForDB,
 	findBlobsInObject,
-	getFilePathForBlob,
 } from './blob.ts';
 import { removeStorageReclamation } from '../server/storageReclamation.ts';
 import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
@@ -507,6 +507,7 @@ type GenerationRow = {
 	phase: 'creating' | 'retired';
 	stores?: string[];
 	primaryStore?: string;
+	blobSweepFailures?: number;
 };
 export function storeNameFor(catalogKey: string, generation: string | undefined): string {
 	return generation ? `${catalogKey}@${generation}` : catalogKey;
@@ -549,7 +550,14 @@ export function recordRetiredGeneration(
 		primaryStore === existing.primaryStore
 	)
 		return;
-	attributesDbi.putSync(key, { table: tableName, generation, phase: 'retired', stores: merged, primaryStore });
+	attributesDbi.putSync(key, {
+		...existing,
+		table: tableName,
+		generation,
+		phase: 'retired',
+		stores: merged,
+		primaryStore,
+	});
 }
 export function storeNamesFor(attributesDbi, tableName: string, generation: string | undefined): string[] {
 	const names: string[] = [];
@@ -3912,19 +3920,111 @@ export function dropColumnFamily(rootStore: RocksDatabase, columnName: string) {
 	}
 }
 
-/**
- * Reclaims the column families of generations the lifecycle journal names: a `creating` row whose
- * table never published (the create died or rolled back), or a `retired` row a drop wrote before it
- * removed the catalog rows. A row is removed only once no family of its generation is registered and
- * the binding reports no physical drop still pending, because a retired name leaves `columns` before
- * its bytes leave the disk; deleting the row inside that window would turn a crash into a permanent
- * orphan. Skips when a create on another thread holds the lock; a row that fails stays for the next
- * load. Never throws: one bad generation must not stop a database from loading.
- */
+const BLOB_SWEEP_BATCH_MS = 5;
+const BLOB_SWEEP_PENDING_LIMIT = 4096;
+const MAX_BLOB_SWEEP_FAILURES = 3;
+let blobSweepBatchMsOverride: number | undefined;
+
+export function setDroppedBlobSweepBatchMsForTesting(value: number | undefined): void {
+	blobSweepBatchMsOverride = value;
+}
+
+export async function sweepDroppedTableBlobs(
+	primaryStore,
+	label: string,
+	options?: { awaitUnlink?: boolean; cancelled?: () => boolean }
+): Promise<{ failures: number; cancelled: boolean; batches: number }> {
+	let resumeKey: any;
+	let hasResumeKey = false;
+	let failures = 0;
+	let batches = 0;
+	const pending = new Set<Promise<void>>();
+	const cancelled = () => options?.cancelled?.();
+	const track = (blob: Blob) => {
+		const completion = deleteBlobAndWait(blob)
+			.catch((error) => {
+				failures++;
+				logger.warn(`Could not reclaim a blob file from dropped table ${label}`, error);
+			})
+			.finally(() => pending.delete(completion));
+		pending.add(completion);
+	};
+	const waitForProgress = async () => {
+		const poll = new Promise<void>((resolve) => {
+			const timer = setTimeout(resolve, 100);
+			timer.unref?.();
+		});
+		await Promise.race([Promise.race(pending), poll]);
+	};
+	try {
+		while (!cancelled()) {
+			const iterator = primaryStore
+				.getRange({
+					versions: true,
+					snapshot: false,
+					lazy: true,
+					start: hasResumeKey ? resumeKey : true,
+					exclusiveStart: hasResumeKey,
+				})
+				[Symbol.iterator]();
+			const deadline = Date.now() + (blobSweepBatchMsOverride ?? BLOB_SWEEP_BATCH_MS);
+			let exhausted = false;
+			let advanced = false;
+			let pendingLimitReached = false;
+			try {
+				while (!cancelled()) {
+					const next = iterator.next();
+					if (next.done) {
+						exhausted = true;
+						break;
+					}
+					advanced = true;
+					resumeKey = next.value.key;
+					hasResumeKey = true;
+					try {
+						const entry = next.value;
+						if (entry.metadataFlags & HAS_BLOBS && entry.value) {
+							if (options?.awaitUnlink) findBlobsInObject(entry.value, track);
+							else deleteBlobsInObject(entry.value);
+						}
+					} catch (error) {
+						failures++;
+						logger.warn(`Could not sweep blob files from record ${String(resumeKey)} of dropped table ${label}`, error);
+					}
+					if (pending.size >= BLOB_SWEEP_PENDING_LIMIT) {
+						pendingLimitReached = true;
+						break;
+					}
+					if (Date.now() >= deadline) break;
+				}
+			} finally {
+				iterator.return?.();
+			}
+			batches++;
+			while (pendingLimitReached && pending.size >= BLOB_SWEEP_PENDING_LIMIT && !cancelled()) await waitForProgress();
+			if (exhausted || !advanced || cancelled()) break;
+			await new Promise<void>((resolve) => setImmediate(resolve));
+		}
+	} catch (error) {
+		if (!cancelled()) {
+			failures++;
+			logger.warn(`Could not sweep the blob files of dropped table ${label}`, error);
+		}
+	}
+	while (pending.size > 0 && !cancelled()) await waitForProgress();
+	return { failures, cancelled: Boolean(cancelled()), batches };
+}
+
 function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseName: string) {
 	const rows = Array.from(attributesDbi.getRange({ start: GENERATION_ROW_PREFIX, end: GENERATION_ROW_END }));
-	if (rows.length === 0) return;
-	if (!tryUpdateAttributesLock(rootStore)) return;
+	if (rows.length === 0) {
+		resetGenerationReclaimDelay(rootStore);
+		return;
+	}
+	if (!tryUpdateAttributesLock(rootStore)) {
+		scheduleGenerationReclaim(rootStore, attributesDbi, databaseName);
+		return;
+	}
 	try {
 		for (const { key, value } of rows as Array<{ key: string; value: GenerationRow }>) {
 			try {
@@ -3941,34 +4041,20 @@ function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseNam
 				const suffix = '@' + value.generation;
 				const retired = new Set(value.stores ?? []);
 				const columns = [...((rootStore as any).columns as string[])];
-				let pendingBlobFiles = false;
 				if (value.phase === 'retired' && value.primaryStore && columns.includes(value.primaryStore)) {
-					const primaryStore = handleLocalTimeForGets(
-						openRocksDatabase(rootStore.path, {
-							...createOpenDBIObject(false, true),
-							name: value.primaryStore,
-						} as any),
-						rootStore
-					);
-					try {
-						for (const entry of (primaryStore as any).getRange({ versions: true, snapshot: false, lazy: true })) {
-							if (!(entry.metadataFlags & HAS_BLOBS) || !entry.value) continue;
-							findBlobsInObject(entry.value, (blob) => {
-								const blobPath = getFilePathForBlob(blob as any);
-								if (blobPath && existsSync(blobPath)) pendingBlobFiles = true;
-							});
-							deleteBlobsInObject(entry.value);
-						}
-					} finally {
-						primaryStore.close();
-					}
+					if (manageThreads.ownsStoreMaintenance(rootStore.path))
+						scheduleGenerationBlobSweep(rootStore, attributesDbi, databaseName, key, value);
+					continue;
 				}
-				if (pendingBlobFiles) continue;
 				for (const columnName of columns) {
 					if (retired.has(columnName) || columnName.endsWith(suffix)) dropColumnFamily(rootStore, columnName);
 				}
-				if ((rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) > 0) continue;
+				if ((rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) > 0) {
+					scheduleGenerationReclaim(rootStore, attributesDbi, databaseName);
+					continue;
+				}
 				attributesDbi.remove(key);
+				resetGenerationReclaimDelay(rootStore);
 			} catch (error) {
 				logger.warn(
 					`Could not reclaim the stores of generation ${value?.generation} of table ${databaseName}.${value?.table}; will retry on the next load`,
@@ -3981,21 +4067,142 @@ function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseNam
 	}
 }
 
-/**
- * Completes a table drop that was interrupted after its `dropping` tombstone
- * was written: drops any surviving table stores and removes the table's
- * catalog rows. Called from the boot-time schema load and from the create
- * path when a same-named table is created over a tombstoned entry. Callers
- * are expected to hold the database's exclusive lock or be in single-threaded
- * startup; a redundant drop of an already-gone store (another worker may be
- * completing the same drop concurrently) is tolerated, but any other
- * per-store failure propagates so the catalog rows are NOT removed - a store
- * that failed to drop must keep its tombstone, or a same-name recreate could
- * reuse (LMDB) or resurrect (RocksDB) the old store's data. Logged only at
- * debug: the caller's retry loop is what decides when a failure is
- * actionable, and logging here on every attempt would flood at the same
- * volume this function's callers are bounding.
- */
+const generationBlobSweeps = new WeakMap<RocksDatabase, Map<string, Promise<void>>>();
+function finishGenerationBlobSweep(
+	rootStore: RocksDatabase,
+	attributesDbi,
+	databaseName: string,
+	key: string,
+	row: GenerationRow,
+	failures: number
+): void {
+	if (!tryUpdateAttributesLock(rootStore)) {
+		scheduleGenerationReclaim(rootStore, attributesDbi, databaseName);
+		return;
+	}
+	try {
+		const latest: GenerationRow | undefined = attributesDbi.getSync(key);
+		if (latest?.phase !== 'retired' || latest.generation !== row.generation || latest.primaryStore !== row.primaryStore)
+			return;
+		if (failures > 0) {
+			const attempts = (latest.blobSweepFailures ?? 0) + 1;
+			if (attempts < MAX_BLOB_SWEEP_FAILURES) {
+				attributesDbi.putSync(key, { ...latest, blobSweepFailures: attempts });
+				scheduleGenerationReclaim(rootStore, attributesDbi, databaseName);
+				return;
+			}
+			logger.error(
+				`Dropping retired generation ${row.generation} of ${databaseName}.${row.table} after ${attempts} blob sweep attempts left ${failures} error(s); orphan cleanup will handle any remaining files`
+			);
+		}
+		const suffix = '@' + latest.generation;
+		const retired = new Set(latest.stores ?? []);
+		for (const columnName of [...((rootStore as any).columns as string[])]) {
+			if (retired.has(columnName) || columnName.endsWith(suffix)) dropColumnFamily(rootStore, columnName);
+		}
+		if ((rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) === 0) {
+			attributesDbi.remove(key);
+			resetGenerationReclaimDelay(rootStore);
+		}
+	} finally {
+		releaseUpdateAttributesLock(rootStore);
+	}
+}
+
+function scheduleGenerationBlobSweep(
+	rootStore: RocksDatabase,
+	attributesDbi,
+	databaseName: string,
+	key: string,
+	row: GenerationRow
+): void {
+	let tasks = generationBlobSweeps.get(rootStore);
+	if (!tasks) generationBlobSweeps.set(rootStore, (tasks = new Map()));
+	if (tasks.has(key)) return;
+	const task = new Promise<void>((resolve) => setImmediate(resolve))
+		.then(async () => {
+			if (rootStore.status === 'closed') return;
+			const current: GenerationRow | undefined = attributesDbi.getSync(key);
+			if (
+				current?.phase !== 'retired' ||
+				current.generation !== row.generation ||
+				current.primaryStore !== row.primaryStore ||
+				!((rootStore as any).columns as string[]).includes(row.primaryStore)
+			)
+				return;
+			let result: Awaited<ReturnType<typeof sweepDroppedTableBlobs>>;
+			try {
+				const primaryStore = handleLocalTimeForGets(
+					openRocksDatabase(rootStore.path, {
+						...createOpenDBIObject(false, true),
+						name: row.primaryStore,
+					} as any),
+					rootStore
+				);
+				try {
+					result = await sweepDroppedTableBlobs(primaryStore, `${databaseName}.${row.table}`, {
+						awaitUnlink: true,
+						cancelled: () => rootStore.status === 'closed',
+					});
+				} finally {
+					primaryStore.close();
+				}
+			} catch (error) {
+				logger.warn(
+					`Could not sweep blob files from retired generation ${row.generation} of ${databaseName}.${row.table}`,
+					error
+				);
+				if (String(rootStore.status) !== 'closed')
+					finishGenerationBlobSweep(rootStore, attributesDbi, databaseName, key, row, 1);
+				return;
+			}
+			if (result.cancelled || String(rootStore.status) === 'closed') return;
+			finishGenerationBlobSweep(rootStore, attributesDbi, databaseName, key, row, result.failures);
+		})
+		.catch((error) => {
+			logger.warn(
+				`Could not sweep blob files from retired generation ${row.generation} of ${databaseName}.${row.table}`,
+				error
+			);
+		})
+		.finally(() => {
+			tasks.delete(key);
+			if (rootStore.status !== 'closed') scheduleGenerationReclaim(rootStore, attributesDbi, databaseName);
+		});
+	tasks.set(key, task);
+}
+
+const scheduledGenerationReclaims = new WeakMap<
+	RocksDatabase,
+	{ timer?: NodeJS.Timeout; delay: number; attributesDbi: any; databaseName: string }
+>();
+function resetGenerationReclaimDelay(rootStore: RocksDatabase): void {
+	const state = scheduledGenerationReclaims.get(rootStore);
+	if (state) state.delay = 2000;
+}
+function scheduleGenerationReclaim(rootStore: RocksDatabase, attributesDbi, databaseName: string): void {
+	let state = scheduledGenerationReclaims.get(rootStore);
+	if (!state) {
+		state = { delay: 2000, attributesDbi, databaseName };
+		scheduledGenerationReclaims.set(rootStore, state);
+	} else {
+		state.attributesDbi = attributesDbi;
+		state.databaseName = databaseName;
+	}
+	if (state.timer) return;
+	state.timer = setTimeout(() => {
+		state.timer = undefined;
+		if (rootStore.status === 'closed') {
+			scheduledGenerationReclaims.delete(rootStore);
+			return;
+		}
+		reclaimGenerations(rootStore, state.attributesDbi, state.databaseName);
+	}, state.delay);
+	state.timer.unref?.();
+	state.delay = Math.min(state.delay * 2, 60_000);
+}
+
+/** Finishes the durable logical state of a drop that stopped after writing its tombstone. */
 function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string, tableName: string) {
 	logger.debug(`Completing interrupted drop of table ${databaseName}.${tableName}`);
 	if (rootStore instanceof RocksDatabase) {
@@ -4019,10 +4226,6 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 				stores,
 				primaryCatalogKey ? storeNameFor(primaryCatalogKey, primaryRow.generation) : undefined
 			);
-		}
-		const columns = new Set<string>((rootStore as any).columns);
-		for (const columnName of stores) {
-			if (columns.has(columnName)) dropColumnFamily(rootStore, columnName);
 		}
 	} else {
 		// LMDB reuses an existing named sub-database on open, so the stores must

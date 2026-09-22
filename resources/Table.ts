@@ -76,6 +76,7 @@ import {
 	dropColumnFamily,
 	markDropInProgress,
 	recordRetiredGeneration,
+	sweepDroppedTableBlobs,
 	storeNameFor,
 	storeNamesFor,
 } from './databases.ts';
@@ -337,20 +338,6 @@ async function settlePhysicalDrops(rootStore: RocksDatabase, label: string): Pro
 	}
 	return true;
 }
-function sweepDroppedTableBlobs(primaryStore, label: string): void {
-	try {
-		for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
-			if (!(entry.metadataFlags & HAS_BLOBS) || !entry.value) continue;
-			try {
-				deleteBlobsInObject(entry.value);
-			} catch (error) {
-				logger.warn?.(`Could not sweep blob files from record ${String(entry.key)} of dropped table ${label}`, error);
-			}
-		}
-	} catch (error) {
-		logger.warn?.(`Could not sweep the blob files of dropped table ${label}`, error);
-	}
-}
 const backgroundBlobSweeps = new WeakMap<RocksDatabase, { stores: Map<any, string>; running: boolean }>();
 function finishDroppedTableBlobSweep(rootStore: RocksDatabase, primaryStore, label: string): void {
 	let state = backgroundBlobSweeps.get(rootStore);
@@ -360,7 +347,12 @@ function finishDroppedTableBlobSweep(rootStore: RocksDatabase, primaryStore, lab
 	state.running = true;
 	void (async () => {
 		let delay = 100;
-		while (rootStore.status !== 'closed' && (rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) > 0) {
+		const deadline = Date.now() + LOCK_TIMEOUT;
+		while (
+			rootStore.status !== 'closed' &&
+			Date.now() < deadline &&
+			(rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) > 0
+		) {
 			await new Promise<void>((resolve) => {
 				const timer = setTimeout(resolve, delay);
 				timer.unref?.();
@@ -371,9 +363,11 @@ function finishDroppedTableBlobSweep(rootStore: RocksDatabase, primaryStore, lab
 			state.stores.clear();
 			return;
 		}
+		if ((rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) > 0)
+			logger.warn?.(`Finishing the readable blob sweep in ${rootStore.path} while physical reclaims remain pending`);
 		const stores = [...state.stores];
 		state.stores.clear();
-		for (const [store, storeLabel] of stores) sweepDroppedTableBlobs(store, storeLabel);
+		for (const [store, storeLabel] of stores) await sweepDroppedTableBlobs(store, storeLabel);
 	})()
 		.catch((error) => logger.warn?.(`Could not finish a background blob sweep in ${rootStore.path}`, error))
 		.finally(() => {
@@ -2214,7 +2208,7 @@ export function makeTable(options) {
 					if (removed) await dbisDb.committed;
 					const label = `${databaseName}.${tableName}`;
 					const settled = await settlePhysicalDrops(rootStore, label);
-					sweepDroppedTableBlobs(primaryStore, label);
+					await sweepDroppedTableBlobs(primaryStore, label);
 					if (!settled) finishDroppedTableBlobSweep(rootStore, primaryStore, label);
 				} finally {
 					releaseDropMark();

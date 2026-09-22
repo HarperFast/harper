@@ -1251,6 +1251,7 @@ interface PendingReclamation {
 	enqueuedAt: number;
 	supersededAt: number;
 	unlinking?: boolean;
+	waiters?: Array<{ resolve: () => void; reject: (error: Error) => void }>;
 }
 // Keyed by file path, which is unique per store — a fileId is a per-store counter, so two databases
 // can hold the same one.
@@ -1459,7 +1460,9 @@ function cancelBlobReclamation(storageInfo: StorageInfo): void {
 		logger.debug?.('Could not resolve blob path to cancel pending reclamation', error);
 		return;
 	}
+	const pending = pendingReclamation.get(filePath);
 	if (!pendingReclamation.delete(filePath)) return;
+	settleReclamationWaiters(pending);
 	if (pendingReclamation.size === 0) resetDrainedQueue();
 }
 
@@ -1478,9 +1481,24 @@ function resetDrainedQueue(): void {
  * @param blob
  */
 export function deleteBlob(blob: Blob): void {
+	queueBlobReclamation(blob);
+}
+
+export function deleteBlobAndWait(blob: Blob): Promise<void> {
+	return new Promise((resolve, reject) => {
+		try {
+			queueBlobReclamation(blob, { resolve, reject });
+		} catch (error) {
+			reject(error);
+		}
+	});
+}
+
+function queueBlobReclamation(blob: Blob, waiter?: { resolve: () => void; reject: (error: Error) => void }): void {
 	// do we even need to check for completion here?
 	const filePath = getFilePathForBlob(blob as any);
 	if (!filePath) {
+		waiter?.resolve();
 		return;
 	}
 	const now = Date.now();
@@ -1504,11 +1522,21 @@ export function deleteBlob(blob: Blob): void {
 		pending.seenBlobs.add(blob);
 		pending.blobs.push(new WeakRef(blob));
 	}
+	if (waiter) (pending.waiters ??= []).push(waiter);
 	if (pending.unlinking) {
 		if (storageInfo) discardStorage(storageInfo);
 		return;
 	}
 	scheduleReclamation(enqueue(filePath, pending, Math.max(pending.deadline, now + getReclamationDelay())));
+}
+
+function settleReclamationWaiters(pending: PendingReclamation | undefined, error?: Error): void {
+	if (!pending?.waiters) return;
+	for (const waiter of pending.waiters) {
+		if (error) waiter.reject(error);
+		else waiter.resolve();
+	}
+	pending.waiters = undefined;
 }
 
 /**
@@ -1562,6 +1590,7 @@ function runReclamation(): void {
 				// A record version referencing this file again was written, possibly on another worker.
 				// The file is live; drop the reclamation rather than unlinking under it.
 				pendingReclamation.delete(filePath);
+				settleReclamationWaiters(pending);
 				continue;
 			}
 			// A snapshot that can still see the superseded version pins the file as surely as a hold.
@@ -1625,7 +1654,10 @@ function runReclamation(): void {
 			// Hand the slot back: it is shared by hash, so leaving it claimed would make every later
 			// hold on a colliding fileId report the file as already reclaimed.
 			releaseReclaimClaim(storageInfo);
-			if (error) logger.debug?.('Error trying to remove blob file', error);
+			if (error && (error as NodeJS.ErrnoException).code !== 'ENOENT') {
+				logger.debug?.('Error trying to remove blob file', error);
+				settleReclamationWaiters(pending, error);
+			} else settleReclamationWaiters(pending);
 		});
 	}
 	if (earliest !== Infinity) scheduleReclamation(earliest);
