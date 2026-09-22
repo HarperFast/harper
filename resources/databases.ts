@@ -2726,7 +2726,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			let persistedFullTextValues = persistedPrimary.descriptor?.fullTextIndexes;
 			const incomingFullTextValues = fullTextIndexesExplicit ? fullTextIndexes : [];
 			if (
-				persistedFullTextValues !== undefined ||
+				(persistedFullTextValues !== undefined &&
+					(rootStore instanceof RocksDatabase || fullTextIndexesExplicit)) ||
 				Table.fullTextIndexes?.length > 0 ||
 				(fullTextIndexesExplicit && (!Array.isArray(incomingFullTextValues) || incomingFullTextValues.length > 0))
 			) {
@@ -2778,12 +2779,17 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					}
 				}
 
-				const durableAudit = persistedPrimary.descriptor?.audit === true;
+				const persistedAudit = persistedPrimary.descriptor?.audit;
+				const durableAudit = persistedAudit === true;
 				const finalAudit =
-					typeof audit === 'boolean'
-						? audit
-						: durableAudit ||
-							(origin !== 'cluster' && fullTextIndexesExplicit && envGet(CONFIG_PARAMS.LOGGING_AUDITLOG) === true);
+					origin === 'cluster'
+						? durableAudit
+						: typeof audit === 'boolean'
+							? audit
+							: durableAudit ||
+								(persistedAudit == null &&
+									fullTextIndexesExplicit &&
+									envGet(CONFIG_PARAMS.LOGGING_AUDITLOG) === true);
 				if (origin === 'cluster' && fullTextIndexesExplicit) {
 					const merged = mergePeerFullTextDefinitions(
 						persistedFullTextValues,

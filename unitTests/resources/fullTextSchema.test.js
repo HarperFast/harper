@@ -307,6 +307,44 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 		}
 	});
 
+	it('does not override a durable audit opt-out from ambient or peer settings', async () => {
+		const previousAudit = environment.get(CONFIG_PARAMS.LOGGING_AUDITLOG);
+		try {
+			environment.setProperty(CONFIG_PARAMS.LOGGING_AUDITLOG, true);
+			const Table = table({
+				table: 'FullTextAuditOptOut',
+				database: 'test',
+				audit: false,
+				attributes: productAttributes(),
+			});
+			if (Table.dbisDB.committed) await Table.dbisDB.committed;
+			assert.throws(
+				() =>
+					table({
+						table: Table.tableName,
+						database: Table.databaseName,
+						attributes: productAttributes(),
+						fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+					}),
+				/must enable audit logging/
+			);
+
+			const AfterPeer = table({
+				table: Table.tableName,
+				database: Table.databaseName,
+				audit: true,
+				attributes: [],
+				fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+				origin: 'cluster',
+			});
+			assert.strictEqual(primaryDescriptor(AfterPeer).audit, false);
+			assert.deepStrictEqual(AfterPeer.fullTextIndexes, []);
+			assert.strictEqual(primaryDescriptor(AfterPeer).fullTextIndexes[0].name, 'search');
+		} finally {
+			environment.setProperty(CONFIG_PARAMS.LOGGING_AUDITLOG, previousAudit);
+		}
+	});
+
 	it('quarantines malformed persisted metadata and heals it on a peer merge', async () => {
 		const Table = table({
 			table: 'FullTextMalformedMetadata',
@@ -505,6 +543,17 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 			);
 		}
 		assert.strictEqual(primaryDescriptor(Merged).fullTextIndexes.length, 2);
+
+		const AfterPeerAuditFalse = table({
+			table: Table.tableName,
+			database: Table.databaseName,
+			audit: false,
+			attributes: [],
+			fullTextIndexes: primaryDescriptor(Merged).fullTextIndexes,
+			origin: 'cluster',
+		});
+		assert.strictEqual(primaryDescriptor(AfterPeerAuditFalse).audit, true);
+		assert.strictEqual(AfterPeerAuditFalse.fullTextIndexes.length, 2);
 	});
 
 	it('keeps peer metadata durable but inactive when audit is unavailable', async () => {
@@ -554,6 +603,26 @@ lmdbDescribe('@fullText LMDB eligibility', () => {
 		if (Peer.dbisDB.committed) await Peer.dbisDB.committed;
 		assert.deepStrictEqual(Peer.fullTextIndexes, []);
 		assert.strictEqual(primaryDescriptor(Peer).fullTextIndexes[0].name, 'search');
+
+		let transactionOwner = Peer.primaryStore.rootStore;
+		while (transactionOwner && !Object.hasOwn(transactionOwner, 'transactionSync'))
+			transactionOwner = Object.getPrototypeOf(transactionOwner);
+		const originalTransaction = transactionOwner.transactionSync;
+		let schemaLocks = 0;
+		transactionOwner.transactionSync = function (...args) {
+			if (new Error().stack.includes('exclusiveLock')) schemaLocks++;
+			return originalTransaction.apply(this, args);
+		};
+		try {
+			table({
+				table: Peer.tableName,
+				database: Peer.databaseName,
+				attributes: productAttributes(),
+			});
+		} finally {
+			transactionOwner.transactionSync = originalTransaction;
+		}
+		assert.strictEqual(schemaLocks, 0);
 	});
 
 	it('does not acquire the LMDB schema lock for a plain GraphQL redeclaration', async () => {

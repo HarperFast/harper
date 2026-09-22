@@ -1391,16 +1391,18 @@ export function makeTable(options) {
 											}
 										}
 										if (hasChanges || event.fullTextIndexes !== undefined) {
-											table({
+											const schemaVersion = (this as any).schemaVersion;
+											const definedTable: any = table({
 												table: tableName,
 												database: databaseName,
 												attributes: updatedAttributes,
 												fullTextIndexes: event.fullTextIndexes,
 												origin: 'cluster',
 											});
-											signalling.signalSchemaChange(
-												new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, databaseName, tableName)
-											);
+											if (definedTable.schemaVersion !== schemaVersion)
+												signalling.signalSchemaChange(
+													new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, databaseName, tableName)
+												);
 										}
 									} else {
 										if (event.beginTxn) {
