@@ -213,8 +213,10 @@ describe('dropTable generation-distinct stores', function () {
 		});
 
 		it('reclaims a retired generation whose family survived a crash, then lets a same-name create start clean', async function () {
-			const Doomed = defineTable('GenCrashRetired');
-			await Doomed.put({ id: 1, str: 'old' });
+			const Doomed = defineTable('GenCrashRetired', [{ name: 'blob', type: 'Blob' }]);
+			const blob = await createBlob(Buffer.alloc(50_000, 3));
+			await Doomed.put({ id: 1, str: 'old', blob });
+			const blobPath = getFilePathForBlob((await Doomed.get(1)).blob);
 			const { generation } = dbisDb().getSync('GenCrashRetired/');
 			const family = Doomed.primaryStore.name;
 			// the drop died after writing its journal row and removing the catalog rows, before the
@@ -223,6 +225,7 @@ describe('dropTable generation-distinct stores', function () {
 				table: 'GenCrashRetired',
 				generation,
 				phase: 'retired',
+				primaryStore: family,
 			});
 			for (const key of catalogRows('GenCrashRetired')) dbisDb().removeSync(key);
 			delete databases[TEST_DB].GenCrashRetired;
@@ -231,6 +234,10 @@ describe('dropTable generation-distinct stores', function () {
 			resetDatabases();
 
 			assert.ok(!rootStore().columns.includes(family), 'the load reclaims the surviving family');
+			await waitFor(() => !fs.existsSync(blobPath), {
+				timeout: 15_000,
+				message: 'restart recovery did not release the retired generation blob',
+			});
 			assert.deepStrictEqual(generationRows(), [], 'the journal row is removed once the family is gone');
 			const Fresh = defineTable('GenCrashRetired');
 			assert.equal(await Fresh.get(1), undefined);

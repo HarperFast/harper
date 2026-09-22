@@ -325,17 +325,38 @@ export function ignoreAlreadyDropped(error: any): void {
 	if (error?.message?.includes('Column family already dropped')) return;
 	throw error;
 }
-async function settlePhysicalDrops(rootStore: RocksDatabase, label: string): Promise<void> {
+async function settlePhysicalDrops(rootStore: RocksDatabase, label: string): Promise<boolean> {
 	const deadline = Date.now() + LOCK_TIMEOUT;
 	while ((rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) > 0) {
 		if (Date.now() >= deadline) {
 			logger.warn?.(
-				`A physical column-family drop is still pending ${LOCK_TIMEOUT}ms after dropping ${label}; blob files written by a commit that raced the drop may not be reclaimed`
+				`A physical column-family drop is still pending in ${rootStore.path} ${LOCK_TIMEOUT}ms after dropping ${label}; the final blob sweep will continue in the background`
 			);
-			return;
+			return false;
 		}
 		await new Promise((resolve) => setTimeout(resolve, 5));
 	}
+	return true;
+}
+function sweepDroppedTableBlobs(primaryStore, label: string): void {
+	try {
+		for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
+			if (entry.metadataFlags & HAS_BLOBS && entry.value) deleteBlobsInObject(entry.value);
+		}
+	} catch (error) {
+		logger.warn?.(`Could not sweep the blob files of dropped table ${label}`, error);
+	}
+}
+function finishDroppedTableBlobSweep(rootStore: RocksDatabase, primaryStore, label: string): void {
+	void (async () => {
+		while (rootStore.status !== 'closed' && (rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) > 0) {
+			await new Promise<void>((resolve) => {
+				const timer = setTimeout(resolve, 100);
+				timer.unref?.();
+			});
+		}
+		if (rootStore.status !== 'closed') sweepDroppedTableBlobs(primaryStore, label);
+	})().catch((error) => logger.warn?.(`Could not finish the blob sweep of dropped table ${label}`, error));
 }
 // A frozen record we may need to copy-on-mutate before stamping it (records are immutable — decoded
 // records are frozen and 5.2 record caching relies on it). Only plain/record objects qualify: never
@@ -2033,7 +2054,9 @@ export function makeTable(options) {
 			TableResource.cleanup();
 			if (databaseName === databasePath && rootStore instanceof RocksDatabase) {
 				try {
-					if (dropGeneration) await retireRocksStores(storeGeneration, dropGeneration);
+					if (!dropGeneration)
+						throw new Error(`Cannot drop ${databaseName}.${tableName}: its catalog tombstone has no drop generation`);
+					await retireRocksStores(storeGeneration, dropGeneration);
 				} catch (error) {
 					derivedIndexRuntime?.completeDrop?.();
 					throw error;
@@ -2069,7 +2092,6 @@ export function makeTable(options) {
 					dbisDb.remove(primaryCatalogKey);
 					return true;
 				};
-				// LMDB keeps its awaited physical drops and current-main stale-owner checks.
 				let removed: boolean;
 				try {
 					const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
@@ -2127,7 +2149,13 @@ export function makeTable(options) {
 					await signalling.signalSchemaChange(message);
 					const removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
 						const stores = storeNamesFor(dbisDb, tableName, generation);
-						recordRetiredGeneration(dbisDb, tableName, dropGeneration, stores);
+						recordRetiredGeneration(
+							dbisDb,
+							tableName,
+							dropGeneration,
+							stores,
+							primaryStore.name ?? storeNameFor(primaryCatalogKey, generation)
+						);
 						const columns = new Set<string>((rootStore as any).columns);
 						for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
 							const attributeName = key.slice(tableName.length + 1);
@@ -2159,14 +2187,10 @@ export function makeTable(options) {
 						return true;
 					});
 					if (removed) await dbisDb.committed;
-					await settlePhysicalDrops(rootStore, `${databaseName}.${tableName}`);
-					try {
-						for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
-							if (entry.metadataFlags & HAS_BLOBS && entry.value) deleteBlobsInObject(entry.value);
-						}
-					} catch (error) {
-						logger.warn?.(`Could not sweep the blob files of dropped table ${databaseName}.${tableName}`, error);
-					}
+					const label = `${databaseName}.${tableName}`;
+					const settled = await settlePhysicalDrops(rootStore, label);
+					sweepDroppedTableBlobs(primaryStore, label);
+					if (!settled) finishDroppedTableBlobSweep(rootStore, primaryStore, label);
 				} finally {
 					releaseDropMark();
 				}
@@ -8061,7 +8085,8 @@ export function makeTable(options) {
 				},
 				(error) => {
 					primaryStore.unlock(id);
-					if (resolved) logger.error?.('Error committing cache update', error);
+					if (resolved && !(droppingTable && error?.code === 'ERR_COLUMN_FAMILY_DROPPED'))
+						logger.error?.('Error committing cache update', error);
 					// else the error was already propagated as part of the promise that we returned
 				}
 			);

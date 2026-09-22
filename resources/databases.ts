@@ -49,10 +49,11 @@ import {
 	openAuditStore,
 	readAuditEntry,
 	createAuditEntry,
+	HAS_BLOBS,
 	type AuditRecord,
 } from './auditStore.ts';
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
-import { databasePaths, deleteRootBlobPathsForDB } from './blob.ts';
+import { databasePaths, deleteBlobsInObject, deleteRootBlobPathsForDB } from './blob.ts';
 import { removeStorageReclamation } from '../server/storageReclamation.ts';
 import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
@@ -496,7 +497,13 @@ const MAX_INTERRUPTED_DROP_ATTEMPTS = 3;
 // family a dropped generation still occupies on disk; LMDB keeps catalog-key names.
 const GENERATION_ROW_PREFIX = '/generation/';
 const GENERATION_ROW_END = '/generation0';
-type GenerationRow = { table: string; generation: string; phase: 'creating' | 'retired'; stores?: string[] };
+type GenerationRow = {
+	table: string;
+	generation: string;
+	phase: 'creating' | 'retired';
+	stores?: string[];
+	primaryStore?: string;
+};
 export function storeNameFor(catalogKey: string, generation: string | undefined): string {
 	return generation ? `${catalogKey}@${generation}` : catalogKey;
 }
@@ -521,12 +528,24 @@ export function markDropInProgress(dropGeneration: string): () => void {
  * Written before any family is retired. A row already present keeps every name it has: a redundant
  * concurrent drop reaches here after the first removed the catalog rows and must not narrow the list.
  */
-export function recordRetiredGeneration(attributesDbi, tableName: string, generation: string, stores: string[]): void {
+export function recordRetiredGeneration(
+	attributesDbi,
+	tableName: string,
+	generation: string,
+	stores: string[],
+	primaryStore?: string
+): void {
 	const key = generationRowKey(generation);
 	const existing: GenerationRow | undefined = attributesDbi.getSync(key);
 	const merged = [...new Set([...(existing?.stores ?? []), ...stores])];
-	if (existing?.phase === 'retired' && merged.length === existing.stores?.length) return;
-	attributesDbi.putSync(key, { table: tableName, generation, phase: 'retired', stores: merged });
+	primaryStore ??= existing?.primaryStore;
+	if (
+		existing?.phase === 'retired' &&
+		merged.length === existing.stores?.length &&
+		primaryStore === existing.primaryStore
+	)
+		return;
+	attributesDbi.putSync(key, { table: tableName, generation, phase: 'retired', stores: merged, primaryStore });
 }
 export function storeNamesFor(attributesDbi, tableName: string, generation: string | undefined): string[] {
 	const names: string[] = [];
@@ -1167,8 +1186,7 @@ function initStores(
 			continue;
 		}
 		const failedAttempts = getInterruptedDropAttempts(path, tableName, generation);
-		// a holder of the lock (a create, or a drop whose broadcast this thread already acked) completes
-		// the drop itself; a contended attempt is not a failed one
+		// A contended pass defers recovery without spending its bounded failure budget.
 		const locked = !(rootStore instanceof RocksDatabase) || tryUpdateAttributesLock(rootStore);
 		if (!locked) {
 			definedTables?.delete(tableName);
@@ -3424,6 +3442,14 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		// an LMDB store is a per-environment handle slot shared with every thread and still inside this
 		// create's write transaction; only RocksDB column-family handles hold native state to release
 		if (rootStore instanceof RocksDatabase) {
+			if (generation) {
+				const suffix = '@' + generation;
+				for (const columnName of [...((rootStore as any).columns as string[])]) {
+					if (columnName.endsWith(suffix))
+						discard(`store ${columnName}`, () => dropColumnFamily(rootStore, columnName));
+				}
+				discard('generation journal row', () => attributesDbi.remove(generationRowKey(generation)));
+			}
 			for (const indexName in Table?.indices ?? {})
 				discard(`index ${indexName}`, () => Table.indices[indexName].close());
 			discard('primary store', () => unpublishedPrimaryStore.close());
@@ -3913,7 +3939,24 @@ function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseNam
 				// committed carries the generation without being named
 				const suffix = '@' + value.generation;
 				const retired = new Set(value.stores ?? []);
-				for (const columnName of (rootStore as any).columns) {
+				const columns = [...((rootStore as any).columns as string[])];
+				if (value.phase === 'retired' && value.primaryStore && columns.includes(value.primaryStore)) {
+					const primaryStore = handleLocalTimeForGets(
+						openRocksDatabase(rootStore.path, {
+							...createOpenDBIObject(false, true),
+							name: value.primaryStore,
+						} as any),
+						rootStore
+					);
+					try {
+						for (const entry of (primaryStore as any).getRange({ versions: true, snapshot: false, lazy: true })) {
+							if (entry.metadataFlags & HAS_BLOBS && entry.value) deleteBlobsInObject(entry.value);
+						}
+					} finally {
+						primaryStore.close();
+					}
+				}
+				for (const columnName of columns) {
 					if (retired.has(columnName) || columnName.endsWith(suffix)) dropColumnFamily(rootStore, columnName);
 				}
 				if ((rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) > 0) continue;
@@ -3957,7 +4000,18 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 			primaryRow.dropGeneration = randomUUID();
 			attributesDbi.putSync(tableName + '/', primaryRow);
 		}
-		if (primaryRow) recordRetiredGeneration(attributesDbi, tableName, primaryRow.dropGeneration, stores);
+		if (primaryRow) {
+			const primaryCatalogKey = [...attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })].find(
+				({ value }) => value?.isPrimaryKey
+			)?.key;
+			recordRetiredGeneration(
+				attributesDbi,
+				tableName,
+				primaryRow.dropGeneration,
+				stores,
+				primaryCatalogKey ? storeNameFor(primaryCatalogKey, primaryRow.generation) : undefined
+			);
+		}
 		const columns = new Set<string>((rootStore as any).columns);
 		for (const columnName of stores) {
 			if (columns.has(columnName)) dropColumnFamily(rootStore, columnName);
