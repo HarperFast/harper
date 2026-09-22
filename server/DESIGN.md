@@ -372,3 +372,248 @@ The `@table(cacheControl:)` value is persisted on the primary-key attribute (lik
 - New protocol plugins implement the `Server` interface (in `Server.ts`) and register via `onRequest`/`onUpgrade`/`onWebSocket`.
 - Always pass `name` when registering a listener with `before`/`after` — anonymous entries can't be ordered against.
 - Tests live in `../unitTests/server/`.
+
+---
+
+## The dispatched API operation is carried on async context, never on the request (`server/serverHelpers/operationAuthorizationState.ts`)
+
+`verifyPermsAST`'s token-scope check has to be told which top-level API operation the caller
+invoked, because the scope is written in that namespace (`sql`, `export_local`, ...). Two things
+make that awkward:
+
+1. On the **direct-SQL** path, the object handed to `checkASTPermissions` _is_ the client's request
+   body, and this check is the only gate there (`chooseOperation`'s `sql` branch is mutually
+   exclusive with its `verifyPerms` call). Any field read off that object is therefore a way to
+   name whichever operation the caller's scope happens to allow and run arbitrary SQL under it.
+   `jsonMessage.operation` is safe only because dispatch already routed on that same field, so it
+   cannot disagree with the operation running. Never add another.
+2. A **job** re-parses its SQL from the nested `search_operation` in a _different_ async context —
+   `executeJob` persists the request and hands off to the job runner, and `jobProcess.ts` re-enters
+   from the `hdb_job` record. So a store established around the originating request cannot reach
+   it, and the re-parse would be judged as `sql` rather than as the job's own operation.
+
+The carrier is therefore established **in the job worker**, by `runWithDispatchedOperation`, from
+the same `request.operation` that `getOperationFunction` just resolved the handler from. That
+identity is the whole basis for trusting it: the value naming the operation and the value selecting
+the code cannot diverge. A new carrier must preserve that property — an added request property, a
+`search_operation` field, or a persisted `parsed_sql_object` would not.
+
+This lives in the same `AsyncLocalStorage` as the auth bypass rather than a second store, so
+`processAST` reads the state once. `runWithOperationAuthorizationBypass` **preserves** an existing
+carrier on both branches. That is deliberate and was initially got wrong: its enforced branch is not
+a bypass, so a job handler dispatching a nested _authorized_ operation lands there, and dropping the
+carrier would judge that job's re-parsed SQL as the inner `sql` and refuse it partway through its own
+work. The consequence to know is the other direction — a nested dispatch inside a job is judged
+against the **outer** job's operation for any `evaluateSQL` that does not pass through
+`chooseOperation`. It allocates only when a carrier is present; with none, two shared frozen objects
+serve the common path. All four stores are frozen, so `getOperationAuthorizationState()` cannot hand
+a mutable one to a caller.
+
+It has four call sites, and they are not all dispatch wrappers: `server.operation()`
+(`serverUtilities.ts`), the ITC path (`registeredOperations.ts`), the legacy SQL engine
+(`sqlEngine/diff/differential.ts`), and Harper's own `hdb_job` query (`server/jobs/jobs.ts`) — that
+last one **is** reached from the ops-API dispatch, via `search_jobs_by_start_date` →
+`handleGetJobsByStartDate` → `getJobsInDateRange`.
+
+Harper's own internal SQL takes the bypass, not the carrier. `getJobsInDateRange` runs a fixed
+`system.hdb_job` query through `evaluateSQL` beneath a handler the caller was already authorized for,
+and `SqlSearchObject` hardcodes `operation: 'sql'` — so the same mismatch applies, but the answer
+differs, and the reason is easy to get backwards. `verifyPermsAST`'s super_user early return is
+`isSuperUser && !isSuSystemOperation`, so a `system` schema is **exempt** from it and the table check
+genuinely runs. A carrier would therefore put Harper's own query through `hasPermissions` on
+`system.hdb_job`, which passes only because `appendSystemTablesToRole` grants `system.*.read` to a
+hydrated super_user — a super_user principal without an appended `permission.system` (an
+impersonation payload, or any path that skips user-cache hydration) would start getting 403s on an
+operation it is entitled to. The bypass also states the actual intent: the statement is Harper's, not
+the caller's. Wrap the individual statement, not the function — a later caller-dependent statement
+must not inherit it.
+
+A second body field has to be neutralized for any of this to hold: `evaluateSQL` trusts a supplied
+`parsed_sql_object` verbatim and skips parsing, `chooseOperation` overwrites only the **top-level**
+one, and `dataLayer/export.ts` hands the nested `search_operation` straight to `evaluateSQL`. So a
+body-supplied `search_operation.parsed_sql_object` carrying `permissions_checked: true` would run an
+arbitrary AST with the check skipped. `chooseOperation` deletes it, forcing the worker to re-parse
+from the `sql` string that dispatch authorized — the nested object is never overwritten the way the
+top-level one is, because nothing downstream should read one at all.
+
+What is untestable is not the carrier's contract — unit tests cover that by calling
+`runWithDispatchedOperation` directly — but that `jobProcess` is what establishes it. Delete that call
+and those tests stay green. The carrier only changes an outcome through `tokenScopeDenial`, which is
+inert unless the principal carries `tokenOperations`, and that property has exactly one origin: an
+OIDC trust-policy exchange, for which there is no integration harness.
+
+Three different mechanisms are easy to conflate here. `tokenOperations` above is the **OIDC token
+operation scope** (#2174). An **inline-role scoped token** (`create_authentication_tokens` with a
+`role` object) is not the same thing and cannot substitute, because `createScopedToken` mints it
+`super_user: false`, so it cannot invoke a `requires_su` operation such as `export_local` at all.
+**Table permissions** are a third, and also cannot substitute — see the system-schema exemption
+above. See #2298.
+
+## `universalHeaders` (`http.securityHeaders`): ownership, precedence, and per-thread scope
+
+`server/http.ts` exports `universalHeaders: [string, string][]`, applied to responses in the
+Node, Bun, and uWS (`#914`, `HARPER_UWS_HTTP`) request handlers alike. `http.securityHeaders`
+config populates it via `applySecurityHeaders()`, called from `handleApplication()` on load and
+on `scope.options.on('change', ...)`. Three invariants to preserve:
+
+- **Ownership tracking.** Other components may push entries onto the same shared array, so a
+  hot-reload can't clear-and-rebuild it. `applySecurityHeaders` tracks the exact `[name, value]`
+  tuples it previously pushed in a module-level `ownedSecurityHeaders` array and splices only
+  those out (by reference, via `indexOf`) before re-adding the new set. Any future feature that
+  pushes into `universalHeaders` from a hot-reloadable source should follow the same "track what
+  I added, only remove what I added" pattern.
+- **Root scope owns the config.** `'http'` is a `TRUSTED_RESOURCE_PLUGINS` key, so an application
+  `config.yaml` with an `http:` block re-invokes `handleApplication`. A module-level guard makes
+  only the _first_ invocation (the root config, which loads before applications) own
+  `applySecurityHeaders` and its change listener; later invocations still refresh `httpOptions`
+  but cannot wipe root-configured headers.
+- **App wins on conflicts.** Universal headers are _defaults_: `applyUniversalHeaders()` (a shared
+  helper used by all three transports) only sets a header when `has(name)` is false, and the
+  direct-to-`nodeResponse` paths (handlesHeaders, error) check `hasHeader` first. A route that sets
+  `X-Frame-Options: DENY` is never loosened by a configured `SAMEORIGIN`. Response paths covered:
+  normal writeHead, `handlesHeaders` streams (e.g. the static component's `send()`, which writes
+  its own headers directly — universal headers are pre-set on `nodeResponse` / the Bun
+  `responseHeaders` shim so the stream can still override its own names), the thrown-error path,
+  and the `status === -1` cascade — on Node via the Fastify `'unhandled'` event bridge, on Bun/uWS
+  via `injectToFastify` (or the bare-404 fallback when no Fastify instance is registered for the
+  port). Each `status === -1` branch builds a **fresh** `Headers` object from the fallback
+  response rather than reusing the request's original `headers`, so `applyUniversalHeaders()` must
+  be called again on whichever object actually gets returned — applying it only once, before the
+  `status === -1` branch, is a trap that silently drops universal headers on every unhandled/404
+  response. CI first caught this on the uWS shard (the integration suite's only unauthenticated
+  404 case landed there); the same bug existed unnoticed on Bun's parallel `status === -1`
+  branches (`getBunHTTPServer`'s bare-404 return and `bunDelegateToNodeServer`'s two `Response`s)
+  and is fixed alongside it in `harper-1568-fix2`.
+
+**Why the operations API doesn't get these headers in normal mode**: ops requests _do_ flow
+through the Harper-native `requestHandler` (`httpServer()` calls `getServer()` for every
+registration, including Fastify's non-function listener) and cascade to Fastify via the
+`status === -1` branch, which copies `response.headers` onto `nodeResponse`. But the ops API runs
+on the **main thread**, and the main thread loads components with `resources.isWorker = false`
+(`server/loadRootComponents.js`), so the componentLoader's `resources.isWorker &&
+extensionModule.handleApplication` gate (`components/componentLoader.ts`) means http's
+`handleApplication` never runs there — the main thread's `universalHeaders` array stays empty.
+`universalHeaders` is per-thread module state, populated only where the http component loads.
+Corollary: with `threads: 0` the ops API shares the worker where `handleApplication` _did_ run,
+so ops responses **will** carry the headers there (benign).
+
+## Under Bun, the main HTTP port is served by `node:http`, not `Bun.serve`
+
+Worth knowing before debugging anything Bun-specific on the HTTP path: `getBunHTTPServer()` builds
+the `Bun.serve()` fetch config, but `onWebSocket()` calls `getHTTPServer()` unconditionally — it has
+a uWS branch and no Bun branch, because Bun native WebSockets are unimplemented (nothing ever sets
+`config.websocket`, so WS relies on the Node `ws` server attached to an `http.Server`). MQTT's
+`handleApplication` registers WS on the default port before REST's `httpServer()` call for that same
+port, so `httpServers[port]` is already a Node server by then and `getBunHTTPServer` early-returns
+without registering a serve config. The port is bound by `registerServer()`'s Node server via
+`listenOnPortsBun`'s trailing "non-HTTP servers" loop, and the fetch handler is never invoked for it
+(only the exclusive operations port reaches `Bun.serve`). Consequence: on Bun the `Request`/`Response`
+fetch path is dead code for the main port, and its divergences show up as `node:http`-emulation
+divergences instead.
+
+One such divergence, `#2210`: Bun's `node:http` never derives keep-alive from the request. For a
+`Connection: close` request `shouldKeepAlive` stays `true`, and neither a `Connection: close` response
+header nor `response.socket.end()` closes the connection — a **stream-ended** response (an async
+source ended through `pipeline()`; a direct `response.end()` is fine) delivers its full body and
+terminal chunk, then holds the connection until Bun's own idle timeout — a chunked-aware client
+completes the message and can walk away, but the un-honored close still violates RFC 9112 §9.6 and
+strands the socket; a raw client waiting on the FIN (and the HTTP/1.0 case below, which has no
+terminal chunk to stop at) hangs outright. An HTTP/1.0 client hangs the same way
+without asking to close at all, since 1.0 persistence needs both an explicit `keep-alive` and a length
+to read to — so a 1.0 response that got no `Content-Length` is close-delimited, the same line Node
+draws (Node closes it at ~7ms; Bun never does). An explicit `close` token wins over `keep-alive` on
+both versions. A 1.0 `keep-alive` request whose response _did_ get a
+`Content-Length` (`body.size` on a blob, `server/http.ts:698-709`) is left open, which is again what
+Node does and what Bun then handles correctly.
+
+`pipeBodyToResponse()` therefore ends `request.socket` itself for those shapes
+(`endConnectionIfClientExpectsClose`, `isBun`-gated, HTTP/1 only, clean path only — the error path
+already closes because `pipeline()` destroys the response with the stream error). Ending the
+_request's_ socket is the only remedy that works after a clean stream end on Bun: a `Connection:
+close` response header, `response.socket.end()` and `response.destroy()` were all measured as no-ops
+there. `socket.end()` is graceful, so it does not truncate — 8 MB over plain TCP and 6 MB over TLS to
+a deliberately slow reader each arrive whole. The
+`Content-Length` check reads `response.hasHeader()`, which Bun populates from the `writeHead(status,
+headers)` fast path this file uses (Node does not, but the branch is Bun-only). A
+keep-alive arm pins the other direction (such a client keeps its connection and reuses it); the two
+HTTP/1.0 arms are Node/Bun-only, because uWS does not route an HTTP/1.0 request to the resource at
+all.
+
+## Per-worker UDS mirrors are separate server instances — port-keyed wiring does not reach them (`server/http.ts`)
+
+With `tls.unixDomainSockets: true`, every secure port gets a per-worker cleartext mirror
+(`<worker>-<port>.sock`) so a fronting proxy (symphony) can terminate TLS and route to a specific
+worker. The mirror is a **separate** `http.Server` instance registered in `SERVERS[udsPath]` — it is
+_not_ `httpServers[port]` — so anything wired by port key (upgrade listeners, uWS `wsHandler`,
+mTLS flags, socket options) must be explicitly propagated to it. `getHTTPServer()` exposes the
+mirror as `server.udsMirror` (Node) / `server.udsMirrorUwsConfig` (HARPER_UWS_UDS) for exactly this;
+`onWebSocket()` uses those to attach the `'upgrade'` dispatch and uWS `wsHandler`. Two lessons paid
+for in production (WS handshakes died with a zero-byte close on the mirrors while SSE worked):
+
+- A Node HTTP server with **no** `'upgrade'` listener destroys upgrade sockets with no response and
+  no log — a silent per-server default that makes a missing listener look like a network problem.
+- `enableProxyProtocol()`'s data interception must hand the socket **back to the original
+  listeners** once the PROXY header decision is made (it re-attaches them and removes its wrapper).
+  A permanent wrapper breaks protocol handoffs: Node's upgrade path removes its parser's `'data'`
+  listener _by reference_ before ws takes over, so a lingering wrapper keeps feeding the freed HTTP
+  parser — which the parser pool can re-issue to another connection, injecting one connection's
+  WS frames into another's request stream (`Parse Error: Data after 'Connection: close'`).
+
+The h2c mirror (`HARPER_H2C_UDS`) is exempt: HTTP/1.1 `Upgrade` doesn't exist in h2, and the
+fronting proxy routes WS to the h1 mirror by ALPN.
+
+Known limitation on uWS-served transports (`HARPER_UWS_HTTP` ports, `HARPER_UWS_UDS` mirrors):
+uWS accepts WebSocket handshakes natively in `app.ws()`, so `server.upgrade()` middleware never
+runs pre-handshake there (auth is unaffected — it runs in the WS connection chain on both paths,
+matching Node's upgrade-then-authorize order). No core component registers custom upgrade
+middleware; `onUpgrade()`/`installUwsWsHandler()` warn when one is registered for a uWS-served
+port so the gap is visible instead of silent.
+
+## A worker that misses an ITC ack gets its OS thread state logged (`server/threads/manageThreads.js`)
+
+`broadcastWithAcknowledgement` already times out (30 s) on a worker whose port stays open but never acks, and that shape is almost always a blocked event loop — a native lock, a runaway synchronous call — which nothing inside the worker can report (harper-pro#788: a restarted node's single http worker went byte-silent while main kept serving `cluster_status`, and the app log only said "not acknowledged by worker thread(s) 2"). So each worker posts its Linux thread id (`readlink /proc/thread-self`) to main once at startup, before anything else runs on it, and the timeout branch reads that thread's kernel state from `/proc/self/task/<tid>`: state, `wchan`, the syscall number (the first token only — the rest of that file is argument registers and stack/instruction pointers), CPU ticks, and context-switch counts, plus two cross-platform signals main already has, `worker.performance.eventLoopUtilization()` and the age of the last 1 s resource report. It samples again a second later and logs the deltas: no CPU ticks, no context switches and `event loop active +1000ms` is "parked on a lock"; ticks climbing with state `R` is "spinning". It is deliberately main-thread-only and best-effort: `workers` and the tid live on the main thread's `Worker` objects, every `/proc` field is reported individually (a hardened container may deny `wchan`/`syscall` while `stat` stays readable), a follow-up sample whose `starttime` differs from the first is discarded (the tid may have been recycled), one diagnostic runs per worker with a 30 s cooldown so concurrent timeouts on the same worker don't multiply reads, and nothing here runs when acks arrive on time. It does not name the lock owner; that still needs a native stack from the next occurrence.
+
+## `chooseOperation` authorizes the invoked operation against the authenticated principal (`server/serverHelpers/serverUtilities.ts`)
+
+`verifyPerms` takes a request-shaped object and reads _both_ halves of the permission question off it: the principal from `hdb_user`, and the tables from `schema`/`database`/`table`/`records`. `chooseOperation` used to hand it `json.search_operation` — a caller-supplied field — which made both halves body-controlled. Fixing one half and not the other is not a fix: with an empty `search_operation` the table map is empty, and `hasPermissions` iterating nothing authorizes everything. Regression cover: `integrationTests/security/choose-operation-authz.test.ts`.
+
+Four rules hold this together, and all four are load-bearing:
+
+**The principal comes from authentication.** Authentication sets only the _top-level_ `hdb_user`, and `validateRequestBodyProperties` inspects only top-level keys, so a nested `hdb_user` must be overwritten, never backfilled `if (!...)`. All four callers of `chooseOperation` (`serverHandlers`, `serverUtilities.operation`, `registeredOperations` worker forwarding, MCP) set the top-level principal before dispatch, which is why this belongs here rather than only at the HTTP boundary.
+
+**`search_operation` is the permission subject only for the operations that consume it.** `dataLayer/export.ts` is its sole consumer (`export_local`, `export_to_s3`); for any other operation the substitution checks the nested tables while the handler runs against the top-level ones, so it is gated on the operation name. It must also be an object naming one of export's supported operations (`search_by_value`/`search_by_hash`/`search_by_conditions`/`sql`) — a primitive, `{}`, or an unsupported operation is a request-time 400, not a wrapped 500 or an asynchronously-failed job.
+
+**One check cannot authorize both the outer export and its nested query.** The outer op's own `verifyPerms` returns before any table check — `export_local`/`export_to_s3` are `requires_su`, and a role that lists the operation in `operations` is granted at gate 2 (an explicit listing of an SU-only operation is a deliberate grant). The job worker then runs `search_operation` through `searchByValue`/`searchByHash`/`searchByConditions`, none of which check permissions. So the outer invocation is authorized first, and then the nested search is authorized additively against its _real_ search handler (`getOperationFunction(search_operation)`) and the authenticated principal — otherwise a role granted `export_local` could export a table it holds no grant on. A nested `sql` search takes the SQL branch instead, but the same two-part shape holds: the outer export op runs through `verifyPerms` (so its `requires_su` gate, the `operations` allowlist, and the export token scope all apply, exactly as on the non-SQL path — SQL must not be a way around the requires_su gate), the statement must be a `SELECT` because export is read-only, and `checkASTPermissions` then covers the statement's tables. A direct `sql` call has no outer job op, so there the `operations` allowlist alone is the operation-invocation check.
+
+**`parsed_sql_object` is dispatch state, never client input.** The export worker re-reads it off the same caller-supplied nested object (`evaluateSQL`), and it carries `permissions_checked`, so a body-supplied one runs an AST no check ever saw. It is deleted from the nested object at dispatch, and stripped from the top-level object before this dispatch's own parse is assigned. Only the direct-SQL path consumes the top-level `parsed_sql_object`; a job re-parses off `search_operation`, so setting it for a job would be inert. The bypass/`apiOperation` decision is carried on async-context state (`getOperationAuthorizationState`), not on the request body, and `processAST` honors the denial `checkASTPermissions` computes — a `PermissionResponseObject` has no `length`, so the guard tests the object itself rather than `.length` (which always refused nothing).
+
+The SQL and job paths are additive rather than exclusive: `verifyPermsAST` validates only the statement's tables and attributes, never the `operations` allowlist or `requires_su`, and a table-free statement gives it nothing to validate — so the allowlist check and the AST check both run for a SQL-carrying request, and the nested-search check runs alongside the outer export check for a job.
+
+## `withNodeAdapter()`'s response is the body `PassThrough` it resolves with (`server/serverHelpers/NodeAdapterResponse.ts`)
+
+`Request.withNodeAdapter(handler)` gives third-party Node middleware an `IncomingMessage`/`ServerResponse` pair and resolves `{ status, headers, body }` once headers are committed. The response is `NodeAdapterResponse extends PassThrough`, and that same stream is the resolved `body`: `write()`'s return value, `'drain'`, `'finish'`, `'close'`, `writableEnded`/`writableFinished` and destroy propagation are Node's own rather than events forwarded from a second stream, which is what `Readable.pipe`, `compression`'s buffered `res.on('drain')` and Next.js's response writer depend on past the high-water mark (#2527). Invariants that middleware exercises and the unit test `unitTests/server/serverHelpers/nodeAdapterMiddleware.test.js` pins against the real `compression` (1.8 and the 1.7.4 Next.js vendors), `send`, `on-finished` and `on-headers`:
+
+- **Headers commit exactly once, through `this.writeHead`.** `write()`, `end()`, `flushHeaders()` and `_implicitHeader()` all reach `this.writeHead(this.statusCode)` by property lookup, so a `writeHead` that `on-headers` replaced on the instance runs its listeners (the ones that set `Content-Encoding` and remove `Content-Length`) before the promise resolves. After commit, `setHeader`/`appendHeader`/`removeHeader` and a second `writeHead` throw `ERR_HTTP_HEADERS_SENT` as Node's do; `_header` (which `compression` ≤ 1.7 tests instead of `headersSent`) and `finished` (which `on-finished` tests) derive from that state.
+- **The adapter owns the `'error'` listener.** A `destroy(err)` right after `writeHead()` emits before the awaiting caller can attach one; the error stays in the stream's `errored` state for `pipeline()`, `finished()` or async iteration. Client disconnect (`Request.signal`) destroys the response without an error after headers (a plain premature close, which `pipeBodyToResponse` treats as routine) and rejects the promise with the abort reason before them; a handler that throws or rejects before ending the response destroys it, and one that fails after `end()` is logged at warn.
+- **Header names are case-insensitive on removal too.** `Headers.delete` lowercases like `set`/`get`/`has`; the inherited `Map.delete` silently left `send`'s `Content-Length` on a gzip body (truncated transfers).
+- **Express is not a target.** `express`'s `app.handle()` replaces the response's prototype with one rooted at `http.ServerResponse.prototype`, which no Writable-derived response survives, and would do the same to the request `Proxy`'s target, Harper's real `IncomingMessage`. Middleware that duck-types the response (Next.js, `compression`, `send`, `serve-static`, `finalhandler`, h3, fastify) is the supported surface.
+
+## `manageThreads` has two different `workerCount`s (`server/threads/manageThreads.js`)
+
+The module-global `let workerCount` and the per-worker `workerData.workerCount` share a name and
+nothing else. `getWorkerCount()` (and therefore the `server.workerCount` a component reads) resolves
+only `workerData.workerCount`, frozen at spawn — it never reads the global; on the main thread it
+answers `isMainWorker ? 1 : undefined`. The global's one and only reader is `restartWorkers`' default
+`maxWorkersDown = Math.max(Math.floor(workerCount / 8), 1)`, so it is the _serving topology_ the
+rolling-restart throttle is sized from, nothing more.
+
+That makes the global writable only by a start that declares the topology. It used to be assigned
+unconditionally from `options.threadCount` inside the `workerData` literal, so every job worker — which
+passes no `threadCount` — set it to `undefined`, and the next rolling restart computed `NaN` (harper#2491).
+`NaN` defeats the guard below it (`NaN < 1` is false) _and_ every throttle comparison, so the restart
+took the whole pool down at once. A string does the same thing for the same reason. So the fix is the conditional write plus a consumer guard that clamps anything not a usable number. `Infinity` is exempt: it is the deliberate "all at once" sentinel `shutdownWorkers` passes, and `shutdownWorkersNow` depends on it to mark every worker synchronously before the first await. A literal `0` is also left alone, because it reads as a ratio rather than as garbage — it still reaches the ratio branch and stops the restart after one worker (harper#2601).
+
+`workerData.workerCount` must stay exactly what it is for each start, `undefined` for job workers
+included: an earlier attempt to give job workers the serving count instead broke the Windows
+integration shard with ECONNREFUSED across the job tests. A job worker that believes it is part of the
+pool behaves differently.
