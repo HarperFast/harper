@@ -18,12 +18,15 @@ registry socket outlives every deadline the test can set: Harper's own spawn bou
 first — `main` went red this way at 576d33330 on one leg of 36, five minutes of silence and
 `UND_ERR_HEADERS_TIMEOUT`.
 
-A fixture therefore either declares no production dependencies, neutralizes the install with
+A fixture therefore declares no production dependencies, resolves them from local files the archive
+carries (`deploy/redeploy-runtime-equivalence.test.ts` builds a `file:vendor/...` dependency, which is
+also the only integration coverage of the automatic install path), neutralizes the install with
 `install_command` (`components/early-hints.test.ts`), or vendors its dependencies into the archive so
-`installApplication` takes its `node_modules`-present early return. `template-redirector-3.0.1-vendored.tgz`
-is the third case: the published `template-redirector@3.0.1` plus `node_modules/papaparse` at the
-version its manifest pins, which is why its name diverges from the package it came from —
-regenerating it with `npm pack` alone would silently restore the flake.
+`installApplication` takes its `node_modules`-present early return.
+`template-redirector-3.0.1-vendored.tgz` is the last case: the published `template-redirector@3.0.1`
+plus `node_modules/papaparse` at the version its manifest pins, which is why its name diverges from
+the package it came from — regenerating it with `npm pack` alone would silently restore the flake.
 
-Enforced by `components/redirector.test.ts`, which asserts the instance log contains
+Nothing enforces this across fixtures. For the redirector archive specifically,
+`components/redirector.test.ts` asserts the instance log contains
 `already has node_modules; skipping install` and no `[redirector:spawn:npm]` line.

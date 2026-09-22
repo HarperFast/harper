@@ -51,7 +51,8 @@ const REDIRECT_CSV = `utcStartTime,utcEndTime,path,host,version,redirectURL,oper
 
 suite('Component: redirector', (ctx: ContextWithHarper) => {
 	before(async () => {
-		await startHarper(ctx);
+		// the negative spawn assertion below reads debug-level log lines
+		await startHarper(ctx, { config: { logging: { level: 'debug' } } });
 
 		const deployResponse = await fetchWithTimeout(
 			ctx.harper.operationsAPIURL,
