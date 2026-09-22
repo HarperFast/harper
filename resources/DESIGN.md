@@ -820,7 +820,7 @@ contention is otherwise invisible until it becomes a timeout. The locked
 sections MUST stay synchronous: the wait blocks the event loop, so an awaited operation inside
 one would stall a concurrent acquirer to its deadline. And dropping then recreating a
 same-named table within one process requires @harperfast/rocksdb-js >= the column-family
-eviction fix (1.4.3 / rocksdb-js#<main PR>): older bindings keep the dropped column family's
+eviction fix (2.1.0 / rocksdb-js#647): older bindings keep the dropped column family's
 by-name registry entry alive whenever other worker threads hold handles, so the recreate
 silently reuses a dangling handle and every write fails with "Invalid column family specified
 in write batch", poisoning the whole database env until restart. The regression suite for all
