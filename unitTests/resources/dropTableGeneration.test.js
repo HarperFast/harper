@@ -179,10 +179,17 @@ describe('dropTable generation-distinct stores', function () {
 	});
 
 	it('does not dispose a same-name replacement for a delayed old-generation drop event', async function () {
-		if (IS_LMDB) return this.skip();
 		const First = defineTable('GenDelayedDrop');
 		const oldGeneration = First.storageGeneration;
+		const oldTableId = First.tableId;
+		let broadcast;
+		schemaHandler.addListener((message) => {
+			if (message.table === 'GenDelayedDrop' && message.dropTableId === oldTableId) broadcast = message;
+		});
 		await First.dropTable();
+		await waitFor(() => broadcast, { timeout: 5_000, message: 'drop broadcast did not carry the table identity' });
+		assert.equal(broadcast.dropTableId, oldTableId);
+		if (!IS_LMDB) assert.equal(broadcast.dropGeneration, oldGeneration);
 		const Replacement = defineTable('GenDelayedDrop');
 		await Replacement.put({ id: 1, str: 'replacement' });
 		await schemaHandler({
@@ -192,11 +199,43 @@ describe('dropTable generation-distinct stores', function () {
 				operation: 'drop_table',
 				schema: TEST_DB,
 				table: 'GenDelayedDrop',
+			},
+		});
+		assert.equal((await Replacement.get(1)).str, 'replacement');
+		await schemaHandler({
+			type: 'schema',
+			message: {
+				originator: process.pid,
+				operation: 'drop_table',
+				schema: TEST_DB,
+				table: 'GenDelayedDrop',
 				dropGeneration: oldGeneration,
+				dropTableId: oldTableId,
 			},
 		});
 		assert.equal((await Replacement.get(1)).str, 'replacement');
 		await Replacement.dropTable();
+	});
+
+	it('disposes the current class for a matching tagged drop event', async function () {
+		const Current = defineTable('GenTaggedDrop');
+		await Current.put({ id: 1, str: 'current' });
+		await schemaHandler({
+			type: 'schema',
+			message: {
+				originator: process.pid,
+				operation: 'drop_table',
+				schema: TEST_DB,
+				table: 'GenTaggedDrop',
+				dropGeneration: Current.storageGeneration,
+				dropTableId: Current.tableId,
+			},
+		});
+		await assert.rejects(async () => Current.get(1), /has been dropped or unloaded/);
+		const Reloaded = databases[TEST_DB].GenTaggedDrop;
+		assert.notEqual(Reloaded, Current);
+		assert.equal((await Reloaded.get(1)).str, 'current');
+		await Reloaded.dropTable();
 	});
 
 	it('does not wait on, or fail for, a source-fill write still landing when the drop starts', async function () {

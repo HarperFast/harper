@@ -2158,15 +2158,16 @@ export function makeTable(options) {
 				}
 			}
 			derivedIndexRuntime?.completeDrop?.();
-			signalling.signalSchemaChange(
-				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName)
-			);
+			const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName);
+			message.dropTableId = tableId;
+			signalling.signalSchemaChange(message);
 
 			async function retireRocksStores(generation: string | undefined, dropGeneration: string) {
 				const releaseDropMark = markDropInProgress(dropGeneration);
 				try {
 					const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName);
 					message.dropGeneration = dropGeneration;
+					message.dropTableId = tableId;
 					await signalling.signalSchemaChange(message);
 					const removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
 						const stores = storeNamesFor(dbisDb, tableName, generation);

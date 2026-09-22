@@ -95,6 +95,7 @@ async function syncSchemaMetadata(msg) {
 				const dropped = databases[msg.schema]?.[msg.table];
 				if (
 					dropped &&
+					(msg.dropTableId == null ? dropped.tableId == null : dropped.tableId === msg.dropTableId) &&
 					(!msg.dropGeneration || !dropped.storageGeneration || dropped.storageGeneration === msg.dropGeneration)
 				) {
 					const derivedIndexRuntime = dropped.derivedIndexRuntime;
