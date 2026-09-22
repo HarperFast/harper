@@ -1,9 +1,5 @@
-// QA-822 fixture resources. Everything else this suite needs (insert, read_audit_log,
-// delete_transaction_logs_before, get_job) is a standard Harper surface the test hits directly.
-//
-// Both routes resolve a fixture table out of the global `tables` alias, so a 200 from
-// `/LogStats/` is also the suite's readiness signal: an HTTP server answering before the
-// databases are open cannot produce one.
+// QA-822 fixture resources: the two things the suite needs that no operations-API surface exposes.
+// Everything else it does goes through the standard API.
 
 const ALL_TABLES = ['PurgeVictim', 'Healer', 'QuietTarget'];
 
@@ -24,9 +20,9 @@ function engineOf(table) {
 	return 'unknown';
 }
 
-// POST /Flush/ — flush every fixture table's primary store. `delete_transaction_logs_before` only
-// deletes log files entirely before the last-flushed-to-RocksDB position, so without this the
-// purge has nothing eligible to delete and the whole suite arms vacuously.
+// `delete_transaction_logs_before` only deletes log files entirely before the last-flushed-to-
+// RocksDB position, so without this the purge has nothing eligible to delete and the suite arms
+// vacuously.
 export class Flush extends Resource {
 	static loadAsInstance = false;
 	async post() {
@@ -40,9 +36,8 @@ export class Flush extends Resource {
 	}
 }
 
-// GET /LogStats/?table=<name> — the native transaction-log snapshot for the table's shared log.
-// `lastFlushedPosition` is invariant 1's oracle; `nextLogPosition` is the log's write cursor, which
-// is what makes commit grouping's effect on the log's byte layout directly measurable.
+// `nextLogPosition` is the log's write cursor, which is what makes commit grouping's effect on the
+// byte layout measurable at all; the operations API exposes neither position.
 export class LogStats extends Resource {
 	static loadAsInstance = false;
 	async get(query) {

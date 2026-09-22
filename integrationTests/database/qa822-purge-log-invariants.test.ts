@@ -19,12 +19,18 @@
  *      The log's byte layout is a function of the records, not of how a client grouped them into
  *      transactions, so no client write pattern can be closer to or further from a flush than
  *      another. Nothing about this is purge-specific; it is measured here because the arming this
- *      file already does gives it a real, non-empty log to measure against.
- *   3. THERE IS NO PARTIAL-LOSS WINDOW AFTER A PURGE. Markers planted at three points across a
- *      post-purge write ramp — starting with a single row written before any further volume — all
- *      survive one clean shutdown together. The failure mode this forbids is the expensive one: a
- *      silent prefix of the post-purge window being dropped while later rows survive, which no
- *      operator could detect from the outside.
+ *      file already does gives it a real, non-empty log to measure against. Note what kind of claim
+ *      this is: it holds because `RocksTransactionLogStore` frames the log per RECORD (`addEntry`
+ *      per audit entry, with the transaction boundary carried as a flag), so it is an empirical
+ *      anchor on that layout rather than a published contract. Native per-transaction framing would
+ *      be a deliberate change, and this assertion is meant to be the thing that notices it.
+ *   3. THERE IS NO PARTIAL-LOSS WINDOW AFTER A PURGE. Markers planted at four points across the
+ *      post-purge window all survive a clean shutdown together. The sharpest is the first: rows
+ *      written by the very process that ran the purge, before it has restarted, which is the
+ *      residual exposure the QA-822 family named. Then a single row first thing in the new process,
+ *      then two more across a write ramp. The failure mode this forbids is the expensive one: a
+ *      silent prefix of the window being dropped while later rows survive, which no operator could
+ *      detect from the outside.
  *
  * WHY INVARIANT 1 IS STATED AS "NEVER WEDGES" RATHER THAN "HEALS". The QA-822 exploration measured
  * the opposite world. On `@harperfast/rocksdb-js` 2.8.0 this same purge left `lastFlushedPosition`
@@ -32,12 +38,13 @@
  * restart to move it off — because `doPurge()` emptied the store's sequence files and then
  * `remove_all`d the directory holding `txn.state` out from under its own open handle
  * (rocksdb-js#808). rocksdb-js#799 shipped the retention floor in v2.9.0, and the purge now keeps
- * the segment the flush position names. Re-measured here by swapping only the binding: 2.8.0
- * deletes both log files and reports `{0,0}`; 2.9.1 and 2.10.0 delete the eligible prefix only and
- * report a live position. So the healing behaviour is no longer reachable, and pinning it would
- * land a permanently red test. Invariant 1 pins the fix instead, which is the stronger claim; the
- * durability half of the original — "and that row survives" — is preserved as invariant 3's first
- * checkpoint.
+ * the segment the flush position names. That was re-measured before this file was written, by
+ * swapping only `@harperfast/rocksdb-js` under one unchanged harper build — 2.8.0 deletes both log
+ * files and reports `{0,0}`, while 2.9.1 and 2.10.0 delete the eligible prefix only and report a
+ * live position. The suite itself does no such swap. So the healing behaviour is unreachable on any
+ * supported pin, and asserting it would land a permanently red test. Invariant 1 pins the fix
+ * instead, which is the stronger claim; the durability half of the original — "and that row
+ * survives" — is preserved among invariant 3's checkpoints.
  *
  * Deliberately NOT asserted, because asserting it would make this file drift or go red for reasons
  * that are not regressions:
@@ -95,12 +102,14 @@ const ARM_CONFIG = {
 };
 const ARM_ENV = { HARPER_STORAGE_ENGINE: 'rocksdb' };
 
-// RocksDB's default transactionLogMaxSize is 16MiB; 5000 * 4200B ≈ 21MiB forces a genuine file
-// rotation, which is what makes the purge REAL — a purge against a single still-active segment
-// deletes nothing and would arm every assertion below vacuously.
-const VICTIM_ROWS = 5000;
+// The seed has to cross the log's rotation size, because a purge against a single still-active
+// segment deletes nothing and would arm every assertion below vacuously. Sized from the log's own
+// `maxFileSize` rather than the 16MiB default, so a change to that default cannot silently turn the
+// arming into a permanent failure.
 const VICTIM_PAD = 'x'.repeat(4200);
 const VICTIM_BATCH = 500;
+const VICTIM_OVERSHOOT = 1.3;
+const DEFAULT_MAX_FILE_SIZE = 16 * 1024 * 1024;
 
 // Invariant 2's two commit shapes. 260 rows × ~4KB ≈ 1.05MiB per shape is deliberately far below
 // the 16MiB rotation size, so both shapes land in one log file and their offsets are comparable.
@@ -307,6 +316,20 @@ async function assertMarkersIntact(ctx: ContextWithHarper, label: string, rows: 
 	}
 }
 
+// Rotation is observed asynchronously, so exhausting the seed budget is not yet proof it happened.
+// Without it the purge has no sealed file to delete and the arming below fails for a reason that
+// has nothing to do with what this suite asserts.
+async function waitForRotation(ctx: ContextWithHarper, before: number): Promise<number> {
+	const deadline = Date.now() + 60_000;
+	let rotations = before;
+	while (Date.now() < deadline) {
+		rotations = (await logStats(ctx, 'PurgeVictim')).rotations;
+		if (rotations > before) return rotations;
+		await sleep(250);
+	}
+	throw new Error(`ORACLE ARMING: the seed never rotated the transaction log (rotations still ${rotations})`);
+}
+
 async function restart(ctx: ContextWithHarper): Promise<void> {
 	await killHarper(ctx as any, { graceMs: 30_000 });
 	await startHarper(ctx, { config: ARM_CONFIG, env: ARM_ENV });
@@ -318,13 +341,15 @@ suite(
 	{ skip: skipSuite },
 	(ctx: ContextWithHarper) => {
 		const findings: string[] = [];
-		// cp0 is a single row planted before any further write volume — the floor case the QA-822
-		// exploration probed, kept here as the first thing the post-purge window must not lose.
-		const checkpoints = [
-			{ label: 'cp0 (one row, before any further volume)', rows: markerRows('cp0', 1) },
-			{ label: 'cp1 (after 260 single-row commits)', rows: markerRows('cp1', MARKER_ROWS) },
-			{ label: 'cp2 (after one 260-row commit)', rows: markerRows('cp2', MARKER_ROWS) },
-		];
+		// `same-process` is the sharpest point in the window and the one the QA-822 family named as
+		// the residual exposure: rows written by the very process that ran the purge, before it has
+		// restarted. cp0 is the next-sharpest — a single row, first thing in the new process, before
+		// any further volume. Both are ordinary members of invariant 3, checked the same way.
+		const sameProcess = { label: 'same-process (written by the purging process)', rows: markerRows('sp', MARKER_ROWS) };
+		const cp0 = { label: 'cp0 (one row, before any further volume)', rows: markerRows('cp0', 1) };
+		const cp1 = { label: 'cp1 (after 260 single-row commits)', rows: markerRows('cp1', MARKER_ROWS) };
+		const cp2 = { label: 'cp2 (after one 260-row commit)', rows: markerRows('cp2', MARKER_ROWS) };
+		const checkpoints = [sameProcess, cp0, cp1, cp2];
 		let postPurge: LogSnapshot;
 		let postPurgeRestart: LogSnapshot;
 		let manyCommitBytes = Number.NaN;
@@ -356,8 +381,11 @@ suite(
 			'1. arm: seed past a rotation and run a purge that really deletes log files',
 			{ timeout: 600_000 },
 			async () => {
-				for (let start = 0; start < VICTIM_ROWS; start += VICTIM_BATCH) {
-					const records = Array.from({ length: Math.min(VICTIM_BATCH, VICTIM_ROWS - start) }, (_, i) => ({
+				const seedStart = await logStats(ctx, 'PurgeVictim');
+				const maxFileSize = seedStart.maxFileSize > 0 ? seedStart.maxFileSize : DEFAULT_MAX_FILE_SIZE;
+				const victimRows = Math.ceil((maxFileSize * VICTIM_OVERSHOOT) / VICTIM_PAD.length);
+				for (let start = 0; start < victimRows; start += VICTIM_BATCH) {
+					const records = Array.from({ length: Math.min(VICTIM_BATCH, victimRows - start) }, (_, i) => ({
 						id: `pv_${start + i}`,
 						seq: start + i,
 						marker: VICTIM_PAD,
@@ -365,7 +393,11 @@ suite(
 					await insertRows(ctx, 'PurgeVictim', records);
 				}
 
-				await sleep(250);
+				const rotations = await waitForRotation(ctx, seedStart.rotations);
+				findings.push(
+					`1. seeded ${victimRows} rows x ${VICTIM_PAD.length}B against maxFileSize=${maxFileSize}; rotations ${seedStart.rotations} -> ${rotations}`
+				);
+
 				const cutoffTimestamp = Date.now();
 				await flushPrimaryStores(ctx);
 
@@ -396,6 +428,13 @@ suite(
 				);
 
 				postPurge = await logStats(ctx, 'QuietTarget');
+
+				// Planted here, and only here, because after the restart this window is gone: these rows
+				// are written by the process that ran the purge, which is the case the QA-822 family
+				// identified as the residual exposure. They go through the same restart below.
+				await insertRows(ctx, 'QuietTarget', sameProcess.rows);
+				await assertMarkersIntact(ctx, '1. POSITIVE CONTROL same-process', sameProcess.rows);
+
 				await restart(ctx);
 				postPurgeRestart = await logStats(ctx, 'QuietTarget');
 				findings.push(`1. post-purge ${fmt(postPurge)}`);
@@ -406,18 +445,25 @@ suite(
 
 		test('2. INVARIANT 1: the purge leaves the flush position inside the log it retained', async () => {
 			ok(purged, 'PRECONDITION: the purge must have run before its aftermath is asserted');
+			// One claim — the segment `txn.state` names outlived the purge — checked through the three
+			// states that claim rules out, each named separately so a red run says which one happened.
 			for (const [when, stats] of [
 				['immediately after the purge', postPurge],
 				['after a clean restart', postPurgeRestart],
 			] as const) {
+				const preamble =
+					`RETENTION-FLOOR INVARIANT (${when}): the purge must retain the log file lastFlushedPosition names. ` +
+					`A purge that deletes it strands the position and everything written before the next flush is lost ` +
+					`at shutdown (rocksdb-js#808); rocksdb-js#799's retention floor is what keeps it.`;
 				ok(
-					!isSentinel(stats.lastFlushedPosition) &&
-						stats.fileCount > 0 &&
-						stats.lastFlushedPosition.sequence >= stats.oldestSequenceNumber,
-					`RETENTION-FLOOR INVARIANT: ${when}, lastFlushedPosition must still name a retained log file. ` +
-						`A purge that deletes the segment holding it strands the position at the {0,0} sentinel ` +
-						`(rocksdb-js#808) and everything written before the next flush is lost at shutdown; ` +
-						`rocksdb-js#799 is what keeps that segment. Got ${fmt(stats)}`
+					!isSentinel(stats.lastFlushedPosition),
+					`${preamble} The position is the {0,0} sentinel, which is what a stranded position reads as. Got ${fmt(stats)}`
+				);
+				ok(stats.fileCount > 0, `${preamble} The purge left no log files at all. Got ${fmt(stats)}`);
+				ok(
+					stats.lastFlushedPosition.sequence >= stats.oldestSequenceNumber &&
+						stats.lastFlushedPosition.sequence <= stats.currentSequenceNumber,
+					`${preamble} The position names a sequence outside the range of files the purge kept. Got ${fmt(stats)}`
 				);
 			}
 		});
@@ -427,25 +473,29 @@ suite(
 			{ timeout: 600_000 },
 			async () => {
 				ok(purged, 'PRECONDITION: the ramp must run inside the post-purge window');
-				await insertRows(ctx, 'QuietTarget', checkpoints[0].rows);
-				await assertMarkersIntact(ctx, '3. POSITIVE CONTROL cp0', checkpoints[0].rows);
+				await insertRows(ctx, 'QuietTarget', cp0.rows);
+				await assertMarkersIntact(ctx, '3. POSITIVE CONTROL cp0', cp0.rows);
 
 				const beforeMany = await logStats(ctx, 'QuietTarget');
 				for (const row of shapeRows('sm')) await insertRows(ctx, 'Healer', [row]);
 				const afterMany = await logStats(ctx, 'QuietTarget');
 
-				await insertRows(ctx, 'QuietTarget', checkpoints[1].rows);
-				await assertMarkersIntact(ctx, '3. POSITIVE CONTROL cp1', checkpoints[1].rows);
+				await insertRows(ctx, 'QuietTarget', cp1.rows);
+				await assertMarkersIntact(ctx, '3. POSITIVE CONTROL cp1', cp1.rows);
 
 				const beforeOne = await logStats(ctx, 'QuietTarget');
 				await insertRows(ctx, 'Healer', shapeRows('lg'));
 				const afterOne = await logStats(ctx, 'QuietTarget');
 
-				await insertRows(ctx, 'QuietTarget', checkpoints[2].rows);
-				await assertMarkersIntact(ctx, '3. POSITIVE CONTROL cp2', checkpoints[2].rows);
+				await insertRows(ctx, 'QuietTarget', cp2.rows);
+				await assertMarkersIntact(ctx, '3. POSITIVE CONTROL cp2', cp2.rows);
 
-				// Both shapes must land inside one log file, or an offset delta would be measuring a
-				// rotation rather than the records, and invariant 2 could fail for a second reason.
+				// Two things would let invariant 2 fail for a reason other than commit grouping, so both
+				// are ruled out here rather than argued: a rotation inside a window would make its offset
+				// delta measure the rotation, and anything else writing to this shared log during a
+				// window — an audit-cleanup pass raising the retention floor is the plausible one — would
+				// add bytes neither shape asked for. The entry count is what detects that second case:
+				// each window must contain exactly the records its shape wrote, and nothing else.
 				for (const [label, from, to] of [
 					['260 single-row commits', beforeMany, afterMany],
 					['one 260-row commit', beforeOne, afterOne],
@@ -454,6 +504,11 @@ suite(
 						to.nextLogPosition.sequence,
 						from.nextLogPosition.sequence,
 						`ORACLE ARMING: ${label} must not rotate the log (${SHAPE_ROWS} rows × ${SHAPE_PAD.length}B is far below maxFileSize=${from.maxFileSize}), got sequence ${from.nextLogPosition.sequence} -> ${to.nextLogPosition.sequence}`
+					);
+					strictEqual(
+						to.entriesWritten - from.entriesWritten,
+						SHAPE_ROWS,
+						`ORACLE ARMING: ${label} must be the only thing written to the shared log in its window, or the byte delta is not attributable to the records; got ${to.entriesWritten - from.entriesWritten} log entries for ${SHAPE_ROWS} records`
 					);
 				}
 				manyCommitBytes = afterMany.nextLogPosition.offset - beforeMany.nextLogPosition.offset;

@@ -1,13 +1,6 @@
-# QA-822 — transaction-log purge anchor. One database, because a RocksDB transaction log is
-# per-database: all three tables share the log whose `lastFlushedPosition` the suite samples.
-#
-# PurgeVictim — seeded past the log's rotation size so the database-scoped purge has a sealed,
-#               flushed file to delete, so the purge is real rather than a no-op against the
-#               still-active segment.
-# Healer      — carries the post-purge write volume for the two commit shapes. A DIFFERENT table
-#               from QuietTarget, so that volume can never be mistaken for the oracle's own writes.
-# QuietTarget — the quiet table whose planted markers are the survival oracle. Nothing else
-#               writes to it, so a marker that goes missing went missing to the purge.
+# One database, because a RocksDB transaction log is per-database: all three tables share the one
+# log the suite samples. They are separate tables so the seed that arms the purge, the post-purge
+# write volume, and the rows read back as the survival oracle can never be confused for each other.
 type PurgeVictim @table(audit: true) @export {
 	id: ID @primaryKey
 	seq: Int
