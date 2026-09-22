@@ -1438,6 +1438,7 @@ function initStores(
 					primaryKey: primaryAttribute.name,
 					databasePath: isLegacy ? `${databaseName}/${tableName}` : databaseName,
 					databaseName,
+					storageGeneration: primaryAttribute.generation,
 					indices,
 					attributes,
 					schemaDefined: primaryAttribute.schemaDefined,
@@ -2924,6 +2925,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				tableId: primaryStore.tableId,
 				databasePath: databaseName,
 				databaseName,
+				storageGeneration: generation,
 				indices: {},
 				attributes,
 				schemaDefined,
@@ -4018,6 +4020,12 @@ export async function sweepDroppedTableBlobs(
 
 function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseName: string) {
 	const rows = Array.from(attributesDbi.getRange({ start: GENERATION_ROW_PREFIX, end: GENERATION_ROW_END }));
+	const state = scheduledGenerationReclaims.get(rootStore);
+	const journalKeys = rows.map(({ key }) => String(key)).join('\0');
+	if (state) {
+		if (state.journalKeys !== undefined && state.journalKeys !== journalKeys) state.delay = 2000;
+		state.journalKeys = journalKeys;
+	}
 	if (rows.length === 0) {
 		resetGenerationReclaimDelay(rootStore);
 		return;
@@ -4177,7 +4185,7 @@ function scheduleGenerationBlobSweep(
 
 const scheduledGenerationReclaims = new WeakMap<
 	RocksDatabase,
-	{ timer?: NodeJS.Timeout; delay: number; attributesDbi: any; databaseName: string }
+	{ timer?: NodeJS.Timeout; delay: number; attributesDbi: any; databaseName: string; journalKeys?: string }
 >();
 function resetGenerationReclaimDelay(rootStore: RocksDatabase): void {
 	const state = scheduledGenerationReclaims.get(rootStore);

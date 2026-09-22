@@ -709,7 +709,7 @@ export function makeTable(options) {
 		if (attribute.expiresAt) expiresAtProperty = attribute;
 		if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
 	}
-	const tableGeneration = (primaryKeyAttribute as any)?.generation;
+	const tableGeneration = options.storageGeneration ?? (primaryKeyAttribute as any)?.generation;
 	let deleteCallbackHandle: { remove: () => void };
 	let prefetchIds = [];
 	let prefetchCallbacks = [];
@@ -969,6 +969,7 @@ export function makeTable(options) {
 		// #section: static-config
 		static name = tableName; // for display/debugging purposes
 		static primaryStore = primaryStore;
+		static storageGeneration = tableGeneration;
 		static auditStore = auditStore;
 		static primaryKey = primaryKey;
 		static tableName = tableName;

@@ -93,7 +93,10 @@ async function syncSchemaMetadata(msg) {
 			const releaseDropMark = msg.dropGeneration ? markDropInProgress(msg.dropGeneration) : undefined;
 			try {
 				const dropped = databases[msg.schema]?.[msg.table];
-				if (dropped) {
+				if (
+					dropped &&
+					(!msg.dropGeneration || !dropped.storageGeneration || dropped.storageGeneration === msg.dropGeneration)
+				) {
 					const derivedIndexRuntime = dropped.derivedIndexRuntime;
 					dropped.derivedIndexRuntime = undefined;
 					delete databases[msg.schema][msg.table];

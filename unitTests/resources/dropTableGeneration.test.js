@@ -18,6 +18,7 @@ const { logger } = require('#src/utility/logging/logger');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 const { derivedIndexReadiness } = require('#src/resources/indexes/hnswDerivedIndex');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { schemaHandler } = require('#js/server/itc/serverHandlers');
 
 const TEST_DB = 'test';
 const IS_LMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -175,6 +176,27 @@ describe('dropTable generation-distinct stores', function () {
 		);
 		await assert.rejects(async () => Retained.put({ id: 2, str: 'y' }), /has been dropped/);
 		assert.equal(databases[TEST_DB]?.GenRetained, undefined);
+	});
+
+	it('does not dispose a same-name replacement for a delayed old-generation drop event', async function () {
+		if (IS_LMDB) return this.skip();
+		const First = defineTable('GenDelayedDrop');
+		const oldGeneration = First.storageGeneration;
+		await First.dropTable();
+		const Replacement = defineTable('GenDelayedDrop');
+		await Replacement.put({ id: 1, str: 'replacement' });
+		await schemaHandler({
+			type: 'schema',
+			message: {
+				originator: process.pid,
+				operation: 'drop_table',
+				schema: TEST_DB,
+				table: 'GenDelayedDrop',
+				dropGeneration: oldGeneration,
+			},
+		});
+		assert.equal((await Replacement.get(1)).str, 'replacement');
+		await Replacement.dropTable();
 	});
 
 	it('does not wait on, or fail for, a source-fill write still landing when the drop starts', async function () {
