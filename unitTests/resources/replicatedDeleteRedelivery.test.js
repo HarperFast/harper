@@ -177,6 +177,18 @@ describe('Re-delivered replicated deletes (harper-pro#826)', () => {
 		});
 	}
 
+	it('does not re-log a re-delivered [put, delete] once the put is recognized as applied', async function () {
+		if (isLMDB) return this.skip();
+		const id = 'put-delete-counted';
+		const logKey = originClock();
+		await applyFrame(logKey, [put(id, 'counted'), del(id)]);
+		// the put's dedup reads the log by key, which can lag a just-committed entry (harper#1137)
+		await waitFor(() => auditStore.get(logKey, Nodes.tableId, id, 1), { message: 'the entries become readable' });
+		await applyFrame(logKey, [put(id, 'counted'), del(id)]);
+		assert.equal(entriesFor(Nodes, id, 'put').length, 1);
+		assert.equal(entriesFor(Nodes, id, 'delete').length, 1);
+	});
+
 	for (const [name, writes] of [
 		['invalidate, delete', (id) => [{ type: 'invalidate', id }, del(id)]],
 		['delete, invalidate, delete', (id) => [del(id), { type: 'invalidate', id }, del(id)]],

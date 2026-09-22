@@ -4375,16 +4375,11 @@ export function makeTable(options) {
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
 						return;
 					}
-					// A re-delivery of this same delete (see resources/DESIGN.md) stages its removal and logs
-					// nothing. Only the immediately preceding write can vouch for the key's state: an invalidate
-					// or relocate writes a null stub without publishing it to the chain.
 					const stagedRemoval = { value: undefined, localTime: txnLogKey, nodeId: options?.nodeId };
-					const removal = write.priorWrite
-						? write.priorWrite.stagedEntry
-						: existingEntry?.metadataFlags & INVALIDATED
-							? undefined
-							: existingEntry;
-					if (existingRecord == null && isAuditEntryWrite(removal, { txnLogKey, nodeId: options?.nodeId })) {
+					if (
+						existingRecord == null &&
+						isAuditEntryWrite(removalBefore(write, existingEntry), { txnLogKey, nodeId: options?.nodeId })
+					) {
 						write.stagedEntry = stagedRemoval;
 						write.skipped = true;
 						return;
@@ -7595,6 +7590,19 @@ export function makeTable(options) {
 			return results;
 		}
 		return ids;
+	}
+
+	/**
+	 * What left a delete's key without a record, for the re-delivery check (resources/DESIGN.md): the
+	 * nearest earlier write in the transaction that staged state, else the stored entry. Only writes marked
+	 * skipped are passed over, because an invalidate or relocate stores a null stub without staging it.
+	 */
+	function removalBefore(write: any, existingEntry: Entry | undefined): Partial<Entry> | undefined {
+		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
+			if (prior.stagedEntry) return prior.stagedEntry;
+			if (!prior.skipped) return;
+		}
+		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
 	}
 
 	function precedesExistingVersion(txnTime: number, existingEntry: Partial<Entry>, nodeId?: number): number {
