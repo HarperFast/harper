@@ -61,13 +61,14 @@ import { RocksIndexStore } from './RocksIndexStore.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
 import {
+	RESTORE_META_DIR,
 	acquireRestoreLock,
-	checkRestoreState,
 	releaseRestoreLock,
 	restoreMarkerPresent,
 	scanBlockedRestores,
-	RESTORE_META_DIR,
+	type BlockedRestoreState,
 	type RestoreLock,
+	withRestoreExclusion,
 } from '../dataLayer/restoreMarker.ts';
 
 /**
@@ -605,7 +606,18 @@ export function getDatabases(): Databases {
 					files.some((file) => file.name.startsWith('MANIFEST-')) &&
 					!schemaConfigs[dbName]?.path
 				) {
-					readRocksMetaDb(dbPath, null, dbName);
+					// blockedByRestore was read once for the whole scan; re-check under the lock so a restore
+					// that started mid-scan cannot have this directory opened out from under it
+					withRestoreExclusion(
+						dbPath,
+						() => readRocksMetaDb(dbPath, null, dbName),
+						(state) => {
+							logger.warn(
+								`Not loading database '${dbName}': ${state === 'in-progress' ? 'a restore is in progress' : 'an incomplete restore must be rerun'}`
+							);
+							return undefined;
+						}
+					);
 					continue;
 				}
 			} catch (err) {
@@ -662,7 +674,16 @@ export function getDatabases(): Databases {
 								files.find((file) => file.name === 'CURRENT')?.isFile() &&
 								files.some((file) => file.name.startsWith('MANIFEST-'))
 							) {
-								readRocksMetaDb(dbPath, null, dbName);
+								withRestoreExclusion(
+									dbPath,
+									() => readRocksMetaDb(dbPath, null, dbName),
+									(state) => {
+										logger.warn(
+											`Not loading database '${dbName}': ${state === 'in-progress' ? 'a restore is in progress' : 'an incomplete restore must be rerun'}`
+										);
+										return undefined;
+									}
+								);
 								continue;
 							}
 						} catch (err) {
@@ -1931,14 +1952,21 @@ export function database({ database: databaseName, table: tableName }) {
 		}
 		rootStore = rocksdbDatabaseEnvs.get(path);
 		if (!rootStore || rootStore.status === 'closed') {
-			// this on-demand open (create_table/create_database and friends) must not resurrect a
-			// database that a restore is rewriting (or left half-purged) — the scan-time restore
-			// checks don't cover this path
-			throwIfBlockedByRestore(path, databaseName);
-			rootStore = openRocksDatabase(path, {
-				disableWAL: false,
-				enableStats: true,
-			}) as any;
+			// This on-demand open (create_table/create_database and friends) must not resurrect a
+			// database that a restore is rewriting (or left half-purged); the scan-time restore checks
+			// don't cover this path. The lock is held across the check AND the open, so a restore cannot
+			// claim the directory in between — checking first and opening after is check-then-act.
+			rootStore = withRestoreExclusion(
+				path,
+				() =>
+					openRocksDatabase(path, {
+						disableWAL: false,
+						enableStats: true,
+					}) as any,
+				(state) => {
+					throwBlockedByRestore(databaseName, state);
+				}
+			);
 			rocksdbDatabaseEnvs.set(path, rootStore as any);
 		}
 	} else {
@@ -1957,17 +1985,14 @@ export function database({ database: databaseName, table: tableName }) {
 	if (definedDatabase) (definedDatabase as any).rootStore = rootStore;
 	return rootStore;
 }
-function throwIfBlockedByRestore(dbPath: string, databaseName: string): void {
-	const restoreState = checkRestoreState(dbPath);
-	if (restoreState !== 'clear') {
-		const error: any = new Error(
-			restoreState === 'in-progress'
-				? `Database '${databaseName}' is being restored; retry when the restore completes`
-				: `Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`
-		);
-		error.statusCode = 409;
-		throw error;
-	}
+function throwBlockedByRestore(databaseName: string, restoreState: BlockedRestoreState): never {
+	const error: any = new Error(
+		restoreState === 'in-progress'
+			? `Database '${databaseName}' is being restored; retry when the restore completes`
+			: `Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`
+	);
+	error.statusCode = 409;
+	throw error;
 }
 
 /**
