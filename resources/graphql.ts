@@ -8,6 +8,7 @@ import type { NamedTypeNode, StringValueNode, ValueNode } from 'graphql';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { attributeToFragment, type JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
+import { compileFullTextDefinitions } from './fullTextSchema.ts';
 
 const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt', 'Blob'];
 
@@ -26,6 +27,15 @@ function coerceDirectiveValue(node: ValueNode): any {
 			return null;
 		case 'ListValue':
 			return node.values.map(coerceDirectiveValue);
+		case 'ObjectValue': {
+			const value: Record<string, unknown> = Object.create(null);
+			for (const field of node.fields) {
+				if (Object.hasOwn(value, field.name.value))
+					throw new ClientError(`Directive object declares "${field.name.value}" more than once`, 400);
+				value[field.name.value] = coerceDirectiveValue(field.value);
+			}
+			return value;
+		}
 		default:
 			return (node as { value?: unknown }).value;
 	}
@@ -42,6 +52,7 @@ server.knownGraphQLDirectives.push(
 	'indexed',
 	'computed',
 	'embed',
+	'fullText',
 	'relationship',
 	'createdTime',
 	'updatedTime',
@@ -136,7 +147,13 @@ async function processGraphQLSchema(
 				// use type name as the default table
 				const attributes: any[] = [];
 				const typeProperties: Record<string, JsonSchemaFragment> = {};
-				const typeDef: any = { table: null, database: null, attributes, properties: typeProperties };
+				const typeDef: any = {
+					table: null,
+					database: null,
+					attributes,
+					properties: typeProperties,
+					fullTextIndexes: [],
+				};
 				if (definition.description?.value) typeDef.description = definition.description.value;
 				types.set(typeName, typeDef);
 				resources.allTypes.set(typeName, typeDef);
@@ -170,6 +187,15 @@ async function processGraphQLSchema(
 					if (directive.name.value === 'splitSegments') typeDef.splitSegments = true;
 					if (directive.name.value === 'replicate') typeDef.replicate = true;
 					if (directive.name.value === 'hidden') typeDef.hidden = true;
+					if (directive.name.value === 'fullText') {
+						const definition: Record<string, unknown> = Object.create(null);
+						for (const arg of directive.arguments || []) {
+							if (Object.hasOwn(definition, arg.name.value))
+								throw new ClientError(`@fullText declares "${arg.name.value}" more than once`, 400);
+							definition[arg.name.value] = coerceDirectiveValue(arg.value);
+						}
+						typeDef.fullTextIndexes.push(definition);
+					}
 					if (directive.name.value === 'export') {
 						typeDef.export = true;
 						for (const arg of directive.arguments) {
@@ -262,6 +288,8 @@ async function processGraphQLSchema(
 									property.version = `embed:${embedDefinition.model}`;
 								}
 							}
+						} else if (directiveName === 'fullText') {
+							throw new ClientError('@fullText must be declared on a @table type, not on a field', 400);
 						} else if (directiveName === 'relationship') {
 							const relationshipDefinition = {};
 							for (const arg of directive.arguments) {
@@ -321,6 +349,9 @@ async function processGraphQLSchema(
 							400
 						);
 				}
+				if (typeDef.fullTextIndexes.length > 0 && !typeDef.table)
+					throw new ClientError('@fullText is only supported on a @table type', 400);
+				typeDef.fullTextIndexes = compileFullTextDefinitions(typeDef.fullTextIndexes, attributes);
 				// Project the array form into the canonical `properties` Record (JSON-Schema-shaped,
 				// keyed by attribute name). Both shapes are co-populated in this single pass;
 				// downstream consumers (MCP, OpenAPI) read whichever form they prefer.

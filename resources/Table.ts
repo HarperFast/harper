@@ -153,6 +153,7 @@ import { RocksDatabase, Transaction as RocksTransaction } from '@harperfast/rock
 import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction';
 import { contentTypes } from '../server/serverHelpers/contentTypes';
 import { type JsonSchemaFragment, projectAttributesToProperties } from './jsonSchemaTypes.ts';
+import { type FullTextDefinition } from './fullTextSchema.ts';
 
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
@@ -610,6 +611,7 @@ export function makeTable(options) {
 		hidden,
 		cacheControl,
 		isBranch,
+		fullTextIndexes = [],
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
@@ -920,6 +922,7 @@ export function makeTable(options) {
 			  }
 			| undefined;
 		static audit = audit;
+		static fullTextIndexes: FullTextDefinition[] = fullTextIndexes;
 		static databasePath = databasePath;
 		static databaseName = databaseName;
 		static attributes = attributes;
@@ -1387,11 +1390,12 @@ export function makeTable(options) {
 												hasChanges = true;
 											}
 										}
-										if (hasChanges) {
+										if (hasChanges || event.fullTextIndexes !== undefined) {
 											table({
 												table: tableName,
 												database: databaseName,
 												attributes: updatedAttributes,
+												fullTextIndexes: event.fullTextIndexes,
 												origin: 'cluster',
 											});
 											signalling.signalSchemaChange(
