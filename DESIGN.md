@@ -239,6 +239,10 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 - [`inspectForLog` bounds its whole render and masks credential-shaped keys (`utility/logging/harper_logger.ts`)](utility/DESIGN.md#inspectforlog-bounds-its-whole-render-and-masks-credential-shaped-keys-utilityloggingharper_loggerts) — The walk charges what util.inspect will print, in order, hooks included; a final cut makes the cap exact; one credential-key list shared with the MCP audit log.
 - [Local messages name the product through `PRODUCT_NAME` (`utility/packageUtils.js`)](utility/DESIGN.md#local-messages-name-the-product-through-product_name-utilitypackageutilsjs) — Local lifecycle messages use the running package.json `productName`; distributions such as Harper Pro set that field instead of rewriting core sources.
 
+## integrationTests/ — end-to-end suite and fixtures
+
+- [A deployed fixture must not install from the npm registry (`integrationTests/fixtures/`)](integrationTests/DESIGN.md#a-deployed-fixture-must-not-install-from-the-npm-registry-integrationtestsfixtures) — A fixture with production dependencies and no bundled `node_modules` puts the npm registry on the test's critical path; vendor them or neutralize the install.
+
 ## build-tools/ — packaging, published artifacts and local lint rules
 
 - [Release dependencies are bundled without host binaries (`bundleDependencies.ts`)](build-tools/DESIGN.md#release-dependencies-are-bundled-without-host-binaries-bundledependenciests) — The locked JavaScript closure ships as bytes; native roots install per platform and the actual archive and consumer layout are checked.
