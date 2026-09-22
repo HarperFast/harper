@@ -58,11 +58,13 @@ describe('native derived-index query coverage', function () {
 			await gate.promise;
 			return flushDerived.apply(this, args);
 		};
-		releaseHeldBarrier = () => {
+		const release = () => {
 			gate.resolve();
+			if (releaseHeldBarrier !== release) return;
+			releaseHeldBarrier = () => {};
 			delete index.flushDerived;
 		};
-		return releaseHeldBarrier;
+		return (releaseHeldBarrier = release);
 	};
 	afterEach(() => releaseHeldBarrier());
 	before(async () => {
