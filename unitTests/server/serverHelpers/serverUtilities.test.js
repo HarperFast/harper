@@ -1249,11 +1249,8 @@ describe('redactForOperationLog', () => {
 // pinLogConfig() to bind against the pinned logger instead of whatever logger existed first.
 describe('processLocalTransaction call-site redaction (real log file)', function () {
 	const { server } = require('#src/server/Server');
-
-	function requireUncached(modulePath) {
-		delete require.cache[require.resolve(modulePath)];
-		return require(modulePath);
-	}
+	const globals = require('#src/globals');
+	const modulePath = require.resolve('#src/server/serverHelpers/serverUtilities');
 
 	let restoreLogConfig;
 	let freshServerUtilities;
@@ -1262,6 +1259,8 @@ describe('processLocalTransaction call-site redaction (real log file)', function
 	let realOperation;
 	let realRegisterOperation;
 	let realSetMcpQuotaHandler;
+	let realGlobalOperation;
+	let originalCacheEntry;
 
 	before(function () {
 		restoreLogConfig = pinLogConfig({ level: 'info' });
@@ -1270,7 +1269,10 @@ describe('processLocalTransaction call-site redaction (real log file)', function
 		realOperation = server.operation;
 		realRegisterOperation = server.registerOperation;
 		realSetMcpQuotaHandler = server.setMcpQuotaHandler;
-		freshServerUtilities = requireUncached('#src/server/serverHelpers/serverUtilities');
+		realGlobalOperation = globals.operation;
+		originalCacheEntry = require.cache[modulePath];
+		delete require.cache[modulePath];
+		freshServerUtilities = require('#src/server/serverHelpers/serverUtilities');
 		logPath = logger.getLogFilePath();
 	});
 
@@ -1280,16 +1282,18 @@ describe('processLocalTransaction call-site redaction (real log file)', function
 		server.operation = realOperation;
 		server.registerOperation = realRegisterOperation;
 		server.setMcpQuotaHandler = realSetMcpQuotaHandler;
+		global.operation = globals.operation = realGlobalOperation;
+		require.cache[modulePath] = originalCacheEntry;
 		registeredOperations.setLocalOperationDispatch({
 			chooseOperation: serverUtilities.chooseOperation,
 			processLocalTransaction: serverUtilities.processLocalTransaction,
 		});
 	});
 
-	it('fails if the call site stops redacting: the raw SSH key must not reach the log', async function () {
+	it('fails if the call site stops redacting: neither the SSH key nor a global secret field reaches the log', async function () {
 		const secretKey = '-----BEGIN OPENSSH PRIVATE KEY-----\nCALL-SITE-REDACTION-SECRET\n-----END OPENSSH PRIVATE KEY-----';
 		const marker = 'call-site-redaction-marker';
-		const body = { operation: 'add_ssh_key', name: marker, key: secretKey };
+		const body = { operation: 'add_ssh_key', name: marker, key: secretKey, password: 'CALL-SITE-REDACTION-PASSWORD' };
 		const offset = existsSync(logPath) ? readFileSync(logPath, 'utf8').length : 0;
 
 		await freshServerUtilities.processLocalTransaction({ body }, async () => ({ ok: true }));
@@ -1305,5 +1309,6 @@ describe('processLocalTransaction call-site redaction (real log file)', function
 
 		assert.ok(written.includes(marker), 'the operation log entry for this request must be present');
 		assert.ok(!written.includes('CALL-SITE-REDACTION-SECRET'), 'the raw SSH key must not reach the operation log');
+		assert.ok(!written.includes('CALL-SITE-REDACTION-PASSWORD'), 'a global secret field must not reach the operation log');
 	});
 });
