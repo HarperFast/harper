@@ -668,6 +668,7 @@ export function makeTable(options) {
 		if (attribute.expiresAt) expiresAtProperty = attribute;
 		if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
 	}
+	const tableGeneration = (primaryKeyAttribute as any)?.generation;
 	let deleteCallbackHandle: { remove: () => void };
 	let prefetchIds = [];
 	let prefetchCallbacks = [];
@@ -1968,7 +1969,12 @@ export function makeTable(options) {
 							primaryMeta = legacyPrimaryMeta;
 						}
 					}
-					if (!primaryMeta || (primaryMeta.tableId != null && primaryMeta.tableId !== tableId)) return false;
+					if (
+						!primaryMeta ||
+						(primaryMeta.tableId != null && primaryMeta.tableId !== tableId) ||
+						(rootStore instanceof RocksDatabase && primaryMeta.generation !== tableGeneration)
+					)
+						return false;
 					dropGeneration = primaryMeta.dropGeneration;
 					storeGeneration = primaryMeta.generation;
 					if (primaryMeta.dropping) return true;
@@ -2026,7 +2032,12 @@ export function makeTable(options) {
 			if (databases[databaseName]?.[tableName] === TableResource) delete databases[databaseName][tableName];
 			TableResource.cleanup();
 			if (databaseName === databasePath && rootStore instanceof RocksDatabase) {
-				if (dropGeneration) await retireRocksStores(storeGeneration, dropGeneration);
+				try {
+					if (dropGeneration) await retireRocksStores(storeGeneration, dropGeneration);
+				} catch (error) {
+					derivedIndexRuntime?.completeDrop?.();
+					throw error;
+				}
 				derivedIndexRuntime?.completeDrop?.();
 				return;
 			}
@@ -2120,7 +2131,7 @@ export function makeTable(options) {
 						const columns = new Set<string>((rootStore as any).columns);
 						for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
 							const attributeName = key.slice(tableName.length + 1);
-							const store = attributeName === '' ? primaryStore : indices[attributeName];
+							const store = key === primaryCatalogKey ? primaryStore : indices[attributeName];
 							if (!store) {
 								const columnName = storeNameFor(key, generation);
 								if (columns.has(columnName)) dropColumnFamily(rootStore, columnName);
@@ -2134,12 +2145,17 @@ export function makeTable(options) {
 							}
 						}
 						// only this drop's own tombstone: the rows may already belong to a recreated generation
-						const currentPrimary = (dbisDb as any).getSync(tableName + '/');
-						if (!currentPrimary?.dropping || currentPrimary.dropGeneration !== dropGeneration) return false;
+						const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
+						if (
+							!currentPrimary?.dropping ||
+							(currentPrimary.tableId != null && currentPrimary.tableId !== tableId) ||
+							currentPrimary.dropGeneration !== dropGeneration
+						)
+							return false;
 						for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
-							if (key !== tableName + '/') dbisDb.remove(key);
+							if (key !== primaryCatalogKey) dbisDb.remove(key);
 						}
-						dbisDb.remove(tableName + '/');
+						dbisDb.remove(primaryCatalogKey);
 						return true;
 					});
 					if (removed) await dbisDb.committed;
