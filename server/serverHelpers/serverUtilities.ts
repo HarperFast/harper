@@ -89,9 +89,9 @@ export type OperationFunctionName = ValueOf<typeof terms.OPERATIONS_ENUM>;
  * name — still stripped, since this runs ahead of the validation that now rejects it). `value` /
  * `values` carry .env secrets from set_env_value; `value` / `envelope` carry secrets from
  * set_secret. `token` is the login-purpose token (login) and the CI identity token
- * (exchange_oidc_token), and is also stripped defensively — no operation declares a top-level `token`,
- * but validation allows unknown keys, so a mistyped `harper deploy setup token=…` must not log a live
- * credential. `refresh_token` is the 30-day credential (refresh_operation_token).
+ * (exchange_oidc_token), and is also stripped defensively — no operation declares a top-level
+ * `token`, but validation allows unknown keys, so a mistyped `harper deploy setup token=…` must not
+ * log a live credential. `refresh_token` is the 30-day credential (refresh_operation_token).
  *
  * Redaction runs *before* the handler, so a rejected request logs a still-spendable credential —
  * which is why a new secret-bearing field belongs here rather than left to the default (harper#1527
@@ -111,10 +111,21 @@ export const UNLOGGABLE_OPERATION_FIELDS = [
 	'refresh_token',
 ];
 
+const UNLOGGABLE_FIELDS_BY_OPERATION = new Map<string, ReadonlySet<string>>([
+	['add_ssh_key', new Set(['key'])],
+	['update_ssh_key', new Set(['key'])],
+]);
+
 /** Callers gate this on log level: it allocates, and the operations log is often off. */
 export function redactForOperationLog(body: Record<string, any>): Record<string, any> {
 	const clean = { ...body };
 	for (const field of UNLOGGABLE_OPERATION_FIELDS) delete clean[field];
+	const operationFields = UNLOGGABLE_FIELDS_BY_OPERATION.get(body.operation);
+	if (operationFields) {
+		for (const field of Object.keys(clean)) {
+			if (operationFields.has(field.toLowerCase())) delete clean[field];
+		}
+	}
 	return clean;
 }
 

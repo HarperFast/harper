@@ -1191,14 +1191,45 @@ describe('redactForOperationLog', () => {
 		assert.ok(!/eyJ[A-Za-z0-9_-]/.test(JSON.stringify(clean)), 'no JWT-shaped value should survive');
 	});
 
+	it('leaves no private key behind for SSH-key operations', () => {
+		const key = '-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-key-material\n-----END OPENSSH PRIVATE KEY-----';
+		for (const operation of ['add_ssh_key', 'update_ssh_key']) {
+			const clean = redactForOperationLog({ operation, name: 'deploy', key, Key: key });
+			assert.deepStrictEqual(clean, { operation, name: 'deploy' });
+			assert.ok(!/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(JSON.stringify(clean)));
+		}
+	});
+
+	it('handles operation names that collide with object prototype properties', () => {
+		const body = { operation: 'valueOf', key: 'auditable-identifier' };
+		assert.deepStrictEqual(redactForOperationLog(body), body);
+	});
+
+	it('keeps environment variable names while stripping their values', () => {
+		const clean = redactForOperationLog({
+			operation: 'set_env_value',
+			project: 'application',
+			key: 'DATABASE_URL',
+			value: 'postgres://secret',
+		});
+		assert.deepStrictEqual(clean, { operation: 'set_env_value', project: 'application', key: 'DATABASE_URL' });
+	});
+
+	it('keeps the environment variable targeted for deletion', () => {
+		const body = { operation: 'delete_env_value', project: 'application', key: 'DATABASE_URL' };
+		assert.deepStrictEqual(redactForOperationLog(body), body);
+	});
+
 	it('preserves everything else', () => {
 		const clean = redactForOperationLog({ operation: 'create_schema', schema: 'test', database: 'data' });
 		assert.deepStrictEqual(clean, { operation: 'create_schema', schema: 'test', database: 'data' });
 	});
 
 	it('does not mutate the request body', () => {
-		const body = { operation: 'exchange_oidc_token', token: 'live-credential' };
+		const key = '-----BEGIN OPENSSH PRIVATE KEY-----';
+		const body = { operation: 'add_ssh_key', key, token: 'live-credential' };
 		redactForOperationLog(body);
+		assert.equal(body.key, key, 'the handler still needs the SSH key it was sent');
 		assert.equal(body.token, 'live-credential', 'the handler still needs the field it was sent');
 	});
 
