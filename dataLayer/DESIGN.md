@@ -78,8 +78,9 @@ Three non-obvious mechanics keep that safe:
 - **The ITC close broadcast is normally best-effort, so closure is verified before the purge.** A
   SCHEMA broadcast (`signalSchemaChange`) usually resolves after remote handlers complete but times
   out at 30s "best-effort" and swallows errors. The restore `close` phase is stricter: it waits until
-  every eligible recipient acknowledges or its port closes, because proceeding past an unconfirmed
-  blob-save barrier would re-open the race the barrier exists to close. A destructive purge still
+  every eligible recipient acknowledges or its port closes, and aborts the restore with a retryable
+  409 if that does not happen within 30s, because proceeding past an unconfirmed blob-save barrier
+  would re-open the race the barrier exists to close. A destructive purge still
   verifies closure independently: `restoreBackup` polls rocksdb-js `registryStatus()` (process-global
   across worker threads) until the database path has no open instance, and aborts with a 409 —
   _cleaning up the marker, since nothing was destroyed_ — if handles remain.

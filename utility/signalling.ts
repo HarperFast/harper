@@ -20,6 +20,9 @@ export async function signalSchemaChange(message: any) {
 		await Promise.all([serverItcHandlers.schema(itcEventSchema), sendItcEvent(itcEventSchema)]);
 	} catch (err) {
 		hdbLogger.error(err);
+		if (message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && message.restorePhase === 'close') {
+			throw err;
+		}
 	}
 }
 

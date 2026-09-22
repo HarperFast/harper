@@ -577,7 +577,13 @@ export async function restoreBackup(request: any) {
 	try {
 		// Block new blob saves, drain in-flight saves, and close the database across all worker threads.
 		// Each thread also rescans, and the restoring marker keeps it from reloading mid-restore.
-		await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'close'));
+		try {
+			await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'close'));
+		} catch {
+			throw new BackupInProgressError(
+				`Cannot restore database '${databaseName}': not every worker completed the blob-save barrier before the acknowledgement deadline. Retry the restore after the stalled work has cleared.`
+			);
+		}
 		// A live component (or the system database) can hold its own handle on the database that
 		// Harper does not track and cannot close, so verify actual process-wide closure before
 		// purging — restoring under an open instance would corrupt it. If handles remain, fail

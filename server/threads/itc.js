@@ -13,6 +13,7 @@ module.exports = {
 	UserEventMsg,
 };
 let serverItcHandlers;
+const RESTORE_CLOSE_ACK_TIMEOUT_MS = 30000;
 onMessageFromWorkers(async (event, sender) => {
 	serverItcHandlers = serverItcHandlers || require('../itc/serverHandlers.js');
 	validateEvent(event);
@@ -40,7 +41,7 @@ function sendItcEvent(event) {
 		event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP &&
 		event.message.restorePhase === 'close'
 	) {
-		return broadcastWithAcknowledgement(event, 0);
+		return broadcastWithAcknowledgement(event, RESTORE_CLOSE_ACK_TIMEOUT_MS, true);
 	}
 	return broadcastWithAcknowledgement(event);
 }

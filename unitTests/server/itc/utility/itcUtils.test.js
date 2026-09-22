@@ -82,13 +82,13 @@ describe('Test itcUtils module', () => {
 			expect(broadcast_stub).to.have.been.calledOnce;
 		});
 
-		it('does not time out a restore close barrier', () => {
+		it('gives a restore close barrier a bounded, fail-closed timeout', () => {
 			const event = {
 				type: 'schema',
 				message: { operation: 'restore_backup', restorePhase: 'close' },
 			};
 			itc_rewired.sendItcEvent(event);
-			expect(broadcast_stub).to.have.been.calledOnceWithExactly(event, 0);
+			expect(broadcast_stub).to.have.been.calledOnceWithExactly(event, 30000, true);
 		});
 	});
 
