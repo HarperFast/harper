@@ -1,4 +1,6 @@
 const assert = require('node:assert');
+const sinon = require('sinon');
+const logger = require('#src/utility/logging/harper_logger');
 const { redactArgs, redactArgsForTool, maskSessionId, emitAuditEntry } = require('#src/components/mcp/audit');
 
 describe('mcp/audit', () => {
@@ -38,8 +40,6 @@ describe('mcp/audit', () => {
 			});
 		});
 
-		// MCP forwards arguments as-is and audits them after the handler, so a field the tool does
-		// not declare is still logged even though the operation rejects it.
 		it('redacts secret fields the tool does not declare', () => {
 			const misdirected = redactArgsForTool({ name: 'API_KEY', values: { A: 'plaintext-secret' } }, 'set_secret');
 			assert.deepStrictEqual(misdirected, { name: 'API_KEY', values: '[redacted]' });
@@ -147,6 +147,30 @@ describe('mcp/audit', () => {
 					durationMs: 15,
 				})
 			);
+		});
+
+		// The redaction tests above call the helper directly; this pins that the emit path still
+		// reaches it, which a regression to a raw redactArgs call would otherwise pass.
+		it('redacts the emitted args through the tool policy', () => {
+			const emitted = [];
+			const restore = sinon.stub(logger, 'info').callsFake((entry) => emitted.push(entry));
+			try {
+				emitAuditEntry({
+					timestamp: new Date().toISOString(),
+					profile: 'operations',
+					sessionId: 'abcdefgh-ijkl',
+					tool: 'set_secret',
+					user: 'alice',
+					args: { name: 'API_KEY', value: 'plaintext-secret', values: { A: 'plaintext-secret' } },
+					status: 'isError',
+					durationMs: 1,
+				});
+			} finally {
+				restore.restore();
+			}
+			assert.equal(emitted.length, 1);
+			assert.deepStrictEqual(emitted[0].args, { name: 'API_KEY', value: '[redacted]', values: '[redacted]' });
+			assert.ok(!JSON.stringify(emitted[0]).includes('plaintext-secret'));
 		});
 
 		it('does not throw on a rate-limited entry with no errorMessage', () => {

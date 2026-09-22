@@ -25,14 +25,11 @@ export interface AuditEntry {
 }
 
 const REDACTION_PATTERN = /(secret|password|token|api[-_]?key|credentials?|auth)/i;
-// Both secret-bearing tools carry all three fields, not just the ones each one declares: MCP
-// forwards arguments as-is and audits them after the handler, so a mistyped `values` on set_secret
-// (or `envelope` on set_env_value) is still logged despite being rejected — and the REST operations
-// log strips all three unconditionally (UNLOGGABLE_OPERATION_FIELDS), so anything narrower here
-// makes the audit path a bypass of it.
+// Both secret tools carry all three fields, not just the ones each declares: MCP forwards arguments
+// as-is and audits them after the handler, so a field the tool rejects is still logged. Mirrors what
+// the REST operations log strips unconditionally (UNLOGGABLE_OPERATION_FIELDS).
 const SECRET_VALUE_FIELDS: ReadonlySet<string> = new Set(['value', 'values', 'envelope']);
-// Scoped per tool because `value`/`values` are ordinary, non-secret params on many other
-// operations (record data, config values); redacting them globally would gut the audit trail.
+// Per tool, not global: `value`/`values` are ordinary params on many other operations.
 const REDACTION_FIELDS_BY_TOOL = new Map<string, ReadonlySet<string>>([
 	['set_secret', SECRET_VALUE_FIELDS],
 	['set_env_value', SECRET_VALUE_FIELDS],
