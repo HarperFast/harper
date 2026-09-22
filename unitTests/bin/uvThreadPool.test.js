@@ -1,9 +1,8 @@
 'use strict';
 
-// libuv's pool is process-global and sized once, from UV_THREADPOOL_SIZE, when the first task is
-// submitted — so bin/uvThreadPool.ts only works if nothing submits before it runs. Under ESM a
-// module's imports are evaluated before its own body, which is why the assignment is a module
-// bin/harper.ts imports first rather than a line at the top of bin/harper.ts.
+// libuv's pool is sized once, when the first task is submitted, so bin/uvThreadPool.ts only works
+// if nothing submits before it runs. These assert the worker count, not the environment variable:
+// only the count distinguishes a pool that sized from one that read the value too late.
 
 const assert = require('node:assert');
 const { execFile } = require('node:child_process');
@@ -52,8 +51,6 @@ describe('libuv thread pool sizing', () => {
 		if (process.platform === 'linux') assert.equal(workers, 3);
 	});
 
-	// The thread count, not the environment variable, is what distinguishes this from the bug: with
-	// the imports in the other order the harness reports size 20 and workers 4.
 	it('wins the race against a later import under ESM', async function () {
 		this.timeout(30000);
 		if (process.platform !== 'linux') this.skip();
