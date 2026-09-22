@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790061874953,
+  "lastUpdate": 1790061878587,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -14926,6 +14926,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 116.62,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f9be6c067523852992e287a53535dab3e86ee5cb",
+          "message": "Keep logger.closeLogFile bound to the current file after a path change (#2724)\n\n* Update logger.closeLogFile when the path setter reassigns the file logger\n\nThe path setter reassigned the closure-local logToFile on every path\nchange but left logger.closeLogFile bound to whichever file logger\nexisted at creation time. Calling closeLogFile() after a path\nreassignment (updateLogger() does this on every config reload) closed\nthe stale file's descriptor instead of the current one.\n\nEvery current caller of .closeLogFile() is in unitTests/ fixtures, so\nthis is a latent foot-gun on public API surface rather than a live\nproduction bug.\n\nDispatch-Task: harper-logger-path-setter-updates-closelogfile\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Fq1h1sJnFzUJTEEag18Sw5\n\n* Rewrite the closeLogFile regression test without sinon\n\nThe prior version added a new sinon sandbox and process-wide fs\nspies, which AGENTS.md's test-style section forbids, and the\nfs.closeSync spy could be polluted by any other file sink's 10s\nauto-close timer firing during the assertion window.\n\nRewritten to be spy-free: close, rename the current file out of the\nway, then write again. A closed fd forces the next write to open a\nfresh file at the original path; a stale fd (the bug) keeps appending\nthrough the rename into the moved file instead.\n\nFound by the cross-model pre-push review (codex + gemini +\ncursor-composer + harper-domain adjudication).\n\nDispatch-Task: harper-logger-path-setter-updates-closelogfile\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KEoN6o5EXor7MuUer71jzs\n\n* Trim the rename-discriminator comment to one line\n\nRound 2 of the cross-model review flagged the four-line comment as\nnarrating code the test already makes clear; keep only the one fact\nit doesn't show (a stale fd rides the rename instead of reopening).\n\nDispatch-Task: harper-logger-path-setter-updates-closelogfile\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KEoN6o5EXor7MuUer71jzs\n\n* Drop the disputed rename-discriminator comment\n\nRound 3 marked it disputed and left it to the author: both outside\nlegs and the domain adjudicator still called it narration. Deleting\nit resolves the finding outright — the close/rename/write/assert\nsequence already demonstrates the mechanism without prose.\n\nDispatch-Task: harper-logger-path-setter-updates-closelogfile\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KEoN6o5EXor7MuUer71jzs\n\n* Close the first sink's fd too, to keep Windows CI's dir cleanup safe\n\nRound 4 caught a real gap: the test never re-pointed at firstPath, so\nits fd (opened by the very first write) was still open when after()\nremoved the test directory. Harmless on Linux, but this suite is in\nwindowsGate.mjs's GROUPS — an open handle there can fail the rmdir\nwith EBUSY/ENOTEMPTY.\n\nDispatch-Task: harper-logger-path-setter-updates-closelogfile\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KEoN6o5EXor7MuUer71jzs\n\n* Fix the inaccurate claim in the fd-cleanup comment\n\nRound 5 caught it: the comment said nothing else closes the first\nsink's fd, but its own 10s auto-close timer eventually would. The\nreal reason to close it explicitly is timing — that timer fires well\nafter this test's after() has already removed the directory.\n\nDispatch-Task: harper-logger-path-setter-updates-closelogfile\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KEoN6o5EXor7MuUer71jzs\n\n* Drop the last narrating clause from the fd-cleanup comment\n\nPost-rebase full review (codex + gemini + domain, converging\nindependently) still flagged the trailing \"so close it explicitly\nhere instead\" clause as repeating the two statements right below it.\nCut to the one non-obvious fact, using the review's own suggested\nwording.\n\nDispatch-Task: harper-logger-path-setter-updates-closelogfile\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KEoN6o5EXor7MuUer71jzs\n\n---------\n\nCo-authored-by: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T02:51:16Z",
+          "url": "https://github.com/HarperFast/harper/commit/f9be6c067523852992e287a53535dab3e86ee5cb"
+        },
+        "date": 1790061877794,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 15.3,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 14.64,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 20.22,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 25.56,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 18.81,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 17.89,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 35.27,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 15.58,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 19.03,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 54.6,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 146.98,
             "unit": "ms"
           }
         ]
