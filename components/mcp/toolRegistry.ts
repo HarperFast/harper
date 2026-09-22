@@ -46,7 +46,13 @@ export interface ToolContent {
 export interface ToolResult {
 	content: ToolContent[];
 	isError?: boolean;
-	structuredContent?: unknown;
+	/**
+	 * MCP types this as a JSON object, and the reference client enforces it
+	 * (`z.record(z.string(), z.unknown())`) — a bare array or scalar here fails the
+	 * whole `tools/call`. Typed as a record so that contract is checked at build
+	 * time; build it with `tools/results.ts`'s `wrapToolResult`, the single producer.
+	 */
+	structuredContent?: Record<string, unknown>;
 }
 
 /** Public shape sent to clients on `tools/list`. */
