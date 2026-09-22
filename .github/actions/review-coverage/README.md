@@ -14,6 +14,30 @@ The footer's `@ <sha>` pin is reported but never enforced — the question is wh
 
 Bot authors, external authors, at-most-two-line PRs, and PRs that are not AI-authored are exempt. Drafts are reported and re-checked at ready-for-review.
 
+## Framing verdict
+
+Callers can provide newline-delimited `framing_paths` as exact repository paths or directory prefixes ending in `/**`. For a ready organization-member PR that changes one of those paths, `framing_mode: enforce` requires one of these line-anchored body forms:
+
+```text
+Framing-Verdict: chosen-approach-sound
+```
+
+or a recorded disagreement:
+
+```text
+## For the human reviewer
+
+The planning concern and the author's evidence-backed resolution.
+
+Framing-Verdict: better-alternative-exists
+```
+
+`option-set-too-narrow` is the other accepted non-clearing value and has the same reviewer-section requirement. A non-clearing field must be accompanied by an explanation in that section; an empty section does not clear the check, while the field itself may be materialized there or with the footer fields. The field may carry the planning review's 12-hex-character nonce or `(round roll-up)` suffix and may be wrapped in `<sub>`, but arbitrary trailing prose is rejected. Fields inside fenced/indented code, block quotes, inline code, or HTML comments do not count. Renames match both the old and new path.
+
+Framing policy is independent of review coverage: it applies even to a one-line governed edit, and does not change `Review-Coverage` or `Human-Review-Need` evaluation. Drafts, bots, and external contributors are reported but remain green for framing. A complete diff with no configured path also remains green without a verdict. Missing, stale, or incomplete file evidence fails closed only in `framing_mode: enforce`; rerun a failed collection job to distinguish a transient API failure from a persistent configuration problem.
+
+The reusable action defaults `framing_mode` to `report` and `framing_paths` to empty. Repository policy belongs in the trusted caller; Harper's workflow supplies the current shared-resource and storage-binding import surface and reserves `replication/**` as the shared prefix for replication code, while Harper Pro can supply its own list.
+
 ## PR description format
 
 For a non-bot Harper organization member changing more than two lines, the description must contain:
@@ -30,7 +54,7 @@ GitHub may omit patches or fail to return a complete file list. Report mode reco
 
 ## Trusted host
 
-Enforcement is only meaningful when the action runs from a trusted checkout. `review-coverage.yml` runs on `pull_request_target` and checks out the **base** commit, so a PR cannot edit the check that gates it. Everything the coverage check reads comes from the event payload; no PR code is executed. A consumer repo enabling `mode: enforce` must do the same:
+Enforcement is only meaningful when the action runs from a trusted checkout. `review-coverage.yml` runs on `pull_request_target` and checks out the **base** commit, so a PR cannot edit the check that gates it. The action reads PR metadata from the event payload and file metadata from GitHub's API; no PR code is executed. A consumer repo enabling `mode: enforce` must do the same:
 
 ```yaml
 on:
@@ -46,8 +70,14 @@ steps:
   - uses: HarperFast/harper/.github/actions/review-coverage@<full sha> # main
     with:
       mode: enforce
+      framing_mode: enforce
+      framing_paths: |
+        resources/Table.ts
+        replication/**
 ```
 
 ## Known limits
 
 The check reads the PR body, which the author can edit. Deleting the generator signature and the HEG fields makes a PR read as not-AI-authored and exempts it; commit trailers are not consulted. This is a guardrail against forgetting a review leg, not a control against an author who means to bypass it.
+
+A framing receipt is not pinned to the current PR head. Synchronizing a PR re-checks whether the body still contains a valid receipt, but cannot determine whether the reviewed approach changed after that receipt was produced. This first-cut gate detects a missing planning receipt; it does not prove the receipt is fresh.
