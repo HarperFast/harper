@@ -45,9 +45,12 @@ Neither hint is an authorization check — `verifyPerms` runs at dispatch.
 
 `tools/list` is filtered through `canRoleInvokeOperation` so each session sees only the operations its user can actually call:
 
-- `super_user` sees everything in the allow list.
-- A user with `structure_user: true` sees schema-structure operations (`create_schema`, `drop_table`, `create_attribute`, etc.) in addition to anything in `permission.operations`.
+- When the role has no `permission.operations` allow list, `super_user` sees every operation on the exposed MCP surface (i.e. everything `mcp.operations.allow` permits), and a user with `structure_user` sees the schema-structure operations (`create_schema`, `drop_schema`, `create_database`, `drop_database`, `create_table`, `drop_table`, `create_attribute`, `drop_attribute`).
+- When the role **does** declare `permission.operations`, that list bounds the session for every user, `super_user` and `structure_user` included. A `structure_user` grant no longer adds the schema-structure operations on top of it — those appear only if they are themselves listed.
 - Other users see only operations listed in `permission.operations`.
+- Group names in `permission.operations` (`read_only`, `standard_user`, …) expand to their member operations for filtering, so a role granted a group sees every operation that group actually allows.
+
+This mirrors dispatch: `permission.operations` is checked ahead of the `super_user` and `structure_user` privilege checks in `verifyPerms`, so an operation outside the list is refused on call. Filtering it out of `tools/list` keeps discovery from advertising tools that would fail closed. The same filter backs the [`harper://operations`](#harper-uris) catalog resource, so both surfaces agree.
 
 The list is cached per session and recomputed when a `notifications/tools/list_changed` event would fire.
 
