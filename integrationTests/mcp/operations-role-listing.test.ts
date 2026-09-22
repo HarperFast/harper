@@ -1,21 +1,10 @@
 /**
  * MCP operations profile — `tools/list` filtering against real role records.
  *
- * Discovery ran `canRoleInvokeOperation`, which short-circuited on
- * `structure_user` truthiness before consulting `permission.operations`. Since
- * harper#2176 moved `verifyOperationsAllowlist` ahead of every privilege
- * early-return in `verifyPerms`, those ops are denied at dispatch — so a role
- * of `{ structure_user: ['data'], operations: ['sql'] }` was advertised eight
- * schema DDL tools that then failed closed on call.
- *
- * Unit tests hand-build the user object; only this path proves the real one.
- * `_expandedOperations` is built at role cache-load time, so group expansion
- * (`read_only`) and the allowlist gate are exercised as the server assembles
- * them rather than as the test asserts them.
- *
- * The default operations allow list is read-only, so the schema DDL ops are
- * opted in via `mcp.operations.allow` — otherwise they would be absent for
- * every role and the assertions would pass vacuously.
+ * Unit tests hand-build the user object; only this path builds `_expandedOperations` at role
+ * cache-load time and resolves roles the way the server does. The schema DDL ops are opted in via
+ * `mcp.operations.allow` because the default allow list is read-only — without that the negative
+ * assertions would pass vacuously.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';

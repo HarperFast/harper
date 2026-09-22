@@ -1,9 +1,7 @@
 /**
- * Role-level operation visibility for MCP discovery, shared by the two surfaces that advertise
- * operations: `tools/list` (toolRegistry.ts) and the `harper://operations` catalog (resources.ts).
- *
- * Discovery must answer the same question dispatch answers, in the same order. Where it does not,
- * a tool is advertised and then fails closed on call, which is worse than not filtering at all.
+ * Role-level operation visibility for MCP discovery, shared by `tools/list` (toolRegistry.ts) and
+ * the `harper://operations` catalog (resources.ts). The invariant it exists to hold, and the three
+ * ways it has been broken, are in components/mcp/DESIGN.md.
  */
 import { expandOperationsPerms } from '../../utility/operationPermissions.ts';
 
@@ -21,17 +19,9 @@ export interface RoleScopedUser {
 type RolePermission = NonNullable<NonNullable<RoleScopedUser['role']>['permission']>;
 
 /**
- * Operations published under a name that is not their handler's canonical `api_name`.
- * `verifyOperationsAllowlist` resolves the handler's `api_name` before testing membership, so
- * discovery resolves the same alias — otherwise `operations: ['create_database']` hides
- * `create_schema`, which dispatch allows, and `operations: ['create_schema']` advertises it,
- * which dispatch denies.
- *
- * These are the `OPERATION_FUNCTION_MAP` entries where two operation names share one handler
- * (`server/serverHelpers/serverUtilities.ts`); that map pulls in the server, so it cannot be
- * imported here. Each pair is pinned behaviorally through the real stack in
- * `integrationTests/mcp/operations-role-listing.test.ts`. A newly aliased pair has to be added
- * here by hand.
+ * Operations whose handler registers a different canonical `api_name`, which is what
+ * `verifyOperationsAllowlist` tests. Hand-maintained: the `OPERATION_FUNCTION_MAP` that defines
+ * them pulls in the server and cannot be imported here, so a newly aliased pair has to be added.
  */
 const OPERATION_API_NAME_ALIASES = new Map([
 	['create_schema', 'create_database'],
@@ -40,45 +30,36 @@ const OPERATION_API_NAME_ALIASES = new Map([
 	['search_by_id', 'search_by_hash'],
 ]);
 
-/** Structure ops a `structure_user` array grant can reach; the array names which databases. */
 const STRUCTURE_TABLE_OPERATIONS = new Set(['create_table', 'drop_table', 'create_attribute', 'drop_attribute']);
 
-/**
- * Structure ops that need an unrestricted `structure_user === true`. `STRUCTURE_USER_OPS` in
- * `operation_authorization.ts` holds only the table/attribute ops, so an array grant falls through
- * to `requires_su` and is denied for these four.
- */
+/** Denied at dispatch for an array grant: `STRUCTURE_USER_OPS` holds only the table ops. */
 const STRUCTURE_DATABASE_OPERATIONS = new Set(['create_schema', 'create_database', 'drop_schema', 'drop_database']);
 
 /**
- * Expansions for roles that arrive without `_expandedOperations`. Keyed off the permission object
- * rather than written onto it: a listing calls the helper once per operation, and an inline-asserted
- * role (impersonation, scoped tokens) may be frozen, where assigning would throw under SES.
+ * Keyed on the `operations` array, not the permission: replacing the array must miss, and an
+ * inline-asserted role (impersonation, scoped token) may be frozen, where writing the expansion
+ * onto the permission would throw under SES.
  */
-const inlineExpansions = new WeakMap<RolePermission, Set<string>>();
+const inlineExpansions = new WeakMap<readonly string[], Set<string>>();
 
-/**
- * Role `operations` allowlist membership, mirroring gate 1 of `verifyPerms`. `null` when the role
- * declares no allowlist. A present but malformed value fails closed.
- */
+/** `null` when the role declares no allowlist. A present but malformed value fails closed. */
 function allowlistAllows(perm: RolePermission, operation: string): boolean | null {
 	const list = perm.operations;
 	if (list == null) return null;
 	if (!Array.isArray(list)) return false;
 	const cached = (perm as { _expandedOperations?: unknown })._expandedOperations;
-	let expanded = cached instanceof Set ? (cached as Set<string>) : inlineExpansions.get(perm);
+	let expanded = cached instanceof Set ? (cached as Set<string>) : inlineExpansions.get(list);
 	if (!expanded) {
 		expanded = expandOperationsPerms(list);
-		inlineExpansions.set(perm, expanded);
+		inlineExpansions.set(list, expanded);
 	}
 	return expanded.has(OPERATION_API_NAME_ALIASES.get(operation) ?? operation);
 }
 
 /**
- * True when the role carries the role-level privilege to invoke `operation`. Per-target
- * schema/table predicates still run at call time in `verifyPerms`; what cannot be deferred is the
- * `operations` allowlist, which runs ahead of every privilege early-return at dispatch
- * (harper#2176) and therefore bounds super_user and structure_user alike.
+ * Role-level privilege to invoke `operation`. Per-target schema/table predicates still run at call
+ * time in `verifyPerms`; the `operations` allowlist cannot be deferred to it, because it runs ahead
+ * of every privilege early-return at dispatch and so bounds super_user and structure_user alike.
  */
 export function canRoleInvokeOperation(user: RoleScopedUser | undefined, operation: string): boolean {
 	const perm = user?.role?.permission;
