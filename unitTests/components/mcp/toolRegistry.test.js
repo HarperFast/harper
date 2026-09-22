@@ -393,9 +393,6 @@ describe('mcp/toolRegistry', () => {
 			assert.equal(canRoleInvokeOperation({}, 'describe_all'), false);
 		});
 
-		// harper#2176 moved `verifyOperationsAllowlist` ahead of every privilege early-return
-		// in `verifyPerms`, so these ops are denied at dispatch. Advertising them in
-		// `tools/list` makes the client offer eight tools that then fail closed.
 		it('does not let a structure_user grant escape an operations allowlist', () => {
 			const user = { role: { permission: { structure_user: ['orders_db'], operations: ['sql'] } } };
 			for (const op of ['create_schema', 'create_database', 'drop_schema', 'drop_database']) {
@@ -448,8 +445,7 @@ describe('mcp/toolRegistry', () => {
 			assert.equal(canRoleInvokeOperation(user, 'describe_all'), false);
 		});
 
-		// `verifyOperationsAllowlist` tests the handler's canonical `api_name`, so an allowlist
-		// naming one half of an alias pair governs both tools. Asserted at dispatch in
+		// Dispatch tests the handler's `api_name`; asserted in
 		// unitTests/utility/operation_authorization.test.js ('create_schema allowed when listed').
 		it('resolves aliased operation names to the api_name dispatch tests', () => {
 			const listed = (ops, op) =>
@@ -466,8 +462,6 @@ describe('mcp/toolRegistry', () => {
 		});
 
 		it('an array structure_user does not reach the database-level structure ops', () => {
-			// STRUCTURE_USER_OPS holds only the table/attribute ops; create/drop schema-or-database
-			// needs `structure_user === true` (utility/operation_authorization.ts).
 			const scoped = { role: { permission: { structure_user: ['data'] } } };
 			for (const op of ['create_table', 'drop_table', 'create_attribute', 'drop_attribute']) {
 				assert.equal(canRoleInvokeOperation(scoped, op), true, op);
@@ -494,8 +488,17 @@ describe('mcp/toolRegistry', () => {
 		});
 
 		it('an empty structure_user array grants nothing', () => {
-			// `[].indexOf(schema)` never matches, so dispatch denies every target.
 			assert.equal(canRoleInvokeOperation({ role: { permission: { structure_user: [] } } }, 'create_table'), false);
+		});
+
+		it('does not serve a stale expansion after the operations array is replaced', () => {
+			const perm = { operations: ['describe_all'] };
+			const user = { role: { permission: perm } };
+			assert.equal(canRoleInvokeOperation(user, 'describe_all'), true);
+			assert.equal(canRoleInvokeOperation(user, 'sql'), false);
+			perm.operations = ['sql'];
+			assert.equal(canRoleInvokeOperation(user, 'sql'), true);
+			assert.equal(canRoleInvokeOperation(user, 'describe_all'), false);
 		});
 
 		it('fails closed on a malformed operations allowlist', () => {
