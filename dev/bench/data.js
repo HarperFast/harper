@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789982252772,
+  "lastUpdate": 1790061874953,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -6323,6 +6323,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1499.56,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f9be6c067523852992e287a53535dab3e86ee5cb",
+          "message": "Keep logger.closeLogFile bound to the current file after a path change (#2724)\n\n* Update logger.closeLogFile when the path setter reassigns the file logger\n\nThe path setter reassigned the closure-local logToFile on every path\nchange but left logger.closeLogFile bound to whichever file logger\nexisted at creation time. Calling closeLogFile() after a path\nreassignment (updateLogger() does this on every config reload) closed\nthe stale file's descriptor instead of the current one.\n\nEvery current caller of .closeLogFile() is in unitTests/ fixtures, so\nthis is a latent foot-gun on public API surface rather than a live\nproduction bug.\n\nDispatch-Task: harper-logger-path-setter-updates-closelogfile\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Fq1h1sJnFzUJTEEag18Sw5\n\n* Rewrite the closeLogFile regression test without sinon\n\nThe prior version added a new sinon sandbox and process-wide fs\nspies, which AGENTS.md's test-style section forbids, and the\nfs.closeSync spy could be polluted by any other file sink's 10s\nauto-close timer firing during the assertion window.\n\nRewritten to be spy-free: close, rename the current file out of the\nway, then write again. A closed fd forces the next write to open a\nfresh file at the original path; a stale fd (the bug) keeps appending\nthrough the rename into the moved file instead.\n\nFound by the cross-model pre-push review (codex + gemini +\ncursor-composer + harper-domain adjudication).\n\nDispatch-Task: harper-logger-path-setter-updates-closelogfile\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KEoN6o5EXor7MuUer71jzs\n\n* Trim the rename-discriminator comment to one line\n\nRound 2 of the cross-model review flagged the four-line comment as\nnarrating code the test already makes clear; keep only the one fact\nit doesn't show (a stale fd rides the rename instead of reopening).\n\nDispatch-Task: harper-logger-path-setter-updates-closelogfile\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KEoN6o5EXor7MuUer71jzs\n\n* Drop the disputed rename-discriminator comment\n\nRound 3 marked it disputed and left it to the author: both outside\nlegs and the domain adjudicator still called it narration. Deleting\nit resolves the finding outright — the close/rename/write/assert\nsequence already demonstrates the mechanism without prose.\n\nDispatch-Task: harper-logger-path-setter-updates-closelogfile\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KEoN6o5EXor7MuUer71jzs\n\n* Close the first sink's fd too, to keep Windows CI's dir cleanup safe\n\nRound 4 caught a real gap: the test never re-pointed at firstPath, so\nits fd (opened by the very first write) was still open when after()\nremoved the test directory. Harmless on Linux, but this suite is in\nwindowsGate.mjs's GROUPS — an open handle there can fail the rmdir\nwith EBUSY/ENOTEMPTY.\n\nDispatch-Task: harper-logger-path-setter-updates-closelogfile\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KEoN6o5EXor7MuUer71jzs\n\n* Fix the inaccurate claim in the fd-cleanup comment\n\nRound 5 caught it: the comment said nothing else closes the first\nsink's fd, but its own 10s auto-close timer eventually would. The\nreal reason to close it explicitly is timing — that timer fires well\nafter this test's after() has already removed the directory.\n\nDispatch-Task: harper-logger-path-setter-updates-closelogfile\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KEoN6o5EXor7MuUer71jzs\n\n* Drop the last narrating clause from the fd-cleanup comment\n\nPost-rebase full review (codex + gemini + domain, converging\nindependently) still flagged the trailing \"so close it explicitly\nhere instead\" clause as repeating the two statements right below it.\nCut to the one non-obvious fact, using the review's own suggested\nwording.\n\nDispatch-Task: harper-logger-path-setter-updates-closelogfile\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KEoN6o5EXor7MuUer71jzs\n\n---------\n\nCo-authored-by: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T02:51:16Z",
+          "url": "https://github.com/HarperFast/harper/commit/f9be6c067523852992e287a53535dab3e86ee5cb"
+        },
+        "date": 1790061873302,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6896.72,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 9446.08,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 9490.77,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6594.45,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4847.07,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 9164.25,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1230.68,
             "unit": "ops/sec"
           }
         ]
