@@ -13,7 +13,8 @@ const CONTROL_TYPE = 'drop-table-cross-worker-control';
 const ITERATIONS = 20;
 // The one error the worker may log: its cache write lost to the drop and was rejected before it
 // reached RocksDB's write path. Anything else the worker logs fails the test.
-const CONTAINED_COMMIT_LOSS = /^Error committing cache update .*(Could not access column family|column family .*dropp)/;
+const CONTAINED_COMMIT_LOSS =
+	/^Error committing cache update .*(Could not access column family|column family .*dropp)/i;
 
 function defineTable(name) {
 	return table({
