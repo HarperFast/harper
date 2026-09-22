@@ -85,8 +85,8 @@ async function listToolNames(ctx: ContextWithHarper, username: string): Promise<
 		requestInit: { headers: { Authorization: basicAuth(username, PASSWORD) } },
 	});
 	const client = new Client({ name: 'mcp-role-listing', version: '1.0.0' }, { capabilities: {} });
-	await client.connect(transport);
 	try {
+		await client.connect(transport);
 		const { tools } = await client.listTools();
 		return tools.map((t) => t.name);
 	} finally {
@@ -195,8 +195,8 @@ suite('MCP operations profile: tools/list respects the role operations allowlist
 			requestInit: { headers: { Authorization: basicAuth(BOUNDED.username, PASSWORD) } },
 		});
 		const client = new Client({ name: 'mcp-role-listing-call', version: '1.0.0' }, { capabilities: {} });
-		await client.connect(transport);
 		try {
+			await client.connect(transport);
 			const result: any = await client.callTool({ name: 'describe_all', arguments: {} });
 			strictEqual(result?.isError ?? false, false, `describe_all should dispatch: ${JSON.stringify(result)}`);
 		} finally {

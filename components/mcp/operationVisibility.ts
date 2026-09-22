@@ -51,6 +51,13 @@ const STRUCTURE_TABLE_OPERATIONS = new Set(['create_table', 'drop_table', 'creat
 const STRUCTURE_DATABASE_OPERATIONS = new Set(['create_schema', 'create_database', 'drop_schema', 'drop_database']);
 
 /**
+ * Expansions for roles that arrive without `_expandedOperations`. Keyed off the permission object
+ * rather than written onto it: a listing calls the helper once per operation, and an inline-asserted
+ * role (impersonation, scoped tokens) may be frozen, where assigning would throw under SES.
+ */
+const inlineExpansions = new WeakMap<RolePermission, Set<string>>();
+
+/**
  * Role `operations` allowlist membership, mirroring gate 1 of `verifyPerms`. `null` when the role
  * declares no allowlist. A present but malformed value fails closed.
  */
@@ -58,16 +65,13 @@ function allowlistAllows(perm: RolePermission, operation: string): boolean | nul
 	const list = perm.operations;
 	if (list == null) return null;
 	if (!Array.isArray(list)) return false;
-	// Normally built at role cache-load time. Inline-asserted roles (impersonation, scoped tokens)
-	// arrive without it, and a listing calls this once per operation, so memoize onto the same
-	// field the cache-load path uses rather than re-expanding ~150 times per request.
-	const holder = perm as { _expandedOperations?: unknown };
-	let expanded = holder._expandedOperations;
-	if (!(expanded instanceof Set)) {
+	const cached = (perm as { _expandedOperations?: unknown })._expandedOperations;
+	let expanded = cached instanceof Set ? (cached as Set<string>) : inlineExpansions.get(perm);
+	if (!expanded) {
 		expanded = expandOperationsPerms(list);
-		holder._expandedOperations = expanded;
+		inlineExpansions.set(perm, expanded);
 	}
-	return (expanded as Set<string>).has(OPERATION_API_NAME_ALIASES.get(operation) ?? operation);
+	return expanded.has(OPERATION_API_NAME_ALIASES.get(operation) ?? operation);
 }
 
 /**
