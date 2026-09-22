@@ -1,5 +1,8 @@
 const assert = require('node:assert');
+const { existsSync, readFileSync } = require('node:fs');
 const logger = require('#src/utility/logging/harper_logger');
+const { pinLogConfig } = require('../../logConfigFixture.js');
+const { waitFor } = require('../../waitFor.js');
 const { redactArgs, redactArgsForTool, maskSessionId, emitAuditEntry } = require('#src/components/mcp/audit');
 
 describe('mcp/audit', () => {
@@ -133,6 +136,12 @@ describe('mcp/audit', () => {
 	});
 
 	describe('emitAuditEntry', () => {
+		let restoreLogConfig;
+		before(() => {
+			restoreLogConfig = pinLogConfig({ level: 'info' });
+		});
+		after(() => restoreLogConfig?.());
+
 		it('does not throw on a well-formed entry', () => {
 			assert.doesNotThrow(() =>
 				emitAuditEntry({
@@ -148,28 +157,27 @@ describe('mcp/audit', () => {
 			);
 		});
 
-		// The redaction tests above call the helper directly; this one covers the emit path.
-		it('redacts the emitted args through the tool policy', () => {
-			const emitted = [];
-			const originalInfo = logger.info;
-			logger.info = (entry) => emitted.push(entry);
-			try {
-				emitAuditEntry({
-					timestamp: new Date().toISOString(),
-					profile: 'operations',
-					sessionId: 'abcdefgh-ijkl',
-					tool: 'set_secret',
-					user: 'alice',
-					args: { name: 'API_KEY', value: 'plaintext-secret', values: { A: 'plaintext-secret' } },
-					status: 'isError',
-					durationMs: 1,
-				});
-			} finally {
-				logger.info = originalInfo;
-			}
-			assert.equal(emitted.length, 1);
-			assert.deepStrictEqual(emitted[0].args, { name: 'API_KEY', value: '[redacted]', values: '[redacted]' });
-			assert.ok(!JSON.stringify(emitted[0]).includes('plaintext-secret'));
+		// The redaction tests above call the helper directly. This one goes through the real logger
+		// to the log file, which is the only place the secret actually has to be absent from.
+		it('keeps secret material out of the emitted log record', async () => {
+			const logPath = logger.getLogFilePath();
+			const offset = existsSync(logPath) ? readFileSync(logPath, 'utf8').length : 0;
+			emitAuditEntry({
+				timestamp: new Date().toISOString(),
+				profile: 'operations',
+				sessionId: 'abcdefgh-ijkl',
+				tool: 'set_secret',
+				user: 'alice',
+				args: { name: 'API_KEY', value: 'plaintext-secret', values: { A: 'plaintext-secret' } },
+				status: 'isError',
+				durationMs: 1,
+			});
+			const written = await waitFor(() => {
+				const tail = readFileSync(logPath, 'utf8').slice(offset);
+				return tail.includes('mcp.audit') ? tail : undefined;
+			});
+			assert.ok(!written.includes('plaintext-secret'), 'the secret must not reach the log file');
+			assert.ok(written.includes('[redacted]'));
 		});
 
 		it('does not throw on a rate-limited entry with no errorMessage', () => {
