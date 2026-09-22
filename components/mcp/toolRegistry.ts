@@ -67,7 +67,7 @@ export interface AuthedUser {
 		role?: string;
 		permission?: {
 			super_user?: boolean;
-			structure_user?: boolean;
+			structure_user?: boolean | string[];
 			operations?: string[];
 			[database: string]:
 				| boolean
@@ -410,13 +410,17 @@ export function hasClassLevelVerbs(
  * Operation names on this path are the snake_case API names (`OPERATIONS_ENUM` values),
  * the same form the allowlist stores, so no camelCase -> `api_name` mapping is needed.
  */
-function operationAllowlistAllows(perm: any, operation: string): boolean | null {
-	const list = perm?.operations;
+type RolePermission = NonNullable<NonNullable<AuthedUser['role']>['permission']>;
+
+function operationAllowlistAllows(perm: RolePermission, operation: string): boolean | null {
+	const list = perm.operations;
 	if (list == null) return null;
 	if (!Array.isArray(list)) return false;
-	// `_expandedOperations` is pre-built at role cache-load time; fall back to on-demand
-	// expansion for inline-asserted roles, exactly as the dispatch gate does.
-	const expanded = perm._expandedOperations instanceof Set ? perm._expandedOperations : expandOperationsPerms(list);
+	// `_expandedOperations` is pre-built at role cache-load time and is not part of the
+	// persisted permission shape; fall back to on-demand expansion for inline-asserted
+	// roles, exactly as the dispatch gate does.
+	const cached = (perm as { _expandedOperations?: unknown })._expandedOperations;
+	const expanded = cached instanceof Set ? (cached as Set<string>) : expandOperationsPerms(list);
 	return expanded.has(operation);
 }
 
@@ -435,11 +439,9 @@ function operationAllowlistAllows(perm: any, operation: string): boolean | null 
 export function canRoleInvokeOperation(user: AuthedUser, operation: string): boolean {
 	const perm = user?.role?.permission;
 	if (!perm) return false;
-	// Gate 1, mirroring `verifyPerms`: an `operations` allowlist binds EVERY privilege
-	// below it, super_user and structure_user included. harper#2176 moved
-	// `verifyOperationsAllowlist` ahead of the privilege early-returns at dispatch, so a
-	// structure grant no longer carries the schema DDL ops past a restrictive allowlist.
-	// Short-circuiting on the flag alone advertised eight ops that then failed closed.
+	// Mirrors gate 1 of `verifyPerms`: an `operations` allowlist binds every privilege
+	// below it, super_user and structure_user included (harper#2176 moved
+	// `verifyOperationsAllowlist` ahead of those early-returns at dispatch).
 	const allowlisted = operationAllowlistAllows(perm, operation);
 	if (allowlisted === false) return false;
 	if (perm.super_user === true) return true;
