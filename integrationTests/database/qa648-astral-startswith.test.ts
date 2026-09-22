@@ -230,6 +230,8 @@ suite(
 			// Headline assertion: rows with an astral char immediately after the prefix must agree
 			// between index and scan. A divergence here IS the #1629 defect.
 			for (const id of IMMEDIATE_ASTRAL_IDS) {
+				// Pin the scan side to true as well, so agreement-on-nothing cannot satisfy (a) on its own.
+				ok(scanIds.has(id), `scan oracle lost "${id}" — (a) cannot judge the index without it`);
 				strictEqual(
 					idxIds.has(id),
 					scanIds.has(id),
