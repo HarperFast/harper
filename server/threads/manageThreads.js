@@ -212,6 +212,9 @@ connectedPorts.sendToThread = function (threadId, message) {
 		throw err;
 	}
 };
+// Direct thread-to-thread send, so a worker can reach a sibling (e.g. the record lock owner worker)
+// without a hop through main. Returns false when no port for the thread is connected.
+module.exports.sendToThread = connectedPorts.sendToThread;
 module.exports.whenThreadsStarted = new Promise((resolve) => {
 	module.exports.threadsHaveStarted = resolve;
 });
@@ -546,6 +549,9 @@ function startWorker(path, options = {}) {
 		for (const requirePath of getRequireModules()) execArgv.push('--require', requirePath);
 	}
 
+	// Only a start that declares the serving topology may write it; see DESIGN.md on the two workerCounts.
+	if (typeof options.threadCount === 'number') workerCount = options.threadCount;
+
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
 		resourceLimits: {
 			maxOldGenerationSizeMb: maxOldMemory,
@@ -560,7 +566,7 @@ function startWorker(path, options = {}) {
 			addThreadIds: channelsToConnect.map((channel) => channel.existingPort.threadId),
 			addPortIsJobWorkers: channelsToConnect.map((channel) => channel.existingPort.isJobWorker === true),
 			workerIndex: options.workerIndex,
-			workerCount: (workerCount = options.threadCount),
+			workerCount: options.threadCount,
 			name: options.name,
 			isolatedApplication: options.application,
 			restartNumber: module.exports.restartNumber,
@@ -701,7 +707,10 @@ async function restartWorkers(
 		}
 
 		module.exports.restartNumber++;
-		if (maxWorkersDown < 1) {
+		// `Infinity` is shutdownWorkers' "all at once" sentinel and must survive.
+		if (typeof maxWorkersDown !== 'number' || Number.isNaN(maxWorkersDown)) {
+			maxWorkersDown = 1;
+		} else if (maxWorkersDown < 1) {
 			// we accept a ratio of workers, and compute absolute maximum being down at a time from the total number of
 			// threads
 			maxWorkersDown = maxWorkersDown * workers.length;

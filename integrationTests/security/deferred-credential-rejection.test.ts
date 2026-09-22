@@ -12,6 +12,10 @@ const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === '
 const WORDPRESS_BASIC = `Basic ${Buffer.from('wordpress:abcd efgh ijkl mnop qrst uvwx').toString('base64')}`;
 const DOWNSTREAM_BEARER = 'Bearer eyJhbGciOiJIUzI1NiJ9.d29vLXNlc3Npb24.not-a-harper-token';
 
+// must match the fixture's `server.getUser` override (fixtures/deferred-credential-rejection/resources.js)
+const REJECTED_SESSION_USER = 'expired-staff';
+const FAULTING_SESSION_USER = 'faulting-staff';
+
 const APP_ROUTE = '/wp-json/wc/v3/products';
 const PROTECTED_ROUTE = '/Ledger/';
 const PUBLIC_ROUTE = '/PublicNotice/';
@@ -183,6 +187,64 @@ suite(
 			});
 
 			equal(response.status, 401);
+		});
+
+		async function mintSessionCookie(user: string) {
+			const response = await fetch(`${restURL}/mint-session?user=${encodeURIComponent(user)}`);
+			equal(response.status, 200, `expected the fixture to mint a session: ${await response.text()}`);
+			const setCookie = response.headers.get('set-cookie');
+			ok(setCookie, 'the session route must return a Set-Cookie');
+			return setCookie.split(';')[0];
+		}
+
+		test('a rejected cookie session reaches an application-owned route instead of a raw error page', async () => {
+			const cookie = await mintSessionCookie(REJECTED_SESSION_USER);
+
+			const response = await get(APP_ROUTE, undefined, { Cookie: cookie });
+
+			equal(response.status, 200, `the application must still be served: ${response.text}`);
+			equal(response.body.servedBy, 'application-catch-all');
+			equal(response.body.harperUser, null);
+			ok(!response.text.startsWith('ClientError'), `the raw error must not be the body: ${response.text}`);
+		});
+
+		test('a rejected cookie session gets the negotiated 401 envelope on a Harper-owned route', async () => {
+			const cookie = await mintSessionCookie(REJECTED_SESSION_USER);
+
+			const response = await get(PROTECTED_ROUTE, undefined, { Cookie: cookie, Accept: 'application/json' });
+
+			equal(response.status, 401, `expected an unauthorized: ${response.text}`);
+			equal(response.headers.get('content-type')?.split(';')[0], 'application/json');
+			equal(response.body?.error, 'SSO session expired');
+			ok(response.body?.title === undefined, `expected no Problem Details envelope: ${response.text}`);
+		});
+
+		test('an internal fault resolving a cookie session fails closed with the generic message', async () => {
+			const cookie = await mintSessionCookie(FAULTING_SESSION_USER);
+
+			const response = await get(APP_ROUTE, undefined, { Cookie: cookie });
+
+			equal(response.status, 401, `an internal fault must be decided in place: ${response.text}`);
+			ok(response.body?.servedBy !== 'application-catch-all', 'an internal fault must not reach the application');
+			ok(
+				!/user store unavailable/.test(response.text),
+				`the internal message must not reach the client: ${response.text}`
+			);
+		});
+
+		test('an accepted cookie session still authenticates a Harper-owned route', async () => {
+			const cookie = await mintSessionCookie(ctx.harper.admin.username);
+
+			const response = await get(PROTECTED_ROUTE, undefined, { Cookie: cookie });
+
+			equal(response.status, 200, `the session user must still authenticate: ${response.text}`);
+		});
+
+		test('a throwing middleware renders its class name as the error code', async () => {
+			const response = await get('/throw-from-middleware');
+
+			equal(response.status, 503);
+			equal(response.text, 'Error: deliberate middleware failure');
 		});
 	}
 );

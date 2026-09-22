@@ -1,9 +1,11 @@
+import type { RocksDatabase } from '@harperfast/rocksdb-js';
 import type { Id } from './ResourceInterface.ts';
 import type { AuditRecord } from './auditStore.ts';
 import type { RocksTransactionLogStore, TransactionLogIterable } from './RocksTransactionLogStore.ts';
 import { writeKeyId } from './DatabaseTransaction.ts';
 import { registerDerivedIndexTables } from './derivedIndexRegistry.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
+import { DerivedIndexLagError, ServerError } from '../utility/errors/hdbError.ts';
 
 const logger = loggerWithTag('derived-index');
 
@@ -17,7 +19,32 @@ export type DerivedIndexDeliveryResult =
 export type DerivedIndexCursor = {
 	format: 1;
 	logs: Record<string, number>;
+	coverage?: DerivedIndexPositions;
 };
+
+export type DerivedIndexPositions = Record<string, { sequence: number; offset: number } | null>;
+
+export type DerivedIndexCoverage = {
+	state: 'current' | 'bounded' | 'unknown';
+	maxLagMilliseconds: number;
+	lagUpperBoundMilliseconds?: number;
+};
+
+export function derivedIndexTime(store: RocksDatabase): bigint {
+	// Bun's hrtime origin is worker-local; the transaction clock is shared by every worker.
+	let milliseconds: number;
+	try {
+		milliseconds = store.getMonotonicTimestamp();
+	} catch {
+		throw new ServerError('The derived index coverage clock is unavailable', 503);
+	}
+	const whole = Math.trunc(milliseconds);
+	return BigInt(whole) * 1_000_000n + BigInt(Math.round((milliseconds - whole) * 1_000_000));
+}
+
+type CoverageCapture = { time: bigint; positions: DerivedIndexPositions };
+type CoverageWaiter = { since: bigint; deadline: bigint; finish: (error?: unknown) => void };
+type CoverageWaitGroup = { waiters: Set<CoverageWaiter>; timer?: NodeJS.Timeout };
 
 export type DerivedIndexState =
 	| { kind: 'record'; version: number; projection: unknown }
@@ -107,6 +134,8 @@ export interface DerivedIndexBackend {
 	/** Receives the epoch fence and readiness reader before any delivery. */
 	attach(host: DerivedIndexBackendHost): void;
 	getDurableCursor(): DerivedIndexCursor | undefined;
+	/** Persist coverage only after its offered cursor is durable; reset must remove it with the cursor. */
+	publishCoverage?(positions: DerivedIndexPositions, ownerEpoch: bigint): void;
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult;
 	/** Request a durability barrier; the backend completes it and wakes through `onStateChange`. */
 	flush(reason: DerivedIndexFlushReason): void | Promise<void>;
@@ -238,7 +267,8 @@ const CONDEMNED_MARKER = new Uint8Array([1]);
 // counter. Each word is self-consistent on its own; nothing needs to observe two of them atomically.
 const READINESS_WORDS = 6;
 const READINESS_EPOCH_OFFSET = READINESS_WORDS * 4;
-export const READINESS_BYTES = READINESS_EPOCH_OFFSET + 8;
+const READINESS_COVERAGE_OFFSET = READINESS_EPOCH_OFFSET + 8;
+export const READINESS_BYTES = READINESS_COVERAGE_OFFSET + 8;
 const READINESS_STATE = 0;
 const READINESS_REASON = 1;
 const READINESS_ATTEMPTS = 2;
@@ -266,6 +296,7 @@ export class DerivedIndexRuntime {
 	#onCommit = () => this.wake();
 	#listening = false;
 	#stopped = false;
+	#coverageWaits = new Map<string, CoverageWaitGroup>();
 
 	constructor(
 		logStore: RocksTransactionLogStore,
@@ -305,6 +336,11 @@ export class DerivedIndexRuntime {
 		return () => {
 			if (this.#runners.get(registration.backend.id) === runner) {
 				this.#runners.delete(registration.backend.id);
+				const waiting = this.#coverageWaits.get(registration.backend.id);
+				if (waiting) {
+					for (const waiter of waiting.waiters)
+						waiter.finish(new ServerError('The native HNSW index is unavailable', 503));
+				}
 				this.#stopListeningIfIdle();
 			}
 			return this.#track(runner, runner.stop());
@@ -340,6 +376,70 @@ export class DerivedIndexRuntime {
 		return this.#runners.get(backendId)?.getMetrics();
 	}
 
+	waitForCoverage(backendId: string, since: bigint, timeout: number, signal?: AbortSignal): Promise<void> {
+		if (this.#stopped || !this.#runners.has(backendId))
+			return Promise.reject(new ServerError('The native HNSW index is unavailable', 503));
+		let group = this.#coverageWaits.get(backendId);
+		const first = !group;
+		if (!group) this.#coverageWaits.set(backendId, (group = { waiters: new Set() }));
+		const waiting = group;
+		const result = new Promise<void>((resolve, reject) => {
+			const waiter: CoverageWaiter = {
+				since,
+				deadline: since + BigInt(Math.ceil(timeout * 1e6)),
+				finish: (error) => {
+					if (!waiting.waiters.delete(waiter)) return;
+					signal?.removeEventListener('abort', abort);
+					if (!waiting.waiters.size) {
+						clearTimeout(waiting.timer);
+						this.#coverageWaits.delete(backendId);
+					}
+					if (error !== undefined) reject(error);
+					else resolve();
+				},
+			};
+			const abort = () => waiter.finish(signal.reason ?? new Error('Index wait aborted'));
+			waiting.waiters.add(waiter);
+			signal?.addEventListener('abort', abort, { once: true });
+			if (signal?.aborted) abort();
+		});
+		if (first && waiting.waiters.size) {
+			// Demand must not retry a deferred batch or count as unread writes for writer backpressure.
+			try {
+				this.#runners.get(backendId)?.wake(false, true);
+				this.#pollCoverage(backendId, waiting);
+			} catch (error) {
+				for (const waiter of waiting.waiters) waiter.finish(error);
+			}
+		}
+		return result;
+	}
+
+	#pollCoverage(backendId: string, group: CoverageWaitGroup) {
+		try {
+			const views = getReadinessViews(this.#logStore, backendId);
+			const before = readReadiness(views);
+			const time = Atomics.load(views.coverage, 0);
+			const after = readReadiness(views);
+			if (after.state !== 'ready')
+				throw new ServerError(
+					`The native HNSW index is ${after.state === 'unavailable' ? 'unavailable' : 'rebuilding'}`,
+					503
+				);
+			const now = derivedIndexTime(this.#logStore.rootStore);
+			let delay = 25;
+			for (const waiter of group.waiters) {
+				if (before.state === 'ready' && before.ownerEpoch === after.ownerEpoch && time >= waiter.since) waiter.finish();
+				else if (now >= waiter.deadline)
+					waiter.finish(new DerivedIndexLagError('Timed out waiting for native HNSW index coverage; retry this query'));
+				else delay = Math.min(delay, Math.max(1, Number(waiter.deadline - now) / 1e6));
+			}
+			if (group.waiters.size) group.timer = setTimeout(() => this.#pollCoverage(backendId, group), delay);
+		} catch (error) {
+			for (const waiter of group.waiters) waiter.finish(error);
+		}
+	}
+
 	/** Force a rebuild (or retry one that became `unavailable`). Returns false when the backend cannot be rebuilt by the runtime. */
 	requestRebuild(backendId: string): boolean {
 		const held = this.#heldRunners.get(backendId);
@@ -364,6 +464,9 @@ export class DerivedIndexRuntime {
 	stop(): Promise<void> {
 		if (this.#stopping) return this.#stopping;
 		this.#stopped = true;
+		for (const group of this.#coverageWaits.values()) {
+			for (const waiter of group.waiters) waiter.finish(new ServerError('The native HNSW index is unavailable', 503));
+		}
 		for (const runner of this.#runners.values()) this.#track(runner, runner.stop());
 		this.#runners.clear();
 		this.#stopListening();
@@ -431,7 +534,13 @@ function effectiveLagBudget(options: Required<DerivedIndexRunnerOptions>): numbe
 	return options.maxLagMilliseconds > 0 ? Math.max(options.maxLagMilliseconds, 2 * options.maxFlushAgeMilliseconds) : 0;
 }
 
-type OfferedProgress = { cursor: DerivedIndexCursor; bytes: number; mutations: number; acceptedAt: number };
+type OfferedProgress = {
+	cursor: DerivedIndexCursor;
+	bytes: number;
+	mutations: number;
+	acceptedAt: number;
+	coverage?: CoverageCapture;
+};
 
 type CollectedKey = { recordId: Id; logVersion: number; sizeHint: number | undefined };
 
@@ -472,6 +581,7 @@ class DerivedIndexRunner {
 	#unanchoredAcceptedAt = 0;
 	#pendingBatch?: DerivedIndexBatch;
 	#carried: CollectedTransaction[] = [];
+	#collectedToEnd = false;
 	#latestSeen = new Map<string, number>();
 	#stalledSince?: number;
 	#lastCaughtUpAt?: number;
@@ -487,6 +597,8 @@ class DerivedIndexRunner {
 	#generation = 0;
 	#idleTimer?: NodeJS.Timeout;
 	#flushTimer?: NodeJS.Timeout;
+	#coverageTimer?: NodeJS.Timeout;
+	#lastPersistedCoverageTime = 0n;
 	#rebuildTimer?: NodeJS.Timeout;
 	#unflushedBytes = 0;
 	#unflushedMutations = 0;
@@ -584,9 +696,9 @@ class DerivedIndexRunner {
 		return this.#sharedViews;
 	}
 
-	wake(fromBackend = false) {
+	wake(fromBackend = false, forCoverage = false) {
 		if (this.#stopped || this.#rebuilding) return;
-		if (!fromBackend && this.#lagBudget > 0) this.#unreadSince ??= this.#options.now();
+		if (!fromBackend && !forCoverage && this.#lagBudget > 0) this.#unreadSince ??= this.#options.now();
 		if (this.status.state === 'unavailable') {
 			if (
 				this.#heldLock ||
@@ -1003,12 +1115,18 @@ class DerivedIndexRunner {
 		const now = this.#options.now();
 		this.#publishLag();
 		try {
+			const captureTime = this.#registration.backend.publishCoverage ? derivedIndexTime(this.#logStore.rootStore) : 0n;
 			if (!this.#checkNewLogs() || !this.#checkRangeHealth()) return;
+			const positions = this.#registration.backend.publishCoverage
+				? readCommittedPositions(this.#logStore, this.#knownLogs)
+				: undefined;
+			const capture = positions ? { time: captureTime, positions } : undefined;
 			if (this.status.state === 'waiting-durable') {
 				if (!this.#reconcileDurableCursor()) return;
 				if (this.#offeredCursors.length - 1 >= this.#options.maxAcceptedBatchesAhead) return;
 				this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
 			}
+			this.#collectedToEnd = false;
 			const batch = this.#pendingBatch ?? this.#collectChunk();
 			if (!this.#live(generation)) return;
 			if (batch === CONTINUE) {
@@ -1017,7 +1135,7 @@ class DerivedIndexRunner {
 				return;
 			}
 			if (!batch) {
-				this.#finishIdlePass();
+				this.#finishIdlePass(capture);
 				return;
 			}
 			const result = this.#deliver(batch);
@@ -1031,7 +1149,12 @@ class DerivedIndexRunner {
 			this.#pendingBatch = undefined;
 			this.#noteAccepted(batch);
 			if (!this.#live(generation)) return;
+			// A nonempty turn can also exhaust the captured log tail. Waiting for an empty turn
+			// would starve coverage under continuous writes even when each drain catches up.
+			const completedCapture = this.#collectedToEnd && this.#carried.length === 0 ? capture : undefined;
+			if (completedCapture) this.#offeredCursors.at(-1)!.coverage = completedCapture;
 			if (!this.#reconcileDurableCursor()) return;
+			this.#publishUnchangedCoverage(completedCapture);
 			this.#publishLag();
 			if (!lastOpen(this.#carried) && this.#offeredCursors.length - 1 >= this.#options.maxAcceptedBatchesAhead) {
 				this.status = { state: 'waiting-durable', ownerEpoch: this.#ownerEpoch };
@@ -1156,6 +1279,7 @@ class DerivedIndexRunner {
 						'log-corrupt',
 						`transaction ${current.timestamp} from '${current.logName}' is incomplete`
 					);
+				this.#collectedToEnd = true;
 				break;
 			}
 			const entry = next.value;
@@ -1364,6 +1488,7 @@ class DerivedIndexRunner {
 			}
 		}
 		for (const logName of current) {
+			if (this.#registration.backend.publishCoverage) this.#logStore.ensureLogExists(logName);
 			if (this.#knownLogs.has(logName)) continue;
 			if (!this.#retainsBeginning(logName)) {
 				this.#needsRebuild(`new transaction log '${logName}' no longer retains its beginning`, 'log-retention');
@@ -1395,7 +1520,7 @@ class DerivedIndexRunner {
 		return true;
 	}
 
-	#finishIdlePass() {
+	#finishIdlePass(capture?: CoverageCapture) {
 		this.#stalledSince = undefined;
 		this.#unreadSince = undefined;
 		this.#reachedEndOfLog = true;
@@ -1409,7 +1534,10 @@ class DerivedIndexRunner {
 			this.#needsRebuild('backend lost its durable cursor', 'cursor-missing');
 			return;
 		}
+		if (capture) this.#offeredCursors.at(-1)!.coverage = capture;
 		if (!this.#reconcileDurableCursor(durable)) return;
+		this.#publishUnchangedCoverage(capture);
+		this.#armCoverageTimer();
 		if (sameCursor(durable, this.#offered!)) this.#lastCaughtUpAt = this.#options.now();
 		this.#publishLag();
 		if (!sameCursor(durable, this.#offered!)) {
@@ -1428,6 +1556,16 @@ class DerivedIndexRunner {
 				this.#fail('backend cursor read threw at idle release', error, 'backend-failed');
 			}
 		}, this.#options.idleGraceMilliseconds);
+	}
+
+	#publishUnchangedCoverage(capture?: CoverageCapture) {
+		if (
+			capture &&
+			!this.#boundaryPending &&
+			this.#unanchoredMutations === 0 &&
+			this.#offeredCursors.slice(1).every((offered) => offered.mutations === 0)
+		)
+			this.#publishCoverage(capture);
 	}
 
 	#reconcileDurableCursor(cursor = this.#registration.backend.getDurableCursor()): boolean {
@@ -1453,12 +1591,43 @@ class DerivedIndexRunner {
 			}
 		}
 		this.#boundaryPending = false;
+		for (let i = offeredIndex; i >= 0; i--) {
+			const coverage = this.#offeredCursors[i].coverage;
+			if (coverage) {
+				this.#publishCoverage(coverage);
+				break;
+			}
+		}
 		if (offeredIndex > 0) {
 			this.#offeredCursors.splice(0, offeredIndex);
 			if (!this.#rebuilding && this.status.state !== 'needs-rebuild') this.#settleReady();
 		}
 		if (offeredIndex > 0 || sameCursor(cursor, this.#offered)) this.#lastCaughtUpAt = this.#options.now();
 		return true;
+	}
+
+	#publishCoverage(capture: CoverageCapture) {
+		if (!this.#owned || this.#rebuilding || Atomics.load(this.#shared().epoch, 0) !== this.#ownerEpoch) return;
+		if (capture.time <= Atomics.load(this.#shared().coverage, 0)) return;
+		if (Number(capture.time - this.#lastPersistedCoverageTime) / 1e6 >= this.#options.maxFlushAgeMilliseconds) {
+			try {
+				this.#registration.backend.publishCoverage!(capture.positions, this.#ownerEpoch!);
+				this.#lastPersistedCoverageTime = capture.time;
+			} catch (error) {
+				logger.warn?.(`Derived index '${this.id}' could not persist query coverage`, error);
+				return;
+			}
+		}
+		Atomics.store(this.#shared().coverage, 0, capture.time);
+	}
+
+	#armCoverageTimer() {
+		if (!this.#registration.backend.publishCoverage || this.#coverageTimer || !this.#owned) return;
+		this.#coverageTimer = setTimeout(() => {
+			this.#coverageTimer = undefined;
+			this.#drain();
+		}, this.#options.maxFlushAgeMilliseconds);
+		this.#coverageTimer.unref?.();
 	}
 
 	#settleReady() {
@@ -1610,6 +1779,10 @@ class DerivedIndexRunner {
 	}
 
 	#discardProgress() {
+		if (this.#coverageTimer) clearTimeout(this.#coverageTimer);
+		this.#coverageTimer = undefined;
+		this.#lastPersistedCoverageTime = 0n;
+		for (const offered of this.#offeredCursors) delete offered.coverage;
 		this.#generation++;
 		this.#stalledSince = undefined;
 		this.#lastCaughtUpAt = undefined;
@@ -1873,6 +2046,7 @@ class DerivedIndexRunner {
 
 	#publishReadiness(state: DerivedIndexReadinessState, reason: DerivedIndexReadinessReason = 'none') {
 		const { words } = this.#shared();
+		if (state !== 'ready') Atomics.store(this.#shared().coverage, 0, 0n);
 		// State last: a reader that sees the new state sees a reason and attempt count at least as new.
 		Atomics.store(words, READINESS_REASON, READINESS_REASONS.indexOf(reason));
 		Atomics.store(words, READINESS_ATTEMPTS, state === 'ready' ? 0 : this.#rebuildAttempts);
@@ -1963,12 +2137,14 @@ function readinessBuffer(
 type SharedViews = {
 	words: Int32Array;
 	epoch: BigInt64Array;
+	coverage: BigInt64Array;
 };
 
 function sharedViewsOf(buffer: ArrayBufferLike): SharedViews {
 	return {
 		words: new Int32Array(buffer, 0, READINESS_WORDS),
 		epoch: new BigInt64Array(buffer, READINESS_EPOCH_OFFSET, 1),
+		coverage: new BigInt64Array(buffer, READINESS_COVERAGE_OFFSET, 1),
 	};
 }
 
@@ -1991,11 +2167,99 @@ export function readDerivedIndexReadiness(
 	logStore: RocksTransactionLogStore,
 	backendId: string
 ): DerivedIndexReadiness {
+	return readReadiness(getReadinessViews(logStore, backendId));
+}
+
+function getReadinessViews(logStore: RocksTransactionLogStore, backendId: string): SharedViews {
 	let byBackend = readinessViews.get(logStore);
 	if (!byBackend) readinessViews.set(logStore, (byBackend = new Map()));
 	let views = byBackend.get(backendId);
 	if (!views) byBackend.set(backendId, (views = sharedViewsOf(readinessBuffer(logStore, backendId))));
-	return readReadiness(views);
+	return views;
+}
+
+function readCommittedPositions(
+	logStore: RocksTransactionLogStore,
+	names: Iterable<string> = logStore.rootStore.listLogs()
+): DerivedIndexPositions | undefined {
+	const positions: DerivedIndexPositions = Object.create(null);
+	try {
+		for (const name of names) {
+			const stats = logStore.rootStore.useLog(name).getStats();
+			// An earlier uncommitted transaction can hide later completed commits behind the readable prefix.
+			const committed = stats.lastCommittedPosition;
+			const next = stats.nextLogPosition;
+			if (next.sequence === 0 && next.offset === 0) {
+				// Opening an empty iterator seeds a header-position sentinel before any file has been written.
+				positions[name] = null;
+				continue;
+			}
+			if (committed ? committed.sequence !== next.sequence || committed.offset !== next.offset : next.offset !== 0)
+				return;
+			positions[name] = committed;
+		}
+	} catch {
+		return;
+	}
+	return positions;
+}
+
+export function sameDerivedIndexPositions(left: DerivedIndexPositions, right: DerivedIndexPositions): boolean {
+	if (
+		!left ||
+		!right ||
+		typeof left !== 'object' ||
+		typeof right !== 'object' ||
+		Array.isArray(left) ||
+		Array.isArray(right) ||
+		Object.keys(left).length !== Object.keys(right).length
+	)
+		return false;
+	for (const name of Object.keys(left)) {
+		if (!Object.hasOwn(right, name)) return false;
+		const a = left[name];
+		const b = right[name];
+		if (a === null || b === null) {
+			if (a !== b) return false;
+		} else if (!a || !b || a.sequence !== b.sequence || a.offset !== b.offset) return false;
+	}
+	return true;
+}
+
+export function readDerivedIndexCoverage(
+	logStore: RocksTransactionLogStore,
+	backendId: string,
+	loadCursor: () => DerivedIndexCursor | undefined,
+	maxLagMilliseconds: number
+): DerivedIndexCoverage {
+	const unknown: DerivedIndexCoverage = { state: 'unknown', maxLagMilliseconds };
+	try {
+		const views = getReadinessViews(logStore, backendId);
+		const readiness = readReadiness(views);
+		if (readiness.state !== 'ready') return unknown;
+		const time = Atomics.load(views.coverage, 0);
+		if (time > 0n) {
+			const age = Number(derivedIndexTime(logStore.rootStore) - time) / 1e6;
+			if (age >= 0) {
+				unknown.lagUpperBoundMilliseconds = age;
+				if (maxLagMilliseconds > 0 && age <= maxLagMilliseconds) return { ...unknown, state: 'bounded' };
+			}
+		}
+		const cursor = loadCursor();
+		if (!isValidCursor(cursor) || !cursor.coverage) return unknown;
+		const positions = readCommittedPositions(logStore);
+		const after = readReadiness(views);
+		if (
+			positions &&
+			after.state === 'ready' &&
+			after.ownerEpoch === readiness.ownerEpoch &&
+			sameDerivedIndexPositions(cursor.coverage, positions)
+		)
+			return { state: 'current', maxLagMilliseconds, lagUpperBoundMilliseconds: 0 };
+	} catch {
+		// Failure to read coverage is not evidence that the native graph needs rebuilding.
+	}
+	return unknown;
 }
 
 function isValidCursor(cursor: DerivedIndexCursor | undefined): cursor is DerivedIndexCursor {

@@ -65,11 +65,13 @@ import {
 	ValidationError,
 	UpdateAttributesLockTimeoutError,
 	LockUnavailableError,
+	appendErrorContext,
 	type ValidationIssue,
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc.js';
 import { databases, table } from './databases.ts';
+import { notifyReplicatedApplyFailure } from './replicatedApplyFailure.ts';
 import {
 	searchByIndex,
 	findAttribute,
@@ -106,6 +108,7 @@ import {
 	LOCAL_ONLY,
 	auditRetention,
 	removeAuditEntry,
+	getAuditFloor,
 	raiseAuditFloor,
 	boundedAuditPruneEnd,
 	isLockControlType,
@@ -133,7 +136,7 @@ import {
 	storedFieldsOnly,
 } from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
-import { rebuildUpdateBefore } from './crdt.ts';
+import { commutativeOpsOf, rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
@@ -185,6 +188,9 @@ type MaybePromise<T> = T | Promise<T>;
 
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
+const sourceWriteTypes = new Set(['put', 'patch', 'delete', 'publish', 'message', 'invalidate', 'relocate']);
+const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
+const SOURCE_APPLY_POSITION = Symbol('sourceApplyPosition');
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
@@ -212,6 +218,20 @@ const MAX_COUNT_PAGE = 10_000;
 // How often the exact-count drain yields to the macrotask queue (must be a power of two for the bit-mask
 // check). Keeps a large scan from monopolizing the event loop without adding a yield per row.
 const COUNT_YIELD_INTERVAL = 2_048;
+// Smallest forward sample `getRecordCount` will extrapolate a record rate from; below it the scan runs
+// to completion and reports an exact count.
+const MIN_ESTIMATOR_SAMPLE = 1_000;
+// Budget intervals the forward scan may spend before it must estimate rather than keep scanning.
+const MAX_ESTIMATE_CHECKPOINTS = 20;
+// A store estimate's `count`, or 0 when the store answered with a shape that cannot be trusted --
+// DESIGN.md's invariant for this API family is that such an answer degrades rather than poisons.
+function usableCount(estimate: any): number {
+	const { count, confidence } = estimate ?? {};
+	// `confidence` needs its own finiteness check, not just the range: `null >= 0 && null <= 1` is true
+	if (!Number.isFinite(count) || count < 0 || !Number.isFinite(confidence) || confidence < 0 || confidence > 1)
+		return 0;
+	return count;
+}
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
@@ -563,7 +583,12 @@ function isPlainOptions(value: unknown): boolean {
 // importing Table (which would be a cycle through databases.ts).
 setLockCoordinatorResolver(
 	(database: string, tableName: string) => (databases as any)[database]?.[tableName]?.lockCoordinator,
-	(database: string, tableName: string) => (databases as any)[database]?.[tableName]?.admittingCoordinator
+	(database: string, tableName: string) => (databases as any)[database]?.[tableName]?.admittingCoordinator,
+	(database: string, tableName: string) => {
+		const Table = (databases as any)[database]?.[tableName];
+		if (typeof Table?.writeLockControlEntry !== 'function') return undefined;
+		return (entry: LockControlEntry) => Table.writeLockControlEntry(entry);
+	}
 );
 
 export function makeTable(options) {
@@ -887,7 +912,13 @@ export function makeTable(options) {
 		static tableName = tableName;
 		static tableId = tableId;
 		static indices = indices;
-		static derivedIndexRuntime: { close(): Promise<void> } | undefined;
+		static derivedIndexRuntime:
+			| {
+					close(dropping?: boolean): Promise<void>;
+					restoreAfterFailedDrop?(): typeof TableResource.derivedIndexRuntime;
+					completeDrop?(dropped?: boolean): void;
+			  }
+			| undefined;
 		static audit = audit;
 		static databasePath = databasePath;
 		static databaseName = databaseName;
@@ -974,12 +1005,32 @@ export function makeTable(options) {
 			(async () => {
 				let userRoleUpdate = false;
 				let lastSequenceId;
+				let pendingApplyFailures: Promise<void> | undefined;
+				const reportDroppedWrite = (event, context, error) => {
+					const position =
+						event === context ? context[SOURCE_APPLY_POSITION] : (event.timestamp ?? context[SOURCE_APPLY_POSITION]);
+					const notification = notifyReplicatedApplyFailure(
+						databaseName,
+						{
+							nodeId: event.nodeId ?? context.nodeId,
+							table: event.table ?? context.table,
+							localTime: event.localTime ?? context.localTime,
+						},
+						position,
+						error,
+						tableName
+					);
+					pendingApplyFailures = pendingApplyFailures
+						? Promise.all([pendingApplyFailures, notification]).then(noop)
+						: notification;
+					return notification;
+				};
 				/** Cluster lock coordination entries (harper#483 Phase 1) describe no record. */
-				const applyLockControlEvent = (event) => {
+				const applyLockControlEvent = (event, context) => {
 					const entry = decodeLockControlPayload(event.type, event.value);
 					if (!entry) {
 						logger.warn?.('discarding a malformed record lock control entry from', event.nodeId, event.type);
-						return;
+						return reportDroppedWrite(event, context, new Error('Malformed record lock control entry'));
 					}
 					const target = event.table ? databases[databaseName]?.[event.table] : TableResource;
 					try {
@@ -995,7 +1046,7 @@ export function makeTable(options) {
 						const author = getNodeNameForId(auditStore, event.nodeId, true);
 						if (!author) {
 							logger.warn?.('discarding a record lock control entry whose origin node could not be resolved');
-							return;
+							return reportDroppedWrite(event, context, new Error('Record lock control origin could not be resolved'));
 						}
 						// The coordinator getter fails closed on an unusable node identity. That is right for
 						// an acquire and wrong here: rejecting out of this sink stalls the apply loop for
@@ -1004,14 +1055,15 @@ export function makeTable(options) {
 						// is momentarily unregistered — and this sink runs off the replication stream, not off
 						// that transport. Dropping a peer's clean-handoff release there leaves the home holding
 						// its grant for the delegation's whole deadline.
-						target?.admittingCoordinator?.applyEntry(entry, author);
+						target?.admittingCoordinator?.applyEntry(entry, author, event.timestamp);
 					} catch (error) {
 						logger.warn?.('dropping a record lock control entry: the coordinator is unavailable', error);
+						return reportDroppedWrite(event, context, error);
 					}
 				};
 				// perform the write of an individual write event
 				const writeUpdate = async (event, context) => {
-					if (isLockControlType(event.type)) return applyLockControlEvent(event);
+					if (isLockControlType(event.type)) return applyLockControlEvent(event, context);
 					const value = event.value;
 					const Table = event.table ? databases[databaseName][event.table] : TableResource;
 					if (
@@ -1043,6 +1095,14 @@ export function makeTable(options) {
 						async: true,
 					};
 					const id = event.id;
+					if (!isSourceWriteType(event.type)) {
+						logger.error?.('Unknown operation', event.type, event.id);
+						const notification = reportDroppedWrite(event, context, new Error('Unknown source operation'));
+						if (event.finished) await event.finished;
+						return notification;
+					}
+					if (Table && event.type === 'put' && value == null && !shouldRevalidateEvents)
+						await reportDroppedWrite(event, context, new Error('Source-applied put has no record content'));
 					const resource: TableResource = await Table.getResource(id, context, options);
 					if (event.finished) await event.finished;
 					switch (event.type) {
@@ -1063,15 +1123,18 @@ export function makeTable(options) {
 							return resource._writeInvalidate(id, value, options);
 						case 'relocate':
 							return resource._writeRelocate(id, options);
-						default:
-							logger.error?.('Unknown operation', event.type, event.id);
 					}
 				};
 
 				/** Keeps the writes to any one key in arrival order; see DESIGN.md (harper#2211). */
 				const stageWrite = (event, context) => {
 					// A grant must not queue behind whatever the key it names is doing.
-					if (isLockControlType(event.type)) return writeUpdate(event, context);
+					if (
+						isLockControlType(event.type) ||
+						!isSourceWriteType(event.type) ||
+						(event.type === 'put' && event.value == null && !shouldRevalidateEvents)
+					)
+						return writeUpdate(event, context);
 					let chainKey: string | undefined;
 					try {
 						const Table = event.table ? databases[databaseName][event.table] : TableResource;
@@ -1118,7 +1181,11 @@ export function makeTable(options) {
 						let txnInProgress;
 						// we listen for events by iterating through the async iterator provided by the subscription
 						for await (const event of subscription) {
+							let failureEvent = event;
+							let failurePosition: number | undefined;
+							let applied = false;
 							try {
+								failurePosition = event?.timestamp;
 								if (!event || typeof event !== 'object') {
 									logger.error?.('Bad subscription event', event);
 									continue;
@@ -1126,6 +1193,13 @@ export function makeTable(options) {
 								const firstWrite = event.type === 'transaction' ? event.writes[0] : event;
 								if (!firstWrite) {
 									logger.error?.('Bad subscription event', event);
+									await notifyReplicatedApplyFailure(
+										databaseName,
+										event,
+										failurePosition,
+										new Error('Subscription transaction has no writes'),
+										tableName
+									);
 									continue;
 								}
 								event.source = source;
@@ -1134,11 +1208,16 @@ export function makeTable(options) {
 								// there is no re-subscribe / sequence-id-resume path to recover it. Mark the context so the
 								// commit retries such conflicts without a cap (see DatabaseTransaction commit).
 								event.sourceApply = true;
+								event[SOURCE_APPLY_POSITION] = failurePosition;
 								if (event.type === 'end_txn') {
 									// Capture the in-progress transaction in a stable local: the loop variable is reset
 									// once this transaction completes (below), but the seq-id closure and the commit await
 									// still need to reference it afterward.
 									const committingTxn = txnInProgress;
+									if (committingTxn) {
+										failureEvent = committingTxn;
+										failurePosition = committingTxn[SOURCE_APPLY_POSITION];
+									}
 									committingTxn?.resolve();
 									let updateRecordedSequenceId: () => MaybePromise<void>;
 									if (event.localTime && lastSequenceId !== event.localTime) {
@@ -1228,6 +1307,7 @@ export function makeTable(options) {
 									let committed;
 									try {
 										committed = committingTxn ? await committingTxn.committed : undefined;
+										applied = true;
 										if (event.onCommit) {
 											// the onCommit callback can be async and carry associated work (e.g. blob
 											// transfer); wait for it too before recording the sequence id. Pass the commit
@@ -1261,6 +1341,13 @@ export function makeTable(options) {
 											// than rethrow) so the current beginTxn still starts a fresh transaction with
 											// correct boundaries instead of having its writes applied as standalone ones.
 											logger.error?.('source-applied transaction commit failed during apply', error);
+											await notifyReplicatedApplyFailure(
+												databaseName,
+												txnInProgress,
+												txnInProgress[SOURCE_APPLY_POSITION],
+												error,
+												tableName
+											);
 										} finally {
 											// Clear it regardless of outcome so a rejected commit isn't re-awaited on the
 											// next beginTxn (which would brick the apply loop).
@@ -1343,6 +1430,7 @@ export function makeTable(options) {
 										// standalone write: backpressure on the commit before pulling the next event,
 										// and pass the commit resolution through to the callback.
 										const committed = commitResolution ? await commitResolution : undefined;
+										applied = true;
 										await event.onCommit(committed);
 									}
 								} else if (commitResolution && !txnInProgress) {
@@ -1351,6 +1439,14 @@ export function makeTable(options) {
 								}
 							} catch (error) {
 								logger.error?.('error in subscription handler', error);
+								if (!applied)
+									await notifyReplicatedApplyFailure(databaseName, failureEvent, failurePosition, error, tableName);
+							} finally {
+								while (pendingApplyFailures) {
+									const notification = pendingApplyFailures;
+									pendingApplyFailures = undefined;
+									await notification;
+								}
 							}
 						}
 					}
@@ -1794,13 +1890,44 @@ export function makeTable(options) {
 
 		static async dropTable() {
 			TableResource.assertSchemaMutable('drop a table');
+			const rootStore = primaryStore.rootStore;
+			if (
+				databaseName === databasePath &&
+				rootStore instanceof RocksDatabase &&
+				(dbisDb as any).put !== (dbisDb as any).putSync
+			)
+				throw new Error(
+					`Cannot drop ${databaseName}.${TableResource.tableName}: the catalog store's put is asynchronous, so the drop tombstone cannot be made durable before the column families are dropped`
+				);
 			// Release post-commit derived-index delivery before any destructive work: the runner's
 			// backend must have quiesced before its stores and native file are destroyed, and a
 			// same-name recreate must not race an owner still applying to the old generation.
 			const derivedIndexRuntime = TableResource.derivedIndexRuntime;
-			TableResource.derivedIndexRuntime = undefined;
-			await derivedIndexRuntime?.close();
-			const rootStore = primaryStore.rootStore;
+			const restoreDerivedIndexesAfterFailedDrop = () => {
+				try {
+					TableResource.derivedIndexRuntime = derivedIndexRuntime?.restoreAfterFailedDrop?.();
+				} catch (restoreError) {
+					TableResource.derivedIndexRuntime = undefined;
+					logger.error?.(
+						`Could not restore derived indexes after failed drop of ${databaseName}.${TableResource.tableName}`,
+						restoreError
+					);
+				}
+			};
+			try {
+				await derivedIndexRuntime?.close(true);
+			} catch (error) {
+				restoreDerivedIndexesAfterFailedDrop();
+				throw error;
+			}
+			const abortStaleDrop = () => {
+				derivedIndexRuntime?.completeDrop?.(false);
+				TableResource.derivedIndexRuntime = undefined;
+				TableResource.cleanup();
+				if (databases[databaseName]?.[tableName] === TableResource) delete databases[databaseName][tableName];
+			};
+			let dropIdentityConfirmed = databaseName !== databasePath;
+			let primaryCatalogKey = TableResource.tableName + '/';
 			if (databaseName === databasePath) {
 				// Persist a drop tombstone on the primary catalog entry BEFORE any
 				// destructive work. If the process dies or a column family drop fails
@@ -1808,10 +1935,19 @@ export function makeTable(options) {
 				// the next startup (or a same-name create) completes the drop via
 				// completeInterruptedDrop in databases.ts instead of resurrecting
 				// the table.
-				const primaryCatalogKey = TableResource.tableName + '/';
+				let tombstoneWrite: any;
 				const writeTombstone = () => {
-					const primaryMeta = (dbisDb as any).getSync(primaryCatalogKey);
-					if (!primaryMeta || primaryMeta.dropping) return;
+					let primaryMeta = (dbisDb as any).getSync(primaryCatalogKey);
+					if (!primaryMeta && primaryKey) {
+						const legacyPrimaryKey = `${TableResource.tableName}/${primaryKey}`;
+						const legacyPrimaryMeta = (dbisDb as any).getSync(legacyPrimaryKey);
+						if (legacyPrimaryMeta?.isPrimaryKey) {
+							primaryCatalogKey = legacyPrimaryKey;
+							primaryMeta = legacyPrimaryMeta;
+						}
+					}
+					if (!primaryMeta || (primaryMeta.tableId != null && primaryMeta.tableId !== tableId)) return false;
+					if (primaryMeta.dropping) return true;
 					primaryMeta.dropping = true;
 					// Stamps this drop's identity so the interrupted-drop retry budget in
 					// databases.ts can be scoped to THIS drop rather than the table name: a
@@ -1821,30 +1957,34 @@ export function makeTable(options) {
 					// the budget by generation instead makes the new drop's tombstone carry
 					// its own fresh key regardless of what any worker last observed.
 					primaryMeta.dropGeneration = randomUUID();
-					return (dbisDb as any).put(primaryCatalogKey, primaryMeta);
+					tombstoneWrite = (dbisDb as any).put(primaryCatalogKey, primaryMeta);
+					return true;
 				};
-				if (rootStore instanceof RocksDatabase) {
-					// withUpdateAttributesLock's locked section cannot be held across an await, so a durable
-					// tombstone depends on put being rebound to putSync for RocksDB primary stores (see
-					// createOpenDBIObject). Check that BEFORE writing anything: a tombstone left behind by a
-					// refused drop would delete the table on the next load.
-					if ((dbisDb as any).put !== (dbisDb as any).putSync)
-						throw new Error(
-							`Cannot drop ${databaseName}.${TableResource.tableName}: the catalog store's put is asynchronous, so the drop tombstone cannot be made durable before the column families are dropped`
+				try {
+					if (rootStore instanceof RocksDatabase) {
+						// withUpdateAttributesLock's locked section cannot be held across an await, so a durable
+						// tombstone depends on put being rebound to putSync for RocksDB primary stores.
+						dropIdentityConfirmed = withUpdateAttributesLock(
+							rootStore,
+							`drop table '${databaseName}.${TableResource.tableName}'`,
+							writeTombstone
 						);
-					withUpdateAttributesLock(
-						rootStore,
-						`drop table '${databaseName}.${TableResource.tableName}'`,
-						writeTombstone
-					);
-				} else {
-					let tombstoneWrite;
-					rootStore.transactionSync(() => {
-						tombstoneWrite = writeTombstone();
-					});
-					if (typeof tombstoneWrite?.then === 'function') await tombstoneWrite;
+					} else {
+						rootStore.transactionSync(() => {
+							dropIdentityConfirmed = writeTombstone();
+						});
+						if (typeof tombstoneWrite?.then === 'function') await tombstoneWrite;
+					}
+				} catch (error) {
+					restoreDerivedIndexesAfterFailedDrop();
+					throw error;
 				}
 			}
+			if (!dropIdentityConfirmed) {
+				abortStaleDrop();
+				return;
+			}
+			TableResource.derivedIndexRuntime = undefined;
 			// A get() against a sourcedFrom table resolves to its caller before the resolved
 			// record's cache write has committed (see getFromSource) - the write lands "in the
 			// background" for latency reasons. Flip this BEFORE removing the table from the
@@ -1857,7 +1997,7 @@ export function makeTable(options) {
 			// family drops below. If a drop fails past this point the table stays
 			// invisible, and the tombstone guarantees the drop completes on the
 			// next startup (or on a same-name create).
-			delete databases[databaseName][tableName];
+			if (databases[databaseName]?.[tableName] === TableResource) delete databases[databaseName][tableName];
 			// The above stops new source-fill writes from starting, but a write from a get()
 			// that already returned to its caller may still be in flight. Dropping the column
 			// families out from under that write is a genuine invariant violation, not just a
@@ -1888,15 +2028,21 @@ export function makeTable(options) {
 				]);
 				clearTimeout(timer);
 				if (result === timedOut) {
+					derivedIndexRuntime?.completeDrop?.();
 					throw new Error(
 						`dropTable() timed out after ${LOCK_TIMEOUT}ms waiting for ${pending.length} in-flight source-populated cache write(s) on ${tableName} to settle; refusing to drop the column families out from under a write that may still be staged. The drop tombstone is durable, so this will be retried on the next load.`
 					);
 				}
 			}
-			for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
-				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
-					deleteBlobsInObject(entry.value);
+			try {
+				for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
+					if (entry.metadataFlags & HAS_BLOBS && entry.value) {
+						deleteBlobsInObject(entry.value);
+					}
 				}
+			} catch (error) {
+				derivedIndexRuntime?.completeDrop?.();
+				throw error;
 			}
 			if (databaseName === databasePath) {
 				// part of a database.
@@ -1914,12 +2060,13 @@ export function makeTable(options) {
 				// same-name create completes the interrupted drop and writes fresh
 				// catalog rows, and clobbering those would orphan the new table.
 				const removeTombstonedCatalog = () => {
-					const currentPrimary = (dbisDb as any).getSync(TableResource.tableName + '/');
-					if (!currentPrimary?.dropping) return false;
+					const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
+					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId))
+						return false;
 					for (const attribute of attributes) {
 						dbisDb.remove(TableResource.tableName + '/' + attribute.name);
 					}
-					dbisDb.remove(TableResource.tableName + '/');
+					dbisDb.remove(primaryCatalogKey);
 					return true;
 				};
 				if (rootStore instanceof RocksDatabase) {
@@ -1931,51 +2078,88 @@ export function makeTable(options) {
 					// completeInterruptedDrop does), never an awaited drop(), or a
 					// concurrent create's wait would be stuck on a drop that the blocked
 					// event loop can never resolve, burning its full deadline before failing.
-					const removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
-						for (const attribute of attributes) {
-							const index = indices[attribute.name];
-							if (index)
-								try {
-									index.customIndex?.resetDerivedStorage?.();
-									index.dropSync();
-								} catch (error) {
-									ignoreAlreadyDropped(error);
-								}
-						}
-						try {
-							primaryStore.dropSync();
-						} catch (error) {
-							ignoreAlreadyDropped(error);
-						}
-						return removeTombstonedCatalog();
-					});
-					if (removed) await dbisDb.committed;
+					let removed: boolean;
+					try {
+						removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
+							const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
+							if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId))
+								return false;
+							for (const attribute of attributes) {
+								const index = indices[attribute.name];
+								if (index)
+									try {
+										index.customIndex?.resetDerivedStorage?.();
+										index.dropSync();
+									} catch (error) {
+										ignoreAlreadyDropped(error);
+									}
+							}
+							try {
+								primaryStore.dropSync();
+							} catch (error) {
+								ignoreAlreadyDropped(error);
+							}
+							return removeTombstonedCatalog();
+						});
+						if (removed) await dbisDb.committed;
+					} catch (error) {
+						derivedIndexRuntime?.completeDrop?.();
+						throw error;
+					}
+					if (!removed) {
+						abortStaleDrop();
+						return;
+					}
 				} else {
 					// LMDB: no shared column-family double-drop, and its engine lock is
 					// transactional rather than this spin lock, so keep the awaited drop
 					// plus the same tombstone-guarded catalog removal.
-					const drops = [];
-					for (const attribute of attributes) {
-						const index = indices[attribute.name];
-						if (index) {
-							index.customIndex?.resetDerivedStorage?.();
-							drops.push(index.drop().catch(ignoreAlreadyDropped));
+					let removed: boolean;
+					try {
+						const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
+						if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId)) {
+							abortStaleDrop();
+							return;
 						}
+						const drops = [];
+						for (const attribute of attributes) {
+							const index = indices[attribute.name];
+							if (index) {
+								index.customIndex?.resetDerivedStorage?.();
+								drops.push(index.drop().catch(ignoreAlreadyDropped));
+							}
+						}
+						drops.push(primaryStore.drop().catch(ignoreAlreadyDropped));
+						await Promise.all(drops);
+						removed = removeTombstonedCatalog();
+						if (removed) await dbisDb.committed;
+					} catch (error) {
+						derivedIndexRuntime?.completeDrop?.();
+						throw error;
 					}
-					drops.push(primaryStore.drop().catch(ignoreAlreadyDropped));
-					await Promise.all(drops);
-					if (removeTombstonedCatalog()) await dbisDb.committed;
+					if (!removed) {
+						abortStaleDrop();
+						throw new Error(
+							`Could not complete drop of ${databaseName}.${tableName}: a replacement table became current while the LMDB stores were being dropped`
+						);
+					}
 				}
 			} else {
 				// legacy table per database. The store to retire is this table's own audit store: nothing
 				// assigns `primaryStore.auditStore` — openAuditStore() assigns `rootStore.auditStore`, and
 				// this is the reference makeTable() was handed. Awaited so a pass suspended mid-removal has
 				// released the primary DBI before it is closed and unlinked.
-				await auditStore?.stopAuditCleanup?.();
-				removeStorageReclamation(primaryStore.path);
-				await primaryStore.close();
-				fs.unlinkSync(primaryStore.path);
+				try {
+					await auditStore?.stopAuditCleanup?.();
+					removeStorageReclamation(primaryStore.path);
+					await primaryStore.close();
+					fs.unlinkSync(primaryStore.path);
+				} catch (error) {
+					derivedIndexRuntime?.completeDrop?.();
+					throw error;
+				}
 			}
+			derivedIndexRuntime?.completeDrop?.();
 			signalling.signalSchemaChange(
 				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName)
 			);
@@ -1998,8 +2182,7 @@ export function makeTable(options) {
 					records: './', // an href to the records themselves
 					name: tableName,
 					database: databaseName,
-					auditSize:
-						auditStore instanceof RocksDatabase ? auditStore.getKeysCount() : auditStore?.getStats().entryCount,
+					auditSize: auditStore?.getStats().entryCount,
 					attributes,
 					recordCount: undefined,
 					estimatedRecordRange: undefined,
@@ -3460,6 +3643,8 @@ export function makeTable(options) {
 						// existing timestamp, which means that we received updates out of order, and must resequence the application
 						// of the updates to the record to ensure consistency across the cluster
 						// TODO: can the previous version be older, but even more previous version be newer?
+						let belowAuditFloor = false;
+						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
 							// A re-delivered out-of-order write (full-copy audit-replay re-delivers writes) must not have
 							// its commutative ops re-folded. additionalAuditRefs is the record's own list of folded
@@ -3505,7 +3690,7 @@ export function makeTable(options) {
 							// Resolve the oldest retained entry once, for the same log the dedup reads.
 							let oldestRetainedAuditTime: number | undefined;
 							let oldestRetainedAuditTimeResolved = false;
-							const dedupVersionCouldBeRetained = (version: number): boolean => {
+							dedupVersionCouldBeRetained = (version: number): boolean => {
 								if (!isRocksDB) return true; // LMDB keeps its exact, unbounded lookup (keyed by local audit time)
 								if (!oldestRetainedAuditTimeResolved) {
 									oldestRetainedAuditTimeResolved = true;
@@ -3552,6 +3737,19 @@ export function makeTable(options) {
 									return; // duplicate already applied; avoid the resequencing walk
 								}
 							}
+							// The walk terminates at this write only by reaching an audit entry whose log key is at or below
+							// txnTime (the loop condition below), so below the floor it cannot: it runs the whole retained
+							// chain to an outcome the floor already determines (harper#2642). txnTime is the coordinate
+							// because it is the one that loop compares; txnLogKey addresses this write's own entry, a
+							// different question that dedupVersionCouldBeRetained already answers. An unknown floor is
+							// Infinity, which fails closed for a cursor check but has to fail OPEN here — walk rather than
+							// discard. RocksDB only: LMDB keeps its exact, unbounded reconciliation.
+							if (isRocksDB && precedesExisting < 0) {
+								const auditFloor = getAuditFloor(auditStore);
+								belowAuditFloor = Number.isFinite(auditFloor) && txnTime < auditFloor;
+							}
+						}
+						if (audit && !belowAuditFloor) {
 							// incremental CRDT updates are only available with audit logging on
 							const initialAuditHead = isRocksDB
 								? resolveAuditHead(id, existingEntry.version, existingEntry.nodeId, existingEntry.additionalAuditRefs)
@@ -3569,7 +3767,12 @@ export function makeTable(options) {
 								new Date(localTime)
 							);
 
-							let nodeId = initialAuditHead.nodeId;
+							// Normalized here and not at the lookup, because the two sources of an undefined nodeId do not
+							// mean the same thing: a record's own nodeId is resolved by the same expression as the id its
+							// audit entry is logged under, which applies `?? 0` (RecordEncoder), so absent means log 0;
+							// `previousNodeId` is never encoded, so absent there means the log is unknown and only the
+							// aggregate lookup can resolve a cross-origin predecessor.
+							let nodeId = initialAuditHead.nodeId ?? 0;
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
 							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = existingEntry.additionalAuditRefs
 								? existingEntry.additionalAuditRefs.map((ref) => ({ localTime: ref.version, nodeId: ref.nodeId }))
@@ -3833,6 +4036,31 @@ export function makeTable(options) {
 								write.skipped = true;
 								return;
 							}
+						} else if (belowAuditFloor) {
+							// The walk cannot reach this write, so it may contribute only what is order-independent: its
+							// commutative ops. Whether a plain field survives depends on what newer writes did to that key,
+							// which is what the purged history no longer answers, so applying one would resurrect state a
+							// newer put may have erased. Everything else loses to the strictly newer head: a full update, a
+							// head carrying no record (a delete or a residency-omitted record, which an op must not
+							// resurrect), and an op-less patch. Bare return, no writeCommit, so no audit record references
+							// the losing update's pre-saved blobs.
+							incrementalUpdateToApply = fullUpdate || existingRecord == null ? null : commutativeOpsOf(recordUpdate);
+							if (!incrementalUpdateToApply) {
+								write.skipped = true;
+								return;
+							}
+							// The surviving head's addressable log-key pointer lives in these, wherever the record and log
+							// clocks differ.
+							if (existingEntry.additionalAuditRefs) {
+								for (const ref of existingEntry.additionalAuditRefs) {
+									additionalAuditRefs.push(ref);
+								}
+							}
+							// Once the walk no longer runs, this ref is what the read-your-writes check above matches a
+							// re-delivery of these ops on. Best-effort, like every other guard here: the encoder bounds
+							// the persisted list, so an identity can age out of it (harper#1148's full-copy convergence
+							// is the backstop).
+							additionalAuditRefs.push({ version: txnLogKey, nodeId: options?.nodeId });
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
 							// was the same type. Assuming a full update this record update loses and there are no changes —
@@ -4488,7 +4716,13 @@ export function makeTable(options) {
 								404
 							);
 					}
-					if (orderAlignedCondition) orderAlignedCondition.descending = Boolean(sort.descending);
+					if (orderAlignedCondition) {
+						orderAlignedCondition.descending = Boolean(sort.descending);
+						if (orderAlignedCondition.maxIndexLagMilliseconds === undefined)
+							orderAlignedCondition.maxIndexLagMilliseconds = sort.maxIndexLagMilliseconds;
+						if (orderAlignedCondition.waitForIndexMilliseconds === undefined)
+							orderAlignedCondition.waitForIndexMilliseconds = sort.waitForIndexMilliseconds;
+					}
 				}
 			}
 			conditions = orderConditions(conditions, operator);
@@ -4556,170 +4790,175 @@ export function makeTable(options) {
 				boundRowFilter || typeof target.vectorFilter === 'function'
 					? { rowFilter: boundRowFilter, vectorFilter: target.vectorFilter }
 					: undefined;
-			const entries = executeConditions(
-				conditions,
-				operator,
-				TableResource,
-				readTxn,
-				target,
-				context,
-				(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
-				filtered,
-				recordAccess
-			);
-			const ensure_loaded = (target as any).ensureLoaded !== false;
-			// The guards inside executeConditions evaluate the
-			// LOCAL record, but on a caching table transformEntryForSelect may then revalidate an
-			// expired/invalidated row from source and return a DIFFERENT record. The explicit row filter
-			// must hold on the record actually returned, so it is re-checked
-			// there, after materialization (the earlier evaluation stays as a prune that also bounds HNSW
-			// traversal). vectorFilter and condition filters intentionally keep the local-record
-			// semantics all query filters have on caching tables.
-			//
-			// A row that is past its TTL but not yet swept by the background eviction
-			// scan is still physically present. A write that is about to overwrite it
-			// anyway (e.g. the SQL engine locating UPDATE/DELETE targets) needs to see
-			// it as a match — the same leniency a direct by-id put/patch already gets,
-			// since those never run the ensureLoaded-gated freshness check this transform
-			// otherwise applies unconditionally to every read.
-			const includeExpired = (target as any).includeExpired === true;
-			const transformToRecord = TableResource.transformEntryForSelect(
-				select,
-				context,
-				readTxn,
-				filtered,
-				ensure_loaded,
-				true,
-				boundRowFilter,
-				includeExpired,
-				postOrdering
-			);
-			let results = TableResource.transformToOrderedSelect(
-				entries,
-				select,
-				postOrdering,
-				context,
-				readTxn,
-				transformToRecord
-			);
-			const offset = target.offset || 0;
-			const end = target.limit !== undefined ? offset + (target.limit as number) : undefined;
-			// `Prefer: count=` (REST pagination): materialize the requested page and attach a total record
-			// count so the HTTP layer can emit a Content-Range. `exact` drains the full matched set once,
-			// windowing the page in the same pass; `estimated` returns just the page plus a cheap planner/
-			// table estimate. Opt-in only — the default streaming path below is untouched.
-			//
-			// Requires a bounded page AND window. Counting is a pagination feature; both the limit and the
-			// offset must be finite, non-negative integers, the limit no larger than MAX_COUNT_PAGE, and the
-			// window (offset + limit) no larger than MAX_EXACT_COUNT_SCAN. Anything else — a missing/
-			// oversized/non-finite/negative limit or offset (a bare collection GET, limit(Infinity),
-			// limit(foo), limit(-5,10)) or a deep-page window past the scan budget — falls through to the
-			// normal streaming path with no count. This bounds the offset too: without it a huge offset would
-			// postpone the exact guardrail (which only engages past the page) until that offset was scanned.
-			const pageLimit = target.limit as number;
-			if (
-				target.count &&
-				Number.isInteger(pageLimit) &&
-				pageLimit >= 0 &&
-				pageLimit <= MAX_COUNT_PAGE &&
-				Number.isInteger(offset) &&
-				offset >= 0 &&
-				offset + pageLimit <= MAX_EXACT_COUNT_SCAN
-			) {
-				const wantExact = target.count === 'exact';
-				const pageEnd = offset + pageLimit;
-				const countStart = performance.now();
-				// A custom-index (vector/HNSW) traversal returns a bounded, approximate candidate set whose size is
-				// chosen from `minResults` (offset + limit), so `scanned` over it tracks the requested page size, not
-				// the true match count — the same query at limit(5) vs limit(200) would otherwise advertise two
-				// different `count=exact` totals. Any query whose execution touches a custom index is affected: a
-				// custom-index sort (its aligned pseudo-condition lands in `conditions`), a custom-index threshold
-				// filter (an HNSW `lt`/`le` is the same minResults-widened traversal as a sort), or an opaque vector
-				// filter. Report the total as unavailable for those rather than advertising it as count=exact
-				// (mirroring how the estimated branch below bails to null for an opaque row/vector filter). A vector
-				// sort applied as in-memory post-ordering leaves no custom-index condition here and stays exact.
-				const touchesCustomIndex = (conds: any[]): boolean =>
-					conds.some((c: any) => {
-						if (!c) return false;
-						if (c.conditions) return touchesCustomIndex(c.conditions);
-						const attr = Array.isArray(c.attribute) ? c.attribute[0] : (c.attribute ?? c[0]);
-						return typeof attr === 'string' && Boolean(indices[attr]?.customIndex);
-					});
-				const approximateResultSet = typeof target.vectorFilter === 'function' || touchesCustomIndex(conditions);
-				return (async () => {
-					const page: any = [];
-					let scanned = 0;
-					let exact = true;
-					try {
-						for await (const record of results) {
-							if (scanned >= offset && scanned < pageEnd) page.push(record);
-							scanned++;
-							// A store whose async iterator settles synchronously (the common indexed-scan case) would
-							// otherwise let this drain spin as one uninterrupted microtask run, blocking the event loop
-							// for the whole count. Yield to the macrotask queue periodically so concurrent requests and
-							// I/O still make progress during a large exact scan.
-							if ((scanned & (COUNT_YIELD_INTERVAL - 1)) === 0) await new Promise((resolve) => setImmediate(resolve));
-							// The page window [offset, pageEnd) is always collected in full first — the guardrail
-							// only ever abandons the running TOTAL, never truncates the page body.
-							if (scanned >= pageEnd) {
-								// `estimated` needs nothing past the page; an approximate (vector) exact total is going to
-								// be reported unavailable anyway, so don't drain its tail for a number we won't publish.
-								if (!wantExact || approximateResultSet) break;
-								// `exact` keeps counting the tail, bounded by a row cap AND a time budget so a
-								// large match set can't turn a bounded page fetch into an unbounded scan.
-								if (scanned > MAX_EXACT_COUNT_SCAN || performance.now() - countStart > MAX_EXACT_COUNT_MS) {
-									exact = false;
-									break;
+			try {
+				const entries = executeConditions(
+					conditions,
+					operator,
+					TableResource,
+					readTxn,
+					target,
+					context,
+					(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
+					filtered,
+					recordAccess
+				);
+				const ensure_loaded = (target as any).ensureLoaded !== false;
+				// The guards inside executeConditions evaluate the
+				// LOCAL record, but on a caching table transformEntryForSelect may then revalidate an
+				// expired/invalidated row from source and return a DIFFERENT record. The explicit row filter
+				// must hold on the record actually returned, so it is re-checked
+				// there, after materialization (the earlier evaluation stays as a prune that also bounds HNSW
+				// traversal). vectorFilter and condition filters intentionally keep the local-record
+				// semantics all query filters have on caching tables.
+				//
+				// A row that is past its TTL but not yet swept by the background eviction
+				// scan is still physically present. A write that is about to overwrite it
+				// anyway (e.g. the SQL engine locating UPDATE/DELETE targets) needs to see
+				// it as a match — the same leniency a direct by-id put/patch already gets,
+				// since those never run the ensureLoaded-gated freshness check this transform
+				// otherwise applies unconditionally to every read.
+				const includeExpired = (target as any).includeExpired === true;
+				const transformToRecord = TableResource.transformEntryForSelect(
+					select,
+					context,
+					readTxn,
+					filtered,
+					ensure_loaded,
+					true,
+					boundRowFilter,
+					includeExpired,
+					postOrdering
+				);
+				let results = TableResource.transformToOrderedSelect(
+					entries,
+					select,
+					postOrdering,
+					context,
+					readTxn,
+					transformToRecord
+				);
+				const offset = target.offset || 0;
+				const end = target.limit !== undefined ? offset + (target.limit as number) : undefined;
+				// `Prefer: count=` (REST pagination): materialize the requested page and attach a total record
+				// count so the HTTP layer can emit a Content-Range. `exact` drains the full matched set once,
+				// windowing the page in the same pass; `estimated` returns just the page plus a cheap planner/
+				// table estimate. Opt-in only — the default streaming path below is untouched.
+				//
+				// Requires a bounded page AND window. Counting is a pagination feature; both the limit and the
+				// offset must be finite, non-negative integers, the limit no larger than MAX_COUNT_PAGE, and the
+				// window (offset + limit) no larger than MAX_EXACT_COUNT_SCAN. Anything else — a missing/
+				// oversized/non-finite/negative limit or offset (a bare collection GET, limit(Infinity),
+				// limit(foo), limit(-5,10)) or a deep-page window past the scan budget — falls through to the
+				// normal streaming path with no count. This bounds the offset too: without it a huge offset would
+				// postpone the exact guardrail (which only engages past the page) until that offset was scanned.
+				const pageLimit = target.limit as number;
+				if (
+					target.count &&
+					Number.isInteger(pageLimit) &&
+					pageLimit >= 0 &&
+					pageLimit <= MAX_COUNT_PAGE &&
+					Number.isInteger(offset) &&
+					offset >= 0 &&
+					offset + pageLimit <= MAX_EXACT_COUNT_SCAN
+				) {
+					const wantExact = target.count === 'exact';
+					const pageEnd = offset + pageLimit;
+					const countStart = performance.now();
+					// A custom-index (vector/HNSW) traversal returns a bounded, approximate candidate set whose size is
+					// chosen from `minResults` (offset + limit), so `scanned` over it tracks the requested page size, not
+					// the true match count — the same query at limit(5) vs limit(200) would otherwise advertise two
+					// different `count=exact` totals. Any query whose execution touches a custom index is affected: a
+					// custom-index sort (its aligned pseudo-condition lands in `conditions`), a custom-index threshold
+					// filter (an HNSW `lt`/`le` is the same minResults-widened traversal as a sort), or an opaque vector
+					// filter. Report the total as unavailable for those rather than advertising it as count=exact
+					// (mirroring how the estimated branch below bails to null for an opaque row/vector filter). A vector
+					// sort applied as in-memory post-ordering leaves no custom-index condition here and stays exact.
+					const touchesCustomIndex = (conds: any[]): boolean =>
+						conds.some((c: any) => {
+							if (!c) return false;
+							if (c.conditions) return touchesCustomIndex(c.conditions);
+							const attr = Array.isArray(c.attribute) ? c.attribute[0] : (c.attribute ?? c[0]);
+							return typeof attr === 'string' && Boolean(indices[attr]?.customIndex);
+						});
+					const approximateResultSet = typeof target.vectorFilter === 'function' || touchesCustomIndex(conditions);
+					return (async () => {
+						const page: any = [];
+						let scanned = 0;
+						let exact = true;
+						try {
+							for await (const record of results) {
+								if (scanned >= offset && scanned < pageEnd) page.push(record);
+								scanned++;
+								// A store whose async iterator settles synchronously (the common indexed-scan case) would
+								// otherwise let this drain spin as one uninterrupted microtask run, blocking the event loop
+								// for the whole count. Yield to the macrotask queue periodically so concurrent requests and
+								// I/O still make progress during a large exact scan.
+								if ((scanned & (COUNT_YIELD_INTERVAL - 1)) === 0) await new Promise((resolve) => setImmediate(resolve));
+								// The page window [offset, pageEnd) is always collected in full first — the guardrail
+								// only ever abandons the running TOTAL, never truncates the page body.
+								if (scanned >= pageEnd) {
+									// `estimated` needs nothing past the page; an approximate (vector) exact total is going to
+									// be reported unavailable anyway, so don't drain its tail for a number we won't publish.
+									if (!wantExact || approximateResultSet) break;
+									// `exact` keeps counting the tail, bounded by a row cap AND a time budget so a
+									// large match set can't turn a bounded page fetch into an unbounded scan.
+									if (scanned > MAX_EXACT_COUNT_SCAN || performance.now() - countStart > MAX_EXACT_COUNT_MS) {
+										exact = false;
+										break;
+									}
 								}
 							}
+						} finally {
+							// We own the iteration here (no results.onDone consumer), so release the read
+							// transaction unconditionally — including when the drain throws — or the snapshot leaks.
+							txn.doneReadTxn();
 						}
-					} finally {
-						// We own the iteration here (no results.onDone consumer), so release the read
-						// transaction unconditionally — including when the drain throws — or the snapshot leaks.
-						txn.doneReadTxn();
-					}
-					let total: number | null;
-					if (wantExact) {
-						// `scanned` is only an authoritative total when the iteration was exhaustive and deterministic;
-						// an approximate (vector/HNSW) result set is neither, so report the total as unavailable.
-						total = exact && !approximateResultSet ? scanned : null;
-					} else if (boundRowFilter || typeof target.vectorFilter === 'function') {
-						// An opaque row/vector filter shapes the result but isn't reflected in the index/condition
-						// estimate; guessing would both mislead and disclose cardinality the filter hides.
-						total = null;
-					} else if (!hasUserConditions) {
-						total = estimatedEntryCount(primaryStore);
-					} else {
-						// Estimate from the real conditions only — drop the planner's synthetic `sort`
-						// pseudo-condition, which otherwise contributes a bogus (entryCount/2) cardinality.
-						const est = estimateCondition(TableResource)({
-							conditions: conditions.filter((c: any) => c.comparator !== 'sort'),
-							operator: operator ? String(operator).toLowerCase() : 'and',
-						});
-						total = isFinite(est) ? Math.round(est) : null;
-					}
-					// For an estimate, never report a total below the last row actually returned — keeps the
-					// Content-Range valid (start-end/total) when an estimate undershoots a non-empty page.
-					// Exact totals are authoritative (and an empty page past the end must not be clamped up).
-					if (!wantExact && total != null && page.length > 0 && total < offset + page.length) {
-						total = offset + page.length;
-					}
-					page.recordCount = total;
-					page.recordCountExact = wantExact && exact && !approximateResultSet;
-					page.selectApplied = true;
-					page.getColumns = getColumns;
-					return page;
-				})() as any;
-			}
-			// apply any offset/limit after all the sorting and filtering
-			if (target.offset || target.limit !== undefined) results = results.slice(offset, end);
-			results.onDone = () => {
-				results.onDone = null; // ensure that it isn't called twice
+						let total: number | null;
+						if (wantExact) {
+							// `scanned` is only an authoritative total when the iteration was exhaustive and deterministic;
+							// an approximate (vector/HNSW) result set is neither, so report the total as unavailable.
+							total = exact && !approximateResultSet ? scanned : null;
+						} else if (boundRowFilter || typeof target.vectorFilter === 'function') {
+							// An opaque row/vector filter shapes the result but isn't reflected in the index/condition
+							// estimate; guessing would both mislead and disclose cardinality the filter hides.
+							total = null;
+						} else if (!hasUserConditions) {
+							total = estimatedEntryCount(primaryStore);
+						} else {
+							// Estimate from the real conditions only — drop the planner's synthetic `sort`
+							// pseudo-condition, which otherwise contributes a bogus (entryCount/2) cardinality.
+							const est = estimateCondition(TableResource)({
+								conditions: conditions.filter((c: any) => c.comparator !== 'sort'),
+								operator: operator ? String(operator).toLowerCase() : 'and',
+							});
+							total = isFinite(est) ? Math.round(est) : null;
+						}
+						// For an estimate, never report a total below the last row actually returned — keeps the
+						// Content-Range valid (start-end/total) when an estimate undershoots a non-empty page.
+						// Exact totals are authoritative (and an empty page past the end must not be clamped up).
+						if (!wantExact && total != null && page.length > 0 && total < offset + page.length) {
+							total = offset + page.length;
+						}
+						page.recordCount = total;
+						page.recordCountExact = wantExact && exact && !approximateResultSet;
+						page.selectApplied = true;
+						page.getColumns = getColumns;
+						return page;
+					})() as any;
+				}
+				// apply any offset/limit after all the sorting and filtering
+				if (target.offset || target.limit !== undefined) results = results.slice(offset, end);
+				results.onDone = () => {
+					results.onDone = null; // ensure that it isn't called twice
+					txn.doneReadTxn();
+				};
+				results.selectApplied = true;
+				results.getColumns = getColumns;
+				return results;
+			} catch (error) {
 				txn.doneReadTxn();
-			};
-			results.selectApplied = true;
-			results.getColumns = getColumns;
-			return results;
+				throw error;
+			}
 		}
 		/**
 		 * This is responsible for ordering and select()ing the attributes/properties from returned entries
@@ -4742,10 +4981,17 @@ export function makeTable(options) {
 			if (sort) {
 				// there might be some situations where we don't need to transform to entries for sorting, not sure
 				entries = transformToEntries(entries, select, context, readTxn, null);
-				let ordered;
+				// Sort keys are resolved as entries are collected, so comparison never dereferences a record: a
+				// cached entry holds its record only weakly, and a re-read per comparison is what this avoids.
+				const clauses: Sort[] = [];
+				for (let order = sort; order; order = order.next) clauses.push(order);
+				const clauseCount = clauses.length;
 				// if we are doing post-ordering, we need to get records first, then sort them
 				results.iterate = function (options: { async: boolean }) {
-					let sortedArrayIterator: IterableIterator<any>;
+					let ordered: any[];
+					let orderedKeys: any[][];
+					let sortedPositions: number[];
+					let sortedIndex: number;
 					const dbIterator =
 						options?.async && entries[Symbol.asyncIterator]
 							? entries[Symbol.asyncIterator]()
@@ -4755,25 +5001,33 @@ export function makeTable(options) {
 					let enqueuedEntryForNextGroup: any;
 					let lastGroupingValue: any;
 					let firstEntry = true;
-					function createComparator(order: Sort) {
-						const nextComparator = order.next && createComparator(order.next);
-						const descending = order.descending;
-						return (entryA, entryB) => {
-							const a = getAttributeValue(entryA, order.attribute, context, order);
-							const b = getAttributeValue(entryB, order.attribute, context, order);
-							const diff = descending
-								? compareKeys(convertToComparableKeys(b), convertToComparableKeys(a))
-								: compareKeys(convertToComparableKeys(a), convertToComparableKeys(b));
-							if (diff === 0) return nextComparator?.(entryA, entryB) || 0;
-							return diff;
-						};
+					function collect(entry) {
+						ordered.push(entry);
+						for (let i = 0; i < clauseCount; i++) {
+							const clause = clauses[i];
+							orderedKeys[i].push(convertToComparableKeys(getAttributeValue(entry, clause.attribute, context, clause)));
+						}
 					}
-					const comparator = createComparator(sort);
+					function comparePositions(positionA: number, positionB: number): number {
+						for (let i = 0; i < clauseCount; i++) {
+							const keys = orderedKeys[i];
+							const diff = clauses[i].descending
+								? compareKeys(keys[positionB], keys[positionA])
+								: compareKeys(keys[positionA], keys[positionB]);
+							if (diff !== 0) return diff;
+						}
+						return 0;
+					}
+					function nextSorted(): IteratorResult<any> {
+						if (sortedIndex < sortedPositions.length)
+							return { done: false, value: ordered[sortedPositions[sortedIndex++]] };
+						return { done: true, value: undefined };
+					}
 					return {
 						async next() {
 							let iteration: IteratorResult<any>;
-							if (sortedArrayIterator) {
-								iteration = sortedArrayIterator.next();
+							if (sortedPositions) {
+								iteration = nextSorted();
 								if (iteration.done) {
 									if (dbDone) {
 										if (results.onDone) results.onDone();
@@ -4785,7 +5039,9 @@ export function makeTable(options) {
 									};
 							}
 							ordered = [];
-							if (enqueuedEntryForNextGroup) ordered.push(enqueuedEntryForNextGroup);
+							orderedKeys = [];
+							for (let i = 0; i < clauseCount; i++) orderedKeys.push([]);
+							if (enqueuedEntryForNextGroup) collect(enqueuedEntryForNextGroup);
 							// need to load all the entries into ordered
 							do {
 								iteration = await dbIterator.next();
@@ -4816,17 +5072,17 @@ export function makeTable(options) {
 											break;
 										}
 									}
-									// we store the value we will sort on, for fast sorting, and the entry so the records can be GC'ed if necessary
-									// before the sorting is completed
-									ordered.push(entry);
+									collect(entry);
 								}
 							} while (true);
 							if ((sort as any).isGrouped) {
 								// TODO: Return grouped results
 							}
-							ordered.sort(comparator);
-							sortedArrayIterator = ordered[Symbol.iterator]();
-							iteration = sortedArrayIterator.next();
+							sortedPositions = [];
+							for (let i = 0; i < ordered.length; i++) sortedPositions.push(i);
+							sortedPositions.sort(comparePositions);
+							sortedIndex = 0;
+							iteration = nextSorted();
 							if (!iteration.done)
 								return {
 									value: await transformToRecord.call(this, iteration.value),
@@ -5800,9 +6056,10 @@ export function makeTable(options) {
 		 * The payload goes in as bytes rather than through `recordUpdater`, which would run it through
 		 * schema projection and the table's shared structure dictionary.
 		 */
-		static writeLockControlEntry(entry: LockControlEntry): Promise<void> {
+		static writeLockControlEntry(entry: LockControlEntry): Promise<number | undefined> {
 			const encodedRecord = encodeLockControlPayload(entry);
 			const nodeId = getThisNodeId(auditStore) ?? 0;
+			let position: number;
 			// No entry pins its clock, the request included. `ts_R` is minted before the write, so pinning
 			// to it can land the entry behind a peer's replication cursor if any write to this table
 			// commits in between — the same hazard that rules it out for grants and releases, which are
@@ -5816,8 +6073,9 @@ export function makeTable(options) {
 						key: null,
 						store: primaryStore,
 						skipReplicationConfirmation: true,
-						commit: (txnTime: number, _existingEntry: any, _retry: any, nativeTransaction: any) =>
-							auditStore[isRocksDB ? 'putSync' : 'put'](
+						commit: (txnTime: number, _existingEntry: any, _retry: any, nativeTransaction: any) => {
+							position = txnTime;
+							return auditStore[isRocksDB ? 'putSync' : 'put'](
 								null,
 								{
 									version: txnTime,
@@ -5837,10 +6095,11 @@ export function makeTable(options) {
 									structureVersion: 0,
 								},
 								{ instructedWrite: true, transaction: nativeTransaction, nodeId, viaNodeId: nodeId }
-							),
+							);
+						},
 					});
 				})
-			).then(() => undefined);
+			).then(() => position);
 		}
 		/**
 		 * The coordinator that holds this node's admissions, transport or not. Releasing and registering
@@ -6136,82 +6395,174 @@ export function makeTable(options) {
 			const exactCount = options?.exactCount;
 			const TIME_LIMIT = options?.timeLimit ?? 1000 / 2; // one second time limit, enforced by seeing if we are halfway through at 500ms
 			const start = performance.now();
-			// `entryCount` (the exact key count) is only needed once the scan blows the time budget --
-			// to decide whether to estimate and as the extrapolation base. On RocksDB it is a full
-			// key-only scan, so we defer it: tables that finish within budget (the common case) and
-			// `exact_count` requests never pay for it. `halfway`/`entryCount` stay 0 until first computed.
 			let entryCount = 0;
-			let halfway = 0;
-			let counted = false;
-			let completeForExact = false;
+			let remainderPhysical = 0;
+			let estimator;
+			// feature-detected per DESIGN.md's invariant for this API family; LMDB stores do not implement it
+			const canEstimate =
+				typeof primaryStore.createCountEstimator === 'function' && typeof primaryStore.estimateCount === 'function';
+			let estimatorFailed = false;
+			let warnedNoBase = false;
+			let checkpoints = 0;
+			let checkpointedEntries = 0;
 			let recordCount = 0;
 			let entriesScanned = 0;
+			let lastKey;
 			let limit: number;
-			for (const { value } of primaryStore.getRange({ start: true, lazy: true, snapshot: false })) {
+			let nextCheckAt = start + TIME_LIMIT;
+			for (const { key, value } of primaryStore.getRange({ start: true, lazy: true, snapshot: false })) {
 				if (value != null) recordCount++;
 				entriesScanned++;
+				lastKey = key;
 				await rest();
-				if (!exactCount && !completeForExact && performance.now() - start > TIME_LIMIT) {
-					if (!counted) {
-						counted = true;
-						entryCount = isRocksDB
-							? primaryStore.getKeysCount({ start: undefined })
-							: primaryStore.getStats().entryCount;
-						halfway = Math.floor(entryCount / 2);
+				// a table too small to reach the floor is small enough to finish exactly
+				if (exactCount || entriesScanned < MIN_ESTIMATOR_SAMPLE) continue;
+				const now = performance.now();
+				if (now <= nextCheckAt) continue;
+				nextCheckAt = now + TIME_LIMIT;
+				checkpoints++;
+				if (canEstimate && !estimatorFailed) {
+					try {
+						estimator ??= primaryStore.createCountEstimator({ start: true });
+						estimator.advance(lastKey, entriesScanned - checkpointedEntries);
+						checkpointedEntries = entriesScanned;
+						entryCount = usableCount(estimator.estimate());
+					} catch (error) {
+						// a store closing concurrently -- drop_table can, while this scan is parked in a yield
+						logger.debug?.('Count estimator unavailable, falling back to an exact scan', error);
+						estimatorFailed = true;
+						estimator = undefined;
+						entryCount = 0;
 					}
-					if (entriesScanned < halfway) {
-						// it is taking too long, so we will just take this sample and a sample from the end to estimate
-						limit = entriesScanned;
-						break;
+				} else if (!canEstimate) {
+					// `canEstimate` false is not the same as "LMDB": a RocksDB store whose native module predates
+					// the estimator API lands here too, and `RocksDatabase.getStats()` carries no `entryCount`.
+					try {
+						const stats = primaryStore.getStats?.();
+						entryCount = Number.isFinite(stats?.entryCount) && stats.entryCount > 0 ? stats.entryCount : 0;
+					} catch {
+						entryCount = 0;
 					}
-					// Past the halfway point already: finishing the scan for an exact count is cheaper
-					// than estimating. Set the flag so we stop re-evaluating the budget on each remaining iteration.
-					completeForExact = true;
+				}
+				if (!entryCount && canEstimate && !estimatorFailed) {
+					// Range estimates are block-granular and can report 0 for a store whose entries are still
+					// in the memtable. Without a base the escape cannot fire at all, so fall back to the
+					// whole-store property rather than silently walking the table.
+					try {
+						const wholeStore = primaryStore.getEstimatedKeyCount();
+						entryCount = Number.isFinite(wholeStore) && wholeStore > 0 ? wholeStore : 0;
+					} catch {
+						entryCount = 0;
+					}
+					if (!entryCount && !warnedNoBase) {
+						warnedNoBase = true;
+						logger.debug?.(`No usable key-count estimate for ${tableName}; counting records by full scan`);
+					}
+				}
+				// Zero is "no usable base": degrade to the exact scan. The checkpoint ceiling is what stops a
+				// base that keeps undershooting from holding the halfway test false forever and walking the
+				// whole table; the reverse sample is bounded by `limit` in turn.
+				if (
+					entryCount > 0 &&
+					(checkpoints >= MAX_ESTIMATE_CHECKPOINTS || entriesScanned < Math.floor(entryCount / 2))
+				) {
+					if (canEstimate) {
+						try {
+							const remaining = primaryStore.estimateCount({ start: lastKey, exclusiveStart: true });
+							// widened by its own reported untrustworthiness: block-granular, so it can land below
+							// the live count it is meant to bound
+							const remainingCount = usableCount(remaining);
+							remainderPhysical = remainingCount > 0 ? remainingCount * (2 - remaining.confidence) : 0;
+						} catch {
+							remainderPhysical = 0;
+						}
+						// A zero or unusable remainder is valid -- entries still in the memtable read as none
+						// through range statistics -- but it would leave `baseMax` resting on the sampled ends
+						// alone. The whole-store property is a separate, non-range source, so fall back to it.
+						if (!remainderPhysical) {
+							try {
+								const wholeStore = primaryStore.getEstimatedKeyCount();
+								if (Number.isFinite(wholeStore)) remainderPhysical = Math.max(wholeStore - entriesScanned, 0);
+							} catch {
+								remainderPhysical = 0;
+							}
+						}
+					}
+					limit = entriesScanned;
+					break;
 				}
 			}
 			if (limit) {
 				// in this case we are going to make an estimate of the table count using the first thousand
 				// entries and last thousand entries
 				const firstRecordCount = recordCount;
+				const firstKey = lastKey;
 				recordCount = 0;
 				// Bound the reverse scan explicitly. The getRange `limit` option is honored by lmdb-js but
 				// ignored by rocksdb-js; without this break the scan reads the whole table, so `recordRate`
 				// blows up to ~entryCount/(2*limit) and the estimate scales with entryCount^2 -- the source
 				// of the wildly inflated `record_count` (e.g. 20,000,000 for ~105k rows) on large RocksDB
-				// tables. The early-exit above guarantees limit < entryCount/2, so the two samples stay disjoint.
+				// tables.
 				let reverseScanned = 0;
-				for (const { value } of primaryStore.getRange({
+				// Sized independently of the forward scan. `entriesScanned` is whatever the forward pass
+				// covered before it escaped, and the checkpoint ceiling lets that run twenty budget
+				// intervals when the base keeps undershooting; matching it here would read that same count
+				// again and double the wall clock of the call this path exists to bound.
+				const reverseLimit = Math.min(limit, MIN_ESTIMATOR_SAMPLE);
+				// Disjointness is enforced against the forward scan's own last key rather than inferred from
+				// the base, which is an estimate that can overshoot by more than 2x.
+				let sampledWholeTable = false;
+				for (const { key, value } of primaryStore.getRange({
 					start: '\uffff',
 					reverse: true,
 					lazy: true,
-					limit,
+					limit: reverseLimit,
 					snapshot: false,
 				})) {
+					if (compareKeys(key, firstKey) <= 0) {
+						sampledWholeTable = true;
+						break;
+					}
 					if (value != null) recordCount++;
 					reverseScanned++;
 					await rest();
-					if (reverseScanned >= limit) break;
+					if (reverseScanned >= reverseLimit) break;
 				}
+				// the samples met, so between them they covered every entry
+				if (sampledWholeTable) return { recordCount: recordCount + firstRecordCount };
 				// Use the actual entries sampled, not limit*2: the reverse scan can yield fewer than `limit`
 				// (concurrent deletions under snapshot:false, or an overestimated entryCount), and counting
 				// those un-scanned slots would inflate the denominator and underestimate the rate.
-				const sampleSize = limit + reverseScanned;
-				const recordRate = (recordCount + firstRecordCount) / sampleSize;
-				const variance =
-					Math.pow((recordCount - firstRecordCount + 1) / limit / 2, 2) + // variance between samples
-					(recordRate * (1 - recordRate)) / sampleSize;
-				const sd = Math.max(Math.sqrt(variance) * entryCount, 1);
-				const estimatedRecordCount = Math.round(recordRate * entryCount);
-				// TODO: This uses a normal/Wald interval, but a binomial confidence interval is probably better calculated using
-				// Wilson score interval or Agresti-Coull interval (I think the latter is a little easier to calculate/implement).
-				const lowerCiLimit = Math.max(estimatedRecordCount - 1.96 * sd, recordCount + firstRecordCount);
-				const upperCiLimit = Math.min(estimatedRecordCount + 1.96 * sd, entryCount);
-				let significantUnit = Math.pow(10, Math.round(Math.log10(sd)));
-				if (significantUnit > estimatedRecordCount) significantUnit = significantUnit / 10;
-				recordCount = Math.round(estimatedRecordCount / significantUnit) * significantUnit;
+				const sampledRecords = recordCount + firstRecordCount;
+				const recordRate = sampledRecords / (limit + reverseScanned);
+				// Endpoints for the extrapolation base, spanning both ways an estimated base can be wrong:
+				// every remaining entry superseded (only what was sampled is live) through every remaining
+				// entry live (the uncalibrated physical count). Churn concentrated outside the sampled ends
+				// calibrates to nothing, so an interval derived from the estimator's confidence would sit
+				// narrowly around the wrong number. Both endpoints are themselves estimates on RocksDB, so
+				// this is a widened heuristic interval, not a guaranteed bound on the live count.
+				const baseMin = entriesScanned + reverseScanned;
+				const baseMax = Math.max(entriesScanned + remainderPhysical, entryCount, baseMin);
+				const estimatedRecordCount = Math.round(recordRate * Math.max(entryCount, baseMin));
+				// The samples counted these directly, and the entries between them can only add; everything
+				// outside the samples could be live. A statistical interval inside those endpoints would be
+				// narrowest exactly where the ends are least representative of the middle -- sampled ends
+				// that are all deletion entries give a rate of 0, collapsing an upper end to ~0 with live
+				// rows in between -- so the endpoints are the evidence itself.
+				const lower = sampledRecords;
+				const upper = Math.round(baseMax);
+				// Report only the precision the interval supports, but never so coarse a unit that the
+				// estimate rounds away: `baseMax` is physical and can exceed a calibrated estimate by
+				// orders of magnitude, which a single division cannot walk back.
+				let significantUnit = Math.pow(10, Math.round(Math.log10(Math.max((upper - lower) / 2, 1))));
+				while (significantUnit > estimatedRecordCount && significantUnit > 1) significantUnit /= 10;
+				recordCount = Math.min(
+					Math.max(Math.round(estimatedRecordCount / significantUnit) * significantUnit, lower),
+					upper
+				);
 				return {
 					recordCount,
-					estimatedRange: [Math.round(lowerCiLimit), Math.round(upperCiLimit)],
+					estimatedRange: [lower, upper],
 				};
 			}
 			return {
@@ -6295,7 +6646,7 @@ export function makeTable(options) {
 											txnForContext(context).getReadTxn(),
 											false,
 											relatedTable,
-											false
+											{ allowFullScan: false }
 										) as any
 									).map((entry) => {
 										if (entry && entry.key !== undefined) return entry;
@@ -7494,25 +7845,34 @@ export function makeTable(options) {
 					}
 					resolve(resolvedEntry);
 				} catch (error) {
-					error.message += ` while resolving record ${id} for ${tableName}`;
-					if (
-						existingRecord &&
-						(((error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED' || error.code === 'EAI_AGAIN') &&
-							!context?.mustRevalidate) ||
-							(context?.staleIfError &&
-								(error.statusCode === 500 ||
-									error.statusCode === 502 ||
-									error.statusCode === 503 ||
-									error.statusCode === 504)))
-					) {
-						// these are conditions under which we can use stale data after an error
-						resolve({
-							key: id,
-							version: existingVersion,
-							value: existingRecord,
-						} as any);
-						logger.trace?.(error.message, '(returned stale record)');
-					} else reject(error);
+					// A source may reject with anything at all, so deciding how to settle is itself
+					// fallible: `message` is not assignable on every error (a DOMException from
+					// AbortSignal.timeout), and a nullish rejection makes the reads below throw.
+					// Leaving this promise unsettled hangs the caller forever, so every path here
+					// has to end in resolve() or reject().
+					try {
+						appendErrorContext(error, ` while resolving record ${id} for ${tableName}`);
+						if (
+							existingRecord &&
+							(((error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED' || error.code === 'EAI_AGAIN') &&
+								!context?.mustRevalidate) ||
+								(context?.staleIfError &&
+									(error.statusCode === 500 ||
+										error.statusCode === 502 ||
+										error.statusCode === 503 ||
+										error.statusCode === 504)))
+						) {
+							// these are conditions under which we can use stale data after an error
+							resolve({
+								key: id,
+								version: existingVersion,
+								value: existingRecord,
+							} as any);
+							logger.trace?.((error as Error)?.message, '(returned stale record)');
+						} else reject(error);
+					} catch (settlingError) {
+						reject(error ?? settlingError);
+					}
 					const resolveDuration = performance.now() - start;
 					recordAction(resolveDuration, 'cache-resolution', tableName, null, 'fail');
 					if (responseHeaders)

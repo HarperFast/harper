@@ -157,6 +157,10 @@ function sendAnalytics() {
 	analyticsStart ||= performance.now();
 	sendAnalyticsTimeout = setTimeout(async () => {
 		sendAnalyticsTimeout = null;
+		// Rotate before the first yield below: a sample recorded mid-flush would otherwise be added to
+		// an entry already reported, and dropped with it.
+		const reportingActions = activeActions;
+		activeActions = new Map();
 		const period = performance.now() - analyticsStart;
 		analyticsStart = 0;
 		const metrics = [];
@@ -166,7 +170,7 @@ function sendAnalytics() {
 			threadId,
 			metrics,
 		};
-		for (const [_name, action] of activeActions) {
+		for (const [_name, action] of reportingActions) {
 			if (action.values) {
 				const values = action.values.subarray(0, (action.values as any).index);
 				values.sort();
@@ -239,7 +243,6 @@ function sendAnalytics() {
 		for (const listener of analyticsListeners) {
 			listener(metrics);
 		}
-		activeActions = new Map();
 		if (parentPort)
 			parentPort.postMessage({
 				type: ANALYTICS_REPORT_TYPE,
@@ -874,6 +877,12 @@ async function storeNodeStorageMetric(analyticsTable: Table) {
 const MAX_LAST_AGGREGATION_SCAN = 1000;
 // Time of this node's last completed aggregation, tracked in O(1) across cycles within a process.
 let lastAggregationTime: number | undefined;
+// Resume point into the raw analytics table: it moves only over records a cycle read, so it is not
+// a clock and never passes an unread report.
+let rawCursor: number | undefined;
+// A cycle stopped at its window edge with raw records still behind it, so the next one skips the
+// cadence guard and drains the next window.
+let aggregationBehind = false;
 
 /**
  * Find the time of the local node's most recent aggregation record by scanning back from the
@@ -896,6 +905,20 @@ export function findLastAggregationTime(
 		if (++scanned >= maxScan) break;
 	}
 	return undefined;
+}
+
+let aggregationRunning = false;
+
+/** Two cycles reading the same cursor roll the same window up twice, and the scheduler does not
+ * await its callback. */
+export async function runAggregationCycle(fromPeriod, toPeriod = 60000) {
+	if (aggregationRunning) return;
+	aggregationRunning = true;
+	try {
+		await aggregation(fromPeriod, toPeriod);
+	} finally {
+		aggregationRunning = false;
+	}
 }
 
 async function aggregation(fromPeriod, toPeriod = 60000) {
@@ -921,28 +944,35 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	// first never touch the table. On the first cycle after boot we seed it once from the table
 	// via a bounded reverse scan (see findLastAggregationTime). Caching the seeded value keeps
 	// the next cycle O(1) even when this run early-returns below as "too recent"; a bound-hit
-	// (no match) leaves it undefined so we don't early-return, proceed to aggregate, and set the
-	// marker to `now` at the end of the cycle instead (#1538).
+	// (no match) leaves it undefined so we don't early-return, proceed to aggregate, and stamp the
+	// cadence marker at the end of the cycle instead (#1538).
 	let lastForPeriod = lastAggregationTime;
 	if (lastForPeriod === undefined) {
 		lastForPeriod = findLastAggregationTime(analyticsTable.primaryStore, localNodeId);
-		if (lastForPeriod !== undefined) lastAggregationTime = lastForPeriod;
+		if (lastForPeriod !== undefined) {
+			lastAggregationTime = lastForPeriod;
+			rawCursor ??= lastForPeriod;
+		}
 	}
 	// was the last aggregation too recent to calculate a whole period?
-	if (lastForPeriod !== undefined && Date.now() - toPeriod < lastForPeriod) return;
+	if (!aggregationBehind && lastForPeriod !== undefined && Date.now() - toPeriod < lastForPeriod) return;
 	let firstForPeriod;
 	const aggregateActions = new Map();
 	const distributions = new Map();
 	const threadsToAverage = [];
-	let lastTime: number;
+	let lastTime: number | undefined;
+	let stoppedAtWindowEdge = false;
 	for (const { key, value } of rawAnalyticsTable.primaryStore.getRange({
-		start: lastForPeriod || false,
+		start: rawCursor || false,
 		exclusiveStart: true,
 		end: Infinity,
 	})) {
 		if (!value) continue;
 		if (firstForPeriod) {
-			if (key > firstForPeriod + toPeriod) break; // outside the period of interest
+			if (key > firstForPeriod + toPeriod) {
+				stoppedAtWindowEdge = true;
+				break; // outside the period of interest
+			}
 		} else firstForPeriod = key;
 		lastTime = key;
 		const { metrics, threadId } = value;
@@ -1088,12 +1118,11 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	};
 	storeMetric(analyticsTable, cruMetric);
 	lastResourceUsage = resourceUsage;
-	// Advance the O(1) last-aggregation marker to this cycle's time. The resource-usage metric
-	// just written is a composite-id record stamped `time: now`, so it is exactly what the
-	// reverse-scan seed would find as the newest matching record. Updating it every completed
-	// cycle — not only when there were raw updates — keeps the `Date.now() - toPeriod` period
-	// guard enforcing the configured cadence during idle stretches, matching the prior
-	// scan-based behavior rather than letting a stale marker run aggregation on every tick (#1538).
+	// The cursor may only pass records this cycle read, and nothing reads below it again: the scan
+	// covers one `toPeriod` window, and a raw report whose `put` has not committed is invisible to
+	// it however recent its key is. An empty scan therefore leaves the cursor where it was.
+	if (lastTime !== undefined) rawCursor = lastTime;
+	aggregationBehind = stoppedAtWindowEdge;
 	lastAggregationTime = now;
 
 	// `system` is set as non-enumerable on the object returned by getDatabases() so most
@@ -1205,7 +1234,7 @@ function startScheduledTasks() {
 		const aggregateRetentionMs = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATERETENTIONMS) ?? AGGREGATE_EXPIRATION;
 		setInterval(
 			async () => {
-				await aggregation(analyticsDelay, AGGREGATE_PERIOD);
+				await runAggregationCycle(analyticsDelay, AGGREGATE_PERIOD);
 				await cleanup(getRawAnalyticsTable(), rawRetentionMs);
 				// 0 means "keep forever" — skip aggregate cleanup, matching storageInterval: 0 convention
 				if (aggregateRetentionMs) await cleanup(getAnalyticsTable(), aggregateRetentionMs);

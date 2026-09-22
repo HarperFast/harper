@@ -1,6 +1,12 @@
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes.ts';
+import {
+	serialize,
+	serializeMessage,
+	getDeserializer,
+	waitForStreamStartup,
+	discardSerializedStream,
+} from '../server/serverHelpers/contentTypes.ts';
 import { addAnalyticsListener, recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { ServerError, ClientError } from '../utility/errors/hdbError.ts';
@@ -19,6 +25,7 @@ import {
 	assertNoDeferredCredentialRejection,
 	settleDeferredCredentialRejection,
 } from '../security/deferredAuthentication.ts';
+import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget';
@@ -348,7 +355,15 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				headers.setIfNone('Last-Modified', new Date(lastModification).toUTCString());
 		} else if (responseData.headers) {
 			// if response is a Response object (or response-like envelope with headers), use it as the response
-			return finalizeResponse(responseData, headers, status, request);
+			const response = finalizeResponse(responseData, headers, status, request);
+			if (request.method === 'HEAD') {
+				discardSerializedStream(response.body);
+				if (!(response instanceof Response)) response.body = undefined;
+			} else if (request.method === 'GET') {
+				const startup = waitForStreamStartup(response.body);
+				if (startup) await startup;
+			}
+			return response;
 		} else if (isFinite(lastModification)) {
 			etagFloat[0] = lastModification;
 			// base64 encoding of the 64-bit float encoding of the date in ms (with quotes)
@@ -422,7 +437,13 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				setCountHeaders(headers, (target as any).offset || 0, (target as any).count, responseData);
 			}
 			responseObject.body = serialize(responseData, request, responseObject);
-			if (method === 'HEAD') responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body
+			if (request.method === 'HEAD') {
+				discardSerializedStream(responseObject.body);
+				responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body
+			} else if (request.method === 'GET') {
+				const startup = waitForStreamStartup(responseObject.body);
+				if (startup) await startup;
+			}
 		}
 		// A collection read's count headers vary by the request's `Prefer` value; serialize() just reset
 		// `Vary`, so declare it here (after serialization) — otherwise a shared cache could serve count
@@ -466,6 +487,19 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			headers,
 			body: undefined,
 		};
+		// The error body is a different representation, so success representation and caching headers
+		// accumulated before the startup failure must not survive its serialization.
+		for (const header of [
+			'Content-Encoding',
+			'Cache-Control',
+			'ETag',
+			'Last-Modified',
+			'Content-Range',
+			'Range-Unit',
+			'Preference-Applied',
+			'Age',
+		])
+			headers.delete(header);
 		responseObject.body = serialize(problemDetail, request, responseObject);
 		return responseObject;
 	}
@@ -552,14 +586,16 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			});
 			try {
 				await chainCompletion;
+				// before the route lookup: the same credential is a 401 over HTTP, so a rejected client
+				// must not learn from the close code whether the resource exists
+				assertNoDeferredCredentialRejection(request);
 				const url = request.url.slice(1);
 				const entry = resources.getMatch(url, 'ws');
 				recordActionBinary(Boolean(entry), 'connection', 'ws', 'connect');
 				if (!entry) {
 					// TODO: Ideally we would like to have a 404 response before upgrading to WebSocket protocol, probably
-					return ws.close(1011, `No resource was found to handle ${request.pathname}`);
+					return ws.close(1011, toCloseReason(`No resource was found to handle ${request.pathname}`));
 				} else {
-					assertNoDeferredCredentialRejection(request);
 					request.handlerPath = entry.path;
 					recordAction(
 						(action) => ({
@@ -599,7 +635,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				ws.close(
 					HTTP_TO_WEBSOCKET_CLOSE_CODES[error.statusCode] || // try to return a helpful code
 						1011, // otherwise generic internal error
-					errorToString(error)
+					toCloseReason(errorToString(error))
 				);
 			}
 			ws.close();

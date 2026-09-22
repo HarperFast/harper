@@ -4,16 +4,26 @@ import { loggerWithTag } from '../../utility/logging/logger.ts';
 
 const logger = loggerWithTag('HNSW');
 
-export interface PlaneSearchHit {
-	id: number;
-	distance: number;
+/**
+ * Parallel arrays, ascending by distance: hit i is (ids[i], distances[i]) with its host key at
+ * keys.subarray(keyEnds[i - 1] ?? 0, keyEnds[i]); an empty key means the node vanished mid-query.
+ */
+export interface PlaneSearchHits {
+	ids: Uint32Array;
+	distances: Float32Array;
+	keys: Buffer;
+	keyEnds: Uint32Array;
 }
+
+/** A predicate batch: candidate ids and their host keys, laid out as in PlaneSearchHits. */
+export type PlanePredicate = (ids: number[], keys: Buffer, keyEnds: Uint32Array) => Uint8Array;
 
 /** NAPI surface of the native file-primary HNSW index (`@harperfast/hnsw`). */
 export interface HnswPlane {
 	readonly dims: number;
 	readonly layer0Cap: number;
-	insert(vector: Float32Array): number;
+	readonly keyCap: number;
+	insert(vector: Float32Array, key?: Buffer): number;
 	remove(id: number): void;
 	writeNodeRaw(
 		id: number,
@@ -33,16 +43,16 @@ export interface HnswPlane {
 		ef: number,
 		filter?: Uint8Array | null,
 		filterExpansion?: number | null
-	): Promise<PlaneSearchHit[]>;
+	): Promise<PlaneSearchHits>;
 	searchWithPredicate(
 		vector: Float32Array,
 		k: number,
 		ef: number,
-		predicate: (ids: number[]) => Uint8Array,
+		predicate: PlanePredicate,
 		filterExpansion?: number | null,
 		visitBudget?: number | null
-	): Promise<PlaneSearchHit[]>;
-	searchSync(vector: Float32Array, k: number, ef: number): PlaneSearchHit[];
+	): Promise<PlaneSearchHits>;
+	searchSync(vector: Float32Array, k: number, ef: number): PlaneSearchHits;
 	writeNodeRawIfAbsent(
 		id: number,
 		level: number,
@@ -63,7 +73,8 @@ export interface HnswPlane {
 }
 
 export interface HnswPlaneConstructor {
-	create(path: string, dims: number, layer0Cap: number, maxNodes: number): HnswPlane;
+	readonly prototype: HnswPlane;
+	create(path: string, dims: number, layer0Cap: number, maxNodes: number, keyCap?: number): HnswPlane;
 	open(path: string): HnswPlane;
 }
 
@@ -106,24 +117,31 @@ export function planeStalePathFor(planePath: string): string {
 }
 
 let binding: HnswPlanePackage | null | undefined;
+let bindingLoadError: Error | undefined;
+let bindingWarningLogged = false;
 
-function getHnswPackage(): HnswPlanePackage | null {
-	if (binding !== undefined) return binding;
-	try {
-		binding = require('@harperfast/hnsw') as HnswPlanePackage;
-	} catch (error) {
-		binding = null;
+function getHnswPackage(warn = true): HnswPlanePackage | null {
+	if (binding === undefined) {
+		try {
+			binding = require('@harperfast/hnsw') as HnswPlanePackage;
+		} catch (error) {
+			binding = null;
+			bindingLoadError = error as Error;
+		}
+	}
+	if (binding === null && warn && !bindingWarningLogged) {
+		bindingWarningLogged = true;
 		logger.warn?.(
-			`The @harperfast/hnsw native module is not available (${(error as Error).message}); ` +
+			`The @harperfast/hnsw native module is not available (${bindingLoadError?.message}); ` +
 				'indexes with nativePlane enabled will remain unavailable until the module can load'
 		);
 	}
 	return binding;
 }
 
-/** The native plane constructor, or null when the compiled artifact is unavailable (warns once). */
-export function getPlaneBinding(): HnswPlaneConstructor | null {
-	return getHnswPackage()?.Plane ?? null;
+/** The native plane constructor, or null when the compiled artifact is unavailable (warns once by default). */
+export function getPlaneBinding(warn = true): HnswPlaneConstructor | null {
+	return getHnswPackage(warn)?.Plane ?? null;
 }
 
 /** Make a derived plane unadoptable before it is replaced or removed. */

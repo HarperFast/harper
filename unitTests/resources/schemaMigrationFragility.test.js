@@ -21,6 +21,14 @@
  *
  * These tests are designed to FAIL if the fragility manifests, so they
  * function as both diagnostics and regression guards.
+ *
+ * The blocks that stand up their own root under envDir remove it on the way IN, never on the way
+ * out. On the way in the process is fresh and holds no handles on those files, so the removal is
+ * safe. On the way out the databases opened against the root are still open, and deleting their
+ * files leaves them writing into a directory that is gone — they then fail their flush whenever
+ * they finally close, which rocksdb-js surfaces at process exit as "Failed to flush database
+ * during close", attributed to no test. envDir is gitignored, so what a run leaves behind is local
+ * litter that the next run clears.
  */
 require('../testUtils');
 const assert = require('node:assert');
@@ -429,10 +437,6 @@ describe('schema-migration fragility: non-indexed attributes missing from table.
 		resetDatabases();
 	});
 
-	after(async () => {
-		await fs.remove(testRoot);
-	});
-
 	it('table.attributes includes all non-indexed fields after resetDatabases()', () => {
 		const tbl = getDatabases()[DB]?.[TABLE];
 		assert.ok(tbl, `${DB}.${TABLE} should be registered after resetDatabases()`);
@@ -541,9 +545,8 @@ describe('schema relationship catalog round-trip', () => {
 		await host.dbisDB.committed;
 	});
 
-	after(async () => {
+	after(() => {
 		closeDatabase(DB);
-		await fs.remove(testRoot);
 	});
 
 	it('persists normalized relationship definitions on the primary catalog descriptor', () => {
@@ -790,10 +793,6 @@ describe('schema relationship catalog on a legacy named primary descriptor', () 
 		await source.dbisDB.committed;
 	});
 
-	after(async () => {
-		await fs.remove(testRoot);
-	});
-
 	it('refuses a drop whose tombstone could not be durable without leaving one behind', async () => {
 		const dbisDB = source.dbisDB;
 		const originalPut = dbisDB.put;
@@ -809,8 +808,31 @@ describe('schema relationship catalog on a legacy named primary descriptor', () 
 		assert.ok(getDatabases()[DB].LegacySource);
 	});
 
-	// pre-5.x catalogs keep a table's settings on the primary key's own row, but dropTable() always
-	// tombstones the bare row, so a drop in flight is only visible there
+	it('drops a table whose legacy catalog stores the primary descriptor under its attribute name', async () => {
+		const tableName = 'LegacyDrop';
+		const LegacyDrop = table({
+			table: tableName,
+			database: DB,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'label', type: 'String', indexed: true },
+			],
+		});
+		const dbisDB = LegacyDrop.dbisDB;
+		assert.strictEqual(LegacyDrop.databaseName, LegacyDrop.databasePath);
+		assert.strictEqual(LegacyDrop.primaryKey, 'id');
+		const primary = dbisDB.getSync(`${tableName}/`);
+		dbisDB.putSync(`${tableName}/id`, { ...primary, name: 'id', attribute: 'id', isPrimaryKey: true });
+		dbisDB.removeSync(`${tableName}/`);
+
+		await LegacyDrop.dropTable();
+
+		assert.strictEqual(getDatabases()[DB][tableName], undefined);
+		assert.deepStrictEqual([...dbisDB.getKeys({ start: `${tableName}/`, end: `${tableName}0` })], []);
+	});
+
+	// A migrated catalog can temporarily have both a named primary descriptor and the modern bare
+	// table row; updates must honor a drop tombstone carried by either representation.
 	it('refuses to update a named descriptor while the bare table row carries a drop tombstone', async () => {
 		const original = source.dbisDB.getSync('LegacySource/');
 		await source.dbisDB.put('LegacySource/id', { ...original, attribute: 'id', relationships: [] });
@@ -866,10 +888,6 @@ describe('schema relationship catalog on a table with no declared primary key', 
 		resetDatabases();
 		await loadGQLSchema(schema('target: NoPrimaryKeyTarget @relationship(from: "targetId")'));
 		await getDatabases()[DB].NoPrimaryKeySource.dbisDB.committed;
-	});
-
-	after(async () => {
-		await fs.remove(testRoot);
 	});
 
 	it('persists the relationship list even though no attribute row carries it', () => {
@@ -936,7 +954,11 @@ describe('schema-migration fragility: stale store reused after LMDB to RocksDB e
 	after(async () => {
 		if (originalEngine === undefined) delete process.env.HARPER_STORAGE_ENGINE;
 		else process.env.HARPER_STORAGE_ENGINE = originalEngine;
-		await fs.remove(testRoot);
+		// Releases only the registered descriptor: before() builds this block's premise by reopening
+		// the database on the other engine without closing the first handle, so more than one live
+		// descriptor points at these files by design. Hence no removal here either — see the note
+		// at the top of the file.
+		closeDatabase(DB);
 	});
 
 	it('starts from a stale LMDB-backed table while the data on disk is RocksDB', () => {

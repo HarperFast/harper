@@ -6,9 +6,10 @@ import { INVALIDATED, EVICTED, freezeRecord } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { lastMetadata } from './RecordEncoder.ts';
-import { writeKeyId } from './DatabaseTransaction.ts';
+import { writeKeyId, getReadTransactionGuard } from './DatabaseTransaction.ts';
 import { recordAction } from './analytics/write';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { appendHeader } from '../server/serverHelpers/Headers.ts';
 
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;
@@ -141,16 +142,13 @@ export function executeConditions(
 				filtered
 				// recordAccess intentionally omitted: guards run once, at the top level (see above).
 			);
-		return searchByIndex(
-			condition,
-			txn,
-			condition.descending || request.reverse === true,
-			table,
-			request.allowFullScan,
+		return searchByIndex(condition, txn, condition.descending || request.reverse === true, table, {
+			allowFullScan: request.allowFullScan,
 			filtered,
 			context,
-			request.limit !== undefined ? (request.offset || 0) + request.limit : undefined
-		);
+			minResults:
+				request.limit === 0 ? 0 : request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
+		});
 	}
 	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount) {
 		return conditions
@@ -269,27 +267,35 @@ function distinctRecords(entries: any): AsyncIterable<Id> {
 }
 
 /**
- * Search for records or keys, based on the search condition, using an index if available
+ * Search for records or keys, based on the search condition, using an index if available. The four
+ * leading parameters are required at every call site; everything optional is named, so a new
+ * capability can be added without shifting positions at callers that don't use it.
  * @param searchCondition
  * @param transaction
  * @param reverse
  * @param Table
- * @param allowFullScan
- * @param filtered
+ * @param options
  */
 export function searchByIndex(
 	searchCondition: DirectCondition,
 	transaction: any,
 	reverse: boolean,
 	Table: any,
-	allowFullScan?: boolean,
-	filtered?: any,
-	context?: any,
-	// How many rows the query will ultimately consume (offset + limit), when it is bounded. An
-	// approximate index returns a fixed-size candidate list, so without this a query asking for more
-	// rows than that list holds silently gets a short result set. Only custom indexes read it.
-	minResults?: number
+	options: {
+		allowFullScan?: boolean;
+		filtered?: any;
+		context?: any;
+		// How many rows the query will ultimately consume (offset + limit), when it is bounded. An
+		// approximate index returns a fixed-size candidate list, so without this a query asking for more
+		// rows than that list holds silently gets a short result set. Only custom indexes read it.
+		minResults?: number;
+	} = {}
 ): AsyncIterable<Id | { key: Id; value: any }> {
+	// A stale positional caller passes `allowFullScan` here. Type checking only covers .ts callers, so
+	// fail loud rather than silently reading every option as undefined.
+	if (typeof options !== 'object' || options === null)
+		throw new TypeError('searchByIndex: the 5th argument is an options object (#2165), not a positional value');
+	const { allowFullScan, filtered, context, minResults } = options;
 	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
 	const comparator = searchCondition.comparator;
@@ -323,8 +329,7 @@ export function searchByIndex(
 				transaction,
 				reverse,
 				relatedTable,
-				allowFullScan,
-				joined
+				{ allowFullScan, filtered: joined }
 			);
 			if (attribute.relationship.to) {
 				// this is one-to-many or many-to-many, so we need to track the filtering of related entries that match
@@ -341,8 +346,7 @@ export function searchByIndex(
 						transaction,
 						reverse,
 						Table,
-						allowFullScan,
-						joined
+						{ allowFullScan, filtered: joined }
 					);
 				};
 				if (attribute.elements) {
@@ -550,7 +554,42 @@ export function searchByIndex(
 			// exploring until it has enough MATCHING results, rather than post-filtering an under-filled
 			// candidate set. Only indexes that opt in (filteredSearch) receive it; others post-filter as before.
 			const recordFilter = index.customIndex.filteredSearch ? searchCondition.recordFilter : undefined;
-			const searched = index.customIndex.search(searchCondition, context, recordFilter, minResults);
+			const waiting = index.customIndex.filePrimary && searchCondition.waitForIndexMilliseconds > 0;
+			const start = waiting ? Promise.withResolvers<void>() : undefined;
+			const controller = waiting ? new AbortController() : undefined;
+			const checkActive = waiting ? getReadTransactionGuard(transaction) : undefined;
+			const signal = waiting
+				? context.signal
+					? AbortSignal.any([context.signal, controller.signal])
+					: controller.signal
+				: undefined;
+			const searchContext = waiting
+				? Object.create(context, {
+						signal: { value: signal },
+						indexSearchStart: { value: start.promise.then(() => checkActive?.()) },
+					})
+				: context;
+			const searched = index.customIndex.search(searchCondition, searchContext, {
+				filter:
+					waiting && recordFilter
+						? (id) => {
+								if (signal.aborted) return false;
+								checkActive?.();
+								return recordFilter(id);
+							}
+						: recordFilter,
+				minResults,
+			});
+			const coverage = (searched as any).indexCoverage;
+			if (!waiting && coverage && context?.responseHeaders) {
+				appendHeader(
+					context.responseHeaders,
+					'Harper-Index-Coverage',
+					`${coverage.state}; lag=${coverage.lagUpperBoundMilliseconds}; tolerance=${coverage.maxLagMilliseconds}`,
+					true
+				);
+				appendHeader(context.responseHeaders, 'Access-Control-Expose-Headers', 'Harper-Index-Coverage', true);
+			}
 			const processEntries = (entries: any[]) => {
 				const loaded = entries
 					.map((entry) => {
@@ -559,7 +598,7 @@ export function searchByIndex(
 							const { key, ...otherProps } = entry;
 							if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
 							const loadedEntry = Table.primaryStore.getEntry(key, {
-								transaction: context && Table._readTxnForContext(context),
+								transaction: waiting ? transaction : context && Table._readTxnForContext(context),
 							});
 							if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
 							freezeRecord(loadedEntry?.value);
@@ -576,7 +615,19 @@ export function searchByIndex(
 				return loaded;
 			};
 			if (typeof (searched as any)?.then === 'function') {
-				const pending = (searched as Promise<any[]>).then(processEntries);
+				let settled = false;
+				const pending = waiting
+					? (searched as Promise<any[]>)
+							.then((entries) => {
+								if (controller.signal.aborted) return [];
+								if (signal.aborted) throw signal.reason ?? new Error('Index search aborted', { cause: signal.reason });
+								checkActive?.();
+								return processEntries(entries);
+							})
+							.finally(() => {
+								settled = true;
+							})
+					: (searched as Promise<any[]>).then(processEntries);
 				// A consumer may abandon this lazy iterable without calling next().
 				pending.catch(() => {});
 				const results: any = new ExtendedIterable();
@@ -593,10 +644,16 @@ export function searchByIndex(
 					return {
 						next() {
 							if (closed) return Promise.resolve({ done: true, value: undefined });
-							return iteratorPromise.then((inner) => (closed ? { done: true, value: undefined } : inner.next()));
+							start?.resolve();
+							return iteratorPromise.then((inner) => {
+								if (closed) return { done: true, value: undefined };
+								checkActive?.();
+								return inner.next();
+							});
 						},
 						return(value?: any) {
 							closed = true;
+							if (!settled) controller?.abort();
 							iteratorPromise.then(
 								(inner) => (inner as any).return?.(value),
 								() => {}

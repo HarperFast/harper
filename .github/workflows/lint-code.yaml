@@ -20,3 +20,4 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npm run lint:required
+      - run: npm run check:design-docs

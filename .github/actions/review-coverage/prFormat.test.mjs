@@ -1,5 +1,6 @@
 import assert from 'node:assert';
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import { Readable } from 'node:stream';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +15,7 @@ const HEAD = '609896d762efe2c9f529a0f9989ce0a53dd29b40';
 const FILE = 'resources/auditStore.ts';
 const HASH = 'db526bfa2603e0ee94ab17a9ea8c2b8bd02e1f626dd6907624cfe8508ad356ba';
 const LINK = `https://github.com/${REPO}/pull/${NUMBER}/changes?w=1#diff-${HASH}R211`;
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const PR_FILES = {
 	version: 1,
 	complete: true,
@@ -342,7 +344,7 @@ test('ordinary leading whitespace is allowed on Complexity', () => {
 	assert.strictEqual(result.pass, true);
 });
 
-test('AI footers must be pinned to the current head', () => {
+test('the coverage footer must be pinned to the current head; the review-need pin may lag it', () => {
 	const result = evaluatePrFormat(pr({ body: body({ head: 'deadbeef1234' }) }), {
 		mode: 'enforce',
 		repo: REPO,
@@ -350,7 +352,23 @@ test('AI footers must be pinned to the current head', () => {
 		prFiles: PR_FILES,
 	});
 	assert.match(result.problems.join('\n'), /Review-Coverage footer is not pinned to the current head/);
-	assert.match(result.problems.join('\n'), /Human-Review-Need footer is not pinned to the current head/);
+	assert.doesNotMatch(result.problems.join('\n'), /Human-Review-Need footer/);
+});
+
+test('a review-need footer carrying decision slugs is a valid footer', () => {
+	const decorated = body().replace(
+		/<sub>Human-Review-Need: (\d)/,
+		'<sub>Human-Review-Need: $1 (decisions: api-naming, delete-semantics)'
+	);
+	assert.notEqual(decorated, body(), 'fixture carries a review-need footer to decorate');
+	const result = evaluatePrFormat(pr({ body: decorated }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.doesNotMatch(result.problems.join('\n'), /Human-Review-Need/);
+	assert.strictEqual(result.compliant, true);
 });
 
 test('footer text cannot satisfy an empty Verification section', () => {
@@ -469,7 +487,10 @@ test('the enforcing workflow never runs from the PR checkout', () => {
 	assert.match(workflow, /ref: \$\{\{ github\.event\.pull_request\.base\.ref \}\}/);
 	assert.doesNotMatch(workflow, /ref: \$\{\{ github\.event\.pull_request\.head\./);
 	assert.match(workflow, /permissions:\n\s+contents: read\n\s+pull-requests: read/);
-	assert.doesNotMatch(workflow, /\b(write|write-all)\b/);
+	assert.doesNotMatch(
+		workflow,
+		/^\s*(?:permissions\s*:\s*(?:['"]?write-all\b|\{[^\n}]*\b(?:write|write-all)\b)|[\w-]+:[ \t]*['"]?(?:write|write-all)\b)/m
+	);
 	assert.match(workflow, /mode: enforce/);
 });
 
@@ -478,9 +499,70 @@ test('the report workflow keeps the existing check identity and gates PR-files c
 	assert.match(workflow, /jobs:\n\s+coverage:\n\s+runs-on:/);
 	assert.doesNotMatch(workflow, /\n\s+name:\s+report/);
 	assert.match(workflow, /author_association == 'MEMBER'/);
+	assert.doesNotMatch(workflow, /pull_request\.additions > 2/);
 	assert.match(workflow, /continue-on-error: true/);
 	assert.match(workflow, /persist-credentials: false/);
 	assert.match(workflow, /format_mode: report/);
-	assert.strictEqual(workflow.match(/live_head=\$\(gh api/g)?.length, 2, 'head is checked before and after collection');
+	assert.match(workflow, /framing_mode: enforce/);
+	for (const framingPath of [
+		'resources/Table.ts',
+		'resources/RecordEncoder.ts',
+		'resources/tracked.ts',
+		'resources/PrimaryRocksDatabase.ts',
+		'replication/**',
+		'resources/branchDatabase.ts',
+		'resources/indexes/HierarchicalNavigableSmallWorld.ts',
+		'utility/lmdb/writeUtility.ts',
+	])
+		assert.match(workflow, new RegExp(`^\\s+${escapeRegExp(framingPath)}\\s*$`, 'm'));
+	assert.strictEqual(
+		workflow.match(/api_with_retry "\$head_response"/g)?.length,
+		2,
+		'head is checked before and after collection'
+	);
+	assert.match(workflow, /for attempt in 1 2 3/);
 	assert.match(workflow, /pr_files_superseded:/);
+});
+
+test('Harper framing policy covers every production storage-binding importer', () => {
+	const root = fileURLToPath(new URL('../../../', import.meta.url));
+	const sourceRoots = [
+		'bin',
+		'components',
+		'config',
+		'dataLayer',
+		'resources',
+		'security',
+		'server',
+		'sqlEngine',
+		'sqlTranslator',
+		'upgrade',
+		'utility',
+		'validation',
+		'launchServiceScripts',
+	];
+	const files = [];
+	const visit = (directory) => {
+		for (const entry of readdirSync(directory, { withFileTypes: true })) {
+			const entryPath = path.join(directory, entry.name);
+			if (entry.isDirectory()) visit(entryPath);
+			else if (/\.(?:js|ts)$/.test(entry.name) && !/\.test\.[jt]s$/.test(entry.name)) files.push(entryPath);
+		}
+	};
+	for (const sourceRoot of sourceRoots) {
+		const directory = path.join(root, sourceRoot);
+		if (existsSync(directory)) visit(directory);
+	}
+	const bindingImport =
+		/(?:\bfrom\s+|\bimport\s*\(|\brequire\s*\()\s*['"](?:lmdb|@harperfast\/rocksdb-js)(?:\/[^'"]*)?['"]/;
+	const importers = files
+		.filter((file) => bindingImport.test(readFileSync(file, 'utf8')))
+		.map((file) => path.relative(root, file).replaceAll(path.sep, '/'));
+	const workflow = readFileSync(path.join(root, '.github/workflows/review-coverage.yml'), 'utf8');
+	for (const importer of importers)
+		assert.match(
+			workflow,
+			new RegExp(`^\\s+${escapeRegExp(importer)}\\s*$`, 'm'),
+			`${importer} imports a storage binding — add it to framing_paths in .github/workflows/review-coverage.yml`
+		);
 });

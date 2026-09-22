@@ -6,7 +6,13 @@ const { dirname, join } = require('node:path');
 const { table, flushDatabases, dropDatabase, getDatabases, resetDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
-const { beginRestore, completeRestore, RESTORE_META_DIR } = require('#src/dataLayer/restoreMarker');
+const {
+	beginRestore,
+	completeRestore,
+	abandonRestore,
+	restoringMarkerPath,
+	RESTORE_META_DIR,
+} = require('#src/dataLayer/restoreMarker');
 
 describe('flushDatabases', () => {
 	before(async function () {
@@ -173,6 +179,30 @@ describe('dropDatabase restore serialization', () => {
 		const loaded = getDatabases();
 		assert.strictEqual(loaded[RESTORE_META_DIR], undefined, 'reserved dir must not be loaded as a database');
 		assert.ok(existsSync(reservedDir), 'the reserved dir itself is left in place (used for lifecycle metadata)');
+	});
+
+	it('never loads a database whose pre-atomic restoring marker is empty', function () {
+		const databaseName = 'corrupt-marker-startup-test';
+		const Table = table({
+			table: 'CorruptMarker',
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = Table.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+
+		abandonRestore(beginRestore(rootStore.path));
+		writeFileSync(restoringMarkerPath(rootStore.path), '');
+		try {
+			resetDatabases();
+			assert.strictEqual(
+				getDatabases()[databaseName],
+				undefined,
+				'a database with a corrupt restoring marker must remain blocked during startup'
+			);
+		} finally {
+			completeRestore(beginRestore(rootStore.path));
+		}
 	});
 });
 

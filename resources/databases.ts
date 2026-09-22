@@ -1014,7 +1014,7 @@ function initStores(
 	{ defaultTable, auditPath, isLegacy, destination, storeName, openedStores }: InitStoresOptions = {}
 ) {
 	// a store with no tables never reaches the per-table loop below, and blob roots resolve from this
-	rootStore.databaseName = storeName ?? databaseName;
+	rootStore.databaseName ??= storeName ?? databaseName;
 	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
 	const internalDbiInit = createOpenDBIObject(false);
 	let attributesDbi = rootStore.dbisDb;
@@ -1177,6 +1177,9 @@ function initStores(
 		// unless its store was migrated to a different engine (e.g. LMDB to RocksDB on startup)
 		const recreateForEngineChange =
 			!!table && (table as any).primaryStore?.rootStore instanceof RocksDatabase !== rootStore instanceof RocksDatabase;
+		const recreateForTableIdChange =
+			!!table && primaryAttribute.tableId != null && table.tableId !== primaryAttribute.tableId;
+		const recreateTable = recreateForEngineChange || recreateForTableIdChange;
 		let indices = {},
 			existingAttributes = [];
 		let tableId;
@@ -1190,7 +1193,8 @@ function initStores(
 		const cacheControl = primaryAttribute.cacheControl;
 		const splitSegments = primaryAttribute.splitSegments;
 		const replicate = primaryAttribute.replicate;
-		if (table && !recreateForEngineChange) {
+		if (table && !recreateTable) {
+			if (primaryAttribute.audit === true && table.audit !== true) table.enableAuditing();
 			indices = table.indices;
 			existingAttributes = table.attributes;
 			table.schemaVersion++;
@@ -1307,12 +1311,13 @@ function initStores(
 			existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1);
 			attributesUpdated = true;
 		}
-		if (table && !recreateForEngineChange) {
+		if (table && !recreateTable) {
 			if (attributesUpdated) {
 				table.schemaVersion++;
 				table.updatedAttributes();
 			}
 		} else {
+			if (recreateForTableIdChange) table.cleanup();
 			table = setTable(
 				tables,
 				tableName,
@@ -2438,6 +2443,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		cacheControl,
 		isolatedApplicationOwner,
 	} = tableDefinition;
+	const auditExplicitlyEnabled = audit === true;
+	const auditExplicitlyDisabled = audit === false;
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
 	// Reject reserved names here too, not only at the operations API: a database
 	// is also created by schema authoring — a `schema.graphql` `@table(database:)`
@@ -2470,36 +2477,132 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	// flag must be left as-is. Only an explicit value can re-assert on the existing-Table branch.
 	const schemaDefinedExplicit = tableDefinition.schemaDefined !== undefined;
 	if (schemaDefined == undefined) schemaDefined = true;
-	if (
-		attributes.some((attribute) => attribute.indexed?.type === 'HNSW' && attribute.indexed.nativePlane) &&
-		audit !== true &&
-		// An explicit false must fail here even for an already-audited Table. Nothing clears the
-		// static, so the runtime would stay attached while the descriptor persists audit: false,
-		// and the next process start would fail catalog load on the derived-index attach.
-		(audit === false || Table?.audit !== true)
-	) {
-		throw new ClientError(
-			`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using nativePlane because its transaction log is the derived-index recovery source`
-		);
-	}
 	const relationshipDefinitions = schemaRelationshipsDefined ? normalizeRelationships(attributes) : undefined;
 	const internalDbiInit = createOpenDBIObject(false);
+	let releaseExclusiveLock: (() => void) | undefined;
 
-	for (const attribute of attributes) {
-		if (attribute.attribute && !attribute.name) {
-			// there is some legacy code that calls the attribute's name the attribute's attribute
-			attribute.name = attribute.attribute;
-			attribute.indexed = true;
-		} else attribute.attribute = attribute.name;
-		if (attribute.expiresAt) attribute.indexed = true;
+	const hasHnswAtEntry = attributes.some((attribute) => attribute.indexed?.type === 'HNSW');
+	const persistedPrimaryDescriptor = (catalog: any) => {
+		const declaredPrimaryKey = attributes.find((attribute) => attribute.isPrimaryKey)?.name ?? Table?.primaryKey;
+		if (declaredPrimaryKey) {
+			const key = `${tableName}/${declaredPrimaryKey}`;
+			const descriptor = catalog?.getSync(key);
+			if (descriptor?.isPrimaryKey) return { key, descriptor };
+		}
+		const key = `${tableName}/`;
+		return { key, descriptor: catalog?.getSync(key) };
+	};
+	const hasLegacyHnswStateAtEntry =
+		Table &&
+		origin !== 'cluster' &&
+		attributes.some((attribute) => {
+			if (attribute.indexed?.type !== 'HNSW') return false;
+			const persisted = Table.dbisDB?.getSync(`${tableName}/${attribute.name || attribute.attribute || ''}`)?.indexed;
+			if (persisted?.type !== 'HNSW') return false;
+			if (Object.hasOwn(persisted, 'nativePlane') && typeof persisted.nativePlane !== 'boolean') return true;
+			for (const name of CUSTOM_INDEXES.HNSW.numericOptions)
+				if (Object.hasOwn(persisted, name) && typeof persisted[name] !== 'number') return true;
+			return false;
+		});
+	try {
+		if (
+			Table &&
+			hasHnswAtEntry &&
+			origin !== 'cluster' &&
+			(rootStore instanceof RocksDatabase || hasLegacyHnswStateAtEntry)
+		)
+			exclusiveLock();
+		const persistedAuditAtEntry =
+			hasHnswAtEntry || (Table && Table.audit !== true)
+				? persistedPrimaryDescriptor(Table?.dbisDB).descriptor?.audit
+				: undefined;
+		if (!auditExplicitlyDisabled && persistedAuditAtEntry === true && Table?.audit !== true) Table.enableAuditing();
+		for (const attribute of attributes) {
+			if (attribute.attribute && !attribute.name) {
+				// there is some legacy code that calls the attribute's name the attribute's attribute
+				attribute.name = attribute.attribute;
+				attribute.indexed = true;
+			} else attribute.attribute = attribute.name;
+			if (attribute.expiresAt) attribute.indexed = true;
+			if (attribute.indexed?.type === 'HNSW' && origin !== 'cluster') {
+				const existingAttribute = Table?.attributes.find((existing: any) => existing.name === attribute.name);
+				const persistedIndexed =
+					Table?.dbisDB?.getSync(`${tableName}/${attribute.name || ''}`)?.indexed ?? existingAttribute?.indexed;
+				CUSTOM_INDEXES.HNSW.normalizeDeclarationOptions(attribute.indexed, persistedIndexed);
+				if (attribute.indexed.nativePlane != null) {
+					const persistedNativePlane = persistedIndexed?.nativePlane;
+					const matchesPersistedLegacySpelling =
+						persistedIndexed?.type === 'HNSW' &&
+						Object.hasOwn(persistedIndexed, 'nativePlane') &&
+						typeof persistedNativePlane !== 'boolean' &&
+						(Object.is(persistedNativePlane, attribute.indexed.nativePlane) ||
+							(typeof persistedNativePlane === 'string' &&
+								typeof attribute.indexed.nativePlane === 'number' &&
+								persistedNativePlane.trim() !== '' &&
+								Number(persistedNativePlane) === attribute.indexed.nativePlane));
+					if (matchesPersistedLegacySpelling) {
+						attribute.indexed.nativePlane = persistedNativePlane;
+					} else {
+						attribute.indexed.nativePlane = CUSTOM_INDEXES.HNSW.normalizeNativePlaneDeclaration(
+							attribute.indexed.nativePlane
+						);
+					}
+				}
+			}
+		}
+		const auditEnabledAtEntry =
+			auditExplicitlyEnabled ||
+			(!auditExplicitlyDisabled &&
+				(persistedAuditAtEntry === true || (persistedAuditAtEntry == null && Table?.audit === true)));
+		if (
+			origin !== 'cluster' &&
+			attributes.some((attribute) => {
+				if (attribute.indexed?.type !== 'HNSW') return false;
+				if (attribute.indexed.nativePlane != null) return Boolean(attribute.indexed.nativePlane);
+				const existingAttribute = Table?.attributes.find(
+					(existing: any) => existing.name === attribute.name && existing.indexed?.type === 'HNSW'
+				);
+				return Boolean(existingAttribute?.indexed.nativePlane);
+			}) &&
+			!auditEnabledAtEntry
+		) {
+			throw new ClientError(
+				`Table '${databaseName}.${tableName}' must enable audit logging before using nativePlane because its transaction log is the derived-index recovery source; set nativePlane: false to use the JS index`
+			);
+		}
+	} catch (error) {
+		releaseLock();
+		throw error;
 	}
+	const validateHnswOptions = (catalog: any, auditQualifiesDefault: boolean) => {
+		for (const attribute of attributes) {
+			const indexed = attribute.indexed;
+			if (indexed?.type !== 'HNSW') continue;
+			const persistedIndexed = catalog?.getSync(`${tableName}/${attribute.name || ''}`)?.indexed;
+			if (indexed.nativePlane) {
+				CUSTOM_INDEXES.HNSW.validateNativePlaneOptions(rootStore, indexed);
+				continue;
+			}
+			if (indexed.nativePlane != null) continue;
+			if (persistedIndexed?.type === 'HNSW' && Object.hasOwn(persistedIndexed, 'nativePlane')) {
+				if (persistedIndexed.nativePlane)
+					CUSTOM_INDEXES.HNSW.validateNativePlaneOptions(rootStore, {
+						...indexed,
+						nativePlane: persistedIndexed.nativePlane,
+					});
+				continue;
+			}
+			if (!auditQualifiesDefault) continue;
+			if (persistedIndexed?.type !== 'HNSW') CUSTOM_INDEXES.HNSW.canDefaultToNativePlane(rootStore, indexed);
+		}
+	};
+	if (!Table && origin !== 'cluster') validateHnswOptions(undefined, auditExplicitlyEnabled);
 	let hasChanges;
 	let refreshRelationshipAttributes = false;
 	let refreshedLiveAttributes = false;
 	let deferredPrimaryRow: any;
 	let unpublishedPrimaryStore: any;
 	let published = false;
-	let releaseExclusiveLock: (() => void) | undefined;
 	const attributesToIndex = [];
 	const indicesToRemove = [];
 	try {
@@ -2533,10 +2636,17 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				}
 			}
 			// Acquire before the first mutation of the live Table below, so a lost race leaves no
-			// attributes this worker describes but never persisted. Only the RocksDB acquire is bounded
-			// and can throw, and only it is cheap when uncontended: LMDB's exclusiveLock() opens an
-			// environment-wide write transaction that cannot time out, so it stays lazy.
+			// attributes this worker describes but never persisted. Only the RocksDB acquire is bounded;
+			// ordinary LMDB declarations stay lazy, while legacy HNSW normalization locks at entry.
 			if (rootStore instanceof RocksDatabase) exclusiveLock();
+			if (origin !== 'cluster') {
+				const lockedAttributesDbi = Table.dbisDB;
+				const persistedAuditUnderLock = persistedPrimaryDescriptor(lockedAttributesDbi).descriptor?.audit;
+				validateHnswOptions(
+					lockedAttributesDbi,
+					auditExplicitlyEnabled || (!auditExplicitlyDisabled && persistedAuditUnderLock === true)
+				);
+			}
 			// it table already exists, get the split segments setting
 			if (splitSegments == undefined) splitSegments = Table.splitSegments;
 			if (origin === 'cluster') {
@@ -2566,6 +2676,13 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						);
 				}
 				attributes = merged;
+			} else if (!attributes.some((attribute) => attribute.isPrimaryKey)) {
+				const existingPrimary = Table.attributes.find((attribute: any) => attribute.isPrimaryKey);
+				if (existingPrimary && attributes.some((attribute) => attribute.name === existingPrimary.name))
+					throw new ClientError(
+						`Cannot remove the primary key designation from '${databaseName}.${tableName}.${existingPrimary.name}'`
+					);
+				if (existingPrimary) attributes = [existingPrimary, ...attributes];
 			}
 			Table.attributes.splice(0, Table.attributes.length, ...attributes);
 			// Re-assert from the live declaration so a stale value on disk (replicated event,
@@ -2750,7 +2867,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			const attribute = attributes.find((attribute) => attribute.name === attribute_name);
 			const removeIndex = !attribute?.indexed && value.indexed && !value.isPrimaryKey;
 			// rows already present under a create are aborted state
-			const staleRow = !attribute || Boolean(deferredPrimaryRow);
+			const staleRow = (!attribute && !value.isPrimaryKey) || Boolean(deferredPrimaryRow);
 			if (staleRow || removeIndex) {
 				exclusiveLock();
 				hasChanges = true;
@@ -2761,9 +2878,79 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				}
 			}
 		}
+		const hasHnswDeclaration = attributes.some((attribute) => attribute.indexed?.type === 'HNSW');
+		const persistedAudit = hasHnswDeclaration ? persistedPrimaryDescriptor(attributesDbi).descriptor?.audit : undefined;
+		// A cluster declaration can apply audit on a create, but deliberately cannot rewrite an existing
+		// table's primary row. Do not let an incoming audit value qualify a replicated native descriptor
+		// that this node would then persist beside its durable audit:false row.
+		const explicitAuditCanBeApplied = origin !== 'cluster' || Boolean(deferredPrimaryRow);
+		const auditEnabledForNativeDefault =
+			(auditExplicitlyEnabled && explicitAuditCanBeApplied) || (!auditExplicitlyDisabled && persistedAudit === true);
+		const auditEnabledForNativePlane =
+			!auditExplicitlyDisabled && (auditEnabledForNativeDefault || (persistedAudit == null && Table.audit === true));
+		for (const attribute of attributes) {
+			const indexed = attribute.indexed;
+			if (!indexed || typeof indexed !== 'object' || indexed.type !== 'HNSW') continue;
+			const descriptor = attributesDbi.getSync(tableName + '/' + (attribute.name || ''));
+			const existingHnsw = descriptor?.indexed?.type === 'HNSW';
+			if (indexed.nativePlane == null) {
+				if (existingHnsw) {
+					if (Object.hasOwn(descriptor.indexed, 'nativePlane')) {
+						indexed.nativePlane = descriptor.indexed.nativePlane;
+					}
+				} else if (
+					origin !== 'cluster' &&
+					auditEnabledForNativeDefault &&
+					CUSTOM_INDEXES.HNSW.canDefaultToNativePlane(rootStore, indexed)
+				) {
+					indexed.nativePlane = true;
+				}
+			} else if (origin === 'cluster' && !existingHnsw && indexed.nativePlane) {
+				let canRunNative = false;
+				try {
+					canRunNative = auditEnabledForNativeDefault && CUSTOM_INDEXES.HNSW.canRunNativePlane(rootStore, indexed);
+				} catch {}
+				if (!canRunNative) {
+					logger.warn(
+						`Using the JS HNSW index for replicated attribute ${databaseName}.${tableName}.${attribute.name} because this node does not satisfy the nativePlane requirements`
+					);
+					indexed.nativePlane = false;
+				}
+			}
+		}
+		const nativePlaneEnabled =
+			origin !== 'cluster' &&
+			attributes.some((attribute) => attribute.indexed?.type === 'HNSW' && attribute.indexed.nativePlane);
+		if (nativePlaneEnabled && !auditEnabledForNativePlane) {
+			throw new ClientError(
+				`Table '${databaseName}.${tableName}' must enable audit logging before using nativePlane because its transaction log is the derived-index recovery source; set nativePlane: false to use the JS index`
+			);
+		}
+		if (nativePlaneEnabled && persistedAudit !== true) audit = true;
+		if (nativePlaneEnabled && persistedAudit !== true && !attributes.some((attribute) => attribute.isPrimaryKey)) {
+			exclusiveLock();
+			const primaryKey = primaryDescriptorKey();
+			const primaryDescriptor = attributesDbi.getSync(primaryKey);
+			if (primaryDescriptor && !tableIsDropping(primaryDescriptor, primaryKey)) {
+				Table.enableAuditing();
+				attributesDbi.put(primaryKey, { ...primaryDescriptor, audit: true });
+				hasChanges = true;
+			}
+		}
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
-		for (const attribute of attributes || []) {
+		const attributesInPersistenceOrder = nativePlaneEnabled
+			? [
+					...attributes.filter((attribute) => attribute.isPrimaryKey),
+					...attributes.filter((attribute) => !attribute.isPrimaryKey),
+				]
+			: auditExplicitlyDisabled
+				? [
+						...attributes.filter((attribute) => !attribute.isPrimaryKey),
+						...attributes.filter((attribute) => attribute.isPrimaryKey),
+					]
+				: attributes;
+		for (const attribute of attributesInPersistenceOrder) {
 			if (attribute.relationship) {
 				refreshRelationshipAttributes = true;
 				continue;
@@ -2786,7 +2973,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				if (
 					origin !== 'cluster' &&
 					(schemaDefinedMismatch ||
-						(audit !== undefined && audit !== Table.audit) ||
+						(typeof audit === 'boolean' && audit !== attributeDescriptor.audit) ||
 						(sealed !== undefined && sealed !== Table.sealed) ||
 						(replicate !== undefined && replicate !== Table.replicate) ||
 						(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
@@ -3120,8 +3307,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	logger.trace(`${tableName} table loaded`);
 
 	return Table as TableResourceType;
-	// dropTable() tombstones the bare table row, which is not the row a legacy catalog keeps the
-	// table's settings in, so a drop in flight has to be checked on both.
+	// A migrated catalog can retain a named primary descriptor beside a bare table tombstone, so a
+	// drop in flight has to be checked on both representations.
 	function tableIsDropping(descriptor: any, descriptorKey: string) {
 		if (descriptor?.dropping) return true;
 		return descriptorKey !== tableName + '/' && attributesDbi.getSync(tableName + '/')?.dropping;
@@ -3129,12 +3316,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	// The catalog row initStores() reads a table's settings from: the primary key's own row when it
 	// has one, and the bare table row otherwise.
 	function primaryDescriptorKey() {
-		const declaredPrimaryKey = attributes?.find((attribute) => attribute.isPrimaryKey)?.name;
-		if (declaredPrimaryKey) {
-			const attributeKey = tableName + '/' + declaredPrimaryKey;
-			if (attributesDbi.getSync(attributeKey)) return attributeKey;
-		}
-		return tableName + '/';
+		return persistedPrimaryDescriptor(attributesDbi).key;
 	}
 	// The catalog of a published table stays, but a class the registration never accepted is
 	// unreachable, so release what makeTable() registered process-wide instead of leaving its timers
@@ -3198,33 +3380,32 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	}
 }
 /**
- * Canonical form used ONLY for the structural (reindex-triggering) comparison of index options.
- * `@indexed(...)` records options in source-argument order and as strings, while the operations API
- * and config objects can supply them reordered or as numbers; without canonicalizing, such a
- * representation-only difference flips the structural comparison and forces a needless full rebuild
- * (clearing + rebuilding the index, 503-ing the attribute throughout) for a semantically identical
- * index. Sorts object keys and coerces numeric-looking (non-zero) string scalars to numbers.
- * Conservative by design: boolean-vs-object, absent-vs-present, and string-"0"-vs-number-0
- * differences are all preserved, so a genuine change (`true` vs `{ type: 'HNSW' }`, an added/removed
- * option, a changed value) still triggers a rebuild. Persistence keys off the raw form, so the stored
- * descriptor self-heals toward this shape over time. harper#1357
+ * Stable structural form for deciding whether an index must be rebuilt. `coerceZero` extends numeric
+ * coercion to zero; a truthiness-sensitive numeric option must normalize its value before using it.
  */
-export function canonicalizeIndexOptions(value: any): any {
-	if (Array.isArray(value)) return value.map(canonicalizeIndexOptions);
+export function canonicalizeIndexOptions(value: any, coerceZero = false): any {
+	if (Array.isArray(value)) return value.map((item) => canonicalizeIndexOptions(item, coerceZero));
 	if (value && typeof value === 'object') {
 		const canonical: Record<string, any> = {};
-		for (const key of Object.keys(value).sort()) canonical[key] = canonicalizeIndexOptions(value[key]);
+		const customIndex = value.type && (CUSTOM_INDEXES as Record<string, any>)[value.type];
+		for (const key of Object.keys(value).sort()) {
+			if (customIndex?.truthyStructuralOptions?.has(key)) {
+				if (value[key]) canonical[key] = true;
+				continue;
+			}
+			const optionValue = customIndex?.normalizeOptionValue
+				? customIndex.normalizeOptionValue(key, value[key])
+				: value[key];
+			canonical[key] = canonicalizeIndexOptions(
+				optionValue,
+				coerceZero || Boolean(customIndex?.numericOptions?.has(key))
+			);
+		}
 		return canonical;
 	}
-	// Coerce numeric-looking strings ("16" -> 16) so string-vs-number representations of the same
-	// option compare equal — EXCEPT zero: the string "0" is truthy while the number 0 is falsy, and
-	// index code may branch on truthiness (e.g. HNSW `if (this.optimizeRouting)` doubles maxConnections),
-	// so "0" and 0 build structurally different indexes and must still trigger a rebuild. Zero is the
-	// only finite number whose string and numeric forms diverge in truthiness, so excluding it fully
-	// closes that gap. Leave non-numeric strings, booleans, null, etc. intact.
 	if (typeof value === 'string' && value.trim() !== '') {
 		const numeric = Number(value);
-		if (numeric !== 0 && Number.isFinite(numeric)) return numeric;
+		if ((numeric !== 0 || coerceZero) && Number.isFinite(numeric)) return numeric;
 	}
 	return value;
 }

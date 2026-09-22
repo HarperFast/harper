@@ -6,7 +6,7 @@
  * (session id, profile, tool name).
  *
  * Argument summarization runs through a redaction step that drops anything
- * that looks like a credential (key/secret/password). Operators who need
+ * that looks like a credential (secret/password/token). Operators who need
  * stricter PII handling configure `mcp.audit.argumentRedactor` to a custom
  * function via a future component-author hook (v1.1).
  */
@@ -25,17 +25,17 @@ export interface AuditEntry {
 }
 
 const REDACTION_PATTERN = /(secret|password|token|api[-_]?key|credentials?|auth)/i;
-// Exact field names that carry secret material without a credential-looking name: `value`/`values`
-// (set_secret plaintext, set_env_value .env secrets) and `envelope` (set_secret ciphertext). These
-// mirror the fields processLocalTransaction strips from the REST operations log — the MCP audit
-// path must not become a bypass. Exact-match so e.g. `search_value` stays auditable.
-const REDACTION_EXACT_FIELDS = /^(value|values|envelope)$/i;
-// ...but only for the operations that actually put secrets in those generically-named fields.
-// `value`/`values` are common, non-secret params on many other operations (record data, config
-// values), so blanket-redacting them would gut the audit trail for unrelated tools. The global
-// REDACTION_PATTERN still applies to every tool; this just narrows the exact-field masking to the
-// secret-bearing ops. NOTE: extend this set if a new op ever carries a secret in a plain field.
-const EXACT_FIELD_TOOLS = new Set(['set_secret', 'set_env_value']);
+// Both secret tools carry all three fields, not just the ones each declares: MCP forwards arguments
+// as-is and audits them after the handler, so a field the tool rejects is still logged. Mirrors what
+// the REST operations log strips unconditionally (UNLOGGABLE_OPERATION_FIELDS).
+const SECRET_VALUE_FIELDS: ReadonlySet<string> = new Set(['value', 'values', 'envelope']);
+// Per tool, not global: `value`/`values` are ordinary params on many other operations.
+const REDACTION_FIELDS_BY_TOOL = new Map<string, ReadonlySet<string>>([
+	['set_secret', SECRET_VALUE_FIELDS],
+	['set_env_value', SECRET_VALUE_FIELDS],
+	['add_ssh_key', new Set(['key'])],
+	['update_ssh_key', new Set(['key'])],
+]);
 const REDACTION_PLACEHOLDER = '[redacted]';
 const MAX_REDACTION_DEPTH = 10;
 
@@ -46,21 +46,25 @@ const MAX_REDACTION_DEPTH = 10;
  * a credential buried below the depth limit cannot leak. Returns a shallow
  * clone — the caller's payload is never mutated.
  */
-export function redactArgs(value: unknown, depth = 0, redactExactFields = false): unknown {
+export function redactArgs(value: unknown, depth = 0, redactionFields?: ReadonlySet<string>): unknown {
 	if (value === null || typeof value !== 'object') return value;
 	if (depth > MAX_REDACTION_DEPTH) return REDACTION_PLACEHOLDER;
 	if (Array.isArray(value)) {
-		return value.map((v) => redactArgs(v, depth + 1, redactExactFields));
+		return value.map((v) => redactArgs(v, depth + 1, redactionFields));
 	}
 	const out: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(value)) {
-		if (REDACTION_PATTERN.test(k) || (redactExactFields && REDACTION_EXACT_FIELDS.test(k))) {
+		if (REDACTION_PATTERN.test(k) || redactionFields?.has(k.toLowerCase())) {
 			out[k] = REDACTION_PLACEHOLDER;
 		} else {
-			out[k] = redactArgs(v, depth + 1, redactExactFields);
+			out[k] = redactArgs(v, depth + 1, redactionFields);
 		}
 	}
 	return out;
+}
+
+export function redactArgsForTool(value: unknown, tool: string): unknown {
+	return redactArgs(value, 0, REDACTION_FIELDS_BY_TOOL.get(tool));
 }
 
 /** Mask a session id for logging — first 8 chars, suffix elided. */
@@ -79,7 +83,7 @@ export function emitAuditEntry(entry: AuditEntry): void {
 		const masked = {
 			...entry,
 			sessionId: maskSessionId(entry.sessionId),
-			args: redactArgs(entry.args, 0, EXACT_FIELD_TOOLS.has(entry.tool)),
+			args: redactArgsForTool(entry.args, entry.tool),
 		};
 		harperLogger.info({ category: 'mcp.audit', ...masked });
 	} catch (err) {

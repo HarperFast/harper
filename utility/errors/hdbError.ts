@@ -66,11 +66,7 @@ export class ServerError extends Error {
 	}
 }
 
-/**
- * Thrown when a write targets a table whose derived index has fallen further behind than its
- * registration allows. A distinct, retryable 503 so writers back off before the index's cursor is
- * lost to transaction-log retention, rather than reading a generic 503 as a permanent failure.
- */
+/** Retryable admission failure when a derived index cannot meet a write or query lag budget. */
 export class DerivedIndexLagError extends ServerError {
 	code: string;
 	retryable: boolean;
@@ -247,6 +243,32 @@ export class AccessViolation extends Violation {
 
 export function isHDBError(e: any) {
 	return e.__proto__.constructor.name === HdbError.name;
+}
+
+/**
+ * Append context to an error's message, tolerating errors whose `message` cannot be assigned.
+ *
+ * A `DOMException` - what `fetch` rejects with when an `AbortSignal.timeout` fires - inherits
+ * `message` as a getter-only accessor, so a plain assignment throws under strict mode. Callers use
+ * this where losing the context is acceptable but throwing from a catch block is not.
+ */
+export function appendErrorContext(error: unknown, context: string): void {
+	try {
+		if (typeof (error as any)?.message !== 'string') return;
+		const annotated = `${(error as Error).message}${context}`;
+		try {
+			(error as Error).message = annotated;
+		} catch {
+			// A getter-only `message` (DOMException) takes an own property instead.
+			Object.defineProperty(error as object, 'message', {
+				value: annotated,
+				writable: true,
+				configurable: true,
+			});
+		}
+	} catch {
+		/* frozen, or a throwing accessor - the original message still propagates */
+	}
 }
 
 export { hdbErrors };

@@ -1,10 +1,15 @@
 import { closeSync, existsSync, openSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { cosineDistance, euclideanDistance, dotProductDistance } from './vector.ts';
-import { FLOAT32_OPTIONS } from 'msgpackr';
+import { FLOAT32_OPTIONS, pack, unpack } from 'msgpackr';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
-import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
+import { ClientError, ServerError, DerivedIndexLagError } from '../../utility/errors/hdbError.ts';
 import type { Id } from '../../resources/ResourceInterface.ts';
-import type { DerivedIndexReadiness } from '../derivedIndexRuntime.ts';
+import {
+	DEFAULT_MAX_INDEX_LAG_MILLISECONDS,
+	MAX_WAIT_FOR_INDEX_MILLISECONDS,
+	type DerivedNativeIndexHost,
+} from './hnswDerivedIndex.ts';
+import { derivedIndexTime, type DerivedIndexReadiness, type DerivedIndexCoverage } from '../derivedIndexRuntime.ts';
 import { SKIP } from '@harperfast/extended-iterable';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { createHash } from 'node:crypto';
@@ -15,6 +20,8 @@ import {
 	planeStalePathFor,
 	PLANE_NO_ID,
 	type HnswPlane,
+	type PlanePredicate,
+	type PlaneSearchHits,
 } from './hnswPlaneBinding.ts';
 
 const logger = loggerWithTag('HNSW');
@@ -106,6 +113,10 @@ const ROUTING_EF = 1;
 // index's own auto-scaled ceiling so the worst case stays the same order. Schema and per-query ef
 // pins are authoritative cost ceilings; only an automatically scaled index widens from `limit`.
 const LIMIT_EF_MAX = 2 * AUTO_EF_CEILING;
+// Rerank candidates per row a bounded nearest-neighbor query consumes, with a floor: each
+// candidate costs a record load and an exact distance, so the rerank must not scale with ef.
+const RERANK_FACTOR = 4;
+const RERANK_MIN = 32;
 // Auto-scaled construction ef, used only when an index does not explicitly configure efConstruction.
 // At a constant efConstruction, edge quality erodes as the graph grows until true neighbours become
 // unreachable at ANY search ef; the cap bounds per-insert cost. Measurements and policy in
@@ -125,13 +136,20 @@ function autoScaleEfConstruction(nodeCount: number): number {
 // this only has to be short enough that a table growing from empty picks up a larger ef promptly.
 const NODE_COUNT_TTL = 10_000;
 
-// Native traversal-plane geometry (DESIGN.md § Native HNSW plane). The layer-0 cap is derived from
-// M/optimizeRouting at creation to cover the JS graph's effective cap (grace overshoot above it
-// truncates by distance); a configuration deriving past this ceiling is refused as ineligible
-// rather than silently truncated. maxNodes is a fixed sparse reservation — pages materialize on
-// write — and ids at or past it are rejected by the crate, which disables the plane.
+// Native traversal-plane geometry (DESIGN.md § Native HNSW plane). A file-primary index builds no
+// JS graph, so the plane header carries its only layer-0 maximum. maxNodes is a fixed sparse
+// reservation — pages materialize on write — and ids at or past it are rejected by the crate,
+// which disables the plane.
+const PLANE_LAYER0_CAP = 64;
 const PLANE_LAYER0_CAP_MAX = 1024;
+// The crate's fixed connection count, which nativePlane pins the index to: a layer-0 cap below it
+// could not hold a node's own forward edges.
+const PLANE_M = 16;
 const PLANE_MAX_NODES = 1 << 24;
+// Default inline primary-key bytes per plane slot (msgpack-encoded); 40 fits UUIDs inside the slot
+// padding. `nativePlaneKeyCap` raises it for tables whose keys are longer.
+const PLANE_KEY_CAP = 40;
+const PLANE_KEY_CAP_MAX = 65535;
 // An existing plane file that cannot be opened is normally another worker mid-create (retry);
 // past this age it is a crashed create and is deleted so the audit-backed runtime can rebuild it.
 const PLANE_STALE_CREATE_MS = 60_000;
@@ -140,6 +158,50 @@ const PLANE_ATTACH_RETRY_MS = 250;
 // Marks an error thrown by an app-supplied filter during a plane search: the caller re-raises
 // it as an ordinary query failure instead of disabling the (healthy) plane.
 const NOT_A_PLANE_FAILURE = Symbol('notAPlaneFailure');
+
+function numericOption(name: string, value: unknown): number | undefined {
+	if (value === undefined || value === null) return undefined;
+	if ((typeof value !== 'number' && typeof value !== 'string') || (typeof value === 'string' && value.trim() === ''))
+		throw new ClientError(`${name} must be a finite number`);
+	const numericValue = Number(value);
+	if (!Number.isFinite(numericValue)) throw new ClientError(`${name} must be a finite number`);
+	return numericValue;
+}
+
+function normalizeOptimizeRoutingDeclaration(value: unknown): unknown {
+	if (value === true || value === 'true') return 1;
+	if (value === false || value === 'false') return 0;
+	return value;
+}
+
+function nativePlaneMaxNodes(options: any): number {
+	const maxNodes = numericOption('nativePlaneMaxNodes', options?.nativePlaneMaxNodes) ?? PLANE_MAX_NODES;
+	if (!Number.isSafeInteger(maxNodes) || maxNodes < 1 || maxNodes >= PLANE_NO_ID) {
+		throw new ClientError('nativePlaneMaxNodes must be a positive integer below 2^32-1');
+	}
+	return maxNodes;
+}
+
+function nativePlaneLayer0Cap(options: any): number {
+	const layer0Cap = numericOption('nativePlaneLayer0Cap', options?.nativePlaneLayer0Cap) ?? PLANE_LAYER0_CAP;
+	if (!Number.isSafeInteger(layer0Cap) || layer0Cap < PLANE_M || layer0Cap > PLANE_LAYER0_CAP_MAX) {
+		throw new ClientError(`nativePlaneLayer0Cap must be an integer between ${PLANE_M} and ${PLANE_LAYER0_CAP_MAX}`);
+	}
+	return layer0Cap;
+}
+
+function nativePlaneKeyCap(options: any): number {
+	const keyCap = numericOption('nativePlaneKeyCap', options?.nativePlaneKeyCap) ?? PLANE_KEY_CAP;
+	if (!Number.isSafeInteger(keyCap) || keyCap < 8 || keyCap > PLANE_KEY_CAP_MAX) {
+		throw new ClientError('nativePlaneKeyCap must be an integer between 8 and 65535');
+	}
+	return keyCap;
+}
+
+function nativePlaneDefaultDisabled(): boolean {
+	const value = process.env.HNSW_NO_NATIVE_DEFAULT;
+	return value != null && value !== '' && value !== '0' && value.toLowerCase() !== 'false';
+}
 
 class MinHeap {
 	private data: Candidate[] = [];
@@ -198,6 +260,10 @@ function bisectInsert(arr: Candidate[], distance: number): number {
  */
 const ENTRY_POINT = Symbol.for('entryPoint');
 const KEY_PREFIX = Symbol.for('key');
+/** A Map key for a primary key: composite keys by their encoding, since arrays compare by reference. */
+function pendingMappingKey(primaryKey: Id): Id {
+	return Array.isArray(primaryKey) ? `\0${pack(primaryKey).toString('latin1')}` : primaryKey;
+}
 const MAX_LEVEL = 10; // should give good high-level skip list performance up to trillions of nodes
 // Visit budget for the post-delete connectivity probe (repairSeveredNeighbors, #1712). Severed
 // islands are small (bounded by the deleted node's neighborhood), so a probe that visits this many
@@ -227,11 +293,146 @@ type Node = {
  */
 export class HierarchicalNavigableSmallWorld {
 	static useObjectStore = true;
+	static numericOptions = new Set([
+		'M',
+		'efConstruction',
+		'efConstructionSearch',
+		'mL',
+		'optimizeRouting',
+		'filterExpansion',
+		'nativePlaneMaxNodes',
+		'nativePlaneKeyCap',
+		'nativePlaneLayer0Cap',
+		'maxLagMilliseconds',
+	]);
+	static truthyStructuralOptions = new Set(['nativePlane']);
+	static normalizeOptionValue(name: string, value: unknown): unknown {
+		if (name !== 'optimizeRouting') return value;
+		if (value === true) return 1;
+		if (value === false) return 0;
+		if (
+			typeof value === 'string' &&
+			(value === 'true' || value === 'false' || (value.trim() !== '' && Number(value) === 0))
+		)
+			// Legacy strings are truthy at runtime; keep them structurally distinct from false/0 so #1357 rebuilds.
+			return `legacy:${value}`;
+		return value;
+	}
+	static normalizeDeclarationOptions(options: any, persistedOptions?: any): void {
+		for (const name of HierarchicalNavigableSmallWorld.numericOptions) {
+			if (options[name] === undefined) continue;
+			if (persistedOptions && Object.hasOwn(persistedOptions, name) && Object.is(options[name], persistedOptions[name]))
+				continue;
+			if (
+				name === 'optimizeRouting' &&
+				typeof persistedOptions?.[name] === 'string' &&
+				options[name] !== false &&
+				options[name] !== 'false'
+			) {
+				try {
+					const declared = numericOption(name, normalizeOptimizeRoutingDeclaration(options[name]));
+					const persisted = numericOption(name, normalizeOptimizeRoutingDeclaration(persistedOptions[name]));
+					if (Object.is(declared, persisted)) {
+						options[name] = persistedOptions[name];
+						continue;
+					}
+				} catch {}
+			}
+			if (options[name] === null) {
+				delete options[name];
+				continue;
+			}
+			const value = name === 'optimizeRouting' ? normalizeOptimizeRoutingDeclaration(options[name]) : options[name];
+			options[name] = numericOption(name, value);
+		}
+		if (Object.hasOwn(options, 'nativePlaneMaxNodes')) nativePlaneMaxNodes(options);
+		if (Object.hasOwn(options, 'nativePlaneKeyCap')) nativePlaneKeyCap(options);
+		if (Object.hasOwn(options, 'nativePlaneLayer0Cap')) nativePlaneLayer0Cap(options);
+	}
+	static normalizeNativePlaneDeclaration(value: unknown): boolean | undefined {
+		if (value === undefined || value === null) return undefined;
+		if (value === true || value === 'true') return true;
+		if (value === false || value === 'false') return false;
+		throw new ClientError('nativePlane must be true or false');
+	}
+	static validateNativePlaneOptions(rootStore: unknown, options: any) {
+		if (!(rootStore instanceof RocksDatabase)) {
+			throw new ClientError(
+				'nativePlane requires the RocksDB storage engine; set nativePlane: false to use the JS index'
+			);
+		}
+		const nativeM = numericOption('M', options?.M);
+		const nativeEfConstruction = numericOption('efConstruction', options?.efConstruction);
+		const nativeML = numericOption('mL', options?.mL);
+		const nativeOptimizeRouting = numericOption(
+			'optimizeRouting',
+			normalizeOptimizeRoutingDeclaration(options?.optimizeRouting)
+		);
+		if (
+			options?.M === null ||
+			options?.efConstruction === null ||
+			options?.mL === null ||
+			options?.optimizeRouting === null ||
+			(nativeM !== undefined && nativeM !== PLANE_M) ||
+			(nativeEfConstruction !== undefined && nativeEfConstruction !== 200) ||
+			(nativeML !== undefined && nativeML !== 1 / Math.log(PLANE_M)) ||
+			(nativeOptimizeRouting !== undefined && nativeOptimizeRouting !== 0.5)
+		) {
+			throw new ClientError(
+				'nativePlane requires M=16, efConstruction=200, mL=1/ln(16), and optimizeRouting=0.5; set nativePlane: false to use the JS index'
+			);
+		}
+		const maxNodes = nativePlaneMaxNodes(options);
+		const keyCap = nativePlaneKeyCap(options);
+		const layer0Cap = nativePlaneLayer0Cap(options);
+		if (options?.quantization === 'none' || options?.distance === 'euclidean' || options?.distance === 'dotProduct') {
+			throw new ClientError(
+				'nativePlane requires an int8-quantized cosine HNSW index; set nativePlane: false to use the JS index'
+			);
+		}
+		return { nativeM, nativeEfConstruction, nativeML, nativeOptimizeRouting, maxNodes, keyCap, layer0Cap };
+	}
+	static canRunNativePlane(rootStore: unknown, options: any, warnForMissingBinding = true): boolean {
+		nativePlaneMaxNodes(options);
+		nativePlaneKeyCap(options);
+		nativePlaneLayer0Cap(options);
+		if (!(rootStore instanceof RocksDatabase) || getPlaneBinding(warnForMissingBinding) == null) return false;
+		if (
+			options?.M === null ||
+			options?.efConstruction === null ||
+			options?.mL === null ||
+			options?.optimizeRouting === null
+		)
+			return false;
+		const configuredM = numericOption('M', options?.M);
+		const configuredEfConstruction = numericOption('efConstruction', options?.efConstruction);
+		const configuredML = numericOption('mL', options?.mL);
+		const configuredOptimizeRouting = numericOption(
+			'optimizeRouting',
+			normalizeOptimizeRoutingDeclaration(options?.optimizeRouting)
+		);
+		const baseEligible =
+			options?.quantization !== 'none' &&
+			options?.distance !== 'euclidean' &&
+			options?.distance !== 'dotProduct' &&
+			(configuredM === undefined || configuredM === PLANE_M) &&
+			(configuredEfConstruction === undefined || configuredEfConstruction === 200) &&
+			(configuredML === undefined || configuredML === 1 / Math.log(PLANE_M)) &&
+			(configuredOptimizeRouting === undefined || configuredOptimizeRouting === 0.5);
+		if (!baseEligible) return false;
+		return true;
+	}
+	static canDefaultToNativePlane(rootStore: unknown, options: any): boolean {
+		return (
+			!nativePlaneDefaultDisabled() && HierarchicalNavigableSmallWorld.canRunNativePlane(rootStore, options, false)
+		);
+	}
 	// Index options that only affect search, not the stored graph — changing them must not trigger a
 	// reindex (databases.ts persists the new value but skips rebuilding). efConstructionSearch is the
 	// search-time candidate-list size; the build uses efConstruction/M/distance, which are structural.
-	// filterExpansion is the visit-budget multiplier for predicate-aware (filtered) traversal.
-	static searchOnlyOptions = ['efConstructionSearch', 'filterExpansion'];
+	// filterExpansion is the visit-budget multiplier for predicate-aware (filtered) traversal;
+	// maxLagMilliseconds controls delivery admission rather than the graph itself.
+	static searchOnlyOptions = ['efConstructionSearch', 'filterExpansion', 'maxLagMilliseconds'];
 	// Signals to search.ts that this index accepts a per-record predicate in search() and applies it
 	// during traversal (predicate-aware / ACORN-style filtering), so companion conditions and RBAC can
 	// be pushed down instead of post-filtering an under-filled candidate set (#1241).
@@ -280,12 +481,23 @@ export class HierarchicalNavigableSmallWorld {
 	private planeDisabledLogged = false;
 	private filePrimary = false;
 	private nativePlaneMaxNodes = PLANE_MAX_NODES;
+	private nativePlaneKeyCap = PLANE_KEY_CAP;
+	private nativePlaneLayer0Cap = PLANE_LAYER0_CAP;
 	// Installed by attachDerivedIndexes on every worker: shared readiness of the index and the way
 	// to ask its owner for a rebuild. Only the owning worker's runtime ever destroys native state.
-	private derivedHost?: { readiness: () => DerivedIndexReadiness; requestRebuild: () => boolean };
+	private derivedHost?: DerivedNativeIndexHost;
+	// keyed by pendingMappingKey(pk): a composite key's arrays never compare equal by reference
 	private pendingDerivedMappings = new Map<
 		Id,
-		{ id?: number; signature?: string; version?: number; pending?: boolean }
+		{
+			primaryKey: Id;
+			id?: number;
+			previousId?: number;
+			signature?: string;
+			version?: number;
+			pending?: boolean;
+			cleared?: boolean;
+		}
 	>();
 	postCommit?: true;
 	constructor(indexStore: any, options: any) {
@@ -295,10 +507,16 @@ export class HierarchicalNavigableSmallWorld {
 			// (we would actually like to use float16 if it were available)
 			this.indexStore.encoder.useFloat32 = FLOAT32_OPTIONS.ALWAYS;
 		}
+		const configuredM = options?.M;
+		const configuredEfConstruction = options?.efConstruction;
+		const configuredEfConstructionSearch = options?.efConstructionSearch;
+		const configuredML = options?.mL;
+		const configuredOptimizeRouting = options?.optimizeRouting;
+		const configuredFilterExpansion = options?.filterExpansion;
 		this.int8 = options?.quantization !== 'none';
 		// Respect an explicitly-configured ef (efConstruction seeds the search ef too); otherwise auto-scale both.
-		this.efSearchConfigured = options?.efConstructionSearch !== undefined || options?.efConstruction !== undefined;
-		this.efConstructionConfigured = options?.efConstruction !== undefined;
+		this.efSearchConfigured = configuredEfConstructionSearch !== undefined || configuredEfConstruction !== undefined;
+		this.efConstructionConfigured = configuredEfConstruction !== undefined;
 		this.distance =
 			options?.distance === 'euclidean'
 				? euclideanDistance
@@ -307,46 +525,34 @@ export class HierarchicalNavigableSmallWorld {
 					: cosineDistance;
 		if (options) {
 			// allow all the HNSW parameters to be configured/tuned
-			if (options.M !== undefined) {
-				this.M = options.M;
+			if (configuredM !== undefined) {
+				this.M = configuredM;
 				this.mL = 1 / Math.log(this.M); // recalculate
 			}
-			if (options.efConstruction !== undefined)
-				this.efConstruction = this.efConstructionSearch = options.efConstruction;
-			if (options.efConstructionSearch !== undefined) this.efConstructionSearch = options.efConstructionSearch;
-			if (options.mL !== undefined) this.mL = options.mL;
-			if (options.optimizeRouting !== undefined) this.optimizeRouting = options.optimizeRouting;
-			if (options.filterExpansion !== undefined) this.filterExpansion = options.filterExpansion;
+			if (configuredEfConstruction !== undefined)
+				this.efConstruction = this.efConstructionSearch = configuredEfConstruction;
+			if (configuredEfConstructionSearch !== undefined) this.efConstructionSearch = configuredEfConstructionSearch;
+			if (configuredML !== undefined) this.mL = configuredML;
+			if (configuredOptimizeRouting !== undefined) this.optimizeRouting = configuredOptimizeRouting;
+			if (configuredFilterExpansion !== undefined) this.filterExpansion = configuredFilterExpansion;
 		}
 		if (options?.nativePlane) {
-			if (!(indexStore?.rootStore instanceof RocksDatabase)) {
-				throw new ClientError('nativePlane requires the RocksDB storage engine');
-			}
-			const nativeML = 1 / Math.log(16);
-			if (
-				(options.M !== undefined && options.M !== 16) ||
-				(options.efConstruction !== undefined && options.efConstruction !== 200) ||
-				(options.mL !== undefined && options.mL !== nativeML) ||
-				(options.optimizeRouting !== undefined && options.optimizeRouting !== 0.5)
-			) {
-				throw new ClientError('nativePlane requires M=16, efConstruction=200, mL=1/ln(16), and optimizeRouting=0.5');
-			}
-			this.efConstruction = options.efConstruction ?? 200;
-			this.nativePlaneMaxNodes = options.nativePlaneMaxNodes ?? PLANE_MAX_NODES;
-			if (
-				!Number.isSafeInteger(this.nativePlaneMaxNodes) ||
-				this.nativePlaneMaxNodes < 1 ||
-				this.nativePlaneMaxNodes >= PLANE_NO_ID
-			) {
-				throw new ClientError('nativePlaneMaxNodes must be a positive integer below 2^32-1');
-			}
+			const { nativeM, nativeEfConstruction, nativeML, nativeOptimizeRouting, maxNodes, keyCap, layer0Cap } =
+				HierarchicalNavigableSmallWorld.validateNativePlaneOptions(indexStore?.rootStore, options);
+			if (nativeM !== undefined) this.M = nativeM;
+			if (nativeML !== undefined) this.mL = nativeML;
+			if (nativeOptimizeRouting !== undefined) this.optimizeRouting = nativeOptimizeRouting;
+			this.efConstruction = nativeEfConstruction ?? 200;
+			this.nativePlaneMaxNodes = maxNodes;
+			this.nativePlaneKeyCap = keyCap;
+			this.nativePlaneLayer0Cap = layer0Cap;
 			// The plane stores int8 bins and computes asymmetric cosine only, so the flag is a
-			// no-op for float (quantization: "none") and non-cosine indexes; a graph whose derived
-			// layer-0 cap exceeds the plane maximum is refused rather than silently truncated.
-			this.planeEligible =
-				this.int8 && this.distance === cosineDistance && this.planeLayer0Cap() <= PLANE_LAYER0_CAP_MAX;
+			// no-op for float (quantization: "none") and non-cosine indexes.
+			this.planeEligible = this.int8 && this.distance === cosineDistance;
 			if (!this.planeEligible) {
-				throw new ClientError('nativePlane requires an int8-quantized cosine HNSW index');
+				throw new ClientError(
+					'nativePlane requires an int8-quantized cosine HNSW index; set nativePlane: false to use the JS index'
+				);
 			}
 			this.filePrimary = true;
 			this.postCommit = true;
@@ -390,6 +596,13 @@ export class HierarchicalNavigableSmallWorld {
 		if (now < this.planeRetryAt) return null;
 		const Plane = getPlaneBinding();
 		if (!Plane) return (this.plane = null); // the loader warned once already
+		if (!('keyCap' in Plane.prototype)) {
+			if (!this.planeDisabledLogged) {
+				this.planeDisabledLogged = true;
+				logger.error?.('the installed @harperfast/hnsw predates 0.3.0; the native HNSW index needs 0.3.0 or later');
+			}
+			return (this.plane = null);
+		}
 		const filePath = this.planeFilePath();
 		if (!filePath) {
 			this.disablePlane(new Error('the index store exposes no path to place the plane file next to'));
@@ -414,7 +627,22 @@ export class HierarchicalNavigableSmallWorld {
 				try {
 					// Crash recovery is per-slot inside the crate. The clean flag is advisory;
 					// another worker may still be constructing this shared file.
-					return (this.plane = Plane.open(filePath));
+					const opened = Plane.open(filePath);
+					// A header that disagrees with the declaration is a different graph, not a
+					// repairable file, and only the owner may destroy it: invalidating through this
+					// handle would write a path-based tombstone that could name a replacement the
+					// owner had already created.
+					const geometryMismatch =
+						opened.keyCap !== this.nativePlaneKeyCap
+							? `keyCap ${opened.keyCap} differs from the configured ${this.nativePlaneKeyCap}`
+							: opened.layer0Cap !== this.nativePlaneLayer0Cap
+								? `layer0Cap ${opened.layer0Cap} differs from the configured ${this.nativePlaneLayer0Cap}`
+								: undefined;
+					if (geometryMismatch) {
+						this.disablePlane(new Error(`plane ${geometryMismatch}`));
+						return null;
+					}
+					return (this.plane = opened);
 				} catch (openError) {
 					if (now - statSync(filePath).mtimeMs <= PLANE_STALE_CREATE_MS) {
 						// another worker is between its exclusive create and the header write
@@ -448,7 +676,13 @@ export class HierarchicalNavigableSmallWorld {
 			}
 			closeSync(fd);
 			try {
-				return (this.plane = Plane.create(filePath, dims, this.planeLayer0Cap(), this.nativePlaneMaxNodes));
+				return (this.plane = Plane.create(
+					filePath,
+					dims,
+					this.nativePlaneLayer0Cap,
+					this.nativePlaneMaxNodes,
+					this.nativePlaneKeyCap
+				));
 			} catch (createError) {
 				// Never leave a partial file that a later process could trust as current.
 				try {
@@ -477,11 +711,6 @@ export class HierarchicalNavigableSmallWorld {
 
 	private derivedReadiness(): DerivedIndexReadiness['state'] {
 		return this.derivedHost?.readiness().state ?? 'unknown';
-	}
-
-	/** The JS graph's effective layer-0 cap for this configuration; sizes the plane's slots. */
-	private planeLayer0Cap(): number {
-		return this.optimizeRouting ? this.M << 3 : this.M << 1;
 	}
 
 	/**
@@ -524,12 +753,10 @@ export class HierarchicalNavigableSmallWorld {
 		}
 	}
 
-	/** True while any node-id mapping survives, which is the only proof this index holds nodes. */
+	/** True while any primary-key mapping survives, which is the only proof this index holds nodes. */
 	private hasNodeMappings(): boolean {
-		// Node ids are the store's numeric keys, so bounding the probe to that key space keeps this
-		// off a full scan of the primary-key mappings beside them.
-		for (const { key } of this.indexStore.getRange({ start: 0, end: Number.MAX_SAFE_INTEGER })) {
-			if (typeof key === 'number') return true;
+		for (const { value } of this.indexStore.getRange({})) {
+			if (value && typeof value === 'object' && typeof value.id === 'number') return true;
 		}
 		return false;
 	}
@@ -544,46 +771,53 @@ export class HierarchicalNavigableSmallWorld {
 	}
 
 	/**
-	 * Native search over the plane: one NAPI crossing, traversal on the libuv pool, promise
-	 * resolution maps node ids back to primary keys through the existing pk resolution. The
-	 * predicate adapter runs on this thread's event loop (batched over a ThreadsafeFunction), so
-	 * this promise must never be awaited by code the predicate itself blocks on; the normal
-	 * request path awaits it safely.
+	 * Native search over the plane: one NAPI crossing, traversal on the libuv pool, every hit
+	 * carrying its primary key out of the slot. The predicate adapter runs on this thread's event
+	 * loop (batched over a ThreadsafeFunction), so this promise must never be awaited by code the
+	 * predicate itself blocks on; the normal request path awaits it safely.
 	 */
 	private searchPlane(
 		plane: HnswPlane,
 		target: number[],
+		k: number,
 		ef: number,
 		filter: ((primaryKey: Id) => boolean) | undefined,
-		filterState: FilterState | undefined,
-		options: any
+		filterState: FilterState | undefined
 	): Promise<any[]> {
 		const query = Float32Array.from(target);
-		let resultPromise: Promise<{ id: number; distance: number }[]>;
+		let resultPromise: Promise<PlaneSearchHits>;
 		let predicateError: unknown;
+		let planeError: unknown;
 		if (filter && filterState) {
-			const predicate = (ids: number[]): Uint8Array => {
+			const predicate: PlanePredicate = (ids, keys, keyEnds) => {
 				const verdicts = new Uint8Array(ids.length);
-				if (predicateError !== undefined) return verdicts; // already failed — deny remaining batches cheaply
-				try {
-					for (let i = 0; i < ids.length; i++) {
-						const primaryKey = this.safeGetSync(ids[i], options)?.primaryKey;
-						if (primaryKey !== undefined && this.admit(filter, filterState, primaryKey)) verdicts[i] = 1;
+				if (predicateError !== undefined || planeError !== undefined) return verdicts;
+				for (let i = 0; i < ids.length; i++) {
+					const start = i === 0 ? 0 : keyEnds[i - 1];
+					const end = keyEnds[i];
+					if (end === start) continue;
+					let primaryKey: Id;
+					try {
+						primaryKey = unpack(keys.subarray(start, end));
+					} catch (error) {
+						planeError = error;
+						break;
 					}
-				} catch (error) {
-					// an app-supplied filter threw: deny the batch and surface the error once the
-					// traversal resolves — the same query failure the JS path raises — instead of
-					// letting it escape into the fatal-strategy ThreadsafeFunction callback
-					predicateError ??= error;
+					try {
+						if (this.admit(filter, filterState, primaryKey)) verdicts[i] = 1;
+					} catch (error) {
+						predicateError = error;
+						break;
+					}
 				}
 				return verdicts;
 			};
-			// pass the already-resolved JS visit budget verbatim so both paths stop at the same count
-			resultPromise = plane.searchWithPredicate(query, ef, ef, predicate, undefined, filterState.maxVisits);
+			resultPromise = plane.searchWithPredicate(query, k, ef, predicate, undefined, filterState.maxVisits);
 		} else {
-			resultPromise = plane.search(query, ef, ef);
+			resultPromise = plane.search(query, k, ef);
 		}
 		return resultPromise.then((hits) => {
+			if (planeError !== undefined) throw planeError;
 			if (predicateError !== undefined) {
 				// the plane itself is healthy; mark the failure as the application's so the caller
 				// re-raises it rather than disabling the plane and retrying
@@ -595,25 +829,17 @@ export class HierarchicalNavigableSmallWorld {
 				throw predicateError;
 			}
 			const entries: any[] = [];
-			try {
-				for (const hit of hits) {
-					const mapping = this.safeGetSync(hit.id, options);
-					if (mapping?.pending) continue;
-					const primaryKey = mapping?.primaryKey;
-					if (primaryKey === undefined) continue; // deleted/reused id raced the search
-					entries.push({ key: primaryKey, distance: hit.distance });
-				}
-			} catch (error) {
-				// The traversal already succeeded; this is a RocksDB read of the id mappings, which
-				// can fail transiently or because the store closed under an in-flight search. Tagging
-				// it keeps the caller from reading it as a plane failure and unlinking a healthy file,
-				// which costs a full reconstruction.
-				try {
-					(error as any)[NOT_A_PLANE_FAILURE] = true;
-				} catch {
-					// a frozen/primitive throw still propagates, it just also disables the plane
-				}
-				throw error;
+			const { distances, keys, keyEnds } = hits;
+			// a key appears twice only after a crash (see applyDerivedValue); keep the nearer hit
+			const seen = new Set<string>();
+			for (let i = 0; i < keyEnds.length; i++) {
+				const start = i === 0 ? 0 : keyEnds[i - 1];
+				const end = keyEnds[i];
+				if (end === start) continue;
+				const encoded = keys.toString('latin1', start, end);
+				if (seen.has(encoded)) continue;
+				seen.add(encoded);
+				entries.push({ key: unpack(keys.subarray(start, end)), distance: distances[i] });
 			}
 			// nodesVisited stays 0 here: layer-0 visits happen inside the native traversal
 			// (filterEvaluations is still counted by the predicate adapter)
@@ -621,8 +847,21 @@ export class HierarchicalNavigableSmallWorld {
 		});
 	}
 
-	attachDerivedHost(host: { readiness: () => DerivedIndexReadiness; requestRebuild: () => boolean }): void {
+	attachDerivedHost(host: DerivedNativeIndexHost): void {
 		this.derivedHost = host;
+	}
+
+	private queryCoverage(maxLagMilliseconds: number) {
+		const coverage = this.derivedHost?.coverage(maxLagMilliseconds);
+		if (!coverage || coverage.state === 'unknown') {
+			const age = coverage?.lagUpperBoundMilliseconds;
+			throw new DerivedIndexLagError(
+				`Cannot certify native HNSW index coverage within ${maxLagMilliseconds} ms` +
+					(age === undefined ? '; freshness is unknown' : `; last certified ${Math.ceil(age)} ms ago`) +
+					'; retry this query'
+			);
+		}
+		return coverage;
 	}
 
 	/**
@@ -689,9 +928,14 @@ export class HierarchicalNavigableSmallWorld {
 	applyDerivedValue(primaryKey: Id, vector: number[], version?: number): void {
 		this.validateVector(primaryKey, vector);
 		const safeKey = typeof primaryKey === 'number' ? [KEY_PREFIX, primaryKey] : primaryKey;
-		const pendingMapping = this.pendingDerivedMappings.get(primaryKey);
+		const pendingKey = pendingMappingKey(primaryKey);
+		const pendingMapping = this.pendingDerivedMappings.get(pendingKey);
 		const storedMapping = pendingMapping ?? this.indexStore.getSync(safeKey);
 		const oldNodeId = typeof storedMapping === 'number' ? storedMapping : storedMapping?.id;
+		// Neither a plane removal nor an insert is durable before the barrier, so a pending
+		// mapping keeps naming the last published node (previousId) for replay to remove.
+		const displacedNodeId: number | undefined = storedMapping?.previousId;
+		const durableNodeId = storedMapping?.pending ? displacedNodeId : oldNodeId;
 		if (storedMapping?.version != null && version != null && storedMapping.version > version) return;
 		const nativeVector = vector ? Float32Array.from(vector) : undefined;
 		const signature = nativeVector
@@ -707,7 +951,6 @@ export class HierarchicalNavigableSmallWorld {
 			!storedMapping.pending
 		) {
 			this.indexStore.putSync(safeKey, { id: oldNodeId, signature, version });
-			this.indexStore.putSync(oldNodeId, { primaryKey, version });
 			return;
 		}
 		let plane = vector ? this.getPlane(vector.length, true) : this.getPlane();
@@ -723,20 +966,23 @@ export class HierarchicalNavigableSmallWorld {
 				`Vector for attribute "${String(primaryKey)}" has ${vector.length} components, but this index stores ${plane.dims}.`
 			);
 		}
-		if (oldNodeId != null) {
-			plane?.remove(oldNodeId);
-			this.indexStore.removeSync(oldNodeId);
-		}
+		// in process a pending mapping's removals already happened and their ids may be reused
+		const removeDisplaced = displacedNodeId != null && !pendingMapping && displacedNodeId !== oldNodeId;
+		const removeOld = oldNodeId != null && !(pendingMapping && storedMapping.cleared);
+		if (removeDisplaced) plane?.remove(displacedNodeId);
+		if (removeOld) plane?.remove(oldNodeId);
 		if (!vector) {
-			this.indexStore.removeSync(safeKey);
-			this.pendingDerivedMappings.set(primaryKey, { version });
+			const cleared = { id: oldNodeId, previousId: durableNodeId, version, pending: true, cleared: true };
+			if (oldNodeId != null || durableNodeId != null) this.indexStore.putSync(safeKey, cleared);
+			else this.indexStore.removeSync(safeKey);
+			this.pendingDerivedMappings.set(pendingKey, { ...cleared, primaryKey });
 			return;
 		}
 		if (!plane) throw new ServerError('The native HNSW module is unavailable for a file-primary index', 503);
-		const nodeId = plane.insert(nativeVector!);
-		this.indexStore.putSync(safeKey, { id: nodeId, signature, version, pending: true });
-		this.indexStore.putSync(nodeId, { primaryKey, version, pending: true });
-		this.pendingDerivedMappings.set(primaryKey, { id: nodeId, signature, version, pending: true });
+		const nodeId = plane.insert(nativeVector!, pack(primaryKey));
+		const mapping = { id: nodeId, previousId: durableNodeId, signature, version, pending: true };
+		this.indexStore.putSync(safeKey, mapping);
+		this.pendingDerivedMappings.set(pendingKey, { ...mapping, primaryKey });
 	}
 
 	async flushDerived(watermark?: number): Promise<void> {
@@ -750,14 +996,13 @@ export class HierarchicalNavigableSmallWorld {
 	}
 
 	private publishDerivedMappings(): void {
-		for (const [primaryKey, mapping] of this.pendingDerivedMappings) {
+		for (const { primaryKey, ...mapping } of this.pendingDerivedMappings.values()) {
 			const safeKey = typeof primaryKey === 'number' ? [KEY_PREFIX, primaryKey] : primaryKey;
-			if (mapping.id === undefined) {
+			if (mapping.cleared || mapping.id === undefined) {
 				this.indexStore.removeSync(safeKey);
 			} else {
 				const published = { id: mapping.id, signature: mapping.signature, version: mapping.version };
 				this.indexStore.putSync(safeKey, published);
-				this.indexStore.putSync(mapping.id, { primaryKey, version: mapping.version });
 			}
 		}
 		this.pendingDerivedMappings.clear();
@@ -1316,8 +1561,9 @@ export class HierarchicalNavigableSmallWorld {
 		}
 	}
 
-	/** O(1) node count — the shared id counter, else a single reverse seek to the largest node id. */
+	/** O(1) node count: the plane's id high-water, the shared id counter, or one reverse seek. */
 	private resolveNodeCount(options?: any): number {
+		if (this.filePrimary) return this.getPlane()?.idHighWater() ?? 0;
 		if (this.idIncrementer) return Number(Atomics.load(this.idIncrementer, 0));
 		try {
 			for (const key of this.indexStore.getKeys({
@@ -1558,12 +1804,14 @@ export class HierarchicalNavigableSmallWorld {
 	 * This the main entry from Harper's query functionality, where we actually search for an ordered list of nearest
 	 * neighbors, using the provided sort/order definition object and performing the multi-layer skip-list search.
 	 * This returns an iterable of the nearest neighbors to the provided target vector, with nearest ordered first.
-	 * @param target
-	 * @param value
-	 * @param descending
-	 * @param distance
-	 * @param comparator
-	 * @param context
+	 *
+	 * This is also the contract an index implemented outside this repo has to satisfy, so everything
+	 * optional is named: a future capability (a paging cursor, a deadline, a recall target) is a new
+	 * field on `options` rather than a positional argument that breaks every existing implementation.
+	 * @param searchCondition the vector query: `target`, `comparator`, and the optional `value`,
+	 *   `descending`, `distance`, `ef` and `filterExpansion` tuning knobs
+	 * @param context the query context; its `transaction` is the nested RocksDB transaction reads use
+	 * @param options optional, named: `filter` (predicate-aware traversal) and `minResults`
 	 */
 	search(
 		{
@@ -1574,6 +1822,8 @@ export class HierarchicalNavigableSmallWorld {
 			comparator,
 			ef,
 			filterExpansion,
+			maxIndexLagMilliseconds = DEFAULT_MAX_INDEX_LAG_MILLISECONDS,
+			waitForIndexMilliseconds = 0,
 		}: {
 			target: number[];
 			value: number;
@@ -1582,19 +1832,27 @@ export class HierarchicalNavigableSmallWorld {
 			comparator: string;
 			ef?: number;
 			filterExpansion?: number;
+			maxIndexLagMilliseconds?: number;
+			waitForIndexMilliseconds?: number;
 		},
 		context: any,
-		// Predicate-aware traversal (#1241). When provided, only nodes for which `filter(primaryKey)`
-		// returns true are admitted to the result list at layer 0; routing is unaffected. Composed by
-		// search.ts from companion AND conditions and caller-supplied vector/row filters. Must be
-		// synchronous and side-effect free. JS-API only (never from a REST query string).
-		filter?: (primaryKey: Id) => boolean,
-		// offset + limit for a bounded query. A layer-0 search returns at most `ef` candidates, so a
-		// query asking for more rows than that used to come back short with no error — capped at 512
-		// (AUTO_EF_MAX) however large the limit was. Raising ef to cover the request keeps `limit`
-		// meaningful; the caller pays for what it asked for.
-		minResults?: number
+		{
+			filter,
+			minResults,
+		}: {
+			// Predicate-aware traversal (#1241). When provided, only nodes for which `filter(primaryKey)`
+			// returns true are admitted to the result list at layer 0; routing is unaffected. Composed by
+			// search.ts from companion AND conditions and caller-supplied vector/row filters. Must be
+			// synchronous and side-effect free. JS-API only (never from a REST query string).
+			filter?: (primaryKey: Id) => boolean;
+			// offset + limit for a bounded query. A layer-0 search returns at most `ef` candidates, so a
+			// query asking for more rows than that used to come back short with no error — capped at 512
+			// (AUTO_EF_MAX) however large the limit was. Raising ef to cover the request keeps `limit`
+			// meaningful; the caller pays for what it asked for.
+			minResults?: number;
+		} = {}
 	) {
+		const waiting = this.filePrimary && waitForIndexMilliseconds > 0;
 		let limit: number | undefined; // only set for threshold comparators; 0 is a valid threshold (e.g. dotProduct)
 		let limitInclusive = false; // true for `le`, false for `lt`
 		switch (comparator) {
@@ -1621,8 +1879,25 @@ export class HierarchicalNavigableSmallWorld {
 		else distanceFunction = this.distance;
 		if (!target) throw new ClientError('A target vector must be provided for an HNSW query');
 		if (!Array.isArray(target)) throw new ClientError('The target vector must be an array');
+		if (
+			this.filePrimary &&
+			(typeof maxIndexLagMilliseconds !== 'number' ||
+				!Number.isFinite(maxIndexLagMilliseconds) ||
+				maxIndexLagMilliseconds < 0)
+		)
+			throw new ClientError('maxIndexLagMilliseconds must be a finite nonnegative number');
+		if (
+			this.filePrimary &&
+			(typeof waitForIndexMilliseconds !== 'number' ||
+				!Number.isFinite(waitForIndexMilliseconds) ||
+				waitForIndexMilliseconds < 0 ||
+				waitForIndexMilliseconds > MAX_WAIT_FOR_INDEX_MILLISECONDS)
+		)
+			throw new ClientError(
+				`waitForIndexMilliseconds must be a finite number between 0 and ${MAX_WAIT_FOR_INDEX_MILLISECONDS}`
+			);
 
-		const options = context.transaction; // should have a nested RocksDB transaction
+		const txnOptions = context.transaction; // should have a nested RocksDB transaction
 		// Resolve search ef: per-query ef wins; else use the schema-pinned value (from either ef option);
 		// otherwise auto-scale with the graph size so recall holds as the table grows.
 		let effectiveEf = this.efConstructionSearch;
@@ -1664,57 +1939,108 @@ export class HierarchicalNavigableSmallWorld {
 					filterEvaluations: 0,
 				}
 			: undefined;
+		const rerankK =
+			comparator === 'sort' && minResults !== undefined
+				? Math.min(effectiveEf, Math.max(RERANK_MIN, minResults * RERANK_FACTOR))
+				: effectiveEf;
 		if (this.filePrimary && distanceFunction !== this.distance) {
 			throw new ClientError('A nativePlane index only supports its configured cosine distance');
 		}
-		// The plane traverses the index's own metric (cosine — the eligibility requirement), so a
-		// query overriding `distance` has to take the JS path: rescoreResults only corrects the
-		// reported distances of whatever candidates came back, not which candidates the beam kept.
-		if (this.planeEligible && distanceFunction === this.distance) {
-			const plane = this.getPlane(target.length, false);
-			// A file-primary index has no JS path to fall through to, so a target the plane cannot
-			// accept has to fail as the client error it is. Otherwise it throws out of
-			// Float32Array.from or the traversal, is read as plane corruption, and unlinks a healthy
-			// file — one malformed query costing a full reconstruction.
-			if (this.filePrimary && plane) this.assertPlaneVector(target, 'Search target');
-			// a non-file-primary query whose dimensionality differs from the graph's takes the JS
-			// path, which tolerates the mismatch, rather than disabling the healthy plane
-			if (plane && plane.dims === target.length && this.planeSearchReady(plane)) {
-				try {
-					return this.searchPlane(plane, target, effectiveEf, filter, filterState, options).catch((error) => {
-						// the query failed for a reason outside the traversal: re-raise instead of disabling the file
-						if (error?.[NOT_A_PLANE_FAILURE]) throw error;
-						// There is no JS graph behind a file-primary index: it stays unavailable until
-						// its audit-backed rebuild succeeds.
+		const searchNative = (certified?: DerivedIndexCoverage) => {
+			if (this.filePrimary && this.derivedReadiness() !== 'ready') {
+				throw new ServerError(
+					`The native HNSW index is ${this.derivedReadiness() === 'unavailable' ? 'unavailable' : 'rebuilding'}`,
+					503
+				);
+			}
+			// The plane traverses the index's own metric (cosine — the eligibility requirement), so a
+			// query overriding `distance` has to take the JS path: rescoreResults only corrects the
+			// reported distances of whatever candidates came back, not which candidates the beam kept.
+			if (this.planeEligible && distanceFunction === this.distance) {
+				const plane = this.getPlane(target.length, false);
+				// A file-primary index has no JS path to fall through to, so a target the plane cannot
+				// accept has to fail as the client error it is. Otherwise it throws out of
+				// Float32Array.from or the traversal, is read as plane corruption, and unlinks a healthy
+				// file — one malformed query costing a full reconstruction.
+				if (this.filePrimary && plane) this.assertPlaneVector(target, 'Search target');
+				// a non-file-primary query whose dimensionality differs from the graph's takes the JS
+				// path, which tolerates the mismatch, rather than disabling the healthy plane
+				if (plane && plane.dims === target.length && this.planeSearchReady(plane)) {
+					const coverage = certified ?? (this.filePrimary ? this.queryCoverage(maxIndexLagMilliseconds) : undefined);
+					try {
+						const searched = this.searchPlane(plane, target, rerankK, effectiveEf, filter, filterState)
+							.catch((error) => {
+								if (error?.[NOT_A_PLANE_FAILURE]) throw error;
+								// There is no JS graph behind a file-primary index: it stays unavailable until
+								// its audit-backed rebuild succeeds.
+								this.disablePlane(error);
+								throw new ServerError('The native HNSW index is rebuilding', 503);
+							})
+							.then((entries) => {
+								if (coverage) Object.defineProperty(entries, 'indexCoverage', { value: coverage });
+								return entries;
+							});
+						if (coverage) Object.defineProperty(searched, 'indexCoverage', { value: coverage });
+						return searched;
+					} catch (error) {
+						// Handle a throw raised before the asynchronous native search returns its promise.
 						this.disablePlane(error);
 						throw new ServerError('The native HNSW index is rebuilding', 503);
-					});
-				} catch (error) {
-					// Handle a throw raised before the asynchronous native search returns its promise.
-					this.disablePlane(error);
-					throw new ServerError('The native HNSW index is rebuilding', 503);
+					}
 				}
 			}
-		}
-		if (this.filePrimary) {
-			const state = this.derivedReadiness();
-			if (state === 'unavailable') throw new ServerError('The native HNSW index is unavailable', 503);
-			const planePath = this.planeFilePath();
-			if (state !== 'ready' || (planePath && existsSync(planePath))) {
-				throw new ServerError('The native HNSW index is rebuilding', 503);
+			if (this.filePrimary) {
+				const state = this.derivedReadiness();
+				if (state === 'unavailable') throw new ServerError('The native HNSW index is unavailable', 503);
+				const planePath = this.planeFilePath();
+				if (state !== 'ready' || (planePath && existsSync(planePath))) {
+					throw new ServerError('The native HNSW index is rebuilding', 503);
+				}
+				// The absence of a file is not proof of an empty index — it is also the state just after
+				// any process removes an unopenable one. Only the surviving node mappings prove it.
+				if (this.hasNodeMappings()) {
+					// A table taking no further writes never drains, so a query is the only thing left
+					// that can notice the graph is gone and ask for it back.
+					logger.error?.(`${this.indexStore.name} lost its native file while its node mappings survive`);
+					this.derivedHost?.requestRebuild();
+					throw new ServerError('The native HNSW index is rebuilding', 503);
+				}
+				const entries = withStats([], filterState);
+				Object.defineProperty(entries, 'indexCoverage', {
+					value: certified ?? this.queryCoverage(maxIndexLagMilliseconds),
+				});
+				return entries;
 			}
-			// The absence of a file is not proof of an empty index — it is also the state just after
-			// any process removes an unopenable one. Only the surviving node mappings prove it.
-			if (this.hasNodeMappings()) {
-				// A table taking no further writes never drains, so a query is the only thing left
-				// that can notice the graph is gone and ask for it back.
-				logger.error?.(`${this.indexStore.name} lost its native file while its node mappings survive`);
-				this.derivedHost?.requestRebuild();
-				throw new ServerError('The native HNSW index is rebuilding', 503);
+		};
+		if (waiting) {
+			context.signal?.throwIfAborted();
+			const host = this.derivedHost;
+			const state = host?.readiness().state;
+			if (state !== 'ready') {
+				throw new ServerError(
+					`The native HNSW index is ${state === 'unavailable' ? 'unavailable' : 'rebuilding'}`,
+					503
+				);
 			}
-			return withStats([], filterState);
+			const searched = Promise.resolve(context.indexSearchStart).then(async () => {
+				context.signal?.throwIfAborted();
+				if (minResults === 0) return [];
+				const started = derivedIndexTime(this.indexStore.rootStore);
+				if (host.coverage(0)?.state !== 'current')
+					await host.waitForCoverage(started, waitForIndexMilliseconds, context.signal);
+				context.signal?.throwIfAborted();
+				return searchNative({
+					state: 'current',
+					maxLagMilliseconds: maxIndexLagMilliseconds,
+					lagUpperBoundMilliseconds: 0,
+				});
+			});
+			searched.catch(() => {});
+			return searched;
 		}
-		let entryPoint = this.getEntryPoint(options);
+		const native = searchNative();
+		if (native) return native;
+		let entryPoint = this.getEntryPoint(txnOptions);
 		if (!entryPoint) return withStats([], filterState);
 		let entryPointId = entryPoint.id;
 		let results: Candidate[] = [];
@@ -1732,7 +2058,7 @@ export class HierarchicalNavigableSmallWorld {
 				entryPoint,
 				l === 0 ? effectiveEf : ROUTING_EF,
 				l,
-				options,
+				txnOptions,
 				distanceFunction,
 				l === 0 ? filter : undefined,
 				l === 0 ? filterState : undefined
@@ -1748,6 +2074,7 @@ export class HierarchicalNavigableSmallWorld {
 			results = results.filter((candidate) =>
 				limitInclusive ? candidate.distance <= limit : candidate.distance < limit
 			);
+		if (results.length > rerankK) results = results.slice(0, rerankK);
 		return withStats(
 			results.map((candidate) => ({
 				// we return the result as an entry so we can provide distance as metadata

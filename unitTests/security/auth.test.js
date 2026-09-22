@@ -1,6 +1,7 @@
 const assert = require('node:assert');
 const sinon = require('sinon');
 const { Headers } = require('#src/server/serverHelpers/Headers');
+const { assertNoDeferredCredentialRejection } = require('#src/security/deferredAuthentication');
 
 // First set up test environment
 const testUtils = require('../testUtils.js');
@@ -165,6 +166,10 @@ describe('auth.ts - certificate verification integration', function () {
 			assert(!nextHandler.called);
 			assert.strictEqual(result.status, 401);
 			assert.deepStrictEqual(result.body, { error: 'Certificate revoked or verification failed' });
+			assert.throws(
+				() => assertNoDeferredCredentialRejection(request),
+				(error) => error.statusCode === 401 && error.message === 'Certificate revoked or verification failed'
+			);
 		});
 
 		it('should reject request when certificate verification fails', async function () {

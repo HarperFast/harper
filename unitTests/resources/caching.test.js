@@ -48,6 +48,7 @@ describe('Caching', () => {
 	let sourceExpiresAt;
 	let return_value = true;
 	let return_error;
+	let return_rejection = null; // when set, `{ value }` is rejected as-is
 	// skip LMDB test for now, https://github.com/HarperFast/harper/issues/414 for re-enabling
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	before(async function () {
@@ -79,6 +80,10 @@ describe('Caching', () => {
 				sourceRequests++;
 				return new Promise((resolve, reject) => {
 					setTimeout(() => {
+						if (return_rejection) {
+							reject(return_rejection.value);
+							return;
+						}
 						if (return_error) {
 							let error = new Error('test source error');
 							error.statusCode = return_error;
@@ -888,38 +893,131 @@ describe('Caching', () => {
 
 	it('Source throw error', async function () {
 		try {
-			IndexedCachingTable.setTTLExpiration(0.005);
-			await new Promise((resolve) => setTimeout(resolve, 10));
+			IndexedCachingTable.setTTLExpiration({ expiration: 0.005, eviction: 100 });
+			await IndexedCachingTable.invalidate(30);
 			sourceRequests = 0;
 			events = [];
 			return_error = 500;
 			let returned_error;
-			let result;
 			try {
-				result = await IndexedCachingTable.get(30);
+				await IndexedCachingTable.get(30);
 			} catch (error) {
 				returned_error = error;
 			}
 			assert.equal(returned_error?.message, 'test source error while resolving record 30 for IndexedCachingTable');
 			assert.equal(sourceRequests, 1);
 
-			IndexedCachingTable.setTTLExpiration({
-				expiration: 0.005,
-				eviction: 0.01,
-			});
 			return_error = false;
-			IndexedCachingTable.invalidate(23); // reset the entry
+			const expiredAt = (sourceExpiresAt = Date.now() - 1);
+			await IndexedCachingTable.invalidate(23);
 			await IndexedCachingTable.get(23);
+			await waitFor(
+				() =>
+					!IndexedCachingTable.primaryStore.hasLock(23) &&
+					IndexedCachingTable.primaryStore.getEntry(23)?.expiresAt === expiredAt,
+				{ message: 'the expired source fill should be committed and remain resident' }
+			);
+			const staleEntry = IndexedCachingTable.primaryStore.getEntry(23);
+			assert(staleEntry);
+			assert(staleEntry.expiresAt < Date.now());
 			sourceRequests = 0;
 			sourceResponses = 0;
 			events = [];
-			await new Promise((resolve) => setTimeout(resolve, 10));
-			// should be stale but not evicted
 			return_error = 504;
-			result = await IndexedCachingTable.get(23, { staleIfError: true });
-			assert(result); // should return stale value despite error
-			assert.equal(sourceRequests, 1); // the source request should be started
+			const result = await IndexedCachingTable.get(23, { staleIfError: true });
+			assert(result);
+			assert.equal(result.name, 'name 23');
+			assert.equal(sourceRequests, 1);
+			await waitFor(() => !IndexedCachingTable.primaryStore.hasLock(23));
 		} finally {
+			return_error = false;
+			sourceExpiresAt = undefined;
+			IndexedCachingTable.setTTLExpiration({ expiration: 0.005, eviction: 0.01 });
+		}
+	});
+
+	it('Source throw error with a non-writable message', async function () {
+		try {
+			IndexedCachingTable.setTTLExpiration(0.005);
+			await delay(10);
+			sourceRequests = 0;
+			events = [];
+			// What `fetch` rejects with when an AbortSignal.timeout fires: DOMException carries
+			// `message` as a getter-only accessor, so annotating it throws under strict mode.
+			return_rejection = { value: new DOMException('test source error', 'TimeoutError') };
+			const HUNG = Symbol('hung');
+			// .mocharc.json sets `timeout: 0`, so an unsettled get() would stall the run rather
+			// than fail it.
+			const outcome = await Promise.race([
+				IndexedCachingTable.get(131).then(
+					() => 'resolved',
+					(error) => error
+				),
+				delay(2000, HUNG),
+			]);
+			assert.notStrictEqual(outcome, HUNG, 'get() must settle when the source rejects');
+			assert.notStrictEqual(outcome, 'resolved', 'get() must reject when the source rejects');
+			assert.equal(outcome.name, 'TimeoutError');
+			assert.equal(sourceRequests, 1);
+		} finally {
+			return_rejection = null;
+		}
+	});
+
+	// The settle decision reads `error.code`, so a nullish rejection reaching it with a
+	// record already cached used to throw before either resolve() or reject() ran.
+	it('Source rejects with no error while a record is cached', async function () {
+		try {
+			IndexedCachingTable.setTTLExpiration({ expiration: 0.005, eviction: 100 });
+			return_rejection = null;
+			return_error = false;
+			IndexedCachingTable.invalidate(132);
+			await IndexedCachingTable.get(132); // seed an existing record to revalidate against
+			await delay(10);
+			return_rejection = { value: undefined };
+			const HUNG = Symbol('hung');
+			const outcome = await Promise.race([
+				IndexedCachingTable.get(132).then(
+					() => 'resolved',
+					(error) => ({ rejected: error })
+				),
+				delay(2000, HUNG),
+			]);
+			assert.notStrictEqual(outcome, HUNG, 'get() must settle when the source rejects with no error');
+		} finally {
+			return_rejection = null;
+			return_error = false;
+		}
+	});
+
+	// Same guard, reached through a hostile accessor rather than a nullish value.
+	it('Source rejects with an error whose code getter throws', async function () {
+		try {
+			IndexedCachingTable.setTTLExpiration({ expiration: 0.005, eviction: 100 });
+			return_rejection = null;
+			return_error = false;
+			IndexedCachingTable.invalidate(133);
+			await IndexedCachingTable.get(133); // seed an existing record to revalidate against
+			await delay(10);
+			const hostile = new Error('hostile source error');
+			Object.defineProperty(hostile, 'code', {
+				get() {
+					throw new Error('code getter blew up');
+				},
+			});
+			return_rejection = { value: hostile };
+			const HUNG = Symbol('hung');
+			const outcome = await Promise.race([
+				IndexedCachingTable.get(133).then(
+					() => 'resolved',
+					(error) => error
+				),
+				delay(2000, HUNG),
+			]);
+			assert.notStrictEqual(outcome, HUNG, 'get() must settle when reading the error throws');
+			assert.strictEqual(outcome, hostile, 'the source error should reach the caller, not the accessor failure');
+		} finally {
+			return_rejection = null;
 			return_error = false;
 		}
 	});

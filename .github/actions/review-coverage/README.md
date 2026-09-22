@@ -8,11 +8,35 @@ An **AI-authored** PR from a non-bot organization member changing more than two 
 
 Coverage is read from the machine-derived `Review-Coverage:` footer that `pr-body-review-need.mjs` materializes from the review receipt; only its `ran=` segment counts, and the authoring family and the Harper adjudicator are excluded. **Only the footer is enforceable**, and the _last_ one in the body wins, so a quoted earlier round cannot score the PR. A prose `## Review coverage` section is still counted and shown in the report, but it is written from memory rather than derived from a receipt, so it does not satisfy `mode: enforce`; the check says so and names the helper that fixes it. Fenced code blocks are blanked before either read, so a PR documenting this convention cannot count its own example.
 
-The footer's `@ <sha>` pin is reported but never enforced — the question is whether two outside models looked at the change, not whether the footer was re-materialized after the last amend.
+The footer's `@ <sha>` pin is reported but never enforced — the question is whether two outside models looked at the change, not whether the footer was re-materialized after the last amend. Coverage is cumulative over the branch: the helper that writes the footer unions every review round, so a head commit with no review receipt of its own still reports the branch's coverage. The failure text says so, because an author who withholds the footer until the head has been re-reviewed spends a review round to produce a line the helper would have written from existing receipts.
 
 `Complexity: easy` waives one leg (not "all but one" — a consumer asking for 3 still gets 2) when the diff corroborates the claim: at most `easy_max_lines` (150) changed lines, at most `easy_max_files` (10) changed files, and at least one outside review still reported. Both caps fail closed when the measurement is missing, and the check names which cap bound. Setting either input to `0` disables the waiver. The waiver is corroborated by size only; the pre-push gate additionally refuses it when the diff touches a risk surface. An `easy` grade on a larger diff is refused and named in the check output, which keeps the field's "may only raise the diff-derived grade" invariant intact.
 
 Bot authors, external authors, at-most-two-line PRs, and PRs that are not AI-authored are exempt. Drafts are reported and re-checked at ready-for-review.
+
+## Framing verdict
+
+Callers can provide newline-delimited `framing_paths` as exact repository paths or directory prefixes ending in `/**`. For a ready organization-member PR that changes one of those paths, `framing_mode: enforce` requires one of these line-anchored body forms:
+
+```text
+Framing-Verdict: chosen-approach-sound
+```
+
+or a recorded disagreement:
+
+```text
+## For the human reviewer
+
+The planning concern and the author's evidence-backed resolution.
+
+Framing-Verdict: better-alternative-exists
+```
+
+`option-set-too-narrow` is the other accepted non-clearing value and has the same reviewer-section requirement. A non-clearing field must be accompanied by an explanation in that section; an empty section does not clear the check, while the field itself may be materialized there or with the footer fields. The field may carry the planning review's 12-hex-character nonce or `(round roll-up)` suffix and may be wrapped in `<sub>`, but arbitrary trailing prose is rejected. Fields inside fenced/indented code, block quotes, inline code, or HTML comments do not count. Renames match both the old and new path.
+
+Framing policy is independent of review coverage: it applies even to a one-line governed edit, and does not change `Review-Coverage` or `Human-Review-Need` evaluation. Drafts, bots, and external contributors are reported but remain green for framing. A complete diff with no configured path also remains green without a verdict. Missing, stale, or incomplete file evidence fails closed only in `framing_mode: enforce`; rerun a failed collection job to distinguish a transient API failure from a persistent configuration problem.
+
+The reusable action defaults `framing_mode` to `report` and `framing_paths` to empty. Repository policy belongs in the trusted caller; Harper's workflow supplies the current shared-resource and storage-binding import surface and reserves `replication/**` as the shared prefix for replication code, while Harper Pro can supply its own list.
 
 ## PR description format
 
@@ -22,7 +46,7 @@ For a non-bot Harper organization member changing more than two lines, the descr
 - exactly one `## Verification` section with executed evidence or a not-observable rationale; and
 - at least one line-anchored link into the current PR diff. Every PR-diff link in the body must point to this repository and PR and resolve inside a current diff hunk.
 
-If any AI field is present, the body must also have one `## For the human reviewer` section before Verification, one valid `Complexity: easy|medium|complicated` field, and one `<sub>Review-Coverage: … @ <sha></sub>` and `<sub>Human-Review-Need: 0-4 @ <sha></sub>` footer pinned to the current head.
+If any AI field is present, the body must also have one `## For the human reviewer` section before Verification, one valid `Complexity: easy|medium|complicated` field, one `<sub>Review-Coverage: … @ <sha></sub>` footer pinned to the current head, and one `<sub>Human-Review-Need: 0-4 [(decisions: …)] @ <sha></sub>` footer. The review-need pin names the commit its grade describes and may lag the head: the footer helper carries the branch's latest graded round forward across an amend it did not re-grade.
 
 Drafts are reported but do not fail enforcement. Repair a link by copying a line link from the PR's Files changed page.
 
@@ -30,7 +54,7 @@ GitHub may omit patches or fail to return a complete file list. Report mode reco
 
 ## Trusted host
 
-Enforcement is only meaningful when the action runs from a trusted checkout. `review-coverage.yml` runs on `pull_request_target` and checks out the **base** commit, so a PR cannot edit the check that gates it. Everything the coverage check reads comes from the event payload; no PR code is executed. A consumer repo enabling `mode: enforce` must do the same:
+Enforcement is only meaningful when the action runs from a trusted checkout. `review-coverage.yml` runs on `pull_request_target` and checks out the **base** commit, so a PR cannot edit the check that gates it. The action reads PR metadata from the event payload and file metadata from GitHub's API; no PR code is executed. A consumer repo enabling `mode: enforce` must do the same:
 
 ```yaml
 on:
@@ -46,8 +70,14 @@ steps:
   - uses: HarperFast/harper/.github/actions/review-coverage@<full sha> # main
     with:
       mode: enforce
+      framing_mode: enforce
+      framing_paths: |
+        resources/Table.ts
+        replication/**
 ```
 
 ## Known limits
 
 The check reads the PR body, which the author can edit. Deleting the generator signature and the HEG fields makes a PR read as not-AI-authored and exempts it; commit trailers are not consulted. This is a guardrail against forgetting a review leg, not a control against an author who means to bypass it.
+
+A framing receipt is not pinned to the current PR head. Synchronizing a PR re-checks whether the body still contains a valid receipt, but cannot determine whether the reviewed approach changed after that receipt was produced. This first-cut gate detects a missing planning receipt; it does not prove the receipt is fresh.

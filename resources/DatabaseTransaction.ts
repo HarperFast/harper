@@ -300,15 +300,21 @@ class ReadSnapshotExpiredError extends ServerError {
 	}
 }
 
-export function trackReadRange(transaction: ReadTransaction, createRange: () => any): any {
+export function getReadTransactionGuard(transaction: ReadTransaction): (() => void) | undefined {
 	const owner = readTransactionOwners.get(transaction);
-	if (!owner) return createRange();
-	function checkActive() {
+	if (!owner) return;
+	return function checkActive() {
 		if (owner.timedOut) throw transactionOpenTooLongError();
 		if (owner.transaction !== transaction) {
 			throw new ReadSnapshotExpiredError();
 		}
-	}
+	};
+}
+
+export function trackReadRange(transaction: ReadTransaction, createRange: () => any): any {
+	const owner = readTransactionOwners.get(transaction);
+	if (!owner) return createRange();
+	const checkActive = getReadTransactionGuard(transaction)!;
 	checkActive();
 	const range = createRange();
 	const iterate = range.iterate;
@@ -656,6 +662,20 @@ export class DatabaseTransaction implements Transaction {
 		// single-store transaction that has never written.
 		if ((this.writes.length === 0 && !this.next) || this.open !== TRANSACTION_STATE.OPEN || !this.hasPendingWrites()) {
 			this.timeout = Math.max(txnExpiration, this.timeoutBudget);
+		}
+	}
+
+	// Each engine keeps its own expiration; LMDBTransaction overrides this with its own.
+	renewIdleTimeout(): void {
+		this.timeout = Math.max(txnExpiration, this.timeoutBudget ?? 0);
+	}
+
+	// The links after this one wait for its native commit before their own commit() is entered; each
+	// hop starts with a full idle window and a stalled native commit is still bounded by one.
+	renewChainForNativeCommit(): void {
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			if (txn.timedOut || txn.open === TRANSACTION_STATE.CLOSED) continue;
+			txn.renewIdleTimeout();
 		}
 	}
 
@@ -1313,6 +1333,7 @@ export class DatabaseTransaction implements Transaction {
 				// the local is empty: a truthy one is what the loop staged into, and the retained-handle
 				// and replay branches below deliberately commit a handle other than this.transaction.
 				if (!transaction) transaction = this.transaction;
+				if (!options.transaction && this.writes.some((write) => write)) this.renewChainForNativeCommit();
 				this.open = TRANSACTION_STATE.CLOSED;
 				// RocksTransaction.commit() resolves with RETRY_NOW_VALUE (a number) under
 				// coordinatedRetry, or void on a normal commit/abort.

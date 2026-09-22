@@ -67,6 +67,11 @@ async function plant(root, component, id, state = {}) {
 		);
 	}
 	if (state.unsettled) await fs.writeFile(path.join(deploymentDir, '.unsettled'), 'stale verdict');
+	if (state.described)
+		await fs.writeFile(
+			path.join(deploymentDir, '.artifact.json'),
+			JSON.stringify({ v: 1, component, rootConfig: null, installationIsOpaque: false, isolated: false })
+		);
 	return deploymentDir;
 }
 
@@ -213,6 +218,47 @@ describe('staged build retention', () => {
 
 			assert.strictEqual(failures.size, 0);
 			assert.deepStrictEqual(await stagedIds(root), []);
+			await fs.rm(root, { recursive: true, force: true });
+		});
+
+		it('clears a stale verdict from a STAGED artifact rather than deleting it, whatever order the unlinks landed in', async () => {
+			// `fail()` only ever writes `.unsettled` beside a journal it keeps, so a marker with no journal says
+			// settlement finished and only the marker's own removal was lost — what a crash between a dormant
+			// return's two unlinks leaves, and the barrier that orders them cannot run on Windows. Deleting
+			// here would destroy a build somebody staged deliberately and whose payload may already be gone.
+			const root = await newRoot('stale-verdict-staged');
+			const deploymentDir = await plant(root, 'web', 'd-verdict', { unsettled: true, described: true });
+
+			const failures = await recoverInterruptedActivations(root);
+
+			assert.strictEqual(failures.size, 0);
+			assert.deepStrictEqual(await stagedIds(root), ['d-verdict'], 'the artifact survives');
+			assert.strictEqual(
+				existsSync(path.join(deploymentDir, '.unsettled')),
+				false,
+				'and carries no verdict, so activation stops refusing it'
+			);
+			await fs.rm(root, { recursive: true, force: true });
+		});
+
+		it('leaves a STAGED artifact alone when its stale verdict will not clear, rather than deleting it', async () => {
+			// A filesystem fault says nothing about whether the build is retainable, so it must not be read as
+			// "not retainable" — the other branch of that decision deletes the artifact. Injected as a
+			// directory-shaped control file, the same corruption this code already reasons about elsewhere: it
+			// fails the non-recursive removal deterministically on every platform while leaving the deployment
+			// directory itself perfectly removable, which is what separates the two outcomes.
+			const root = await newRoot('stale-verdict-unclearable');
+			const deploymentDir = await plant(root, 'web', 'd-stuck', { described: true });
+			await fs.mkdir(path.join(deploymentDir, '.unsettled'));
+			await fs.writeFile(path.join(deploymentDir, '.unsettled', 'inner'), '');
+
+			const failures = await recoverInterruptedActivations(root);
+
+			assert.ok(existsSync(deploymentDir), 'the certified artifact is still there');
+			assert.ok(existsSync(path.join(deploymentDir, '.unsettled')), 'and so is the verdict, for the next pass');
+			// Every worker fails the component closed on that surviving marker, so main saying nothing is the
+			// split where main serves what every worker refuses.
+			assert.deepStrictEqual([...failures.keys()], ['web'], 'main reaches the same verdict the workers will');
 			await fs.rm(root, { recursive: true, force: true });
 		});
 

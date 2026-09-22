@@ -36,6 +36,8 @@ npm run test:unit:windows          # The Windows CI gate — a scoped slice, see
 npm run test:integration           # Full integration test suite
 ```
 
+**Resources:** CI runs this suite as two steps — `test:unit:resources:core` and `test:unit:resources:indexes` — so the step budget stays spendable as the suite grows, and so a wedged run is reported in 8 minutes rather than 12 (harper#2660). `:indexes` is the `*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js` files and `:core` is the same glob with that pattern excluded, so the two are an exact partition and a newly added file lands in `:core` rather than in neither. `test:unit:resources` is untouched — still one mocha process over the whole suite — so `test:unit:all`, `test:unit:lmdb` and a local full run behave exactly as before, and it is what to run locally to check that the two shards still add up. It is only a partial backstop in CI: the sole workflow path that reaches it is `test:unit:lmdb`, so a file the two globs stopped covering would still get LMDB execution but, `vectorIndexPlane.test.js` and `blob.test.js` aside, no default-engine (RocksDB) execution. To reproduce a red CI step locally, run that step's script.
+
 **Windows:** `test:unit:windows` is what the `unit-test-windows` CI job runs, and it covers only the part of the unit tree verified green on Windows. If you touch platform-specific code, run it — the Ubuntu jobs will not catch a Windows-only break. `unitTests/windowsGate.mjs` holds the scope and the list of suites still excluded, each with the reason; shrinking that list is welcome work. The gate runs one mocha process per directory and fails any group that exits without printing a summary line — keep both. A mocha run can stop advancing with nothing failed (`timeout: 0` in `.mocharc.json` means no test ever times out), in which case the event loop drains and the process exits 0 having printed no epilogue; that reads as a pass to every runner. `unitTests/mocha.init.js` fails such a run from the inside, and the gate's summary check backstops a process that never gets that far.
 
 Run a single test file directly:
@@ -100,17 +102,17 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 ### Source — covered above
 
-- **`components/`** — plugin/app loader. Entry: `Scope.ts`, `OptionsWatcher.ts`. Tests: `unitTests/components/`.
+- **`components/`** — plugin/app loader. Entry: `Scope.ts`, `OptionsWatcher.ts`. **See [components/DESIGN.md](components/DESIGN.md)** (deploys, load lifecycle) and [components/mcp/DESIGN.md](components/mcp/DESIGN.md). Tests: `unitTests/components/`.
 - **`server/`** — HTTP/WS/MQTT/etc. Entry: `operationsServer.ts` (boot), `http.ts` (native HTTP). **See [server/DESIGN.md](server/DESIGN.md).** Tests: `unitTests/server/`.
 - **`resources/`** — universal Resource abstraction; tables. Entry: `Resource.ts`, `Table.ts`. **See [resources/DESIGN.md](resources/DESIGN.md).** Tests: `unitTests/resources/`.
-- **`dataLayer/`** — legacy translation modules (`insert.js`, `search.js`, `update.js`). **Avoid for new code.** Tests: `unitTests/dataLayer/`.
-- **`config/`** — YAML config + hot reload. Entry: `configUtils.js`, `RootConfigWatcher.ts`. Tests: `unitTests/config/`.
-- **`utility/`** — logging, errors, helpers. Tests: `unitTests/utility/`.
+- **`dataLayer/`** — legacy translation modules (`insert.js`, `search.js`, `update.js`). **Avoid for new code.** Backup/restore and the version gate live here too: [dataLayer/DESIGN.md](dataLayer/DESIGN.md). Tests: `unitTests/dataLayer/`.
+- **`config/`** — YAML config + hot reload. Entry: `configUtils.js`, `RootConfigWatcher.ts`. **See [config/DESIGN.md](config/DESIGN.md).** Tests: `unitTests/config/`.
+- **`utility/`** — logging, errors, helpers. [utility/DESIGN.md](utility/DESIGN.md). Tests: `unitTests/utility/`.
 
 ### Other source folders
 
 - **`bin/`** — CLI entry points. `harper.js` is the executable; `run.js` initializes and runs the server; `cliOperations.js` translates CLI args → API operations. Tests: `unitTests/bin/`. **Don't look here for** business logic.
-- **`security/`** — auth, authz, certificate handling, context. Entry: `jsLoader.ts` exposes `getContext()`, `getResponse()`, `getUser()`; `user.ts` for User/Role; `certificateVerification/` for TLS validation; `data_objects/` for permission/role models. Tests: `unitTests/security/`.
+- **`security/`** — auth, authz, certificate handling, context. Entry: `jsLoader.ts` exposes `getContext()`, `getResponse()`, `getUser()`; `user.ts` for User/Role; `certificateVerification/` for TLS validation; `data_objects/` for permission/role models. **See [security/DESIGN.md](security/DESIGN.md).** Tests: `unitTests/security/`.
 - **`sqlTranslator/`** — SQL → internal operations via AlaSQL AST. Entry: `sqlTranslator/index.js` exports `evaluateSQL`, `processAST`, `convertSQLToAST`, `checkASTPermissions`. **Legacy — avoid for new code.** Tests: `unitTests/sqlTranslator/`.
 - **`validation/`** — input shape validation (Joi + `validate.js`). Entry: `validationWrapper.js`. **Not authorization** — that's in `security/`. Tests: `unitTests/validation/`.
 - **`upgrade/`** — version-upgrade orchestration. Entry: `directivesManager.js` exports `processDirectives()`. Per-version logic in `directives/`. Tests: `integrationTests/upgrade/`.
@@ -121,7 +123,7 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 - **`bin/`** — covered above (it's source).
 - **`benchmarks/`** — HNSW vector-search benchmark only (`hnsw-search.js`). Stand-alone; not part of CI.
-- **`build-tools/`** — build-pipeline scripts. Tests: `unitTests/build-tools/`; run `npm run test:unit:main` after changes.
+- **`build-tools/`** — build-pipeline scripts. [build-tools/DESIGN.md](build-tools/DESIGN.md) covers the published artifacts. Tests: `unitTests/build-tools/`; run `npm run test:unit:main` after changes.
 - **`dev/`** — single dev utility (`sync-commits.js`) for cross-repo commit syncing. Not runtime.
 - **`integrationTests/`** — end-to-end tests against a built distribution. Run with `npm run test:integration` / `npm run test:integration:all`. Subdirs mirror source. See `integrationTests/README.md`.
 - **`unitTests/`** — Mocha unit tests; subdir per source layer. Run with `npm run test:unit:<layer>`.
@@ -129,7 +131,7 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 ### Top-level docs to consult
 
-- **[DESIGN.md](DESIGN.md)** — running list of non-obvious internals (RecordObject prototype, getFromSource timing, blob orphan cleanup). Read this before debugging anything record-store-related.
+- **[DESIGN.md](DESIGN.md)** — index of every design note (one line each) and the rules for where a note goes. The notes themselves live in the `DESIGN.md` of the directory that owns the code; read the one for the directory you are touching.
 - **[dependencies.md](dependencies.md)** — rationale for every npm dependency. Required reading before adding a new package.
 - **[storage-format.md](storage-format.md)** — on-disk layout (RocksDB/LMDB).
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — contribution workflow.
@@ -140,12 +142,19 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 For megafiles and complex subsystems, jump to the section index instead of reading top-to-bottom:
 
-| If you are touching…                                   | Read first                                 |
-| ------------------------------------------------------ | ------------------------------------------ |
-| Anything in `resources/` (especially `Table.ts`)       | [resources/DESIGN.md](resources/DESIGN.md) |
-| HTTP/WS/MQTT, middleware ordering, content types       | [server/DESIGN.md](server/DESIGN.md)       |
-| Record-store internals (commit timing, blobs, encoder) | [DESIGN.md](DESIGN.md)                     |
-| Adding a dependency                                    | [dependencies.md](dependencies.md)         |
+| If you are touching…                                   | Read first                                                 |
+| ------------------------------------------------------ | ---------------------------------------------------------- |
+| Anything in `resources/` (especially `Table.ts`)       | [resources/DESIGN.md](resources/DESIGN.md)                 |
+| HTTP/WS/MQTT, middleware ordering, content types       | [server/DESIGN.md](server/DESIGN.md)                       |
+| Record-store internals (commit timing, blobs, encoder) | [resources/DESIGN.md](resources/DESIGN.md)                 |
+| `table.lock()`, record-lock ownership                  | [resources/record-locks.md](resources/record-locks.md)     |
+| Derived indexes, HNSW                                  | [resources/indexes/DESIGN.md](resources/indexes/DESIGN.md) |
+| Deploys, component load lifecycle                      | [components/DESIGN.md](components/DESIGN.md)               |
+| Config composition, env layers, hot reload             | [config/DESIGN.md](config/DESIGN.md)                       |
+| Backup/restore, system tables, version gate            | [dataLayer/DESIGN.md](dataLayer/DESIGN.md)                 |
+| Tokens, OIDC, TLS                                      | [security/DESIGN.md](security/DESIGN.md)                   |
+| Any other directory                                    | its `DESIGN.md`, via the index in [DESIGN.md](DESIGN.md)   |
+| Adding a dependency                                    | [dependencies.md](dependencies.md)                         |
 
 ---
 
@@ -160,6 +169,8 @@ For megafiles and complex subsystems, jump to the section index instead of readi
 **TypeScript + type stripping** — Source files are `.ts` but Node.js runs them directly via type stripping in development. The `dist/` directory is the compiled production artifact. Both `.ts` and legacy `.js` files coexist; new code should be `.ts`.
 
 **Minimal dependencies** — `dependencies.md` documents the rationale for every dependency. Adding a new dependency requires justification; implementing something ourselves is often preferred.
+
+**An error's class name is its error code, and it is public** — Harper's error taxonomy (`ClientError`, `ServerError`, and the rest of `utility/errors/hdbError.ts`) is a contract clients code against: the class name is documented, clients branch on it, and it guides support. So `errorToString`'s `ClassName: message` rendering is deliberate wherever a client reads it — terminal HTTP error bodies (`server/http.ts`), REST WebSocket close reasons — and `streamErrorRecord` (`server/serverHelpers/contentTypes.ts`) publishes the class name in its own `error` field for the same reason. Do not "sanitize" it away as an internal implementation detail, and treat renaming an error class as a breaking change. What must not reach a client is an internal fault's _message_ — see `AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL`, which replaces the text while keeping the code.
 
 ---
 
@@ -199,5 +210,6 @@ source tree — which permanently shadows git's config file. Every subsequent ag
 - `contextStorage` (AsyncLocalStorage) carries per-request context (user, transaction) across async boundaries — this is how authorization and transactions work without explicit parameter threading.
 - SQL authorization (`verifyPermsAST` → `hasPermissions`) only checks the tables recorded in the statement bucket's affected-attribute map — it iterates that map, so a table missing from it is never checked, and an empty map authorizes by vacuous truth. Two rules follow. Resolve a table reference exactly once, through `sqlEngine/binder/defaultDatabase.ts`, so the authorization layer and the engine's binder cannot disagree about which `database.table` a bare name means. And when adding a new SQL construct, either record its table references in that map or make `getUnauthorizedTableRefs()` report them — an unrecorded reference is a permission bypass, not a missing feature (GHSA-5c29-q62v-jrwf).
 - Tests under `unitTests/apiTests/` require the server to be stopped first (`node ./dist/bin/harper.js stop`) — `test:unit:apitests` does this automatically.
+- Never assert on a fire-and-forget store write in the same turn that issued it. The engines disagree on read-your-writes: `PrimaryRocksDatabase` shows a pending `put` to a synchronous `getRange()`, `LMDBStore` shows it only after the commit lands (measured ~8 ms). `test:unit:resources` runs under both, so such an assertion passes locally and goes red on the `Unit tests: lmdb` leg alone. Poll with `unitTests/waitFor.js` instead — and where the property is "exactly once", no wait can establish it, so read the count from the producer (`onAnalyticsAggregate()` for aggregation cycles) rather than from storage.
 - `@export` annotation on a schema class auto-generates a REST API for that table — this is the primary developer-facing API.
 - Test style: write new unit tests with `assert` (the bare `node:assert` module) against real modules — **do not add new uses of `sinon` or `rewire`**. Use plain `assert`, **not** `node:assert/strict` — strict mode's deep-equality and coercion rules cause more friction and surprising failures than they prevent; plain `assert` is the house style. When a specific check genuinely needs strict/deep-strict semantics, call `assert.strictEqual`/`assert.deepStrictEqual` explicitly (both exist on plain `assert`) rather than importing `/strict`. This is lint-enforced: oxlint's `no-restricted-imports` rule rejects `node:assert/strict` and `assert/strict` imports. Older tests in `unitTests/security/` and `unitTests/utility/` still depend on them but they are not the target shape; match newer tests in `unitTests/config/*`, `unitTests/resources/*`, `unitTests/components/*`. If you can't write a test without stubbing, comment on the issue describing what's missing and stop — don't reach for sinon/rewire as a shortcut.

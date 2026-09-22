@@ -10,6 +10,10 @@ import * as envMgr from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import * as YAML from 'yaml';
 import { logger } from '../../utility/logging/logger.ts';
+import {
+	errorToString as harperErrorToString,
+	errorForLog as harperErrorForLog,
+} from '../../utility/logging/harper_logger.ts';
 import { Blob } from '../../resources/blob.ts';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
@@ -17,6 +21,36 @@ import { parseMultipartRequest } from './multipartParser.ts';
 const SERIALIZATION_BIGINT = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
 const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
 const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
+const streamStartup = Symbol('streamStartup');
+const serializedStreamError = Symbol('serializedStreamError');
+
+type StreamStartup = {
+	result: Promise<{ failed?: true; error?: unknown }>;
+	abort: () => void;
+	start: () => void;
+	cancel?: () => void;
+};
+
+function streamErrorRecord(error: any) {
+	let name = 'Error';
+	let message;
+	try {
+		const code = error?.code;
+		if (typeof code === 'string' || typeof code === 'number') name = String(code);
+		else if (typeof error?.constructor?.name === 'string') name = error.constructor.name;
+		else if (typeof error?.name === 'string') name = error.name;
+	} catch {}
+	try {
+		if (typeof error?.message === 'string') message = error.message;
+	} catch {}
+	message ??= harperErrorToString(error);
+	const record: { error: string; message: string; status?: number } = { error: name, message };
+	try {
+		const status = error?.statusCode ?? error?.status;
+		if (typeof status === 'number') record.status = status;
+	} catch {}
+	return record;
+}
 
 const PUBLIC_ENCODE_OPTIONS = {
 	useRecords: false,
@@ -103,9 +137,14 @@ mediaTypes.set('text/yaml', {
 });
 
 const ndjsonHandler = {
-	serializeStream(data: any) {
+	serializeStream(data: any, _response?: Response, request?: any) {
 		if (data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) {
-			return Readable.from(transformIterable(data, (msg: any) => JSONStringify(msg) + '\n'));
+			return errorFrameStream(
+				data,
+				(msg: any) => JSONStringify(msg) + '\n',
+				(error) => JSONStringify({ $harperStreamError: streamErrorRecord(error) }) + '\n',
+				request?.method === 'GET'
+			);
 		}
 		return JSONStringify(data) + '\n';
 	},
@@ -132,9 +171,14 @@ function serializeSSEData(data: any) {
 
 mediaTypes.set('text/event-stream', {
 	// Server-Sent Events (SSE)
-	serializeStream: function (iterable) {
+	serializeStream: function (iterable, _response?: Response, request?: any) {
 		// create a readable stream that we use to stream out events from our subscription
-		return Readable.from(transformIterable(iterable, this.serialize));
+		return errorFrameStream(
+			iterable,
+			this.serialize,
+			(error) => this.serialize({ event: 'harper-error', data: streamErrorRecord(error) }),
+			request?.method === 'GET'
+		);
 	},
 	serialize: function (message) {
 		if (message.acknowledge) message.acknowledge();
@@ -396,7 +440,12 @@ export function serialize(responseData, request, responseObject) {
 			(responseData[Symbol.iterator] || responseData[Symbol.asyncIterator]) &&
 			serializer.serializer.serializeStream
 		) {
-			if (responseData.mapError) {
+			if (
+				responseData.mapError &&
+				serializer.type !== 'application/x-ndjson' &&
+				serializer.type !== 'application/ndjson' &&
+				serializer.type !== 'text/event-stream'
+			) {
 				// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
 				const getColumns = responseData.getColumns;
 				responseData = responseData.mapError((error) => {
@@ -407,9 +456,10 @@ export function serialize(responseData, request, responseObject) {
 				});
 				responseData.getColumns = getColumns;
 			}
-			let stream = serializer.serializer.serializeStream(responseData, responseObject);
+			let stream = serializer.serializer.serializeStream(responseData, responseObject, request);
 			if (canCompress) {
 				responseObject.headers.set('Content-Encoding', 'br');
+				const uncompressedStream = stream;
 				stream = stream.pipe(
 					createBrotliCompress({
 						params: {
@@ -421,6 +471,7 @@ export function serialize(responseData, request, responseObject) {
 						},
 					})
 				);
+				if (uncompressedStream[streamStartup]) stream[streamStartup] = uncompressedStream[streamStartup];
 			}
 			return stream;
 		}
@@ -623,24 +674,146 @@ function deserializerUnknownType(contentType: ContentType): Deserialize {
 	}
 }
 
-function transformIterable(iterable, transform) {
+function errorFrameStream(iterable, transform, serializeError, eager: boolean) {
+	const transformed = transformIterable(iterable, transform, serializeError, eager);
+	const readable = Readable.from(transformed);
+	const startup: StreamStartup = transformed[streamStartup];
+	startup.cancel = () => readable.destroy();
+	readable[streamStartup] = startup;
+	return readable;
+}
+
+export function discardSerializedStream(stream) {
+	stream?.[streamStartup]?.cancel?.();
+	stream?.destroy?.();
+}
+
+export function waitForStreamStartup(stream) {
+	const startup: StreamStartup | undefined = stream?.[streamStartup];
+	if (!startup) return;
+	startup.start();
+	return startup.result.then((result) => {
+		if (result.failed) {
+			startup.abort();
+			discardSerializedStream(stream);
+			throw result.error;
+		}
+	});
+}
+
+function transformIterable(iterable, transform, serializeError, eager) {
+	let iterator;
+	let terminal = false;
+	let first = true;
+	let started = false;
+	let firstStep;
+	let startupSettled = false;
+	const startupResult = Promise.withResolvers<{ failed?: true; error?: unknown }>();
+	const errorDecision = Promise.withResolvers<boolean>();
+	let startupTimer;
+
+	const commit = () => {
+		if (startupTimer) clearImmediate(startupTimer);
+		if (!startupSettled) {
+			startupSettled = true;
+			startupResult.resolve({});
+		}
+		errorDecision.resolve(true);
+	};
+	const abort = () => {
+		if (startupTimer) clearImmediate(startupTimer);
+		errorDecision.resolve(false);
+	};
+	const handleError = async (error) => {
+		terminal = true;
+		try {
+			const returned = iterator.return?.();
+			returned?.catch?.(() => {});
+		} catch {}
+		if (!startupSettled) startupResult.resolve({ failed: true, error });
+		if (!startupSettled && !(await errorDecision.promise)) return { done: true };
+		logger.warn?.('Error serializing in stream', harperErrorForLog(error));
+		return { value: serializeError(error), done: false, [serializedStreamError]: true };
+	};
+	const transformStep = (step) => {
+		if (step?.[serializedStreamError]) return step;
+		if (terminal) return { done: true };
+		if (step.done) return step;
+		try {
+			return { value: transform(step.value), done: false };
+		} catch (error) {
+			return handleError(error);
+		}
+	};
+	const getRawNext = () => {
+		if (terminal) return { done: true };
+		let step;
+		try {
+			step = iterator.next();
+		} catch (error) {
+			return handleError(error);
+		}
+		if (step.then) return step.then(undefined, handleError);
+		return step;
+	};
+	const getNext = () => {
+		if (terminal) return { done: true };
+		let step;
+		try {
+			step = iterator.next();
+		} catch (error) {
+			return handleError(error);
+		}
+		if (step.then) return step.then(transformStep, handleError);
+		return transformStep(step);
+	};
+	const start = () => {
+		if (started) return;
+		started = true;
+		iterator = iterable[Symbol.asyncIterator] ? iterable[Symbol.asyncIterator]() : iterable[Symbol.iterator]();
+		firstStep = getRawNext();
+		Promise.resolve(firstStep).then(
+			() => {
+				if (!terminal) commit();
+			},
+			() => {}
+		);
+		// After this turn, the HTTP status can no longer wait for a first item without delaying long-lived streams.
+		startupTimer = setImmediate(commit);
+	};
+	if (eager) start();
+
 	return {
+		[streamStartup]: {
+			result: startupResult.promise,
+			abort,
+			start,
+		},
 		[Symbol.asyncIterator]() {
-			const iterator = iterable[Symbol.asyncIterator] ? iterable[Symbol.asyncIterator]() : iterable[Symbol.iterator]();
 			return {
 				next() {
-					const step = iterator.next();
-					if (step.then) {
-						// don't transform the terminal sentinel step, whose value is undefined
-						return step.then((result) => (result.done ? result : { value: transform(result.value), done: false }));
+					if (terminal) return { done: true };
+					if (first) {
+						first = false;
+						start();
+						const step = firstStep;
+						firstStep = undefined;
+						if (step.then) return step.then(transformStep);
+						return transformStep(step);
 					}
-					return step.done ? step : { value: transform(step.value), done: false };
+					return getNext();
 				},
 				return(value) {
-					return iterator.return(value);
+					terminal = true;
+					started = true;
+					if (!iterator)
+						iterator = iterable[Symbol.asyncIterator]
+							? iterable[Symbol.asyncIterator]()
+							: iterable[Symbol.iterator]?.();
+					return iterator?.return?.(value) ?? { value, done: true };
 				},
 				throw(error) {
-					return iterator.throw(error);
+					return iterator?.throw?.(error) ?? Promise.reject(error);
 				},
 			};
 		},

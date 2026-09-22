@@ -1,0 +1,105 @@
+require('../testUtils');
+const assert = require('node:assert');
+const { EventEmitter } = require('node:events');
+const { addSubscription } = require('#src/resources/transactionBroadcast');
+const { table } = require('#src/resources/databases');
+const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor.js');
+require('#src/server/serverHelpers/serverUtilities');
+
+function makeFakeStores(path) {
+	const auditStore = new EventEmitter();
+	auditStore.env = {};
+	auditStore.reusableIterable = true;
+	const primaryStore = { path, tableId: 1 };
+	return { primaryStore, auditStore };
+}
+
+function subscribeCollecting(table, key) {
+	const events = [];
+	const subscription = addSubscription(
+		table,
+		key,
+		(recordId, auditRecord, timestamp, beginTxn) => {
+			events.push({ id: recordId, type: auditRecord.type, beginTxn });
+		},
+		0,
+		{ crossThreads: false }
+	);
+	subscription.includeDescendants = true;
+	subscription.supportsTransactions = true;
+	return { events, subscription };
+}
+
+function putEntries(...recordIds) {
+	const logKey = Date.now();
+	return recordIds.map((recordId) => ({ type: 'put', tableId: 1, recordId, version: logKey, txnLogKey: logKey }));
+}
+
+describe('transactionBroadcast key-hierarchy walk', () => {
+	it('terminates for keys rooted at "/" and still reaches the whole-table subscriber', async function () {
+		const table = makeFakeStores('/fake/broadcast-key-walk-root');
+		const { events, subscription } = subscribeCollecting(table, null);
+		try {
+			table.auditStore.emit('aftercommit', putEntries('/foo', '/', '//x', 'a/b'));
+			await waitFor(() => events.length === 5, { message: 'all four puts and the end_txn should be delivered' });
+			assert.deepEqual(
+				events.map((event) => event.id),
+				['/foo', '/', '//x', 'a/b', null]
+			);
+			assert.equal(events[4].type, 'end_txn');
+		} finally {
+			subscription.end();
+		}
+	});
+
+	it('notifies a subscriber on the root key exactly once per leading-slash record', async function () {
+		const table = makeFakeStores('/fake/broadcast-key-walk-root-key');
+		const { events, subscription } = subscribeCollecting(table, '/');
+		try {
+			table.auditStore.emit('aftercommit', putEntries('/foo', '/', '//x', 'unrelated/key'));
+			await waitFor(() => events.length === 4, { message: 'one put per leading-slash record and the end_txn' });
+			assert.deepEqual(events, [
+				{ id: '/foo', type: 'put', beginTxn: true },
+				{ id: '/', type: 'put', beginTxn: undefined },
+				{ id: '//x', type: 'put', beginTxn: undefined },
+				{ id: null, type: 'end_txn', beginTxn: true },
+			]);
+		} finally {
+			subscription.end();
+		}
+	});
+});
+
+describe('transactionBroadcast key-hierarchy walk through Table.subscribe', () => {
+	let KeyWalkTable;
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		KeyWalkTable = table({
+			table: 'BroadcastKeyWalk',
+			database: 'broadcastKeyWalk',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			audit: true,
+		});
+	});
+
+	it('delivers a leading-slash record to a live collection subscriber over the committed path', async function () {
+		const subscription = await KeyWalkTable.subscribe({ isCollection: true, omitCurrent: true });
+		const events = [];
+		subscription.on('data', (event) => events.push(event));
+		try {
+			await KeyWalkTable.put('/shop/womens-clothing', { name: 'leading slash' });
+			await KeyWalkTable.put('plain-key', { name: 'control' });
+			await waitFor(() => events.length === 2, { message: 'both puts should reach the subscriber' });
+			assert.deepEqual(
+				events.map((event) => event.id),
+				['/shop/womens-clothing', 'plain-key']
+			);
+		} finally {
+			subscription.end();
+		}
+	});
+});

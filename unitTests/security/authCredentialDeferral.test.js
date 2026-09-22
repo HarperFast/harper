@@ -5,11 +5,16 @@ testUtils.preTestPrep();
 
 const { makeCallbackChain } = require('#src/server/middlewareChain');
 const { Headers } = require('#src/server/serverHelpers/Headers');
-const { credentialRejectionError, settleDeferredCredentialRejection } = require('#src/security/deferredAuthentication');
+const {
+	credentialRejectionError,
+	settleDeferredCredentialRejection,
+	assertNoDeferredCredentialRejection,
+} = require('#src/security/deferredAuthentication');
 const { ClientError, ServerError } = require('#src/utility/errors/hdbError');
 const serverModule = require('#src/server/Server');
 const resourcesModule = require('#src/resources/Resources');
 const tokenAuthentication = require('#src/security/tokenAuthentication');
+const { databases } = require('#src/resources/databases');
 const { authentication } = require('#src/security/auth');
 
 const HARPER_OWNED = '/Ledger/1';
@@ -472,6 +477,290 @@ describe('deferred credential rejection through the app-port middleware chain', 
 
 			assert.strictEqual(response.status, 401);
 			assert.strictEqual(response.headers.get('WWW-Authenticate'), 'Basic');
+		});
+	});
+});
+
+describe('#2703 principal resolution failures become decisions, not thrown errors', () => {
+	const SESSION_ID = 'sess-2703';
+	const SESSION_USER = 'staff@example.com';
+	// the cookie name is prefixed with the origin, with its first non-word character replaced
+	const SESSION_COOKIE = `example_com-hdb-session=${SESSION_ID}`;
+	const CERT_CN = 'svc.example.com';
+
+	const sessionTable = databases.system.hdb_session;
+	let originalGetUser;
+	let originalValidateOperationToken;
+
+	let trace;
+	let ownedPaths;
+	let getUserOutcomes;
+	let getUserCalls;
+
+	function restLayer(request, nextHandler) {
+		if (!ownedPaths.has(request.pathname)) return nextHandler(request);
+		trace.push('rest');
+		const settled = settleDeferredCredentialRejection(request);
+		if (settled) return settled;
+		if (!request.user) return { status: 401, headers: new Headers(), body: JSON.stringify({ error: 'Login failed' }) };
+		return {
+			status: 200,
+			headers: new Headers(),
+			body: JSON.stringify({ servedBy: 'rest', user: request.user?.username ?? null }),
+		};
+	}
+
+	function applicationCatchAll(request) {
+		trace.push('catch-all');
+		return {
+			status: 200,
+			headers: new Headers(),
+			body: JSON.stringify({ servedBy: 'catch-all', harperUser: request.user?.username ?? null }),
+		};
+	}
+
+	const chain = makeCallbackChain(
+		[
+			{ listener: applicationCatchAll, port: 'all', name: 'applicationCatchAll', after: 'rest' },
+			{ listener: authentication, port: 'all', name: 'authentication' },
+			{ listener: restLayer, port: 'all', name: 'rest', after: 'authentication' },
+		],
+		'all',
+		() => ({ status: 404, headers: new Headers(), body: 'Not found' })
+	);
+
+	async function send(pathname, { cookie, mtls, mtlsUser = 'CN', authorization, isOperationsServer } = {}) {
+		const headerObject = { host: 'example.com' };
+		if (cookie) headerObject.cookie = cookie;
+		if (authorization) headerObject.authorization = authorization;
+		const request = {
+			method: 'GET',
+			url: pathname,
+			pathname,
+			ip: '203.0.113.7',
+			headers: { asObject: headerObject, get: (name) => headerObject[name.toLowerCase()] },
+			peerCertificate: mtls ? { subject: { CN: CERT_CN } } : { subject: null },
+			...(mtls ? { mtlsConfig: { user: mtlsUser }, authorized: true } : {}),
+			...(isOperationsServer ? { isOperationsServer: true } : {}),
+		};
+		let thrown;
+		let response;
+		try {
+			response = await chain(request);
+		} catch (error) {
+			thrown = error;
+		}
+		return { request, response, thrown, body: response?.body ? JSON.parse(response.body) : undefined };
+	}
+
+	before(async () => {
+		originalGetUser = serverModule.server.getUser;
+		originalValidateOperationToken = tokenAuthentication.validateOperationToken;
+
+		await sessionTable.put({ id: SESSION_ID, user: SESSION_USER });
+		serverModule.server.getUser = async (username) => {
+			getUserCalls.push(username);
+			const outcome = getUserOutcomes.get(username);
+			if (outcome) throw outcome;
+			return { username, role: { permission: {} } };
+		};
+	});
+
+	after(async () => {
+		await sessionTable.delete(SESSION_ID);
+		serverModule.server.getUser = originalGetUser;
+		tokenAuthentication.validateOperationToken = originalValidateOperationToken;
+	});
+
+	beforeEach(() => {
+		trace = [];
+		ownedPaths = new Set([HARPER_OWNED]);
+		getUserOutcomes = new Map();
+		getUserCalls = [];
+	});
+
+	describe('cookie session', () => {
+		it('serves an application-owned route normally when the session is rejected', async () => {
+			getUserOutcomes.set(SESSION_USER, credentialRejectionError('SSO session expired', 401));
+
+			const { request, response, thrown, body } = await send(APP_OWNED, { cookie: SESSION_COOKIE });
+
+			assert.strictEqual(thrown, undefined, 'the rejection must not escape the middleware chain');
+			assert.strictEqual(response.status, 200);
+			assert.strictEqual(body.servedBy, 'catch-all');
+			assert.strictEqual(request.user, undefined);
+			assert.strictEqual(body.harperUser, null);
+		});
+
+		it('answers a Harper-owned route with the negotiated 401 envelope', async () => {
+			getUserOutcomes.set(SESSION_USER, credentialRejectionError('SSO session expired', 401));
+
+			const { response, body } = await send(HARPER_OWNED, { cookie: SESSION_COOKIE });
+
+			assert.strictEqual(response.status, 401);
+			assert.deepStrictEqual(body, { error: 'SSO session expired' });
+			assert.strictEqual(response.headers.get('Content-Type'), 'application/json');
+			assert.deepStrictEqual(trace, ['rest']);
+		});
+
+		it('fails closed in place on an internal fault instead of deferring', async () => {
+			getUserOutcomes.set(SESSION_USER, new ServerError('user store unavailable'));
+
+			const { response, body, thrown } = await send(APP_OWNED, { cookie: SESSION_COOKIE });
+
+			assert.strictEqual(thrown, undefined);
+			assert.strictEqual(response.status, 401);
+			assert.strictEqual(body.error, 'Login failed');
+			assert.deepStrictEqual(trace, [], 'an internal fault must not reach the application');
+		});
+
+		it('fails closed on an internal fault that happens to carry a 4xx status', async () => {
+			getUserOutcomes.set(SESSION_USER, new ClientError('Table system.hdb_role not found'));
+
+			const { response, body } = await send(APP_OWNED, { cookie: SESSION_COOKIE });
+
+			assert.strictEqual(response.status, 401);
+			assert.strictEqual(body.error, 'Login failed');
+			assert.ok(!JSON.stringify(body).includes('hdb_role'), 'internal detail must not reach the client');
+		});
+
+		it('decides a rejected session in place on the operations API, keeping the tagged message', async () => {
+			getUserOutcomes.set(SESSION_USER, credentialRejectionError('SSO session expired', 401));
+
+			const { response, body } = await send(APP_OWNED, { cookie: SESSION_COOKIE, isOperationsServer: true });
+
+			assert.strictEqual(response.status, 401);
+			assert.strictEqual(body.error, 'SSO session expired');
+			assert.deepStrictEqual(trace, [], 'Harper owns every operations route, so it never defers');
+		});
+
+		it('still authenticates a session the override accepts', async () => {
+			const { response, body } = await send(HARPER_OWNED, { cookie: SESSION_COOKIE });
+
+			assert.strictEqual(response.status, 200);
+			assert.strictEqual(body.user, SESSION_USER);
+		});
+
+		it('marks a deferred session rejection as identity-dependent for shared caches', async () => {
+			getUserOutcomes.set(SESSION_USER, credentialRejectionError('SSO session expired', 401));
+
+			const { response } = await send(APP_OWNED, { cookie: SESSION_COOKIE });
+
+			assert.strictEqual(response.headers.get('Cache-Control'), 'private, no-cache');
+			assert.ok(response.headers.get('Vary').includes('Cookie'));
+		});
+	});
+
+	describe('mTLS certificate identity', () => {
+		it('defers a rejected certificate identity instead of throwing out of the chain', async () => {
+			getUserOutcomes.set(CERT_CN, credentialRejectionError('certificate user revoked', 401));
+
+			const { request, response, thrown, body } = await send(APP_OWNED, { mtls: true });
+
+			assert.strictEqual(thrown, undefined);
+			assert.strictEqual(response.status, 200);
+			assert.strictEqual(body.servedBy, 'catch-all');
+			assert.strictEqual(request.user, undefined);
+		});
+
+		it('does not fall through to Basic after the certificate identity was rejected', async () => {
+			getUserOutcomes.set(CERT_CN, credentialRejectionError('certificate user revoked', 401));
+
+			const { request, body } = await send(APP_OWNED, { mtls: true, authorization: HARPER_BASIC });
+
+			assert.deepStrictEqual(getUserCalls, [CERT_CN], 'Basic must not be attempted after a rejected certificate');
+			assert.strictEqual(request.user, undefined);
+			assert.strictEqual(body.harperUser, null);
+		});
+
+		it('does not fall through to the cookie session after the certificate identity was rejected', async () => {
+			getUserOutcomes.set(CERT_CN, credentialRejectionError('certificate user revoked', 401));
+
+			const { request } = await send(APP_OWNED, { mtls: true, cookie: SESSION_COOKIE });
+
+			assert.deepStrictEqual(getUserCalls, [CERT_CN]);
+			assert.strictEqual(request.user, undefined);
+		});
+
+		it('rejects a certificate identity at a Harper-owned route with the negotiated envelope', async () => {
+			getUserOutcomes.set(CERT_CN, credentialRejectionError('certificate user revoked', 401));
+
+			const { response, body } = await send(HARPER_OWNED, { mtls: true });
+
+			assert.strictEqual(response.status, 401);
+			assert.deepStrictEqual(body, { error: 'certificate user revoked' });
+		});
+
+		it('fails closed in place on an internal fault resolving the certificate identity', async () => {
+			getUserOutcomes.set(CERT_CN, new ServerError('user store unavailable'));
+
+			const { response, body, thrown } = await send(APP_OWNED, { mtls: true });
+
+			assert.strictEqual(thrown, undefined);
+			assert.strictEqual(response.status, 401);
+			assert.strictEqual(body.error, 'Login failed');
+			assert.deepStrictEqual(trace, []);
+		});
+
+		it('still authenticates a certificate identity the override accepts', async () => {
+			const { request, response, body } = await send(HARPER_OWNED, { mtls: true });
+
+			assert.strictEqual(response.status, 200);
+			assert.strictEqual(request.user.username, CERT_CN);
+			assert.strictEqual(body.user, CERT_CN);
+		});
+
+		it('leaves regular authentication to run when the certificate names no user', async () => {
+			const { request } = await send(APP_OWNED, { mtls: true, mtlsUser: null, authorization: HARPER_BASIC });
+
+			// the resolved principal must be the Basic user, not one derived from the certificate
+			assert.strictEqual(request.user?.username, 'harper_admin');
+			assert.ok(!getUserCalls.includes(CERT_CN), 'the certificate CN must not be resolved as a user');
+		});
+	});
+
+	// A WebSocket/MQTT upgrade only awaits the chain (server/REST.ts, server/mqtt.ts) and never reads
+	// its resolved value, so an in-place 401 is invisible to it unless it is recorded on the request.
+	describe('an in-place rejection still fails an upgrade closed', () => {
+		it('throws for an internal fault resolving a cookie session, with the generic message', async () => {
+			getUserOutcomes.set(SESSION_USER, new ServerError('user store unavailable'));
+
+			const { request } = await send(APP_OWNED, { cookie: SESSION_COOKIE });
+
+			assert.throws(
+				() => assertNoDeferredCredentialRejection(request),
+				(error) => error.statusCode === 401 && error.message === 'Login failed'
+			);
+		});
+
+		it('throws for an internal fault resolving a certificate identity', async () => {
+			getUserOutcomes.set(CERT_CN, new ServerError('user store unavailable'));
+
+			const { request } = await send(APP_OWNED, { mtls: true });
+
+			assert.throws(() => assertNoDeferredCredentialRejection(request), /Login failed/);
+		});
+
+		it('leaves a successfully authenticated upgrade alone', async () => {
+			const { request } = await send(APP_OWNED, { cookie: SESSION_COOKIE });
+
+			assert.doesNotThrow(() => assertNoDeferredCredentialRejection(request));
+		});
+	});
+
+	describe('operations API keeps a tagged rejection message', () => {
+		it('does not replace a tagged Authorization rejection with the generic message', async () => {
+			tokenAuthentication.validateOperationToken = async () => {
+				throw credentialRejectionError('token expired', 403);
+			};
+
+			const { response, body } = await send(APP_OWNED, {
+				authorization: 'Bearer expired-harper-token',
+				isOperationsServer: true,
+			});
+
+			assert.strictEqual(response.status, 401);
+			assert.strictEqual(body.error, 'token expired');
 		});
 	});
 });

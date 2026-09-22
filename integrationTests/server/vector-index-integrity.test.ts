@@ -57,7 +57,7 @@ function makeSchemaWithIndex(typeName: string, database: string): string {
 		`type ${typeName} @table(database: "${database}") @sealed @export {`,
 		'\tid: ID! @primaryKey',
 		'\ttag: String',
-		'\tembedding: [Float] @indexed(type: "HNSW", distance: "cosine")',
+		'\tembedding: [Float] @indexed(type: "HNSW", distance: "cosine", nativePlane: false)',
 		'}',
 		'',
 	].join('\n');

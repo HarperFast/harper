@@ -18,6 +18,7 @@ import * as child_process from 'node:child_process';
 import { CONFIG_PARAMS, DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
 
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
+import { markCredentialRejection, credentialRejectionError } from './credentialRejection.ts';
 import type {} from 'ses';
 import {
 	existsSync,
@@ -946,6 +947,8 @@ function getHarperExports(scope: ApplicationScope) {
 		authenticateUser: server.authenticateUser,
 		operation: server.operation,
 		contentTypes,
+		markCredentialRejection,
+		credentialRejectionError,
 		Attribute: undefined,
 		Config: undefined,
 		ConfigValue: undefined,

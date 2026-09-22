@@ -161,6 +161,17 @@ async function lockTypes() {
 	await locked.unlock();
 }
 
+async function searchTypes() {
+	const options = { sort: { attribute: 'vector', target: [1, 0], waitForIndexMilliseconds: 10000 } };
+	const searching = Track.search(options);
+	const querying = Track.query(options);
+	const searchedRows: AsyncIterable<TrackRecord> = await searching;
+	const queriedRows: AsyncIterable<TrackRecord> = await querying;
+	const unawaitedSearch: AsyncIterable<TrackRecord> = searching;
+	const unawaitedQuery: AsyncIterable<TrackRecord> = querying;
+	return { searchedRows, queriedRows, unawaitedSearch, unawaitedQuery };
+}
+
 // Explicit-typed forms, to show the projections stand alone too:
 const toInsert: InsertTrack = { name: 'New Album', status: 'draft', duration: 50 };
 const toReplace: UpsertTrack = { id: 'DtMF', name: 'New Album', status: 'draft' };
@@ -196,6 +207,7 @@ export {
 	filter,
 	verbs,
 	lockTypes,
+	searchTypes,
 	authorName,
 	firstBookTitle,
 };

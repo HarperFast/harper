@@ -29,8 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
     # on a required check. Every step below is capped in its own right and this sits above their
-    # sum (44 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
-    timeout-minutes: 45
+    # sum (50 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
+    timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
@@ -87,9 +87,26 @@ jobs:
       # each step's own cap is what turns a wedged suite into a reported failure, so one bad
       # top-level suite no longer hides the rest (harper#2587, harper#2017) — `test:unit:lmdb`
       # still chains its own resources/apitests/bin runs with `&&`, so a failure there stops
-      # at the first of those three. Per-step budgets are sized off measured Node 22 durations
-      # (the slowest leg): main ~2m15-2m30, apitests ~20-25s, resources ~4m30-5m25,
-      # lmdb ~1m55-2m05.
+      # at the first of those three.
+      #
+      # Size a cap you are changing at roughly 1.5x that step's slowest run which REACHED mocha's
+      # epilogue, pooling all three Node legs since none is reliably the slowest, and re-derive it
+      # from the Actions step API: a cap-killed sample is right-censored and reads far too low.
+      # Derived 2026-09-18 over the 30 `Unit Test` pushes since 2026-09-14, and only `resources`
+      # was re-budgeted — capped at 7m off a ~4m30-5m25 estimate nobody re-measured, it reached
+      # 6m58 completed, went red on main, and needed ~7m40 at its worst. `main` (3m19) and `lmdb`
+      # (3m17) sit at ~1.2x their own worst, not 1.5x. `lmdb` has been killed at 4m twice on main,
+      # but from its LMDB-`resources` phase running ~2x its usual time rather than from drift, so
+      # that one wants a diagnosis and not a bigger number.
+      #
+      # `resources` is two steps so that budget stays spendable as the suite grows, and so a
+      # wedged run is reported in 8 minutes rather than 12 (harper#2660). They partition the
+      # suite by file name, so a file added later lands in one of them rather than in neither;
+      # AGENTS.md carries the pattern. They are the only default-engine run of that tree as a
+      # whole — `hnsw-plane` below and the Windows gate each run one file out of it — so a
+      # partition these globs stop making is a hole nothing else closes. Their caps apply the
+      # rule above to the 7m40 worst case, split by the shards' measured share of it, 63/37:
+      # core 4m50 -> 8m, indexes 2m50 -> 5m.
       - name: 'Unit tests: main'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
         timeout-minutes: 4
@@ -100,10 +117,15 @@ jobs:
         timeout-minutes: 3
         run: npm run test:unit:apitests
 
-      - name: 'Unit tests: resources'
+      - name: 'Unit tests: resources (core)'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
-        timeout-minutes: 7
-        run: npm run test:unit:resources
+        timeout-minutes: 8
+        run: npm run test:unit:resources:core
+
+      - name: 'Unit tests: resources (indexes)'
+        if: "!cancelled() && steps.setup-harper.outcome == 'success'"
+        timeout-minutes: 5
+        run: npm run test:unit:resources:indexes
 
       - name: 'Unit tests: lmdb'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"

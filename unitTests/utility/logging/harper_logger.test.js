@@ -988,6 +988,45 @@ describe('Test harper_logger module', () => {
 		});
 	});
 
+	describe('Test path setter keeps closeLogFile bound to the current file', () => {
+		const PATH_SETTER_TEST_DIR = path.join(__dirname, 'pathSetterCloseLogFileTest');
+
+		before(() => {
+			fs.mkdirpSync(PATH_SETTER_TEST_DIR);
+		});
+
+		after(() => {
+			fs.removeSync(PATH_SETTER_TEST_DIR);
+		});
+
+		it('closes the fd of the path the logger currently points at, not the one it was created with', async () => {
+			const firstPath = path.join(PATH_SETTER_TEST_DIR, 'first.log');
+			const secondPath = path.join(PATH_SETTER_TEST_DIR, 'second.log');
+			const movedSecondPath = path.join(PATH_SETTER_TEST_DIR, 'second.log.moved');
+			const logger = createLogger({ path: firstPath, level: 'info' });
+
+			logger.info('into first');
+			await waitFor(() => fs.existsSync(firstPath) && fs.readFileSync(firstPath, 'utf8').includes('into first'));
+
+			logger.path = secondPath;
+			logger.info('into second');
+			await waitFor(() => fs.existsSync(secondPath) && fs.readFileSync(secondPath, 'utf8').includes('into second'));
+
+			logger.closeLogFile();
+			fs.renameSync(secondPath, movedSecondPath);
+
+			logger.info('after close');
+			await waitFor(() => fs.existsSync(secondPath) && fs.readFileSync(secondPath, 'utf8').includes('after close'));
+			assert.ok(!fs.readFileSync(movedSecondPath, 'utf8').includes('after close'));
+			assert.ok(!fs.readFileSync(firstPath, 'utf8').includes('after close'));
+
+			logger.closeLogFile();
+			// The first sink's 10s close timer fires too late for after()'s directory removal.
+			logger.path = firstPath;
+			logger.closeLogFile();
+		});
+	});
+
 	describe('Test external/component logger rotation inheritance (#1877)', () => {
 		const ROTATION_TEST_DIR = path.join(__dirname, 'rotationInheritanceTest');
 		let loggersToCleanup, rotationCaseDir;
@@ -2332,6 +2371,26 @@ describe('Test harper_logger module', () => {
 			const error = new Error('origin fetch failed', { cause: hostileCause });
 			assert.doesNotThrow(() => logger.error(error));
 			assert.ok(lines.join('\n').includes('Error: origin fetch failed'));
+		});
+	});
+
+	describe('Test applyLogSettings function (harper#2191)', () => {
+		const { _applyLogSettingsForTests, getLogFilePath } = harperLoggerModule;
+
+		it('does not throw on a component key declared with no body', () => {
+			// `myComponent:` with nothing under it parses to null, and this runs from the root
+			// config's async `change` listener, where the TypeError escapes as an unhandled
+			// rejection rather than as a listener fault the watcher contains.
+			assert.doesNotThrow(() => _applyLogSettingsForTests({ noBody: null }));
+		});
+
+		it('leaves the established settings alone when the barrier settles carrying no config', () => {
+			// A read that ends with nothing settles the barrier too, and `updateLogger` reads an
+			// absent `rotation`/`console` as off — so applying it would disable logging on the one
+			// boot that could not read its config.
+			const established = getLogFilePath();
+			_applyLogSettingsForTests(undefined);
+			assert.equal(getLogFilePath(), established, 'a config-less settle must not reconfigure logging');
 		});
 	});
 });

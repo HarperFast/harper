@@ -11,6 +11,7 @@ const { clearThisNodeName, getThisNodeName } = require('#src/server/nodeName');
 const {
 	registerClusterLockTransport,
 	unregisterClusterLockTransport,
+	writeLockBarrier,
 	decodeLockControlPayload,
 	homeFor,
 	ringKeyFor,
@@ -100,6 +101,8 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			ownsCoordination: () => overrides.owns ?? true,
 			requestDelegation: overrides.requestDelegation ?? (() => Promise.reject(new Error('no peer transport'))),
 			recallDelegation: overrides.recallDelegation ?? (() => Promise.resolve()),
+			establishLockFreshness:
+				overrides.establishLockFreshness ?? (async (_database, _table, _key, dependencies) => dependencies ?? []),
 			...overrides.extra,
 		});
 	}
@@ -246,6 +249,190 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			assert.strictEqual((await ClusterLockTest.get(recordId)).n, 7, 'and the holder’s write survived');
 		});
 
+		it('commits a replicating barrier ordered after every earlier write, and returns its position', async function () {
+			if (isLMDB) return this.skip();
+			useSoloTransport();
+			const grantedBefore = ClusterLockTest.lockCoordinator.stats.granted;
+			const recordId = id();
+			await ClusterLockTest.put({ id: recordId, n: 1 });
+			let writeVersion;
+			for (const entry of ClusterLockTest.auditStore.getRange({ start: 1 }))
+				if (entry.tableId === ClusterLockTest.tableId && entry.recordId === recordId) writeVersion = entry.version;
+			assert.ok(Number.isFinite(writeVersion), 'the write has an audit entry');
+			const before = controlEntries().length;
+
+			const position = await writeLockBarrier('test', 'ClusterLockTest', 1);
+			assert.ok(Number.isFinite(position), 'the barrier resolves to a log position');
+			assert.ok(position > writeVersion, 'the barrier is ordered after the write committed before it');
+			// Order in the log itself, not only in key space: the write is met before the barrier.
+			const order = [];
+			for (const entry of ClusterLockTest.auditStore.getRange({ start: 1 })) {
+				if (entry.tableId !== ClusterLockTest.tableId) continue;
+				if (entry.recordId === recordId) order.push('write');
+				else if (entry.type === 'lockBarrier' && entry.version === position) order.push('barrier');
+			}
+			assert.deepStrictEqual(order, ['write', 'barrier']);
+			const barrier = controlEntries().slice(before).at(-1);
+			assert.strictEqual(barrier.type, 'lockBarrier');
+			assert.strictEqual(barrier.version, position, 'the returned position is the entry’s own log key');
+			assert.strictEqual(barrier.recordId, null, 'a barrier names no record');
+			assert.strictEqual(barrier.extendedType & LOCAL_ONLY, 0, 'replicating it is the fence');
+			assert.strictEqual(barrier.structureVersion ?? 0, 0, 'a control entry must not advance table structures');
+			const decoded = decodeLockControlPayload(barrier.type, barrier.value);
+			assert.ok(decoded && Number.isFinite(decoded.nonce), 'the payload decodes through the table decoder');
+
+			const later = await writeLockBarrier('test', 'ClusterLockTest', 77);
+			assert.ok(later > position, 'positions advance with the log');
+			assert.strictEqual(
+				decodeLockControlPayload('lockBarrier', controlEntries().at(-1).value).nonce,
+				77,
+				'the entry carries the nonce the caller will match it on'
+			);
+			for (const nonce of [-1, 1.5, NaN, 2 ** 53])
+				await assert.rejects(
+					() => writeLockBarrier('test', 'ClusterLockTest', nonce),
+					(error) => error.statusCode === 400
+				);
+			assert.strictEqual(
+				ClusterLockTest.lockCoordinator.stats.granted,
+				grantedBefore,
+				'the coordinator acted on a barrier'
+			);
+		});
+
+		it('is always this node’s own commit, never the transport’s control writer', async function () {
+			if (isLMDB) return this.skip();
+			const relayed = [];
+			useSoloTransport({ extra: { writeControl: (table, entry) => (relayed.push({ table, entry }), 4242) } });
+			const before = controlEntries().length;
+			const position = await writeLockBarrier('test', 'ClusterLockTest', 2);
+			assert.deepStrictEqual(relayed, [], 'the transport hook was consulted');
+			assert.strictEqual(controlEntries().slice(before).at(-1)?.version, position, 'the barrier is in the local log');
+		});
+
+		it('rejects, and never throws, when the barrier commits without a position or the writer fails', async function () {
+			if (isLMDB) return this.skip();
+			useSoloTransport();
+			const realWriter = ClusterLockTest.writeLockControlEntry;
+			try {
+				ClusterLockTest.writeLockControlEntry = () => Promise.resolve(undefined);
+				await assert.rejects(
+					() => writeLockBarrier('test', 'ClusterLockTest', 3),
+					(error) =>
+						error.statusCode === 503 && error.retryable === true && /without a log position/.test(error.message)
+				);
+				for (const bad of [NaN, -1, Infinity]) {
+					ClusterLockTest.writeLockControlEntry = () => bad;
+					await assert.rejects(() => writeLockBarrier('test', 'ClusterLockTest', 4), /without a log position/);
+				}
+				ClusterLockTest.writeLockControlEntry = () => {
+					throw new Error('the log is not accepting writes');
+				};
+				const attempt = writeLockBarrier('test', 'ClusterLockTest', 5);
+				assert.ok(attempt instanceof Promise);
+				await assert.rejects(attempt, /not accepting writes/);
+			} finally {
+				ClusterLockTest.writeLockControlEntry = realWriter;
+			}
+		});
+
+		it('rejects a barrier for a table that does not exist', async function () {
+			if (isLMDB) return this.skip();
+			useSoloTransport();
+			await assert.rejects(
+				() => writeLockBarrier('test', 'NoSuchLockTable', 6),
+				(error) => error.statusCode === 404
+			);
+		});
+
+		it('admits a recovery-marked grant after the transport writes a barrier and drains to it', async function () {
+			if (isLMDB) return this.skip();
+			// Retire the table's coordinator without a successor: the replacement must not trust virgin
+			// keys, so the first grant it issues carries the recovery marker.
+			useSoloTransport();
+			const warmUp = await ClusterLockTest.lock(id(), { hold: true, lease: 5000 });
+			await warmUp.unlock();
+			unregisterClusterLockTransport('test', true);
+			assert.strictEqual(ClusterLockTest.lockCoordinator, undefined);
+
+			const recordId = id();
+			await ClusterLockTest.put({ id: recordId, n: 41 });
+			const calls = [];
+			let barrierPosition;
+			useSoloTransport({
+				establishLockFreshness: async (database, table, _key, dependencies, deadlineMs) => {
+					calls.push({ dependencies, deadlineMs });
+					if (dependencies !== null) return dependencies;
+					// Solo, the only member is this node and its stream is the local log.
+					barrierPosition = await writeLockBarrier(database, table, 7);
+					await waitFor(() =>
+						controlEntries().some((entry) => entry.type === 'lockBarrier' && entry.version === barrierPosition)
+					);
+					return [[getThisNodeName(), barrierPosition]];
+				},
+			});
+			const record = await ClusterLockTest.lock(recordId, { hold: true, lease: 5000 });
+			try {
+				assert.strictEqual(calls.length, 1);
+				assert.strictEqual(calls[0].dependencies, null, 'the grant carried the recovery marker');
+				assert.ok(calls[0].deadlineMs > 0 && Number.isFinite(calls[0].deadlineMs), 'the transport was told its budget');
+				assert.ok(Number.isFinite(barrierPosition), 'the transport drained to a barrier');
+				assert.strictEqual(record.n, 41, 'the predecessor’s write is visible to the admitted successor');
+			} finally {
+				await record.unlock();
+			}
+		});
+
+		it('routes a replicated barrier through the sink as a no-op: no record, no cleared grant', async function () {
+			if (isLMDB) return this.skip();
+			const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
+			const { encodeLockControlPayload } = require('#src/resources/recordLockCoordinator');
+			const { unpack } = require('msgpackr');
+			const peerId = getIdOfRemoteNode('peer-barrier', ClusterLockTest.auditStore);
+			useSoloTransport({ homes: [NODE_NAME, 'peer-barrier'] });
+			const events = new IterableEventQueue();
+			SinkLockTest.sourcedFrom(
+				{ subscribe: () => events, subscribeOnThisThread: () => true },
+				{ intermediateSource: true }
+			);
+			const recordId = `barrier-${id()}`;
+			const coordinator = SinkLockTest.lockCoordinator;
+			const grantedBefore = coordinator.stats.granted;
+			const granted = await coordinator.onDelegationRequest({
+				key: recordId,
+				requester: 'peer-barrier',
+				generation: 1,
+				leaseMs: 5000,
+			});
+			assert.strictEqual(granted.granted, true);
+			events.send({
+				type: 'lockBarrier',
+				table: 'SinkLockTest',
+				id: null,
+				value: unpack(encodeLockControlPayload({ type: 'lockBarrier', nonce: 9 })),
+				nodeId: peerId,
+				timestamp: Date.now(),
+			});
+			// An ordinary write behind it proves the sink got past the barrier rather than stalling on it.
+			const followerId = `${recordId}-after`;
+			events.send({
+				type: 'put',
+				table: 'SinkLockTest',
+				id: followerId,
+				value: { id: followerId, n: 1 },
+				nodeId: peerId,
+				timestamp: Date.now(),
+			});
+			await waitFor(async () => Boolean(await SinkLockTest.get(followerId)));
+			assert.strictEqual(coordinator.stats.granted, grantedBefore + 1, 'a barrier cleared a live grant');
+			assert.ok(!(await SinkLockTest.get(recordId)), 'no record was written for it');
+			coordinator.applyEntry(
+				{ type: 'lockRelease', key: recordId, requester: 'peer-barrier', token: granted.token, dependencies: [] },
+				'peer-barrier',
+				Date.now()
+			);
+		});
+
 		it('writes nothing for a node-scoped lock', async function () {
 			if (isLMDB) return this.skip();
 			useSoloTransport();
@@ -382,18 +569,43 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			assert.strictEqual(granted.granted, true, 'the peer holds a delegation from this node');
 			assert.strictEqual(coordinator.stats.granted, 1);
 
-			const wire = { type: 'lockRelease', key: recordId, requester: 'peer-sink', token: granted.token };
+			const releasePosition = Date.now();
+			const wire = {
+				type: 'lockRelease',
+				key: recordId,
+				requester: 'peer-sink',
+				token: granted.token,
+				dependencies: [],
+			};
 			events.send({
 				type: 'lockRelease',
 				table: 'SinkLockTest',
 				id: null,
 				value: unpack(encodeLockControlPayload(wire)),
 				nodeId: peerId,
-				timestamp: Date.now(),
+				timestamp: releasePosition,
 			});
 			// Clearing the grant is the observable effect of the entry being routed to the coordinator.
 			await waitFor(() => coordinator.stats.granted === 0);
 			assert.ok(!(await SinkLockTest.get(recordId)), 'and no record was written for it');
+			const successor = await coordinator.onDelegationRequest({
+				key: recordId,
+				requester: NODE_NAME,
+				generation: 1,
+				leaseMs: 5000,
+			});
+			assert.deepStrictEqual(successor.dependencies, [['peer-sink', releasePosition]]);
+			coordinator.applyEntry(
+				{
+					type: 'lockRelease',
+					key: recordId,
+					requester: NODE_NAME,
+					token: successor.token,
+					dependencies: null,
+				},
+				NODE_NAME,
+				releasePosition + 1
+			);
 		});
 
 		it('routes a replicated control entry to the coordinator and never to a record', async function () {
@@ -511,6 +723,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 				ownsCoordination: () => true,
 				requestDelegation: () => Promise.reject(new Error('no peer transport')),
 				recallDelegation: () => Promise.resolve(),
+				establishLockFreshness: async (_database, _table, _key, dependencies) => dependencies ?? [],
 			};
 			registerClusterLockTransport('test', transport);
 			const recordId = idHomedHere(homes);
@@ -769,6 +982,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 
 			const record = await ClusterLockTest.lock(recordId, { hold: true, lease: 5000 });
 			await record.unlock();
+			await writeLockBarrier('test', 'ClusterLockTest', 8);
 			await ClusterLockTest.put({ id: recordId, n: 2 });
 			// Wait for the ordinary write to arrive; anything the lock produced would have arrived first.
 			const deadline = Date.now() + 5000;
@@ -785,7 +999,11 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			await ClusterLockTest.put({ id: recordId, n: 1 });
 			const record = await ClusterLockTest.lock(recordId, { hold: true, lease: 5000 });
 			await record.unlock();
-			assert.ok(controlEntries().length > 0, 'the entries are in the log');
+			await writeLockBarrier('test', 'ClusterLockTest', 9);
+			assert.ok(
+				controlEntries().some((entry) => entry.type === 'lockBarrier'),
+				'the entries are in the log'
+			);
 			const types = [];
 			for await (const entry of ClusterLockTest.getHistory()) types.push(entry.type);
 			assert.deepStrictEqual(types.filter(isLockControlType), [], 'but getHistory reports none of them');
