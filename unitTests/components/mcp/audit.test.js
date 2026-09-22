@@ -157,8 +157,6 @@ describe('mcp/audit', () => {
 			);
 		});
 
-		// The redaction tests above call the helper directly. This one goes through the real logger
-		// to the log file, which is the only place the secret actually has to be absent from.
 		it('keeps secret material out of the emitted log record', async () => {
 			const logPath = logger.getLogFilePath();
 			const offset = existsSync(logPath) ? readFileSync(logPath, 'utf8').length : 0;
@@ -172,9 +170,12 @@ describe('mcp/audit', () => {
 				status: 'isError',
 				durationMs: 1,
 			});
+			// The logger buffers and flushes on a timer, so poll for this entry specifically — an
+			// earlier test's audit line can land after the offset is taken.
 			const written = await waitFor(() => {
+				if (!existsSync(logPath)) return undefined;
 				const tail = readFileSync(logPath, 'utf8').slice(offset);
-				return tail.includes('mcp.audit') ? tail : undefined;
+				return tail.includes("tool: 'set_secret'") ? tail : undefined;
 			});
 			assert.ok(!written.includes('plaintext-secret'), 'the secret must not reach the log file');
 			assert.ok(written.includes('[redacted]'));
