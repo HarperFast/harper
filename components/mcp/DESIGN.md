@@ -84,17 +84,30 @@ A handful of design points are non-obvious and easy to break:
   _bypassed_ by the seam and is therefore covered at the **integration** level (`sse-listchanged.test.ts` N3
   record / N4 collection), not in unit tests.
 
-- **Discovery filtering must mirror the dispatch gate's ORDER, not just its inputs.**
-  `canRoleInvokeOperation` (duplicated in `toolRegistry.ts` and `resources.ts`, backing both
-  `tools/list` and `harper://operations`) answers only the role-level question; per-target
-  schema/table checks still run at call time in `verifyPerms`. What it may **not** defer is the
-  `operations` allowlist. `verifyOperationsAllowlist` runs _ahead of every privilege
-  early-return_ in `verifyPerms` (harper#2176), super_user and structure_user included, so a
-  helper that short-circuits on a privilege flag advertises tools that then fail closed on call.
-  The helper is therefore allowlist-first: deny when an allowlist excludes the op, and only then
-  consult the flags. Membership resolves through `_expandedOperations ?? expandOperationsPerms`
-  because the allowlist stores **group** names (`read_only`, `standard_user`) that the dispatch
-  gate expands — a raw `includes` under-advertises every op a role holds only via a group. These
-  helpers are the class of code that goes stale silently: they were correct when written and were
-  invalidated by a change in a _different_ file, with no test failure to announce it. Whenever the
-  ordering in `verifyPerms` changes, re-check both copies.
+- **Discovery filtering must mirror dispatch's ORDER _and_ its name namespace.**
+  `canRoleInvokeOperation` (`operationVisibility.ts`, shared by `tools/list` and the
+  `harper://operations` catalog) answers only the role-level question; per-target schema/table
+  checks still run at call time in `verifyPerms`. Three things it may **not** defer:
+
+  1. **The `operations` allowlist.** `verifyOperationsAllowlist` runs _ahead of every privilege
+     early-return_ in `verifyPerms` (harper#2176), super_user and structure_user included, so a
+     helper that short-circuits on a privilege flag advertises tools that fail closed on call.
+  2. **The `api_name` alias.** Dispatch tests the handler's canonical `api_name`, and four ops are
+     published under a different name — `create_schema`/`drop_schema` (handlers
+     `createSchema`/`dropSchema`, api_names `create_database`/`drop_database`),
+     `describe_database`→`describe_schema`, `search_by_id`→`search_by_hash`. Matching the raw tool
+     name disagrees in BOTH directions. The alias table is hand-maintained because
+     `OPERATION_FUNCTION_MAP` pulls in the server and cannot be imported here.
+  3. **`structure_user` is not one grant.** `STRUCTURE_USER_OPS` holds only the four
+     table/attribute ops; create/drop schema-or-database needs `structure_user === true`, so an
+     array grant (and `[]`, which is truthy) is denied for those four.
+
+  Group names resolve through `_expandedOperations ?? expandOperationsPerms` because the allowlist
+  stores groups (`read_only`, `standard_user`) that dispatch expands — a raw `includes`
+  under-advertises every op a role holds only via a group.
+
+  This is the class of code that goes stale silently: it was correct when written and was
+  invalidated by a change in a _different_ file, with no test failure to announce it. It lives in
+  one module for that reason — it was duplicated across the two surfaces, and keeping two copies in
+  step is how the original bug survived. Whenever `verifyPerms`' ordering, the `api_name` table, or
+  `STRUCTURE_USER_OPS` changes, re-check it.
