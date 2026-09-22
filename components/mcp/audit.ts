@@ -25,12 +25,12 @@ export interface AuditEntry {
 }
 
 const REDACTION_PATTERN = /(secret|password|token|api[-_]?key|credentials?|auth)/i;
-const REDACTION_FIELDS_BY_TOOL: Record<string, ReadonlySet<string>> = {
-	set_secret: new Set(['value', 'envelope']),
-	set_env_value: new Set(['value', 'values']),
-	add_ssh_key: new Set(['key']),
-	update_ssh_key: new Set(['key']),
-};
+const REDACTION_FIELDS_BY_TOOL = new Map<string, ReadonlySet<string>>([
+	['set_secret', new Set(['value', 'envelope'])],
+	['set_env_value', new Set(['value', 'values'])],
+	['add_ssh_key', new Set(['key'])],
+	['update_ssh_key', new Set(['key'])],
+]);
 const REDACTION_PLACEHOLDER = '[redacted]';
 const MAX_REDACTION_DEPTH = 10;
 
@@ -49,7 +49,7 @@ export function redactArgs(value: unknown, depth = 0, redactionFields?: Readonly
 	}
 	const out: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(value)) {
-		if (REDACTION_PATTERN.test(k) || redactionFields?.has(k)) {
+		if (REDACTION_PATTERN.test(k) || redactionFields?.has(k.toLowerCase())) {
 			out[k] = REDACTION_PLACEHOLDER;
 		} else {
 			out[k] = redactArgs(v, depth + 1, redactionFields);
@@ -59,7 +59,7 @@ export function redactArgs(value: unknown, depth = 0, redactionFields?: Readonly
 }
 
 export function redactArgsForTool(value: unknown, tool: string): unknown {
-	return redactArgs(value, 0, REDACTION_FIELDS_BY_TOOL[tool]);
+	return redactArgs(value, 0, REDACTION_FIELDS_BY_TOOL.get(tool));
 }
 
 /** Mask a session id for logging — first 8 chars, suffix elided. */

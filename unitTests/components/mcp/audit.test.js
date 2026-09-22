@@ -40,13 +40,22 @@ describe('mcp/audit', () => {
 
 		it('redacts key for SSH-key tools without hiding generic key fields', () => {
 			const privateKey = '-----BEGIN OPENSSH PRIVATE KEY-----';
-			const input = { name: 'deploy', key: privateKey };
+			const input = { name: 'deploy', key: privateKey, Key: privateKey };
 
 			for (const tool of ['add_ssh_key', 'update_ssh_key']) {
-				assert.equal(redactArgsForTool(input, tool).key, '[redacted]');
+				assert.deepStrictEqual(redactArgsForTool(input, tool), {
+					name: 'deploy',
+					key: '[redacted]',
+					Key: '[redacted]',
+				});
 			}
-			assert.equal(redactArgsForTool(input, 'search_by_value').key, privateKey);
+			assert.deepStrictEqual(redactArgsForTool(input, 'search_by_value'), input);
 			assert.equal(input.key, privateKey, 'redaction must not mutate the caller payload');
+		});
+
+		it('handles tool names that collide with object prototype properties', () => {
+			const input = { key: 'auditable-identifier' };
+			assert.deepStrictEqual(redactArgsForTool(input, 'valueOf'), input);
 		});
 
 		it('leaves generic value/values fields auditable for non-secret tools', () => {

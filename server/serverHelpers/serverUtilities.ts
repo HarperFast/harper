@@ -111,16 +111,21 @@ export const UNLOGGABLE_OPERATION_FIELDS = [
 	'refresh_token',
 ];
 
-const UNLOGGABLE_FIELDS_BY_OPERATION: Record<string, readonly string[]> = {
-	add_ssh_key: ['key'],
-	update_ssh_key: ['key'],
-};
+const UNLOGGABLE_FIELDS_BY_OPERATION = new Map<string, ReadonlySet<string>>([
+	['add_ssh_key', new Set(['key'])],
+	['update_ssh_key', new Set(['key'])],
+]);
 
 /** Callers gate this on log level: it allocates, and the operations log is often off. */
 export function redactForOperationLog(body: Record<string, any>): Record<string, any> {
 	const clean = { ...body };
-	const fields = [...UNLOGGABLE_OPERATION_FIELDS, ...(UNLOGGABLE_FIELDS_BY_OPERATION[body.operation] ?? [])];
-	for (const field of fields) delete clean[field];
+	for (const field of UNLOGGABLE_OPERATION_FIELDS) delete clean[field];
+	const operationFields = UNLOGGABLE_FIELDS_BY_OPERATION.get(body.operation);
+	if (operationFields) {
+		for (const field of Object.keys(clean)) {
+			if (operationFields.has(field.toLowerCase())) delete clean[field];
+		}
+	}
 	return clean;
 }
 

@@ -1194,10 +1194,15 @@ describe('redactForOperationLog', () => {
 	it('leaves no private key behind for SSH-key operations', () => {
 		const key = '-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-key-material\n-----END OPENSSH PRIVATE KEY-----';
 		for (const operation of ['add_ssh_key', 'update_ssh_key']) {
-			const clean = redactForOperationLog({ operation, name: 'deploy', key });
+			const clean = redactForOperationLog({ operation, name: 'deploy', key, Key: key });
 			assert.deepStrictEqual(clean, { operation, name: 'deploy' });
 			assert.ok(!/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(JSON.stringify(clean)));
 		}
+	});
+
+	it('handles operation names that collide with object prototype properties', () => {
+		const body = { operation: 'valueOf', key: 'auditable-identifier' };
+		assert.deepStrictEqual(redactForOperationLog(body), body);
 	});
 
 	it('keeps environment variable names while stripping their values', () => {
