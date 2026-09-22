@@ -10,10 +10,15 @@
  *
  *   1. A PURGE NEVER STRANDS THE FLUSH POSITION. After a purge that really deleted files, the
  *      log's `lastFlushedPosition` still names a file the purge retained — never the
- *      `{sequence:0, offset:0}` sentinel — and it still does after a clean restart. This is
- *      rocksdb-js#799's retention-floor contract ("the sequence file named by `txn.state` and every
- *      newer file remain") stated as an executable claim. It is the assertion that goes red if that
- *      floor is ever removed or the dependency pin rolls back below it.
+ *      `{sequence:0, offset:0}` sentinel — and it still does once that process has shut down and
+ *      reopened. This is rocksdb-js#799's retention-floor contract ("the sequence file named by
+ *      `txn.state` and every newer file remain") stated as an executable claim. It is the assertion
+ *      that goes red if that floor is ever removed or the dependency pin rolls back below it.
+ *      What the second sample does NOT isolate: invariant 3 needs rows written by the purging
+ *      process before it restarts, and those writes are themselves enough to rewrite flush state,
+ *      so a regression visible only on a no-write reopen would be masked there. The first sample —
+ *      taken in the purging process with zero writes since the purge — is the one that isolates it,
+ *      and it is the sample that fails on a pre-#799 binding.
  *   2. COMMIT GROUPING IS IRRELEVANT. The same 260 records advance the log's write cursor by the
  *      same number of bytes whether they arrive as 260 single-row commits or as one 260-row commit.
  *      The log's byte layout is a function of the records, not of how a client grouped them into
@@ -341,10 +346,6 @@ suite(
 	{ skip: skipSuite },
 	(ctx: ContextWithHarper) => {
 		const findings: string[] = [];
-		// `same-process` is the sharpest point in the window and the one the QA-822 family named as
-		// the residual exposure: rows written by the very process that ran the purge, before it has
-		// restarted. cp0 is the next-sharpest — a single row, first thing in the new process, before
-		// any further volume. Both are ordinary members of invariant 3, checked the same way.
 		const sameProcess = { label: 'same-process (written by the purging process)', rows: markerRows('sp', MARKER_ROWS) };
 		const cp0 = { label: 'cp0 (one row, before any further volume)', rows: markerRows('cp0', 1) };
 		const cp1 = { label: 'cp1 (after 260 single-row commits)', rows: markerRows('cp1', MARKER_ROWS) };
@@ -429,9 +430,8 @@ suite(
 
 				postPurge = await logStats(ctx, 'QuietTarget');
 
-				// Planted here, and only here, because after the restart this window is gone: these rows
-				// are written by the process that ran the purge, which is the case the QA-822 family
-				// identified as the residual exposure. They go through the same restart below.
+				// Here and nowhere else: after the restart this window is gone. These rows are written by
+				// the process that ran the purge — the residual exposure the QA-822 family named.
 				await insertRows(ctx, 'QuietTarget', sameProcess.rows);
 				await assertMarkersIntact(ctx, '1. POSITIVE CONTROL same-process', sameProcess.rows);
 
@@ -445,11 +445,11 @@ suite(
 
 		test('2. INVARIANT 1: the purge leaves the flush position inside the log it retained', async () => {
 			ok(purged, 'PRECONDITION: the purge must have run before its aftermath is asserted');
-			// One claim — the segment `txn.state` names outlived the purge — checked through the three
-			// states that claim rules out, each named separately so a red run says which one happened.
+			// One claim — the segment `txn.state` names outlived the purge — split so a red run names
+			// which of the three states it rules out actually happened.
 			for (const [when, stats] of [
 				['immediately after the purge', postPurge],
-				['after a clean restart', postPurgeRestart],
+				['after the purging process shut down and reopened', postPurgeRestart],
 			] as const) {
 				const preamble =
 					`RETENTION-FLOOR INVARIANT (${when}): the purge must retain the log file lastFlushedPosition names. ` +
@@ -490,12 +490,10 @@ suite(
 				await insertRows(ctx, 'QuietTarget', cp2.rows);
 				await assertMarkersIntact(ctx, '3. POSITIVE CONTROL cp2', cp2.rows);
 
-				// Two things would let invariant 2 fail for a reason other than commit grouping, so both
-				// are ruled out here rather than argued: a rotation inside a window would make its offset
-				// delta measure the rotation, and anything else writing to this shared log during a
-				// window — an audit-cleanup pass raising the retention floor is the plausible one — would
-				// add bytes neither shape asked for. The entry count is what detects that second case:
-				// each window must contain exactly the records its shape wrote, and nothing else.
+				// A rotation inside a window would make its offset delta measure the rotation, and a
+				// foreign write — an audit-cleanup pass raising the retention floor is the plausible one
+				// — would add bytes neither shape asked for. Both would fail invariant 2 for a reason
+				// that is not commit grouping, so the entry count rules the second one out here.
 				for (const [label, from, to] of [
 					['260 single-row commits', beforeMany, afterMany],
 					['one 260-row commit', beforeOne, afterOne],
