@@ -58,11 +58,16 @@ function allowlistAllows(perm: RolePermission, operation: string): boolean | nul
 	const list = perm.operations;
 	if (list == null) return null;
 	if (!Array.isArray(list)) return false;
-	// Built at role cache-load time and absent from the persisted shape; inline-asserted roles
-	// (impersonation, scoped tokens) expand on demand, exactly as the dispatch gate does.
-	const cached = (perm as { _expandedOperations?: unknown })._expandedOperations;
-	const expanded = cached instanceof Set ? (cached as Set<string>) : expandOperationsPerms(list);
-	return expanded.has(OPERATION_API_NAME_ALIASES.get(operation) ?? operation);
+	// Normally built at role cache-load time. Inline-asserted roles (impersonation, scoped tokens)
+	// arrive without it, and a listing calls this once per operation, so memoize onto the same
+	// field the cache-load path uses rather than re-expanding ~150 times per request.
+	const holder = perm as { _expandedOperations?: unknown };
+	let expanded = holder._expandedOperations;
+	if (!(expanded instanceof Set)) {
+		expanded = expandOperationsPerms(list);
+		holder._expandedOperations = expanded;
+	}
+	return (expanded as Set<string>).has(OPERATION_API_NAME_ALIASES.get(operation) ?? operation);
 }
 
 /**
