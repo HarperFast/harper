@@ -2,7 +2,7 @@
 
 Cross-cutting helpers.
 
-**Read this when:** touching `watchPath.ts` or anything that arms a native file watch.
+**Read this when:** touching `watchPath.ts` or anything that arms a native file watch, or adding an interactive CLI prompt (`interactivePrompts.ts`).
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -53,3 +53,7 @@ absolute paths built from `cwd`, so its bases must be derived from the same spel
 paths are relative to `cwd` and reads stay on the configured `component.directory`. And a watcher
 that degrades to polling stays there for its lifetime, so a caller with no polling story of its own
 (`resources/blob.ts`) needs one — there it polls `readMore` on the existing no-progress deadline.
+
+## Interactive CLI prompts go through `utility/interactivePrompts.ts`
+
+Every `@inquirer`-based one-shot prompt in the codebase (`bin/login.ts`, `bin/deploySetup.ts`, `utility/install/installer.ts`, `upgrade/upgradePrompt.ts`) calls the `prompts` object (or `promptYesNo`) exported from `utility/interactivePrompts.ts` — never `@inquirer/*` directly. Reuse that seam for any new `@inquirer`-style prompt rather than importing an `@inquirer` subpath yourself: it lazy-loads each prompt package on first real call (this module sits on the server boot path via `upgradePrompt`, so eager imports would cost every rolling-restart node), restores clean-exit-on-Ctrl-C (`ExitPromptError` → exit 130, not a logged stack), and disables the password prompt's plaintext-reveal keypress. `rawPromptsForTesting` is the underlying, pre-guard layer tests stub — `@inquirer/*` packages are real ES modules, so `require('@inquirer/input').default = stub` silently no-ops even through CJS interop. Out of scope: line-oriented REPLs like `bin/agentCli.ts`'s `readline.question` flow are a different interaction model and don't go through this seam.
