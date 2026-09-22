@@ -586,3 +586,102 @@ describe('mcp/tools/operations — handler dispatch', () => {
 		assert.equal(stream.destroyed, true, 'backstop must still destroy an unconsumed stream');
 	});
 });
+
+describe('mcp/tools/operations — structuredContent is a spec-legal record', () => {
+	// MCP types `structuredContent` as an object. The reference client validates it
+	// with `z.record(z.string(), z.unknown())` inside `Client.callTool`, so a bare
+	// array fails the WHOLE call ("expected record, received array") before the
+	// result reaches the caller — invisible to a raw JSON-RPC POST, fatal to every
+	// spec-compliant host. Harper operations return arrays routinely (`sql` for a
+	// SELECT, `search_by_*`, `list_users`, `list_roles`, `get_job`), so these assert
+	// the framing against the SDK's own schema rather than against a hand-written
+	// shape that could drift from the spec.
+	const { CallToolResultSchema } = require('@modelcontextprotocol/sdk/types.js');
+
+	function assertSpecLegal(res) {
+		const parsed = CallToolResultSchema.safeParse(res);
+		assert.ok(
+			parsed.success,
+			`result must satisfy the MCP CallToolResult schema: ${parsed.success ? '' : JSON.stringify(parsed.error?.issues)}`
+		);
+	}
+
+	async function callReturning(operationName, value) {
+		_setChooseOperationForTest(() => async () => value);
+		_setProcessLocalTransactionForTest(async (_req, fn) => await fn({}));
+		_setOperationFunctionMapForTest(makeOpMap([[operationName, null]]));
+		registerOperationsTools();
+		return getTool(operationName).handler({}, { user: SUPER, profile: 'operations', sessionId: 's' });
+	}
+
+	let envOverrides;
+	const originalEnvGet = env.get;
+
+	beforeEach(() => {
+		_resetRegistryForTest();
+		envOverrides = {};
+		env.get = (key) => (key in envOverrides ? envOverrides[key] : originalEnvGet.call(env, key));
+	});
+
+	afterEach(() => {
+		_resetRegistryForTest();
+		_setOperationFunctionMapForTest(undefined);
+		_setChooseOperationForTest(undefined);
+		_setProcessLocalTransactionForTest(undefined);
+		env.get = originalEnvGet;
+	});
+
+	it('wraps an array result (a sql SELECT) in { results } instead of emitting a bare array', async () => {
+		envOverrides.mcp_operations_allow = ['sql'];
+		const rows = [
+			{ id: 1, name: 'a' },
+			{ id: 2, name: 'b' },
+		];
+		const res = await callReturning('sql', rows);
+
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(res.structuredContent, { results: rows });
+		assertSpecLegal(res);
+		// The text frame is the client-facing payload and must stay verbatim —
+		// the wrapper exists only to satisfy structuredContent's record contract.
+		assert.deepEqual(JSON.parse(res.content[0].text), rows);
+	});
+
+	it('wraps the array-returning operations on the DEFAULT allow surface', async () => {
+		// Not just the opted-in `sql`: these are default-allowed and array-shaped,
+		// so the bug broke a clean Harper boot for a spec-compliant client.
+		for (const operationName of ['list_users', 'list_roles', 'get_job', 'search_by_value']) {
+			_resetRegistryForTest();
+			const payload = [{ n: operationName }];
+			const res = await callReturning(operationName, payload);
+			assert.deepEqual(res.structuredContent, { results: payload }, operationName);
+			assertSpecLegal(res);
+		}
+	});
+
+	it('leaves an object result untouched (describe_all keeps its database tree)', async () => {
+		const tree = { data: { tables: { dog: { record_count: 3 } } } };
+		const res = await callReturning('describe_all', tree);
+
+		assert.deepEqual(res.structuredContent, tree, 'an object payload passes through unwrapped');
+		assertSpecLegal(res);
+	});
+
+	it('omits structuredContent for a payload with no object form', async () => {
+		// The field is optional; omitting it is the spec-legal way to say "no
+		// structured view". Emitting a scalar fails the call the same way an array does.
+		for (const value of ['just a message', 42, true, new Date('2020-01-01T00:00:00Z')]) {
+			_resetRegistryForTest();
+			const res = await callReturning('system_information', value);
+			assert.equal(res.structuredContent, undefined, `${String(value)} must not become structuredContent`);
+			assertSpecLegal(res);
+		}
+	});
+
+	it('emits an empty array result as { results: [] }, not a bare []', async () => {
+		envOverrides.mcp_operations_allow = ['sql'];
+		const res = await callReturning('sql', []);
+		assert.deepEqual(res.structuredContent, { results: [] });
+		assertSpecLegal(res);
+	});
+});

@@ -1197,3 +1197,87 @@ describe('mcp/tools/application — custom mcpResources opt-in (#1609)', () => {
 		assert.equal(matchCustomResource('application', 'docs:///index'), undefined);
 	});
 });
+
+describe('mcp/tools/application — structuredContent is a spec-legal record', () => {
+	// Same record contract as the operations profile: MCP types `structuredContent`
+	// as an object and the reference client rejects anything else before the result
+	// reaches the caller. An application-profile handler reaches an array whenever a
+	// custom Resource method or a custom `get` returns a list.
+	const { CallToolResultSchema } = require('@modelcontextprotocol/sdk/types.js');
+
+	function assertSpecLegal(res) {
+		const parsed = CallToolResultSchema.safeParse(res);
+		assert.ok(
+			parsed.success,
+			`result must satisfy the MCP CallToolResult schema: ${parsed.success ? '' : JSON.stringify(parsed.error?.issues)}`
+		);
+	}
+
+	beforeEach(() => {
+		_resetRegistryForTest();
+		_resetPromptRegistryForTest();
+		_setRequestTargetForTest(FakeRequestTarget);
+	});
+
+	afterEach(() => {
+		_resetRegistryForTest();
+		_resetPromptRegistryForTest();
+		_setResourcesForTest(undefined);
+		_setRequestTargetForTest(undefined);
+		_resetApplicationToolsRegisteredForTest();
+	});
+
+	it('wraps an array returned by a custom author tool in { results }', async () => {
+		class Recommendations {
+			async recommendSimilar() {
+				return [{ id: 'a' }, { id: 'b' }];
+			}
+		}
+		Recommendations.mcpTools = [{ name: 'recommend_similar', method: 'recommendSimilar' }];
+		_setResourcesForTest(makeRegistry([['Recommendations', { Resource: Recommendations }]]));
+		registerApplicationTools();
+
+		const res = await getTool('recommend_similar').handler({}, { user: SUPER, profile: 'application', sessionId: 's' });
+
+		assert.deepEqual(res.structuredContent, { results: [{ id: 'a' }, { id: 'b' }] });
+		assertSpecLegal(res);
+		// Text frame keeps the author's payload verbatim.
+		assert.deepEqual(JSON.parse(res.content[0].text), [{ id: 'a' }, { id: 'b' }]);
+	});
+
+	it('wraps an array returned by a custom get_ handler in { results }', async () => {
+		const Product = makeTableResource({
+			databaseName: 'data',
+			tableName: 'product',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+			staticHandlers: { get: async () => [{ id: '1' }, { id: '2' }] },
+		});
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+
+		const res = await getTool('get_Product').handler(
+			{ id: '1' },
+			{ user: SUPER, profile: 'application', sessionId: 's' }
+		);
+
+		assert.deepEqual(res.structuredContent, { results: [{ id: '1' }, { id: '2' }] });
+		assertSpecLegal(res);
+	});
+
+	it('keeps the search_ envelope as { rows, nextCursor } rather than re-wrapping it', async () => {
+		// search_ already frames its own paginated envelope; the array wrapper must
+		// not fire for it (that would nest the page under an extra `results` key).
+		const Product = makeTableResource({
+			databaseName: 'data',
+			tableName: 'product',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+
+		const res = await getTool('search_Product').handler({}, { user: SUPER, profile: 'application', sessionId: 's' });
+
+		assert.deepEqual(res.structuredContent, { rows: [{ id: '1' }, { id: '2' }] });
+		assertSpecLegal(res);
+	});
+});
