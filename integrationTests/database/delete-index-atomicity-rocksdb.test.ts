@@ -228,7 +228,6 @@ suite(
 			// exists to remove, so an unrefreshed oracle is a test bug, not a fallback.
 			if (!snapshotPath) throw new Error('oracle read before refreshOracle(): there is no checkpoint to read');
 			if (!dbiCache.has(catalogKey)) {
-				// a column family carries its table's create-time generation: `<catalogKey>@<uuid>`
 				const root = RocksDatabase.open(snapshotPath, { readOnly: true });
 				let name: string | undefined;
 				try {

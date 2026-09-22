@@ -233,11 +233,15 @@ describe('dropTable generation-distinct stores', function () {
 
 			resetDatabases();
 
-			assert.ok(!rootStore().columns.includes(family), 'the load reclaims the surviving family');
+			assert.ok(rootStore().columns.includes(family), 'the family remains durable while blob deletion is pending');
+			assert.equal(generationRows().length, 1, 'the journal remains durable while blob deletion is pending');
 			await waitFor(() => !fs.existsSync(blobPath), {
 				timeout: 15_000,
 				message: 'restart recovery did not release the retired generation blob',
 			});
+			resetDatabases();
+
+			assert.ok(!rootStore().columns.includes(family), 'a later load reclaims the surviving family');
 			assert.deepStrictEqual(generationRows(), [], 'the journal row is removed once the family is gone');
 			const Fresh = defineTable('GenCrashRetired');
 			assert.equal(await Fresh.get(1), undefined);

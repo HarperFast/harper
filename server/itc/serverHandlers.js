@@ -90,8 +90,6 @@ async function syncSchemaMetadata(msg) {
 			return;
 		}
 		if (msg.operation === hdbTerms.OPERATIONS_ENUM.DROP_TABLE && msg.table) {
-			// the ack is the dropper's barrier: the unload must happen whatever the derived-index
-			// shutdown does, and no rescan during that await may complete the drop
 			const releaseDropMark = msg.dropGeneration ? markDropInProgress(msg.dropGeneration) : undefined;
 			try {
 				const dropped = databases[msg.schema]?.[msg.table];

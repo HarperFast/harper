@@ -243,7 +243,6 @@ function usableCount(estimate: any): number {
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
-// This bounds schema-lock acquisition; LOCK_TIMEOUT bounds record-lock waits and the post-drop reclaim wait.
 export const UPDATE_ATTRIBUTES_LOCK_TIMEOUT = 10000;
 const UPDATE_ATTRIBUTES_LOCK = 'update-attributes';
 // Contention is otherwise only visible once it becomes a timeout (harper#2251).
@@ -341,22 +340,49 @@ async function settlePhysicalDrops(rootStore: RocksDatabase, label: string): Pro
 function sweepDroppedTableBlobs(primaryStore, label: string): void {
 	try {
 		for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
-			if (entry.metadataFlags & HAS_BLOBS && entry.value) deleteBlobsInObject(entry.value);
+			if (!(entry.metadataFlags & HAS_BLOBS) || !entry.value) continue;
+			try {
+				deleteBlobsInObject(entry.value);
+			} catch (error) {
+				logger.warn?.(`Could not sweep blob files from record ${String(entry.key)} of dropped table ${label}`, error);
+			}
 		}
 	} catch (error) {
 		logger.warn?.(`Could not sweep the blob files of dropped table ${label}`, error);
 	}
 }
+const backgroundBlobSweeps = new WeakMap<RocksDatabase, { stores: Map<any, string>; running: boolean }>();
 function finishDroppedTableBlobSweep(rootStore: RocksDatabase, primaryStore, label: string): void {
+	let state = backgroundBlobSweeps.get(rootStore);
+	if (!state) backgroundBlobSweeps.set(rootStore, (state = { stores: new Map(), running: false }));
+	state.stores.set(primaryStore, label);
+	if (state.running) return;
+	state.running = true;
 	void (async () => {
+		let delay = 100;
 		while (rootStore.status !== 'closed' && (rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) > 0) {
 			await new Promise<void>((resolve) => {
-				const timer = setTimeout(resolve, 100);
+				const timer = setTimeout(resolve, delay);
 				timer.unref?.();
 			});
+			delay = Math.min(delay * 2, 60_000);
 		}
-		if (rootStore.status !== 'closed') sweepDroppedTableBlobs(primaryStore, label);
-	})().catch((error) => logger.warn?.(`Could not finish the blob sweep of dropped table ${label}`, error));
+		if (rootStore.status === 'closed') {
+			state.stores.clear();
+			return;
+		}
+		const stores = [...state.stores];
+		state.stores.clear();
+		for (const [store, storeLabel] of stores) sweepDroppedTableBlobs(store, storeLabel);
+	})()
+		.catch((error) => logger.warn?.(`Could not finish a background blob sweep in ${rootStore.path}`, error))
+		.finally(() => {
+			state.running = false;
+			if (state.stores.size > 0) {
+				const [store, storeLabel] = state.stores.entries().next().value;
+				finishDroppedTableBlobSweep(rootStore, store, storeLabel);
+			}
+		});
 }
 // A frozen record we may need to copy-on-mutate before stamping it (records are immutable — decoded
 // records are frozen and 5.2 record caching relies on it). Only plain/record objects qualify: never
@@ -2172,7 +2198,6 @@ export function makeTable(options) {
 								ignoreAlreadyDropped(error);
 							}
 						}
-						// only this drop's own tombstone: the rows may already belong to a recreated generation
 						const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
 						if (
 							!currentPrimary?.dropping ||
@@ -8085,7 +8110,7 @@ export function makeTable(options) {
 				},
 				(error) => {
 					primaryStore.unlock(id);
-					if (resolved && !(droppingTable && error?.code === 'ERR_COLUMN_FAMILY_DROPPED'))
+					if (resolved && !(disposed && error?.code === 'ERR_COLUMN_FAMILY_DROPPED'))
 						logger.error?.('Error committing cache update', error);
 					// else the error was already propagated as part of the promise that we returned
 				}

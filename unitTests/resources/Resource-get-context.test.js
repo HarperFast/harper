@@ -189,15 +189,6 @@ describe('Resource.get context passing', function () {
 });
 
 describe('dropTable does not wait for in-flight source-populated cache writes (harper#1381)', function () {
-	// A get() on a sourcedFrom table resolves to its caller before the resolved record's cache
-	// write has committed. A drop that raced such a write used to corrupt the column family
-	// handle ("Invalid column family specified in write batch"), so dropTable() drained its own
-	// thread's pending writes against a 10s timeout and failed the drop on expiry. The binding now
-	// retires a family immediately and drops it behind commits already admitted, so the drop
-	// neither waits nor fails; a write that reaches staging after the drop began is not written.
-	// The write's own async step (the @embed pre-commit hook) is gated behind a promise the test
-	// controls, so the GET has already resolved and the write is provably still pending when
-	// dropTable() runs.
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // this table drop path is RocksDB-only
 
 	it('resolves dropTable() while a gated cache-from-source write is still pending, and that write never lands', async function () {

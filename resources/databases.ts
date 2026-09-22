@@ -53,7 +53,13 @@ import {
 	type AuditRecord,
 } from './auditStore.ts';
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
-import { databasePaths, deleteBlobsInObject, deleteRootBlobPathsForDB } from './blob.ts';
+import {
+	databasePaths,
+	deleteBlobsInObject,
+	deleteRootBlobPathsForDB,
+	findBlobsInObject,
+	getFilePathForBlob,
+} from './blob.ts';
 import { removeStorageReclamation } from '../server/storageReclamation.ts';
 import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
@@ -493,8 +499,6 @@ function isAbandonedIndexBuild(descriptor: any, currentRestartGeneration: number
 // unbounded retry turns one broken table into a per-reload log flood in every
 // worker thread.
 const MAX_INTERRUPTED_DROP_ATTEMPTS = 3;
-// RocksDB store names carry the generation minted at create, so a same-name recreate never binds to a
-// family a dropped generation still occupies on disk; LMDB keeps catalog-key names.
 const GENERATION_ROW_PREFIX = '/generation/';
 const GENERATION_ROW_END = '/generation0';
 type GenerationRow = {
@@ -1186,7 +1190,6 @@ function initStores(
 			continue;
 		}
 		const failedAttempts = getInterruptedDropAttempts(path, tableName, generation);
-		// A contended pass defers recovery without spending its bounded failure budget.
 		const locked = !(rootStore instanceof RocksDatabase) || tryUpdateAttributesLock(rootStore);
 		if (!locked) {
 			definedTables?.delete(tableName);
@@ -3935,11 +3938,10 @@ function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseNam
 					attributesDbi.remove(key);
 					continue;
 				}
-				// by explicit name and by suffix: a family opened for an index whose catalog row never
-				// committed carries the generation without being named
 				const suffix = '@' + value.generation;
 				const retired = new Set(value.stores ?? []);
 				const columns = [...((rootStore as any).columns as string[])];
+				let pendingBlobFiles = false;
 				if (value.phase === 'retired' && value.primaryStore && columns.includes(value.primaryStore)) {
 					const primaryStore = handleLocalTimeForGets(
 						openRocksDatabase(rootStore.path, {
@@ -3950,12 +3952,18 @@ function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseNam
 					);
 					try {
 						for (const entry of (primaryStore as any).getRange({ versions: true, snapshot: false, lazy: true })) {
-							if (entry.metadataFlags & HAS_BLOBS && entry.value) deleteBlobsInObject(entry.value);
+							if (!(entry.metadataFlags & HAS_BLOBS) || !entry.value) continue;
+							findBlobsInObject(entry.value, (blob) => {
+								const blobPath = getFilePathForBlob(blob as any);
+								if (blobPath && existsSync(blobPath)) pendingBlobFiles = true;
+							});
+							deleteBlobsInObject(entry.value);
 						}
 					} finally {
 						primaryStore.close();
 					}
 				}
+				if (pendingBlobFiles) continue;
 				for (const columnName of columns) {
 					if (retired.has(columnName) || columnName.endsWith(suffix)) dropColumnFamily(rootStore, columnName);
 				}
@@ -3991,19 +3999,19 @@ function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseNam
 function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string, tableName: string) {
 	logger.debug(`Completing interrupted drop of table ${databaseName}.${tableName}`);
 	if (rootStore instanceof RocksDatabase) {
-		// Explicit names, never a `tableName + '/'` prefix: a live same-name recreate carries its own
-		// generation next to the retired one and must survive this sweep.
 		const primaryRow = attributesDbi.getSync(tableName + '/');
 		const stores = storeNamesFor(attributesDbi, tableName, primaryRow?.generation);
 		if (primaryRow && !primaryRow.dropGeneration) {
-			// a tombstone from before dropGeneration existed: give it one, durably, so retries share it
 			primaryRow.dropGeneration = randomUUID();
 			attributesDbi.putSync(tableName + '/', primaryRow);
 		}
 		if (primaryRow) {
-			const primaryCatalogKey = [...attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })].find(
+			const primaryRows = [...attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })].filter(
 				({ value }) => value?.isPrimaryKey
-			)?.key;
+			);
+			const primaryCatalogKey =
+				primaryRows.find(({ key }) => key !== tableName + '/')?.key ??
+				primaryRows.find(({ key }) => key === tableName + '/')?.key;
 			recordRetiredGeneration(
 				attributesDbi,
 				tableName,
