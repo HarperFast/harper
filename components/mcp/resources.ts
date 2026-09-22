@@ -45,7 +45,7 @@ import {
 	matchCustomResource,
 } from './customResourceRegistry.ts';
 import type { McpProfile } from './transport.ts';
-import { expandOperationsPerms } from '../../utility/operationPermissions.ts';
+import { canRoleInvokeOperation } from './operationVisibility.ts';
 
 // Harper's resource graph (Resources, generateJsonApi, Server) initializes
 // eagerly when imported at module-load. Unit tests that don't boot Harper
@@ -899,57 +899,6 @@ function userTablePermissions(user: AuthedUser, db: string, table: string): Tabl
 		describe: tablePerm.describe === true,
 		attribute_permissions: tablePerm.attribute_permissions,
 	};
-}
-
-const SCHEMA_STRUCTURE_OPERATIONS = new Set([
-	'create_schema',
-	'create_database',
-	'drop_schema',
-	'drop_database',
-	'create_table',
-	'drop_table',
-	'create_attribute',
-	'drop_attribute',
-]);
-
-/**
- * Role-level `operations` allowlist membership, mirroring gate 1 of `verifyPerms`
- * (`verifyOperationsAllowlist` in `utility/operation_authorization.ts`).
- *
- * Returns `null` when the role declares no allowlist (nothing to enforce), otherwise
- * `true`/`false` for membership. Group names (`read_only`, `standard_user`, ...) expand
- * exactly as they do at dispatch, so discovery and invocation agree on what "listed"
- * means -- a raw `includes` would hide every op a role holds only via a group. A present
- * but malformed `operations` fails closed, which is how dispatch effectively treats it.
- *
- * Operation names on this path are the snake_case API names (`OPERATIONS_ENUM` values),
- * the same form the allowlist stores, so no camelCase -> `api_name` mapping is needed.
- */
-type RolePermission = NonNullable<NonNullable<AuthedUser['role']>['permission']>;
-
-function operationAllowlistAllows(perm: RolePermission, operation: string): boolean | null {
-	const list = perm.operations;
-	if (list == null) return null;
-	if (!Array.isArray(list)) return false;
-	// `_expandedOperations` is pre-built at role cache-load time and is not part of the
-	// persisted permission shape; fall back to on-demand expansion for inline-asserted
-	// roles, exactly as the dispatch gate does.
-	const cached = (perm as { _expandedOperations?: unknown })._expandedOperations;
-	const expanded = cached instanceof Set ? (cached as Set<string>) : expandOperationsPerms(list);
-	return expanded.has(operation);
-}
-
-function canRoleInvokeOperation(user: AuthedUser, operation: string): boolean {
-	const perm = user?.role?.permission;
-	if (!perm) return false;
-	// Mirrors gate 1 of `verifyPerms`: an `operations` allowlist binds every privilege
-	// below it, super_user and structure_user included (harper#2176 moved
-	// `verifyOperationsAllowlist` ahead of those early-returns at dispatch).
-	const allowlisted = operationAllowlistAllows(perm, operation);
-	if (allowlisted === false) return false;
-	if (perm.super_user === true) return true;
-	if (perm.structure_user && SCHEMA_STRUCTURE_OPERATIONS.has(operation)) return true;
-	return allowlisted === true;
 }
 
 function filterAttributesByPermissions(attributes: any[], attributePermissions: unknown): any[] {

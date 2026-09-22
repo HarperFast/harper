@@ -448,6 +448,56 @@ describe('mcp/toolRegistry', () => {
 			assert.equal(canRoleInvokeOperation(user, 'describe_all'), false);
 		});
 
+		// `verifyOperationsAllowlist` tests the handler's canonical `api_name`, so an allowlist
+		// naming one half of an alias pair governs both tools. Asserted at dispatch in
+		// unitTests/utility/operation_authorization.test.js ('create_schema allowed when listed').
+		it('resolves aliased operation names to the api_name dispatch tests', () => {
+			const listed = (ops, op) =>
+				canRoleInvokeOperation({ role: { permission: { super_user: true, operations: ops } } }, op);
+			// The canonical name governs both tools in the pair.
+			assert.equal(listed(['create_database'], 'create_schema'), true);
+			assert.equal(listed(['create_database'], 'create_database'), true);
+			assert.equal(listed(['drop_database'], 'drop_schema'), true);
+			assert.equal(listed(['describe_schema'], 'describe_database'), true);
+			assert.equal(listed(['search_by_hash'], 'search_by_id'), true);
+			// The alias name is not what dispatch tests, so it grants neither.
+			assert.equal(listed(['create_schema'], 'create_schema'), false);
+			assert.equal(listed(['drop_schema'], 'drop_schema'), false);
+		});
+
+		it('an array structure_user does not reach the database-level structure ops', () => {
+			// STRUCTURE_USER_OPS holds only the table/attribute ops; create/drop schema-or-database
+			// needs `structure_user === true` (utility/operation_authorization.ts).
+			const scoped = { role: { permission: { structure_user: ['data'] } } };
+			for (const op of ['create_table', 'drop_table', 'create_attribute', 'drop_attribute']) {
+				assert.equal(canRoleInvokeOperation(scoped, op), true, op);
+			}
+			for (const op of ['create_schema', 'create_database', 'drop_schema', 'drop_database']) {
+				assert.equal(canRoleInvokeOperation(scoped, op), false, op);
+			}
+		});
+
+		it('an unrestricted structure_user reaches all eight structure ops', () => {
+			const all = { role: { permission: { structure_user: true } } };
+			for (const op of [
+				'create_table',
+				'drop_table',
+				'create_attribute',
+				'drop_attribute',
+				'create_schema',
+				'create_database',
+				'drop_schema',
+				'drop_database',
+			]) {
+				assert.equal(canRoleInvokeOperation(all, op), true, op);
+			}
+		});
+
+		it('an empty structure_user array grants nothing', () => {
+			// `[].indexOf(schema)` never matches, so dispatch denies every target.
+			assert.equal(canRoleInvokeOperation({ role: { permission: { structure_user: [] } } }, 'create_table'), false);
+		});
+
 		it('fails closed on a malformed operations allowlist', () => {
 			assert.equal(canRoleInvokeOperation({ role: { permission: { operations: 'sql' } } }, 'sql'), false);
 			assert.equal(
