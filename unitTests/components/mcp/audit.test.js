@@ -20,7 +20,7 @@ describe('mcp/audit', () => {
 			assert.equal(out.list[0].password, '[redacted]');
 		});
 
-		it('redacts only the secret fields used by each tool', () => {
+		it('redacts every secret-bearing field for both secret tools', () => {
 			const secret = redactArgsForTool(
 				{ name: 'API_KEY', value: 'plaintext-secret', envelope: 'enc:v1:abc' },
 				'set_secret'
@@ -36,6 +36,16 @@ describe('mcp/audit', () => {
 				value: '[redacted]',
 				values: '[redacted]',
 			});
+		});
+
+		// MCP forwards arguments as-is and audits them after the handler, so a field the tool does
+		// not declare is still logged even though the operation rejects it.
+		it('redacts secret fields the tool does not declare', () => {
+			const misdirected = redactArgsForTool({ name: 'API_KEY', values: { A: 'plaintext-secret' } }, 'set_secret');
+			assert.deepStrictEqual(misdirected, { name: 'API_KEY', values: '[redacted]' });
+
+			const environment = redactArgsForTool({ project: 'application', envelope: 'enc:v1:abc' }, 'set_env_value');
+			assert.deepStrictEqual(environment, { project: 'application', envelope: '[redacted]' });
 		});
 
 		it('redacts key for SSH-key tools without hiding generic key fields', () => {
