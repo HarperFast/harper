@@ -79,6 +79,40 @@ The `operations` field in a permission object restricts which Operations API cal
 
 Operations normally restricted to `super_user` can be selectively granted by including them in the list. If `operations` is not set, the role can call any non-`super_user` operation, subject to table CRUD permissions.
 
+<VersionBadge type="changed" version="v5.3.0" />
+
+An operation the list omits is denied whatever else the role carries — the list is checked ahead of every other permission on the role. Earlier v5 releases let table DDL and SQL around it; both now go through it.
+
+So grant by listing, and build a role up rather than trying to narrow `super_user` — `add_role` and `alter_role` reject `super_user` or `cluster_user` set to `true` alongside any other key. A role that maintains one database's tables and queries them with SQL:
+
+```json
+{
+	"operation": "add_role",
+	"role": "orders_maintainer",
+	"permission": {
+		"operations": ["sql", "create_table", "drop_table"],
+		"structure_user": ["orders_db"],
+		"orders_db": {
+			"tables": {
+				"orders": {
+					"read": true,
+					"insert": true,
+					"update": false,
+					"delete": false,
+					"attribute_permissions": []
+				}
+			}
+		}
+	}
+}
+```
+
+`sql` has to be listed or the role cannot run SQL at all. Listing it grants the interface, not the data: the statement is still checked against the table permissions above, so this role can `SELECT` and `INSERT` on `orders` and nothing else. That check is what separates the `read_only` and `standard_user` groups below, which both include `sql`.
+
+`create_table` and `drop_table` have to be listed too, and `structure_user` then limits them to `orders_db`. `create_database` and `drop_database` additionally require `structure_user: true`.
+
+The value must be an array of strings; a non-array value is rejected on write. A role that already holds one — a pre-5.0 role that granted a database named `operations`, before the key became reserved — can stop the instance loading its user cache ([harper#2194](https://github.com/HarperFast/harper/issues/2194)).
+
 **Permission Groups**
 
 Groups expand to a predefined set of operations and can be mixed with individual operation names:
