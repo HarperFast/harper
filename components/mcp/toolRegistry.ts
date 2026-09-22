@@ -26,6 +26,7 @@
  */
 import { encodeCursor } from './pagination.ts';
 import type { McpProfile } from './transport.ts';
+import { expandOperationsPerms } from '../../utility/operationPermissions.ts';
 
 export interface ToolAnnotations {
 	title?: string;
@@ -397,22 +398,53 @@ export function hasClassLevelVerbs(
 }
 
 /**
+ * Role-level `operations` allowlist membership, mirroring gate 1 of `verifyPerms`
+ * (`verifyOperationsAllowlist` in `utility/operation_authorization.ts`).
+ *
+ * Returns `null` when the role declares no allowlist (nothing to enforce), otherwise
+ * `true`/`false` for membership. Group names (`read_only`, `standard_user`, ...) expand
+ * exactly as they do at dispatch, so discovery and invocation agree on what "listed"
+ * means -- a raw `includes` would hide every op a role holds only via a group. A present
+ * but malformed `operations` fails closed, which is how dispatch effectively treats it.
+ *
+ * Operation names on this path are the snake_case API names (`OPERATIONS_ENUM` values),
+ * the same form the allowlist stores, so no camelCase -> `api_name` mapping is needed.
+ */
+function operationAllowlistAllows(perm: any, operation: string): boolean | null {
+	const list = perm?.operations;
+	if (list == null) return null;
+	if (!Array.isArray(list)) return false;
+	// `_expandedOperations` is pre-built at role cache-load time; fall back to on-demand
+	// expansion for inline-asserted roles, exactly as the dispatch gate does.
+	const expanded = perm._expandedOperations instanceof Set ? perm._expandedOperations : expandOperationsPerms(list);
+	return expanded.has(operation);
+}
+
+/**
  * Role-level operations check for the operations profile. Returns true if
  * the user has the role-level privilege required to invoke `operation`,
  * regardless of any per-call schema/table predicate (those run at tool-call
  * time).
  *
- * The implementation here is intentionally conservative — only flags that
- * grant operations globally short-circuit. Per-operation per-target checks
- * are evaluated at call time by Harper's existing `verifyPerms`.
+ * Per-operation per-target checks (which schema, which table) are still
+ * evaluated at call time by Harper's existing `verifyPerms` — this only
+ * answers the role-level question. What it may NOT defer is the `operations`
+ * allowlist: that gate runs ahead of every privilege early-return at dispatch,
+ * so a flag-only short-circuit here advertises tools that fail closed on call.
  */
 export function canRoleInvokeOperation(user: AuthedUser, operation: string): boolean {
-	if (isSuperUser(user)) return true;
 	const perm = user?.role?.permission;
 	if (!perm) return false;
+	// Gate 1, mirroring `verifyPerms`: an `operations` allowlist binds EVERY privilege
+	// below it, super_user and structure_user included. harper#2176 moved
+	// `verifyOperationsAllowlist` ahead of the privilege early-returns at dispatch, so a
+	// structure grant no longer carries the schema DDL ops past a restrictive allowlist.
+	// Short-circuiting on the flag alone advertised eight ops that then failed closed.
+	const allowlisted = operationAllowlistAllows(perm, operation);
+	if (allowlisted === false) return false;
+	if (perm.super_user === true) return true;
 	if (perm.structure_user && SCHEMA_STRUCTURE_OPERATIONS.has(operation)) return true;
-	if (Array.isArray(perm.operations) && perm.operations.includes(operation)) return true;
-	return false;
+	return allowlisted === true;
 }
 
 /**
