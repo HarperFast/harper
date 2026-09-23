@@ -161,7 +161,7 @@ describe('Subscription origin identity', () => {
 		const replay = await subscribe({ startTime: 1, includeOrigin: true });
 		await waitFor(() => replay.subscription.closed);
 		assertFailedClosed(replay);
-		const live = await subscribe({ includeOrigin: true, omitCurrent: true });
+		const live = await subscribe({ includeOrigin: true, omitCurrent: true, supportsTransactions: true });
 		await peer.put('V', 1);
 		await waitFor(() => live.subscription.closed);
 		assertFailedClosed(live);

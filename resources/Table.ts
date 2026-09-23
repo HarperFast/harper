@@ -5793,9 +5793,11 @@ export function makeTable(options) {
 					value = auditRecord.getValue?.(primaryStore, getFullRecord, localTime);
 					if (getFullRecord && type === 'patch') type = 'put';
 				}
-				if (!includeOrigin || type === 'end_txn' || type === 'reload')
+				if (!includeOrigin)
 					return { id, localTime, value, version: auditRecord.version, type, beginTxn, size: auditRecord.size };
 				if (originFailure) return;
+				if (type === 'end_txn' || type === 'reload')
+					return { id, localTime, value, version: auditRecord.version, type, beginTxn, size: auditRecord.size };
 				const nodeId = auditRecord.nodeId;
 				const nodeName = originName(nodeId, live);
 				if (nodeName === undefined) return;
@@ -5840,9 +5842,7 @@ export function makeTable(options) {
 				lastOriginName = name;
 				return name;
 			}
-			// The live listener runs inside the fan-out loop over this key's subscribers; closing there
-			// splices the array under the loop and the next subscriber misses the event, so the close
-			// waits for the microtask while originFailure keeps every later event of this subscription out.
+			// A synchronous close inside the live fan-out splices the subscriber array under its loop (harper#2771).
 			function failOrigin(error: SubscriptionOriginError, live: boolean): undefined {
 				originFailure = error;
 				if (live) queueMicrotask(() => failSubscription(error));
