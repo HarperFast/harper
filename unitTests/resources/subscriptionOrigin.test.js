@@ -169,6 +169,24 @@ describe('Subscription origin identity', () => {
 		assert.equal(indifferent.events.length, 2, 'a subscription without includeOrigin still gets both writes');
 	});
 
+	it('fails the subscription on a record with no origin id, even as its first event', async () => {
+		const { subscription, events } = await subscribe({ includeOrigin: true, omitCurrent: true });
+		subscription.listener('X', { type: 'message', version: 1, getValue: () => ({ value: 1 }) }, Date.now(), true);
+		await waitFor(() => subscription.closed);
+		assertFailedClosed({ subscription, events });
+	});
+
+	it('closes only the failing subscriber; a sibling on the same key still gets the event', async () => {
+		const peer = peerSource(T);
+		const failing = await subscribe({ includeOrigin: true, omitCurrent: true });
+		const sibling = await subscribe({ omitCurrent: true });
+		await peer.put('W', 1);
+		await waitFor(() => failing.subscription.closed && sibling.events.length >= 1);
+		assertFailedClosed(failing);
+		assert.equal(sibling.events[0].id, 'W');
+		assert.ok(!sibling.subscription.closed);
+	});
+
 	it('fails the subscription when the node map cannot be read', async () => {
 		// Own database: the corrupt map record below breaks every later write to it.
 		const Corrupt = table({

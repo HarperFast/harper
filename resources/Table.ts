@@ -5445,6 +5445,7 @@ export function makeTable(options) {
 			const includeOrigin = Boolean(request.includeOrigin);
 			let lastOriginId: number | undefined;
 			let lastOriginName: string | undefined;
+			let originFailure: SubscriptionOriginError | undefined;
 			// While the count, !omitCurrent, and non-collection branches replay older messages, real-time
 			// messages from the listener accumulate here and are drained at the end of the IIFE so they
 			// arrive after the replayed history, in order. The startTime branch sets this to null and
@@ -5503,7 +5504,7 @@ export function makeTable(options) {
 						if (auditRecord.type === 'reload' && !request.rawEvents && databaseName !== 'system') {
 							return scheduleReloadResnapshot();
 						}
-						const event = eventFromAudit(id, auditRecord, txnLogKey, beginTxn);
+						const event = eventFromAudit(id, auditRecord, txnLogKey, beginTxn, true);
 						if (!event) return;
 						// Queued events are filtered when the queue drains through send() below; events sent
 						// directly (queue already drained) are filtered here. Each event is filtered once.
@@ -5775,7 +5776,7 @@ export function makeTable(options) {
 				harperLogger.error?.('Error in real-time subscription:', error);
 				subscription.close(error);
 			}
-			function eventFromAudit(id: Id, auditRecord: any, localTime: number, beginTxn?: boolean) {
+			function eventFromAudit(id: Id, auditRecord: any, localTime: number, beginTxn?: boolean, live = false) {
 				let type = auditRecord.type;
 				let value;
 				const isMutation =
@@ -5794,8 +5795,9 @@ export function makeTable(options) {
 				}
 				if (!includeOrigin || type === 'end_txn' || type === 'reload')
 					return { id, localTime, value, version: auditRecord.version, type, beginTxn, size: auditRecord.size };
+				if (originFailure) return;
 				const nodeId = auditRecord.nodeId;
-				const nodeName = originName(nodeId);
+				const nodeName = originName(nodeId, live);
 				if (nodeName === undefined) return;
 				return {
 					id,
@@ -5809,31 +5811,43 @@ export function makeTable(options) {
 					nodeName,
 				};
 			}
-			function originName(nodeId: number | undefined): string | undefined {
+			function originName(nodeId: number | undefined, live: boolean): string | undefined {
+				if (nodeId === undefined) {
+					return failOrigin(new SubscriptionOriginError(`A ${tableName} event carries no origin node id`), live);
+				}
 				if (nodeId === lastOriginId) return lastOriginName;
 				let name: string | undefined;
 				try {
-					name = nodeId === undefined ? undefined : getNodeNameForId(auditStore, nodeId, true);
+					name = getNodeNameForId(auditStore, nodeId, true);
 				} catch (error) {
-					failSubscription(
+					return failOrigin(
 						new SubscriptionOriginError(
 							`The origin node ${nodeId} of a ${tableName} event could not be resolved`,
 							error
-						)
+						),
+						live
 					);
-					return;
 				}
 				if (name === undefined) {
-					failSubscription(
+					return failOrigin(
 						new SubscriptionOriginError(
 							`The origin node ${nodeId} of a ${tableName} event is not in the database's node map`
-						)
+						),
+						live
 					);
-					return;
 				}
 				lastOriginId = nodeId;
 				lastOriginName = name;
 				return name;
+			}
+			// The live listener runs inside the fan-out loop over this key's subscribers; closing there
+			// splices the array under the loop and the next subscriber misses the event, so the close
+			// waits for the microtask while originFailure keeps every later event of this subscription out.
+			function failOrigin(error: SubscriptionOriginError, live: boolean): undefined {
+				originFailure = error;
+				if (live) queueMicrotask(() => failSubscription(error));
+				else failSubscription(error);
+				return undefined;
 			}
 			function send(event: any, alreadyFiltered = false) {
 				if (!isActive()) return false;
