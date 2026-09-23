@@ -1,6 +1,7 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
+const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor.js');
 require('#src/server/serverHelpers/serverUtilities');
@@ -41,6 +42,33 @@ describe('Subscription superseded versions', () => {
 		await T.put('A', { value: 2 });
 		await T.patch('A', { value: 3 });
 		await T.patch('A', { value: 4 });
+	}
+
+	for (const scope of [
+		{ startTime: 1 },
+		{ startTime: 1, id: 'A' },
+		{ previousCount: 10, id: 'A' },
+		...(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? [{ previousCount: 10 }] : []),
+	]) {
+		it(`filters superseded relocations for ${JSON.stringify(scope)}`, async () => {
+			await T.put('A', { value: 2 });
+			const context = {};
+			await transaction(context, async () => {
+				const resource = await T.getResource('A', context);
+				resource._writeRelocate('A', {});
+			});
+			await T.put('A', { value: 4 });
+			const current = await subscribe(scope);
+			assert.deepStrictEqual(
+				current.events.map((event) => [event.type, event.value?.value]),
+				[['put', 4]]
+			);
+			const history = await subscribe({ ...scope, includeSuperseded: true });
+			assert.deepStrictEqual(
+				history.events.map((event) => event.type),
+				['put', 'relocate', 'put']
+			);
+		});
 	}
 
 	for (const scope of [{ isCollection: true }, { id: 'A' }]) {
