@@ -28,8 +28,8 @@ describe('Subscription superseded versions', () => {
 	async function subscribe(options) {
 		const events = [];
 		let replayEnd = 0;
-		if (options.startTime && options.id === undefined) {
-			for (const record of T.auditStore.getRange({ start: options.startTime })) {
+		if ((options.startTime || options.previousCount) && options.id === undefined) {
+			for (const record of T.auditStore.getRange({ start: options.startTime || 1 })) {
 				if (record.tableId === T.tableId) replayEnd = Math.max(replayEnd, record.txnLogKey);
 			}
 		}
@@ -51,6 +51,15 @@ describe('Subscription superseded versions', () => {
 		...(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? [{ previousCount: 10 }] : []),
 	]) {
 		it(`filters superseded relocations for ${JSON.stringify(scope)}`, async () => {
+			if (scope.previousCount && scope.id === undefined) {
+				const Other = table({
+					database: 'test',
+					table: 'RelocationReplayNoise',
+					audit: true,
+					attributes: [{ name: 'id', isPrimaryKey: true }],
+				});
+				for (let id = 0; id < 120; id++) await Other.put(id, {});
+			}
 			await T.put('A', { value: 2 });
 			const context = {};
 			await transaction(context, async () => {
