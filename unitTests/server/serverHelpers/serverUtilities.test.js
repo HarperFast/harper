@@ -1291,7 +1291,8 @@ describe('processLocalTransaction call-site redaction (real log file)', function
 	});
 
 	it('fails if the call site stops redacting: neither the SSH key nor a global secret field reaches the log', async function () {
-		const secretKey = '-----BEGIN OPENSSH PRIVATE KEY-----\nCALL-SITE-REDACTION-SECRET\n-----END OPENSSH PRIVATE KEY-----';
+		const secretKey =
+			'-----BEGIN OPENSSH PRIVATE KEY-----\nCALL-SITE-REDACTION-SECRET\n-----END OPENSSH PRIVATE KEY-----';
 		const marker = 'call-site-redaction-marker';
 		const body = { operation: 'add_ssh_key', name: marker, key: secretKey, password: 'CALL-SITE-REDACTION-PASSWORD' };
 		const offset = existsSync(logPath) ? readFileSync(logPath, 'utf8').length : 0;
@@ -1309,6 +1310,9 @@ describe('processLocalTransaction call-site redaction (real log file)', function
 
 		assert.ok(written.includes(marker), 'the operation log entry for this request must be present');
 		assert.ok(!written.includes('CALL-SITE-REDACTION-SECRET'), 'the raw SSH key must not reach the operation log');
-		assert.ok(!written.includes('CALL-SITE-REDACTION-PASSWORD'), 'a global secret field must not reach the operation log');
+		assert.ok(
+			!written.includes('CALL-SITE-REDACTION-PASSWORD'),
+			'a global secret field must not reach the operation log'
+		);
 	});
 });
