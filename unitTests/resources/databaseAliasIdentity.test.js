@@ -189,10 +189,10 @@ describe('shared root-store database identity', function () {
 			const Table = databases[alias][tableName];
 			dbis.push(Table.primaryStore, ...Object.values(Table.indices));
 		}
-		assert(dbis.length >= 5, 'both aliases must hold their own primary and index dbis');
+		assert.strictEqual(new Set(dbis.map((store) => store.db)).size, 5, 'each alias must hold its own native dbis');
 		// recorded, not forwarded: on the unfixed path the second alias's call is the use-after-free
 		for (const store of dbis) {
-			Object.defineProperty(store.db, 'close', { value: () => nativeCloses.push(store.name) });
+			Object.defineProperty(store.db, 'close', { value: () => nativeCloses.push(store.name), configurable: true });
 		}
 
 		assert.strictEqual(closeDatabase('physicalalias'), true);

@@ -2109,14 +2109,14 @@ export async function dropDatabase(databaseName) {
 }
 
 /**
- * Close a RocksDB database's store handles on the current thread and unregister it, without
+ * Close a database's store handles on the current thread and unregister it, without
  * touching its files. Used by the restore_backup flow: every thread must release its handles so
  * `backups.restore()` can purge and rewrite the (fully closed) database directory. A subsequent
  * `resetDatabases()`/`getDatabases()` rescan reloads it (or skips it while a restore is in
  * progress, per the restore marker checks in the scan).
  *
- * An LMDB database is closed by closing its environment, which releases every dbi in it; the
- * other database aliases sharing that environment are unregistered with it.
+ * An LMDB database is closed by closing its environment, which releases every dbi in it, so every
+ * other database alias sharing that environment is closed with it.
  */
 export function closeDatabase(databaseName: string): boolean {
 	const dbTables = databases[databaseName];
@@ -2164,16 +2164,15 @@ export function closeDatabase(databaseName: string): boolean {
 		lmdbDatabaseEnvs.delete(rootStore.path);
 		rocksdbDatabaseEnvs.delete(rootStore.path);
 	}
+	unregisterDatabase(databaseName);
 	for (const aliasName of Object.keys(databases)) {
-		if (aliasName === databaseName) continue;
 		for (const rootStore of lmdbRootStores) {
 			if (databaseUsesRootStore(aliasName, rootStore)) {
-				unregisterDatabase(aliasName);
+				closeDatabase(aliasName);
 				break;
 			}
 		}
 	}
-	unregisterDatabase(databaseName);
 	return true;
 }
 

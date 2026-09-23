@@ -920,6 +920,6 @@ Database aliases that resolve to one path share one LMDB root store, but each al
 dbi handles. `mdb_env_close` releases every dbi, while lmdb-js's native `DbiWrap.close()` calls
 `mdb_dbi_close` on the `MDB_env*` it captured at open, so closing a dbi after another alias closed the
 environment is a use-after-free (an intermittent segfault in the lmdb unit run). `closeDatabase` closes
-an LMDB root once, only while `open`, skips its dbis, and unregisters every alias sharing it. RocksDB
+an LMDB root once, only while `open`, skips its dbis, and closes every alias sharing it. RocksDB
 column families are independently refcounted handles, so they are still closed one by one. Enforced by
 the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.
