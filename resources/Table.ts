@@ -65,6 +65,7 @@ import {
 	ValidationError,
 	UpdateAttributesLockTimeoutError,
 	LockUnavailableError,
+	SubscriptionOriginError,
 	appendErrorContext,
 	type ValidationIssue,
 } from '../utility/errors/hdbError.ts';
@@ -5441,6 +5442,10 @@ export function makeTable(options) {
 			}
 			const getFullRecord = !request.rawEvents;
 			const includeSuperseded = request.includeSuperseded ?? request.rawEvents ?? false;
+			const includeOrigin = Boolean(request.includeOrigin);
+			// Declared ahead of the replay IIFE, which reaches eventFromAudit synchronously.
+			let lastOriginId: number | undefined;
+			let lastOriginName: string | undefined;
 			// While the count, !omitCurrent, and non-collection branches replay older messages, real-time
 			// messages from the listener accumulate here and are drained at the end of the IIFE so they
 			// arrive after the replayed history, in order. The startTime branch sets this to null and
@@ -5782,7 +5787,48 @@ export function makeTable(options) {
 					value = auditRecord.getValue?.(primaryStore, getFullRecord, localTime);
 					if (getFullRecord && type === 'patch') type = 'put';
 				}
-				return { id, localTime, value, version: auditRecord.version, type, beginTxn, size: auditRecord.size };
+				if (!includeOrigin || type === 'end_txn' || type === 'reload' || auditRecord.nodeId === undefined)
+					return { id, localTime, value, version: auditRecord.version, type, beginTxn, size: auditRecord.size };
+				const nodeId = auditRecord.nodeId;
+				const nodeName = originName(nodeId);
+				if (nodeName === undefined) return;
+				return {
+					id,
+					localTime,
+					value,
+					version: auditRecord.version,
+					type,
+					beginTxn,
+					size: auditRecord.size,
+					nodeId,
+					nodeName,
+				};
+			}
+			function originName(nodeId: number): string | undefined {
+				if (nodeId === lastOriginId) return lastOriginName;
+				let name: string | undefined;
+				try {
+					name = getNodeNameForId(auditStore, nodeId, true);
+				} catch (error) {
+					failSubscription(
+						new SubscriptionOriginError(
+							`The origin node ${nodeId} of a ${tableName} event could not be resolved`,
+							error
+						)
+					);
+					return;
+				}
+				if (name === undefined) {
+					failSubscription(
+						new SubscriptionOriginError(
+							`The origin node ${nodeId} of a ${tableName} event is not in the database's node map`
+						)
+					);
+					return;
+				}
+				lastOriginId = nodeId;
+				lastOriginName = name;
+				return name;
 			}
 			function send(event: any, alreadyFiltered = false) {
 				if (!isActive()) return false;

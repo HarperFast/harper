@@ -142,6 +142,24 @@ export class LockUnavailableError extends ServerError {
 	}
 }
 
+/**
+ * `Table.subscribe({ includeOrigin: true })` could not name the origin node of an event: the id is not
+ * in the database's node map, or reading the map threw. The subscription ends with this error rather
+ * than deliver the event without its origin or skip it — a skipped write is the silent gap the option
+ * exists to prevent.
+ */
+export class SubscriptionOriginError extends ServerError {
+	code: string;
+	retryable: boolean;
+	constructor(message: string, cause?: unknown) {
+		super(message, 500);
+		this.name = 'SubscriptionOriginError';
+		this.code = 'SUBSCRIPTION_ORIGIN_UNRESOLVED';
+		this.retryable = false;
+		if (cause !== undefined) this.cause = cause;
+	}
+}
+
 /** One structured validation failure. `path` is dot-scoped (`body.price`, `query.sort`, `params.id`). */
 export interface ValidationIssue {
 	/** Where the failure occurred, e.g. `body.price`, `query.expand`, `params.id`. */

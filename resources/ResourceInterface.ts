@@ -253,6 +253,12 @@ export interface SubscriptionRequest extends RequestTarget {
 	rawEvents?: boolean;
 	/** Include superseded record versions in replay and live delivery. Defaults to rawEvents, otherwise false. */
 	includeSuperseded?: boolean;
+	/**
+	 * Put the origin node on every event built from an audit record, as `nodeId` (this node's local
+	 * short id for it) and `nodeName` (its globally stable name). Off by default; JavaScript API only.
+	 * An origin the node map cannot name ends the subscription with `SubscriptionOriginError`.
+	 */
+	includeOrigin?: boolean;
 	listener?: Listener;
 	/**
 	 * Application-supplied predicate for subscription events, including tombstones and messages that
@@ -311,4 +317,16 @@ export interface ListenerPayload<Payload extends object = any> {
 	version: number;
 	type: string;
 	beginTxn: boolean;
+	/**
+	 * With `includeOrigin`: the origin node's short id in this node's per-database id space (0 is this
+	 * node). Not comparable across nodes — use `nodeName` for that.
+	 */
+	nodeId?: number;
+	/**
+	 * With `includeOrigin`: the origin node's globally stable name. A position `(nodeName, localTime)`
+	 * is safe to persist only after an event with a greater `localTime` from that origin, or an
+	 * `end_txn`, has been delivered: events of one transaction share a `localTime` and `startTime`
+	 * excludes every event at the cursor.
+	 */
+	nodeName?: string;
 }
