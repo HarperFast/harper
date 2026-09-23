@@ -602,6 +602,9 @@ function startWorker(path, options = {}) {
 		// way)
 		harperLogger.error(`Worker index ${options.workerIndex} error:`, error);
 	});
+	// `worker.threadId` is -1 once the thread has exited, so anything an exit listener logs has to
+	// have captured it first.
+	const workerThreadId = worker.threadId;
 	worker.on('exit', (_code) => {
 		workers.splice(workers.indexOf(worker), 1);
 		const unexpected = exitedUnexpectedly(worker);
@@ -612,7 +615,7 @@ function startWorker(path, options = {}) {
 			try {
 				options.onUnexpectedExit?.(worker);
 			} catch (error) {
-				harperLogger.error('onUnexpectedExit handler failed for thread', worker.threadId, error);
+				harperLogger.error('onUnexpectedExit handler failed for thread', workerThreadId, error);
 			}
 		}
 		if (unexpected && options.autoRestart !== false && options.shouldAutoRestart?.(worker) !== false) {
@@ -946,6 +949,7 @@ async function restartWorkers(
  * @returns {Promise<boolean>} whether the worker reported that it started
  */
 function whenWorkerStarted(newWorker) {
+	const newWorkerThreadId = newWorker.threadId; // -1 by the time the exit listener below runs
 	return new Promise((resolve) => {
 		const cleanup = () => {
 			clearTimeout(timeout);
@@ -954,7 +958,7 @@ function whenWorkerStarted(newWorker) {
 		};
 		const timeout = setTimeout(
 			() => {
-				harperLogger.error('Replacement worker did not start in time', newWorker.threadId);
+				harperLogger.error('Replacement worker did not start in time', newWorkerThreadId);
 				cleanup();
 				// Its predecessor is already gone, so a replacement wedged in boot is a worker slot serving
 				// nothing until the process restarts. Stop it and let startWorker's exit handling replace it.
@@ -975,7 +979,7 @@ function whenWorkerStarted(newWorker) {
 			}
 		};
 		const exitListener = () => {
-			harperLogger.warn('Replacement worker exited before starting', newWorker.threadId);
+			harperLogger.warn('Replacement worker exited before starting', newWorkerThreadId);
 			cleanup();
 			resolve(false);
 		};
