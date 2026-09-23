@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790154864222,
+  "lastUpdate": 1790154868822,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -23113,6 +23113,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 1746.3,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kyle Bernhardy",
+            "username": "kylebernhardy",
+            "email": "kyle@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8715cca79a9239e10693ae203ce6b2b8ff200094",
+          "message": "Merge pull request #2615 from HarperFast/codex/fulltext-schema-activation\n\nAdd @fullText schema declaration and validation",
+          "timestamp": "2026-09-23T02:25:38Z",
+          "url": "https://github.com/HarperFast/harper/commit/8715cca79a9239e10693ae203ce6b2b8ff200094"
+        },
+        "date": 1790154867425,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 4093.63,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 4093.63,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 519,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 1124.5,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 1449.5,
             "unit": "ms"
           }
         ]
