@@ -605,9 +605,9 @@ function startWorker(path, options = {}) {
 	worker.on('exit', (_code) => {
 		workers.splice(workers.indexOf(worker), 1);
 		const unexpected = exitedUnexpectedly(worker);
-		// An option rather than a listener on the returned worker, because `startCopy` restarts through
-		// this same options object and a listener would not reach the replacement. Contained: a throw
-		// here is an uncaught exception in an 'exit' listener, which would take the process down.
+		// An option, not a listener on the returned worker: `startCopy` restarts through this same
+		// options object, so a listener would not reach the replacement. Contained because a throw in
+		// an 'exit' listener is uncaught.
 		if (unexpected) {
 			try {
 				options.onUnexpectedExit?.(worker);

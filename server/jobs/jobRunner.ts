@@ -153,10 +153,7 @@ async function launchJobThread(job_id: any) {
 	}
 }
 
-/**
- * Only an *unexpected* exit strands the row. A deliberate stop is either replaced by `startCopy`,
- * whose replacement re-runs the job, or part of a teardown the boot sweep then owns.
- */
+/** Only an unexpected exit strands the row; a deliberate stop is replaced or swept. */
 function startJobWorker(jobId: any) {
 	return threadsStart.startWorker(join(__dirname, './jobProcess.js'), {
 		autoRestart: false,
