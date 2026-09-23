@@ -2114,6 +2114,9 @@ export async function dropDatabase(databaseName) {
  * `backups.restore()` can purge and rewrite the (fully closed) database directory. A subsequent
  * `resetDatabases()`/`getDatabases()` rescan reloads it (or skips it while a restore is in
  * progress, per the restore marker checks in the scan).
+ *
+ * An LMDB database is closed by closing its environment, which releases every dbi in it; the
+ * other database aliases sharing that environment are unregistered with it.
  */
 export function closeDatabase(databaseName: string): boolean {
 	const dbTables = databases[databaseName];
@@ -2141,9 +2144,12 @@ export function closeDatabase(databaseName: string): boolean {
 	// plus the fact that its production callers reach it only for RocksDB databases, whose pass is one
 	// synchronous purgeLogs() call with nothing suspended mid-removal.
 	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
+	const lmdbRootStores = new Set([...rootStores].filter((rootStore) => !(rootStore instanceof RocksDatabase)));
 	for (const tableName in dbTables) {
 		const table: any = dbTables[tableName];
-		if (!table?.primaryStore) continue;
+		// a dbi closed natively after its environment closed (through another alias sharing it) runs
+		// mdb_dbi_close against the freed environment
+		if (!table?.primaryStore || lmdbRootStores.has(table.primaryStore.rootStore)) continue;
 		for (const indexName in table.indices || {}) {
 			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
 		}
@@ -2151,11 +2157,36 @@ export function closeDatabase(databaseName: string): boolean {
 	}
 	for (const rootStore of rootStores) {
 		removeStorageReclamation(rootStore.path);
-		closeStore(rootStore.dbisDb, 'attributes store');
-		closeStore(rootStore, 'root store');
+		if (!lmdbRootStores.has(rootStore)) {
+			closeStore(rootStore.dbisDb, 'attributes store');
+			closeStore(rootStore, 'root store');
+		} else if (rootStore.status === 'open') closeStore(rootStore, 'root store');
 		lmdbDatabaseEnvs.delete(rootStore.path);
 		rocksdbDatabaseEnvs.delete(rootStore.path);
 	}
+	for (const aliasName of Object.keys(databases)) {
+		if (aliasName === databaseName) continue;
+		for (const rootStore of lmdbRootStores) {
+			if (databaseUsesRootStore(aliasName, rootStore)) {
+				unregisterDatabase(aliasName);
+				break;
+			}
+		}
+	}
+	unregisterDatabase(databaseName);
+	return true;
+}
+
+function databaseUsesRootStore(databaseName: string, rootStore: any): boolean {
+	if ((definedDatabases?.get(databaseName) as any)?.rootStore === rootStore) return true;
+	const dbTables = databases[databaseName];
+	for (const tableName in dbTables) {
+		if ((dbTables[tableName] as any)?.primaryStore?.rootStore === rootStore) return true;
+	}
+	return false;
+}
+
+function unregisterDatabase(databaseName: string): void {
 	const definedDatabase = definedDatabases?.get(databaseName);
 	if (definedDatabase) (definedDatabase as any).rootStore = undefined;
 	if (databaseName === 'data') {
@@ -2165,7 +2196,6 @@ export function closeDatabase(databaseName: string): boolean {
 		delete tables[DEFINED_TABLES];
 	}
 	delete databases[databaseName];
-	return true;
 }
 
 /**

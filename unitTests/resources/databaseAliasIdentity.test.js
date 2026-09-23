@@ -8,6 +8,7 @@ const { setupTestDBPath } = require('../testUtils');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 const { dropSchema } = require('#src/dataLayer/schema');
+const { registryStatus } = require('@harperfast/rocksdb-js');
 const { table, closeDatabase, getDatabases, resetDatabases } = require('#src/resources/databases');
 const { databasePaths, getRootBlobPathsForDB } = require('#src/resources/blob');
 const {
@@ -25,7 +26,7 @@ function closeAliases(aliases) {
 	for (const alias of aliases) closeDatabase(alias);
 }
 
-async function createPhysicalStore(storageRoot, databaseName, tableName) {
+async function createPhysicalStore(storageRoot, databaseName, tableName, attributes = []) {
 	mkdirSync(storageRoot, { recursive: true });
 	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, storageRoot);
 	env.setProperty(terms.CONFIG_PARAMS.DATABASES, {});
@@ -33,7 +34,7 @@ async function createPhysicalStore(storageRoot, databaseName, tableName) {
 	const Table = table({
 		database: databaseName,
 		table: tableName,
-		attributes: [{ name: 'id', isPrimaryKey: true }],
+		attributes: [{ name: 'id', isPrimaryKey: true }, ...attributes],
 	});
 	await Table.dbisDB.committed;
 	closeDatabase(databaseName);
@@ -171,6 +172,59 @@ describe('shared root-store database identity', function () {
 		loadedAliases = ['configuredalias', 'physicalalias'];
 
 		assertStableIdentity({ aliases: loadedAliases, expectedIdentity: 'configuredalias', tableName });
+	});
+
+	it('closes a shared LMDB environment once, without natively closing its dbis, and unregisters every alias', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb') return this.skip();
+		const storageRoot = join(testRoot, 'alias-close-lmdb');
+		const tableName = 'AliasCloseLmdb';
+		await createPhysicalStore(storageRoot, 'physicalalias', tableName, [{ name: 'name', indexed: true }]);
+		const databases = loadAliases(storageRoot, { configured: ['configuredalias'] });
+		loadedAliases = ['physicalalias', 'configuredalias'];
+		const rootStore = databases.physicalalias[tableName].primaryStore.rootStore;
+		assert.strictEqual(databases.configuredalias[tableName].primaryStore.rootStore, rootStore);
+		const nativeCloses = [];
+		const dbis = [rootStore.dbisDb];
+		for (const alias of loadedAliases) {
+			const Table = databases[alias][tableName];
+			dbis.push(Table.primaryStore, ...Object.values(Table.indices));
+		}
+		assert(dbis.length >= 5, 'both aliases must hold their own primary and index dbis');
+		// recorded, not forwarded: on the unfixed path the second alias's call is the use-after-free
+		for (const store of dbis) {
+			Object.defineProperty(store.db, 'close', { value: () => nativeCloses.push(store.name) });
+		}
+
+		assert.strictEqual(closeDatabase('physicalalias'), true);
+		assert.deepStrictEqual(nativeCloses, []);
+		assert.notStrictEqual(rootStore.status, 'open');
+		const remaining = getDatabases();
+		assert.strictEqual(remaining.physicalalias, undefined);
+		assert.strictEqual(remaining.configuredalias, undefined);
+		assert.strictEqual(closeDatabase('configuredalias'), false);
+		assert.deepStrictEqual(nativeCloses, []);
+
+		const reopened = loadAliases(storageRoot, { configured: ['configuredalias'] });
+		assert.notStrictEqual(reopened.configuredalias[tableName].primaryStore.rootStore, rootStore);
+		await reopened.physicalalias[tableName].put({ id: 'written-through-physical', name: 'shared' });
+		assert.strictEqual((await reopened.configuredalias[tableName].get('written-through-physical')).name, 'shared');
+	});
+
+	it('releases every RocksDB handle on a shared store once each alias closes', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const storageRoot = join(testRoot, 'alias-close-rocks');
+		const tableName = 'AliasCloseRocks';
+		await createPhysicalStore(storageRoot, 'physicalalias', tableName, [{ name: 'name', indexed: true }]);
+		const databases = loadAliases(storageRoot, { configured: ['configuredalias'] });
+		loadedAliases = ['physicalalias', 'configuredalias'];
+		const { path } = databases.physicalalias[tableName].primaryStore.rootStore;
+		assert.strictEqual(databases.configuredalias[tableName].primaryStore.rootStore.path, path);
+		const handlesOn = () => registryStatus().find((db) => db.path === path)?.refCount ?? 0;
+		assert(handlesOn() > 0);
+
+		closeAliases(loadedAliases);
+		loadedAliases = [];
+		assert.strictEqual(handlesOn(), 0);
 	});
 
 	it('prunes both aliases on the originating thread and another worker after the shared store is dropped', async function () {

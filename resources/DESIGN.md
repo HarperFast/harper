@@ -913,3 +913,13 @@ can be replaced through `set_env_value`, and a replicated encrypted value cannot
 node. The application sees a missing variable rather than ciphertext. Plaintext and encrypted values
 coexist per value; `get_env_keys` and `get_component_file` still expose key names only. The
 envelope format, key model and client flow are user-facing and belong in HarperFast/documentation.
+
+## Closing an LMDB database closes its environment, never its dbis (`databases.ts` `closeDatabase`)
+
+Database aliases that resolve to one path share one LMDB root store, but each alias opens its own
+dbi handles. `mdb_env_close` releases every dbi, while lmdb-js's native `DbiWrap.close()` calls
+`mdb_dbi_close` on the `MDB_env*` it captured at open, so closing a dbi after another alias closed the
+environment is a use-after-free (an intermittent segfault in the lmdb unit run). `closeDatabase` closes
+an LMDB root once, only while `open`, skips its dbis, and unregisters every alias sharing it. RocksDB
+column families are independently refcounted handles, so they are still closed one by one. Enforced by
+the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.
