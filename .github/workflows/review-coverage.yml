@@ -99,6 +99,7 @@ jobs:
             resources/blob.ts
             resources/branchDatabase.ts
             resources/databases.ts
+            resources/derivedIndexes.ts
             resources/derivedIndexRuntime.ts
             resources/indexes/HierarchicalNavigableSmallWorld.ts
             resources/longLivedTransactions.ts
