@@ -326,7 +326,8 @@ export interface ListenerPayload<Payload extends object = any> {
 	 * With `includeOrigin`: the origin node's globally stable name. A position `(nodeName, localTime)`
 	 * is safe to persist only after an event with a greater `localTime` from that origin, or an
 	 * `end_txn`, has been delivered: events of one transaction share a `localTime` and `startTime`
-	 * excludes every event at the cursor.
+	 * excludes every event at the cursor. On RocksDB `localTime` is the origin's own log key and is
+	 * comparable across nodes; on LMDB it is this node's audit key and is comparable only here.
 	 */
 	nodeName?: string;
 }

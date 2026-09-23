@@ -1,5 +1,4 @@
 const assert = require('node:assert');
-const sinon = require('sinon');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -31,7 +30,6 @@ describe('Subscription origin identity', () => {
 		});
 	});
 	afterEach(() => {
-		sinon.restore();
 		for (const subscription of subscriptions.splice(0)) subscription.end();
 	});
 
@@ -144,7 +142,6 @@ describe('Subscription origin identity', () => {
 		assert.deepStrictEqual(originFields(live.events[0]), { nodeId: peer.nodeId, nodeName: 'peer-a' });
 		const replay = await subscribe({ startTime: 1, includeOrigin: true });
 		assert.deepStrictEqual(originFields(replay.events[0]), { nodeId: peer.nodeId, nodeName: 'peer-a' });
-		// last-id memo does not leak across subscriptions or origins
 		await T.put('L', { value: 1 });
 		await waitFor(() => live.events.length >= 2);
 		assert.deepStrictEqual(originFields(live.events[1]), { nodeId: 0, nodeName: getThisNodeName() });
@@ -173,16 +170,18 @@ describe('Subscription origin identity', () => {
 	});
 
 	it('fails the subscription when the node map cannot be read', async () => {
-		await T.put('A', { value: 1 });
-		getIdOfRemoteNode('peer-b', T.auditStore); // drops the cached inverted map so the replay must re-read it
-		const getBinary = T.auditStore.getBinary;
-		sinon.stub(T.auditStore, 'getBinary').callsFake(function (key) {
-			if (key === REMOTE_NODE_IDS) throw new Error('map unreadable');
-			return getBinary.call(this, key);
+		// Own database: the corrupt map record below breaks every later write to it.
+		const Corrupt = table({
+			database: 'origin-corrupt-map',
+			table: 'Corrupt',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
 		});
-		const replay = await subscribe({ startTime: 1, includeOrigin: true });
+		await Corrupt.put('A', { value: 1 });
+		Corrupt.auditStore.putSync(REMOTE_NODE_IDS, Buffer.from([0x92]));
+		const replay = await subscribe({ startTime: 1, includeOrigin: true }, Corrupt);
 		await waitFor(() => replay.subscription.closed);
 		assertFailedClosed(replay);
-		assert.equal(replay.events[0].cause?.message, 'map unreadable');
+		assert.ok(replay.events[0].cause instanceof Error, 'the map read failure rides along as the cause');
 	});
 });

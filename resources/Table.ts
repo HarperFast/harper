@@ -5443,7 +5443,6 @@ export function makeTable(options) {
 			const getFullRecord = !request.rawEvents;
 			const includeSuperseded = request.includeSuperseded ?? request.rawEvents ?? false;
 			const includeOrigin = Boolean(request.includeOrigin);
-			// Declared ahead of the replay IIFE, which reaches eventFromAudit synchronously.
 			let lastOriginId: number | undefined;
 			let lastOriginName: string | undefined;
 			// While the count, !omitCurrent, and non-collection branches replay older messages, real-time
@@ -5568,7 +5567,10 @@ export function makeTable(options) {
 								subscription!.startTime = auditRecord.txnLogKey;
 								if (thisId == null || isDescendantId(thisId, id)) {
 									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
-									if (!event) continue;
+									if (!event) {
+										if (!isActive()) return;
+										continue;
+									}
 									if (!send(event)) return;
 									if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 										if ((await subscription.waitForDrain()) === false) return;
@@ -5609,7 +5611,10 @@ export function makeTable(options) {
 									}
 									cursorMaxTime = Math.max(cursorMaxTime, auditRecord.txnLogKey);
 									const historyEntry = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
-									if (!historyEntry) continue;
+									if (!historyEntry) {
+										if (!isActive()) return;
+										continue;
+									}
 									// Filter rows before they consume a previousCount slot.
 									if (allowsEvent && !allowsEvent(historyEntry)) {
 										if (!isActive()) return;
@@ -5787,7 +5792,7 @@ export function makeTable(options) {
 					value = auditRecord.getValue?.(primaryStore, getFullRecord, localTime);
 					if (getFullRecord && type === 'patch') type = 'put';
 				}
-				if (!includeOrigin || type === 'end_txn' || type === 'reload' || auditRecord.nodeId === undefined)
+				if (!includeOrigin || type === 'end_txn' || type === 'reload')
 					return { id, localTime, value, version: auditRecord.version, type, beginTxn, size: auditRecord.size };
 				const nodeId = auditRecord.nodeId;
 				const nodeName = originName(nodeId);
@@ -5804,11 +5809,11 @@ export function makeTable(options) {
 					nodeName,
 				};
 			}
-			function originName(nodeId: number): string | undefined {
+			function originName(nodeId: number | undefined): string | undefined {
 				if (nodeId === lastOriginId) return lastOriginName;
 				let name: string | undefined;
 				try {
-					name = getNodeNameForId(auditStore, nodeId, true);
+					name = nodeId === undefined ? undefined : getNodeNameForId(auditStore, nodeId, true);
 				} catch (error) {
 					failSubscription(
 						new SubscriptionOriginError(

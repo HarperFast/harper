@@ -143,10 +143,9 @@ export class LockUnavailableError extends ServerError {
 }
 
 /**
- * `Table.subscribe({ includeOrigin: true })` could not name the origin node of an event: the id is not
- * in the database's node map, or reading the map threw. The subscription ends with this error rather
- * than deliver the event without its origin or skip it — a skipped write is the silent gap the option
- * exists to prevent.
+ * `Table.subscribe({ includeOrigin: true })` could not name an event's origin node (the id is not in the
+ * database's node map, the record has none, or reading the map threw); the subscription ends instead
+ * of delivering or skipping the event.
  */
 export class SubscriptionOriginError extends ServerError {
 	code: string;
