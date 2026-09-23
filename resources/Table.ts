@@ -5723,7 +5723,6 @@ export function makeTable(options) {
 										if (count) count--;
 									} else if (!isActive()) return;
 								}
-								if (!includeSuperseded) break;
 								const previousHead = isRocksDB
 									? resolveAuditHead(
 											thisId,
@@ -5735,7 +5734,7 @@ export function makeTable(options) {
 								nextTime = previousHead.txnLogKey;
 								nodeId = previousHead.nodeId;
 							} else break;
-						} while (includeSuperseded && nextTime > startTime && count !== 0);
+						} while (nextTime > startTime && count !== 0);
 						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;
 						}
@@ -5774,7 +5773,7 @@ export function makeTable(options) {
 				if (isMutation && !includeSuperseded) {
 					if (id === undefined) return;
 					const entry: Entry = primaryStore.getEntry(id);
-					if (entry ? entry.version !== auditRecord.version : type !== 'delete') return;
+					if (!entry || entry.version !== auditRecord.version) return;
 					if (getFullRecord) {
 						value = entry?.value;
 						type = entry?.metadataFlags & INVALIDATED ? 'invalidate' : value ? 'put' : 'delete';

@@ -3,7 +3,6 @@ const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor.js');
-const sinon = require('sinon');
 require('#src/server/serverHelpers/serverUtilities');
 
 describe('Subscription superseded versions', () => {
@@ -122,32 +121,37 @@ describe('Subscription superseded versions', () => {
 		);
 	});
 
-	it('skips evicted puts but keeps deletes after tombstone removal', async () => {
+	it('skips mutations without a primary entry, including deletes superseded before eviction', async () => {
 		await T.put('evicted', { value: 1 });
 		const entry = T.primaryStore.getEntry('evicted');
 		await T.evict('evicted', entry.value, entry.version);
 		await T.put('deleted', { value: 2 });
 		await T.delete('deleted');
 		await T.primaryStore.remove('deleted');
+		await T.put('recreated', { value: 1 });
+		await T.delete('recreated');
+		await T.put('recreated', { value: 2 });
+		const recreated = T.primaryStore.getEntry('recreated');
+		await T.evict('recreated', recreated.value, recreated.version);
 		assert.equal(T.primaryStore.getEntry('evicted'), undefined);
 		assert.equal(T.primaryStore.getEntry('deleted'), undefined);
 		const { events } = await subscribe({ startTime: 1 });
-		assert.deepStrictEqual(
-			events.map((event) => [event.id, event.type]),
-			[['deleted', 'delete']]
-		);
+		assert.deepStrictEqual(events, []);
 	});
 
-	it('does not scan older versions when the current single-record version is filtered out', async () => {
-		await versions();
-		const reads = sinon.spy(T.auditStore, 'getSync');
-		try {
-			const { events } = await subscribe({ id: 'A', previousCount: 10, rowFilter: () => false });
-			assert.deepStrictEqual(events, []);
-			assert.ok(reads.callCount <= 2, `read ${reads.callCount} audit records for one current version`);
-		} finally {
-			reads.restore();
-		}
+	it('keeps published messages within single-record history', async () => {
+		await T.publish('A', { value: 2 });
+		await T.publish('A', { value: 3 });
+		await T.put('A', { value: 4 });
+		const { events } = await subscribe({ id: 'A', startTime: 1 });
+		assert.deepStrictEqual(
+			events.map((event) => [event.type, event.value?.value]),
+			[
+				['message', 2],
+				['message', 3],
+				['put', 4],
+			]
+		);
 	});
 
 	it('applies rowFilter to the historical value that is delivered', async () => {
