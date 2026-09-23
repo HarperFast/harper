@@ -198,8 +198,6 @@ jobs:
       - name: Install dependencies
         run: npm install --ignore-scripts
 
-      # the plane suite runs against dist/, so a tolerated build failure would grade a stale
-      # dist and still report green (this job's build always propagated failures)
       - name: Build
         run: npm run build
 
