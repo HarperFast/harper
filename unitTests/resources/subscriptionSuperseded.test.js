@@ -123,16 +123,14 @@ describe('Subscription superseded versions', () => {
 
 	it('skips mutations without a primary entry, including deletes superseded before eviction', async () => {
 		await T.put('evicted', { value: 1 });
-		const entry = T.primaryStore.getEntry('evicted');
-		await T.evict('evicted', entry.value, entry.version);
+		await T.primaryStore.remove('evicted');
 		await T.put('deleted', { value: 2 });
 		await T.delete('deleted');
 		await T.primaryStore.remove('deleted');
 		await T.put('recreated', { value: 1 });
 		await T.delete('recreated');
 		await T.put('recreated', { value: 2 });
-		const recreated = T.primaryStore.getEntry('recreated');
-		await T.evict('recreated', recreated.value, recreated.version);
+		await T.primaryStore.remove('recreated');
 		assert.equal(T.primaryStore.getEntry('evicted'), undefined);
 		assert.equal(T.primaryStore.getEntry('deleted'), undefined);
 		const { events } = await subscribe({ startTime: 1 });
