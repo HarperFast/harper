@@ -1,0 +1,23 @@
+name: _debug-author-association
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        required: true
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe author_association under GITHUB_TOKEN
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          echo "token scopes visible to this job:"
+          gh api /rate_limit -i 2>&1 | grep -i x-oauth-scopes || echo "(no scopes header — expected for an installation token)"
+          echo "---"
+          gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '{author_association, login: .user.login}'
