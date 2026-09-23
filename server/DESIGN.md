@@ -651,7 +651,8 @@ what survived the death, not by what killed it:
   hook settles them instead, via `settleAbandonedJob()`.
 
 Ownership is a per-boot uuid rather than a pid because pids are reused, and a reused pid would make a
-dead job look alive.
+dead job look alive. Both mechanisms report an interrupted row as `ERROR` rather than a new status, because
+every existing `get_job` consumer already handles `ERROR`; the distinction lives in the message.
 
 The hook is `startWorker`'s `onUnexpectedExit` option, and it fires only for an exit neither deliberate
 nor part of a teardown — a deliberate stop is always either replaced (`startCopy()` on a restart, which

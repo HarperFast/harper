@@ -34,6 +34,39 @@ describe('startWorker onUnexpectedExit', function () {
 		assert.deepStrictEqual(exits, [], 'a stopped worker is already someone else’s responsibility');
 	});
 
+	// A handler that fails must not take the process down with the thread — a throw inside an 'exit'
+	// listener is uncaught, and an async handler's rejection is unhandled.
+	for (const [kind, handler] of [
+		[
+			'throws',
+			() => {
+				throw new Error('handler blew up');
+			},
+		],
+		[
+			'rejects',
+			async () => {
+				throw new Error('handler blew up');
+			},
+		],
+	]) {
+		it(`contains a handler that ${kind}`, async function () {
+			const unhandled = [];
+			const record = (reason) => unhandled.push(reason);
+			process.on('unhandledRejection', record);
+			const worker = await startFixtureWorker([], handler);
+			try {
+				worker.postMessage({ type: 'die' });
+				await once(worker, 'exit');
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.deepStrictEqual(unhandled, []);
+			} finally {
+				process.off('unhandledRejection', record);
+				await cleanUp([worker]);
+			}
+		});
+	}
+
 	// A replacement can be stranded exactly like the worker it replaced.
 	it('fires for a replacement started by startCopy', async function () {
 		const exits = [];
@@ -50,12 +83,12 @@ describe('startWorker onUnexpectedExit', function () {
 	});
 });
 
-function startFixtureWorker(exits) {
+function startFixtureWorker(exits, onUnexpectedExit = (worker) => exits.push(worker)) {
 	return new Promise((resolve, reject) => {
 		startWorker(FIXTURE, {
 			autoRestart: false,
 			name: 'unexpected-exit-fixture',
-			onUnexpectedExit: (worker) => exits.push(worker),
+			onUnexpectedExit,
 			onStarted(worker) {
 				const onMessage = (message) => {
 					if (message?.type !== 'fixture-ready') return;

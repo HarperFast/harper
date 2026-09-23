@@ -602,22 +602,13 @@ function startWorker(path, options = {}) {
 		// way)
 		harperLogger.error(`Worker index ${options.workerIndex} error:`, error);
 	});
-	// `worker.threadId` is -1 once the thread has exited, so anything an exit listener logs has to
-	// have captured it first.
-	const workerThreadId = worker.threadId;
+	const workerThreadId = worker.threadId; // -1 once the thread has exited, so capture it for the listener
 	worker.on('exit', (_code) => {
 		workers.splice(workers.indexOf(worker), 1);
 		const unexpected = exitedUnexpectedly(worker);
-		// An option, not a listener on the returned worker: `startCopy` restarts through this same
-		// options object, so a listener would not reach the replacement. Contained because a throw in
-		// an 'exit' listener is uncaught.
-		if (unexpected) {
-			try {
-				options.onUnexpectedExit?.(worker);
-			} catch (error) {
-				harperLogger.error('onUnexpectedExit handler failed for thread', workerThreadId, error);
-			}
-		}
+		// An option rather than a listener on the returned worker, so that `startCopy`'s replacement
+		// inherits it — see server/DESIGN.md.
+		if (unexpected) runExitHandler(options.onUnexpectedExit, worker, workerThreadId);
 		if (unexpected && options.autoRestart !== false && options.shouldAutoRestart?.(worker) !== false) {
 			// if this wasn't an intentional shutdown, restart now (unless we have tried too many times)
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
@@ -949,7 +940,7 @@ async function restartWorkers(
  * @returns {Promise<boolean>} whether the worker reported that it started
  */
 function whenWorkerStarted(newWorker) {
-	const newWorkerThreadId = newWorker.threadId; // -1 by the time the exit listener below runs
+	const newWorkerThreadId = newWorker.threadId;
 	return new Promise((resolve) => {
 		const cleanup = () => {
 			clearTimeout(timeout);
@@ -995,6 +986,19 @@ function beginProcessShutdown() {
 }
 function exitedUnexpectedly(worker) {
 	return !processShuttingDown && !worker.wasShutdown;
+}
+/**
+ * A caller's exit handler must not be able to take the process down with it: inside an 'exit'
+ * listener a synchronous throw is uncaught, and an async handler's rejection is unhandled.
+ */
+function runExitHandler(handler, worker, threadId) {
+	if (!handler) return;
+	const failed = (error) => harperLogger.error('onUnexpectedExit handler failed for thread', threadId, error);
+	try {
+		Promise.resolve(handler(worker)).catch(failed);
+	} catch (error) {
+		failed(error);
+	}
 }
 async function shutdownWorkersNow(name) {
 	if (name == null) beginProcessShutdown();

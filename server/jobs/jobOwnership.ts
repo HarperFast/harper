@@ -32,7 +32,6 @@ function jobTable(): any {
 	return (getDatabases() as any).system?.[hdbTerms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME];
 }
 
-/** ERROR rather than a new status, because every existing `get_job` consumer already handles it. */
 function settle(id: any, interruption: string) {
 	return updateJob({
 		id,
