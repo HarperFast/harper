@@ -1,0 +1,27 @@
+name: _debug-app-members-read
+on:
+  push:
+    branches: [kris/review-coverage-live-association]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint a members:read-scoped installation token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.HARPERFAST_AI_CLIENT_ID }}
+          private-key: ${{ secrets.HARPERFAST_AI_APP_PRIVATE_KEY }}
+          permission-members: read
+          permission-metadata: read
+      - name: Probe membership + author_association under the app token
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          echo "membership state:"
+          gh api orgs/HarperFast/memberships/dawsontoth --jq '{state, role}' || echo "membership call failed"
+          echo "---"
+          echo "author_association on pulls/2754 under this token:"
+          gh api repos/HarperFast/harper/pulls/2754 --jq '{author_association, login: .user.login}'
