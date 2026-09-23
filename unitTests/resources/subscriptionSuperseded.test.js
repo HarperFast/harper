@@ -154,6 +154,26 @@ describe('Subscription superseded versions', () => {
 		);
 	});
 
+	for (const scope of [{ isCollection: true }, { id: 'A' }]) {
+		it(`uses the primary version after publish for ${JSON.stringify(scope)}`, async () => {
+			await T.put('A', { value: 4 });
+			await T.publish('A', { value: 5 });
+			const { events } = await subscribe({ startTime: 1, ...scope });
+			assert.deepStrictEqual(
+				events.map((event) => [event.type, event.value?.value]),
+				[['message', 5]]
+			);
+			const history = await subscribe({ startTime: 1, includeSuperseded: true, ...scope });
+			assert.deepStrictEqual(
+				history.events.map((event) => [event.type, event.value?.value]),
+				[
+					['put', 4],
+					['message', 5],
+				]
+			);
+		});
+	}
+
 	it('applies rowFilter to the historical value that is delivered', async () => {
 		await versions();
 		const history = await subscribe({ startTime: 1, includeSuperseded: true, rowFilter: (row) => row.value === 3 });
@@ -210,7 +230,6 @@ describe('Subscription superseded versions', () => {
 		it(`handles delayed live audit notifications with includeSuperseded=${includeSuperseded}`, async () => {
 			await versions();
 			const { subscription, events } = await subscribe({ omitCurrent: true, includeSuperseded });
-			// Feed real audit entries through the live callback after all three versions committed.
 			for (const record of T.auditStore.getRange({ start: 1, snapshot: false })) {
 				if (record.tableId === T.tableId && record.recordId === 'A') {
 					subscription.listener('A', record, record.txnLogKey);
