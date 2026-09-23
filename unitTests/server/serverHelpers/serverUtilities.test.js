@@ -16,6 +16,9 @@ const quota = require('#src/components/mcp/quota');
 const operation_function_caller = require('#src/utility/OperationFunctionCaller');
 const logger = require('#src/utility/logging/harper_logger');
 const { contextStorage } = require('#src/resources/transaction');
+const { existsSync, readFileSync } = require('node:fs');
+const { pinLogConfig } = require('../../logConfigFixture.js');
+const { waitFor } = require('../../waitFor.js');
 
 const test_func_data = { data: 'this is data', more_data: 'this is more data' };
 const test_error = 'This is bad!';
@@ -1239,5 +1242,73 @@ describe('redactForOperationLog', () => {
 		for (const field of Object.keys(CREDENTIAL_FIELDS)) {
 			assert.ok(UNLOGGABLE_OPERATION_FIELDS.includes(field), `${field} must stay in the redaction list`);
 		}
+	});
+});
+
+// operationLog is captured at serverUtilities module load, so it must be reloaded after
+// pinLogConfig() to bind against the pinned logger instead of whatever logger existed first.
+describe('processLocalTransaction call-site redaction (real log file)', function () {
+	const { server } = require('#src/server/Server');
+	const globals = require('#src/globals');
+	const modulePath = require.resolve('#src/server/serverHelpers/serverUtilities');
+
+	let restoreLogConfig;
+	let freshServerUtilities;
+	let logPath;
+	let originalLogLevel;
+	let realOperation;
+	let realRegisterOperation;
+	let realSetMcpQuotaHandler;
+	let realGlobalOperation;
+	let originalCacheEntry;
+
+	before(function () {
+		restoreLogConfig = pinLogConfig({ level: 'info' });
+		originalLogLevel = logger.logLevel;
+		logger.logLevel = 'info';
+		realOperation = server.operation;
+		realRegisterOperation = server.registerOperation;
+		realSetMcpQuotaHandler = server.setMcpQuotaHandler;
+		realGlobalOperation = globals.operation;
+		originalCacheEntry = require.cache[modulePath];
+		delete require.cache[modulePath];
+		freshServerUtilities = require('#src/server/serverHelpers/serverUtilities');
+		logPath = logger.getLogFilePath();
+	});
+
+	after(function () {
+		logger.logLevel = originalLogLevel;
+		restoreLogConfig?.();
+		server.operation = realOperation;
+		server.registerOperation = realRegisterOperation;
+		server.setMcpQuotaHandler = realSetMcpQuotaHandler;
+		global.operation = globals.operation = realGlobalOperation;
+		require.cache[modulePath] = originalCacheEntry;
+		registeredOperations.setLocalOperationDispatch({
+			chooseOperation: serverUtilities.chooseOperation,
+			processLocalTransaction: serverUtilities.processLocalTransaction,
+		});
+	});
+
+	it('fails if the call site stops redacting: neither the SSH key nor a global secret field reaches the log', async function () {
+		const secretKey = '-----BEGIN OPENSSH PRIVATE KEY-----\nCALL-SITE-REDACTION-SECRET\n-----END OPENSSH PRIVATE KEY-----';
+		const marker = 'call-site-redaction-marker';
+		const body = { operation: 'add_ssh_key', name: marker, key: secretKey, password: 'CALL-SITE-REDACTION-PASSWORD' };
+		const offset = existsSync(logPath) ? readFileSync(logPath, 'utf8').length : 0;
+
+		await freshServerUtilities.processLocalTransaction({ body }, async () => ({ ok: true }));
+
+		const written = await waitFor(
+			() => {
+				if (!existsSync(logPath)) return undefined;
+				const tail = readFileSync(logPath, 'utf8').slice(offset);
+				return tail.includes(marker) ? tail : undefined;
+			},
+			{ message: 'operation log entry for call-site redaction test was never written' }
+		);
+
+		assert.ok(written.includes(marker), 'the operation log entry for this request must be present');
+		assert.ok(!written.includes('CALL-SITE-REDACTION-SECRET'), 'the raw SSH key must not reach the operation log');
+		assert.ok(!written.includes('CALL-SITE-REDACTION-PASSWORD'), 'a global secret field must not reach the operation log');
 	});
 });
