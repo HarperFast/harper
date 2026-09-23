@@ -60,6 +60,16 @@ import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
+import { compileFullTextDefinitions, type FullTextDefinition } from './fullTextSchema.ts';
+import { projectAttributesToProperties } from './jsonSchemaTypes.ts';
+import {
+	definitionsEqual,
+	mergePeerFullTextDefinitions,
+	readPersistedFullTextDefinitions,
+	retainFullTextDefinitions,
+	safeInterimFullTextDefinitions,
+	serializeFullTextState,
+} from './fullTextSchemaLifecycle.ts';
 import {
 	acquireRestoreLock,
 	checkRestoreState,
@@ -437,6 +447,7 @@ _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 
 const NEXT_TABLE_ID = Symbol.for('next-table-id');
+const warnedFullTextStates = new Map<string, string>();
 // Restore every field used by `commonChanged`, plus `indexed` and `indexNulls`,
 // from the durable descriptor. In particular, preserve `indexNulls: false` so
 // an index that excludes nulls is not reopened as though it contains them.
@@ -1193,8 +1204,27 @@ function initStores(
 		const cacheControl = primaryAttribute.cacheControl;
 		const splitSegments = primaryAttribute.splitSegments;
 		const replicate = primaryAttribute.replicate;
+		let fullTextIndexes: FullTextDefinition[] = [];
+		if (primaryAttribute.fullTextIndexes !== undefined) {
+			const warnings: string[] = [];
+			const persisted = readPersistedFullTextDefinitions(primaryAttribute.fullTextIndexes, attributes, (message) =>
+				warnings.push(`${databaseName}.${tableName}: ${message}`)
+			);
+			if (rootStore instanceof RocksDatabase && primaryAttribute.audit === true) fullTextIndexes = persisted;
+			else if (persisted.length > 0)
+				warnings.push(
+					`Ignoring persisted @fullText declarations for ${databaseName}.${tableName}; full-text indexes require RocksDB and audit logging`
+				);
+			const warningKey = `${rootStore.path}\0${tableName}`;
+			const warningState = serializeFullTextState([primaryAttribute.fullTextIndexes, warnings]);
+			if (warnings.length > 0 && warnedFullTextStates.get(warningKey) !== warningState) {
+				warnedFullTextStates.set(warningKey, warningState);
+				for (const warning of warnings) logger.warn(warning);
+			} else if (warnings.length === 0) warnedFullTextStates.delete(warningKey);
+		}
 		if (table && !recreateTable) {
 			if (primaryAttribute.audit === true && table.audit !== true) table.enableAuditing();
+			table.fullTextIndexes = fullTextIndexes;
 			indices = table.indices;
 			existingAttributes = table.attributes;
 			table.schemaVersion++;
@@ -1341,6 +1371,7 @@ function initStores(
 					databaseName,
 					indices,
 					attributes,
+					fullTextIndexes,
 					schemaDefined: primaryAttribute.schemaDefined,
 					dbisDB: attributesDbi,
 				})
@@ -1816,6 +1847,7 @@ interface TableDefinition {
 	cacheControl?: string | null;
 	/** Internal: this declaration came from the application owned by the current dedicated worker. */
 	isolatedApplicationOwner?: boolean;
+	fullTextIndexes?: FullTextDefinition[];
 }
 /**
  * Ensure that we have this database object (that holds a set of tables) set up
@@ -2442,9 +2474,13 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		hidden,
 		cacheControl,
 		isolatedApplicationOwner,
+		fullTextIndexes,
 	} = tableDefinition;
 	const auditExplicitlyEnabled = audit === true;
 	const auditExplicitlyDisabled = audit === false;
+	const fullTextIndexesExplicit = tableDefinition.fullTextIndexes !== undefined;
+	if (origin !== 'cluster' && fullTextIndexesExplicit && !Array.isArray(fullTextIndexes))
+		throw new ClientError('@fullText declarations must be a list', 400);
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
 	// Reject reserved names here too, not only at the operations API: a database
 	// is also created by schema authoring — a `schema.graphql` `@table(database:)`
@@ -2492,6 +2528,41 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		const key = `${tableName}/`;
 		return { key, descriptor: catalog?.getSync(key) };
 	};
+	const catalogAttributes = (catalog: any, liveAttributes?: readonly any[]) => {
+		const liveByName = liveAttributes && new Map(liveAttributes.map((attribute) => [attribute.name, attribute]));
+		const durableAttributes: any[] = [];
+		for (const { key, value } of catalog.getRange({ start: tableName + '/', end: tableName + '0' })) {
+			if (!value || value.dropping) continue;
+			const name = value.name || key.toString().slice(tableName.length + 1);
+			if (!name) continue;
+			const live = liveByName?.get(name);
+			if (!live) {
+				durableAttributes.push({ ...value, name });
+				continue;
+			}
+			const restored = Object.create(Object.getPrototypeOf(live));
+			for (const property of Reflect.ownKeys(live)) {
+				const descriptor = Object.getOwnPropertyDescriptor(live, property);
+				if (!descriptor) continue;
+				Object.defineProperty(restored, property, {
+					...descriptor,
+					configurable: true,
+					...('value' in descriptor ? { writable: true } : {}),
+				});
+			}
+			const preserveProperties =
+				Object.hasOwn(live, 'properties') &&
+				(!Object.hasOwn(value, 'properties') ||
+					serializeFullTextState(live.properties) === serializeFullTextState(value.properties));
+			const liveProperties = live.properties;
+			applyDurableDeclaration(restored, value);
+			if (preserveProperties) restored.properties = liveProperties;
+			restored.name = name;
+			durableAttributes.push(restored);
+		}
+		return durableAttributes;
+	};
+	const fullTextWarning = (message: string) => logger.warn(`${databaseName}.${tableName}: ${message}`);
 	const hasLegacyHnswStateAtEntry =
 		Table &&
 		origin !== 'cluster' &&
@@ -2603,6 +2674,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	let deferredPrimaryRow: any;
 	let unpublishedPrimaryStore: any;
 	let published = false;
+	let fullTextValuesForPersistence: unknown;
+	let fullTextPersistencePending = false;
+	let activeFullTextIndexes: FullTextDefinition[] | undefined;
+	let restoreFullTextLiveState: (() => void) | undefined;
+	let armFullTextLiveStateRestore: (() => void) | undefined;
 	const attributesToIndex = [];
 	const indicesToRemove = [];
 	try {
@@ -2635,9 +2711,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					);
 				}
 			}
-			// Acquire before the first mutation of the live Table below, so a lost race leaves no
-			// attributes this worker describes but never persisted. Only the RocksDB acquire is bounded;
-			// ordinary LMDB declarations stay lazy, while legacy HNSW normalization locks at entry.
+			// RocksDB serializes every schema update here. LMDB stays lazy until this declaration
+			// actually has full-text state to reconcile.
 			if (rootStore instanceof RocksDatabase) exclusiveLock();
 			if (origin !== 'cluster') {
 				const lockedAttributesDbi = Table.dbisDB;
@@ -2646,6 +2721,131 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					lockedAttributesDbi,
 					auditExplicitlyEnabled || (!auditExplicitlyDisabled && persistedAuditUnderLock === true)
 				);
+			}
+			let persistedPrimary = persistedPrimaryDescriptor(Table.dbisDB);
+			let persistedFullTextValues = persistedPrimary.descriptor?.fullTextIndexes;
+			const incomingFullTextValues = fullTextIndexesExplicit ? fullTextIndexes : [];
+			if (
+				(persistedFullTextValues !== undefined && (rootStore instanceof RocksDatabase || fullTextIndexesExplicit)) ||
+				Table.fullTextIndexes?.length > 0 ||
+				(fullTextIndexesExplicit && (!Array.isArray(incomingFullTextValues) || incomingFullTextValues.length > 0))
+			) {
+				if (!(rootStore instanceof RocksDatabase)) {
+					exclusiveLock();
+					persistedPrimary = persistedPrimaryDescriptor(Table.dbisDB);
+					persistedFullTextValues = persistedPrimary.descriptor?.fullTextIndexes;
+				}
+				const originalAttributes = Table.attributes.slice();
+				const relationshipAttributes = originalAttributes.filter((attribute: any) => attribute.relationship);
+				const originalMetadata = {
+					description: Table.description,
+					hidden: Table.hidden,
+					cacheControl: Table.cacheControl,
+					schemaDefined: Table.schemaDefined,
+				};
+				armFullTextLiveStateRestore = () => {
+					if (restoreFullTextLiveState) return;
+					restoreFullTextLiveState = () => {
+						const restored = catalogAttributes(Table.dbisDB, originalAttributes);
+						const names = new Set(restored.map((attribute) => attribute.name));
+						for (const relationship of relationshipAttributes)
+							if (!names.has(relationship.name)) restored.push(relationship);
+						Table.attributes.splice(0, Table.attributes.length, ...restored);
+						Object.assign(Table, originalMetadata);
+						Table.properties = projectAttributesToProperties(restored);
+						const restoredPrimary = persistedPrimaryDescriptor(Table.dbisDB).descriptor;
+						Table.fullTextIndexes =
+							rootStore instanceof RocksDatabase && restoredPrimary?.audit === true
+								? readPersistedFullTextDefinitions(restoredPrimary?.fullTextIndexes, restored, fullTextWarning)
+								: [];
+						Table.schemaVersion++;
+						Table.updatedAttributes();
+						void Table.derivedIndexRuntime?.close();
+						Table.derivedIndexRuntime = attachDerivedIndexes(Table);
+					};
+				};
+				const durableAttributes = catalogAttributes(Table.dbisDB);
+				let validationAttributes: any[];
+				if (origin === 'cluster') {
+					const byName = new Map(durableAttributes.map((attribute) => [attribute.name, attribute]));
+					for (const attribute of attributes) if (!byName.has(attribute.name)) byName.set(attribute.name, attribute);
+					validationAttributes = [...byName.values()];
+				} else {
+					validationAttributes = attributes.slice();
+					if (!validationAttributes.some((attribute) => attribute.name === Table.primaryKey)) {
+						const durablePrimary = durableAttributes.find((attribute) => attribute.name === Table.primaryKey);
+						if (durablePrimary) validationAttributes.unshift(durablePrimary);
+					}
+				}
+
+				const persistedAudit = persistedPrimary.descriptor?.audit;
+				const durableAudit = persistedAudit === true;
+				const finalAudit =
+					origin === 'cluster'
+						? durableAudit
+						: typeof audit === 'boolean'
+							? audit
+							: durableAudit ||
+								(persistedAudit == null && fullTextIndexesExplicit && envGet(CONFIG_PARAMS.LOGGING_AUDITLOG) === true);
+				if (origin === 'cluster' && fullTextIndexesExplicit) {
+					const merged = mergePeerFullTextDefinitions(
+						persistedFullTextValues,
+						incomingFullTextValues,
+						validationAttributes,
+						fullTextWarning
+					);
+					fullTextValuesForPersistence = merged.values;
+					fullTextPersistencePending = merged.changed;
+					activeFullTextIndexes = rootStore instanceof RocksDatabase && finalAudit ? merged.definitions : [];
+				} else if (origin === 'cluster') {
+					fullTextValuesForPersistence = persistedFullTextValues;
+					activeFullTextIndexes =
+						rootStore instanceof RocksDatabase && finalAudit
+							? readPersistedFullTextDefinitions(persistedFullTextValues, validationAttributes, fullTextWarning)
+							: [];
+				} else if (fullTextIndexesExplicit) {
+					const compiled = compileFullTextDefinitions(incomingFullTextValues, validationAttributes);
+					if (compiled.length > 0 && !(rootStore instanceof RocksDatabase))
+						throw new ClientError(
+							`Table '${databaseName}.${tableName}' cannot use @fullText with the LMDB storage engine`,
+							400
+						);
+					if (compiled.length > 0 && !finalAudit)
+						throw new ClientError(
+							`Table '${databaseName}.${tableName}' must enable audit logging before using @fullText because its transaction log is the derived-index recovery source`,
+							400
+						);
+					const interim = safeInterimFullTextDefinitions(persistedFullTextValues, validationAttributes, compiled);
+					const pinAudit = compiled.length > 0 && persistedPrimary.descriptor?.audit !== true;
+					if (pinAudit || !definitionsEqual(interim, persistedFullTextValues)) {
+						const interimPrimary = { ...persistedPrimary.descriptor };
+						if (pinAudit) interimPrimary.audit = true;
+						if (interim.length > 0) interimPrimary.fullTextIndexes = interim;
+						else delete interimPrimary.fullTextIndexes;
+						armFullTextLiveStateRestore?.();
+						Table.dbisDB.put(persistedPrimary.key, interimPrimary);
+						if (pinAudit && Table.audit !== true) Table.enableAuditing();
+						Table.fullTextIndexes = rootStore instanceof RocksDatabase && finalAudit ? interim : [];
+						hasChanges = true;
+					}
+					fullTextValuesForPersistence = compiled;
+					fullTextPersistencePending = !definitionsEqual(compiled, interim);
+					activeFullTextIndexes = compiled;
+				} else {
+					const retained = retainFullTextDefinitions(
+						persistedFullTextValues,
+						durableAttributes,
+						validationAttributes,
+						fullTextWarning
+					);
+					if (retained.length > 0 && audit === false)
+						throw new ClientError(
+							`Table '${databaseName}.${tableName}' must keep audit logging enabled while @fullText is declared`,
+							400
+						);
+					fullTextValuesForPersistence = persistedFullTextValues;
+					activeFullTextIndexes = rootStore instanceof RocksDatabase && finalAudit ? retained : [];
+				}
 			}
 			// it table already exists, get the split segments setting
 			if (splitSegments == undefined) splitSegments = Table.splitSegments;
@@ -2684,6 +2884,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					);
 				if (existingPrimary) attributes = [existingPrimary, ...attributes];
 			}
+			armFullTextLiveStateRestore?.();
 			Table.attributes.splice(0, Table.attributes.length, ...attributes);
 			// Re-assert from the live declaration so a stale value on disk (replicated event,
 			// v4-era backfill) is corrected on every reload. Gated on `schemaDefinedExplicit` so
@@ -2698,6 +2899,31 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			// undefined means a non-schema caller (add_attribute, cluster schema events) — don't clobber
 			if (cacheControl !== undefined) Table.cacheControl = cacheControl;
 		} else {
+			if (fullTextIndexesExplicit) {
+				if (origin === 'cluster') {
+					const merged = mergePeerFullTextDefinitions([], fullTextIndexes, attributes, fullTextWarning);
+					fullTextValuesForPersistence = merged.values;
+					activeFullTextIndexes =
+						rootStore instanceof RocksDatabase &&
+						(typeof audit === 'boolean' ? audit : envGet(CONFIG_PARAMS.LOGGING_AUDITLOG) === true)
+							? merged.definitions
+							: [];
+				} else {
+					const compiled = compileFullTextDefinitions(fullTextIndexes ?? [], attributes);
+					if (compiled.length > 0 && !(rootStore instanceof RocksDatabase))
+						throw new ClientError(
+							`Table '${databaseName}.${tableName}' cannot use @fullText with the LMDB storage engine`,
+							400
+						);
+					if (compiled.length > 0 && audit !== true)
+						throw new ClientError(
+							`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using @fullText because its transaction log is the derived-index recovery source`,
+							400
+						);
+					fullTextValuesForPersistence = compiled;
+					activeFullTextIndexes = compiled;
+				}
+			}
 			const auditStore = rootStore.auditStore;
 			primaryKeyAttribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
 			primaryKey = primaryKeyAttribute.name;
@@ -2706,6 +2932,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			primaryKeyAttribute.schemaDefined = schemaDefined;
 			// Old readers treat every attribute row as live schema, so relationships stay on the ignored primary descriptor.
 			if (relationshipDefinitions) primaryKeyAttribute.relationships = relationshipDefinitions;
+			if (Array.isArray(fullTextValuesForPersistence) && fullTextValuesForPersistence.length > 0)
+				primaryKeyAttribute.fullTextIndexes = fullTextValuesForPersistence;
 			// can't change compression after the fact (except threshold), so save only when we create the table
 			primaryKeyAttribute.compression = getDefaultCompression();
 			if (trackDeletes) primaryKeyAttribute.trackDeletes = true;
@@ -2823,6 +3051,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				databaseName,
 				indices: {},
 				attributes,
+				fullTextIndexes: activeFullTextIndexes ?? [],
 				schemaDefined,
 				dbisDB: attributesDbi,
 				description,
@@ -3233,6 +3462,20 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attributesDbi.put(dbiKey, attribute);
 			}
 		}
+		if (fullTextPersistencePending && !deferredPrimaryRow) {
+			const { key, descriptor } = persistedPrimaryDescriptor(attributesDbi);
+			if (descriptor && !tableIsDropping(descriptor, key)) {
+				const updatedPrimary = { ...descriptor };
+				if (Array.isArray(fullTextValuesForPersistence) && fullTextValuesForPersistence.length > 0)
+					updatedPrimary.fullTextIndexes = fullTextValuesForPersistence;
+				else delete updatedPrimary.fullTextIndexes;
+				if (!definitionsEqual(descriptor.fullTextIndexes, updatedPrimary.fullTextIndexes)) {
+					exclusiveLock();
+					attributesDbi.put(key, updatedPrimary);
+					hasChanges = true;
+				}
+			}
+		}
 		// The primary row is what makes a table loadable, so it lands last: a scan on another thread that
 		// runs mid-create skips the table instead of building (and announcing) a partial one. It already
 		// carries this table's relationships (set on primaryKeyAttribute above), so the persistence block
@@ -3266,12 +3509,34 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			}
 		}
 	} catch (error) {
+		let restored = false;
+		if (restoreFullTextLiveState) {
+			try {
+				restoreFullTextLiveState();
+				restored = true;
+			} catch (restoreError) {
+				logger.error(`Could not restore the live schema for ${databaseName}.${tableName}`, restoreError);
+			}
+		}
 		if (unpublishedPrimaryStore && !published) discardUnpublishedTable();
 		else if (published && tables[tableName] !== Table) discardUnregisteredClass();
+		if (restored && !target.branch) {
+			try {
+				const operation = signalling.signalSchemaChange(
+					new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
+				);
+				void operation?.catch((signalError: unknown) =>
+					logger.error(`Could not signal restored schema progress for ${databaseName}.${tableName}`, signalError)
+				);
+			} catch (signalError) {
+				logger.error(`Could not signal restored schema progress for ${databaseName}.${tableName}`, signalError);
+			}
+		}
 		throw error;
 	} finally {
 		releaseLock();
 	}
+	if (activeFullTextIndexes !== undefined) Table.fullTextIndexes = activeFullTextIndexes;
 	if (hasChanges || refreshRelationshipAttributes) Table.schemaVersion++;
 	if (hasChanges || refreshRelationshipAttributes || refreshedLiveAttributes) Table.updatedAttributes();
 	logger.trace(`${tableName} table loading, running index`);
