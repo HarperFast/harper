@@ -46,6 +46,8 @@ This script requires `sudo`. Only needs to be run once per machine (or after a r
 
 ## Running Tests
 
+To run under Bun, use `npm run test:integration:bun` (`HARPER_RUNTIME=bun harper-integration-test-run`) — never run test files directly with Bun's own test runner (`bun test <file>.test.ts` / `bunx bun test`). Bun's runner applies its own 5s default per-test timeout, which produces spurious timeouts/failures against suites whose `startHarper`/teardown loops take 30-120s.
+
 Run the full integration test suite:
 
 ```sh
