@@ -20,6 +20,21 @@ import { COVERAGE_REQUIRED } from './reviewGate.mjs';
 
 const MAX_PR_FILES_BYTES = 4 * 1024 * 1024;
 
+// The full enum GitHub documents for `author_association` — a workflow step resolves this
+// live (see review-coverage.yml) because the webhook payload's copy can be stale: GitHub
+// itself warns it may not reflect the account's current relationship to the repo. Validated
+// against the enum so a malformed override can't smuggle an unrecognized value through.
+const AUTHOR_ASSOCIATIONS = new Set([
+	'OWNER',
+	'MEMBER',
+	'COLLABORATOR',
+	'CONTRIBUTOR',
+	'FIRST_TIME_CONTRIBUTOR',
+	'FIRST_TIMER',
+	'MANNEQUIN',
+	'NONE',
+]);
+
 function arg(name, fallback = '') {
 	const i = process.argv.indexOf(`--${name}`);
 	return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
@@ -49,6 +64,17 @@ function main(mode, formatMode, framingMode) {
 	const event = JSON.parse(readFileSync(eventPath, 'utf8'));
 	const pr = event.pull_request;
 	if (!pr) throw new Error('event payload has no pull_request');
+	const liveAssociation = arg('pr-author-association', process.env.INPUT_PR_AUTHOR_ASSOCIATION || '').toUpperCase();
+	if (liveAssociation && liveAssociation !== pr.author_association) {
+		if (AUTHOR_ASSOCIATIONS.has(liveAssociation)) {
+			console.log(
+				`review-coverage: author_association resolved live as ${liveAssociation} (webhook payload had ${pr.author_association ?? 'unset'})`
+			);
+			pr.author_association = liveAssociation;
+		} else {
+			console.error(`::warning::review-coverage: ignoring unrecognized live author_association '${liveAssociation}'`);
+		}
+	}
 	const rawRequired = arg('required', process.env.INPUT_REQUIRED || process.env.REVIEW_COVERAGE_REQUIRED || '');
 	const required = rawRequired === '' ? COVERAGE_REQUIRED : Number(rawRequired);
 	if (!Number.isInteger(required) || required < 0) throw new Error(`invalid required '${rawRequired}'`);

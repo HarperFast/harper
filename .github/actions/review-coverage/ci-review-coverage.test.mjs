@@ -468,6 +468,31 @@ test('exit codes: report never reds, enforce reds on policy AND on plumbing', ()
 	assert.match(invalidEnforce.stderr, /invalid required 'tow'/);
 });
 
+test('a live pr-author-association override corrects a stale webhook payload', () => {
+	// The payload says CONTRIBUTOR (as GitHub's cached copy can, even for a current org member);
+	// the live override says MEMBER. Enforcement should follow the live value, not the payload.
+	const staleContributor = { pull_request: pr({ author_association: 'CONTRIBUTOR' }) };
+	assert.strictEqual(run(staleContributor, '--mode', 'enforce'), 0, 'payload alone still exempts as non-member');
+	const corrected = runResult(staleContributor, '--mode', 'enforce', '--pr-author-association', 'MEMBER');
+	assert.strictEqual(corrected.status, 1, 'the live override makes this a member PR subject to enforcement');
+	assert.match(corrected.stdout, /author_association resolved live as MEMBER/);
+
+	// And the reverse: a payload that says MEMBER should not escape enforcement when the live
+	// lookup says the account no longer has that association.
+	const staleMember = { pull_request: pr({ author_association: 'MEMBER' }) };
+	assert.strictEqual(run(staleMember, '--mode', 'enforce'), 1, 'payload alone enforces as a member');
+	const downgraded = runResult(staleMember, '--mode', 'enforce', '--pr-author-association', 'CONTRIBUTOR');
+	assert.strictEqual(downgraded.status, 0, 'the live override exempts once the account is no longer a member');
+	assert.match(downgraded.stdout, /exempt: author is not an org member \(CONTRIBUTOR\)/);
+});
+
+test('an unrecognized pr-author-association override is ignored, not trusted', () => {
+	const staleContributor = { pull_request: pr({ author_association: 'CONTRIBUTOR' }) };
+	const result = runResult(staleContributor, '--mode', 'enforce', '--pr-author-association', 'SUPERADMIN');
+	assert.strictEqual(result.status, 0, 'falls back to the payload association rather than accepting garbage');
+	assert.match(result.stderr, /ignoring unrecognized live author_association 'SUPERADMIN'/);
+});
+
 test('the CLI runs through a symlinked entrypoint', () => {
 	const dir = mkdtempSync(path.join(tmpdir(), 'rc-link-'));
 	const link = path.join(dir, 'ci-review-coverage.mjs');
