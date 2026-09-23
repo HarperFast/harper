@@ -36,7 +36,8 @@ describe('Test parseMessage', function () {
 
 	beforeEach(function () {
 		sandbox = sinon.createSandbox();
-		start_stub = sandbox.stub(threads_start, 'startWorker');
+		// startWorker returns the worker; jobRunner hangs the abandoned-job settle hook on its 'exit'.
+		start_stub = sandbox.stub(threads_start, 'startWorker').returns({ on() {} });
 	});
 
 	afterEach(function () {

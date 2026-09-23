@@ -91,6 +91,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [`withNodeAdapter()`'s response is the body `PassThrough` it resolves with (`server/serverHelpers/NodeAdapterResponse.ts`)](server/DESIGN.md#withnodeadapters-response-is-the-body-passthrough-it-resolves-with-serverserverhelpersnodeadapterresponsets) — The adapter response is the `PassThrough` it resolves with; headers commit once through `writeHead`; Express is not a target.
 - [`manageThreads` has two different `workerCount`s (`server/threads/manageThreads.js`)](server/DESIGN.md#managethreads-has-two-different-workercounts-serverthreadsmanagethreadsjs) — The module-global `workerCount` sizes only the rolling-restart throttle; `getWorkerCount()` reads `workerData.workerCount`, frozen at spawn.
 - [A WebSocket close reason must be bounded to 123 bytes (`server/serverHelpers/webSocketCloseReason.ts`)](server/DESIGN.md#a-websocket-close-reason-must-be-bounded-to-123-bytes-serverserverhelperswebsocketclosereasonts) — `ws` throws past 123 bytes from a rejection handler; every dynamic reason goes through `toCloseReason()`, and all three terminal handlers render the error code alike.
+- [A job row is settled by exactly one of two mechanisms, chosen by who is still alive (`server/jobs/`)](server/DESIGN.md#a-job-row-is-settled-by-exactly-one-of-two-mechanisms-chosen-by-who-is-still-alive-serverjobs) — The boot sweep claims rows a previous process owned; the job worker’s exit hook claims rows abandoned by a thread inside a live process.
 
 ## security/ — tokens, OIDC, TLS
 

@@ -28,25 +28,39 @@ export function stampJobOwner(job: any): void {
 	job.owner_pid = process.pid;
 }
 
+function jobTable(): any {
+	return (getDatabases() as any).system?.[hdbTerms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME];
+}
+
+/**
+ * Interrupted rows are reported as ERROR rather than a new status: every consumer of `get_job`
+ * already handles ERROR, and the distinction lives in the message.
+ */
+function settle(id: any, interruption: string) {
+	return updateJob({
+		id,
+		status: hdbTerms.JOB_STATUS_ENUM.ERROR,
+		message: `Job was interrupted: ${interruption}. Rerun the operation.`,
+	});
+}
+
 /**
  * Settle every job row left unfinished by a process that is no longer running, and report how many
  * were settled.
  *
  * Safe to call more than once: a row this process owns is skipped, and a row it does not own is
  * moved to a terminal status, so a second pass finds nothing. Boot is the only place it needs to
- * run, because a row owned by a live process is by definition still someone's responsibility.
- *
- * Interrupted rows are reported as ERROR rather than a new status: every consumer of `get_job`
- * already handles ERROR, and the distinction lives in the message.
+ * run, because a row owned by a live process is by definition still someone's responsibility --
+ * `settleAbandonedJob` is what discharges that responsibility when the owner is this process.
  */
 export async function reconcileInterruptedJobs(): Promise<number> {
-	const jobTable = (getDatabases() as any).system?.[hdbTerms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME];
-	if (!jobTable) return 0;
+	const table = jobTable();
+	if (!table) return 0;
 
 	// Collect before writing: the search walks the `status` attribute these updates change.
 	const interrupted: Array<{ id: any; owner_pid: any }> = [];
 	for (const status of UNFINISHED_JOB_STATUSES) {
-		for await (const job of jobTable.search([{ attribute: 'status', value: status }])) {
+		for await (const job of table.search([{ attribute: 'status', value: status }])) {
 			if (job.owner_instance !== JOB_OWNER_INSTANCE_ID) interrupted.push({ id: job.id, owner_pid: job.owner_pid });
 		}
 	}
@@ -55,11 +69,7 @@ export async function reconcileInterruptedJobs(): Promise<number> {
 	for (const { id, owner_pid } of interrupted) {
 		const owner = owner_pid == null ? 'an earlier Harper process' : `Harper process ${owner_pid}`;
 		try {
-			await updateJob({
-				id,
-				status: hdbTerms.JOB_STATUS_ENUM.ERROR,
-				message: `Job was interrupted: ${owner} exited before it finished. Rerun the operation.`,
-			});
+			await settle(id, `${owner} exited before it finished`);
 			settled++;
 		} catch (error) {
 			log.error(`Could not settle interrupted job ${id}`, error);
@@ -67,4 +77,20 @@ export async function reconcileInterruptedJobs(): Promise<number> {
 	}
 	if (settled > 0) log.warn(`Settled ${settled} job(s) left unfinished by a Harper process that is no longer running`);
 	return settled;
+}
+
+/**
+ * Settle a job abandoned by a worker thread that died inside a process that is still running, and
+ * report whether it had to.
+ *
+ * `reconcileInterruptedJobs` cannot reach these: the row still carries this process's owner id, and
+ * the sweep only runs at boot. The status is re-read rather than assumed, because a worker that did
+ * finish writes its terminal status before it schedules its own exit.
+ */
+export async function settleAbandonedJob(jobId: any): Promise<boolean> {
+	const job = await jobTable()?.get(jobId);
+	if (!UNFINISHED_JOB_STATUSES.includes(job?.status)) return false;
+	await settle(jobId, 'its worker thread exited before it finished');
+	log.warn(`Settled job ${jobId}, whose worker thread exited before it finished`);
+	return true;
 }

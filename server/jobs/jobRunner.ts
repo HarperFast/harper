@@ -8,6 +8,7 @@ import moment from 'moment';
 import * as bulkLoad from '../../dataLayer/bulkLoad.ts';
 import log from '../../utility/logging/harper_logger.ts';
 import * as jobs from './jobs.ts';
+import { settleAbandonedJob } from './jobOwnership.ts';
 import * as hdbExport from '../../dataLayer/export.ts';
 import * as hdbDelete from '../../dataLayer/delete.ts';
 import * as rocksdbBackup from '../../dataLayer/rocksdbBackup.ts';
@@ -143,11 +144,7 @@ async function runJob(runnerMessage: any, operation: any) {
 async function launchJobThread(job_id: any) {
 	log.trace('launching job thread:', job_id);
 	if (isMainThread) {
-		threadsStart.startWorker(join(__dirname, './jobProcess.js'), {
-			autoRestart: false,
-			name: 'job',
-			env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${job_id}` },
-		});
+		startJobWorker(job_id);
 	} else {
 		parentPort.postMessage({
 			type: hdbTerms.ITC_EVENT_TYPES.START_JOB,
@@ -155,14 +152,33 @@ async function launchJobThread(job_id: any) {
 		});
 	}
 }
+
+/**
+ * The worker writes its own terminal status, so an exit that leaves the row unfinished is a thread
+ * that died before it could — and nothing else will settle that row, because the boot sweep only
+ * claims rows a *previous* process owned and this process is still running.
+ *
+ * `exitedUnexpectedly` is the same signal `manageThreads` auto-restarts on: a deliberate stop is
+ * always either replaced (`startCopy` on a restart, which re-runs the job) or followed by the boot
+ * sweep (process shutdown), so settling one would fight whoever already owns it.
+ */
+function startJobWorker(jobId: any) {
+	const worker = threadsStart.startWorker(join(__dirname, './jobProcess.js'), {
+		autoRestart: false,
+		name: hdbTerms.THREAD_TYPES.JOB,
+		env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${jobId}` },
+	});
+	worker.on('exit', () => {
+		if (!threadsStart.exitedUnexpectedly(worker)) return;
+		settleAbandonedJob(jobId).catch((error) => log.error(`Could not settle abandoned job ${jobId}:`, error));
+	});
+	return worker;
+}
+
 if (isMainThread) {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.START_JOB, async (message) => {
 		try {
-			threadsStart.startWorker(join(__dirname, './jobProcess.js'), {
-				autoRestart: false,
-				name: 'job',
-				env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${message.jobId}` },
-			});
+			startJobWorker(message.jobId);
 		} catch (e) {
 			log.error(`Failed to start worker for job ${message.jobId}:`, e);
 			try {

@@ -179,6 +179,7 @@ module.exports = {
 	extendShutdownDeadline,
 	restoreShutdownDeadline,
 	beginProcessShutdown,
+	exitedUnexpectedly,
 	registerWorkerDataProvider,
 	onThreadExit,
 	hasThreadExited,
@@ -604,12 +605,7 @@ function startWorker(path, options = {}) {
 	});
 	worker.on('exit', (_code) => {
 		workers.splice(workers.indexOf(worker), 1);
-		if (
-			!processShuttingDown &&
-			!worker.wasShutdown &&
-			options.autoRestart !== false &&
-			options.shouldAutoRestart?.(worker) !== false
-		) {
+		if (exitedUnexpectedly(worker) && options.autoRestart !== false && options.shouldAutoRestart?.(worker) !== false) {
 			// if this wasn't an intentional shutdown, restart now (unless we have tried too many times)
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
 				options.unexpectedRestarts = worker.unexpectedRestarts + 1;
@@ -982,6 +978,14 @@ function shutdownWorkers(name) {
 }
 function beginProcessShutdown() {
 	processShuttingDown = true;
+}
+/**
+ * Whether a worker's exit is one nothing has accounted for. A deliberate stop is always either
+ * replaced (`startCopy` on a restart) or part of a process teardown, so callers with their own
+ * recovery to run — see `startJobWorker` — owe it only to an exit this reports true for.
+ */
+function exitedUnexpectedly(worker) {
+	return !processShuttingDown && !worker.wasShutdown;
 }
 async function shutdownWorkersNow(name) {
 	if (name == null) beginProcessShutdown();
