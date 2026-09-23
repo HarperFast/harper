@@ -179,7 +179,6 @@ module.exports = {
 	extendShutdownDeadline,
 	restoreShutdownDeadline,
 	beginProcessShutdown,
-	exitedUnexpectedly,
 	registerWorkerDataProvider,
 	onThreadExit,
 	hasThreadExited,
@@ -605,7 +604,12 @@ function startWorker(path, options = {}) {
 	});
 	worker.on('exit', (_code) => {
 		workers.splice(workers.indexOf(worker), 1);
-		if (exitedUnexpectedly(worker) && options.autoRestart !== false && options.shouldAutoRestart?.(worker) !== false) {
+		const unexpected = exitedUnexpectedly(worker);
+		// Carried on `options`, not attached to the worker by the caller: `startCopy` restarts a worker
+		// through this same options object, and a hook bound to the first worker would never reach the
+		// replacements that can die the same way.
+		if (unexpected) options.onUnexpectedExit?.(worker);
+		if (unexpected && options.autoRestart !== false && options.shouldAutoRestart?.(worker) !== false) {
 			// if this wasn't an intentional shutdown, restart now (unless we have tried too many times)
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
 				options.unexpectedRestarts = worker.unexpectedRestarts + 1;
@@ -979,11 +983,7 @@ function shutdownWorkers(name) {
 function beginProcessShutdown() {
 	processShuttingDown = true;
 }
-/**
- * Whether a worker's exit is one nothing has accounted for. A deliberate stop is always either
- * replaced (`startCopy` on a restart) or part of a process teardown, so callers with their own
- * recovery to run — see `startJobWorker` — owe it only to an exit this reports true for.
- */
+/** An exit nothing has accounted for: neither a deliberate stop nor part of a process teardown. */
 function exitedUnexpectedly(worker) {
 	return !processShuttingDown && !worker.wasShutdown;
 }

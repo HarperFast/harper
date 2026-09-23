@@ -653,8 +653,13 @@ what survived the death, not by what killed it:
 Ownership is a per-boot uuid rather than a pid because pids are reused, and a reused pid would make a
 dead job look alive.
 
-The exit hook fires only for an exit `manageThreads.exitedUnexpectedly()` reports — a deliberate stop is
-always either replaced (`startCopy()` on a restart, which re-runs the job from the persisted row) or part
-of a process teardown the boot sweep then owns, so settling one would fight whoever already owns it. That
-leaves one shape uncovered by construction: a job worker deliberately stopped with no replacement while
-the process keeps running. Nothing does that today; a change that starts to must settle the row itself.
+The hook is `startWorker`'s `onUnexpectedExit` option, and it fires only for an exit neither deliberate
+nor part of a teardown — a deliberate stop is always either replaced (`startCopy()` on a restart, which
+re-runs the job from the persisted row) or followed by the boot sweep, so settling one would fight
+whoever already owns it. It is an **option** rather than a listener the caller attaches to the returned
+worker because `startCopy()` restarts through the same options object: a listener bound to the first
+worker never reaches the replacements, which can die the same way.
+
+That leaves one shape uncovered by construction: a job worker deliberately stopped with no replacement
+while the process keeps running. Nothing does that today; a change that starts to must settle the row
+itself.

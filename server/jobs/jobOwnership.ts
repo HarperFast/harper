@@ -80,12 +80,9 @@ export async function reconcileInterruptedJobs(): Promise<number> {
 }
 
 /**
- * Settle a job abandoned by a worker thread that died inside a process that is still running, and
- * report whether it had to.
- *
- * `reconcileInterruptedJobs` cannot reach these: the row still carries this process's owner id, and
- * the sweep only runs at boot. The status is re-read rather than assumed, because a worker that did
- * finish writes its terminal status before it schedules its own exit.
+ * Settle a job abandoned by a worker thread that died inside a live process, and report whether it
+ * had to. `reconcileInterruptedJobs` cannot reach these: the row still carries this process's owner
+ * id, and the sweep only runs at boot.
  */
 export async function settleAbandonedJob(jobId: any): Promise<boolean> {
 	const job = await jobTable()?.get(jobId);

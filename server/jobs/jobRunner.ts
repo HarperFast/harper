@@ -154,25 +154,17 @@ async function launchJobThread(job_id: any) {
 }
 
 /**
- * The worker writes its own terminal status, so an exit that leaves the row unfinished is a thread
- * that died before it could — and nothing else will settle that row, because the boot sweep only
- * claims rows a *previous* process owned and this process is still running.
- *
- * `exitedUnexpectedly` is the same signal `manageThreads` auto-restarts on: a deliberate stop is
- * always either replaced (`startCopy` on a restart, which re-runs the job) or followed by the boot
- * sweep (process shutdown), so settling one would fight whoever already owns it.
+ * Only an *unexpected* exit strands the row. A deliberate stop is either replaced by `startCopy`,
+ * whose replacement re-runs the job, or part of a teardown the boot sweep then owns.
  */
 function startJobWorker(jobId: any) {
-	const worker = threadsStart.startWorker(join(__dirname, './jobProcess.js'), {
+	return threadsStart.startWorker(join(__dirname, './jobProcess.js'), {
 		autoRestart: false,
 		name: hdbTerms.THREAD_TYPES.JOB,
 		env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${jobId}` },
+		onUnexpectedExit: () =>
+			settleAbandonedJob(jobId).catch((error) => log.error(`Could not settle abandoned job ${jobId}:`, error)),
 	});
-	worker.on('exit', () => {
-		if (!threadsStart.exitedUnexpectedly(worker)) return;
-		settleAbandonedJob(jobId).catch((error) => log.error(`Could not settle abandoned job ${jobId}:`, error));
-	});
-	return worker;
 }
 
 if (isMainThread) {
