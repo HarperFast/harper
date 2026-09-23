@@ -32,10 +32,7 @@ function jobTable(): any {
 	return (getDatabases() as any).system?.[hdbTerms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME];
 }
 
-/**
- * Interrupted rows are reported as ERROR rather than a new status: every consumer of `get_job`
- * already handles ERROR, and the distinction lives in the message.
- */
+/** ERROR rather than a new status, because every existing `get_job` consumer already handles it. */
 function settle(id: any, interruption: string) {
 	return updateJob({
 		id,
@@ -46,12 +43,8 @@ function settle(id: any, interruption: string) {
 
 /**
  * Settle every job row left unfinished by a process that is no longer running, and report how many
- * were settled.
- *
- * Safe to call more than once: a row this process owns is skipped, and a row it does not own is
- * moved to a terminal status, so a second pass finds nothing. Boot is the only place it needs to
- * run, because a row owned by a live process is by definition still someone's responsibility --
- * `settleAbandonedJob` is what discharges that responsibility when the owner is this process.
+ * were settled. Idempotent: a row this process owns is skipped, and every other unfinished row
+ * becomes terminal.
  */
 export async function reconcileInterruptedJobs(): Promise<number> {
 	const table = jobTable();
@@ -79,11 +72,7 @@ export async function reconcileInterruptedJobs(): Promise<number> {
 	return settled;
 }
 
-/**
- * Settle a job abandoned by a worker thread that died inside a live process, and report whether it
- * had to. `reconcileInterruptedJobs` cannot reach these: the row still carries this process's owner
- * id, and the sweep only runs at boot.
- */
+/** Settle a job abandoned by a worker thread that died inside a live process. See server/DESIGN.md. */
 export async function settleAbandonedJob(jobId: any): Promise<boolean> {
 	const job = await jobTable()?.get(jobId);
 	if (!UNFINISHED_JOB_STATUSES.includes(job?.status)) return false;

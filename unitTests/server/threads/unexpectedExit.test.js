@@ -10,10 +10,8 @@ const { startWorker, stopWorker, workers } = require('#js/server/threads/manageT
 
 const FIXTURE = path.join(__dirname, 'unexpectedExit-fixture.cjs');
 
-// `onUnexpectedExit` is what a caller with its own recovery hangs off a worker's death — the job
-// runner settles the abandoned job row from it. The distinction it draws is the whole contract: a
-// deliberate stop already has an owner (a replacement, or the process teardown), and only a death
-// nothing accounted for is the caller's to handle.
+// A deliberate stop already has an owner — a replacement, or the process teardown — so only a death
+// nothing accounted for reaches the hook.
 describe('startWorker onUnexpectedExit', function () {
 	this.timeout(60000);
 
@@ -36,9 +34,7 @@ describe('startWorker onUnexpectedExit', function () {
 		assert.deepStrictEqual(exits, [], 'a stopped worker is already someone else’s responsibility');
 	});
 
-	// Regression: the hook used to be attached to the worker object by the caller, so a replacement
-	// `startCopy()` produced carried no hook and its death went unnoticed. Carrying it on `options`,
-	// which `startCopy` reuses, is what makes the replacement inherit it.
+	// A replacement can be stranded exactly like the worker it replaced.
 	it('fires for a replacement started by startCopy', async function () {
 		const exits = [];
 		const worker = await startFixtureWorker(exits);

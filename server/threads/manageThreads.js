@@ -605,10 +605,16 @@ function startWorker(path, options = {}) {
 	worker.on('exit', (_code) => {
 		workers.splice(workers.indexOf(worker), 1);
 		const unexpected = exitedUnexpectedly(worker);
-		// Carried on `options`, not attached to the worker by the caller: `startCopy` restarts a worker
-		// through this same options object, and a hook bound to the first worker would never reach the
-		// replacements that can die the same way.
-		if (unexpected) options.onUnexpectedExit?.(worker);
+		// An option rather than a listener on the returned worker, because `startCopy` restarts through
+		// this same options object and a listener would not reach the replacement. Contained: a throw
+		// here is an uncaught exception in an 'exit' listener, which would take the process down.
+		if (unexpected) {
+			try {
+				options.onUnexpectedExit?.(worker);
+			} catch (error) {
+				harperLogger.error('onUnexpectedExit handler failed for thread', worker.threadId, error);
+			}
+		}
 		if (unexpected && options.autoRestart !== false && options.shouldAutoRestart?.(worker) !== false) {
 			// if this wasn't an intentional shutdown, restart now (unless we have tried too many times)
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
@@ -983,7 +989,6 @@ function shutdownWorkers(name) {
 function beginProcessShutdown() {
 	processShuttingDown = true;
 }
-/** An exit nothing has accounted for: neither a deliberate stop nor part of a process teardown. */
 function exitedUnexpectedly(worker) {
 	return !processShuttingDown && !worker.wasShutdown;
 }
