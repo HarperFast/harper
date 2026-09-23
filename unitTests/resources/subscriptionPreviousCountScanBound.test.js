@@ -100,6 +100,7 @@ describe('Subscription previousCount backfill scan bound', () => {
 			id: 'filtered-single',
 			isCollection: false,
 			previousCount: 2,
+			includeSuperseded: true,
 			rowFilter: (record) => record.name !== 'deny-newest',
 		});
 		const events = [];

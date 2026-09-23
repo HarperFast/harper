@@ -5440,6 +5440,7 @@ export function makeTable(options) {
 				table({ table: tableName, database: databaseName, schemaDefined, attributes, audit: true });
 			}
 			const getFullRecord = !request.rawEvents;
+			const includeSuperseded = request.includeSuperseded ?? request.rawEvents ?? false;
 			// While the count, !omitCurrent, and non-collection branches replay older messages, real-time
 			// messages from the listener accumulate here and are drained at the end of the IIFE so they
 			// arrive after the replayed history, in order. The startTime branch sets this to null and
@@ -5494,43 +5495,12 @@ export function makeTable(options) {
 				function (id: Id, auditRecord?: any, txnLogKey?: any, beginTxn?: any) {
 					if (dropDuringReplay) return;
 					try {
-						let type = auditRecord.type;
-						// Ahead of the rawEvents branch, which forwards every type verbatim.
-						if (isLockControlType(type)) return;
-						let value;
-						if (type === 'message' || request.rawEvents) {
-							// we only send the full message, this are individual messages that can be sent out of order
-							// TODO: Do we want to have a limit to how far out-of-order we are willing to send?
-							value = auditRecord.getValue?.(primaryStore, getFullRecord);
-						} else if (type === 'reload') {
-							// Whole-table marker with a null id and no record (harper-pro#489): a copyApply base copy
-							// back-filled rows with no per-row audit events. For a user table, re-deliver the current
-							// scope as 'put's so MQTT/SSE/WS subscribers recover the snapshotted records, and do NOT
-							// forward the bare marker (harper-pro#495). System-DB subscribers (knownNodes etc.) instead
-							// get the raw marker and run their own bespoke whole-table rescan.
-							if (databaseName !== 'system') return scheduleReloadResnapshot();
-							// system DB: fall through to forward the bare 'reload' event verbatim.
-						} else if (type !== 'end_txn') {
-							// these are events that indicate that the primary record has changed. I believe we always want to simply
-							// send the latest value. Note that it is fine to synchronously access these records, they should have just
-							// been written, so are fresh in memory.
-							const entry: Entry = primaryStore.getEntry(id);
-							if (entry) {
-								if (entry.version !== auditRecord.version) return; // out of order event, with old update, don't send anything
-								value = entry.value;
-								type = entry.metadataFlags & INVALIDATED ? 'invalidate' : value ? 'put' : 'delete';
-							} else {
-								type = 'delete';
-							}
+						if (isLockControlType(auditRecord.type)) return;
+						if (auditRecord.type === 'reload' && !request.rawEvents && databaseName !== 'system') {
+							return scheduleReloadResnapshot();
 						}
-						const event = {
-							id,
-							localTime: txnLogKey,
-							value,
-							version: auditRecord.version,
-							type,
-							beginTxn,
-						};
+						const event = eventFromAudit(id, auditRecord, txnLogKey, beginTxn);
+						if (!event) return;
 						// Queued events are filtered when the queue drains through send() below; events sent
 						// directly (queue already drained) are filtered here. Each event is filtered once.
 						if (pendingRealTimeQueue) pendingRealTimeQueue.push(event);
@@ -5590,25 +5560,15 @@ export function makeTable(options) {
 								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								if (isLockControlType(auditRecord.type)) continue;
 								const id = auditRecord.recordId;
+								subscription!.startTime = auditRecord.txnLogKey;
 								if (thisId == null || isDescendantId(thisId, id)) {
-									const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.txnLogKey);
-									if (
-										!send({
-											id,
-											localTime: auditRecord.txnLogKey,
-											value,
-											version: auditRecord.version,
-											type: auditRecord.type,
-											size: auditRecord.size,
-										})
-									)
-										return;
+									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
+									if (!event) continue;
+									if (!send(event)) return;
 									if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
-										// if we have too many messages, we need to pause and let the client catch up
 										if ((await subscription.waitForDrain()) === false) return;
 									}
 								}
-								subscription!.startTime = auditRecord.txnLogKey; // update so we don't double send
 							}
 						} finally {
 							// replay is done, we can start sending real-time messages again
@@ -5616,6 +5576,7 @@ export function makeTable(options) {
 						}
 					} else if (count) {
 						const history = [];
+						let cursorMaxTime = 0;
 						let inspected = 0;
 						// we are collecting the history in reverse order to get the right count, then reversing to send
 						for (const auditRecord of auditStore.getRange({ start: 'z', end: false, reverse: true })) {
@@ -5641,14 +5602,9 @@ export function makeTable(options) {
 										);
 										break;
 									}
-									const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.txnLogKey);
-									const historyEntry = {
-										id,
-										localTime: auditRecord.txnLogKey,
-										value,
-										version: auditRecord.version,
-										type: auditRecord.type,
-									};
+									cursorMaxTime = Math.max(cursorMaxTime, auditRecord.txnLogKey);
+									const historyEntry = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
+									if (!historyEntry) continue;
 									// Filter rows before they consume a previousCount slot.
 									if (allowsEvent && !allowsEvent(historyEntry)) {
 										if (!isActive()) return;
@@ -5664,12 +5620,6 @@ export function makeTable(options) {
 						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;
 						}
-						// Use the latest record cursor saw (history[0] = most recent due to reverse
-						// iteration) as the gate. This is in the audit log's own time domain (works for
-						// both lmdb's localTime and rocksdb's transaction-derived version) — a JS-side
-						// `getNextMonotonicTime()` would not be comparable to rocksdb's native
-						// transaction timestamps.
-						const cursorMaxTime = history[0]?.localTime ?? history[0]?.version ?? 0;
 						if (cursorMaxTime) subscription!.startTime = cursorMaxTime;
 						// In-flight pre-subscribe 'committed' callbacks may have queued duplicates of
 						// records the cursor saw while subscription.startTime was still 0. Filter them.
@@ -5764,20 +5714,16 @@ export function makeTable(options) {
 							const auditRecord = auditStore.getSync(nextTime, tableId, thisId, nodeId);
 							if (auditRecord) {
 								if (startTime < nextTime) {
-									const value = auditRecord.getValue(primaryStore, getFullRecord, nextTime);
-									if (getFullRecord) auditRecord.type = 'put';
-									const historyEntry = {
-										id: thisId,
-										value,
-										localTime: nextTime,
-										...auditRecord,
-									};
-									if (!allowsEvent || allowsEvent(historyEntry)) {
+									const event = eventFromAudit(thisId, auditRecord, nextTime);
+									if (!includeSuperseded) request.omitCurrent = true;
+									const historyEntry = event && { ...auditRecord, ...event };
+									if (historyEntry && (!allowsEvent || allowsEvent(historyEntry))) {
 										request.omitCurrent = true;
 										history.push(historyEntry);
 										if (count) count--;
 									} else if (!isActive()) return;
 								}
+								if (!includeSuperseded) break;
 								const previousHead = isRocksDB
 									? resolveAuditHead(
 											thisId,
@@ -5789,7 +5735,7 @@ export function makeTable(options) {
 								nextTime = previousHead.txnLogKey;
 								nodeId = previousHead.nodeId;
 							} else break;
-						} while (nextTime > startTime && count !== 0);
+						} while (includeSuperseded && nextTime > startTime && count !== 0);
 						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;
 						}
@@ -5819,6 +5765,25 @@ export function makeTable(options) {
 				if (subscription.closed) return;
 				harperLogger.error?.('Error in real-time subscription:', error);
 				subscription.close(error);
+			}
+			function eventFromAudit(id: Id, auditRecord: any, localTime: number, beginTxn?: boolean) {
+				let type = auditRecord.type;
+				let value;
+				const isMutation =
+					type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate';
+				if (isMutation && !includeSuperseded) {
+					if (id === undefined) return;
+					const entry: Entry = primaryStore.getEntry(id);
+					if (entry ? entry.version !== auditRecord.version : type !== 'delete') return;
+					if (getFullRecord) {
+						value = entry?.value;
+						type = entry?.metadataFlags & INVALIDATED ? 'invalidate' : value ? 'put' : 'delete';
+					} else value = auditRecord.getValue?.(primaryStore, false, localTime);
+				} else {
+					value = auditRecord.getValue?.(primaryStore, getFullRecord, localTime);
+					if (getFullRecord && type === 'patch') type = 'put';
+				}
+				return { id, localTime, value, version: auditRecord.version, type, beginTxn, size: auditRecord.size };
 			}
 			function send(event: any, alreadyFiltered = false) {
 				if (!isActive()) return false;

@@ -311,7 +311,7 @@ describe('Subscription replay', () => {
 			await RecordTable.put(42, { name: 'v2' });
 			await RecordTable.put(42, { name: 'v3' });
 			await delay(10);
-			const subscription = await RecordTable.subscribe({ id: 42, startTime: startTime - 1 });
+			const subscription = await RecordTable.subscribe({ id: 42, startTime: startTime - 1, includeSuperseded: true });
 			const events = await collect(subscription, 100);
 			subscription.return?.();
 
@@ -325,6 +325,10 @@ describe('Subscription replay', () => {
 			// final event's value should be the latest
 			const final = events[events.length - 1];
 			assert.equal(final.value?.name, 'v3', `expected final value to be v3, got ${final.value?.name}`);
+			assert.deepEqual(
+				events.map((event) => event.value?.name),
+				['v1', 'v2', 'v3']
+			);
 			// history is sent oldest-first, so localTimes ascend
 			assertChronological(events, 'non-collection branch out of order');
 		});
@@ -334,7 +338,7 @@ describe('Subscription replay', () => {
 			await RecordTable.put(99, { name: 'pre1' });
 			await RecordTable.put(99, { name: 'pre2' });
 			await delay(10);
-			const subscription = await RecordTable.subscribe({ id: 99, startTime: startTime - 1 });
+			const subscription = await RecordTable.subscribe({ id: 99, startTime: startTime - 1, includeSuperseded: true });
 			const finalConcurrentValue = 'post4';
 			const events = [];
 			subscription.on('data', (event) => events.push(event));
@@ -521,10 +525,11 @@ describe('Subscription replay', () => {
 				await RecordTable.put(8000, { name: 'rapid_v' + i });
 			}
 			await delay(5);
-			const subscription = await RecordTable.subscribe({ id: 8000, startTime: startTime - 1 });
+			const subscription = await RecordTable.subscribe({ id: 8000, startTime: startTime - 1, includeSuperseded: true });
 			const events = await collect(subscription, 200);
 			subscription.return?.();
 
+			assert.equal(events.length, 250, 'all versions must replay across the yield boundary');
 			const pairs = events.map((e) => `${e.id}:${e.version}`);
 			assert.equal(
 				new Set(pairs).size,
@@ -884,7 +889,7 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < 20; i++) {
 				await T.put(42, { name: 'v' + i });
 			}
-			const subscription = await T.subscribe({ previousCount: 5, isCollection: true });
+			const subscription = await T.subscribe({ previousCount: 5, isCollection: true, includeSuperseded: true });
 			const events = await collect(subscription, 100);
 			subscription.return?.();
 
@@ -1189,13 +1194,13 @@ describe('Subscription replay', () => {
 			await T.delete(1);
 			await T.put(1, { name: 'b' });
 
-			const subscription = await T.subscribe({ startTime: 1, isCollection: true, id: 1 });
+			const subscription = await T.subscribe({ startTime: 1, isCollection: true, id: 1, includeSuperseded: true });
 			const events = await collect(subscription, 100);
 			subscription.return?.();
 
 			// We expect history of put/delete/put events for id=1, all delivered.
 			const ids = events.filter((e) => e.id === 1).map((e) => e.type);
-			assert.ok(ids.length >= 1, `expected at least 1 event for id=1, got ${ids.length}`);
+			assert.deepEqual(ids, ['put', 'delete', 'put']);
 		});
 	});
 });
