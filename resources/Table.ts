@@ -5715,7 +5715,6 @@ export function makeTable(options) {
 							if (auditRecord) {
 								if (startTime < nextTime) {
 									const event = eventFromAudit(thisId, auditRecord, nextTime);
-									if (!includeSuperseded) request.omitCurrent = true;
 									const historyEntry = event && { ...auditRecord, ...event };
 									if (historyEntry && (!allowsEvent || allowsEvent(historyEntry))) {
 										request.omitCurrent = true;

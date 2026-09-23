@@ -220,6 +220,19 @@ describe('Subscription superseded versions', () => {
 		assert.deepStrictEqual(current.events, []);
 	});
 
+	it('retains the current snapshot when eventFilter rejects audit metadata across older versions', async () => {
+		await versions();
+		const { events } = await subscribe({
+			id: 'A',
+			startTime: 1,
+			eventFilter: (event) => event.recordId === undefined,
+		});
+		assert.deepStrictEqual(
+			events.map((event) => [event.type, event.value?.value]),
+			[['put', 4]]
+		);
+	});
+
 	it('keeps invalidation typed as invalidate', async () => {
 		await versions();
 		await T.invalidate('A');
