@@ -1,9 +1,7 @@
 name: _debug-author-association
 on:
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        required: true
+  push:
+    branches: [kris/review-coverage-live-association]
 permissions:
   contents: read
   pull-requests: read
@@ -15,7 +13,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ inputs.pr_number }}
+          PR_NUMBER: '2754'
         run: |
           echo "token scopes visible to this job:"
           gh api /rate_limit -i 2>&1 | grep -i x-oauth-scopes || echo "(no scopes header — expected for an installation token)"
