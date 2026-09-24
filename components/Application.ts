@@ -4239,7 +4239,6 @@ export function shouldPackLocalDirectory(packageIdentifier: string | undefined, 
  * @returns A promise that resolves when all preparation steps complete.
  */
 export type PrepareApplicationOptions = {
-	/** Receives the deploy lifecycle id of this preparation once its start is broadcast. */
 	onDeployStart?: (deploymentId: string) => void;
 	beforePrepare?: () => Promise<void>;
 	/**
@@ -4546,20 +4545,11 @@ export function trackStartupPreparation(
 	return preparation;
 }
 
-async function reportLateStartupPreparation(
-	preparation: StartupPreparation,
-	builtIn?: Pick<Application, 'isNewComponent' | 'packageMetadataChanged'>
-): Promise<void> {
-	const { requestRestart, requestRestartAfterDeploy } = await import('./requestRestart.ts');
-	let restartRequested = true;
-	if (builtIn) {
-		restartRequested = requestRestartAfterDeploy(builtIn.isNewComponent, builtIn.packageMetadataChanged, false, false);
-	} else {
-		requestRestart();
-	}
+async function reportLateStartupPreparation(preparation: StartupPreparation): Promise<void> {
+	const { requestRestart } = await import('./requestRestart.ts');
+	requestRestart();
 	logger.warn?.(
-		`Component ${preparation.name} finished preparing after startup stopped waiting for it` +
-			(restartRequested ? '; restart Harper to load it' : '')
+		`Component ${preparation.name} finished preparing after startup stopped waiting for it; restart Harper to load it`
 	);
 }
 
@@ -4608,7 +4598,7 @@ export async function waitForStartupPreparations(
 	}
 	for (const preparation of pending) {
 		preparation.leftBehind = true;
-		// Loading the installed tree is the alternative startup chose, so no load may wait on this deploy.
+		// Startup loads the installed tree instead of waiting for this deploy, so no Scope may wait for it either.
 		if (preparation.deploymentId) deployLifecycle.releaseLoads(preparation.name, preparation.deploymentId);
 	}
 	return [...pending];
@@ -4656,22 +4646,14 @@ export async function installApplications() {
 		});
 
 		preparations.add(
-			trackStartupPreparation(
-				name,
-				packageIdentifier,
-				application.dirPath,
-				async (onDeployStart) => {
-					try {
-						await prepareApplication(application, { onDeployStart });
-					} catch (error) {
-						logger.error?.(`Failed to prepare built-in component ${name}:`, errorForLog(error));
-						throw error;
-					}
-				},
-				// A built-in is prepared again on every restart, so an unconditional request would loop wherever a
-				// restart request triggers a restart; only a new or changed install needs one.
-				(preparation) => reportLateStartupPreparation(preparation, application)
-			)
+			trackStartupPreparation(name, packageIdentifier, application.dirPath, async (onDeployStart) => {
+				try {
+					await prepareApplication(application, { onDeployStart });
+				} catch (error) {
+					logger.error?.(`Failed to prepare built-in component ${name}:`, errorForLog(error));
+					throw error;
+				}
+			})
 		);
 	}
 

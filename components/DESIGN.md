@@ -443,8 +443,7 @@ installed tree. `deploy:start`/`deploy:end` bracket the periods in which an unre
 
 When a left-behind preparation succeeds it requests a restart unconditionally: some running generation
 predates its swap, and the package-metadata comparison `requestRestartAfterDeploy` uses cannot tell whether
-that generation ever loaded a working version. Built-ins are the exception: they are prepared again on every
-restart, so they use that comparison, or a slow built-in would request a restart after every restart. Because a preparation outlives the call that started it, each
+that generation ever loaded a working version. Because a preparation outlives the call that started it, each
 `harper-application-lock.json` transition is a read-modify-write in one per-path queue
 (`updateApplicationLock`), and a reinstall clears its entry under the component preparation lock
 (`recordApplicationPreparation`), after any earlier preparation's success write (harper#2072). Enforced by
