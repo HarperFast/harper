@@ -1,9 +1,5 @@
 'use strict';
 
-// #2315 step 3: a component's root-config entry is an effect of its activation. These cover the writer every
-// runtime read-modify-write of the root config document goes through — its per-effect semantics, the lock
-// that serializes it with deploys, drops and `set_configuration`, and what it refuses to rewrite.
-
 const assert = require('node:assert');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -186,15 +182,13 @@ describe('root config publication', () => {
 		it('answers an effect the document already satisfies without the lock or write access, as every payload deploy of an unconfigured component needs', async function () {
 			this.timeout(10000);
 			if (!permissionsEnforced()) return this.skip();
-			writeEntry('configured', { package: 'npm:configured@1' });
 			// Held throughout, so an answer that waited on the lock would time out rather than pass.
 			const release = await holdPublicationLock();
 			try {
 				makeReadOnly();
 				assert.strictEqual(await applyRootConfigEffect('never-configured', { kind: 'unset-package' }), false);
-				const unchanged = { kind: 'set', entry: { package: 'npm:configured@1' } };
-				assert.strictEqual(await applyRootConfigEffect('configured', unchanged), false, 'a replayed journal');
-				await assertRootConfigEffectPublishable('configured', unchanged);
+				assert.strictEqual(await applyRootConfigEffect('never-configured', { kind: 'remove' }), false);
+				await assertRootConfigEffectPublishable('never-configured', { kind: 'unset-package' });
 			} finally {
 				await release();
 			}
@@ -213,6 +207,31 @@ describe('root config publication', () => {
 	});
 
 	describe('serializes every writer of the document', () => {
+		it("takes the lock for a satisfied effect when this thread's view of the entry is not what the file says", async function () {
+			this.timeout(10000);
+			// The unit harness never refreshes the memoized config from the file, so an entry written straight to
+			// the file is one this thread's view does not have yet — and the refresh that fixes it can rewrite the
+			// file on the main thread.
+			writeEntry('configured', { package: 'npm:configured@1' });
+			const release = await holdPublicationLock();
+			let answered = false;
+			const answering = applyRootConfigEffect('configured', {
+				kind: 'set',
+				entry: { package: 'npm:configured@1' },
+			}).then((changed) => {
+				answered = true;
+				return changed;
+			});
+			try {
+				// Asserting a non-event: it waits for the lock like any writer.
+				await sleep(300);
+				assert.strictEqual(answered, false);
+			} finally {
+				await release();
+			}
+			assert.strictEqual(await answering, false, 'and then changes nothing');
+		});
+
 		it('holds a writer until the lock is free, and then applies it', async () => {
 			const release = await holdPublicationLock();
 			let applied = false;

@@ -265,12 +265,15 @@ config writer on the node times out behind it. Each write is `atomicWriteFile({ 
 file is fsynced through its write handle (Windows only flushes a handle opened for writing) and the directory
 after the rename, tolerating the platform's "cannot sync" codes and nothing else. An effect the document
 already satisfies — a replayed journal, or a payload deploy of a component with no entry, which is most of
-them — is answered before the lock and needs no write access at all: the lock creates its directory beside the
-config, and a node whose config is readable but not writable took payload deploys before this change and
-must still. It still syncs the file and its directory, through read handles (only Windows needs a write handle
-to flush, and there a refusal is a tolerated code), because a crashed predecessor can have renamed it in
-unflushed. Deciding outside the lock is safe because the file is only replaced by rename. A document that does
-not parse cleanly is refused, never rewritten from what the parser recovered.
+them — is answered before the lock and needs no write access at all, provided this thread's memoized view of
+the entry agrees with the file: the lock creates its directory beside the config, and a node whose config is
+readable but not writable took payload deploys before this change and must still. When the view disagrees, the
+effect goes through the lock like any writer, because the refresh that fixes the view re-applies the env config
+layers on the main thread and can rewrite the file — unlocked, that rewrite could drop a concurrent writer's
+change. The lock-free answer still syncs the file and its directory, through read handles (only Windows needs a
+write handle to flush, and there a refusal is a tolerated code), because a crashed predecessor can have renamed
+it in unflushed. Deciding outside the lock is safe because the file is only replaced by rename. A document that
+does not parse cleanly is refused, never rewritten from what the parser recovered.
 
 **Boot ordering depends on the refresh.** `env.initSync()` memoizes the config object, so publishing to disk
 during recovery is not enough on its own: `applyRootConfigEffect` re-inits THIS thread's config, and boot

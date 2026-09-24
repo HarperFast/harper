@@ -1,8 +1,6 @@
 /**
- * A component's root-config entry is an effect of its activation (#2315 step 3): a deploy that fails
- * publishes nothing, a payload deploy takes back the package it replaced, and an activation a crash
- * interrupted between its two renames has its entry published by boot recovery — before
- * `installApplications()` reads the config it installs from.
+ * A component's root-config entry changes only as an effect of an activation that committed, including one
+ * boot recovery finishes — before `installApplications()` reads the config it installs from.
  */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';

@@ -106,13 +106,13 @@ export async function withRootConfigPublicationLock<T>(publish: () => Promise<T>
  */
 export async function applyRootConfigEffect(component: string, effect: RootConfigEffect): Promise<boolean> {
 	if (effect.kind === 'keep') return false;
-	// A satisfied effect is answered without the lock, which needs write access to the config's directory: a node
-	// whose config is readable but not writable still takes payload deploys, and a replay recovery could never
-	// finish would fail the component closed at every start. Safe unlocked: the file is only replaced by rename.
+	// Answered without the lock when neither the file nor this thread's view of the entry needs anything: the lock
+	// needs write access to the config's directory, and a node whose config is readable but not writable still
+	// takes payload deploys. Any refresh stays under the lock, because on the main thread it can rewrite the file.
+	// Safe unlocked: the file is only replaced by rename.
 	const unlocked = readRootConfigChange(component, effect);
-	if (!unlocked.changed) {
+	if (!unlocked.changed && isDeepStrictEqual(getConfigObj()?.[component], unlocked.configDoc.toJSON()?.[component])) {
 		syncFileToStorageSync(unlocked.configFilePath);
-		if (!isDeepStrictEqual(getConfigObj()?.[component], unlocked.configDoc.toJSON()?.[component])) env.initSync(true);
 		return false;
 	}
 	return withRootConfigPublicationLock(async () => {

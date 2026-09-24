@@ -801,7 +801,6 @@ async function deployComponent(req) {
 		// committed" — so a later failure arrives after both phases reported success. The operation's error
 		// is the authority on whether the deploy landed, not the phase stream.
 		emit('phase', { phase: 'prepare', status: 'start' });
-		// Declared, never written here: the activation publishes it once the swap commits.
 		let declaredRootConfig = null;
 		await prepareApplication(application, {
 			// `.deploy-staging/<artifactId>`. The public deployment id, so the id the caller was handed is

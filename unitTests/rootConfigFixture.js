@@ -1,13 +1,10 @@
 'use strict';
 
 /**
- * Read and seed the root config an activation publishes into.
- *
- * A unit run has ONE root config, the per-PID `harper-config.yaml` mocha.init.js materializes, and a deploy's
- * root-config entry is an effect of its activation (#2315 step 3). So a suite that activates a package build,
- * or seeds an entry to watch one change, is writing to a file every later suite in the run reads. Each test
- * that does puts the file back with `preserveRootConfig()`. Reads go to the file itself rather than
- * `getConfigObj()`, which `testUtils.preTestPrep()` keeps from refreshing.
+ * A unit run has ONE root config, the per-PID `harper-config.yaml` mocha.init.js materializes, and every later
+ * suite in the run reads it — so a test that activates a package build or seeds an entry puts the file back with
+ * `preserveRootConfig()`. Reads go to the file itself rather than `getConfigObj()`, which
+ * `testUtils.preTestPrep()` keeps from refreshing.
  */
 
 const { readFileSync, writeFileSync } = require('node:fs');
