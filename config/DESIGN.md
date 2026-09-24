@@ -29,6 +29,10 @@ entries under (`components/rootConfigPublication.ts`; the design is in
 [components/DESIGN.md](../components/DESIGN.md#root-config-is-an-effect-of-the-activation)), because all
 three parse and rewrite the whole document and the last rename otherwise drops the others' change. The
 lock is held around `updateConfigValue` only — never across replication, which is other nodes' writes.
+`updateConfigValue` reads and writes one file: the one `getConfigFilePath()` names, which is what boot reads
+and what the lock is keyed by. Deriving it from the document's `rootPath` put the write where boot does not
+look whenever the config file is named by the boot props, and after any change to `rootPath` itself; that
+derivation is now only the fallback for install-time callers that run before the boot props exist.
 A write another durable record depends on passes `atomicWriteFile({ durable: true })`, which fsyncs the
 content through its write handle before the rename and the directory after it; the default stays
 unsynced, since every other config write is re-derivable.
