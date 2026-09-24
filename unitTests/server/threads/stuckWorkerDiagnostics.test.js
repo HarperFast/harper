@@ -7,6 +7,7 @@ const harperLogger = require('#src/utility/logging/harper_logger');
 const {
 	startWorker,
 	broadcastWithAcknowledgement,
+	broadcastWithStrictAcknowledgement,
 	onMessageFromWorkers,
 	workers,
 } = require('#js/server/threads/manageThreads');
@@ -147,5 +148,15 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		await broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, 2000);
 		assert.equal(logLine('not acknowledged'), undefined);
 		assert.equal(logLine('Worker thread'), undefined);
+	});
+
+	it('rejects a strict broadcast when a worker reports preparation failure', async function () {
+		const worker = await startFixtureWorker('reject');
+		started.push(worker);
+		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000), (error) => {
+			assert(error instanceof AggregateError);
+			assert.match(error.errors[0].message, /could not prepare for the schema change: fixture preparation failed/);
+			return true;
+		});
 	});
 });

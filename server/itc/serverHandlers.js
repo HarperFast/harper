@@ -46,6 +46,14 @@ async function schemaHandler(event) {
 	}
 
 	hdbLogger.trace(`ITC schemaHandler received schema event:`, event);
+	if (
+		event.message?.operation === hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA &&
+		event.message.schema &&
+		event.message.prepareDrop
+	) {
+		await closeDatabase(event.message.schema);
+		return;
+	}
 	// restore_backup: this thread must release its store handles so the restore can purge and
 	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
 	// the restoring marker is present, and reloads it on the completion signal (marker gone).

@@ -1714,6 +1714,11 @@ export function makeTable(options) {
 			request: Context,
 			resourceOptions?: any
 		): Promise<TableResource<Record>> | TableResource<Record> {
+			if (databaseCommitsSuspended(primaryStore.rootStore))
+				throw new DatabaseClosingError(
+					databaseName,
+					!(request as any)?.transaction?.root && !(request as any)?.transaction?.snapshotFree
+				);
 			const resource: TableResource = super.getResource(target, request, resourceOptions) as any;
 			if (this.loadAsInstance !== false) {
 				return resource._loadRecord(target, request, resourceOptions);

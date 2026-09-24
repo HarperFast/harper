@@ -10,6 +10,8 @@ parentPort.on('message', (message) => {
 		);
 	} else if (message.requestId && process.argv.includes('--acknowledge')) {
 		parentPort.postMessage({ type: 'ack', id: message.requestId });
+	} else if (message.requestId && process.argv.includes('--reject')) {
+		parentPort.postMessage({ type: 'ack', id: message.requestId, error: { message: 'fixture preparation failed' } });
 	}
 });
 // manageThreads unrefs parentPort, so something must keep a non-blocking fixture alive.

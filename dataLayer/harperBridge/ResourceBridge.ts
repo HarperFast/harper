@@ -186,8 +186,17 @@ export class ResourceBridge extends BridgeMethods {
 	}
 
 	async dropSchema(dropSchemaObj) {
-		await dropDatabase(dropSchemaObj.schema);
-		signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, dropSchemaObj.schema));
+		const completion = () => new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, dropSchemaObj.schema);
+		const preparation: any = completion();
+		preparation.prepareDrop = true;
+		try {
+			await signalling.signalSchemaChangeToPeers(preparation);
+			await dropDatabase(dropSchemaObj.schema);
+		} catch (error) {
+			await signalling.signalSchemaChange(completion());
+			throw error;
+		}
+		await signalling.signalSchemaChange(completion());
 	}
 
 	async updateRecords(updateObj) {

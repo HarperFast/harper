@@ -170,6 +170,7 @@ module.exports = {
 	onMessageByType,
 	broadcast,
 	broadcastWithAcknowledgement,
+	broadcastWithStrictAcknowledgement,
 	getWorkerIndex,
 	getWorkerCount,
 	getEligibleBroadcastRecipientThreadIds,
@@ -1060,14 +1061,15 @@ async function broadcast(message, includeSelf) {
 const awaitingResponses = new Map();
 let nextId = 1;
 // Backstop so a wedged-but-alive worker (one whose event loop is blocked and never acks, yet
-// whose port hasn't closed) can't hang a mutating admin/DDL op forever. The durable write has
-// already succeeded by the time we broadcast, and the health monitor restarts a truly stuck
-// worker (its port close fires the same ack handlers), so on timeout we proceed best-effort.
+// whose port hasn't closed) can't hang a mutating admin/DDL op forever. Ordinary broadcasts happen
+// after the durable write and proceed best-effort; strict preparation broadcasts reject on timeout.
 const DEFAULT_ACK_TIMEOUT_MS = 30000;
-function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
-	return new Promise((resolve) => {
+function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS, strict = false) {
+	return new Promise((resolve, reject) => {
 		let waitingCount = 0;
 		let timer;
+		let initializing = true;
+		const failures = [];
 		// Tracks the handlers still awaiting an ack for THIS broadcast. Doubles as an
 		// idempotency guard: a port's handler runs at most once whether it's driven by an ack,
 		// the close listener, or the timeout below.
@@ -1077,7 +1079,9 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 				clearTimeout(timer);
 				timer = undefined;
 			}
-			resolve();
+			if (strict && failures.length > 0)
+				reject(new AggregateError(failures, 'A worker could not prepare for the schema change'));
+			else resolve();
 		};
 		for (let port of connectedPorts) {
 			// Job workers run a single isolated task and exit; they don't participate in
@@ -1085,12 +1089,20 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 			// the job worker's ACK while the job worker's event loop is busy waiting for the
 			// same broadcast to complete (re-entrant schema change triggered by the job op).
 			if (!isEligibleBroadcastRecipient(port)) continue;
+			let ackHandler;
 			try {
 				let requestId = nextId++;
-				const ackHandler = () => {
+				ackHandler = (response) => {
 					if (!pending.delete(ackHandler)) return; // already settled for this port
+					if (response?.error) {
+						const error = new Error(
+							`Worker ${port.threadId} could not prepare for the schema change: ${response.error.message ?? response.error}`
+						);
+						error.cause = response.error;
+						failures.push(error);
+					}
 					awaitingResponses.delete(requestId);
-					if (--waitingCount === 0) {
+					if (--waitingCount === 0 && !initializing) {
 						finish();
 					}
 					if (port !== parentPort && --port.refCount === 0) {
@@ -1113,23 +1125,25 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 						}
 					});
 				}
-				port.postMessage(message);
 				waitingCount++;
+				port.postMessage(message);
 			} catch (error) {
 				harperLogger.error(`Unable to send message to worker`, error);
+				ackHandler?.({ error: { message: error.message ?? String(error) } });
 			}
 		}
-		if (waitingCount === 0) return resolve();
+		initializing = false;
+		if (waitingCount === 0) return finish();
 		if (timeout > 0) {
 			timer = setTimeout(() => {
 				timer = undefined;
 				const stuck = [];
 				for (let ackHandler of [...pending]) {
 					stuck.push(ackHandler.port);
-					ackHandler(); // same cleanup path as an ack/close; drives waitingCount to 0 and resolves
+					ackHandler(strict ? { error: { message: `did not acknowledge within ${timeout}ms` } } : undefined); // same cleanup path as an ack/close; drives waitingCount to 0 and resolves
 				}
 				harperLogger.warn(
-					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.map((port) => port?.threadId).join(', ')} within ${timeout}ms; proceeding best-effort`
+					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.map((port) => port?.threadId).join(', ')} within ${timeout}ms; ${strict ? 'failing the coordinated operation' : 'proceeding best-effort'}`
 				);
 				if (isMainThread) for (let port of stuck) logStuckWorkerDiagnostics(port);
 				else if (parentPort) {
@@ -1141,6 +1155,10 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 			timer.unref?.();
 		}
 	});
+}
+
+function broadcastWithStrictAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
+	return broadcastWithAcknowledgement(message, timeout, true);
 }
 
 // Linux only: /proc/thread-self resolves to <pid>/task/<tid> for the calling thread.
@@ -1867,7 +1885,7 @@ function addPort(port, keepRef, isJobWorker) {
 			} else if (message.type === ACKNOWLEDGEMENT) {
 				let completion = awaitingResponses.get(message.id);
 				if (completion) {
-					completion();
+					completion(message);
 				}
 			} else if (message.type === REMOVE_PORT) {
 				const idx = connectedPorts.findIndex((p) => p.threadId === message.threadId);

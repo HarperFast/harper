@@ -184,7 +184,6 @@ export function trackOutstandingCommit(
 		outstandingCommitCount--;
 		if (rootCommits) {
 			rootCommits.delete(commitResolution);
-			if (rootCommits.size === 0) outstandingCommitsByRoot.delete(rootStore);
 		}
 	};
 	commitResolution.then(untrack, untrack);

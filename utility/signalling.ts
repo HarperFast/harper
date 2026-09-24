@@ -4,7 +4,7 @@ import * as hdbTerms from './hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import ITCEventObject from '../server/itc/utility/ITCEventObject.js';
 let serverItcHandlers;
-import { sendItcEvent } from '../server/threads/itc.js';
+import { sendItcEvent, sendItcEventStrict } from '../server/threads/itc.js';
 
 // Await BOTH the local handler and the cross-worker broadcast. The local handler is what
 // rebuilds THIS thread's cache; firing it un-awaited let the originating worker return success
@@ -21,6 +21,13 @@ export async function signalSchemaChange(message: any) {
 	} catch (err) {
 		hdbLogger.error(err);
 	}
+}
+
+/** Prepare peer workers for destructive DDL without applying the completion event locally. */
+export async function signalSchemaChangeToPeers(message: any): Promise<void> {
+	hdbLogger.debug('signalSchemaChangeToPeers called with message:', message);
+	const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
+	await sendItcEventStrict(itcEventSchema);
 }
 
 /**

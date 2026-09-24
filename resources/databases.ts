@@ -68,7 +68,7 @@ import { planeFilePathFor, planeStalePathFor } from './indexes/hnswPlaneBinding.
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
-import { suspendDatabaseCommits } from './DatabaseTransaction.ts';
+import { databaseCommitsSuspended, suspendDatabaseCommits } from './DatabaseTransaction.ts';
 import { replayLogs } from './replayLogs.ts';
 import {
 	assertFullTextActivationSupported,
@@ -1893,15 +1893,25 @@ export function openBranchDatabase(
 			// branch frees its path, so a stale handle would otherwise tear down its successor
 			if (closing) return closing;
 			const releaseActivation = suspendDerivedIndexActivation(rootStore);
-			const operation = settleBranchDerivedIndexes(tables)
+			const commitSuspension = suspendDatabaseCommits([rootStore]);
+			let closed = false;
+			const operation = commitSuspension
+				.waitForDrain()
+				.then(() => settleBranchDerivedIndexes(tables))
 				.then(() => {
 					closeBranchHandles(path, rootStore, openedStores, tables);
 					if (openBranches.get(path) === branch) openBranches.delete(path);
 					releaseBranchIdentity(storeName);
 					rocksdbDatabaseEnvs.delete(path);
 					manageThreads.markBranchStorePath(path, false);
+					closed = true;
 				})
-				.finally(releaseActivation);
+				.finally(() => {
+					if (!closed) {
+						commitSuspension.release();
+						releaseActivation();
+					}
+				});
 			const retryable = operation.catch((error) => {
 				if (closing === retryable) closing = undefined;
 				throw error;
@@ -2219,6 +2229,7 @@ export async function dropDatabase(databaseName) {
 	// a check-then-act marker probe. Released in the finally below.
 	const restoreLocks: RestoreLock[] = [];
 	let releaseDerivedIndexActivation: (() => void) | undefined;
+	let databaseRemoved = false;
 	try {
 		for (const tableName in dbTables) {
 			const table = dbTables[tableName];
@@ -2264,9 +2275,10 @@ export async function dropDatabase(databaseName) {
 			}
 		}
 
+		databaseRemoved = true;
 		await deleteRootBlobPathsForDB(rootStore);
 	} finally {
-		releaseDerivedIndexActivation?.();
+		if (!databaseRemoved) releaseDerivedIndexActivation?.();
 		for (const lock of restoreLocks) releaseRestoreLock(lock);
 	}
 }
@@ -2290,6 +2302,7 @@ export async function closeDatabase(databaseName: string): Promise<boolean> {
 		false,
 		definedRoot ? [definedRoot] : []
 	);
+	let databaseClosed = false;
 	try {
 		const rootStores = new Set<any>();
 		const closeStore = async (store: any, description: string) => {
@@ -2336,9 +2349,10 @@ export async function closeDatabase(databaseName: string): Promise<boolean> {
 				}
 			}
 		}
+		databaseClosed = true;
 		return true;
 	} finally {
-		releaseDerivedIndexActivation();
+		if (!databaseClosed) releaseDerivedIndexActivation();
 	}
 }
 
@@ -2435,6 +2449,7 @@ async function settleDatabaseDerivedIndexes(
 		tables.push(table);
 	}
 	await commitSuspension.waitForDrain();
+	await settleInterruptedDropRetirements(rootStores);
 	if (attachments.size === 0) return releaseLifecycle;
 	const entries = [...attachments];
 	const results = await Promise.allSettled(entries.map(async ([attachment]) => attachment.close(dropping)));
@@ -4788,6 +4803,26 @@ function scheduleGenerationReclaim(rootStore: RocksDatabase, attributesDbi, data
 	state.delay = Math.min(state.delay * 2, 60_000);
 }
 
+const interruptedDropRetirements = new WeakMap<object, Set<Promise<void>>>();
+
+function trackInterruptedDropRetirement(rootStore: object, task: Promise<void>): void {
+	let tasks = interruptedDropRetirements.get(rootStore);
+	if (!tasks) interruptedDropRetirements.set(rootStore, (tasks = new Set()));
+	tasks.add(task);
+	const remove = () => {
+		tasks.delete(task);
+	};
+	task.then(remove, remove);
+}
+
+async function settleInterruptedDropRetirements(rootStores: Iterable<object>): Promise<void> {
+	for (;;) {
+		const tasks = [...rootStores].flatMap((rootStore) => [...(interruptedDropRetirements.get(rootStore) ?? [])]);
+		if (tasks.length === 0) return;
+		await Promise.allSettled(tasks);
+	}
+}
+
 /** Finishes the durable logical state of a drop that stopped after writing its tombstone. */
 function completeInterruptedDrop(
 	rootStore,
@@ -4815,13 +4850,14 @@ function completeInterruptedDrop(
 		if (names.length > 0) {
 			const releaseRetirement = acquireFullTextRetirementFence(rootStore, tableName);
 			if (releaseRetirement) {
-				void (async () => {
+				const retirement = (async () => {
 					try {
 						const retired = await retireFullTextIndexes(
 							{ databaseName, tableName, primaryStore: { rootStore } },
-							names.map((name) => ({ name }))
+							names.map((name) => ({ name })),
+							() => rootStore.status === 'open' && !databaseCommitsSuspended(rootStore)
 						);
-						if (!retired || rootStore.status === 'closed') return;
+						if (!retired || rootStore.status === 'closed' || databaseCommitsSuspended(rootStore)) return;
 						await withUpdateAttributesLockNonBlocking(
 							rootStore,
 							`complete interrupted drop of '${databaseName}.${tableName}'`,
@@ -4833,6 +4869,7 @@ function completeInterruptedDrop(
 						releaseRetirement();
 					}
 				})();
+				trackInterruptedDropRetirement(rootStore, retirement);
 			}
 			return false;
 		}

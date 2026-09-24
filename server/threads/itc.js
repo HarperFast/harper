@@ -4,24 +4,42 @@ const hdbUtils = require('../../utility/common_utils.ts');
 const hdbTerms = require('../../utility/hdbTerms.ts');
 const { ITC_ERRORS } = require('../../utility/errors/commonErrors.ts');
 const { threadId } = require('worker_threads');
-const { onMessageFromWorkers, broadcastWithAcknowledgement } = require('./manageThreads.js');
+const {
+	onMessageFromWorkers,
+	broadcastWithAcknowledgement,
+	broadcastWithStrictAcknowledgement,
+} = require('./manageThreads.js');
 
 module.exports = {
 	sendItcEvent,
+	sendItcEventStrict,
 	validateEvent,
 	SchemaEventMsg,
 };
 let serverItcHandlers;
 onMessageFromWorkers(async (event, sender) => {
 	serverItcHandlers = serverItcHandlers || require('../itc/serverHandlers.js');
-	validateEvent(event);
-	if (serverItcHandlers[event.type]) {
-		await serverItcHandlers[event.type](event);
+	let error;
+	try {
+		validateEvent(event);
+		if (serverItcHandlers[event.type]) {
+			await serverItcHandlers[event.type](event);
+		}
+	} catch (caught) {
+		const hdbLogger = require('../../utility/logging/harper_logger.ts');
+		hdbLogger.error('ITC event handler failed', caught);
+		error = {
+			name: caught?.name,
+			message: caught?.message ?? String(caught),
+			code: caught?.code,
+			statusCode: caught?.statusCode,
+		};
 	}
 	if (event.requestId && sender)
 		sender.postMessage({
 			type: 'ack',
 			id: event.requestId,
+			error,
 		});
 });
 
@@ -35,6 +53,11 @@ function sendItcEvent(event) {
 	// is set to 0 in workers, so sendToThread(0, ...) routes back to main.
 	if (event.message) event.message.originator = threadId;
 	return broadcastWithAcknowledgement(event);
+}
+
+function sendItcEventStrict(event) {
+	if (event.message) event.message.originator = threadId;
+	return broadcastWithStrictAcknowledgement(event);
 }
 
 /**

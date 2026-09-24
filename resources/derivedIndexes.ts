@@ -626,7 +626,8 @@ export function attachDerivedIndexes(
 /** Retire durable native indexes even when their in-memory attachment could not be restored. */
 export async function retireFullTextIndexes(
 	Table: any,
-	definitions: readonly Pick<FullTextDefinition, 'name'>[]
+	definitions: readonly Pick<FullTextDefinition, 'name'>[],
+	shouldContinue: () => boolean = () => true
 ): Promise<boolean> {
 	const fullTextTest = fullTextTestConfiguration;
 	const retryMilliseconds =
@@ -634,6 +635,7 @@ export async function retireFullTextIndexes(
 	const deadline = Date.now() + retryMilliseconds;
 	let retired = true;
 	for (const definition of definitions) {
+		if (!shouldContinue()) return false;
 		let retryDelayMilliseconds = 10;
 		let retrying = false;
 		for (;;) {
@@ -646,6 +648,7 @@ export async function retireFullTextIndexes(
 				});
 				break;
 			} catch (error) {
+				if (!shouldContinue()) return false;
 				const code =
 					error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
 						? error.code
@@ -659,6 +662,7 @@ export async function retireFullTextIndexes(
 						);
 					}
 					await new Promise((resolve) => setTimeout(resolve, Math.min(retryDelayMilliseconds, remaining)));
+					if (!shouldContinue()) return false;
 					retryDelayMilliseconds = Math.min(retryDelayMilliseconds * 2, 250);
 					continue;
 				}
@@ -701,7 +705,8 @@ async function resumePersistedFullTextRetirements(
 		if (!shouldContinue()) return false;
 		const retired = await retireFullTextIndexes(
 			Table,
-			names.map((name) => ({ name }))
+			names.map((name) => ({ name })),
+			shouldContinue
 		);
 		if (!retired || !shouldContinue()) return false;
 		await Table.completeFullTextIndexRetirements?.(names);

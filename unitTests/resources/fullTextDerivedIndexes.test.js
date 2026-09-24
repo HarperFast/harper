@@ -330,6 +330,14 @@ describe('@fullText derived-index activation', () => {
 			finishSubmittedCommit?.();
 			releaseClose?.();
 		}
+		assert.strictEqual(databaseCommitsSuspended(Product.primaryStore.rootStore), true);
+		assert.throws(
+			() => Product.put('stale-write', { title: 'Stale write' }),
+			(error) => {
+				assert.strictEqual(error.code, 'DATABASE_CLOSING', error.stack);
+				return true;
+			}
+		);
 		Product = undefined;
 	});
 
@@ -1307,6 +1315,60 @@ describe('@fullText derived-index activation', () => {
 
 		Product = table(tableOptions());
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+	});
+
+	rocksOnly('cancels interrupted-drop retirement before closing its database', async () => {
+		const database = `fulltext-interrupted-drop-close-${Date.now()}`;
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'tags', type: 'array', elements: { type: 'String' } },
+			],
+			fullTextIndexes: [definition()],
+		});
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+		const runtime = Product.derivedIndexRuntime;
+		Product.derivedIndexRuntime = undefined;
+		await runtime.close();
+		const primaryKey = `${Product.tableName}/`;
+		const descriptor = Product.dbisDB.getSync(primaryKey);
+		const tombstone = {
+			...descriptor,
+			fullTextIndexRetirements: [{ name: 'search' }],
+			dropping: true,
+			dropGeneration: descriptor.generation,
+		};
+		delete tombstone.fullTextIndexes;
+		delete tombstone.fullTextIndexGenerations;
+		Product.dbisDB.putSync(primaryKey, tombstone);
+		delete databases[database].Product;
+		binding.resetFailuresRemaining = 1000;
+
+		assert.throws(
+			() =>
+				table({
+					database,
+					table: 'Product',
+					audit: true,
+					attributes: [
+						{ name: 'id', type: 'ID', isPrimaryKey: true },
+						{ name: 'title', type: 'String' },
+					],
+					fullTextIndexes: [{ ...definition(), fields: [{ name: 'title', weight: 1 }] }],
+				}),
+			/interrupted full-text drop is being retired/
+		);
+		await waitFor(() => binding.resets.length > 0, 30_000);
+		await closeDatabase(database);
+		const attemptsAfterClose = binding.resets.length;
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.strictEqual(binding.resets.length, attemptsAfterClose);
+		assert.strictEqual(Product.primaryStore.rootStore.status, 'closed');
+		Product = undefined;
 	});
 
 	rocksOnly('rejects a drop before persisting its tombstone while retirement is already fenced', async () => {

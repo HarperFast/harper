@@ -6,6 +6,7 @@ const { dirname, join } = require('node:path');
 const { table, flushDatabases, dropDatabase, getDatabases, resetDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { databaseCommitsSuspended } = require('#src/resources/DatabaseTransaction');
 const {
 	beginRestore,
 	completeRestore,
@@ -359,6 +360,14 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 
 		const closing = branch.close();
 		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(databaseCommitsSuspended(branch.rootStore), true);
+		assert.throws(
+			() => branch.tables.BranchSource.put('closing-write', { note: 'late' }),
+			(error) => {
+				assert.strictEqual(error.code, 'DATABASE_CLOSING');
+				return true;
+			}
+		);
 		assert.ok(refCountFor(branchPath) > 0, 'the branch stores stay open while a native writer is settling');
 		assert.throws(
 			() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'),
@@ -369,6 +378,7 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		await closing;
 
 		assert.strictEqual(refCountFor(branchPath), 0);
+		assert.strictEqual(databaseCommitsSuspended(branch.rootStore), true);
 	});
 
 	it('keeps a branch registered and retryable when its derived writer cannot settle', async function () {
@@ -380,6 +390,7 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		};
 
 		await assert.rejects(branch.close(), /writer still active/);
+		assert.strictEqual(databaseCommitsSuspended(branch.rootStore), false);
 		assert.ok(refCountFor(branchPath) > 0, 'a failed settle must leave the stores open');
 		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'), /already open/);
 

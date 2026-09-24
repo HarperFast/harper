@@ -20,8 +20,12 @@ const {
 	closeLoadedDatabases,
 	openBranchDatabase,
 	closeBranchDatabases,
+	databases,
 } = require('#src/resources/databases');
 const { registryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
+const { schema: schemaHandler } = require('#js/server/itc/serverHandlers');
+const { OPERATIONS_ENUM } = require('#src/utility/hdbTerms');
+const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 
 describe('RocksDB handle release', function () {
 	before(function () {
@@ -52,6 +56,38 @@ describe('RocksDB handle release', function () {
 		await closeDatabase('closerelease1');
 
 		assert.strictEqual(refCountFor(dbPath), 0, 'no native handles should remain after closeDatabase');
+	});
+
+	it('a drop-schema preparation event closes the peer database before acknowledging', async function () {
+		this.timeout(30000);
+		const databaseName = 'drop_schema_prepare';
+		const rootStore = openRocksDb(databaseName);
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+
+		await schemaHandler({
+			type: 'schema',
+			message: {
+				originator: process.pid,
+				operation: OPERATIONS_ENUM.DROP_SCHEMA,
+				schema: databaseName,
+				prepareDrop: true,
+			},
+		});
+
+		assert.strictEqual(databases[databaseName], undefined);
+		assert.strictEqual(refCountFor(rootStore.path), 0);
+	});
+
+	it('dropSchema coordinates peer preparation before destroying the local database', async function () {
+		this.timeout(30000);
+		const databaseName = 'drop_schema_coordinated';
+		const rootStore = openRocksDb(databaseName);
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+
+		await new ResourceBridge().dropSchema({ schema: databaseName });
+
+		assert.strictEqual(databases[databaseName], undefined);
+		assert.strictEqual(refCountFor(rootStore.path), 0);
 	});
 
 	it('closeLoadedDatabases releases every loaded user database (what a job worker does on exit)', async function () {
