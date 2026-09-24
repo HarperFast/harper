@@ -411,8 +411,10 @@ function systemStore(tableName: string) {
 	return table.primaryStore;
 }
 
-// Mirrors resources/Table.ts's checkValidId. MAX_KEY_BYTES is LMDB's limit on the ordered-binary
-// encoded key; escaped characters (U+0000-U+0003) can expand a string past its character count.
+// hdb_user and hdb_role ids are only ever strings or numbers; anything else is malformed data.
+// MAX_KEY_BYTES is LMDB's limit on the ordered-binary encoded key; escaped characters (U+0000-U+0003)
+// can expand a string past its character count, so the size check (mirroring Table.ts's checkValidId)
+// measures the encoded length above KEY_FAST_PATH_CHARS rather than trusting the character count.
 const KEY_FAST_PATH_CHARS = 659;
 const MAX_KEY_BYTES = 1978;
 const KEY_SIZE_TEST_BUFFER = Buffer.allocUnsafeSlow(8192);
