@@ -46,8 +46,7 @@ function uniqueName(label) {
 }
 
 function track(label, start, onLateSuccess = () => {}, configKey = 'config') {
-	const application = { dirPath: '/nonexistent', isNewComponent: true, packageMetadataChanged: false };
-	return trackStartupPreparation(uniqueName(label), configKey, application, start, onLateSuccess);
+	return trackStartupPreparation(uniqueName(label), configKey, '/nonexistent', start, onLateSuccess);
 }
 
 async function withTimerSpy(delays, run) {
@@ -108,7 +107,8 @@ describe('installApplications lock state', () => {
 			recordApplicationPreparation(
 				'test',
 				applicationConfig,
-				async () => {
+				async (clearEntry) => {
+					await clearEntry();
 					throw new Error('installation failed');
 				},
 				lock.updateLock
@@ -130,7 +130,8 @@ describe('installApplications lock state', () => {
 		await recordApplicationPreparation(
 			'test',
 			applicationConfig,
-			async () => {
+			async (clearEntry) => {
+				await clearEntry();
 				prepareCalled = true;
 				assert.deepStrictEqual(lock.snapshots, [{}]);
 			},
@@ -141,7 +142,7 @@ describe('installApplications lock state', () => {
 		assert.deepStrictEqual(lock.snapshots, [{}, { test: applicationConfig }]);
 	});
 
-	it('does not persist a restored success entry when preparation fails', async () => {
+	it('keeps the entry when preparation fails before it takes the component lock', async () => {
 		const applicationConfig = { package: 'test-package' };
 		const lock = memoryLock({ test: applicationConfig });
 
@@ -150,6 +151,26 @@ describe('installApplications lock state', () => {
 				'test',
 				applicationConfig,
 				async () => {
+					throw new Error('lock wait timed out');
+				},
+				lock.updateLock
+			),
+			/lock wait timed out/
+		);
+
+		assert.deepStrictEqual(lock.snapshots, []);
+	});
+
+	it('does not persist a restored success entry when preparation fails', async () => {
+		const applicationConfig = { package: 'test-package' };
+		const lock = memoryLock({ test: applicationConfig });
+
+		await assert.rejects(
+			recordApplicationPreparation(
+				'test',
+				applicationConfig,
+				async (clearEntry) => {
+					await clearEntry();
 					throw new Error('installation failed');
 				},
 				lock.updateLock
@@ -179,9 +200,10 @@ describe('installApplications lock state', () => {
 			const stalled = recordApplicationPreparation(
 				'stalled',
 				{ package: 'a' },
-				() => {
+				async (clearEntry) => {
+					await clearEntry();
 					started.resolve();
-					return release.promise;
+					await release.promise;
 				},
 				(mutate) => updateApplicationLock(lockPath, mutate)
 			);
@@ -191,7 +213,7 @@ describe('installApplications lock state', () => {
 			await recordApplicationPreparation(
 				'other',
 				{ package: 'b' },
-				async () => {},
+				(clearEntry) => clearEntry(),
 				(mutate) => updateApplicationLock(lockPath, mutate)
 			);
 			assert.deepStrictEqual(await readLock(), { other: { package: 'b' } });
@@ -335,9 +357,8 @@ describe('startup preparation wait', () => {
 				return release.promise;
 			};
 			const name = uniqueName('dedupe');
-			const application = { dirPath: '/nonexistent', isNewComponent: true, packageMetadataChanged: false };
-			const first = trackStartupPreparation(name, 'config', application, start, () => {});
-			const second = trackStartupPreparation(name, 'config', application, start, () => {});
+			const first = trackStartupPreparation(name, 'config', '/nonexistent', start, () => {});
+			const second = trackStartupPreparation(name, 'config', '/nonexistent', start, () => {});
 			assert.strictEqual(second, first);
 			assert.strictEqual(starts, 1);
 
@@ -347,7 +368,7 @@ describe('startup preparation wait', () => {
 			const afterSettle = trackStartupPreparation(
 				name,
 				'config',
-				application,
+				'/nonexistent',
 				async () => {},
 				() => {}
 			);
@@ -356,15 +377,14 @@ describe('startup preparation wait', () => {
 
 		it('starts a new preparation when the configuration changed, and rejoins the first when it changes back', () => {
 			const name = uniqueName('reconfigured');
-			const application = { dirPath: '/nonexistent', isNewComponent: true, packageMetadataChanged: false };
 			let starts = 0;
 			const start = () => {
 				starts++;
 				return new Promise(() => {});
 			};
-			const configA = trackStartupPreparation(name, 'A', application, start, () => {});
-			const configB = trackStartupPreparation(name, 'B', application, start, () => {});
-			const configAAgain = trackStartupPreparation(name, 'A', application, start, () => {});
+			const configA = trackStartupPreparation(name, 'A', '/nonexistent', start, () => {});
+			const configB = trackStartupPreparation(name, 'B', '/nonexistent', start, () => {});
+			const configAAgain = trackStartupPreparation(name, 'A', '/nonexistent', start, () => {});
 			assert.notStrictEqual(configB, configA);
 			assert.strictEqual(configAAgain, configA);
 			assert.strictEqual(starts, 2);
@@ -390,24 +410,24 @@ describe('startup preparation wait', () => {
 			assert.deepStrictEqual(late, [abandoned.name]);
 		});
 
-		it('still reports a left-behind preparation that a later call waits on and sees finish', async () => {
-			// That later call cannot know its own generation will load the component on every worker.
+		it('a later call does not wait again for a preparation left behind, whose success is still reported', async () => {
 			const late = [];
 			const release = deferred();
 			const name = uniqueName('picked-up');
-			const application = { dirPath: '/nonexistent', isNewComponent: true, packageMetadataChanged: false };
 			const start = () => release.promise;
 			const onLateSuccess = (preparation) => late.push(preparation.name);
 
-			const boot = trackStartupPreparation(name, 'config', application, start, onLateSuccess);
+			const boot = trackStartupPreparation(name, 'config', '/nonexistent', start, onLateSuccess);
 			await waitForStartupPreparations([boot], 10);
-			const restart = trackStartupPreparation(name, 'config', application, start, onLateSuccess);
-			assert.strictEqual(restart, boot);
-			const waiting = waitForStartupPreparations([restart], 60_000);
-			release.resolve();
-			assert.deepStrictEqual(await waiting, []);
-			await sleep(0);
+			const restart = trackStartupPreparation(name, 'config', '/nonexistent', start, onLateSuccess);
+			assert.strictEqual(restart, boot, 'no second preparation');
+			const startedAt = performance.now();
+			assert.deepStrictEqual(await waitForStartupPreparations([restart], 60_000), [boot]);
+			assert.ok(performance.now() - startedAt < 5_000, 'the restart did not wait out a fresh deadline');
 
+			release.resolve();
+			await boot.promise;
+			await sleep(0);
 			assert.deepStrictEqual(late, [name]);
 		});
 

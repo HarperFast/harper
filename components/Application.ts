@@ -4483,7 +4483,6 @@ async function activateStagedArtifact(
 	});
 }
 
-/** `deployment_startupInstallTimeout` in ms; 0 waits indefinitely. */
 export function getStartupInstallTimeoutMs(): number {
 	const configured = getConfigValue(CONFIG_PARAMS.DEPLOYMENT_STARTUPINSTALLTIMEOUT);
 	if (configured === undefined || configured === null) return DEFAULT_STARTUP_INSTALL_TIMEOUT_MS;
@@ -4500,7 +4499,7 @@ export function getStartupInstallTimeoutMs(): number {
 export type StartupPreparation = {
 	name: string;
 	configKey: string;
-	application: Pick<Application, 'dirPath' | 'isNewComponent' | 'packageMetadataChanged'>;
+	dirPath: string;
 	promise: Promise<void>;
 	/** Some installApplications() call stopped waiting for this, so a generation already running predates its swap. */
 	leftBehind: boolean;
@@ -4516,14 +4515,14 @@ const startupPreparations = new Map<string, StartupPreparation>();
 export function trackStartupPreparation(
 	name: string,
 	configKey: string,
-	application: StartupPreparation['application'],
+	dirPath: string,
 	start: () => Promise<void>,
 	onLateSuccess: (preparation: StartupPreparation) => void | Promise<void> = reportLateStartupPreparation
 ): StartupPreparation {
 	const key = JSON.stringify([name, configKey]);
 	const existing = startupPreparations.get(key);
 	if (existing) return existing;
-	const preparation: StartupPreparation = { name, configKey, application, promise: start(), leftBehind: false };
+	const preparation: StartupPreparation = { name, configKey, dirPath, promise: start(), leftBehind: false };
 	startupPreparations.set(key, preparation);
 	const settle = (succeeded: boolean) => {
 		startupPreparations.delete(key);
@@ -4550,15 +4549,21 @@ async function reportLateStartupPreparation(preparation: StartupPreparation): Pr
 /**
  * Wait for the given preparations until they all settle or `timeoutMs` elapses, warning periodically about
  * what startup is still waiting for. Returns the ones still pending, which keep running (and holding their
- * component locks) — the caller stops waiting, it does not cancel. Infinity waits indefinitely.
+ * component locks) — the caller stops waiting, it does not cancel. Infinity waits indefinitely. One that an
+ * earlier call already stopped waiting for is returned without waiting again: the node already runs without it.
  */
 export async function waitForStartupPreparations(
 	preparations: Iterable<StartupPreparation>,
 	timeoutMs: number,
 	progressIntervalMs: number = STARTUP_INSTALL_PROGRESS_INTERVAL_MS
 ): Promise<StartupPreparation[]> {
-	const pending = new Set(preparations);
-	if (pending.size === 0) return [];
+	const leftBehind: StartupPreparation[] = [];
+	const pending = new Set<StartupPreparation>();
+	for (const preparation of preparations) {
+		if (preparation.leftBehind) leftBehind.push(preparation);
+		else pending.add(preparation);
+	}
+	if (pending.size === 0) return leftBehind;
 	const startedAt = performance.now();
 	const allSettled = Promise.all(
 		[...pending].map((preparation) =>
@@ -4586,8 +4591,10 @@ export async function waitForStartupPreparations(
 		clearTimeout(deadlineTimer);
 		clearInterval(progressTimer);
 	}
-	const leftBehind = [...pending];
-	for (const preparation of leftBehind) preparation.leftBehind = true;
+	for (const preparation of pending) {
+		preparation.leftBehind = true;
+		leftBehind.push(preparation);
+	}
 	return leftBehind;
 }
 
@@ -4603,11 +4610,7 @@ export async function waitForStartupPreparations(
  * `trackStartupPreparation`), and startup loads whatever is installed at that point.
  */
 export async function installApplications() {
-	// Armed before enumeration: resolving credentials for each entry below can itself take time.
-	const startedAt = performance.now();
 	const timeoutMs = getStartupInstallTimeoutMs();
-	const preparations = new Set<StartupPreparation>();
-
 	const config = getConfigObj();
 
 	const componentsRootDirPath = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
@@ -4617,9 +4620,13 @@ export async function installApplications() {
 	await mkdir(componentsRootDirPath, { recursive: true });
 
 	const harperApplicationLockPath = join(getConfigValue(CONFIG_PARAMS.ROOTPATH), 'harper-application-lock.json');
-	const updateLock = (mutate: ApplicationLockMutation) => updateApplicationLock(harperApplicationLockPath, mutate);
-	// Creates the file on a first boot even when nothing needs preparing.
-	await updateLock(() => {});
+	// Creates the file on a first boot even when nothing needs preparing. Not awaited: every lock-file and
+	// credential read runs inside a preparation, where the deadline bounds it.
+	updateApplicationLock(harperApplicationLockPath, () => {}).catch((error) =>
+		logger.error?.(`Could not write ${harperApplicationLockPath}:`, errorForLog(error))
+	);
+
+	const preparations = new Set<StartupPreparation>();
 
 	// first install any built-in components specified from env vars
 	for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
@@ -4633,7 +4640,14 @@ export async function installApplications() {
 		});
 
 		preparations.add(
-			trackStartupPreparation(name, packageIdentifier, application, () => prepareApplication(application))
+			trackStartupPreparation(name, packageIdentifier, application.dirPath, async () => {
+				try {
+					await prepareApplication(application);
+				} catch (error) {
+					logger.error?.(`Failed to prepare built-in component ${name}:`, errorForLog(error));
+					throw error;
+				}
+			})
 		);
 	}
 
@@ -4648,71 +4662,87 @@ export async function installApplications() {
 			// Then do proper error-based validation with TypeScript `asserts` to provide type safety
 			// This will throw if the config is invalid
 			assertApplicationConfig(name, applicationConfig);
-
-			// Resolve any credential references from the store so a cold install (fresh node, wiped
-			// components dir, new peer that never installed) can authenticate without the token being
-			// re-supplied. Best-effort: if custody isn't available yet or a referenced secret is
-			// missing, log and install without it (a truly private package then fails in npm with its
-			// own error) rather than blocking boot.
-			let credentials: ResolvedCredential[] | undefined;
-			if (applicationConfig.credentials?.length) {
-				try {
-					const { resolveCredentials } = await import('./secretOperations.ts');
-					credentials = await resolveCredentials(applicationConfig.credentials, name);
-				} catch (error) {
-					logger.warn?.(
-						`Could not resolve credentials for application ${name} at install time: ${(error as Error).message}`
-					);
-				}
-			}
-
-			const application = new Application({
-				name,
-				packageIdentifier: applicationConfig.package,
-				install: applicationConfig.install,
-				credentials,
-			});
-
-			// Lock check: only install if not already installed with matching configuration. Read per entry: a
-			// preparation an earlier call stopped waiting for may have recorded its success since this call began.
-			const installedConfig = (await readApplicationLock(harperApplicationLockPath)).applications[name];
-			if (
-				existsSync(application.dirPath) &&
-				installedConfig &&
-				JSON.stringify(installedConfig) === JSON.stringify(applicationConfig)
-			) {
-				logger.info?.(`Application ${name} is already installed with matching configuration; skipping installation`);
-				continue;
-			}
-			// Once preparation is required, the old entry is no longer evidence of a complete
-			// installation. In particular, a failed reinstall may leave a partial directory behind;
-			// retaining the prior entry would make the next boot skip that partial component.
-			preparations.add(
-				trackStartupPreparation(name, JSON.stringify(applicationConfig), application, () =>
-					recordApplicationPreparation(name, applicationConfig, () => prepareApplication(application), updateLock)
-				)
-			);
 		} catch (error) {
 			logger.error?.(`Skipping installation of application ${name} due to invalid configuration: ${error.message}`);
+			continue;
 		}
+		const dirPath = join(componentsRootDirPath, name);
+		preparations.add(
+			trackStartupPreparation(name, JSON.stringify(applicationConfig), dirPath, () =>
+				installConfiguredApplication(name, applicationConfig, dirPath, harperApplicationLockPath)
+			)
+		);
 	}
 
-	const leftBehind = await waitForStartupPreparations(
-		preparations,
-		timeoutMs === 0 ? Infinity : timeoutMs - (performance.now() - startedAt)
-	);
-	for (const { name, application } of leftBehind) {
+	const leftBehind = await waitForStartupPreparations(preparations, timeoutMs === 0 ? Infinity : timeoutMs);
+	for (const { name, dirPath } of leftBehind) {
 		// Loading this startup's installed tree is the alternative startup chose, so no load may wait on it.
 		deployLifecycle.releaseLoads(name);
 		logger.error?.(
-			`Startup is no longer waiting for ${name}: its preparation has not finished after ${timeoutMs}ms ` +
-				`(${CONFIG_PARAMS.DEPLOYMENT_STARTUPINSTALLTIMEOUT}). It continues in the background; until it finishes, ` +
-				(existsSync(application.dirPath)
-					? 'the version already installed stays in place'
-					: 'the component is not installed')
+			`Startup is no longer waiting for ${name}: its preparation is still running after ` +
+				`${CONFIG_PARAMS.DEPLOYMENT_STARTUPINSTALLTIMEOUT} (${timeoutMs}ms). It continues in the background; ` +
+				(existsSync(dirPath)
+					? 'until it finishes, the version already installed stays in place'
+					: 'until it finishes, the component is not installed')
 		);
 	}
 	if (leftBehind.length === 0) logger.info?.('All root applications loaded');
+}
+
+async function installConfiguredApplication(
+	name: string,
+	applicationConfig: ApplicationConfig,
+	dirPath: string,
+	harperApplicationLockPath: string
+): Promise<void> {
+	try {
+		// Lock check: only install if not already installed with matching configuration
+		const installedConfig = (await readApplicationLock(harperApplicationLockPath)).applications[name];
+		if (
+			existsSync(dirPath) &&
+			installedConfig &&
+			JSON.stringify(installedConfig) === JSON.stringify(applicationConfig)
+		) {
+			logger.info?.(`Application ${name} is already installed with matching configuration; skipping installation`);
+			return;
+		}
+
+		// Resolve any credential references from the store so a cold install (fresh node, wiped
+		// components dir, new peer that never installed) can authenticate without the token being
+		// re-supplied. Best-effort: if custody isn't available yet or a referenced secret is
+		// missing, log and install without it (a truly private package then fails in npm with its
+		// own error) rather than blocking boot.
+		let credentials: ResolvedCredential[] | undefined;
+		if (applicationConfig.credentials?.length) {
+			try {
+				const { resolveCredentials } = await import('./secretOperations.ts');
+				credentials = await resolveCredentials(applicationConfig.credentials, name);
+			} catch (error) {
+				logger.warn?.(
+					`Could not resolve credentials for application ${name} at install time: ${(error as Error).message}`
+				);
+			}
+		}
+
+		const application = new Application({
+			name,
+			packageIdentifier: applicationConfig.package,
+			install: applicationConfig.install,
+			credentials,
+		});
+		// Once preparation is required, the old entry is no longer evidence of a complete
+		// installation. In particular, a failed reinstall may leave a partial directory behind;
+		// retaining the prior entry would make the next boot skip that partial component.
+		await recordApplicationPreparation(
+			name,
+			applicationConfig,
+			(clearEntry) => prepareApplication(application, { beforePrepare: clearEntry }),
+			(mutate) => updateApplicationLock(harperApplicationLockPath, mutate)
+		);
+	} catch (error) {
+		logger.error?.(`Failed to prepare application ${name}:`, errorForLog(error));
+		throw error;
+	}
 }
 
 type ApplicationLockFile = { applications: Record<string, ApplicationConfig> };
@@ -4766,26 +4796,23 @@ export function updateApplicationLock(
  * Each transition is durably awaited — not just applied in memory — so a crash mid-preparation can
  * never leave the on-disk lock file still claiming success for a directory a subsequent reinstall
  * left partially written (which would make `installApplications`'s already-installed check skip
- * the required reinstall forever).
+ * the required reinstall forever). `prepare` runs `clearEntry` under the component's preparation lock,
+ * so the removal cannot land before the success write of an earlier preparation still holding it.
  */
 export async function recordApplicationPreparation(
 	name: string,
 	applicationConfig: ApplicationConfig,
-	prepare: () => Promise<void>,
+	prepare: (clearEntry: () => Promise<void>) => Promise<void>,
 	updateLock: (mutate: ApplicationLockMutation) => Promise<void>
 ): Promise<void> {
-	try {
-		await updateLock((applications) => {
+	await prepare(() =>
+		updateLock((applications) => {
 			delete applications[name];
-		});
-		await prepare();
-		await updateLock((applications) => {
-			applications[name] = applicationConfig;
-		});
-	} catch (error) {
-		logger.error?.(`Failed to prepare application ${name}:`, errorForLog(error));
-		throw error;
-	}
+		})
+	);
+	await updateLock((applications) => {
+		applications[name] = applicationConfig;
+	});
 }
 
 /**

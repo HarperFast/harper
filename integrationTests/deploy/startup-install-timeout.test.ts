@@ -1,7 +1,3 @@
-/**
- * Startup waits for component preparation at most `deployment.startupInstallTimeout` (harper#2072); listeners
- * open only after that wait, so without the bound one install that never finishes keeps the whole node down.
- */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, match, ok, strictEqual } from 'node:assert';
 import { join } from 'node:path';
@@ -40,7 +36,6 @@ async function writeFixture(version: number, withInstallScript: boolean): Promis
 	return dir;
 }
 
-/** The install finishes once `release` exists, and appends a line to `starts` each time it begins. */
 async function createGate() {
 	const dir = await mkdtemp(join(tmpdir(), 'startup-install-gate-'));
 	const release = join(dir, 'release');
@@ -127,11 +122,11 @@ suite(
 			strictEqual((await probe(ctx)).status, 404, 'the component is not loaded');
 			match(
 				await readBootLog(ctx),
-				new RegExp(`Startup is no longer waiting for ${PROJECT}: its preparation has not finished`)
+				new RegExp(`Startup is no longer waiting for ${PROJECT}: its preparation is still running`)
 			);
 		});
 
-		test('a worker restart during the stall waits on the same install instead of starting another', async () => {
+		test('a worker restart during the stall neither starts a second install nor waits for the first', async () => {
 			await restartWorkers(ctx);
 			strictEqual(await gate.starts(), 1);
 			strictEqual(await getRestartRequired(ctx), false, 'nothing has finished yet');
