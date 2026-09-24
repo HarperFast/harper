@@ -420,7 +420,6 @@ describe('security/impersonation.ts', () => {
 
 			await applyImpersonation(su, { username: 'other_admin' });
 
-			// The stored role and its shared derived view must still have super_user: true
 			assert.strictEqual(userModule.getUserWithRole('other_admin').role.permission.super_user, true);
 		});
 

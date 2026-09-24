@@ -1,6 +1,5 @@
 import { threadId } from 'node:worker_threads';
 
-// Which worker served the request, and the principal authentication resolved there
 export class WhoAmI extends Resource {
 	static loadAsInstance = false;
 	allowRead() {
