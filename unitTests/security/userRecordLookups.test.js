@@ -10,6 +10,7 @@ const { Headers } = require('#src/server/serverHelpers/Headers');
 const user = require('#src/security/user');
 const { authentication } = require('#src/security/auth');
 const { registerLiveSubscription } = require('#src/server/liveSubscriptionAuth');
+const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
 
 const PASSWORD = 'lookup-password';
 const hashOf = (plain) => password.hash(plain, password.HASH_FUNCTION.SHA256);
@@ -126,6 +127,24 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			}
 		});
 
+		it('returns a user a resequenced write left on a reused version, and never treats it as current', async function () {
+			// only the RocksDB encoder keeps an out-of-order write under the existing version
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			await testUtils.seedUsers([lookupUser({ logins: 0 })]);
+			const now = Date.now();
+			const login = { logins: { __op__: 'add', value: 1 } };
+			await databases.system.hdb_user.patch('lookup_user', login, { timestamp: now + 100 });
+			// out of order: merged onto the newer record and stored under its version
+			await databases.system.hdb_user.patch('lookup_user', login, { timestamp: now + 50 });
+			const entry = databases.system.hdb_user.primaryStore.getEntry('lookup_user');
+			assert.ok(entry.metadataFlags & VERSION_REUSED, 'the record carries a reused version');
+			const found = user.getUserWithRole('lookup_user');
+			assert.strictEqual(found.role.id, 'lookup_role');
+			assert.strictEqual(user.isCurrentUser(found), false);
+			// later writes in this suite must not lose to the future timestamp
+			await new Promise((resolve) => setTimeout(resolve, 150));
+		});
+
 		it('re-checks the super user it remembered', async () => {
 			const remembered = await user.getSuperUser();
 			const superUserRoleId = remembered.role.id;
@@ -216,7 +235,8 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			assert.strictEqual((await authenticate(header)).user.role.permission.super_user, true);
 		});
 
-		it('drops a component-provided principal when a user or role changes', async () => {
+		it('re-resolves a component-provided principal once the records for its name change', async () => {
+			await testUtils.seedUsers([lookupUser()]);
 			const getUser = server.getUser;
 			let resolutions = 0;
 			server.getUser = async (username) => {
@@ -224,11 +244,11 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 				return { username, role: { role: 'component_role', permission: {} } };
 			};
 			try {
-				const header = basic('component_user', 'any');
+				const header = basic('lookup_user', 'any');
 				await authenticate(header);
 				await authenticate(header);
 				assert.strictEqual(resolutions, 1, 'the principal is cached');
-				await nextUserChange(() => testUtils.seedUsers([lookupUser()]));
+				await databases.system.hdb_user.put(lookupUser({ role: 'lookup_role', active: false }));
 				await authenticate(header);
 				assert.strictEqual(resolutions, 2);
 			} finally {

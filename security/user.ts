@@ -18,6 +18,8 @@ export {
 	findAndValidateUser,
 	getUserWithRole,
 	isCurrentUser,
+	userRecordVersions,
+	trackUserRecords,
 	onUserChange,
 	USERNAME_REQUIRED,
 	ALTERUSER_NOTHING_TO_UPDATE,
@@ -408,15 +410,24 @@ function readEntry(store, id): RecordEntry | undefined {
 	return entry?.value == null ? undefined : entry;
 }
 
-// A reused version no longer identifies one value (RecordEncoder.ts VERSION_REUSED)
-function holdsVersion(entry: RecordEntry | undefined, version: number | undefined): boolean {
-	if (entry === undefined || version === undefined) return entry === undefined && version === undefined;
-	return entry.version === version && !(entry.metadataFlags & VERSION_REUSED);
+/**
+ * What a later read must match to be the same committed record: null for no record, undefined when
+ * that cannot be told — a resequenced write reused the version (RecordEncoder.ts VERSION_REUSED).
+ * A record stored without metadata (harper#2012) has no version until it is next written.
+ */
+function versionOf(entry: RecordEntry | undefined): number | null | undefined {
+	if (entry === undefined) return null;
+	if (entry.metadataFlags & VERSION_REUSED) return undefined;
+	return entry.version ?? 0;
+}
+
+function holdsVersion(entry: RecordEntry | undefined, version: number | null | undefined): boolean {
+	return version !== undefined && versionOf(entry) === version;
 }
 
 // The verification table (RocksDB) confirms a version without a read; a miss there only means "read it"
-function isUnchanged(store, id, version: number | undefined): boolean {
-	if (version !== undefined && store.verifyVersion?.(id, version)) return true;
+function isUnchanged(store, id, version: number | null | undefined): boolean {
+	if (version && store.verifyVersion?.(id, version)) return true;
 	return holdsVersion(readEntry(store, id), version);
 }
 
@@ -430,14 +441,15 @@ function readUserEntries(username: string): UserEntries {
 		if (user?.value.role == null) return { user };
 		const role = readEntry(roleStore, user.value.role);
 		// RocksDB reads share no snapshot: a user unchanged since before its role was read held at that
-		// moment. A record stored without metadata has no version to re-check (harper#2012).
-		if (user.version === undefined || userStore.verifyVersion?.(username, user.version)) return { user, role };
-		const reread = readEntry(userStore, username);
-		if (holdsVersion(reread, user.version)) return { user, role };
-		user = reread;
+		// moment. A reused version cannot show that, and re-reading would not change it.
+		const version = versionOf(user);
+		if (version === undefined || isUnchanged(userStore, username, version)) return { user, role };
+		user = readEntry(userStore, username);
 	}
 }
 
+// a memo, so clearing it only costs recomputation; bounds it under role churn
+const MAX_DERIVED_ROLES = 1024;
 const derivedRoles = new Map<unknown, { version: number; role: UserRole }>();
 
 function derivedRole(roleId: unknown, entry: RecordEntry | undefined): UserRole | undefined {
@@ -448,18 +460,33 @@ function derivedRole(roleId: unknown, entry: RecordEntry | undefined): UserRole 
 	const derived = derivedRoles.get(roleId);
 	if (derived && holdsVersion(entry, derived.version)) return derived.role;
 	const role = withSystemTablePermissions(entry.value);
-	derivedRoles.set(roleId, { version: entry.version, role });
+	const version = versionOf(entry);
+	if (version === undefined) derivedRoles.delete(roleId);
+	else {
+		if (derivedRoles.size >= MAX_DERIVED_ROLES) derivedRoles.clear();
+		derivedRoles.set(roleId, { version, role });
+	}
 	return role;
 }
 
-// the record versions each user this module returns was built from
-const userProvenance = new WeakMap<User, UserProvenance>();
-
 interface UserProvenance {
 	username: string;
-	userVersion?: number;
+	userVersion: number | null | undefined;
 	roleId?: unknown;
-	roleVersion?: number;
+	roleVersion: number | null | undefined;
+}
+
+// users this module built, and users resolved elsewhere (a component's `server.getUser`) as tracked by the caller
+const userProvenance = new WeakMap<User, UserProvenance>();
+const trackedProvenance = new WeakMap<User, UserProvenance>();
+
+function provenanceOf(username: string, entries: UserEntries): UserProvenance {
+	return {
+		username,
+		userVersion: versionOf(entries.user),
+		roleId: entries.user?.value.role,
+		roleVersion: versionOf(entries.role),
+	};
 }
 
 function userView(username: string, entries: UserEntries): User {
@@ -469,12 +496,7 @@ function userView(username: string, entries: UserEntries): User {
 	const role = record && derivedRole(record.role, entries.role);
 	// verifyPerms replaces role.permission on the request's user; the derived role is shared
 	if (role) user.role = { ...role, permission: { ...role.permission } };
-	userProvenance.set(user, {
-		username,
-		userVersion: entries.user?.version,
-		roleId: record?.role,
-		roleVersion: entries.role?.version,
-	});
+	userProvenance.set(user, provenanceOf(username, entries));
 	return user;
 }
 
@@ -484,12 +506,25 @@ function getUserWithRole(username: string): User | undefined {
 	return entries.user && userView(username, entries);
 }
 
+/** The versions of `username`'s user and role records now, for `trackUserRecords`. */
+function userRecordVersions(username: string): UserProvenance {
+	return provenanceOf(username, readUserEntries(username));
+}
+
 /**
- * Whether the records a user returned by this module was built from are still the committed ones.
- * A user built elsewhere (a scoped token, a component's `server.getUser`) carries no provenance.
+ * Makes `isCurrentUser` check a user resolved outside this module against the record versions read
+ * before it was resolved; a write in between then shows as a change.
+ */
+function trackUserRecords(user: User, versions: UserProvenance): void {
+	if (user && typeof user === 'object' && !userProvenance.has(user)) trackedProvenance.set(user, versions);
+}
+
+/**
+ * Whether the user and role records a user was built from are still the committed ones. A user with
+ * no recorded versions (a scoped token, whose role it carries itself) is current.
  */
 function isCurrentUser(user: User): boolean {
-	const provenance = userProvenance.get(user);
+	const provenance = userProvenance.get(user) ?? trackedProvenance.get(user);
 	if (!provenance) return true;
 	if (!isUnchanged(systemStore(USER_TABLE_NAME), provenance.username, provenance.userVersion)) return false;
 	return (
@@ -566,6 +601,9 @@ const userChangeListeners: Array<() => void | Promise<void>> = [];
 const userChangeSubscriptions = new Map<string, { table: any; subscription: Promise<any> }>();
 let userChangeNotificationScheduled = false;
 let unauditedUserTableLogged = false;
+const SUBSCRIBE_RETRY_MIN_MS = 1000;
+const SUBSCRIBE_RETRY_MAX_MS = 60_000;
+let subscribeRetryDelay = SUBSCRIBE_RETRY_MIN_MS;
 
 /**
  * Calls `listener` on this thread after `system.hdb_user` or `system.hdb_role` changes, from any thread
@@ -609,11 +647,18 @@ function subscribeToUserChanges(table): void {
 		table.subscribe({ listener: scheduleUserChangeNotification, omitCurrent: true })
 	);
 	userChangeSubscriptions.set(tableName, { table, subscription });
-	subscription.catch((error) => {
-		if (userChangeSubscriptions.get(tableName)?.subscription === subscription)
+	subscription.then(
+		() => (subscribeRetryDelay = SUBSCRIBE_RETRY_MIN_MS),
+		(error) => {
+			if (userChangeSubscriptions.get(tableName)?.subscription !== subscription) return;
 			userChangeSubscriptions.delete(tableName);
-		logger.error(`Failed to subscribe to system.${tableName} for user changes`, error);
-	});
+			logger.error(`Failed to subscribe to system.${tableName} for user changes; retrying`, error);
+			setTimeout(() => {
+				if (databases.system?.[tableName] === table) subscribeToUserChanges(table);
+			}, subscribeRetryDelay).unref();
+			subscribeRetryDelay = Math.min(subscribeRetryDelay * 2, SUBSCRIBE_RETRY_MAX_MS);
+		}
+	);
 }
 
 function scheduleUserChangeNotification(): void {

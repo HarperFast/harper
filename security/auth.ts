@@ -1,4 +1,4 @@
-import { getSuperUser, isCurrentUser, onUserChange } from './user.ts';
+import { getSuperUser, isCurrentUser, trackUserRecords, userRecordVersions } from './user.ts';
 import { server } from '../server/Server.ts';
 import { resources } from '../resources/Resources.ts';
 import { validateOperationToken, validateRefreshToken, validateLoginToken, decodeJWT } from './tokenAuthentication.ts';
@@ -60,10 +60,6 @@ const DEFAULT_COOKIE_EXPIRES = 'Tue, 01 Oct 8307 19:33:20 GMT';
 let authorizationCache = new Map();
 server.onInvalidatedUser(() => {
 	// TODO: Eventually we probably want to be able to invalidate individual users
-	authorizationCache = new Map();
-});
-// A component's server.getUser principal has no record provenance for the per-hit isCurrentUser check
-onUserChange(() => {
 	authorizationCache = new Map();
 });
 let bypassUser: any;
@@ -262,7 +258,12 @@ export async function authentication(request, nextHandler) {
 							username = decoded.slice(0, colonIndex);
 							password = decoded.slice(colonIndex + 1);
 							// legacy support for passing in blank username and password to indicate no auth
-							newUser = username || password ? await server.getUser(username, password, request) : null;
+							if (username || password) {
+								// read first: a component's server.getUser principal carries no record versions itself
+								const versions = userRecordVersions(username);
+								newUser = await server.getUser(username, password, request);
+								trackUserRecords(newUser, versions);
+							} else newUser = null;
 							break;
 						case 'Bearer':
 							try {
