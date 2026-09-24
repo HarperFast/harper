@@ -171,8 +171,7 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 
 		it('treats a username over the LMDB key-size limit as unauthenticatable, not an internal fault', () => {
 			assert.strictEqual(user.getUserWithRole('x'.repeat(2000)), undefined);
-			// ordered-binary escapes low control characters to 2 bytes each, so UTF-8 byte length alone
-			// would pass this well under the limit while the encoded key exceeds it
+			// ordered-binary escapes U+0000-U+0003 to two bytes each: 1000 characters here encode past the key limit
 			assert.strictEqual(user.getUserWithRole('\u0001'.repeat(1000)), undefined);
 		});
 
