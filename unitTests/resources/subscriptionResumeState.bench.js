@@ -10,7 +10,8 @@ function measure(count, pattern) {
 		let timestamp = 1000 + i;
 		if (pattern === 'silent mix') origin = i % Math.ceil(count / 2);
 		if (pattern === 'bursty') origin = Math.floor(i / 250) % count;
-		if (pattern === 'skew' && origin === count - 1) timestamp -= 500;
+		if (pattern === 'lagging skew' && origin === count - 1) timestamp -= 500;
+		if (pattern === 'leading skew' && origin === count - 1) timestamp += 500;
 		state.recordTransaction(origins[origin], timestamp);
 		const checkpoint = state.checkpoint();
 		if (checkpoint.resumeState) {
@@ -32,7 +33,8 @@ describe('subscription resume state wire cost', () => {
 	it('reports token updates and bytes for common traffic patterns', () => {
 		const rows = [];
 		for (const count of [5, 20]) {
-			for (const pattern of ['steady active', 'silent mix', 'bursty', 'skew']) rows.push(measure(count, pattern));
+			for (const pattern of ['steady active', 'silent mix', 'bursty', 'lagging skew', 'leading skew'])
+				rows.push(measure(count, pattern));
 		}
 		console.table(rows);
 	});

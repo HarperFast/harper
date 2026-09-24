@@ -21,6 +21,15 @@ export class SubscriptionResumeError extends Error {
 	}
 }
 
+export class SubscriptionResumeBusyError extends Error {
+	readonly retryable = true;
+	readonly resyncRequired = false;
+	constructor() {
+		super('Subscription resume validation is already running; retry later');
+		this.name = 'SubscriptionResumeBusyError';
+	}
+}
+
 export function validateResumeTimestamp(timestamp: number): void {
 	if (!Number.isFinite(timestamp) || timestamp <= 0 || timestamp > 8.64e15)
 		throw new TypeError('A resume transaction timestamp must be finite, positive, and within the date range');

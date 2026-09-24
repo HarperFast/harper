@@ -179,7 +179,8 @@ describe('compact subscription resume over real physical logs', () => {
 		await assert.rejects(open(corrupt, checkpoint([['a', 100]])), /unreadable/);
 		const replaced = database();
 		await append(replaced, 'local', 100, ['reload'], 'reload');
-		await assert.rejects(open(replaced, checkpoint([['a', 100]])), /replaced state/);
+		const replacedReader = await open(replaced, checkpoint([['a', 100]]));
+		assert.throws(() => [...replacedReader], /replaced state/);
 	});
 
 	it('invalidates an open iterator on new logs or a reload, and can be closed repeatedly', async () => {
@@ -189,14 +190,57 @@ describe('compact subscription resume over real physical logs', () => {
 		assert.strictEqual([...reader].length, 1);
 		await append(store, 'new-origin', 101);
 		assert.throws(() => reader.next(), /membership changed/);
-		assert.strictEqual(reader.next().done, true);
+		assert.throws(() => reader.next(), /membership changed/);
 		reader.return();
+		assert.strictEqual(reader.next().done, true);
 		const other = database();
 		await append(other, 'local', 100);
 		const second = await open(other, checkpoint([['a', 100]]));
 		assert.strictEqual([...second].length, 1);
 		await append(other, 'local', 101, ['reload'], 'reload');
 		assert.throws(() => second.next(), /replaced state/);
+	});
+
+	it('allows an acknowledged reload before the replay anchor', async () => {
+		const store = database();
+		await append(store, 'local', 10, ['reload'], 'reload');
+		await append(store, 'local', 100);
+		assert.deepStrictEqual(
+			[
+				...(await open(
+					store,
+					checkpoint([
+						['a', 10],
+						['a', 100],
+					])
+				)),
+			].map((entry) => entry.txnLogKey),
+			[100]
+		);
+	});
+
+	it('demonstrates why a newer startTime must not be persisted with an older fingerprint', async () => {
+		const store = database();
+		const state = new SubscriptionResumeState(options);
+		for (const [origin, timestamp] of [
+			['a', 50],
+			['b', 55],
+		]) {
+			await append(store, origin === 'a' ? 'local' : origin, timestamp);
+			state.recordTransaction(origin, timestamp);
+		}
+		const previous = state.checkpoint();
+		await append(store, 'b', 70);
+		state.recordTransaction('b', 70);
+		const current = state.checkpoint();
+		await append(store, 'local', 40);
+		await append(store, 'local', 65);
+		await assert.rejects(open(store, current), /does not match/);
+		const mixed = await open(store, { startTime: current.startTime, resumeState: previous.resumeState });
+		assert.deepStrictEqual(
+			[...mixed].map((entry) => entry.txnLogKey),
+			[65, 70]
+		);
 	});
 
 	it('bounds scan work and releases admission after rejection or cancellation', async () => {
@@ -211,7 +255,7 @@ describe('compact subscription resume over real physical logs', () => {
 		await assert.rejects(open(store, saved, { ...options, maxEntries: 100 }), /budget exceeded/);
 		const controller = new AbortController();
 		const pending = open(store, saved, { ...options, signal: controller.signal });
-		await assert.rejects(open(store, saved), /already running/);
+		await assert.rejects(open(store, saved), { retryable: true, resyncRequired: false });
 		controller.abort();
 		await assert.rejects(pending, { name: 'AbortError' });
 		assert.strictEqual([...(await open(store, saved))].length, 1100);

@@ -3,6 +3,7 @@ import type { AuditRecord } from './auditStore.ts';
 import type { RocksTransactionLogStore, TransactionLogIterable } from './RocksTransactionLogStore.ts';
 import {
 	SubscriptionResumeError,
+	SubscriptionResumeBusyError,
 	SubscriptionResumeState,
 	subscriptionResumeFingerprint,
 	validateResumeTimestamp,
@@ -24,10 +25,14 @@ function checkRange(range: TransactionLogIterable): void {
 		throw new SubscriptionResumeError('transaction log history is incomplete or unreadable');
 }
 
-function checkEntry(entry: AuditRecord): void {
-	if (!entry.type || entry.type === 'reload')
+function checkEntry(entry: AuditRecord, allowReload = false): void {
+	if (!entry.type || (!allowReload && entry.type === 'reload'))
 		throw new SubscriptionResumeError('transaction log contains unreadable or replaced state');
-	validateResumeTimestamp(entry.txnLogKey);
+	try {
+		validateResumeTimestamp(entry.txnLogKey);
+	} catch {
+		throw new SubscriptionResumeError('invalid transaction timestamp');
+	}
 }
 
 function checkHistory(store: RocksTransactionLogStore, origins: Set<string>, localNodeName: string): string[] {
@@ -44,7 +49,7 @@ function checkHistory(store: RocksTransactionLogStore, origins: Set<string>, loc
 	return names.sort();
 }
 
-/** Internal prototype: caller must establish common physical history, authorize, and own snapshot/live handoff. */
+/** Caller must establish common physical history, authorize, and own snapshot/live handoff. */
 export async function openSubscriptionResumeLog(
 	store: RocksTransactionLogStore,
 	options: SubscriptionResumeLogOptions
@@ -60,7 +65,7 @@ export async function openSubscriptionResumeLog(
 	const maxEntries = options.maxEntries ?? 100_000;
 	if (!Number.isSafeInteger(maxEntries) || maxEntries <= 0)
 		throw new TypeError('maxEntries must be a positive integer');
-	if (scanning.has(store.rootStore)) throw new SubscriptionResumeError('resume validation is already running');
+	if (scanning.has(store.rootStore)) throw new SubscriptionResumeBusyError();
 	signal?.throwIfAborted();
 	const originSet = new Set(origins);
 	const names = checkHistory(store, originSet, options.localNodeName);
@@ -82,7 +87,7 @@ export async function openSubscriptionResumeLog(
 			for (let result = iterator.next(); !result.done; result = iterator.next()) {
 				if (++inspected > maxEntries) throw new SubscriptionResumeError('resume validation entry budget exceeded');
 				const entry = result.value;
-				checkEntry(entry);
+				checkEntry(entry, true);
 				if (pending !== undefined && pending !== entry.txnLogKey)
 					throw new SubscriptionResumeError('incomplete transaction');
 				pending = entry.txnLogKey;
@@ -119,11 +124,13 @@ export async function openSubscriptionResumeLog(
 		const replayIterator = iterator;
 		const pending = new Map<string, number>();
 		let closed = false;
+		let failure: { error: unknown } | undefined;
 		const reader: IterableIterator<AuditRecord> = {
 			[Symbol.iterator]() {
 				return this;
 			},
 			next() {
+				if (failure) throw failure.error;
 				if (closed) return { done: true, value: undefined };
 				try {
 					signal?.throwIfAborted();
@@ -144,13 +151,19 @@ export async function openSubscriptionResumeLog(
 					else pending.set(entry.logName, entry.txnLogKey);
 					return result;
 				} catch (error) {
-					reader.return();
+					try {
+						reader.return();
+					} finally {
+						failure = { error };
+					}
 					throw error;
 				}
 			},
 			return() {
-				if (!closed) replayIterator.return?.();
+				const shouldClose = !closed;
 				closed = true;
+				failure = undefined;
+				if (shouldClose) replayIterator.return?.();
 				return { done: true, value: undefined };
 			},
 		};
