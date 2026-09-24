@@ -117,12 +117,14 @@ export async function openSubscriptionResumeLog(
 		if (JSON.stringify(checkHistory(store, originSet, options.localNodeName)) !== registry)
 			throw new SubscriptionResumeError('transaction log membership changed during validation');
 		signal?.throwIfAborted();
+		for (const name of names) store.ensureLogExists(name);
 		range = store.getRange({ startByLog: anchors, exactStart: true, exclusiveStart: false, includeLogName: true });
 		iterator = range[Symbol.iterator]();
 		checkRange(range);
 		const replayRange = range;
 		const replayIterator = iterator;
 		const pending = new Map<string, number>();
+		const acknowledgedAnchors = new Map(anchors);
 		let closed = false;
 		let failure: { error: unknown } | undefined;
 		const reader: IterableIterator<AuditRecord> = {
@@ -143,12 +145,14 @@ export async function openSubscriptionResumeLog(
 						return result;
 					}
 					const entry = result.value;
-					checkEntry(entry);
+					checkEntry(entry, acknowledgedAnchors.get(entry.logName) === entry.txnLogKey);
 					const previous = pending.get(entry.logName);
 					if (previous !== undefined && previous !== entry.txnLogKey)
 						throw new SubscriptionResumeError('incomplete transaction');
-					if (entry.endTxn) pending.delete(entry.logName);
-					else pending.set(entry.logName, entry.txnLogKey);
+					if (entry.endTxn) {
+						pending.delete(entry.logName);
+						acknowledgedAnchors.delete(entry.logName);
+					} else pending.set(entry.logName, entry.txnLogKey);
 					return result;
 				} catch (error) {
 					try {

@@ -84,6 +84,36 @@ describe('compact subscription resume over real physical logs', () => {
 		);
 	});
 
+	it('replays validated logs even when their registration event has not arrived', async () => {
+		for (const timestamp of [40, 200]) {
+			const store = database();
+			await append(store, 'local', 100);
+			const on = store.rootStore.on;
+			store.rootStore.on = function (event, listener) {
+				if (event !== 'new-transaction-log') return on.call(this, event, listener);
+			};
+			try {
+				assert.strictEqual([...store.getRange({ start: 0 })].length, 1);
+			} finally {
+				store.rootStore.on = on;
+			}
+			await append(store, 'b', timestamp);
+			assert.strictEqual(store.logByName.has('b'), false);
+			const saved = checkpoint(
+				timestamp < 100
+					? [
+							['a', 100],
+							['b', timestamp],
+						]
+					: [['a', 100]]
+			);
+			assert.deepStrictEqual(
+				[...(await open(store, saved))].map((entry) => entry.txnLogKey),
+				[100, timestamp].sort((a, b) => a - b)
+			);
+		}
+	});
+
 	it('keeps an origin active after its last physical transaction regresses', async () => {
 		const store = database();
 		await append(store, 'local', 100);
@@ -178,7 +208,8 @@ describe('compact subscription resume over real physical logs', () => {
 		});
 		await assert.rejects(open(corrupt, checkpoint([['a', 100]])), /unreadable/);
 		const replaced = database();
-		await append(replaced, 'local', 100, ['reload'], 'reload');
+		await append(replaced, 'local', 100);
+		await append(replaced, 'local', 101, ['reload'], 'reload');
 		const replacedReader = await open(replaced, checkpoint([['a', 100]]));
 		assert.throws(() => [...replacedReader], /replaced state/);
 	});
@@ -217,6 +248,27 @@ describe('compact subscription resume over real physical logs', () => {
 			].map((entry) => entry.txnLogKey),
 			[100]
 		);
+	});
+
+	it('allows an acknowledged reload anchor but rejects later backdated reloads', async () => {
+		for (const timestamp of [5, 10]) {
+			const store = database();
+			await append(store, 'local', 10, ['reload'], 'reload');
+			await append(store, 'b', 100);
+			const reader = await open(
+				store,
+				checkpoint([
+					['a', 10],
+					['b', 100],
+				])
+			);
+			assert.deepStrictEqual(
+				[...reader].map((entry) => entry.txnLogKey),
+				[10, 100]
+			);
+			await append(store, 'local', timestamp, ['reload-again'], 'reload');
+			assert.throws(() => [...reader], /replaced state/);
+		}
 	});
 
 	it('demonstrates why a newer startTime must not be persisted with an older fingerprint', async () => {

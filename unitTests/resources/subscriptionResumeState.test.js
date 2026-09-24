@@ -141,7 +141,7 @@ describe('compact subscription resume state', () => {
 		for (const historyId of ['', null, undefined, 123]) {
 			assert.throws(() => tracker({ historyId }), TypeError);
 		}
-		for (const window of [0, -1, NaN, Infinity, -Infinity, '10', null]) {
+		for (const window of [0, -1, 0.5, 17872084411267.645, NaN, Infinity, -Infinity, '10', null]) {
 			assert.throws(() => tracker({ window }), TypeError);
 		}
 		const state = tracker();
@@ -163,6 +163,17 @@ describe('compact subscription resume state', () => {
 		assert.equal(state.checkpoint().startTime, 0);
 		state.recordTransaction('a', 100.125);
 		assert.equal(state.checkpoint().startTime, 90.125);
+	});
+
+	it('reconstructs the upper bound exactly for fractional timestamps and integral windows', () => {
+		for (const timestamp of [100.125, 53971999079880.664, 63159691962114.4, 87163152496429.39, 8.64e15]) {
+			for (const window of [1, 10, 17872084411267]) {
+				const state = tracker({ window });
+				state.recordTransaction('a', timestamp);
+				const { startTime } = state.checkpoint();
+				assert.equal(startTime + window, Math.max(timestamp, window));
+			}
+		}
 	});
 
 	it('never reconstructs an inclusive anchor beyond a delivered prefix in an exhaustive unordered model', () => {

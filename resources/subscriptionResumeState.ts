@@ -60,6 +60,7 @@ export class SubscriptionResumeState {
 		if (typeof historyId !== 'string' || !historyId.length)
 			throw new TypeError('A subscription resume history identity is required');
 		validateResumeTimestamp(window);
+		if (!Number.isSafeInteger(window)) throw new TypeError('The resume window must be whole milliseconds');
 		this.#historyId = historyId;
 		this.#window = window;
 		for (const origin of Array.from(origins).sort()) {
