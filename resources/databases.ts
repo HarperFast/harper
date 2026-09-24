@@ -4760,7 +4760,12 @@ function completeInterruptedDrop(
 		(bareEntry?.value?.isPrimaryKey ? bareEntry : undefined) ?? catalogRows.find(({ value }) => value?.isPrimaryKey);
 	const tombstoneEntry = bareEntry ?? primaryEntry;
 	if (rootStore instanceof RocksDatabase && !fullTextRetired) {
-		const names = persistedFullTextIndexNames(primaryEntry?.value?.fullTextIndexes);
+		const names = [
+			...new Set([
+				...persistedFullTextIndexNames(primaryEntry?.value?.fullTextIndexes),
+				...persistedFullTextIndexNames(primaryEntry?.value?.fullTextIndexRetirements),
+			]),
+		];
 		if (names.length > 0) {
 			const releaseRetirement = acquireFullTextRetirementFence(rootStore, tableName);
 			if (releaseRetirement) {

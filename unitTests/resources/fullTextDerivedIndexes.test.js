@@ -1066,6 +1066,50 @@ describe('@fullText derived-index activation', () => {
 		assert(binding.resets.some((options) => options.path === opened.path && options.indexId === opened.indexId));
 	});
 
+	rocksOnly('does not let a failed retirement-journal update poison database close', async () => {
+		const database = `fulltext-retirement-completion-failure-${Date.now()}`;
+		const attributes = () => [
+			{ name: 'id', type: 'ID', isPrimaryKey: true },
+			{ name: 'title', type: 'String' },
+			{ name: 'tags', type: 'array', elements: { type: 'String' } },
+		];
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: attributes(),
+			fullTextIndexes: [definition()],
+		});
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+		const runtime = Product.derivedIndexRuntime;
+		Product.derivedIndexRuntime = undefined;
+		await runtime.close();
+		const primaryKey = `${Product.tableName}/`;
+		const descriptor = Product.dbisDB.getSync(primaryKey);
+		const retirementDescriptor = { ...descriptor, fullTextIndexRetirements: [{ name: 'search' }] };
+		delete retirementDescriptor.fullTextIndexes;
+		delete retirementDescriptor.fullTextIndexGenerations;
+		Product.dbisDB.putSync(primaryKey, retirementDescriptor);
+		Product.fullTextIndexes = [];
+		Product.fullTextIndexGenerations = {};
+		Product.fullTextIndexRetirements = ['search'];
+		const completeRetirements = Product.completeFullTextIndexRetirements;
+		Product.completeFullTextIndexRetirements = () => {
+			throw new Error('injected retirement-journal update failure');
+		};
+		try {
+			refreshDerivedIndexes(Product);
+			await waitFor(() => Product.derivedIndexRuntime?.matchesCurrent?.() === false, 30_000);
+		} finally {
+			Product.completeFullTextIndexRetirements = completeRetirements;
+		}
+
+		assert.strictEqual(await closeDatabase(database), true);
+		Product = undefined;
+		Product = table({ database, table: 'Product', audit: true, attributes: attributes(), fullTextIndexes: [] });
+		await waitFor(() => !Product.dbisDB.getSync(primaryKey)?.fullTextIndexRetirements, 30_000);
+	});
+
 	rocksOnly('retires native storage after a successful table drop', async () => {
 		Product = table({
 			database: `fulltext-drop-${Date.now()}`,
@@ -1194,7 +1238,7 @@ describe('@fullText derived-index activation', () => {
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
 	});
 
-	rocksOnly('retires native storage before completing an interrupted drop', async () => {
+	rocksOnly('retires pending native storage before completing an interrupted drop', async () => {
 		const database = `fulltext-interrupted-drop-${Date.now()}`;
 		const tableOptions = () => ({
 			database,
@@ -1215,11 +1259,15 @@ describe('@fullText derived-index activation', () => {
 		const rootStore = Product.primaryStore.rootStore;
 		const primaryKey = `${Product.tableName}/`;
 		const descriptor = Product.dbisDB.getSync(primaryKey);
-		Product.dbisDB.putSync(primaryKey, {
+		const tombstone = {
 			...descriptor,
+			fullTextIndexRetirements: [{ name: 'search' }],
 			dropping: true,
 			dropGeneration: descriptor.generation,
-		});
+		};
+		delete tombstone.fullTextIndexes;
+		delete tombstone.fullTextIndexGenerations;
+		Product.dbisDB.putSync(primaryKey, tombstone);
 		delete databases[database].Product;
 		let finishReset;
 		binding.resetWait = new Promise((resolve) => {

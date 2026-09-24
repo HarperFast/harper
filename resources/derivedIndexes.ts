@@ -294,12 +294,19 @@ export function attachDerivedIndexes(
 		Table,
 		fullTextRetirementNames,
 		() => !closing && registered.tables.get(Table.tableId)?.current === installed
-	).then((completed) => {
-		if (completed) fullTextRetirementSnapshot = JSON.stringify(Table.fullTextIndexRetirements ?? []);
-		else fullTextRetirementRecoveryFailed = true;
-	});
-	persistedRetirementOperation.catch((error) =>
-		fullTextLogger.warn?.(`Could not resume full-text retirement for ${Table.databaseName}.${Table.tableName}`, error)
+	);
+	const persistedRetirementSettlement = persistedRetirementOperation.then(
+		(completed) => {
+			if (completed) fullTextRetirementSnapshot = JSON.stringify(Table.fullTextIndexRetirements ?? []);
+			else fullTextRetirementRecoveryFailed = true;
+		},
+		(error) => {
+			fullTextRetirementRecoveryFailed = true;
+			fullTextLogger.warn?.(
+				`Could not resume full-text retirement for ${Table.databaseName}.${Table.tableName}`,
+				error
+			);
+		}
 	);
 	const hnswSnapshot = attributes.map((attribute: any) => ({
 		name: attribute.name,
@@ -529,7 +536,7 @@ export function attachDerivedIndexes(
 							const retired = await retireFullTextIndexes(Table, removedDefinitions);
 							if (retired) await Table.completeFullTextIndexRetirements?.(removedDefinitions.map(({ name }) => name));
 						} else if (waitForPeerRetirement) await waitForPeerRetirement;
-						await persistedRetirementOperation;
+						await persistedRetirementSettlement;
 						releaseRegistration();
 					}
 				} finally {
@@ -708,21 +715,22 @@ function attachFullTextRetirementRecovery(Table: any, names: readonly string[]):
 	let closing = false;
 	let settled = false;
 	const operation = resumePersistedFullTextRetirements(Table, names, () => !closing);
-	void operation.then(
+	const settlement = operation.then(
 		() => {
 			settled = true;
 		},
-		() => {
+		(error) => {
 			settled = true;
+			fullTextLogger.warn?.(
+				`Could not resume full-text retirement for ${Table.databaseName}.${Table.tableName}`,
+				error
+			);
 		}
-	);
-	operation.catch((error) =>
-		fullTextLogger.warn?.(`Could not resume full-text retirement for ${Table.databaseName}.${Table.tableName}`, error)
 	);
 	return {
 		async close() {
 			closing = true;
-			await operation;
+			await settlement;
 		},
 		hasFullTextIndexes() {
 			return false;
