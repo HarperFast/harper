@@ -588,8 +588,7 @@ describe('mcp/tools/operations — handler dispatch', () => {
 });
 
 describe('mcp/tools/operations — structuredContent is a spec-legal record', () => {
-	// Asserted against the SDK's own schema rather than a hand-written shape, so these
-	// track the spec instead of drifting from it.
+	// Asserted against the SDK's own schema so these track the spec rather than drifting.
 	const { CallToolResultSchema } = require('@modelcontextprotocol/sdk/types.js');
 
 	function assertSpecLegal(res) {
@@ -636,14 +635,10 @@ describe('mcp/tools/operations — structuredContent is a spec-legal record', ()
 		assert.equal(res.isError, undefined);
 		assert.deepEqual(res.structuredContent, { results: rows });
 		assertSpecLegal(res);
-		// The text frame is the client-facing payload and must stay verbatim —
-		// the wrapper exists only to satisfy structuredContent's record contract.
 		assert.deepEqual(JSON.parse(res.content[0].text), rows);
 	});
 
 	it('wraps the array-returning operations on the DEFAULT allow surface', async () => {
-		// Not just the opted-in `sql`: these are default-allowed and array-shaped,
-		// so the bug broke a clean Harper boot for a spec-compliant client.
 		for (const operationName of ['list_users', 'list_roles', 'get_job', 'search_by_value']) {
 			_resetRegistryForTest();
 			const payload = [{ n: operationName }];
@@ -662,8 +657,6 @@ describe('mcp/tools/operations — structuredContent is a spec-legal record', ()
 	});
 
 	it('omits structuredContent for a payload with no object form', async () => {
-		// The field is optional; omitting it is the spec-legal way to say "no
-		// structured view". Emitting a scalar fails the call the same way an array does.
 		for (const value of ['just a message', 42, true, new Date('2020-01-01T00:00:00Z')]) {
 			_resetRegistryForTest();
 			const res = await callReturning('system_information', value);
