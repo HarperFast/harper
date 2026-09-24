@@ -53,7 +53,7 @@ import {
 } from '../customResourceRegistry.ts';
 import { notifyPromptsListChanged, notifyResourcesListChanged, notifyToolsListChanged } from '../listChanged.ts';
 import { decodeCursor, encodeCursor } from '../pagination.ts';
-import { wrapToolResult } from './results.ts';
+import { serializesToArray, wrapToolResult } from './results.ts';
 import {
 	type AttributePermissionEntry,
 	type HarperAttribute,
@@ -496,7 +496,9 @@ function rejectArrayForSchemaBearingVerb(
 	data: unknown,
 	ResourceClass: ResourceClassLike
 ): ToolResult | undefined {
-	if (!Array.isArray(data)) return undefined;
+	// Classified the same way `wrapToolResult` classifies it: a `toJSON` returning an array
+	// reaches the wire as `{ results }` just like a bare array does.
+	if (!serializesToArray(data)) return undefined;
 	if (hasAuthoredOutputSchema(ResourceClass, verb)) return undefined;
 	const message =
 		`${toolName} resolved to an array, but the tool advertises an object outputSchema. ` +
