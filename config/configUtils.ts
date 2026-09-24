@@ -1009,6 +1009,26 @@ function findUnrecognizedParams(args: object): string[] {
 }
 
 /**
+ * The root config file a rewrite reads AND writes: the one boot reads, whenever it exists. Deriving the path
+ * from the document's `rootPath` instead put the result where boot does not look — on a layout whose config
+ * file is named by the boot props rather than sitting at its root, and after any change to `rootPath` itself —
+ * and made the file written differ from the one the root-config publication lock is keyed by. The derived path
+ * remains the fallback for install-time callers, which can run before the boot props naming the file exist.
+ */
+function configFileToRewrite(hdbRoot: string): string {
+	let bootConfigFilePath: string | undefined;
+	try {
+		bootConfigFilePath = getConfigFilePath();
+	} catch {}
+	if (bootConfigFilePath && fs.existsSync(bootConfigFilePath)) return bootConfigFilePath;
+	const configFilePath = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
+	if (!fs.existsSync(configFilePath) && fs.existsSync(path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE))) {
+		return path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE);
+	}
+	return configFilePath;
+}
+
+/**
  * Updates and validates a config value in config file. Can also create a backup of config before updating.
  * @param param - the config value to update
  * @param value - the value to set the config to
@@ -1028,14 +1048,8 @@ export function updateConfigValue(
 		initConfig();
 	}
 
-	// Old root/path is used just in case they are updating the operations api root.
-	const oldHdbRoot = getConfigValue(CONFIG_PARAM_MAP.hdb_root);
-	let oldConfigPath = path.join(oldHdbRoot, hdbTerms.HARPER_CONFIG_FILE);
-	if (!fs.existsSync(oldConfigPath) && fs.existsSync(path.join(oldHdbRoot, hdbTerms.HDB_CONFIG_FILE))) {
-		oldConfigPath = path.join(oldHdbRoot, hdbTerms.HDB_CONFIG_FILE);
-	}
-
-	const configDoc = parseYamlDoc(oldConfigPath);
+	const configFilePath = configFileToRewrite(getConfigValue(CONFIG_PARAM_MAP.hdb_root));
+	const configDoc = parseYamlDoc(configFilePath);
 	let schemasArgs;
 
 	// Don't do the update if the values are the same.
@@ -1152,14 +1166,10 @@ export function updateConfigValue(
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(configDoc);
 	const hdbRoot = configDoc.getIn(['rootPath']) as string;
-	let configFileLocation = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
-	if (!fs.existsSync(configFileLocation) && fs.existsSync(path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE))) {
-		configFileLocation = path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE);
-	}
 
 	if (createBackup === true) {
 		// Creates a backup of config before new config is written to disk.
-		backupConfigFile(oldConfigPath, hdbRoot);
+		backupConfigFile(configFilePath, hdbRoot);
 	}
 
 	if (configDoc.errors?.length > 0) {
@@ -1169,7 +1179,7 @@ export function updateConfigValue(
 			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
 		);
 	}
-	atomicWriteFile(configFileLocation, String(configDoc));
+	atomicWriteFile(configFilePath, String(configDoc));
 	if (update_config_obj) {
 		flatConfigObj = setActiveConfig(configDoc.toJSON());
 	}
