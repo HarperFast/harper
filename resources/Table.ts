@@ -412,14 +412,13 @@ export function makeTable(options) {
 					const id = event.id;
 					// Marked before any await, so a transaction's first write is seen where transaction() returns
 					if (
-						sourceWriteTypes.has(event.type) &&
 						databaseName === SYSTEM_SCHEMA_NAME &&
 						(event.table === SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME ||
 							event.table === SYSTEM_TABLE_NAMES.USER_TABLE_NAME) &&
+						sourceWriteTypes.has(event.type) &&
 						!context[USER_ROLE_WRITE]
 					) {
 						context[USER_ROLE_WRITE] = true;
-						// a later write into an open begin_txn, whose commit is already assigned
 						if (context.committed) signalUserChangeOnCommit(context.committed);
 					}
 					const resource: TableResource = await Table.getResource(id, context, options);
