@@ -573,6 +573,7 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 		if (AfterPeer.dbisDB.committed) await AfterPeer.dbisDB.committed;
 		assert.deepStrictEqual(AfterPeer.fullTextIndexes, []);
 		assert.strictEqual(primaryDescriptor(AfterPeer).fullTextIndexes[0].name, 'search');
+		assert.match(primaryDescriptor(AfterPeer).fullTextIndexGenerations.search, /^[0-9a-f-]+$/);
 	});
 });
 
@@ -603,6 +604,7 @@ lmdbDescribe('@fullText LMDB eligibility', () => {
 		if (Peer.dbisDB.committed) await Peer.dbisDB.committed;
 		assert.deepStrictEqual(Peer.fullTextIndexes, []);
 		assert.strictEqual(primaryDescriptor(Peer).fullTextIndexes[0].name, 'search');
+		assert.match(primaryDescriptor(Peer).fullTextIndexGenerations.search, /^[0-9a-f-]+$/);
 
 		let transactionOwner = Peer.primaryStore.rootStore;
 		while (transactionOwner && !Object.hasOwn(transactionOwner, 'transactionSync'))

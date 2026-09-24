@@ -188,6 +188,10 @@ export type DerivedIndexRegistration = {
 	backend: DerivedIndexBackend;
 	projections: ReadonlyMap<number, (record: unknown) => unknown>;
 	options?: DerivedIndexRunnerOptions;
+	/** Shared readiness identity when it must be narrower than the stable backend/lock identity. */
+	readinessId?: string;
+	/** False once this table generation has been superseded. Must be synchronous and allocation-free. */
+	isCurrent?: () => boolean;
 };
 
 /**
@@ -246,6 +250,9 @@ const READINESS_STATES: DerivedIndexReadinessState[] = [
 	'needs-rebuild',
 	'unavailable',
 ];
+// Single-word sentinels keep compound setup/retry states from interleaving with a peer publication.
+const READINESS_BACKEND_FAILED = READINESS_STATES.length;
+const READINESS_RETRYING = READINESS_BACKEND_FAILED + 1;
 const READINESS_REASONS: DerivedIndexReadinessReason[] = [
 	'none',
 	'cursor-missing',
@@ -333,6 +340,7 @@ export class DerivedIndexRuntime {
 			this.#listening = true;
 		}
 		runner.wake(true);
+		let releaseStarted = false;
 		return () => {
 			if (this.#runners.get(registration.backend.id) === runner) {
 				this.#runners.delete(registration.backend.id);
@@ -343,6 +351,8 @@ export class DerivedIndexRuntime {
 				}
 				this.#stopListeningIfIdle();
 			}
+			if (releaseStarted) return this.#retryRunnerRelease(registration.backend.id, runner);
+			releaseStarted = true;
 			return this.#track(runner, runner.stop());
 		};
 	}
@@ -417,7 +427,7 @@ export class DerivedIndexRuntime {
 
 	#pollCoverage(backendId: string, group: CoverageWaitGroup) {
 		try {
-			const views = getReadinessViews(this.#logStore, backendId);
+			const views = getReadinessViews(this.#logStore, this.#runners.get(backendId)?.readinessId ?? backendId);
 			const before = readReadiness(views);
 			const time = Atomics.load(views.coverage, 0);
 			const after = readReadiness(views);
@@ -443,21 +453,29 @@ export class DerivedIndexRuntime {
 	/** Force a rebuild (or retry one that became `unavailable`). Returns false when the backend cannot be rebuilt by the runtime. */
 	requestRebuild(backendId: string): boolean {
 		const held = this.#heldRunners.get(backendId);
-		if (held) {
-			const released = held.runner.retryRelease();
-			this.#pendingStops.add(released);
-			released.then(
-				() => {
-					this.#pendingStops.delete(released);
-					this.#pendingStops.delete(held.stopped);
-					if (this.#heldRunners.get(backendId) === held) this.#heldRunners.delete(backendId);
-				},
-				() => {}
-			);
-		}
+		if (held) void this.#retryRunnerRelease(backendId, held.runner);
 		const runner = this.#runners.get(backendId);
 		if (runner) return runner.requestRebuild();
 		return held !== undefined;
+	}
+
+	#retryRunnerRelease(backendId: string, runner: DerivedIndexRunner): Promise<void> {
+		const held = this.#heldRunners.get(backendId);
+		const released = runner.retryRelease();
+		this.#pendingStops.add(released);
+		released.then(
+			() => {
+				this.#pendingStops.delete(released);
+				if (held?.runner === runner) this.#pendingStops.delete(held.stopped);
+				if (this.#heldRunners.get(backendId)?.runner === runner) this.#heldRunners.delete(backendId);
+			},
+			() => {
+				if (held?.runner === runner && held.stopped !== released) this.#pendingStops.delete(held.stopped);
+				const current = this.#heldRunners.get(backendId);
+				if (!current || current.runner === runner) this.#heldRunners.set(backendId, { runner, stopped: released });
+			}
+		);
+		return released;
 	}
 
 	/** Resolves once every runner has released ownership and its backend shutdown has settled. */
@@ -485,8 +503,15 @@ export class DerivedIndexRuntime {
 
 	#stopListening() {
 		if (!this.#listening) return;
-		this.#logStore.rootStore.off?.('committed', this.#onCommit);
-		this.#listening = false;
+		try {
+			this.#logStore.rootStore.off?.('committed', this.#onCommit);
+		} catch (error) {
+			// An already-closed store cannot emit again and some native stores reject listener access
+			// after close. Preserve errors from a live store, where losing the listener would be unsafe.
+			if (this.#logStore.rootStore.status === 'open') throw error;
+		} finally {
+			this.#listening = false;
+		}
 	}
 }
 
@@ -624,12 +649,17 @@ class DerivedIndexRunner {
 	#unregisterTables: () => void;
 	#ownerEpoch?: bigint;
 	#readinessBuffer: SharedReadinessBuffer;
+	#wakeBuffer: SharedReadinessBuffer;
 	#sharedViews: SharedViews;
 	#resetting?: Promise<void>;
 	status: DerivedIndexRunnerStatus = { state: 'idle' };
 
 	get id() {
 		return this.#registration.backend.id;
+	}
+
+	get readinessId() {
+		return this.#registration.readinessId ?? this.id;
 	}
 
 	retryRelease(): Promise<void> {
@@ -666,7 +696,13 @@ class DerivedIndexRunner {
 			typeof root?.getSync === 'function' &&
 			typeof root?.removeSync === 'function';
 		this.#lagBudget = effectiveLagBudget(options);
-		this.#readinessBuffer = readinessBuffer(logStore, registration.backend.id, () => this.#notified());
+		const notified = () => this.#notified();
+		this.#readinessBuffer = readinessBuffer(
+			logStore,
+			this.readinessId,
+			this.readinessId === this.id ? notified : undefined
+		);
+		this.#wakeBuffer = this.readinessId === this.id ? this.#readinessBuffer : wakeBuffer(logStore, this.id, notified);
 		this.#sharedViews = sharedViewsOf(this.#readinessBuffer);
 		try {
 			registration.backend.attach({
@@ -678,6 +714,7 @@ class DerivedIndexRunner {
 			);
 		} catch (error) {
 			this.#readinessBuffer.cancel?.();
+			if (this.#wakeBuffer !== this.#readinessBuffer) this.#wakeBuffer.cancel?.();
 			throw error;
 		}
 		this.#unregisterTables = registerDerivedIndexTables(
@@ -700,11 +737,7 @@ class DerivedIndexRunner {
 		if (this.#stopped || this.#rebuilding) return;
 		if (!fromBackend && !forCoverage && this.#lagBudget > 0) this.#unreadSince ??= this.#options.now();
 		if (this.status.state === 'unavailable') {
-			if (
-				this.#heldLock ||
-				Atomics.load(this.#shared().words, READINESS_STATE) === READINESS_STATES.indexOf('unavailable')
-			)
-				return;
+			if (this.#heldLock || isUnavailableReadinessState(Atomics.load(this.#shared().words, READINESS_STATE))) return;
 			this.status = { state: 'idle' };
 		}
 		// A shared rebuild request must reach an owner parked on backpressure or backoff at its next wake.
@@ -742,6 +775,7 @@ class DerivedIndexRunner {
 		try {
 			this.#unsubscribeBackend?.();
 			this.#readinessBuffer.cancel?.();
+			if (this.#wakeBuffer !== this.#readinessBuffer) this.#wakeBuffer.cancel?.();
 		} catch (error) {
 			logger.warn?.(`Derived index '${this.id}' cleanup hook threw`, error);
 		}
@@ -883,9 +917,9 @@ class DerivedIndexRunner {
 			return true;
 		}
 		// The owner may be another worker that never idles: leave the request where every runner looks,
-		// and notify whoever holds the buffer's callback.
+		// and notify every generation sharing the stable runner lock.
 		Atomics.store(this.#shared().words, READINESS_REBUILD_REQUEST, 1);
-		this.#readinessBuffer.notify?.();
+		this.#wakeBuffer.notify?.();
 		this.wake(true);
 		return true;
 	}
@@ -927,12 +961,14 @@ class DerivedIndexRunner {
 	 * The lock is taken without an unlock callback. rocksdb-js queues such a callback as a
 	 * thread-safe function of the caller's env, and on Node 22 a callback left behind by a worker that
 	 * was terminated aborts the process when another thread unlocks (HarperFast/rocksdb-js, pending).
-	 * A successor is woken by the releasing owner's `notify()` on the readiness buffer — which
-	 * tolerates a dead listener's env — and by the retry timer below.
+	 * A successor is woken by the releasing owner's `notify()` on the stable-id wake buffer — which
+	 * tolerates a dead listener's env — and by the retry timer below. Registrations without a
+	 * generation-specific readiness id keep using the readiness buffer itself.
 	 */
 	#acquire() {
 		// Commit wakes are frequent; neither a parked nor a backing-off runner may re-probe on each one.
 		if (this.#waitingForLock || this.#lockBackoff) return;
+		if (this.#registration.isCurrent && !this.#registration.isCurrent()) return;
 		if (this.#releasing) {
 			this.#releasing.then(() => this.wake(true));
 			return;
@@ -982,6 +1018,15 @@ class DerivedIndexRunner {
 		this.#reachedEndOfLog = false;
 		try {
 			if (!reviving) this.#ownerEpoch = this.#mintEpoch();
+			// A worker that could not construct this generation may have published a setup-only
+			// failure before this healthy backend acquired the stable runner lock. Ownership is
+			// stronger evidence: clear only that sentinel, never a runner-published unavailable state.
+			Atomics.compareExchange(
+				this.#shared().words,
+				READINESS_STATE,
+				READINESS_BACKEND_FAILED,
+				READINESS_STATES.indexOf('unknown')
+			);
 			this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
 			const condemned = this.#readCondemnation();
 			const shared = this.getReadiness();
@@ -1101,6 +1146,10 @@ class DerivedIndexRunner {
 
 	#drain() {
 		if (!this.#owned || this.#stopped || this.#rebuilding) return;
+		if (this.#registration.isCurrent && !this.#registration.isCurrent()) {
+			this.#release();
+			return;
+		}
 		if (this.#canRebuild() && this.#takeSharedRebuildRequest()) {
 			if (this.#rebuildTimer) {
 				clearTimeout(this.#rebuildTimer);
@@ -2083,10 +2132,10 @@ class DerivedIndexRunner {
 				logger.error(`Failed to release derived index runner '${backend.id}'`, error);
 			}
 			// A skip left standing by an absent or throwing `notify` swallows a peer's release instead.
-			if (this.#readinessBuffer.notify) {
+			if (this.#wakeBuffer.notify) {
 				this.#skipNextNotify = !this.#stopped;
 				try {
-					this.#readinessBuffer.notify();
+					this.#wakeBuffer.notify();
 				} catch (error) {
 					this.#skipNextNotify = false;
 					logger.warn?.(`Derived index '${backend.id}' could not notify peers of its release`, error);
@@ -2134,6 +2183,16 @@ function readinessBuffer(
 	) as SharedReadinessBuffer;
 }
 
+function wakeBuffer(
+	logStore: RocksTransactionLogStore,
+	backendId: string,
+	callback: () => void
+): SharedReadinessBuffer {
+	return logStore.getUserSharedBuffer(`derived-index:${backendId}:wake`, new ArrayBuffer(1), {
+		callback,
+	}) as SharedReadinessBuffer;
+}
+
 type SharedViews = {
 	words: Int32Array;
 	epoch: BigInt64Array;
@@ -2151,12 +2210,19 @@ function sharedViewsOf(buffer: ArrayBufferLike): SharedViews {
 const readinessViews = new WeakMap<object, Map<string, SharedViews>>();
 
 function readReadiness({ words, epoch }: SharedViews): DerivedIndexReadiness {
-	const state = READINESS_STATES[Atomics.load(words, READINESS_STATE)] ?? 'unknown';
-	const reason = READINESS_REASONS[Atomics.load(words, READINESS_REASON)] ?? 'none';
+	const stateIndex = Atomics.load(words, READINESS_STATE);
+	const setupFailed = stateIndex === READINESS_BACKEND_FAILED;
+	const retrying = stateIndex === READINESS_RETRYING;
+	const state = setupFailed ? 'unavailable' : retrying ? 'unknown' : (READINESS_STATES[stateIndex] ?? 'unknown');
+	const reason = setupFailed
+		? 'backend-failed'
+		: retrying
+			? 'none'
+			: (READINESS_REASONS[Atomics.load(words, READINESS_REASON)] ?? 'none');
 	const readiness: DerivedIndexReadiness = {
 		state,
 		ownerEpoch: Atomics.load(epoch, 0),
-		rebuildAttempts: Atomics.load(words, READINESS_ATTEMPTS),
+		rebuildAttempts: retrying || setupFailed ? 0 : Atomics.load(words, READINESS_ATTEMPTS),
 	};
 	if (reason !== 'none') readiness.reason = reason;
 	return readiness;
@@ -2168,6 +2234,59 @@ export function readDerivedIndexReadiness(
 	backendId: string
 ): DerivedIndexReadiness {
 	return readReadiness(getReadinessViews(logStore, backendId));
+}
+
+/** Publish setup-time state before a backend runner exists. */
+export function publishDerivedIndexReadiness(
+	logStore: RocksTransactionLogStore,
+	backendId: string,
+	state: DerivedIndexReadinessState,
+	reason: DerivedIndexReadinessReason = 'none'
+): void {
+	const views = getReadinessViews(logStore, backendId);
+	if (state === 'unknown') Atomics.store(views.words, READINESS_ATTEMPTS, 0);
+	Atomics.store(views.words, READINESS_REASON, READINESS_REASONS.indexOf(reason));
+	Atomics.store(views.words, READINESS_STATE, READINESS_STATES.indexOf(state));
+}
+
+/** Publish a setup failure only while no elected runner has published a stronger state. */
+export function publishDerivedIndexUnavailableIfUnknown(
+	logStore: RocksTransactionLogStore,
+	backendId: string
+): boolean {
+	const { words, epoch } = getReadinessViews(logStore, backendId);
+	// RETRYING is an explicit setup retry. Epochs are monotonic, so a prior
+	// owner must not prevent that retry from returning to an observable failure.
+	if (
+		Atomics.compareExchange(words, READINESS_STATE, READINESS_RETRYING, READINESS_BACKEND_FAILED) === READINESS_RETRYING
+	)
+		return true;
+	if (Atomics.load(epoch, 0) !== 0n) return false;
+	const published =
+		Atomics.compareExchange(words, READINESS_STATE, READINESS_STATES.indexOf('unknown'), READINESS_BACKEND_FAILED) ===
+		READINESS_STATES.indexOf('unknown');
+	if (!published) return false;
+	// Close the race with an owner acquiring between the epoch probe and the state CAS.
+	if (Atomics.load(epoch, 0) !== 0n) {
+		Atomics.compareExchange(words, READINESS_STATE, READINESS_BACKEND_FAILED, READINESS_STATES.indexOf('unknown'));
+		return false;
+	}
+	return true;
+}
+
+/** Rearm setup only while no peer has replaced the unavailable state. */
+export function retryDerivedIndexUnavailable(logStore: RocksTransactionLogStore, backendId: string): boolean {
+	const { words } = getReadinessViews(logStore, backendId);
+	const unavailable = READINESS_STATES.indexOf('unavailable');
+	if (Atomics.compareExchange(words, READINESS_STATE, unavailable, READINESS_RETRYING) === unavailable) return true;
+	return (
+		Atomics.compareExchange(words, READINESS_STATE, READINESS_BACKEND_FAILED, READINESS_RETRYING) ===
+		READINESS_BACKEND_FAILED
+	);
+}
+
+function isUnavailableReadinessState(stateIndex: number): boolean {
+	return stateIndex === READINESS_STATES.indexOf('unavailable') || stateIndex === READINESS_BACKEND_FAILED;
 }
 
 function getReadinessViews(logStore: RocksTransactionLogStore, backendId: string): SharedViews {

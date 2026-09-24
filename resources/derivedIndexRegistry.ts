@@ -1,5 +1,82 @@
 const registrations = new WeakMap<object, Map<number, number>>();
 const admissions = new WeakMap<object, Map<number, Array<() => string | undefined>>>();
+type LockStore = { tryLock(key: string): boolean; unlock(key: string): void };
+
+function fullTextClearLockKey(tableId: number): string {
+	return `derived-index:fulltext:${tableId}:table-clear`;
+}
+
+function fullTextRetirementLockKey(tableName: string): string {
+	return `derived-index:fulltext:${tableName}:retirement`;
+}
+
+/** Hold this node-wide fence for the full duration of an asynchronous table clear. */
+export function acquireFullTextClearFence(rootStore: LockStore, tableId: number): (() => void) | undefined {
+	const key = fullTextClearLockKey(tableId);
+	if (!rootStore.tryLock(key)) return;
+	let held = true;
+	return () => {
+		if (!held) return;
+		held = false;
+		rootStore.unlock(key);
+	};
+}
+
+/** Probe without waiting; callers hold the schema lock so a clear cannot start between this and persistence. */
+export function fullTextClearInProgress(rootStore: LockStore, tableId: number): boolean {
+	const release = acquireFullTextClearFence(rootStore, tableId);
+	if (!release) return true;
+	release();
+	return false;
+}
+
+/** Wait until the current clear releases its fence; callers retry admission afterwards. */
+export async function waitForFullTextClear(rootStore: LockStore, tableId: number): Promise<void> {
+	let retryDelayMilliseconds = 1;
+	for (;;) {
+		await new Promise((resolve) => setTimeout(resolve, retryDelayMilliseconds));
+		const release = acquireFullTextClearFence(rootStore, tableId);
+		if (release) {
+			release();
+			return;
+		}
+		retryDelayMilliseconds = Math.min(retryDelayMilliseconds * 2, 50);
+	}
+}
+
+/** Fence same-name recreation while a dropped table's native directories are being retired. */
+export function acquireFullTextRetirementFence(rootStore: LockStore, tableName: string): (() => void) | undefined {
+	const key = fullTextRetirementLockKey(tableName);
+	if (!rootStore.tryLock(key)) return;
+	let held = true;
+	return () => {
+		if (!held) return;
+		held = false;
+		rootStore.unlock(key);
+	};
+}
+
+/** Probe under the schema lock so recreation cannot pass between the probe and catalog persistence. */
+export function fullTextRetirementInProgress(rootStore: LockStore, tableName: string): boolean {
+	const release = acquireFullTextRetirementFence(rootStore, tableName);
+	if (!release) return true;
+	release();
+	return false;
+}
+
+/** Wait until the current retirement releases its fence; the caller must recheck its generation afterwards. */
+export async function waitForFullTextRetirement(rootStore: LockStore, tableName: string): Promise<void> {
+	let retryDelayMilliseconds = 1;
+	for (;;) {
+		const release = acquireFullTextRetirementFence(rootStore, tableName);
+		if (release) {
+			release();
+			return;
+		}
+		await new Promise((resolve) => setTimeout(resolve, retryDelayMilliseconds));
+		retryDelayMilliseconds = Math.min(retryDelayMilliseconds * 2, 50);
+	}
+}
 
 /** `admission` returns a reason while writes to these tables must be rejected. */
 export function registerDerivedIndexTables(

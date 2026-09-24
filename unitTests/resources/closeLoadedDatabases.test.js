@@ -49,7 +49,7 @@ describe('RocksDB handle release', function () {
 		const dbPath = rootStore.path;
 		assert.ok(refCountFor(dbPath) > 0, 'database should be open before close');
 
-		closeDatabase('closerelease1');
+		await closeDatabase('closerelease1');
 
 		assert.strictEqual(refCountFor(dbPath), 0, 'no native handles should remain after closeDatabase');
 	});
@@ -61,7 +61,7 @@ describe('RocksDB handle release', function () {
 		if (!(a instanceof RocksDatabase)) return this.skip();
 		assert.ok(refCountFor(a.path) > 0 && refCountFor(b.path) > 0, 'both databases should be open');
 
-		closeLoadedDatabases();
+		await closeLoadedDatabases();
 
 		assert.strictEqual(refCountFor(a.path), 0, 'database a should be released');
 		assert.strictEqual(refCountFor(b.path), 0, 'database b should be released');
@@ -78,13 +78,42 @@ describe('RocksDB handle release', function () {
 			const branch = openBranchDatabase(checkpointDir, 'closerelease4', 'appA__closerelease4');
 			assert.ok(refCountFor(branch.rootStore.path) > 0, 'branch should be open');
 
-			closeLoadedDatabases();
+			await closeLoadedDatabases();
 
 			// a branch is not in `databases`, so the walk below cannot reach it — an exiting job worker
 			// would leak its handles process-wide unless this is the single teardown entry point
 			assert.strictEqual(refCountFor(checkpointDir), 0, 'branch should be released on thread teardown');
 		} finally {
-			closeBranchDatabases();
+			await closeBranchDatabases();
+			rmSync(scratchRoot, { recursive: true, force: true });
+		}
+	});
+
+	it('continues closing regular databases when one branch writer cannot settle', async function () {
+		this.timeout(30000);
+		const rootStore = openRocksDb('closerelease5');
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const scratchRoot = mkdtempSync(join(tmpdir(), 'harper.unit-test.branch-close-failure-'));
+		const checkpointDir = join(scratchRoot, 'checkpoint');
+		let branch;
+		try {
+			await rootStore.createCheckpoint(checkpointDir);
+			branch = openBranchDatabase(checkpointDir, 'closerelease5', 'appA__closerelease5');
+			const BranchTable = branch.tables[Object.keys(branch.tables)[0]];
+			BranchTable.derivedIndexRuntime = { close: () => Promise.reject(new Error('writer still active')) };
+
+			await closeLoadedDatabases();
+
+			assert.strictEqual(refCountFor(rootStore.path), 0, 'regular database handles are still released');
+			assert.ok(refCountFor(branch.rootStore.path) > 0, 'the unsafe branch close remains fail-closed');
+			BranchTable.derivedIndexRuntime = { close: () => Promise.resolve() };
+			await branch.close();
+		} finally {
+			if (branch?.rootStore.status !== 'closed') {
+				branch.tables[Object.keys(branch.tables)[0]].derivedIndexRuntime = { close: () => Promise.resolve() };
+				await branch.close();
+			}
+			await closeBranchDatabases();
 			rmSync(scratchRoot, { recursive: true, force: true });
 		}
 	});
@@ -98,7 +127,7 @@ describe('RocksDB handle release', function () {
 		const dbPath = rootStore.path;
 		assert.ok(refCountFor(dbPath) > 0, 'tableless database should be open');
 
-		closeLoadedDatabases();
+		await closeLoadedDatabases();
 
 		assert.strictEqual(refCountFor(dbPath), 0, 'tableless database should be released');
 	});

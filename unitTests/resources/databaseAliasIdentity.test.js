@@ -22,8 +22,8 @@ const WORKER_FIXTURE = join(__dirname, 'databaseAliasIdentity-thread.js');
 const MESSAGE_TYPE = 'database-alias-identity-test';
 const CONTROL_TYPE = 'database-alias-identity-control';
 
-function closeAliases(aliases) {
-	for (const alias of aliases) closeDatabase(alias);
+async function closeAliases(aliases) {
+	for (const alias of aliases) await closeDatabase(alias);
 }
 
 async function createPhysicalStore(storageRoot, databaseName, tableName, attributes = []) {
@@ -37,7 +37,7 @@ async function createPhysicalStore(storageRoot, databaseName, tableName, attribu
 		attributes: [{ name: 'id', isPrimaryKey: true }, ...attributes],
 	});
 	await Table.dbisDB.committed;
-	closeDatabase(databaseName);
+	await closeDatabase(databaseName);
 }
 
 function loadAliases(storageRoot, aliases) {
@@ -146,7 +146,7 @@ describe('shared root-store database identity', function () {
 			await fixture?.close();
 		} finally {
 			fixture = undefined;
-			closeAliases(loadedAliases);
+			await closeAliases(loadedAliases);
 			loadedAliases = [];
 			setupTestDBPath();
 		}

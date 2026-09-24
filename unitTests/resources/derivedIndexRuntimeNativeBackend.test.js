@@ -701,6 +701,22 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.strictEqual(store.locks.size, 1);
 	});
 
+	it('replaces a superseded failed shutdown attempt in the runtime-wide stop set', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const failing = new AsyncBackend('unregister-retry-failing', { cursor: cursor(10) });
+		failing.shutdown = () => Promise.reject(new Error('native queue did not drain'));
+		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		const unregister = runtime.register(registration(failing));
+		await waitFor(() => store.locks.size === 1);
+		await assert.rejects(unregister(), /native queue did not drain/);
+		await assert.rejects(unregister(), /native queue did not drain/);
+
+		await assert.rejects(runtime.stop(), (error) => {
+			assert.strictEqual(error instanceof AggregateError, false, 'only the latest failed attempt remains pending');
+			return /native queue did not drain/.test(error.message);
+		});
+	});
+
 	it('delivers a peer rebuild request to an owner parked on backend backpressure', async () => {
 		const records = new Map([['1:a', { version: 20, value: { title: 'a' } }]]);
 		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]), {

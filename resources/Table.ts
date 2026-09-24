@@ -117,7 +117,13 @@ import {
 	isLockControlType,
 	isAuditEntryWrite,
 } from './auditStore.ts';
-import { derivedIndexWriteRejection, hasDerivedIndexRegistration } from './derivedIndexRegistry.ts';
+import {
+	acquireFullTextClearFence,
+	acquireFullTextRetirementFence,
+	derivedIndexWriteRejection,
+	hasDerivedIndexRegistration,
+	waitForFullTextClear,
+} from './derivedIndexRegistry.ts';
 import {
 	decodeLockControlPayload,
 	encodeLockControlPayload,
@@ -157,7 +163,8 @@ import { RocksDatabase, Transaction as RocksTransaction } from '@harperfast/rock
 import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction';
 import { contentTypes } from '../server/serverHelpers/contentTypes';
 import { type JsonSchemaFragment, projectAttributesToProperties } from './jsonSchemaTypes.ts';
-import { type FullTextDefinition } from './fullTextSchema.ts';
+import { type FullTextDefinition, type FullTextIndexGenerations } from './fullTextSchema.ts';
+import { readPersistedFullTextDefinitions } from './fullTextSchemaLifecycle.ts';
 
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
@@ -294,12 +301,38 @@ export function releaseUpdateAttributesLock(rootStore: RocksDatabase) {
 	rootStore.unlock(updateAttributesLockKey);
 }
 
-export function withUpdateAttributesLock<Callback extends () => unknown>(
+async function acquireUpdateAttributesLockAsync(
+	rootStore: RocksDatabase,
+	scopeDescription: string,
+	timeout = UPDATE_ATTRIBUTES_LOCK_TIMEOUT
+): Promise<void> {
+	if (rootStore.tryLock(updateAttributesLockKey)) return;
+	const startTime = performance.now();
+	let waitTime = 1;
+	while (!rootStore.tryLock(updateAttributesLockKey)) {
+		const elapsed = performance.now() - startTime;
+		if (elapsed >= timeout) {
+			throw new UpdateAttributesLockTimeoutError(
+				`Timed out after ${Math.round(elapsed)}ms waiting for the exclusive '${UPDATE_ATTRIBUTES_LOCK}' lock on ${scopeDescription}; the lock holder did not release it before the deadline, so this schema/attribute update cannot proceed`
+			);
+		}
+		await new Promise((resolve) => setTimeout(resolve, Math.min(waitTime, timeout - elapsed)));
+		if (waitTime < 16) waitTime *= 2;
+	}
+	const waited = performance.now() - startTime;
+	if (waited >= UPDATE_ATTRIBUTES_LOCK_SLOW_WAIT)
+		try {
+			logger.warn?.(
+				`Acquired the exclusive '${UPDATE_ATTRIBUTES_LOCK}' lock on ${scopeDescription} after waiting ${Math.round(waited)}ms`
+			);
+		} catch {}
+}
+
+function runWithUpdateAttributesLock<Callback extends () => unknown>(
 	rootStore: RocksDatabase,
 	scopeDescription: string,
 	callback: Callback & (ReturnType<Callback> extends PromiseLike<unknown> ? never : unknown)
 ): ReturnType<Callback> {
-	acquireUpdateAttributesLock(rootStore, scopeDescription);
 	try {
 		const result = callback();
 		if (typeof (result as any)?.then === 'function') {
@@ -317,6 +350,27 @@ export function withUpdateAttributesLock<Callback extends () => unknown>(
 	} finally {
 		releaseUpdateAttributesLock(rootStore);
 	}
+}
+
+export function withUpdateAttributesLock<Callback extends () => unknown>(
+	rootStore: RocksDatabase,
+	scopeDescription: string,
+	callback: Callback & (ReturnType<Callback> extends PromiseLike<unknown> ? never : unknown)
+): ReturnType<Callback> {
+	acquireUpdateAttributesLock(rootStore, scopeDescription);
+	return runWithUpdateAttributesLock(rootStore, scopeDescription, callback);
+}
+
+function withUpdateAttributesLockNonBlocking<Callback extends () => unknown>(
+	rootStore: RocksDatabase,
+	scopeDescription: string,
+	callback: Callback & (ReturnType<Callback> extends PromiseLike<unknown> ? never : unknown)
+): ReturnType<Callback> | Promise<ReturnType<Callback>> {
+	if (rootStore.tryLock(updateAttributesLockKey))
+		return runWithUpdateAttributesLock(rootStore, scopeDescription, callback);
+	return acquireUpdateAttributesLockAsync(rootStore, scopeDescription).then(() =>
+		runWithUpdateAttributesLock(rootStore, scopeDescription, callback)
+	);
 }
 // Tolerate a redundant column family drop. Drops are broadcast to every worker
 // thread and each holds its own handle to the same underlying family, so a
@@ -677,6 +731,7 @@ export function makeTable(options) {
 		cacheControl,
 		isBranch,
 		fullTextIndexes = [],
+		fullTextIndexGenerations = Object.create(null),
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
@@ -981,12 +1036,17 @@ export function makeTable(options) {
 		static derivedIndexRuntime:
 			| {
 					close(dropping?: boolean): Promise<void>;
+					hasFullTextIndexes?(): boolean;
+					fullTextDefinitions?(): readonly FullTextDefinition[];
+					matchesCurrent?(): boolean;
 					restoreAfterFailedDrop?(): typeof TableResource.derivedIndexRuntime;
+					retireAfterConfirmedDrop?(definitions?: readonly FullTextDefinition[]): Promise<void>;
 					completeDrop?(dropped?: boolean): void;
 			  }
 			| undefined;
 		static audit = audit;
 		static fullTextIndexes: FullTextDefinition[] = fullTextIndexes;
+		static fullTextIndexGenerations: FullTextIndexGenerations = fullTextIndexGenerations;
 		static databasePath = databasePath;
 		static databaseName = databaseName;
 		static attributes = attributes;
@@ -2041,9 +2101,10 @@ export function makeTable(options) {
 			const derivedIndexRuntime = TableResource.derivedIndexRuntime;
 			const restoreDerivedIndexesAfterFailedDrop = () => {
 				try {
-					TableResource.derivedIndexRuntime = derivedIndexRuntime?.restoreAfterFailedDrop?.();
+					const restored = derivedIndexRuntime?.restoreAfterFailedDrop?.();
+					if (TableResource.derivedIndexRuntime === derivedIndexRuntime) TableResource.derivedIndexRuntime = restored;
 				} catch (restoreError) {
-					TableResource.derivedIndexRuntime = undefined;
+					if (TableResource.derivedIndexRuntime === derivedIndexRuntime) TableResource.derivedIndexRuntime = undefined;
 					logger.error?.(
 						`Could not restore derived indexes after failed drop of ${databaseName}.${TableResource.tableName}`,
 						restoreError
@@ -2056,12 +2117,20 @@ export function makeTable(options) {
 				restoreDerivedIndexesAfterFailedDrop();
 				throw error;
 			}
+			let releaseFullTextRetirementFence: (() => void) | undefined;
+			const releaseFullTextRetirement = () => {
+				const release = releaseFullTextRetirementFence;
+				releaseFullTextRetirementFence = undefined;
+				release?.();
+			};
 			const abortStaleDrop = () => {
+				releaseFullTextRetirement();
 				derivedIndexRuntime?.completeDrop?.(false);
 				TableResource.derivedIndexRuntime = undefined;
 				TableResource.cleanup();
 				if (databases[databaseName]?.[tableName] === TableResource) delete databases[databaseName][tableName];
 			};
+			let fullTextDefinitionsForRetirement = [...TableResource.fullTextIndexes];
 			let dropIdentityConfirmed = databaseName !== databasePath;
 			let primaryCatalogKey = TableResource.tableName + '/';
 			let storeGeneration: string | undefined;
@@ -2092,6 +2161,26 @@ export function makeTable(options) {
 						return false;
 					dropGeneration = primaryMeta.dropGeneration;
 					storeGeneration = primaryMeta.generation;
+					const durableFullTextDefinitions =
+						rootStore instanceof RocksDatabase
+							? readPersistedFullTextDefinitions(primaryMeta.fullTextIndexes, attributes, () => {})
+							: [];
+					const attachedFullTextDefinitions = derivedIndexRuntime?.fullTextDefinitions?.() ?? [];
+					const definitionsByName = new Map(
+						[...durableFullTextDefinitions, ...attachedFullTextDefinitions].map((definition) => [
+							definition.name,
+							definition,
+						])
+					);
+					fullTextDefinitionsForRetirement = [...definitionsByName.values()];
+					if (fullTextDefinitionsForRetirement.length > 0 && !releaseFullTextRetirementFence) {
+						releaseFullTextRetirementFence = acquireFullTextRetirementFence(rootStore, TableResource.tableName);
+						if (!releaseFullTextRetirementFence)
+							throw new ClientError(
+								`Cannot drop '${databaseName}.${TableResource.tableName}' while its full-text storage is being retired`,
+								409
+							);
+					}
 					if (primaryMeta.dropping) return true;
 					primaryMeta.dropping = true;
 					// Stamps this drop's identity so the interrupted-drop retry budget in
@@ -2123,11 +2212,13 @@ export function makeTable(options) {
 						if (typeof tombstoneWrite?.then === 'function') await tombstoneWrite;
 					}
 				} catch (error) {
+					releaseFullTextRetirement();
 					restoreDerivedIndexesAfterFailedDrop();
 					throw error;
 				}
 			}
 			if (!dropIdentityConfirmed) {
+				releaseFullTextRetirement();
 				abortStaleDrop();
 				return;
 			}
@@ -2151,11 +2242,14 @@ export function makeTable(options) {
 					if (!dropGeneration)
 						throw new Error(`Cannot drop ${databaseName}.${tableName}: its catalog tombstone has no drop generation`);
 					await retireRocksStores(storeGeneration, dropGeneration);
+					await retireFullTextStorage();
 				} catch (error) {
+					releaseFullTextRetirement();
 					derivedIndexRuntime?.completeDrop?.();
 					throw error;
 				}
 				derivedIndexRuntime?.completeDrop?.();
+				releaseFullTextRetirement();
 				return;
 			}
 			try {
@@ -2165,6 +2259,7 @@ export function makeTable(options) {
 					}
 				}
 			} catch (error) {
+				releaseFullTextRetirement();
 				derivedIndexRuntime?.completeDrop?.();
 				throw error;
 			}
@@ -2206,6 +2301,7 @@ export function makeTable(options) {
 					removed = removeTombstonedCatalog();
 					if (removed) await dbisDb.committed;
 				} catch (error) {
+					releaseFullTextRetirement();
 					derivedIndexRuntime?.completeDrop?.();
 					throw error;
 				}
@@ -2226,14 +2322,30 @@ export function makeTable(options) {
 					await primaryStore.close();
 					fs.unlinkSync(primaryStore.path);
 				} catch (error) {
+					releaseFullTextRetirement();
 					derivedIndexRuntime?.completeDrop?.();
 					throw error;
 				}
 			}
-			derivedIndexRuntime?.completeDrop?.();
-			const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName);
-			message.dropTableId = tableId;
-			signalling.signalSchemaChange(message);
+			try {
+				const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName);
+				message.dropTableId = tableId;
+				await signalling.signalSchemaChange(message);
+				await retireFullTextStorage();
+				derivedIndexRuntime?.completeDrop?.();
+			} finally {
+				releaseFullTextRetirement();
+			}
+
+			async function retireFullTextStorage() {
+				if (fullTextDefinitionsForRetirement.length === 0) return;
+				if (derivedIndexRuntime?.retireAfterConfirmedDrop)
+					await derivedIndexRuntime.retireAfterConfirmedDrop(fullTextDefinitionsForRetirement);
+				else {
+					const { retireFullTextIndexes } = await import('./derivedIndexes.ts');
+					await retireFullTextIndexes(TableResource, fullTextDefinitionsForRetirement);
+				}
+			}
 
 			async function retireRocksStores(generation: string | undefined, dropGeneration: string) {
 				const releaseDropMark = markDropInProgress(dropGeneration);
@@ -7137,22 +7249,75 @@ export function makeTable(options) {
 			return history.reverse();
 		}
 		static clear() {
-			// clear the primary store and every secondary index dbi (same pattern used by
-			// runIndexing when rebuilding from scratch), so clear() doesn't leave stale
-			// index entries pointing at records that no longer exist.
-			const promises = [primaryStore.clear()];
-			for (const key in indices) {
-				const index = indices[key];
-				index.customIndex?.resetDerivedStorage?.();
-				promises.push(index.clearAsync ? index.clearAsync() : index.clear());
-			}
-			return Promise.all(promises);
+			const rootStore = primaryStore.rootStore;
+			const assertNoFullTextDeclaration = () => {
+				const namedPrimaryDescriptor = (dbisDb as any).getSync(`${tableName}/${primaryKey}`);
+				const primaryDescriptor = namedPrimaryDescriptor?.isPrimaryKey
+					? namedPrimaryDescriptor
+					: (dbisDb as any).getSync(`${tableName}/`);
+				const durableDefinitions = readPersistedFullTextDefinitions(
+					primaryDescriptor?.fullTextIndexes,
+					attributes,
+					() => {}
+				);
+				if (
+					TableResource.fullTextIndexes.length > 0 ||
+					(rootStore instanceof RocksDatabase && durableDefinitions.length > 0)
+				)
+					throw new ClientError(
+						`Table.clear() is not supported on full-text table '${databaseName}.${tableName}' until whole-table invalidation is crash-safe`,
+						501
+					);
+			};
+			let releaseFullTextClearFence: (() => void) | undefined;
+			let waitForExistingClear: Promise<void> | undefined;
+			let admission: void | Promise<void>;
+			if (rootStore instanceof RocksDatabase) {
+				admission = withUpdateAttributesLockNonBlocking(rootStore, `clear table '${databaseName}.${tableName}'`, () => {
+					assertNoFullTextDeclaration();
+					releaseFullTextClearFence = acquireFullTextClearFence(rootStore, tableId);
+					if (!releaseFullTextClearFence) waitForExistingClear = waitForFullTextClear(rootStore, tableId);
+				});
+			} else assertNoFullTextDeclaration();
+			const startClear = () => {
+				if (waitForExistingClear) return waitForExistingClear.then(() => TableResource.clear());
+				// clear the primary store and every secondary index dbi (same pattern used by
+				// runIndexing when rebuilding from scratch), so clear() doesn't leave stale
+				// index entries pointing at records that no longer exist.
+				const promises = [];
+				const settleStartedClears = (synchronousFailure?: { error: unknown }) =>
+					Promise.allSettled(promises)
+						.then((results) => {
+							if (synchronousFailure) throw synchronousFailure.error;
+							const values = [];
+							for (const result of results) {
+								if (result.status === 'rejected') throw result.reason;
+								values.push(result.value);
+							}
+							return values;
+						})
+						.finally(releaseFullTextClearFence);
+				try {
+					promises.push(primaryStore.clear());
+					for (const key in indices) {
+						const index = indices[key];
+						index.customIndex?.resetDerivedStorage?.();
+						promises.push(index.clearAsync ? index.clearAsync() : index.clear());
+					}
+					return settleStartedClears();
+				} catch (error) {
+					if (promises.length > 0) return settleStartedClears({ error });
+					releaseFullTextClearFence?.();
+					throw error;
+				}
+			};
+			return admission instanceof Promise ? admission.then(startClear) : startClear();
 		}
 		/** Release everything makeTable() registered process-wide; the class must not be used afterwards. */
 		static cleanup() {
 			disposed = true;
 			TableResource.getResource = unavailableResource;
-			TableResource.derivedIndexRuntime
+			void TableResource.derivedIndexRuntime
 				?.close()
 				.catch((error) => logger.warn?.(`Derived index shutdown failed for ${databaseName}.${tableName}`, error));
 			clearTimeout(cleanupTimer);

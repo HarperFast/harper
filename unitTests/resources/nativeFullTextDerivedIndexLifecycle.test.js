@@ -7,6 +7,7 @@ const {
 	createNativeFullTextDerivedIndexBackend,
 	NativeFullTextDerivedIndexLifecycle,
 } = require('#src/resources/indexes/nativeFullTextDerivedIndexLifecycle');
+const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNativeBinding');
 const { DERIVED_INDEX_ACCEPTED, DERIVED_INDEX_DEFERRED } = require('#src/resources/derivedIndexRuntime');
 const { waitFor } = require('../waitFor');
 
@@ -114,6 +115,39 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 	beforeEach(() => {
 		storePath = path.join(setupTestDBPath(), `fulltext-lifecycle-${Date.now()}-${Math.random()}`);
 		fs.mkdirSync(storePath, { recursive: true });
+	});
+
+	it('loads the published registry package and persists a searchable checkpoint', async function () {
+		const supportedTarget =
+			(process.platform === 'darwin' && process.arch === 'arm64') ||
+			(process.platform === 'linux' && ['arm64', 'x64'].includes(process.arch)) ||
+			(process.platform === 'win32' && process.arch === 'x64');
+		if (!supportedTarget) this.skip();
+
+		const binding = await loadFullTextNativeBinding();
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await lifecycle.initialize();
+		const index = await lifecycle.open();
+		await index.applyMutationBatch(
+			{
+				upserts: [{ id: 'product-1', fields: { title: 'Red running shoes' } }],
+				deletes: [],
+			},
+			{ assumeDistinctIds: true, rejectedUpsert: 'delete' }
+		);
+		await index.publish('registry-checkpoint');
+		const result = await index.search({ text: 'running', limit: 10 });
+		assert.deepStrictEqual(
+			result.hits.map(({ id }) => id),
+			['product-1']
+		);
+		await index.close({ mode: 'require-clean' });
+
+		assert.deepStrictEqual(lifecycle.inspect(), {
+			state: 'checkpointed',
+			committedPayload: 'registry-checkpoint',
+		});
+		await lifecycle.reset();
 	});
 
 	it('uses one deterministic native directory and stable source generation', async () => {
@@ -253,6 +287,22 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		);
 		assert.strictEqual(binding.runtimeInfoCalls, 1);
 		assert.strictEqual(binding.reclaims.length, 0);
+		assert.strictEqual(binding.opens.length, 0);
+	});
+
+	it('clamps the default cursor payload limit to a smaller native commit capacity', async () => {
+		const binding = new FakeNativeModule();
+		binding.maxCommitPayloadBytes = 32 * 1024;
+		const backendOptions = {
+			...options(storePath, binding),
+			id: 'products-title',
+		};
+		assert.strictEqual(backendOptions.maxCursorPayloadBytes, undefined);
+		const backend = await createNativeFullTextDerivedIndexBackend(backendOptions);
+
+		assert.strictEqual(backend.id, 'products-title');
+		assert.strictEqual(binding.runtimeInfoCalls, 1);
+		assert.strictEqual(binding.reclaims.length, 1);
 		assert.strictEqual(binding.opens.length, 0);
 	});
 

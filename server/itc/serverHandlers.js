@@ -50,7 +50,13 @@ async function schemaHandler(event) {
 	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
 	// the restoring marker is present, and reloads it on the completion signal (marker gone).
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {
-		closeDatabase(event.message.schema);
+		try {
+			await closeDatabase(event.message.schema);
+		} catch (error) {
+			// Let the originator's process-wide closure check fail the restore immediately instead of
+			// withholding this worker's acknowledgement until the broadcast timeout.
+			hdbLogger.error(`Could not release database '${event.message.schema}' for restore`, error);
+		}
 	}
 	await cleanLmdbMap(event.message);
 	await syncSchemaMetadata(event.message);
