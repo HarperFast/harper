@@ -4,8 +4,9 @@
 # check gates the PR, so a PR must not be able to edit it. `base.ref` rather than `base.sha` —
 # the workflow file already comes from the base branch tip, and pinning the action to the sha the
 # PR forked from runs a stale copy on any long-lived branch. No PR code is executed here — the
-# coverage evaluation reads the event payload, and the file-hunk collection reads the API — so
-# the usual pull_request_target hazard does not apply. Permissions stay read-only regardless.
+# coverage evaluation reads the event payload, and the membership resolution and file-hunk
+# collection read the API — so the usual pull_request_target hazard does not apply. Permissions
+# stay read-only regardless; the app token minted below is scoped to members:read + metadata:read.
 name: review-coverage
 on:
   pull_request_target:
@@ -26,12 +27,45 @@ jobs:
           ref: ${{ github.event.pull_request.base.ref }}
           persist-credentials: false
           sparse-checkout: .github/actions/review-coverage
+      - name: Mint a members:read-scoped app token
+        id: app-token
+        # The webhook's author_association is wrong for a PRIVATE org membership: only a
+        # credential carrying members:read can see it, and GITHUB_TOKEN cannot be granted that
+        # permission at all. harperfastaibot already holds members:read org-wide and already has
+        # its secrets wired into this repo for the Claude/Gemini review bots.
+        if: >-
+          github.event.pull_request.user.type != 'Bot' &&
+          !endsWith(github.event.pull_request.user.login, '[bot]')
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.HARPERFAST_AI_CLIENT_ID }}
+          private-key: ${{ secrets.HARPERFAST_AI_APP_PRIVATE_KEY }}
+          permission-members: read
+          permission-metadata: read
+      - name: Resolve live org membership
+        id: author
+        # resolveMembership.sh only ever prints MEMBER or nothing — never a demotion — so a
+        # failed mint, a failed lookup, or a confirmed non-member all leave this output empty,
+        # falling back to the webhook's own association below and in the composite action.
+        if: steps.app-token.outputs.token != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ORG: ${{ github.repository_owner }}
+          LOGIN: ${{ github.event.pull_request.user.login }}
+        run: |
+          association=$(.github/actions/review-coverage/resolveMembership.sh "$ORG" "$LOGIN")
+          [[ -n "$association" ]] && echo "author_association=$association" >> "$GITHUB_OUTPUT"
+          exit 0
       - name: Collect current PR file hunks
         id: pr-files
         if: >-
           github.event.pull_request.user.type != 'Bot' &&
           !endsWith(github.event.pull_request.user.login, '[bot]') &&
-          (github.event.pull_request.author_association == 'MEMBER' || github.event.pull_request.author_association == 'OWNER')
+          (steps.author.outputs.author_association == 'MEMBER' ||
+           github.event.pull_request.author_association == 'MEMBER' ||
+           github.event.pull_request.author_association == 'OWNER')
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -116,3 +150,4 @@ jobs:
           pr_files: ${{ steps.pr-files.outputs.path }}
           pr_files_ready: ${{ steps.pr-files.outputs.ready }}
           pr_files_superseded: ${{ steps.pr-files.outputs.superseded }}
+          pr_author_association: ${{ steps.author.outputs.author_association }}
