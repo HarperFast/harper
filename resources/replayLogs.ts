@@ -133,17 +133,20 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 			startFromLastFlushed: true,
 			readUncommitted: true,
 			trackCorruptTransactions: true,
+			includeLogName: true,
 		});
-		// Set once an entry pulled since the open transaction began carried `endTxn`, staged or skipped:
-		// its native commit has been read whole, and the next entry begins another commit even when it
-		// shares the log key — a replication receiver commits every re-delivery under the origin's key.
+		// The open transaction replays one native commit, identified by its physical log and log key. A
+		// key alone does not identify one: a replication receiver commits every re-delivery of a source
+		// transaction under the origin's key, and a peer's log can hold the same key as the origin's.
+		let openLogName: string | undefined;
+		// Set once an entry pulled since the open transaction began carried `endTxn`, staged or skipped.
 		let openCommitEnded = false;
-		// Commits the open transaction, or discards it whole when a corrupt frame cut its native commit
-		// short: half of a source transaction must never become durable, so it stays in the log for a
-		// repaired retry.
-		const endTransaction = (): Error | undefined => {
+		// Commits the open transaction, or discards it whole when its native commit was not read to its
+		// end — cut short by a corrupt frame, or by `cutShort` when replay stops early — so that half of a
+		// source transaction never becomes durable; it stays in the log for a repaired retry.
+		const endTransaction = (cutShort = false): Error | undefined => {
 			const ending = transaction!;
-			const torn = !openCommitEnded && entries.corruptFrameStop.truncatedVersions.has(lastTimestamp);
+			const torn = !openCommitEnded && (cutShort || entries.corruptFrameStop.truncatedVersions.has(lastTimestamp));
 			const staged = stagedWrites;
 			transaction = undefined;
 			stagedWrites = 0;
@@ -154,8 +157,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					ending.abort();
 				} else ending.directCommitSync();
 			} catch (error) {
-				// directCommitSync aborts and detaches its transaction on failure; no cleanup here. A failed
-				// commit never applied, so its writes come back out of `writes` as a discard's already did.
+				// directCommitSync already aborted it; a failed commit never applied
 				if (!torn) writes -= staged;
 				logger.error(`Error ${torn ? 'discarding a torn' : 'committing'} replay transaction`, error);
 				return error;
@@ -171,6 +173,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				logger.fatal(
 					`${stallDiagnostic} Continuing boot without replaying the remainder; shed or relocate the oversized/undecodable peer transaction log(s), or re-clone this node, to recover the unreplayed data.`
 				);
+				if (transaction) endTransaction(true);
 				break;
 			}
 			const {
@@ -186,11 +189,13 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				username,
 				extendedType,
 				endTxn,
+				logName,
 			} = auditRecord;
 			try {
-				// A replay transaction is exactly one native commit: never two merged, never one split. Log
-				// keys still delimit entries that carry no end marker.
-				if (transaction && (openCommitEnded || lastTimestamp !== txnLogKey)) {
+				// Replay transactions follow native commit boundaries, so memory is bounded by the largest
+				// commit rather than by every commit sharing a key. Entries skipped as unrecoverable are
+				// still left out of their commit, as before; the key still delimits marker-less entries.
+				if (transaction && (openCommitEnded || lastTimestamp !== txnLogKey || openLogName !== logName)) {
 					const commitError = endTransaction();
 					if (commitError && electedReplayer) {
 						strictFailure = commitError;
@@ -199,9 +204,8 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					// Abort if replay has exceeded the total wall-clock budget even while making progress
 					// (harper#1316, facet a). shouldAbortStalledReplay resets its counters on every write,
 					// so a slow-but-progressing replay (deep out-of-order audit chain walk per entry) can
-					// peg the boot thread indefinitely without tripping it. Checked only here, right after a
-					// whole native commit was committed and before the next is staged, so aborting never
-					// tears a source transaction in half. Re-clone to recover the unreplayed remainder.
+					// peg the boot thread indefinitely without tripping it. Checked only between native commits.
+					// Re-clone to recover the unreplayed remainder.
 					if (shouldAbortSlowReplay(performance.now() - replayStartTime, replayTimeoutMs)) {
 						const slowMessage = `Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). The transaction log contains a pathologically deep out-of-order write history that is too expensive to reconcile during boot (harper#1316). Re-clone this node from a healthy leader to recover the unreplayed data.`;
 						if (electedReplayer) {
@@ -275,6 +279,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				// make a later legitimate write in between look stale (harper#2411).
 				if (!transaction) {
 					lastTimestamp = txnLogKey;
+					openLogName = logName;
 					openCommitEnded = false;
 					transaction = new DatabaseTransaction();
 					transaction.db = primaryStore;

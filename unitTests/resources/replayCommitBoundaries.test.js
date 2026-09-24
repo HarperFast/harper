@@ -7,6 +7,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table, databases, database } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { replayLogs } = require('#src/resources/replayLogs');
+const { REPLAY_NO_PROGRESS_COUNT_LIMIT } = require('#src/resources/replayLogsGuards');
 const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
@@ -16,20 +17,18 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 const describeUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
 
-// Records each replay transaction's fate (committed or aborted) and how many writes it staged.
-// `onCommit` runs before the real commit, so it can throw to simulate a commit failure.
+// Call-through observers: replay transactions are internal to replayLogs, and a commit boundary is
+// not otherwise observable before the process runs out of heap.
 function spyOnReplayTransactions(onCommit) {
 	const outcomes = [];
 	const { directCommitSync, abort } = DatabaseTransaction.prototype;
 	DatabaseTransaction.prototype.directCommitSync = function () {
 		if (this.isReplay) {
-			try {
-				onCommit?.(this);
-			} catch (error) {
-				this.abort(); // as a failed directCommitSync does
-				throw error;
-			}
-			outcomes.push({ transaction: this, outcome: 'committed', writes: this.writes.length });
+			onCommit?.(this);
+			const writes = this.writes.length;
+			const result = directCommitSync.call(this);
+			outcomes.push({ transaction: this, outcome: 'committed', writes });
+			return result;
 		}
 		return directCommitSync.call(this);
 	};
@@ -45,8 +44,6 @@ function spyOnReplayTransactions(onCommit) {
 	return outcomes;
 }
 
-// Drives the real replay loop over a synthetic entry stream, recording which transaction each
-// replayed record was staged in.
 async function replayStream(entries, { truncatedVersions = new Set(), elected = true, onCommit } = {}) {
 	const stagedIn = new Map();
 	let unlocked = false;
@@ -68,13 +65,14 @@ async function replayStream(entries, { truncatedVersions = new Set(), elected = 
 		auditStore: {
 			getRange: () =>
 				Object.assign(
-					entries.map(({ id, key, endTxn, tableId = 7 }) => ({
+					entries.map(({ id, key, endTxn, tableId = 7, logName = 'local' }) => ({
 						type: 'put',
 						tableId,
 						recordId: id,
 						version: key,
 						txnLogKey: key,
 						endTxn,
+						logName,
 						extendedType: 17,
 						getValue: () => ({ id }),
 					})),
@@ -91,7 +89,6 @@ async function replayStream(entries, { truncatedVersions = new Set(), elected = 
 	} finally {
 		outcomes.restore();
 	}
-	// group the replayed ids by the transaction they were staged in, in replay order
 	const groups = [];
 	for (const [id, txn] of stagedIn) {
 		const group = groups.find((candidate) => candidate.transaction === txn);
@@ -106,7 +103,6 @@ async function replayStream(entries, { truncatedVersions = new Set(), elected = 
 	return { groups: groups.map(({ ids, outcome }) => ({ ids, outcome })), failure, unlocked };
 }
 
-// Runs one phase of the crash fixture; a `write` child is expected to SIGKILL itself.
 async function runCrashChild(args) {
 	const child = spawn(process.execPath, [path.join(__dirname, 'replayCommitBoundaries-crash.js'), ...args], {
 		stdio: ['ignore', 'ignore', 'pipe'],
@@ -306,6 +302,31 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 		]);
 	});
 
+	it('discards a torn commit even when another log continues at the same key', async function () {
+		const { groups } = await replayStream(
+			[
+				{ id: 'a', key: 5, endTxn: false, logName: 'origin' },
+				{ id: 'b', key: 5, endTxn: true, logName: 'via-peer' },
+			],
+			{ truncatedVersions: new Set([5]) }
+		);
+		assert.deepStrictEqual(groups, [
+			{ ids: ['a'], outcome: 'aborted' },
+			{ ids: ['b'], outcome: 'committed' },
+		]);
+	});
+
+	it('discards the open commit when a boot replay stops for lack of progress inside it', async function () {
+		const stream = [{ id: 'a', key: 5, endTxn: false }];
+		// a dropped table's entries, enough to trip the no-progress bound before the commit's end
+		for (let i = 0; i <= REPLAY_NO_PROGRESS_COUNT_LIMIT; i++)
+			stream.push({ id: 'x' + i, key: 5, endTxn: false, tableId: 99 });
+		stream.push({ id: 'end', key: 5, endTxn: true, tableId: 99 });
+		const { groups, failure } = await replayStream(stream, { elected: false });
+		assert.strictEqual(failure, undefined);
+		assert.deepStrictEqual(groups, [{ ids: ['a'], outcome: 'aborted' }]);
+	});
+
 	it('ends a commit at an endTxn marker carried by a skipped entry', async function () {
 		const { groups } = await replayStream([
 			{ id: 'a', key: 5, endTxn: false },
@@ -348,12 +369,19 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 			{ id: 'a', key: 5, endTxn: true },
 			{ id: 'b', key: 5, endTxn: true },
 		];
+		// The native commit is the one seam with no real failure to provoke; failing it runs
+		// directCommitSync's own cleanup.
 		const failFirst = () => {
 			let failed = false;
-			return () => {
+			return (replayTransaction) => {
 				if (failed) return;
 				failed = true;
-				throw new Error('simulated commit failure');
+				replayTransaction.transaction = {
+					commitSync() {
+						throw new Error('simulated commit failure');
+					},
+					abort() {},
+				};
 			};
 		};
 
