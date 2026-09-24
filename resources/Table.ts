@@ -1248,15 +1248,6 @@ export function makeTable(options) {
 					return side;
 				};
 
-				const commitPart = async (part) => {
-					try {
-						part.resolve();
-						await part.committed;
-					} catch (error) {
-						return { part, error };
-					}
-				};
-
 				/**
 				 * Resolves whether every part of a source transaction committed. Every part is released even after one
 				 * fails, so none stays open holding a snapshot; then each failed part is reported under its own origin
@@ -1264,12 +1255,21 @@ export function makeTable(options) {
 				 * The commit side effects wait for all of the parts.
 				 */
 				const commitSourceTransaction = async (txn) => {
-					const failure = await commitPart(txn);
-					let failures = failure && [failure];
+					let failures: Array<{ part: any; error: unknown }> | undefined;
+					try {
+						txn.resolve();
+						await txn.committed;
+					} catch (error) {
+						failures = [{ part: txn, error }];
+					}
 					if (txn.sideTransactions) {
 						for (const side of txn.sideTransactions.values()) {
-							const sideFailure = await commitPart(side);
-							if (sideFailure) (failures ??= []).push(sideFailure);
+							try {
+								side.resolve();
+								await side.committed;
+							} catch (error) {
+								(failures ??= []).push({ part: side, error });
+							}
 						}
 					}
 					if (failures) {
@@ -1433,7 +1433,6 @@ export function makeTable(options) {
 									let committed;
 									try {
 										if (committingTxn) {
-											// a failed part was reported, and the sequence id is not advanced past it
 											if (!(await commitSourceTransaction(committingTxn))) continue;
 											committed = await committingTxn.committed;
 										}
@@ -1450,9 +1449,8 @@ export function makeTable(options) {
 										// next beginTxn (which would brick the apply loop).
 										txnInProgress = undefined;
 									}
-									// Only reached when the commit succeeded; a failure propagates to the handler's catch
-									// and the sequence id is intentionally not advanced past the unapplied write. Remembered
-									// only once recorded, so a re-delivery of a failed transaction still records it.
+									// Only reached when every part committed: a failed part holds the sequence id, and it is
+									// remembered only once recorded, so a re-delivery of a failed transaction still records it.
 									if (updateRecordedSequenceId) {
 										await updateRecordedSequenceId();
 										lastSequenceId = event.localTime;
@@ -1466,9 +1464,8 @@ export function makeTable(options) {
 										// one), this is the backpressure point for all but the last transaction: wait for
 										// the prior commit to land before applying the next so the sequence id can't
 										// advance past an uncommitted write.
-										// A failed part is reported, and apply continues so the current beginTxn still
-										// starts a fresh transaction with correct boundaries instead of having its writes
-										// applied as standalone ones.
+										// A failed part is reported and apply continues, so this beginTxn still starts a
+										// fresh transaction instead of having its writes applied as standalone ones.
 										try {
 											await commitSourceTransaction(txnInProgress);
 										} finally {
@@ -1541,14 +1538,13 @@ export function makeTable(options) {
 									}
 								});
 								if (txnInProgress) {
-									// begin_txn: pending until the source transaction closes, which runs its commit side effects
+									// begin_txn: the source transaction's close runs its commit side effects
 									txnInProgress.committed = commitResolution;
 								} else {
 									// standalone write: backpressure on the commit before pulling the next event
 									const committed = commitResolution ? await commitResolution : undefined;
 									applied = true;
 									if (userRoleUpdate) signalling.signalUserChange(new UserEventMsg(process.pid));
-									// pass the commit resolution through to the callback
 									if (event.onCommit) await event.onCommit(committed);
 								}
 							} catch (error) {

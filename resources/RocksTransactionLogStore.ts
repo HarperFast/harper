@@ -168,11 +168,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 		return nodeId > -1 ? (this.nodeLogs?.[nodeId] ?? this.loadLogs()[nodeId]) : undefined;
 	}
 
-	/**
-	 * The log that a write from origin `nodeId`, received via `viaNodeId`, is recorded in. One RocksDB transaction can
-	 * append to only one log, so a source transaction whose writes resolve to different logs must be applied as one
-	 * transaction per log (harper#1162).
-	 */
+	/** The log a write from origin `nodeId`, received via `viaNodeId`, is recorded in. */
 	logFor(nodeId: number | undefined, viaNodeId: number | undefined): TransactionLog {
 		return this.logById(nodeId) ?? this.logById(viaNodeId) ?? this.log;
 	}
