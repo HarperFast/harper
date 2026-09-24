@@ -1361,6 +1361,27 @@ describe('mcp/tools/application — structuredContent honors the ADVERTISED outp
 		assertHonorsContract(tool, res);
 	});
 
+	// `buildOutputSchemas` (defineResource.ts) keys by HTTP verb, so a code-first resource declares
+	// `post`, not `create`. Every other test here keys by the MCP verb and so only ever exercises the
+	// first half of `schemas?.[verb] ?? schemas?.[CONTRACT_VERB[verb]]`.
+	it('an authored outputSchemas keyed by HTTP verb owns the contract for its MCP verb', async () => {
+		const Product = productResource({ post: async () => [{ id: '1' }] });
+		Product.outputSchemas = {
+			post: {
+				type: 'object',
+				properties: { results: { type: 'array' } },
+				required: ['results'],
+				additionalProperties: false,
+			},
+		};
+		register(Product);
+		const tool = getTool('create_Product');
+		const res = await tool.handler({ name: 'x' }, CTX);
+
+		assert.equal(res.isError, undefined, `outputSchemas.post should govern create_: ${res.content?.[0]?.text}`);
+		assert.deepEqual(res.structuredContent, { results: [{ id: '1' }] });
+	});
+
 	it('search_ advertises no outputSchema and keeps its { rows } envelope', async () => {
 		register(productResource({}));
 		const tool = getTool('search_Product');
