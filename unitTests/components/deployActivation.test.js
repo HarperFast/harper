@@ -348,9 +348,8 @@ describe('interrupted activation recovery', () => {
 });
 
 describe('the root-config effect of an interrupted activation', () => {
-	// #2315 step 3: the journal carries what the activation does to the component's root-config entry, and
-	// every roll forward applies it — a crash anywhere past the first rename otherwise brings the certified
-	// build up under the previous release's config, isolation included.
+	// Every roll forward applies the journal's effect: a crash past the first rename would otherwise bring the
+	// certified build up under the previous release's config, isolation included.
 	preserveRootConfig();
 
 	const journalV2 = (component, id, rootConfig) => JSON.stringify({ v: 2, component, candidateId: id, rootConfig });

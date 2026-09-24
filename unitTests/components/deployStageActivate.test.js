@@ -3,8 +3,8 @@
 // #2315 step 6: `deploy_component` can build and certify a component without activating it, and a later
 // request can swap that artifact in by deployment id. These cover the filesystem protocol that makes the
 // delay safe — the artifact descriptor, the exclusive claim on a public id, the verification an activation
-// runs before it touches anything, and the return to a dormant, retryable state when one fails — plus, from
-// step 3, that the component's root-config entry changes only once the swap has committed.
+// runs before it touches anything, and the return to a dormant, retryable state when one fails — and that the
+// component's root-config entry changes only once the swap has committed.
 
 const assert = require('node:assert');
 const path = require('node:path');
@@ -80,6 +80,25 @@ async function readLive(componentsRoot, name) {
 
 async function readDescriptor(componentsRoot, id) {
 	return JSON.parse(await fs.readFile(path.join(deploymentDir(componentsRoot, id), '.artifact.json'), 'utf8'));
+}
+
+/**
+ * Whether a read-only directory actually denies this process a write. Root ignores the mode bits and Windows
+ * does not model them this way, so an injection built on one would silently do nothing there; probing keeps
+ * such an environment skipping rather than passing with nothing exercised.
+ */
+async function readOnlyDirectoryDeniesWrites() {
+	const probe = await fs.mkdtemp(path.join(os.tmpdir(), 'stage-activate-probe-'));
+	try {
+		await fs.chmod(probe, 0o500);
+		await fs.writeFile(path.join(probe, 'x'), '');
+		return false;
+	} catch {
+		return true;
+	} finally {
+		await fs.chmod(probe, 0o700).catch(() => {});
+		await fs.rm(probe, { recursive: true, force: true });
+	}
 }
 
 describe('staging a build without activating it', () => {
@@ -701,25 +720,6 @@ describe('an activation that fails before it commits', () => {
 	// still succeed, the deployment directory and lock root stay writable, and only a rename whose parent is
 	// the root fails. The aside staging directory is pre-created so the preparation
 	// preamble takes its recovery branch here rather than creating it later from inside the boundary.
-	/**
-	 * Whether a read-only directory actually denies this process a write. Root ignores the mode bits and
-	 * Windows does not model them this way, so the injection below would silently do nothing there; probing
-	 * keeps such an environment skipping rather than passing with nothing exercised.
-	 */
-	const readOnlyDirectoryDeniesWrites = async () => {
-		const probe = await fs.mkdtemp(path.join(os.tmpdir(), 'stage-activate-probe-'));
-		try {
-			await fs.chmod(probe, 0o500);
-			await fs.writeFile(path.join(probe, 'x'), '');
-			return false;
-		} catch {
-			return true;
-		} finally {
-			await fs.chmod(probe, 0o700).catch(() => {});
-			await fs.rm(probe, { recursive: true, force: true });
-		}
-	};
-
 	const failAfterJournal = async (root, component, id, options = {}) => {
 		await fs.mkdir(path.join(root, '.deploy-aside', component), { recursive: true, mode: 0o700 });
 		await fs.chmod(root, 0o500);
@@ -799,6 +799,36 @@ describe('an activation that fails before it commits', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
+	// The entry is published after the commit, where a failure leaves the release live under the previous entry
+	// through every restart until someone fixes the config. A config that cannot take the entry now is refused
+	// while refusing still changes nothing.
+	it('refuses, before anything moves, an entry the root config could not take once the release was live', async function () {
+		this.timeout(20000);
+		const root = await newRoot('preflight-config');
+		await writeLive(root, 'web', 'LIVE v1\n');
+		const app = applicationAt(
+			root,
+			'web',
+			await makeTarball({ 'package.json': '{"name":"web","version":"2.0.0"}\n', 'index.js': 'DEPLOYED v2\n' })
+		);
+		const unparseable = readFileSync(getConfigFilePath(), 'utf8') + '\nunparseable: [unterminated\n';
+		writeFileSync(getConfigFilePath(), unparseable);
+
+		await assert.rejects(
+			() =>
+				prepareApplication(app, {
+					artifactId: 'd1',
+					describeArtifact: () => ({ rootConfig: { package: 'npm:web@2' }, isolated: false }),
+				}),
+			/does not parse/
+		);
+
+		assert.strictEqual(await readLive(root, 'web'), 'LIVE v1\n', 'the previous release was never moved');
+		assert.strictEqual(existsSync(deploymentDir(root, 'd1')), false, 'the build is discarded like any failed build');
+		assert.strictEqual(readFileSync(getConfigFilePath(), 'utf8'), unparseable, 'and config was not rewritten');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
 	// The window the entry used to be published in: after B1 has displaced the live tree, before B2. B1 is
 	// parked in its retry by a read-only root until the journal is on disk; the deployment directory — B2's
 	// source parent — is then made read-only and B1 let through, so the live tree is displaced and the swap
@@ -865,7 +895,8 @@ describe('an activation that fails after it commits', () => {
 	preserveRootConfig();
 
 	it('keeps the journal when the entry cannot be published, and recovery publishes it once it can', async function () {
-		this.timeout(20000);
+		this.timeout(30000);
+		if (process.platform === 'win32' || !(await readOnlyDirectoryDeniesWrites())) return this.skip();
 		const root = await newRoot('post-commit-config');
 		await writeLive(root, 'web', 'LIVE v1\n');
 		const app = applicationAt(
@@ -874,17 +905,36 @@ describe('an activation that fails after it commits', () => {
 			await makeTarball({ 'package.json': '{"name":"web","version":"2.0.0"}\n', 'index.js': 'DEPLOYED v2\n' })
 		);
 		const intact = readFileSync(getConfigFilePath(), 'utf8');
-		// A document the writer refuses to rewrite, so the publication after the commit is what fails.
-		writeFileSync(getConfigFilePath(), intact + '\nunparseable: [unterminated\n');
-
-		await assert.rejects(
-			() =>
-				prepareApplication(app, {
-					artifactId: 'd1',
-					describeArtifact: () => ({ rootConfig: { package: 'npm:web@2', isolated: true }, isolated: true }),
-				}),
-			/Deployed web, but could not publish its root configuration/
-		);
+		// Everything the preparation creates directly under the components root exists already, so a read-only
+		// root parks it in the move-aside's retry — past the up-front config check and the journal, and nowhere
+		// earlier. The config is broken while it waits, so the publication after the commit is what fails.
+		for (const dir of ['.deploy-staging', path.join('.deploy-aside', 'web'), '.component-preparation-locks']) {
+			await fs.mkdir(path.join(root, dir), { recursive: true, mode: 0o700 });
+		}
+		await fs.chmod(root, 0o500);
+		const deploying = prepareApplication(app, {
+			artifactId: 'd1',
+			describeArtifact: () => ({ rootConfig: { package: 'npm:web@2', isolated: true }, isolated: true }),
+		});
+		// Settled by the assertion below; this only keeps a failure before the journal from surfacing as an
+		// unhandled rejection while the wait runs.
+		deploying.catch(() => {});
+		try {
+			await waitFor(
+				async () => {
+					const entries = await fs.readdir(deploymentDir(root, 'd1')).catch(() => []);
+					return entries.includes('.activation.json') && !entries.some((entry) => entry.includes('.partial-'));
+				},
+				20000,
+				5
+			);
+			// A document the writer refuses to rewrite.
+			writeFileSync(getConfigFilePath(), intact + '\nunparseable: [unterminated\n');
+			await fs.chmod(root, 0o700);
+			await assert.rejects(deploying, /Deployed web on this node, but could not publish its root configuration/);
+		} finally {
+			await fs.chmod(root, 0o700).catch(() => {});
+		}
 
 		assert.strictEqual(await readLive(root, 'web'), 'DEPLOYED v2\n', 'the release is live');
 		const journal = JSON.parse(await fs.readFile(path.join(deploymentDir(root, 'd1'), '.activation.json'), 'utf8'));

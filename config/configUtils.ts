@@ -179,9 +179,13 @@ function writeFileDurablySync(filePath: string, content) {
 	}
 }
 
-/** Put an existing file's content and the directory entry naming it on storage. */
+/**
+ * Put an existing file's content and the directory entry naming it on storage, without needing permission to
+ * write either: this flushes what is already there, so it must not fail where the file is readable but not
+ * writable. Only Windows needs a write handle to flush, and there a refusal is one of the tolerated codes.
+ */
 export function syncFileToStorageSync(filePath: string) {
-	syncPathSync(filePath, 'r+');
+	syncPathSync(filePath, process.platform === 'win32' ? 'r+' : 'r');
 	syncPathSync(path.dirname(filePath), 'r');
 }
 
@@ -1398,10 +1402,7 @@ export async function setConfiguration(setConfigJson) {
 	}
 	assertThreadHeapMemoryStartable(configFields);
 	try {
-		// Serialized with every other runtime writer of the document — a deploy publishing its entry, a drop
-		// removing one — because each parses and rewrites the whole file. Held only around the local write;
-		// replication is other nodes' writes. Imported lazily: the lock lives with the deploy code that owns
-		// the other writers, and this module loads before any of it.
+		// Imported lazily: the publication lock's module loads this one.
 		const { withRootConfigPublicationLock } = await import('../components/rootConfigPublication.ts');
 		await withRootConfigPublicationLock(async () => updateConfigValue(undefined, undefined, configFields, true));
 		if (replicated) {

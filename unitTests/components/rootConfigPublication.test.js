@@ -14,9 +14,11 @@ const YAML = require('yaml');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { getConfigFilePath } = require('#src/config/configUtils');
+const { getConfigFilePath, getConfigPath } = require('#src/config/configUtils');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const {
 	applyRootConfigEffect,
+	assertRootConfigEffectPublishable,
 	isRootConfigEffect,
 	rootConfigEffectFromDeclaration,
 	withRootConfigPublicationLock,
@@ -163,6 +165,53 @@ describe('root config publication', () => {
 		}
 	});
 
+	describe('when the root config is readable but not writable', () => {
+		// Root ignores the mode bits and Windows does not model them this way, so there nothing would be denied.
+		const permissionsEnforced = () => process.platform !== 'win32' && process.getuid?.() !== 0;
+		const modes = new Map();
+		const makeReadOnly = () => {
+			for (const [target, mode] of [
+				[getConfigFilePath(), 0o444],
+				[path.dirname(getConfigFilePath()), 0o500],
+			]) {
+				modes.set(target, fs.statSync(target).mode & 0o777);
+				fs.chmodSync(target, mode);
+			}
+		};
+		afterEach(() => {
+			for (const [target, mode] of modes) fs.chmodSync(target, mode);
+			modes.clear();
+		});
+
+		it('answers an effect the document already satisfies without the lock or write access, as every payload deploy of an unconfigured component needs', async function () {
+			this.timeout(10000);
+			if (!permissionsEnforced()) return this.skip();
+			writeEntry('configured', { package: 'npm:configured@1' });
+			// Held throughout, so an answer that waited on the lock would time out rather than pass.
+			const release = await holdPublicationLock();
+			try {
+				makeReadOnly();
+				assert.strictEqual(await applyRootConfigEffect('never-configured', { kind: 'unset-package' }), false);
+				const unchanged = { kind: 'set', entry: { package: 'npm:configured@1' } };
+				assert.strictEqual(await applyRootConfigEffect('configured', unchanged), false, 'a replayed journal');
+				await assertRootConfigEffectPublishable('configured', unchanged);
+			} finally {
+				await release();
+			}
+		});
+
+		it('refuses up front an effect that would have to change the document', async function () {
+			if (!permissionsEnforced()) return this.skip();
+			makeReadOnly();
+
+			await assert.rejects(
+				() => assertRootConfigEffectPublishable('web', { kind: 'set', entry: { package: 'npm:web@2' } }),
+				(error) => /is not writable/.test(error.message) && error.statusCode === 500
+			);
+			await assertRootConfigEffectPublishable('web', { kind: 'keep' });
+		});
+	});
+
 	describe('serializes every writer of the document', () => {
 		it('holds a writer until the lock is free, and then applies it', async () => {
 			const release = await holdPublicationLock();
@@ -254,6 +303,28 @@ describe('root config publication', () => {
 			await setting;
 			assert.strictEqual(readRootConfig().logging?.level, 'fatal');
 		});
+	});
+});
+
+describe('drop_component', () => {
+	preserveRootConfig();
+
+	it('removes the entry before the tree, so a refusal leaves the component whole rather than an entry that reinstalls it', async () => {
+		const { dropComponent } = require('#src/components/operations');
+		const componentDir = path.join(getConfigPath(CONFIG_PARAMS.COMPONENTSROOT), 'drop-order');
+		fs.mkdirSync(componentDir, { recursive: true });
+		fs.writeFileSync(path.join(componentDir, 'index.js'), '// live\n');
+		fs.writeFileSync(
+			getConfigFilePath(),
+			fs.readFileSync(getConfigFilePath(), 'utf8') + '\nunparseable: [unterminated\n'
+		);
+		try {
+			await assert.rejects(() => dropComponent({ project: 'drop-order' }), /does not parse/);
+
+			assert.ok(fs.existsSync(path.join(componentDir, 'index.js')), 'nothing was dropped');
+		} finally {
+			fs.rmSync(componentDir, { recursive: true, force: true });
+		}
 	});
 });
 

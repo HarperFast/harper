@@ -8,6 +8,7 @@ import {
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import {
 	applyRootConfigEffect,
+	assertRootConfigEffectPublishable,
 	isRootConfigEffect,
 	rootConfigEffectFromDeclaration,
 	type RootConfigEffect,
@@ -1312,7 +1313,6 @@ type ActivationJournal = {
 	v: number;
 	component: string;
 	candidateId: string;
-	/** What the activation does to the component's root-config entry once the swap has committed. */
 	rootConfig: RootConfigEffect;
 };
 
@@ -2836,6 +2836,7 @@ export async function activateCandidateApplication(
 	else if (rootConfig.kind === 'remove') {
 		throw new Error(`Cannot activate ${application.name}: an activation never removes its root-config entry`);
 	}
+	await assertRootConfigEffectPublishable(application.name, rootConfig);
 	const liveDirPath = application.dirPath;
 	const candidateDirPath = candidateApplicationPath(liveDirPath, deploymentId);
 	const deploymentDirPath = candidateDeploymentDirPath(liveDirPath, deploymentId);
@@ -3004,20 +3005,20 @@ export async function activateCandidateApplication(
 	}
 	// The tree moved, so any dependency link that named its build path is now dangling.
 	await repairRelocatedDependencyLinks(liveDirPath, candidateDirPath);
-	// Before the rollback record is retired, because the journal is the only record of this effect and it goes
-	// once that record is settled. Thrown rather than logged: the failures below cost disk, this one costs the
-	// component its configuration — a release staged to run isolated would be restarted non-isolated on the
-	// strength of an operation that reported success. The records survive it, so the next settlement publishes.
+	// Before the rollback record is retired: the journal is the only record of this effect, and it goes once that
+	// record is settled. Thrown, unlike the failures below, because reporting success would restart workers under
+	// the previous entry — isolation included.
 	try {
 		await applyRootConfigEffect(application.name, rootConfig);
 	} catch (error) {
 		const failure = new Error(
-			`Deployed ${application.name}, but could not publish its root configuration. The release is live, and ` +
-				`its entry is published when recovery next settles this activation — at the next start, or the next ` +
-				`deploy of ${application.name}: ${errorMessage(error)}`,
+			`Deployed ${application.name} on this node, but could not publish its root configuration. The release is ` +
+				`live here and was not sent to any other node; its entry is published when recovery next settles this ` +
+				`activation — at the next start, or the next deploy of ${application.name}: ${errorMessage(error)}`,
 			{ cause: error }
 		);
 		(failure as any)[ACTIVATION_COMMITTED] = true;
+		if ((error as any)?.statusCode) (failure as any).statusCode = (error as any).statusCode;
 		throw failure;
 	}
 	const settledRecord = asidePath ?? priorAbsentRecordPath!;

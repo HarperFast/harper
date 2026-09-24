@@ -236,6 +236,13 @@ same failure fails the component closed with `.unsettled`, the contract the reti
 publication-lock timeout is rethrown as a 503 `ServerError` rather than the preparation lock's own timeout
 class, which recovery reads as "a live deploy holds this component's lock" — a deferral, not a verdict.
 
+The throw also means `deploy_component` never reaches replication: the release is live on this node only, and
+the error says so. A fresh deploy converges; a retry of a `deployment_id` activation does not, because its
+preamble settles the kept journal and the artifact is gone — the unconvergeable-retry gap #2315 step 5 owns.
+So a condition that would fail every publish is refused BEFORE anything moves: `assertRootConfigEffectPublishable`
+runs ahead of the journal and refuses an effect that would have to change a document that does not parse, or
+whose directory this process cannot write. Only a static condition is caught; a publish can still fail.
+
 **A version-1 journal is replayed from the artifact descriptor.** A v1 activation of a staged artifact
 published its descriptor's entry between the two renames, so a crash in that window is exactly the one whose
 effect `.artifact.json` still records; mapping every v1 journal to `keep` would carry the isolation loss this
@@ -256,10 +263,14 @@ lock, then this one. Its wait is bounded (30 s) and never renewed, and a ticket 
 process is reclaimed through `isThreadRunning` — without it a same-process ticket reads as live and every
 config writer on the node times out behind it. Each write is `atomicWriteFile({ durable: true })`: the temp
 file is fsynced through its write handle (Windows only flushes a handle opened for writing) and the directory
-after the rename, tolerating the platform's "cannot sync" codes and nothing else. An apply that finds the
-entry already right still syncs the file and its directory before returning, because a crashed predecessor
-can have renamed it in unflushed. A document that does not parse cleanly is refused, never rewritten from what
-the parser recovered.
+after the rename, tolerating the platform's "cannot sync" codes and nothing else. An effect the document
+already satisfies — a replayed journal, or a payload deploy of a component with no entry, which is most of
+them — is answered before the lock and needs no write access at all: the lock creates its directory beside the
+config, and a node whose config is readable but not writable took payload deploys before this change and
+must still. It still syncs the file and its directory, through read handles (only Windows needs a write handle
+to flush, and there a refusal is a tolerated code), because a crashed predecessor can have renamed it in
+unflushed. Deciding outside the lock is safe because the file is only replaced by rename. A document that does
+not parse cleanly is refused, never rewritten from what the parser recovered.
 
 **Boot ordering depends on the refresh.** `env.initSync()` memoizes the config object, so publishing to disk
 during recovery is not enough on its own: `applyRootConfigEffect` re-inits THIS thread's config, and boot

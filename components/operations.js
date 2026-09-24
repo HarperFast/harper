@@ -37,7 +37,7 @@ const {
 	dropComponentDirectory,
 } = require('./Application.ts');
 const { COMPONENT_PREPARATION_LOCK_DIR, withComponentPreparationLock } = require('./componentPreparationLock.ts');
-const { applyRootConfigEffect } = require('./rootConfigPublication.ts');
+const { applyRootConfigEffect, withRootConfigPublicationLock } = require('./rootConfigPublication.ts');
 const { server } = require('../server/Server.ts');
 const {
 	DeploymentRecorder,
@@ -323,7 +323,7 @@ async function dropCustomFunctionProject(req) {
 		}
 
 		if (appFound) {
-			configUtils.updateConfigValue(hdbTerms.CONFIG_PARAMS.APPS, apps);
+			await withRootConfigPublicationLock(async () => configUtils.updateConfigValue(hdbTerms.CONFIG_PARAMS.APPS, apps));
 
 			return `Successfully deleted project: ${project}`;
 		}
@@ -801,10 +801,7 @@ async function deployComponent(req) {
 		// committed" — so a later failure arrives after both phases reported success. The operation's error
 		// is the authority on whether the deploy landed, not the phase stream.
 		emit('phase', { phase: 'prepare', status: 'start' });
-		// The root-config entry a package deploy owns, or null for a payload deploy, which owns none. Only
-		// DECLARED here: the preparation publishes it as an effect of the activation, after the swap commits, so
-		// a build or validation that fails never leaves config naming a release that did not go live. A stage
-		// records it with the artifact for the activation that eventually publishes it.
+		// Declared, never written here: the activation publishes it once the swap commits.
 		let declaredRootConfig = null;
 		await prepareApplication(application, {
 			// `.deploy-staging/<artifactId>`. The public deployment id, so the id the caller was handed is
@@ -1496,6 +1493,9 @@ async function dropComponent(req) {
 				}
 				if (runningApplications.includes(project)) restartScope = project;
 			}
+			// First, because it is the step that can refuse: failing here after the tree is gone would leave an entry
+			// the next start reinstalls the dropped component from.
+			if (!file) await applyRootConfigEffect(project, { kind: 'remove' });
 			const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
 			if (!file && (await fs.pathExists(componentSymlink))) {
 				await fs.unlink(componentSymlink);
@@ -1516,7 +1516,6 @@ async function dropComponent(req) {
 				await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
 			}
 
-			if (!file) await applyRootConfigEffect(project, { kind: 'remove' });
 			response = await server.replication.replicateOperation(req);
 			const { applicationHasBranchStorage, removeBranchesForApplication } = require('../resources/branchDatabase.ts');
 			const branched = !file && applicationHasBranchStorage(project);

@@ -1,6 +1,14 @@
+import { access, constants } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import * as env from '../utility/environment/environmentManager.ts';
-import { atomicWriteFile, getConfigFilePath, parseYamlDoc, syncFileToStorageSync } from '../config/configUtils.ts';
+import {
+	atomicWriteFile,
+	getConfigFilePath,
+	getConfigObj,
+	parseYamlDoc,
+	syncFileToStorageSync,
+} from '../config/configUtils.ts';
 import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
 import { ComponentPreparationLockTimeoutError, withComponentPreparationLock } from './componentPreparationLock.ts';
@@ -21,8 +29,6 @@ export type RootConfigEffect =
 	{ kind: 'keep' } | { kind: 'set'; entry: Record<string, unknown> } | { kind: 'unset-package' } | { kind: 'remove' };
 
 const ROOT_CONFIG_EFFECT_KINDS = new Set(['keep', 'set', 'unset-package', 'remove']);
-// The keys a package deploy publishes about HOW the component is installed. Everything else on the entry —
-// `isolated`, `urlPath`, `host`, `branchedDatabases` — is runtime configuration a payload deploy does not own.
 const PACKAGE_INSTALL_KEYS = ['package', 'install', 'credentials'];
 // Every holder is one parse-and-rewrite of a small file, so a wait this long means the holder is wedged, not
 // busy. Not renewed for a live holder: a config write is not an `npm install`.
@@ -92,34 +98,70 @@ export async function withRootConfigPublicationLock<T>(publish: () => Promise<T>
 }
 
 /**
- * Apply an effect to the component's root-config entry under the publication lock, and return only once the
- * entry as the effect wants it is on storage — even when this call found it already in place, because a
- * crashed predecessor can have renamed the file in without flushing it. Idempotent, so recovery can re-apply
- * a journal after a crash at any point. Refreshes THIS thread's memoized config, which is what lets a boot-time
- * recovery publish before `installApplications()` reads the config it installs from. Returns whether the file
- * changed.
+ * Apply an effect to the component's root-config entry, and return only once the entry as the effect wants it
+ * is on storage — even when it was already in place, because a crashed predecessor can have renamed the file in
+ * without flushing it. Idempotent, so recovery can re-apply a journal after a crash at any point. Leaves THIS
+ * thread's memoized config agreeing with the file, which is what lets a boot-time recovery publish before
+ * `installApplications()` reads the config it installs from. Returns whether the file changed.
  */
 export async function applyRootConfigEffect(component: string, effect: RootConfigEffect): Promise<boolean> {
 	if (effect.kind === 'keep') return false;
-	const changed = await withRootConfigPublicationLock(async () => {
-		const configFilePath = getConfigFilePath();
-		const configDoc = parseYamlDoc(configFilePath);
-		// Refused before anything is applied: rewriting a document that did not parse cleanly writes back only
-		// what the parser recovered.
-		if (configDoc.errors?.length > 0) {
-			throw new Error(
-				`Cannot publish the root config entry of ${component}: ${configFilePath} does not parse: ${configDoc.errors}`
-			);
-		}
-		if (!applyEffectToDocument(configDoc, component, effect)) {
-			syncFileToStorageSync(configFilePath);
-			return false;
-		}
-		atomicWriteFile(configFilePath, String(configDoc), { durable: true });
-		return true;
+	// A satisfied effect is answered without the lock, which needs write access to the config's directory: a node
+	// whose config is readable but not writable still takes payload deploys, and a replay recovery could never
+	// finish would fail the component closed at every start. Safe unlocked: the file is only replaced by rename.
+	const unlocked = readRootConfigChange(component, effect);
+	if (!unlocked.changed) {
+		syncFileToStorageSync(unlocked.configFilePath);
+		if (!isDeepStrictEqual(getConfigObj()?.[component], unlocked.configDoc.toJSON()?.[component])) env.initSync(true);
+		return false;
+	}
+	return withRootConfigPublicationLock(async () => {
+		const { configFilePath, configDoc, changed } = readRootConfigChange(component, effect);
+		if (changed) atomicWriteFile(configFilePath, String(configDoc), { durable: true });
+		else syncFileToStorageSync(configFilePath);
+		// Inside the lock: on the main thread a refresh re-applies the env config layers and can rewrite the file.
+		env.initSync(true);
+		return changed;
 	});
-	env.initSync(true);
-	return changed;
+}
+
+/**
+ * Refuse an effect this node could not publish, while refusing still changes nothing: the publish runs after the
+ * commit rename, and a document that does not parse or a directory this process cannot write fails it at every
+ * start after. Only static conditions are caught; the publish can still fail.
+ */
+export async function assertRootConfigEffectPublishable(component: string, effect: RootConfigEffect): Promise<void> {
+	if (effect.kind === 'keep') return;
+	const { configFilePath, changed } = readRootConfigChange(component, effect);
+	if (!changed) return;
+	const configDirPath = dirname(configFilePath);
+	try {
+		await access(configDirPath, constants.W_OK);
+	} catch (error) {
+		const refusal = new ServerError(
+			`Cannot deploy ${component}: its root config entry changes with this release, and ${configDirPath} is not ` +
+				`writable, so the entry could not be published once the release went live: ${errorMessage(error)}`
+		);
+		refusal.cause = error;
+		throw refusal;
+	}
+}
+
+function readRootConfigChange(component: string, effect: RootConfigEffect) {
+	const configFilePath = getConfigFilePath();
+	const configDoc = parseYamlDoc(configFilePath);
+	// Refused before anything is applied: rewriting a document that did not parse cleanly writes back only what
+	// the parser recovered.
+	if (configDoc.errors?.length > 0) {
+		throw new Error(
+			`Cannot publish the root config entry of ${component}: ${configFilePath} does not parse: ${configDoc.errors}`
+		);
+	}
+	return { configFilePath, configDoc, changed: applyEffectToDocument(configDoc, component, effect) };
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 function applyEffectToDocument(configDoc: any, component: string, effect: RootConfigEffect): boolean {

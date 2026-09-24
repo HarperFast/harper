@@ -185,8 +185,11 @@ suite('deploy_component publishes root config as an effect of the activation', (
 
 		await startHarper(ctx, { config: {}, env: {} });
 
-		strictEqual(await liveVersion(ctx, project), '2', 'recovery rolled the certified build forward');
-		deepStrictEqual(await rootConfigEntry(ctx, project), { package: packagedV2 }, 'and published its entry');
+		// Not proof of WHICH copy is live: installApplications() then reinstalls the package over the rolled-forward
+		// tree, since no deploy writes harper-application-lock.json, and both are version 2 here. What this case
+		// pins is the order — the entry is on disk and refreshed before that install reads it.
+		strictEqual(await liveVersion(ctx, project), '2', 'the release the interrupted activation carried is live');
+		deepStrictEqual(await rootConfigEntry(ctx, project), { package: packagedV2 }, 'recovery published its entry');
 		const lock = JSON.parse(await readFile(join(ctx.harper.dataRootDir, 'harper-application-lock.json'), 'utf8'));
 		deepStrictEqual(
 			lock.applications?.[project],
