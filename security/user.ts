@@ -112,6 +112,7 @@ import { credentialRejectionError } from './credentialRejection.ts';
 import { databases, getDatabases, onUpdatedTable } from '../resources/databases.ts';
 import { VERSION_REUSED } from '../resources/RecordEncoder.ts';
 import { contextStorage } from '../resources/transaction.ts';
+import { writeKey } from 'ordered-binary';
 
 server.getUser = (username: string, password?: string | null): Promise<User> => {
 	return findAndValidateUser(username, password, password != null);
@@ -410,7 +411,22 @@ function systemStore(tableName: string) {
 	return table.primaryStore;
 }
 
+// Mirrors resources/Table.ts's checkValidId: below this many characters a key can never encode too
+// large to need measuring; MAX_KEY_BYTES is LMDB's limit, ordered-binary-encoded (escaped chars can
+// expand, so byte length alone underestimates it)
+const KEY_FAST_PATH_CHARS = 659;
+const MAX_KEY_BYTES = 1978;
+const KEY_SIZE_TEST_BUFFER = Buffer.allocUnsafeSlow(8192);
+
+function keyTooLargeForStore(id: unknown): boolean {
+	if (typeof id !== 'string' || id.length < KEY_FAST_PATH_CHARS) return false;
+	if (id.length > MAX_KEY_BYTES) return true;
+	return writeKey(id, KEY_SIZE_TEST_BUFFER, 0) > MAX_KEY_BYTES;
+}
+
 function readEntry(store, id): RecordEntry | undefined {
+	// An id too large to fit as a key would otherwise throw from the store read; treat it as absent
+	if (keyTooLargeForStore(id)) return undefined;
 	const entry = store.getEntry(id);
 	return entry?.value == null ? undefined : entry;
 }
@@ -441,8 +457,6 @@ function isUnchanged(store, id, stamp: RecordStamp): boolean {
 	return holdsStamp(readEntry(store, id), stamp);
 }
 
-// LMDB rejects a key over this many bytes; a longer username is unauthenticatable, not an internal fault
-const MAX_USERNAME_KEY_BYTES = 1978;
 // A user/role pair recheck retries only while a write keeps landing between the two reads; this bounds
 // the retry against a sustained write storm on the same user, which would otherwise spin the event loop
 const MAX_USER_ENTRY_ATTEMPTS = 50;
@@ -450,7 +464,6 @@ const MAX_USER_ENTRY_ATTEMPTS = 50;
 /** The user and its role as of one committed state. */
 function readUserEntries(username: string): UserEntries {
 	if ((typeof username !== 'string' && typeof username !== 'number') || username === '') return {};
-	if (typeof username === 'string' && Buffer.byteLength(username, 'utf8') > MAX_USERNAME_KEY_BYTES) return {};
 	const userStore = systemStore(USER_TABLE_NAME);
 	const roleStore = systemStore(ROLE_TABLE_NAME);
 	let user = readEntry(userStore, username);

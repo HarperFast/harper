@@ -171,13 +171,22 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 
 		it('treats a username over the LMDB key-size limit as unauthenticatable, not an internal fault', () => {
 			assert.strictEqual(user.getUserWithRole('x'.repeat(2000)), undefined);
+			// ordered-binary escapes low control characters to 2 bytes each, so UTF-8 byte length alone
+			// would pass this well under the limit while the encoded key exceeds it
+			assert.strictEqual(user.getUserWithRole('\u0001'.repeat(1000)), undefined);
 		});
 
-		it('lists other users when an unreferenced role written straight to hdb_role has no permission', async () => {
-			await testUtils.seedUsers([lookupUser()]);
-			await databases.system.hdb_role.put({ id: 'malformed_role', role: 'malformed_role' });
+		it('lists users when a role written straight to hdb_role has no permission', async () => {
+			await testUtils.seedUsers([
+				lookupUser(),
+				lookupUser({
+					username: 'lookup_user_malformed_role',
+					role: { id: 'malformed_role', role: 'malformed_role' },
+				}),
+			]);
 			const listed = await user.listUsers();
 			assert.strictEqual(listed.get('lookup_user').role.id, 'lookup_role');
+			assert.strictEqual(listed.get('lookup_user_malformed_role').role.permission, undefined);
 		});
 	});
 
