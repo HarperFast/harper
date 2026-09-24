@@ -193,7 +193,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 			try {
 				// Replay transactions follow native commit boundaries, so memory is bounded by the largest
 				// commit rather than by every commit sharing a key. Entries skipped as unrecoverable are
-				// still left out of their commit, as before; the key still delimits marker-less entries.
+				// still left out of their commit; the key still delimits marker-less entries.
 				if (transaction && (openCommitEnded || lastTimestamp !== txnLogKey || openLogName !== logName)) {
 					const commitError = endTransaction();
 					if (commitError && electedReplayer) {
