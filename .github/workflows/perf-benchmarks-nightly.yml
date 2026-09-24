@@ -69,7 +69,7 @@ jobs:
         run: git checkout -- package-lock.json
 
       - name: Build
-        run: npm run build || true # repo currently has type errors; ignore per integration-tests.yml
+        run: npm run build
 
       - name: Verify build output
         run: test -f dist/bin/harper.js || { echo "dist/bin/harper.js missing — build failed"; exit 1; }
