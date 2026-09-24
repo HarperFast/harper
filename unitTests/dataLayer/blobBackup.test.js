@@ -5,6 +5,8 @@ const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writ
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const {
+	assertEngineOnlyRestoreAllowed,
+	blobRootsHaveFiles,
 	blobSnapshotDir,
 	blobsReadmeContent,
 	copyBlobRootsByIndex,
@@ -370,6 +372,66 @@ describe('blobBackup', function () {
 
 		it('is a no-op when no blob snapshots exist', async function () {
 			await purgeBlobSnapshots(backupDir, new Set([1]));
+		});
+	});
+
+	describe('blobRootsHaveFiles', function () {
+		it('is false for roots that do not exist', async function () {
+			assert.strictEqual(await blobRootsHaveFiles([rootA, rootB]), false);
+		});
+
+		it('is false for a root that holds only empty directories', async function () {
+			mkdirSync(join(rootA, '001', '002'), { recursive: true });
+			assert.strictEqual(await blobRootsHaveFiles([rootA]), false);
+		});
+
+		it('finds a file nested at the blob layout depth', async function () {
+			writeBlob(rootA, '001/002/003', 'alpha');
+			assert.strictEqual(await blobRootsHaveFiles([rootA]), true);
+		});
+
+		it('checks every configured root, not just the first', async function () {
+			mkdirSync(rootA, { recursive: true });
+			writeBlob(rootB, '001/002/003', 'beta');
+			assert.strictEqual(await blobRootsHaveFiles([rootA, rootB]), true);
+		});
+	});
+
+	describe('assertEngineOnlyRestoreAllowed', function () {
+		const engineOnly = { backupHasBlobs: false, allowEngineOnly: false };
+
+		it('refuses an engine-only in-place restore while blobs are present', async function () {
+			writeBlob(rootA, '001/002/003', 'alpha');
+			await assert.rejects(
+				assertEngineOnlyRestoreAllowed('somedb', [rootA], engineOnly),
+				(error) => error.statusCode === 400 && /allow_engine_only/.test(error.message)
+			);
+		});
+
+		it('allows it once the operator opts in', async function () {
+			writeBlob(rootA, '001/002/003', 'alpha');
+			await assertEngineOnlyRestoreAllowed('somedb', [rootA], { ...engineOnly, allowEngineOnly: true });
+		});
+
+		it('allows it when the roots are empty, so nothing can disagree', async function () {
+			await assertEngineOnlyRestoreAllowed('somedb', [rootA], engineOnly);
+		});
+
+		it('refuses a named target whose blob roots still hold files', async function () {
+			// A target's blob roots live outside its database directory, so "no database of that name"
+			// does not mean "no blobs of that name" — a dropped database leaves them for a retention
+			// window. Exempting a restore because it names a different database reopened the very
+			// mixed generation this guard exists to prevent.
+			writeBlob(rootA, '001/002/003', 'alpha');
+			await assert.rejects(
+				assertEngineOnlyRestoreAllowed('somedb-copy', [rootA], engineOnly),
+				(error) => error.statusCode === 400 && /allow_engine_only/.test(error.message)
+			);
+		});
+
+		it('never applies to a backup that captured blobs', async function () {
+			writeBlob(rootA, '001/002/003', 'alpha');
+			await assertEngineOnlyRestoreAllowed('somedb', [rootA], { ...engineOnly, backupHasBlobs: true });
 		});
 	});
 });

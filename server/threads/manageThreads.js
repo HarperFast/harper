@@ -328,13 +328,17 @@ function stopWorker(worker) {
 function getWorkerCount() {
 	return workerData ? workerData.workerCount : isMainWorker ? 1 : undefined;
 }
-function isEligibleBroadcastRecipient(port) {
-	return !port.isJobWorker;
+function isEligibleBroadcastRecipient(port, message) {
+	return (
+		!port.isJobWorker ||
+		(message?.type === hdbTerms.ITC_EVENT_TYPES.SCHEMA &&
+			message.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP)
+	);
 }
-function getEligibleBroadcastRecipientThreadIds() {
+function getEligibleBroadcastRecipientThreadIds(message) {
 	const recipientThreadIds = new Set();
 	for (const port of connectedPorts) {
-		if (isEligibleBroadcastRecipient(port) && port.threadId !== undefined) {
+		if (isEligibleBroadcastRecipient(port, message) && port.threadId !== undefined) {
 			recipientThreadIds.add(port.threadId);
 		}
 	}
@@ -1063,12 +1067,14 @@ let nextId = 1;
 // Backstop so a wedged-but-alive worker (one whose event loop is blocked and never acks, yet
 // whose port hasn't closed) can't hang a mutating admin/DDL op forever. The durable write has
 // already succeeded by the time we broadcast, and the health monitor restarts a truly stuck
-// worker (its port close fires the same ack handlers), so on timeout we proceed best-effort.
+// worker (its port close fires the same ack handlers), so on timeout ordinary broadcasts proceed
+// best-effort. A caller whose invariant requires every acknowledgement can opt into rejection.
 const DEFAULT_ACK_TIMEOUT_MS = 30000;
-function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
-	return new Promise((resolve) => {
+function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS, failClosedOnTimeout = false) {
+	return new Promise((resolve, reject) => {
 		let waitingCount = 0;
 		let timer;
+		let settlementError;
 		// Tracks the handlers still awaiting an ack for THIS broadcast. Doubles as an
 		// idempotency guard: a port's handler runs at most once whether it's driven by an ack,
 		// the close listener, or the timeout below.
@@ -1078,14 +1084,14 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 				clearTimeout(timer);
 				timer = undefined;
 			}
-			resolve();
+			if (settlementError) reject(settlementError);
+			else resolve();
 		};
 		for (let port of connectedPorts) {
-			// Job workers run a single isolated task and exit; they don't participate in
-			// schema-change gossip. Including them causes a deadlock: the broadcast waits for
-			// the job worker's ACK while the job worker's event loop is busy waiting for the
-			// same broadcast to complete (re-entrant schema change triggered by the job op).
-			if (!isEligibleBroadcastRecipient(port)) continue;
+			// Job workers do not participate in ordinary gossip: a job may itself be awaiting that
+			// broadcast. Restore is the exception because every blob-writing thread must join its close
+			// barrier; message handlers remain live while the job's own async operation is suspended.
+			if (!isEligibleBroadcastRecipient(port, message)) continue;
 			try {
 				let requestId = nextId++;
 				const ackHandler = () => {
@@ -1125,12 +1131,15 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 			timer = setTimeout(() => {
 				timer = undefined;
 				const stuck = [];
+				if (failClosedOnTimeout) {
+					settlementError = new Error(`ITC broadcast (type ${message.type}) was not acknowledged within ${timeout}ms`);
+				}
 				for (let ackHandler of [...pending]) {
 					stuck.push(ackHandler.port);
-					ackHandler(); // same cleanup path as an ack/close; drives waitingCount to 0 and resolves
+					ackHandler(); // same cleanup path as an ack/close; drives waitingCount to 0 and settles
 				}
 				harperLogger.warn(
-					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.map((port) => port?.threadId).join(', ')} within ${timeout}ms; proceeding best-effort`
+					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.map((port) => port?.threadId).join(', ')} within ${timeout}ms; ${failClosedOnTimeout ? 'aborting operation' : 'proceeding best-effort'}`
 				);
 				if (isMainThread) for (let port of stuck) logStuckWorkerDiagnostics(port);
 				else if (parentPort) {

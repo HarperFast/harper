@@ -13,6 +13,7 @@ module.exports = {
 	UserEventMsg,
 };
 let serverItcHandlers;
+const RESTORE_CLOSE_ACK_TIMEOUT_MS = 30000;
 onMessageFromWorkers(async (event, sender) => {
 	serverItcHandlers = serverItcHandlers || require('../itc/serverHandlers.js');
 	validateEvent(event);
@@ -35,6 +36,13 @@ function sendItcEvent(event) {
 	// The main thread's threadId is 0 (worker_threads convention); parentPort.threadId
 	// is set to 0 in workers, so sendToThread(0, ...) routes back to main.
 	if (event.message) event.message.originator = threadId;
+	if (
+		event.type === hdbTerms.ITC_EVENT_TYPES.SCHEMA &&
+		event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP &&
+		event.message.restorePhase === 'close'
+	) {
+		return broadcastWithAcknowledgement(event, RESTORE_CLOSE_ACK_TIMEOUT_MS, true);
+	}
 	return broadcastWithAcknowledgement(event);
 }
 

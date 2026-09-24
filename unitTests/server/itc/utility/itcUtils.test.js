@@ -81,6 +81,15 @@ describe('Test itcUtils module', () => {
 			expect(event.originator).to.equal(undefined);
 			expect(broadcast_stub).to.have.been.calledOnce;
 		});
+
+		it('gives a restore close barrier a bounded, fail-closed timeout', () => {
+			const event = {
+				type: 'schema',
+				message: { operation: 'restore_backup', restorePhase: 'close' },
+			};
+			itc_rewired.sendItcEvent(event);
+			expect(broadcast_stub).to.have.been.calledOnceWithExactly(event, 30000, true);
+		});
 	});
 
 	describe('Test constructor functions', () => {

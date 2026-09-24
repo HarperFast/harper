@@ -203,7 +203,7 @@ describe('CrossThread Module', function () {
 		});
 
 		describe('expectedResponses sizing (connectedPorts-based)', function () {
-			it('sizes expectedResponses from the exact eligible broadcast-recipient count, excluding job workers', async function () {
+			it('excludes job workers from ordinary broadcasts but includes them in restore barriers', async function () {
 				registry.setStatus('poolComp', 'healthy', 'Main thread');
 				getWorkerIndexStub.returns(0);
 
@@ -212,6 +212,14 @@ describe('CrossThread Module', function () {
 				const jobPort = { threadId: 9, isJobWorker: true };
 				connectedPorts.push(httpPortA, httpPortB, jobPort);
 				assert.equal(manageThreadsModule.getEligibleBroadcastRecipientThreadIds().size, 2);
+				const restoreEvent = {
+					type: 'schema',
+					message: { operation: 'restore_backup' },
+				};
+				assert.deepEqual(
+					[...manageThreadsModule.getEligibleBroadcastRecipientThreadIds(restoreEvent)].sort(),
+					[7, 8, 9]
+				);
 
 				let handler;
 				onMessageByTypeStub.callsFake((eventType, h) => {
