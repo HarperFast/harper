@@ -53,7 +53,7 @@ Neither hint is an authorization check — `verifyPerms` runs at dispatch.
 - Group names in `permission.operations` (`read_only`, `standard_user`, …) expand to their member operations for filtering, so a role granted a group sees every operation that group actually allows.
 - Operations that share a handler are matched by that handler's canonical name, so listing one name of a pair grants both tools. Use the canonical name: `create_database` (also grants `create_schema`), `drop_database` (also `drop_schema`), `describe_schema` (also `describe_database`), `search_by_hash` (also `search_by_id`). Listing the non-canonical name of a pair — `operations: ["create_schema"]` — grants neither, because dispatch tests `create_database`.
 
-This mirrors dispatch: `permission.operations` is checked ahead of the `super_user` and `structure_user` privilege checks in `verifyPerms`, so an operation outside the list is refused on call. Filtering it out of `tools/list` keeps discovery from advertising tools that would fail closed. The same filter backs the [`harper://operations`](#harper-uris) catalog resource, so both surfaces agree.
+This mirrors dispatch. `verifyPerms` evaluates `permission.operations` first, ahead of the `super_user` and `structure_user` early returns. An operation outside that list is refused on call, whatever privilege flags the role carries. Filtering those operations out of `tools/list` keeps discovery from advertising tools that would fail closed. The same filter backs the [`harper://operations`](#harper-uris) catalog resource, so both surfaces agree.
 
 The list is cached per session and recomputed when a `notifications/tools/list_changed` event would fire.
 
