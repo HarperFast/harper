@@ -4,7 +4,7 @@ const assert = require('assert');
 const path = require('node:path');
 const { startWorker, registerWorkerDataProvider } = require('#js/server/threads/manageThreads');
 
-const FIXTURE = path.join(__dirname, 'workerData-fixture.js');
+const FIXTURE = path.join(__dirname, 'workerData-fixture.cjs');
 // Providers registered here filter on this worker name so they can never leak values into
 // workers spawned by other tests sharing the process.
 const WORKER_NAME = 'workerData-provider-test';

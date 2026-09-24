@@ -12,7 +12,7 @@ const { once } = require('node:events');
 // (process group tracking, worker exit handling) rather than sharing the mocha process's.
 describe('process group reclaim ordering', () => {
 	it('does not report a dead worker as reclaimable until its process group is confirmed gone', async () => {
-		const harness = spawn(process.execPath, [require.resolve('./fixtures/processGroupReclaimHarness.js')], {
+		const harness = spawn(process.execPath, [require.resolve('./fixtures/processGroupReclaimHarness.cjs')], {
 			stdio: ['ignore', 'pipe', 'inherit'],
 		});
 		let output = '';
