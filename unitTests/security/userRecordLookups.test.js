@@ -96,38 +96,48 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			assert.strictEqual(user.getUserWithRole('lookup_user').role.permission.super_user, true);
 		});
 
-		it('pairs the user with the role it references in the state it re-read', async () => {
-			// One transaction moves the user from role A to role B and grants A super_user: a lookup whose
-			// user read lands before it and whose role read lands after must not combine the two.
-			await testUtils.seedUsers([
-				lookupUser({ role: { id: 'lookup_role_b', role: 'lookup_role_b', permission: { super_user: false } } }),
-				{
-					username: 'lookup_role_a_holder',
-					role: { id: 'lookup_role_a', role: 'lookup_role_a', permission: { super_user: true } },
-				},
-			]);
-			const userStore = databases.system.hdb_user.primaryStore;
-			const ownGetEntry = Object.hasOwn(userStore, 'getEntry') ? userStore.getEntry : undefined;
-			const getEntry = userStore.getEntry;
-			let staleReadPending = true;
-			userStore.getEntry = function (id, options) {
-				const entry = getEntry.call(this, id, options);
-				if (!staleReadPending || id !== 'lookup_user') return entry;
-				staleReadPending = false;
-				return { ...entry, value: { ...entry.value, role: 'lookup_role_a' }, version: entry.version - 1 };
-			};
-			try {
-				const found = user.getUserWithRole('lookup_user');
-				assert.strictEqual(staleReadPending, false, 'the lookup made the stale read');
-				assert.strictEqual(found.role.id, 'lookup_role_b');
-				assert.strictEqual(found.role.permission.super_user, false);
-			} finally {
-				if (ownGetEntry) userStore.getEntry = ownGetEntry;
-				else delete userStore.getEntry;
-			}
-		});
+		for (const [label, staleFlags] of [
+			['numbered', 0],
+			['reused', VERSION_REUSED],
+		]) {
+			it(`pairs the user with the role it references in the state it re-read (${label} version)`, async () => {
+				// One transaction moves the user from role A to role B and grants A super_user: a lookup whose
+				// user read lands before it and whose role read lands after must not combine the two.
+				await testUtils.seedUsers([
+					lookupUser({ role: { id: 'lookup_role_b', role: 'lookup_role_b', permission: { super_user: false } } }),
+					{
+						username: 'lookup_role_a_holder',
+						role: { id: 'lookup_role_a', role: 'lookup_role_a', permission: { super_user: true } },
+					},
+				]);
+				const userStore = databases.system.hdb_user.primaryStore;
+				const ownGetEntry = Object.hasOwn(userStore, 'getEntry') ? userStore.getEntry : undefined;
+				const getEntry = userStore.getEntry;
+				let staleReadPending = true;
+				userStore.getEntry = function (id, options) {
+					const entry = getEntry.call(this, id, options);
+					if (!staleReadPending || id !== 'lookup_user') return entry;
+					staleReadPending = false;
+					return {
+						...entry,
+						value: { ...entry.value, role: 'lookup_role_a' },
+						version: staleFlags ? entry.version : entry.version - 1,
+						metadataFlags: (entry.metadataFlags ?? 0) | staleFlags,
+					};
+				};
+				try {
+					const found = user.getUserWithRole('lookup_user');
+					assert.strictEqual(staleReadPending, false, 'the lookup made the stale read');
+					assert.strictEqual(found.role.id, 'lookup_role_b');
+					assert.strictEqual(found.role.permission.super_user, false);
+				} finally {
+					if (ownGetEntry) userStore.getEntry = ownGetEntry;
+					else delete userStore.getEntry;
+				}
+			});
+		}
 
-		it('returns a user a resequenced write left on a reused version, and never treats it as current', async function () {
+		it('returns a user a resequenced write left on a reused version, and compares it by value', async function () {
 			// only the RocksDB encoder keeps an out-of-order write under the existing version
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 			await testUtils.seedUsers([lookupUser({ logins: 0 })]);
@@ -140,7 +150,9 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			assert.ok(entry.metadataFlags & VERSION_REUSED, 'the record carries a reused version');
 			const found = user.getUserWithRole('lookup_user');
 			assert.strictEqual(found.role.id, 'lookup_role');
-			assert.strictEqual(user.isCurrentUser(found), false);
+			assert.strictEqual(user.isCurrentUser(found), true, 'an unchanged value is still current');
+			await databases.system.hdb_user.patch('lookup_user', { active: false }, { timestamp: now + 25 });
+			assert.strictEqual(user.isCurrentUser(found), false, 'a changed value is not');
 			// later writes in this suite must not lose to the future timestamp
 			await new Promise((resolve) => setTimeout(resolve, 150));
 		});

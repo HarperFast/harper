@@ -411,24 +411,29 @@ function readEntry(store, id): RecordEntry | undefined {
 }
 
 /**
- * What a later read must match to be the same committed record: null for no record, undefined when
- * that cannot be told — a resequenced write reused the version (RecordEncoder.ts VERSION_REUSED).
- * A record stored without metadata (harper#2012) has no version until it is next written.
+ * What a later read must match to be the same committed record: null for no record, else its version,
+ * or its value when a resequenced write reused the version (RecordEncoder.ts VERSION_REUSED) so the
+ * version no longer identifies one value. A record stored without metadata (harper#2012) has no
+ * version until it is next written.
  */
-function versionOf(entry: RecordEntry | undefined): number | null | undefined {
+type RecordStamp = number | object | null;
+
+function stampOf(entry: RecordEntry | undefined): RecordStamp {
 	if (entry === undefined) return null;
-	if (entry.metadataFlags & VERSION_REUSED) return undefined;
+	if (entry.metadataFlags & VERSION_REUSED) return entry.value;
 	return entry.version ?? 0;
 }
 
-function holdsVersion(entry: RecordEntry | undefined, version: number | null | undefined): boolean {
-	return version !== undefined && versionOf(entry) === version;
+function holdsStamp(entry: RecordEntry | undefined, stamp: RecordStamp): boolean {
+	if (entry === undefined || stamp === null) return entry === undefined && stamp === null;
+	if (typeof stamp === 'object') return _.isEqual(entry.value, stamp);
+	return !(entry.metadataFlags & VERSION_REUSED) && (entry.version ?? 0) === stamp;
 }
 
 // The verification table (RocksDB) confirms a version without a read; a miss there only means "read it"
-function isUnchanged(store, id, version: number | null | undefined): boolean {
-	if (version && store.verifyVersion?.(id, version)) return true;
-	return holdsVersion(readEntry(store, id), version);
+function isUnchanged(store, id, stamp: RecordStamp): boolean {
+	if (typeof stamp === 'number' && stamp !== 0 && store.verifyVersion?.(id, stamp)) return true;
+	return holdsStamp(readEntry(store, id), stamp);
 }
 
 /** The user and its role as of one committed state. */
@@ -440,17 +445,15 @@ function readUserEntries(username: string): UserEntries {
 	while (true) {
 		if (user?.value.role == null) return { user };
 		const role = readEntry(roleStore, user.value.role);
-		// RocksDB reads share no snapshot: a user unchanged since before its role was read held at that
-		// moment. A reused version cannot show that, and re-reading would not change it.
-		const version = versionOf(user);
-		if (version === undefined || isUnchanged(userStore, username, version)) return { user, role };
+		// RocksDB reads share no snapshot: a user unchanged since before its role was read held at that moment
+		if (isUnchanged(userStore, username, stampOf(user))) return { user, role };
 		user = readEntry(userStore, username);
 	}
 }
 
 // a memo, so clearing it only costs recomputation; bounds it under role churn
 const MAX_DERIVED_ROLES = 1024;
-const derivedRoles = new Map<unknown, { version: number; role: UserRole }>();
+const derivedRoles = new Map<unknown, { stamp: RecordStamp; role: UserRole }>();
 
 function derivedRole(roleId: unknown, entry: RecordEntry | undefined): UserRole | undefined {
 	if (!entry) {
@@ -458,34 +461,29 @@ function derivedRole(roleId: unknown, entry: RecordEntry | undefined): UserRole 
 		return undefined;
 	}
 	const derived = derivedRoles.get(roleId);
-	if (derived && holdsVersion(entry, derived.version)) return derived.role;
+	if (derived && holdsStamp(entry, derived.stamp)) return derived.role;
 	const role = withSystemTablePermissions(entry.value);
-	const version = versionOf(entry);
-	if (version === undefined) derivedRoles.delete(roleId);
-	else {
-		if (derivedRoles.size >= MAX_DERIVED_ROLES) derivedRoles.clear();
-		derivedRoles.set(roleId, { version, role });
-	}
+	if (derivedRoles.size >= MAX_DERIVED_ROLES) derivedRoles.clear();
+	derivedRoles.set(roleId, { stamp: stampOf(entry), role });
 	return role;
 }
 
 interface UserProvenance {
 	username: string;
-	userVersion: number | null | undefined;
+	userStamp: RecordStamp;
 	roleId?: unknown;
-	roleVersion: number | null | undefined;
+	roleStamp: RecordStamp;
 }
 
-// users this module built, and users resolved elsewhere (a component's `server.getUser`) as tracked by the caller
 const userProvenance = new WeakMap<User, UserProvenance>();
 const trackedProvenance = new WeakMap<User, UserProvenance>();
 
 function provenanceOf(username: string, entries: UserEntries): UserProvenance {
 	return {
 		username,
-		userVersion: versionOf(entries.user),
+		userStamp: stampOf(entries.user),
 		roleId: entries.user?.value.role,
-		roleVersion: versionOf(entries.role),
+		roleStamp: stampOf(entries.role),
 	};
 }
 
@@ -506,7 +504,6 @@ function getUserWithRole(username: string): User | undefined {
 	return entries.user && userView(username, entries);
 }
 
-/** The versions of `username`'s user and role records now, for `trackUserRecords`. */
 function userRecordVersions(username: string): UserProvenance {
 	return provenanceOf(username, readUserEntries(username));
 }
@@ -526,9 +523,9 @@ function trackUserRecords(user: User, versions: UserProvenance): void {
 function isCurrentUser(user: User): boolean {
 	const provenance = userProvenance.get(user) ?? trackedProvenance.get(user);
 	if (!provenance) return true;
-	if (!isUnchanged(systemStore(USER_TABLE_NAME), provenance.username, provenance.userVersion)) return false;
+	if (!isUnchanged(systemStore(USER_TABLE_NAME), provenance.username, provenance.userStamp)) return false;
 	return (
-		provenance.roleId == null || isUnchanged(systemStore(ROLE_TABLE_NAME), provenance.roleId, provenance.roleVersion)
+		provenance.roleId == null || isUnchanged(systemStore(ROLE_TABLE_NAME), provenance.roleId, provenance.roleStamp)
 	);
 }
 
@@ -671,8 +668,9 @@ function notifyUserChangeListeners(): void {
 	userChangeNotificationScheduled = false;
 	for (const listener of userChangeListeners) {
 		try {
-			const result = listener();
-			if (result) result.catch((error) => logger.error('User change listener failed', error));
+			const result: any = listener();
+			if (typeof result?.catch === 'function')
+				result.catch((error) => logger.error('User change listener failed', error));
 		} catch (error) {
 			logger.error('User change listener failed', error);
 		}
