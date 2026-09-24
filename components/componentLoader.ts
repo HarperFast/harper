@@ -473,7 +473,6 @@ export const loadedPaths = new Map();
 // re-invoking `startOnMainThread` on every reload accumulated watchers/routes and re-ran
 // destructive one-time scans (e.g. the replicator's hdb_nodes subscription scan).
 export const mainThreadInitialized = new Map<string, any>();
-// Starts still in flight, so a concurrent load of the same component awaits the one start.
 const mainThreadInitializing = new Map<string, Promise<any>>();
 
 function mainThreadKeyFor(componentName: string, resolvedFolder: string, isRoot: boolean): string {
@@ -482,7 +481,8 @@ function mainThreadKeyFor(componentName: string, resolvedFolder: string, isRoot:
 
 /**
  * Run the component's `startOnMainThread` unless it already ran (see `mainThreadInitialized`), and return the
- * module to use from then on. A failed start is not recorded, so the next load retries it.
+ * module to use from then on. Concurrent callers share one start; a failed start is not recorded, so the next
+ * load retries it.
  */
 function startOnMainThreadOnce(mainThreadKey: string, extensionModule: any, options: any): Promise<any> {
 	if (mainThreadInitialized.has(mainThreadKey)) return Promise.resolve(mainThreadInitialized.get(mainThreadKey));
@@ -508,13 +508,12 @@ async function importTrustedPlugin(componentName: string): Promise<any> {
 		: plugin;
 }
 
-// The root built-in that registers this node's secret custody (Harper Pro's key custody).
 const SECRET_CUSTODY_COMPONENT = 'secretCustody';
 
 /**
  * Start the secret-custody built-in ahead of the root load, so boot-time application installs can decrypt
- * sealed SSH deploy keys and resolve stored registry credentials (#2780). The root load then reuses the
- * started module. Any failure is logged and left to the root load to retry and report.
+ * sealed SSH deploy keys and resolve stored registry credentials. The root load then reuses the started
+ * module. Any failure is logged and left to the root load to retry and report.
  */
 export async function startSecretCustodyOnMainThread(): Promise<void> {
 	try {

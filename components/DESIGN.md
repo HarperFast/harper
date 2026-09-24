@@ -420,7 +420,6 @@ input, changed dependency evidence, or any genuinely opaque runtime does. Entry 
 remain consumer-directed: the static plugin applies asset changes incrementally, while executable
 consumers such as `jsResource` request a restart on their logical `change` or `unlink` events.
 
-
 ## Secret custody starts before boot-time installs
 
 `installApplications()` decrypts sealed SSH deploy keys and resolves stored registry credentials through

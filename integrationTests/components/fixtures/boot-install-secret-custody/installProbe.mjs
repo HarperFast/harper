@@ -1,5 +1,4 @@
-// Run as an application's `install.command`: records what the install spawn received from Harper's
-// secret consumers — the SSH identity materialized behind GIT_SSH_COMMAND, and the transient .npmrc.
+// Runs as the application's `install.command`, recording the credential inputs the install spawn received.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 

@@ -10,7 +10,8 @@
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, doesNotMatch, match } from 'node:assert';
 import { generateKeyPairSync } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import YAML from 'yaml';
@@ -37,12 +38,15 @@ const { privateKey, publicKey } = generateKeyPairSync('rsa', {
 	publicKeyEncoding: { type: 'spki', format: 'pem' },
 	privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
 });
+const scratchDirectory = mkdtempSync(join(tmpdir(), 'harper-boot-custody-'));
+const custodyStartLog = join(scratchDirectory, 'custody-starts.log');
 const ENV = {
 	HARPER_BUILTIN_COMPONENTS:
 		'secretCustody=@/integrationTests/components/fixtures/boot-install-secret-custody/custody.mjs',
 	BOOT_CUSTODY_PRIVATE_KEY_B64: Buffer.from(privateKey).toString('base64'),
+	BOOT_CUSTODY_START_LOG: custodyStartLog,
 };
-const CONFIG = { secretCustody: true };
+const CONFIG = { secretCustody: true, logging: { level: 'debug' } };
 
 // hdb.log can stay in the first boot's log directory after a restart, so read every candidate.
 function readInstanceLogs(logDirectories: string[]): string {
@@ -103,6 +107,7 @@ suite(
 
 		after(async () => {
 			await teardownHarper(ctx);
+			rmSync(scratchDirectory, { recursive: true, force: true });
 		});
 
 		test('the install spawn receives the decrypted SSH identity and the resolved registry token', () => {
@@ -117,6 +122,10 @@ suite(
 			const probe = JSON.parse(readFileSync(probePath, 'utf8'));
 			deepStrictEqual(probe.sshKey, SSH_KEY_PLAINTEXT);
 			match(probe.npmrc ?? '', new RegExp(`:_authToken=${REGISTRY_TOKEN}$`, 'm'));
+		});
+
+		test('custody starts once per boot: the root load reuses the start made before installing', () => {
+			deepStrictEqual(readFileSync(custodyStartLog, 'utf8'), 'start\n'.repeat(2));
 		});
 	}
 );
