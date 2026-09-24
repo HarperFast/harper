@@ -24,6 +24,15 @@ schema. Per-peer failures never reject: they come back as `{status: 'failed', re
 in `response.replicated[]`, and `message` still reads as success (same contract as drop_schema), so
 operators must inspect the array for per-node outcomes.
 
+Its local write takes the **root-config publication lock** that deploys and drops publish component
+entries under (`components/rootConfigPublication.ts`; the design is in
+[components/DESIGN.md](../components/DESIGN.md#root-config-is-an-effect-of-the-activation)), because all
+three parse and rewrite the whole document and the last rename otherwise drops the others' change. The
+lock is held around `updateConfigValue` only — never across replication, which is other nodes' writes.
+A write another durable record depends on passes `atomicWriteFile({ durable: true })`, which fsyncs the
+content through its write handle before the rename and the directory after it; the default stays
+unsynced, since every other config write is re-derivable.
+
 ## Root config watchers must read synchronously (`config/readConfigFileSync.ts`)
 
 `atomicWriteFile()` swaps the config file in with `renameSync` and, on Windows, retries the
@@ -286,8 +295,9 @@ the write in flight as an operator edit. A worker that concluded "user edit" wou
 env-supplied value for itself alone and serve different config than its siblings.
 
 Known limit: the pair commits as a unit _within a process_. Two live processes (a server boot and a
-CLI invocation) can still interleave their config-file writes and promotions, and nothing in the repo
-serializes config writes across processes. Pre-existing — both artifacts were unordered before this
+CLI invocation) can still interleave their config-file writes and promotions, and nothing serializes
+these boot-time writers across processes — the root-config publication lock covers only the runtime
+writers (deploy, drop, `set_configuration`). Pre-existing — both artifacts were unordered before this
 protocol — and out of scope here, but the "commits as a unit" guarantee stops at the process
 boundary.
 

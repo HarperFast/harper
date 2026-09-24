@@ -125,7 +125,65 @@ type RenameRetryOptions = {
 
 type AtomicWriteOptions = RenameRetryOptions & {
 	skipIfUnchanged?: boolean;
+	/**
+	 * fsync the content before the rename and the directory after it, so the caller may treat the write as
+	 * on storage. Off by default: only a write another durable record depends on — a deploy's root-config
+	 * entry, which the activation journal is retired on the strength of — pays for the two syncs.
+	 */
+	durable?: boolean;
 };
+
+// Codes that mean "this platform or filesystem will not fsync this handle", as opposed to "the write did
+// not reach storage". Windows raises EPERM fsyncing perfectly healthy files and cannot open a directory
+// for fsync at all; network and overlay mounts return EINVAL or ENOTSUP. None of those say anything about
+// durability, and treating them as failures would fail every durable write on those platforms. EIO and
+// ENOSPC are not in the set on purpose.
+const UNSUPPORTED_SYNC_CODES = new Set(['EPERM', 'EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'EBADF', 'EISDIR']);
+
+export function isUnsupportedSyncError(error: unknown): boolean {
+	return UNSUPPORTED_SYNC_CODES.has((error as NodeJS.ErrnoException)?.code ?? '');
+}
+
+function fsyncTolerantSync(fd: number) {
+	try {
+		fs.fsyncSync(fd);
+	} catch (error) {
+		if (!isUnsupportedSyncError(error)) throw error;
+	}
+}
+
+// `flags` matters on Windows, which only flushes a handle opened for writing; a directory cannot be opened
+// for writing anywhere, and Windows cannot open one for fsync at all.
+function syncPathSync(targetPath: string, flags: 'r' | 'r+') {
+	let fd: number;
+	try {
+		fd = fs.openSync(targetPath, flags);
+	} catch (error) {
+		if (isUnsupportedSyncError(error)) return;
+		throw error;
+	}
+	try {
+		fsyncTolerantSync(fd);
+	} finally {
+		fs.closeSync(fd);
+	}
+}
+
+function writeFileDurablySync(filePath: string, content) {
+	const fd = fs.openSync(filePath, 'w');
+	try {
+		fs.writeFileSync(fd, content);
+		fsyncTolerantSync(fd);
+	} finally {
+		fs.closeSync(fd);
+	}
+}
+
+/** Put an existing file's content and the directory entry naming it on storage. */
+export function syncFileToStorageSync(filePath: string) {
+	syncPathSync(filePath, 'r+');
+	syncPathSync(path.dirname(filePath), 'r');
+}
 
 function validateRenameRetryOptions({ retryBudgetMs, maxRetries, initialDelayMs, maxDelayMs }: RenameRetryOptions) {
 	const invalidOption =
@@ -181,6 +239,7 @@ export function atomicWriteFile(
 		initialDelayMs = RENAME_RETRY_INITIAL_DELAY_MS,
 		maxDelayMs = RENAME_RETRY_MAX_DELAY_MS,
 		skipIfUnchanged = false,
+		durable = false,
 	}: AtomicWriteOptions = {}
 ) {
 	// Before the temp write, so an option set that can never rename leaves no file behind.
@@ -190,7 +249,10 @@ export function atomicWriteFile(
 	if (skipIfUnchanged && matchesFileContent(filePath, content)) return false;
 	const tempPath = `${filePath}.${process.pid}.${threadId}.${randomBytes(4).toString('hex')}.tmp`;
 	try {
-		fs.writeFileSync(tempPath, content);
+		// Content before the rename: a rename that reaches storage ahead of the bytes it names is the
+		// torn write the temp file exists to prevent.
+		if (durable) writeFileDurablySync(tempPath, content);
+		else fs.writeFileSync(tempPath, content);
 	} catch (err) {
 		// The open succeeds before the write runs out of room, leaving the temp file behind.
 		removeTempFile(tempPath);
@@ -204,6 +266,7 @@ export function atomicWriteFile(
 		removeTempFile(tempPath);
 		throw err;
 	}
+	if (durable) syncPathSync(path.dirname(filePath), 'r');
 	return true;
 }
 
@@ -1335,7 +1398,12 @@ export async function setConfiguration(setConfigJson) {
 	}
 	assertThreadHeapMemoryStartable(configFields);
 	try {
-		updateConfigValue(undefined, undefined, configFields, true);
+		// Serialized with every other runtime writer of the document — a deploy publishing its entry, a drop
+		// removing one — because each parses and rewrites the whole file. Held only around the local write;
+		// replication is other nodes' writes. Imported lazily: the lock lives with the deploy code that owns
+		// the other writers, and this module loads before any of it.
+		const { withRootConfigPublicationLock } = await import('../components/rootConfigPublication.ts');
+		await withRootConfigPublicationLock(async () => updateConfigValue(undefined, undefined, configFields, true));
 		if (replicated) {
 			// Opt-in fan-out to all cluster nodes (#660). replicateOperation forwards the
 			// body with `replicated: false`, so peers apply locally without re-replicating;
@@ -1376,7 +1444,7 @@ export function readConfigFile() {
 	return configDoc.toJSON();
 }
 
-function parseYamlDoc(filePath) {
+export function parseYamlDoc(filePath) {
 	return YAML.parseDocument(fs.readFileSync(filePath, 'utf8'), { simpleKeys: true } as any);
 }
 
@@ -1549,36 +1617,6 @@ export function initOldConfig(oldConfigPath: string) {
 export function getConfigFromFile(param: string) {
 	const config_file = readConfigFile();
 	return _.get(config_file, param.replaceAll('_', '.'));
-}
-
-/**
- * Adds a top level element and any nested values to harperdb-config
- * @param topLevelElement - element name
- * @param values - JSON value which should have top level element
- * @returns {Promise<void>}
- */
-export async function addConfig(topLevelElement, values) {
-	const configDoc = parseYamlDoc(getConfigFilePath());
-	configDoc.hasIn([topLevelElement])
-		? configDoc.setIn([topLevelElement], values)
-		: configDoc.addIn([topLevelElement], values);
-	if (configDoc.errors?.length > 0) {
-		throw handleHDBError(
-			new Error(),
-			`Error parsing harperdb-config.yaml ${configDoc.errors}`,
-			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
-		);
-	}
-	atomicWriteFile(getConfigFilePath(), String(configDoc));
-}
-
-export function deleteConfigFromFile(param: string) {
-	const configFilePath = getConfigFilePath(hdbUtils.getPropsFilePath());
-	const configDoc = parseYamlDoc(configFilePath);
-	configDoc.deleteIn(param);
-	const hdbRoot = configDoc.getIn(['rootPath']) as string;
-	const configFileLocation = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
-	atomicWriteFile(configFileLocation, String(configDoc));
 }
 
 export function getConfigObj() {

@@ -1,6 +1,17 @@
 import { type Logger } from '../utility/logging/logger.ts';
-import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.ts';
+import {
+	getConfigObj,
+	getConfigValue,
+	getConfigPath,
+	isUnsupportedSyncError as isUnsupportedSync,
+} from '../config/configUtils.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import {
+	applyRootConfigEffect,
+	isRootConfigEffect,
+	rootConfigEffectFromDeclaration,
+	type RootConfigEffect,
+} from './rootConfigPublication.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
@@ -1050,7 +1061,10 @@ const UNSETTLED_MARKER = '.unsettled';
 // Written before `.complete`, so the marker vouches for it. An OPTIONAL record would not do: it could not
 // distinguish a payload build, which owns no root config, from a package build whose record was lost.
 const CANDIDATE_ARTIFACT_FILE = '.artifact.json';
-const ACTIVATION_JOURNAL_VERSION = 1;
+// v2 carries the root-config effect. A v1 journal was written by a build that published config outside
+// its journal; `readActivationJournal` derives its effect from the artifact descriptor where one exists.
+const ACTIVATION_JOURNAL_VERSION = 2;
+const LEGACY_ACTIVATION_JOURNAL_VERSION = 1;
 const ARTIFACT_DESCRIPTOR_VERSION = 1;
 const DEFAULT_STAGING_RETENTION_MAX_COUNT = 5;
 
@@ -1298,6 +1312,8 @@ type ActivationJournal = {
 	v: number;
 	component: string;
 	candidateId: string;
+	/** What the activation does to the component's root-config entry once the swap has committed. */
+	rootConfig: RootConfigEffect;
 };
 
 function candidateCompleteMarkerPath(componentDirPath: string, deploymentId: string): string {
@@ -1523,9 +1539,9 @@ async function readActivationJournal(journalPath: string): Promise<ActivationJou
 	} catch (error) {
 		throw new Error(`Activation journal ${journalPath} could not be parsed: ${errorMessage(error)}`);
 	}
-	if (parsed?.v !== ACTIVATION_JOURNAL_VERSION) {
+	if (parsed?.v !== ACTIVATION_JOURNAL_VERSION && parsed?.v !== LEGACY_ACTIVATION_JOURNAL_VERSION) {
 		throw new Error(
-			`Activation journal ${journalPath} has version ${JSON.stringify(parsed?.v)}, expected ${ACTIVATION_JOURNAL_VERSION}`
+			`Activation journal ${journalPath} has version ${JSON.stringify(parsed?.v)}, expected ${LEGACY_ACTIVATION_JOURNAL_VERSION} or ${ACTIVATION_JOURNAL_VERSION}`
 		);
 	}
 	if (!isJoinableComponentName(parsed.component) || typeof parsed.candidateId !== 'string') {
@@ -1538,7 +1554,31 @@ async function readActivationJournal(journalPath: string): Promise<ActivationJou
 			`Activation journal ${journalPath} names candidate '${parsed.candidateId}', which is not its own deployment`
 		);
 	}
-	return parsed as ActivationJournal;
+	let rootConfig: RootConfigEffect;
+	if (parsed.v === LEGACY_ACTIVATION_JOURNAL_VERSION) {
+		// A v1 activation published config outside its journal: a staged artifact published its descriptor's
+		// entry between the first rename and the commit, so a crash in that window is exactly the one whose
+		// effect the descriptor still records; an immediate deploy published before it built, so there is
+		// nothing left to do for it.
+		const descriptor = await readArtifactDescriptor(dirname(journalPath), parsed.component);
+		rootConfig = descriptor ? rootConfigEffectFromDeclaration(descriptor.rootConfig) : { kind: 'keep' };
+	} else {
+		if (!isRootConfigEffect(parsed.rootConfig) || parsed.rootConfig.kind === 'remove') {
+			throw new Error(`Activation journal ${journalPath} does not record its root-config effect`);
+		}
+		rootConfig = parsed.rootConfig;
+	}
+	if (rootConfig.kind === 'set') {
+		try {
+			assertApplicationConfig(parsed.component, rootConfig.entry as any);
+		} catch (error) {
+			throw new Error(
+				`Activation journal ${journalPath} records a root-config entry that cannot be published: ${errorMessage(error)}`,
+				{ cause: error }
+			);
+		}
+	}
+	return { v: parsed.v, component: parsed.component, candidateId: parsed.candidateId, rootConfig };
 }
 
 /**
@@ -2511,6 +2551,9 @@ async function settleInterruptedActivation(
 		// re-point.
 		await repairRelocatedDependencyLinks(liveDirPath, candidateDirPath);
 		await syncRenameParents(candidateDirPath, liveDirPath);
+		// The committed release's config, before anything below can let the journal go: the journal is the only
+		// record of it. A failure propagates and keeps the journal, the same contract the retire has.
+		await applyRootConfigEffect(journal.component, journal.rootConfig);
 		// Retiring PROPAGATES from here: the retired marker is what stops the legacy pass restoring the tree
 		// this roll-forward just displaced. Failing the component closed and retrying at the next start is
 		// the cheaper mistake — the journal survives, so the verdict is re-derivable. Only the disk sweep
@@ -2648,15 +2691,6 @@ async function settleInterruptedActivation(
  * fsync the candidate's contents before `.complete` vouches for them — otherwise the control files can
  * outlive the tree after a power loss and recovery rolls forward onto a truncated one.
  */
-// Codes that mean "this platform or filesystem will not fsync this handle", as opposed to "the write did
-// not reach storage". Windows raises EPERM fsyncing perfectly healthy files, and network/overlay mounts
-// return EINVAL or ENOTSUP — none of which say anything about durability, and all of which would otherwise
-// fail every deploy on those platforms.
-const UNSUPPORTED_SYNC_CODES = new Set(['EPERM', 'EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'EBADF', 'EISDIR']);
-
-function isUnsupportedSync(error: unknown): boolean {
-	return UNSUPPORTED_SYNC_CODES.has((error as NodeJS.ErrnoException)?.code ?? '');
-}
 
 // How many file syncs run at once while flushing a candidate. Serial open/sync/close over a large
 // dependency tree adds seconds to every activation, all of it under the component preparation lock; a small
@@ -2779,24 +2813,29 @@ async function syncArtifactAncestors(deploymentDirPath: string): Promise<void> {
 }
 
 /**
- * Make a built and validated candidate live, as one compensating transaction over two effects: the live tree
- * moves aside, then the candidate takes its place. Root config is NOT one of them — for an immediate deploy
- * it is still published before the build, unchanged, and making it transactional is tracked separately
- * (#2315). A delayed activation hands its artifact's recorded entry in as `afterJournal`, which publishes it
- * from inside the window a crash rolls forward from — see that call site.
+ * Make a built and validated candidate live, as one transaction over three effects: the live tree moves
+ * aside, the candidate takes its place, and the component's root-config entry follows `options.rootConfig`.
+ * The first two compensate; the third happens only after the commit, so nothing before the commit touches
+ * config and a failed activation has no config to undo.
  *
  * The candidate must ALREADY be certified: `markCandidateComplete` is the caller's, so a delayed activation
  * does not re-walk and re-fsync a whole dependency tree it certified when it was built. The activation
- * journal is still written and fsynced BEFORE the first rename, so a crash anywhere below is recoverable —
- * see `settleInterruptedActivation` for the state matrix. The second rename is the COMMIT POINT: nothing
- * after it may compensate, because the live path holds the candidate and renaming the aside back over it
- * cannot succeed.
+ * journal — with the config effect in it — is still written and fsynced BEFORE the first rename, so a crash
+ * anywhere below is recoverable, config included: see `settleInterruptedActivation` for the state matrix. The
+ * second rename is the COMMIT POINT: nothing after it may compensate, because the live path holds the
+ * candidate and renaming the aside back over it cannot succeed.
  */
 export async function activateCandidateApplication(
 	application: Application,
 	deploymentId: string,
-	options: { afterJournal?: () => Promise<(() => Promise<void>) | void> } = {}
+	options: { rootConfig?: RootConfigEffect } = {}
 ): Promise<void> {
+	const rootConfig = options.rootConfig ?? { kind: 'keep' };
+	// Before anything is on disk: a journal recovery would refuse to read is one it could never settle.
+	if (rootConfig.kind === 'set') assertApplicationConfig(application.name, rootConfig.entry as any);
+	else if (rootConfig.kind === 'remove') {
+		throw new Error(`Cannot activate ${application.name}: an activation never removes its root-config entry`);
+	}
 	const liveDirPath = application.dirPath;
 	const candidateDirPath = candidateApplicationPath(liveDirPath, deploymentId);
 	const deploymentDirPath = candidateDeploymentDirPath(liveDirPath, deploymentId);
@@ -2877,7 +2916,6 @@ export async function activateCandidateApplication(
 	 * rename may enter this catch — see B2.
 	 */
 	let pendingEffect = 'record the activation';
-	let undoAfterJournal: (() => Promise<void>) | void;
 	try {
 		try {
 			await writeControlFileDurably(
@@ -2886,6 +2924,7 @@ export async function activateCandidateApplication(
 					v: ACTIVATION_JOURNAL_VERSION,
 					component: application.name,
 					candidateId: deploymentId,
+					rootConfig,
 				})
 			);
 		} catch (error) {
@@ -2924,23 +2963,6 @@ export async function activateCandidateApplication(
 		pendingEffect = 'record the displaced component directory';
 		await syncRenameParents(liveDirPath, asidePath ?? priorAbsentRecordPath!);
 
-		// Config is published HERE — after B1, before the commit — because this is the only point where the
-		// on-disk state recovery would find rolls FORWARD to the certified artifact: live is displaced, the
-		// candidate is complete, and the rollback record exists. Publishing before B1 (with or without the
-		// journal) leaves live present and the candidate present with no rollback record, which settlement
-		// reads as an activation that never started: it deletes the deployment directory, and the next boot
-		// re-resolves the published package identifier from the registry instead — the substitution this step
-		// exists to prevent.
-		//
-		// A crash in the remaining window — after the roll-forward state exists but before this publish — is
-		// the inverse hazard: `rollForward()` renames the candidate live and publishes nothing, so the
-		// certified artifact serves under the PREVIOUS release's config. That includes its ISOLATION intent,
-		// which is a containment boundary and not just a version string: a component staged to run isolated
-		// comes back non-isolated after an ordinary crash, with nothing in the operation reporting it.
-		// Closing it needs config to be an effect of the journal itself, which is #2315 step 3.
-		pendingEffect = 'publish the root configuration';
-		undoAfterJournal = await options.afterJournal?.();
-
 		// B2 — the candidate becomes live. THE RENAME IS THE COMMIT POINT: nothing after it may compensate,
 		// because the live path now holds the candidate and renaming the aside back over it cannot succeed. A
 		// compensating step there fails its own rollback and reports a failure for a deploy that is live. It is
@@ -2963,41 +2985,13 @@ export async function activateCandidateApplication(
 			},
 		});
 	} catch (error) {
-		// Whether the journal can still carry this activation forward, decided BEFORE compensation removes the
-		// evidence it is read from. Only a first-ever deploy qualifies: `restoreLive` leaves the live path
-		// absent, and recovery reads absent-plus-complete-candidate as a roll forward. A component that
-		// already had a tree gets that tree back and loses its rollback record with it, so the next settle
-		// reads live-plus-candidate-with-no-record and returns the artifact to dormant whatever the journal
-		// says — keeping it there defers the same verdict to the next start and strands config until then.
-		const recoveryCanRollForward = priorAbsentRecordPath !== undefined;
 		await compensate(error, pendingEffect, restoreLive, application);
-		let configRestored = true;
-		if (undoAfterJournal) {
-			configRestored = await undoAfterJournal().then(
-				() => true,
-				(undoError) => {
-					application.logger.warn(
-						`Restored ${application.name} after a failed activation but could not restore its root config, ` +
-							`which still names deployment ${deploymentId}` +
-							(recoveryCanRollForward
-								? '; keeping its activation journal so recovery can roll the certified build forward instead:'
-								: '. The certified build stays dormant and the previous release stays live, so the two ' +
-									'disagree until an operator republishes the component or activates it again:'),
-						undoError
-					);
-					return false;
-				}
-			);
-		}
-		// Kept only where it changes the outcome. Config is stranded either way for a component that already
-		// had a tree — the durable-config window #2315 step 3 closes — and a journal that recovery will only
-		// settle back to dormant buys nothing for holding it.
-		if (configRestored || !recoveryCanRollForward) await returnToDormant();
+		await returnToDormant();
 		throw error;
 	}
 
 	// Past the point of no return: each failure below leaves a state recovery settles forward, so they are
-	// logged, not thrown.
+	// logged, not thrown — all but the config effect, see there.
 	let swapDurable = true;
 	try {
 		await syncRenameParents(candidateDirPath, liveDirPath);
@@ -3010,6 +3004,22 @@ export async function activateCandidateApplication(
 	}
 	// The tree moved, so any dependency link that named its build path is now dangling.
 	await repairRelocatedDependencyLinks(liveDirPath, candidateDirPath);
+	// Before the rollback record is retired, because the journal is the only record of this effect and it goes
+	// once that record is settled. Thrown rather than logged: the failures below cost disk, this one costs the
+	// component its configuration — a release staged to run isolated would be restarted non-isolated on the
+	// strength of an operation that reported success. The records survive it, so the next settlement publishes.
+	try {
+		await applyRootConfigEffect(application.name, rootConfig);
+	} catch (error) {
+		const failure = new Error(
+			`Deployed ${application.name}, but could not publish its root configuration. The release is live, and ` +
+				`its entry is published when recovery next settles this activation — at the next start, or the next ` +
+				`deploy of ${application.name}: ${errorMessage(error)}`,
+			{ cause: error }
+		);
+		(failure as any)[ACTIVATION_COMMITTED] = true;
+		throw failure;
+	}
 	const settledRecord = asidePath ?? priorAbsentRecordPath!;
 	let retired = false;
 	// Skipped entirely when the swap is not known to be on storage, so the journal below survives.
@@ -3048,6 +3058,15 @@ export async function activateCandidateApplication(
  * rolls that state forward — so they must survive, and the caller keys on this to skip discarding them.
  */
 const COMPENSATION_INCOMPLETE = Symbol('compensationIncomplete');
+/**
+ * Marks a failure past the commit rename: the release is live and its journal holds an effect not yet
+ * applied. The deployment records are how recovery finishes it, so the caller must not discard them either.
+ */
+const ACTIVATION_COMMITTED = Symbol('activationCommitted');
+
+function activationCommitted(error: unknown): boolean {
+	return Boolean((error as any)?.[ACTIVATION_COMMITTED]);
+}
 
 function compensationIncomplete(error: unknown): boolean {
 	return Boolean((error as any)?.[COMPENSATION_INCOMPLETE]);
@@ -4259,18 +4278,13 @@ export type PrepareApplicationOptions = {
 	 */
 	mode?: 'deploy' | 'stage' | 'activate';
 	/**
-	 * `stage` only: the build's declared intent, recorded with the artifact for whoever activates it.
-	 * A callback rather than a value because `beforePrepare` is what determines it, and that runs after
-	 * these options have been constructed.
+	 * `deploy` and `stage`: the build's declared intent — the root-config entry it owns, or `null` for a
+	 * payload build, which owns none. `deploy` publishes it once the swap commits; `stage` records it with the
+	 * artifact for whoever activates it. Omitted, the preparation leaves root config alone, which is what a
+	 * caller installing FROM root config needs. A callback rather than a value because `beforePrepare` is
+	 * what determines it, and that runs after these options have been constructed.
 	 */
 	describeArtifact?: () => { rootConfig: Record<string, unknown> | null; isolated: boolean };
-	/**
-	 * `activate` only: publish the artifact's recorded root-config entry, immediately before the swap. May
-	 * return an undo, run if the activation then fails before it commits — otherwise a failed activation
-	 * leaves config naming a release that is not live, which the next boot install would resolve and build
-	 * from scratch over a component whose certified artifact is sitting beside it.
-	 */
-	publishRootConfig?: (entry: Record<string, unknown>) => Promise<(() => Promise<void>) | void>;
 	/** `activate` only: admit the artifact's isolation intent under the preparation lock, before the swap. */
 	admitIsolation?: (descriptor: ArtifactDescriptor) => Promise<void>;
 };
@@ -4364,7 +4378,10 @@ export async function prepareApplication(application: Application, options: Prep
 							return;
 						}
 						await markCandidateComplete(application.dirPath, artifactId, application.name);
-						await activateCandidateApplication(application, artifactId);
+						const declared = options.describeArtifact?.();
+						await activateCandidateApplication(application, artifactId, {
+							rootConfig: declared ? rootConfigEffectFromDeclaration(declared.rootConfig) : { kind: 'keep' },
+						});
 					} catch (error) {
 						// The builder's own cleanup only covers a failed BUILD. A rejected validation, or an
 						// activation that was cleanly compensated, would otherwise leave a whole installed
@@ -4374,7 +4391,10 @@ export async function prepareApplication(application: Application, options: Prep
 						// path may be absent, and the candidate plus its `.complete` marker and journal are exactly
 						// what recovery needs to roll the validated deploy forward at the next start. Discarding
 						// them there trades a bounded disk cost for a component with no version at all.
-						if (!compensationIncomplete(error)) await discardCandidate(application, artifactId);
+						// Nor past the commit, where the journal still holds the config effect recovery has to finish.
+						if (!compensationIncomplete(error) && !activationCommitted(error)) {
+							await discardCandidate(application, artifactId);
+						}
 						throw error;
 					}
 				} finally {
@@ -4475,9 +4495,7 @@ async function activateStagedArtifact(
 		);
 	}
 	await activateCandidateApplication(application, artifactId, {
-		// Returns its own undo, which the swap runs inside its pre-commit boundary — see there for why it
-		// cannot be run out here.
-		afterJournal: descriptor.rootConfig ? () => options.publishRootConfig!(descriptor.rootConfig!) : undefined,
+		rootConfig: rootConfigEffectFromDeclaration(descriptor.rootConfig),
 	});
 }
 
