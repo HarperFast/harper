@@ -90,7 +90,7 @@ describe('coalesceRefresh', () => {
 			active++;
 			maxActive = Math.max(maxActive, active);
 			if (runs === 1) nested = refresh();
-			await null;
+			await Promise.resolve();
 			active--;
 		});
 		await refresh();

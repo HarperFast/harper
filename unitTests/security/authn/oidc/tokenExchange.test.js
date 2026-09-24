@@ -16,7 +16,6 @@ const { addOidcTrust } = require('#src/security/authn/oidc/trustPolicyOperations
 const { clearJwksCache } = require('#src/security/authn/oidc/jwks');
 const { validateOperationToken, clearJWTRSAKeysCache, decodeJWT } = require('#src/security/tokenAuthentication');
 const { databases } = require('#src/resources/databases');
-const { setUsersWithRolesCache } = require('#src/security/user');
 const terms = require('#src/utility/hdbTerms');
 
 const TRUST_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME;
@@ -79,7 +78,7 @@ function seedUsers() {
 	});
 	users.set('admin', { username: 'admin', active: true, role: { role: 'su', permission: { super_user: true } } });
 	users.set('retired', { username: 'retired', active: false, role: { role: 'deployer', permission: {} } });
-	return setUsersWithRolesCache(users);
+	return testUtils.seedUsers(users);
 }
 
 const asAdmin = (body) => ({
@@ -147,9 +146,10 @@ describe('exchangeOidcToken', () => {
 		restoreTableFactory();
 	});
 
-	after(() => {
+	after(async () => {
 		removeJwtKeys();
 		clearJWTRSAKeysCache();
+		await testUtils.seedUsers();
 	});
 
 	function identityToken(overrides = {}) {
@@ -405,7 +405,7 @@ describe('exchangeOidcToken', () => {
 
 	it('rejects a policy naming a user that no longer exists, without spending the token', async () => {
 		await addPolicy();
-		await setUsersWithRolesCache(new Map());
+		await testUtils.seedUsers();
 		const token = identityToken();
 		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token }));
 		assert.strictEqual(useTable.mock.rows.size, 0, 'a token the runner cannot re-mint must not be burned');
@@ -417,7 +417,7 @@ describe('exchangeOidcToken', () => {
 		await addPolicy();
 		const users = new Map();
 		users.set('ci-deploy', { username: 'ci-deploy', active: false, role: { role: 'deployer', permission: {} } });
-		await setUsersWithRolesCache(users);
+		await testUtils.seedUsers(users);
 
 		const token = identityToken();
 		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token }));

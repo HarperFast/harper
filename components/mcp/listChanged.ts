@@ -57,7 +57,10 @@ export function _resetListChangedForTest(): void {
 function loadItcHandlers(): ItcHandlers | undefined {
 	if (_itcHandlersOverride) return _itcHandlersOverride;
 	try {
-		return require('../../server/itc/serverHandlers');
+		const { schemaHandler, resourceHandler } = require('../../server/itc/serverHandlers');
+		// user and role changes arrive through hdb_user/hdb_role table subscriptions, not ITC
+		const { onUserChange } = require('../../security/user');
+		return { schemaHandler, resourceHandler, userHandler: { addListener: onUserChange } };
 	} catch (err) {
 		harperLogger.trace(`MCP listChanged: ITC handlers unavailable (${(err as Error).message})`);
 		return undefined;
@@ -313,9 +316,9 @@ export function initListChanged(): boolean {
 	if (!handlers) return false;
 	let installed = 0;
 	if (handlers.userHandler?.addListener) {
-		// Harper's ITC handler treats listeners as `() => void`. Our handler is
-		// async (re-resolves users); fire-and-forget with a swallow so a rejection
-		// can never escape the event emitter as an UnhandledPromiseRejection.
+		// Listeners are `() => void`. Our handler is async (re-resolves users);
+		// fire-and-forget with a swallow so a rejection can never escape as an
+		// UnhandledPromiseRejection.
 		onUserChangeBound = () => {
 			onUserChange().catch((err) => harperLogger.trace(`MCP listChanged onUserChange: ${(err as Error).message}`));
 		};

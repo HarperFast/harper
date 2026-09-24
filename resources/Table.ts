@@ -4,13 +4,7 @@
  * table-level interactions, loading records, updating records, querying, and more.
  */
 
-import {
-	CONFIG_PARAMS,
-	OPERATIONS_ENUM,
-	SYSTEM_TABLE_NAMES,
-	SYSTEM_SCHEMA_NAME,
-	MAX_SET_TIMEOUT_MS,
-} from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, OPERATIONS_ENUM, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
 import { type Database } from 'lmdb';
 import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
@@ -69,7 +63,7 @@ import {
 	type ValidationIssue,
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
-import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc.js';
+import { SchemaEventMsg } from '../server/threads/itc.js';
 import {
 	databases,
 	table,
@@ -202,7 +196,6 @@ NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const sourceWriteTypes = new Set(['put', 'patch', 'delete', 'publish', 'message', 'invalidate', 'relocate']);
 const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
 const SOURCE_APPLY_POSITION = Symbol('sourceApplyPosition');
-const USER_ROLE_WRITE = Symbol('userRoleWrite');
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
@@ -1128,9 +1121,6 @@ export function makeTable(options) {
 						return reportDroppedWrite(event, context, error);
 					}
 				};
-				// A failed commit is reported by the apply loop, which awaits it
-				const signalUserChangeOnCommit = (committed: Promise<unknown>) =>
-					committed.then(() => signalling.signalUserChange(new UserEventMsg(process.pid)), noop);
 				// perform the write of an individual write event
 				const writeUpdate = async (event, context) => {
 					if (isLockControlType(event.type)) return applyLockControlEvent(event, context);
@@ -1165,19 +1155,7 @@ export function makeTable(options) {
 						if (event.finished) await event.finished;
 						return notification;
 					}
-					const valuelessPut = Table && event.type === 'put' && value == null && !shouldRevalidateEvents;
-					// Marked before any await, so a transaction's first write is seen where transaction() returns
-					if (
-						!valuelessPut &&
-						databaseName === SYSTEM_SCHEMA_NAME &&
-						(event.table === SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME ||
-							event.table === SYSTEM_TABLE_NAMES.USER_TABLE_NAME) &&
-						!context[USER_ROLE_WRITE]
-					) {
-						context[USER_ROLE_WRITE] = true;
-						if (context.committed) signalUserChangeOnCommit(context.committed);
-					}
-					if (valuelessPut)
+					if (Table && event.type === 'put' && value == null && !shouldRevalidateEvents)
 						await reportDroppedWrite(event, context, new Error('Source-applied put has no record content'));
 					const resource: TableResource = await Table.getResource(id, context, options);
 					if (event.finished) await event.finished;
@@ -1493,7 +1471,6 @@ export function makeTable(options) {
 									}
 								});
 								if (txnInProgress) txnInProgress.committed = commitResolution;
-								if (commitResolution && event[USER_ROLE_WRITE]) signalUserChangeOnCommit(commitResolution);
 
 								if (event.onCommit) {
 									if (txnInProgress) {

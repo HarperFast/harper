@@ -945,7 +945,3 @@ can be replaced through `set_env_value`, and a replicated encrypted value cannot
 node. The application sees a missing variable rather than ciphertext. Plaintext and encrypted values
 coexist per value; `get_env_keys` and `get_component_file` still expose key names only. The
 envelope format, key model and client flow are user-facing and belong in HarperFast/documentation.
-
-## A replicated commit signals a user change only if it staged a user or role write (`Table.ts` `sourcedFrom`)
-
-The apply loop marks the commit's context (`USER_ROLE_WRITE`) on an accepted `system.hdb_user` or `hdb_role` write, before any await so the first write is seen where `transaction()` returns, and signals only when that commit succeeds. A failed commit is reported by the apply loop and never signals. Each signal rebuilds the user cache on every thread, so a flag that outlived its transaction turned every later system commit into a cluster-wide rebuild. Enforced by `unitTests/resources/replicatedUserChangeSignal.test.js`.

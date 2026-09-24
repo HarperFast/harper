@@ -6,11 +6,7 @@ const {
 	registerReplicatedApplyFailureListener,
 	unregisterReplicatedApplyFailureListener,
 } = require('#src/resources/replicatedApplyFailure');
-const { getUsersWithRolesCache } = require('#src/security/user');
-const { userHandler } = require('#js/server/itc/serverHandlers');
-const { UserEventMsg } = require('#js/server/threads/itc');
-const ITCEventObject = require('#js/server/itc/utility/ITCEventObject');
-const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
+const { findAndValidateUser, getUserWithRole, onUserChange } = require('#src/security/user');
 const { waitFor } = require('../waitFor');
 
 function deferred() {
@@ -21,21 +17,16 @@ function deferred() {
 
 let serial = 0;
 let userChanges = 0;
-let countUserChanges = false;
-userHandler.addListener(() => {
-	if (countUserChanges) userChanges++;
-});
+onUserChange(() => userChanges++);
 
-/**
- * Resolves with the number of user changes handled so far, once every one signalled before the call has
- * rebuilt the cache and run its listeners (it runs one more change itself, which it does not count).
- */
-async function settledUserChanges() {
-	await userHandler(new ITCEventObject(ITC_EVENT_TYPES.USER, new UserEventMsg(process.pid)));
-	return userChanges - 1;
+async function noFurtherUserChange(since) {
+	// a non-event: give the audit-log notify pass and its setImmediate fan-out time to run
+	for (let i = 0; i < 5; i++) await yieldMacrotask();
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.strictEqual(userChanges, since, 'no user change was notified');
 }
 
-describe('replicated system-database apply: user-change signal', function () {
+describe('replicated system-database apply: user and role writes', function () {
 	this.timeout(10000);
 	let unhandled;
 	const onUnhandled = (reason) => unhandled.push(reason);
@@ -56,6 +47,11 @@ describe('replicated system-database apply: user-change signal', function () {
 			if (!databases.system?.[name]) table({ database: 'system', table: name, attributes, audit: true });
 		}
 		await databases.system.hdb_role.put({ id: 'super_user', role: 'super_user', permission: { super_user: true } });
+		await databases.system.hdb_role.put({ id: 'replicated_role', role: 'replicated_role', permission: {} });
+	});
+
+	after(async () => {
+		await databases.system.hdb_role.delete('replicated_role');
 	});
 
 	beforeEach(() => {
@@ -63,12 +59,9 @@ describe('replicated system-database apply: user-change signal', function () {
 		applyFailures = [];
 		process.on('unhandledRejection', onUnhandled);
 		registerReplicatedApplyFailureListener('system', onApplyFailure);
-		userChanges = 0;
-		countUserChanges = true;
 	});
 
 	afterEach(async () => {
-		countUserChanges = false;
 		for (const { held, done } of subscriptions.splice(0)) {
 			held.resolve();
 			await done.promise;
@@ -145,72 +138,69 @@ describe('replicated system-database apply: user-change signal', function () {
 		return event;
 	}
 
-	it('signals once for a user write, not again for later non-user commits on the subscription', async () => {
-		const id = ++serial;
-		const username = `signal_user_${id}`;
-		await applyFromSource([
-			userPut(username),
-			nodePut(`signal-node-${id}-a`),
-			nodePut(`signal-node-${id}-b`),
-			nodePut(`signal-node-${id}-c`),
-		]);
-		assert.ok(await databases.system.hdb_nodes.get(`signal-node-${id}-c`), 'the later system commits applied');
-		assert.strictEqual(await settledUserChanges(), 1);
-		assert.ok((await getUsersWithRolesCache()).has(username), 'the signal rebuilt the user cache');
+	function rolePut(id, permission) {
+		return {
+			type: 'put',
+			table: 'hdb_role',
+			id,
+			value: { id, role: id, permission },
+			nodeId: 21,
+			timestamp: Date.now(),
+		};
+	}
+
+	it('makes a replicated user write visible to the next lookup, and notifies user-change listeners', async () => {
+		const username = `replicated_user_${++serial}`;
+		const before = userChanges;
+		await applyFromSource([userPut(username)]);
+		const user = await findAndValidateUser(username, null, false);
+		assert.strictEqual(user.role?.permission.super_user, true, 'the lookup reads the committed record');
+		await waitFor(() => userChanges > before, { message: 'a user-change listener ran' });
 	});
 
-	it('does not signal or leave an unhandled rejection when a user-write commit fails', async () => {
+	it('does not notify for later non-user commits on the subscription', async () => {
+		const id = ++serial;
+		const before = userChanges;
+		await applyFromSource([userPut(`quiet_user_${id}`)]);
+		await waitFor(() => userChanges > before, { message: 'the user write notified' });
+		const settled = userChanges;
+		await applyFromSource([
+			nodePut(`quiet-node-${id}-a`),
+			nodePut(`quiet-node-${id}-b`),
+			nodePut(`quiet-node-${id}-c`),
+		]);
+		assert.ok(await databases.system.hdb_nodes.get(`quiet-node-${id}-c`), 'the later system commits applied');
+		await noFurtherUserChange(settled);
+	});
+
+	it('applies a replicated role change to the next lookup of a user holding it', async () => {
+		const username = `role_holder_${++serial}`;
+		await applyFromSource([userPut(username, { value: { username, role: 'replicated_role', active: true } })]);
+		assert.notStrictEqual(getUserWithRole(username).role.permission.super_user, true);
+		await applyFromSource([rolePut('replicated_role', { super_user: true })]);
+		assert.strictEqual(getUserWithRole(username).role.permission.super_user, true);
+		await applyFromSource([rolePut('replicated_role', {})]);
+		assert.notStrictEqual(getUserWithRole(username).role.permission.super_user, true);
+	});
+
+	it('leaves no user, notification, or unhandled rejection when a user-write commit fails', async () => {
 		const id = ++serial;
 		const error = new Error('injected replicated commit failure');
+		const before = userChanges;
 		await applyFromSource([failCommit(userPut(`failed_user_${id}`), error), nodePut(`after-failure-node-${id}`)]);
 		assert.ok(await databases.system.hdb_nodes.get(`after-failure-node-${id}`), 'apply continued past the failure');
-		assert.equal(await databases.system.hdb_user.get(`failed_user_${id}`), undefined);
+		assert.strictEqual(getUserWithRole(`failed_user_${id}`), undefined);
 		assert.strictEqual(applyFailures.length, 1, 'the apply loop still reports the failed commit');
 		assert.strictEqual(applyFailures[0].error, error);
-		// unhandledRejection is emitted after the microtask queue drains
-		await yieldMacrotask();
-		await yieldMacrotask();
+		// also long enough for an unhandledRejection, which is emitted after the microtask queue drains
+		await noFurtherUserChange(before);
 		assert.deepStrictEqual(unhandled, []);
-		assert.strictEqual(await settledUserChanges(), 0);
 	});
 
-	it('signals for a begin_txn transaction whose user write is staged after its first write', async () => {
+	it('makes a user staged late in a begin_txn transaction visible once it commits', async () => {
 		const id = ++serial;
 		const username = `txn_user_${id}`;
 		await applyFromSource([nodePut(`txn-node-${id}`, { beginTxn: true }), userPut(username), { type: 'end_txn' }]);
-		assert.ok(await databases.system.hdb_user.get(username), 'the transaction committed');
-		assert.strictEqual(await settledUserChanges(), 1);
-		assert.ok((await getUsersWithRolesCache()).has(username));
-	});
-
-	it('signals once for a transaction with several user writes', async () => {
-		const id = ++serial;
-		await applyFromSource([
-			userPut(`multi_user_${id}_a`, { beginTxn: true }),
-			nodePut(`multi-node-${id}`),
-			userPut(`multi_user_${id}_b`),
-			userPut(`multi_user_${id}_c`),
-			{ type: 'end_txn' },
-			{
-				type: 'transaction',
-				nodeId: 21,
-				timestamp: Date.now(),
-				writes: [userPut(`multi_user_${id}_d`), userPut(`multi_user_${id}_e`)],
-			},
-		]);
-		assert.ok(await databases.system.hdb_user.get(`multi_user_${id}_e`), 'both transactions committed');
-		assert.strictEqual(await settledUserChanges(), 2);
-	});
-
-	it('does not signal for dropped user-table events', async () => {
-		const id = ++serial;
-		await applyFromSource([
-			userPut(`unknown_op_user_${id}`, { type: 'invalid-operation' }),
-			userPut(`valueless_user_${id}`, { value: null }),
-			nodePut(`after-drop-node-${id}`),
-		]);
-		assert.ok(await databases.system.hdb_nodes.get(`after-drop-node-${id}`));
-		assert.strictEqual(applyFailures.length, 2, 'both drops are reported');
-		assert.strictEqual(await settledUserChanges(), 0);
+		assert.ok(getUserWithRole(username), 'the transaction committed and the lookup sees it');
 	});
 });

@@ -37,14 +37,3 @@ export function signalResourcesRegistered() {
 		hdbLogger.error(err);
 	}
 }
-
-export async function signalUserChange(message: any) {
-	try {
-		hdbLogger.trace('signalUserChange called with message:', message);
-		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
-		const itcEventUser = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.USER, message);
-		await Promise.all([serverItcHandlers.user(itcEventUser), sendItcEvent(itcEventUser)]);
-	} catch (err) {
-		hdbLogger.error(err);
-	}
-}

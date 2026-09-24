@@ -1,4 +1,5 @@
 import hdbLogger from '../utility/logging/harper_logger.ts';
+import { coalesceRefresh } from '../utility/coalesceRefresh.ts';
 
 /**
  * Continuous re-authorization for live subscriptions (#1414).
@@ -9,9 +10,9 @@ import hdbLogger from '../utility/logging/harper_logger.ts';
  * authorization — at the TABLE/RBAC level, matching how the subscription was granted; there is no
  * per-record evaluation — and terminates any that no longer authorize.
  *
- * Triggers: (1) immediately on the ITC user-change broadcast (the same signal that rebuilds the
- * user/role cache), and (2) on a fixed interval as a backstop and to catch token expiry, which is
- * not event-signaled.
+ * Triggers: (1) promptly on a user or role change (`onUserChange`: hdb_user/hdb_role table
+ * subscriptions), and (2) on a fixed interval as a backstop and to catch token expiry, which is not
+ * event-signaled.
  */
 
 // Backstop interval; also catches token expiry, which is not event-signaled. Overridable for tests.
@@ -45,13 +46,18 @@ function safeLog(log: ((message: string) => void) | undefined, message: string):
 
 const registry = new Set<LiveSubscription>();
 let sweepTimer: any = null;
-let itcListenerInstalled = false;
+let userChangeListenerInstalled = false;
 let sweeping = false;
 
 const NOOP_HANDLE = { unregister: () => {} };
 
+// A change that lands while a sweep runs gets a sweep of its own; the running one may have rechecked its entry already
+const coalescedSweep = coalesceRefresh(sweep);
+
 function triggerSweep(): void {
-	void sweep().catch((error) => safeLog(hdbLogger.error, `liveSubscriptionAuth: sweep failed: ${errorMessage(error)}`));
+	void coalescedSweep().catch((error) =>
+		safeLog(hdbLogger.error, `liveSubscriptionAuth: sweep failed: ${errorMessage(error)}`)
+	);
 }
 
 function ensureStarted(): void {
@@ -60,17 +66,12 @@ function ensureStarted(): void {
 		// don't keep the worker alive solely for the recheck timer
 		sweepTimer.unref?.();
 	}
-	if (!itcListenerInstalled) {
+	if (!userChangeListenerInstalled) {
 		try {
-			// Fire an immediate sweep when a user/role mutation propagates. serverHandlers rebuilds the
-			// user/role cache before invoking listeners, so recheck() observes the new permissions.
-			const handlers = require('./itc/serverHandlers.js');
-			if (handlers?.userHandler?.addListener) {
-				handlers.userHandler.addListener(triggerSweep);
-				itcListenerInstalled = true;
-			}
+			require('../security/user').onUserChange(triggerSweep);
+			userChangeListenerInstalled = true;
 		} catch (error) {
-			hdbLogger.trace?.(`liveSubscriptionAuth: ITC userHandler unavailable: ${(error as Error).message}`);
+			hdbLogger.trace?.(`liveSubscriptionAuth: user change notifications unavailable: ${(error as Error).message}`);
 		}
 	}
 }

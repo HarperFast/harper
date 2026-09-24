@@ -1054,7 +1054,7 @@ function registerLiveSubscriptionForContext(subscription: any, resource: any, ad
 				// created later). Expiry (authExpiresAt above) is its only revocation.
 				fresh = user;
 			} else {
-				// Re-fetch current user state — the user/role cache is rebuilt on mutations — so a dropped or
+				// Re-read current user state from hdb_user/hdb_role, so a dropped or
 				// role-stripped user no longer authorizes.
 				const { findAndValidateUser } = require('../security/user');
 				fresh = await findAndValidateUser(username, undefined, false);

@@ -1,4 +1,4 @@
-import { getSuperUser } from './user.ts';
+import { getSuperUser, isCurrentUser, onUserChange } from './user.ts';
 import { server } from '../server/Server.ts';
 import { resources } from '../resources/Resources.ts';
 import { validateOperationToken, validateRefreshToken, validateLoginToken, decodeJWT } from './tokenAuthentication.ts';
@@ -8,8 +8,6 @@ import * as env from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 const { forComponent, AuthAuditLog, errorForLog } = harperLogger;
-import serverHandlers from '../server/itc/serverHandlers.js';
-const { user } = serverHandlers;
 import { Headers, addVaryHeader, SHARED_CACHE_OPTIN, PRIVATE_SCOPE } from '../server/serverHelpers/Headers.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { verifyCertificate } from './certificateVerification/index.ts';
@@ -62,6 +60,10 @@ const DEFAULT_COOKIE_EXPIRES = 'Tue, 01 Oct 8307 19:33:20 GMT';
 let authorizationCache = new Map();
 server.onInvalidatedUser(() => {
 	// TODO: Eventually we probably want to be able to invalidate individual users
+	authorizationCache = new Map();
+});
+// A component's server.getUser principal has no record provenance for the per-hit isCurrentUser check
+onUserChange(() => {
 	authorizationCache = new Map();
 });
 let bypassUser: any;
@@ -231,7 +233,10 @@ export async function authentication(request, nextHandler) {
 			let cachedUser = authorizationCache.get(authorization);
 			// A cached Bearer identity must not outlive its token: expiry is the only revocation
 			// mechanism for scoped tokens, so it has to be exact, not cache-TTL-fuzzy.
-			if (cachedUser?.authExpiresAt && cachedUser.authExpiresAt * 1000 <= Date.now()) {
+			if (
+				cachedUser &&
+				((cachedUser.authExpiresAt && cachedUser.authExpiresAt * 1000 <= Date.now()) || !isCurrentUser(cachedUser))
+			) {
 				authorizationCache.delete(authorization);
 				cachedUser = undefined;
 			}
@@ -483,9 +488,6 @@ export async function authentication(request, nextHandler) {
 setInterval(() => {
 	authorizationCache = new Map();
 }, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
-user.addListener(() => {
-	authorizationCache = new Map();
-});
 let started = false;
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	if (started) return;

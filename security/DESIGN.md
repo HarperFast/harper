@@ -174,6 +174,12 @@ Two consequences that are easy to miss:
   resolving a principal from a different credential is a contradiction. Hence a rejected certificate
   identity stops resolution outright instead of falling through to Basic, the session, or the local bypass.
 
-## User-cache refreshes are coalesced per thread and never join a scan already running (`security/user.ts`)
+## User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)
 
-Every user-change signal runs `setUsersWithRolesCache()` on every thread, and each run is a full `hdb_role` + `hdb_user` scan holding a read snapshot. `coalesceRefresh` (`utility/coalesceRefresh.ts`) keeps one scan in flight per thread and runs a single trailing scan for all calls that arrive meanwhile. A caller must not join the running scan: it may have read before the caller's own write, and `addUser`/`alterUser`/`dropUser` and revocation rely on the cache holding their write once the await returns. One scan at a time also stops an older scan from finishing last and installing a stale cache. Enforced by `unitTests/utility/coalesceRefresh.test.js` and `unitTests/security/usersWithRolesCacheRefresh.test.js`.
+There is no per-thread copy of `hdb_user`/`hdb_role`: every lookup point-reads the user by name and its role by id through the primary store's record cache, so no writer (an operation, a replicated commit) has to announce a change for lookups to see it. Three rules keep that true:
+
+- **One committed state.** RocksDB point reads share no snapshot, so `readUserEntries` re-checks the user's version after reading its role and retries if it moved; otherwise one transaction that moves a user to role B and grants role A super_user could be read as the user on A with A's new grant.
+- **Derived data is keyed by entry version, not object identity.** With `storage.caching: false` every read returns a new object. The per-role memo of `appendSystemTablesToRole` + expanded operations, and `isCurrentUser`, compare versions; a `VERSION_REUSED` entry never matches. `auth.ts` runs `isCurrentUser` on every `authorizationCache` hit, so a cached principal is re-verified once its user or role record changes.
+- **Notifications are only for holders of a user.** `onUserChange` feeds live-subscription revocation and MCP list-changed from per-thread `hdb_user`/`hdb_role` subscriptions. It never subscribes to an unaudited table, because `subscribe()` would enable and persist auditing on it.
+
+LMDB lookups use the thread's shared read txn, which lmdb-js renews at most once per event-loop turn, so a commit on another thread is seen from the next turn. Resetting it per lookup would give each in-flight transaction its own reader slot. Enforced by `unitTests/security/userRecordLookups.test.js` and `unitTests/resources/replicatedUserWrites.test.js`.

@@ -947,7 +947,6 @@ export const ITC_EVENT_TYPES = {
 	CHILD_STARTUP_PHASE: 'child_startup_phase',
 	CHILD_STOPPED: 'child_stopped',
 	SCHEMA: 'schema',
-	USER: 'user',
 	METRICS: 'metrics',
 	GET_METRICS: 'get_metrics',
 	RESTART: 'restart',
