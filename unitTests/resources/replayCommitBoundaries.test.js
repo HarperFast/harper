@@ -369,8 +369,7 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 			{ id: 'a', key: 5, endTxn: true },
 			{ id: 'b', key: 5, endTxn: true },
 		];
-		// The native commit is the one seam with no real failure to provoke; failing it runs
-		// directCommitSync's own cleanup.
+		// fails the native commit, so directCommitSync's own cleanup runs
 		const failFirst = () => {
 			let failed = false;
 			return (replayTransaction) => {

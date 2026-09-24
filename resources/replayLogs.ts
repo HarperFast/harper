@@ -139,7 +139,6 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 		// key alone does not identify one: a replication receiver commits every re-delivery of a source
 		// transaction under the origin's key, and a peer's log can hold the same key as the origin's.
 		let openLogName: string | undefined;
-		// Set once an entry pulled since the open transaction began carried `endTxn`, staged or skipped.
 		let openCommitEnded = false;
 		// Commits the open transaction, or discards it whole when its native commit was not read to its
 		// end — cut short by a corrupt frame, or by `cutShort` when replay stops early — so that half of a
@@ -153,7 +152,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 			try {
 				if (torn) {
 					writes -= staged;
-					discardedWrites += staged;
+					if (!cutShort) discardedWrites += staged;
 					ending.abort();
 				} else ending.directCommitSync();
 			} catch (error) {
@@ -165,6 +164,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 		};
 		for (const auditRecord of entries as any) {
 			if (noProgressRun > 0 && shouldAbortStalledReplay(noProgressRun, performance.now() - lastProgressTime)) {
+				if (transaction && !electedReplayer) endTransaction(true);
 				const stallDiagnostic = `Aborting transaction-log replay in ${(rootStore as any).databaseName} database: ${noProgressRun} consecutive audit entries with no successful write (${skipped} skipped as unrecoverable, ${writes} replayed so far). This backlog is making no forward progress and was blocking startup (harper#1266) — typically a peer transaction log whose values reference unresolvable shared structures (harper#1163), or a backlog for a dropped table.`;
 				if (electedReplayer) {
 					strictAbort(new Error(stallDiagnostic), transaction);
@@ -173,7 +173,6 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				logger.fatal(
 					`${stallDiagnostic} Continuing boot without replaying the remainder; shed or relocate the oversized/undecodable peer transaction log(s), or re-clone this node, to recover the unreplayed data.`
 				);
-				if (transaction) endTransaction(true);
 				break;
 			}
 			const {
