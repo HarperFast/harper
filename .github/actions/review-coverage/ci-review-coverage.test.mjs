@@ -468,21 +468,20 @@ test('exit codes: report never reds, enforce reds on policy AND on plumbing', ()
 	assert.match(invalidEnforce.stderr, /invalid required 'tow'/);
 });
 
-test('a live pr-author-association override corrects a stale webhook payload', () => {
-	// The payload says CONTRIBUTOR (as GitHub's cached copy can, even for a current org member);
-	// the live override says MEMBER. Enforcement should follow the live value, not the payload.
+test('a pr-author-association override changes enforcement in either direction', () => {
+	// The CLI's override mechanism is generic (see prExemption.mjs); review-coverage.yml only
+	// ever drives it one way (promoting a confirmed member — see the workflow's own comment for
+	// why), but the mechanism itself isn't what makes that true, so both directions are tested.
 	const staleContributor = { pull_request: pr({ author_association: 'CONTRIBUTOR' }) };
 	assert.strictEqual(run(staleContributor, '--mode', 'enforce'), 0, 'payload alone still exempts as non-member');
 	const corrected = runResult(staleContributor, '--mode', 'enforce', '--pr-author-association', 'MEMBER');
-	assert.strictEqual(corrected.status, 1, 'the live override makes this a member PR subject to enforcement');
+	assert.strictEqual(corrected.status, 1, 'the override makes this a member PR subject to enforcement');
 	assert.match(corrected.stdout, /author_association resolved live as MEMBER/);
 
-	// And the reverse: a payload that says MEMBER should not escape enforcement when the live
-	// lookup says the account no longer has that association.
 	const staleMember = { pull_request: pr({ author_association: 'MEMBER' }) };
 	assert.strictEqual(run(staleMember, '--mode', 'enforce'), 1, 'payload alone enforces as a member');
 	const downgraded = runResult(staleMember, '--mode', 'enforce', '--pr-author-association', 'CONTRIBUTOR');
-	assert.strictEqual(downgraded.status, 0, 'the live override exempts once the account is no longer a member');
+	assert.strictEqual(downgraded.status, 0, 'the override exempts once told the account is not a member');
 	assert.match(downgraded.stdout, /exempt: author is not an org member \(CONTRIBUTOR\)/);
 });
 

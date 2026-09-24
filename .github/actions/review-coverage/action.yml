@@ -40,9 +40,7 @@ inputs:
     description: true when the event head was replaced before collection completed
     default: 'false'
   pr_author_association:
-    description: >-
-      author_association resolved live via the API at evaluation time, overriding the webhook
-      payload's copy (which GitHub itself may not have refreshed). Empty skips the override.
+    description: author_association override from a live org-membership check; empty skips it
     default: ''
 runs:
   using: node24

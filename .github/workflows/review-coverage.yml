@@ -4,9 +4,9 @@
 # check gates the PR, so a PR must not be able to edit it. `base.ref` rather than `base.sha` —
 # the workflow file already comes from the base branch tip, and pinning the action to the sha the
 # PR forked from runs a stale copy on any long-lived branch. No PR code is executed here — the
-# coverage evaluation reads the event payload, and the author-association resolution and
-# file-hunk collection read the API — so the usual pull_request_target hazard does not apply.
-# Permissions stay read-only regardless.
+# coverage evaluation reads the event payload, and the membership resolution and file-hunk
+# collection read the API — so the usual pull_request_target hazard does not apply. Permissions
+# stay read-only regardless; the app token minted below is scoped to members:read only.
 name: review-coverage
 on:
   pull_request_target:
@@ -27,40 +27,56 @@ jobs:
           ref: ${{ github.event.pull_request.base.ref }}
           persist-credentials: false
           sparse-checkout: .github/actions/review-coverage
-      - name: Resolve current author association
-        id: author
-        # The webhook payload's author_association can be stale — GitHub documents that it may
-        # not reflect the account's current relationship to the repo. A membership grant that
-        # hasn't propagated into a cached payload otherwise exempts a member's PR from coverage
-        # enforcement permanently, since synchronize doesn't recompute it. Failing open here (no
-        # `set -e` on the retry loop, no output on exhaustion) falls back to the payload's own
-        # value below and in the composite action, matching the pre-existing behavior.
+      - name: Mint a members:read-scoped app token
+        id: app-token
+        # The webhook's author_association is wrong for a PRIVATE org membership: GitHub only
+        # reveals it to a caller whose credential carries members:read, a permission GITHUB_TOKEN
+        # cannot be granted at all. Confirmed on harper#2754 — GITHUB_TOKEN reported the same
+        # wrong CONTRIBUTOR the webhook did for a genuine member, while an app token scoped to
+        # members:read correctly saw an active membership on the identical account. harperfastaibot
+        # already holds members:read org-wide and already has secrets wired into this repo.
         if: >-
           github.event.pull_request.user.type != 'Bot' &&
           !endsWith(github.event.pull_request.user.login, '[bot]')
         continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.HARPERFAST_AI_CLIENT_ID }}
+          private-key: ${{ secrets.HARPERFAST_AI_APP_PRIVATE_KEY }}
+          permission-members: read
+          permission-metadata: read
+      - name: Resolve live org membership
+        id: author
+        # One-directional: only promotes to MEMBER, never demotes. A failed mint, a failed
+        # lookup, or a confirmed non-member all leave this output empty, so the gate below and
+        # the composite action's override both fall back to the webhook's own association —
+        # exactly today's behavior. A transient error can therefore never move a real member into
+        # the exempt "always human review" path; it can only miss promoting one.
+        if: steps.app-token.outputs.token != ''
+        continue-on-error: true
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ORG: ${{ github.repository_owner }}
+          LOGIN: ${{ github.event.pull_request.user.login }}
         run: |
           set -uo pipefail
-          [[ "$GH_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 0
-          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || exit 0
+          [[ "$ORG" =~ ^[A-Za-z0-9_.-]+$ ]] || exit 0
+          [[ "$LOGIN" =~ ^[A-Za-z0-9_-]+$ ]] || exit 0
           for attempt in 1 2 3; do
-            association=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.author_association') && break
+            state=$(gh api "orgs/$ORG/memberships/$LOGIN" --jq '.state' 2>/dev/null) && break
             (( attempt == 3 )) && exit 0
             sleep "$attempt"
           done
-          [[ -n "$association" ]] && echo "association=$association" >> "$GITHUB_OUTPUT"
+          [[ "$state" == "active" ]] && echo "author_association=MEMBER" >> "$GITHUB_OUTPUT"
           exit 0
       - name: Collect current PR file hunks
         id: pr-files
         if: >-
           github.event.pull_request.user.type != 'Bot' &&
           !endsWith(github.event.pull_request.user.login, '[bot]') &&
-          ((steps.author.outputs.association || github.event.pull_request.author_association) == 'MEMBER' ||
-           (steps.author.outputs.association || github.event.pull_request.author_association) == 'OWNER')
+          (steps.author.outputs.author_association == 'MEMBER' ||
+           github.event.pull_request.author_association == 'MEMBER' ||
+           github.event.pull_request.author_association == 'OWNER')
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -145,4 +161,4 @@ jobs:
           pr_files: ${{ steps.pr-files.outputs.path }}
           pr_files_ready: ${{ steps.pr-files.outputs.ready }}
           pr_files_superseded: ${{ steps.pr-files.outputs.superseded }}
-          pr_author_association: ${{ steps.author.outputs.association }}
+          pr_author_association: ${{ steps.author.outputs.author_association }}

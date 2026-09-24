@@ -20,10 +20,8 @@ import { COVERAGE_REQUIRED } from './reviewGate.mjs';
 
 const MAX_PR_FILES_BYTES = 4 * 1024 * 1024;
 
-// The full enum GitHub documents for `author_association` — a workflow step resolves this
-// live (see review-coverage.yml) because the webhook payload's copy can be stale: GitHub
-// itself warns it may not reflect the account's current relationship to the repo. Validated
-// against the enum so a malformed override can't smuggle an unrecognized value through.
+// The full documented enum, so an override can only ever land on a value classification
+// already understands (see review-coverage.yml for where this input comes from).
 const AUTHOR_ASSOCIATIONS = new Set([
 	'OWNER',
 	'MEMBER',
