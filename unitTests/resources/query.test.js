@@ -960,6 +960,7 @@ describe('Querying through Resource API', () => {
 				await Player.put({ id: 'player-4', name: 'dave', teamCode: 'blue' });
 				for (const suffix of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']) {
 					await Team.put({ id: `team-${suffix}`, code: `code-${suffix}`, league: suffix < 'f' ? 'north' : 'south' });
+					// a join filter's miss on a bench player is what switches it to an id set
 					await Player.put({ id: `bench-${suffix}`, name: 'bench', teamCode: `code-${suffix}` });
 				}
 				await Player.put({ id: 'erin-1', name: 'erin', teamCode: 'code-e' });
@@ -971,7 +972,7 @@ describe('Querying through Resource API', () => {
 			async function teamsWithPlayerNamed(name, conditions = []) {
 				const teams = [];
 				for await (const record of Team.search({
-					conditions: [...conditions, { attribute: ['players', 'name'], value: name }],
+					conditions: [{ attribute: ['players', 'name'], value: name }, ...conditions],
 					select: ['id', { name: 'players', select: ['id'] }],
 				})) {
 					teams.push({ id: record.id, players: record.players.map((player) => player.id) });
@@ -1009,7 +1010,6 @@ describe('Querying through Resource API', () => {
 			});
 
 			it('matches a joined condition against the local `from` value after switching to an id set', async function () {
-				// the id set is only tried by a join filtering more than 3 driving records, after a miss (a bench player)
 				const north = [{ attribute: 'league', value: 'north' }];
 				const explanation = Team.search({
 					conditions: [{ attribute: ['players', 'name'], value: 'erin' }, ...north],
