@@ -29,6 +29,24 @@ describe('deployLifecycle', () => {
 		});
 	});
 
+	describe('loadsAwaitDeploy', () => {
+		it('releases only the deploys in flight when releaseLoads is called', () => {
+			deployLifecycle._handle({ name: 'foo', phase: 'start', deploymentId: 'left-behind' });
+			assert.equal(deployLifecycle.loadsAwaitDeploy('foo'), true);
+			deployLifecycle.releaseLoads('foo');
+			assert.equal(deployLifecycle.loadsAwaitDeploy('foo'), false);
+			assert.equal(deployLifecycle.isDeployInFlight('foo'), true, 'watchers still see the deploy');
+
+			deployLifecycle._handle({ name: 'foo', phase: 'start', deploymentId: 'next' });
+			assert.equal(deployLifecycle.loadsAwaitDeploy('foo'), true, 'a later deploy is awaited again');
+			deployLifecycle._handle({ name: 'foo', phase: 'end', deploymentId: 'next' });
+			deployLifecycle._handle({ name: 'foo', phase: 'end', deploymentId: 'left-behind' });
+
+			deployLifecycle._handle({ name: 'foo', phase: 'start', deploymentId: 'left-behind' });
+			assert.equal(deployLifecycle.loadsAwaitDeploy('foo'), true, 'the release ended with its deploy');
+		});
+	});
+
 	describe('event emission', () => {
 		it('emits deploy:start when a start event is processed', () => {
 			let received;

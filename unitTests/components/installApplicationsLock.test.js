@@ -21,7 +21,6 @@ const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const harperLogger =
 	require('#src/utility/logging/harper_logger').default || require('#src/utility/logging/harper_logger');
 
-/** An in-memory `updateLock` that records the lock state after every transition. */
 function memoryLock(applications) {
 	const snapshots = [];
 	const updateLock = async (mutate) => {
@@ -41,7 +40,7 @@ function deferred() {
 }
 
 let nameSequence = 0;
-/** Tracked preparations are process-wide by name, so every test gets names nothing else uses. */
+// Tracked preparations are process-wide, so no test may reuse another's name.
 function uniqueName(label) {
 	return `startup-prep-${label}-${process.pid}-${++nameSequence}`;
 }
@@ -51,13 +50,6 @@ function track(label, start, onLateSuccess = () => {}, configKey = 'config') {
 	return trackStartupPreparation(uniqueName(label), configKey, application, start, onLateSuccess);
 }
 
-/** Registers the caller as a waiter, the way installApplications does before it waits. */
-function waitedOn(preparation) {
-	preparation.waiters++;
-	return preparation;
-}
-
-/** Records the timers armed with exactly these delays, and which of them are still uncleared. */
 async function withTimerSpy(delays, run) {
 	const originals = {
 		setTimeout: global.setTimeout,
@@ -182,18 +174,20 @@ describe('installApplications lock state', () => {
 			await fs.writeFile(lockPath, JSON.stringify({ applications: { stalled: { package: 'a' } } }));
 			const readLock = async () => JSON.parse(await fs.readFile(lockPath, 'utf8')).applications;
 
-			// Call 1 starts the stalled preparation, then stops waiting for it.
-			let succeedStalled;
+			const started = deferred();
+			const release = deferred();
 			const stalled = recordApplicationPreparation(
 				'stalled',
 				{ package: 'a' },
-				() => new Promise((resolve) => (succeedStalled = resolve)),
+				() => {
+					started.resolve();
+					return release.promise;
+				},
 				(mutate) => updateApplicationLock(lockPath, mutate)
 			);
-			await sleep(10);
+			await started.promise;
 			assert.deepStrictEqual(await readLock(), {});
 
-			// Call 2 (a worker restart) installs another component meanwhile.
 			await recordApplicationPreparation(
 				'other',
 				{ package: 'b' },
@@ -202,7 +196,7 @@ describe('installApplications lock state', () => {
 			);
 			assert.deepStrictEqual(await readLock(), { other: { package: 'b' } });
 
-			succeedStalled();
+			release.resolve();
 			await stalled;
 			assert.deepStrictEqual(await readLock(), { other: { package: 'b' }, stalled: { package: 'a' } });
 		});
@@ -239,30 +233,25 @@ describe('startup preparation wait', () => {
 	});
 
 	describe('waitForStartupPreparations', () => {
-		it('returns only the preparations still pending at the deadline, and stops waiting on them', async () => {
-			const done = waitedOn(track('done', async () => {}));
-			const failed = waitedOn(track('failed', () => Promise.reject(new Error('install failed'))));
+		it('returns only the preparations still pending at the deadline, and marks them left behind', async () => {
+			const done = track('done', async () => {});
+			const failed = track('failed', () => Promise.reject(new Error('install failed')));
 			const stalled = deferred();
-			const pending = waitedOn(track('pending', () => stalled.promise));
+			const pending = track('pending', () => stalled.promise);
 
 			const startedAt = performance.now();
 			const leftBehind = await waitForStartupPreparations([done, failed, pending], 50);
 
 			assert.ok(performance.now() - startedAt >= 45, 'waited for the deadline');
 			assert.deepStrictEqual(leftBehind, [pending]);
-			assert.deepStrictEqual(
-				[done.waiters, failed.waiters, pending.waiters],
-				[0, 0, 0],
-				'every waiter released, whether settled or left behind'
-			);
+			assert.deepStrictEqual([done.leftBehind, failed.leftBehind, pending.leftBehind], [false, false, true]);
 			stalled.resolve();
 			await pending.promise;
-			assert.strictEqual(pending.waiters, 0, 'a settlement after the deadline does not release twice');
 		});
 
 		it('returns as soon as everything settles and clears its deadline and progress timers', async () => {
 			const release = deferred();
-			const preparation = waitedOn(track('fast', () => release.promise));
+			const preparation = track('fast', () => release.promise);
 			let leftBehind;
 			let elapsed;
 			const { armed, uncleared } = await withTimerSpy([54_321, 12_345], async (originals) => {
@@ -287,7 +276,7 @@ describe('startup preparation wait', () => {
 
 		it('waits indefinitely for Infinity', async () => {
 			const release = deferred();
-			const preparation = waitedOn(track('unbounded', () => release.promise));
+			const preparation = track('unbounded', () => release.promise);
 			let returned = false;
 			const waiting = waitForStartupPreparations([preparation], Infinity).then((leftBehind) => {
 				returned = true;
@@ -301,7 +290,7 @@ describe('startup preparation wait', () => {
 
 		it('clamps a deadline beyond the setTimeout ceiling instead of firing immediately', async () => {
 			const release = deferred();
-			const preparation = waitedOn(track('huge', () => release.promise));
+			const preparation = track('huge', () => release.promise);
 			let returned = false;
 			const waiting = waitForStartupPreparations([preparation], 30 * 24 * 60 * 60 * 1000).then(() => (returned = true));
 			await sleep(50);
@@ -316,7 +305,7 @@ describe('startup preparation wait', () => {
 			harperLogger.warn = (message) => warnings.push(message);
 			try {
 				const stalled = deferred();
-				const pending = waitedOn(track('reported', () => stalled.promise));
+				const pending = track('reported', () => stalled.promise);
 				await waitForStartupPreparations([pending], 80, 20);
 				stalled.resolve();
 				assert.ok(warnings.length > 0, 'progress was reported');
@@ -329,7 +318,7 @@ describe('startup preparation wait', () => {
 		it('a preparation that rejects after the deadline is not an unhandled rejection', async () => {
 			const rejections = await collectUnhandledRejections(async () => {
 				const stalled = deferred();
-				const pending = waitedOn(track('late-failure', () => stalled.promise));
+				const pending = track('late-failure', () => stalled.promise);
 				await waitForStartupPreparations([pending], 10);
 				stalled.reject(new Error('install failed late'));
 			});
@@ -365,38 +354,34 @@ describe('startup preparation wait', () => {
 			assert.notStrictEqual(afterSettle, first, 'a settled preparation is not reused');
 		});
 
-		it('starts a new preparation when the configuration changed', () => {
+		it('starts a new preparation when the configuration changed, and rejoins the first when it changes back', () => {
 			const name = uniqueName('reconfigured');
 			const application = { dirPath: '/nonexistent', isNewComponent: true, packageMetadataChanged: false };
-			const first = trackStartupPreparation(
-				name,
-				'old',
-				application,
-				() => new Promise(() => {}),
-				() => {}
-			);
-			const second = trackStartupPreparation(
-				name,
-				'new',
-				application,
-				() => new Promise(() => {}),
-				() => {}
-			);
-			assert.notStrictEqual(second, first);
+			let starts = 0;
+			const start = () => {
+				starts++;
+				return new Promise(() => {});
+			};
+			const configA = trackStartupPreparation(name, 'A', application, start, () => {});
+			const configB = trackStartupPreparation(name, 'B', application, start, () => {});
+			const configAAgain = trackStartupPreparation(name, 'A', application, start, () => {});
+			assert.notStrictEqual(configB, configA);
+			assert.strictEqual(configAAgain, configA);
+			assert.strictEqual(starts, 2);
 		});
 
-		it('reports a success only when no installApplications call is still waiting for it', async () => {
+		it('reports the success of a preparation startup stopped waiting for, and only that', async () => {
 			const late = [];
 			const onLateSuccess = (preparation) => late.push(preparation.name);
 
-			const consumedRelease = deferred();
-			const consumed = waitedOn(track('consumed', () => consumedRelease.promise, onLateSuccess));
-			const waiting = waitForStartupPreparations([consumed], 60_000);
-			consumedRelease.resolve();
+			const inTimeRelease = deferred();
+			const inTime = track('in-time', () => inTimeRelease.promise, onLateSuccess);
+			const waiting = waitForStartupPreparations([inTime], 60_000);
+			inTimeRelease.resolve();
 			await waiting;
 
 			const abandonedRelease = deferred();
-			const abandoned = waitedOn(track('abandoned', () => abandonedRelease.promise, onLateSuccess));
+			const abandoned = track('abandoned', () => abandonedRelease.promise, onLateSuccess);
 			await waitForStartupPreparations([abandoned], 10);
 			abandonedRelease.resolve();
 			await abandoned.promise;
@@ -405,7 +390,8 @@ describe('startup preparation wait', () => {
 			assert.deepStrictEqual(late, [abandoned.name]);
 		});
 
-		it('a later call that picks the preparation up consumes its success', async () => {
+		it('still reports a left-behind preparation that a later call waits on and sees finish', async () => {
+			// That later call cannot know its own generation will load the component on every worker.
 			const late = [];
 			const release = deferred();
 			const name = uniqueName('picked-up');
@@ -413,44 +399,40 @@ describe('startup preparation wait', () => {
 			const start = () => release.promise;
 			const onLateSuccess = (preparation) => late.push(preparation.name);
 
-			const boot = waitedOn(trackStartupPreparation(name, 'config', application, start, onLateSuccess));
+			const boot = trackStartupPreparation(name, 'config', application, start, onLateSuccess);
 			await waitForStartupPreparations([boot], 10);
-			const restart = waitedOn(trackStartupPreparation(name, 'config', application, start, onLateSuccess));
+			const restart = trackStartupPreparation(name, 'config', application, start, onLateSuccess);
 			assert.strictEqual(restart, boot);
 			const waiting = waitForStartupPreparations([restart], 60_000);
 			release.resolve();
 			assert.deepStrictEqual(await waiting, []);
 			await sleep(0);
 
-			assert.deepStrictEqual(late, [], 'the restart that loads it needs no further restart');
+			assert.deepStrictEqual(late, [name]);
 		});
 
 		it('never reports a failure as late, and a throwing reporter is not an unhandled rejection', async () => {
 			let reported = 0;
 			const rejections = await collectUnhandledRejections(async () => {
 				const failing = deferred();
-				const failed = waitedOn(
-					track(
-						'late-reject',
-						() => failing.promise,
-						() => {
-							reported++;
-						}
-					)
+				const failed = track(
+					'late-reject',
+					() => failing.promise,
+					() => {
+						reported++;
+					}
 				);
 				await waitForStartupPreparations([failed], 10);
 				failing.reject(new Error('install failed'));
 
 				const succeeding = deferred();
-				const thrower = waitedOn(
-					track(
-						'throwing-reporter',
-						() => succeeding.promise,
-						() => {
-							reported++;
-							throw new Error('status store closed');
-						}
-					)
+				const thrower = track(
+					'throwing-reporter',
+					() => succeeding.promise,
+					() => {
+						reported++;
+						throw new Error('status store closed');
+					}
 				);
 				await waitForStartupPreparations([thrower], 10);
 				succeeding.resolve();

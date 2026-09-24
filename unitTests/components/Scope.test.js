@@ -602,6 +602,28 @@ describe('Scope', () => {
 			}
 		});
 
+		it('loads the installed tree when the deploy in flight was released from loads', async () => {
+			deployLifecycle._handle({ name: this.appName, phase: 'start', deploymentId: 'startup-left-behind' });
+			deployLifecycle.releaseLoads(this.appName);
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope(this.appName, this.resources, this.server)
+			);
+			try {
+				const entries = [];
+				const entryHandler = scope.handleEntry({ files: 'test.js' }, (entry) => entries.push(entry));
+				await scope.waitForDeployCompletion();
+				await entryHandler.ready;
+				assert.ok(entries.length > 0, 'the handler scans instead of pausing behind the released deploy');
+			} finally {
+				deployLifecycle._handle({ name: this.appName, phase: 'end', deploymentId: 'startup-left-behind' });
+				await scope.close();
+			}
+		});
+
 		it('resumes a mid-deploy scope when the deploy owner exits', async () => {
 			const ownerThreadId = 41;
 			deployLifecycle._handle({

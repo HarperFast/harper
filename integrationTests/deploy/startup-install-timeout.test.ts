@@ -1,12 +1,6 @@
 /**
- * Startup waits for component preparation at most `deployment.startupInstallTimeout` (harper#2072). Before it,
- * `installApplications()` awaited every preparation with no bound, and listeners open only after it returns, so
- * one component whose install never finished kept the whole node down — no operations API, no status — silently.
- *
- * The component's install command blocks until a sentinel file appears, so the test decides when it finishes,
- * and counts its starts so a restart during the stall can be shown not to begin a second install.
- *
- * Run: npm run test:integration -- "integrationTests/deploy/startup-install-timeout.test.ts"
+ * Startup waits for component preparation at most `deployment.startupInstallTimeout` (harper#2072); listeners
+ * open only after that wait, so without the bound one install that never finishes keeps the whole node down.
  */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, match, ok, strictEqual } from 'node:assert';
@@ -16,7 +10,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+import { killHarper, startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 import { authHeader, getRestartRequired, operation } from './redeploy-restart-flag-helpers.ts';
 
 const PROJECT = 'startup-install-stall';
@@ -33,15 +27,49 @@ const poll = setInterval(() => {
 // Worker restarts on Windows routinely outlast the readiness deadlines below (harper#1813).
 const skipSuite = process.platform === 'win32';
 
-async function probeStatus(ctx: ContextWithHarper): Promise<number> {
-	const response = await fetch(`${ctx.harper.httpURL}/StalledInstallProbe/`, {
-		headers: { Authorization: authHeader(ctx) },
-	});
-	await response.body?.cancel();
-	return response.status;
+/** A component serving `{ version }` at /StalledInstallProbe/. Always a throwaway copy: loading it links node_modules/harper into it. */
+async function writeFixture(version: number, withInstallScript: boolean): Promise<string> {
+	const dir = await mkdtemp(join(tmpdir(), 'startup-install-fixture-'));
+	await writeFile(join(dir, 'package.json'), JSON.stringify({ name: PROJECT, version: `${version}.0.0` }));
+	await writeFile(join(dir, 'config.yaml'), 'rest: true\njsResource:\n  files: resource.js\n');
+	await writeFile(
+		join(dir, 'resource.js'),
+		`export class StalledInstallProbe extends Resource {\n\tget() {\n\t\treturn { version: ${version} };\n\t}\n}\n`
+	);
+	if (withInstallScript) await writeFile(join(dir, 'install.cjs'), INSTALL_SCRIPT);
+	return dir;
 }
 
-/** `restart_service` only queues a job; the restart (and the installApplications() it runs) is done when that is. */
+/** The install finishes once `release` exists, and appends a line to `starts` each time it begins. */
+async function createGate() {
+	const dir = await mkdtemp(join(tmpdir(), 'startup-install-gate-'));
+	const release = join(dir, 'release');
+	const starts = join(dir, 'starts');
+	return {
+		dir,
+		release,
+		installCommand: `node install.cjs ${release} ${starts}`,
+		starts: async () => (existsSync(starts) ? (await readFile(starts, 'utf8')).split('\n').filter(Boolean).length : 0),
+		open: () => writeFile(release, ''),
+	};
+}
+
+async function probe(ctx: ContextWithHarper): Promise<{ status: number; body?: any }> {
+	const response = await fetch(`${ctx.harper.httpURL}/StalledInstallProbe/`, {
+		headers: { Authorization: authHeader(ctx), Accept: 'application/json' },
+	});
+	if (response.status !== 200) {
+		await response.body?.cancel();
+		return { status: response.status };
+	}
+	return { status: 200, body: await response.json() };
+}
+
+function readBootLog(ctx: ContextWithHarper): Promise<string> {
+	return readFile(join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log'), 'utf8');
+}
+
+// `restart_service` only queues a job; the installApplications() the restart runs is done when the job is.
 async function restartWorkers(ctx: ContextWithHarper): Promise<void> {
 	const { job_id: jobId } = await operation(ctx, { operation: 'restart_service', service: 'http_workers' });
 	ok(jobId, 'restart_service returned a job id');
@@ -63,34 +91,19 @@ async function waitUntil(description: string, condition: () => Promise<boolean>,
 }
 
 suite(
-	'startup stops waiting for a component install after deployment.startupInstallTimeout',
+	'startup stops waiting for a new component install after deployment.startupInstallTimeout',
 	{ skip: skipSuite },
 	(ctx: ContextWithHarper) => {
 		let fixtureDir: string;
-		let gateDir: string;
-		const releasePath = () => join(gateDir, 'release');
-		const startsPath = () => join(gateDir, 'starts');
-		const installStarts = async () =>
-			existsSync(startsPath()) ? (await readFile(startsPath(), 'utf8')).split('\n').filter(Boolean).length : 0;
+		let gate: Awaited<ReturnType<typeof createGate>>;
 
 		before(async () => {
-			gateDir = await mkdtemp(join(tmpdir(), 'startup-install-gate-'));
-			// A throwaway copy, because loading the component links node_modules/harper into its directory.
-			fixtureDir = await mkdtemp(join(tmpdir(), 'startup-install-fixture-'));
-			await writeFile(join(fixtureDir, 'package.json'), JSON.stringify({ name: PROJECT, version: '1.0.0' }));
-			await writeFile(join(fixtureDir, 'config.yaml'), 'rest: true\njsResource:\n  files: resource.js\n');
-			await writeFile(
-				join(fixtureDir, 'resource.js'),
-				'export class StalledInstallProbe extends Resource {\n\tget() {\n\t\treturn { ok: true };\n\t}\n}\n'
-			);
-			await writeFile(join(fixtureDir, 'install.cjs'), INSTALL_SCRIPT);
+			gate = await createGate();
+			fixtureDir = await writeFixture(1, true);
 			await startHarper(ctx, {
 				config: {
 					deployment: { startupInstallTimeout: STARTUP_INSTALL_TIMEOUT_MS },
-					[PROJECT]: {
-						package: `file:${fixtureDir}`,
-						install: { command: `node install.cjs ${releasePath()} ${startsPath()}` },
-					},
+					[PROJECT]: { package: `file:${fixtureDir}`, install: { command: gate.installCommand } },
 				},
 				env: {},
 			});
@@ -99,40 +112,95 @@ suite(
 		after(async () => {
 			try {
 				// The install runs in its own process group, which tearing Harper down does not reach.
-				if (gateDir) await writeFile(releasePath(), '');
+				if (gate) await gate.open();
 				await teardownHarper(ctx);
 			} finally {
 				if (fixtureDir) await rm(fixtureDir, { recursive: true, force: true });
-				if (gateDir) await rm(gateDir, { recursive: true, force: true });
+				if (gate) await rm(gate.dir, { recursive: true, force: true });
 			}
 		});
 
 		test('the node starts while the install is still running, without that component', async () => {
-			strictEqual(await installStarts(), 1, 'the install had started');
-			ok(!existsSync(releasePath()), 'and cannot have finished');
-			const status = await operation(ctx, { operation: 'get_status' });
-			ok(status, 'the operations API answers');
-			strictEqual(await probeStatus(ctx), 404, 'the component is not loaded');
-			const log = await readFile(join(ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log'), 'hdb.log'), 'utf8');
-			match(log, new RegExp(`Startup is no longer waiting for ${PROJECT}: its preparation has not finished`));
+			await waitUntil('the install starts', async () => (await gate.starts()) === 1);
+			ok(!existsSync(gate.release), 'and cannot have finished');
+			ok(await operation(ctx, { operation: 'get_status' }), 'the operations API answers');
+			strictEqual((await probe(ctx)).status, 404, 'the component is not loaded');
+			match(
+				await readBootLog(ctx),
+				new RegExp(`Startup is no longer waiting for ${PROJECT}: its preparation has not finished`)
+			);
 		});
 
 		test('a worker restart during the stall waits on the same install instead of starting another', async () => {
 			await restartWorkers(ctx);
-			strictEqual(await installStarts(), 1);
+			strictEqual(await gate.starts(), 1);
 			strictEqual(await getRestartRequired(ctx), false, 'nothing has finished yet');
 		});
 
 		test('when the install finishes it is recorded, a restart is requested, and a restart loads it', async () => {
-			await writeFile(releasePath(), '');
+			await gate.open();
 			await waitUntil('get_status reports restartRequired', () => getRestartRequired(ctx));
-			strictEqual(await installStarts(), 1, 'the install ran exactly once');
+			strictEqual(await gate.starts(), 1, 'the install ran exactly once');
 			const lock = JSON.parse(await readFile(join(ctx.harper.dataRootDir, 'harper-application-lock.json'), 'utf8'));
 			deepStrictEqual(Object.keys(lock.applications), [PROJECT], 'the completed install is recorded');
 
 			await restartWorkers(ctx);
-			await waitUntil('the component serves', async () => (await probeStatus(ctx)) === 200);
-			strictEqual(await installStarts(), 1, 'the restart reused the recorded install');
+			await waitUntil('the component serves', async () => (await probe(ctx)).status === 200);
+			strictEqual(await gate.starts(), 1, 'the restart reused the recorded install');
 		});
 	}
 );
+
+for (const threadCount of [1, 0]) {
+	suite(
+		`an existing component whose reinstall stalls keeps its installed version (threads.count: ${threadCount})`,
+		{ skip: skipSuite },
+		(ctx: ContextWithHarper) => {
+			let installedDir: string;
+			let replacementDir: string;
+			let gate: Awaited<ReturnType<typeof createGate>>;
+			const config = (component: Record<string, unknown>) => ({
+				threads: { count: threadCount },
+				deployment: { startupInstallTimeout: STARTUP_INSTALL_TIMEOUT_MS },
+				[PROJECT]: component,
+			});
+
+			before(async () => {
+				gate = await createGate();
+				installedDir = await writeFixture(1, false);
+				replacementDir = await writeFixture(2, true);
+				await startHarper(ctx, { config: config({ package: `file:${installedDir}` }), env: {} });
+				await waitUntil('version 1 serves', async () => (await probe(ctx)).body?.version === 1);
+				await killHarper(ctx);
+				await startHarper(ctx, {
+					config: config({ package: `file:${replacementDir}`, install: { command: gate.installCommand } }),
+					env: {},
+				});
+			});
+
+			after(async () => {
+				try {
+					if (gate) await gate.open();
+					await teardownHarper(ctx);
+				} finally {
+					for (const dir of [installedDir, replacementDir, gate?.dir]) {
+						if (dir) await rm(dir, { recursive: true, force: true });
+					}
+				}
+			});
+
+			test('the node starts and serves the installed version while the reinstall runs', async () => {
+				await waitUntil('the reinstall starts', async () => (await gate.starts()) === 1);
+				ok(!existsSync(gate.release));
+				await waitUntil('version 1 serves', async () => (await probe(ctx)).body?.version === 1);
+			});
+
+			test('when the reinstall finishes it is recorded and a restart is requested', async () => {
+				await gate.open();
+				await waitUntil('get_status reports restartRequired', () => getRestartRequired(ctx));
+				const lock = JSON.parse(await readFile(join(ctx.harper.dataRootDir, 'harper-application-lock.json'), 'utf8'));
+				strictEqual(lock.applications[PROJECT]?.package, `file:${replacementDir}`);
+			});
+		}
+	);
+}

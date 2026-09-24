@@ -422,17 +422,23 @@ consumers such as `jsResource` request a restart on their logical `change` or `u
 
 ## Startup waits for component preparation only up to `deployment.startupInstallTimeout`
 
-Listeners open and workers start only after `installApplications()` returns, so any component
-preparation it waits on gates the whole node. It therefore waits at most
-`deployment.startupInstallTimeout` (default 10 minutes, `0` = unbounded), measured from its entry
-(`waitForStartupPreparations`). A preparation still running then is left behind, not cancelled: it keeps
-its component preparation lock, so no second writer can touch that component, and a later
-`installApplications()` (every worker restart runs one) waits on the same in-flight promise rather than
-starting another (`trackStartupPreparation`, keyed by component name and configuration). Startup loads
-what is installed meanwhile — the previous version, or nothing for a new component. A success that no
-call is still waiting on requests the restart a deploy-without-restart would (`requestRestartAfterDeploy`);
-one that a later call is waiting on is loaded by that call's generation instead. Because a preparation can
-outlive the call that read the lock file, every `harper-application-lock.json` transition is a
-read-modify-write in one per-path queue (`updateApplicationLock`), never a write of a caller's snapshot
-(harper#2072). Enforced by `unitTests/components/installApplicationsLock.test.js` and
+Listeners open and workers start only after `installApplications()` returns, so any component preparation it
+waits on gates the whole node. It waits at most `deployment.startupInstallTimeout` (default 10 minutes, `0` =
+unbounded), measured from its entry (`waitForStartupPreparations`). A preparation still running then is left
+behind, not cancelled: it keeps its component preparation lock, so no second writer touches that component, and
+a later `installApplications()` (every worker restart runs one) waits on the same in-flight promise instead of
+starting another (`trackStartupPreparation`, keyed by component and configuration).
+
+Startup then loads the installed tree: the previous version, or nothing for a new component. On the installing
+thread that needs `deployLifecycle.releaseLoads()`, because a Scope created while its component's deploy is in
+flight would otherwise wait for that deploy and pause its watchers — in single-thread mode that is the node's
+only serving thread, and startup would block on the very preparation it stopped waiting for. Workers started
+after the broadcast never saw the deploy, so they already load the installed tree.
+
+When a preparation that any call stopped waiting for succeeds, it requests a restart unconditionally: some
+running generation predates its swap, and the package-metadata comparison `requestRestartAfterDeploy` uses
+cannot tell whether that generation ever loaded a working version. Because a preparation outlives the call that
+started it, each `harper-application-lock.json` transition is a read-modify-write in one per-path queue
+(`updateApplicationLock`), and the already-installed check reads the file per entry (harper#2072). Enforced by
+`unitTests/components/installApplicationsLock.test.js` and
 `integrationTests/deploy/startup-install-timeout.test.ts`.

@@ -3,7 +3,7 @@ import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUti
 import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
-import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
+import { broadcastDeployStart, broadcastDeployEnd, deployLifecycle } from './deployLifecycle.ts';
 import { ComponentPreparationLockTimeoutError, withComponentPreparationLock } from './componentPreparationLock.ts';
 import {
 	isThreadRunning,
@@ -4483,7 +4483,7 @@ async function activateStagedArtifact(
 	});
 }
 
-/** `deployment_startupInstallTimeout` in ms; 0 waits indefinitely. Only a finite non-negative number or numeric string counts. */
+/** `deployment_startupInstallTimeout` in ms; 0 waits indefinitely. */
 export function getStartupInstallTimeoutMs(): number {
 	const configured = getConfigValue(CONFIG_PARAMS.DEPLOYMENT_STARTUPINSTALLTIMEOUT);
 	if (configured === undefined || configured === null) return DEFAULT_STARTUP_INSTALL_TIMEOUT_MS;
@@ -4502,13 +4502,15 @@ export type StartupPreparation = {
 	configKey: string;
 	application: Pick<Application, 'dirPath' | 'isNewComponent' | 'packageMetadataChanged'>;
 	promise: Promise<void>;
-	/** installApplications() calls still waiting on this within their deadline; a success nobody waits for is late. */
-	waiters: number;
+	/** Some installApplications() call stopped waiting for this, so a generation already running predates its swap. */
+	leftBehind: boolean;
 };
 
 // Process-wide, because a preparation startup stopped waiting for outlives the call that started it: the
 // next installApplications() (every worker restart runs one) must wait on it, not start a second one that
 // would queue on the first one's component lock and rebuild the component again when it finally gets it.
+// Keyed by configuration too, so a config that flips back while an older preparation is still running
+// rejoins that preparation.
 const startupPreparations = new Map<string, StartupPreparation>();
 
 export function trackStartupPreparation(
@@ -4518,13 +4520,14 @@ export function trackStartupPreparation(
 	start: () => Promise<void>,
 	onLateSuccess: (preparation: StartupPreparation) => void | Promise<void> = reportLateStartupPreparation
 ): StartupPreparation {
-	const existing = startupPreparations.get(name);
-	if (existing?.configKey === configKey) return existing;
-	const preparation: StartupPreparation = { name, configKey, application, promise: start(), waiters: 0 };
-	startupPreparations.set(name, preparation);
+	const key = JSON.stringify([name, configKey]);
+	const existing = startupPreparations.get(key);
+	if (existing) return existing;
+	const preparation: StartupPreparation = { name, configKey, application, promise: start(), leftBehind: false };
+	startupPreparations.set(key, preparation);
 	const settle = (succeeded: boolean) => {
-		if (startupPreparations.get(name) === preparation) startupPreparations.delete(name);
-		if (!succeeded || preparation.waiters > 0) return;
+		startupPreparations.delete(key);
+		if (!succeeded || !preparation.leftBehind) return;
 		Promise.resolve()
 			.then(() => onLateSuccess(preparation))
 			.catch((error) => logger.error?.(`Could not report the late preparation of ${name}:`, errorForLog(error)));
@@ -4537,18 +4540,10 @@ export function trackStartupPreparation(
 }
 
 async function reportLateStartupPreparation(preparation: StartupPreparation): Promise<void> {
-	const { requestRestartAfterDeploy } = await import('./requestRestart.ts');
-	const { application } = preparation;
-	// The contract a deploy without a restart leaves, which is what this is: the swap happened under running workers.
-	const restartRequested = requestRestartAfterDeploy(
-		application.isNewComponent,
-		application.packageMetadataChanged,
-		false,
-		false
-	);
+	const { requestRestart } = await import('./requestRestart.ts');
+	requestRestart();
 	logger.warn?.(
-		`Component ${preparation.name} finished preparing after startup stopped waiting for it` +
-			(restartRequested ? '; restart Harper to load it' : '')
+		`Component ${preparation.name} finished preparing after startup stopped waiting for it; restart Harper to load it`
 	);
 }
 
@@ -4565,14 +4560,11 @@ export async function waitForStartupPreparations(
 	const pending = new Set(preparations);
 	if (pending.size === 0) return [];
 	const startedAt = performance.now();
-	const release = (preparation: StartupPreparation) => {
-		if (pending.delete(preparation)) preparation.waiters--;
-	};
 	const allSettled = Promise.all(
 		[...pending].map((preparation) =>
 			preparation.promise.then(
-				() => release(preparation),
-				() => release(preparation)
+				() => pending.delete(preparation),
+				() => pending.delete(preparation)
 			)
 		)
 	);
@@ -4595,7 +4587,7 @@ export async function waitForStartupPreparations(
 		clearInterval(progressTimer);
 	}
 	const leftBehind = [...pending];
-	for (const preparation of leftBehind) release(preparation);
+	for (const preparation of leftBehind) preparation.leftBehind = true;
 	return leftBehind;
 }
 
@@ -4615,11 +4607,6 @@ export async function installApplications() {
 	const startedAt = performance.now();
 	const timeoutMs = getStartupInstallTimeoutMs();
 	const preparations = new Set<StartupPreparation>();
-	const waitFor = (preparation: StartupPreparation) => {
-		if (preparations.has(preparation)) return;
-		preparation.waiters++;
-		preparations.add(preparation);
-	};
 
 	const config = getConfigObj();
 
@@ -4631,8 +4618,8 @@ export async function installApplications() {
 
 	const harperApplicationLockPath = join(getConfigValue(CONFIG_PARAMS.ROOTPATH), 'harper-application-lock.json');
 	const updateLock = (mutate: ApplicationLockMutation) => updateApplicationLock(harperApplicationLockPath, mutate);
-	// Before any preparation is registered, so a throw here cannot strand a registered wait.
-	const harperApplicationLock = await readApplicationLock(harperApplicationLockPath);
+	// Creates the file on a first boot even when nothing needs preparing.
+	await updateLock(() => {});
 
 	// first install any built-in components specified from env vars
 	for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
@@ -4645,7 +4632,9 @@ export async function installApplications() {
 			packageIdentifier,
 		});
 
-		waitFor(trackStartupPreparation(name, packageIdentifier, application, () => prepareApplication(application)));
+		preparations.add(
+			trackStartupPreparation(name, packageIdentifier, application, () => prepareApplication(application))
+		);
 	}
 
 	for (const [name, applicationConfig] of Object.entries(config)) {
@@ -4684,11 +4673,13 @@ export async function installApplications() {
 				credentials,
 			});
 
-			// Lock check: only install if not already installed with matching configuration
+			// Lock check: only install if not already installed with matching configuration. Read per entry: a
+			// preparation an earlier call stopped waiting for may have recorded its success since this call began.
+			const installedConfig = (await readApplicationLock(harperApplicationLockPath)).applications[name];
 			if (
 				existsSync(application.dirPath) &&
-				harperApplicationLock.applications[name] &&
-				JSON.stringify(harperApplicationLock.applications[name]) === JSON.stringify(applicationConfig)
+				installedConfig &&
+				JSON.stringify(installedConfig) === JSON.stringify(applicationConfig)
 			) {
 				logger.info?.(`Application ${name} is already installed with matching configuration; skipping installation`);
 				continue;
@@ -4696,7 +4687,7 @@ export async function installApplications() {
 			// Once preparation is required, the old entry is no longer evidence of a complete
 			// installation. In particular, a failed reinstall may leave a partial directory behind;
 			// retaining the prior entry would make the next boot skip that partial component.
-			waitFor(
+			preparations.add(
 				trackStartupPreparation(name, JSON.stringify(applicationConfig), application, () =>
 					recordApplicationPreparation(name, applicationConfig, () => prepareApplication(application), updateLock)
 				)
@@ -4711,18 +4702,17 @@ export async function installApplications() {
 		timeoutMs === 0 ? Infinity : timeoutMs - (performance.now() - startedAt)
 	);
 	for (const { name, application } of leftBehind) {
+		// Loading this startup's installed tree is the alternative startup chose, so no load may wait on it.
+		deployLifecycle.releaseLoads(name);
 		logger.error?.(
 			`Startup is no longer waiting for ${name}: its preparation has not finished after ${timeoutMs}ms ` +
-				`(${CONFIG_PARAMS.DEPLOYMENT_STARTUPINSTALLTIMEOUT}). It continues in the background; until it does, ` +
+				`(${CONFIG_PARAMS.DEPLOYMENT_STARTUPINSTALLTIMEOUT}). It continues in the background; until it finishes, ` +
 				(existsSync(application.dirPath)
-					? 'the previously installed version is what loads'
-					: 'the component is not loaded')
+					? 'the version already installed stays in place'
+					: 'the component is not installed')
 		);
 	}
 	if (leftBehind.length === 0) logger.info?.('All root applications loaded');
-
-	// Every preparation records its own transitions; this creates the file when nothing needed preparing.
-	await updateLock(() => {});
 }
 
 type ApplicationLockFile = { applications: Record<string, ApplicationConfig> };
