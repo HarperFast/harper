@@ -636,3 +636,31 @@ the bare message until harper#2703, so the same error carried an error code on t
 
 REST settles a credential rejection _before_ its route lookup, so a rejected client gets the unauthorized
 close rather than `1011 No resource was found` — which would otherwise disclose whether the resource exists.
+
+## A job row is settled by exactly one of two mechanisms, chosen by who is still alive (`server/jobs/`)
+
+A job's terminal status is written by the worker itself (`jobProcess.ts`), so a worker that dies first
+leaves the row at `CREATED`/`IN_PROGRESS` forever. Two mechanisms settle those rows, and the split is by
+what survived the death, not by what killed it:
+
+- The **process** is gone — crash, `restart`, `HARPER_EXIT_ON_RESTART` under an orchestrator. The next
+  boot's `reconcileInterruptedJobs()` claims every unfinished row whose `owner_instance` is not this
+  process's, which is all of them (harper#2635).
+- The **thread** is gone but the process is not. The boot sweep cannot see these: the row still carries
+  the running process's own `owner_instance`, and the sweep only runs at boot. `startJobWorker`'s exit
+  hook settles them instead, via `settleAbandonedJob()`.
+
+Ownership is a per-boot uuid rather than a pid because pids are reused, and a reused pid would make a
+dead job look alive. Both mechanisms report an interrupted row as `ERROR` rather than a new status, because
+every existing `get_job` consumer already handles `ERROR`; the distinction lives in the message.
+
+The hook is `startWorker`'s `onUnexpectedExit` option, and it fires only for an exit neither deliberate
+nor part of a teardown — a deliberate stop is always either replaced (`startCopy()` on a restart, which
+re-runs the job from the persisted row) or followed by the boot sweep, so settling one would fight
+whoever already owns it. It is an **option** rather than a listener the caller attaches to the returned
+worker because `startCopy()` restarts through the same options object: a listener bound to the first
+worker never reaches the replacements, which can die the same way.
+
+That leaves one shape uncovered by construction: a job worker deliberately stopped with no replacement
+while the process keeps running. Nothing does that today; a change that starts to must settle the row
+itself.
