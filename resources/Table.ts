@@ -1248,29 +1248,41 @@ export function makeTable(options) {
 					return side;
 				};
 
-				/** Commits a source transaction and then its side transactions; fails if any of them fails. */
-				const commitSourceTransaction = async (txn) => {
-					let failure: { error: unknown } | undefined;
-					for (const part of [txn, ...(txn.sideTransactions?.values() ?? [])]) {
-						// every part is released, even after a failure, so none is left open holding a snapshot
+				const commitPart = async (part) => {
+					try {
 						part.resolve();
-						try {
-							await part.committed;
-						} catch (error) {
-							failure ??= { error };
-						}
+						await part.committed;
+					} catch (error) {
+						return { part, error };
 					}
-					if (failure) throw failure.error;
-					return txn.committed;
 				};
 
-				const signalUserChangeOnCommit = (commitResolution) => {
-					if (!userRoleUpdate || !commitResolution || commitResolution.waitingForUserChange) return;
-					commitResolution.waitingForUserChange = true; // only need to send one signal per transaction
-					// a failed commit is reported where the loop awaits it
-					commitResolution
-						.then(() => signalling.signalUserChange(new UserEventMsg(process.pid)), noop)
-						.catch((error) => logger.error?.('failed to signal a replicated user change', error));
+				/**
+				 * Resolves whether every part of a source transaction committed. Every part is released even after one
+				 * fails, so none stays open holding a snapshot; then each failed part is reported under its own origin
+				 * before the next event is pulled. Transient conflicts retry without limit and never reach the report.
+				 * The commit side effects wait for all of the parts.
+				 */
+				const commitSourceTransaction = async (txn) => {
+					const failure = await commitPart(txn);
+					let failures = failure && [failure];
+					if (txn.sideTransactions) {
+						for (const side of txn.sideTransactions.values()) {
+							const sideFailure = await commitPart(side);
+							if (sideFailure) (failures ??= []).push(sideFailure);
+						}
+					}
+					if (failures) {
+						for (const { part, error } of failures) {
+							logger.error?.('source-applied transaction commit failed during apply', error);
+							await notifyReplicatedApplyFailure(databaseName, part, part[SOURCE_APPLY_POSITION], error, tableName);
+						}
+						return false;
+					}
+					if (userRoleUpdate) signalling.signalUserChange(new UserEventMsg(process.pid));
+					if (txn.onCommit)
+						txn.committed.then(txn.onCommit).catch((error) => logger.error?.('error in subscription handler', error));
+					return true;
 				};
 
 				try {
@@ -1420,7 +1432,11 @@ export function makeTable(options) {
 									// advances past an uncommitted write (which would diverge this node from its peers).
 									let committed;
 									try {
-										committed = committingTxn ? await commitSourceTransaction(committingTxn) : undefined;
+										if (committingTxn) {
+											// a failed part was reported, and the sequence id is not advanced past it
+											if (!(await commitSourceTransaction(committingTxn))) continue;
+											committed = await committingTxn.committed;
+										}
 										applied = true;
 										if (event.onCommit) {
 											// the onCommit callback can be async and carry associated work (e.g. blob
@@ -1450,21 +1466,11 @@ export function makeTable(options) {
 										// one), this is the backpressure point for all but the last transaction: wait for
 										// the prior commit to land before applying the next so the sequence id can't
 										// advance past an uncommitted write.
+										// A failed part is reported, and apply continues so the current beginTxn still
+										// starts a fresh transaction with correct boundaries instead of having its writes
+										// applied as standalone ones.
 										try {
 											await commitSourceTransaction(txnInProgress);
-										} catch (error) {
-											// Transient conflicts retry without limit and never reach here, so this is a
-											// non-retryable commit failure on the prior transaction. Log and continue (rather
-											// than rethrow) so the current beginTxn still starts a fresh transaction with
-											// correct boundaries instead of having its writes applied as standalone ones.
-											logger.error?.('source-applied transaction commit failed during apply', error);
-											await notifyReplicatedApplyFailure(
-												databaseName,
-												txnInProgress,
-												txnInProgress[SOURCE_APPLY_POSITION],
-												error,
-												tableName
-											);
 										} finally {
 											// Clear it regardless of outcome so a rejected commit isn't re-awaited on the
 											// next beginTxn (which would brick the apply loop).
@@ -1474,7 +1480,6 @@ export function makeTable(options) {
 										// write in the current source transaction if one is in progress
 										const target = transactionFor(event, txnInProgress);
 										target.writePromises.push(stageWrite(event, target));
-										signalUserChangeOnCommit(target.committed);
 										continue;
 									}
 								}
@@ -1535,28 +1540,16 @@ export function makeTable(options) {
 										return writeUpdate(event, event);
 									}
 								});
-								if (txnInProgress) txnInProgress.committed = commitResolution;
-								signalUserChangeOnCommit(commitResolution);
-
-								if (event.onCommit) {
-									if (txnInProgress) {
-										// begin_txn: commitResolution stays pending until the matching end_txn, so it
-										// can't be awaited here; onCommit is awaited at end_txn once the commit lands.
-										if (commitResolution)
-											commitResolution
-												.then(event.onCommit, noop) // a failed commit is reported where end_txn awaits it
-												.catch((error) => logger.error?.('error in subscription handler', error));
-										else event.onCommit();
-									} else {
-										// standalone write: backpressure on the commit before pulling the next event,
-										// and pass the commit resolution through to the callback.
-										const committed = commitResolution ? await commitResolution : undefined;
-										applied = true;
-										await event.onCommit(committed);
-									}
-								} else if (commitResolution && !txnInProgress) {
-									// standalone write with no onCommit: still backpressure on the commit.
-									await commitResolution;
+								if (txnInProgress) {
+									// begin_txn: pending until the source transaction closes, which runs its commit side effects
+									txnInProgress.committed = commitResolution;
+								} else {
+									// standalone write: backpressure on the commit before pulling the next event
+									const committed = commitResolution ? await commitResolution : undefined;
+									applied = true;
+									if (userRoleUpdate) signalling.signalUserChange(new UserEventMsg(process.pid));
+									// pass the commit resolution through to the callback
+									if (event.onCommit) await event.onCommit(committed);
 								}
 							} catch (error) {
 								logger.error?.('error in subscription handler', error);

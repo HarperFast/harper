@@ -17,9 +17,11 @@ describe('replicated apply of a frame spanning origin logs', function () {
 	this.timeout(10000);
 	const failures = [];
 	let failureGate;
+	let gateAt = 1;
+	// holds the apply loop at the `gateAt`th reported failure until the gate opens
 	const listener = (failure) => {
 		failures.push(failure);
-		return failureGate?.promise;
+		if (failures.length >= gateAt) return failureGate?.promise;
 	};
 	let held;
 	let done;
@@ -32,12 +34,13 @@ describe('replicated apply of a frame spanning origin logs', function () {
 	});
 	after(() => unregister(DATABASE, listener));
 	afterEach(async () => {
-		failures.length = 0;
 		failureGate?.resolve();
 		failureGate = undefined;
+		gateAt = 1;
 		held?.resolve();
 		await done?.promise;
 		held = done = undefined;
+		failures.length = 0;
 	});
 
 	function deferred() {
@@ -199,38 +202,40 @@ describe('replicated apply of a frame spanning origin logs', function () {
 		};
 	}
 
-	for (const failed of [0, 1, 2]) {
-		it(`holds the frame when log transaction ${failed + 1} of 3 fails, and still commits the others`, async () => {
-			const { Table, node } = fixture();
+	for (const failedParts of [[0], [1], [2], [1, 2]]) {
+		it(`holds the frame when log transaction(s) ${failedParts.map((part) => part + 1)} of 3 fail, and commits the others`, async () => {
+			const { Table, auditStore, node } = fixture();
 			const via = node('via');
 			const origins = [node('origin-a'), node('origin-b'), node('origin-c')];
 			const ids = origins.map((_origin, index) => `part-${index}`);
 			const records = ids.map((id, index) => [id, origins[index]]);
 			const failing = frame(records, via);
-			const failure = new Error(`part ${failed} commit failure`);
-			failCommit(failing.events[failed], Table, failure);
+			const errors = failedParts.map((part) => new Error(`part ${part} commit failure`));
+			failedParts.forEach((part, index) => failCommit(failing.events[part], Table, errors[index]));
+			let onCommitCalls = 0;
+			failing.events[0].onCommit = () => onCommitCalls++;
+			// the same frame again, as a reconnect re-delivers it
+			const redelivered = frame(records, via);
+			for (const event of redelivered.events)
+				if (event.type === 'put') event.timestamp = event.version = failing.timestamp;
+			redelivered.end.localTime = failing.end.localTime;
+			redelivered.events[0].onCommit = () => onCommitCalls++;
 			const unhandled = [];
 			const onUnhandled = (reason) => unhandled.push(reason);
 			process.on('unhandledRejection', onUnhandled);
 			failureGate = deferred();
+			gateAt = failedParts.length;
 			try {
-				// the same frame again, as a reconnect re-delivers it
-				const redelivered = {
-					events: frame(records, via).events.map((event) => ({
-						...event,
-						timestamp: failing.timestamp,
-						version: failing.timestamp,
-					})),
-				};
-				redelivered.events.at(-1).localTime = failing.end.localTime;
 				start(Table, [...failing.events, ...redelivered.events]);
-				await waitFor(() => failures.length > 0, { message: 'the failed part is reported' });
+				await waitFor(() => failures.length === failedParts.length, { message: 'every failed part is reported' });
 				assert.deepStrictEqual(
-					failures.map(({ error, position }) => [error, position]),
-					[[failure, failing.timestamp]]
+					failures.map(({ error, nodeId, position }) => [error, nodeId, position]),
+					failedParts.map((part, index) => [errors[index], origins[part], failing.timestamp]),
+					'each failed part is reported under its own origin'
 				);
 				for (const [index, id] of ids.entries())
-					assert.equal(!!(await Table.get(id)), index !== failed, `${id} committed unless it failed`);
+					assert.equal(!!(await Table.get(id)), !failedParts.includes(index), `${id} committed unless it failed`);
+				assert.equal(onCommitCalls, 0, 'onCommit waits for every part');
 				assert.notEqual(
 					Table.dbisDB.getSync([Symbol.for('seq'), via])?.seqId,
 					failing.end.localTime,
@@ -239,6 +244,9 @@ describe('replicated apply of a frame spanning origin logs', function () {
 				failures.length = 0;
 				failureGate.resolve();
 				await applied(Table, failing.end, ids);
+				await waitFor(() => onCommitCalls === 1, { message: 'the re-delivered frame runs onCommit once' });
+				for (const [index, id] of ids.entries())
+					assert.deepStrictEqual(logEntries(auditStore, origins[index], failing.timestamp), [[id, true]]);
 				await new Promise(setImmediate);
 				assert.deepStrictEqual(unhandled, []);
 			} finally {
