@@ -64,13 +64,17 @@ function main(mode, formatMode, framingMode) {
 	if (!pr) throw new Error('event payload has no pull_request');
 	const liveAssociation = arg('pr-author-association', process.env.INPUT_PR_AUTHOR_ASSOCIATION || '').toUpperCase();
 	if (liveAssociation && liveAssociation !== pr.author_association) {
-		if (AUTHOR_ASSOCIATIONS.has(liveAssociation)) {
+		if (!AUTHOR_ASSOCIATIONS.has(liveAssociation)) {
+			console.error(`::warning::review-coverage: ignoring unrecognized live author_association '${liveAssociation}'`);
+		} else if (liveAssociation === 'MEMBER' || liveAssociation === 'OWNER') {
 			console.log(
 				`review-coverage: author_association resolved live as ${liveAssociation} (webhook payload had ${pr.author_association ?? 'unset'})`
 			);
 			pr.author_association = liveAssociation;
 		} else {
-			console.error(`::warning::review-coverage: ignoring unrecognized live author_association '${liveAssociation}'`);
+			console.error(
+				`::warning::review-coverage: ignoring non-promoting live author_association '${liveAssociation}' — this override can only promote to MEMBER/OWNER`
+			);
 		}
 	}
 	const rawRequired = arg('required', process.env.INPUT_REQUIRED || process.env.REVIEW_COVERAGE_REQUIRED || '');

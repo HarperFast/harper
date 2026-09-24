@@ -6,7 +6,7 @@
 # PR forked from runs a stale copy on any long-lived branch. No PR code is executed here — the
 # coverage evaluation reads the event payload, and the membership resolution and file-hunk
 # collection read the API — so the usual pull_request_target hazard does not apply. Permissions
-# stay read-only regardless; the app token minted below is scoped to members:read only.
+# stay read-only regardless; the app token minted below is scoped to members:read + metadata:read.
 name: review-coverage
 on:
   pull_request_target:
@@ -29,12 +29,10 @@ jobs:
           sparse-checkout: .github/actions/review-coverage
       - name: Mint a members:read-scoped app token
         id: app-token
-        # The webhook's author_association is wrong for a PRIVATE org membership: GitHub only
-        # reveals it to a caller whose credential carries members:read, a permission GITHUB_TOKEN
-        # cannot be granted at all. Confirmed on harper#2754 — GITHUB_TOKEN reported the same
-        # wrong CONTRIBUTOR the webhook did for a genuine member, while an app token scoped to
-        # members:read correctly saw an active membership on the identical account. harperfastaibot
-        # already holds members:read org-wide and already has secrets wired into this repo.
+        # The webhook's author_association is wrong for a PRIVATE org membership: only a
+        # credential carrying members:read can see it, and GITHUB_TOKEN cannot be granted that
+        # permission at all. harperfastaibot already holds members:read org-wide and already has
+        # its secrets wired into this repo for the Claude/Gemini review bots.
         if: >-
           github.event.pull_request.user.type != 'Bot' &&
           !endsWith(github.event.pull_request.user.login, '[bot]')
@@ -47,11 +45,9 @@ jobs:
           permission-metadata: read
       - name: Resolve live org membership
         id: author
-        # One-directional: only promotes to MEMBER, never demotes. A failed mint, a failed
-        # lookup, or a confirmed non-member all leave this output empty, so the gate below and
-        # the composite action's override both fall back to the webhook's own association —
-        # exactly today's behavior. A transient error can therefore never move a real member into
-        # the exempt "always human review" path; it can only miss promoting one.
+        # resolveMembership.sh only ever prints MEMBER or nothing — never a demotion — so a
+        # failed mint, a failed lookup, or a confirmed non-member all leave this output empty,
+        # falling back to the webhook's own association below and in the composite action.
         if: steps.app-token.outputs.token != ''
         continue-on-error: true
         env:
@@ -59,15 +55,8 @@ jobs:
           ORG: ${{ github.repository_owner }}
           LOGIN: ${{ github.event.pull_request.user.login }}
         run: |
-          set -uo pipefail
-          [[ "$ORG" =~ ^[A-Za-z0-9_.-]+$ ]] || exit 0
-          [[ "$LOGIN" =~ ^[A-Za-z0-9_-]+$ ]] || exit 0
-          for attempt in 1 2 3; do
-            state=$(gh api "orgs/$ORG/memberships/$LOGIN" --jq '.state' 2>/dev/null) && break
-            (( attempt == 3 )) && exit 0
-            sleep "$attempt"
-          done
-          [[ "$state" == "active" ]] && echo "author_association=MEMBER" >> "$GITHUB_OUTPUT"
+          association=$(.github/actions/review-coverage/resolveMembership.sh "$ORG" "$LOGIN")
+          [[ -n "$association" ]] && echo "author_association=$association" >> "$GITHUB_OUTPUT"
           exit 0
       - name: Collect current PR file hunks
         id: pr-files
