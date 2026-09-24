@@ -36,6 +36,7 @@ import {
 	TRANSACTION_STATE,
 	writeKeyId,
 	closeWriteInstance,
+	databaseCommitsSuspended,
 	type WriteGeneration,
 } from './DatabaseTransaction.ts';
 import {
@@ -52,6 +53,7 @@ import * as envMngr from '../utility/environment/environmentManager.ts';
 import { addSubscription } from './transactionBroadcast.ts';
 import {
 	DerivedIndexLagError,
+	DatabaseClosingError,
 	handleHDBError,
 	ClientError,
 	ServerError,
@@ -962,9 +964,12 @@ export function makeTable(options) {
 		}
 		return { txnLogKey: version, nodeId };
 	}
-	// Canonical-source applies (sourceApply), replay and replication notifications are never shed;
-	// dropping one would advance the source cursor past a write that never landed.
+	// Canonical-source applies (sourceApply), replay and replication notifications bypass lag shedding;
+	// dropping one would advance the source cursor past a write that never landed. Database teardown is
+	// different: its submission barrier rejects every producer before the underlying store is closed.
 	function assertDerivedIndexAdmission(options: any, transaction: any) {
+		if (databaseCommitsSuspended(primaryStore.rootStore))
+			throw new DatabaseClosingError(databaseName, !transaction?.root && !transaction?.snapshotFree);
 		if (options?.isNotification || transaction?.sourceApply || transaction?.isReplay) return;
 		const reason = derivedIndexWriteRejection(auditStore, tableId);
 		if (reason) throw new DerivedIndexLagError(reason);

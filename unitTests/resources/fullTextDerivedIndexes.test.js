@@ -4,6 +4,11 @@ const path = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
 const { closeDatabase, database: openDatabase, databases, dropDatabase, table } = require('#src/resources/databases');
 const { acquireUpdateAttributesLock, releaseUpdateAttributesLock } = require('#src/resources/Table');
+const {
+	databaseCommitsSuspended,
+	getOutstandingCommits,
+	trackOutstandingCommit,
+} = require('#src/resources/DatabaseTransaction');
 const { publishDerivedIndexReadiness } = require('#src/resources/derivedIndexRuntime');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
@@ -292,6 +297,9 @@ describe('@fullText derived-index activation', () => {
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
 		let releaseClose;
 		binding.closeBarrier = new Promise((resolve) => (releaseClose = resolve));
+		let finishSubmittedCommit;
+		const submittedCommit = new Promise((resolve) => (finishSubmittedCommit = resolve));
+		trackOutstandingCommit(submittedCommit, Product.primaryStore);
 		const originalAttachment = Product.derivedIndexRuntime;
 		let closed = false;
 		const closing = closeDatabase(database).then((result) => {
@@ -299,6 +307,18 @@ describe('@fullText derived-index activation', () => {
 			return result;
 		});
 		try {
+			await waitFor(() => databaseCommitsSuspended(Product.primaryStore.rootStore));
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.strictEqual(binding.closeAttempts, 0);
+			assert.throws(
+				() => Product.put('late-write', { title: 'Late write' }),
+				(error) => {
+					assert.strictEqual(error.code, 'DATABASE_CLOSING');
+					assert.strictEqual(error.retryable, true);
+					return true;
+				}
+			);
+			finishSubmittedCommit();
 			await waitFor(() => binding.closeAttempts > 0);
 			assert.strictEqual(closed, false);
 			Product.fullTextIndexGenerations = { search: 'replacement-during-close' };
@@ -307,6 +327,7 @@ describe('@fullText derived-index activation', () => {
 			releaseClose();
 			assert.strictEqual(await closing, true);
 		} finally {
+			finishSubmittedCommit?.();
 			releaseClose?.();
 		}
 		Product = undefined;
@@ -423,6 +444,9 @@ describe('@fullText derived-index activation', () => {
 			audit: true,
 			attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }],
 		});
+		if (Product.dbisDB.committed) await Product.dbisDB.committed;
+		await waitFor(() => getOutstandingCommits().count === 0);
+		await new Promise((resolve) => setImmediate(resolve));
 		let closeAttempts = 0;
 		Product.derivedIndexRuntime = {
 			close() {
@@ -433,6 +457,7 @@ describe('@fullText derived-index activation', () => {
 		};
 
 		await assert.rejects(dropDatabase(database), /synchronous writer close failure/);
+		assert.strictEqual(databaseCommitsSuspended(Product.primaryStore.rootStore), false);
 		assert.strictEqual(closeAttempts, 2, 'failure recovery must be able to re-run attachment cleanup');
 		await waitFor(() => Product.derivedIndexRuntime === undefined);
 		await dropDatabase(database);

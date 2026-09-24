@@ -68,6 +68,7 @@ import { planeFilePathFor, planeStalePathFor } from './indexes/hnswPlaneBinding.
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
+import { suspendDatabaseCommits } from './DatabaseTransaction.ts';
 import { replayLogs } from './replayLogs.ts';
 import {
 	assertFullTextActivationSupported,
@@ -2416,10 +2417,12 @@ async function settleDatabaseDerivedIndexes(
 		if (rootStore) rootStores.add(rootStore);
 	}
 	const activationReleases = [...rootStores].map(suspendDerivedIndexActivation);
-	let activationReleased = false;
-	const releaseActivation = () => {
-		if (activationReleased) return;
-		activationReleased = true;
+	const commitSuspension = suspendDatabaseCommits(rootStores);
+	let lifecycleReleased = false;
+	const releaseLifecycle = () => {
+		if (lifecycleReleased) return;
+		lifecycleReleased = true;
+		commitSuspension.release();
 		for (const release of activationReleases) release();
 	};
 	const attachments = new Map<any, any[]>();
@@ -2431,14 +2434,15 @@ async function settleDatabaseDerivedIndexes(
 		if (!tables) attachments.set(attachment, (tables = []));
 		tables.push(table);
 	}
-	if (attachments.size === 0) return releaseActivation;
+	await commitSuspension.waitForDrain();
+	if (attachments.size === 0) return releaseLifecycle;
 	const entries = [...attachments];
 	const results = await Promise.allSettled(entries.map(async ([attachment]) => attachment.close(dropping)));
 	const failures = results
 		.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
 		.map((result) => result.reason);
 	if (failures.length > 0) {
-		releaseActivation();
+		releaseLifecycle();
 		for (const [attachment, tables] of entries) {
 			if (dropping) attachment.completeDrop?.(false);
 			for (const table of tables) refreshDerivedIndexes(table);
@@ -2450,7 +2454,7 @@ async function settleDatabaseDerivedIndexes(
 		if (dropping) attachment.completeDrop?.();
 		for (const table of tables) if (table.derivedIndexRuntime === attachment) table.derivedIndexRuntime = undefined;
 	}
-	return releaseActivation;
+	return releaseLifecycle;
 }
 // HNSW_NO_AUTOVERSION kill-switch: when set, a NEW index initializes as legacy rather than
 // versioned. process.env values are strings, so a bare truthiness check would treat "0"/"false"
@@ -3077,12 +3081,54 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							400
 						);
 					const pinAudit = compiled.length > 0 && persistedPrimary.descriptor?.audit !== true;
-					if (pinAudit) {
+					const requestedNames = new Set(compiled.map(({ name }) => name));
+					const durableDefinitions = readPersistedFullTextDefinitions(
+						persistedFullTextValues,
+						durableAttributes,
+						fullTextWarning
+					);
+					const removedNames = durableDefinitions.map(({ name }) => name).filter((name) => !requestedNames.has(name));
+					const invalidatedNames = durableDefinitions
+						.filter(({ name }) => requestedNames.has(name))
+						.filter((definition) => {
+							try {
+								compileFullTextDefinitions([definition], validationAttributes);
+								return false;
+							} catch (error) {
+								if (error instanceof ClientError) return true;
+								throw error;
+							}
+						})
+						.map(({ name }) => name);
+					const transitionRetirements = new Set([...removedNames, ...invalidatedNames]);
+					if (pinAudit || transitionRetirements.size > 0) {
 						const interimPrimary = { ...persistedPrimary.descriptor };
-						interimPrimary.audit = true;
+						if (pinAudit) interimPrimary.audit = true;
+						if (transitionRetirements.size > 0) {
+							const interimDefinitions = durableDefinitions.filter(({ name }) => requestedNames.has(name));
+							if (interimDefinitions.length > 0) {
+								interimPrimary.fullTextIndexes = interimDefinitions;
+								interimPrimary.fullTextIndexGenerations = persistedFullTextIndexGenerations(
+									persistedPrimary.descriptor?.fullTextIndexGenerations,
+									interimDefinitions
+								);
+							} else {
+								delete interimPrimary.fullTextIndexes;
+								delete interimPrimary.fullTextIndexGenerations;
+							}
+							const retirements = new Set(
+								persistedFullTextIndexNames(persistedPrimary.descriptor?.fullTextIndexRetirements)
+							);
+							for (const name of transitionRetirements) retirements.add(name);
+							for (const name of requestedNames) if (!transitionRetirements.has(name)) retirements.delete(name);
+							fullTextIndexRetirementNames = [...retirements].sort();
+							if (fullTextIndexRetirementNames.length > 0)
+								interimPrimary.fullTextIndexRetirements = fullTextIndexRetirementNames.map((name) => ({ name }));
+							else delete interimPrimary.fullTextIndexRetirements;
+						}
 						armFullTextLiveStateRestore?.();
 						Table.dbisDB.put(persistedPrimary.key, interimPrimary);
-						if (Table.audit !== true) Table.enableAuditing();
+						if (pinAudit && Table.audit !== true) Table.enableAuditing();
 						hasChanges = true;
 					}
 					fullTextValuesForPersistence = compiled;

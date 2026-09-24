@@ -1,7 +1,11 @@
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
 import { Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
-import { ServerError, TransactionCommitConflictTimeoutError } from '../utility/errors/hdbError.ts';
+import {
+	DatabaseClosingError,
+	ServerError,
+	TransactionCommitConflictTimeoutError,
+} from '../utility/errors/hdbError.ts';
 import { lockNotHeldError, type RecordLockHandle } from './recordLock.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context, Id } from './ResourceInterface.ts';
@@ -81,6 +85,9 @@ interface OutstandingCommit {
 let oldestOutstandingCommit: OutstandingCommit | undefined;
 let newestOutstandingCommit: OutstandingCommit | undefined;
 let outstandingCommitCount = 0;
+const outstandingCommitsByRoot = new WeakMap<object, Set<Promise<number | void>>>();
+const suspendedDatabaseCommits = new WeakMap<object, number>();
+let suspendedDatabaseRootCount = 0;
 // Caps the stuck-commit log (checkOverloaded() below) to at most one line per this interval across
 // the whole thread, regardless of how many distinct commits individually cross the threshold — see
 // the comment at the log site for why a per-commit-only dedup isn't enough under sustained overload.
@@ -152,6 +159,13 @@ export function trackOutstandingCommit(
 	else oldestOutstandingCommit = outstanding;
 	newestOutstandingCommit = outstanding;
 	outstandingCommitCount++;
+	const rootStore = store?.rootStore;
+	let rootCommits: Set<Promise<number | void>> | undefined;
+	if (rootStore && typeof rootStore === 'object') {
+		rootCommits = outstandingCommitsByRoot.get(rootStore);
+		if (!rootCommits) outstandingCommitsByRoot.set(rootStore, (rootCommits = new Set()));
+		rootCommits.add(commitResolution);
+	}
 	// Doubles as the write-queue-depth high-water mark (see getTransactionQueueDepths): every
 	// outstanding commit is a write-queue entry, so the peak of one is the peak of the other.
 	if (outstandingCommitCount > writeTxnQueueDepthHighWater) writeTxnQueueDepthHighWater = outstandingCommitCount;
@@ -168,8 +182,54 @@ export function trackOutstandingCommit(
 		if (outstanding.next != null) outstanding.next.prev = outstanding.prev;
 		else newestOutstandingCommit = outstanding.prev;
 		outstandingCommitCount--;
+		if (rootCommits) {
+			rootCommits.delete(commitResolution);
+			if (rootCommits.size === 0) outstandingCommitsByRoot.delete(rootStore);
+		}
 	};
 	commitResolution.then(untrack, untrack);
+}
+
+export function databaseCommitsSuspended(rootStore: object | undefined): boolean {
+	return suspendedDatabaseRootCount > 0 && rootStore != null && (suspendedDatabaseCommits.get(rootStore) ?? 0) > 0;
+}
+
+/**
+ * Stop new native commits for these database roots and wait for submissions already in flight.
+ * The returned release is reference-counted and idempotent so overlapping lifecycle operations
+ * cannot reopen commit admission underneath each other.
+ */
+export function suspendDatabaseCommits(rootStores: Iterable<object>): {
+	waitForDrain(): Promise<void>;
+	release(): void;
+} {
+	const roots = [...new Set(rootStores)];
+	for (const rootStore of roots) {
+		const count = suspendedDatabaseCommits.get(rootStore) ?? 0;
+		if (count === 0) suspendedDatabaseRootCount++;
+		suspendedDatabaseCommits.set(rootStore, count + 1);
+	}
+	let released = false;
+	return {
+		async waitForDrain() {
+			for (;;) {
+				const pending = roots.flatMap((rootStore) => [...(outstandingCommitsByRoot.get(rootStore) ?? [])]);
+				if (pending.length === 0) return;
+				await Promise.allSettled(pending);
+			}
+		},
+		release() {
+			if (released) return;
+			released = true;
+			for (const rootStore of roots) {
+				const count = suspendedDatabaseCommits.get(rootStore) ?? 0;
+				if (count <= 1) {
+					suspendedDatabaseCommits.delete(rootStore);
+					suspendedDatabaseRootCount--;
+				} else suspendedDatabaseCommits.set(rootStore, count - 1);
+			}
+		},
+	};
 }
 
 /**
@@ -1398,6 +1458,7 @@ export class DatabaseTransaction implements Transaction {
 						}
 						// with options.transaction set this is a retry round — the save loop above already
 						// re-staged the writes into it
+						this.assertDatabaseCommitAllowed(transaction);
 						commitResolution = transaction.commit() as Promise<void>;
 						recordCommitLatency(commitResolution, performance.now());
 						// Write-queue-depth accounting for this replay commit happens uniformly below, via
@@ -1457,6 +1518,7 @@ export class DatabaseTransaction implements Transaction {
 							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
 							// sentinel (a number) is why commitResolution is typed
 							// Promise<number | void>; it is handled in the resolve callback below.
+							this.assertDatabaseCommitAllowed(transaction);
 							commitResolution = transaction.commit();
 							// Record how long this commit stays outstanding (submit → settle) as a distribution
 							// metric. This is the same clock the overload check uses (trackOutstandingCommit
@@ -1795,6 +1857,20 @@ export class DatabaseTransaction implements Transaction {
 		this.writesAbandoned = false;
 	}
 
+	private assertDatabaseCommitAllowed(transaction: RocksTransaction): void {
+		const rootStore = this.writes[0]?.store?.rootStore;
+		if (!databaseCommitsSuspended(rootStore)) return;
+		const retryable = !this.root && !this.snapshotFree;
+		if (this.transaction === transaction) this.detachOwnedTransaction();
+		abortNativeTransaction(transaction, 'aborting a transaction while its database is closing');
+		try {
+			this.abort();
+		} catch (error) {
+			harperLogger.debug?.('cleaning up a transaction while its database is closing', error);
+		}
+		throw new DatabaseClosingError(rootStore?.databaseName ?? rootStore?.path ?? 'unknown', retryable);
+	}
+
 	abort(): void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		// Defensively release any native handle whose reference bookkeeping was already consumed.
@@ -1968,6 +2044,7 @@ export class DatabaseTransaction implements Transaction {
 	directCommitSync(): void {
 		const transaction = this.transaction;
 		try {
+			if (transaction) this.assertDatabaseCommitAllowed(transaction);
 			transaction?.commitSync();
 		} catch (error) {
 			// Still uncommitted and still holding its write intents, and no caller aborts after this

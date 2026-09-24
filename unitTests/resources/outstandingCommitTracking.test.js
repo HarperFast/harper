@@ -7,6 +7,8 @@ const { transaction } = require('#src/resources/transaction');
 const {
 	getOutstandingCommits,
 	trackOutstandingCommit,
+	databaseCommitsSuspended,
+	suspendDatabaseCommits,
 	setMaxOutstandingTxnDuration,
 } = require('#src/resources/DatabaseTransaction');
 const { waitFor } = require('../waitFor');
@@ -81,6 +83,54 @@ describe('Outstanding commit tracking', () => {
 			assert.equal(typeof outstanding.oldestAgeMs, 'number', 'a tracked commit should report an age');
 			assert.ok(outstanding.oldestAgeMs >= 0, 'a tracked commit should report a non-negative age');
 		}
+	});
+
+	it('suspends a database root until its submitted commits drain', async function () {
+		if (isLMDB) return;
+		const rootStore = {};
+		const unrelatedRoot = {};
+		let settle;
+		const pending = new Promise((resolve) => (settle = resolve));
+		trackOutstandingCommit(pending, { rootStore });
+		const first = suspendDatabaseCommits([rootStore]);
+		const second = suspendDatabaseCommits([rootStore]);
+		let drained = false;
+		const drain = first.waitForDrain().then(() => (drained = true));
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(drained, false);
+		assert.strictEqual(databaseCommitsSuspended(rootStore), true);
+		assert.strictEqual(databaseCommitsSuspended(unrelatedRoot), false);
+		settle();
+		await drain;
+		first.release();
+		first.release();
+		assert.strictEqual(databaseCommitsSuspended(rootStore), true);
+		second.release();
+		assert.strictEqual(databaseCommitsSuspended(rootStore), false);
+		await assertAllUntracked('the drained per-database commit should be untracked');
+	});
+
+	it('aborts a write staged before its database commit barrier', async function () {
+		if (isLMDB) return;
+		const rootStore = TrackA.primaryStore.rootStore;
+		let suspension;
+		try {
+			await assert.rejects(
+				transaction({}, async (context) => {
+					await TrackA.put(7, { name: 'staged-before-close' }, context);
+					suspension = suspendDatabaseCommits([rootStore]);
+				}),
+				(error) => {
+					assert.strictEqual(error.code, 'DATABASE_CLOSING');
+					assert.strictEqual(error.retryable, true);
+					return true;
+				}
+			);
+		} finally {
+			suspension?.release();
+		}
+		assert.strictEqual(await TrackA.get(7), null);
+		await assertAllUntracked('the rejected pre-barrier write should leave no submitted commit');
 	});
 
 	// The defect this guards: tracking used to occupy a single shared slot, claimed by whichever
