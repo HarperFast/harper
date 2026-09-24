@@ -1,5 +1,5 @@
-// A record-scoped `get` resolving to an ARRAY, with no `static outputSchemas.get`
-// to redeclare the contract — so `get_Listing` keeps the derived record schema.
+// A record-scoped `get` resolving to an array, with no `static outputSchemas.get`,
+// so `get_Listing` keeps the derived record schema it cannot satisfy.
 export class Listing extends tables.Listing {
 	async get() {
 		return [

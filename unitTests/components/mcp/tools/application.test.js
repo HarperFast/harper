@@ -1199,9 +1199,8 @@ describe('mcp/tools/application — custom mcpResources opt-in (#1609)', () => {
 });
 
 describe('mcp/tools/application — structuredContent honors the ADVERTISED outputSchema', () => {
-	// Two contracts bind a result: the base CallToolResult record rule, and the per-tool
-	// outputSchema a client caches from tools/list and validates against (-32602 on a miss).
-	// Assert both — checking only the first is what let an array through as `{ results }`.
+	// Assert both contracts: the base CallToolResult record rule AND the per-tool outputSchema
+	// a client caches from tools/list.
 	const nodePath = require('node:path');
 	const { CallToolResultSchema } = require('@modelcontextprotocol/sdk/types.js');
 	// The SDK's `exports` map blocks this subpath, so resolve it relative to a public entry
@@ -1317,8 +1316,6 @@ describe('mcp/tools/application — structuredContent honors the ADVERTISED outp
 	});
 
 	it('an authored outputSchemas.<verb> owns the contract, so its array is wrapped, not rejected', async () => {
-		// The guard is about the DERIVED record schema. An author who declares a `{ results }`
-		// envelope gets the wrapper and their own schema validates it.
 		const Product = productResource({ get: async () => [{ id: '1' }] });
 		Product.outputSchemas = {
 			get: {

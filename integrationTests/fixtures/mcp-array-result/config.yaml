@@ -1,5 +1,3 @@
-# Fixture for the MCP application profile's outputSchema contract: a generated
-# verb whose handler resolves to an array no object schema can describe.
 graphqlSchema:
   files: '*.graphql'
 jsResource:

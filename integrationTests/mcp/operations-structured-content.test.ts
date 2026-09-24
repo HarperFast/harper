@@ -1,17 +1,11 @@
 /**
  * MCP operations profile — `structuredContent` must be a JSON object.
  *
- * The reference client validates it with `z.record(z.string(), z.unknown())` inside
- * `Client.callTool`, so a bare array fails the entire call:
+ * A raw JSON-RPC POST accepts a non-object frame happily, so this suite drives the real
+ * `@modelcontextprotocol/sdk` client, whose `Client.callTool` rejects it.
  *
- *   $ZodError: [ { "expected": "record", "code": "invalid_type",
- *       "path": [ "structuredContent" ], "message": "expected record, received array" } ]
- *
- * A raw JSON-RPC POST accepts the same frame happily, so this suite drives the real
- * `@modelcontextprotocol/sdk` client and asserts "the call resolves at all" before shape.
- *
- * MCP mounted via the config object (not .env): HARPER_SET_CONFIG's flattenObject drops
- * empty profile objects, so a non-empty mountPath is needed.
+ * MCP mounted via the config object: HARPER_SET_CONFIG's flattenObject drops empty profile
+ * objects, so a non-empty mountPath is needed.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, deepStrictEqual, strictEqual } from 'node:assert';
@@ -105,7 +99,6 @@ suite('MCP operations profile — structuredContent is a spec-legal record (#274
 		});
 		client = new Client({ name: 'mcp-structured-content', version: '1.0.0' }, { capabilities: {} });
 		await client.connect(transport);
-		// A real host lists first, which is what builds the SDK's per-tool output validator.
 		await client.listTools();
 	});
 
@@ -152,7 +145,6 @@ suite('MCP operations profile — structuredContent is a spec-legal record (#274
 	});
 
 	test('operations tools advertise no outputSchema, which is why { results } is safe here', async () => {
-		// If one ever starts advertising a schema, the wrapped shape must be declared with it.
 		const list = await client.listTools();
 		const withSchema = list.tools.filter((t) => t.outputSchema).map((t) => t.name);
 		deepStrictEqual(withSchema, [], `operations tools declaring an outputSchema: ${withSchema.join(', ')}`);

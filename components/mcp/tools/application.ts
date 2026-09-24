@@ -486,14 +486,9 @@ function hasAuthoredOutputSchema(ResourceClass: ResourceClassLike, verb: string)
 const warnedArrayContractTools = new Set<string>();
 
 /**
- * MCP requires `outputSchema` to describe an object, so an array can satisfy neither the
- * DERIVED record schema the generated verbs advertise nor any schema at all. Wrapping it as
- * `{ results }` keeps the base `CallToolResult` legal but still fails the advertised schema a
- * client cached from `tools/list`, with InvalidParams (-32602) — so reject instead of emitting
- * a payload that contradicts our own advertisement.
- *
- * An authored `static outputSchemas.<verb>` means the author owns the contract: wrap and let
- * their schema govern. `search_` and author `mcpTools` advertise nothing and never come here.
+ * MCP requires `outputSchema` to describe an object, so an array satisfies neither the derived
+ * record schema these verbs advertise nor the wrapped `{ results }` form a client validates
+ * against it. An authored `static outputSchemas.<verb>` means the author owns the contract.
  */
 function rejectArrayForSchemaBearingVerb(
 	toolName: string,
@@ -507,7 +502,6 @@ function rejectArrayForSchemaBearingVerb(
 		`${toolName} resolved to an array, but the tool advertises an object outputSchema. ` +
 		`Return an object envelope — e.g. { results: [...] } — and declare it with ` +
 		`\`static outputSchemas.${verb}\`.`;
-	// Once per tool: a host that retries a misconfigured verb would otherwise flood the log.
 	if (!warnedArrayContractTools.has(toolName)) {
 		warnedArrayContractTools.add(toolName);
 		harperLogger.warn(`MCP ${toolName}: ${message}`);
@@ -1308,6 +1302,9 @@ export function registerApplicationTools(): void {
 		return;
 	}
 	applicationToolsRegistered = true;
+	// A rebuild is the lifecycle point where an author's fix (or re-break) lands, so the
+	// warn-once set resets with it.
+	warnedArrayContractTools.clear();
 	// Capture BEFORE walking: a registration landing mid-walk bumps the version
 	// past this snapshot, so the next request's freshness check re-walks.
 	lastWalkedRegistrationVersion = (resources as { registrationVersion?: number }).registrationVersion ?? 0;

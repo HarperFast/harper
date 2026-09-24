@@ -1,13 +1,12 @@
 /**
  * MCP application profile — a generated verb must honor the `outputSchema` it advertised.
  *
- * The SDK client caches that schema from `tools/list` and validates every later result
- * against it, so `{ results: [...] }` — legal as a bare CallToolResult — still fails with
- * InvalidParams (-32602). Driving `listTools()` before `callTool()` is load-bearing: it is
- * the only order in which that validator exists.
+ * The SDK client caches that schema from `tools/list` and validates later results against it,
+ * so `listTools()` before `callTool()` is load-bearing: it is the only order in which the
+ * validator exists.
  *
- * MCP mounted via the config object (not .env): HARPER_SET_CONFIG's flattenObject drops
- * empty profile objects, so a non-empty mountPath is needed.
+ * MCP mounted via the config object: HARPER_SET_CONFIG's flattenObject drops empty profile
+ * objects, so a non-empty mountPath is needed.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual, match } from 'node:assert';
@@ -52,7 +51,6 @@ suite(
 			client = new Client({ name: 'mcp-output-schema', version: '1.0.0' }, { capabilities: {} });
 			await client.connect(transport);
 
-			// The load-bearing step: this is what builds the SDK's per-tool output validator.
 			const list = await client.listTools();
 			advertisedGetSchema = list.tools.find((t) => t.name === 'get_Listing')?.outputSchema;
 		});
@@ -63,8 +61,6 @@ suite(
 		});
 
 		test('get_Listing advertises an object outputSchema requiring the primary key', async () => {
-			// The premise of the whole suite — if this stops holding, the assertions below
-			// are vacuous rather than failing.
 			const schema = advertisedGetSchema as
 				{ type?: string; required?: string[]; additionalProperties?: boolean } | undefined;
 			ok(schema, 'get_Listing advertises an outputSchema');
@@ -74,9 +70,6 @@ suite(
 		});
 
 		test('an array from get_ comes back as a clean contract error, not a -32602 throw', async () => {
-			// Before the review fix this rejected inside callTool with
-			// "Structured content does not match the tool's output schema" — the caller got an
-			// exception rather than a result, on a client that had merely listed the tools first.
 			const result = (await client.callTool({ name: 'get_Listing', arguments: { id: 'a' } })) as SdkToolResult;
 
 			strictEqual(result.isError, true, 'the mismatch is reported as a tool error');
@@ -89,8 +82,6 @@ suite(
 		});
 
 		test('the same client can still call a conforming verb afterwards', async () => {
-			// The error is per-call, not a poisoned session: search_ advertises no outputSchema
-			// and keeps its `{ rows }` envelope, and the validator cached above does not touch it.
 			const result = (await client.callTool({ name: 'search_Listing', arguments: {} })) as SdkToolResult;
 			strictEqual(result.isError, undefined, textFrame(result));
 			const structured = result.structuredContent as { rows?: unknown[] } | undefined;

@@ -1,5 +1,5 @@
-# @export generates the MCP CRUD verb tools, each advertising a derived object
-# outputSchema — the contract the resources.js getter deliberately breaks.
+# @export generates the CRUD verb tools whose derived object outputSchema the
+# resources.js getter breaks.
 type Listing @table @export {
 	id: ID @primaryKey
 	name: String
