@@ -528,7 +528,6 @@ describe('Test custom functions operations', () => {
 				package: '@org/new-package',
 			});
 
-			// The entry is declared, not written: preparation publishes it once the swap commits.
 			expect(prepareApplicationStub.firstCall.args[0].name).to.equal('existing-component');
 			expect(prepareApplicationStub.firstCall.args[1].describeArtifact().rootConfig.package).to.equal(
 				'@org/new-package'

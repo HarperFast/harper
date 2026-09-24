@@ -3,8 +3,7 @@
 // #2315 step 6: `deploy_component` can build and certify a component without activating it, and a later
 // request can swap that artifact in by deployment id. These cover the filesystem protocol that makes the
 // delay safe — the artifact descriptor, the exclusive claim on a public id, the verification an activation
-// runs before it touches anything, and the return to a dormant, retryable state when one fails — and that the
-// component's root-config entry changes only once the swap has committed.
+// runs before it touches anything, and the return to a dormant, retryable state when one fails.
 
 const assert = require('node:assert');
 const path = require('node:path');
