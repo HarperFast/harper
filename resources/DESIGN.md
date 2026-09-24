@@ -146,8 +146,8 @@ Consequences worth knowing:
   replayed record at its log key would move its version forward and make a later legitimate write
   look stale. Its transactions follow native commits: one ends at a commit's last-entry `endTxn`
   marker, at a change of physical log, or at a change of `txnLogKey` (what
-  `CorruptFrameStop.truncatedVersions` records), and one not read to its end is discarded, never
-  committed. A log key alone is not a commit: a receiver commits every re-delivery of a source
+  `CorruptFrameStop.truncatedVersions` records), and one a corrupt frame or a stalled replay cut
+  short is discarded, never committed. A log key alone is not a commit: a receiver commits every re-delivery of a source
   transaction under the origin's key, and grouping by key once staged millions of them into one
   replay transaction (harper#2161). Entries skipped as unrecoverable are still left out of their
   commit. Other consumers still treat a second commit at one key as a duplicate
