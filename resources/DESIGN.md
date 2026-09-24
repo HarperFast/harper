@@ -794,6 +794,30 @@ Consequence for callers that wrap the source in a hashing `Transform`: calling `
 
 Future agents touching `components/deploymentRecorder.ts` for Slice B's streaming variant should pick one of the latter two patterns.
 
+## A shared root store closes with its last alias, never its first (`databases.ts` `closeDatabase`/`closeDatabaseWithAliases`)
+
+Two database names that resolve to one path (a configured alias plus the generic scan, or two
+configured aliases) share one root store object, cached per path in `lmdbDatabaseEnvs`/
+`rocksdbDatabaseEnvs`. `closeDatabase(name)` (`:2222`) is therefore a **logical** release of one
+name only: it retires the name's table runtime (`Table.cleanup()`), closes the RocksDB
+column-family handles that name opened (each open is its own refcount), and tears the root store
+itself down — audit-cleanup stop, storage-reclamation unregistration, env-cache entry — only when
+`isRootStoreReferencedElsewhere` (`:2336`) finds no other loaded name still pointing at it. LMDB
+table handles are never closed individually: `mdb_dbi_close` invalidates the environment-wide slot
+for every wrapper of it and is optional by LMDB's contract, so closing one alias while another still
+holds a handle into the same environment is a use-after-free once the environment itself closes
+(`mdb_env_close` frees it) — the segfault harper#2721 traced on the Node.js v22/v26 unit legs,
+allocator-dependent and reproducible with `MALLOC_PERTURB_=165`.
+
+`closeDatabaseWithAliases(name)` (`:2292`) is the **physical** close: every loaded name sharing a
+root store with `name`, waited on the derived-index runtime of every affected table to stop first
+so a flush in flight cannot land after the stores close. `restore_backup`'s ITC handler
+(`server/itc/serverHandlers.js`) calls this, not `closeDatabase`, because `verifyDatabaseClosed`
+polls the process-wide registry by path — an alias `closeDatabase` left open still blocks the purge.
+Root-store identity is compared by object, never by path: alias discovery only sees names already
+loaded on the current thread, which is sufficient because names load per thread all at once from
+one configuration scan.
+
 ## Table drops, the `dropping` tombstone, and ghost tables
 
 A table is a set of RocksDB column families (`T/` plus `T/<attr>`) and a set of catalog rows
