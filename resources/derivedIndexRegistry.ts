@@ -1,6 +1,8 @@
 const registrations = new WeakMap<object, Map<number, number>>();
 const admissions = new WeakMap<object, Map<number, Array<() => string | undefined>>>();
-type LockStore = { tryLock(key: string): boolean; unlock(key: string): void };
+type LockStore = { status?: string; tryLock(key: string): boolean; unlock(key: string): void };
+type FenceWaitOptions = { shouldContinue?: () => boolean; timeoutMilliseconds?: number };
+const DEFAULT_FENCE_WAIT_MILLISECONDS = 70_000;
 
 function fullTextClearLockKey(tableId: number): string {
 	return `derived-index:fulltext:${tableId}:table-clear`;
@@ -31,17 +33,12 @@ export function fullTextClearInProgress(rootStore: LockStore, tableId: number): 
 }
 
 /** Wait until the current clear releases its fence; callers retry admission afterwards. */
-export async function waitForFullTextClear(rootStore: LockStore, tableId: number): Promise<void> {
-	let retryDelayMilliseconds = 1;
-	for (;;) {
-		await new Promise((resolve) => setTimeout(resolve, retryDelayMilliseconds));
-		const release = acquireFullTextClearFence(rootStore, tableId);
-		if (release) {
-			release();
-			return;
-		}
-		retryDelayMilliseconds = Math.min(retryDelayMilliseconds * 2, 50);
-	}
+export function waitForFullTextClear(
+	rootStore: LockStore,
+	tableId: number,
+	options?: FenceWaitOptions
+): Promise<boolean> {
+	return waitForFence(rootStore, () => acquireFullTextClearFence(rootStore, tableId), 'table clear', options);
 }
 
 /** Fence same-name recreation while a dropped table's native directories are being retired. */
@@ -65,14 +62,37 @@ export function fullTextRetirementInProgress(rootStore: LockStore, tableName: st
 }
 
 /** Wait until the current retirement releases its fence; the caller must recheck its generation afterwards. */
-export async function waitForFullTextRetirement(rootStore: LockStore, tableName: string): Promise<void> {
+export function waitForFullTextRetirement(
+	rootStore: LockStore,
+	tableName: string,
+	options?: FenceWaitOptions
+): Promise<boolean> {
+	return waitForFence(
+		rootStore,
+		() => acquireFullTextRetirementFence(rootStore, tableName),
+		`retirement of full-text storage for '${tableName}'`,
+		options
+	);
+}
+
+async function waitForFence(
+	rootStore: LockStore,
+	acquire: () => (() => void) | undefined,
+	description: string,
+	options: FenceWaitOptions = {}
+): Promise<boolean> {
+	const deadline = Date.now() + (options.timeoutMilliseconds ?? DEFAULT_FENCE_WAIT_MILLISECONDS);
 	let retryDelayMilliseconds = 1;
 	for (;;) {
-		const release = acquireFullTextRetirementFence(rootStore, tableName);
+		if (options.shouldContinue && !options.shouldContinue()) return false;
+		if (rootStore.status !== undefined && rootStore.status !== 'open')
+			throw new Error(`Cannot wait for ${description} on a ${rootStore.status} store`);
+		const release = acquire();
 		if (release) {
 			release();
-			return;
+			return true;
 		}
+		if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${description}`);
 		await new Promise((resolve) => setTimeout(resolve, retryDelayMilliseconds));
 		retryDelayMilliseconds = Math.min(retryDelayMilliseconds * 2, 50);
 	}

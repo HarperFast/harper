@@ -632,6 +632,65 @@ describe('@fullText derived-index activation', () => {
 		assert(binding.resets.length > 0);
 	});
 
+	rocksOnly('keeps the prior declaration when a storage-generation update fails before publication', async () => {
+		const database = `fulltext-generation-failure-${Date.now()}`;
+		const attributes = () => [
+			{ name: 'id', type: 'ID', isPrimaryKey: true },
+			{ name: 'title', type: 'String' },
+			{ name: 'tags', type: 'array', elements: { type: 'String' } },
+		];
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: attributes(),
+			fullTextIndexes: [definition()],
+		});
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+		const namedPrimaryKey = `${Product.tableName}/${Product.primaryKey}`;
+		const primaryKey = Product.dbisDB.getSync(namedPrimaryKey)?.isPrimaryKey
+			? namedPrimaryKey
+			: `${Product.tableName}/`;
+		const initialGeneration = Product.fullTextIndexGenerations.search;
+		const dbisDBDescriptor = Object.getOwnPropertyDescriptor(Product, 'dbisDB');
+		let activeCatalog = Product.dbisDB;
+		let interceptedPut;
+		Object.defineProperty(Product, 'dbisDB', {
+			configurable: true,
+			get: () => activeCatalog,
+			set(catalog) {
+				activeCatalog = catalog;
+				interceptedPut = catalog.put;
+				catalog.put = function (key, value, ...options) {
+					if (String(key) === primaryKey) throw new Error('injected final full-text catalog write failure');
+					return interceptedPut.call(this, key, value, ...options);
+				};
+			},
+		});
+		try {
+			assert.throws(
+				() =>
+					table({
+						database,
+						table: 'Product',
+						audit: true,
+						attributes: attributes(),
+						fullTextIndexes: [definition(2)],
+					}),
+				/injected final full-text catalog write failure/
+			);
+		} finally {
+			if (interceptedPut) activeCatalog.put = interceptedPut;
+			Object.defineProperty(Product, 'dbisDB', { ...dbisDBDescriptor, value: activeCatalog });
+		}
+
+		const descriptor = Product.dbisDB.getSync(primaryKey);
+		assert.strictEqual(descriptor.fullTextIndexes[0].fields[0].weight, 1);
+		assert.strictEqual(descriptor.fullTextIndexGenerations.search, initialGeneration);
+		assert.strictEqual(Product.fullTextIndexes[0].fields[0].weight, 1);
+		assert.strictEqual(Product.fullTextIndexGenerations.search, initialGeneration);
+	});
+
 	rocksOnly('reports activation failure and retries on the next schema installation', async () => {
 		const database = `fulltext-activation-failure-${Date.now()}`;
 		const attributes = () => [
@@ -970,6 +1029,41 @@ describe('@fullText derived-index activation', () => {
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
 		const opened = latestOpen(binding, Product);
 		assert(binding.states.has(`${opened.path}\0${opened.indexId}\0${opened.generation}`));
+	});
+
+	rocksOnly('resumes an incomplete removal retirement when the database reopens', async () => {
+		const database = `fulltext-retirement-reopen-${Date.now()}`;
+		const attributes = () => [
+			{ name: 'id', type: 'ID', isPrimaryKey: true },
+			{ name: 'title', type: 'String' },
+			{ name: 'tags', type: 'array', elements: { type: 'String' } },
+		];
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: attributes(),
+			fullTextIndexes: [definition()],
+		});
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+		const opened = latestOpen(binding, Product);
+		const stateKey = `${opened.path}\0${opened.indexId}\0${opened.generation}`;
+		const primaryKey = `${Product.tableName}/`;
+		binding.resetError = Object.assign(new Error('another writer owns the index'), { code: 'E_LOCK_BUSY' });
+
+		Product = table({ database, table: 'Product', audit: true, attributes: attributes(), fullTextIndexes: [] });
+		await waitFor(() => Product.dbisDB.getSync(primaryKey)?.fullTextIndexRetirements?.[0]?.name === 'search', 30_000);
+		await waitFor(() => Product.derivedIndexRuntime?.matchesCurrent?.() === false, 30_000);
+		assert(binding.states.has(stateKey));
+		await closeDatabase(database);
+		Product = undefined;
+		binding.resetError = undefined;
+
+		Product = table({ database, table: 'Product', audit: true, attributes: attributes(), fullTextIndexes: [] });
+		await waitFor(() => !Product.dbisDB.getSync(primaryKey)?.fullTextIndexRetirements, 30_000);
+
+		assert.strictEqual(binding.states.has(stateKey), false);
+		assert(binding.resets.some((options) => options.path === opened.path && options.indexId === opened.indexId));
 	});
 
 	rocksOnly('retires native storage after a successful table drop', async () => {

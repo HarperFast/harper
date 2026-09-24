@@ -231,6 +231,10 @@ export function attachDerivedIndexes(
 	);
 	const attributes = hnswAttributes.filter((attribute: any) => Table.indices[attribute.name]?.customIndex?.postCommit);
 	const fullTextDefinitions = (Table.fullTextIndexes ?? []) as FullTextDefinition[];
+	const fullTextRetirementNames =
+		Table.primaryStore?.rootStore instanceof RocksDatabase
+			? [...new Set((Table.fullTextIndexRetirements ?? []) as string[])].sort()
+			: [];
 	if (Table.audit !== true && (attributes.length > 0 || fullTextDefinitions.length > 0)) {
 		throw new ClientError(
 			`Table '${Table.databaseName}.${Table.tableName}' must enable audit logging before using a post-commit derived index`
@@ -242,7 +246,10 @@ export function attachDerivedIndexes(
 		Table.tableName,
 		fullTextDefinitions
 	);
-	if (!Table.auditStore) return;
+	if (!Table.auditStore) {
+		if (fullTextRetirementNames.length > 0) return attachFullTextRetirementRecovery(Table, fullTextRetirementNames);
+		return;
+	}
 	const auditStore = Table.auditStore as RocksTransactionLogStore;
 	const registered = runtimeFor(auditStore);
 	const fullTextTest = fullTextTestConfiguration;
@@ -257,7 +264,13 @@ export function attachDerivedIndexes(
 		if (attribute.indexed.nativePlane === false && !indexStore.customIndex.postCommit && registered.backends.has(id))
 			markUnavailableRetry(registered, auditStore, id);
 	}
-	if (attributes.length === 0 && fullTextDefinitions.length === 0) return;
+	if (attributes.length === 0 && fullTextDefinitions.length === 0 && fullTextRetirementNames.length === 0) return;
+	if (
+		attributes.length === 0 &&
+		fullTextDefinitions.length === 0 &&
+		(registered.tableBackends.get(Table.tableId)?.size ?? 0) > 0
+	)
+		return;
 	const installed = { Table };
 	let registeredTable = registered.tables.get(Table.tableId);
 	if (registeredTable) {
@@ -275,6 +288,19 @@ export function attachDerivedIndexes(
 	let registrationReleased = false;
 	let closeOperation: Promise<void> | undefined;
 	const fullTextSnapshot = fullTextActivationSnapshot(Table, fullTextDefinitions);
+	let fullTextRetirementSnapshot = JSON.stringify(fullTextRetirementNames);
+	let fullTextRetirementRecoveryFailed = false;
+	const persistedRetirementOperation = resumePersistedFullTextRetirements(
+		Table,
+		fullTextRetirementNames,
+		() => !closing && registered.tables.get(Table.tableId)?.current === installed
+	).then((completed) => {
+		if (completed) fullTextRetirementSnapshot = JSON.stringify(Table.fullTextIndexRetirements ?? []);
+		else fullTextRetirementRecoveryFailed = true;
+	});
+	persistedRetirementOperation.catch((error) =>
+		fullTextLogger.warn?.(`Could not resume full-text retirement for ${Table.databaseName}.${Table.tableName}`, error)
+	);
 	const hnswSnapshot = attributes.map((attribute: any) => ({
 		name: attribute.name,
 		index: Table.indices[attribute.name]?.customIndex,
@@ -381,7 +407,12 @@ export function attachDerivedIndexes(
 		setup = (async () => {
 			await quiescePredecessor();
 			if (!isCurrent()) return;
-			await waitForFullTextRetirement(Table.primaryStore.rootStore, Table.tableName);
+			if (
+				!(await waitForFullTextRetirement(Table.primaryStore.rootStore, Table.tableName, {
+					shouldContinue: isCurrent,
+				}))
+			)
+				return;
 			if (!isCurrent()) return;
 			if (retryUnavailableReadiness) retryDerivedIndexUnavailable(auditStore, readinessId);
 			const storage = fullTextStorageDefinition(definition);
@@ -459,11 +490,13 @@ export function attachDerivedIndexes(
 				? []
 				: fullTextDefinitions.filter((definition) => !retained.has(definition.name));
 			let releaseRetirementFence: (() => void) | undefined;
-			let waitForPeerRetirement: Promise<void> | undefined;
+			let waitForPeerRetirement: Promise<boolean> | undefined;
 			if (removedDefinitions.length > 0) {
 				releaseRetirementFence = acquireFullTextRetirementFence(Table.primaryStore.rootStore, Table.tableName);
 				if (!releaseRetirementFence)
-					waitForPeerRetirement = waitForFullTextRetirement(Table.primaryStore.rootStore, Table.tableName);
+					waitForPeerRetirement = waitForFullTextRetirement(Table.primaryStore.rootStore, Table.tableName, {
+						shouldContinue: () => Table.primaryStore.rootStore.status === 'open',
+					});
 			}
 			const tableRegistration = registered.tables.get(Table.tableId);
 			if (tableRegistration) {
@@ -492,8 +525,11 @@ export function attachDerivedIndexes(
 						if (failures.length === 1) throw failures[0];
 						if (failures.length)
 							throw new AggregateError(failures, `Could not settle derived indexes for table ${Table.tableId}`);
-						if (releaseRetirementFence) await retireFullTextIndexes(Table, removedDefinitions);
-						else if (waitForPeerRetirement) await waitForPeerRetirement;
+						if (releaseRetirementFence) {
+							const retired = await retireFullTextIndexes(Table, removedDefinitions);
+							if (retired) await Table.completeFullTextIndexRetirements?.(removedDefinitions.map(({ name }) => name));
+						} else if (waitForPeerRetirement) await waitForPeerRetirement;
+						await persistedRetirementOperation;
 						releaseRegistration();
 					}
 				} finally {
@@ -508,9 +544,12 @@ export function attachDerivedIndexes(
 			return closeOperation;
 		},
 		matchesCurrent() {
-			if (closing || !matchesCurrentHnsw()) return false;
+			if (closing || fullTextRetirementRecoveryFailed || !matchesCurrentHnsw()) return false;
 			const currentDefinitions = (Table.fullTextIndexes ?? []) as FullTextDefinition[];
-			return fullTextActivationSnapshot(Table, currentDefinitions) === fullTextSnapshot;
+			return (
+				fullTextActivationSnapshot(Table, currentDefinitions) === fullTextSnapshot &&
+				JSON.stringify(Table.fullTextIndexRetirements ?? []) === fullTextRetirementSnapshot
+			);
 		},
 		retryUnavailableFullText() {
 			if (closing) return;
@@ -626,6 +665,83 @@ export async function retireFullTextIndexes(
 		}
 	}
 	return retired;
+}
+
+async function resumePersistedFullTextRetirements(
+	Table: any,
+	names: readonly string[],
+	shouldContinue: () => boolean
+): Promise<boolean> {
+	if (names.length === 0) return true;
+	const rootStore = Table.primaryStore.rootStore;
+	const deadline = Date.now() + DEFAULT_FULL_TEXT_RETIREMENT_RETRY_MILLISECONDS;
+	let releaseRetirementFence: (() => void) | undefined;
+	while (shouldContinue() && !releaseRetirementFence) {
+		releaseRetirementFence = acquireFullTextRetirementFence(rootStore, Table.tableName);
+		if (releaseRetirementFence) break;
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) throw new Error(`Timed out waiting to resume full-text retirement for '${Table.tableName}'`);
+		if (
+			!(await waitForFullTextRetirement(rootStore, Table.tableName, {
+				shouldContinue,
+				timeoutMilliseconds: remaining,
+			}))
+		)
+			return false;
+	}
+	if (!releaseRetirementFence) return false;
+	try {
+		if (!shouldContinue()) return false;
+		const retired = await retireFullTextIndexes(
+			Table,
+			names.map((name) => ({ name }))
+		);
+		if (!retired || !shouldContinue()) return false;
+		await Table.completeFullTextIndexRetirements?.(names);
+		return true;
+	} finally {
+		releaseRetirementFence();
+	}
+}
+
+function attachFullTextRetirementRecovery(Table: any, names: readonly string[]): DerivedIndexAttachment {
+	let closing = false;
+	let settled = false;
+	const operation = resumePersistedFullTextRetirements(Table, names, () => !closing);
+	void operation.then(
+		() => {
+			settled = true;
+		},
+		() => {
+			settled = true;
+		}
+	);
+	operation.catch((error) =>
+		fullTextLogger.warn?.(`Could not resume full-text retirement for ${Table.databaseName}.${Table.tableName}`, error)
+	);
+	return {
+		async close() {
+			closing = true;
+			await operation;
+		},
+		hasFullTextIndexes() {
+			return false;
+		},
+		fullTextDefinitions() {
+			return [];
+		},
+		matchesCurrent() {
+			return !closing && !settled && JSON.stringify(Table.fullTextIndexRetirements ?? []) === JSON.stringify(names);
+		},
+		retryUnavailableFullText() {},
+		restoreAfterFailedDrop() {
+			return undefined;
+		},
+		retireAfterConfirmedDrop(definitions = names.map((name) => ({ name }))) {
+			return retireFullTextIndexes(Table, definitions);
+		},
+		completeDrop() {},
+	};
 }
 
 /** Keep a healthy, generation-identical full-text attachment across routine catalog reloads. */

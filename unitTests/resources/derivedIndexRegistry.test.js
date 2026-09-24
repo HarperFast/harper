@@ -1,9 +1,26 @@
 const assert = require('node:assert');
 const {
+	acquireFullTextRetirementFence,
 	derivedIndexWriteRejection,
 	hasDerivedIndexRegistration,
 	registerDerivedIndexTables,
+	waitForFullTextRetirement,
 } = require('#src/resources/derivedIndexRegistry');
+
+function lockStore() {
+	const held = new Set();
+	return {
+		status: 'open',
+		tryLock(key) {
+			if (held.has(key)) return false;
+			held.add(key);
+			return true;
+		},
+		unlock(key) {
+			held.delete(key);
+		},
+	};
+}
 
 describe('derived index registration tracking', () => {
 	it('counts registrations independently by audit store and table', () => {
@@ -44,5 +61,34 @@ describe('derived index registration tracking', () => {
 		assert.strictEqual(hasDerivedIndexRegistration(store, 1), true);
 		releaseOpen();
 		assert.strictEqual(hasDerivedIndexRegistration(store, 1), false);
+	});
+
+	it('cancels a retirement-fence wait when its owner is no longer current', async () => {
+		const store = lockStore();
+		const release = acquireFullTextRetirementFence(store, 'Product');
+		try {
+			assert.strictEqual(await waitForFullTextRetirement(store, 'Product', { shouldContinue: () => false }), false);
+		} finally {
+			release();
+		}
+	});
+
+	it('rejects retirement-fence waits after the store starts closing', async () => {
+		const store = lockStore();
+		store.status = 'closing';
+		await assert.rejects(waitForFullTextRetirement(store, 'Product'), /closing store/);
+	});
+
+	it('bounds retirement-fence waits', async () => {
+		const store = lockStore();
+		const release = acquireFullTextRetirementFence(store, 'Product');
+		try {
+			await assert.rejects(
+				waitForFullTextRetirement(store, 'Product', { timeoutMilliseconds: 5 }),
+				/Timed out waiting/
+			);
+		} finally {
+			release();
+		}
 	});
 });

@@ -397,7 +397,7 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 		const originalRemove = removeOwner.removeSync;
 		removeOwner.removeSync = function (key, ...args) {
 			if (String(key) === 'FullTextRemovalOrder/title') {
-				assert.strictEqual(primaryDescriptor(Removal).fullTextIndexes, undefined);
+				assert.strictEqual(primaryDescriptor(Removal).fullTextIndexes[0].name, 'search');
 				throw new Error('crash before source removal');
 			}
 			return originalRemove.call(this, key, ...args);
@@ -417,8 +417,8 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 		} finally {
 			removeOwner.removeSync = originalRemove;
 		}
-		assert.strictEqual(primaryDescriptor(Removal).fullTextIndexes, undefined);
-		assert.deepStrictEqual(Removal.fullTextIndexes, []);
+		assert.strictEqual(primaryDescriptor(Removal).fullTextIndexes[0].name, 'search');
+		assert.strictEqual(Removal.fullTextIndexes[0].name, 'search');
 		assert(Removal.dbisDB.getSync('FullTextRemovalOrder/title'));
 
 		const Addition = table({

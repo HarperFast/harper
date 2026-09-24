@@ -735,6 +735,7 @@ export function makeTable(options) {
 		isBranch,
 		fullTextIndexes = [],
 		fullTextIndexGenerations = Object.create(null),
+		fullTextIndexRetirements = [],
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
@@ -1050,6 +1051,35 @@ export function makeTable(options) {
 		static audit = audit;
 		static fullTextIndexes: FullTextDefinition[] = fullTextIndexes;
 		static fullTextIndexGenerations: FullTextIndexGenerations = fullTextIndexGenerations;
+		static fullTextIndexRetirements: string[] = fullTextIndexRetirements;
+		static completeFullTextIndexRetirements(names: readonly string[]): void | Promise<void> {
+			if (names.length === 0 || !(primaryStore.rootStore instanceof RocksDatabase)) return;
+			const completed = new Set(names);
+			return withUpdateAttributesLockNonBlocking(
+				primaryStore.rootStore,
+				`complete full-text retirement for '${databaseName}.${tableName}'`,
+				() => {
+					const namedKey = `${tableName}/${primaryKey}`;
+					const namedDescriptor = (dbisDb as any).getSync(namedKey);
+					const key = namedDescriptor?.isPrimaryKey ? namedKey : `${tableName}/`;
+					const descriptor = (dbisDb as any).getSync(key);
+					if (
+						!descriptor ||
+						(descriptor.tableId != null && descriptor.tableId !== tableId) ||
+						descriptor.generation !== tableGeneration
+					)
+						return;
+					const remaining = persistedFullTextIndexNames(descriptor.fullTextIndexRetirements).filter(
+						(name) => !completed.has(name)
+					);
+					const updated = { ...descriptor };
+					if (remaining.length > 0) updated.fullTextIndexRetirements = remaining.map((name) => ({ name }));
+					else delete updated.fullTextIndexRetirements;
+					(dbisDb as any).putSync(key, updated);
+					this.fullTextIndexRetirements = remaining;
+				}
+			);
+		}
 		static databasePath = databasePath;
 		static databaseName = databaseName;
 		static attributes = attributes;
@@ -2168,7 +2198,10 @@ export function makeTable(options) {
 					storeGeneration = primaryMeta.generation;
 					const durableFullTextDefinitions =
 						rootStore instanceof RocksDatabase
-							? persistedFullTextIndexNames(primaryMeta.fullTextIndexes).map((name) => ({ name }))
+							? [
+									...persistedFullTextIndexNames(primaryMeta.fullTextIndexes),
+									...persistedFullTextIndexNames(primaryMeta.fullTextIndexRetirements),
+								].map((name) => ({ name }))
 							: [];
 					const attachedFullTextDefinitions = derivedIndexRuntime?.fullTextDefinitions?.() ?? [];
 					const definitionsByName = new Map(
@@ -7279,7 +7312,7 @@ export function makeTable(options) {
 					);
 			};
 			let releaseFullTextClearFence: (() => void) | undefined;
-			let waitForExistingClear: Promise<void> | undefined;
+			let waitForExistingClear: Promise<boolean> | undefined;
 			let admission: void | Promise<void>;
 			if (rootStore instanceof RocksDatabase) {
 				admission = withUpdateAttributesLockNonBlocking(rootStore, `clear table '${databaseName}.${tableName}'`, () => {
