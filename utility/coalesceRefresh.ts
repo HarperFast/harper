@@ -7,7 +7,8 @@ export function coalesceRefresh(refresh: () => Promise<void>): () => Promise<voi
 	let running: Promise<void> | undefined;
 	let queued: PromiseWithResolvers<void> | undefined;
 	const start = (): Promise<void> => {
-		const run = (running = (async () => refresh())());
+		// Deferred so `running` is set before `refresh` runs: a call from inside it must queue, not overlap
+		const run = (running = Promise.resolve().then(refresh));
 		run.then(settle, settle);
 		return run;
 	};

@@ -1175,7 +1175,6 @@ export function makeTable(options) {
 						!context[USER_ROLE_WRITE]
 					) {
 						context[USER_ROLE_WRITE] = true;
-						// a later write into an open begin_txn, whose commit is already assigned
 						if (context.committed) signalUserChangeOnCommit(context.committed);
 					}
 					if (valuelessPut)
