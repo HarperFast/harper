@@ -109,7 +109,7 @@ describe('RocksDB handle release', function () {
 			BranchTable.derivedIndexRuntime = { close: () => Promise.resolve() };
 			await branch.close();
 		} finally {
-			if (branch?.rootStore.status !== 'closed') {
+			if (branch && branch.rootStore.status !== 'closed') {
 				branch.tables[Object.keys(branch.tables)[0]].derivedIndexRuntime = { close: () => Promise.resolve() };
 				await branch.close();
 			}

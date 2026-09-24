@@ -991,6 +991,14 @@ describe('@fullText derived-index activation', () => {
 		const matchingResets = () =>
 			binding.resets.filter((options) => options.path === opened.path && options.indexId === opened.indexId).length;
 		const resetsBeforeDrop = matchingResets();
+		const resetNativeFullTextIndex = binding.resetNativeFullTextIndex;
+		binding.resetNativeFullTextIndex = function (options) {
+			assert(
+				Product.dbisDB.getSync(`${Product.tableName}/`)?.dropping,
+				'the catalog tombstone must survive native retirement'
+			);
+			return resetNativeFullTextIndex.call(this, options);
+		};
 
 		await Product.dropTable();
 
@@ -1197,8 +1205,9 @@ describe('@fullText derived-index activation', () => {
 	});
 
 	rocksOnly('does not fail an authoritative drop when native retirement is busy', async () => {
-		Product = table({
-			database: `fulltext-busy-retirement-${Date.now()}`,
+		const database = `fulltext-busy-retirement-${Date.now()}`;
+		const tableOptions = () => ({
+			database,
 			table: 'Product',
 			audit: true,
 			attributes: [
@@ -1208,6 +1217,7 @@ describe('@fullText derived-index activation', () => {
 			],
 			fullTextIndexes: [definition()],
 		});
+		Product = table(tableOptions());
 		await Product.put('shoe-1', { title: 'Trail shoe', tags: ['trail'] });
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
 		const opened = latestOpen(binding, Product);
@@ -1217,6 +1227,10 @@ describe('@fullText derived-index activation', () => {
 		await Product.dropTable();
 
 		assert.strictEqual(binding.states.has(stateKey), true);
+		assert(Product.dbisDB.getSync(`${Product.tableName}/`)?.dropping, 'failed retirement must retain the tombstone');
+		binding.resetError = undefined;
+		assert.throws(() => table(tableOptions()), /interrupted full-text drop is being retired/);
+		await waitFor(() => Product.dbisDB.getSync(`${Product.tableName}/`) === undefined, 30_000);
 		Product = undefined;
 	});
 

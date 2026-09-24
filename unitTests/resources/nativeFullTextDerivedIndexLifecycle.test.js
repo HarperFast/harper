@@ -118,9 +118,11 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 	});
 
 	it('loads the published registry package and persists a searchable checkpoint', async function () {
+		const glibcVersion =
+			process.platform === 'linux' ? process.report?.getReport().header.glibcVersionRuntime : undefined;
 		const supportedTarget =
 			(process.platform === 'darwin' && process.arch === 'arm64') ||
-			(process.platform === 'linux' && ['arm64', 'x64'].includes(process.arch)) ||
+			(process.platform === 'linux' && glibcVersion && ['arm64', 'x64'].includes(process.arch)) ||
 			(process.platform === 'win32' && process.arch === 'x64');
 		if (!supportedTarget) this.skip();
 
@@ -147,7 +149,18 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			state: 'checkpointed',
 			committedPayload: 'registry-checkpoint',
 		});
-		await lifecycle.reset();
+
+		const nextGeneration = new NativeFullTextDerivedIndexLifecycle(
+			options(storePath, binding, { sourceGeneration: 'table-generation-2' })
+		);
+		await nextGeneration.initialize();
+		assert.deepStrictEqual(nextGeneration.inspect(), { state: 'incompatible', code: 'E_IDENTITY_MISMATCH' });
+		await nextGeneration.reset();
+		const rebuilt = await nextGeneration.open();
+		const rebuiltResult = await rebuilt.search({ text: 'running', limit: 10 });
+		assert.deepStrictEqual(rebuiltResult.hits, []);
+		await rebuilt.close({ mode: 'require-clean' });
+		await nextGeneration.reset();
 	});
 
 	it('uses one deterministic native directory and stable source generation', async () => {

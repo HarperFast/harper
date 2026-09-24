@@ -2246,8 +2246,12 @@ export function makeTable(options) {
 				try {
 					if (!dropGeneration)
 						throw new Error(`Cannot drop ${databaseName}.${tableName}: its catalog tombstone has no drop generation`);
-					await retireRocksStores(storeGeneration, dropGeneration);
-					await retireFullTextStorage();
+					const retired = await retireRocksStores(storeGeneration, dropGeneration);
+					if (!retired) {
+						derivedIndexRuntime?.completeDrop?.();
+						releaseFullTextRetirement();
+						return;
+					}
 				} catch (error) {
 					releaseFullTextRetirement();
 					derivedIndexRuntime?.completeDrop?.();
@@ -2342,23 +2346,26 @@ export function makeTable(options) {
 				releaseFullTextRetirement();
 			}
 
-			async function retireFullTextStorage() {
-				if (fullTextDefinitionsForRetirement.length === 0) return;
+			async function retireFullTextStorage(): Promise<boolean> {
+				if (fullTextDefinitionsForRetirement.length === 0) return true;
 				if (derivedIndexRuntime?.retireAfterConfirmedDrop)
-					await derivedIndexRuntime.retireAfterConfirmedDrop(fullTextDefinitionsForRetirement);
+					return derivedIndexRuntime.retireAfterConfirmedDrop(fullTextDefinitionsForRetirement);
 				else {
 					const { retireFullTextIndexes } = await import('./derivedIndexes.ts');
-					await retireFullTextIndexes(TableResource, fullTextDefinitionsForRetirement);
+					return retireFullTextIndexes(TableResource, fullTextDefinitionsForRetirement);
 				}
 			}
 
-			async function retireRocksStores(generation: string | undefined, dropGeneration: string) {
+			async function retireRocksStores(generation: string | undefined, dropGeneration: string): Promise<boolean> {
 				const releaseDropMark = markDropInProgress(dropGeneration);
 				try {
 					const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName);
 					message.dropGeneration = dropGeneration;
 					message.dropTableId = tableId;
 					await signalling.signalSchemaChange(message);
+					// Keep the tombstone's native index names durable until every peer writer
+					// has stopped and the wrapper has retired their storage.
+					if (!(await retireFullTextStorage())) return false;
 					const removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
 						const stores = storeNamesFor(dbisDb, tableName, generation);
 						const retiredStores = recordRetiredGeneration(
@@ -2411,6 +2418,7 @@ export function makeTable(options) {
 					const settled = await settlePhysicalDrops(rootStore, label);
 					await sweepDroppedTableBlobs(primaryStore, label);
 					if (!settled) finishDroppedTableBlobSweep(rootStore, primaryStore, label);
+					return true;
 				} finally {
 					releaseDropMark();
 				}
