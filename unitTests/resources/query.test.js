@@ -936,6 +936,7 @@ describe('Querying through Resource API', () => {
 						type FromToTeam @table(database: "relationshipFromTo") {
 							id: ID @primaryKey
 							code: String @indexed
+							league: String @indexed
 							players: [FromToPlayer] @relationship(from: "code", to: "teamCode")
 							captain: FromToPlayer @relationship(from: "code", to: "teamCode")
 						}
@@ -957,7 +958,26 @@ describe('Querying through Resource API', () => {
 				// joins team-1 only if the primary key were used in place of `from`
 				await Player.put({ id: 'player-3', name: 'carol', teamCode: 'team-1' });
 				await Player.put({ id: 'player-4', name: 'dave', teamCode: 'blue' });
+				for (const suffix of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']) {
+					await Team.put({ id: `team-${suffix}`, code: `code-${suffix}`, league: suffix < 'f' ? 'north' : 'south' });
+					await Player.put({ id: `bench-${suffix}`, name: 'bench', teamCode: `code-${suffix}` });
+				}
+				await Player.put({ id: 'erin-1', name: 'erin', teamCode: 'code-e' });
+				await Player.put({ id: 'erin-2', name: 'erin', teamCode: 'team-b' });
+				await Player.put({ id: 'erin-3', name: 'erin', teamCode: 'code-f' });
+				await Player.put({ id: 'erin-4', name: 'erin', teamCode: 'code-g' });
 			});
+
+			async function teamsWithPlayerNamed(name, conditions = []) {
+				const teams = [];
+				for await (const record of Team.search({
+					conditions: [...conditions, { attribute: ['players', 'name'], value: name }],
+					select: ['id', { name: 'players', select: ['id'] }],
+				})) {
+					teams.push({ id: record.id, players: record.players.map((player) => player.id) });
+				}
+				return teams;
+			}
 
 			it('resolves an array of the records whose `to` attribute equals the local `from` value', async function () {
 				const team = await Team.get('team-1');
@@ -980,22 +1000,25 @@ describe('Querying through Resource API', () => {
 			});
 
 			it('matches a joined condition against the local `from` value', async function () {
-				async function teamsWithPlayerNamed(name, conditions = []) {
-					const teams = [];
-					for await (const record of Team.search({
-						conditions: [...conditions, { attribute: ['players', 'name'], value: name }],
-						select: ['id', { name: 'players', select: ['id'] }],
-					})) {
-						teams.push({ id: record.id, players: record.players.map((player) => player.id) });
-					}
-					return teams;
-				}
 				assert.deepStrictEqual(await teamsWithPlayerNamed('alice'), [{ id: 'team-1', players: ['player-1'] }]);
 				assert.deepStrictEqual(await teamsWithPlayerNamed('dave'), [{ id: 'team-2', players: ['player-4'] }]);
 				assert.deepStrictEqual(await teamsWithPlayerNamed('carol'), []);
 				const byId = [{ attribute: 'id', value: 'team-1' }];
 				assert.deepStrictEqual(await teamsWithPlayerNamed('alice', byId), [{ id: 'team-1', players: ['player-1'] }]);
 				assert.deepStrictEqual(await teamsWithPlayerNamed('carol', byId), []);
+			});
+
+			it('matches a joined condition against the local `from` value after switching to an id set', async function () {
+				// with five north teams driving, the join filters each team and, on its first miss (a bench
+				// player), switches to the set of erin `teamCode` values checked against each team's `from`
+				const north = [{ attribute: 'league', value: 'north' }];
+				const explanation = Team.search({
+					conditions: [...north, { attribute: ['players', 'name'], value: 'erin' }],
+					explain: true,
+				});
+				assert.equal(explanation.conditions[0].attribute, 'league');
+				assert(explanation.conditions[0].estimated_count > 3);
+				assert.deepStrictEqual(await teamsWithPlayerNamed('erin', north), [{ id: 'team-e', players: ['erin-1'] }]);
 			});
 
 			it('does not resolve the scalar form and logs that it must be an array type', async function () {
