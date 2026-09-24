@@ -140,7 +140,11 @@ export async function scanLiveClaims(
 	await onEntriesListed?.();
 	const choosingPrefix = `${lockName}.choosing.`;
 	const ticketPrefix = `${lockName}.ticket.`;
+	const releasedPrefix = `${lockName}.released.`;
 	const claimNames = entries.filter((name) => name.startsWith(choosingPrefix) || name.startsWith(ticketPrefix));
+	const releasedTokens = new Set(
+		entries.filter((name) => name.startsWith(releasedPrefix)).map((name) => name.slice(releasedPrefix.length))
+	);
 	const claims = await Promise.all(
 		claimNames.map(async (name) => {
 			let claimPath = join(lockRoot, name);
@@ -175,16 +179,27 @@ export async function scanLiveClaims(
 	);
 	const choosing: ComponentPreparationLockOwner[] = [];
 	const tickets: ComponentPreparationLockOwner[] = [];
+	const remainingTicketPaths = new Set(
+		claimNames.filter((name) => name.startsWith(ticketPrefix)).map((name) => join(lockRoot, name))
+	);
 	for (const claim of claims) {
 		if (claim.owner?.token === ownToken) continue;
-		if (!claim.owner || !claim.alive) {
+		if (!claim.owner || !claim.alive || releasedTokens.has(claim.owner.token)) {
 			// Claim filenames contain a random owner token and are never reused. Removing this exact
 			// stale claim therefore cannot delete a fresh acquisition, unlike renaming a common lock path.
-			await rm(claim.claimPath, { force: true }).catch(() => {});
+			await rm(claim.claimPath, { force: true }).then(
+				() => remainingTicketPaths.delete(claim.claimPath),
+				() => {}
+			);
 			continue;
 		}
 		if (claim.isTicket) tickets.push(claim.owner);
 		else choosing.push(claim.owner);
+	}
+	for (const token of releasedTokens) {
+		if (![...remainingTicketPaths].some((path) => path.endsWith(`.${token}.json`))) {
+			await rm(join(lockRoot, `${releasedPrefix}${token}`), { force: true }).catch(() => {});
+		}
 	}
 	return { choosing, tickets };
 }
@@ -306,7 +321,7 @@ async function acquireComponentPreparationLock(
 			await delay(LOCK_POLL_INTERVAL_MS);
 		}
 	} catch (error) {
-		if (ticketPath) await rm(ticketPath, { force: true }).catch(() => {});
+		if (ticketPath) await releaseTicket(lockRoot, lockName, ticketPath, owner.token).catch(() => {});
 		throw error;
 	}
 
@@ -315,8 +330,44 @@ async function acquireComponentPreparationLock(
 		if (currentOwner?.token !== owner.token) {
 			throw new Error(`Lost ownership of component preparation lock for ${canonicalPath}`);
 		}
-		await rm(ticketPath!, { force: true });
+		await releaseTicket(lockRoot, lockName, ticketPath!, owner.token);
 	};
+}
+
+const TICKET_REMOVAL_RETRY_DELAYS_MS = [10, 40, 160];
+
+function releasedMarkerPath(lockRoot: string, lockName: string, token: string): string {
+	return join(lockRoot, `${lockName}.released.${token}`);
+}
+
+/**
+ * Give up a ticket. A ticket that cannot be removed — a Windows sharing violation, a scanner holding the file —
+ * would otherwise keep naming a live thread of this process, and every later contender would wait behind a holder
+ * that has finished. So a removal that keeps failing publishes a marker instead, which `scanLiveClaims` honours:
+ * the marker is a new file, which whatever holds the ticket does not prevent, and only the ticket's owner ever
+ * writes one, so it can never retire a holder that has not finished. Exported for its failure-injection tests.
+ */
+export async function releaseTicket(
+	lockRoot: string,
+	lockName: string,
+	ticketPath: string,
+	token: string,
+	removeTicket: (path: string) => Promise<void> = (path) => rm(path, { force: true })
+): Promise<void> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			await removeTicket(ticketPath);
+			return;
+		} catch (error) {
+			if (attempt >= TICKET_REMOVAL_RETRY_DELAYS_MS.length) {
+				await writeFile(releasedMarkerPath(lockRoot, lockName, token), '', { mode: 0o600 }).catch(() => {
+					throw error;
+				});
+				return;
+			}
+		}
+		await delay(TICKET_REMOVAL_RETRY_DELAYS_MS[attempt]);
+	}
 }
 
 /** Serialize destructive preparation work for one component path across Harper worker threads. */

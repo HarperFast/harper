@@ -3,7 +3,7 @@
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
-const { Worker } = require('node:worker_threads');
+const { Worker, threadId } = require('node:worker_threads');
 const { mkdtemp, mkdir, readdir, rm, utimes, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
@@ -15,6 +15,8 @@ const {
 	componentPreparationLockPaths,
 	withComponentPreparationLock,
 	scanLiveClaims,
+	releaseTicket,
+	ComponentPreparationLockTimeoutError,
 	COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
 } = require('#src/components/componentPreparationLock');
 
@@ -412,5 +414,82 @@ describe('component preparation lock', () => {
 
 		assert.equal(result.choosing.length, 0);
 		assert.equal(result.tickets.length, 0);
+	});
+
+	describe('a ticket its owner could not remove', () => {
+		// Owned by this very thread, so without a released marker it reads as a live holder.
+		async function plantLiveTicket(componentDirPath, token) {
+			const { lockRoot, lockName } = componentPreparationLockPaths(componentDirPath);
+			await mkdir(lockRoot, { recursive: true });
+			const ticketPath = join(lockRoot, `${lockName}.ticket.1.${token}.json`);
+			await writeFile(
+				ticketPath,
+				JSON.stringify({
+					pid: process.pid,
+					threadId,
+					processInstanceId: COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
+					token,
+					ticket: 1,
+				})
+			);
+			return { lockRoot, lockName, ticketPath };
+		}
+		const boundedWait = { timeoutMs: 300, renewTimeoutWhileOwnerAlive: false };
+
+		it('blocks every later contender while nothing says it was released', async () => {
+			const componentDirPath = join(rootDir, 'stuck-ticket');
+			await plantLiveTicket(componentDirPath, 'stuck');
+
+			await assert.rejects(
+				withComponentPreparationLock(componentDirPath, async () => {}, boundedWait),
+				ComponentPreparationLockTimeoutError
+			);
+		});
+
+		it('stops blocking once its owner has published the released marker, and both are cleared', async () => {
+			const componentDirPath = join(rootDir, 'released-ticket');
+			const { lockRoot, lockName } = await plantLiveTicket(componentDirPath, 'released');
+			await writeFile(join(lockRoot, `${lockName}.released.released`), '');
+
+			let acquired = false;
+			await withComponentPreparationLock(componentDirPath, async () => (acquired = true), boundedWait);
+
+			assert.equal(acquired, true);
+			assert.deepStrictEqual(
+				(await readdir(lockRoot)).filter((name) => name.startsWith(lockName)),
+				[],
+				'the stale ticket and its marker are gone, and so is the ticket this acquisition held'
+			);
+		});
+
+		it('is released by a marker when removing it keeps failing, and the release reports success', async () => {
+			const componentDirPath = join(rootDir, 'undeletable-ticket');
+			const { lockRoot, lockName, ticketPath } = await plantLiveTicket(componentDirPath, 'undeletable');
+			let attempts = 0;
+
+			await releaseTicket(lockRoot, lockName, ticketPath, 'undeletable', async () => {
+				attempts++;
+				throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
+			});
+
+			assert.ok(attempts > 1, 'the removal was retried before falling back to the marker');
+			assert.ok((await readdir(lockRoot)).includes(`${lockName}.released.undeletable`));
+			let acquired = false;
+			await withComponentPreparationLock(componentDirPath, async () => (acquired = true), boundedWait);
+			assert.equal(acquired, true, 'and the next contender does not wait behind it');
+		});
+
+		it('still fails when neither the ticket nor a marker can be written', async () => {
+			const componentDirPath = join(rootDir, 'unreleasable-ticket');
+			const { lockName, ticketPath } = await plantLiveTicket(componentDirPath, 'unreleasable');
+
+			await assert.rejects(
+				releaseTicket(join(rootDir, 'no-such-directory'), lockName, ticketPath, 'unreleasable', async () => {
+					throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+				}),
+				/EPERM/,
+				'the removal error is what the caller sees'
+			);
+		});
 	});
 });
