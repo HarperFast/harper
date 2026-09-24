@@ -1,7 +1,5 @@
-# `Listing` exists only so @export generates the MCP CRUD verb tools, each of
-# which advertises a derived object `outputSchema`. The resources.js subclass
-# then returns an ARRAY from the record-scoped `get`, which is the shape that
-# no object outputSchema can describe (#2754 review).
+# @export generates the MCP CRUD verb tools, each advertising a derived object
+# outputSchema — the contract the resources.js getter deliberately breaks.
 type Listing @table @export {
 	id: ID @primaryKey
 	name: String

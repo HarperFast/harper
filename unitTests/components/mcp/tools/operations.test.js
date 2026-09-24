@@ -588,14 +588,8 @@ describe('mcp/tools/operations — handler dispatch', () => {
 });
 
 describe('mcp/tools/operations — structuredContent is a spec-legal record', () => {
-	// MCP types `structuredContent` as an object. The reference client validates it
-	// with `z.record(z.string(), z.unknown())` inside `Client.callTool`, so a bare
-	// array fails the WHOLE call ("expected record, received array") before the
-	// result reaches the caller — invisible to a raw JSON-RPC POST, fatal to every
-	// spec-compliant host. Harper operations return arrays routinely (`sql` for a
-	// SELECT, `search_by_*`, `list_users`, `list_roles`, `get_job`), so these assert
-	// the framing against the SDK's own schema rather than against a hand-written
-	// shape that could drift from the spec.
+	// Asserted against the SDK's own schema rather than a hand-written shape, so these
+	// track the spec instead of drifting from it.
 	const { CallToolResultSchema } = require('@modelcontextprotocol/sdk/types.js');
 
 	function assertSpecLegal(res) {

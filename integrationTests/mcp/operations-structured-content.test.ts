@@ -1,27 +1,17 @@
 /**
- * MCP operations profile — `structuredContent` must be a JSON object (#2746).
+ * MCP operations profile — `structuredContent` must be a JSON object.
  *
- * MCP types `structuredContent` as a record. The reference client validates it
- * with `z.record(z.string(), z.unknown())` inside `Client.callTool`, so a tool
- * that answers with a bare array fails the ENTIRE call:
+ * The reference client validates it with `z.record(z.string(), z.unknown())` inside
+ * `Client.callTool`, so a bare array fails the entire call:
  *
  *   $ZodError: [ { "expected": "record", "code": "invalid_type",
- *       "path": [ "structuredContent" ],
- *       "message": "Invalid input: expected record, received array" } ]
+ *       "path": [ "structuredContent" ], "message": "expected record, received array" } ]
  *
- * ...raised in the SDK's `shared/protocol.js` before the result is ever handed
- * back. Harper operations return arrays routinely — `sql` for a SELECT,
- * `search_by_value`, `list_roles`, `list_users`, `get_job` — and those were
- * being placed in `structuredContent` verbatim, so every one of them was
- * uncallable from a spec-compliant host.
+ * A raw JSON-RPC POST accepts the same frame happily, so this suite drives the real
+ * `@modelcontextprotocol/sdk` client and asserts "the call resolves at all" before shape.
  *
- * This suite deliberately drives the real `@modelcontextprotocol/sdk` client
- * rather than crafting raw JSON-RPC: a raw POST happily accepts the malformed
- * frame, which is exactly why the bug survived the existing coverage. The
- * assertions below are "the call resolves at all" first and shape second.
- *
- * MCP mounted via the config object (not .env): HARPER_SET_CONFIG's
- * flattenObject drops empty profile objects, so a non-empty mountPath is needed.
+ * MCP mounted via the config object (not .env): HARPER_SET_CONFIG's flattenObject drops
+ * empty profile objects, so a non-empty mountPath is needed.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, deepStrictEqual, strictEqual } from 'node:assert';
@@ -115,10 +105,7 @@ suite('MCP operations profile — structuredContent is a spec-legal record (#274
 		});
 		client = new Client({ name: 'mcp-structured-content', version: '1.0.0' }, { capabilities: {} });
 		await client.connect(transport);
-		// Do what a real host does before calling anything: list the tools. The SDK caches an
-		// outputSchema validator per tool from this response and applies it to every later
-		// `callTool`, so a suite that skips `listTools()` never exercises that validation at
-		// all — the gap the #2754 review caught on the application profile.
+		// A real host lists first, which is what builds the SDK's per-tool output validator.
 		await client.listTools();
 	});
 
@@ -128,8 +115,6 @@ suite('MCP operations profile — structuredContent is a spec-legal record (#274
 	});
 
 	test('sql SELECT returns rows without tripping the SDK client result validation', async () => {
-		// Before the fix this threw $ZodError("expected record, received array")
-		// inside callTool — the rows never reached this line.
 		const result = (await client.callTool({
 			name: 'sql',
 			arguments: { sql: `SELECT id, name FROM ${DATABASE}.${TABLE} ORDER BY id` },
@@ -161,25 +146,19 @@ suite('MCP operations profile — structuredContent is a spec-legal record (#274
 	});
 
 	test('list_roles — an array operation on the DEFAULT allow surface — is callable', async () => {
-		// Not only opted-in operations were affected: `list_*` is default-allowed
-		// and array-shaped, so a clean Harper boot was already serving broken frames.
 		const result = (await client.callTool({ name: 'list_roles', arguments: {} })) as SdkToolResult;
 		const roles = assertArrayFraming(result, 'list_roles');
 		ok(roles.length > 0, 'a booted Harper always has at least the super_user role');
 	});
 
 	test('operations tools advertise no outputSchema, which is why { results } is safe here', async () => {
-		// The wrapper only has to satisfy the base CallToolResult record contract on this
-		// profile. If an operations tool ever starts advertising an outputSchema, the
-		// wrapped shape has to be declared with it — the application profile's lesson.
+		// If one ever starts advertising a schema, the wrapped shape must be declared with it.
 		const list = await client.listTools();
 		const withSchema = list.tools.filter((t) => t.outputSchema).map((t) => t.name);
 		deepStrictEqual(withSchema, [], `operations tools declaring an outputSchema: ${withSchema.join(', ')}`);
 	});
 
 	test('an object-returning operation keeps its payload unwrapped', async () => {
-		// The wrapper is for arrays only — describe_all is keyed by database name
-		// and must not gain a `results` level.
 		const result = (await client.callTool({ name: 'describe_all', arguments: {} })) as SdkToolResult;
 		strictEqual(result.isError, undefined, textFrame(result));
 		const structured = result.structuredContent as Record<string, unknown> | undefined;

@@ -1,27 +1,13 @@
 /**
- * MCP application profile — a generated verb tool must honor the `outputSchema`
- * it advertised (#2754 review).
+ * MCP application profile — a generated verb must honor the `outputSchema` it advertised.
  *
- * Two contracts bind a `tools/call` result, and satisfying only the first is what
- * the original fix did:
+ * The SDK client caches that schema from `tools/list` and validates every later result
+ * against it, so `{ results: [...] }` — legal as a bare CallToolResult — still fails with
+ * InvalidParams (-32602). Driving `listTools()` before `callTool()` is load-bearing: it is
+ * the only order in which that validator exists.
  *
- *   1. the base `CallToolResult` schema — `structuredContent` must be a record;
- *   2. the tool's own `outputSchema`, which the SDK client caches from `tools/list`
- *      and validates every later result against, rejecting a mismatch with
- *      `InvalidParams` (-32602).
- *
- * Wrapping an array as `{ results: [...] }` satisfies (1) and still fails (2) for
- * every generated verb, because the derived record schema requires the primary key
- * and sets `additionalProperties: false`. So an array from a schema-bearing verb is
- * reported as a server-side contract error instead.
- *
- * This suite drives the real SDK client through the sequence a host actually uses —
- * `listTools()` first, then `callTool()` on the same client — because that is the
- * only order in which the outputSchema validator exists at all. A suite that calls
- * `callTool()` on a fresh client silently skips the validation being asserted here.
- *
- * MCP mounted via the config object (not .env): HARPER_SET_CONFIG's flattenObject
- * drops empty profile objects, so a non-empty mountPath is needed.
+ * MCP mounted via the config object (not .env): HARPER_SET_CONFIG's flattenObject drops
+ * empty profile objects, so a non-empty mountPath is needed.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual, match } from 'node:assert';
