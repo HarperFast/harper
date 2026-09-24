@@ -142,10 +142,14 @@ Consequences worth knowing:
   branches and, when a RocksDB record version differs from its log key, the record's own audit head.
   Under stage 2 the stored reference field can be renamed; until then, "fixing" it to the record
   version silently unaddresses the entry it points at.
-- **Crash replay uses both.** `replayLogs` delimits transactions by `txnLogKey` (which is also what
-  `CorruptFrameStop.truncatedVersions` records) and replays each write at its stored `version`.
-  Stamping a replayed record at its log key would move its version forward and make a later
-  legitimate write look stale.
+- **Crash replay uses both.** `replayLogs` replays each write at its stored `version`; stamping a
+  replayed record at its log key would move its version forward and make a later legitimate write
+  look stale. Its transactions are native commits, delimited by each commit's last-entry `endTxn`
+  marker and, for entries without one, by `txnLogKey` (what `CorruptFrameStop.truncatedVersions`
+  records). A log key alone is not a commit: a receiver commits every re-delivery of a source
+  transaction under the origin's key, and grouping by key once staged millions of them into one
+  replay transaction (harper#2161). Other consumers still treat a second commit at one key as a
+  duplicate (`resumePastExactStart`, the derived-index runtime, subscription delivery).
 - **Compatibility surfaces still report `localTime` as the transaction timestamp.** Subscription,
   history, and pro-to-core replication event shapes predate this internal name and remain unchanged;
   no on-disk or on-wire identifier changes in this stage.
