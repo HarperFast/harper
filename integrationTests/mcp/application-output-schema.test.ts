@@ -81,6 +81,18 @@ suite(
 			match(payload.message, /static outputSchemas\.get/, 'and the remedy the author should apply');
 		});
 
+		test('a toJSON that yields an array is caught the same way, through the same sequence', async () => {
+			// `Array.isArray` on the handler's value is false here; what reaches the wire is an
+			// array all the same, so the advertised record schema is broken identically.
+			const result = (await client.callTool({ name: 'get_Coded', arguments: { id: 'a' } })) as SdkToolResult;
+
+			strictEqual(result.isError, true, `expected a contract error, got: ${textFrame(result)}`);
+			strictEqual(result.structuredContent, undefined);
+			const payload = JSON.parse(textFrame(result));
+			strictEqual(payload.tool, 'get_Coded');
+			match(payload.message, /static outputSchemas\.get/);
+		});
+
 		test('the same client can still call a conforming verb afterwards', async () => {
 			const result = (await client.callTool({ name: 'search_Listing', arguments: {} })) as SdkToolResult;
 			strictEqual(result.isError, undefined, textFrame(result));

@@ -1,6 +1,11 @@
 # @export generates the CRUD verb tools whose derived object outputSchema the
-# resources.js getter breaks.
+# resources.js getters break.
 type Listing @table @export {
+	id: ID @primaryKey
+	name: String
+}
+
+type Coded @table @export {
 	id: ID @primaryKey
 	name: String
 }

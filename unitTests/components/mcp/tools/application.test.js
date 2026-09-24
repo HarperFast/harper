@@ -1218,7 +1218,10 @@ describe('mcp/tools/application — structuredContent honors the ADVERTISED outp
 		assert.ok(parsed.success, `CallToolResult: ${parsed.success ? '' : JSON.stringify(parsed.error?.issues)}`);
 		if (!tool.outputSchema || res.isError) return; // the SDK skips schema validation for error results
 		assert.ok(res.structuredContent, `${tool.name} advertises an outputSchema so it must return structuredContent`);
-		const verdict = new AjvJsonSchemaValidator().getValidator(tool.outputSchema)(res.structuredContent);
+		// The client validates what came off the wire, so round-trip before validating: a
+		// `toJSON` makes the in-process object and the transmitted one different values.
+		const onTheWire = JSON.parse(JSON.stringify(res.structuredContent));
+		const verdict = new AjvJsonSchemaValidator().getValidator(tool.outputSchema)(onTheWire);
 		assert.ok(
 			verdict.valid,
 			`${tool.name} structuredContent must match its advertised outputSchema: ${verdict.errorMessage}`
@@ -1313,6 +1316,30 @@ describe('mcp/tools/application — structuredContent honors the ADVERTISED outp
 			assert.equal(res.isError, undefined, `${toolName}: ${res.content?.[0]?.text}`);
 			assertHonorsContract(tool, res);
 		}
+	});
+
+	it('classifies by the SERIALIZED form, so a toJSON returning an array is caught too', async () => {
+		// `Array.isArray` on the raw value misses this: the wrapper keys on what reaches the
+		// wire, and `{ results: [...] }` fails the derived record schema either way.
+		register(productResource({ get: async () => ({ toJSON: () => [{ id: 'a' }, { id: 'b' }] }) }));
+		const tool = getTool('get_Product');
+		const res = await tool.handler({ id: 'a' }, CTX);
+
+		assert.equal(res.isError, true, 'a toJSON-array is the same contract error as a bare array');
+		assert.equal(res.structuredContent, undefined);
+		assert.match(JSON.parse(res.content[0].text).message, /static outputSchemas\.get/);
+		assertHonorsContract(tool, res);
+	});
+
+	it('a toJSON returning an object is untouched by the guard', async () => {
+		// The mirror of the above: classification must not over-trigger on `toJSON` itself.
+		register(productResource({ get: async () => ({ toJSON: () => ({ id: 'a', name: 'x' }) }) }));
+		const tool = getTool('get_Product');
+		const res = await tool.handler({ id: 'a' }, CTX);
+
+		assert.equal(res.isError, undefined, res.content?.[0]?.text);
+		assert.deepEqual(JSON.parse(JSON.stringify(res.structuredContent)), { id: 'a', name: 'x' });
+		assertHonorsContract(tool, res);
 	});
 
 	it('an authored outputSchemas.<verb> owns the contract, so its array is wrapped, not rejected', async () => {
