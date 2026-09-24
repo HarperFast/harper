@@ -849,11 +849,7 @@ table-scoped instead of widening to a database purge.
 
 ## A numeric transaction-log selector is a lookup, never a log name (`RocksTransactionLogStore.getRange`)
 
-`getRange({ log })` takes a log name (string) or a local node id (number). rocksdb-js `useLog` is
-get-or-create and stringifies numbers, so only a string may reach it; an unmapped node id is an
-empty range. A node id with no log of its own is normal: relayed origins and removed ones, whose
-writes `put()` routes to the via-node or `local` log (harper#2778). Pinned by `auditLog.test.js`
-"a numeric log id with no log misses without creating one".
+`useLog` is get-or-create, so only a string log name may reach it; a node id with no log (a relayed or removed origin, whose writes `put()` routes to the via-node or `local` log) is an empty range ([harper#2778](https://github.com/HarperFast/harper/issues/2778)). Pinned by `auditLog.test.js` "a numeric log id with no log misses without creating one".
 
 ## Query-plan range estimation blends statistical estimates by confidence (`search.ts`)
 
