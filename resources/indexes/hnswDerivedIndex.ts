@@ -512,6 +512,13 @@ export function attachDerivedIndexes(Table: any):
 		},
 		restoreAfterFailedDrop() {
 			registered.droppingTables.delete(Table.tableId);
+			const currentTable = registered.tables.get(Table.tableId)?.current.Table;
+			if (currentTable && currentTable !== Table) return;
+			for (const registration of registered.tables.values()) {
+				const current = registration.current.Table;
+				if (current !== Table && current.databasePath === Table.databasePath && current.tableName === Table.tableName)
+					return;
+			}
 			for (const [id, registeredBackend] of registeredBackends) {
 				const current = registered.backends.get(id);
 				if (current && current !== registeredBackend) return;

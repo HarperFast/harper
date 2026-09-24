@@ -4,16 +4,13 @@ require('../testUtils');
 const assert = require('node:assert');
 const path = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
-const { table } = require('#src/resources/databases');
+const { table, database } = require('#src/resources/databases');
 const { startWorker, onMessageByType, setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 const WORKER_FIXTURE = path.join(__dirname, 'dropTableCrossWorkerWrite-worker.js');
 const MESSAGE_TYPE = 'drop-table-cross-worker-test';
 const CONTROL_TYPE = 'drop-table-cross-worker-control';
 const ITERATIONS = 20;
-// The one error the worker may log: its cache write lost to the drop and was rejected before it
-// reached RocksDB's write path. Anything else the worker logs fails the test.
-const CONTAINED_COMMIT_LOSS = /^Error committing cache update .*(Could not access column family|column family .*dropp)/;
 
 function defineTable(name) {
 	return table({
@@ -118,12 +115,11 @@ describe('dropTable racing a cross-worker source-fill commit', function () {
 		assert.deepStrictEqual(catalogRows(Main, name), [], 'catalog rows must be removed');
 	});
 
-	// harper#1381: a column family must not be dropped while a commit naming it is between conflict
-	// validation and its write, because RocksDB latches that write's failure as a fatal background
-	// error on the whole environment. dropTable() drains only its own thread's source-fill commits,
-	// so a worker's in-flight commit can still land on the dropped family. Skipped until rocksdb-js#806
-	// serializes drops against in-flight commits; on the current binding it fails on iteration 0.
-	it.skip('leaves the storage environment writable and the catalog clean', async () => {
+	it('leaves the storage environment writable and the catalog clean', async function () {
+		assert.ok(
+			'columnFamily.pendingReclaims' in (database({ database: 'test', table: null }).getStats?.() ?? {}),
+			'the drop path no longer drains in-flight writes and needs a @harperfast/rocksdb-js that defers physical column-family drops behind admitted commits (rocksdb-js#850); bump the pin'
+		);
 		let raced = 0;
 		for (let i = 0; i < ITERATIONS; i++) {
 			const name = `CrossDrop${i}`;
@@ -138,9 +134,7 @@ describe('dropTable racing a cross-worker source-fill commit', function () {
 			if (Main.primaryStore.hasLock(i)) raced++;
 			await Main.dropTable();
 			await fixture.expect('commit-settled');
-			const unexpected = fixture
-				.drain()
-				.filter((message) => message.event !== 'logged-error' || !CONTAINED_COMMIT_LOSS.test(message.message));
+			const unexpected = fixture.drain();
 			assert.deepStrictEqual(unexpected, [], `iteration ${i}: unexpected worker events`);
 			Probe.primaryStore.putSync('__probe__', { i });
 			assert.deepStrictEqual(catalogRows(Main, name), [], `iteration ${i}: catalog rows must be removed`);
