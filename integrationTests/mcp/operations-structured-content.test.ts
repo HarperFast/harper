@@ -115,6 +115,11 @@ suite('MCP operations profile — structuredContent is a spec-legal record (#274
 		});
 		client = new Client({ name: 'mcp-structured-content', version: '1.0.0' }, { capabilities: {} });
 		await client.connect(transport);
+		// Do what a real host does before calling anything: list the tools. The SDK caches an
+		// outputSchema validator per tool from this response and applies it to every later
+		// `callTool`, so a suite that skips `listTools()` never exercises that validation at
+		// all — the gap the #2754 review caught on the application profile.
+		await client.listTools();
 	});
 
 	after(async () => {
@@ -161,6 +166,15 @@ suite('MCP operations profile — structuredContent is a spec-legal record (#274
 		const result = (await client.callTool({ name: 'list_roles', arguments: {} })) as SdkToolResult;
 		const roles = assertArrayFraming(result, 'list_roles');
 		ok(roles.length > 0, 'a booted Harper always has at least the super_user role');
+	});
+
+	test('operations tools advertise no outputSchema, which is why { results } is safe here', async () => {
+		// The wrapper only has to satisfy the base CallToolResult record contract on this
+		// profile. If an operations tool ever starts advertising an outputSchema, the
+		// wrapped shape has to be declared with it — the application profile's lesson.
+		const list = await client.listTools();
+		const withSchema = list.tools.filter((t) => t.outputSchema).map((t) => t.name);
+		deepStrictEqual(withSchema, [], `operations tools declaring an outputSchema: ${withSchema.join(', ')}`);
 	});
 
 	test('an object-returning operation keeps its payload unwrapped', async () => {

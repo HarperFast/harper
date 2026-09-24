@@ -474,11 +474,41 @@ function makeTarget(): InstanceType<RequestTargetCtor> {
 // derived `{ id }`/`{ deleted }` shape, which would corrupt custom Resource
 // responses and their author-declared output schemas (#1324).
 //
-// An array counts as an envelope here (it is the author's payload, not a scalar
-// to be wrapped in `{ id }`); `wrapToolResult` is what then makes it legal for
-// `structuredContent`.
+// Arrays never reach this: `rejectArrayForSchemaBearingVerb` turns them into a
+// contract error first, because every verb that calls this also advertises an
+// object `outputSchema` they cannot satisfy.
 function isStructuredEnvelope(data: unknown): data is object {
 	return typeof data === 'object' && data !== null;
+}
+
+/**
+ * The generated verb tools (`get_`, `create_`, `update_`, `patch_`, `delete_`) each
+ * advertise an `outputSchema`, and MCP requires that schema to describe an OBJECT. A
+ * handler resolving to an array therefore cannot satisfy the tool's own advertisement,
+ * and wrapping it is not a fix: `wrapToolResult`'s `{ results }` form keeps the base
+ * `CallToolResult` legal, but a client that has called `tools/list` caches the advertised
+ * schema and still rejects the call with `InvalidParams` (-32602) — `{ results }` has
+ * neither the required primary key nor `additionalProperties: false`.
+ *
+ * So rather than emit a payload we already know violates our own contract, report it as a
+ * server-side error naming the remedy. The author either returns the object envelope their
+ * schema describes, or declares the matching `static outputSchemas.<verb>`.
+ *
+ * `search_` and author `mcpTools` advertise no `outputSchema`, so they are not routed here
+ * and keep `wrapToolResult`'s `{ results }` wrapper.
+ */
+function rejectArrayForSchemaBearingVerb(toolName: string, verb: string, data: unknown): ToolResult | undefined {
+	if (!Array.isArray(data)) return undefined;
+	const message =
+		`${toolName} resolved to an array, but the tool advertises an object outputSchema ` +
+		`(MCP requires outputSchema to describe an object, so no array can satisfy it). Return an ` +
+		`object envelope from the Resource — e.g. { results: [...] } — and declare it with ` +
+		`\`static outputSchemas.${verb}\`.`;
+	harperLogger.warn(`MCP ${toolName}: ${message}`);
+	return {
+		isError: true,
+		content: [{ type: 'text', text: JSON.stringify({ kind: 'harper_error', tool: toolName, message }) }],
+	};
 }
 
 function wrapError(toolName: string, err: unknown): ToolResult {
@@ -533,7 +563,7 @@ function makeGetHandler(toolName: string, path: string, capturedClass: ResourceC
 			if (Array.isArray(a.get_attributes)) target.select = a.get_attributes as string[];
 			applyContractInputs(target, ResourceClass, a, 'get');
 			const data = await ResourceClass.get!(target, buildContext(context.user));
-			return wrapToolResult(data);
+			return rejectArrayForSchemaBearingVerb(toolName, 'get', data) ?? wrapToolResult(data);
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
@@ -612,7 +642,10 @@ function makeCreateHandler(toolName: string, path: string, capturedClass: Resour
 			// scalar against a declared outputSchema with -32600. A custom Resource
 			// that returns a structured record/envelope (typically with a
 			// `static outputSchemas.create` override) is passed through unchanged (#1324).
-			return wrapToolResult(isStructuredEnvelope(data) ? data : { id: data });
+			return (
+				rejectArrayForSchemaBearingVerb(toolName, 'create', data) ??
+				wrapToolResult(isStructuredEnvelope(data) ? data : { id: data })
+			);
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
@@ -643,7 +676,10 @@ function makeUpdateHandler(toolName: string, path: string, capturedClass: Resour
 			// derive{Update,Patch}OutputSchema. A custom Resource that returns a
 			// structured envelope (with a static outputSchemas override) passes
 			// through unchanged (#1324).
-			return wrapToolResult(isStructuredEnvelope(data) ? data : { ok: true });
+			return (
+				rejectArrayForSchemaBearingVerb(toolName, verb === 'put' ? 'update' : 'patch', data) ??
+				wrapToolResult(isStructuredEnvelope(data) ? data : { ok: true })
+			);
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
@@ -663,7 +699,10 @@ function makeDeleteHandler(toolName: string, path: string, capturedClass: Resour
 			// result carries structuredContent matching deriveDeleteOutputSchema. A
 			// custom Resource that returns a structured envelope (typically with a
 			// `static outputSchemas.delete` override) is passed through unchanged (#1324).
-			return wrapToolResult(isStructuredEnvelope(data) ? data : { deleted: Boolean(data) });
+			return (
+				rejectArrayForSchemaBearingVerb(toolName, 'delete', data) ??
+				wrapToolResult(isStructuredEnvelope(data) ? data : { deleted: Boolean(data) })
+			);
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
