@@ -1199,27 +1199,25 @@ describe('mcp/tools/application — custom mcpResources opt-in (#1609)', () => {
 });
 
 describe('mcp/tools/application — structuredContent honors the ADVERTISED outputSchema', () => {
-	// Two contracts have to hold together, and checking only the first is what let the
-	// #2754 review finding through:
-	//   1. the base `CallToolResult` schema — `structuredContent` must be a record;
-	//   2. the per-tool `outputSchema` this very tool advertised on `tools/list`, which a
-	//      real client caches and validates against, rejecting a mismatch with -32602.
-	// Wrapping an array as `{ results }` satisfies (1) and still fails (2) for every
-	// generated verb that advertises a derived record schema, so these assert BOTH.
+	// Two contracts bind a result: the base CallToolResult record rule, and the per-tool
+	// outputSchema a client caches from tools/list and validates against (-32602 on a miss).
+	// Assert both — checking only the first is what let an array through as `{ results }`.
 	const nodePath = require('node:path');
 	const { CallToolResultSchema } = require('@modelcontextprotocol/sdk/types.js');
-	// The SDK gates deep subpath imports through its `exports` map, so reach the validator
-	// the client itself uses by file path rather than by specifier.
-	const { AjvJsonSchemaValidator } = require(
-		nodePath.resolve('node_modules/@modelcontextprotocol/sdk/dist/cjs/validation/ajv-provider.js')
+	// The SDK's `exports` map blocks this subpath, so resolve it relative to a public entry
+	// rather than off the process cwd.
+	const AJV_PROVIDER = nodePath.join(
+		nodePath.dirname(require.resolve('@modelcontextprotocol/sdk/types.js')),
+		'validation',
+		'ajv-provider.js'
 	);
+	const { AjvJsonSchemaValidator } = require(AJV_PROVIDER);
 
 	/** Assert a result is legal both as a CallToolResult and against the tool's own outputSchema. */
 	function assertHonorsContract(tool, res) {
 		const parsed = CallToolResultSchema.safeParse(res);
 		assert.ok(parsed.success, `CallToolResult: ${parsed.success ? '' : JSON.stringify(parsed.error?.issues)}`);
-		if (!tool.outputSchema) return;
-		if (res.isError) return; // the SDK skips outputSchema validation for error results
+		if (!tool.outputSchema || res.isError) return; // the SDK skips schema validation for error results
 		assert.ok(res.structuredContent, `${tool.name} advertises an outputSchema so it must return structuredContent`);
 		const verdict = new AjvJsonSchemaValidator().getValidator(tool.outputSchema)(res.structuredContent);
 		assert.ok(
@@ -1264,9 +1262,6 @@ describe('mcp/tools/application — structuredContent honors the ADVERTISED outp
 	});
 
 	it('get_ rejects an array as a contract error instead of advertising a schema it breaks', async () => {
-		// Regression for the #2754 review: `{ results: [...] }` is a legal CallToolResult but
-		// violates get_Product's advertised `required: ['id'] / additionalProperties: false`,
-		// so a client that called tools/list first still threw -32602.
 		register(productResource({ get: async () => [{ id: '1' }, { id: '2' }] }));
 		const tool = getTool('get_Product');
 		const res = await tool.handler({ id: '1' }, CTX);
@@ -1302,8 +1297,6 @@ describe('mcp/tools/application — structuredContent honors the ADVERTISED outp
 	});
 
 	it('the normal (non-array) results of every schema-bearing verb match their advertised schema', async () => {
-		// The positive control for the above: the guard must not have broken the ordinary path,
-		// and each derived schema must actually describe what its handler returns.
 		const cases = [
 			['get_Product', {}, { id: '1' }],
 			['create_Product', { post: async () => 'new-1' }, { name: 'x' }],
@@ -1323,6 +1316,27 @@ describe('mcp/tools/application — structuredContent honors the ADVERTISED outp
 		}
 	});
 
+	it('an authored outputSchemas.<verb> owns the contract, so its array is wrapped, not rejected', async () => {
+		// The guard is about the DERIVED record schema. An author who declares a `{ results }`
+		// envelope gets the wrapper and their own schema validates it.
+		const Product = productResource({ get: async () => [{ id: '1' }] });
+		Product.outputSchemas = {
+			get: {
+				type: 'object',
+				properties: { results: { type: 'array' } },
+				required: ['results'],
+				additionalProperties: false,
+			},
+		};
+		register(Product);
+		const tool = getTool('get_Product');
+		const res = await tool.handler({ id: '1' }, CTX);
+
+		assert.equal(res.isError, undefined, `authored schema should govern: ${res.content?.[0]?.text}`);
+		assert.deepEqual(res.structuredContent, { results: [{ id: '1' }] });
+		assertHonorsContract(tool, res);
+	});
+
 	it('search_ advertises no outputSchema and keeps its { rows } envelope', async () => {
 		register(productResource({}));
 		const tool = getTool('search_Product');
@@ -1333,7 +1347,6 @@ describe('mcp/tools/application — structuredContent honors the ADVERTISED outp
 	});
 
 	it('a custom author tool advertises no outputSchema, so an array still wraps as { results }', async () => {
-		// Nothing was advertised, so nothing is contradicted — the wrapper is the whole fix here.
 		class Recommendations {
 			async recommendSimilar() {
 				return [{ id: 'a' }, { id: 'b' }];

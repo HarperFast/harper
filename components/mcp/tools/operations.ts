@@ -356,9 +356,6 @@ export function makeOperationToolHandler(operationName: string) {
 					],
 				};
 			}
-			// Array payloads (a `sql` SELECT, `search_by_*`, `list_users`, `list_roles`,
-			// `get_job`, …) are wrapped for `structuredContent`, which MCP types as an
-			// object — see `wrapToolResult`. The text frame keeps the payload verbatim.
 			return wrapToolResult(data);
 		} catch (err) {
 			const e = err as { message?: string; http_resp_msg?: string; statusCode?: number };

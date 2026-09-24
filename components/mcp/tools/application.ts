@@ -473,38 +473,45 @@ function makeTarget(): InstanceType<RequestTargetCtor> {
 // should pass through to structuredContent as-is rather than being wrapped in a
 // derived `{ id }`/`{ deleted }` shape, which would corrupt custom Resource
 // responses and their author-declared output schemas (#1324).
-//
-// Arrays never reach this: `rejectArrayForSchemaBearingVerb` turns them into a
-// contract error first, because every verb that calls this also advertises an
-// object `outputSchema` they cannot satisfy.
 function isStructuredEnvelope(data: unknown): data is object {
 	return typeof data === 'object' && data !== null;
 }
 
+/** Mirrors registration's `overrideOutput`: did the author declare this verb's output schema? */
+function hasAuthoredOutputSchema(ResourceClass: ResourceClassLike, verb: string): boolean {
+	const schemas = (ResourceClass as { outputSchemas?: Record<string, object> }).outputSchemas;
+	return Boolean(schemas?.[verb] ?? schemas?.[CONTRACT_VERB[verb]]);
+}
+
+const warnedArrayContractTools = new Set<string>();
+
 /**
- * The generated verb tools (`get_`, `create_`, `update_`, `patch_`, `delete_`) each
- * advertise an `outputSchema`, and MCP requires that schema to describe an OBJECT. A
- * handler resolving to an array therefore cannot satisfy the tool's own advertisement,
- * and wrapping it is not a fix: `wrapToolResult`'s `{ results }` form keeps the base
- * `CallToolResult` legal, but a client that has called `tools/list` caches the advertised
- * schema and still rejects the call with `InvalidParams` (-32602) — `{ results }` has
- * neither the required primary key nor `additionalProperties: false`.
+ * MCP requires `outputSchema` to describe an object, so an array can satisfy neither the
+ * DERIVED record schema the generated verbs advertise nor any schema at all. Wrapping it as
+ * `{ results }` keeps the base `CallToolResult` legal but still fails the advertised schema a
+ * client cached from `tools/list`, with InvalidParams (-32602) — so reject instead of emitting
+ * a payload that contradicts our own advertisement.
  *
- * So rather than emit a payload we already know violates our own contract, report it as a
- * server-side error naming the remedy. The author either returns the object envelope their
- * schema describes, or declares the matching `static outputSchemas.<verb>`.
- *
- * `search_` and author `mcpTools` advertise no `outputSchema`, so they are not routed here
- * and keep `wrapToolResult`'s `{ results }` wrapper.
+ * An authored `static outputSchemas.<verb>` means the author owns the contract: wrap and let
+ * their schema govern. `search_` and author `mcpTools` advertise nothing and never come here.
  */
-function rejectArrayForSchemaBearingVerb(toolName: string, verb: string, data: unknown): ToolResult | undefined {
+function rejectArrayForSchemaBearingVerb(
+	toolName: string,
+	verb: string,
+	data: unknown,
+	ResourceClass: ResourceClassLike
+): ToolResult | undefined {
 	if (!Array.isArray(data)) return undefined;
+	if (hasAuthoredOutputSchema(ResourceClass, verb)) return undefined;
 	const message =
-		`${toolName} resolved to an array, but the tool advertises an object outputSchema ` +
-		`(MCP requires outputSchema to describe an object, so no array can satisfy it). Return an ` +
-		`object envelope from the Resource — e.g. { results: [...] } — and declare it with ` +
+		`${toolName} resolved to an array, but the tool advertises an object outputSchema. ` +
+		`Return an object envelope — e.g. { results: [...] } — and declare it with ` +
 		`\`static outputSchemas.${verb}\`.`;
-	harperLogger.warn(`MCP ${toolName}: ${message}`);
+	// Once per tool: a host that retries a misconfigured verb would otherwise flood the log.
+	if (!warnedArrayContractTools.has(toolName)) {
+		warnedArrayContractTools.add(toolName);
+		harperLogger.warn(`MCP ${toolName}: ${message}`);
+	}
 	return {
 		isError: true,
 		content: [{ type: 'text', text: JSON.stringify({ kind: 'harper_error', tool: toolName, message }) }],
@@ -563,7 +570,7 @@ function makeGetHandler(toolName: string, path: string, capturedClass: ResourceC
 			if (Array.isArray(a.get_attributes)) target.select = a.get_attributes as string[];
 			applyContractInputs(target, ResourceClass, a, 'get');
 			const data = await ResourceClass.get!(target, buildContext(context.user));
-			return rejectArrayForSchemaBearingVerb(toolName, 'get', data) ?? wrapToolResult(data);
+			return rejectArrayForSchemaBearingVerb(toolName, 'get', data, ResourceClass) ?? wrapToolResult(data);
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
@@ -643,7 +650,7 @@ function makeCreateHandler(toolName: string, path: string, capturedClass: Resour
 			// that returns a structured record/envelope (typically with a
 			// `static outputSchemas.create` override) is passed through unchanged (#1324).
 			return (
-				rejectArrayForSchemaBearingVerb(toolName, 'create', data) ??
+				rejectArrayForSchemaBearingVerb(toolName, 'create', data, ResourceClass) ??
 				wrapToolResult(isStructuredEnvelope(data) ? data : { id: data })
 			);
 		} catch (err) {
@@ -677,7 +684,7 @@ function makeUpdateHandler(toolName: string, path: string, capturedClass: Resour
 			// structured envelope (with a static outputSchemas override) passes
 			// through unchanged (#1324).
 			return (
-				rejectArrayForSchemaBearingVerb(toolName, verb === 'put' ? 'update' : 'patch', data) ??
+				rejectArrayForSchemaBearingVerb(toolName, verb === 'put' ? 'update' : 'patch', data, ResourceClass) ??
 				wrapToolResult(isStructuredEnvelope(data) ? data : { ok: true })
 			);
 		} catch (err) {
@@ -700,7 +707,7 @@ function makeDeleteHandler(toolName: string, path: string, capturedClass: Resour
 			// custom Resource that returns a structured envelope (typically with a
 			// `static outputSchemas.delete` override) is passed through unchanged (#1324).
 			return (
-				rejectArrayForSchemaBearingVerb(toolName, 'delete', data) ??
+				rejectArrayForSchemaBearingVerb(toolName, 'delete', data, ResourceClass) ??
 				wrapToolResult(isStructuredEnvelope(data) ? data : { deleted: Boolean(data) })
 			);
 		} catch (err) {

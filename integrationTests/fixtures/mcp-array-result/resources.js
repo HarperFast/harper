@@ -1,7 +1,5 @@
-// A record-scoped `get` that resolves to an ARRAY. This is legal for a custom
-// Resource to do, but `get_Listing` advertises the derived record schema
-// (`required: ['id']`, `additionalProperties: false`), so no wrapping of the
-// array can satisfy the contract the tool published on `tools/list`.
+// A record-scoped `get` resolving to an ARRAY, with no `static outputSchemas.get`
+// to redeclare the contract — so `get_Listing` keeps the derived record schema.
 export class Listing extends tables.Listing {
 	async get() {
 		return [
