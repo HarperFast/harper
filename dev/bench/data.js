@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790154868822,
+  "lastUpdate": 1790234544151,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -6437,6 +6437,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 978.88,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "ebf7117e88f1796af633f3a1bb88e5d3aa366844",
+          "message": "Resolve author_association live for review-coverage (#2773)\n\n* Resolve author_association live for review-coverage, not from the webhook payload\n\nThe webhook payload's author_association can go stale relative to GitHub's\nown current state — confirmed on harper#2754, where a genuine org member\n(dawsontoth) read as CONTRIBUTOR on every triggering event across more than\na day, exempting the PR from coverage/format/framing enforcement entirely.\nSince the payload is only captured at event delivery and never recomputed,\na membership grant near a PR's creation can pin it wrong indefinitely.\n\nreview-coverage.yml now resolves association live via the API before\ndeciding whether to collect PR files, and threads the resolved value into\nthe composite action as pr_author_association. ci-review-coverage.mjs\noverrides pr.author_association with it before any evaluator runs, so\ncoverage, pr-format, and framing-verdict all pick it up through the same\nclassifyPullRequest() call. Any API failure falls back to today's\npayload-based behavior — fails open, can't newly break a working PR.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* debug: temporary probe for GITHUB_TOKEN author_association visibility\n\n* debug: trigger probe on push instead (workflow_dispatch needs default-branch registration)\n\n* Remove temporary GITHUB_TOKEN author_association probe\n\n* debug: probe harperfastaibot members:read token\n\n* Remove temporary members:read app-token probe\n\n* Resolve org membership through an app token, not GITHUB_TOKEN\n\nThe prior version of this fix re-fetched author_association live but with\nGITHUB_TOKEN — proven empirically to return the exact same wrong value the\nwebhook does for a private org membership (confirmed on harper#2754:\nGITHUB_TOKEN and the stale webhook both report dawsontoth as CONTRIBUTOR).\nGITHUB_TOKEN cannot be granted org-level members:read at all; there is no\nsuch permission key available to it.\n\nharperfastaibot already holds members:read org-wide and already has its\nsecrets (HARPERFAST_AI_CLIENT_ID/HARPERFAST_AI_APP_PRIVATE_KEY) wired into\nthis repo for the Claude/Gemini review bots. Minting a token scoped down\nto members:read + metadata:read and querying orgs/{org}/memberships/{login}\ndirectly resolves it correctly — verified live against the same account.\n\nOne-directional by design: the live check can only promote to MEMBER,\nnever demote, so any failure (missing secret, API hiccup, confirmed\nnon-member) simply leaves today's payload-based behavior unchanged.\n\nAlso fixes a CI-breaking regression from the previous commit: the\nPR-files gate's rewritten condition put a `)` directly before ` == `,\nbreaking prFormat.test.mjs's literal-text assertion that the workflow\nstill gates on `author_association == 'MEMBER'`. Restructured as a flat\nOR so the literal substring survives and the logic reads more directly.\n\nTrims comments flagged by cross-model review as narrating what the code\nor tests already say.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* Enforce promote-only at the code level; extract and test the membership check\n\nRound-2 cross-model review findings:\n\n- Extracted the inline bash into resolveMembership.sh so it's testable\n  independent of a live GitHub Actions run. It now fails fast on a\n  confirmed 404 (no member) instead of burning two pointless retries, and\n  emits a ::warning:: after exhausting retries on any OTHER failure (e.g.\n  a 403 from a lost members:read grant) instead of exiting silently —\n  closing the exact silent-failure mode that let the original bug go\n  unnoticed for a day. 4 new tests drive the actual script against a\n  stubbed `gh`, rather than only asserting on source text.\n\n- ci-review-coverage.mjs now refuses to apply the override unless the\n  live value is MEMBER or OWNER. This was flagged as an open decision\n  (promote-only enforced by convention in the workflow vs. as an\n  invariant in the code); enforcing it in the code means a future edit\n  to review-coverage.yml can't accidentally start exempting real members\n  just by handing this override some other value.\n\n- Trimmed remaining comment nits (narrating rationale already covered\n  elsewhere, a stale pointer to the wrong file, \"today's behavior\"\n  phrasing that reads oddly outside this PR's context).\n\nLeft open for Kris: reusing harperfastaibot (whose installation also\nbacks write-capable workflows) vs. a dedicated members:read-only app —\nnoted in the PR description rather than decided here.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T03:18:17Z",
+          "url": "https://github.com/HarperFast/harper/commit/ebf7117e88f1796af633f3a1bb88e5d3aa366844"
+        },
+        "date": 1790234541923,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 8666.63,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 12533.97,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 11804.41,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 8669.27,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 6461.11,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 12642.71,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1508.38,
             "unit": "ops/sec"
           }
         ]
