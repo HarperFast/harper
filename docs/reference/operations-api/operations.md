@@ -878,6 +878,20 @@ Additional parameters:
 
 `urlPath` and `host` both require `package` and are rejected on a payload-only deploy. To mount a payload-deployed component, add `host`/`urlPath` to its entry in the root `harper-config.yaml` instead.
 
+#### How a deploy updates the root config
+
+<VersionBadge type="changed" version="v5.3.0" />
+
+A deploy changes the component's entry in the root `harper-config.yaml` only once the new release is live on that node. A deploy that fails to install or validate leaves the entry exactly as it was, so a restart does not install a release that never went live. If Harper stops partway through the swap, startup settles it before it installs anything from the root config: either the previous release stays live with its entry, or the new release goes live with its entry, including whether the component runs isolated.
+
+- A `package` deploy replaces the component's entry with one built from the request: `package`, `install`, `credentials`, `urlPath`, `host`, `branchedDatabases`, and `isolated`.
+- A `payload` deploy removes `package`, `install`, and `credentials` from the entry and keeps everything else, such as `host`, `urlPath`, `isolated`, and `branchedDatabases`. An entry left with no keys is removed. A `package` key left in place would make a node installing from the root config resolve the old package instead of the payload release that is live.
+- `drop_component` removes the entry.
+
+These writes are serialized with each other and with `set_configuration`, so concurrent deploys, drops, and configuration changes do not overwrite one another.
+
+A deploy that has to change the entry is refused before anything changes if the root config does not parse, or if Harper cannot write to the directory that holds it. A deploy that leaves the entry as it is, such as a `payload` deploy of a component that has no entry, does not need the root config to be writable.
+
 #### Staging a build and activating it later
 
 <VersionBadge version="v5.3.0" />
