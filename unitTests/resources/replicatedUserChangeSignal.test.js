@@ -35,8 +35,6 @@ async function settledUserChanges() {
 	return userChanges - 1;
 }
 
-// A replicated system-database commit that writes hdb_user or hdb_role signals a user change, which
-// runs userHandler on every thread; these drive the real signal and handler, with one thread.
 describe('replicated system-database apply: user-change signal', function () {
 	this.timeout(10000);
 	let unhandled;
@@ -81,7 +79,6 @@ describe('replicated system-database apply: user-change signal', function () {
 		for (const name of createdNodes.splice(0)) await databases.system.hdb_nodes.delete(name);
 	});
 
-	/** Runs `events` through a replicated-apply subscription on the system database. */
 	function applyFromSource(events) {
 		const held = deferred();
 		const done = deferred();
@@ -130,7 +127,6 @@ describe('replicated system-database apply: user-change signal', function () {
 		);
 	}
 
-	/** Fails the commit of `event` by staging a write whose before-commit hook rejects with `error`. */
 	function failCommit(event, error) {
 		event.finished = {
 			then(resolve) {
@@ -187,12 +183,34 @@ describe('replicated system-database apply: user-change signal', function () {
 		assert.ok((await getUsersWithRolesCache()).has(username));
 	});
 
-	it('does not signal for a dropped user-table event', async () => {
+	it('signals once for a transaction with several user writes', async () => {
 		const id = ++serial;
-		const username = `dropped_user_${id}`;
-		await applyFromSource([userPut(username, { type: 'invalid-operation' }), nodePut(`after-drop-node-${id}`)]);
+		await applyFromSource([
+			userPut(`multi_user_${id}_a`, { beginTxn: true }),
+			nodePut(`multi-node-${id}`),
+			userPut(`multi_user_${id}_b`),
+			userPut(`multi_user_${id}_c`),
+			{ type: 'end_txn' },
+			{
+				type: 'transaction',
+				nodeId: 21,
+				timestamp: Date.now(),
+				writes: [userPut(`multi_user_${id}_d`), userPut(`multi_user_${id}_e`)],
+			},
+		]);
+		assert.ok(await databases.system.hdb_user.get(`multi_user_${id}_e`), 'both transactions committed');
+		assert.strictEqual(await settledUserChanges(), 2);
+	});
+
+	it('does not signal for dropped user-table events', async () => {
+		const id = ++serial;
+		await applyFromSource([
+			userPut(`unknown_op_user_${id}`, { type: 'invalid-operation' }),
+			userPut(`valueless_user_${id}`, { value: null }),
+			nodePut(`after-drop-node-${id}`),
+		]);
 		assert.ok(await databases.system.hdb_nodes.get(`after-drop-node-${id}`));
-		assert.strictEqual(applyFailures.length, 1, 'the drop is reported');
+		assert.strictEqual(applyFailures.length, 2, 'both drops are reported');
 		assert.strictEqual(await settledUserChanges(), 0);
 	});
 });

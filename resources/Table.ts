@@ -1165,8 +1165,10 @@ export function makeTable(options) {
 						if (event.finished) await event.finished;
 						return notification;
 					}
+					const valuelessPut = Table && event.type === 'put' && value == null && !shouldRevalidateEvents;
 					// Marked before any await, so a transaction's first write is seen where transaction() returns
 					if (
+						!valuelessPut &&
 						databaseName === SYSTEM_SCHEMA_NAME &&
 						(event.table === SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME ||
 							event.table === SYSTEM_TABLE_NAMES.USER_TABLE_NAME) &&
@@ -1176,7 +1178,7 @@ export function makeTable(options) {
 						// a later write into an open begin_txn, whose commit is already assigned
 						if (context.committed) signalUserChangeOnCommit(context.committed);
 					}
-					if (Table && event.type === 'put' && value == null && !shouldRevalidateEvents)
+					if (valuelessPut)
 						await reportDroppedWrite(event, context, new Error('Source-applied put has no record content'));
 					const resource: TableResource = await Table.getResource(id, context, options);
 					if (event.finished) await event.finished;

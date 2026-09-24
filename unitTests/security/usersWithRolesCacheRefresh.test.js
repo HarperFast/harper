@@ -7,8 +7,6 @@ const ADDED = 'refresh_added_user';
 const REVOKED = 'refresh_revoked_user';
 const DELETED = 'refresh_deleted_user';
 
-// Every user-change signal refreshes this cache on every thread, so concurrent refreshes coalesce; a
-// caller must still see what was written before its call.
 describe('setUsersWithRolesCache under concurrent refreshes', function () {
 	let user;
 

@@ -1,7 +1,6 @@
 const assert = require('node:assert');
 const { coalesceRefresh } = require('#src/utility/coalesceRefresh');
 
-/** A refresh whose runs complete only when the test settles them, recording how many overlap. */
 function gatedRefresh() {
 	const runs = [];
 	let active = 0;

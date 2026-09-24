@@ -387,8 +387,6 @@ function cacheExpandedOperationsPerms(userRole: UserRole) {
 	userRole.permission._expandedOperations = expandOperationsPerms(userRole.permission.operations);
 }
 
-// Every user-change signal refreshes this on every thread; a burst of signals must not become a burst of
-// full hdb_role + hdb_user scans.
 const refreshUsersWithRolesCache = coalesceRefresh(async () => {
 	usersWithRolesMap = await listUsers();
 });
