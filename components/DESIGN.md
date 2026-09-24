@@ -419,3 +419,20 @@ not restart a fully observed runtime, but a changed or missing imported helper, 
 input, changed dependency evidence, or any genuinely opaque runtime does. Entry changes themselves
 remain consumer-directed: the static plugin applies asset changes incrementally, while executable
 consumers such as `jsResource` request a restart on their logical `change` or `unlink` events.
+
+## Startup waits for component preparation only up to `deployment.startupInstallTimeout`
+
+Listeners open and workers start only after `installApplications()` returns, so any component
+preparation it waits on gates the whole node. It therefore waits at most
+`deployment.startupInstallTimeout` (default 10 minutes, `0` = unbounded), measured from its entry
+(`waitForStartupPreparations`). A preparation still running then is left behind, not cancelled: it keeps
+its component preparation lock, so no second writer can touch that component, and a later
+`installApplications()` (every worker restart runs one) waits on the same in-flight promise rather than
+starting another (`trackStartupPreparation`, keyed by component name and configuration). Startup loads
+what is installed meanwhile — the previous version, or nothing for a new component. A success that no
+call is still waiting on requests the restart a deploy-without-restart would (`requestRestartAfterDeploy`);
+one that a later call is waiting on is loaded by that call's generation instead. Because a preparation can
+outlive the call that read the lock file, every `harper-application-lock.json` transition is a
+read-modify-write in one per-path queue (`updateApplicationLock`), never a write of a caller's snapshot
+(harper#2072). Enforced by `unitTests/components/installApplicationsLock.test.js` and
+`integrationTests/deploy/startup-install-timeout.test.ts`.

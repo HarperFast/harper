@@ -109,6 +109,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)](components/DESIGN.md#a-dangling-symlink-silently-truncates-the-deploy-tarball-componentspackagecomponentts) — tar-fs treats a dangling symlink's ENOENT as end-of-stream, so `scanPackageDirectory()` pre-walks the tree.
 - [Deploy watcher generations preserve logical entry events](components/DESIGN.md#deploy-watcher-generations-preserve-logical-entry-events) — `EntryHandler` snapshots matching paths across a deploy so consumers see logical change and delete events, not raw rescan adds.
 - [Restart-free deploys require proof of runtime equivalence](components/DESIGN.md#restart-free-deploys-require-proof-of-runtime-equivalence) — A deploy stays restart-free only when declared files, the imported runtime and installed dependencies are all proven equivalent.
+- [Startup waits for component preparation only up to `deployment.startupInstallTimeout`](components/DESIGN.md#startup-waits-for-component-preparation-only-up-to-deploymentstartupinstalltimeout) — One stalled install cannot hold listeners closed; it finishes in the background under its lock, and lock-file transitions are read-modify-write.
 
 ## components/mcp/
 
