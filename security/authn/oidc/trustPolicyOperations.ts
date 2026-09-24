@@ -16,7 +16,7 @@ import * as terms from '../../../utility/hdbTerms.ts';
 import { ClientError, hdbErrors } from '../../../utility/errors/hdbError.ts';
 import { validateBySchema } from '../../../validation/validationWrapper.ts';
 import { loggerWithTag } from '../../../utility/logging/logger.ts';
-import { getUsersWithRolesCache } from '../../user.ts';
+import { getUserWithRole } from '../../user.ts';
 import { validateClaimConstraintShape } from './claims.ts';
 import { normalizeIssuer } from './jwks.ts';
 import { profileForIssuer } from './providers/index.ts';
@@ -269,11 +269,10 @@ export async function addOidcTrust(req: any) {
 	profile.assertPolicyIsSpecific(req.claims);
 
 	// Resolve the target user now: a policy pointing at a user that does not exist would fail only at
-	// exchange time, in CI, with nothing to point at. Read the users cache directly rather than
-	// findAndValidateUser — with validatePassword false, that returns a bare `{ username }` for an
-	// unknown user instead of failing, so it cannot answer "does this user exist".
-	const users = await getUsersWithRolesCache();
-	const targetUser = users?.get(req.user);
+	// exchange time, in CI, with nothing to point at. Not findAndValidateUser — with validatePassword
+	// false, that returns a bare `{ username }` for an unknown user, so it cannot answer "does this
+	// user exist".
+	const targetUser = getUserWithRole(req.user);
 	if (!targetUser) {
 		throw new ClientError(`No such user '${req.user}'; create the user before granting it to a workflow`);
 	}
@@ -314,14 +313,13 @@ export async function listOidcTrust(req: any) {
 	// this the listing would still say the trust is fine for the most mundane arrival of all: someone
 	// deletes or deactivates the CI user and every deploy starts failing.
 	//
-	// Annotated here rather than in readPolicies, and deliberately: this is one cache read for the
-	// whole listing on an SU-only path, where doing it per row in readPolicies would put a user lookup
-	// on the unauthenticated exchange path, which already resolves the user itself at the right moment.
-	// A shape problem already reported wins, since it is the more fundamental complaint.
-	const users = await getUsersWithRolesCache();
+	// Annotated here rather than in readPolicies, and deliberately: this is an SU-only path, where
+	// doing it in readPolicies would put a user lookup on the unauthenticated exchange path, which
+	// already resolves the user itself at the right moment. A shape problem already reported wins,
+	// since it is the more fundamental complaint.
 	for (const policy of policies as any[]) {
 		if (policy.invalid_reason) continue;
-		const user = users?.get(policy.user);
+		const user = getUserWithRole(policy.user);
 		if (!user) policy.invalid_reason = `names user '${policy.user}', which does not exist`;
 		else if (user.active === false) policy.invalid_reason = `names inactive user '${policy.user}'`;
 	}

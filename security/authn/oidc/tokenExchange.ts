@@ -17,7 +17,7 @@ import { loggerWithTag } from '../../../utility/logging/logger.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
 import * as env from '../../../utility/environment/environmentManager.ts';
 import { AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES, CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
-import { getUsersWithRolesCache } from '../../user.ts';
+import { getUserWithRole } from '../../user.ts';
 import { createOperationToken } from '../../tokenAuthentication.ts';
 import { rejectToken, verifyIdentityToken } from './identityToken.ts';
 import { matchTrustPolicyClaims } from './claims.ts';
@@ -264,8 +264,7 @@ export async function exchangeOidcToken(req: any) {
 
 		// Resolved before the token is spent, so a policy naming a deleted or deactivated user fails
 		// without burning a token the runner cannot re-mint.
-		const users = await getUsersWithRolesCache();
-		const user = users?.get(policy.user);
+		const user = getUserWithRole(policy.user);
 		if (!user) rejectToken(`trust policy '${policy.id}' names user '${policy.user}', which does not exist`);
 		if (user.active === false) rejectToken(`trust policy '${policy.id}' names inactive user '${policy.user}'`);
 		username = user.username;

@@ -15,7 +15,6 @@ const {
 	loadEnabledPolicies,
 } = require('#src/security/authn/oidc/trustPolicyOperations');
 const { databases } = require('#src/resources/databases');
-const { setUsersWithRolesCache } = require('#src/security/user');
 const terms = require('#src/utility/hdbTerms');
 const opAuth = require('#src/utility/operation_authorization');
 
@@ -67,7 +66,7 @@ function seedUsers() {
 	});
 	users.set('admin', { username: 'admin', active: true, role: { role: 'su', permission: { super_user: true } } });
 	users.set('retired', { username: 'retired', active: false, role: { role: 'deployer', permission: {} } });
-	return setUsersWithRolesCache(users);
+	return testUtils.seedUsers(users);
 }
 
 const su = (op, body = {}) => ({
@@ -96,6 +95,9 @@ function validPolicy(overrides = {}) {
 describe('oidc trustPolicyOperations', () => {
 	let installed;
 
+	// before installMockTable, which stands in an empty `databases.system` if none is loaded yet
+	before(() => testUtils.ensureSystemTables());
+
 	beforeEach(async () => {
 		installed = installMockTable();
 		await seedUsers();
@@ -104,6 +106,8 @@ describe('oidc trustPolicyOperations', () => {
 	afterEach(() => {
 		installed.restore();
 	});
+
+	after(() => testUtils.seedUsers());
 
 	describe('super_user enforcement (in-handler, allowlist-proof)', () => {
 		const cases = [
@@ -316,7 +320,7 @@ describe('oidc trustPolicyOperations', () => {
 		// user and every deploy starts failing while the listing still says the trust is fine.
 		it('reports a policy naming a user that no longer exists', async () => {
 			await addOidcTrust(su('add_oidc_trust', validPolicy({ id: 'gone' })));
-			await setUsersWithRolesCache(new Map());
+			await testUtils.seedUsers();
 
 			const listed = (await listOidcTrust(su('list_oidc_trust'))).policies.find((p) => p.id === 'gone');
 			assert.match(listed.invalid_reason, /does not exist/);
@@ -326,7 +330,7 @@ describe('oidc trustPolicyOperations', () => {
 			await addOidcTrust(su('add_oidc_trust', validPolicy({ id: 'inactive' })));
 			const users = new Map();
 			users.set('ci-deploy', { username: 'ci-deploy', active: false, role: { role: 'r', permission: {} } });
-			await setUsersWithRolesCache(users);
+			await testUtils.seedUsers(users);
 
 			const listed = (await listOidcTrust(su('list_oidc_trust'))).policies.find((p) => p.id === 'inactive');
 			assert.match(listed.invalid_reason, /inactive/);

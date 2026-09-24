@@ -465,7 +465,6 @@ if (!parentPort) {
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CHILD_STARTUP_PHASE, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.SCHEMA, null);
-listenersByType.set(hdbTerms.ITC_EVENT_TYPES.USER, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_REQUEST, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_RESPONSE, null);
