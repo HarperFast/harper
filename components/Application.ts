@@ -4239,6 +4239,8 @@ export function shouldPackLocalDirectory(packageIdentifier: string | undefined, 
  * @returns A promise that resolves when all preparation steps complete.
  */
 export type PrepareApplicationOptions = {
+	/** Receives the deploy lifecycle id of this preparation once its start is broadcast. */
+	onDeployStart?: (deploymentId: string) => void;
 	beforePrepare?: () => Promise<void>;
 	/**
 	 * Runs against the built candidate while the live version is still serving, and BEFORE the swap. A
@@ -4279,6 +4281,7 @@ export type PrepareApplicationOptions = {
 
 export async function prepareApplication(application: Application, options: PrepareApplicationOptions = {}) {
 	const lifecycleToken = await broadcastDeployStart(application.name);
+	options.onDeployStart?.(lifecycleToken);
 	const mode = options.mode ?? 'deploy';
 	const artifactId = options.artifactId ?? lifecycleToken;
 	try {
@@ -4501,6 +4504,7 @@ export type StartupPreparation = {
 	configKey: string;
 	dirPath: string;
 	promise: Promise<void>;
+	deploymentId?: string;
 	/** Some installApplications() call stopped waiting for this, so a generation already running predates its swap. */
 	leftBehind: boolean;
 };
@@ -4516,13 +4520,17 @@ export function trackStartupPreparation(
 	name: string,
 	configKey: string,
 	dirPath: string,
-	start: () => Promise<void>,
+	start: (onDeployStart: (deploymentId: string) => void) => Promise<void>,
 	onLateSuccess: (preparation: StartupPreparation) => void | Promise<void> = reportLateStartupPreparation
 ): StartupPreparation {
 	const key = JSON.stringify([name, configKey]);
 	const existing = startupPreparations.get(key);
 	if (existing) return existing;
-	const preparation: StartupPreparation = { name, configKey, dirPath, promise: start(), leftBehind: false };
+	const preparation = { name, configKey, dirPath, leftBehind: false } as StartupPreparation;
+	preparation.promise = start((deploymentId) => {
+		preparation.deploymentId = deploymentId;
+		if (preparation.leftBehind) deployLifecycle.releaseLoads(name, deploymentId);
+	});
 	startupPreparations.set(key, preparation);
 	const settle = (succeeded: boolean) => {
 		startupPreparations.delete(key);
@@ -4538,32 +4546,39 @@ export function trackStartupPreparation(
 	return preparation;
 }
 
-async function reportLateStartupPreparation(preparation: StartupPreparation): Promise<void> {
-	const { requestRestart } = await import('./requestRestart.ts');
-	requestRestart();
+async function reportLateStartupPreparation(
+	preparation: StartupPreparation,
+	builtIn?: Pick<Application, 'isNewComponent' | 'packageMetadataChanged'>
+): Promise<void> {
+	const { requestRestart, requestRestartAfterDeploy } = await import('./requestRestart.ts');
+	let restartRequested = true;
+	if (builtIn) {
+		restartRequested = requestRestartAfterDeploy(builtIn.isNewComponent, builtIn.packageMetadataChanged, false, false);
+	} else {
+		requestRestart();
+	}
 	logger.warn?.(
-		`Component ${preparation.name} finished preparing after startup stopped waiting for it; restart Harper to load it`
+		`Component ${preparation.name} finished preparing after startup stopped waiting for it` +
+			(restartRequested ? '; restart Harper to load it' : '')
 	);
 }
 
 /**
  * Wait for the given preparations until they all settle or `timeoutMs` elapses, warning periodically about
- * what startup is still waiting for. Returns the ones still pending, which keep running (and holding their
- * component locks) — the caller stops waiting, it does not cancel. Infinity waits indefinitely. One that an
- * earlier call already stopped waiting for is returned without waiting again: the node already runs without it.
+ * what startup is still waiting for. Returns the ones this call stopped waiting for, which keep running (and
+ * holding their component locks) — the caller stops waiting, it does not cancel. Infinity waits indefinitely.
+ * One an earlier call already stopped waiting for is not waited for again: the node already runs without it.
  */
 export async function waitForStartupPreparations(
 	preparations: Iterable<StartupPreparation>,
 	timeoutMs: number,
 	progressIntervalMs: number = STARTUP_INSTALL_PROGRESS_INTERVAL_MS
 ): Promise<StartupPreparation[]> {
-	const leftBehind: StartupPreparation[] = [];
 	const pending = new Set<StartupPreparation>();
 	for (const preparation of preparations) {
-		if (preparation.leftBehind) leftBehind.push(preparation);
-		else pending.add(preparation);
+		if (!preparation.leftBehind) pending.add(preparation);
 	}
-	if (pending.size === 0) return leftBehind;
+	if (pending.size === 0) return [];
 	const startedAt = performance.now();
 	const allSettled = Promise.all(
 		[...pending].map((preparation) =>
@@ -4593,9 +4608,10 @@ export async function waitForStartupPreparations(
 	}
 	for (const preparation of pending) {
 		preparation.leftBehind = true;
-		leftBehind.push(preparation);
+		// Loading the installed tree is the alternative startup chose, so no load may wait on this deploy.
+		if (preparation.deploymentId) deployLifecycle.releaseLoads(preparation.name, preparation.deploymentId);
 	}
-	return leftBehind;
+	return [...pending];
 }
 
 /**
@@ -4640,14 +4656,22 @@ export async function installApplications() {
 		});
 
 		preparations.add(
-			trackStartupPreparation(name, packageIdentifier, application.dirPath, async () => {
-				try {
-					await prepareApplication(application);
-				} catch (error) {
-					logger.error?.(`Failed to prepare built-in component ${name}:`, errorForLog(error));
-					throw error;
-				}
-			})
+			trackStartupPreparation(
+				name,
+				packageIdentifier,
+				application.dirPath,
+				async (onDeployStart) => {
+					try {
+						await prepareApplication(application, { onDeployStart });
+					} catch (error) {
+						logger.error?.(`Failed to prepare built-in component ${name}:`, errorForLog(error));
+						throw error;
+					}
+				},
+				// A built-in is prepared again on every restart, so an unconditional request would loop wherever a
+				// restart request triggers a restart; only a new or changed install needs one.
+				(preparation) => reportLateStartupPreparation(preparation, application)
+			)
 		);
 	}
 
@@ -4668,16 +4692,14 @@ export async function installApplications() {
 		}
 		const dirPath = join(componentsRootDirPath, name);
 		preparations.add(
-			trackStartupPreparation(name, JSON.stringify(applicationConfig), dirPath, () =>
-				installConfiguredApplication(name, applicationConfig, dirPath, harperApplicationLockPath)
+			trackStartupPreparation(name, JSON.stringify(applicationConfig), dirPath, (onDeployStart) =>
+				installConfiguredApplication(name, applicationConfig, dirPath, harperApplicationLockPath, onDeployStart)
 			)
 		);
 	}
 
 	const leftBehind = await waitForStartupPreparations(preparations, timeoutMs === 0 ? Infinity : timeoutMs);
 	for (const { name, dirPath } of leftBehind) {
-		// Loading this startup's installed tree is the alternative startup chose, so no load may wait on it.
-		deployLifecycle.releaseLoads(name);
 		logger.error?.(
 			`Startup is no longer waiting for ${name}: its preparation is still running after ` +
 				`${CONFIG_PARAMS.DEPLOYMENT_STARTUPINSTALLTIMEOUT} (${timeoutMs}ms). It continues in the background; ` +
@@ -4686,14 +4708,15 @@ export async function installApplications() {
 					: 'until it finishes, the component is not installed')
 		);
 	}
-	if (leftBehind.length === 0) logger.info?.('All root applications loaded');
+	if (![...preparations].some((preparation) => preparation.leftBehind)) logger.info?.('All root applications loaded');
 }
 
 async function installConfiguredApplication(
 	name: string,
 	applicationConfig: ApplicationConfig,
 	dirPath: string,
-	harperApplicationLockPath: string
+	harperApplicationLockPath: string,
+	onDeployStart: (deploymentId: string) => void
 ): Promise<void> {
 	try {
 		// Lock check: only install if not already installed with matching configuration
@@ -4736,7 +4759,7 @@ async function installConfiguredApplication(
 		await recordApplicationPreparation(
 			name,
 			applicationConfig,
-			(clearEntry) => prepareApplication(application, { beforePrepare: clearEntry }),
+			(clearEntry) => prepareApplication(application, { beforePrepare: clearEntry, onDeployStart }),
 			(mutate) => updateApplicationLock(harperApplicationLockPath, mutate)
 		);
 	} catch (error) {

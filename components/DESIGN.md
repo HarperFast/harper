@@ -434,14 +434,17 @@ one) rejoins it rather than starting another (`trackStartupPreparation`, keyed b
 and does not wait for it again, since the node already runs without it.
 
 Startup then loads the installed tree: the previous version, or nothing for a new component. On the installing
-thread that needs `deployLifecycle.releaseLoads()`, because a Scope created while its component's deploy is in
-flight would otherwise wait for that deploy and pause its watchers — in single-thread mode that is the node's
-only serving thread, and startup would block on the very preparation it stopped waiting for. Workers started
-after the broadcast never saw the deploy, so they already load the installed tree.
+thread that needs `deployLifecycle.releaseLoads()` for the preparation's own deploy id, because a Scope created
+while its component's deploy is in flight would otherwise wait for that deploy and pause its watchers — in
+single-thread mode that is the node's only serving thread, and startup would block on the very preparation it
+stopped waiting for. Workers started after the broadcast never saw the deploy, so they already load the
+installed tree. `deploy:start`/`deploy:end` bracket the periods in which an unreleased deploy is in flight
+(`loadsAwaitDeploy`), so a release ends a pause and a later overlapping deploy still starts one.
 
 When a left-behind preparation succeeds it requests a restart unconditionally: some running generation
 predates its swap, and the package-metadata comparison `requestRestartAfterDeploy` uses cannot tell whether
-that generation ever loaded a working version. Because a preparation outlives the call that started it, each
+that generation ever loaded a working version. Built-ins are the exception: they are prepared again on every
+restart, so they use that comparison, or a slow built-in would request a restart after every restart. Because a preparation outlives the call that started it, each
 `harper-application-lock.json` transition is a read-modify-write in one per-path queue
 (`updateApplicationLock`), and a reinstall clears its entry under the component preparation lock
 (`recordApplicationPreparation`), after any earlier preparation's success write (harper#2072). Enforced by

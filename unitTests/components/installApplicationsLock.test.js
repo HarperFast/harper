@@ -16,6 +16,7 @@ const {
 	updateApplicationLock,
 	waitForStartupPreparations,
 } = require('#src/components/Application');
+const { deployLifecycle, _resetForTests: resetDeployLifecycle } = require('#src/components/deployLifecycle');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const harperLogger =
@@ -337,6 +338,51 @@ describe('startup preparation wait', () => {
 			}
 		});
 
+		it("releases a left-behind preparation's own deploy from loads, whenever that deploy starts", async () => {
+			const early = uniqueName('early-deploy');
+			const late = uniqueName('late-deploy');
+			try {
+				const release = deferred();
+				const earlyPreparation = trackStartupPreparation(
+					early,
+					'config',
+					'/nonexistent',
+					(onDeployStart) => {
+						deployLifecycle._handle({ name: early, phase: 'start', deploymentId: 'early' });
+						onDeployStart('early');
+						return release.promise;
+					},
+					() => {}
+				);
+				deployLifecycle._handle({ name: early, phase: 'start', deploymentId: 'unrelated' });
+				await waitForStartupPreparations([earlyPreparation], 10);
+				assert.equal(deployLifecycle.loadsAwaitDeploy(early), true, 'an unrelated deploy is not released');
+				deployLifecycle._handle({ name: early, phase: 'end', deploymentId: 'unrelated' });
+				assert.equal(deployLifecycle.loadsAwaitDeploy(early), false);
+
+				let startDeploy;
+				const latePreparation = trackStartupPreparation(
+					late,
+					'config',
+					'/nonexistent',
+					(onDeployStart) => {
+						startDeploy = () => {
+							deployLifecycle._handle({ name: late, phase: 'start', deploymentId: 'late' });
+							onDeployStart('late');
+						};
+						return new Promise(() => {});
+					},
+					() => {}
+				);
+				await waitForStartupPreparations([latePreparation], 10);
+				startDeploy();
+				assert.equal(deployLifecycle.loadsAwaitDeploy(late), false);
+				release.resolve();
+			} finally {
+				resetDeployLifecycle();
+			}
+		});
+
 		it('a preparation that rejects after the deadline is not an unhandled rejection', async () => {
 			const rejections = await collectUnhandledRejections(async () => {
 				const stalled = deferred();
@@ -422,7 +468,7 @@ describe('startup preparation wait', () => {
 			const restart = trackStartupPreparation(name, 'config', '/nonexistent', start, onLateSuccess);
 			assert.strictEqual(restart, boot, 'no second preparation');
 			const startedAt = performance.now();
-			assert.deepStrictEqual(await waitForStartupPreparations([restart], 60_000), [boot]);
+			assert.deepStrictEqual(await waitForStartupPreparations([restart], 60_000), [], 'already reported');
 			assert.ok(performance.now() - startedAt < 5_000, 'the restart did not wait out a fresh deadline');
 
 			release.resolve();

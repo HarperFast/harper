@@ -60,21 +60,31 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 		return (this.#byComponent.get(componentName)?.size ?? 0) > 0;
 	}
 
-	/** Whether a Scope created now must wait for, and pause its watchers through, a deploy in flight. */
+	/**
+	 * Whether a Scope must wait for, and pause its watchers through, a deploy in flight. `deploy:start` and
+	 * `deploy:end` bracket exactly the periods in which this is true, so a Scope's state stays consistent.
+	 */
 	loadsAwaitDeploy(componentName: string): boolean {
-		for (const deploymentId of this.#byComponent.get(componentName) ?? []) {
-			if (!this.#releasedFromLoads.has(deploymentId)) return true;
-		}
-		return false;
+		return this.#unreleasedCount(componentName) > 0;
 	}
 
 	/**
-	 * Let Scopes created from now on load the installed tree while this component's current deploys are still
-	 * in flight, as a worker that never saw their broadcast already does. Startup does this for a preparation
-	 * it stopped waiting for; the live tree only changes at that deploy's final swap.
+	 * Let Scopes load the installed tree while this deploy is still in flight, as a worker that never saw its
+	 * broadcast already does. Startup does this for a preparation it stopped waiting for; the live tree only
+	 * changes at that deploy's final swap.
 	 */
-	releaseLoads(componentName: string): void {
-		for (const deploymentId of this.#byComponent.get(componentName) ?? []) this.#releasedFromLoads.add(deploymentId);
+	releaseLoads(componentName: string, deploymentId: string): void {
+		if (!this.#byComponent.get(componentName)?.has(deploymentId) || this.#releasedFromLoads.has(deploymentId)) return;
+		this.#releasedFromLoads.add(deploymentId);
+		if (this.#unreleasedCount(componentName) === 0) this.#emitSafely('deploy:end', componentName);
+	}
+
+	#unreleasedCount(componentName: string): number {
+		let count = 0;
+		for (const deploymentId of this.#byComponent.get(componentName) ?? []) {
+			if (!this.#releasedFromLoads.has(deploymentId)) count++;
+		}
+		return count;
 	}
 
 	// Process a deploy lifecycle event in-process. Called both from the
@@ -96,7 +106,7 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 			this.#deployments.set(deploymentId, { name: event.name, ownerThreadId });
 			this.#byComponent.set(event.name, active);
 			active.add(deploymentId);
-			if (active.size === 1) this.#emitSafely('deploy:start', event.name);
+			if (this.#unreleasedCount(event.name) === 1) this.#emitSafely('deploy:start', event.name);
 			return;
 		}
 		if (!deploymentId) deploymentId = this.#legacyDeployments.get(event.name)?.pop();
@@ -124,14 +134,12 @@ class DeployLifecycle extends EventEmitter<DeployLifecycleEventsMap> {
 		const deployment = this.#deployments.get(deploymentId);
 		if (!deployment) return;
 		this.#deployments.delete(deploymentId);
-		this.#releasedFromLoads.delete(deploymentId);
+		const wasReleased = this.#releasedFromLoads.delete(deploymentId);
 		const active = this.#byComponent.get(deployment.name);
 		if (!active) return;
 		active.delete(deploymentId);
-		if (active.size === 0) {
-			this.#byComponent.delete(deployment.name);
-			this.#emitSafely('deploy:end', deployment.name);
-		}
+		if (active.size === 0) this.#byComponent.delete(deployment.name);
+		if (!wasReleased && this.#unreleasedCount(deployment.name) === 0) this.#emitSafely('deploy:end', deployment.name);
 	}
 
 	#emitSafely(event: 'deploy:start' | 'deploy:end', componentName: string): void {

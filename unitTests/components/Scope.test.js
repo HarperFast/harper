@@ -604,7 +604,7 @@ describe('Scope', () => {
 
 		it('loads the installed tree when the deploy in flight was released from loads', async () => {
 			deployLifecycle._handle({ name: this.appName, phase: 'start', deploymentId: 'startup-left-behind' });
-			deployLifecycle.releaseLoads(this.appName);
+			deployLifecycle.releaseLoads(this.appName, 'startup-left-behind');
 			const scope = new Scope(
 				this.appName,
 				this.pluginName,
@@ -620,6 +620,31 @@ describe('Scope', () => {
 				assert.ok(entries.length > 0, 'the handler scans instead of pausing behind the released deploy');
 			} finally {
 				deployLifecycle._handle({ name: this.appName, phase: 'end', deploymentId: 'startup-left-behind' });
+				await scope.close();
+			}
+		});
+
+		it('resumes a scope paused behind a deploy when that deploy is released', async () => {
+			deployLifecycle._handle({ name: this.appName, phase: 'start', deploymentId: 'released-later' });
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope(this.appName, this.resources, this.server)
+			);
+			try {
+				const entries = [];
+				const entryHandler = scope.handleEntry({ files: 'test.js' }, (entry) => entries.push(entry));
+				const deployWait = scope.waitForDeployCompletion();
+				await waitFor(() => entryHandler._liveWatcherCountForTests === 0);
+
+				deployLifecycle.releaseLoads(this.appName, 'released-later');
+				await deployWait;
+				await entryHandler.ready;
+				assert.ok(entries.length > 0, 'releasing the deploy resumes the paused handler');
+			} finally {
+				deployLifecycle._handle({ name: this.appName, phase: 'end', deploymentId: 'released-later' });
 				await scope.close();
 			}
 		});
