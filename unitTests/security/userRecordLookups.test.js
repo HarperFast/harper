@@ -168,6 +168,17 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			assert.notStrictEqual(current.username, remembered.username, 'the demoted user is not returned');
 			assert.strictEqual(current.role.role, 'super_user');
 		});
+
+		it('treats a username over the LMDB key-size limit as unauthenticatable, not an internal fault', () => {
+			assert.strictEqual(user.getUserWithRole('x'.repeat(2000)), undefined);
+		});
+
+		it('lists other users when an unreferenced role written straight to hdb_role has no permission', async () => {
+			await testUtils.seedUsers([lookupUser()]);
+			await databases.system.hdb_role.put({ id: 'malformed_role', role: 'malformed_role' });
+			const listed = await user.listUsers();
+			assert.strictEqual(listed.get('lookup_user').role.id, 'lookup_role');
+		});
 	});
 
 	describe('isCurrentUser', () => {

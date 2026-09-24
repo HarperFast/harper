@@ -58,7 +58,6 @@ function loadItcHandlers(): ItcHandlers | undefined {
 	if (_itcHandlersOverride) return _itcHandlersOverride;
 	try {
 		const { schemaHandler, resourceHandler } = require('../../server/itc/serverHandlers');
-		// user and role changes arrive through hdb_user/hdb_role table subscriptions, not ITC
 		const { onUserChange } = require('../../security/user');
 		return { schemaHandler, resourceHandler, userHandler: { addListener: onUserChange } };
 	} catch (err) {

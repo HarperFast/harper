@@ -350,6 +350,11 @@ function appendSystemTablesToRole(userRole: UserRole) {
 		logger.error(`invalid user role found.`);
 		return;
 	}
+	if (!userRole.permission) {
+		// reachable only via a direct table write or a replicated write; the operations API requires permission
+		logger.error(`role ${userRole.role ?? userRole.id} has no permission; skipping system table permissions.`);
+		return;
+	}
 	if (!userRole.permission.system) {
 		userRole.permission.system = {
 			tables: {},
@@ -436,19 +441,27 @@ function isUnchanged(store, id, stamp: RecordStamp): boolean {
 	return holdsStamp(readEntry(store, id), stamp);
 }
 
+// LMDB rejects a key over this many bytes; a longer username is unauthenticatable, not an internal fault
+const MAX_USERNAME_KEY_BYTES = 1978;
+// A user/role pair recheck retries only while a write keeps landing between the two reads; this bounds
+// the retry against a sustained write storm on the same user, which would otherwise spin the event loop
+const MAX_USER_ENTRY_ATTEMPTS = 50;
+
 /** The user and its role as of one committed state. */
 function readUserEntries(username: string): UserEntries {
 	if ((typeof username !== 'string' && typeof username !== 'number') || username === '') return {};
+	if (typeof username === 'string' && Buffer.byteLength(username, 'utf8') > MAX_USERNAME_KEY_BYTES) return {};
 	const userStore = systemStore(USER_TABLE_NAME);
 	const roleStore = systemStore(ROLE_TABLE_NAME);
 	let user = readEntry(userStore, username);
-	while (true) {
+	for (let attempt = 0; attempt < MAX_USER_ENTRY_ATTEMPTS; attempt++) {
 		if (user?.value.role == null) return { user };
 		const role = readEntry(roleStore, user.value.role);
 		// RocksDB reads share no snapshot: a user unchanged since before its role was read held at that moment
 		if (isUnchanged(userStore, username, stampOf(user))) return { user, role };
 		user = readEntry(userStore, username);
 	}
+	return {};
 }
 
 // a memo, so clearing it only costs recomputation; bounds it under role churn
@@ -498,7 +511,6 @@ function userView(username: string, entries: UserEntries): User {
 	return user;
 }
 
-/** The current user with its role, or undefined when no such user exists. */
 function getUserWithRole(username: string): User | undefined {
 	const entries = readUserEntries(username);
 	return entries.user && userView(username, entries);
