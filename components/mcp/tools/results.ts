@@ -4,16 +4,12 @@ const OPEN_BRACE = 0x7b; /* { */
 const OPEN_BRACKET = 0x5b; /* [ */
 
 function serialize(data: unknown): string {
-	// `JSON.stringify` yields undefined for a payload it cannot represent; a content frame
+	// `JSON.stringify` returns undefined for a payload it cannot represent, and a content frame
 	// without `text` is not a valid MCP result.
 	return typeof data === 'string' ? data : (JSON.stringify(data ?? null) ?? 'null');
 }
 
-/**
- * Whether a payload reaches the wire as a JSON array — the question callers must ask, since a
- * `toJSON` can turn an object into one and an array into something else. Only a value carrying
- * `toJSON` is serialized to decide, so the ordinary paths cost one `typeof`.
- */
+/** Whether the payload reaches the wire as a JSON array: `toJSON` can turn either into the other. */
 export function serializesToArray(data: unknown): boolean {
 	if (data === null || typeof data !== 'object') return false;
 	const hasToJson = typeof (data as { toJSON?: unknown }).toJSON === 'function';
@@ -22,10 +18,8 @@ export function serializesToArray(data: unknown): boolean {
 }
 
 /**
- * MCP requires `structuredContent` to be a JSON object, and the reference client rejects the
- * whole call otherwise. Arrays are therefore wrapped; a value with no object form gets no
- * `structuredContent`, since the field is optional where a non-object is illegal. Decided on
- * the serialized form because that is what goes on the wire.
+ * MCP requires `structuredContent` to be a JSON object and the reference client rejects the whole
+ * call otherwise, so an array is wrapped and a non-object form omits the field, which is optional.
  */
 function toStructuredContent(data: unknown, serialized: string): Record<string, unknown> | undefined {
 	if (data === null || typeof data !== 'object') return undefined;
