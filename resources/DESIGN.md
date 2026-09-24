@@ -806,8 +806,7 @@ itself down — audit-cleanup stop, storage-reclamation unregistration, env-cach
 table handles are never closed individually: `mdb_dbi_close` invalidates the environment-wide slot
 for every wrapper of it and is optional by LMDB's contract, so closing one alias while another still
 holds a handle into the same environment is a use-after-free once the environment itself closes
-(`mdb_env_close` frees it) — the segfault harper#2721 traced on the Node.js v22/v26 unit legs,
-allocator-dependent and reproducible with `MALLOC_PERTURB_=165`.
+(`mdb_env_close` frees it), allocator-state dependent (harper#2721).
 
 `closeDatabaseWithAliases(name)` (`:2292`) is the **physical** close: every loaded name sharing a
 root store with `name`, waited on the derived-index runtime of every affected table to stop first

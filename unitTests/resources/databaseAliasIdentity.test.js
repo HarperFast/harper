@@ -7,6 +7,7 @@ const { mkdirSync } = require('node:fs');
 const { join } = require('node:path');
 const { registryStatus } = require('@harperfast/rocksdb-js');
 const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 const { dropSchema } = require('#src/dataLayer/schema');
@@ -53,8 +54,7 @@ async function createPhysicalStore(storageRoot, databaseName, tableName) {
 }
 
 async function waitForClosed(rootStore) {
-	for (let i = 0; rootStore.status !== 'closed' && i < 100; i++) await new Promise((r) => setTimeout(r, 10));
-	assert.strictEqual(rootStore.status, 'closed');
+	await waitFor(() => rootStore.status === 'closed', { message: 'root store never reached status closed' });
 }
 
 function assertNoOpenHandles(rootStore) {
