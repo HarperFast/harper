@@ -597,6 +597,7 @@ export const CONFIG_PARAMS = {
 	OPERATIONSAPI_COMPONENTFILE_MAXSIZE: 'operationsApi_componentFile_maxSize',
 	DEPLOYMENT_PAYLOADRETENTION_MAXSIZE: 'deployment_payloadRetention_maxSize',
 	DEPLOYMENT_STAGINGRETENTION_MAXCOUNT: 'deployment_stagingRetention_maxCount',
+	DEPLOYMENT_STARTUPINSTALLTIMEOUT: 'deployment_startupInstallTimeout',
 	OPERATIONSAPI_TLS: 'operationsApi_tls',
 	OPERATIONSAPI_TLS_CERTIFICATE: 'operationsApi_tls_certificate',
 	OPERATIONSAPI_TLS_PRIVATEKEY: 'operationsApi_tls_privateKey',
