@@ -108,6 +108,7 @@ import * as terms from '../utility/hdbTerms.ts';
 import { expandOperationsPerms } from '../utility/operationPermissions.ts';
 import { activeSuperUserRemains } from './superUserGuard.ts';
 import { credentialRejectionError } from './credentialRejection.ts';
+import { coalesceRefresh } from '../utility/coalesceRefresh.ts';
 
 server.getUser = (username: string, password?: string | null): Promise<User> => {
 	return findAndValidateUser(username, password, password != null);
@@ -386,9 +387,15 @@ function cacheExpandedOperationsPerms(userRole: UserRole) {
 	userRole.permission._expandedOperations = expandOperationsPerms(userRole.permission.operations);
 }
 
+// Every user-change signal refreshes this on every thread; a burst of signals must not become a burst of
+// full hdb_role + hdb_user scans.
+const refreshUsersWithRolesCache = coalesceRefresh(async () => {
+	usersWithRolesMap = await listUsers();
+});
+
 async function setUsersWithRolesCache(cache = undefined) {
 	if (cache) usersWithRolesMap = cache;
-	else usersWithRolesMap = await listUsers();
+	else await refreshUsersWithRolesCache();
 }
 
 async function getUsersWithRolesCache() {

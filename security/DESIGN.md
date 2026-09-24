@@ -173,3 +173,7 @@ Two consequences that are easy to miss:
   `settleDeferredCredentialRejection` _before_ they read `request.user`, so once a credential is deferred,
   resolving a principal from a different credential is a contradiction. Hence a rejected certificate
   identity stops resolution outright instead of falling through to Basic, the session, or the local bypass.
+
+## User-cache refreshes are coalesced per thread and never join a scan already running (`security/user.ts`)
+
+Every user-change signal runs `setUsersWithRolesCache()` on every thread, and each run is a full `hdb_role` + `hdb_user` scan holding a read snapshot. `coalesceRefresh` (`utility/coalesceRefresh.ts`) keeps one scan in flight per thread and runs a single trailing scan for all calls that arrive meanwhile. A caller must not join the running scan: it may have read before the caller's own write, and `addUser`/`alterUser`/`dropUser` and revocation rely on the cache holding their write once the await returns. One scan at a time also stops an older scan from finishing last and installing a stale cache. Enforced by `unitTests/utility/coalesceRefresh.test.js` and `unitTests/security/usersWithRolesCacheRefresh.test.js`.
