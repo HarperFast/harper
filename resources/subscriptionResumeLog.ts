@@ -157,7 +157,7 @@ export async function openSubscriptionResumeLog(
 		iterator = undefined;
 		return reader;
 	} finally {
-		iterator?.return?.();
 		scanning.delete(store.rootStore);
+		iterator?.return?.();
 	}
 }

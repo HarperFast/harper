@@ -217,6 +217,34 @@ describe('compact subscription resume over real physical logs', () => {
 		assert.strictEqual([...(await open(store, saved))].length, 1100);
 	});
 
+	it('releases admission even when closing a validation iterator throws', async () => {
+		const store = database();
+		await append(store, 'local', 100);
+		const saved = checkpoint([['a', 100]]);
+		const getRange = store.getRange;
+		store.getRange = function (options) {
+			const range = getRange.call(this, options);
+			const createIterator = range[Symbol.iterator];
+			range[Symbol.iterator] = function () {
+				const iterator = createIterator.call(this);
+				return {
+					next: () => iterator.next(),
+					return() {
+						iterator.return?.();
+						throw new Error('injected close failure');
+					},
+				};
+			};
+			return range;
+		};
+		try {
+			await assert.rejects(open(store, saved), /injected close failure/);
+		} finally {
+			store.getRange = getRange;
+		}
+		assert.strictEqual([...(await open(store, saved))].length, 1);
+	});
+
 	it('rejects a surviving in-window anchor when an earlier physical prefix was pruned', async () => {
 		const store = database({ transactionLogMaxSize: 128 });
 		for (const timestamp of [100, 20, 98]) {
