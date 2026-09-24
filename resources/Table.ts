@@ -105,6 +105,8 @@ type MaybePromise<T> = T | Promise<T>;
 
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
+const sourceWriteTypes = new Set(['put', 'patch', 'delete', 'publish', 'message', 'invalidate', 'relocate']);
+const USER_ROLE_WRITE = Symbol('userRoleWrite');
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
 // RocksDB-only: number of eviction/tombstone removals coalesced into a single transaction commit.
@@ -380,18 +382,14 @@ export function makeTable(options) {
 			// as they come in, and directly writing them to this table. We use the notification option to ensure
 			// that we don't re-broadcast these as "requested" changes back to the source.
 			(async () => {
-				let userRoleUpdate = false;
 				let lastSequenceId;
+				// A failed commit is reported by the apply loop, which awaits it
+				const signalUserChangeOnCommit = (committed: Promise<unknown>) =>
+					committed.then(() => signalling.signalUserChange(new UserEventMsg(process.pid)), noop);
 				// perform the write of an individual write event
 				const writeUpdate = async (event, context) => {
 					const value = event.value;
 					const Table = event.table ? databases[databaseName][event.table] : TableResource;
-					if (
-						databaseName === SYSTEM_SCHEMA_NAME &&
-						(event.table === SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME || event.table === SYSTEM_TABLE_NAMES.USER_TABLE_NAME)
-					) {
-						userRoleUpdate = true;
-					}
 					if (event.id === undefined) {
 						event.id = value[Table.primaryKey];
 						if (event.id === undefined) throw new Error('Replication message without an id ' + JSON.stringify(event));
@@ -412,6 +410,18 @@ export function makeTable(options) {
 						async: true,
 					};
 					const id = event.id;
+					// Marked before any await, so a transaction's first write is seen where transaction() returns
+					if (
+						sourceWriteTypes.has(event.type) &&
+						databaseName === SYSTEM_SCHEMA_NAME &&
+						(event.table === SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME ||
+							event.table === SYSTEM_TABLE_NAMES.USER_TABLE_NAME) &&
+						!context[USER_ROLE_WRITE]
+					) {
+						context[USER_ROLE_WRITE] = true;
+						// a later write into an open begin_txn, whose commit is already assigned
+						if (context.committed) signalUserChangeOnCommit(context.committed);
+					}
 					const resource: TableResource = await Table.getResource(id, context, options);
 					if (event.finished) await event.finished;
 					switch (event.type) {
@@ -638,11 +648,7 @@ export function makeTable(options) {
 									}
 								});
 								if (txnInProgress) txnInProgress.committed = commitResolution;
-								if (userRoleUpdate && commitResolution && !(commitResolution as any).waitingForUserChange) {
-									// if the user role changed, asynchronously signal the user change (but don't block this function)
-									commitResolution.then(() => signalling.signalUserChange(new UserEventMsg(process.pid)));
-									(commitResolution as any).waitingForUserChange = true; // only need to send one signal per transaction
-								}
+								if (commitResolution && event[USER_ROLE_WRITE]) signalUserChangeOnCommit(commitResolution);
 
 								if (event.onCommit) {
 									if (txnInProgress) {
