@@ -128,13 +128,13 @@ describe('replicated apply failure listeners', function () {
 		};
 	}
 
-	for (const boundary of ['beginTxn', 'end_txn', 'standalone', 'standalone with onCommit']) {
+	for (const boundary of ['beginTxn', 'beginTxn with onCommit', 'end_txn', 'standalone', 'standalone with onCommit']) {
 		it(`awaits every listener after a ${boundary} commit rejection before staging the next write`, async () => {
 			const { Table, pulls, start } = fixture();
 			const failed = put('failed', { localTime: 123, version: 456, viaNodeId: 99, remoteNodeIds: [99] });
-			if (boundary === 'beginTxn' || boundary === 'end_txn') failed.beginTxn = true;
+			if (boundary.startsWith('beginTxn') || boundary === 'end_txn') failed.beginTxn = true;
 			let onCommitCalls = 0;
-			if (boundary === 'standalone with onCommit') failed.onCommit = () => onCommitCalls++;
+			if (boundary.endsWith('with onCommit')) failed.onCommit = () => onCommitCalls++;
 			const fault = commitFailure(failed, Table);
 			const error = new Error(`terminal ${boundary} commit failure`);
 			const firstGate = deferred();
@@ -165,6 +165,9 @@ describe('replicated apply failure listeners', function () {
 			const events = [failed];
 			if (boundary === 'end_txn') events.push({ type: 'end_txn', timestamp: failed.timestamp + 2 });
 			events.push(next, end);
+			const unhandled = [];
+			const onUnhandled = (reason) => unhandled.push(reason);
+			process.on('unhandledRejection', onUnhandled);
 			try {
 				start(events);
 				await fault.reject(error);
@@ -190,7 +193,10 @@ describe('replicated apply failure listeners', function () {
 				await waitFor(() => Table.dbisDB.getSync([Symbol.for('seq'), 99])?.seqId === end.localTime, {
 					message: 'the later cursor advances only after the hole was reported',
 				});
+				await new Promise(setImmediate);
+				assert.deepStrictEqual(unhandled, [], 'the reported commit failure must not also escape as unhandled');
 			} finally {
+				process.off('unhandledRejection', onUnhandled);
 				fault.resolve();
 				firstGate.resolve();
 				secondGate.resolve();

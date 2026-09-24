@@ -85,7 +85,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			// do not record transaction entries on retry
 			return;
 		}
-		const log = this.logById(options.nodeId) ?? this.logById(options.viaNodeId) ?? this.log;
+		const log = this.logFor(options.nodeId, options.viaNodeId);
 		let entryBinary: Uint8Array;
 		if (auditRecord instanceof Uint8Array) entryBinary = auditRecord;
 		else {
@@ -166,6 +166,15 @@ export class RocksTransactionLogStore extends EventEmitter {
 
 	logById(nodeId: number) {
 		return nodeId > -1 ? (this.nodeLogs?.[nodeId] ?? this.loadLogs()[nodeId]) : undefined;
+	}
+
+	/**
+	 * The log that a write from origin `nodeId`, received via `viaNodeId`, is recorded in. One RocksDB transaction can
+	 * append to only one log, so a source transaction whose writes resolve to different logs must be applied as one
+	 * transaction per log (harper#1162).
+	 */
+	logFor(nodeId: number | undefined, viaNodeId: number | undefined): TransactionLog {
+		return this.logById(nodeId) ?? this.logById(viaNodeId) ?? this.log;
 	}
 
 	putSync(suggestedKey: any, value: any, options: any) {

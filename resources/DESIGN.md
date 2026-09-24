@@ -543,6 +543,10 @@ When the key already holds no record because this same write — origin node plu
 
 Without this, every re-delivery appended another entry under the origin's log key; in a mesh each appended copy is new log tail every peer forwards and re-logs in turn. A delete that follows another write to the key in its transaction still applies — it is not a tie with its own removal. LMDB keys its log by local time, so a stored tombstone there carries no origin log key and only copies within one transaction collapse. Pinned by `../unitTests/resources/replicatedDeleteRedelivery.test.js`.
 
+## A replicated source transaction commits as one apply transaction per transaction log (`Table.sourcedFrom`, harper#1162)
+
+A RocksDB transaction can append to only one `TransactionLog`, and `RocksTransactionLogStore.logFor()` routes each write by origin, then via node, then `local`. A replicated frame can carry records that resolve to several logs: a relay without an origin's log files that origin's records under the via node's log, and this node's log set can differ from the sender's (a store left behind by a removed node). So the apply loop keeps the frame's first transaction for its own log and opens one side transaction per other log on first use (`transactionFor`), then commits them in that order at the frame's close (`commitSourceTransaction`), releasing every part even after one fails and failing the close if any did. One transaction per log, never one per run: an A,B,A frame written as three transactions would put two under the frame's log key in log A, which an exact resume reports as `duplicate` and the derived-index runner turns into a rebuild. All of one origin's records share a node id and via node, so no origin transaction is ever split. Copy snapshots write no audit entry and stay in the first transaction. Pinned by `../unitTests/resources/replicatedApplyOriginLogs.test.js`.
+
 ## A second sequential save() on the same ImmediateTransaction context must chain on `operation.innerCommit`
 
 Two `update()`+`save()` cycles on the _same resource instance_, outside an explicit `transaction()`,

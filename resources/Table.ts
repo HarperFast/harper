@@ -1224,6 +1224,55 @@ export function makeTable(options) {
 					return staged;
 				};
 
+				/**
+				 * The apply transaction for a write inside source transaction `txn`. One RocksDB transaction appends to
+				 * one transaction log, so a write that resolves to another origin's log goes to a side transaction for
+				 * that log, committed with `txn`. One per log, not one per run, so no log gets a second transaction
+				 * under the frame's log key (harper#1162).
+				 */
+				const transactionFor = (event, txn) => {
+					// copy snapshots write no audit entry, and LMDB has a single log
+					if (!isRocksDB || event.isCopyApply) return txn;
+					if (event.nodeId === txn.nodeId && event.viaNodeId === txn.viaNodeId) return txn;
+					const log = auditStore.logFor(event.nodeId, event.viaNodeId);
+					if (log === (txn.transactionLog ??= auditStore.logFor(txn.nodeId, txn.viaNodeId))) return txn;
+					let side = txn.sideTransactions?.get(log);
+					if (!side) {
+						side = event;
+						side.writePromises = [];
+						let release;
+						side.committed = transaction(side, () => new Promise((resolve) => (release = resolve)));
+						side.resolve = () => release(Promise.all(side.writePromises));
+						(txn.sideTransactions ??= new Map()).set(log, side);
+					}
+					return side;
+				};
+
+				/** Commits a source transaction and then its side transactions; fails if any of them fails. */
+				const commitSourceTransaction = async (txn) => {
+					let failure: { error: unknown } | undefined;
+					for (const part of [txn, ...(txn.sideTransactions?.values() ?? [])]) {
+						// every part is released, even after a failure, so none is left open holding a snapshot
+						part.resolve();
+						try {
+							await part.committed;
+						} catch (error) {
+							failure ??= { error };
+						}
+					}
+					if (failure) throw failure.error;
+					return txn.committed;
+				};
+
+				const signalUserChangeOnCommit = (commitResolution) => {
+					if (!userRoleUpdate || !commitResolution || commitResolution.waitingForUserChange) return;
+					commitResolution.waitingForUserChange = true; // only need to send one signal per transaction
+					// a failed commit is reported where the loop awaits it
+					commitResolution
+						.then(() => signalling.signalUserChange(new UserEventMsg(process.pid)), noop)
+						.catch((error) => logger.error?.('failed to signal a replicated user change', error));
+				};
+
 				try {
 					const hasSubscribe = source.subscribe;
 					// if subscriptions come in out-of-order, we need to track deletes to ensure consistency
@@ -1285,7 +1334,6 @@ export function makeTable(options) {
 										failureEvent = committingTxn;
 										failurePosition = committingTxn[SOURCE_APPLY_POSITION];
 									}
-									committingTxn?.resolve();
 									let updateRecordedSequenceId: () => MaybePromise<void>;
 									if (event.localTime && lastSequenceId !== event.localTime) {
 										if (event.remoteNodeIds?.length > 0) {
@@ -1364,7 +1412,6 @@ export function makeTable(options) {
 												}
 												return dbisDb.put(seqKey, seqRecord);
 											};
-											lastSequenceId = event.localTime;
 										}
 									}
 									// Backpressure: wait for the transaction's commit to land before recording the sequence
@@ -1373,7 +1420,7 @@ export function makeTable(options) {
 									// advances past an uncommitted write (which would diverge this node from its peers).
 									let committed;
 									try {
-										committed = committingTxn ? await committingTxn.committed : undefined;
+										committed = committingTxn ? await commitSourceTransaction(committingTxn) : undefined;
 										applied = true;
 										if (event.onCommit) {
 											// the onCommit callback can be async and carry associated work (e.g. blob
@@ -1388,8 +1435,12 @@ export function makeTable(options) {
 										txnInProgress = undefined;
 									}
 									// Only reached when the commit succeeded; a failure propagates to the handler's catch
-									// and the sequence id is intentionally not advanced past the unapplied write.
-									if (updateRecordedSequenceId) await updateRecordedSequenceId();
+									// and the sequence id is intentionally not advanced past the unapplied write. Remembered
+									// only once recorded, so a re-delivery of a failed transaction still records it.
+									if (updateRecordedSequenceId) {
+										await updateRecordedSequenceId();
+										lastSequenceId = event.localTime;
+									}
 									continue;
 								}
 								if (txnInProgress) {
@@ -1399,9 +1450,8 @@ export function makeTable(options) {
 										// one), this is the backpressure point for all but the last transaction: wait for
 										// the prior commit to land before applying the next so the sequence id can't
 										// advance past an uncommitted write.
-										txnInProgress.resolve();
 										try {
-											await txnInProgress.committed;
+											await commitSourceTransaction(txnInProgress);
 										} catch (error) {
 											// Transient conflicts retry without limit and never reach here, so this is a
 											// non-retryable commit failure on the prior transaction. Log and continue (rather
@@ -1421,8 +1471,10 @@ export function makeTable(options) {
 											txnInProgress = undefined;
 										}
 									} else {
-										// write in the current transaction if one is in progress
-										txnInProgress.writePromises.push(stageWrite(event, txnInProgress));
+										// write in the current source transaction if one is in progress
+										const target = transactionFor(event, txnInProgress);
+										target.writePromises.push(stageWrite(event, target));
+										signalUserChangeOnCommit(target.committed);
 										continue;
 									}
 								}
@@ -1484,17 +1536,16 @@ export function makeTable(options) {
 									}
 								});
 								if (txnInProgress) txnInProgress.committed = commitResolution;
-								if (userRoleUpdate && commitResolution && !(commitResolution as any).waitingForUserChange) {
-									// if the user role changed, asynchronously signal the user change (but don't block this function)
-									commitResolution.then(() => signalling.signalUserChange(new UserEventMsg(process.pid)));
-									(commitResolution as any).waitingForUserChange = true; // only need to send one signal per transaction
-								}
+								signalUserChangeOnCommit(commitResolution);
 
 								if (event.onCommit) {
 									if (txnInProgress) {
 										// begin_txn: commitResolution stays pending until the matching end_txn, so it
 										// can't be awaited here; onCommit is awaited at end_txn once the commit lands.
-										if (commitResolution) commitResolution.then(event.onCommit);
+										if (commitResolution)
+											commitResolution
+												.then(event.onCommit, noop) // a failed commit is reported where end_txn awaits it
+												.catch((error) => logger.error?.('error in subscription handler', error));
 										else event.onCommit();
 									} else {
 										// standalone write: backpressure on the commit before pulling the next event,
