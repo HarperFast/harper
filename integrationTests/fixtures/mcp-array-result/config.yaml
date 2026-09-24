@@ -1,0 +1,12 @@
+# Fixture for the MCP application profile's outputSchema contract (#2754 review):
+# a generated verb tool advertises an object outputSchema, so a handler that
+# resolves to an array must be reported as a contract error rather than shipped
+# as `{ results: [...] }` — which is a legal CallToolResult but fails the schema
+# the same client just cached from `tools/list`.
+graphqlSchema:
+  files: '*.graphql'
+jsResource:
+  files: resources.js
+rest: true
+databases:
+  - name: data
