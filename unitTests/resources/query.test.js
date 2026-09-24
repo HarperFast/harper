@@ -1009,11 +1009,10 @@ describe('Querying through Resource API', () => {
 			});
 
 			it('matches a joined condition against the local `from` value after switching to an id set', async function () {
-				// with five north teams driving, the join filters each team and, on its first miss (a bench
-				// player), switches to the set of erin `teamCode` values checked against each team's `from`
+				// the id set is only tried by a join filtering more than 3 driving records, after a miss (a bench player)
 				const north = [{ attribute: 'league', value: 'north' }];
 				const explanation = Team.search({
-					conditions: [...north, { attribute: ['players', 'name'], value: 'erin' }],
+					conditions: [{ attribute: ['players', 'name'], value: 'erin' }, ...north],
 					explain: true,
 				});
 				assert.equal(explanation.conditions[0].attribute, 'league');
