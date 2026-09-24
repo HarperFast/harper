@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const path = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
-const { closeDatabase, database: openDatabase, dropDatabase, table } = require('#src/resources/databases');
+const { closeDatabase, database: openDatabase, databases, dropDatabase, table } = require('#src/resources/databases');
 const { acquireUpdateAttributesLock, releaseUpdateAttributesLock } = require('#src/resources/Table');
 const { publishDerivedIndexReadiness } = require('#src/resources/derivedIndexRuntime');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -719,6 +719,40 @@ describe('@fullText derived-index activation', () => {
 		assert.strictEqual(binding.opens.length, 0);
 	});
 
+	rocksOnly('keeps eviction auditing registered when a native writer fails to close', async () => {
+		Product = table({
+			database: `fulltext-close-failure-audit-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'tags', type: 'array', elements: { type: 'String' } },
+			],
+			fullTextIndexes: [definition()],
+		});
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+		const runtime = Product.derivedIndexRuntime;
+		Product.derivedIndexRuntime = undefined;
+		binding.closeError = new Error('writer did not quiesce');
+
+		await assert.rejects(runtime.close(), /shutdown failed|did not prove quiescence/);
+		assert.strictEqual(hasDerivedIndexRegistration(Product.auditStore, Product.tableId), true);
+		await Product.put('shoe-1', { title: 'Trail shoe', tags: ['trail'] });
+		const entry = Product.primaryStore.getEntry('shoe-1');
+		await Product.evict('shoe-1', entry.value, entry.version);
+		assert(
+			[...Product.auditStore.getRange({ start: 1 })].some(
+				(record) => record.type === 'evict' && record.recordId === 'shoe-1'
+			),
+			'evictions must remain recoverable while a failed writer still owns native storage'
+		);
+
+		binding.closeError = undefined;
+		await runtime.close();
+		assert.strictEqual(hasDerivedIndexRegistration(Product.auditStore, Product.tableId), false);
+	});
+
 	rocksOnly('keeps eviction auditing registered until a pending drop is durable', async () => {
 		let finishRuntimeInfo;
 		let markRuntimeInfoStarted;
@@ -984,6 +1018,12 @@ describe('@fullText derived-index activation', () => {
 		const runtime = Product.derivedIndexRuntime;
 		Product.derivedIndexRuntime = undefined;
 		await runtime.close();
+		Product.fullTextIndexes.splice(0);
+		Product.attributes.splice(
+			0,
+			Product.attributes.length,
+			...Product.attributes.filter(({ name }) => name !== 'title' && name !== 'tags')
+		);
 
 		await Product.dropTable();
 
@@ -1047,6 +1087,48 @@ describe('@fullText derived-index activation', () => {
 		assert.throws(() => table(tableOptions()), /previous full-text storage is being retired/);
 		finishReset();
 		await dropping;
+
+		Product = table(tableOptions());
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+	});
+
+	rocksOnly('retires native storage before completing an interrupted drop', async () => {
+		const database = `fulltext-interrupted-drop-${Date.now()}`;
+		const tableOptions = () => ({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'tags', type: 'array', elements: { type: 'String' } },
+			],
+			fullTextIndexes: [definition()],
+		});
+		Product = table(tableOptions());
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+		const runtime = Product.derivedIndexRuntime;
+		Product.derivedIndexRuntime = undefined;
+		await runtime.close();
+		const rootStore = Product.primaryStore.rootStore;
+		const primaryKey = `${Product.tableName}/`;
+		const descriptor = Product.dbisDB.getSync(primaryKey);
+		Product.dbisDB.putSync(primaryKey, {
+			...descriptor,
+			dropping: true,
+			dropGeneration: descriptor.generation,
+		});
+		delete databases[database].Product;
+		let finishReset;
+		binding.resetWait = new Promise((resolve) => {
+			finishReset = resolve;
+		});
+
+		assert.throws(() => table(tableOptions()), /interrupted full-text drop is being retired/);
+		assert(Product.dbisDB.getSync(primaryKey)?.dropping, 'the tombstone must remain until native retirement settles');
+		finishReset();
+		await waitFor(() => Product.dbisDB.getSync(primaryKey) === undefined, 30_000);
+		assert.strictEqual(fullTextRetirementInProgress(rootStore, 'Product'), false);
 
 		Product = table(tableOptions());
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);

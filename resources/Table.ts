@@ -163,8 +163,11 @@ import { RocksDatabase, Transaction as RocksTransaction } from '@harperfast/rock
 import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction';
 import { contentTypes } from '../server/serverHelpers/contentTypes';
 import { type JsonSchemaFragment, projectAttributesToProperties } from './jsonSchemaTypes.ts';
-import { type FullTextDefinition, type FullTextIndexGenerations } from './fullTextSchema.ts';
-import { readPersistedFullTextDefinitions } from './fullTextSchemaLifecycle.ts';
+import {
+	persistedFullTextIndexNames,
+	type FullTextDefinition,
+	type FullTextIndexGenerations,
+} from './fullTextSchema.ts';
 
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
@@ -361,7 +364,7 @@ export function withUpdateAttributesLock<Callback extends () => unknown>(
 	return runWithUpdateAttributesLock(rootStore, scopeDescription, callback);
 }
 
-function withUpdateAttributesLockNonBlocking<Callback extends () => unknown>(
+export function withUpdateAttributesLockNonBlocking<Callback extends () => unknown>(
 	rootStore: RocksDatabase,
 	scopeDescription: string,
 	callback: Callback & (ReturnType<Callback> extends PromiseLike<unknown> ? never : unknown)
@@ -1040,7 +1043,7 @@ export function makeTable(options) {
 					fullTextDefinitions?(): readonly FullTextDefinition[];
 					matchesCurrent?(): boolean;
 					restoreAfterFailedDrop?(): typeof TableResource.derivedIndexRuntime;
-					retireAfterConfirmedDrop?(definitions?: readonly FullTextDefinition[]): Promise<void>;
+					retireAfterConfirmedDrop?(definitions?: readonly Pick<FullTextDefinition, 'name'>[]): Promise<boolean>;
 					completeDrop?(dropped?: boolean): void;
 			  }
 			| undefined;
@@ -2130,7 +2133,9 @@ export function makeTable(options) {
 				TableResource.cleanup();
 				if (databases[databaseName]?.[tableName] === TableResource) delete databases[databaseName][tableName];
 			};
-			let fullTextDefinitionsForRetirement = [...TableResource.fullTextIndexes];
+			let fullTextDefinitionsForRetirement: Array<Pick<FullTextDefinition, 'name'>> = [
+				...TableResource.fullTextIndexes,
+			];
 			let dropIdentityConfirmed = databaseName !== databasePath;
 			let primaryCatalogKey = TableResource.tableName + '/';
 			let storeGeneration: string | undefined;
@@ -2163,7 +2168,7 @@ export function makeTable(options) {
 					storeGeneration = primaryMeta.generation;
 					const durableFullTextDefinitions =
 						rootStore instanceof RocksDatabase
-							? readPersistedFullTextDefinitions(primaryMeta.fullTextIndexes, attributes, () => {})
+							? persistedFullTextIndexNames(primaryMeta.fullTextIndexes).map((name) => ({ name }))
 							: [];
 					const attachedFullTextDefinitions = derivedIndexRuntime?.fullTextDefinitions?.() ?? [];
 					const definitionsByName = new Map(
@@ -7255,14 +7260,10 @@ export function makeTable(options) {
 				const primaryDescriptor = namedPrimaryDescriptor?.isPrimaryKey
 					? namedPrimaryDescriptor
 					: (dbisDb as any).getSync(`${tableName}/`);
-				const durableDefinitions = readPersistedFullTextDefinitions(
-					primaryDescriptor?.fullTextIndexes,
-					attributes,
-					() => {}
-				);
 				if (
 					TableResource.fullTextIndexes.length > 0 ||
-					(rootStore instanceof RocksDatabase && durableDefinitions.length > 0)
+					(rootStore instanceof RocksDatabase &&
+						persistedFullTextIndexNames(primaryDescriptor?.fullTextIndexes).length > 0)
 				)
 					throw new ClientError(
 						`Table.clear() is not supported on full-text table '${databaseName}.${tableName}' until whole-table invalidation is crash-safe`,

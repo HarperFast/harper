@@ -25,6 +25,7 @@ import {
 	acquireUpdateAttributesLock,
 	releaseUpdateAttributesLock,
 	tryUpdateAttributesLock,
+	withUpdateAttributesLockNonBlocking,
 } from './Table.ts';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
 import {
@@ -71,15 +72,21 @@ import { replayLogs } from './replayLogs.ts';
 import {
 	assertFullTextActivationSupported,
 	refreshDerivedIndexes,
+	retireFullTextIndexes,
 	suspendDerivedIndexActivation,
 } from './derivedIndexes.ts';
-import { fullTextClearInProgress, fullTextRetirementInProgress } from './derivedIndexRegistry.ts';
+import {
+	acquireFullTextRetirementFence,
+	fullTextClearInProgress,
+	fullTextRetirementInProgress,
+} from './derivedIndexRegistry.ts';
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
 import {
 	compileFullTextDefinitions,
+	persistedFullTextIndexNames,
 	reconcileFullTextIndexGenerations,
 	type FullTextDefinition,
 	type FullTextIndexGenerations,
@@ -1248,14 +1255,14 @@ function initStores(
 		}
 		if (failedAttempts < MAX_INTERRUPTED_DROP_ATTEMPTS) {
 			try {
-				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+				const completed = completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
 				// Sweep every generation this worker has ever tracked for this table, not
 				// just the one just resolved: if a prior generation was exhausted here,
 				// then resolved+recreated+re-dropped by another worker as this generation
 				// without this worker ever observing a live row in between (the only other
 				// place that sweeps), the prior generation's entry would otherwise never
 				// be cleared.
-				clearInterruptedDropEntries(path, tableName);
+				if (completed) clearInterruptedDropEntries(path, tableName);
 				definedTables?.delete(tableName);
 			} catch (error) {
 				const attempt = failedAttempts + 1;
@@ -3308,7 +3315,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// create below starts from a clean slate; treating the tombstoned
 				// entry as an existing table would recurse forever on the stale
 				// catalog row.
-				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+				if (!completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName))
+					throw new ClientError(
+						`Cannot create '${databaseName}.${tableName}' while its interrupted full-text drop is being retired`,
+						409
+					);
 				// This resolves the drop without ever going through the schema-load
 				// reconcile below, which is the only other place that returns a spent
 				// budget. Without clearing it here too, a table that gets dropped again
@@ -4730,7 +4741,13 @@ function scheduleGenerationReclaim(rootStore: RocksDatabase, attributesDbi, data
 }
 
 /** Finishes the durable logical state of a drop that stopped after writing its tombstone. */
-function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string, tableName: string) {
+function completeInterruptedDrop(
+	rootStore,
+	attributesDbi,
+	databaseName: string,
+	tableName: string,
+	fullTextRetired = false
+): boolean {
 	logger.debug(`Completing interrupted drop of table ${databaseName}.${tableName}`);
 	const catalogRows = [...attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })] as Array<{
 		key: string;
@@ -4740,6 +4757,33 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 	const primaryEntry =
 		(bareEntry?.value?.isPrimaryKey ? bareEntry : undefined) ?? catalogRows.find(({ value }) => value?.isPrimaryKey);
 	const tombstoneEntry = bareEntry ?? primaryEntry;
+	if (rootStore instanceof RocksDatabase && !fullTextRetired) {
+		const names = persistedFullTextIndexNames(primaryEntry?.value?.fullTextIndexes);
+		if (names.length > 0) {
+			const releaseRetirement = acquireFullTextRetirementFence(rootStore, tableName);
+			if (releaseRetirement) {
+				void (async () => {
+					try {
+						const retired = await retireFullTextIndexes(
+							{ databaseName, tableName, primaryStore: { rootStore } },
+							names.map((name) => ({ name }))
+						);
+						if (!retired || rootStore.status === 'closed') return;
+						await withUpdateAttributesLockNonBlocking(
+							rootStore,
+							`complete interrupted drop of '${databaseName}.${tableName}'`,
+							() => completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName, true)
+						);
+					} catch (error) {
+						logger.warn(`Could not retire full-text storage for interrupted drop ${databaseName}.${tableName}`, error);
+					} finally {
+						releaseRetirement();
+					}
+				})();
+			}
+			return false;
+		}
+	}
 	if (rootStore instanceof RocksDatabase) {
 		const tombstone = tombstoneEntry?.value;
 		const generation = tombstone?.generation ?? primaryEntry?.value?.generation;
@@ -4790,6 +4834,7 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 		(attributesDbi as any).removeSync(key);
 	}
 	if (tombstoneEntry) (attributesDbi as any).removeSync(tombstoneEntry.key);
+	return true;
 }
 
 export function dropTableMeta({ table: tableName, database: databaseName }) {

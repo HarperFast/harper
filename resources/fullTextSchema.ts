@@ -54,6 +54,18 @@ export type FullTextStorageDefinition = Pick<
 
 export type FullTextIndexGenerations = Record<string, string>;
 
+/** Names are enough to locate native storage even when source attributes are missing or stale. */
+export function persistedFullTextIndexNames(values: unknown): string[] {
+	if (!Array.isArray(values)) return [];
+	const names = new Set<string>();
+	for (const value of values) {
+		if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+		const name = (value as { name?: unknown }).name;
+		if (typeof name === 'string' && name.length > 0) names.add(name);
+	}
+	return [...names].sort();
+}
+
 export function fullTextStorageDefinition(definition: FullTextDefinition): FullTextStorageDefinition {
 	return {
 		fields: definition.fields.map(({ name, weight }) => ({ name, weight })),

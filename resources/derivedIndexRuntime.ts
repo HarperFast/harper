@@ -2257,10 +2257,19 @@ export function publishDerivedIndexUnavailableIfUnknown(
 	const { words, epoch } = getReadinessViews(logStore, backendId);
 	// RETRYING is an explicit setup retry. Epochs are monotonic, so a prior
 	// owner must not prevent that retry from returning to an observable failure.
+	const retryEpoch = Atomics.load(epoch, 0);
 	if (
 		Atomics.compareExchange(words, READINESS_STATE, READINESS_RETRYING, READINESS_BACKEND_FAILED) === READINESS_RETRYING
-	)
+	) {
+		// Close the same owner-election race as the unknown-state path below. A
+		// runner that acquired this epoch owns readiness, even if its worker has
+		// not published ready yet.
+		if (Atomics.load(epoch, 0) !== retryEpoch) {
+			Atomics.compareExchange(words, READINESS_STATE, READINESS_BACKEND_FAILED, READINESS_STATES.indexOf('unknown'));
+			return false;
+		}
 		return true;
+	}
 	if (Atomics.load(epoch, 0) !== 0n) return false;
 	const published =
 		Atomics.compareExchange(words, READINESS_STATE, READINESS_STATES.indexOf('unknown'), READINESS_BACKEND_FAILED) ===

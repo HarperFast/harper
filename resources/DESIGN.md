@@ -808,7 +808,8 @@ number into its write instruction synchronously and the native writer consumes i
 (`node_modules/lmdb/write.js`), so a pass suspended inside `await removeAuditEntry()` still has a
 delete pending against the primary and audit DBIs, and LMDB forbids closing a DBI an existing
 transaction has modified. `dropDatabase()` and the legacy arm of `Table.dropTable()` await it.
-`closeDatabase()` and branch `close()` are synchronous and cannot; what covers them is that every
+`closeDatabase()` and branch `close()` are asynchronous and await writer drain plus derived-index
+settlement before their stores close. What covers reset paths is that every
 environment touch remaining in a resumed pass — cursor advance, cursor release, marker write, re-arm —
 re-checks `rootStore.status`, plus the fact that their production callers reach them only for RocksDB
 stores, whose pass is one synchronous `purgeLogs()` call with nothing suspended mid-removal.

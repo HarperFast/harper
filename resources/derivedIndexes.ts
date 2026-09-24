@@ -65,7 +65,7 @@ type DerivedIndexAttachment = {
 	matchesCurrent(): boolean;
 	retryUnavailableFullText(): void;
 	restoreAfterFailedDrop(): DerivedIndexAttachment | undefined;
-	retireAfterConfirmedDrop(definitions?: readonly FullTextDefinition[]): Promise<void>;
+	retireAfterConfirmedDrop(definitions?: readonly Pick<FullTextDefinition, 'name'>[]): Promise<boolean>;
 	completeDrop(dropped?: boolean): void;
 };
 type FullTextTestConfiguration = {
@@ -449,7 +449,6 @@ export function attachDerivedIndexes(
 			if (dropping) registered.droppingTables.add(Table.tableId);
 			if (closeOperation) return closeOperation;
 			closing = true;
-			if (!dropping) releaseRegistration();
 			const settlements = dropping
 				? [...(registered.tableBackends.get(Table.tableId) ?? [])].map((backend) => backend.settle())
 				: releases.map((release) => release());
@@ -495,6 +494,7 @@ export function attachDerivedIndexes(
 							throw new AggregateError(failures, `Could not settle derived indexes for table ${Table.tableId}`);
 						if (releaseRetirementFence) await retireFullTextIndexes(Table, removedDefinitions);
 						else if (waitForPeerRetirement) await waitForPeerRetirement;
+						releaseRegistration();
 					}
 				} finally {
 					releaseRetirementFence?.();
@@ -578,11 +578,15 @@ export function attachDerivedIndexes(
 }
 
 /** Retire durable native indexes even when their in-memory attachment could not be restored. */
-export async function retireFullTextIndexes(Table: any, definitions: readonly FullTextDefinition[]): Promise<void> {
+export async function retireFullTextIndexes(
+	Table: any,
+	definitions: readonly Pick<FullTextDefinition, 'name'>[]
+): Promise<boolean> {
 	const fullTextTest = fullTextTestConfiguration;
 	const retryMilliseconds =
 		fullTextTest?.shutdownTimeoutMilliseconds ?? DEFAULT_FULL_TEXT_RETIREMENT_RETRY_MILLISECONDS;
 	const deadline = Date.now() + retryMilliseconds;
+	let retired = true;
 	for (const definition of definitions) {
 		let retryDelayMilliseconds = 10;
 		let retrying = false;
@@ -616,10 +620,12 @@ export async function retireFullTextIndexes(Table: any, definitions: readonly Fu
 					`Could not retire full-text index ${Table.databaseName}.${Table.tableName}.${definition.name}`,
 					error
 				);
+				retired = false;
 				break;
 			}
 		}
 	}
+	return retired;
 }
 
 /** Keep a healthy, generation-identical full-text attachment across routine catalog reloads. */
