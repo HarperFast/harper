@@ -112,6 +112,7 @@ import {
 	raiseAuditFloor,
 	boundedAuditPruneEnd,
 	isLockControlType,
+	isAuditEntryWrite,
 } from './auditStore.ts';
 import { derivedIndexWriteRejection, hasDerivedIndexRegistration } from './derivedIndexRegistry.ts';
 import {
@@ -4359,6 +4360,7 @@ export function makeTable(options) {
 				commit: (txnTime, existingEntry, retry, transaction: any) => {
 					write.stagedEntry = undefined; // reset per round; set below once the removal is applied
 					write.superseded = false; // reset per round, as in the update path
+					write.skipped = false;
 					// what a preceding write in this transaction left for this key is what gets removed
 					// from the indices here, not the pre-transaction record (harper#1968)
 					const priorStagedOp = priorStagedWrite(write);
@@ -4377,6 +4379,15 @@ export function makeTable(options) {
 					// write (a concurrent transaction observed on a retry round, or an out-of-order delivery)
 					// that a chained delete must not destroy.
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
+						return;
+					}
+					const stagedRemoval = { value: undefined, localTime: txnLogKey, nodeId: options?.nodeId };
+					if (
+						existingRecord == null &&
+						isAuditEntryWrite(removalBefore(write, existingEntry), { txnLogKey, nodeId: options?.nodeId })
+					) {
+						write.stagedEntry = stagedRemoval;
+						write.skipped = true;
 						return;
 					}
 					updateIndices(id, existingRecord, null, transaction && { transaction });
@@ -4407,7 +4418,7 @@ export function makeTable(options) {
 						// Only RocksDB's remove() takes an options object; on LMDB the 2nd arg is ifVersion, and its writes already join the batched txn.
 						removeEntry(primaryStore, existingEntry, isRocksDB && transaction ? { transaction } : undefined);
 					}
-					write.stagedEntry = { value: undefined }; // the key holds no record for the rest of this transaction
+					write.stagedEntry = stagedRemoval; // the key holds no record for the rest of this transaction
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					// the removal supersedes the nearest record an earlier write in this transaction stored
 					// (older ones were already marked by their staged successors), so its saved blobs are
@@ -7585,6 +7596,19 @@ export function makeTable(options) {
 			return results;
 		}
 		return ids;
+	}
+
+	/**
+	 * What left a delete's key without a record, for the re-delivery check (resources/DESIGN.md): the
+	 * nearest earlier write in the transaction that staged state, else the stored entry. Only writes marked
+	 * skipped are passed over, because an invalidate or relocate stores a null stub without staging it.
+	 */
+	function removalBefore(write: any, existingEntry: Entry | undefined): Partial<Entry> | undefined {
+		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
+			if (prior.stagedEntry) return prior.stagedEntry;
+			if (!prior.skipped) return;
+		}
+		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
 	}
 
 	function precedesExistingVersion(txnTime: number, existingEntry: Partial<Entry>, nodeId?: number): number {
