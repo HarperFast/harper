@@ -637,14 +637,16 @@ the bare message until harper#2703, so the same error carried an error code on t
 REST settles a credential rejection _before_ its route lookup, so a rejected client gets the unauthorized
 close rather than `1011 No resource was found` — which would otherwise disclose whether the resource exists.
 
-## A request-queue shed is a 503 with no error line (`server/throttle.ts`)
+## A request-queue shed is a 503 the server never logged (`server/throttle.ts`)
 
 `throttle()` sheds a queued call once `queuedCalls.length × averageEventCycleTime` exceeds the limit (20s
-by default): `server/http.ts` answers `Service unavailable, exceeded request queue limit` and records only
-an analytics action, and `resources/Table.ts`'s cache-resolution throttle throws its own 503. Every other
-503 a write can get from `DatabaseTransaction.ts` (write-queue age, conflict abandonment) logs at error
-level first. So a burst of 503s with no error line in the log is the throttle, which now says so with a
-rate-limited warn per throttle instance naming the queue. The gate is per instance on purpose: a shared
-one let a cache-fill shed silence the HTTP shed that followed. Reproduce with a large concurrent
-non-GET burst on one CPU-starved worker (`integrationTests/resources/sourcedfrom-eav-cache-coherence.test.ts`
-P1 under Bun pinned to a contended core).
+by default). `server/http.ts` answers it directly with `Service unavailable, exceeded request queue limit`
+and records only an analytics action; nothing is thrown, so the HTTP error path that logs every thrown
+status (`info` for a 503, `warn` for a 500) never runs, and the `DatabaseTransaction` write-queue and
+conflict 503s log at `error` before they throw. A 503 with that exact body and no log line of any level
+behind it is therefore the throttle, which now writes a rate-limited `warn` per throttle instance naming
+the queue; `resources/Table.ts`'s cache-resolution throttle throws its own 503 under the same warn. The
+gate is per instance on purpose: a shared one let a cache-fill shed silence the HTTP shed that followed.
+Reproduce with a large concurrent non-GET burst on one CPU-starved worker
+(`integrationTests/resources/sourcedfrom-eav-cache-coherence.test.ts` P1 under Bun pinned to a contended
+core).

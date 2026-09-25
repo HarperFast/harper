@@ -73,7 +73,7 @@ suite('QA-595 EAV catalog x sourcedFrom cache coherence', { skip: skipSuite }, (
 	let restURL: string;
 	let headers: Record<string, string>;
 
-	// A request-queue shed is backpressure under the burst, not a coherence defect; any other 503 fails.
+	// A request-queue shed is backpressure under the burst, not a coherence defect.
 	let shedRetries = 0;
 	async function putAttribute(entityId: string, attrName: string, gen: number): Promise<number> {
 		const key = `${entityId}:${attrName}`;
