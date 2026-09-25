@@ -53,7 +53,9 @@ import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
  *   rewritten at all — see `beginRestore`.
  * - `<meta-dir>/<key>.dropping` — durable database-drop intent for one physical root. Every root in
  *   a logical database receives its marker before any root is destroyed. Startup scans block marked
- *   roots, and retrying the same drop removes remaining roots before clearing the markers.
+ *   roots, and retrying the same drop removes remaining roots and the blob directories recorded for
+ *   their physical store identities before clearing the markers. The recorded identity is covered by
+ *   a digest, so damaged marker content fails closed instead of redirecting blob deletion.
  */
 
 // The backtick makes this an illegal database name (schemaRegex rejects `/` and backtick only), so
@@ -331,19 +333,61 @@ export function clearRestoreMarker(lock: RestoreLock): void {
 
 export type DatabaseDropLock = RestoreLock & {
 	databaseName: string;
+	blobDatabaseName: string;
 };
 
-function readDatabaseDropMarker(dbPath: string): string | undefined {
+function validBlobDatabaseName(databaseName: string | undefined): databaseName is string {
+	return (
+		!!databaseName &&
+		databaseName.length <= 250 &&
+		databaseName !== '.' &&
+		databaseName !== '..' &&
+		!databaseName.includes('/') &&
+		!databaseName.includes('\\') &&
+		!databaseName.includes('`')
+	);
+}
+
+function databaseDropMarkerDigest(rootName: string, databaseName: string, blobDatabaseName: string): string {
+	return createHash('sha256')
+		.update('database-drop\0')
+		.update(rootName)
+		.update('\0')
+		.update(databaseName)
+		.update('\0')
+		.update(blobDatabaseName)
+		.digest('hex');
+}
+
+function readDatabaseDropMarker(dbPath: string): { databaseName: string; blobDatabaseName: string } | undefined {
 	try {
-		const [rootName, databaseName] = readFileSync(droppingMarkerPath(dbPath), 'utf8').split('\n', 2);
-		if (rootName !== basename(dbPath) || !databaseName) return undefined;
-		return databaseName;
+		const [rootName, databaseName, blobDatabaseName, digest] = readFileSync(droppingMarkerPath(dbPath), 'utf8').split(
+			'\n',
+			4
+		);
+		if (
+			rootName !== basename(dbPath) ||
+			!databaseName ||
+			!validBlobDatabaseName(blobDatabaseName) ||
+			digest !== databaseDropMarkerDigest(rootName, databaseName, blobDatabaseName)
+		)
+			return undefined;
+		return { databaseName, blobDatabaseName };
 	} catch {
 		return undefined;
 	}
 }
 
-export function beginDatabaseDrop(dbPath: string, databaseName: string): DatabaseDropLock {
+export function beginDatabaseDrop(
+	dbPath: string,
+	databaseName: string,
+	blobDatabaseName = databaseName
+): DatabaseDropLock {
+	if (!validBlobDatabaseName(blobDatabaseName)) {
+		const error: any = new Error(`Database drop blob identity for '${databaseName}' is invalid`);
+		error.statusCode = 409;
+		throw error;
+	}
 	const markerPath = droppingMarkerPath(dbPath);
 	const lock = acquireRestoreLock(dbPath);
 	const preexisting = existsSync(markerPath);
@@ -356,23 +400,26 @@ export function beginDatabaseDrop(dbPath: string, databaseName: string): Databas
 			throw error;
 		}
 		if (preexisting) {
-			if (readDatabaseDropMarker(dbPath) !== databaseName) {
+			const marker = readDatabaseDropMarker(dbPath);
+			if (marker?.databaseName !== databaseName) {
 				const error: any = new Error(`Database drop marker for '${databaseName}' is invalid at ${markerPath}`);
 				error.statusCode = 409;
 				throw error;
 			}
+			blobDatabaseName = marker.blobDatabaseName;
 		} else {
+			const rootName = basename(dbPath);
 			publishMarker(
 				dbPath,
 				markerPath,
-				`${basename(dbPath)}\n${databaseName}\ndrop started ${new Date().toISOString()}\n`
+				`${rootName}\n${databaseName}\n${blobDatabaseName}\n${databaseDropMarkerDigest(rootName, databaseName, blobDatabaseName)}\ndrop started ${new Date().toISOString()}\n`
 			);
 		}
 	} catch (error) {
 		fileLockRelease(lock.token);
 		throw error;
 	}
-	return { ...lock, preexisting, databaseName };
+	return { ...lock, preexisting, databaseName, blobDatabaseName };
 }
 
 function removeDatabaseDropMarker(lock: DatabaseDropLock): void {

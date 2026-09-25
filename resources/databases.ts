@@ -59,7 +59,6 @@ import {
 	deleteBlobPathsForDatabaseName,
 	deleteBlobAndWait,
 	deleteBlobsInObject,
-	deleteRootBlobPathsForDB,
 	findBlobsInObject,
 } from './blob.ts';
 import { removeStorageReclamation } from '../server/storageReclamation.ts';
@@ -1070,9 +1069,14 @@ function databasesBlockedByRestore(databasePath: string): Set<string> {
 function databaseRootsBlockedByDrop(databasePath: string): Set<string> {
 	const blocked = new Set<string>();
 	for (const drop of scanBlockedDatabaseDrops(databasePath)) {
-		logger.error(
-			`Incomplete drop of database '${drop.databaseName ?? basename(drop.rootPath)}' detected; not loading ${drop.rootPath} — retry drop_database to recover (${drop.markerPath})`
-		);
+		if (drop.databaseName)
+			logger.error(
+				`Incomplete drop of database '${drop.databaseName}' detected; not loading ${drop.rootPath} — retry drop_database to recover (${drop.markerPath})`
+			);
+		else
+			logger.error(
+				`Incomplete database drop with invalid marker metadata detected; not loading ${drop.rootPath} — inspect the root and marker before manual recovery (${drop.markerPath})`
+			);
 		blocked.add(drop.rootPath);
 	}
 	return blocked;
@@ -2286,10 +2290,15 @@ function throwIfBlockedByRestore(dbPath: string, databaseName: string): void {
 	}
 }
 
-function lockDatabaseForDrop(dbPath: string, databaseName: string, held: DatabaseDropLock[]): void {
+function lockDatabaseForDrop(
+	dbPath: string,
+	databaseName: string,
+	held: DatabaseDropLock[],
+	blobDatabaseName = databaseName
+): void {
 	if (held.some((lock) => lock.dbPath === dbPath)) return;
 	try {
-		held.push(beginDatabaseDrop(dbPath, databaseName));
+		held.push(beginDatabaseDrop(dbPath, databaseName, blobDatabaseName));
 	} catch (error) {
 		const cleanupFailures = [];
 		for (const lock of held.splice(0)) {
@@ -2355,7 +2364,8 @@ async function resumeIncompleteDatabaseDrop(databaseName: string, rootPaths: Ite
 		for (const rootPath of paths) lockDatabaseForDrop(rootPath, databaseName, dropLocks);
 		destructiveWorkStarted = true;
 		for (const lock of dropLocks) await destroyIncompleteDatabaseRoot(lock.dbPath);
-		await deleteBlobPathsForDatabaseName(databaseName);
+		for (const blobDatabaseName of new Set(dropLocks.map((lock) => lock.blobDatabaseName)))
+			await deleteBlobPathsForDatabaseName(blobDatabaseName);
 		while (dropLocks.length > 0) completeDatabaseDrop(dropLocks.shift()!);
 	} finally {
 		releaseDatabaseDropLocks(dropLocks, destructiveWorkStarted);
@@ -2386,8 +2396,18 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 		if (rootStores.size === 0) {
 			rootStores.add(openDatabaseRoot({ database: databaseName }, { allowPreparedDrop: true }));
 		}
-		for (const rootPath of new Set([...requestedRootPaths, ...[...rootStores].map((rootStore) => rootStore.path)]))
-			lockDatabaseForDrop(rootPath, databaseName, dropLocks);
+		const blobDatabaseNamesByRootPath = new Map(
+			[...rootStores].map((rootStore) => [rootStore.path, rootStore.databaseName ?? databaseName])
+		);
+		for (const rootPath of new Set([...requestedRootPaths, ...blobDatabaseNamesByRootPath.keys()])) {
+			const inferredBlobDatabaseName = basename(rootPath).replace(/\.mdb$/, '');
+			lockDatabaseForDrop(
+				rootPath,
+				databaseName,
+				dropLocks,
+				blobDatabaseNamesByRootPath.get(rootPath) ?? inferredBlobDatabaseName
+			);
+		}
 		releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, true, rootStores);
 		destructiveWorkStarted = true;
 		for (const rootStore of rootStores) {
@@ -2443,7 +2463,8 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 			throw new DatabaseClosingError(databaseName);
 		for (const rootPath of detachedRootPaths) await rm(rootPath, { recursive: true, force: true });
 
-		for (const rootStore of rootStores) await deleteRootBlobPathsForDB(rootStore);
+		for (const blobDatabaseName of new Set(dropLocks.map((lock) => lock.blobDatabaseName)))
+			await deleteBlobPathsForDatabaseName(blobDatabaseName);
 		while (dropLocks.length > 0) completeDatabaseDrop(dropLocks.shift()!);
 	} finally {
 		if (destructiveWorkStarted) {

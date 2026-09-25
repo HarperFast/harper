@@ -347,7 +347,11 @@ describe('restoreMarker', function () {
 			const b = join(tempDir, 'beta');
 			mkdirSync(a);
 			mkdirSync(b);
-			const locks = [beginDatabaseDrop(a, 'catalog'), beginDatabaseDrop(b, 'catalog')];
+			const locks = [beginDatabaseDrop(a, 'catalog', 'physical-a'), beginDatabaseDrop(b, 'catalog', 'physical-b')];
+			assert.deepStrictEqual(
+				locks.map((lock) => lock.blobDatabaseName),
+				['physical-a', 'physical-b']
+			);
 			try {
 				assert.deepStrictEqual(
 					scanBlockedDatabaseDrops(tempDir)
@@ -374,6 +378,17 @@ describe('restoreMarker', function () {
 			const retry = beginDatabaseDrop(dbPath, 'catalog');
 			assert.strictEqual(retry.preexisting, true);
 			completeDatabaseDrop(retry);
+		});
+
+		it('rejects a marker whose recorded blob identity was altered', function () {
+			abandonDatabaseDrop(beginDatabaseDrop(dbPath, 'catalog', 'physical'));
+			const markerPath = droppingMarkerPath(dbPath);
+			const marker = readFileSync(markerPath, 'utf8').split('\n');
+			marker[2] = 'unrelated';
+			writeFileSync(markerPath, marker.join('\n'));
+
+			assert.throws(() => beginDatabaseDrop(dbPath, 'catalog', 'physical'), /drop marker.*invalid/);
+			assert.ok(existsSync(markerPath));
 		});
 
 		it('cancels a new marker but preserves a marker owned by a retry', function () {

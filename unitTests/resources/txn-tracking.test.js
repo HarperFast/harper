@@ -449,9 +449,10 @@ describe('Write txn timeout', () => {
 				String(message).includes('Harper transaction has held RocksDB transaction')
 			);
 			assert.ok(reported.length > 0, 'the un-reaped source-apply holder must be named');
-			assert.match(reported[0][0], /state: [^,]*source-apply/);
-			assert.match(reported[0][0], /IndexedTxnTable/);
-			assert.match(reported[0][0], /transaction \d+/, 'the native id is the join key with the registry sweep');
+			const indexedTableReport = reported.find(([message]) => /IndexedTxnTable/.test(String(message)));
+			assert.ok(indexedTableReport, 'the report for this transaction must name IndexedTxnTable');
+			assert.match(indexedTableReport[0], /state: [^,]*source-apply/);
+			assert.match(indexedTableReport[0], /transaction \d+/, 'the native id is the join key with the registry sweep');
 			// Attribution must not have changed the exemption it is reporting on.
 			assert.strictEqual((await IndexedResource.get(402))?.t, 8, 'source-apply write should still be preserved');
 		} finally {

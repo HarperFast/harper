@@ -327,10 +327,13 @@ describe('shared root-store database identity', function () {
 		await createPhysicalStore(storageRoot, 'physicalb', 'TableB');
 		loadAliases(storageRoot, { configured: ['configuredalias'] });
 		loadedAliases = ['physicala', 'physicalb', 'configuredalias'];
-		const rootPaths = [
-			getDatabases().physicala.TableA.primaryStore.rootStore.path,
-			getDatabases().physicalb.TableB.primaryStore.rootStore.path,
+		const rootStores = [
+			getDatabases().physicala.TableA.primaryStore.rootStore,
+			getDatabases().physicalb.TableB.primaryStore.rootStore,
 		];
+		const rootPaths = rootStores.map((rootStore) => rootStore.path);
+		const blobPaths = [...new Set(rootStores.flatMap((rootStore) => getRootBlobPathsForDB(rootStore)))];
+		for (const blobPath of blobPaths) mkdirSync(blobPath, { recursive: true });
 		const originalDestroy = RocksDatabase.prototype.destroy;
 		let destroyCount = 0;
 		RocksDatabase.prototype.destroy = function () {
@@ -356,6 +359,7 @@ describe('shared root-store database identity', function () {
 		loadedAliases = [];
 		assert.deepStrictEqual(scanBlockedDatabaseDrops(storageRoot), []);
 		for (const rootPath of rootPaths) assert.strictEqual(existsSync(rootPath), false);
+		for (const blobPath of blobPaths) assert.strictEqual(existsSync(blobPath), false);
 	});
 
 	it('completes a drop whose marker publication was interrupted before deletion', async function () {
@@ -370,7 +374,7 @@ describe('shared root-store database identity', function () {
 			getDatabases().physicalb.TableB.primaryStore.rootStore.path,
 		];
 		await closeAliases(loadedAliases);
-		abandonDatabaseDrop(beginDatabaseDrop(rootPaths[0], 'configuredalias'));
+		abandonDatabaseDrop(beginDatabaseDrop(rootPaths[0], 'configuredalias', 'physicala'));
 		resetDatabases();
 		assert.strictEqual(databases.physicala, undefined);
 		assert.ok(databases.physicalb);
