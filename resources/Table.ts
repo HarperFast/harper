@@ -2541,11 +2541,12 @@ export function makeTable(options) {
 			const transaction = txnForContext(context);
 			checkValidId(id);
 			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
-
-			transaction.addWrite({
+			const sourceTransaction = transaction;
+			const write = {
 				key: id,
 				store: primaryStore,
 				entry,
+				deleteNodeId: options?.nodeId ?? null,
 				nodeName: (context as any)?.nodeName,
 				before:
 					(this.constructor as any).source?.delete && !(context as any)?.source
@@ -2558,9 +2559,29 @@ export function makeTable(options) {
 							context.lastModified = existingEntry.version;
 						TableResource._updateResource(this, existingEntry);
 					}
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
+					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					if (precedesExisting < 0) {
 						return;
 					} // a newer record exists locally
+					// Re-delivered onto the removal it already made (same version and origin): writing again would
+					// append an audit entry that every peer forwards and re-logs in turn (harper#1162, harper#2761).
+					// This branch passes each write the pre-transaction entry, so the check holds only when no other
+					// kind of write to this key shares the transaction.
+					if (
+						precedesExisting === 0 &&
+						existingEntry?.version === txnTime &&
+						(existingEntry.nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore) ?? 0) &&
+						existingRecord == null &&
+						!(existingEntry.metadataFlags & INVALIDATED) &&
+						sourceTransaction.writes.every(
+							(other) =>
+								other === write ||
+								other?.key !== id ||
+								other.store !== primaryStore ||
+								(other as any).deleteNodeId === write.deleteNodeId
+						)
+					)
+						return;
 					updateIndices(id, existingRecord, null, transaction && { transaction });
 					if (audit || trackDeletes) {
 						updateRecord(
@@ -2584,7 +2605,8 @@ export function makeTable(options) {
 						removeEntry(primaryStore, existingEntry);
 					}
 				},
-			} as any);
+			} as any;
+			transaction.addWrite(write);
 			return true;
 		}
 
