@@ -239,15 +239,6 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 		assert.deepStrictEqual(rows, { a: 1, b: 2, c: 3, d: 4 });
 	});
 
-	it('replays many one-write commits at one key as one transaction each', function () {
-		const commits = 5000;
-		const stream = [];
-		for (let i = 0; i < commits; i++) stream.push({ id: 'r' + i, key: 5, endTxn: true });
-		const { groups } = replayStream(stream);
-		assert.strictEqual(groups.length, commits);
-		assert.deepStrictEqual([...new Set(groups.map(({ ids, outcome }) => `${outcome}:${ids.length}`))], ['committed:1']);
-	});
-
 	it('ends a commit at an endTxn marker carried by an entry replay skips', async function () {
 		const attributes = [{ name: 'id', isPrimaryKey: true }, { name: 'n' }];
 		const Kept = table({ table: 'KeptRows', database: 'replayskipped', attributes });

@@ -114,9 +114,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 				endTxn,
 			} = auditRecord;
 			try {
-				// A replay transaction is one native commit ("Boot replay transactions" in DESIGN.md): it ends at
-				// the commit's last entry or at a change of log key, before the skip paths so a skipped last
-				// entry still closes it.
+				// A replay transaction is one native commit ("Boot replay transactions" in DESIGN.md).
 				if (transaction && (openCommitEnded || lastTimestamp !== version)) {
 					const ending = transaction;
 					transaction = undefined;
