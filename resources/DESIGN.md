@@ -704,7 +704,16 @@ set. Live removals are tracked in a `Set`, and each one removes itself and wakes
 producer when it settles, so any completion releases the loop. In these removal loops, do not repeatedly
 race the live set: each race attaches another reaction to every long-pending removal. Both phases drain
 their tracked removals before settling, including when iteration throws. `scheduleAuditCleanup` remains
-sequential because it is an automatic background loop.
+sequential because it is an automatic background loop, and it ends a pass at its first failed removal
+rather than continuing past it: its `deleted` count (the backoff input) and the `last-removed` marker it
+writes then cover a contiguous removed prefix — nothing above that marker was removed by the pass — and
+the next pass retries the failed entry first. Past a failure there is no key the marker can truthfully
+record, and counting failures as progress re-armed an all-failing pass at 10 ms. The guarantee is
+pass-local: the marker is written after its removals, `deleteHistory` never writes it, and a marker an
+older build persisted past a failed entry is not repaired; completeness is the audit floor's question.
+Stopping costs liveness only for an entry that fails on every pass, which is why `removeAuditEntry` must
+fail only when `auditStore.remove()` does (below). Regression: `auditLog.test.js` "ends a pass at a failed
+removal".
 
 Individual removal failures are logged and excluded from the returned count, but a purge that attempted
 at least one removal and completed none rejects with the first error after both phases have drained.
@@ -722,9 +731,11 @@ followed by an unconditional remove: a record recreated between those operations
 `removeAuditEntry` has a second, nested version of the same hazard: for a `'delete'`-type audit record it
 also invokes a per-table delete callback (`addDeleteRemovalCallback`) that removes the corresponding
 primary-store tombstone. That callback's promise must be returned and joined with the audit-store
-removal (currently via `Promise.all`, with the callback's own rejection caught and logged separately so
-a failed tombstone cleanup doesn't get misreported as a failed audit-entry removal) — otherwise the
-tombstone removal is fire-and-forget and the same detached-rejection hazard reappears one level down.
+removal (currently via `Promise.all`, with the callback's own rejection — and a throwing tombstone
+lookup, such as lmdb-js `getEntry(undefined)` for an undecodable recordId — caught and logged through
+`warnContained`, so neither a failed tombstone cleanup nor a throwing log sink gets misreported as a failed
+audit-entry removal) — otherwise the tombstone removal is fire-and-forget and the same detached-rejection
+hazard reappears one level down.
 A tombstone whose cleanup fails this way is not swept automatically — `scheduleAuditCleanup`'s automatic
 pass never retries it, since the audit entry that would have triggered a retry is already gone. It sits
 in the primary store until an operator runs `delete_transaction_logs_before` with `cleanup_deleted_records: true`.
