@@ -53,8 +53,8 @@ describe('Subscription previousCount backfill scan bound', () => {
 		// matching this file's other magic numbers being test-local constants.
 		const MAX_PREVIOUS_COUNT_SCAN = 10_000;
 		const N = MAX_PREVIOUS_COUNT_SCAN + 250; // comfortably past the cap
-		// The cap counts audit records, not transactions, so batching keeps N in-scope entries while
-		// avoiding N separate commits — those took 5s to 70s on CI runners, depending on disk latency.
+		// The cap counts audit records, not transactions, so batching keeps N in-scope entries without
+		// N separate commits, whose cost scales with the runner's disk latency.
 		const BATCH = 500;
 		for (let i = 0; i < N; i += BATCH) {
 			await transaction(async () => {
