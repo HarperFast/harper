@@ -691,6 +691,32 @@ describe('certificate verification tables', function () {
 			assert.strictEqual(result.valid, false);
 		});
 
+		it('a check decides by the CRL it downloaded, even once another thread has replaced the stored set', async () => {
+			const client = await authority.issue();
+			await authority.publish({
+				revokedSerials: [client.serialNumber],
+				thisUpdate: Date.now() - HOUR,
+				nextUpdate: Date.now() + DAY,
+			});
+			const CrlCache = systemTable(CRL_CACHE_TABLE);
+			const ownPut = Object.hasOwn(CrlCache, 'put');
+			const put = CrlCache.put;
+			// lands after this check stored its revocations: another thread's older CRL, without this one, commits
+			CrlCache.put = async function (...args) {
+				await systemTable(REVOKED_CERTIFICATES_TABLE).delete(revocationId(authority, client), {});
+				return put.apply(this, args);
+			};
+			let result;
+			try {
+				result = await verifyCertificate(peerCertificate(authority, client), crlOnlyVerification('fail-closed'));
+			} finally {
+				if (ownPut) CrlCache.put = put;
+				else delete CrlCache.put;
+			}
+
+			assert.strictEqual(result.status, 'revoked');
+		});
+
 		it('concurrent checks of certificates from one CA share one CRL download and replacement', async () => {
 			const clients = [];
 			for (let i = 0; i < 24; i++) clients.push(await authority.issue());

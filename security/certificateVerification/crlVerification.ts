@@ -69,12 +69,12 @@ class CertificateRevocationListSource extends Resource {
 		const { distributionPoint, issuerPem: issuerPemStr, config } = requestContext;
 
 		try {
-			const result = await downloadAndParseCRLOnce(distributionPoint, issuerPemStr, config);
+			const { entry } = await downloadAndParseCRLOnce(distributionPoint, issuerPemStr, config);
 
 			// Set expiration - use the CRL's nextUpdate time or configured TTL, whichever is sooner
-			context.expiresAt = Math.min(result.next_update, Date.now() + config.cacheTtl);
+			context.expiresAt = Math.min(entry.next_update, Date.now() + config.cacheTtl);
 
-			return result;
+			return entry;
 		} catch (error) {
 			logger.error?.(`CRL fetch error for: ${distributionPoint} - ${error}`);
 
@@ -273,9 +273,14 @@ export async function performCRLCheck(
 		const crlStatus = await checkCRLFreshness(distributionPoints, issuerPem, config);
 
 		if (crlStatus.upToDate) {
-			// CRL was just fetched/refreshed — re-check the revoked table since it may have
-			// been populated by processRevokedCertificates during the download above. Outside the verdict
-			// fill's transaction: on LMDB its read snapshot predates the revocations committed since.
+			// A CRL this check downloaded decides it: by now another thread may have replaced the stored set with
+			// a different generation of that CRL
+			if (crlStatus.revokedIds) {
+				return crlStatus.revokedIds.has(compositeId)
+					? { status: 'revoked', reason: 'unspecified', source: crlStatus.source }
+					: { status: 'good', source: crlStatus.source };
+			}
+			// Outside the verdict fill's transaction: on LMDB its read snapshot predates rows committed since
 			const revokedEntryFresh = await (revokedTable as any).get(compositeId, {});
 			if (revokedEntryFresh) {
 				const entry = revokedEntryFresh as any;
@@ -321,7 +326,7 @@ async function checkCRLFreshness(
 	distributionPoints: string[],
 	issuerPem: string,
 	config: CRLConfig
-): Promise<{ upToDate: boolean; reason?: string; source?: string }> {
+): Promise<{ upToDate: boolean; reason?: string; source?: string; revokedIds?: Set<string> }> {
 	const now = Date.now();
 
 	// Check each distribution point
@@ -345,8 +350,9 @@ async function checkCRLFreshness(
 			}
 
 			// If no valid cached CRL, download and parse fresh
+			let revokedIds: Set<string> | undefined;
 			if (!crlData) {
-				crlData = await downloadAndParseCRLOnce(distributionPoint, issuerPem, config);
+				({ entry: crlData, revokedIds } = await downloadAndParseCRLOnce(distributionPoint, issuerPem, config));
 			}
 
 			// Check if CRL is current
@@ -361,9 +367,9 @@ async function checkCRLFreshness(
 					}
 				}
 
-				return { upToDate: true, source: distributionPoint };
+				return { upToDate: true, source: distributionPoint, revokedIds };
 			} else if (crlExpiry + config.gracePeriod > now) {
-				return { upToDate: true, source: distributionPoint };
+				return { upToDate: true, source: distributionPoint, revokedIds };
 			} else {
 				return { upToDate: false, reason: 'crl-expired' };
 			}
@@ -383,7 +389,7 @@ async function checkCRLFreshness(
 // Concurrent checks of certificates from one CA share one download and replacement per distribution point on
 // this thread; each replacing the same rows would make their commits conflict, and past the retry limit that
 // fails the check.
-const crlDownloads = new Map<string, Promise<CRLCacheEntry>>();
+const crlDownloads = new Map<string, Promise<DownloadedCRL>>();
 
 function downloadAndParseCRLOnce(distributionPoint: string, issuerPemStr: string, config: CRLConfig) {
 	const key = `${distributionPoint}\n${config.gracePeriod}\n${issuerPemStr}`;
@@ -395,18 +401,24 @@ function downloadAndParseCRLOnce(distributionPoint: string, issuerPemStr: string
 	return download;
 }
 
+interface DownloadedCRL {
+	entry: CRLCacheEntry;
+	/** The composite ids of the certificates the CRL revokes */
+	revokedIds: Set<string>;
+}
+
 /**
  * Download and parse a CRL from a distribution point
  * @param distributionPoint - CRL URL
  * @param issuerPemStr - Issuer certificate for signature verification
  * @param config - CRL configuration (download timeout, grace period)
- * @returns Parsed CRL entry for caching
+ * @returns Parsed CRL entry for caching, and the certificates it revokes
  */
 async function downloadAndParseCRL(
 	distributionPoint: string,
 	issuerPemStr: string,
 	config: CRLConfig
-): Promise<CRLCacheEntry> {
+): Promise<DownloadedCRL> {
 	// Download the CRL
 	// Note: Using fetch here since CRL downloads are cached and infrequent
 	// (typically one per CA), so this is not a hot path
@@ -471,9 +483,15 @@ async function downloadAndParseCRL(
 
 		// Process revoked certificates before returning so the revoked table is populated
 		// before any subsequent lookup in performCRLCheck
-		await processRevokedCertificates(crl, issuerPemStr, distributionPoint, nextUpdate, config.gracePeriod ?? 0);
+		const revokedIds = await processRevokedCertificates(
+			crl,
+			issuerPemStr,
+			distributionPoint,
+			nextUpdate,
+			config.gracePeriod ?? 0
+		);
 
-		return cacheEntry;
+		return { entry: cacheEntry, revokedIds };
 	} finally {
 		clearTimeout(timeoutId);
 	}
@@ -486,6 +504,7 @@ async function downloadAndParseCRL(
  * @param distributionPoint - CRL distribution point URL
  * @param nextUpdate - When this CRL expires
  * @param gracePeriod - How long past nextUpdate performCRLCheck still honors a revocation
+ * @returns The composite ids of the revoked certificates
  */
 async function processRevokedCertificates(
 	crl: pkijs.CertificateRevocationList,
@@ -493,10 +512,11 @@ async function processRevokedCertificates(
 	distributionPoint: string,
 	nextUpdate: number,
 	gracePeriod: number
-): Promise<void> {
+): Promise<Set<string>> {
 	const revokedTable = getRevokedCertificateTable();
 	const issuerKeyId = extractIssuerKeyId(issuerPemStr);
 	const cacheKey = distributionPoint;
+	const revokedIds = new Set<string>();
 
 	// All or nothing, so a failure leaves the previous revocations rather than a partial set that would read
 	// as good. Its own transaction, not the verdict fill's, so the rows are committed before performCRLCheck
@@ -526,9 +546,11 @@ async function processRevokedCertificates(
 				crl_next_update: nextUpdate,
 			};
 
+			revokedIds.add(entry.composite_id);
 			await (revokedTable as any).put(entry.composite_id, entry);
 		}
 	});
+	return revokedIds;
 }
 
 /**
