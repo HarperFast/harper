@@ -105,6 +105,7 @@ import * as password from '../utility/password.ts';
 import { server } from '../server/Server.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { expandOperationsPerms } from '../utility/operationPermissions.ts';
+import { coalesceRefresh } from '../utility/coalesceRefresh.ts';
 
 server.getUser = (username: string, password?: string | null): Promise<User> => {
 	return findAndValidateUser(username, password, password != null);
@@ -371,9 +372,13 @@ function cacheExpandedOperationsPerms(userRole: UserRole) {
 	userRole.permission._expandedOperations = expandOperationsPerms(userRole.permission.operations);
 }
 
+const refreshUsersWithRolesCache = coalesceRefresh(async () => {
+	usersWithRolesMap = await listUsers();
+});
+
 async function setUsersWithRolesCache(cache = undefined) {
 	if (cache) usersWithRolesMap = cache;
-	else usersWithRolesMap = await listUsers();
+	else await refreshUsersWithRolesCache();
 }
 
 async function getUsersWithRolesCache() {
