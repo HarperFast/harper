@@ -57,58 +57,67 @@ describe('CrossThread Module', function () {
 		});
 
 		it('should collect status from multiple threads', async function () {
-			this.timeout(5000); // Allow enough time for async operations
+			this.timeout(5000); // mocha has no default timeout; bound a collector regression that never settles
 			registry.setStatus('sharedComp', 'healthy', 'Local is healthy');
 			// Test with main thread (undefined)
 			getWorkerIndexStub.returns(undefined);
 
 			connectedPorts.push({ threadId: 7 }, { threadId: 8 });
 
-			// Simulate responses from other threads
-			onMessageByTypeStub.callsFake((eventType, handler) => {
-				// Simulate async responses
-				setTimeout(() => {
-					handler({
-						message: {
-							requestId: 1,
-							threadId: 7,
-							workerIndex: 1,
-							isMainThread: false,
-							statuses: [
-								[
-									'sharedComp',
-									{
-										status: 'warning',
-										message: 'Worker 1 warning',
-										lastChecked: new Date(),
-									},
-								],
-							],
-						},
-					});
-					handler({
-						message: {
-							requestId: 1,
-							threadId: 8,
-							workerIndex: 2,
-							isMainThread: false,
-							statuses: [
-								[
-									'sharedComp',
-									{
-										status: 'healthy',
-										message: 'Worker 2 healthy',
-										lastChecked: new Date(),
-									},
-								],
-							],
-						},
-					});
-				}, 100);
+			let handler;
+			onMessageByTypeStub.callsFake((eventType, responseHandler) => {
+				handler = responseHandler;
 			});
 
-			// Wait for collection to complete
-			const collected = await collector.collect(registry);
+			let sentinelFired = false;
+			const sentinel = new Promise((resolve) =>
+				setImmediate(() => {
+					sentinelFired = true;
+					resolve();
+				})
+			);
+
+			const collectPromise = collector.collect(registry);
+			handler({
+				message: {
+					requestId: 1,
+					threadId: 7,
+					workerIndex: 1,
+					isMainThread: false,
+					statuses: [
+						[
+							'sharedComp',
+							{
+								status: 'warning',
+								message: 'Worker 1 warning',
+								lastChecked: new Date(),
+							},
+						],
+					],
+				},
+			});
+			handler({
+				message: {
+					requestId: 1,
+					threadId: 8,
+					workerIndex: 2,
+					isMainThread: false,
+					statuses: [
+						[
+							'sharedComp',
+							{
+								status: 'healthy',
+								message: 'Worker 2 healthy',
+								lastChecked: new Date(),
+							},
+						],
+					],
+				},
+			});
+
+			const collected = await collectPromise;
+			assert.equal(sentinelFired, false, 'collect() should resolve before the setImmediate sentinel');
+			await sentinel;
 
 			assert.equal(collected.size, 3);
 			// In test environment with undefined workerIndex, we get main thread
@@ -156,49 +165,62 @@ describe('CrossThread Module', function () {
 		});
 
 		it('should complete early when all threads respond', async function () {
-			this.timeout(5000);
+			this.timeout(5000); // mocha has no default timeout; bound a collector regression that never settles
 			registry.setStatus('fastComp', 'healthy', 'Main thread');
 			getWorkerIndexStub.returns(0);
 
 			connectedPorts.push({ threadId: 7 }, { threadId: 8 });
 
-			// Track when collection completes
-			const startTime = Date.now();
-			let resolveTime;
-
 			sendItcEventStub.resolves();
 
-			// Setup response handler to send responses quickly
-			onMessageByTypeStub.callsFake((eventType, handler) => {
-				// Send responses after just 50ms (much less than 5000ms timeout)
-				setTimeout(() => {
-					handler({
-						message: {
-							requestId: 1,
-							threadId: 7,
-							workerIndex: 1,
-							isMainThread: false,
-							statuses: [['fastComp', { status: 'healthy' }]],
-						},
-					});
-					// Second response completes the set
-					handler({
-						message: {
-							requestId: 1,
-							threadId: 8,
-							workerIndex: 2,
-							isMainThread: false,
-							statuses: [['fastComp', { status: 'healthy' }]],
-						},
-					});
-				}, 50);
+			let handler;
+			onMessageByTypeStub.callsFake((eventType, responseHandler) => {
+				handler = responseHandler;
 			});
 
-			const collected = await collector.collect(registry);
-			resolveTime = Date.now() - startTime;
+			let settled = false;
+			const collectPromise = collector.collect(registry).then((collected) => {
+				settled = true;
+				return collected;
+			});
 
-			// Should complete much faster than timeout
-			assert.ok(resolveTime < 1000, `Collection took ${resolveTime}ms, should be < 1000ms`);
+			handler({
+				message: {
+					requestId: 1,
+					threadId: 7,
+					workerIndex: 1,
+					isMainThread: false,
+					statuses: [['fastComp', { status: 'healthy' }]],
+				},
+			});
+			await new Promise(setImmediate);
+			assert.equal(settled, false, 'collect() must wait for both eligible workers to respond');
+
+			// Second response completes the set
+			handler({
+				message: {
+					requestId: 1,
+					threadId: 8,
+					workerIndex: 2,
+					isMainThread: false,
+					statuses: [['fastComp', { status: 'healthy' }]],
+				},
+			});
+
+			// Prove collect() resolves once responses are in, rather than waiting out
+			// the collector's own internal 1s timeout (set in the outer beforeEach)
+			let sentinelFired = false;
+			const sentinel = new Promise((resolve) =>
+				setImmediate(() => {
+					sentinelFired = true;
+					resolve();
+				})
+			);
+
+			const collected = await collectPromise;
+			assert.equal(sentinelFired, false, 'collect() should resolve before the setImmediate sentinel');
+			await sentinel;
+
 			assert.equal(collected.size, 3); // local + 2 workers
 		});
 

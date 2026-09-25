@@ -379,6 +379,9 @@ function setupTestDBPath() {
 	let dbPath = materializePerPidRoot();
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, dbPath);
 	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(dbPath, 'database'));
+	// data/dev/test/test2 deliberately alias the same physical dbPath, so tests exercise the
+	// path-keyed alias dedup in resources/databases.ts's interruptedDropAttempts (see the
+	// giveUpLogs assertion in unitTests/resources/dropTableGhost.test.js)
 	const databasePaths = {
 		data: { path: dbPath },
 		dev: { path: dbPath },

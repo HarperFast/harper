@@ -254,6 +254,10 @@ jobs:
           if-no-files-found: ignore
 
   run-integration-tests-bun:
+    # No legacy-harper-version provisioning step here (unlike the Windows/uWS jobs): the
+    # upgrade suites skip entirely when HARPER_RUNTIME === 'bun' (see
+    # integrationTests/upgrade/4.x-upgrade.test.ts's testsBun skip condition), so there's
+    # nothing in this job that would ever read HARPER_LEGACY_VERSION_PATH.
     name: Integration Tests ${{matrix.shard}}/6 (Bun)
     runs-on: ubuntu-latest
     timeout-minutes: 25
