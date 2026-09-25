@@ -827,9 +827,10 @@ describe('Audit log', () => {
 					if (loggingThrows) throw new Error('simulated logging failure');
 				};
 				const auditRemoveCalls = [];
+				let tombstoneRemovals = 0;
 				const auditStore = {
 					tableStores: { 7: rootStore.openDB('primary', {}) },
-					deleteCallbacks: { 7: () => assert.fail('no tombstone can match an undecodable recordId') },
+					deleteCallbacks: { 7: () => tombstoneRemovals++ },
 					remove(key) {
 						auditRemoveCalls.push(key);
 						return Promise.resolve();
@@ -838,6 +839,7 @@ describe('Audit log', () => {
 
 				await removeAuditEntry(auditStore, deleteAuditRecord);
 				assert.deepEqual(auditRemoveCalls, ['audit-key']);
+				assert.equal(tombstoneRemovals, 0, 'no tombstone can match an undecodable recordId');
 				assert.ok(
 					warnings.some(([message]) => message === 'Error removing deleted record while removing its audit entry'),
 					'the failed tombstone lookup must be logged as a tombstone failure'
