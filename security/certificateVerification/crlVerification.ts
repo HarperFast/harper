@@ -531,9 +531,7 @@ async function processRevokedCertificates(
 			if (!serialHex)
 				throw new Error(`A revoked certificate in the CRL from ${distributionPoint} has no serial number`);
 
-			const serialNumber = Array.from(serialHex)
-				.map((b) => b.toString(16).padStart(2, '0'))
-				.join('');
+			const serialNumber = Buffer.from(serialHex).toString('hex');
 
 			const entry: RevokedCertificateEntry = {
 				composite_id: createRevokedCertificateId(issuerKeyId, serialNumber),

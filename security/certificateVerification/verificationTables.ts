@@ -113,7 +113,7 @@ async function evictVerdictsWithoutExpiry(CertificateCache: any): Promise<void> 
 		snapshot: false,
 		lazy: true,
 	})) {
-		if (value == null || expiresAt >= 0) continue;
+		if (value == null || expiresAt != undefined) continue;
 		const slot = evictions++ % MAX_OUTSTANDING_EVICTIONS;
 		await outstanding[slot];
 		outstanding[slot] = CertificateCache.evict(key, value, version);
