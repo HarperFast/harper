@@ -2064,7 +2064,10 @@ export function makeTable(options) {
 									// getRange yields ascending by audit-log key, so the first entry is the oldest retained.
 									// Mirror replicationConnection's retention check and the cleanup key basis (localTime ??
 									// version). Fall back to the nominal time-based purge floor when the log is empty/unavailable.
-									for (const entry of auditStore.getRange({ start: 1, log: options?.nodeId })) {
+									for (const entry of auditStore.getRange({
+										start: 1,
+										log: auditStore.logFor(options?.nodeId, options?.viaNodeId).name,
+									})) {
 										oldestRetainedAuditTime = entry.localTime ?? entry.version;
 										break;
 									}
@@ -2088,7 +2091,7 @@ export function makeTable(options) {
 							// A recommit of the same transaction survived that skip only because the old write batch
 							// still carried the put; a fresh-transaction replay (ERR_TRY_AGAIN) would drop the write.
 							if (isRocksDB && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(txnTime)) {
-								const priorAudit = auditStore.get(txnTime, tableId, id, options?.nodeId);
+								const priorAudit = auditStore.get(txnTime, tableId, id, options?.nodeId, options?.viaNodeId);
 								if (
 									priorAudit &&
 									priorAudit.version === txnTime &&
@@ -2152,7 +2155,7 @@ export function makeTable(options) {
 							const isReDeliveredDuplicate = () => {
 								if (stagedOwnAuditEntry) return false;
 								if (!dedupVersionCouldBeRetained(txnTime)) return false; // pre-retention version — skip the end-of-log scan (best-effort; see above)
-								const duplicate = auditStore.get(txnTime, tableId, id, options?.nodeId);
+								const duplicate = auditStore.get(txnTime, tableId, id, options?.nodeId, options?.viaNodeId);
 								return (
 									duplicate &&
 									duplicate.version === txnTime &&
