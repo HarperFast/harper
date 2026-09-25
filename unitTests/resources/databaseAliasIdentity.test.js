@@ -210,7 +210,7 @@ describe('shared root-store database identity', function () {
 		assert.strictEqual((await reopened.configuredalias[tableName].get('written-through-physical')).name, 'shared');
 	});
 
-	it('releases every RocksDB handle on a shared store once each alias closes', async function () {
+	it('releases every RocksDB handle and unregisters every alias when one alias closes', async function () {
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
 		const storageRoot = join(testRoot, 'alias-close-rocks');
 		const tableName = 'AliasCloseRocks';
@@ -222,9 +222,13 @@ describe('shared root-store database identity', function () {
 		const handlesOn = () => registryStatus().find((db) => db.path === path)?.refCount ?? 0;
 		assert(handlesOn() > 0);
 
-		await closeAliases(loadedAliases);
+		assert.strictEqual(await closeDatabase('physicalalias'), true);
 		loadedAliases = [];
 		assert.strictEqual(handlesOn(), 0);
+		const remaining = getDatabases();
+		assert.strictEqual(remaining.physicalalias, undefined);
+		assert.strictEqual(remaining.configuredalias, undefined);
+		assert.strictEqual(await closeDatabase('configuredalias'), false);
 	});
 
 	it('prunes both aliases on the originating thread and another worker after the shared store is dropped', async function () {
@@ -234,6 +238,7 @@ describe('shared root-store database identity', function () {
 		await createPhysicalStore(storageRoot, 'physicalalias', tableName);
 		loadAliases(storageRoot, { configured: ['configuredalias'] });
 		loadedAliases = ['physicalalias', 'configuredalias'];
+		const path = getDatabases().physicalalias[tableName].primaryStore.rootStore.path;
 		fixture = startFixtureWorker(loadedAliases);
 		assert.deepStrictEqual((await fixture.expect('booted')).aliases, {
 			physicalalias: true,
@@ -241,6 +246,7 @@ describe('shared root-store database identity', function () {
 		});
 
 		await dropSchema({ operation: terms.OPERATIONS_ENUM.DROP_SCHEMA, schema: 'physicalalias' });
+		assert.strictEqual(registryStatus().find((database) => database.path === path)?.refCount ?? 0, 0);
 		const localDatabases = getDatabases();
 		assert.strictEqual(localDatabases.physicalalias, undefined);
 		assert.strictEqual(localDatabases.configuredalias, undefined);

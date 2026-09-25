@@ -2284,9 +2284,7 @@ function lockDatabaseForDrop(dbPath: string, databaseName: string, held: Restore
  */
 export async function dropDatabase(databaseName) {
 	if (!databases[databaseName]) throw new Error('Database does not exist');
-	const dbTables = databases[databaseName];
-	const rootStores = new Set<any>();
-	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
+	const { databaseNames, dbTables, rootStores } = collectDatabaseGraph(databaseName);
 
 	// Hold the per-database restore lock across the entire drop so its file deletion can never
 	// interleave with a restore's purge-and-copy on the same directory — a destroy landing after a
@@ -2297,11 +2295,6 @@ export async function dropDatabase(databaseName) {
 	let releaseDerivedIndexActivation: (() => void) | undefined;
 	let destructiveWorkStarted = false;
 	try {
-		for (const tableName in dbTables) {
-			const rootStore = dbTables[tableName].primaryStore.rootStore;
-			rootStores.add(rootStore);
-		}
-		if (definedRoot) rootStores.add(definedRoot);
 		// A tableless database may exist on disk without this worker ever having opened its root. The
 		// drop owner must open that root to destroy it; the private bypass is safe because ResourceBridge
 		// already owns the preparation fence that intentionally rejects every public open.
@@ -2318,20 +2311,31 @@ export async function dropDatabase(databaseName) {
 			rocksdbDatabaseEnvs.delete(rootStore.path);
 		}
 
-		for (const tableName in dbTables) {
-			databaseEventsEmitter.emit('dropTable', tableName, databaseName);
+		for (const [tableName, table] of Object.entries(dbTables)) {
+			databaseEventsEmitter.emit('dropTable', (table as any).tableName ?? tableName, (table as any).databaseName);
 		}
 
-		if (databaseName === 'data') {
-			for (const tableName in tables) {
-				delete tables[tableName];
+		for (const name of databaseNames) {
+			if (name === 'data') {
+				for (const tableName in tables) {
+					delete tables[tableName];
+				}
+				delete tables[DEFINED_TABLES];
 			}
-			delete tables[DEFINED_TABLES];
+			delete databases[name];
+			definedDatabases?.delete(name);
+			databaseEventsEmitter.emit('dropDatabase', name);
 		}
-		delete databases[databaseName];
-		definedDatabases?.delete(databaseName);
 
-		databaseEventsEmitter.emit('dropDatabase', databaseName);
+		const closedStores = new Set<any>();
+		for (const table of Object.values(dbTables) as any[]) {
+			if (!(table?.primaryStore?.rootStore instanceof RocksDatabase)) continue;
+			for (const store of [...Object.values(table.indices || {}), table.primaryStore] as any[]) {
+				if (!store || closedStores.has(store)) continue;
+				closedStores.add(store);
+				await store.close?.();
+			}
+		}
 
 		for (const rootStore of rootStores) {
 			// awaited: retirement stops the loop admitting work, the barrier is what says the pass that was
@@ -2340,8 +2344,9 @@ export async function dropDatabase(databaseName) {
 			removeStorageReclamation(rootStore.path);
 			if (rootStore.status === 'open') {
 				if (rootStore instanceof RocksDatabase) {
-					rootStore.close();
-					rootStore.destroy();
+					await (rootStore as any).dbisDb?.close?.();
+					await rootStore.close();
+					await rootStore.destroy();
 				} else {
 					await rootStore.close();
 					await unlink(rootStore.path);
@@ -2403,17 +2408,11 @@ export async function closeDatabase(
 	databaseName: string,
 	{ requireClosed = false }: { requireClosed?: boolean } = {}
 ): Promise<boolean> {
-	const dbTables = databases[databaseName];
-	if (!dbTables) return false;
-	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
-	const releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(
-		dbTables,
-		false,
-		definedRoot ? [definedRoot] : []
-	);
+	if (!databases[databaseName]) return false;
+	const { databaseNames, dbTables, rootStores } = collectDatabaseGraph(databaseName);
+	const releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, false, rootStores);
 	let databaseClosed = false;
 	let handleCloseStarted = false;
-	const rootStores = new Set<any>();
 	try {
 		const rootStorePaths: string[] = [];
 		const closeFailures: unknown[] = [];
@@ -2427,15 +2426,6 @@ export async function closeDatabase(
 				return false;
 			}
 		};
-		for (const tableName in dbTables) {
-			const table: any = dbTables[tableName];
-			if (!table?.primaryStore) continue;
-			if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
-		}
-		// a database with no tables (an empty schema, or one whose tables were all dropped) still holds
-		// an open root store, tracked only on the defined-database entry rather than any table — include
-		// it so its handles are released too (the Set dedupes it against the per-table root stores above)
-		if (definedRoot) rootStores.add(definedRoot);
 		await Promise.all([...rootStores].map((rootStore) => rootStore.auditStore?.stopAuditCleanup?.()));
 		handleCloseStarted = true;
 		const lmdbRootStores = new Set([...rootStores].filter((rootStore) => !(rootStore instanceof RocksDatabase)));
@@ -2471,18 +2461,10 @@ export async function closeDatabase(
 				lmdbDatabaseEnvs.delete(rootStore.path);
 				rocksdbDatabaseEnvs.delete(rootStore.path);
 			}
-			unregisterDatabase(databaseName);
+			for (const name of databaseNames) unregisterDatabase(name);
 			throw new AggregateError(closeFailures, `Could not close database '${databaseName}' for destructive DDL`);
 		}
-		unregisterDatabase(databaseName);
-		for (const aliasName of Object.keys(databases)) {
-			for (const rootStore of lmdbRootStores) {
-				if (databaseUsesRootStore(aliasName, rootStore)) {
-					await closeDatabase(aliasName, { requireClosed });
-					break;
-				}
-			}
-		}
+		for (const name of databaseNames) unregisterDatabase(name);
 		databaseClosed = true;
 		return true;
 	} finally {
@@ -2500,9 +2482,51 @@ export async function closeDatabase(
 	}
 }
 
+function collectDatabaseGraph(databaseName: string): {
+	databaseNames: Set<string>;
+	dbTables: Record<string, any>;
+	rootStores: Set<any>;
+} {
+	const databaseNames = new Set([databaseName]);
+	const processedNames = new Set<string>();
+	const rootStores = new Set<any>();
+	const tableSet = new Set<any>();
+	for (;;) {
+		for (const name of databaseNames) {
+			if (processedNames.has(name)) continue;
+			processedNames.add(name);
+			const tables = databases[name];
+			for (const tableName in tables) {
+				const table = tables[tableName];
+				tableSet.add(table);
+				if (table?.primaryStore?.rootStore) rootStores.add(table.primaryStore.rootStore);
+			}
+			const definedRoot = (definedDatabases?.get(name) as any)?.rootStore;
+			if (definedRoot) rootStores.add(definedRoot);
+		}
+		let foundAlias = false;
+		for (const aliasName of Object.keys(databases)) {
+			if (databaseNames.has(aliasName)) continue;
+			for (const rootStore of rootStores) {
+				if (!databaseUsesRootStore(aliasName, rootStore)) continue;
+				databaseNames.add(aliasName);
+				foundAlias = true;
+				break;
+			}
+		}
+		if (!foundAlias) break;
+	}
+	return {
+		databaseNames,
+		dbTables: Object.fromEntries([...tableSet].map((table, index) => [index, table])),
+		rootStores,
+	};
+}
+
 function databaseUsesRootStore(databaseName: string, rootStore: any): boolean {
 	if ((definedDatabases?.get(databaseName) as any)?.rootStore === rootStore) return true;
 	const dbTables = databases[databaseName];
+	if (!dbTables) return false;
 	for (const tableName in dbTables) {
 		if ((dbTables[tableName] as any)?.primaryStore?.rootStore === rootStore) return true;
 	}
