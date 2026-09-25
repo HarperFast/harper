@@ -46,7 +46,6 @@ server.registerOperation = realRegisterOperation;
 server.operation = realOperation;
 
 const { OPERATION_FUNCTION_MAP } = require('#src/server/serverHelpers/serverUtilities');
-/** The handler chooseOperation hands verifyPerms for a built-in operation: the job's own for a job. */
 function dispatchedHandlerName(operation) {
 	const { operation_function, job_operation_function } = OPERATION_FUNCTION_MAP.get(operation);
 	return (job_operation_function ?? operation_function).name;
@@ -450,19 +449,16 @@ describe('Test operation_authorization', function () {
 		assert.deepEqual(missing_ops, []);
 	});
 
-	// Gate 1 checks `api_name ?? <handler name>`, and no role can list a handler name, so an entry registered
-	// without its api_name leaves the operation refused to every role that carries an allowlist (#2175).
 	describe('every dispatched operation is grantable by the API name a role lists', function () {
 		const { canRoleInvokeOperation } = require('#src/components/mcp/operationVisibility');
 		const ALL_OPERATIONS = Object.values(terms.OPERATIONS_ENUM);
 		// Registered without an api_name on purpose; the reasons are at their registrations.
 		const UNGRANTABLE = [terms.OPERATIONS_ENUM.GET_BACKUP, terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG];
-		// Built-in operations only: other suites register throwaway operations on the live map. `sql` is left
-		// out because chooseOperation hands gate 1 its API name rather than a handler name.
+		// Built-ins only, since other suites register throwaway operations on this map; `sql` reaches gate 1
+		// by its API name, not through a handler.
 		const dispatched = [...OPERATION_FUNCTION_MAP.keys()].filter(
 			(operation) => ALL_OPERATIONS.includes(operation) && operation !== terms.OPERATIONS_ENUM.SQL
 		);
-		// Gate 1 sees only the handler, so the operations sharing one are granted as a group.
 		const sharingHandler = (operation) =>
 			dispatched.filter((other) => dispatchedHandlerName(other) === dispatchedHandlerName(operation));
 		const allowlisted = (operations) => ({ hdb_user: { role: { permission: { super_user: false, operations } } } });
@@ -493,9 +489,8 @@ describe('Test operation_authorization', function () {
 			}
 		});
 
-		// MCP mirrors gate 1 by hand (components/mcp/operationVisibility.ts), so a change to the api_name
-		// table has to reach it too. It does not model the two ungrantable operations: discovery still
-		// advertises them to a role that lists them.
+		// Discovery does not model the two ungrantable operations: it still advertises them to a role that
+		// lists them.
 		it('is advertised by MCP discovery exactly when gate 1 grants it', function () {
 			const disagreements = [];
 			for (const operation of dispatched) {
@@ -1741,8 +1736,6 @@ describe('Test operations permissions', function () {
 		});
 	});
 
-	// Each of these was refused to every role that carries an allowlist, whether it listed the operation
-	// or not: the registry entry carried no api_name, so gate 1 checked the handler name (#2175).
 	describe('verifyPerms() — operations allowlist grants by API name', function () {
 		const GRANTED_BY_NAME = [
 			terms.OPERATIONS_ENUM.DEPLOY_COMPONENT,
@@ -1782,7 +1775,6 @@ describe('Test operations permissions', function () {
 			});
 		}
 
-		// A legacy alias shares its handler, and so its grant, with the canonical name.
 		for (const [alias, canonical] of [
 			[terms.OPERATIONS_ENUM.DEPLOY_CUSTOM_FUNCTION_PROJECT, terms.OPERATIONS_ENUM.DEPLOY_COMPONENT],
 			[terms.OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT, terms.OPERATIONS_ENUM.PACKAGE_COMPONENT],
