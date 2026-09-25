@@ -1300,9 +1300,8 @@ export class DatabaseTransaction implements Transaction {
 				this.save(operation, transaction, i < this.validated, options);
 			}
 		} catch (error) {
-			// A retry round's transaction was detached before its first submission, so abort() below
-			// cannot reach it; released here or its write intents stay parked until GC (a lapsed lease
-			// refusing the re-save is the case that reaches this).
+			// abort() releases only this.transaction; a retry round's handle was detached before its
+			// first submission and would otherwise hold its write intents until GC.
 			if (transaction && transaction !== this.transaction) {
 				try {
 					transaction.abort();
@@ -1389,8 +1388,17 @@ export class DatabaseTransaction implements Transaction {
 							);
 							if (this.timestamp) replayTransaction.setTimestamp(this.timestamp);
 							this.retries++; // a replay round: commit handlers re-base on the reloaded entries
-							for (const operation of this.writes) {
-								this.save(operation, replayTransaction, true, options);
+							try {
+								for (const operation of this.writes) {
+									this.save(operation, replayTransaction, true, options);
+								}
+							} catch (error) {
+								// Same cleanup as the save loop above: the replay handle is never this.transaction.
+								try {
+									replayTransaction.abort();
+								} catch {}
+								this.abort();
+								throw error;
 							}
 							transaction = replayTransaction;
 						}
@@ -2023,11 +2031,8 @@ export class ImmediateTransaction extends DatabaseTransaction {
 	save(...args: any[]): any {
 		const operation = args[0]; // the staged write, not a transaction — commit() re-enters here with it
 		if (this.isCommitting) {
-			// commit() re-enters here for every staged write, passing the native transaction it is
-			// committing — on a retry or replay round, the one being retried. The re-save must stage into
-			// that transaction: with none, super.save() opens its own and (CLOSED by now) commits it
-			// through a nested commit(), whose retry loop re-enters here again, without bound.
-			// Reload so the read happens within that transaction.
+			// Stage into the transaction commit() is committing (on a retry round, the one being retried)
+			// and reload within it; with no handle super.save() would open its own and nest a commit().
 			super.save(operation, args[1], true);
 		} else {
 			this.isCommitting = true;

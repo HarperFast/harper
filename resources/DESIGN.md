@@ -569,7 +569,8 @@ reuse the same `ImmediateTransaction` object even after its first cycle has clos
 CLOSED`). The second `save()` re-enters `ImmediateTransaction.save()` with `isCommitting` false, so it
 calls `this.commit()` again; that `commit()`'s own sweep loop calls `this.save(newWrite, ...)` — a
 **polymorphic re-dispatch to `ImmediateTransaction.save()`**, now with `isCommitting` true, which takes
-the `super.save(operation, null, true)` branch and (since `this.open` is still `CLOSED`) creates its own
+the `super.save(operation, transaction, true)` branch with no handle to forward (a CLOSED context has
+none) and so creates its own
 brand-new `RocksTransaction` and immediately commits it, stashing the real commit promise on
 `operation.innerCommit`. But the outer `commit()`'s sweep loop discards the return value of
 `this.save(operation, ...)` for every write it processes — that's fine when the write commits inline,

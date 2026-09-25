@@ -1,19 +1,17 @@
-const assert = require('assert');
+const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { ImmediateTransaction } = require('#src/resources/DatabaseTransaction');
 const { MIN_LOCK_LEASE_MS } = require('#src/resources/recordLock');
+const { transaction } = require('#src/resources/transaction');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
-// A conflict retry in commit() re-saves every write into the native transaction it is retrying.
-// ImmediateTransaction.save() used to drop that transaction on the re-entry, so the re-save opened a
-// fresh one, took the immediateCommit path, and nested another commit() — whose retry loop re-saved
-// again, without bound: RangeError on the first conflicting write of a request (a LockWrite holder
-// save racing a replicated write to the same key, in harper-pro's cluster record-lock test).
+// A conflict retry in commit() re-saves every write into the native transaction it is retrying;
+// ImmediateTransaction.save() must stage into that one rather than open its own (resources/DESIGN.md).
 describe('ImmediateTransaction conflict retry', () => {
 	let Locked;
 	let nextId = 1;
@@ -57,8 +55,9 @@ describe('ImmediateTransaction conflict retry', () => {
 		};
 		const originalAbort = Transaction.prototype.abort;
 		Transaction.prototype.abort = function (...args) {
+			const result = originalAbort.apply(this, args);
 			if (this.store?.db === targetDb) aborted.push(this.id);
-			return originalAbort.apply(this, args);
+			return result;
 		};
 		pendingRestores.push(() => {
 			Transaction.prototype.commit = originalCommit;
@@ -100,6 +99,38 @@ describe('ImmediateTransaction conflict retry', () => {
 		await holder.unlock();
 	});
 
+	it('retries a real RocksDB conflict: a plain write landing during the hold wins by LWW, and the save resolves', async function () {
+		if (isLMDB) return this.skip();
+		const recordId = id();
+		await Locked.put({ id: recordId, n: 0 });
+		const holder = await Locked.lock(recordId, { hold: true, lease: 5000 });
+		// The incident's shape: the holder's write is staged, then a plain write to the same key commits
+		// before the holder's native commit runs, so RocksDB itself refuses that commit.
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const originalCommit = Transaction.prototype.commit;
+		const targetDb = Locked.primaryStore.store.db;
+		const attempts = [];
+		let interposed = false;
+		Transaction.prototype.commit = async function (...args) {
+			if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
+			attempts.push(this.id);
+			if (!interposed) {
+				interposed = true;
+				await Locked.put({ id: recordId, n: 100 });
+			}
+			return originalCommit.apply(this, args);
+		};
+		pendingRestores.push(() => (Transaction.prototype.commit = originalCommit));
+		holder.set('n', 7);
+		await holder.save();
+		const holderCommits = attempts.filter((txnId) => txnId === attempts[0]);
+		assert.strictEqual(holderCommits.length, 2, `the holder's transaction was retried once: ${attempts}`);
+		assert.strictEqual(attempts.length, 3, 'one interposed plain write, no extra transactions');
+		assert.strictEqual(Locked.primaryStore.getEntry(recordId).value.n, 100, 'the later plain write wins by LWW');
+		await assertNoUnhandledRejection();
+		await holder.unlock();
+	});
+
 	it('rejects the awaited save once a persistent conflict spends the commit budget', async function () {
 		if (isLMDB) return this.skip();
 		const recordId = id();
@@ -137,6 +168,33 @@ describe('ImmediateTransaction conflict retry', () => {
 		);
 		assert.deepStrictEqual(attempts, [attempts[0]], 'the retry was refused before a second commit');
 		assert.ok(aborted.includes(attempts[0]), 'the refused native transaction was released');
+		assert.strictEqual(Locked.primaryStore.getEntry(recordId).value.n, 0, 'a stale holder write never lands');
+		await assertNoUnhandledRejection();
+	});
+
+	it('releases the replay transaction when a lapsed lease refuses a re-save forced by an open iterator', async function () {
+		if (isLMDB) return this.skip();
+		const recordId = id();
+		await Locked.put({ id: recordId, n: 0 });
+		const { aborted } = conflictCommits({ failFirst: 0 });
+		const lease = MIN_LOCK_LEASE_MS;
+		await assert.rejects(
+			transaction(async (context) => {
+				const record = await Locked.lock(recordId, { lease });
+				record.set('n', 7);
+				await record.save();
+				// An open read iterator at commit forces every staged write onto a replay transaction.
+				const iterator = Locked.search({ conditions: [] }, context)[Symbol.asyncIterator]();
+				await iterator.next();
+				await delay(lease + 50);
+			}),
+			(error) => error.statusCode === 409
+		);
+		assert.strictEqual(
+			aborted.length,
+			2,
+			`the replay transaction and the retained read handle were released: ${aborted}`
+		);
 		assert.strictEqual(Locked.primaryStore.getEntry(recordId).value.n, 0, 'a stale holder write never lands');
 		await assertNoUnhandledRejection();
 	});
