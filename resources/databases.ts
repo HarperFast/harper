@@ -3,7 +3,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
-import { join, extname, basename } from 'node:path';
+import { join, extname, basename, resolve } from 'node:path';
 import {
 	closeSync,
 	existsSync,
@@ -719,6 +719,10 @@ export function getDatabases(): Databases {
 		const entries = readdirSync(databasePath, { withFileTypes: true });
 		const blockedByRestore = databasesBlockedByRestore(databasePath);
 		const blockedByDrop = databaseRootsBlockedByDrop(databasePath);
+		const configuredDropCoversDirectory = Object.entries(schemaConfigs).some(
+			([name, config]: [string, any]) =>
+				config?.path && resolve(config.path) === resolve(databasePath) && blockedByDrop.databaseNames.has(name)
+		);
 		for (const databaseEntry of entries) {
 			// in-progress migration staging dirs are not databases until atomically renamed into place
 			if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue;
@@ -731,7 +735,12 @@ export function getDatabases(): Databases {
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dbPath = join(databasePath, databaseEntry.name);
 			if (databaseDropPrepared(dbPath)) continue;
-			if (blockedByDrop.has(dbPath)) continue;
+			if (
+				configuredDropCoversDirectory ||
+				blockedByDrop.rootPaths.has(dbPath) ||
+				blockedByDrop.databaseNames.has(dbName)
+			)
+				continue;
 			if (blockedByRestore.has(dbName)) continue;
 			if (isOpenBranchPath(dbPath)) continue;
 
@@ -774,7 +783,7 @@ export function getDatabases(): Databases {
 					if (tableEntry.isFile() && extname(tableEntry.name).toLowerCase() === '.mdb') {
 						const tablePath = join(schemaPath, tableEntry.name);
 						if (databaseDropPrepared(tablePath)) continue;
-						if (blockedByDrop.has(tablePath)) continue;
+						if (blockedByDrop.rootPaths.has(tablePath) || blockedByDrop.databaseNames.has(schemaEntry.name)) continue;
 						const auditPath = join(schemaAuditPath, tableEntry.name);
 						readMetaDb(tablePath, basename(tableEntry.name, '.mdb'), schemaEntry.name, auditPath, true);
 					}
@@ -786,6 +795,7 @@ export function getDatabases(): Databases {
 	if (schemaConfigs) {
 		for (const dbName in schemaConfigs) {
 			const schemaConfig = schemaConfigs[dbName];
+			if (databaseDropRecoveryPending(dbName)) continue;
 			const databasePath = schemaConfig.path;
 			if (existsSync(databasePath)) {
 				const entries = readdirSync(databasePath, { withFileTypes: true });
@@ -798,7 +808,7 @@ export function getDatabases(): Databases {
 					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
 					const dbPath = join(databasePath, databaseEntry.name);
 					if (databaseDropPrepared(dbPath)) continue;
-					if (blockedByDrop.has(dbPath)) continue;
+					if (blockedByDrop.rootPaths.has(dbPath) || blockedByDrop.databaseNames.has(dbName)) continue;
 					if (isOpenBranchPath(dbPath)) continue;
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {
 						readMetaDb(dbPath, basename(databaseEntry.name, '.mdb'), dbName);
@@ -1066,8 +1076,12 @@ function databasesBlockedByRestore(databasePath: string): Set<string> {
 	return blocked;
 }
 
-function databaseRootsBlockedByDrop(databasePath: string): Set<string> {
-	const blocked = new Set<string>();
+function databaseRootsBlockedByDrop(databasePath: string): {
+	rootPaths: Set<string>;
+	databaseNames: Set<string>;
+} {
+	const rootPaths = new Set<string>();
+	const databaseNames = new Set<string>();
 	for (const drop of scanBlockedDatabaseDrops(databasePath)) {
 		if (drop.databaseName)
 			logger.error(
@@ -1077,9 +1091,10 @@ function databaseRootsBlockedByDrop(databasePath: string): Set<string> {
 			logger.error(
 				`Incomplete database drop with invalid marker metadata detected; not loading ${drop.rootPath} — inspect the root and marker before manual recovery (${drop.markerPath})`
 			);
-		blocked.add(drop.rootPath);
+		rootPaths.add(drop.rootPath);
+		if (drop.databaseName) databaseNames.add(drop.databaseName);
 	}
-	return blocked;
+	return { rootPaths, databaseNames };
 }
 
 /**
@@ -2494,6 +2509,53 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
  */
 const databaseDropPreparationTasks = new Map<string, { id: string; task: Promise<void>; rootPaths: string[] }>();
 
+function addPhysicalDatabaseRoots(directory: string, rootPaths: Set<string>): void {
+	if (!existsSync(directory)) return;
+	for (const entry of readdirSync(directory, { withFileTypes: true })) {
+		if (entry.name === RESTORE_META_DIR || entry.name === BRANCH_ROOT_DIR || entry.name.endsWith(MIGRATING_DIR_SUFFIX))
+			continue;
+		const rootPath = join(directory, entry.name);
+		if (entry.isFile()) {
+			if (extname(entry.name).toLowerCase() === '.mdb') rootPaths.add(rootPath);
+			continue;
+		}
+		if (!entry.isDirectory()) continue;
+		try {
+			const files = readdirSync(rootPath, { withFileTypes: true });
+			if (
+				files.find((file) => file.name === 'CURRENT')?.isFile() &&
+				files.some((file) => file.name.startsWith('MANIFEST-'))
+			)
+				rootPaths.add(rootPath);
+		} catch (error) {
+			if (!('code' in error && error.code === 'ENOENT')) throw error;
+		}
+	}
+}
+
+function databaseDropRecoveryGraphPaths(databaseName: string, incompleteRootPaths: string[]): string[] {
+	const rootPaths = new Set(incompleteRootPaths);
+	if (incompleteRootPaths.length === 0) return [];
+	const databaseConfig = (envGet(CONFIG_PARAMS.DATABASES) || {})[databaseName];
+	if (databaseConfig?.path) addPhysicalDatabaseRoots(databaseConfig.path, rootPaths);
+	addPhysicalDatabaseRoots(join(getBaseSchemaPath(), databaseName), rootPaths);
+	for (const [tableName, tableConfig] of Object.entries(databaseConfig?.tables || {}) as [string, any][]) {
+		if (!tableConfig?.path) continue;
+		for (const rootPath of [join(tableConfig.path, tableName), join(tableConfig.path, `${tableName}.mdb`)]) {
+			if (existsSync(rootPath)) rootPaths.add(rootPath);
+		}
+	}
+	try {
+		const storageRoot = resolveDatabaseStorageRoot(databaseName);
+		for (const rootPath of [join(storageRoot, databaseName), join(storageRoot, `${databaseName}.mdb`)]) {
+			if (existsSync(rootPath)) rootPaths.add(rootPath);
+		}
+	} catch {
+		// Configured and legacy roots above may still be recoverable without the default storage path.
+	}
+	return [...rootPaths];
+}
+
 function incompleteDatabaseDropPaths(databaseName: string): string[] {
 	const directories = new Set<string>();
 	try {
@@ -2525,14 +2587,15 @@ export function databaseDropPreparationTargets(databaseName: string): {
 } {
 	getDatabases();
 	const incompleteRootPaths = incompleteDatabaseDropPaths(databaseName);
+	const recoveryRootPaths = databaseDropRecoveryGraphPaths(databaseName, incompleteRootPaths);
 	if (!databases[databaseName]) {
-		if (incompleteRootPaths.length > 0) return { rootPaths: incompleteRootPaths };
+		if (recoveryRootPaths.length > 0) return { rootPaths: recoveryRootPaths };
 		throw new Error(`Database '${databaseName}' does not exist`);
 	}
 	const graph = collectDatabaseGraph(databaseName);
 	if (graph.rootStores.size === 0) graph.rootStores.add(openDatabaseRoot({ database: databaseName }));
 	return {
-		rootPaths: [...new Set([...incompleteRootPaths, ...[...graph.rootStores].map((rootStore) => rootStore.path)])],
+		rootPaths: [...new Set([...recoveryRootPaths, ...[...graph.rootStores].map((rootStore) => rootStore.path)])],
 	};
 }
 
@@ -2642,11 +2705,7 @@ export async function closeDatabase(
 			rocksdbDatabaseEnvs.delete(path);
 		}
 		if (requireClosed && closeFailures.length > 0) {
-			// Some child stores may already be closed even when the root close fails. Never return
-			// that partially closed graph to service; the preparation fence holds until completion,
-			// after which the next lookup rebuilds fresh wrappers from the still-authoritative files.
-			// rocksdb-js serializes a new open with a native descriptor close, so retaining neither
-			// Harper's root wrapper nor its child handles is safe even if native teardown is in flight.
+			// A partially closed graph must be rebuilt rather than returned to service.
 			for (const rootStore of rootStores) {
 				lmdbDatabaseEnvs.delete(rootStore.path);
 				rocksdbDatabaseEnvs.delete(rootStore.path);

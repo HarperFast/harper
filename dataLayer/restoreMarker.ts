@@ -217,7 +217,7 @@ function markerIsIntact(markerPath: string, dbPath: string): boolean {
 }
 
 /**
- * Publish the restoring marker atomically. The caller must already hold the restore lock, which is
+ * Publish a restore or drop marker atomically. The caller must already hold the restore lock, which is
  * what makes the fixed temp name safe: only one writer per database can exist at a time, so a temp
  * left by an earlier crash is this database's own debris and is simply overwritten.
  */

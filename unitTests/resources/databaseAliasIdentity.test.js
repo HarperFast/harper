@@ -377,7 +377,7 @@ describe('shared root-store database identity', function () {
 		abandonDatabaseDrop(beginDatabaseDrop(rootPaths[0], 'configuredalias', 'physicala'));
 		resetDatabases();
 		assert.strictEqual(databases.physicala, undefined);
-		assert.ok(databases.physicalb);
+		assert.strictEqual(databases.physicalb, undefined);
 
 		await dropSchema({ operation: terms.OPERATIONS_ENUM.DROP_SCHEMA, schema: 'configuredalias' });
 		loadedAliases = [];

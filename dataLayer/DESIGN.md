@@ -116,8 +116,10 @@ Three non-obvious mechanics keep that safe:
   remove every physical store's blob directories even when only a configured alias survives; an
   integrity digest makes damaged identity content fail closed instead of redirecting deletion.
   Markers are removed only after every root and blob path has been removed.
-  Startup scans and cold opens reject marked roots, and retrying `drop_database` completes the
-  deletion from the markers even when the in-memory catalog is gone.
+  Startup scans and cold opens reject the marked root and the rest of its logical database graph, so
+  a crash while publishing or canceling several markers cannot expose a partial database. Retrying
+  `drop_database` re-enumerates that graph and completes the deletion even when the in-memory catalog
+  is gone.
   `database()`'s on-demand open still uses the read-only `throwIfBlockedByRestore` (a
   `create_table`/`create_schema` must not resurrect a half-purged directory as a fresh empty DB), but
   the destructive drop path now uses the exclusive lock so the race is closed, not merely narrowed.

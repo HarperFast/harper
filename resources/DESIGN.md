@@ -1020,8 +1020,10 @@ an owner failure cannot strand admission or race a still-closing handle.
 
 Before the first physical deletion, the drop owner publishes one fsynced `.dropping` marker beside
 every root while holding the existing restore locks. All scan layouts and cold opens reject marked
-roots. A failed or interrupted drop keeps those markers; retrying `drop_database` resolves the roots
-from the markers even when no catalog entry survived, removes the remaining stores and every blob
-directory recorded for their physical store identities, and clears the markers last. A restore is
-rejected while drop intent exists. This makes multi-root drop fail closed without putting filesystem
-work on the record or query path.
+roots; a surviving marker also blocks the rest of its logical graph, preventing a crash during
+multi-root marker publication or cancellation from exposing only part of a database. A failed or
+interrupted drop keeps those markers; retrying `drop_database` re-enumerates the graph even when no
+catalog entry survived, removes the remaining stores and every blob directory recorded for their
+physical store identities, and clears the markers last. A restore is rejected while drop intent
+exists. This makes multi-root drop fail closed without putting filesystem work on the record or query
+path.

@@ -83,8 +83,7 @@ export function handleDatabaseDropPreparationOwnerExit(ownerThreadId: number): v
 	for (const [rootPath, preparation] of databaseDropPreparations) {
 		if (preparation.ownerThreadId !== ownerThreadId) continue;
 		preparation.ownerExited = true;
-		// A peer may still be closing its local handles when the owner dies. Keep that peer fenced
-		// until its own preparation settles; a worker created afterward has no old handles to drain.
+		// An owner exit cannot release a peer's fence while that peer is still closing handles.
 		if (preparation.preparationTask) {
 			const release = () => releaseDatabaseDropPreparation(rootPath, preparation.id);
 			preparation.preparationTask.then(release, release);
