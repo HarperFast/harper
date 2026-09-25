@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790241356085,
+  "lastUpdate": 1790321383798,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -6494,6 +6494,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1508.38,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1daf935c1abbdbb5767df280fda9f1b8b36c5a2d",
+          "message": "fix(components): bound how long startup waits for component installs (#2784)\n\n* fix(components): bound how long startup waits for component installs\n\nListeners open only after installApplications() returns, and it awaited every\ncomponent preparation with no bound, so one install that never settled kept the\nwhole node down with nothing logged (harper#2072). #2085 removed the zombie\nprocess-group trigger; this removes the gating.\n\n- deployment.startupInstallTimeout (default 10 min, 0 = unbounded) bounds the wait,\n  measured from entry; startup warns every 60 s about what it is waiting for and\n  logs each component it stops waiting for.\n- A preparation left behind keeps running under its component lock. A later\n  installApplications() (every worker restart) waits on the same in-flight promise\n  instead of starting a second install; a success no call is waiting on requests the\n  restart a deploy-without-restart would.\n- Lock-file transitions are read-modify-write in one per-path queue, so a late\n  success cannot write a stale snapshot over a later call's entries.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01GWyUQT9kaNW7Y37PE4AH77\n\n* fix(components): load the installed tree past a stalled startup install\n\nReview round 1 on the bounded startup wait:\n\n- A Scope created while its component's deploy is in flight waits for that\n  deploy and pauses its watchers; in single-thread mode that blocked startup on\n  the very preparation it had stopped waiting for. deployLifecycle.releaseLoads()\n  lets Scopes created after the deadline load the installed tree, as workers\n  that never saw the broadcast already do.\n- A preparation any call stopped waiting for requests a restart when it succeeds,\n  unconditionally; the waiter count that tried to detect a consuming generation\n  could not tell whether that generation loaded it.\n- In-flight preparations are keyed by component and configuration, so a config\n  that flips back rejoins the first preparation.\n- The already-installed check reads the lock file per entry, so a preparation\n  that finished while this call was enumerating is not started again.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01GWyUQT9kaNW7Y37PE4AH77\n\n* fix(components): bound all per-component startup work, not only the build\n\nReview round 2 on the bounded startup wait:\n\n- The lock-file read and credential lookup ran before the wait began, so a\n  stalled one kept listeners closed past the deadline. They now run inside the\n  tracked preparation (installConfiguredApplication); the lock-file create is\n  not awaited.\n- A later installApplications() no longer waits again for a preparation an\n  earlier call already left behind; each worker restart otherwise re-paid the\n  full timeout while the stall lasted.\n- A reinstall clears its lock-file entry under the component preparation lock\n  (beforePrepare), so it cannot land before an earlier preparation's success\n  write.\n- Built-in component preparation failures are logged again.\n- The handleApplication timeout is armed for a load whose deploy was released.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01GWyUQT9kaNW7Y37PE4AH77\n\n* fix(components): release only the left-behind deploy, and follow it in lifecycle events\n\nReview round 3 on the bounded startup wait:\n\n- deploy:start/deploy:end now bracket the periods in which an unreleased deploy\n  is in flight, so a release ends a Scope's pause and a later overlapping deploy\n  still starts one. ApplicationScope keys beginDeploy on the same state.\n- releaseLoads() takes the preparation's own lifecycle id (prepareApplication\n  reports it through onDeployStart), and only a newly left-behind preparation is\n  released and logged, so a concurrent deploy of the same component stays gated.\n- Built-ins, prepared again on every restart, request a late restart only for a\n  new or changed install; the unconditional request looped under auto-reload.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01GWyUQT9kaNW7Y37PE4AH77\n\n* fix(components): one late-restart rule for built-ins and configured apps\n\nReview round 4: the package-metadata comparison used for built-ins missed a\nsource-only update and still looped for an opaque install, so built-ins go back\nto the unconditional late restart request configured applications use. Trims\ntwo comments.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01GWyUQT9kaNW7Y37PE4AH77\n\n* test(components): skip the single-thread stall suite under Bun\n\nA threads.count: 0 boot under Bun fails before any install stalls: the main\nthread binds the operations port twice. Nothing here depends on the runtime.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01GWyUQT9kaNW7Y37PE4AH77\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T21:30:36Z",
+          "url": "https://github.com/HarperFast/harper/commit/1daf935c1abbdbb5767df280fda9f1b8b36c5a2d"
+        },
+        "date": 1790321381539,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6075.58,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8121.58,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 8140.1,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 5933.72,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4275.96,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 7714.48,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 939,
             "unit": "ops/sec"
           }
         ]
