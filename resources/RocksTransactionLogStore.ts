@@ -184,6 +184,15 @@ export class RocksTransactionLogStore extends EventEmitter {
 		this.ensureLogExists(nodeName);
 		return this.logById(nodeId);
 	}
+	/**
+	 * The log `put` filed a write from this origin (relayed through `viaNodeId`) in, if it exists; a lookup
+	 * reads it and never creates one. A relayed origin with no log wrote nothing (`put` rejects it).
+	 */
+	logFor(nodeId: number, viaNodeId: number) {
+		if (nodeId === undefined || nodeId === 0) return this.logById(0) ?? this.log;
+		const relayed = viaNodeId !== undefined && viaNodeId !== nodeId;
+		return this.logById(nodeId) ?? (relayed ? undefined : this.log);
+	}
 	logById(nodeId: number) {
 		return nodeId > -1 ? (this.nodeLogs?.[nodeId] ?? this.loadLogs()[nodeId]) : undefined;
 	}
@@ -195,18 +204,24 @@ export class RocksTransactionLogStore extends EventEmitter {
 			this.put(suggestedKey, value, options);
 		}
 	}
-	get(key: any, tableId: number, recordId: any, nodeId: number) {
-		return this.getSync(key, tableId, recordId, nodeId);
+	get(key: any, tableId: number, recordId: any, nodeId: number, viaNodeId?: number) {
+		return this.getSync(key, tableId, recordId, nodeId, viaNodeId);
 	}
-	getSync(key: any, tableId: number, recordId: any, nodeId: number) {
+	getSync(key: any, tableId: number, recordId: any, nodeId: number, viaNodeId?: number) {
 		if (typeof key === 'number') {
 			if (typeof tableId !== 'number') throw new Error('tableId must be a number');
 			if (recordId === undefined) {
 				throw new Error('recordId must be provided');
 			}
 			// this a request for a transaction log entry by a timestamp
-			for (const entry of this.getRange({ start: key, exactStart: true, log: nodeId })) {
-				if (entry.recordId === recordId && entry.tableId === tableId) {
+			let log: string | undefined;
+			if (nodeId !== undefined) {
+				log = this.logFor(nodeId, viaNodeId ?? nodeId)?.name;
+				if (log === undefined) return;
+			}
+			for (const entry of this.getRange({ start: key, exactStart: true, log })) {
+				// a relay log holds several origins' entries, and (txnLogKey, nodeId) identifies one
+				if (entry.recordId === recordId && entry.tableId === tableId && !(nodeId > 0 && entry.nodeId !== nodeId)) {
 					return entry;
 				}
 				if (entry.txnLogKey !== key) return; // no longer in this transaction

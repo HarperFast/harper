@@ -3832,9 +3832,12 @@ export function makeTable(options) {
 									// getRange yields ascending by audit-log key, so the first entry is the oldest retained.
 									// Mirror replicationConnection's retention check and the cleanup key basis (`txnLogKey`).
 									// Fall back to the nominal time-based purge floor when the log is empty/unavailable.
-									for (const entry of auditStore.getRange({ start: 1, log: options?.nodeId })) {
-										oldestRetainedAuditTime = entry.txnLogKey;
-										break;
+									const floorLog = auditStore.logFor(options?.nodeId, options?.viaNodeId);
+									if (floorLog) {
+										for (const entry of auditStore.getRange({ start: 1, log: floorLog.name })) {
+											oldestRetainedAuditTime = entry.txnLogKey;
+											break;
+										}
 									}
 									oldestRetainedAuditTime ??= Date.now() - auditRetention;
 								}
@@ -3858,7 +3861,7 @@ export function makeTable(options) {
 							// A recommit of the same transaction survived that skip only because the old write batch
 							// still carried the put; a fresh-transaction replay (ERR_TRY_AGAIN) would drop the write.
 							if (isRocksDB && !replaying && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(txnLogKey)) {
-								const priorAudit = auditStore.get(txnLogKey, tableId, id, options?.nodeId);
+								const priorAudit = auditStore.get(txnLogKey, tableId, id, options?.nodeId, options?.viaNodeId);
 								if (
 									priorAudit &&
 									priorAudit.txnLogKey === txnLogKey &&
@@ -3963,7 +3966,7 @@ export function makeTable(options) {
 							const isReDeliveredDuplicate = () => {
 								if (replaying || stagedOwnAuditEntry) return false;
 								if (!dedupVersionCouldBeRetained(txnLogKey)) return false; // pre-retention log key — skip the end-of-log scan (best-effort; see above)
-								const duplicate = auditStore.get(txnLogKey, tableId, id, options?.nodeId);
+								const duplicate = auditStore.get(txnLogKey, tableId, id, options?.nodeId, options?.viaNodeId);
 								return (
 									duplicate &&
 									duplicate.txnLogKey === txnLogKey &&

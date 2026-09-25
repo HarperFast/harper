@@ -296,8 +296,8 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 		const headLookup = spy.exactStartRanges.find((range) => range.start === headKey);
 		assert.ok(headLookup, `the walk should look up the head; got ${JSON.stringify(spy.exactStartRanges)}`);
 		// `log: undefined` means "aggregate over every per-origin log", which is what pegged the field
-		// receivers. A local head resolves to log 0.
-		assert.strictEqual(headLookup.log, 0, 'the head lookup must name the local log, not aggregate');
+		// receivers. A local head resolves to the local log.
+		assert.strictEqual(headLookup.log, 'local', 'the head lookup must name the local log, not aggregate');
 		// The step after it follows `previousNodeId`, which is never encoded, so its log is genuinely
 		// unknown and must keep aggregating — moving the `?? 0` to the lookup call site would send it to
 		// the local log alone and truncate a cross-origin chain.
