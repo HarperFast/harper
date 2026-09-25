@@ -77,8 +77,7 @@ describe('certificateVerification/certificateVerificationSource.ts', function ()
 			assert.strictEqual(result.certificate_id, 'crl:abc123');
 			assert.strictEqual(result.method, 'crl');
 			assert.ok(result.checked_at);
-			// the expiry is the cached record's metadata, set on the source context, not a field
-			assert.ok(!('expiresAt' in result));
+			assert.ok(!('expiresAt' in result), 'the expiry is set on the source context, not returned as a field');
 			assert.ok(context.expiresAt > Date.now());
 			// Result will have some status (good/revoked/unknown)
 			assert.ok(['good', 'revoked', 'unknown'].includes(result.status));
