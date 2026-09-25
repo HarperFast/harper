@@ -3,8 +3,9 @@
  * full shape, including on data a pre-fix 5.3.0 pre-release wrote, which no directive reaches because its
  * data version sorts above every 5.3.0 directive.
  *
- * The pre-release suite needs HARPER_LEGACY_530_PRERELEASE_PATH (dist/bin/harper.js of harper@5.3.0-beta.2,
- * which CI installs) and is skipped without it.
+ * The pre-release suite needs HARPER_LEGACY_530_PRERELEASE_PATH (dist/bin/harper.js of harper@5.3.0-beta.2)
+ * and is skipped without it. CI sets it everywhere but the uWS HTTP job: that registry install has no
+ * uWebSockets.js, so under HARPER_UWS_HTTP the legacy binary's workers cannot bind.
  */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
