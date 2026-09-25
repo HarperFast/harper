@@ -8709,31 +8709,42 @@ export function makeTable(options) {
 				// find any entries that are set to expire before now
 				// updatedAttributes() clears expiresAtProperty when a live redeclaration drops the directive,
 				// and there is nothing left for this interval to scan by
-				if (disposed || runningRecordExpiration || !expiresAtProperty) return;
+				if (disposed || maintenanceClosed || runningRecordExpiration || !expiresAtProperty) return;
 				runningRecordExpiration = true;
 				recordExpirationCompletion = (async () => {
 					const expiresAtName = expiresAtProperty.name;
 					const index = indices[expiresAtName];
 					if (!index) throw new Error(`expiresAt attribute ${expiresAtProperty} must be indexed`);
 					const inFlight = new Set<Promise<unknown>>();
-					for (const key of index.getRange({
+					const trackInFlight = (operation: Promise<unknown>) => {
+						const tracked = operation.finally(() => inFlight.delete(tracked));
+						inFlight.add(tracked);
+						if (inFlight.size >= 50) return Promise.race(inFlight);
+					};
+					expirationScan: for (const key of index.getRange({
 						start: true,
 						values: false,
 						end: Date.now(),
 						snapshot: false,
 					})) {
 						for (const id of index.getValues(key)) {
+							if (maintenanceClosed) break expirationScan;
 							const recordEntry = primaryStore.getEntry(id);
 							if (!recordEntry?.value) {
 								// cleanup the index if the record is gone
-								primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id));
+								const repair = trackMaintenanceCommit(
+									Promise.resolve(primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id))).catch(
+										(error) => logger.warn?.('Error removing stale expiration index entry', id, error)
+									)
+								);
+								const backpressure = trackInFlight(repair);
+								if (backpressure) await backpressure;
 							} else if (recordEntry.value[expiresAtName] < Date.now()) {
 								// make sure the record hasn't changed and won't change while removing
 								const eviction = TableResource.evict(id, recordEntry.value, recordEntry.version);
 								if (eviction) {
-									const tracked = eviction.finally(() => inFlight.delete(tracked));
-									inFlight.add(tracked);
-									if (inFlight.size >= 50) await Promise.race(inFlight);
+									const backpressure = trackInFlight(eviction);
+									if (backpressure) await backpressure;
 								}
 							}
 						}

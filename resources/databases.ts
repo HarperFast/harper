@@ -1904,10 +1904,14 @@ export function openBranchDatabase(
 			const releaseActivation = suspendDerivedIndexActivation(rootStore);
 			const commitSuspension = suspendDatabaseCommits([rootStore]);
 			let closed = false;
+			let maintenanceQuiesced = false;
 			const operation = commitSuspension
 				.waitForDrain()
 				.then(() => settleBranchDerivedIndexes(tables))
-				.then(() => settleTableMaintenance(tables))
+				.then(async () => {
+					await settleTableMaintenance(tables);
+					maintenanceQuiesced = true;
+				})
 				.then(() => {
 					closeBranchHandles(path, rootStore, openedStores, tables);
 					if (openBranches.get(path) === branch) openBranches.delete(path);
@@ -1917,7 +1921,8 @@ export function openBranchDatabase(
 					closed = true;
 				})
 				.finally(() => {
-					if (!closed) {
+					// An unexpected failure after maintenance stops cannot safely return this graph to service.
+					if (!closed && !maintenanceQuiesced) {
 						commitSuspension.release();
 						releaseActivation();
 					}

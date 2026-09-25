@@ -1091,6 +1091,7 @@ function broadcastWithAcknowledgement(
 				const error = new AggregateError(failures, 'A worker could not prepare for the schema change');
 				for (const property of ['name', 'code', 'statusCode']) {
 					const value = failures[0][property];
+					if (property === 'name' && value === 'Error') continue;
 					if (value != null && failures.every((failure) => failure[property] === value)) error[property] = value;
 				}
 				reject(error);
