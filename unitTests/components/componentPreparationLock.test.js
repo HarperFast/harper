@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 const { Worker, threadId } = require('node:worker_threads');
 const { mkdtemp, mkdir, readdir, rm, utimes, writeFile } = require('node:fs/promises');
@@ -477,6 +477,78 @@ describe('component preparation lock', () => {
 			let acquired = false;
 			await withComponentPreparationLock(componentDirPath, async () => (acquired = true), boundedWait);
 			assert.equal(acquired, true, 'and the next contender does not wait behind it');
+		});
+
+		// Only macOS lets an unprivileged process make a file undeletable while its directory stays writable — the
+		// user-immutable flag — which is the state a Windows sharing violation leaves a ticket in.
+		const undeletable = (filePath, on) => spawnSync('chflags', [on ? 'uchg' : 'nouchg', filePath]);
+		const ticketNames = async (lockRoot, lockName) =>
+			(await readdir(lockRoot)).filter((name) => name.startsWith(`${lockName}.ticket.`));
+
+		it('publishes the marker from the real release, and clears both once the ticket can go', async function () {
+			if (process.platform !== 'darwin') return this.skip();
+			const componentDirPath = join(rootDir, 'immutable-ticket');
+			const { lockRoot, lockName } = componentPreparationLockPaths(componentDirPath);
+			let ticketPath;
+			try {
+				await withComponentPreparationLock(componentDirPath, async () => {
+					ticketPath = join(lockRoot, (await ticketNames(lockRoot, lockName))[0]);
+					undeletable(ticketPath, true);
+				});
+				assert.ok(
+					(await readdir(lockRoot)).some((name) => name.startsWith(`${lockName}.released.`)),
+					'the release published a marker for the ticket it could not remove'
+				);
+				let acquired = false;
+				await withComponentPreparationLock(componentDirPath, async () => (acquired = true), boundedWait);
+				assert.equal(acquired, true, 'and the next holder did not wait behind it');
+			} finally {
+				if (ticketPath) undeletable(ticketPath, false);
+			}
+
+			await withComponentPreparationLock(componentDirPath, async () => {}, boundedWait);
+			assert.deepStrictEqual(
+				(await readdir(lockRoot)).filter((name) => name.startsWith(lockName)),
+				[]
+			);
+		});
+
+		it('retires the ticket of an acquisition that gave up and could not remove it', async function () {
+			if (process.platform !== 'darwin') return this.skip();
+			const componentDirPath = join(rootDir, 'immutable-waiter');
+			const { lockRoot, lockName } = componentPreparationLockPaths(componentDirPath);
+			let releaseHolder;
+			const holding = withComponentPreparationLock(
+				componentDirPath,
+				() => new Promise((resolve) => (releaseHolder = resolve))
+			);
+			await waitFor(async () => (await ticketNames(lockRoot, lockName).catch(() => [])).length === 1, 5000, 5);
+			const [holderTicket] = await ticketNames(lockRoot, lockName);
+
+			const waiting = withComponentPreparationLock(componentDirPath, async () => {}, boundedWait);
+			waiting.catch(() => {});
+			let waiterTicket;
+			await waitFor(
+				async () => {
+					waiterTicket = (await ticketNames(lockRoot, lockName)).find((name) => name !== holderTicket);
+					return Boolean(waiterTicket);
+				},
+				5000,
+				5
+			);
+			undeletable(join(lockRoot, waiterTicket), true);
+			try {
+				await assert.rejects(waiting, ComponentPreparationLockTimeoutError);
+				const waiterToken = waiterTicket.slice(0, -'.json'.length).split('.').pop();
+				assert.ok(
+					(await readdir(lockRoot)).includes(`${lockName}.released.${waiterToken}`),
+					'the give-up released its ticket through the same marker'
+				);
+			} finally {
+				undeletable(join(lockRoot, waiterTicket), false);
+				releaseHolder();
+				await holding;
+			}
 		});
 
 		it('still fails when neither the ticket nor a marker can be written', async () => {

@@ -1009,18 +1009,16 @@ function findUnrecognizedParams(args: object): string[] {
 }
 
 /**
- * The root config file a rewrite reads AND writes: the one boot reads, whenever it exists. Deriving the path
- * from the document's `rootPath` instead put the result where boot does not look — on a layout whose config
- * file is named by the boot props rather than sitting at its root, and after any change to `rootPath` itself —
- * and made the file written differ from the one the root-config publication lock is keyed by. The derived path
- * remains the fallback for install-time callers, which can run before the boot props naming the file exist.
+ * The root config file a rewrite reads AND writes: the one boot reads, which is also what the root-config
+ * publication lock is keyed by. Taken from the boot source whenever there is one, even if that file is missing
+ * right now — a rewrite of some other copy would report success for a change the next boot never sees. Only
+ * with no boot source at all, as an install has before it writes the boot props, is the path derived from the
+ * document's rootPath.
  */
 function configFileToRewrite(hdbRoot: string): string {
-	let bootConfigFilePath: string | undefined;
-	try {
-		bootConfigFilePath = getConfigFilePath();
-	} catch {}
-	if (bootConfigFilePath && fs.existsSync(bootConfigFilePath)) return bootConfigFilePath;
+	if (hdbUtils.getEnvCliRootPath() || fs.statSync(hdbUtils.getPropsFilePath(), { throwIfNoEntry: false })) {
+		return getConfigFilePath();
+	}
 	const configFilePath = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
 	if (!fs.existsSync(configFilePath) && fs.existsSync(path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE))) {
 		return path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE);

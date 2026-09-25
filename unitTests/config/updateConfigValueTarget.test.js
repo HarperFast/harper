@@ -42,4 +42,41 @@ describe('updateConfigValue', () => {
 			'and no config file was written under the other rootPath'
 		);
 	});
+
+	/** Run `body` with the process's boot source replaced, restoring it before returning. */
+	function withBootSource({ rootPath, home }, body) {
+		const saved = { ROOTPATH: process.env.ROOTPATH, HOME: process.env.HOME };
+		const set = (name, value) => (value === undefined ? delete process.env[name] : (process.env[name] = value));
+		set('ROOTPATH', rootPath);
+		set('HOME', home);
+		try {
+			return body();
+		} finally {
+			set('ROOTPATH', saved.ROOTPATH);
+			set('HOME', saved.HOME);
+		}
+	}
+
+	it('fails rather than writing another copy when the file boot reads is missing', () => {
+		const before = fs.readFileSync(getConfigFilePath(), 'utf8');
+
+		// Boot would read `<elsewhere>/harper-config.yaml`, which does not exist, while the copy under the cached
+		// rootPath does: rewriting that copy would report success for a change the next boot never sees.
+		assert.throws(
+			() =>
+				withBootSource({ rootPath: elsewhere, home: process.env.HOME }, () =>
+					updateConfigValue('logging_level', 'fatal')
+				),
+			/ENOENT/
+		);
+
+		assert.strictEqual(fs.readFileSync(getConfigFilePath(), 'utf8'), before, 'the other copy was not rewritten');
+	});
+
+	it('falls back to the rootPath the document names when there is no boot source at all, as during an install', () => {
+		// No ROOTPATH and no boot props file: the state an install is in before it writes the boot props.
+		withBootSource({ rootPath: undefined, home: elsewhere }, () => updateConfigValue('logging_level', 'fatal'));
+
+		assert.strictEqual(readRootConfig().logging?.level, 'fatal');
+	});
 });

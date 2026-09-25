@@ -141,10 +141,13 @@ export async function scanLiveClaims(
 	const choosingPrefix = `${lockName}.choosing.`;
 	const ticketPrefix = `${lockName}.ticket.`;
 	const releasedPrefix = `${lockName}.released.`;
-	const claimNames = entries.filter((name) => name.startsWith(choosingPrefix) || name.startsWith(ticketPrefix));
-	const releasedTokens = new Set(
-		entries.filter((name) => name.startsWith(releasedPrefix)).map((name) => name.slice(releasedPrefix.length))
-	);
+	const claimNames: string[] = [];
+	// Allocated only when a release marker exists, so the polling path of an ordinary acquisition does not pay for it.
+	let releasedTokens: Set<string> | undefined;
+	for (const name of entries) {
+		if (name.startsWith(choosingPrefix) || name.startsWith(ticketPrefix)) claimNames.push(name);
+		else if (name.startsWith(releasedPrefix)) (releasedTokens ??= new Set()).add(name.slice(releasedPrefix.length));
+	}
 	const claims = await Promise.all(
 		claimNames.map(async (name) => {
 			let claimPath = join(lockRoot, name);
@@ -179,25 +182,28 @@ export async function scanLiveClaims(
 	);
 	const choosing: ComponentPreparationLockOwner[] = [];
 	const tickets: ComponentPreparationLockOwner[] = [];
-	const remainingTicketPaths = new Set(
-		claimNames.filter((name) => name.startsWith(ticketPrefix)).map((name) => join(lockRoot, name))
-	);
+	// Tokens of tickets still on disk after this pass, so a marker is kept exactly as long as its ticket.
+	const unremovedTicketTokens = releasedTokens && new Set<string>();
 	for (const claim of claims) {
-		if (claim.owner?.token === ownToken) continue;
-		if (!claim.owner || !claim.alive || releasedTokens.has(claim.owner.token)) {
+		// Matched on the token the ticket itself records, not on its filename.
+		const released = Boolean(claim.owner && releasedTokens?.has(claim.owner.token));
+		if (claim.owner?.token !== ownToken && (!claim.owner || !claim.alive || released)) {
 			// Claim filenames contain a random owner token and are never reused. Removing this exact
 			// stale claim therefore cannot delete a fresh acquisition, unlike renaming a common lock path.
-			await rm(claim.claimPath, { force: true }).then(
-				() => remainingTicketPaths.delete(claim.claimPath),
-				() => {}
+			const removed = await rm(claim.claimPath, { force: true }).then(
+				() => true,
+				() => false
 			);
+			if (!removed && claim.isTicket && claim.owner) unremovedTicketTokens?.add(claim.owner.token);
 			continue;
 		}
-		if (claim.isTicket) tickets.push(claim.owner);
-		else choosing.push(claim.owner);
+		if (claim.isTicket && claim.owner) unremovedTicketTokens?.add(claim.owner.token);
+		if (claim.owner?.token === ownToken) continue;
+		if (claim.isTicket) tickets.push(claim.owner!);
+		else choosing.push(claim.owner!);
 	}
-	for (const token of releasedTokens) {
-		if (![...remainingTicketPaths].some((path) => path.endsWith(`.${token}.json`))) {
+	for (const token of releasedTokens ?? []) {
+		if (!unremovedTicketTokens!.has(token)) {
 			await rm(join(lockRoot, `${releasedPrefix}${token}`), { force: true }).catch(() => {});
 		}
 	}
@@ -341,11 +347,9 @@ function releasedMarkerPath(lockRoot: string, lockName: string, token: string): 
 }
 
 /**
- * Give up a ticket. A ticket that cannot be removed — a Windows sharing violation, a scanner holding the file —
- * would otherwise keep naming a live thread of this process, and every later contender would wait behind a holder
- * that has finished. So a removal that keeps failing publishes a marker instead, which `scanLiveClaims` honours:
- * the marker is a new file, which whatever holds the ticket does not prevent, and only the ticket's owner ever
- * writes one, so it can never retire a holder that has not finished. Exported for its failure-injection tests.
+ * A ticket that cannot be removed is retired by a marker `scanLiveClaims` honours instead. Only the ticket's owner
+ * writes one, and tokens are never reused, so a marker cannot retire a holder that has not finished. Exported for
+ * failure injection, since Linux cannot make a file undeletable in a writable directory without root.
  */
 export async function releaseTicket(
 	lockRoot: string,
