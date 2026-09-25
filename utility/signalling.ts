@@ -15,14 +15,21 @@ import { sendItcEvent, sendItcEventStrict } from '../server/threads/itc.js';
 // admission fence remains in place until remote workers have processed the same transition.
 export async function signalSchemaChange(
 	message: any,
-	{ peersFirst = false, includeJobWorkers = false }: { peersFirst?: boolean; includeJobWorkers?: boolean } = {}
+	{
+		peersFirst = false,
+		includeJobWorkers = false,
+		peerRounds = 1,
+	}: { peersFirst?: boolean; includeJobWorkers?: boolean; peerRounds?: number } = {}
 ) {
 	try {
 		hdbLogger.debug('signalSchemaChange called with message:', message);
 		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
 		const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
 		if (peersFirst) {
-			await sendItcEvent(itcEventSchema, includeJobWorkers);
+			for (let round = 0; round < peerRounds; round++) {
+				await sendItcEvent(itcEventSchema, includeJobWorkers);
+				if (round + 1 < peerRounds) await new Promise(setImmediate);
+			}
 			await serverItcHandlers.schema(itcEventSchema);
 		} else
 			await Promise.all([serverItcHandlers.schema(itcEventSchema), sendItcEvent(itcEventSchema, includeJobWorkers)]);
