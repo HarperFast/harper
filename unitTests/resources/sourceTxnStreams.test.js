@@ -124,4 +124,20 @@ describe('source transactions keyed by stream', function () {
 		await waitFor(() => logEntries(Table).relayed !== undefined);
 		assert.equal(logEntries(Table).relayed.log, 'relayed-origin');
 	});
+
+	(isRocksDB ? it : it.skip)('rejects a relayed entry whose origin has no node name', async () => {
+		const { Table, applied } = start((Table) => {
+			const relayId = getIdOfRemoteNode('relay-peer', Table.auditStore);
+			Table.auditStore.ensureLogExists('relay-peer');
+			return [
+				put('unnamed', NOW + 7.1, { beginTxn: true, nodeId: 4242, viaNodeId: relayId }),
+				{ type: 'end_txn' },
+				put('after-unnamed', NOW + 8.1),
+			];
+		});
+		await waitFor(() => applied.length === 3);
+		await waitFor(async () => (await recordIds(Table, ['after-unnamed'])).length === 1);
+		assert.deepEqual(await recordIds(Table, ['unnamed']), []);
+		assert.equal(logEntries(Table).unnamed, undefined);
+	});
 });

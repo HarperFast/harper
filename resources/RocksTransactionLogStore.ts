@@ -85,7 +85,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 			// do not record transaction entries on retry
 			return;
 		}
-		const log = options.nodeId === undefined ? this.log : this.logForOrigin(options.nodeId);
+		const log =
+			options.nodeId === undefined
+				? this.log
+				: this.logForOrigin(options.nodeId, options.viaNodeId !== undefined && options.viaNodeId !== options.nodeId);
 		let entryBinary: Uint8Array;
 		if (auditRecord instanceof Uint8Array) entryBinary = auditRecord;
 		else {
@@ -166,13 +169,17 @@ export class RocksTransactionLogStore extends EventEmitter {
 
 	/**
 	 * The log for an origin's entries, created on first use: a log holds one origin, which keeps `txnLogKey`
-	 * unique within it (the key alone repeats across origins).
+	 * unique within it (the key alone repeats across origins). A relayed entry must name its origin; an id with
+	 * no node name that was not relayed is not a replication origin, and stays in the local log.
 	 */
-	logForOrigin(nodeId: number) {
+	logForOrigin(nodeId: number, relayed: boolean) {
 		const log = this.logById(nodeId);
 		if (log) return log;
 		const nodeName = getNodeNameForId(this, nodeId, true);
-		if (nodeName === undefined) throw new Error(`No node name is mapped to origin id ${nodeId}`);
+		if (nodeName === undefined) {
+			if (relayed) throw new Error(`No node name is mapped to origin id ${nodeId}`);
+			return this.log;
+		}
 		this.ensureLogExists(nodeName);
 		return this.logById(nodeId);
 	}
