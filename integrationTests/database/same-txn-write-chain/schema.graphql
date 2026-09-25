@@ -1,0 +1,28 @@
+# Tables for same-transaction write chains: several writes to one key inside ONE ambient
+# transaction (one HTTP request to a custom Resource). See ../same-txn-write-chain.test.ts.
+
+# `sum` is derived from `a` and `b`; a chain that splits the fields across two PATCHes needs each
+# PATCH's merge base to include the earlier PATCH, or the untouched field reverts.
+type Computed @table(database: "sametxnchain") @export {
+	id: ID @primaryKey
+	a: Int
+	b: Int
+	sum: Int @computed(from: "a != null && b != null ? (a + b) : null")
+}
+
+# Two-step state machine (A -> LOCKED -> DONE) written in one transaction while other requests race
+# to move the same row out of A.
+type CasChain @table(database: "sametxnchain") @export {
+	id: ID @primaryKey
+	status: String
+	seq: Int
+	owner: String
+}
+
+# audit: false so a superseded blob is referenced by nothing once its record version is replaced;
+# with an audit log the audit entry would keep it alive and the file count would not settle to 1.
+type BlobChain @table(database: "sametxnchain", audit: false) @export {
+	id: ID @primaryKey
+	blob: Blob
+	tag: String
+}
