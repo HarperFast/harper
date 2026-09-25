@@ -636,3 +636,7 @@ the bare message until harper#2703, so the same error carried an error code on t
 
 REST settles a credential rejection _before_ its route lookup, so a rejected client gets the unauthorized
 close rather than `1011 No resource was found` — which would otherwise disclose whether the resource exists.
+
+## An operations-API failure is logged once, by `handlePostRequest` (`server/serverHelpers/serverHandlers.js`)
+
+`handlePostRequest` logs every error it throws, at error level or the error's own higher `fatal`/`notify`, and records it against its request; `serverErrorHandler`, which Fastify calls next with the same request, skips that error. Keep the log in `handlePostRequest` rather than moving it to the handler: `serverErrorHandler` logs an error with no `logLevel` of its own at info, below the default `warn`, so most operation errors would disappear from a default log; and a custom-function route that catches `hdbCore.request()`'s rejection never reaches the handler at all. The record is keyed by request, not by error, so an error object that surfaces again in another request is still logged there. A refusal still also writes `chooseOperation`'s own `403 from operation …` and `User '…' is not permitted to …` lines; the Error line is the one that says why.

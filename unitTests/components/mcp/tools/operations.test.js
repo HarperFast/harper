@@ -10,6 +10,12 @@ const {
 } = require('#src/components/mcp/tools/operations');
 const { listTools, getTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
 const env = require('#src/utility/environment/environmentManager');
+const { existsSync, readFileSync } = require('node:fs');
+const harperLogger = require('#src/utility/logging/harper_logger');
+const { handleHDBError } = require('#src/utility/errors/hdbError');
+const PermissionResponseObject = require('#src/security/data_objects/PermissionResponseObject').default;
+const { pinLogConfig } = require('../../../logConfigFixture.js');
+const { waitFor } = require('../../../waitFor.js');
 
 function makeOpMap(entries) {
 	const m = new Map();
@@ -507,6 +513,34 @@ describe('mcp/tools/operations — handler dispatch', () => {
 		assert.equal(payload.kind, 'harper_error');
 		assert.equal(payload.operation, 'describe_all');
 		assert.match(payload.message, /not permitted/);
+	});
+
+	it('traces a refusal by its reason and returns the permission report as the message', async () => {
+		const reason = "Operation 'describe_all' is not permitted for this role's operations configuration";
+		const report = new PermissionResponseObject().handleUnauthorizedItem(reason);
+		_setChooseOperationForTest(() => {
+			throw handleHDBError(new Error(), report, 403, undefined, false, true);
+		});
+		_setProcessLocalTransactionForTest(async () => null);
+		_setOperationFunctionMapForTest(makeOpMap([['describe_all', null]]));
+		registerOperationsTools();
+
+		const restoreLogConfig = pinLogConfig({ level: 'trace' });
+		try {
+			const logPath = harperLogger.getLogFilePath();
+			const res = await getTool('describe_all').handler({}, { user: NOBODY, profile: 'operations', sessionId: 's' });
+			assert.deepStrictEqual(JSON.parse(res.content[0].text).message, JSON.parse(JSON.stringify(report)));
+
+			const traced = await waitFor(() =>
+				(existsSync(logPath) ? readFileSync(logPath, 'utf8') : '')
+					.split('\n')
+					.find((line) => line.includes('MCP operations/describe_all threw:'))
+			);
+			assert.ok(traced.includes(reason), traced);
+			assert.ok(!traced.includes('[object Object]'), traced);
+		} finally {
+			restoreLogConfig();
+		}
 	});
 
 	it('maps server-side validation errors to isError=true', async () => {

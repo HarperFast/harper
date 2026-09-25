@@ -1,7 +1,36 @@
 'use strict';
-import logger from '../logging/harper_logger.ts';
+import logger, { inspectForLog } from '../logging/harper_logger.ts';
 import * as hdbErrors from './commonErrors.ts';
 import * as hdbTerms from '../hdbTerms.ts';
+
+/**
+ * `message` has to be a string, because it is what the logger and `String(error)` render. A response
+ * message can be a structured body instead, such as the permission report a refused operation
+ * answers with, so describe one by its `error` summary followed by the reasons it lists. Anything
+ * else is rendered the way the logger renders a structured value, which cannot throw and does not
+ * expose the properties of an Error nested in it.
+ */
+function messageText(message: any): string {
+	if (typeof message === 'string') return message;
+	try {
+		if (typeof message.message === 'string') return message.message;
+		const { error, ...detail } = message;
+		if (typeof error === 'string') {
+			const reasons = Object.values(detail)
+				.flat()
+				.filter((reason) => reason != null && (typeof reason !== 'object' || Object.keys(reason).length > 0))
+				.map((reason) => (typeof reason === 'string' ? reason : renderValue(reason)));
+			return reasons.length > 0 ? `${error}: ${reasons.join('; ')}` : error;
+		}
+	} catch {
+		// a getter or proxy that throws; render the value as a whole instead
+	}
+	return renderValue(message);
+}
+
+function renderValue(value: any): string {
+	return String(inspectForLog(value, { breakLength: Infinity, depth: 4 }));
+}
 
 /**
  * Custom error class used for better error and log handling.  Caught errors that evaluate to an instanceof HdbError can
@@ -15,7 +44,7 @@ export class HdbError extends Error {
 	logLevel: string;
 	/**
 	 * @param {Error} errOrig -  Error to be translated into HdbError. If manually throwing an error, pass `new Error()` to ensure stack trace is maintained
-	 * @param {String} [httpMsg] - optional -  response message that will be returned via the API
+	 * @param {String|Object} [httpMsg] - optional -  response message that will be returned via the API
 	 * @param {Number} [httpCode] - optional -  response status code that will be returned via the API
 	 * @param {String} [logLevel] - optional -  log level that will be used for logging of this error
 	 * @param {String} [logMsg] - optional - log message that, if provided, will be logged at the `logLevel` above
@@ -32,14 +61,9 @@ export class HdbError extends Error {
 			: hdbErrors.DEFAULT_ERROR_MSGS[httpCode]
 				? hdbErrors.DEFAULT_ERROR_MSGS[httpCode]
 				: hdbErrors.DEFAULT_ERROR_MSGS[hdbErrors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
-		this.message = errOrig.message ? errOrig.message : this.http_resp_msg;
+		this.message = messageText(errOrig.message ? errOrig.message : this.http_resp_msg);
 		this.type = errOrig.name;
 		if (logLevel) this.logLevel = logLevel;
-
-		//This ensures that the error stack does not include [object Object] if the error message is not a string
-		if (typeof this.message !== 'string') {
-			this.stack = errOrig.stack;
-		}
 
 		if (logMsg) {
 			logger[logLevel](logMsg);
