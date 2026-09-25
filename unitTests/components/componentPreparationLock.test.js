@@ -479,8 +479,7 @@ describe('component preparation lock', () => {
 			assert.equal(acquired, true, 'and the next contender does not wait behind it');
 		});
 
-		// Only macOS lets an unprivileged process make a file undeletable while its directory stays writable — the
-		// user-immutable flag — which is the state a Windows sharing violation leaves a ticket in.
+		// The user-immutable flag: undeletable in a writable directory, as a Windows sharing violation leaves a ticket.
 		const undeletable = (filePath, on) => spawnSync('chflags', [on ? 'uchg' : 'nouchg', filePath]);
 		const ticketNames = async (lockRoot, lockName) =>
 			(await readdir(lockRoot)).filter((name) => name.startsWith(`${lockName}.ticket.`));

@@ -142,7 +142,6 @@ export async function scanLiveClaims(
 	const ticketPrefix = `${lockName}.ticket.`;
 	const releasedPrefix = `${lockName}.released.`;
 	const claimNames: string[] = [];
-	// Allocated only when a release marker exists, so the polling path of an ordinary acquisition does not pay for it.
 	let releasedTokens: Set<string> | undefined;
 	for (const name of entries) {
 		if (name.startsWith(choosingPrefix) || name.startsWith(ticketPrefix)) claimNames.push(name);
@@ -182,10 +181,9 @@ export async function scanLiveClaims(
 	);
 	const choosing: ComponentPreparationLockOwner[] = [];
 	const tickets: ComponentPreparationLockOwner[] = [];
-	// Tokens of tickets still on disk after this pass, so a marker is kept exactly as long as its ticket.
+	// A marker is kept exactly as long as its ticket.
 	const unremovedTicketTokens = releasedTokens && new Set<string>();
 	for (const claim of claims) {
-		// Matched on the token the ticket itself records, not on its filename.
 		const released = Boolean(claim.owner && releasedTokens?.has(claim.owner.token));
 		if (claim.owner?.token !== ownToken && (!claim.owner || !claim.alive || released)) {
 			// Claim filenames contain a random owner token and are never reused. Removing this exact
@@ -202,9 +200,11 @@ export async function scanLiveClaims(
 		if (claim.isTicket) tickets.push(claim.owner!);
 		else choosing.push(claim.owner!);
 	}
-	for (const token of releasedTokens ?? []) {
-		if (!unremovedTicketTokens!.has(token)) {
-			await rm(join(lockRoot, `${releasedPrefix}${token}`), { force: true }).catch(() => {});
+	if (releasedTokens) {
+		for (const token of releasedTokens) {
+			if (!unremovedTicketTokens!.has(token)) {
+				await rm(join(lockRoot, `${releasedPrefix}${token}`), { force: true }).catch(() => {});
+			}
 		}
 	}
 	return { choosing, tickets };
@@ -349,7 +349,7 @@ function releasedMarkerPath(lockRoot: string, lockName: string, token: string): 
 /**
  * A ticket that cannot be removed is retired by a marker `scanLiveClaims` honours instead. Only the ticket's owner
  * writes one, and tokens are never reused, so a marker cannot retire a holder that has not finished. Exported for
- * failure injection, since Linux cannot make a file undeletable in a writable directory without root.
+ * failure injection.
  */
 export async function releaseTicket(
 	lockRoot: string,
