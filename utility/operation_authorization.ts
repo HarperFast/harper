@@ -113,7 +113,7 @@ class permission {
 		this.requires_su = requiresSu;
 		this.perms = perms;
 		// snake_case API operation name (from OPERATIONS_ENUM) for operations allowlist checks. Without it
-		// gate 1 checks the handler name, which no role can list, so no allowlist can grant the operation.
+		// gate 1 checks the handler name, which a role can list only if it happens to be an API name too.
 		this.api_name = apiName;
 	}
 }

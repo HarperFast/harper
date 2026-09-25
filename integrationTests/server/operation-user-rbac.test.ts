@@ -35,7 +35,6 @@ const STANDARD_USER_ROLE = 'standard_user_ops_role';
 const STANDARD_USER_USER = 'standard_user_user';
 const STANDARD_USER_PASS = 'Test1234!';
 
-// The least-privilege CI deploy role the OIDC trusted-publishing docs point a trust policy at.
 const DEPLOYER_ROLE = 'deploy_ops_role';
 const DEPLOYER_USER = 'deployer_user';
 const DEPLOYER_PASS = 'Test1234!';
@@ -202,7 +201,6 @@ suite('operations RBAC', (ctx: ContextWithHarper) => {
 		});
 	}
 
-	/** The allowlist refusal names the API operation, so a 403 for any other reason does not satisfy it. */
 	function assertNotInOperations(body: any, operation: string) {
 		const expected = `Operation '${operation}' is not permitted for this role's operations configuration`;
 		ok(body?.unauthorized_access?.includes(expected), `expected "${expected}", got ${JSON.stringify(body)}`);
@@ -361,7 +359,6 @@ suite('operations RBAC', (ctx: ContextWithHarper) => {
 			strictEqual(res.status, 200, `deploy_component: ${JSON.stringify(body)}`);
 			strictEqual(body.message, `Successfully deployed: ${DEPLOY_PROJECT}`);
 
-			// The recorded deployment is attributed to the delegated user, not to an elevated principal.
 			const deadline = Date.now() + 20_000;
 			let deployment: any;
 			while (Date.now() < deadline) {
@@ -375,6 +372,18 @@ suite('operations RBAC', (ctx: ContextWithHarper) => {
 			}
 			strictEqual(deployment?.status, 'success', `get_deployment: ${JSON.stringify(deployment)}`);
 			strictEqual(deployment.user, DEPLOYER_USER);
+		});
+
+		test('deploy_custom_function_project is allowed (legacy alias of the granted deploy_component)', async () => {
+			const res = await callOp(DEPLOYER_USER, DEPLOYER_PASS, {
+				operation: 'deploy_custom_function_project',
+				project: DEPLOY_PROJECT,
+				payload: await targz(DEPLOY_FIXTURE_PATH),
+				restart: false,
+			});
+			const body = (await res.json()) as any;
+			strictEqual(res.status, 200, `deploy_custom_function_project: ${JSON.stringify(body)}`);
+			strictEqual(body.message, `Successfully deployed: ${DEPLOY_PROJECT}`);
 		});
 
 		test('drop_component is denied (the grant is deploy_component only)', async () => {
