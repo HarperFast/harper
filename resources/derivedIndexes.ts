@@ -81,6 +81,7 @@ type FullTextTestConfiguration = {
 };
 const runtimes = new WeakMap<object, Registered>();
 const suspendedActivation = new WeakMap<object, number>();
+const permanentlySuspendedActivation = new WeakSet<object>();
 const retryUnavailableByStore = new WeakMap<object, Set<string>>();
 let fullTextTestConfiguration: FullTextTestConfiguration | undefined;
 
@@ -97,11 +98,21 @@ export function suspendDerivedIndexActivation(rootStore: object): () => void {
 	};
 }
 
+/** Prevent abandoned root wrappers from reattaching derived indexes after a failed native close. */
+export function permanentlySuspendDerivedIndexActivation(rootStore: object): void {
+	permanentlySuspendedActivation.add(rootStore);
+}
+
 function activationSuspended(Table: any): boolean {
 	const rootStore = Table.primaryStore?.rootStore;
 	// Closed roots no longer retain an active suspension count, but stale table classes must not
 	// resurrect their derived-index runtime after successful teardown.
-	return rootStore != null && (rootStore.status === 'closed' || suspendedActivation.has(rootStore));
+	return (
+		rootStore != null &&
+		(rootStore.status === 'closed' ||
+			permanentlySuspendedActivation.has(rootStore) ||
+			suspendedActivation.has(rootStore))
+	);
 }
 
 function markUnavailableRetry(registered: Registered, auditStore: RocksTransactionLogStore, backendId: string): void {

@@ -36,6 +36,7 @@ const {
 } = require('#src/resources/databaseDropPreparation');
 const {
 	getSuspendedDatabaseRootCount,
+	databaseCommitsSuspended,
 	setDatabaseCommitDrainTimeoutMilliseconds,
 	trackOutstandingCommit,
 } = require('#src/resources/DatabaseTransaction');
@@ -160,6 +161,7 @@ describe('RocksDB handle release', function () {
 		const databaseName = 'drop_schema_close_failure';
 		const dropPreparationId = 'drop-schema-close-failure-test';
 		const rootStore = openRocksDb(databaseName);
+		const suspendedBefore = getSuspendedDatabaseRootCount();
 		const originalPrimaryStore = databases[databaseName].pkg.primaryStore;
 		const close = rootStore.close;
 		rootStore.close = () => {
@@ -184,6 +186,12 @@ describe('RocksDB handle release', function () {
 			(error) => error.code === 'DATABASE_CLOSING'
 		);
 		assert.strictEqual(databases[databaseName], undefined, 'a partially closed graph must be unregistered');
+		assert.strictEqual(databaseCommitsSuspended(rootStore), true, 'the abandoned root must remain fenced');
+		assert.strictEqual(
+			getSuspendedDatabaseRootCount(),
+			suspendedBefore,
+			'an abandoned root must not retain the process-wide active-fence fast path'
+		);
 		rootStore.close = close;
 		await schemaHandler({
 			type: 'schema',
@@ -342,6 +350,7 @@ describe('RocksDB handle release', function () {
 		const scratchRoot = mkdtempSync(join(tmpdir(), 'harper.unit-test.branch-close-failure-'));
 		const checkpointDir = join(scratchRoot, 'checkpoint');
 		let branch;
+		const suspendedBefore = getSuspendedDatabaseRootCount();
 		try {
 			await rootStore.createCheckpoint(checkpointDir);
 			branch = openBranchDatabase(checkpointDir, 'closerelease5', 'appA__closerelease5');
@@ -352,6 +361,7 @@ describe('RocksDB handle release', function () {
 
 			assert.strictEqual(refCountFor(rootStore.path), 0, 'regular database handles are still released');
 			assert.ok(refCountFor(branch.rootStore.path) > 0, 'the unsafe branch close remains fail-closed');
+			assert.strictEqual(getSuspendedDatabaseRootCount(), suspendedBefore);
 			BranchTable.derivedIndexRuntime = { close: () => Promise.resolve() };
 			await branch.close();
 		} finally {

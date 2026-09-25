@@ -71,11 +71,13 @@ import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
 import {
 	databaseCommitsSuspended,
 	getDatabaseCommitDrainTimeoutMilliseconds,
+	permanentlySuspendDatabaseCommits,
 	suspendDatabaseCommits,
 } from './DatabaseTransaction.ts';
 import { replayLogs } from './replayLogs.ts';
 import {
 	assertFullTextActivationSupported,
+	permanentlySuspendDerivedIndexActivation,
 	refreshDerivedIndexes,
 	retireFullTextIndexes,
 	suspendDerivedIndexActivation,
@@ -1931,6 +1933,13 @@ export function openBranchDatabase(
 						releaseActivation();
 						resumeTableMaintenance(tables);
 						for (const table of Object.values(tables)) refreshDerivedIndexes(table);
+					} else if (!closed) {
+						// Native handle teardown started, so this wrapper graph cannot safely return to service.
+						// Move its fences off the process-wide active counter and onto the abandoned root itself.
+						permanentlySuspendDatabaseCommits([rootStore]);
+						permanentlySuspendDerivedIndexActivation(rootStore);
+						commitSuspension.release();
+						releaseActivation();
 					}
 				});
 			const retryable = operation.catch((error) => {
@@ -2374,7 +2383,6 @@ export async function closeDatabase(
 		false,
 		definedRoot ? [definedRoot] : []
 	);
-	let databaseClosed = false;
 	let handleCloseStarted = false;
 	const rootStores = new Set<any>();
 	try {
@@ -2445,11 +2453,16 @@ export async function closeDatabase(
 				}
 			}
 		}
-		databaseClosed = true;
-		if ([...rootStores].every((rootStore) => rootStore.status !== 'open')) releaseDerivedIndexActivation();
 		return true;
 	} finally {
-		if (!databaseClosed && !handleCloseStarted) releaseDerivedIndexActivation();
+		const hasOpenRoot = [...rootStores].some((rootStore) => rootStore.status === 'open');
+		if (handleCloseStarted && hasOpenRoot) {
+			// The catalog graph has been or will be discarded; keep only those stale wrappers fenced.
+			// Weak ownership lets garbage collection reclaim the fence with the abandoned wrappers.
+			permanentlySuspendDatabaseCommits(rootStores);
+			for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);
+		}
+		releaseDerivedIndexActivation();
 	}
 }
 

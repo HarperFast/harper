@@ -89,6 +89,7 @@ let oldestOutstandingCommit: OutstandingCommit | undefined;
 let newestOutstandingCommit: OutstandingCommit | undefined;
 let outstandingCommitCount = 0;
 const suspendedDatabaseCommits = new WeakMap<object, number>();
+const permanentlySuspendedDatabaseCommits = new WeakSet<object>();
 let suspendedDatabaseRootCount = 0;
 // Caps the stuck-commit log (checkOverloaded() below) to at most one line per this interval across
 // the whole thread, regardless of how many distinct commits individually cross the threshold — see
@@ -188,9 +189,14 @@ export function trackOutstandingCommit(
 export function databaseCommitsSuspended(rootStore: object | undefined): boolean {
 	if (rootStore == null) return false;
 	// Successful teardown releases the active fence so unrelated databases keep the zero-cost fast
-	// path, but a stale Table class must still reject writes against its closed native descriptor.
-	if ((rootStore as any).status === 'closed') return true;
+	// path, but a stale Table class must still reject writes against a closed or abandoned descriptor.
+	if ((rootStore as any).status === 'closed' || permanentlySuspendedDatabaseCommits.has(rootStore)) return true;
 	return suspendedDatabaseRootCount > 0 && (suspendedDatabaseCommits.get(rootStore) ?? 0) > 0;
+}
+
+/** Keep abandoned root wrappers fenced without retaining the process-wide active-fence counter. */
+export function permanentlySuspendDatabaseCommits(rootStores: Iterable<object>): void {
+	for (const rootStore of rootStores) permanentlySuspendedDatabaseCommits.add(rootStore);
 }
 
 export function getSuspendedDatabaseRootCount(): number {
