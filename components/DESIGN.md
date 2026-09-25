@@ -495,6 +495,14 @@ input, changed dependency evidence, or any genuinely opaque runtime does. Entry 
 remain consumer-directed: the static plugin applies asset changes incrementally, while executable
 consumers such as `jsResource` request a restart on their logical `change` or `unlink` events.
 
+## Secret custody starts before boot-time installs
+
+`installApplications()` decrypts sealed SSH deploy keys and resolves stored registry credentials through
+secret custody, which is itself a root built-in (Harper Pro's `secretCustody`). `loadRootComponents()`
+therefore starts that one built-in through `startSecretCustodyOnMainThread()` before installing, and the
+root load reuses the start through the shared `mainThreadInitialized` gate ([#2780](https://github.com/HarperFast/harper/issues/2780)).
+Enforced by `integrationTests/components/boot-install-secret-custody.test.ts`.
+
 ## Startup waits for component preparation only up to `deployment.startupInstallTimeout`
 
 Listeners open and workers start only after `installApplications()` returns, so any component preparation it
