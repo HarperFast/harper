@@ -5,6 +5,8 @@ const DEFAULT_MAX_QUEUE_TIME = 20_000; // 20 seconds
 let lastWarning = 0;
 const WARNING_INTERVAL = 30000;
 const EVENT_QUEUE_MONITORING_INTERVAL = 3000;
+const LIMIT_EXCEEDED_LOG_INTERVAL = 5000;
+let lastLimitExceededLog = -Infinity;
 let lastEventQueueCheck = performance.now() + EVENT_QUEUE_MONITORING_INTERVAL;
 let averageEventCycleTime = 0;
 /**
@@ -23,6 +25,16 @@ export function throttle(
 		if (queuedCalls) {
 			// this is an estimate of the time an event will take to process, based on the average event cycle time and the queue depth
 			if (queuedCalls.length * averageEventCycleTime > maxQueueTimeLimit) {
+				// Rate-limited: the shed itself is silent (a 503 the HTTP layer reports at most as an
+				// analytics action), and without this line a burst of rejected writes leaves no
+				// server-side record of the queue depth and event-loop cycle time that caused it.
+				const now = performance.now();
+				if (now - lastLimitExceededLog > LIMIT_EXCEEDED_LOG_INTERVAL) {
+					lastLimitExceededLog = now;
+					logger.warn?.(
+						`Rejecting queued calls: ${queuedCalls.length} already queued at ~${Math.round(averageEventCycleTime)}ms per event cycle, an estimated wait past the ${maxQueueTimeLimit}ms limit`
+					);
+				}
 				return onLimitExceeded(...args);
 			}
 			return new Promise((resolve, reject) => {

@@ -52,6 +52,8 @@ const SETTLE_MS = 2500; // extra buffer past TTL before trusting convergence
 
 const N_PRODUCTS = 60; // 60 x 5 attrs = 300 EAV rows for the bulk probe
 const READS_PER_PRODUCT_DURING_BURST = 3;
+const PUT_SHED_RETRIES = 10; // attempts per PUT before a 503 (request-queue shed) fails the probe
+const PUT_SHED_BACKOFF_MS = 100; // grows linearly per attempt: 5.5s of backoff across all retries
 
 interface ProductBody {
 	id: string;
@@ -70,16 +72,28 @@ suite('QA-595 EAV catalog x sourcedFrom cache coherence', { skip: skipSuite }, (
 	let restURL: string;
 	let headers: Record<string, string>;
 
+	// The burst queues 300 non-GET requests on one worker at once. The HTTP request-queue throttle
+	// (server/http.ts) sheds new writes with a 503 once the queue's estimated drain time passes its
+	// limit, which a slow CI event loop reaches under Bun. That is the server's backpressure, not the
+	// cache-coherence defect this probe hunts, so a shed PUT backs off and re-sends like a real client.
+	let shedRetries = 0;
 	async function putAttribute(entityId: string, attrName: string, gen: number): Promise<number> {
 		const key = `${entityId}:${attrName}`;
-		const res = await fetch(`${restURL}/Attribute/${encodeURIComponent(key)}`, {
-			method: 'PUT',
-			headers,
-			body: JSON.stringify(attrRow(entityId, attrName, gen)),
-		});
-		await res.text().catch(() => undefined);
-		if (![200, 201, 204].includes(res.status)) throw new Error(`PUT Attribute/${key} -> ${res.status}`);
-		return res.status;
+		for (let attempt = 1; ; attempt++) {
+			const res = await fetch(`${restURL}/Attribute/${encodeURIComponent(key)}`, {
+				method: 'PUT',
+				headers,
+				body: JSON.stringify(attrRow(entityId, attrName, gen)),
+			});
+			const text = await res.text().catch(() => '');
+			if ([200, 201, 204].includes(res.status)) return res.status;
+			if (res.status === 503 && attempt < PUT_SHED_RETRIES) {
+				shedRetries++;
+				await sleep(PUT_SHED_BACKOFF_MS * attempt);
+				continue;
+			}
+			throw new Error(`PUT Attribute/${key} -> ${res.status}${text ? `: ${text.slice(0, 200)}` : ''}`);
+		}
 	}
 
 	async function getProduct(entityId: string): Promise<{ status: number; body: ProductBody | null }> {
@@ -205,7 +219,7 @@ suite('QA-595 EAV catalog x sourcedFrom cache coherence', { skip: skipSuite }, (
 			}
 			console.log(
 				`[QA-595 P1] observations captured=${[...observations.values()].reduce((n, a) => n + a.length, 0)} ` +
-					`torn(mixed-gen)=${tornCount}\n  samples: ${JSON.stringify(tornSamples)}`
+					`torn(mixed-gen)=${tornCount} shed-retries=${shedRetries}\n  samples: ${JSON.stringify(tornSamples)}`
 			);
 
 			// settle well past TTL, then check convergence against the independent raw-row oracle
