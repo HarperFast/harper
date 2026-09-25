@@ -1905,14 +1905,16 @@ export function openBranchDatabase(
 			const commitSuspension = suspendDatabaseCommits([rootStore]);
 			let closed = false;
 			let maintenanceQuiesced = false;
+			let handleCloseStarted = false;
 			const operation = commitSuspension
 				.waitForDrain()
-				.then(() => settleBranchDerivedIndexes(tables))
 				.then(async () => {
 					await settleTableMaintenance(tables);
 					maintenanceQuiesced = true;
 				})
+				.then(() => settleBranchDerivedIndexes(tables))
 				.then(() => {
+					handleCloseStarted = true;
 					closeBranchHandles(path, rootStore, openedStores, tables);
 					if (openBranches.get(path) === branch) openBranches.delete(path);
 					releaseBranchIdentity(storeName);
@@ -1921,8 +1923,8 @@ export function openBranchDatabase(
 					closed = true;
 				})
 				.finally(() => {
-					// An unexpected failure after maintenance stops cannot safely return this graph to service.
-					if (!closed && !maintenanceQuiesced) {
+					if (!closed && !handleCloseStarted) {
+						if (maintenanceQuiesced) resumeTableMaintenance(tables);
 						commitSuspension.release();
 						releaseActivation();
 					}
@@ -2258,7 +2260,6 @@ export async function dropDatabase(databaseName) {
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
 		}
 		releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, true, [rootStore]);
-		await settleTableMaintenance(dbTables);
 		for (const tableName in dbTables) {
 			const tableRoot = dbTables[tableName].primaryStore.rootStore;
 			lmdbDatabaseEnvs.delete(tableRoot.path);
@@ -2348,7 +2349,6 @@ export async function closeDatabase(
 		false,
 		definedRoot ? [definedRoot] : []
 	);
-	await settleTableMaintenance(dbTables);
 	let databaseClosed = false;
 	try {
 		const rootStores = new Set<any>();
@@ -2490,15 +2490,11 @@ export async function closeLoadedDatabases(): Promise<void> {
 }
 
 async function settleTableMaintenance(dbTables: Record<string, any>): Promise<void> {
-	await Promise.all(
-		Object.values(dbTables).map((table: any) =>
-			table
-				?.closeMaintenance?.()
-				.catch((error) =>
-					logger.warn(`Error settling maintenance for ${table?.databaseName}.${table?.tableName}`, error)
-				)
-		)
-	);
+	await Promise.all(Object.values(dbTables).map((table: any) => table?.closeMaintenance?.()));
+}
+
+function resumeTableMaintenance(dbTables: Record<string, any>): void {
+	for (const table of Object.values(dbTables)) table?.resumeMaintenance?.();
 }
 
 async function settleDatabaseDerivedIndexes(
@@ -2531,6 +2527,7 @@ async function settleDatabaseDerivedIndexes(
 	}
 	await commitSuspension.waitForDrain();
 	await settleInterruptedDropRetirements(rootStores);
+	await settleTableMaintenance(dbTables);
 	if (attachments.size === 0) return releaseLifecycle;
 	const entries = [...attachments];
 	const results = await Promise.allSettled(entries.map(async ([attachment]) => attachment.close(dropping)));
@@ -2538,6 +2535,7 @@ async function settleDatabaseDerivedIndexes(
 		.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
 		.map((result) => result.reason);
 	if (failures.length > 0) {
+		resumeTableMaintenance(dbTables);
 		releaseLifecycle();
 		for (const [attachment, tables] of entries) {
 			if (dropping) attachment.completeDrop?.(false);

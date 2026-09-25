@@ -786,8 +786,8 @@ export function makeTable(options) {
 	let cleanupInterval = 86400000;
 	let cleanupPriority = 0;
 	let lastCleanupInterval: number | undefined;
-	let cleanupTimer: NodeJS.Timeout;
-	let recordExpirationInterval: NodeJS.Timeout;
+	let cleanupTimer: NodeJS.Timeout | undefined;
+	let recordExpirationInterval: NodeJS.Timeout | undefined;
 	// a reclamation pass awaits a scheduled cleanup, which only settles from its timer
 	const pendingCleanupResolvers = new Set<() => void>();
 	let disposed = false;
@@ -2147,6 +2147,7 @@ export function makeTable(options) {
 			// same-name recreate must not race an owner still applying to the old generation.
 			const derivedIndexRuntime = TableResource.derivedIndexRuntime;
 			const restoreDerivedIndexesAfterFailedDrop = () => {
+				TableResource.resumeMaintenance();
 				try {
 					const restored = derivedIndexRuntime?.restoreAfterFailedDrop?.();
 					if (TableResource.derivedIndexRuntime === derivedIndexRuntime) TableResource.derivedIndexRuntime = restored;
@@ -2158,6 +2159,7 @@ export function makeTable(options) {
 					);
 				}
 			};
+			await TableResource.closeMaintenance();
 			try {
 				await derivedIndexRuntime?.close(true);
 			} catch (error) {
@@ -2288,7 +2290,6 @@ export function makeTable(options) {
 			// invisible, and the tombstone guarantees the drop completes on the
 			// next startup (or on a same-name create).
 			if (databases[databaseName]?.[tableName] === TableResource) delete databases[databaseName][tableName];
-			await TableResource.closeMaintenance();
 			TableResource.cleanup();
 			if (databaseName === databasePath && rootStore instanceof RocksDatabase) {
 				try {
@@ -7395,6 +7396,13 @@ export function makeTable(options) {
 				await Promise.allSettled(pending);
 			}
 		}
+		static resumeMaintenance(): void {
+			if (disposed || !maintenanceClosed) return;
+			maintenanceClosed = false;
+			lastCleanupInterval = undefined;
+			if (expirationScanScheduled || evictionMs) scheduleCleanup();
+			if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
+		}
 		static _readTxnForContext(context) {
 			return txnForContext(context).getReadTxn();
 		}
@@ -8437,8 +8445,10 @@ export function makeTable(options) {
 	function stopMaintenance() {
 		maintenanceClosed = true;
 		clearTimeout(cleanupTimer);
+		cleanupTimer = undefined;
 		settlePendingCleanup();
 		clearInterval(recordExpirationInterval);
+		recordExpirationInterval = undefined;
 	}
 	// RocksDB-only: coalesces eviction/tombstone removals into shared transactions so the cleanup
 	// scan pays one commit per batch instead of one per record. Descriptors hold only the decoded
