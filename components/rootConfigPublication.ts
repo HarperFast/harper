@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import * as env from '../utility/environment/environmentManager.ts';
 import {
 	atomicWriteFile,
-	getConfigFilePath,
+	getRootConfigFilePath,
 	getConfigObj,
 	parseYamlDoc,
 	syncFileToStorageSync,
@@ -66,7 +66,7 @@ export async function withRootConfigPublicationLock<T>(publish: () => Promise<T>
 	let acquired = false;
 	try {
 		return await withComponentPreparationLock(
-			getConfigFilePath(),
+			getRootConfigFilePath(),
 			() => {
 				acquired = true;
 				return publish();
@@ -148,7 +148,7 @@ export async function assertRootConfigEffectPublishable(component: string, effec
 }
 
 function readRootConfigChange(component: string, effect: RootConfigEffect) {
-	const configFilePath = getConfigFilePath();
+	const configFilePath = getRootConfigFilePath();
 	const configDoc = parseYamlDoc(configFilePath);
 	// Refused before anything is applied: rewriting a document that did not parse cleanly writes back only what
 	// the parser recovered.

@@ -19,8 +19,10 @@
  * ROOTPATH stays exported for the whole run — worker threads a test spawns
  * and mid-run config/logger re-initializations must resolve the per-PID
  * root too. The few test files that specifically exercise boot-props-based
- * resolution (which a ROOTPATH env var shadows) clear the variable and the
- * noBootFile() memo for their own scope.
+ * resolution (which a ROOTPATH env var shadows) clear it for their own scope
+ * with bootPropsFixture.js's clearRootPath(), which also hides the boot
+ * properties of any Harper installed on the machine. A test that clears or
+ * replaces ROOTPATH any other way must put it back.
  *
  * storage.path is pinned to <pid dir>/database (the same layout the config
  * template yields, asserted absolutely so an inherited config can never
