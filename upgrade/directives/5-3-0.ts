@@ -3,7 +3,8 @@
 // 5.3.0 — introduces system.hdb_oidc_trust and system.hdb_oidc_token_use for OIDC trusted
 // publishing (#2171).
 //
-// Fresh installs get the table from json/systemSchema.json; this covers existing installs. The
+// Fresh installs get both tables from json/systemSchema.json; this covers existing installs, and the
+// replay table's full shape is also declared on every boot (security/authn/oidc/tokenUseTable.ts). The
 // version must match the release that ships the dependent operations — see 5-1-0.ts for what
 // happens when it does not, and DESIGN.md "System table bootstrap" for the three touchpoints.
 
@@ -13,60 +14,21 @@ import * as terms from '../../utility/hdbTerms.ts';
 import * as initPaths from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
 import bridge from '../../dataLayer/harperBridge/harperBridge.ts';
 import hdbLogger from '../../utility/logging/harper_logger.ts';
+import { declareTokenUseTable } from '../../security/authn/oidc/tokenUseTable.ts';
 
 const OIDC_TRUST_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME;
 const OIDC_TOKEN_USE_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TOKEN_USE_TABLE_NAME;
 
 /**
- * The replay table gets the same bootstrap as the trust table, for a reason specific to it: replay
- * records must replicate, and a node that has never completed an exchange would otherwise not have
- * the table at all when a peer's record arrives. Provisioning it at install/upgrade time removes
- * that question entirely rather than depending on how replication treats a row for an unknown table.
- *
- * Only the primary key is declared here. The `expiresAt` TTL attribute is not expressible through
- * CreateTableObject, so tokenExchange.ts layers it on with an unconditional `table()` call — the
- * same two-step hdb_certificate_cache uses.
- *
- * KNOWN LIMITATION, shared with hdb_certificate_cache rather than specific to this table: that
- * second step runs on the exchange path, so a node that never performs an exchange — the passive
- * members of a cluster, which is most of them when CI always targets one endpoint — has the table
- * from this directive but never registers `expiresAt` locally. Replicated replay rows still land
- * there (that is what `audit: true` buys) but get no eviction, so the table grows on exactly the
- * nodes doing no work. Rows are small and bounded by exchange volume, so this is slow rather than
- * dangerous. Fixing it properly means installing the TTL at system-table setup instead of on first
- * use, which is a change to how every lazily-extended system table is provisioned — worth doing
- * once, for both tables, rather than special-casing this one.
+ * Declares the replay table whether or not it exists: the node that upgrades second can already hold a
+ * copy its pre-upgrade replication handshake created from a peer, with none of the attribute flags.
  */
-async function createHdbOidcTokenUseIfMissing() {
-	if (databases.system?.[OIDC_TOKEN_USE_TABLE]) {
-		hdbLogger.info(`system.${OIDC_TOKEN_USE_TABLE} already exists; skipping create.`);
-		await patchIsHashAttribute(OIDC_TOKEN_USE_TABLE);
-		return;
+async function declareHdbOidcTokenUse() {
+	if (!databases.system?.[OIDC_TOKEN_USE_TABLE]) {
+		hdbLogger.info(`Creating system.${OIDC_TOKEN_USE_TABLE} table for OIDC replay protection.`);
+		initPaths.initSystemSchemaPaths(terms.SYSTEM_SCHEMA_NAME, OIDC_TOKEN_USE_TABLE);
 	}
-
-	hdbLogger.info(`Creating system.${OIDC_TOKEN_USE_TABLE} table for OIDC replay protection.`);
-
-	const CreateTableObject =
-		require('../../dataLayer/CreateTableObject').default || require('../../dataLayer/CreateTableObject');
-	const schema = (systemSchema as any)[OIDC_TOKEN_USE_TABLE];
-	if (!schema) {
-		throw new Error(`systemSchema.${OIDC_TOKEN_USE_TABLE} is missing; cannot run 5.3.0 directive.`);
-	}
-
-	initPaths.initSystemSchemaPaths(terms.SYSTEM_SCHEMA_NAME, OIDC_TOKEN_USE_TABLE);
-	const createTable = new (CreateTableObject as any)(
-		terms.SYSTEM_SCHEMA_NAME,
-		OIDC_TOKEN_USE_TABLE,
-		schema.hash_attribute
-	);
-	createTable.attributes = schema.attributes;
-	const primaryKeyAttribute = createTable.attributes.find(({ attribute }) => attribute === schema.hash_attribute);
-	if (primaryKeyAttribute) primaryKeyAttribute.isPrimaryKey = true;
-	// Must match `"audit": true` in systemSchema.json — and here auditing is not cosmetic: it is the
-	// replication change feed, without which replay protection would be node-local.
-	createTable.audit = true;
-
-	await bridge.createTable(OIDC_TOKEN_USE_TABLE, createTable);
+	await declareTokenUseTable().indexingOperation;
 	await patchIsHashAttribute(OIDC_TOKEN_USE_TABLE);
 }
 
@@ -103,9 +65,8 @@ async function createHdbOidcTrustIfMissing() {
  *
  * harperdb@4.x reads is_hash_attribute from __dbis__ to derive the LMDB DBI open flags; without it
  * the DBI is opened with the opposite flags (DUPSORT set) and LMDB throws MDB_INCOMPATIBLE, breaking
- * downgrade — the same guard 5-1-0.ts and 5-2-0.ts apply to their tables. Both tables created here
- * go through the identical CreateTableObject + bridge.createTable path, so both need it; exempting
- * one would be a silent asymmetry rather than a decision. Idempotent: no-op when already set.
+ * downgrade — the same guard 5-1-0.ts and 5-2-0.ts apply to their tables. Both tables here get it;
+ * exempting one would be a silent asymmetry rather than a decision. Idempotent: no-op when already set.
  */
 async function patchIsHashAttribute(tableName: string) {
 	const systemTable = (databases as any).system?.[tableName];
@@ -126,7 +87,7 @@ const directive530 = {
 	version: '5.3.0',
 	description: 'create system.hdb_oidc_trust and system.hdb_oidc_token_use tables for OIDC trusted publishing',
 	sync_functions: [] as Array<() => unknown>,
-	async_functions: [createHdbOidcTrustIfMissing, createHdbOidcTokenUseIfMissing] as Array<() => Promise<unknown>>,
+	async_functions: [createHdbOidcTrustIfMissing, declareHdbOidcTokenUse] as Array<() => Promise<unknown>>,
 };
 
 export default [directive530];

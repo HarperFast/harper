@@ -10,7 +10,6 @@
 import jwt from 'jsonwebtoken';
 import Joi from 'joi';
 import { createHash } from 'node:crypto';
-import { table, type Table } from '../../../resources/databases.ts';
 import { ClientError } from '../../../utility/errors/hdbError.ts';
 import { validateBySchema } from '../../../validation/validationWrapper.ts';
 import { loggerWithTag } from '../../../utility/logging/logger.ts';
@@ -24,6 +23,7 @@ import { matchTrustPolicyClaims } from './claims.ts';
 import { normalizeIssuer } from './jwks.ts';
 import { profileForIssuer, type IdentityProviderProfile } from './providers/index.ts';
 import { loadEnabledPolicies } from './trustPolicyOperations.ts';
+import { declareTokenUseTable } from './tokenUseTable.ts';
 import type { OidcTrustPolicy, TokenClaims } from './types.ts';
 
 const logger = loggerWithTag('oidc-trust');
@@ -41,8 +41,6 @@ const REPLAY_RECORD_PADDING_MS = 120_000;
 /** Real identity tokens are ~1-2 KB; this bounds what we are willing to even parse. */
 const MAX_TOKEN_LENGTH = 8192;
 
-const TOKEN_USE_TABLE = 'hdb_oidc_token_use';
-
 /**
  * Spent identity tokens, keyed by the fingerprint below and expiring with the token, so the table
  * stays proportional to in-flight tokens rather than to deploy history and never holds a credential.
@@ -52,8 +50,6 @@ const TOKEN_USE_TABLE = 'hdb_oidc_token_use';
  * not a privilege escalation: whoever holds the token could obtain one operation token regardless.
  * What it stops is the realistic case, a token that leaks after a legitimate run and is reused
  * inside its window.
- *
- * table() also registers into `databases.system`, so the lookup finds it after the first call.
  */
 let tokenUseTable: any;
 
@@ -63,29 +59,7 @@ export function clearTokenUseTableCache(): void {
 }
 
 function getTokenUseTable(): any {
-	// Memoized per process, but `table()` is NOT skipped merely because the table already exists.
-	// The systemSchema stub and the 5.3.0 directive declare only the primary key — the `expiresAt`
-	// TTL is not expressible through CreateTableObject — so this call is what actually installs the
-	// TTL, layered on top of the bootstrap. Short-circuiting on existence would mean a table that
-	// arrived any other way (bootstrap, replication, restore, a manual create_table) never gets it,
-	// and replay records would then accumulate in a system table forever. hdb_certificate_cache
-	// does the same two-step for the same reason.
-	tokenUseTable ??= table<Table>({
-		table: TOKEN_USE_TABLE,
-		database: 'system',
-		// `audit: true` explicitly, NOT the default (which follows logging.auditLog). Auditing is the
-		// replication change feed (databases.ts: "auditing must be enabled for replication"), and
-		// replay records MUST replicate so a token spent on one node cannot be re-spent on another
-		// inside its window. Without this, an operator with logging.auditLog:false would silently lose
-		// cross-node replay protection. Its sibling hdb_oidc_trust is audited for the same reason.
-		audit: true,
-		attributes: [
-			{ name: 'id', isPrimaryKey: true },
-			{ name: 'policy_id' },
-			{ name: 'used_at' },
-			{ name: 'expiresAt', expiresAt: true, indexed: true },
-		],
-	});
+	tokenUseTable ??= declareTokenUseTable();
 	return tokenUseTable;
 }
 

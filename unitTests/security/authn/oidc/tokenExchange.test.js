@@ -57,10 +57,8 @@ function installMockTable(name, primaryKey) {
 }
 
 /**
- * The replay table is reached through an unconditional `table()` call, not a lookup — it has to be,
- * because the systemSchema bootstrap declares only the primary key and `table()` is what layers the
- * expiresAt TTL on top. So intercept the factory rather than seeding `databases.system`, which that
- * call would otherwise sail straight past.
+ * The replay table is reached through its `table()` declaration (tokenUseTable.ts), not a lookup, so
+ * intercept the factory rather than seeding `databases.system`, which that call would sail straight past.
  */
 function installMockTableFactory(name, mock) {
 	const databasesModule = require('#src/resources/databases');

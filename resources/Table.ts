@@ -8406,6 +8406,15 @@ export function makeTable(options) {
 			return primaryStore.remove(id, version);
 		});
 	}
+	function* expiresAtIndexEntries(index: any, end: number): Generator<{ key: any; id: Id }> {
+		if (isRocksDB) {
+			// a RocksIndexStore holds each [value, primary key] pair as its own composite key and has no getValues
+			for (const { key, value } of index.getRange({ start: true, end, snapshot: false })) yield { key, id: value };
+		} else {
+			for (const key of index.getRange({ start: true, values: false, end, snapshot: false }))
+				for (const id of index.getValues(key)) yield { key, id };
+		}
+	}
 	function runRecordExpirationEviction() {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
 		if (ownsStoreExpiration(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker())) {
@@ -8421,21 +8430,14 @@ export function makeTable(options) {
 					const expiresAtName = expiresAtProperty.name;
 					const index = indices[expiresAtName];
 					if (!index) throw new Error(`expiresAt attribute ${expiresAtProperty} must be indexed`);
-					for (const key of index.getRange({
-						start: true,
-						values: false,
-						end: Date.now(),
-						snapshot: false,
-					})) {
-						for (const id of index.getValues(key)) {
-							const recordEntry = primaryStore.getEntry(id);
-							if (!recordEntry?.value) {
-								// cleanup the index if the record is gone
-								primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id));
-							} else if (recordEntry.value[expiresAtName] < Date.now()) {
-								// make sure the record hasn't changed and won't change while removing
-								TableResource.evict(id, recordEntry.value, recordEntry.version);
-							}
+					for (const { key, id } of expiresAtIndexEntries(index, Date.now())) {
+						const recordEntry = primaryStore.getEntry(id);
+						if (!recordEntry?.value) {
+							// cleanup the index if the record is gone
+							primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id));
+						} else if (recordEntry.value[expiresAtName] < Date.now()) {
+							// make sure the record hasn't changed and won't change while removing
+							TableResource.evict(id, recordEntry.value, recordEntry.version);
 						}
 						await rest();
 					}

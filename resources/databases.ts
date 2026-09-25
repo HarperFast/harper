@@ -3433,9 +3433,12 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements) ||
 				// Include `embed` so a source/model change refreshes the embed registry.
 				JSON.stringify(attributeDescriptor.embed) !== JSON.stringify(attribute.embed);
-			// any metadata difference (drives persistence)
+			// any metadata difference (drives persistence). `expiresAt` changes only what the loader arms, not
+			// the index contents, so it is persisted here but is not a structural change.
 			const changed =
-				commonChanged || JSON.stringify(attributeDescriptor?.indexed) !== JSON.stringify(attribute.indexed);
+				commonChanged ||
+				JSON.stringify(attributeDescriptor?.indexed) !== JSON.stringify(attribute.indexed) ||
+				!attributeDescriptor?.expiresAt !== !attribute.expiresAt;
 			// structure-affecting difference (drives reindex) — ignores search-only option changes and
 			// representation-only differences (key order, string-vs-number) via canonicalIndexKey
 			const indexOptionsStructurallyChanged =

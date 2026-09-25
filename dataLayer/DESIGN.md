@@ -40,6 +40,14 @@ System tables replicate by default. To opt out, add the name to `NON_REPLICATING
 
 If the table needs `audit: true`, set it both in the schema (for fresh installs) **and** on the `CreateTableObject` instance in the directive (for upgrades) — otherwise the two paths diverge.
 
+**A replicated system table whose owner declares more than a name list** — an `@expiresAt` attribute, an index — needs that declaration on every node, every boot. `hdb_oidc_token_use` is the case: `security/authn/oidc/tokenUseTable.ts` holds its one definition, and `bin/run.ts initialize()` applies it after the upgrade step and before worker threads start (skipped in read-only mode; a failure is logged and retried on the next start), as do the 5.3.0 directive and the exchange path. `systemSchema.json` keeps only its primary key; the declaration completes the table on the first boot after install. Every other route to a copy leaves it partial, which is why the declaration cannot live only on the exchange path or in the directive:
+
+- A node that has not upgraded yet gets any system table it lacks from a peer's replication handshake (`DB_SCHEMA`), created from a snapshot that carries each attribute's name, type and primary-key bit — never `indexed` or `expiresAt` — and schema-defined like the peer's copy. From then on the handshake keeps that local definition and logs `Schema for '<db>.<table>' is defined locally, but attribute '<name>: <type>' from '<node>' does not match local attribute which does not exist` for every attribute a peer has and it lacks, so no peer repairs it; the directive that runs when that node upgrades finds the table already there.
+- A node that never exercises the owner's code path (a passive cluster member for the OIDC exchange) never declares the rest, and the rows replicated to it never expire.
+- An install already on a pre-release of the directive's version never runs the directive again (the `compareVersions` caveat above): from `5.3.0-beta.2`, `getVersionsForUpgrade` selects nothing for `5.3.0`, `5.3.0-beta.3` or `5.3.1`.
+
+A local `table()` declaration is authoritative, so repeating it repairs any of those shapes in place, keeping every row, and is a no-op once the shape matches (measured 2026-09-25: under 1 ms; repairing a stub holding 100,000 replay rows, 0.4 s on RocksDB and 1.4 s on LMDB). `hdb_certificate_cache` has the same lazy-only extension and has not been moved to this yet.
+
 ## RocksDB backup/restore: the restore lock + marker protocol (`dataLayer/restoreMarker.ts`, `dataLayer/rocksdbBackup.ts`)
 
 The `restore_backup` operation restores a user database on a live server by closing it across all

@@ -26,6 +26,7 @@ import { startHTTPThreads } from '../server/threads/socketRouter.ts';
 import { beginProcessShutdown } from '../server/threads/manageThreads.js';
 import * as hdbInfoController from '../dataLayer/hdbInfoController.ts';
 import { isReadOnlyMode } from '../resources/databases.ts';
+import { ensureTokenUseTable } from '../security/authn/oidc/tokenUseTable.ts';
 import { getThisNodeName, getThisNodeHostname } from '../server/nodeName.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import { getHdbPid, isProcessRunning } from '../utility/processManagement/processManagement.js';
@@ -182,6 +183,17 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 			hdbLogger.error(err);
 		}
 		process.exit(1);
+	}
+
+	// Every boot rather than only in the 5.3.0 directive, which never runs on data already at a 5.3.0
+	// pre-release (compareVersions sorts those above 5.3.0). Before worker threads start, so worker 0
+	// loads the completed table and arms its expiry sweep.
+	if (!isReadOnlyMode()) {
+		try {
+			await ensureTokenUseTable();
+		} catch (error) {
+			hdbLogger.error('Starting without a complete system.hdb_oidc_token_use; the next start retries', error);
+		}
 	}
 
 	// A built-in component only activates when its config key is present. Fresh installs get these
