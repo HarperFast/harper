@@ -81,13 +81,13 @@ Operations normally restricted to `super_user` can be selectively granted by inc
 
 List an aliased operation by its canonical name. `create_database`, `drop_database`, `describe_schema`, `search_by_hash`, `add_component`, `package_component`, `deploy_component`, and `delete_files_before` each grant their legacy spelling too (`create_schema`, `drop_schema`, `describe_database`, `search_by_id`, `add_custom_function_project`, `package_custom_function_project`, `deploy_custom_function_project`, `delete_records_before`), but a list that names only the legacy spelling grants neither.
 
-A few `super_user` operations cannot be granted by listing them, and a role that lists one is refused: the secrets-store operations, the OIDC trust-policy operations, `get_deployment_payload`, the managed-backup operations (`create_backup`, `list_backups`, `verify_backup`, `delete_backup`, `purge_backups`, `restore_backup`), `get_backup`, and `read_transaction_log`.
+A few `super_user` operations cannot be granted by listing them, and a role that lists one is refused: the secrets-store operations, the OIDC trust-policy operations, `get_deployment_payload`, the managed-backup operations (`create_backup`, `list_backups`, `verify_backup`, `delete_backup`, `purge_backups`, `restore_backup`), `get_backup`, `read_transaction_log`, and the legacy `catchup`.
 
 <VersionBadge type="changed" version="v5.3.0" />
 
 An operation the list omits is denied whatever else the role carries — the list is checked ahead of every other permission on the role. Earlier v5 releases let table DDL and SQL around it; both now go through it.
 
-Earlier releases also refused a listing of `deploy_component`, `add_component`, `drop_component`, `package_component`, `set_component_file`, `set_custom_function`, `drop_custom_function`, `drop_custom_function_project`, `restart_service`, `set_configuration`, `get_status`, `set_status`, `clear_status`, `install_node_modules`, `delete_files_before`, `delete_audit_logs_before`, `delete_transaction_logs_before`, `cleanup_orphan_blobs`, `search_jobs_by_start_date`, and `registration_info`, whatever the role carried. They are granted as listed now.
+Earlier releases also refused a listing of `deploy_component`, `add_component`, `drop_component`, `package_component`, `set_component_file`, `set_custom_function`, `drop_custom_function`, `drop_custom_function_project`, `restart_service`, `set_configuration`, `get_status`, `set_status`, `clear_status`, `install_node_modules`, `delete_files_before`, `delete_audit_logs_before`, `delete_transaction_logs_before`, `cleanup_orphan_blobs`, `search_jobs_by_start_date`, and `registration_info`, whatever the role carried. They are granted as listed now. `catchup`, which earlier releases granted to a role that listed it, no longer can be.
 
 So grant by listing, and build a role up rather than trying to narrow `super_user` — `add_role` and `alter_role` reject `super_user` or `cluster_user` set to `true` alongside any other key. A role that maintains one database's tables and queries them with SQL:
 
