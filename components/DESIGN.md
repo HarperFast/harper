@@ -493,3 +493,33 @@ not restart a fully observed runtime, but a changed or missing imported helper, 
 input, changed dependency evidence, or any genuinely opaque runtime does. Entry changes themselves
 remain consumer-directed: the static plugin applies asset changes incrementally, while executable
 consumers such as `jsResource` request a restart on their logical `change` or `unlink` events.
+
+## Startup waits for component preparation only up to `deployment.startupInstallTimeout`
+
+Listeners open and workers start only after `installApplications()` returns, so any component preparation it
+waits on gates the whole node. It waits at most `deployment.startupInstallTimeout` (default 10 minutes, `0` =
+unbounded) (`waitForStartupPreparations`). Everything per component that can block — the lock-file read, the
+credential lookup, the build — runs inside the tracked preparation, so the deadline bounds it; enumeration
+itself only validates config.
+
+A preparation still running at the deadline is left behind, not cancelled: it keeps its component preparation
+lock, so no second writer touches that component. A later `installApplications()` (every worker restart runs
+one) rejoins it rather than starting another (`trackStartupPreparation`, keyed by component and configuration)
+and does not wait for it again, since the node already runs without it.
+
+Startup then loads the installed tree: the previous version, or nothing for a new component. On the installing
+thread that needs `deployLifecycle.releaseLoads()` for the preparation's own deploy id, because a Scope created
+while its component's deploy is in flight would otherwise wait for that deploy and pause its watchers — in
+single-thread mode that is the node's only serving thread, and startup would block on the very preparation it
+stopped waiting for. Workers started after the broadcast never saw the deploy, so they already load the
+installed tree. `deploy:start`/`deploy:end` bracket the periods in which an unreleased deploy is in flight
+(`loadsAwaitDeploy`), so a release ends a pause and a later overlapping deploy still starts one.
+
+When a left-behind preparation succeeds it requests a restart unconditionally: some running generation
+predates its swap, and the package-metadata comparison `requestRestartAfterDeploy` uses cannot tell whether
+that generation ever loaded a working version. Because a preparation outlives the call that started it, each
+`harper-application-lock.json` transition is a read-modify-write in one per-path queue
+(`updateApplicationLock`), and a reinstall clears its entry under the component preparation lock
+(`recordApplicationPreparation`), after any earlier preparation's success write (harper#2072). Enforced by
+`unitTests/components/installApplicationsLock.test.js` and
+`integrationTests/deploy/startup-install-timeout.test.ts`.

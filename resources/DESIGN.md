@@ -260,6 +260,11 @@ Seven things that are easy to get wrong here:
   file was dropped or not. Entries below that horizon are often still on disk, and a cursor among
   them is told to resync — conservative in the safe direction only. LMDB can see a single eligible
   entry, so it raises off the first one it finds instead.
+- **A prune's clamped floor can sit past `Date.now() + 1`.** `boundedAuditPruneEnd` records `newest + 1`
+  when the newest log key is at or past the clock, and log keys are fractional `getNextMonotonicTime`
+  values, not `Date.now()`, so for the rest of that key's millisecond the floor exceeds the wall clock
+  by more than one. Bound it by the newest key, never the wall clock alone (`auditFloor.test.js`, the
+  far-future `deleteHistory` case — it failed twice on main that way).
 - **Untrustworthy metadata resolves to `Infinity`, not to a number.** A wrong-length record, or eight
   bytes decoding to NaN/negative, must not become a floor: `cursor < NaN` is false, so a consumer
   spelling the check that way would read corrupt metadata as safe.

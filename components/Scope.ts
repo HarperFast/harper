@@ -114,7 +114,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.#directory = directory;
 		this.#configFilePath = configFilePath;
 		this.#logger = loggerWithTag(this.#appName);
-		this.#deployInFlight = deployLifecycle.isDeployInFlight(this.#appName);
+		this.#deployInFlight = deployLifecycle.loadsAwaitDeploy(this.#appName);
 
 		this.databaseEvents = databaseEventsEmitter;
 		this.applicationScope = applicationScope;

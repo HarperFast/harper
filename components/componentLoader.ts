@@ -679,7 +679,7 @@ function withDeployAwareTimeout<T>(operation: Promise<T>, scope: Scope, timeout:
 		absoluteTimer = setTimeout(() => rejectTimeout(absoluteTimeout), absoluteTimeout);
 		absoluteTimer.unref?.();
 		const arm = () => {
-			if (deployLifecycle.isDeployInFlight(scope.appName)) return;
+			if (timer || deployLifecycle.loadsAwaitDeploy(scope.appName)) return;
 			if (remaining <= 0) return rejectTimeout();
 			activeSince = Date.now();
 			timer = setTimeout(rejectTimeout, remaining);

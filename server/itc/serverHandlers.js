@@ -5,12 +5,7 @@ const hdbLogger = require('../../utility/logging/harper_logger.ts');
 const hdbTerms = require('../../utility/hdbTerms.ts');
 const cleanLmdbMap =
 	require('../../utility/lmdb/cleanLMDBMap.ts').default || require('../../utility/lmdb/cleanLMDBMap.ts');
-const userSchema = require('../../security/user.ts');
 const { validateEvent } = require('../threads/itc.js');
-const harperBridge =
-	require('../../dataLayer/harperBridge/harperBridge.ts').default ||
-	require('../../dataLayer/harperBridge/harperBridge.ts');
-const process = require('process');
 const { isMainThread, threadId, workerData } = require('node:worker_threads');
 const {
 	databases,
@@ -22,11 +17,10 @@ const {
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
- * @type {{schema: ((function(*): Promise<void>)|*), job: ((function(*): Promise<void>)|*), user: ((function(): Promise<void>)|*)}}
+ * @type {{schema: ((function(*): Promise<void>)|*), job: ((function(*): Promise<void>)|*)}}
  */
 const serverItcHandlers = {
 	[hdbTerms.ITC_EVENT_TYPES.SCHEMA]: schemaHandler,
-	[hdbTerms.ITC_EVENT_TYPES.USER]: userHandler,
 	[hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST]: componentStatusRequestHandler,
 	[hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_REQUEST]: resourceOpenApiRequestHandler,
 	[hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_REQUEST]: middlewareChainsRequestHandler,
@@ -127,39 +121,6 @@ async function syncSchemaMetadata(msg) {
 		hdbLogger.error(e);
 	}
 }
-
-const userListeners = [];
-/**
- * Updates the global hdbUsers object by querying the hdbRole table.
- * @param event
- * @returns {Promise<void>}
- */
-async function userHandler(event) {
-	try {
-		try {
-			harperBridge.resetReadTxn(hdbTerms.SYSTEM_SCHEMA_NAME, hdbTerms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME);
-			harperBridge.resetReadTxn(hdbTerms.SYSTEM_SCHEMA_NAME, hdbTerms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME);
-		} catch (error) {
-			// this can happen during tests, best to ignore
-			hdbLogger.warn(error);
-		}
-		const validate = validateEvent(event);
-		if (validate) {
-			hdbLogger.error(validate);
-			return;
-		}
-
-		hdbLogger.trace(`ITC userHandler ${hdbTerms.HDB_ITC_CLIENT_PREFIX}${process.pid} received user event:`, event);
-		await userSchema.setUsersWithRolesCache();
-		for (let listener of userListeners) listener();
-	} catch (err) {
-		hdbLogger.error(err);
-	}
-}
-
-userHandler.addListener = function (listener) {
-	userListeners.push(listener);
-};
 
 const resourceListeners = [];
 /**
@@ -330,8 +291,6 @@ async function middlewareChainsRequestHandler(event) {
 }
 
 module.exports = serverItcHandlers;
-// Named exports so consumers (e.g., MCP listChanged) can subscribe via
-// `userHandler.addListener(fn)` / `schemaHandler.addListener(fn)`.
-module.exports.userHandler = userHandler;
+// Named exports so consumers (e.g., MCP listChanged) can subscribe via `schemaHandler.addListener(fn)`.
 module.exports.schemaHandler = schemaHandler;
 module.exports.resourceHandler = resourceHandler;

@@ -243,10 +243,10 @@ So a rejection is recorded rather than answered:
 **Rejection provenance is asserted, never inferred.** `security/credentialRejection.ts` holds a
 module-private `Symbol` tag; only the code that actually concludes "this credential is unacceptable"
 sets it, and `isCredentialRejection()` reads nothing else. Status ranges cannot carry that meaning:
-`findAndValidateUser()` lazily loads the user cache, whose system-table searches raise a
-default-status-400 `ClientError` when `system.hdb_role`/`system.hdb_user` is unavailable, so a 4xx
-test would classify a storage outage as an unknown credential and hand it to application
-authorization. The tag is set at exactly these points:
+user resolution touches system-table searches (`listUsers()`) that raise a default-status-400
+`ClientError` when `system.hdb_role`/`system.hdb_user` is unavailable, so a 4xx test would classify a
+storage outage as an unknown credential and hand it to application authorization. The tag is set at
+exactly these points:
 
 | Tagged rejection                                                   | Where                                      |
 | ------------------------------------------------------------------ | ------------------------------------------ |
@@ -423,7 +423,7 @@ differs, and the reason is easy to get backwards. `verifyPermsAST`'s super_user 
 genuinely runs. A carrier would therefore put Harper's own query through `hasPermissions` on
 `system.hdb_job`, which passes only because `appendSystemTablesToRole` grants `system.*.read` to a
 hydrated super_user — a super_user principal without an appended `permission.system` (an
-impersonation payload, or any path that skips user-cache hydration) would start getting 403s on an
+impersonation payload, or any user not resolved through `security/user.ts`) would start getting 403s on an
 operation it is entitled to. The bypass also states the actual intent: the statement is Harper's, not
 the caller's. Wrap the individual statement, not the function — a later caller-dependent statement
 must not inherit it.

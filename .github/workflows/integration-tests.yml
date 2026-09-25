@@ -89,7 +89,7 @@ jobs:
         run: npm install --ignore-scripts
 
       - name: Build
-        run: npm run build || true # we currently have type errors so just ignore that
+        run: npm run build
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -191,7 +191,6 @@ jobs:
 
       - name: Build
         run: npm run build
-        continue-on-error: true # we currently have type errors so just ignore that
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

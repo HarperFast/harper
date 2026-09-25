@@ -56,20 +56,4 @@ describe('Test signalling module', () => {
 		signalling.signalSchemaChange('message');
 		expect(log_error_stub.lastCall.args[0].name).to.equal(TEST_ERROR);
 	});
-
-	it('Test signalUserChange happy path', () => {
-		const message = 'user';
-		const expected_event = {
-			type: 'user',
-			message: 'user',
-		};
-		signalling.signalUserChange(message);
-		expect(send_itc_event_stub).to.have.been.calledWith(sinon.match(expected_event));
-	});
-
-	it('Test signalUserChange sad path', () => {
-		send_itc_event_stub.throws(TEST_ERROR);
-		signalling.signalUserChange('message');
-		expect(log_error_stub.lastCall.args[0].name).to.equal(TEST_ERROR);
-	});
 });

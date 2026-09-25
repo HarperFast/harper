@@ -616,12 +616,19 @@ describe('audit staleness floor', () => {
 			await wiped.put('w-1', { name: 'one' });
 			await spared.put('s-1', { name: 'one' });
 
+			const newest = Math.max(...auditEntries(wiped.auditStore).map((entry) => entry.logKey));
 			const absurd = Date.now() * 1000; // a ms value read as µs — about the year 55000
 			await wiped.deleteHistory(absurd);
 
 			const floor = floorOf(wiped);
 			assert.ok(floor < absurd, `the floor must be clamped below the requested bound, got ${floor}`);
-			assert.ok(floor <= Date.now() + 1, `and must not be left sitting in the future, got ${floor}`);
+			// log keys are fractional monotonic-clock values, so the `newest + 1` clamp can sit past the integer
+			// `Date.now() + 1` for the rest of the newest key's millisecond
+			const bound = Math.max(newest + 1, Date.now());
+			assert.ok(
+				floor <= bound,
+				`and must not be left sitting in the future, got ${floor} (bound ${bound}, newest key ${newest})`
+			);
 			// The property the verbatim floor destroyed: a write after the prune is still resumable. The
 			// sibling was never pruned, so this must hold for it regardless of what `wiped` asked for.
 			// the clamp sits at `newest + 1` when the newest key's fractional millisecond is at or past the

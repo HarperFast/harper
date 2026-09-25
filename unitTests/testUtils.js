@@ -416,7 +416,7 @@ async function seededAdminIsUsable() {
  * (hdb_user, hdb_role, etc.), a super_user role with an active admin user (which
  * authorizeLocal/getSuperUser() need to authorize local requests), and self-signed
  * certificates (which the TLS servers, e.g. MQTT's secure port, need). Suites that
- * exercise code requiring the system tables (e.g. setUsersWithRolesCache) call this
+ * exercise code requiring the system tables (e.g. findAndValidateUser) call this
  * after setupTestDBPath() instead of borrowing an installed Harper root's system
  * database.
  */
@@ -650,6 +650,65 @@ function installTestJwtKeys() {
 	};
 }
 
+// what each seedUsers() write replaced, so the next call can put it back
+const seededRecords = { hdb_user: new Map(), hdb_role: new Map() };
+let userChangesDelivered = 0;
+let countingUserChanges = false;
+
+/**
+ * Writes `users` (a Map or array; a user's `role` is a role object or an existing role id) as real
+ * hdb_user/hdb_role records, after restoring whatever an earlier call replaced. A role object without
+ * an `id` gets one per user, so two users whose roles share a name keep their own permissions.
+ * `seedUsers()` with no users only restores.
+ */
+async function seedUsers(users = []) {
+	await ensureSystemTables();
+	if (!countingUserChanges) {
+		countingUserChanges = true;
+		require('#src/security/user').onUserChange(() => userChangesDelivered++);
+	}
+	const { system } = getDatabases();
+	// the last write per record, so a record restored and seeded again is written once
+	const writes = new Map();
+	for (const [tableName, replaced] of Object.entries(seededRecords)) {
+		for (const [id, prior] of replaced) writes.set(`${tableName}/${id}`, { tableName, id, record: prior });
+		replaced.clear();
+	}
+	const seed = async (tableName, id, record) => {
+		const replaced = seededRecords[tableName];
+		const key = `${tableName}/${id}`;
+		if (!replaced.has(id)) {
+			const prior = writes.has(key) ? writes.get(key).record : await system[tableName].get(id);
+			replaced.set(id, prior && { ...prior });
+		}
+		writes.set(key, { tableName, id, record });
+	};
+	for (const user of users instanceof Map ? users.values() : users) {
+		let role = user.role;
+		if (role && typeof role === 'object') {
+			const id = role.id ?? `seeded_role_${user.username}`;
+			await seed('hdb_role', id, { ...role, id });
+			role = id;
+		}
+		await seed('hdb_user', user.username, { ...user, role });
+	}
+	if (writes.size === 0) return;
+	const deliveredBefore = userChangesDelivered;
+	// one commit, so one user-change notification covers every write
+	await require('#src/resources/transaction').transaction(async (context) => {
+		for (const { tableName, id, record } of writes.values()) {
+			if (record) await system[tableName].put(record, context);
+			else await system[tableName].delete(id, context);
+		}
+	});
+	// Listeners it notifies (live-subscription rechecks, MCP sessions) resolve users themselves: let them
+	// run now rather than inside the caller's next assertions
+	await require('./waitFor').waitFor(() => userChangesDelivered > deliveredBefore, {
+		message: 'seedUsers: the user-change notification for its writes never arrived',
+	});
+	await new Promise((resolve) => setImmediate(resolve));
+}
+
 module.exports = {
 	changeProcessToBinDir,
 	deepClone,
@@ -664,6 +723,7 @@ module.exports = {
 	getMockTestPath,
 	setupTestDBPath,
 	ensureSystemTables,
+	seedUsers,
 	sortAsc,
 	sortDesc,
 	sortAttrKeyMap,

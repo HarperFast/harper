@@ -54,7 +54,7 @@ jobs:
 
       - name: Build
         timeout-minutes: 3
-        run: npm run build || true # we currently have type errors so just ignore that
+        run: npm run build
 
       - name: Type contract tests
         if: matrix.node-version == 22
@@ -168,7 +168,6 @@ jobs:
 
       - name: Build
         run: npm run build
-        continue-on-error: true # we currently have type errors so just ignore that
 
       # Bounded below the job so a hung group fails the step rather than cancelling
       # the job, which keeps the gate's own group table in the log. The gate caps each
@@ -199,8 +198,6 @@ jobs:
       - name: Install dependencies
         run: npm install --ignore-scripts
 
-      # strict here, unlike the other jobs: the plane suite runs against dist/, so a tolerated
-      # build failure would grade a stale dist and still report green
       - name: Build
         run: npm run build
 

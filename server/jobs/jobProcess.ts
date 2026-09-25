@@ -7,7 +7,8 @@ import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as hdbUtils from '../../utility/common_utils.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import * as globalSchema from '../../utility/globalSchema.ts';
-import * as user from '../../security/user.ts';
+// installs server.getUser/authenticateUser
+import '../../security/user.ts';
 import * as serverUtils from '../serverHelpers/serverUtilities.ts';
 import { runWithDispatchedOperation } from '../serverHelpers/operationAuthorizationState.ts';
 import { stripSuppliedParsedSqlObject } from '../serverHelpers/requestSanitization.ts';
@@ -35,7 +36,6 @@ const JOB_ID = JOB_NAME.substring(4);
 	try {
 		harperLogger.notify('Starting job:', JOB_ID);
 		globalSchema.setSchemaDataToGlobal();
-		await user.setUsersWithRolesCache();
 
 		for (const { packageIdentifier } of getEnvBuiltInComponents()) {
 			if (packageIdentifier.startsWith('@/')) {
