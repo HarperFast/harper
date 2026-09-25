@@ -67,7 +67,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			// do not record transaction entries on retry
 			return;
 		}
-		const log = this.logById(options.nodeId) ?? this.logById(options.viaNodeId) ?? this.log;
+		const log = this.logFor(options.nodeId, options.viaNodeId);
 		let entryBinary: Uint8Array;
 		if (auditRecord instanceof Uint8Array) entryBinary = auditRecord;
 		else {
@@ -147,6 +147,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 		log.addEntry(entryBinary, options.transaction.id);
 	}
 
+	/** A lookup of a write's entry must read the log its write was filed in. */
+	logFor(nodeId: number, viaNodeId: number) {
+		return this.logById(nodeId) ?? this.logById(viaNodeId) ?? this.log;
+	}
 	logById(nodeId: number) {
 		return nodeId > -1 ? (this.nodeLogs?.[nodeId] ?? this.loadLogs()[nodeId]) : undefined;
 	}
@@ -158,18 +162,20 @@ export class RocksTransactionLogStore extends EventEmitter {
 			this.put(suggestedKey, value, options);
 		}
 	}
-	get(key: any, tableId: number, recordId: any, nodeId: number) {
-		return this.getSync(key, tableId, recordId, nodeId);
+	get(key: any, tableId: number, recordId: any, nodeId: number, viaNodeId?: number) {
+		return this.getSync(key, tableId, recordId, nodeId, viaNodeId);
 	}
-	getSync(key: any, tableId: number, recordId: any, nodeId: number) {
+	getSync(key: any, tableId: number, recordId: any, nodeId: number, viaNodeId?: number) {
 		if (typeof key === 'number') {
 			if (typeof tableId !== 'number') throw new Error('tableId must be a number');
 			if (recordId === undefined) {
 				throw new Error('recordId must be provided');
 			}
 			// this a request for a transaction log entry by a timestamp
-			for (const entry of this.getRange({ start: key, exactStart: true, log: nodeId })) {
-				if (entry.recordId === recordId && entry.tableId === tableId) {
+			const log = nodeId === undefined ? undefined : this.logFor(nodeId, viaNodeId ?? nodeId).name;
+			for (const entry of this.getRange({ start: key, exactStart: true, log })) {
+				// a relay log holds several origins' entries, and (version, nodeId) identifies one
+				if (entry.recordId === recordId && entry.tableId === tableId && !(nodeId > 0 && entry.nodeId !== nodeId)) {
 					return entry;
 				}
 				if (entry.version !== key) return; // no longer in this transaction
