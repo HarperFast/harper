@@ -10,6 +10,7 @@ const { stringify } = require('yaml');
 const { spy } = require('sinon');
 const { DEFAULT_CONFIG } = require('#src/components/DEFAULT_CONFIG');
 const { cloneDeep } = require('lodash');
+const { waitFor } = require('../waitFor.js');
 
 /**
  * This function asserts that an event is emitted.
@@ -30,6 +31,33 @@ async function assertEvent(ee, event, triggerEvent, additionalAssertions) {
 		await additionalAssertions?.(eventSpy);
 	} finally {
 		ee.removeListener(event, eventSpy);
+	}
+}
+
+/**
+ * Write `contents` to a watched path, re-writing until `ee` reports `event`.
+ *
+ * chokidar's `ready` fires before its native watch is live, and the read it triggers covers only
+ * what is on disk by then, so a write landing in the millisecond after it is reported by no event.
+ * Writing until the watcher reports it keeps that gap out of the assertion: a write past it makes
+ * chokidar re-read the directory, and a repeat write is silent because identical contents diff to
+ * nothing in `#merge`.
+ */
+async function writeUntilObserved(ee, event, filePath, contents) {
+	let observed = false;
+	const capture = () => (observed = true);
+	ee.on(event, capture);
+	try {
+		await waitFor(
+			async () => {
+				if (observed) return true;
+				await writeFile(filePath, contents, 'utf-8');
+				return observed;
+			},
+			{ message: `Timed out waiting for ${event} after writing ${filePath}` }
+		);
+	} finally {
+		ee.off(event, capture);
 	}
 }
 
@@ -616,7 +644,7 @@ describe('OptionsWatcher', () => {
 		await assertEvent(
 			options,
 			'change',
-			() => writeFile(configFilePath, stringify(expected), 'utf-8'),
+			() => writeUntilObserved(options, 'change', configFilePath, stringify(expected)),
 			(changeSpy) => {
 				assert.equal(changeSpy.callCount, 1);
 				assert.deepEqual(options.getRoot(), expected, 'should return the updated config after writing a new file');

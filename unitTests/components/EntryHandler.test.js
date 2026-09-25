@@ -27,6 +27,33 @@ function createFixture(fixture) {
 	return { directory: dirPath };
 }
 
+/**
+ * chokidar emits `addDir` before it arms the new directory's own native watch, and nothing
+ * re-reads that gap, so a file created inside it is reported by no event at all. Writing until the
+ * watcher reports the file keeps the gap out of the assertion: a write past it makes chokidar
+ * re-read the directory and surface the file, and a repeat write to one it already knows is a
+ * `change`, so the `add` count asserted below is unaffected.
+ */
+async function writeFileUntilObserved(entryHandler, absolutePath, contents) {
+	let observed;
+	const capture = (entry) => {
+		if (entry.absolutePath === absolutePath) observed ??= entry;
+	};
+	entryHandler.on('add', capture);
+	try {
+		await waitFor(
+			async () => {
+				if (observed) return observed;
+				await writeFile(absolutePath, contents);
+				return observed;
+			},
+			{ message: `Timed out waiting for the add event for ${absolutePath}` }
+		);
+	} finally {
+		entryHandler.off('add', capture);
+	}
+}
+
 describe('EntryHandler', () => {
 	const fixture = ['a', 'b', 'c', ['foo', ['d', 'e', ['bar', ['f', 'g']]]]];
 	beforeEach(() => {
@@ -115,10 +142,8 @@ describe('EntryHandler', () => {
 		assert.ok(addDirArg.stats.isDirectory(), 'addDir event argument `stats` should be a directory');
 
 		// New file creation in new directory
-		const addFileInDirEvent = once(entryHandler, 'add');
 		const newFileInDirPath = join(newDirPath, 'y');
-		await writeFile(newFileInDirPath, 'y');
-		await addFileInDirEvent;
+		await writeFileUntilObserved(entryHandler, newFileInDirPath, 'y');
 		assert.equal(addHandlerSpy.callCount, 9, 'add event should be triggered for the new file in new directory');
 		const addFileInDirArg = addHandlerSpy.getCall(8).args[0];
 		assert.equal(
