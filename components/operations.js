@@ -571,8 +571,6 @@ function logRestartOutcome(restart, what) {
 
 // A peer's validation load and swap, which have no allowance of their own to sum.
 const PEER_DEPLOY_VALIDATION_MARGIN_MS = 10 * 60 * 1000;
-// setTimeout fires at once when given a longer delay.
-const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
 /**
  * How long the origin waits for each peer to answer a replicated deploy: every wait and command the peer is
@@ -589,7 +587,7 @@ function peerDeployAnswerTimeoutMs(req) {
 			componentPreparationBudgetMs(installTimeoutMs) +
 			PEER_DEPLOY_VALIDATION_MARGIN_MS +
 			(req.restart === true ? RESTART_WAIT_CEILING_MS : 0),
-		MAX_TIMER_DELAY_MS
+		hdbTerms.MAX_SET_TIMEOUT_MS
 	);
 }
 
