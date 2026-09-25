@@ -140,6 +140,7 @@ suite(
 		// Re-passed verbatim on every startHarper call: omitting it on a restart wipes config.
 		let bootConfig: Record<string, unknown>;
 		let revocationExpiries: Record<string, number | null>;
+		let verdictExpiries: Record<string, number | null>;
 
 		function mtlsStatus(which: 'valid' | 'revoked'): Promise<number> {
 			return new Promise<number>((resolveStatus, reject) => {
@@ -164,6 +165,18 @@ suite(
 		async function assertVerifies() {
 			strictEqual(await mtlsStatus('revoked'), 401, 'the revoked certificate is refused');
 			ok((await mtlsStatus('valid')) !== 401, 'the valid certificate is accepted');
+		}
+
+		async function readStateWithBothVerdicts(): Promise<State> {
+			let state: State;
+			const deadline = Date.now() + 10_000;
+			do {
+				state = await readState();
+				if ((state.hdb_certificate_cache?.rows.length ?? 0) >= 2) break;
+				await sleep(100);
+			} while (Date.now() < deadline);
+			ok(state.hdb_certificate_cache!.rows.length >= 2, 'both verdicts were cached');
+			return state;
 		}
 
 		before(async () => {
@@ -200,17 +213,10 @@ suite(
 
 		test('the pre-change release declares them with @expiresAt and caches verdicts with no stored expiry', async () => {
 			await assertVerifies();
-			let state: State;
-			const deadline = Date.now() + 10_000;
-			do {
-				state = await readState();
-				if ((state.hdb_certificate_cache?.rows.length ?? 0) >= 2) break;
-				await sleep(100);
-			} while (Date.now() < deadline);
+			const state = await readStateWithBothVerdicts();
 			strictEqual(state.hdb_certificate_cache!.durable.expiresAt?.expiresAt, true);
 			strictEqual(state.hdb_revoked_certificates!.durable.expiresAt?.expiresAt, true);
 			strictEqual(state.hdb_certificate_cache!.durableExpiration, null);
-			ok(state.hdb_certificate_cache!.rows.length >= 2, 'both verdicts were cached');
 			for (const verdict of state.hdb_certificate_cache!.rows) {
 				strictEqual(verdict.expiresAt, null, `verdict ${verdict.id} has no stored expiry`);
 				ok(verdict.fields.includes('expiresAt'), 'its expiry was a field');
@@ -219,14 +225,6 @@ suite(
 			ok(revocations.length >= 1, 'the revocation was stored');
 			for (const revocation of revocations) ok(revocation.expiresAt! > Date.now(), 'with a stored expiry');
 			revocationExpiries = Object.fromEntries(revocations.map(({ id, expiresAt }) => [id, expiresAt]));
-		});
-
-		test('a read-only boot of this build leaves them as they are', async () => {
-			await killHarper(ctx);
-			await boot(() => startHarper(ctx, { config: bootConfig, env: { HARPER_READONLY: '1' } }));
-			const state = await readState();
-			strictEqual(state.hdb_certificate_cache!.durable.expiresAt?.expiresAt, true);
-			strictEqual(state.hdb_certificate_cache!.durableExpiration, null);
 		});
 
 		test('the next writable boot declares them in full, keeping each revocation and dropping the verdicts', async () => {
@@ -240,6 +238,24 @@ suite(
 				'every revocation keeps the expiry it was stored with'
 			);
 			deepStrictEqual(state.hdb_certificate_cache!.rows, [], 'the verdicts stored with no expiry are evicted');
+
+			await assertVerifies();
+			const verdicts = (await readStateWithBothVerdicts()).hdb_certificate_cache!.rows;
+			for (const verdict of verdicts) ok(verdict.expiresAt! > Date.now(), `verdict ${verdict.id} stores its expiry`);
+			verdictExpiries = Object.fromEntries(verdicts.map(({ id, expiresAt }) => [id, expiresAt]));
+		});
+
+		// After the upgrade: a read-only boot over data from an older version exits at the upgrade step.
+		test('a read-only boot of this build starts with the repaired tables as they are', async () => {
+			await killHarper(ctx);
+			await boot(() => startHarper(ctx, { config: bootConfig, env: { HARPER_READONLY: '1' } }));
+			const state = await readState();
+			assertDeclared(state);
+			deepStrictEqual(
+				Object.fromEntries(state.hdb_certificate_cache!.rows.map(({ id, expiresAt }) => [id, expiresAt])),
+				verdictExpiries,
+				'every verdict keeps the expiry it was stored with'
+			);
 
 			await assertVerifies();
 		});
