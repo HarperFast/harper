@@ -167,6 +167,7 @@ describe('source transactions keyed by stream', function () {
 
 	it('records no cursor and runs no onCommit for a held stream after its failure', async () => {
 		const stream = {};
+		const otherStream = {};
 		let laterCommits = 0;
 		const { Table, applied } = start([
 			failingWrite('held-failed', NOW + 11.1, { beginTxn: true, txnStream: stream }),
@@ -179,10 +180,12 @@ describe('source transactions keyed by stream', function () {
 				remoteNodeIds: [79],
 				onCommit: () => laterCommits++,
 			},
-			put('other-stream', NOW + 13.1, { beginTxn: true, txnStream: {} }),
+			put('other-stream', NOW + 13.1, { beginTxn: true, txnStream: otherStream }),
+			// closed, so no source-apply transaction outlives this test (txn-tracking.test.js reports the first one held)
+			{ type: 'end_txn', txnStream: otherStream },
 		]);
-		await waitFor(() => applied.length === 5);
-		await waitFor(async () => (await recordIds(Table, ['held-later'])).length === 1);
+		await waitFor(() => applied.length === 6);
+		await waitFor(async () => (await recordIds(Table, ['held-later', 'other-stream'])).length === 2);
 		assert.equal(laterCommits, 0);
 		assert.equal(Table.dbisDB.getSync([Symbol.for('seq'), 79]), undefined);
 	});
