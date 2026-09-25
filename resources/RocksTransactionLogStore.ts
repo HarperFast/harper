@@ -141,7 +141,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 	}
 
 	/** A lookup of a write's entry must read the log its write was filed in. */
-	logFor(nodeId: number, viaNodeId: number) {
+	logFor(nodeId?: number, viaNodeId?: number) {
 		return this.logById(nodeId) ?? this.logById(viaNodeId) ?? this.log;
 	}
 	logById(nodeId: number) {
@@ -155,10 +155,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 			this.put(suggestedKey, value, options);
 		}
 	}
-	get(key: any, tableId: number, recordId: any, nodeId: number, viaNodeId?: number) {
+	get(key: any, tableId: number, recordId: any, nodeId?: number, viaNodeId?: number) {
 		return this.getSync(key, tableId, recordId, nodeId, viaNodeId);
 	}
-	getSync(key: any, tableId: number, recordId: any, nodeId: number, viaNodeId?: number) {
+	getSync(key: any, tableId: number, recordId: any, nodeId?: number, viaNodeId?: number) {
 		if (typeof key === 'number') {
 			if (typeof tableId !== 'number') throw new Error('tableId must be a number');
 			if (recordId === undefined) {
