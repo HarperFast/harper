@@ -28,10 +28,15 @@ const { registryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
 const { schema: schemaHandler } = require('#js/server/itc/serverHandlers');
 const { OPERATIONS_ENUM } = require('#src/utility/hdbTerms');
 const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
+const { dropSchema } = require('#src/dataLayer/schema');
 const {
 	claimDatabaseDropPreparation,
 	releaseDatabaseDropPreparation,
 } = require('#src/resources/databaseDropPreparation');
+const {
+	setDatabaseCommitDrainTimeoutMilliseconds,
+	trackOutstandingCommit,
+} = require('#src/resources/DatabaseTransaction');
 
 describe('RocksDB handle release', function () {
 	before(function () {
@@ -78,6 +83,30 @@ describe('RocksDB handle release', function () {
 		await closeDatabase('closerelease1');
 
 		assert.strictEqual(refCountFor(dbPath), 0, 'no native handles should remain after closeDatabase');
+	});
+
+	it('keeps database handles open when an outstanding commit misses the drain deadline', async function () {
+		this.timeout(30000);
+		const databaseName = 'close_drain_timeout';
+		const rootStore = openRocksDb(databaseName);
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		let settle;
+		const pending = new Promise((resolve) => (settle = resolve));
+		trackOutstandingCommit(pending, { rootStore });
+		const previousTimeout = setDatabaseCommitDrainTimeoutMilliseconds(10);
+		try {
+			await assert.rejects(
+				closeDatabase(databaseName),
+				(error) => error.code === 'DATABASE_DRAIN_TIMEOUT' && error.retryable === true
+			);
+			assert.ok(refCountFor(rootStore.path) > 0, 'a drain timeout must occur before native handles close');
+			assert.strictEqual(databases[databaseName].pkg.primaryStore.rootStore, rootStore);
+		} finally {
+			setDatabaseCommitDrainTimeoutMilliseconds(previousTimeout);
+			settle();
+			await pending;
+			await closeDatabase(databaseName);
+		}
 	});
 
 	it('a drop-schema preparation event closes the peer database before acknowledging', async function () {
@@ -211,6 +240,23 @@ describe('RocksDB handle release', function () {
 
 		assert.strictEqual(databases[databaseName], undefined);
 		assert.strictEqual(refCountFor(rootStore.path), 0);
+	});
+
+	it('the public dropSchema path emits one coordinated completion', async function () {
+		this.timeout(30000);
+		const databaseName = 'drop_schema_single_completion';
+		const rootStore = openRocksDb(databaseName);
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		let completions = 0;
+		const removeListener = schemaHandler.addListener((message) => {
+			if (message.operation === OPERATIONS_ENUM.DROP_SCHEMA && message.schema === databaseName) completions++;
+		});
+		try {
+			await dropSchema({ operation: OPERATIONS_ENUM.DROP_SCHEMA, schema: databaseName });
+			assert.strictEqual(completions, 1);
+		} finally {
+			removeListener();
+		}
 	});
 
 	it('dropSchema destroys a tableless database without tripping its own fence', async function () {

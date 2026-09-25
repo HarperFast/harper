@@ -68,7 +68,11 @@ import { planeFilePathFor, planeStalePathFor } from './indexes/hnswPlaneBinding.
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
-import { databaseCommitsSuspended, suspendDatabaseCommits } from './DatabaseTransaction.ts';
+import {
+	databaseCommitsSuspended,
+	getDatabaseCommitDrainTimeoutMilliseconds,
+	suspendDatabaseCommits,
+} from './DatabaseTransaction.ts';
 import { replayLogs } from './replayLogs.ts';
 import {
 	assertFullTextActivationSupported,
@@ -1903,15 +1907,12 @@ export function openBranchDatabase(
 			if (closing) return closing;
 			const releaseActivation = suspendDerivedIndexActivation(rootStore);
 			const commitSuspension = suspendDatabaseCommits([rootStore]);
+			const deadline = Date.now() + getDatabaseCommitDrainTimeoutMilliseconds();
 			let closed = false;
-			let maintenanceQuiesced = false;
 			let handleCloseStarted = false;
 			const operation = commitSuspension
-				.waitForDrain()
-				.then(async () => {
-					await settleTableMaintenance(tables);
-					maintenanceQuiesced = true;
-				})
+				.waitForDrain({ deadline, databaseName })
+				.then(() => settleTableMaintenance(tables, deadline))
 				.then(() => settleBranchDerivedIndexes(tables))
 				.then(() => {
 					handleCloseStarted = true;
@@ -1926,10 +1927,8 @@ export function openBranchDatabase(
 					if (!closed && !handleCloseStarted) {
 						commitSuspension.release();
 						releaseActivation();
-						if (maintenanceQuiesced) {
-							resumeTableMaintenance(tables);
-							for (const table of Object.values(tables)) refreshDerivedIndexes(table);
-						}
+						resumeTableMaintenance(tables);
+						for (const table of Object.values(tables)) refreshDerivedIndexes(table);
 					}
 				});
 			const retryable = operation.catch((error) => {
@@ -2498,8 +2497,8 @@ export async function closeLoadedDatabases(): Promise<void> {
 	}
 }
 
-async function settleTableMaintenance(dbTables: Record<string, any>): Promise<void> {
-	await Promise.all(Object.values(dbTables).map((table: any) => table?.closeMaintenance?.()));
+async function settleTableMaintenance(dbTables: Record<string, any>, deadline: number): Promise<void> {
+	await Promise.all(Object.values(dbTables).map((table: any) => table?.closeMaintenance?.(deadline)));
 }
 
 function resumeTableMaintenance(dbTables: Record<string, any>): void {
@@ -2518,6 +2517,8 @@ async function settleDatabaseDerivedIndexes(
 	}
 	const activationReleases = [...rootStores].map(suspendDerivedIndexActivation);
 	const commitSuspension = suspendDatabaseCommits(rootStores);
+	const deadline = Date.now() + getDatabaseCommitDrainTimeoutMilliseconds();
+	const databaseName = ([...rootStores][0] as any)?.databaseName ?? 'unknown';
 	let lifecycleReleased = false;
 	const releaseLifecycle = () => {
 		if (lifecycleReleased) return;
@@ -2534,24 +2535,27 @@ async function settleDatabaseDerivedIndexes(
 		if (!tables) attachments.set(attachment, (tables = []));
 		tables.push(table);
 	}
-	await commitSuspension.waitForDrain();
-	await settleInterruptedDropRetirements(rootStores);
-	await settleTableMaintenance(dbTables);
-	if (attachments.size === 0) return releaseLifecycle;
 	const entries = [...attachments];
-	const results = await Promise.allSettled(entries.map(async ([attachment]) => attachment.close(dropping)));
-	const failures = results
-		.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-		.map((result) => result.reason);
-	if (failures.length > 0) {
+	try {
+		await commitSuspension.waitForDrain({ deadline, databaseName });
+		await settleInterruptedDropRetirements(rootStores);
+		await settleTableMaintenance(dbTables, deadline);
+		if (attachments.size === 0) return releaseLifecycle;
+		const results = await Promise.allSettled(entries.map(async ([attachment]) => attachment.close(dropping)));
+		const failures = results
+			.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+			.map((result) => result.reason);
+		if (failures.length === 1) throw failures[0];
+		if (failures.length)
+			throw new AggregateError(failures, 'Could not settle derived indexes before closing the database');
+	} catch (error) {
 		resumeTableMaintenance(dbTables);
 		releaseLifecycle();
 		for (const [attachment, tables] of entries) {
 			if (dropping) attachment.completeDrop?.(false);
 			for (const table of tables) refreshDerivedIndexes(table);
 		}
-		if (failures.length === 1) throw failures[0];
-		throw new AggregateError(failures, 'Could not settle derived indexes before closing the database');
+		throw error;
 	}
 	for (const [attachment, tables] of entries) {
 		if (dropping) attachment.completeDrop?.();

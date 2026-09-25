@@ -6,6 +6,7 @@ import {
 	acquireFullTextRetirementFence,
 	registerDerivedIndexTables,
 	waitForFullTextRetirement,
+	waitForFullTextRetirementLease,
 } from './derivedIndexRegistry.ts';
 import {
 	DerivedIndexRuntime,
@@ -60,7 +61,6 @@ type Registered = {
 };
 type DerivedIndexAttachment = {
 	close(dropping?: boolean): Promise<void>;
-	hasFullTextIndexes(): boolean;
 	fullTextDefinitions(): readonly FullTextDefinition[];
 	matchesCurrent(): boolean;
 	retryUnavailableFullText(): void;
@@ -477,9 +477,6 @@ export function attachDerivedIndexes(
 		});
 	}
 	return {
-		hasFullTextIndexes() {
-			return fullTextDefinitions.length > 0;
-		},
 		fullTextDefinitions() {
 			return fullTextDefinitions;
 		},
@@ -685,24 +682,14 @@ async function resumePersistedFullTextRetirements(
 ): Promise<boolean> {
 	if (names.length === 0) return true;
 	const rootStore = Table.primaryStore.rootStore;
-	const deadline = Date.now() + DEFAULT_FULL_TEXT_RETIREMENT_RETRY_MILLISECONDS;
-	let releaseRetirementFence: (() => void) | undefined;
-	while (shouldContinue() && !releaseRetirementFence) {
-		releaseRetirementFence = acquireFullTextRetirementFence(rootStore, Table.tableName);
-		if (releaseRetirementFence) break;
-		const remaining = deadline - Date.now();
-		if (remaining <= 0) throw new Error(`Timed out waiting to resume full-text retirement for '${Table.tableName}'`);
-		if (
-			!(await waitForFullTextRetirement(rootStore, Table.tableName, {
-				shouldContinue,
-				timeoutMilliseconds: remaining,
-			}))
-		)
-			return false;
-	}
+	const releaseRetirementFence = await waitForFullTextRetirementLease(rootStore, Table.tableName, {
+		shouldContinue,
+		timeoutMilliseconds: DEFAULT_FULL_TEXT_RETIREMENT_RETRY_MILLISECONDS,
+	});
 	if (!releaseRetirementFence) return false;
 	try {
 		if (!shouldContinue()) return false;
+		if (!(await Table.hasCurrentFullTextIndexRetirements(names))) return true;
 		const retired = await retireFullTextIndexes(
 			Table,
 			names.map((name) => ({ name })),
@@ -736,9 +723,6 @@ function attachFullTextRetirementRecovery(Table: any, names: readonly string[]):
 		async close() {
 			closing = true;
 			await settlement;
-		},
-		hasFullTextIndexes() {
-			return false;
 		},
 		fullTextDefinitions() {
 			return [];

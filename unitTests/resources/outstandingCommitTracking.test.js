@@ -7,6 +7,7 @@ const { transaction } = require('#src/resources/transaction');
 const {
 	getOutstandingCommits,
 	trackOutstandingCommit,
+	commitTrackedRocksTransaction,
 	databaseCommitsSuspended,
 	suspendDatabaseCommits,
 	setMaxOutstandingTxnDuration,
@@ -108,6 +109,57 @@ describe('Outstanding commit tracking', () => {
 		second.release();
 		assert.strictEqual(databaseCommitsSuspended(rootStore), false);
 		await assertAllUntracked('the drained per-database commit should be untracked');
+	});
+
+	it('tracks raw RocksDB commits and rejects submissions after suspension', async function () {
+		if (isLMDB) return;
+		const rootStore = { databaseName: 'raw-commit-test' };
+		const store = { rootStore, name: 'raw' };
+		let settle;
+		const pending = new Promise((resolve) => (settle = resolve));
+		const submitted = commitTrackedRocksTransaction({ commit: () => pending }, store);
+		const suspension = suspendDatabaseCommits([rootStore]);
+		let drained = false;
+		const drain = suspension.waitForDrain().then(() => (drained = true));
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(drained, false);
+
+		let aborted = false;
+		await assert.rejects(
+			commitTrackedRocksTransaction(
+				{
+					commit: () => assert.fail('a suspended commit must not be submitted'),
+					abort: () => (aborted = true),
+				},
+				store
+			),
+			(error) => error.code === 'DATABASE_CLOSING'
+		);
+		assert.strictEqual(aborted, true);
+
+		settle();
+		await Promise.all([submitted, drain]);
+		suspension.release();
+		await assertAllUntracked('raw commits should use the shared outstanding-commit queue');
+	});
+
+	it('bounds commit draining without releasing admission implicitly', async function () {
+		if (isLMDB) return;
+		const rootStore = { databaseName: 'drain-timeout-test' };
+		let settle;
+		const pending = new Promise((resolve) => (settle = resolve));
+		trackOutstandingCommit(pending, { rootStore });
+		const suspension = suspendDatabaseCommits([rootStore]);
+		await assert.rejects(
+			suspension.waitForDrain({ deadline: Date.now() + 10, databaseName: rootStore.databaseName }),
+			(error) => error.code === 'DATABASE_DRAIN_TIMEOUT' && error.retryable === true
+		);
+		assert.strictEqual(databaseCommitsSuspended(rootStore), true);
+		suspension.release();
+		assert.strictEqual(databaseCommitsSuspended(rootStore), false);
+		settle();
+		await pending;
+		await assertAllUntracked('a timed-out drain should still unlink a later-settled commit');
 	});
 
 	it('aborts a write staged before its database commit barrier', async function () {

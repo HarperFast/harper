@@ -5,6 +5,7 @@ const {
 	hasDerivedIndexRegistration,
 	registerDerivedIndexTables,
 	waitForFullTextRetirement,
+	waitForFullTextRetirementLease,
 } = require('#src/resources/derivedIndexRegistry');
 
 function lockStore() {
@@ -90,5 +91,26 @@ describe('derived index registration tracking', () => {
 		} finally {
 			release();
 		}
+	});
+
+	it('hands a retirement fence directly to one waiter at a time', async () => {
+		const store = lockStore();
+		const releaseInitial = acquireFullTextRetirementFence(store, 'Product');
+		const first = waitForFullTextRetirementLease(store, 'Product');
+		await new Promise((resolve) => setImmediate(resolve));
+		let secondAcquired = false;
+		const second = waitForFullTextRetirementLease(store, 'Product').then((release) => {
+			secondAcquired = true;
+			return release;
+		});
+
+		releaseInitial();
+		const releaseFirst = await first;
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(secondAcquired, false);
+		releaseFirst();
+		const releaseSecond = await second;
+		assert.strictEqual(typeof releaseSecond, 'function');
+		releaseSecond();
 	});
 });

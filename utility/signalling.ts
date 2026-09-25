@@ -35,11 +35,11 @@ export async function signalSchemaChange(
 export async function signalSchemaChangeToPeers(message: any): Promise<void> {
 	hdbLogger.debug('signalSchemaChangeToPeers called with message:', message);
 	const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
-	// Native derived-index shutdown has a 70-second backstop. The extra round closes the topology
-	// race: after the main thread installs the preparation fence, any worker started during round one
-	// inherits it and is present for round two.
+	// Commit draining can consume 120 seconds and native derived-index shutdown another 70. The
+	// extra round closes the topology race: after the main thread installs the preparation fence, any
+	// worker started during round one inherits it and is present for round two.
 	for (let round = 0; round < 2; round++) {
-		await sendItcEventStrict(itcEventSchema, 90_000, true);
+		await sendItcEventStrict(itcEventSchema, 210_000, true);
 		if (round === 0) await new Promise(setImmediate);
 	}
 }

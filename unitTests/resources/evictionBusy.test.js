@@ -3,6 +3,7 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { registerDerivedIndexTables } = require('#src/resources/derivedIndexRegistry');
+const { suspendDatabaseCommits } = require('#src/resources/DatabaseTransaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 // Regression for #1287 (RocksDB leg). The cleanup scan's batcher retries ERR_BUSY, but the two
@@ -91,6 +92,24 @@ describe('evict() swallows a commit conflict instead of rejecting (#1287)', () =
 			assert.strictEqual(closed, true);
 		} finally {
 			Transaction.prototype.commit = originalCommit;
+		}
+	});
+
+	it('resolves without an unhandled rejection when teardown denies the commit', async function () {
+		await BusyTable.put('b3', { id: 'b3' });
+		const entry = BusyTable.primaryStore.getEntry('b3');
+		const suspension = suspendDatabaseCommits([BusyTable.primaryStore.rootStore]);
+		const unhandled = [];
+		const onUnhandled = (error) => unhandled.push(error);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			await BusyTable.evict('b3', entry.value, entry.version);
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.deepStrictEqual(unhandled, []);
+			assert.ok(BusyTable.primaryStore.getEntry('b3'), 'denied eviction must leave the resident record intact');
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
+			suspension.release();
 		}
 	});
 });

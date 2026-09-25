@@ -26,7 +26,7 @@ import type {
 import type { User } from '../security/user.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
 import { Resource, SEARCH_AUTHORIZATION, transformForSelect } from './Resource.ts';
-import { when, promiseNormalize } from '../utility/when.ts';
+import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
 import {
 	DatabaseTransaction,
 	ImmediateTransaction,
@@ -37,6 +37,8 @@ import {
 	writeKeyId,
 	closeWriteInstance,
 	databaseCommitsSuspended,
+	commitTrackedRocksTransaction,
+	getDatabaseCommitDrainTimeoutMilliseconds,
 	type WriteGeneration,
 } from './DatabaseTransaction.ts';
 import {
@@ -55,6 +57,7 @@ import { databaseDropPrepared } from './databaseDropPreparation.ts';
 import {
 	DerivedIndexLagError,
 	DatabaseClosingError,
+	DatabaseDrainTimeoutError,
 	handleHDBError,
 	ClientError,
 	ServerError,
@@ -999,6 +1002,19 @@ export function makeTable(options) {
 		error.statusCode = 404;
 		throw error;
 	}
+	function currentFullTextDescriptor(): { key: string; descriptor: any } | undefined {
+		const namedKey = `${tableName}/${primaryKey}`;
+		const namedDescriptor = (dbisDb as any).getSync(namedKey);
+		const key = namedDescriptor?.isPrimaryKey ? namedKey : `${tableName}/`;
+		const descriptor = (dbisDb as any).getSync(key);
+		if (
+			!descriptor ||
+			(descriptor.tableId != null && descriptor.tableId !== tableId) ||
+			descriptor.generation !== tableGeneration
+		)
+			return;
+		return { key, descriptor };
+	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
@@ -1049,7 +1065,6 @@ export function makeTable(options) {
 		static derivedIndexRuntime:
 			| {
 					close(dropping?: boolean): Promise<void>;
-					hasFullTextIndexes?(): boolean;
 					fullTextDefinitions?(): readonly FullTextDefinition[];
 					matchesCurrent?(): boolean;
 					restoreAfterFailedDrop?(): typeof TableResource.derivedIndexRuntime;
@@ -1061,6 +1076,19 @@ export function makeTable(options) {
 		static fullTextIndexes: FullTextDefinition[] = fullTextIndexes;
 		static fullTextIndexGenerations: FullTextIndexGenerations = fullTextIndexGenerations;
 		static fullTextIndexRetirements: string[] = fullTextIndexRetirements;
+		static hasCurrentFullTextIndexRetirements(names: readonly string[]): boolean | Promise<boolean> {
+			if (names.length === 0 || !(primaryStore.rootStore instanceof RocksDatabase)) return false;
+			return withUpdateAttributesLockNonBlocking(
+				primaryStore.rootStore,
+				`verify full-text retirement for '${databaseName}.${tableName}'`,
+				() => {
+					const current = currentFullTextDescriptor();
+					if (!current) return false;
+					const pending = new Set(persistedFullTextIndexNames(current.descriptor.fullTextIndexRetirements));
+					return names.every((name) => pending.has(name));
+				}
+			);
+		}
 		static completeFullTextIndexRetirements(names: readonly string[]): void | Promise<void> {
 			if (names.length === 0 || !(primaryStore.rootStore instanceof RocksDatabase)) return;
 			const completed = new Set(names);
@@ -1068,16 +1096,9 @@ export function makeTable(options) {
 				primaryStore.rootStore,
 				`complete full-text retirement for '${databaseName}.${tableName}'`,
 				() => {
-					const namedKey = `${tableName}/${primaryKey}`;
-					const namedDescriptor = (dbisDb as any).getSync(namedKey);
-					const key = namedDescriptor?.isPrimaryKey ? namedKey : `${tableName}/`;
-					const descriptor = (dbisDb as any).getSync(key);
-					if (
-						!descriptor ||
-						(descriptor.tableId != null && descriptor.tableId !== tableId) ||
-						descriptor.generation !== tableGeneration
-					)
-						return;
+					const current = currentFullTextDescriptor();
+					if (!current) return;
+					const { key, descriptor } = current;
 					const remaining = persistedFullTextIndexNames(descriptor.fullTextIndexRetirements).filter(
 						(name) => !completed.has(name)
 					);
@@ -1484,7 +1505,11 @@ export function makeTable(options) {
 														} catch {}
 														throw error;
 													}
-													return seqTransaction.commit().catch((error) => {
+													return commitTrackedRocksTransaction(
+														seqTransaction,
+														dbisDb,
+														(primaryStore as any).rootStore
+													).catch((error) => {
 														// A rejected commit leaves the handle open too, so release it here as well —
 														// same reason as the staging failure above, and the same shape as the
 														// eviction paths' commit failures (see evict/commitItems below).
@@ -3187,7 +3212,7 @@ export function makeTable(options) {
 				// DatabaseTransaction's ERR_BUSY retry, so a concurrent-write conflict rejects here — swallow it
 				// (abandon the eviction) and log anything unexpected, rather than letting it crash the process.
 				return trackMaintenanceCommit(
-					(transaction as any).commit().catch((error) => {
+					commitTrackedRocksTransaction(transaction as RocksTransaction, primaryStore).catch((error) => {
 						// The commit failed, so the read-snapshot/transaction handle is still open — release it, as the
 						// batched-eviction path does on its own commit failures. committed===true skips the finally abort.
 						try {
@@ -7387,13 +7412,18 @@ export function makeTable(options) {
 			deleteCallbackHandle?.remove();
 			removeStorageReclamationHandler(primaryStore.path, reclamationHandler);
 		}
-		static async closeMaintenance(): Promise<void> {
+		static async closeMaintenance(deadline?: number): Promise<void> {
+			const startedAt = Date.now();
+			const defaultTimeout = getDatabaseCommitDrainTimeoutMilliseconds();
+			const timeoutMilliseconds = deadline === undefined ? defaultTimeout : Math.max(0, deadline - startedAt);
+			const resolvedDeadline = deadline ?? startedAt + timeoutMilliseconds;
 			stopMaintenance();
-			await Promise.allSettled([lastEvictionCompletion, recordExpirationCompletion]);
+			const timeoutError = () => new DatabaseDrainTimeoutError(databaseName, timeoutMilliseconds);
+			await settleBeforeDeadline([lastEvictionCompletion, recordExpirationCompletion], resolvedDeadline, timeoutError);
 			for (;;) {
 				const pending = [...maintenanceCommits];
 				if (pending.length === 0) return;
-				await Promise.allSettled(pending);
+				await settleBeforeDeadline(pending, resolvedDeadline, timeoutError);
 			}
 		}
 		static resumeMaintenance(): void {
@@ -8509,7 +8539,7 @@ export function makeTable(options) {
 					return;
 				}
 				try {
-					await transaction.commit();
+					await commitTrackedRocksTransaction(transaction, primaryStore);
 					return;
 				} catch (error: any) {
 					try {

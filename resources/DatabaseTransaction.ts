@@ -3,6 +3,7 @@ import { Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import {
 	DatabaseClosingError,
+	DatabaseDrainTimeoutError,
 	ServerError,
 	TransactionCommitConflictTimeoutError,
 } from '../utility/errors/hdbError.ts';
@@ -12,7 +13,7 @@ import type { Context, Id } from './ResourceInterface.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { convertToMS } from '../utility/common_utils.ts';
-import { when } from '../utility/when.ts';
+import { settleBeforeDeadline, when } from '../utility/when.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Transaction as RocksTransaction, type Store as RocksStore, constants } from '@harperfast/rocksdb-js';
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
@@ -79,6 +80,7 @@ interface OutstandingCommit {
 	// so that every outstanding commit carries its own identity and its own `logged` flag: a second
 	// commit that is still stuck once the first settles becomes the new oldest and logs on its own.
 	store: any;
+	rootStore: any;
 	startedFrom: { resourceName: string; method: string } | undefined;
 	nativeTransaction: any;
 	logged: boolean;
@@ -108,11 +110,12 @@ function allowStuckCommitLog(site: 'shed' | 'abandon', now: number): boolean {
 function describeCommitIdentity(
 	store: any,
 	startedFrom: { resourceName: string; method: string } | undefined,
-	nativeTransaction: any
+	nativeTransaction: any,
+	rootStore = store?.rootStore
 ): string {
 	const nativeTransactionId = nativeTransaction?.id;
 	return (
-		`from table: ${store?.rootStore?.databaseName ?? '?'}.${store?.name ?? '?'}` +
+		`from table: ${rootStore?.databaseName ?? '?'}.${store?.name ?? '?'}` +
 		(nativeTransactionId !== undefined ? ` (transaction ${nativeTransactionId})` : '') +
 		(startedFrom?.resourceName
 			? `, started from ${startedFrom.resourceName}${startedFrom.method ? '.' + startedFrom.method : ''}`
@@ -128,9 +131,9 @@ function describeCommitIdentity(
 // from its own submission, keeping the overload window per-attempt rather than cumulative over a
 // retry ladder. `.then(untrack, untrack)` also marks an ERR_BUSY rejection handled, so this
 // tracking never surfaces as an unhandled rejection alongside the caller's own handler.
-// Exported only so unit tests can drive the list with controllable promises: the unlink order that
-// matters (a middle or tail node settling first) cannot be forced through real writes, and a node
-// left linked would 503 every write on this thread forever. commit() below is the sole caller.
+// Exported so raw RocksDB writers and unit tests share the same queue. The unlink order that matters
+// (a middle or tail node settling first) cannot be forced through real writes, and a node left linked
+// would 503 every write on this thread forever.
 // Also the single source for write-queue-depth accounting (getTransactionQueueDepths below): every
 // native commit this function tracks is, by definition, exactly the write-queue backlog — see the
 // comment there for why that used to be a second, separately-maintained counter.
@@ -140,7 +143,8 @@ export function trackOutstandingCommit(
 	commitResolution: Promise<number | void>,
 	store?: any,
 	startedFrom?: { resourceName: string; method: string },
-	nativeTransaction?: any
+	nativeTransaction?: any,
+	rootStore = store?.rootStore
 ): void {
 	// Guards against a future caller passing a non-Promise: today commit() always hands this a real
 	// Promise, but an unguarded link here would leave a node permanently wedged in the list (503ing
@@ -152,6 +156,7 @@ export function trackOutstandingCommit(
 		next: undefined,
 		commitResolution,
 		store,
+		rootStore,
 		startedFrom,
 		nativeTransaction,
 		logged: false,
@@ -184,13 +189,46 @@ export function databaseCommitsSuspended(rootStore: object | undefined): boolean
 	return suspendedDatabaseRootCount > 0 && rootStore != null && (suspendedDatabaseCommits.get(rootStore) ?? 0) > 0;
 }
 
+export function commitTrackedRocksTransaction(
+	transaction: RocksTransaction,
+	store: any,
+	rootStore = store?.rootStore
+): Promise<number | void> {
+	if (databaseCommitsSuspended(rootStore)) {
+		try {
+			transaction.abort();
+		} catch {}
+		return Promise.reject(new DatabaseClosingError(rootStore?.databaseName ?? rootStore?.path ?? 'unknown'));
+	}
+	let commitResolution: Promise<number | void>;
+	try {
+		commitResolution = transaction.commit() as Promise<number | void>;
+	} catch (error) {
+		return Promise.reject(error);
+	}
+	trackOutstandingCommit(commitResolution, store, undefined, transaction, rootStore);
+	return commitResolution;
+}
+
+let databaseCommitDrainTimeoutMilliseconds = 120_000;
+
+export function getDatabaseCommitDrainTimeoutMilliseconds(): number {
+	return databaseCommitDrainTimeoutMilliseconds;
+}
+
+export function setDatabaseCommitDrainTimeoutMilliseconds(timeoutMilliseconds: number): number {
+	const previous = databaseCommitDrainTimeoutMilliseconds;
+	databaseCommitDrainTimeoutMilliseconds = timeoutMilliseconds;
+	return previous;
+}
+
 /**
  * Stop new native commits for these database roots and wait for submissions already in flight.
  * The returned release is reference-counted and idempotent so overlapping lifecycle operations
  * cannot reopen commit admission underneath each other.
  */
 export function suspendDatabaseCommits(rootStores: Iterable<object>): {
-	waitForDrain(): Promise<void>;
+	waitForDrain(options?: { deadline?: number; databaseName?: string }): Promise<void>;
 	release(): void;
 } {
 	const roots = [...new Set(rootStores)];
@@ -202,14 +240,27 @@ export function suspendDatabaseCommits(rootStores: Iterable<object>): {
 	}
 	let released = false;
 	return {
-		async waitForDrain() {
+		async waitForDrain(options = {}) {
+			const timeoutMilliseconds =
+				options.deadline === undefined
+					? databaseCommitDrainTimeoutMilliseconds
+					: Math.max(0, options.deadline - Date.now());
+			const deadline = options.deadline ?? Date.now() + timeoutMilliseconds;
 			for (;;) {
 				const pending: Promise<number | void>[] = [];
 				for (let outstanding = oldestOutstandingCommit; outstanding; outstanding = outstanding.next) {
-					if (rootSet.has(outstanding.store?.rootStore)) pending.push(outstanding.commitResolution);
+					if (rootSet.has(outstanding.rootStore)) pending.push(outstanding.commitResolution);
 				}
 				if (pending.length === 0) return;
-				await Promise.allSettled(pending);
+				await settleBeforeDeadline(
+					pending,
+					deadline,
+					() =>
+						new DatabaseDrainTimeoutError(
+							options.databaseName ?? (roots[0] as any)?.databaseName ?? (roots[0] as any)?.path ?? 'unknown',
+							timeoutMilliseconds
+						)
+				);
 			}
 		},
 		release() {
@@ -1081,11 +1132,12 @@ export class DatabaseTransaction implements Transaction {
 						describeCommitIdentity(
 							oldestOutstandingCommit.store,
 							oldestOutstandingCommit.startedFrom,
-							oldestOutstandingCommit.nativeTransaction
+							oldestOutstandingCommit.nativeTransaction,
+							oldestOutstandingCommit.rootStore
 						) +
 						`.` +
 						describeHolderCandidates(
-							oldestOutstandingCommit.store?.rootStore?.path,
+							oldestOutstandingCommit.rootStore?.path,
 							oldestOutstandingCommit.nativeTransaction?.id
 						) +
 						` Further record updates and publishes from new application requests on this thread ` +

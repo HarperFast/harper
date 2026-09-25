@@ -196,11 +196,6 @@ export async function dropSchema(dropSchemaObject: any) {
 	}
 
 	await harperBridge.dropSchema(dropSchemaObject);
-	// Await cross-worker propagation before returning success so no worker keeps serving the
-	// dropped schema (#1497).
-	await signalling.signalSchemaChange(
-		new SchemaEventMsg(process.pid, dropSchemaObject.operation, dropSchemaObject.schema)
-	);
 
 	let response = await server.replication.replicateOperation(dropSchemaObject);
 	response.message = `successfully deleted '${dropSchemaObject.schema}'`;

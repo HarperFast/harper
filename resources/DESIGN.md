@@ -816,6 +816,14 @@ stores, whose pass is one synchronous `purgeLogs()` call with nothing suspended 
 `resetDatabases()` closes LMDB roots with no retirement call at all, so that re-check is a routine
 path rather than a defensive one.
 
+RocksDB teardown closes commit admission before it drains. Every raw `RocksTransaction` writer must
+therefore submit through `commitTrackedRocksTransaction`, the same outstanding-commit queue used by
+`DatabaseTransaction`; a direct `transaction.commit()` is invisible to database close and can race
+handle destruction. Commit and table-maintenance drains share one absolute 120-second deadline. A
+timeout is a retryable close failure: handles stay open, admission and maintenance are restored, and
+the caller may retry. This is separate from derived-index shutdown because replication cursors,
+eviction, and optimistic primary-store removal write RocksDB without going through a derived index.
+
 The last-removed marker is retained until it commits. A rejected write is logged and carried to the
 next pass rather than dropped: a pass that deletes nothing never reaches the write again, so one
 transient failure would otherwise leave the recorded boundary permanently behind the entries that

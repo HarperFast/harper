@@ -1064,6 +1064,36 @@ describe('@fullText derived-index activation', () => {
 		assert(binding.states.has(`${opened.path}\0${opened.indexId}\0${opened.generation}`));
 	});
 
+	rocksOnly('rejects a retirement journal captured from a replaced table generation', async () => {
+		const database = `fulltext-retirement-generation-${Date.now()}`;
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'tags', type: 'array', elements: { type: 'String' } },
+			],
+			fullTextIndexes: [definition()],
+		});
+		const descriptorKey = `${Product.tableName}/`;
+		const descriptor = Product.dbisDB.getSync(descriptorKey);
+		Product.dbisDB.putSync(descriptorKey, {
+			...descriptor,
+			fullTextIndexRetirements: [{ name: 'search' }],
+		});
+		assert.strictEqual(await Product.hasCurrentFullTextIndexRetirements(['search']), true);
+
+		Product.dbisDB.putSync(descriptorKey, {
+			...descriptor,
+			generation: `${descriptor.generation}-successor`,
+			fullTextIndexRetirements: [{ name: 'search' }],
+		});
+		assert.strictEqual(await Product.hasCurrentFullTextIndexRetirements(['search']), false);
+		Product.dbisDB.putSync(descriptorKey, descriptor);
+	});
+
 	rocksOnly('resumes an incomplete removal retirement when the database reopens', async () => {
 		const database = `fulltext-retirement-reopen-${Date.now()}`;
 		const attributes = () => [
@@ -1510,7 +1540,6 @@ describe('@fullText derived-index activation', () => {
 		Product = table({ database, table: 'Product', audit: true, attributes: attributes(), fullTextIndexes: [] });
 		await waitFor(() => binding.closeAttempts > 0);
 		assert(Product.derivedIndexRuntime, 'failed settlement must remain retryable after declaration removal');
-		assert.strictEqual(Product.derivedIndexRuntime.hasFullTextIndexes(), true);
 
 		binding.closeError = undefined;
 		let finishReset;

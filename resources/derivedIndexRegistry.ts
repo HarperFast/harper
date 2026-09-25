@@ -75,23 +75,45 @@ export function waitForFullTextRetirement(
 	);
 }
 
+export function waitForFullTextRetirementLease(
+	rootStore: LockStore,
+	tableName: string,
+	options?: FenceWaitOptions
+): Promise<(() => void) | undefined> {
+	return waitForFenceLease(
+		rootStore,
+		() => acquireFullTextRetirementFence(rootStore, tableName),
+		`retirement of full-text storage for '${tableName}'`,
+		options
+	);
+}
+
 async function waitForFence(
 	rootStore: LockStore,
 	acquire: () => (() => void) | undefined,
 	description: string,
 	options: FenceWaitOptions = {}
 ): Promise<boolean> {
+	const release = await waitForFenceLease(rootStore, acquire, description, options);
+	if (!release) return false;
+	release();
+	return true;
+}
+
+async function waitForFenceLease(
+	rootStore: LockStore,
+	acquire: () => (() => void) | undefined,
+	description: string,
+	options: FenceWaitOptions = {}
+): Promise<(() => void) | undefined> {
 	const deadline = Date.now() + (options.timeoutMilliseconds ?? DEFAULT_FENCE_WAIT_MILLISECONDS);
 	let retryDelayMilliseconds = 1;
 	for (;;) {
-		if (options.shouldContinue && !options.shouldContinue()) return false;
+		if (options.shouldContinue && !options.shouldContinue()) return;
 		if (rootStore.status !== undefined && rootStore.status !== 'open')
 			throw new Error(`Cannot wait for ${description} on a ${rootStore.status} store`);
 		const release = acquire();
-		if (release) {
-			release();
-			return true;
-		}
+		if (release) return release;
 		if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${description}`);
 		await new Promise((resolve) => setTimeout(resolve, retryDelayMilliseconds));
 		retryDelayMilliseconds = Math.min(retryDelayMilliseconds * 2, 50);
