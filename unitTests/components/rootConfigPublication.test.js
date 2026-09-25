@@ -23,8 +23,40 @@ const {
 	componentPreparationLockPaths,
 	COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
 } = require('#src/components/componentPreparationLock');
+const envModule = require('#src/utility/environment/environmentManager');
 const { waitFor } = require('../waitFor.js');
 const { preserveRootConfig, readRootConfig, setRootConfigEntry: writeEntry } = require('../rootConfigFixture.js');
+
+// Root ignores the mode bits and Windows does not model them this way, so there nothing would be denied.
+const permissionsEnforced = () => process.platform !== 'win32' && process.getuid?.() !== 0;
+
+/** Run `body` with config env vars set. Nothing in it may refresh the config, or the vars would be applied for real. */
+async function withConfigEnv(vars, body) {
+	const saved = Object.entries(vars).map(([name]) => [name, process.env[name]]);
+	Object.assign(process.env, vars);
+	try {
+		return await body();
+	} finally {
+		for (const [name, value] of saved) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+	}
+}
+
+/** Make the config refresh also run `afterRefresh`, the way an env layer rewriting the file would. */
+async function withRefreshThat(afterRefresh, body) {
+	const initSync = envModule.initSync;
+	envModule.initSync = (force) => {
+		initSync(force);
+		afterRefresh();
+	};
+	try {
+		return await body();
+	} finally {
+		envModule.initSync = initSync;
+	}
+}
 
 /** Hold the publication lock until the returned release is called. Resolves once it is actually held. */
 async function holdPublicationLock() {
@@ -162,8 +194,6 @@ describe('root config publication', () => {
 	});
 
 	describe('when the root config is readable but not writable', () => {
-		// Root ignores the mode bits and Windows does not model them this way, so there nothing would be denied.
-		const permissionsEnforced = () => process.platform !== 'win32' && process.getuid?.() !== 0;
 		const modes = new Map();
 		const makeReadOnly = () => {
 			for (const [target, mode] of [
@@ -325,11 +355,153 @@ describe('root config publication', () => {
 	});
 });
 
-describe('drop_component', () => {
+describe('an effect the config environment would undo', () => {
 	preserveRootConfig();
 
-	it('removes the entry before the tree, so a refusal leaves the component whole rather than an entry that reinstalls it', async () => {
-		const { dropComponent } = require('#src/components/operations');
+	it('is refused before anything is written when HARPER_SET_CONFIG forces another package', async () => {
+		writeEntry('env-web', { package: 'npm:env-web@1' });
+		const before = fs.readFileSync(getConfigFilePath(), 'utf8');
+		const effect = { kind: 'set', entry: { package: 'npm:env-web@2' } };
+
+		await withConfigEnv(
+			{ HARPER_SET_CONFIG: JSON.stringify({ 'env-web': { package: 'npm:env-web@1' } }) },
+			async () => {
+				await assert.rejects(
+					assertRootConfigEffectPublishable('env-web', effect),
+					(error) => error.statusCode === 409 && /HARPER_SET_CONFIG sets env-web\.package\b/.test(error.message)
+				);
+				await assert.rejects(applyRootConfigEffect('env-web', effect), /HARPER_SET_CONFIG sets env-web\.package\b/);
+			}
+		);
+
+		assert.strictEqual(fs.readFileSync(getConfigFilePath(), 'utf8'), before);
+	});
+
+	it('is refused the same way for HARPER_CONFIG, which reasserts its keys over edits too', async () => {
+		writeEntry('env-web', { package: 'npm:env-web@1' });
+		const before = fs.readFileSync(getConfigFilePath(), 'utf8');
+
+		await withConfigEnv({ HARPER_CONFIG: JSON.stringify({ 'env-web': { package: 'npm:env-web@1' } }) }, () =>
+			assert.rejects(
+				applyRootConfigEffect('env-web', { kind: 'set', entry: { package: 'npm:env-web@2' } }),
+				/HARPER_CONFIG sets env-web\.package\b/
+			)
+		);
+
+		assert.strictEqual(fs.readFileSync(getConfigFilePath(), 'utf8'), before);
+	});
+
+	it('is refused for a payload deploy when a variable names the package it removes', async () => {
+		writeEntry('env-web', { package: 'npm:env-web@1', urlPath: '/web' });
+
+		await withConfigEnv({ HARPER_SET_CONFIG: JSON.stringify({ 'env-web': { package: 'npm:env-web@1' } }) }, () =>
+			assert.rejects(
+				assertRootConfigEffectPublishable('env-web', { kind: 'unset-package' }),
+				/HARPER_SET_CONFIG sets env-web\.package\b.*would not last/
+			)
+		);
+	});
+
+	it('is refused for a drop when a variable would put the entry back', async () => {
+		writeEntry('env-web', { package: 'npm:env-web@1' });
+
+		await withConfigEnv({ HARPER_CONFIG: JSON.stringify({ 'env-web': { isolated: true } }) }, () =>
+			assert.rejects(
+				applyRootConfigEffect('env-web', { kind: 'remove' }),
+				/HARPER_CONFIG sets env-web\.isolated\b.*would come back/
+			)
+		);
+
+		assert.deepStrictEqual(readRootConfig()['env-web'], { package: 'npm:env-web@1' });
+	});
+
+	it('is not refused over a key the variable adds beside the ones the effect declares', async () => {
+		writeEntry('env-web', { package: 'npm:env-web@1', isolated: true });
+
+		await withConfigEnv({ HARPER_SET_CONFIG: JSON.stringify({ 'env-web': { isolated: true } }) }, () =>
+			assertRootConfigEffectPublishable('env-web', { kind: 'set', entry: { package: 'npm:env-web@2' } })
+		);
+	});
+
+	it('throws when the config refresh leaves the file contradicting the effect', async () => {
+		writeEntry('env-web', { package: 'npm:env-web@1', urlPath: '/web' });
+
+		await withRefreshThat(
+			() => writeEntry('env-web', { ...readRootConfig()['env-web'], package: 'npm:env-web@1' }),
+			() =>
+				assert.rejects(
+					applyRootConfigEffect('env-web', { kind: 'unset-package' }),
+					/did not take effect: .* contradicts it at env-web\.package\b/
+				)
+		);
+	});
+});
+
+describe('drop_component', () => {
+	preserveRootConfig();
+	const dropComponent = (req) => require('#src/components/operations').dropComponent(req);
+	let componentDir;
+
+	/** A live component `name` with an entry, dropped by each test below. */
+	function liveComponent(name, entry = { package: `npm:${name}`, isolated: true }) {
+		componentDir = path.join(getConfigPath(CONFIG_PARAMS.COMPONENTSROOT), name);
+		fs.mkdirSync(componentDir, { recursive: true });
+		fs.writeFileSync(path.join(componentDir, 'index.js'), '// live\n');
+		writeEntry(name, entry);
+		return entry;
+	}
+
+	afterEach(() => {
+		if (!componentDir) return;
+		if (fs.existsSync(componentDir)) fs.chmodSync(componentDir, 0o755);
+		fs.rmSync(componentDir, { recursive: true, force: true });
+		componentDir = undefined;
+	});
+
+	it('leaves the tree and its entry when the tree cannot be moved aside', async function () {
+		if (!permissionsEnforced()) return this.skip();
+		const entry = liveComponent('drop-stuck');
+		// A directory moved under another parent must itself be writable, for its `..` entry.
+		fs.chmodSync(componentDir, 0o555);
+
+		await assert.rejects(() => dropComponent({ project: 'drop-stuck' }), /EACCES|EPERM/);
+
+		assert.ok(fs.existsSync(path.join(componentDir, 'index.js')), 'the tree stays');
+		assert.deepStrictEqual(readRootConfig()['drop-stuck'], entry, 'and so does its entry');
+	});
+
+	it('puts the tree back when its entry cannot be removed', async () => {
+		const entry = liveComponent('drop-back');
+
+		await withRefreshThat(
+			() => writeEntry('drop-back', entry),
+			() => assert.rejects(() => dropComponent({ project: 'drop-back' }), /did not take effect/)
+		);
+
+		assert.ok(fs.existsSync(path.join(componentDir, 'index.js')), 'the tree is back');
+		assert.deepStrictEqual(readRootConfig()['drop-back'], entry);
+	});
+
+	it('completes when the node_modules link cannot be removed, since that is cleanup after the entry', async function () {
+		if (!permissionsEnforced()) return this.skip();
+		liveComponent('drop-link');
+		const nodeModules = path.join(envModule.get(CONFIG_PARAMS.ROOTPATH), 'node_modules');
+		const link = path.join(nodeModules, 'drop-link');
+		fs.mkdirSync(nodeModules, { recursive: true });
+		fs.symlinkSync(componentDir, link, 'dir');
+		fs.chmodSync(nodeModules, 0o555);
+		try {
+			await dropComponent({ project: 'drop-link' });
+
+			assert.strictEqual(readRootConfig()['drop-link'], undefined, 'the entry is gone');
+			assert.strictEqual(fs.existsSync(componentDir), false, 'and so is the tree');
+		} finally {
+			fs.chmodSync(nodeModules, 0o755);
+			fs.rmSync(link, { force: true });
+		}
+	});
+
+	it('refuses before anything moves when the entry cannot be removed', async () => {
 		const componentDir = path.join(getConfigPath(CONFIG_PARAMS.COMPONENTSROOT), 'drop-order');
 		fs.mkdirSync(componentDir, { recursive: true });
 		fs.writeFileSync(path.join(componentDir, 'index.js'), '// live\n');

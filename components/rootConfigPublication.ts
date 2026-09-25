@@ -9,6 +9,7 @@ import {
 	parseYamlDoc,
 	syncFileToStorageSync,
 } from '../config/configUtils.ts';
+import { composeReassertedEnvConfig, REASSERTING_CONFIG_ENV_VARS } from '../config/harperConfigEnvVars.ts';
 import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
 import { ComponentPreparationLockTimeoutError, withComponentPreparationLock } from './componentPreparationLock.ts';
@@ -99,10 +100,11 @@ export async function withRootConfigPublicationLock<T>(publish: () => Promise<T>
 
 /**
  * Apply an effect to the component's root-config entry, and return only once the entry as the effect wants it
- * is on storage — even when it was already in place, because a crashed predecessor can have renamed the file in
- * without flushing it. Idempotent, so recovery can re-apply a journal after a crash at any point. Leaves THIS
- * thread's memoized config agreeing with the file, which is what lets a boot-time recovery publish before
- * `installApplications()` reads the config it installs from. Returns whether the file changed.
+ * is on storage and has survived the config refresh — even when it was already in place, because a crashed
+ * predecessor can have renamed the file in without flushing it. Idempotent, so recovery can re-apply a journal after
+ * a crash at any point. Leaves THIS thread's memoized config agreeing with the file, which is what lets a boot-time
+ * recovery publish before `installApplications()` reads the config it installs from. Returns whether the file
+ * changed.
  */
 export async function applyRootConfigEffect(component: string, effect: RootConfigEffect): Promise<boolean> {
 	if (effect.kind === 'keep') return false;
@@ -117,22 +119,32 @@ export async function applyRootConfigEffect(component: string, effect: RootConfi
 	}
 	return withRootConfigPublicationLock(async () => {
 		const { configFilePath, configDoc, changed } = readRootConfigChange(component, effect);
+		assertEnvLayersKeepEffect(component, effect, configDoc.toJSON() ?? {});
 		if (changed) atomicWriteFile(configFilePath, String(configDoc), { durable: true });
 		else syncFileToStorageSync(configFilePath);
 		// Inside the lock: on the main thread a refresh re-applies the env config layers and can rewrite the file.
 		env.initSync(true);
+		const contradicted = contradictedKeys(parseYamlDoc(configFilePath).toJSON()?.[component], effect);
+		if (contradicted.length > 0) {
+			throw new ServerError(
+				`The root config entry of ${component} did not take effect: after the config refresh, ${configFilePath} ` +
+					`contradicts it at ${formatKeys(component, contradicted)}`
+			);
+		}
 		return changed;
 	});
 }
 
 /**
- * Refuse an effect this node could not publish, while refusing still changes nothing: the publish runs after the
- * commit rename, and a document that does not parse or a directory this process cannot write fails it at every
- * start after. Only static conditions are caught; the publish can still fail.
+ * Refuse an effect this node could not publish, or that would not last, while refusing still changes nothing: the
+ * publish runs after the commit rename, and a document that does not parse, a directory this process cannot write,
+ * or a config env var that reasserts a key the effect changes fails it at every start after. Only static conditions
+ * are caught; the publish can still fail.
  */
 export async function assertRootConfigEffectPublishable(component: string, effect: RootConfigEffect): Promise<void> {
 	if (effect.kind === 'keep') return;
-	const { configFilePath, changed } = readRootConfigChange(component, effect);
+	const { configFilePath, configDoc, changed } = readRootConfigChange(component, effect);
+	assertEnvLayersKeepEffect(component, effect, configDoc.toJSON() ?? {});
 	if (!changed) return;
 	const configDirPath = dirname(configFilePath);
 	try {
@@ -158,6 +170,69 @@ function readRootConfigChange(component: string, effect: RootConfigEffect) {
 		);
 	}
 	return { configFilePath, configDoc, changed: applyEffectToDocument(configDoc, component, effect) };
+}
+
+/**
+ * HARPER_CONFIG and HARPER_SET_CONFIG rewrite every key they name at each start and each config refresh, so an
+ * effect they contradict would be reported published and then undone — a package activation left live under the
+ * forced entry, or a dropped component's entry put back.
+ */
+function assertEnvLayersKeepEffect(
+	component: string,
+	effect: RootConfigEffect,
+	resultingConfig: Record<string, unknown>
+): void {
+	if (effect.kind === 'keep') return;
+	const reasons: string[] = [];
+	for (const envVarName of REASSERTING_CONFIG_ENV_VARS) {
+		if (!process.env[envVarName]) continue;
+		const keys = contradictedKeys(composeReassertedEnvConfig(resultingConfig, [envVarName])[component], effect);
+		if (keys.length > 0) reasons.push(`${envVarName} sets ${formatKeys(component, keys)}`);
+	}
+	if (reasons.length === 0) return;
+	const outcome =
+		effect.kind === 'remove' ? 'the entry would come back' : 'the entry this release publishes would not last';
+	throw new ServerError(
+		`Cannot ${effect.kind === 'remove' ? 'remove' : 'publish'} the root config entry of ${component}: ` +
+			`${reasons.join('; ')}, which the config environment reasserts at every start and config refresh, so ` +
+			`${outcome}. Change the variable first.`,
+		409
+	);
+}
+
+/** The keys of the component's entry that contradict what the effect wants of it; none when the effect holds. */
+function contradictedKeys(entry: unknown, effect: RootConfigEffect): string[] {
+	switch (effect.kind) {
+		case 'keep':
+			return [];
+		case 'set':
+			return leafPaths(effect.entry).filter(
+				(keyPath) => !isDeepStrictEqual(valueAt(entry, keyPath), valueAt(effect.entry, keyPath))
+			);
+		case 'unset-package':
+			return isPlainObject(entry) ? PACKAGE_INSTALL_KEYS.filter((key) => key in entry) : [];
+		case 'remove':
+			if (entry === undefined) return [];
+			return isPlainObject(entry) && Object.keys(entry).length > 0 ? Object.keys(entry) : [''];
+	}
+}
+
+function leafPaths(value: Record<string, unknown>, prefix = ''): string[] {
+	return Object.entries(value).flatMap(([key, child]) =>
+		isPlainObject(child) && Object.keys(child).length > 0 ? leafPaths(child, `${prefix}${key}.`) : [`${prefix}${key}`]
+	);
+}
+
+function valueAt(value: unknown, keyPath: string): unknown {
+	for (const key of keyPath.split('.')) {
+		if (!isPlainObject(value)) return undefined;
+		value = value[key];
+	}
+	return value;
+}
+
+function formatKeys(component: string, keys: string[]): string {
+	return keys.map((key) => (key ? `${component}.${key}` : component)).join(', ');
 }
 
 function errorMessage(error: unknown): string {

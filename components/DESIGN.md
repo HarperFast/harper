@@ -215,7 +215,12 @@ boundary settles config to the same end state as the tree. `deploy_component` on
 - `keep` — a caller installing FROM root config (`installApplications()`, `add_component`, harper-pro's
   clone) owns no effect. It returns before taking any lock, so a boot re-install never waits on a config
   writer.
-- `remove` — `drop_component`. Never journaled.
+- `remove` — `drop_component`. Never journaled, so the drop orders itself instead: what the removal would refuse is
+  refused before anything moves, the tree is renamed aside, and the entry goes last, the tree being renamed back if
+  the removal fails. A failed drop therefore never leaves a live component whose entry — its package, settings and
+  isolation — is gone. The `node_modules` link and the aside tree are cleaned up after, and a failure there is
+  logged, not thrown. A crash between the rename and the removal leaves the entry without its tree: the next start
+  reinstalls a package component, and a repeated drop finishes the job.
 
 **The effect is written into `.activation.json` (journal v2) before the first rename, and applied after the
 commit** — after the swap is flushed and dependency links are re-pointed, and before the rollback record is
@@ -276,6 +281,16 @@ handles (only Windows needs a write handle to flush, and there a refusal is a to
 predecessor can have renamed it in unflushed. Deciding outside the lock is safe because the file is only
 replaced by rename. A document that does not parse cleanly is refused, never rewritten from what the parser
 recovered.
+
+**An effect the config environment would undo is refused.** `HARPER_CONFIG` and `HARPER_SET_CONFIG` rewrite every
+key they name at each start and each config refresh, over the file and over edits to it. A package activation whose
+entry one of them contradicts would go live under the forced entry, and a dropped component's entry would come back.
+So the pre-flight composes those two variables over the document it would write and refuses, with a 409 naming the
+variable and the keys, an effect they contradict; the writer repeats the check under the lock. Keys a variable adds
+beside the ones an effect declares are no contradiction: an operator-forced `isolated: true` stays beside a
+deploy's `package`. After its refresh, the writer re-reads the file and throws if the effect no longer holds — the
+backstop for what composing those two cannot predict, such as `HARPER_DEFAULT_CONFIG` filling a removed key back in
+on the main thread.
 
 **Boot ordering depends on the refresh.** `env.initSync()` memoizes the config object, so publishing to disk
 during recovery is not enough on its own: `applyRootConfigEffect` re-inits THIS thread's config, and boot

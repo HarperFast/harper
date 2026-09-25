@@ -35,9 +35,14 @@ const {
 	ASIDE_STAGING_DIR,
 	DEPLOY_STAGING_DIR,
 	dropComponentDirectory,
+	retireComponentDirectory,
 } = require('./Application.ts');
 const { COMPONENT_PREPARATION_LOCK_DIR, withComponentPreparationLock } = require('./componentPreparationLock.ts');
-const { applyRootConfigEffect, withRootConfigPublicationLock } = require('./rootConfigPublication.ts');
+const {
+	applyRootConfigEffect,
+	assertRootConfigEffectPublishable,
+	withRootConfigPublicationLock,
+} = require('./rootConfigPublication.ts');
 const { server } = require('../server/Server.ts');
 const {
 	DeploymentRecorder,
@@ -1492,16 +1497,22 @@ async function dropComponent(req) {
 				}
 				if (runningApplications.includes(project)) restartScope = project;
 			}
-			// First, because it is the step that can refuse: failing here after the tree is gone would leave an entry
-			// the next start reinstalls the dropped component from.
-			if (!file) await applyRootConfigEffect(project, { kind: 'remove' });
-			const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
-			if (!file && (await fs.pathExists(componentSymlink))) {
-				await fs.unlink(componentSymlink);
-			}
-
 			if (!file) {
-				await dropComponentDirectory(componentPath, project, log);
+				// The entry goes last, so a failed drop never leaves the component live without it: what the removal
+				// would refuse is refused before anything moves, and a removal that fails anyway puts the tree back.
+				await assertRootConfigEffectPublishable(project, { kind: 'remove' });
+				const retired = await retireComponentDirectory(componentPath, project, log);
+				try {
+					await applyRootConfigEffect(project, { kind: 'remove' });
+				} catch (error) {
+					await retired.restore().catch((restoreError) => log.error(restoreError));
+					throw error;
+				}
+				await retired.discard();
+				const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
+				await fs.unlink(componentSymlink).catch((error) => {
+					if (error.code !== 'ENOENT') log.warn(`Dropped ${project} but could not remove ${componentSymlink}:`, error);
+				});
 			} else if (await fs.pathExists(pathToComponent)) {
 				await fs.remove(pathToComponent);
 			}
