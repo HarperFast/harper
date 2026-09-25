@@ -20,8 +20,8 @@ const OIDC_TRUST_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME;
 const OIDC_TOKEN_USE_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TOKEN_USE_TABLE_NAME;
 
 /**
- * Declares the replay table whether or not it exists: the node that upgrades second can already hold a
- * copy its pre-upgrade replication handshake created from a peer, with none of the attribute flags.
+ * Not skipped when the table exists: the node that upgrades second can already hold a copy its
+ * pre-upgrade replication handshake created from a peer, with none of the attribute flags.
  */
 async function declareHdbOidcTokenUse() {
 	if (!databases.system?.[OIDC_TOKEN_USE_TABLE]) {

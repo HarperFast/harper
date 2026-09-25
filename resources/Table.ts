@@ -8409,16 +8409,20 @@ export function makeTable(options) {
 	// RocksDB has no ifVersion: the removal is its own transaction instead, which re-reads the record (it may
 	// have been written again since the sweep saw it missing) and conflicts with a write that re-adds the entry.
 	function removeIndexEntryOfMissingRecord(index: any, key: any, id: Id) {
-		const transaction = txnForContext({ transaction: new DatabaseTransaction() }).getReadTxn() as any;
+		let transaction: RocksTransaction | undefined;
 		try {
+			transaction = new RocksTransaction(primaryStore.store);
 			if (primaryStore.getEntry(id, { transaction })?.value) {
 				transaction.abort();
 				return;
 			}
 			index.remove(key, id, { transaction });
 		} catch (error) {
-			transaction.abort();
-			throw error;
+			try {
+				transaction?.abort();
+			} catch {}
+			logger.warn?.('Error removing the index entry of a missing record', id, error);
+			return;
 		}
 		transaction.commit().catch((error) => {
 			try {

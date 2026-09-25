@@ -1,21 +1,10 @@
 /**
- * system.hdb_oidc_token_use on a node that never runs an OIDC exchange.
+ * system.hdb_oidc_token_use on a node that never runs an OIDC exchange: it must reach worker start with the
+ * full shape, including on data a pre-fix 5.3.0 pre-release wrote, which no directive reaches because its
+ * data version sorts above every 5.3.0 directive.
  *
- * Every node needs the replay table's `expiresAt` declared locally, or the replay rows replicated to it
- * are never evicted. The table used to get that declaration only from the exchange path, so a passive
- * node kept the primary-key-only stub its install or upgrade created. This suite boots the real server:
- *
- *   1. a fresh install reaches worker start with the full shape;
- *   2. data written by a pre-fix 5.3.0 pre-release — the stub, holding replay rows the way a peer's
- *      replication leaves them — is repaired on the next boot of this build. No directive runs for it:
- *      its data version already sorts above every 5.3.0 directive, so only the every-boot declaration can
- *      reach it. A read-only boot leaves it alone; the next writable boot repairs it, and the expiry sweep
- *      that worker 0 arms from the repaired catalog evicts the expired rows and keeps the rest.
- *
- * Suite 2 needs HARPER_LEGACY_530_PRERELEASE_PATH: dist/bin/harper.js of a pre-fix 5.3.0 pre-release
- * (CI installs harper@5.3.0-beta.2), and is skipped without it.
- *
- * Repro: HARPER_LEGACY_530_PRERELEASE_PATH=<path> npm run test:integration -- "integrationTests/upgrade/oidc-token-use-table.test.ts"
+ * The pre-release suite needs HARPER_LEGACY_530_PRERELEASE_PATH (dist/bin/harper.js of harper@5.3.0-beta.2,
+ * which CI installs) and is skipped without it.
  */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
