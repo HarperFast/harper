@@ -2673,6 +2673,11 @@ export function prepareDatabaseDrop(
 	claimDatabaseDropPreparations(paths, preparationId, ownerThreadId, databaseName);
 	const task = (async () => {
 		for (const name of names) await closeDatabase(name, { requireClosed: true });
+		// A previous destroy attempt can leave a native lifecycle entry owned by this worker. Clear it
+		// before acknowledging a retry so a different origin worker can complete the durable drop.
+		for (const rootPath of paths) {
+			if (incompleteDatabaseDropStores.has(rootPath)) await destroyIncompleteDatabaseRoot(rootPath);
+		}
 	})();
 	databaseDropPreparationTasks.set(databaseName, { id: preparationId, task, rootPaths: paths });
 	for (const rootPath of paths) trackDatabaseDropPreparationTask(rootPath, preparationId, task);

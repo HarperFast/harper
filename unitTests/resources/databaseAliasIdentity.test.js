@@ -348,6 +348,8 @@ describe('shared root-store database identity', function () {
 		} finally {
 			RocksDatabase.prototype.destroy = originalDestroy;
 		}
+		await prepareDatabaseDrop('configuredalias', 'alias-drop-recovery-peer', 1, rootPaths);
+		await completeDatabaseDropPreparation('configuredalias', 'alias-drop-recovery-peer', rootPaths);
 
 		resetDatabases();
 		assert.strictEqual(databases.configuredalias, undefined);

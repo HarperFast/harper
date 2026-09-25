@@ -229,6 +229,12 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		});
 	});
 
+	it('accepts a job worker that closes normally before acknowledging preparation', async function () {
+		const worker = await startFixtureWorker('exit', 'job');
+		started.push(worker);
+		await broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000, true);
+	});
+
 	it('includes job workers when destructive completion requests it', async function () {
 		const worker = await startFixtureWorker('report-acknowledge', 'job');
 		started.push(worker);

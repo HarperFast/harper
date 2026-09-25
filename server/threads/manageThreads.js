@@ -1131,6 +1131,7 @@ function broadcastWithAcknowledgement(
 				ackHandler.closeResponse = strict
 					? { error: { message: 'exited before acknowledging preparation' } }
 					: undefined;
+				ackHandler.allowNormalJobExit = strict && includeJobWorkers && port.isJobWorker;
 				pending.add(ackHandler);
 				port.ref();
 				port.refCount = (port.refCount || 0) + 1;
@@ -1138,10 +1139,10 @@ function broadcastWithAcknowledgement(
 				if (!port.hasAckCloseListener) {
 					// just set a single close listener that can clean up all the ack handlers for a port that is closed
 					port.hasAckCloseListener = true;
-					port.on(port.close ? 'close' : 'exit', () => {
+					port.on(port.close ? 'close' : 'exit', (exitCode) => {
 						for (let [, ackHandler] of awaitingResponses) {
 							if (ackHandler.port === port) {
-								ackHandler(ackHandler.closeResponse);
+								ackHandler(ackHandler.allowNormalJobExit && exitCode === 0 ? undefined : ackHandler.closeResponse);
 							}
 						}
 					});
