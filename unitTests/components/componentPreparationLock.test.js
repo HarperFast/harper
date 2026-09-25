@@ -1,9 +1,9 @@
 'use strict';
 
 const assert = require('node:assert');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
-const { Worker } = require('node:worker_threads');
+const { Worker, threadId } = require('node:worker_threads');
 const { mkdtemp, mkdir, readdir, rm, utimes, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
@@ -15,6 +15,8 @@ const {
 	componentPreparationLockPaths,
 	withComponentPreparationLock,
 	scanLiveClaims,
+	releaseTicket,
+	ComponentPreparationLockTimeoutError,
 	COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
 } = require('#src/components/componentPreparationLock');
 
@@ -412,5 +414,164 @@ describe('component preparation lock', () => {
 
 		assert.equal(result.choosing.length, 0);
 		assert.equal(result.tickets.length, 0);
+	});
+
+	it('removes a ticket whose record does not parse, even from a scan that holds no claim', async () => {
+		const { lockRoot, lockName } = componentPreparationLockPaths(join(rootDir, 'unparseable-ticket'));
+		await mkdir(lockRoot, { recursive: true, mode: 0o700 });
+		await writeFile(join(lockRoot, `${lockName}.ticket.1.unparseable.json`), '{');
+
+		const result = await scanLiveClaims(lockRoot, lockName, {});
+
+		assert.deepStrictEqual(result, { choosing: [], tickets: [] });
+		assert.deepStrictEqual(await readdir(lockRoot), []);
+	});
+
+	describe('a ticket its owner could not remove', () => {
+		// Owned by this very thread, so without a released marker it reads as a live holder.
+		async function plantLiveTicket(componentDirPath, token) {
+			const { lockRoot, lockName } = componentPreparationLockPaths(componentDirPath);
+			await mkdir(lockRoot, { recursive: true });
+			const ticketPath = join(lockRoot, `${lockName}.ticket.1.${token}.json`);
+			await writeFile(
+				ticketPath,
+				JSON.stringify({
+					pid: process.pid,
+					threadId,
+					processInstanceId: COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
+					token,
+					ticket: 1,
+				})
+			);
+			return { lockRoot, lockName, ticketPath };
+		}
+		const boundedWait = { timeoutMs: 300, renewTimeoutWhileOwnerAlive: false };
+
+		it('blocks every later contender while nothing says it was released', async () => {
+			const componentDirPath = join(rootDir, 'stuck-ticket');
+			await plantLiveTicket(componentDirPath, 'stuck');
+
+			await assert.rejects(
+				withComponentPreparationLock(componentDirPath, async () => {}, boundedWait),
+				ComponentPreparationLockTimeoutError
+			);
+		});
+
+		it('stops blocking once its owner has published the released marker, and both are cleared', async () => {
+			const componentDirPath = join(rootDir, 'released-ticket');
+			const { lockRoot, lockName } = await plantLiveTicket(componentDirPath, 'released');
+			await writeFile(join(lockRoot, `${lockName}.released.released`), '');
+
+			let acquired = false;
+			await withComponentPreparationLock(componentDirPath, async () => (acquired = true), boundedWait);
+
+			assert.equal(acquired, true);
+			assert.deepStrictEqual(
+				(await readdir(lockRoot)).filter((name) => name.startsWith(lockName)),
+				[],
+				'the stale ticket and its marker are gone, and so is the ticket this acquisition held'
+			);
+		});
+
+		it('is released by a marker when removing it keeps failing, and the release reports success', async () => {
+			const componentDirPath = join(rootDir, 'undeletable-ticket');
+			const { lockRoot, lockName, ticketPath } = await plantLiveTicket(componentDirPath, 'undeletable');
+			let attempts = 0;
+
+			await releaseTicket(lockRoot, lockName, ticketPath, 'undeletable', async () => {
+				attempts++;
+				throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
+			});
+
+			assert.ok(attempts > 1, 'the removal was retried before falling back to the marker');
+			assert.ok((await readdir(lockRoot)).includes(`${lockName}.released.undeletable`));
+			let acquired = false;
+			await withComponentPreparationLock(componentDirPath, async () => (acquired = true), boundedWait);
+			assert.equal(acquired, true, 'and the next contender does not wait behind it');
+		});
+
+		// The user-immutable flag: undeletable in a writable directory, as a Windows sharing violation leaves a ticket.
+		const undeletable = (filePath, on) => spawnSync('chflags', [on ? 'uchg' : 'nouchg', filePath]);
+		const ticketNames = async (lockRoot, lockName) =>
+			(await readdir(lockRoot)).filter((name) => name.startsWith(`${lockName}.ticket.`));
+
+		it('publishes the marker from the real release, and clears both once the ticket can go', async function () {
+			if (process.platform !== 'darwin') return this.skip();
+			const componentDirPath = join(rootDir, 'immutable-ticket');
+			const { lockRoot, lockName } = componentPreparationLockPaths(componentDirPath);
+			let ticketPath;
+			try {
+				await withComponentPreparationLock(componentDirPath, async () => {
+					ticketPath = join(lockRoot, (await ticketNames(lockRoot, lockName))[0]);
+					undeletable(ticketPath, true);
+				});
+				assert.ok(
+					(await readdir(lockRoot)).some((name) => name.startsWith(`${lockName}.released.`)),
+					'the release published a marker for the ticket it could not remove'
+				);
+				let acquired = false;
+				await withComponentPreparationLock(componentDirPath, async () => (acquired = true), boundedWait);
+				assert.equal(acquired, true, 'and the next holder did not wait behind it');
+			} finally {
+				if (ticketPath) undeletable(ticketPath, false);
+			}
+
+			await withComponentPreparationLock(componentDirPath, async () => {}, boundedWait);
+			assert.deepStrictEqual(
+				(await readdir(lockRoot)).filter((name) => name.startsWith(lockName)),
+				[]
+			);
+		});
+
+		it('retires the ticket of an acquisition that gave up and could not remove it', async function () {
+			if (process.platform !== 'darwin') return this.skip();
+			const componentDirPath = join(rootDir, 'immutable-waiter');
+			const { lockRoot, lockName } = componentPreparationLockPaths(componentDirPath);
+			let releaseHolder;
+			const holding = withComponentPreparationLock(
+				componentDirPath,
+				() => new Promise((resolve) => (releaseHolder = resolve))
+			);
+			await waitFor(async () => (await ticketNames(lockRoot, lockName).catch(() => [])).length === 1, 5000, 5);
+			const [holderTicket] = await ticketNames(lockRoot, lockName);
+
+			const waiting = withComponentPreparationLock(componentDirPath, async () => {}, boundedWait);
+			waiting.catch(() => {});
+			let waiterTicket;
+			await waitFor(
+				async () => {
+					waiterTicket = (await ticketNames(lockRoot, lockName)).find((name) => name !== holderTicket);
+					return Boolean(waiterTicket);
+				},
+				5000,
+				5
+			);
+			undeletable(join(lockRoot, waiterTicket), true);
+			try {
+				await assert.rejects(waiting, ComponentPreparationLockTimeoutError);
+				const waiterToken = waiterTicket.slice(0, -'.json'.length).split('.').pop();
+				assert.ok(
+					(await readdir(lockRoot)).includes(`${lockName}.released.${waiterToken}`),
+					'the give-up released its ticket through the same marker'
+				);
+			} finally {
+				undeletable(join(lockRoot, waiterTicket), false);
+				releaseHolder();
+				await holding;
+			}
+		});
+
+		it('still fails when neither the ticket nor a marker can be written', async () => {
+			const componentDirPath = join(rootDir, 'unreleasable-ticket');
+			const { lockName, ticketPath } = await plantLiveTicket(componentDirPath, 'unreleasable');
+
+			await assert.rejects(
+				releaseTicket(join(rootDir, 'no-such-directory'), lockName, ticketPath, 'unreleasable', async () => {
+					throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+				}),
+				/EPERM/,
+				'the removal error is what the caller sees'
+			);
+		});
 	});
 });

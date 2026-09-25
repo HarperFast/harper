@@ -12,6 +12,7 @@ const YAML = require('yaml');
 const logger = require('#src/utility/logging/harper_logger');
 const common_utils = require('#src/utility/common_utils');
 const testUtils = require('../testUtils.js');
+const { clearRootPath } = require('../bootPropsFixture.js');
 const hdbTerms = require('#src/utility/hdbTerms');
 const { handleHDBError } = require('#src/utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = require('#src/utility/errors/commonErrors');
@@ -120,16 +121,9 @@ describe('Test configUtils module', () => {
 	const sandbox = sinon.createSandbox();
 
 	// exercises boot-props resolution, which mocha.init.js's ROOTPATH export shadows
-	let savedRootPathEnv;
-	before(() => {
-		savedRootPathEnv = process.env.ROOTPATH;
-		delete process.env.ROOTPATH;
-		common_utils.resetNoBootFileCache();
-	});
+	clearRootPath();
 
 	after(() => {
-		if (savedRootPathEnv !== undefined) process.env.ROOTPATH = savedRootPathEnv;
-		common_utils.resetNoBootFileCache();
 		sandbox.restore();
 	});
 

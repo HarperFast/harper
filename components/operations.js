@@ -2,7 +2,6 @@
 
 const path = require('node:path');
 const { isMainThread, parentPort } = require('node:worker_threads');
-const { isDeepStrictEqual } = require('node:util');
 const fs = require('fs-extra');
 const fg = require('fast-glob');
 const normalize = require('normalize-path');
@@ -38,6 +37,7 @@ const {
 	dropComponentDirectory,
 } = require('./Application.ts');
 const { COMPONENT_PREPARATION_LOCK_DIR, withComponentPreparationLock } = require('./componentPreparationLock.ts');
+const { applyRootConfigEffect, withRootConfigPublicationLock } = require('./rootConfigPublication.ts');
 const { server } = require('../server/Server.ts');
 const {
 	DeploymentRecorder,
@@ -323,7 +323,7 @@ async function dropCustomFunctionProject(req) {
 		}
 
 		if (appFound) {
-			configUtils.updateConfigValue(hdbTerms.CONFIG_PARAMS.APPS, apps);
+			await withRootConfigPublicationLock(async () => configUtils.updateConfigValue(hdbTerms.CONFIG_PARAMS.APPS, apps));
 
 			return `Successfully deleted project: ${project}`;
 		}
@@ -801,49 +801,19 @@ async function deployComponent(req) {
 		// committed" — so a later failure arrives after both phases reported success. The operation's error
 		// is the authority on whether the deploy landed, not the phase stream.
 		emit('phase', { phase: 'prepare', status: 'start' });
-		// The root-config entry a package deploy publishes. A stage records it with the artifact instead of
-		// publishing it, so a staged release nobody activated cannot leave config naming it — and the
-		// activation that eventually publishes it does so in the same order a normal deploy does.
-		let stagedRootConfig = null;
+		let declaredRootConfig = null;
 		await prepareApplication(application, {
 			// `.deploy-staging/<artifactId>`. The public deployment id, so the id the caller was handed is
 			// the id a later `deployment_id` request can name; an activation names the artifact's own id,
 			// not the new row's.
 			artifactId: req.deployment_id ?? req._deploymentId,
 			mode,
-			describeArtifact: () => ({ rootConfig: stagedRootConfig, isolated: Boolean(nowIsolated) }),
-			// Returns its own undo. Publication happens BEFORE the swap, in the same order a normal deploy
-			// uses, so an activation that fails pre-commit would otherwise leave config naming a release that
-			// is not live — and `installApplications()` would resolve and install that package from scratch at
-			// the next boot, over a component whose certified artifact is sitting right there. Restoring is
-			// best-effort and not durable (that is #2315 step 3's work); it is still the difference between a
-			// failed activation that changed nothing and one that re-points the component.
-			publishRootConfig: async (entry) => {
-				const previous = configUtils.getConfigObj()?.[req.project];
-				await configUtils.addConfig(req.project, entry);
-				env.initSync(true);
-				// Read BACK, not `entry` — see `publishedEntryStillStands`.
-				const published = configUtils.getConfigObj()?.[req.project];
-				return async () => {
-					if (
-						!publishedEntryStillStands(
-							published,
-							() => env.initSync(true),
-							() => configUtils.getConfigObj()?.[req.project]
-						)
-					) {
-						return;
-					}
-					if (previous === undefined) configUtils.deleteConfigFromFile([req.project]);
-					else await configUtils.addConfig(req.project, previous);
-					env.initSync(true);
-				};
-			},
+			describeArtifact: () => ({ rootConfig: declaredRootConfig, isolated: Boolean(nowIsolated) }),
 			admitIsolation: async (descriptor) => {
 				env.initSync(true);
 				wasIsolated = isIsolatedApplication(req.project);
-				// A package artifact restores its own root-config entry, so its recorded intent is what will
-				// be in force. A payload artifact publishes no config, so the effective configuration is the
+				// A package artifact publishes its own root-config entry, so its recorded intent is what will
+				// be in force. A payload artifact owns no `isolated` key, so the effective configuration is the
 				// only authority there — a saved `false` must not admit past an isolation the operator set
 				// between the stage and this call.
 				nowIsolated = descriptor.rootConfig ? descriptor.isolated : wasIsolated;
@@ -870,12 +840,7 @@ async function deployComponent(req) {
 				if (req.branchedDatabases !== undefined) applicationConfig.branchedDatabases = req.branchedDatabases;
 				if (nowIsolated) applicationConfig.isolated = true;
 				if (credentialReferences.length) applicationConfig.credentials = credentialReferences;
-				if (mode === 'stage') {
-					stagedRootConfig = applicationConfig;
-					return;
-				}
-				await configUtils.addConfig(req.project, applicationConfig);
-				env.initSync(true);
+				declaredRootConfig = applicationConfig;
 			},
 			validateCandidate: async (candidateDirPath) => {
 				emit('phase', { phase: 'prepare', status: 'done' });
@@ -1113,27 +1078,6 @@ async function deployComponent(req) {
 		}
 		throw outErr;
 	}
-}
-
-/**
- * Whether the root-config entry an activation published is still the one on disk — the condition for that
- * activation's failure to take it back. A `set_configuration` acknowledged while the swap was retrying is
- * not this operation's to overwrite, and restoring a snapshot taken before it would silently drop it.
- *
- * Split out from the caller so it can be tested without a deploy: this is the only guard on a hazard the
- * preparation lock does not cover, and both ways it can regress fail silently. `refreshConfig` is called
- * BEFORE the read and is load-bearing — `set_configuration` writes the config file without refreshing this
- * process's config object, so a cached read compares against a value that predates the very change the
- * guard exists to protect and always concludes nothing moved. It narrows the window rather than closing
- * it; serializing config publication is #2315 step 3.
- *
- * `published` must be the entry as read back after publication, not as passed in: only two values that went
- * through the same write-and-parse round trip are comparable, and comparing against the argument would read
- * any serialization difference as a concurrent change and skip every undo.
- */
-function publishedEntryStillStands(published, refreshConfig, readCurrentEntry) {
-	refreshConfig();
-	return isDeepStrictEqual(readCurrentEntry(), published);
 }
 
 /**
@@ -1548,6 +1492,9 @@ async function dropComponent(req) {
 				}
 				if (runningApplications.includes(project)) restartScope = project;
 			}
+			// First, because it is the step that can refuse: failing here after the tree is gone would leave an entry
+			// the next start reinstalls the dropped component from.
+			if (!file) await applyRootConfigEffect(project, { kind: 'remove' });
 			const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
 			if (!file && (await fs.pathExists(componentSymlink))) {
 				await fs.unlink(componentSymlink);
@@ -1568,8 +1515,6 @@ async function dropComponent(req) {
 				await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
 			}
 
-			if (!file) configUtils.deleteConfigFromFile([project]);
-			if (!file && isMainThread) env.initSync(true);
 			response = await server.replication.replicateOperation(req);
 			const { applicationHasBranchStorage, removeBranchesForApplication } = require('../resources/branchDatabase.ts');
 			const branched = !file && applicationHasBranchStorage(project);
@@ -1630,7 +1575,6 @@ exports.dropCustomFunctionProject = dropCustomFunctionProject;
 exports.packageComponent = packageComponent;
 exports.deployComponent = deployComponent;
 exports.unconfirmedStagingPeers = unconfirmedStagingPeers;
-exports.publishedEntryStillStands = publishedEntryStillStands;
 exports.getComponents = getComponents;
 exports.getComponentFile = getComponentFile;
 exports.setComponentFile = setComponentFile;

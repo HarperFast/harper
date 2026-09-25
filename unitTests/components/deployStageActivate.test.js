@@ -8,7 +8,7 @@
 const assert = require('node:assert');
 const path = require('node:path');
 const fs = require('node:fs/promises');
-const { existsSync } = require('node:fs');
+const { existsSync, readFileSync, writeFileSync } = require('node:fs');
 const os = require('node:os');
 
 const testUtils = require('../testUtils.js');
@@ -20,11 +20,16 @@ const {
 	pruneDormantBuilds,
 	candidateApplicationPath,
 	publishClaimOwnership,
+	recoverInterruptedActivations,
 	DEPLOY_STAGING_DIR,
 	Application,
 } = require('#src/components/Application');
+const { waitFor } = require('../waitFor.js');
+const { setTimeout: sleep } = require('node:timers/promises');
 const { packageDirectory } = require('#src/components/packageComponent');
-const { unconfirmedStagingPeers, publishedEntryStillStands } = require('#src/components/operations');
+const { unconfirmedStagingPeers } = require('#src/components/operations');
+const { getConfigFilePath } = require('#src/config/configUtils');
+const { preserveRootConfig, rootConfigEntry, setRootConfigEntry } = require('../rootConfigFixture.js');
 
 async function newRoot(label) {
 	return fs.mkdtemp(path.join(os.tmpdir(), `stage-activate-${label}-`));
@@ -74,6 +79,25 @@ async function readLive(componentsRoot, name) {
 
 async function readDescriptor(componentsRoot, id) {
 	return JSON.parse(await fs.readFile(path.join(deploymentDir(componentsRoot, id), '.artifact.json'), 'utf8'));
+}
+
+/**
+ * Whether a read-only directory actually denies this process a write. Root ignores the mode bits and Windows
+ * does not model them this way, so an injection built on one would silently do nothing there; probing keeps
+ * such an environment skipping rather than passing with nothing exercised.
+ */
+async function readOnlyDirectoryDeniesWrites() {
+	const probe = await fs.mkdtemp(path.join(os.tmpdir(), 'stage-activate-probe-'));
+	try {
+		await fs.chmod(probe, 0o500);
+		await fs.writeFile(path.join(probe, 'x'), '');
+		return false;
+	} catch {
+		return true;
+	} finally {
+		await fs.chmod(probe, 0o700).catch(() => {});
+		await fs.rm(probe, { recursive: true, force: true });
+	}
 }
 
 describe('staging a build without activating it', () => {
@@ -447,6 +471,8 @@ describe('claiming a deployment id', () => {
 });
 
 describe('activating a staged artifact', () => {
+	preserveRootConfig();
+
 	it('swaps in the staged bytes without rebuilding, and consumes the artifact', async function () {
 		this.timeout(20000);
 		const root = await newRoot('activate');
@@ -464,38 +490,24 @@ describe('activating a staged artifact', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	it('publishes the root-config entry the build recorded, in the window recovery rolls forward from', async function () {
+	it('publishes the root-config entry the build recorded once the swap has committed', async function () {
 		this.timeout(20000);
 		const root = await newRoot('activate-config');
 		await writeLive(root, 'web', 'LIVE v1\n');
+		setRootConfigEntry('web', { package: 'npm:web@1' });
 		await stage(root, 'web', 'a1', 'STAGED v2\n', {
-			describeArtifact: () => ({ rootConfig: { package: 'npm:web', isolated: false }, isolated: false }),
+			describeArtifact: () => ({ rootConfig: { package: 'npm:web@2', isolated: false }, isolated: false }),
 		});
+		assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@1' }, 'staging publishes nothing');
 
-		const published = [];
-		await prepareApplication(applicationAt(root, 'web'), {
-			mode: 'activate',
-			artifactId: 'a1',
-			publishRootConfig: async (entry) => {
-				published.push({
-					entry,
-					liveDisplaced: !existsSync(path.join(root, 'web')),
-					journalPresent: existsSync(path.join(deploymentDir(root, 'a1'), '.activation.json')),
-				});
-			},
-		});
+		await prepareApplication(applicationAt(root, 'web'), { mode: 'activate', artifactId: 'a1' });
 
-		assert.deepStrictEqual(published[0].entry, { package: 'npm:web', isolated: false });
-		// Both true is what makes a crash here roll FORWARD to the certified artifact. Published any earlier
-		// — live still present, no rollback record — settlement reads it as an activation that never started,
-		// deletes the artifact, and the next boot rebuilds the published package from the registry instead.
-		assert.strictEqual(published[0].journalPresent, true, 'the journal is already on disk');
-		assert.strictEqual(published[0].liveDisplaced, true, 'and the previous version is already displaced');
 		assert.strictEqual(await readLive(root, 'web'), 'STAGED v2\n');
+		assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@2', isolated: false });
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	it('admits the isolation the build declared, under the preparation lock', async function () {
+	it('admits the isolation the build declared under the preparation lock, and publishes it', async function () {
 		this.timeout(20000);
 		const root = await newRoot('activate-isolation');
 		await writeLive(root, 'web', 'LIVE v1\n');
@@ -508,10 +520,24 @@ describe('activating a staged artifact', () => {
 			mode: 'activate',
 			artifactId: 'a1',
 			admitIsolation: async (descriptor) => admitted.push(descriptor.isolated),
-			publishRootConfig: async () => {},
 		});
 
 		assert.deepStrictEqual(admitted, [true]);
+		assert.strictEqual(rootConfigEntry('web').isolated, true, 'the containment boundary it was admitted under');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it("removes a payload artifact's registry provenance and keeps the runtime configuration it does not own", async function () {
+		// A cold install would otherwise resolve the old package over the payload release that is now live.
+		this.timeout(20000);
+		const root = await newRoot('activate-payload-config');
+		await writeLive(root, 'web', 'LIVE v1\n');
+		setRootConfigEntry('web', { package: 'npm:web@1', install: { command: 'npm ci' }, isolated: true, urlPath: '/w' });
+		await stage(root, 'web', 'a1', 'STAGED v2\n');
+
+		await prepareApplication(applicationAt(root, 'web'), { mode: 'activate', artifactId: 'a1' });
+
+		assert.deepStrictEqual(rootConfigEntry('web'), { isolated: true, urlPath: '/w' });
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
@@ -684,32 +710,15 @@ describe('retention and a staged artifact', () => {
 });
 
 describe('an activation that fails before it commits', () => {
+	preserveRootConfig();
+
 	// The live tree is restored by compensation, but the artifact also has to come back to DORMANT — no
 	// journal — or the next preparation reads live-plus-candidate as an abandoned activation and deletes the
 	// very artifact the operator staged.
-	// A read-only components ROOT is what lands the failure past verification, `publishRootConfig` and the
-	// journal write: reads still succeed, the deployment directory and lock root stay writable, and only a
-	// rename whose parent is the root fails. The aside staging directory is pre-created so the preparation
+	// A read-only components ROOT is what lands the failure past verification and the journal write: reads
+	// still succeed, the deployment directory and lock root stay writable, and only a rename whose parent is
+	// the root fails. The aside staging directory is pre-created so the preparation
 	// preamble takes its recovery branch here rather than creating it later from inside the boundary.
-	/**
-	 * Whether a read-only directory actually denies this process a write. Root ignores the mode bits and
-	 * Windows does not model them this way, so the injection below would silently do nothing there; probing
-	 * keeps such an environment skipping rather than passing with nothing exercised.
-	 */
-	const readOnlyDirectoryDeniesWrites = async () => {
-		const probe = await fs.mkdtemp(path.join(os.tmpdir(), 'stage-activate-probe-'));
-		try {
-			await fs.chmod(probe, 0o500);
-			await fs.writeFile(path.join(probe, 'x'), '');
-			return false;
-		} catch {
-			return true;
-		} finally {
-			await fs.chmod(probe, 0o700).catch(() => {});
-			await fs.rm(probe, { recursive: true, force: true });
-		}
-	};
-
 	const failAfterJournal = async (root, component, id, options = {}) => {
 		await fs.mkdir(path.join(root, '.deploy-aside', component), { recursive: true, mode: 0o700 });
 		await fs.chmod(root, 0o500);
@@ -772,93 +781,211 @@ describe('an activation that fails before it commits', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	// A read-only ROOT cannot reach the config publish: B1 renames the live tree out of the root, so it is
-	// the step that fails and the callback never runs. To land the failure between the publish and the
-	// commit, the publish itself takes write permission off the DEPLOYMENT directory — B2 renames the
-	// candidate out of there — and the undo puts it back so compensation can still do its work.
-	const failAfterConfigPublish = async (root, component, id, onUndo) => {
-		const seen = { published: [], undone: 0 };
-		await assert.rejects(
-			() =>
-				prepareApplication(applicationAt(root, component), {
-					mode: 'activate',
-					artifactId: id,
-					publishRootConfig: async (entry) => {
-						seen.published.push(entry);
-						await fs.chmod(deploymentDir(root, id), 0o500);
-						return async () => {
-							await fs.chmod(deploymentDir(root, id), 0o700);
-							seen.undone++;
-							await onUndo?.();
-						};
-					},
-				}),
-			(error) => {
-				assert.match(String(error.message), /EACCES|EPERM/);
-				assert.doesNotMatch(String(error.message), /Cannot deploy/);
-				return true;
-			}
-		);
-		await fs.chmod(deploymentDir(root, id), 0o700).catch(() => {});
-		assert.strictEqual(seen.published.length, 1, 'the config publish ran, so the failure is past it');
-		return seen;
-	};
-
-	it('takes back the root-config entry it published, so config does not name a release that is not live', async function () {
+	it('leaves the root-config entry alone, since nothing before the commit publishes it', async function () {
 		this.timeout(30000);
 		if (!(await readOnlyDirectoryDeniesWrites())) return this.skip();
 		const root = await newRoot('compensate-config');
 		await writeLive(root, 'web', 'LIVE v1\n');
+		setRootConfigEntry('web', { package: 'npm:web@1' });
 		await stage(root, 'web', 'a1', 'STAGED v2\n', {
 			describeArtifact: () => ({ rootConfig: { package: 'npm:web@2', isolated: false }, isolated: false }),
 		});
 
-		const seen = await failAfterConfigPublish(root, 'web', 'a1');
+		await failAfterJournal(root, 'web', 'a1');
 
-		assert.strictEqual(seen.undone, 1, 'the entry that named the unactivated release was taken back');
+		assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@1' });
 		assert.strictEqual(await readLive(root, 'web'), 'LIVE v1\n');
-		assert.strictEqual(
-			existsSync(path.join(deploymentDir(root, 'a1'), '.activation.json')),
-			false,
-			'and the artifact is dormant again'
-		);
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	it('returns the artifact to dormant even when the config undo fails, because an existing component cannot roll forward', async function () {
-		this.timeout(30000);
-		if (!(await readOnlyDirectoryDeniesWrites())) return this.skip();
-		const root = await newRoot('compensate-config-undo-fails');
+	// The entry is published after the commit, where a failure leaves the release live under the previous entry
+	// through every restart until someone fixes the config. A config that cannot take the entry now is refused
+	// while refusing still changes nothing.
+	it('refuses, before anything moves, an entry the root config could not take once the release was live', async function () {
+		this.timeout(20000);
+		const root = await newRoot('preflight-config');
 		await writeLive(root, 'web', 'LIVE v1\n');
+		const app = applicationAt(
+			root,
+			'web',
+			await makeTarball({ 'package.json': '{"name":"web","version":"2.0.0"}\n', 'index.js': 'DEPLOYED v2\n' })
+		);
+		const unparseable = readFileSync(getConfigFilePath(), 'utf8') + '\nunparseable: [unterminated\n';
+		writeFileSync(getConfigFilePath(), unparseable);
+
+		await assert.rejects(
+			() =>
+				prepareApplication(app, {
+					artifactId: 'd1',
+					describeArtifact: () => ({ rootConfig: { package: 'npm:web@2' }, isolated: false }),
+				}),
+			/does not parse/
+		);
+
+		assert.strictEqual(await readLive(root, 'web'), 'LIVE v1\n', 'the previous release was never moved');
+		assert.strictEqual(existsSync(deploymentDir(root, 'd1')), false, 'the build is discarded like any failed build');
+		assert.strictEqual(readFileSync(getConfigFilePath(), 'utf8'), unparseable, 'and config was not rewritten');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	// The window the entry used to be published in: after B1 has displaced the live tree, before B2. B1 is
+	// parked in its retry by a read-only root until the journal is on disk; the deployment directory — B2's
+	// source parent — is then made read-only and B1 let through, so the live tree is displaced and the swap
+	// retries against a lock that outlasts its budget.
+	it('never publishes the entry when the swap fails after the live tree was displaced, which is the divergence #2315 step 6 pinned, inverted', async function () {
+		this.timeout(60000);
+		if (process.platform === 'win32' || !(await readOnlyDirectoryDeniesWrites())) return this.skip();
+		const root = await newRoot('fail-after-displacing');
+		await writeLive(root, 'web', 'LIVE v1\n');
+		setRootConfigEntry('web', { package: 'npm:web@1' });
 		await stage(root, 'web', 'a1', 'STAGED v2\n', {
-			describeArtifact: () => ({ rootConfig: { package: 'npm:web@2', isolated: false }, isolated: false }),
+			describeArtifact: () => ({ rootConfig: { package: 'npm:web@2', isolated: true }, isolated: true }),
 		});
+		const configBefore = await fs.stat(getConfigFilePath());
+		const deployment = deploymentDir(root, 'a1');
+		await fs.mkdir(path.join(root, '.deploy-aside', 'web'), { recursive: true, mode: 0o700 });
 
-		// Compensation has already put the live tree back and taken its rollback record with it, so the next
-		// settle reads live-plus-candidate-with-no-record: for a staged artifact that means dormant, never a
-		// roll forward. Holding the journal for a roll-forward that cannot happen only defers the same
-		// verdict to the next start and leaves the artifact unusable until then.
-		const seen = await failAfterConfigPublish(root, 'web', 'a1', async () => {
-			throw new Error('config undo failed');
-		});
+		await fs.chmod(root, 0o500);
+		const activating = prepareApplication(applicationAt(root, 'web'), { mode: 'activate', artifactId: 'a1' });
+		try {
+			await waitFor(
+				async () => {
+					const entries = await fs.readdir(deployment).catch(() => []);
+					return entries.includes('.activation.json') && !entries.some((entry) => entry.includes('.partial-'));
+				},
+				20000,
+				5
+			);
+			await sleep(150);
+			await fs.chmod(deployment, 0o500);
+			await fs.chmod(root, 0o700);
+			await assert.rejects(activating, { code: 'EACCES' });
+		} finally {
+			await fs.chmod(root, 0o700).catch(() => {});
+			await fs.chmod(deployment, 0o700).catch(() => {});
+		}
 
-		// ASSERTED, not glossed: the entry this activation published is still standing while the previous
-		// release is what is live. That divergence is the whole of #2315 step 3 — and it includes the
-		// isolation the artifact recorded — so it is pinned here rather than left for a reader to infer from
-		// trees and journals. Whoever closes step 3 should find this assertion inverted.
-		assert.strictEqual(seen.undone, 1, 'the undo was attempted');
-		assert.deepStrictEqual(
-			seen.published[0],
-			{ package: 'npm:web@2', isolated: false },
-			'and its entry is the one config is left naming, though that release is not live'
-		);
-		assert.strictEqual(await readLive(root, 'web'), 'LIVE v1\n');
+		assert.strictEqual(await readLive(root, 'web'), 'LIVE v1\n', 'compensation put the previous release back');
 		assert.strictEqual(
-			existsSync(path.join(deploymentDir(root, 'a1'), '.activation.json')),
-			false,
-			'the journal is retired rather than held for a roll forward recovery will not perform'
+			(await fs.stat(getConfigFilePath())).ino,
+			configBefore.ino,
+			'and root config was never written at all — an atomic write renames a new file in'
 		);
-		assert.ok(existsSync(path.join(deploymentDir(root, 'a1'), 'web')), 'and the certified build is still there');
+		assert.deepStrictEqual(
+			rootConfigEntry('web'),
+			{ package: 'npm:web@1' },
+			'so config names the release that is live, isolation included'
+		);
+
+		// The journal outlived the failure, because the directory holding it was the one made read-only. What
+		// recovery does with it is return the artifact to dormant — still without touching config.
+		assert.strictEqual((await recoverInterruptedActivations(root)).size, 0);
+		assert.strictEqual(existsSync(path.join(deployment, '.activation.json')), false);
+		assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@1' });
+
+		await prepareApplication(applicationAt(root, 'web'), { mode: 'activate', artifactId: 'a1' });
+		assert.strictEqual(await readLive(root, 'web'), 'STAGED v2\n');
+		assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@2', isolated: true });
+		await fs.rm(root, { recursive: true, force: true });
+	});
+});
+
+describe('an activation that fails after it commits', () => {
+	preserveRootConfig();
+
+	it('keeps the journal when the entry cannot be published, and recovery publishes it once it can', async function () {
+		this.timeout(30000);
+		if (process.platform === 'win32' || !(await readOnlyDirectoryDeniesWrites())) return this.skip();
+		const root = await newRoot('post-commit-config');
+		await writeLive(root, 'web', 'LIVE v1\n');
+		const app = applicationAt(
+			root,
+			'web',
+			await makeTarball({ 'package.json': '{"name":"web","version":"2.0.0"}\n', 'index.js': 'DEPLOYED v2\n' })
+		);
+		const intact = readFileSync(getConfigFilePath(), 'utf8');
+		// Everything the preparation creates directly under the components root exists already, so a read-only
+		// root parks it in the move-aside's retry — past the up-front config check and the journal, and nowhere
+		// earlier. The config is broken while it waits, so the publication after the commit is what fails.
+		for (const dir of ['.deploy-staging', path.join('.deploy-aside', 'web'), '.component-preparation-locks']) {
+			await fs.mkdir(path.join(root, dir), { recursive: true, mode: 0o700 });
+		}
+		await fs.chmod(root, 0o500);
+		const deploying = prepareApplication(app, {
+			artifactId: 'd1',
+			describeArtifact: () => ({ rootConfig: { package: 'npm:web@2', isolated: true }, isolated: true }),
+		});
+		// Settled by the assertion below; this only keeps a failure before the journal from surfacing as an
+		// unhandled rejection while the wait runs.
+		deploying.catch(() => {});
+		try {
+			await waitFor(
+				async () => {
+					const entries = await fs.readdir(deploymentDir(root, 'd1')).catch(() => []);
+					return entries.includes('.activation.json') && !entries.some((entry) => entry.includes('.partial-'));
+				},
+				20000,
+				5
+			);
+			// A document the writer refuses to rewrite.
+			writeFileSync(getConfigFilePath(), intact + '\nunparseable: [unterminated\n');
+			await fs.chmod(root, 0o700);
+			await assert.rejects(deploying, /Deployed web on this node, but could not publish its root configuration/);
+		} finally {
+			await fs.chmod(root, 0o700).catch(() => {});
+		}
+
+		assert.strictEqual(await readLive(root, 'web'), 'DEPLOYED v2\n', 'the release is live');
+		const journal = JSON.parse(await fs.readFile(path.join(deploymentDir(root, 'd1'), '.activation.json'), 'utf8'));
+		assert.deepStrictEqual(
+			journal.rootConfig,
+			{ kind: 'set', entry: { package: 'npm:web@2', isolated: true } },
+			'and the records carrying the effect it still owes were kept rather than discarded as a failed build'
+		);
+
+		writeFileSync(getConfigFilePath(), intact);
+		assert.strictEqual((await recoverInterruptedActivations(root)).size, 0);
+
+		assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@2', isolated: true });
+		assert.strictEqual(existsSync(deploymentDir(root, 'd1')), false, 'and the activation is settled');
+		assert.strictEqual(await readLive(root, 'web'), 'DEPLOYED v2\n');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('publishes a deploy that declared no entry as unsetting its registry provenance', async function () {
+		this.timeout(20000);
+		const root = await newRoot('payload-deploy-config');
+		await writeLive(root, 'web', 'LIVE v1\n');
+		setRootConfigEntry('web', { package: 'npm:web@1', urlPath: '/w' });
+		const app = applicationAt(
+			root,
+			'web',
+			await makeTarball({ 'package.json': '{"name":"web","version":"2.0.0"}\n', 'index.js': 'PAYLOAD v2\n' })
+		);
+
+		await prepareApplication(app, { describeArtifact: () => ({ rootConfig: null, isolated: false }) });
+
+		assert.strictEqual(await readLive(root, 'web'), 'PAYLOAD v2\n');
+		assert.deepStrictEqual(rootConfigEntry('web'), { urlPath: '/w' });
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('leaves config alone for a preparation that declares nothing, which is how boot installs FROM it', async function () {
+		this.timeout(20000);
+		const root = await newRoot('keep-config');
+		await writeLive(root, 'web', 'LIVE v1\n');
+		setRootConfigEntry('web', { package: 'npm:web@1' });
+		const configBefore = await fs.stat(getConfigFilePath());
+		const app = applicationAt(
+			root,
+			'web',
+			await makeTarball({ 'package.json': '{"name":"web","version":"2.0.0"}\n', 'index.js': 'REINSTALLED\n' })
+		);
+
+		await prepareApplication(app);
+
+		assert.strictEqual(await readLive(root, 'web'), 'REINSTALLED\n');
+		assert.strictEqual((await fs.stat(getConfigFilePath())).ino, configBefore.ino, 'not even rewritten');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 });
@@ -902,62 +1029,6 @@ describe('a build with no artifact id', () => {
 
 		assert.strictEqual(candidatePath, candidateApplicationPath(dirPath, 'lifecycle-token'));
 		await fs.rm(root, { recursive: true, force: true });
-	});
-});
-
-describe('whether a failed activation still owns the root-config entry it published', () => {
-	// The only guard on a hazard the preparation lock does not cover — it serializes deploys of one
-	// component, not root-config writers — and both ways it can regress fail silently.
-	it('refreshes before it reads, because a config write does not update this process in place', () => {
-		const order = [];
-		publishedEntryStillStands(
-			{ package: 'npm:web@2' },
-			() => order.push('refresh'),
-			() => {
-				order.push('read');
-				return { package: 'npm:web@2' };
-			}
-		);
-
-		assert.deepStrictEqual(
-			order,
-			['refresh', 'read'],
-			'reading first compares against a value that predates the change this guard exists to protect'
-		);
-	});
-
-	it('still stands when nothing else touched it, whatever order the keys come back in', () => {
-		assert.strictEqual(
-			publishedEntryStillStands(
-				{ package: 'npm:web@2', isolated: false },
-				() => {},
-				() => ({ isolated: false, package: 'npm:web@2' })
-			),
-			true
-		);
-	});
-
-	it('does not stand once something else has changed the entry, so the undo leaves it alone', () => {
-		assert.strictEqual(
-			publishedEntryStillStands(
-				{ package: 'npm:web@2' },
-				() => {},
-				() => ({ package: 'npm:web@3' })
-			),
-			false,
-			"a set_configuration acknowledged while the swap retried is not this activation's to overwrite"
-		);
-	});
-
-	it('does not stand when the entry is gone entirely', () => {
-		assert.strictEqual(
-			publishedEntryStillStands(
-				{ package: 'npm:web@2' },
-				() => {},
-				() => undefined
-			),
-			false
-		);
 	});
 });
 

@@ -37,7 +37,7 @@ The retry set is `EPERM`/`EACCES`/`EBUSY` only: a destination that exists is str
 here clears between attempts, and `settleInterruptedActivation` already fails that case closed rather
 than guessing which tree is current.
 
-The ordering is the design. Two things used to be wrong in a way each other hid:
+The ordering is the design. Three things used to be wrong, the first two in a way each other hid:
 
 - **The live tree was moved aside first**, so the component was broken for the whole extract +
   `npm install`. Worse than unavailable — the live path held the _new_ code before its dependencies were
@@ -50,13 +50,10 @@ The ordering is the design. Two things used to be wrong in a way each other hid:
   incomplete side-effect isolation. It also remains a no-op on the main thread, and the operations API
   deploys on the main thread — so operator deploys are still unvalidated, exactly as before. Fixing that
   is separate work; this only fixed the order.
-  **Root config is deliberately NOT part of this transaction.** It is still written before the build and
-  never rolled back, so `installApplications()` can reinstall a rejected release at the next restart —
-  unchanged from before this change. Making config an effect of the activation was implemented and then
-  pulled back out: it kept surfacing durability and locking problems that had nothing to do with the tree
-  swap (a memoized config object a disk write does not refresh, `atomicWriteFile` not fsyncing, writers that
-  do not share the publication lock). It is tracked as its own step so the tree half can land on its own
-  evidence.
+- **Root config was written before the build and never rolled back**, so a build or validation that failed
+  still left config naming the release, and `installApplications()` installed it at the next restart. The
+  entry is now the transaction's third effect, published after the commit — see "Root config is an effect
+  of the activation" below.
 
 ### Staging a build now and activating it later
 
@@ -151,20 +148,9 @@ ever writes `.unsettled` beside a journal it keeps, so a marker without one says
 the marker's own removal was lost. An undescribed build in that state stays disposable, which is the rule
 that predates staging.
 
-**Keeping the activation journal after a failed root-config undo only changes the outcome for a first-ever
-deploy.** Compensation has already put an existing component's tree back and taken its rollback record with
-it, so the next settle reads live-plus-candidate-with-no-record and returns the artifact to dormant whatever
-the journal says — holding it there defers the same verdict to the next start and leaves the artifact
-unusable until then. Only a first deploy leaves the live path absent, which recovery reads as a roll forward.
-Config is stranded either way for an existing component; that is the durable-config window #2315 step 3
-closes, not something the journal can cover.
-
-**The same window costs isolation, not just a version string.** A staged artifact records the isolation the
-build admitted in its `.artifact.json`, and an activation publishes that with the rest of its root-config
-entry between B1 and the commit. `rollForward()` publishes nothing, so a crash after the roll-forward state
-exists but before that publish brings the certified artifact up under the previous release's config — and a
-component staged to run isolated comes back NON-ISOLATED, with nothing in the operation reporting it.
-Isolation is a containment boundary, so weigh that window by this rather than by the version mismatch.
+**Every roll forward publishes the journal's root-config effect**, before it retires the rollback record — see
+"Root config is an effect of the activation" below. A roll back and a return to dormant publish nothing,
+because nothing before the commit ever touched config.
 
 The journal is consulted **first**, and the legacy in-place extraction recovery enforces that itself: it
 refuses to restore a rollback record while an unsettled journal is attributable to that component — by its
@@ -208,10 +194,99 @@ with its journal intact. Only the sweep itself is best-effort, because it costs 
 decision. For the same reason, a swap whose rename cannot be confirmed on storage skips both the retire
 and the journal removal: the journal is what would carry the activation forward after a power loss.
 
-Three limits are deliberate and tracked separately: activation is two renames, so the live _pathname_ is
+Two limits are deliberate and tracked separately: activation is two renames, so the live _pathname_ is
 briefly absent (in-memory resources are unaffected, but a component that opens its own files during a
-request can still see a gap); validation does not run on the main-thread deploy path; and config
-publication is not yet an effect of this transaction, as above.
+request can still see a gap); and validation does not run on the main-thread deploy path.
+
+### Root config is an effect of the activation
+
+A component's root-config entry changes only as a journaled, durable effect of an activation that committed
+on this node — or of `drop_component` — so it never names a release that is not live here, and a crash at any
+boundary settles config to the same end state as the tree. `deploy_component` only _declares_ the entry
+(`describeArtifact`); `prepareApplication` turns the declaration into a `RootConfigEffect`
+(`components/rootConfigPublication.ts`) and `activateCandidateApplication` owns applying it:
+
+- `set` — a package build publishes the entry it was declared with, replacing the component's entry whole,
+  as `addConfig` did.
+- `unset-package` — a payload build removes `package`, `install` and `credentials` and keeps the rest
+  (`isolated`, `urlPath`, `host`, `branchedDatabases`), removing the entry if nothing remains. "No package"
+  is an opinion: left in place, a cold install resolves the old package over the payload release that is
+  live. This is a behaviour change operators can see.
+- `keep` — a caller installing FROM root config (`installApplications()`, `add_component`, harper-pro's
+  clone) owns no effect. It returns before taking any lock, so a boot re-install never waits on a config
+  writer.
+- `remove` — `drop_component`. Never journaled.
+
+**The effect is written into `.activation.json` (journal v2) before the first rename, and applied after the
+commit** — after the swap is flushed and dependency links are re-pointed, and before the rollback record is
+retired, because the journal is the only record of the effect and it goes once that record is settled.
+Nothing before the commit touches config, so a failed or compensated activation has nothing to undo; the
+best-effort, non-durable undo that used to run there — and the divergence when it failed — is gone. Every
+roll forward in `settleInterruptedActivation` applies the same effect at the same point. Roll back and
+return to dormant never apply it. Application is idempotent, so a crash between the apply and the journal's
+removal is settled by applying again.
+
+**A failure to publish after the commit THROWS**, unlike the retire and sweep that follow it: those cost disk,
+this one costs the component its configuration, and `deploy_component` restarts workers on the strength of
+the published config — a release staged `isolated: true` would run non-isolated after an operation that
+reported success. The error is marked `ACTIVATION_COMMITTED` so `prepareApplication` keeps the deployment
+records instead of discarding them as a failed build; the journal survives, and the next settlement — the
+next start, a worker's load-time pass, or the component's next deploy — publishes the entry. In recovery the
+same failure fails the component closed with `.unsettled`, the contract the retire already has. A
+publication-lock timeout is rethrown as a 503 `ServerError` rather than the preparation lock's own timeout
+class, which recovery reads as "a live deploy holds this component's lock" — a deferral, not a verdict.
+
+The throw also means `deploy_component` never reaches replication: the release is live on this node only, and
+the error says so. A fresh deploy converges; a retry of a `deployment_id` activation does not, because its
+preamble settles the kept journal and the artifact is gone — the unconvergeable-retry gap #2315 step 5 owns.
+So a condition that would fail every publish is refused BEFORE anything moves: `assertRootConfigEffectPublishable`
+runs ahead of the journal and refuses an effect that would have to change a document that does not parse, or
+whose directory this process cannot write. Only a static condition is caught; a publish can still fail.
+
+**A version-1 journal is replayed from the artifact descriptor.** A v1 activation of a staged artifact
+published its descriptor's entry between the two renames, so a crash in that window is exactly the one whose
+effect `.artifact.json` still records; mapping every v1 journal to `keep` would carry the isolation loss this
+closes across the upgrade. A v1 journal with no descriptor is an immediate deploy, which published before it
+built, and gets `keep`. A v2 journal whose effect is malformed, is `remove`, or whose `set` entry fails
+`assertApplicationConfig` fails the component closed before anything moves — and `activateCandidateApplication`
+refuses the same entries before it writes the journal, since a journal recovery would refuse to read is one it
+could never settle. The reverse direction is not covered: a build before this change refuses a v2 journal and
+fails that component closed, so settle every interrupted activation (a clean start does) before downgrading.
+
+**One writer, one lock, durable.** `applyRootConfigEffect` is the only runtime read-modify-write of the root
+config document besides `set_configuration`, which takes the same lock around `updateConfigValue` — and that
+reads and writes the same file the lock is keyed by, the one boot reads. `addConfig` and `deleteConfigFromFile`
+are gone — the latter wrote to a path rebuilt from the document's `rootPath` rather than the file it parsed. The
+lock is the component preparation lock primitive keyed by `getRootConfigFilePath()`, which names the file boot
+reads whenever a boot source exists and so is fixed for the life of the process — not a configured path
+`set_configuration` could move under a concurrent writer. Lock order is always
+component preparation lock, then this one. Its wait is bounded (30 s) and never renewed, and a ticket left by a
+dead worker of this process is reclaimed through `isThreadRunning` — without it a same-process ticket reads as
+live and every config writer on the node times out behind it. Each write is
+`atomicWriteFile({ durable: true })`: the temp file is fsynced through its write handle (Windows only flushes a
+handle opened for writing) and the directory after the rename, tolerating the platform's "cannot sync" codes and
+nothing else. An effect the document already satisfies — a replayed journal, or a payload deploy of a component
+with no entry, which is most of them — is answered before the lock and needs no write access at all, provided
+this thread's memoized view of the entry agrees with the file: the lock creates its directory beside the config,
+and a node whose config is readable but not writable took payload deploys before this change and must still.
+When the view disagrees, the effect goes through the lock like any writer, because the refresh that fixes the
+view re-applies the env config layers on the main thread and can rewrite the file — unlocked, that rewrite could
+drop a concurrent writer's change. The lock-free answer still syncs the file and its directory, through read
+handles (only Windows needs a write handle to flush, and there a refusal is a tolerated code), because a crashed
+predecessor can have renamed it in unflushed. Deciding outside the lock is safe because the file is only
+replaced by rename. A document that does not parse cleanly is refused, never rewritten from what the parser
+recovered.
+
+**Boot ordering depends on the refresh.** `env.initSync()` memoizes the config object, so publishing to disk
+during recovery is not enough on its own: `applyRootConfigEffect` re-inits THIS thread's config, and boot
+recovery runs on main before `installApplications()` reads `getConfigObj()`.
+
+Not covered, and pre-existing: other threads' memoized config stays stale until a restart re-inits it; the
+boot-time config writers and out-of-process editors are not serialized with the lock; and
+`installApplications()` still reinstalls a package-deployed component from its source at the next start
+whenever `harper-application-lock.json` does not match its entry — which, since no deploy writes that file, is
+the first start after every package deploy. Validation of a package deploy now runs under the entry in force
+rather than the one being deployed, since the latter is no longer published until the commit.
 
 ### Retention of dormant staged builds
 
@@ -247,7 +322,7 @@ directories are preserved by design and can still fill a volume.
 
 `prepareApplication()` performs one transaction per component: build the replacement, validate it, then swap it in (see "A deploy builds off to the side" below). Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
 
-The deploy lifecycle broadcast deliberately sits _outside_ the lock. Overlapping requests therefore increment the existing per-component lifecycle refcount before queueing; watchers remain suppressed continuously until the final queued preparation ends. The lock itself covers credential materialization, extraction, and installation. Its fully-written owner record is published with an atomic rename, so contenders never observe a partially initialized lock. A preparation caller never steals a lock from a known-live owner based on elapsed wall time: installs can be long-running and clocks can jump. Locks from a dead process are reclaimed, and a same-process contender asks the main thread whether the owning worker still exists so a worker crash does not wedge that component until Harper restarts. The boot-time bulk-recovery probe is deliberately different: it never renews its 250 ms deadline, even behind another live recovery, so it can defer that component and let the worker bind its listener.
+The deploy lifecycle broadcast deliberately sits _outside_ the lock. Overlapping requests therefore increment the existing per-component lifecycle refcount before queueing; watchers remain suppressed continuously until the final queued preparation ends. The lock itself covers credential materialization, extraction, and installation. Its fully-written owner record is published with an atomic rename, so contenders never observe a partially initialized lock. A preparation caller never steals a lock from a known-live owner based on elapsed wall time: installs can be long-running and clocks can jump. Locks from a dead process are reclaimed, and a same-process contender asks the main thread whether the owning worker still exists so a worker crash does not wedge that component until Harper restarts. A ticket its owner could not remove — a Windows sharing violation, a scanner holding the file — would name a finished holder that is still alive, so a release whose unlink keeps failing publishes a `<lockName>.released.<token>` marker instead, which contenders honour by clearing both. Only the ticket's owner writes one, after confirming it still owns the ticket, and tokens are never reused, so a marker cannot retire a holder that has not finished. A process running an older build ignores markers, so overlapping processes of mixed versions do not get this guarantee, and a ticket left live-looking before the upgrade stays until that process restarts. The boot-time bulk-recovery probe is deliberately different: it never renews its 250 ms deadline, even behind another live recovery, so it can defer that component and let the worker bind its listener.
 
 A plugin load that begins while its component is being deployed waits for that lifecycle to end before
 starting `handleApplication`; if a deploy begins during the load, the plugin timeout counts only active,
