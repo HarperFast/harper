@@ -16,6 +16,7 @@ const DEFAULT_LOCK_WAIT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 // `.publishing` file surviving this long can only be a crash orphan (a write that was never
 // followed by its rename), never an in-flight publish.
 const STALE_PUBLISHING_SWEEP_AGE_MS = 60_000;
+const TRANSIENT_FILE_RETRY_DELAYS_MS = [10, 40, 160];
 
 export interface ComponentPreparationLockOwner {
 	pid: number;
@@ -66,11 +67,17 @@ function isProcessAlive(pid: number): boolean {
 }
 
 async function readOwner(claimPath: string): Promise<ComponentPreparationLockOwner | null> {
-	try {
-		return JSON.parse(await readFile(claimPath, 'utf8'));
-	} catch (error: any) {
-		if (error.code === 'ENOENT' || error instanceof SyntaxError) return null;
-		throw error;
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return JSON.parse(await readFile(claimPath, 'utf8'));
+		} catch (error: any) {
+			if (error.code === 'ENOENT' || error instanceof SyntaxError) return null;
+			// Windows refuses to open a file whose unlink is in progress (EPERM) until the unlinking handle
+			// closes and the name is gone. A claim that stays unreadable is not absent: dropping a live
+			// ticket would admit a second holder.
+			if (error.code !== 'EPERM' || attempt >= TRANSIENT_FILE_RETRY_DELAYS_MS.length) throw error;
+		}
+		await delay(TRANSIENT_FILE_RETRY_DELAYS_MS[attempt]);
 	}
 }
 
@@ -332,7 +339,13 @@ async function acquireComponentPreparationLock(
 	}
 
 	return async () => {
-		const currentOwner = await readOwner(ticketPath!);
+		// A record that is there but cannot be read is still this acquisition's own: only it publishes a ticket at a
+		// path its token names. That is how a Windows scanner holding the ticket without read sharing looks, and the
+		// release has to go ahead then, or the ticket outlives the holder as a live one once the scanner lets go.
+		const currentOwner = await readOwner(ticketPath!).catch((error) => {
+			if (HELD_RECORD_READ_CODES.has(error?.code)) return owner;
+			throw error;
+		});
 		if (currentOwner?.token !== owner.token) {
 			throw new Error(`Lost ownership of component preparation lock for ${canonicalPath}`);
 		}
@@ -340,7 +353,7 @@ async function acquireComponentPreparationLock(
 	};
 }
 
-const TICKET_REMOVAL_RETRY_DELAYS_MS = [10, 40, 160];
+const HELD_RECORD_READ_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
 
 function releasedMarkerPath(lockRoot: string, lockName: string, token: string): string {
 	return join(lockRoot, `${lockName}.released.${token}`);
@@ -363,14 +376,14 @@ export async function releaseTicket(
 			await removeTicket(ticketPath);
 			return;
 		} catch (error) {
-			if (attempt >= TICKET_REMOVAL_RETRY_DELAYS_MS.length) {
+			if (attempt >= TRANSIENT_FILE_RETRY_DELAYS_MS.length) {
 				await writeFile(releasedMarkerPath(lockRoot, lockName, token), '', { mode: 0o600 }).catch(() => {
 					throw error;
 				});
 				return;
 			}
 		}
-		await delay(TICKET_REMOVAL_RETRY_DELAYS_MS[attempt]);
+		await delay(TRANSIENT_FILE_RETRY_DELAYS_MS[attempt]);
 	}
 }
 

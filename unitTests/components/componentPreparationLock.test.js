@@ -4,7 +4,10 @@ const assert = require('node:assert');
 const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 const { Worker, threadId } = require('node:worker_threads');
-const { mkdtemp, mkdir, readdir, rm, utimes, writeFile } = require('node:fs/promises');
+const { constants: fsConstants } = require('node:fs');
+const fsPromises = require('node:fs/promises');
+const { chmod, mkdtemp, mkdir, open, readdir, rm, utimes, writeFile } = fsPromises;
+const { syncBuiltinESMExports } = require('node:module');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -41,6 +44,25 @@ function startLockWorker(componentDirPath, hold = false) {
 		});`,
 		{ eval: true, workerData: { componentDirPath, hold, lockModulePath, ownerPid: process.pid } }
 	);
+}
+
+// Windows refuses to open a file whose unlink is in progress with EPERM; POSIX has no such state, so the
+// refusal is injected. The ESM binding of readFile follows the stub only through syncBuiltinESMExports.
+async function withRefusedReads(refuse, run) {
+	const { readFile } = fsPromises;
+	fsPromises.readFile = async (path, ...rest) => {
+		if (await refuse(String(path))) {
+			throw Object.assign(new Error(`EPERM: operation not permitted, open '${path}'`), { code: 'EPERM' });
+		}
+		return readFile(path, ...rest);
+	};
+	syncBuiltinESMExports();
+	try {
+		return await run();
+	} finally {
+		fsPromises.readFile = readFile;
+		syncBuiltinESMExports();
+	}
 }
 
 describe('component preparation lock', () => {
@@ -416,6 +438,75 @@ describe('component preparation lock', () => {
 		assert.equal(result.tickets.length, 0);
 	});
 
+	it('reads a choosing claim refused mid-unlink as removed, and finds the ticket it upgraded to', async () => {
+		const { lockRoot, lockName } = componentPreparationLockPaths(join(rootDir, 'unlinking-choosing'));
+		await mkdir(lockRoot, { recursive: true, mode: 0o700 });
+		const owner = {
+			pid: process.pid,
+			threadId: 0,
+			processInstanceId: COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
+			token: 'unlinking-token',
+			ticket: 3,
+		};
+		const choosingPath = join(lockRoot, `${lockName}.choosing.${owner.token}.json`);
+		const ticketPath = join(lockRoot, `${lockName}.ticket.${owner.ticket}.${owner.token}.json`);
+		await writeFile(choosingPath, JSON.stringify(owner));
+
+		let choosingReads = 0;
+		const result = await withRefusedReads(
+			async (path) => {
+				if (path !== choosingPath || choosingReads++ > 0) return false;
+				await rm(choosingPath);
+				return true;
+			},
+			() => scanLiveClaims(lockRoot, lockName, {}, undefined, () => writeFile(ticketPath, JSON.stringify(owner)))
+		);
+
+		assert.equal(choosingReads, 2, 'the refused read is retried');
+		assert.deepStrictEqual(result.choosing, []);
+		assert.deepStrictEqual(
+			result.tickets.map((ticket) => ticket.token),
+			['unlinking-token']
+		);
+	});
+
+	it('never drops a live ticket whose read is refused', async () => {
+		const { lockRoot, lockName } = componentPreparationLockPaths(join(rootDir, 'refused-ticket'));
+		await mkdir(lockRoot, { recursive: true, mode: 0o700 });
+		const ticketName = `${lockName}.ticket.1.refused-token.json`;
+		const ticketPath = join(lockRoot, ticketName);
+		await writeFile(
+			ticketPath,
+			JSON.stringify({
+				pid: process.pid,
+				threadId: 0,
+				processInstanceId: COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
+				token: 'refused-token',
+				ticket: 1,
+			})
+		);
+
+		let ticketReads = 0;
+		const refusedOnce = await withRefusedReads(
+			async (path) => path === ticketPath && ticketReads++ === 0,
+			() => scanLiveClaims(lockRoot, lockName, {})
+		);
+		assert.deepStrictEqual(
+			refusedOnce.tickets.map((ticket) => ticket.token),
+			['refused-token']
+		);
+
+		await assert.rejects(
+			withRefusedReads(
+				async (path) => path === ticketPath,
+				() => scanLiveClaims(lockRoot, lockName, {})
+			),
+			{ code: 'EPERM' },
+			'a claim that stays unreadable fails the scan'
+		);
+		assert.deepStrictEqual(await readdir(lockRoot), [ticketName]);
+	});
+
 	it('removes a ticket whose record does not parse, even from a scan that holds no claim', async () => {
 		const { lockRoot, lockName } = componentPreparationLockPaths(join(rootDir, 'unparseable-ticket'));
 		await mkdir(lockRoot, { recursive: true, mode: 0o700 });
@@ -559,6 +650,79 @@ describe('component preparation lock', () => {
 				releaseHolder();
 				await holding;
 			}
+		});
+
+		// A mode its owner cannot read refuses the release's ownership read the way a Windows scanner holding the
+		// ticket without read sharing does. Root reads through it, and Windows does not model it this way.
+		const readCanBeRefused = () => process.platform !== 'win32' && process.getuid?.() !== 0;
+
+		it('is released even when its record cannot be read at release', async function () {
+			if (!readCanBeRefused()) return this.skip();
+			const componentDirPath = join(rootDir, 'unreadable-at-release');
+			const { lockRoot, lockName } = componentPreparationLockPaths(componentDirPath);
+
+			await withComponentPreparationLock(componentDirPath, async () => {
+				await chmod(join(lockRoot, (await ticketNames(lockRoot, lockName))[0]), 0o000);
+			});
+
+			assert.deepStrictEqual(await ticketNames(lockRoot, lockName), [], 'the ticket went');
+			let acquired = false;
+			await withComponentPreparationLock(componentDirPath, async () => (acquired = true), boundedWait);
+			assert.equal(acquired, true);
+		});
+
+		it('publishes the marker when its record can be neither read nor removed at release', async function () {
+			if (process.platform !== 'darwin') return this.skip();
+			const componentDirPath = join(rootDir, 'held-at-release');
+			const { lockRoot, lockName } = componentPreparationLockPaths(componentDirPath);
+			let ticketPath;
+			try {
+				await withComponentPreparationLock(componentDirPath, async () => {
+					ticketPath = join(lockRoot, (await ticketNames(lockRoot, lockName))[0]);
+					await chmod(ticketPath, 0o000);
+					undeletable(ticketPath, true);
+				});
+				assert.ok(
+					(await readdir(lockRoot)).some((name) => name.startsWith(`${lockName}.released.`)),
+					'the release published a marker for the ticket it could neither read nor remove'
+				);
+			} finally {
+				if (ticketPath) {
+					undeletable(ticketPath, false);
+					await chmod(ticketPath, 0o600);
+				}
+			}
+
+			let acquired = false;
+			await withComponentPreparationLock(componentDirPath, async () => (acquired = true), boundedWait);
+			assert.equal(acquired, true, 'once the ticket can be read again, it reads as released, not live');
+		});
+
+		// Node opens every file sharing read, write and delete unless asked for libuv's UV_FS_O_EXLOCK, which shares
+		// nothing: the handle of a scanner holding the ticket without read or delete sharing.
+		const UV_FS_O_EXLOCK = 0x10000000;
+
+		it('is released through a handle that shares nothing, and the next holder acquires once it closes', async function () {
+			if (process.platform !== 'win32') return this.skip();
+			const componentDirPath = join(rootDir, 'exclusive-at-release');
+			const { lockRoot, lockName } = componentPreparationLockPaths(componentDirPath);
+			let handle;
+			try {
+				await withComponentPreparationLock(componentDirPath, async () => {
+					const ticketPath = join(lockRoot, (await ticketNames(lockRoot, lockName))[0]);
+					handle = await open(ticketPath, fsConstants.O_RDONLY | UV_FS_O_EXLOCK);
+				});
+				assert.ok(
+					(await readdir(lockRoot)).some((name) => name.startsWith(`${lockName}.released.`)),
+					'the release published a marker for the ticket it could neither read nor remove'
+				);
+			} finally {
+				await handle?.close();
+			}
+
+			let acquired = false;
+			await withComponentPreparationLock(componentDirPath, async () => (acquired = true), boundedWait);
+			assert.equal(acquired, true);
 		});
 
 		it('still fails when neither the ticket nor a marker can be written', async () => {
