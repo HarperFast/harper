@@ -86,6 +86,7 @@ One giant `makeTable()` factory that returns a `TableResource extends Resource` 
 | How are residencies enforced (replication)?         | `Table.ts → #section: lifecycle-admin` (residency block: `getResidencyRecord`, `setResidency`, `setResidencyById`, `getResidency`) |
 | How is the RecordObject prototype applied?          | `RecordEncoder.ts` (see `../DESIGN.md`)                                                                                            |
 | Where is the per-request transaction stored?        | `transaction.ts` + `contextStorage` (AsyncLocalStorage)                                                                            |
+| How does boot replay delimit its transactions?      | `replayLogs.ts` (see "Boot replay transactions" below)                                                                             |
 | How does a URL path map to a Resource?              | `Resources.ts → getMatch` (exact/prefix fast path) then `matchParamRoute` (parameterised routes); see "Path routing" below         |
 
 ---
@@ -124,6 +125,10 @@ Mechanics:
 Tests: `../unitTests/resources/paramRoutes.test.js` (unit) and `../integrationTests/apiTests/param-routes.test.mjs` (end-to-end); enumeration coverage in `../unitTests/resources/openApi.test.js` and `../unitTests/components/mcp/resources.test.js`.
 
 ---
+
+## Boot replay transactions (`replayLogs.ts`)
+
+After an unclean shutdown `replayLogs` re-applies the unflushed transaction log inside `DatabaseTransaction`s marked `isReplay` (never re-logged). **A replay transaction is one native commit, never more**: it ends at the commit's last entry (the `endTxn` flag `RocksTransactionLogStore.getRange` sets on every yielded audit record) or at a change of log key, and the marker is recorded even for an entry replay skips, so a commit whose last entry is unrecoverable still closes. A log key alone is not a commit: a replication receiver commits every re-delivery of a source transaction under the origin's key, and grouping by key once staged millions of same-key commits into one transaction until the main thread ran out of heap (harper#2161). Memory during replay is bounded by the largest single native commit. The wall-clock abort (harper#1316) runs only at that boundary, with nothing staged. Accepted limits on this line: a torn tail (a final commit with no `endTxn`) is still committed as before, and an entry without the flag falls back to the log-key rule. `unitTests/resources/replayCommitBoundaries.test.js` pins the boundaries.
 
 ## Conventions
 

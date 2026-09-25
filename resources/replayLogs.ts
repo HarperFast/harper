@@ -75,8 +75,9 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 			tableById.set(table.tableId, table);
 		}
 		// replay all the logs
-		let transaction: DatabaseTransaction;
+		let transaction: DatabaseTransaction | undefined;
 		let lastTimestamp = 0;
+		let openCommitEnded = false;
 		let writes = 0;
 		let skipped = 0;
 		// Track forward progress so a backlog of unwritable entries can't grind the boot thread
@@ -110,8 +111,27 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 				originatingOperation,
 				username,
 				extendedType,
+				endTxn,
 			} = auditRecord;
 			try {
+				// A replay transaction is one native commit ("Boot replay transactions" in DESIGN.md).
+				if (transaction && (openCommitEnded || lastTimestamp !== version)) {
+					const ending = transaction;
+					transaction = undefined;
+					try {
+						ending.directCommitSync();
+					} catch (error) {
+						logger.error('Error committing replay transaction', error);
+					}
+					// The wall-clock budget (harper#1316) is checked only here, between native commits with
+					// nothing staged, so aborting never tears a commit in half.
+					if (shouldAbortSlowReplay(performance.now() - replayStartTime, replayTimeoutMs)) {
+						logger.fatal(
+							`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). The transaction log contains a pathologically deep out-of-order write history that is too expensive to reconcile during boot (harper#1316). Re-clone this node from a healthy leader to recover the unreplayed data.`
+						);
+						break;
+					}
+				}
 				if (classifyAuditEntryForReplay(extendedType, tableId, true) === 'corrupt-header') {
 					skipped++;
 					noProgressRun++;
@@ -165,28 +185,9 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					warnedReplayHappening = true;
 					console.warn('Harper was not properly shutdown, replaying transaction logs to synchronize database');
 				}
-				if (lastTimestamp !== version) {
+				if (!transaction) {
 					lastTimestamp = version;
-					try {
-						// commit the last transaction since we are starting a new one
-						transaction?.directCommitSync();
-					} catch (error) {
-						logger.error('Error committing replay transaction', error);
-					}
-					// Abort if replay has exceeded the total wall-clock budget even while making progress
-					// (harper#1316, facet a). shouldAbortStalledReplay resets its counters on every write,
-					// so a slow-but-progressing replay (deep out-of-order audit chain walk per entry) can
-					// peg the boot thread indefinitely without tripping it. Checked only here, at a version
-					// boundary: the prior version's transaction was just committed in full and the new one
-					// is not yet staged, so aborting never tears a same-version (same source-transaction)
-					// write batch in half. Re-clone to recover the unreplayed remainder.
-					if (shouldAbortSlowReplay(performance.now() - replayStartTime, replayTimeoutMs)) {
-						logger.fatal(
-							`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). The transaction log contains a pathologically deep out-of-order write history that is too expensive to reconcile during boot (harper#1316). Re-clone this node from a healthy leader to recover the unreplayed data.`
-						);
-						transaction = undefined as any; // already committed above; nothing staged for the new version
-						break;
-					}
+					openCommitEnded = false;
 					transaction = new DatabaseTransaction();
 					transaction.db = primaryStore;
 					transaction.timestamp = version;
@@ -280,6 +281,8 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 				logger.error(`Error writing from replay of log`, err, {
 					version,
 				});
+			} finally {
+				if (endTxn) openCommitEnded = true;
 			}
 		}
 		try {
