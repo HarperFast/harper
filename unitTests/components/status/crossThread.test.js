@@ -173,9 +173,8 @@ describe('CrossThread Module', function () {
 
 			sendItcEventStub.resolves();
 
-			// A long internal timeout here, distinct from the shared 1s collector in the outer
-			// beforeEach, so the pending-state check below can't race the collector's own timeout
-			// under a loaded runner
+			// A long internal timeout here, distinct from the shared collector's 1s timeout, so
+			// the pending-state check below can't race the collector's own timeout under a loaded runner
 			const earlyCollector = new CrossThreadStatusCollector(60_000);
 
 			let handler;

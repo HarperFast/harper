@@ -255,8 +255,8 @@ jobs:
 
   run-integration-tests-bun:
     # No legacy-harper-version provisioning: every suite reading HARPER_LEGACY_VERSION_PATH
-    # skips under HARPER_RUNTIME=bun (integrationTests/upgrade/4.x-upgrade.test.ts:49,
-    # qa606-upgrade-structgrowth.test.ts, database/blob-restart-ttl-unlink.test.ts).
+    # skips under HARPER_RUNTIME=bun (integrationTests/upgrade/4.x-upgrade.test.ts,
+    # qa606-upgrade-structgrowth.test.ts).
     name: Integration Tests ${{matrix.shard}}/6 (Bun)
     runs-on: ubuntu-latest
     timeout-minutes: 25
