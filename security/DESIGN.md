@@ -10,7 +10,7 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ## OIDC trusted publishing (`security/authn/oidc/`)
 
-`exchange_oidc_token` lets a workload authenticate with no stored Harper credential (#2171): it presents an identity token minted by its runtime, and gets back a one-hour operation token for the user a stored trust policy names. It is in `NO_AUTH_OPERATIONS` because it _is_ the authentication, the same way `create_authentication_tokens` is against a password — the same three wiring points apply (`serverHandlers.js` `NO_AUTH_OPERATIONS`, the `verifyPerms` bypass in `serverUtilities.ts`, and a `permission(false, [])` registration).
+`exchange_oidc_token` lets a workload authenticate with no stored Harper credential (#2171): it presents an identity token minted by its runtime, and gets back a one-hour operation token for the user a stored trust policy names. It is in `NO_AUTH_OPERATIONS` because it _is_ the authentication, the same way `create_authentication_tokens` is against a password — the same three wiring points apply (`serverHandlers.js` `NO_AUTH_OPERATIONS`, the `verifyPerms` bypass in `serverUtilities.ts`, and a `permission(false, [], OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN)` registration).
 
 **The core is issuer-agnostic; everything issuer-specific lives in `providers/`.** That split is the point of the layout, not an accident of it — a new workload-identity issuer should be a profile, not a change to verification, matching, or storage.
 
@@ -68,16 +68,18 @@ endpoints must carry restrictive table permissions; `operations: ['read_only']` 
 constrain REST writes if table perms allow them.
 
 Which name the allowlist is checked against: `verifyPerms` is handed the handler, not the invoked
-operation, and gate 1 resolves `requiredPermissions.get(handler.name).api_name ?? handler.name`. A
-registration without its `api_name` therefore makes gate 1 check the handler name, which a role can
-list only when it is also an API name, because `validateOperations` admits only API names. So a role
-listing such an operation validates, saves, and is refused. `catchup` is the exception: its handler
-name is its API name, so listing it grants it.
+operation, so gate 1 checks the registered entry's `api_name`, and never the handler's own name —
+only a name with no registration at all (`sql`) is checked as given. The `permission` constructor
+requires that argument: an API name, or `null` when no allowlist may grant the operation. Leaving it
+out is a compile error, which closes the old failure where an omitted name made gate 1 fall back to
+the handler name — refusing every role that listed the operation, unless the handler name happened
+to equal the API name, when it silently granted it instead.
 Aliases share a handler, so listing the canonical name grants both spellings and the alias spelling
-grants neither. `get_backup` and `read_transaction_log` are registered without an `api_name` on
-purpose: gate 2 would grant `get_backup` ahead of its READ check on a whole-database copy, and
-`read_transaction_log` lacks `read_audit_log`'s `system.hdb_secret` guard. A test in
-`unitTests/utility/operation_authorization.test.js` holds every dispatched operation to this.
+grants neither. `get_backup`, `read_transaction_log` and `catchup` are registered with `null`: gate 2
+would grant `get_backup` ahead of its READ check on a whole-database copy, `read_transaction_log`
+lacks `read_audit_log`'s `system.hdb_secret` guard, and the legacy `catchup` applies writes to any
+table with no table permission check. A test in `unitTests/utility/operation_authorization.test.js`
+holds every dispatched operation to this.
 
 The invariant to preserve when touching any synthetic (inline/impersonated/scoped) role:
 `permissionsTranslator.getRolePermissions` memoizes translated permissions **by role name** (keyed

@@ -101,8 +101,8 @@ A handful of design points are non-obvious and easy to break:
      directions. The alias table is hand-maintained because `OPERATION_FUNCTION_MAP` pulls in the
      server and cannot be imported here; `unitTests/utility/operation_authorization.test.js` compares
      discovery with gate 1 for every dispatched operation, so a drift fails there. Discovery still
-     advertises `get_backup` and `read_transaction_log` to a role that lists them, while dispatch
-     refuses them (their registrations deliberately carry no `api_name`).
+     advertises `get_backup`, `read_transaction_log` and `catchup` to a role that lists them, while
+     dispatch refuses them (their registrations deliberately carry a `null` `api_name`).
   3. **`structure_user` is not one grant.** `STRUCTURE_USER_OPS` holds only the four
      table/attribute ops; create/drop schema-or-database needs `structure_user === true`, so an
      array grant (and `[]`, which is truthy) is denied for those four.
