@@ -8645,6 +8645,7 @@ export function makeTable(options) {
 										versions: true,
 										lazy: true, // only want to access metadata most of the time
 									})) {
+										if (maintenanceClosed) break;
 										const { key, value: record, version, expiresAt, metadataFlags } = entry;
 										// if there is no auditing cleanup and we are tracking deletion, need to do cleanup of
 										// these deletion entries (LMDB audit cleanup has its own scheduled job for this)

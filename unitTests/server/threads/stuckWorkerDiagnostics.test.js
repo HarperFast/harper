@@ -173,6 +173,7 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		started.push(worker);
 		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000), (error) => {
 			assert(error instanceof AggregateError);
+			assert.strictEqual(error.name, 'DatabaseDroppingError');
 			assert.strictEqual(error.code, 'DATABASE_DROP_IN_PROGRESS');
 			assert.strictEqual(error.statusCode, 409);
 			assert.strictEqual(error.errors[0].name, 'DatabaseDroppingError');
