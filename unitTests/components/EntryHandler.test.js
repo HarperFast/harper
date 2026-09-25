@@ -27,14 +27,6 @@ function createFixture(fixture) {
 	return { directory: dirPath };
 }
 
-<<<<<<< HEAD
-=======
-function createEntryHandler(...args) {
-	const entryHandler = new EntryHandler(...args);
-	openHandlers.add(entryHandler);
-	return entryHandler;
-}
-
 /**
  * chokidar emits `addDir` before it arms the new directory's own native watch, and nothing
  * re-reads that gap, so a file created inside it is reported by no event at all. Writing until the
@@ -62,7 +54,6 @@ async function writeFileUntilObserved(entryHandler, absolutePath, contents) {
 	}
 }
 
->>>>>>> 8cfd60b9f (Stop the node 26 unit leg timing out on chokidar's unarmed-watch window)
 describe('EntryHandler', () => {
 	const fixture = ['a', 'b', 'c', ['foo', ['d', 'e', ['bar', ['f', 'g']]]]];
 	beforeEach(() => {
