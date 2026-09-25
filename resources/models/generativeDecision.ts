@@ -96,9 +96,8 @@ export function createGenerativeDecisionBackend(
 			const input = buildInput(state, schema, opts.instructions);
 			const responseFormat = { schema: toResponseSchema(schema) };
 			const signal = composeSignal(opts.signal, requestTimeoutMs);
-			// One controller for the batch: the first failure cancels the samples still in flight, and
-			// the workers are awaited to settlement before anything is thrown, so no sample rejects
-			// unobserved and the facade never falls back while calls are still running.
+			// The workers settle before anything is thrown: no sample rejects unobserved, and the facade
+			// never falls back to another candidate while calls are still in flight.
 			const controller = new AbortController();
 			const onAbort = () => controller.abort(signal?.reason);
 			if (signal?.aborted) onAbort();

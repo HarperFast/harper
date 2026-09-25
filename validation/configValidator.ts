@@ -187,8 +187,7 @@ const bedrockEntrySchema = Joi.object({
 	region: string.optional(),
 	...commonEntryFields,
 }).unknown(false);
-// The built-in vote adapter for `models.decision` entries (#2779). `model` is deliberately absent:
-// the adapter names a generative logical name, not a provider model.
+// No `model` field: the adapter names a generative logical name, not a provider model.
 const generativeDecisionEntrySchema = Joi.object({
 	backend: string.valid('generative').required(),
 	generative: string.optional(),

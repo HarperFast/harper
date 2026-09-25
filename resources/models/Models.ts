@@ -11,7 +11,7 @@ import { getModelCallAnalyticsWriter, type ModelCallAnalyticsWriter, type ModelC
 import { recordAction } from '../analytics/write.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import { runAgentLoop, runAgentLoopStream } from './agentLoop.ts';
-import { normalizeDecision, stateToText, validateDecisionSchema } from './decision.ts';
+import { DecisionContractError, normalizeDecision, stateToText, validateDecisionSchema } from './decision.ts';
 import type {
 	AccountingContext,
 	BackendOpts,
@@ -279,8 +279,6 @@ export class Models implements ModelsContract {
 			this.#recordFailure(resolved.backend, 'decide', opts.model, accounting, undefined, startedAt, resolved.error);
 			throw resolved.error;
 		}
-		// Same fallback loop as embed(); an output that violates the decision contract is a backend
-		// error, so it is recorded against that backend and the next candidate is tried.
 		let firstError: unknown = undefined;
 		let hasError = false;
 		for (const backend of resolved.candidates) {
@@ -292,6 +290,12 @@ export class Models implements ModelsContract {
 				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
 				const calibrated = backend.capabilities()?.calibrated === true;
 				const decision = normalizeDecision<T>(schema, result.output, backend.name, calibrated);
+				// A backend may report a single call as uncalibrated; the caller's requirement still holds.
+				if (!decision.calibrated && opts.requires?.includes('calibrated'))
+					throw new DecisionContractError(
+						backend.name,
+						"probabilities are not calibrated, but 'calibrated' was required"
+					);
 				const id = this.#record(backend, 'decide', opts.model, accounting, undefined, result, attemptStart);
 				return result.usage ? { id: String(id), ...decision, usage: result.usage } : { id: String(id), ...decision };
 			} catch (err) {

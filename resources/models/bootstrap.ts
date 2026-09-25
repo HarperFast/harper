@@ -70,7 +70,7 @@ interface ModelEntry {
 	organization?: string;
 	// bedrock
 	region?: string;
-	// generative decision adapter (#2779)
+	// generative decision adapter
 	generative?: string;
 	samples?: number;
 	concurrency?: number;

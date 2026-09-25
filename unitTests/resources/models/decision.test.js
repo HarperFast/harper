@@ -5,6 +5,7 @@ require('#src/resources/databases');
 const {
 	validateDecisionSchema,
 	allowedValues,
+	isAllowedValue,
 	stateToText,
 	normalizeDecision,
 	toResponseSchema,
@@ -31,10 +32,12 @@ describe('validateDecisionSchema', () => {
 	it('accepts an enum leaf, a boolean leaf, a bounded integer leaf, and a one-level object', () => {
 		for (const schema of [
 			QUEUE,
+			{ enum: [1, 2, 3] },
+			{ enum: [true, false] },
 			{ type: 'boolean' },
 			{ type: 'integer', minimum: 1, maximum: 5 },
+			{ type: 'integer', minimum: -254, maximum: 0 },
 			{ type: 'object', properties: { queue: QUEUE, urgent: { type: 'boolean' } } },
-			{ enum: [1, 'a', true], description: 'mixed' },
 		]) {
 			assert.doesNotThrow(() => validateDecisionSchema(schema));
 		}
@@ -51,14 +54,17 @@ describe('validateDecisionSchema', () => {
 		rejects({ enum: Array.from({ length: 256 }, (_, i) => i) }, '2..255');
 	});
 
-	it('rejects duplicate, non-primitive and non-finite enum values', () => {
+	it('rejects duplicate, non-primitive, non-finite and mixed-type enum values', () => {
 		rejects({ enum: ['a', 'a'] }, 'distinct');
-		rejects({ enum: ['a', {}] }, 'strings, finite numbers or booleans');
-		rejects({ enum: [1, NaN] }, 'strings, finite numbers or booleans');
+		rejects({ enum: [{}, 'a'] }, 'strings, finite numbers or booleans');
+		rejects({ enum: ['a', {}] }, 'one type');
+		rejects({ enum: [1, NaN] }, 'finite');
+		rejects({ enum: [1, 'a'] }, 'one type');
 	});
 
-	it('rejects an integer range with non-integer bounds or a span outside 2..255', () => {
-		rejects({ type: 'integer', minimum: 0.5, maximum: 3 }, 'must be integers');
+	it('rejects an integer range with unsafe or non-integer bounds, or a span outside 2..255', () => {
+		rejects({ type: 'integer', minimum: 0.5, maximum: 3 }, 'safe integers');
+		rejects({ type: 'integer', minimum: 2 ** 53 - 1, maximum: 2 ** 53 + 100 }, 'safe integers');
 		rejects({ type: 'integer', minimum: 3, maximum: 3 }, '2..255');
 		rejects({ type: 'integer', minimum: 0, maximum: 255 }, '2..255');
 	});
@@ -88,11 +94,24 @@ describe('validateDecisionSchema', () => {
 	});
 });
 
-describe('allowedValues', () => {
+describe('allowedValues and isAllowedValue', () => {
 	it('returns enum values in declared order, booleans as [false, true], and the integer range', () => {
 		assert.deepStrictEqual(allowedValues(QUEUE), ['billing', 'refund', 'bug', 'other']);
 		assert.deepStrictEqual(allowedValues({ type: 'boolean' }), [false, true]);
 		assert.deepStrictEqual(allowedValues({ type: 'integer', minimum: 2, maximum: 4 }), [2, 3, 4]);
+		assert.deepStrictEqual(allowedValues({ type: 'integer', minimum: -1, maximum: 1 }), [-1, 0, 1]);
+	});
+
+	it('checks membership without materializing the range', () => {
+		const range = { type: 'integer', minimum: 2, maximum: 4 };
+		assert.strictEqual(isAllowedValue(range, 3), true);
+		assert.strictEqual(isAllowedValue(range, 5), false);
+		assert.strictEqual(isAllowedValue(range, 2.5), false);
+		assert.strictEqual(isAllowedValue(range, '3'), false);
+		assert.strictEqual(isAllowedValue({ type: 'boolean' }, false), true);
+		assert.strictEqual(isAllowedValue({ type: 'boolean' }, 0), false);
+		assert.strictEqual(isAllowedValue(QUEUE, 'bug'), true);
+		assert.strictEqual(isAllowedValue(QUEUE, 'spam'), false);
 	});
 });
 
@@ -134,15 +153,24 @@ describe('normalizeDecision', () => {
 		assert.strictEqual(d.calibrated, false);
 	});
 
-	it('honors a backend-supplied value when it is a most-probable outcome, and rejects one that is not', () => {
+	it('leads the distribution with a tied value the backend chose, and rejects a value that is not most probable', () => {
 		const distribution = dist([
 			['billing', 0.5],
 			['refund', 0.5],
 			['bug', 0],
 			['other', 0],
 		]);
-		assert.strictEqual(normalizeDecision(QUEUE, { distribution, value: 'refund' }, 'b', false).value, 'refund');
-		assert.throws(() => normalizeDecision(QUEUE, { distribution, value: 'bug' }, 'b', false), DecisionContractError);
+		const d = normalizeDecision(QUEUE, { distribution, value: 'refund' }, 'b', false);
+		assert.strictEqual(d.value, 'refund');
+		assert.strictEqual(d.distribution[0].value, 'refund');
+		assert.deepStrictEqual(
+			d.distribution.map((e) => e.value),
+			['refund', 'billing', 'bug', 'other']
+		);
+		assert.throws(
+			() => normalizeDecision(QUEUE, { distribution, value: 'bug' }, 'b', false),
+			(err) => err instanceof DecisionContractError && !err.message.includes('bug')
+		);
 	});
 
 	it('takes calibrated from the output, else from the backend capability', () => {
@@ -156,7 +184,7 @@ describe('normalizeDecision', () => {
 		assert.strictEqual(normalizeDecision(QUEUE, { distribution, calibrated: false }, 'b', true).calibrated, false);
 	});
 
-	it('rejects a missing, incomplete, duplicated, out-of-set, out-of-range or non-normalized distribution', () => {
+	it('rejects a missing, incomplete, duplicated, out-of-set, out-of-range or non-normalized distribution without echoing values', () => {
 		const cases = [
 			[{ value: 'billing' }, 'distribution is required'],
 			[{ distribution: 'nope' }, 'distribution is required'],
@@ -178,7 +206,7 @@ describe('normalizeDecision', () => {
 						['billing', 1],
 						['refund', 0],
 						['bug', 0],
-						['nope', 0],
+						['SECRET-VALUE', 0],
 					]),
 				},
 				'not an allowed value',
@@ -210,7 +238,10 @@ describe('normalizeDecision', () => {
 		for (const [output, fragment] of cases) {
 			assert.throws(
 				() => normalizeDecision(QUEUE, output, 'b', false),
-				(err) => err instanceof DecisionContractError && err.message.includes(fragment),
+				(err) =>
+					err instanceof DecisionContractError &&
+					err.message.includes(fragment) &&
+					!err.message.includes('SECRET-VALUE'),
 				fragment
 			);
 		}
@@ -270,7 +301,7 @@ describe('toResponseSchema', () => {
 			type: 'integer',
 			enum: [1, 2, 3],
 		});
-		assert.deepStrictEqual(toResponseSchema({ enum: [1, 'a'] }).properties.value, { enum: [1, 'a'] });
+		assert.deepStrictEqual(toResponseSchema({ enum: [1, 2] }).properties.value, { type: 'number', enum: [1, 2] });
 	});
 
 	it('emits every object property as required with no additional properties', () => {
@@ -299,11 +330,14 @@ describe('parseDecisionSample', () => {
 		);
 	});
 
-	it('rejects non-JSON, non-object, missing, out-of-set and mistyped samples', () => {
+	it('rejects non-JSON, non-object, missing, out-of-set and mistyped samples without echoing the sample', () => {
 		assert.throws(() => parseDecisionSample(QUEUE, 'bug'), /not valid JSON/);
 		assert.throws(() => parseDecisionSample(QUEUE, '["bug"]'), /not a JSON object/);
-		assert.throws(() => parseDecisionSample(QUEUE, '{}'), /'value' is undefined/);
-		assert.throws(() => parseDecisionSample(QUEUE, '{"value":"spam"}'), /not an allowed value/);
+		assert.throws(() => parseDecisionSample(QUEUE, '{}'), /'value' is not an allowed value/);
+		assert.throws(
+			() => parseDecisionSample(QUEUE, '{"value":"SECRET-VALUE"}'),
+			(err) => /not an allowed value/.test(err.message) && !err.message.includes('SECRET-VALUE')
+		);
 		assert.throws(
 			() => parseDecisionSample({ type: 'integer', minimum: 1, maximum: 3 }, '{"value":"2"}'),
 			/not an allowed value/

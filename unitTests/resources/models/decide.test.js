@@ -268,3 +268,43 @@ describe('decision backends in the registry', () => {
 		assert.strictEqual(d.probability, 1);
 	});
 });
+
+describe('models.decide calibration requirement and metrics', () => {
+	let writer;
+	let metricSpy;
+	let models;
+
+	beforeEach(() => {
+		clearRegistry();
+		clearRouting();
+		writer = makeMockWriter();
+		metricSpy = makeMetricSpy();
+		models = new Models(writer, metricSpy.emitter);
+	});
+
+	afterEach(() => {
+		clearRegistry();
+		clearRouting();
+	});
+
+	it("rejects a call that requires 'calibrated' when the backend reports the call itself as uncalibrated", async () => {
+		setDecision('cal', scripted('cal', [{ distribution: oneHot('bug'), calibrated: false }], { calibrated: true }));
+		await assert.rejects(
+			models.decide('x', QUEUE, { model: 'cal', requires: ['calibrated'] }),
+			(err) => err instanceof DecisionContractError && /not calibrated/.test(err.message)
+		);
+		assert.strictEqual(writer.records[0].success, false);
+		assert.strictEqual(writer.records[0].error_code, 'backend_error');
+		const d = await models.decide('x', QUEUE, { model: 'cal' });
+		assert.strictEqual(d.calibrated, false);
+	});
+
+	it('emits the model-decide counter for a backend that reports no usage', async () => {
+		setDecision('nousage', scripted('nousage', [{ distribution: oneHot('bug') }]));
+		const d = await models.decide('x', QUEUE, { model: 'nousage' });
+		assert.strictEqual(d.usage, undefined);
+		assert.ok(metricSpy.calls.some((c) => c.metric === 'model-decide' && c.value === 1 && c.path === 'nousage'));
+		assert.ok(!metricSpy.calls.some((c) => c.metric === 'model-decide-tokens'));
+		assert.strictEqual(writer.records[0].prompt_tokens, undefined);
+	});
+});

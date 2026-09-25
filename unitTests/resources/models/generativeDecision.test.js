@@ -291,3 +291,38 @@ describe('models.decision config → generative adapter → facade (through boot
 		);
 	});
 });
+
+describe('models.decision config → module decision backend (through bootstrap)', () => {
+	const FIXTURE = join(__dirname, 'fixtures', 'decision-backend-module.cjs');
+
+	beforeEach(() => {
+		clearRegistry();
+		clearRouting();
+		resetModelsProjection();
+	});
+
+	afterEach(() => {
+		clearRegistry();
+		clearRouting();
+		resetModelsProjection();
+	});
+
+	it('boots a decision backend from a module specifier under models.decision and decides through the singleton', async () => {
+		await bootstrapModels({
+			models: {
+				decision: {
+					default: { backend: FIXTURE, winner: 'other', calibrated: true, fallback: ['llm'] },
+					llm: { backend: 'generative', samples: 1 },
+				},
+			},
+		});
+		assert.strictEqual(resolveDecision('default').name, 'module:decision-default');
+		const d = await models.decide({ body: 'hello' }, QUEUE, { requires: ['calibrated'] });
+		assert.strictEqual(d.value, 'other');
+		assert.strictEqual(d.probability, 1);
+		assert.strictEqual(d.calibrated, true);
+		assert.deepStrictEqual(d.usage, { promptTokens: 3 });
+		const candidates = getRouter().route({ kind: 'decision', logicalName: 'default', requires: ['decide'] });
+		assert.deepStrictEqual(candidates, [resolveDecision('default'), resolveDecision('llm')]);
+	});
+});
