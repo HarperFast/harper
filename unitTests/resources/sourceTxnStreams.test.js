@@ -109,6 +109,22 @@ describe('source transactions keyed by stream', function () {
 		assert.deepEqual(await recordIds(Table, ['a1', 'b1', 'b2']), ['b1', 'b2']);
 	});
 
+	it('does not commit a write still pending when its stream aborts', async () => {
+		const stream = {};
+		let release;
+		const pending = new Promise((resolve) => (release = resolve));
+		const { Table, applied } = start(function* () {
+			yield put('paused', NOW + 14.1, { beginTxn: true, txnStream: stream, finished: pending });
+			yield { type: 'abort_txn', txnStream: stream };
+			release();
+			yield put('after-abort', NOW + 15.1);
+		});
+		await waitFor(() => applied.length === 3);
+		await waitFor(async () => (await recordIds(Table, ['after-abort'])).length === 1);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.deepEqual(await recordIds(Table, ['paused']), []);
+	});
+
 	function failingWrite(id, timestamp, extra) {
 		return put(id, timestamp, {
 			...extra,
@@ -123,6 +139,7 @@ describe('source transactions keyed by stream', function () {
 	it('holds the cursor and reports a failed earlier segment at the frame end_txn', async () => {
 		const stream = {};
 		const failures = [];
+		let commits = 0;
 		const { Table, applied } = start([
 			failingWrite('seg-failed', NOW + 9.1, { beginTxn: true, txnStream: stream }),
 			put('seg-ok', NOW + 9.1, { beginTxn: true, txnStream: stream }),
@@ -132,6 +149,7 @@ describe('source transactions keyed by stream', function () {
 				localTime: NOW + 9.1,
 				remoteNodeIds: [77],
 				onFailure: (error, position) => failures.push([error.message, position]),
+				onCommit: () => commits++,
 			},
 		]);
 		await waitFor(() => applied.length === 3);
@@ -140,6 +158,7 @@ describe('source transactions keyed by stream', function () {
 		assert.equal(Table.dbisDB.getSync([Symbol.for('seq'), 77]), undefined);
 		assert.match(failures[0][0], /injected failure for seg-failed/);
 		assert.equal(failures[0][1], NOW + 9.1);
+		assert.equal(commits, 0);
 	});
 
 	it('records no cursor and runs no onCommit for a held stream after its failure', async () => {
@@ -184,6 +203,7 @@ describe('source transactions keyed by stream', function () {
 	it('applies untagged events positionally, as one default stream', async () => {
 		const { Table } = start([put('d1', NOW + 5.1, { beginTxn: true }), put('d2', NOW + 5.1), { type: 'end_txn' }]);
 		await waitFor(async () => (await recordIds(Table, ['d1', 'd2'])).length === 2);
+		if (isRocksDB) assert.equal(logEntries(Table).d1.log, 'local');
 	});
 
 	(isRocksDB ? it : it.skip)("files an origin's entry in that origin's own log", async () => {

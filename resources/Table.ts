@@ -1164,6 +1164,8 @@ export function makeTable(options) {
 						await reportDroppedWrite(event, context, new Error('Source-applied put has no record content'));
 					const resource: TableResource = await Table.getResource(id, context, options);
 					if (event.finished) await event.finished;
+					// an aborted source transaction's released context would otherwise commit this write on its own
+					if (context.sourceAborted) return;
 					switch (event.type) {
 						case 'put':
 							return shouldRevalidateEvents
@@ -1237,8 +1239,6 @@ export function makeTable(options) {
 						: runsApplicationCodeSingletons(); // set up by the defining application's code, so it runs where that code does
 					const subscription = hasSubscribe && subscribeOnThisThread && (await source.subscribe?.(subscriptionOptions));
 					if (subscription) {
-						// A replication receiver tags each event with its connection (`txnStream`); events from several
-						// connections interleave in this one subscription, and a transaction is delimited per connection.
 						const defaultStream: SourceTxnStream = { txn: undefined, lastSequenceId: undefined };
 						let taggedStreams: WeakMap<object, SourceTxnStream> | undefined;
 						// we listen for events by iterating through the async iterator provided by the subscription
@@ -1282,6 +1282,7 @@ export function makeTable(options) {
 									taggedStreams?.delete(txnStreamKey);
 									stream.txn = undefined;
 									if (txnInProgress) {
+										txnInProgress.sourceAborted = true;
 										txnInProgress.abortSource(new Error('Source connection ended mid-transaction'));
 										try {
 											await txnInProgress.committed;
@@ -1400,7 +1401,7 @@ export function makeTable(options) {
 									try {
 										committed = committingTxn ? await committingTxn.committed : undefined;
 										applied = true;
-										if (event.onCommit) {
+										if (event.onCommit && stream.failure === undefined) {
 											// the onCommit callback can be async and carry associated work (e.g. blob
 											// transfer); wait for it too before recording the sequence id. Pass the commit
 											// resolution through, as callbacks may use the committed txn time.
@@ -1416,8 +1417,8 @@ export function makeTable(options) {
 										// next beginTxn (which would brick the apply loop).
 										txnInProgress = stream.txn = undefined;
 									}
-									// A transaction this end_txn closes over failed earlier (when a later beginTxn closed it),
-									// so the sequence id must not advance past it either; the source decides whether to replay.
+									// A transaction this end_txn closes over failed earlier (when a later beginTxn closed it), so
+									// neither onCommit nor the sequence id may pass it; the source decides whether to replay.
 									if (stream.failure !== undefined) {
 										const failure = stream.failure;
 										stream.failure = undefined;

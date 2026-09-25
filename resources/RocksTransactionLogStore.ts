@@ -1,6 +1,6 @@
 import { TransactionLog, RocksDatabase, shutdown, type TransactionEntry } from '@harperfast/rocksdb-js';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
-import { getIdOfRemoteNode, getNodeNameForId } from './nodeIdMapping.ts';
+import { exportIdMapping, getIdOfRemoteNode, getNodeNameForId } from './nodeIdMapping.ts';
 import { Decoder, readAuditEntry, ENTRY_DATAVIEW, AuditRecord, createAuditEntry } from './auditStore.ts';
 import { HAS_STRUCTURE_UPDATE } from './RecordEncoder.ts';
 import {
@@ -86,7 +86,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			return;
 		}
 		const log =
-			options.nodeId === undefined
+			options.nodeId === undefined || options.nodeId === 0
 				? this.log
 				: this.logForOrigin(options.nodeId, options.viaNodeId !== undefined && options.viaNodeId !== options.nodeId);
 		let entryBinary: Uint8Array;
@@ -167,15 +167,14 @@ export class RocksTransactionLogStore extends EventEmitter {
 		log.addEntry(entryBinary, options.transaction.id);
 	}
 
-	/**
-	 * The log for an origin's entries, created on first use: a log holds one origin, which keeps `txnLogKey`
-	 * unique within it (the key alone repeats across origins). A relayed entry must name its origin; an id with
-	 * no node name that was not relayed is not a replication origin, and stays in the local log.
-	 */
+	/** A log holds one origin, which keeps `txnLogKey` unique within it; see resources/DESIGN.md. */
 	logForOrigin(nodeId: number, relayed: boolean) {
 		const log = this.logById(nodeId);
 		if (log) return log;
-		const nodeName = getNodeNameForId(this, nodeId, true);
+		// the cached name map can miss an id another worker minted moments ago
+		const nodeName =
+			getNodeNameForId(this, nodeId, true) ??
+			Object.entries(exportIdMapping(this) ?? {}).find(([, id]) => id === nodeId)?.[0];
 		if (nodeName === undefined) {
 			if (relayed) throw new Error(`No node name is mapped to origin id ${nodeId}`);
 			return this.log;
