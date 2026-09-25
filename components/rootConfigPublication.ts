@@ -9,6 +9,7 @@ import {
 	parseYamlDoc,
 	syncFileToStorageSync,
 } from '../config/configUtils.ts';
+import { composeReassertedEnvConfig, REASSERTING_CONFIG_ENV_VARS } from '../config/harperConfigEnvVars.ts';
 import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
 import { ComponentPreparationLockTimeoutError, withComponentPreparationLock } from './componentPreparationLock.ts';
@@ -99,10 +100,11 @@ export async function withRootConfigPublicationLock<T>(publish: () => Promise<T>
 
 /**
  * Apply an effect to the component's root-config entry, and return only once the entry as the effect wants it
- * is on storage — even when it was already in place, because a crashed predecessor can have renamed the file in
- * without flushing it. Idempotent, so recovery can re-apply a journal after a crash at any point. Leaves THIS
- * thread's memoized config agreeing with the file, which is what lets a boot-time recovery publish before
- * `installApplications()` reads the config it installs from. Returns whether the file changed.
+ * is on storage and has survived the config refresh — even when it was already in place, because a crashed
+ * predecessor can have renamed the file in without flushing it. Idempotent, so recovery can re-apply a journal after
+ * a crash at any point. Leaves THIS thread's memoized config agreeing with the file, which is what lets a boot-time
+ * recovery publish before `installApplications()` reads the config it installs from. Returns whether the file
+ * changed.
  */
 export async function applyRootConfigEffect(component: string, effect: RootConfigEffect): Promise<boolean> {
 	if (effect.kind === 'keep') return false;
@@ -117,22 +119,53 @@ export async function applyRootConfigEffect(component: string, effect: RootConfi
 	}
 	return withRootConfigPublicationLock(async () => {
 		const { configFilePath, configDoc, changed } = readRootConfigChange(component, effect);
+		assertEnvLayersKeepEffect(component, effect, configDoc.toJSON() ?? {});
 		if (changed) atomicWriteFile(configFilePath, String(configDoc), { durable: true });
 		else syncFileToStorageSync(configFilePath);
 		// Inside the lock: on the main thread a refresh re-applies the env config layers and can rewrite the file.
 		env.initSync(true);
+		const refreshedDoc = parseYamlDoc(configFilePath);
+		if (refreshedDoc.errors?.length > 0) {
+			throw new Error(
+				`The root config entry of ${component} cannot be confirmed: after the config refresh, ${configFilePath} ` +
+					`does not parse: ${refreshedDoc.errors}`
+			);
+		}
+		const contradicted = contradictedKeys(refreshedDoc.toJSON()?.[component], effect);
+		if (contradicted.length > 0) {
+			throw new ServerError(
+				`The root config entry of ${component} did not take effect: after the config refresh, ${configFilePath} ` +
+					`contradicts it at ${contradicted.map((keyPath) => formatKeyPath(component, keyPath)).join(', ')}`,
+				409
+			);
+		}
 		return changed;
 	});
 }
 
 /**
- * Refuse an effect this node could not publish, while refusing still changes nothing: the publish runs after the
- * commit rename, and a document that does not parse or a directory this process cannot write fails it at every
- * start after. Only static conditions are caught; the publish can still fail.
+ * Whether the root config file on disk names an entry for the component — true when it cannot tell, since a caller
+ * deciding whether the entry is gone must not guess that it is.
+ */
+export function hasRootConfigEntry(component: string): boolean {
+	try {
+		const configDoc = parseYamlDoc(getRootConfigFilePath());
+		return configDoc.errors?.length > 0 || configDoc.toJSON()?.[component] !== undefined;
+	} catch {
+		return true;
+	}
+}
+
+/**
+ * Refuse an effect this node could not publish, or that would not last, while refusing still changes nothing: the
+ * publish runs after the commit rename, and a document that does not parse, a directory this process cannot write,
+ * or a config env var that reasserts a key the effect changes fails it at every start after. Only static conditions
+ * are caught; the publish can still fail.
  */
 export async function assertRootConfigEffectPublishable(component: string, effect: RootConfigEffect): Promise<void> {
 	if (effect.kind === 'keep') return;
-	const { configFilePath, changed } = readRootConfigChange(component, effect);
+	const { configFilePath, configDoc, changed } = readRootConfigChange(component, effect);
+	assertEnvLayersKeepEffect(component, effect, configDoc.toJSON() ?? {});
 	if (!changed) return;
 	const configDirPath = dirname(configFilePath);
 	try {
@@ -158,6 +191,92 @@ function readRootConfigChange(component: string, effect: RootConfigEffect) {
 		);
 	}
 	return { configFilePath, configDoc, changed: applyEffectToDocument(configDoc, component, effect) };
+}
+
+/**
+ * HARPER_CONFIG and HARPER_SET_CONFIG rewrite every key they name at each start and each config refresh, so an
+ * effect they contradict would be reported published and then undone — a package activation left live under the
+ * forced entry, or a dropped component's entry put back.
+ */
+function assertEnvLayersKeepEffect(
+	component: string,
+	effect: RootConfigEffect,
+	resultingConfig: Record<string, unknown>
+): void {
+	if (effect.kind === 'keep') return;
+	const setVars = REASSERTING_CONFIG_ENV_VARS.filter((envVarName) => process.env[envVarName]);
+	if (setVars.length === 0) return;
+	// Composed together, as a refresh applies them: HARPER_CONFIG yields to HARPER_SET_CONFIG on a key both name.
+	const contradicted = contradictedKeys(composeReassertedEnvConfig(resultingConfig, setVars)[component], effect);
+	if (contradicted.length === 0) return;
+	const entryByVar = [...setVars].reverse().map((name) => [name, composeReassertedEnvConfig({}, [name])[component]]);
+	const keysByVar = new Map<string, string[]>();
+	for (const keyPath of contradicted) {
+		// Attributed to the variable that wins it. A key none of them sets is an artifact of composing the document,
+		// not something a refresh would do to it: composition splits a key with a dot in it into nested keys.
+		const envVarName = entryByVar.find(([, entry]) => setsKey(entry, keyPath))?.[0];
+		if (envVarName)
+			keysByVar.set(envVarName, [...(keysByVar.get(envVarName) ?? []), formatKeyPath(component, keyPath)]);
+	}
+	if (keysByVar.size === 0) return;
+	const reasons = [...keysByVar].map(([envVarName, keys]) => `${envVarName} sets ${keys.join(', ')}`);
+	const outcome =
+		effect.kind === 'remove' ? 'the next start would reinstall it' : 'the entry this release publishes would not last';
+	throw new ServerError(
+		`Cannot ${effect.kind === 'remove' ? 'remove' : 'publish'} the root config entry of ${component}: ` +
+			`${reasons.join('; ')}, which the config environment reasserts at every start and config refresh, so ` +
+			`${outcome}. Change the variable first.`,
+		409
+	);
+}
+
+/**
+ * The keys, as paths into the component's entry, that contradict what the effect wants of it; none when the
+ * effect holds. For a payload deploy and a drop that is only `package`: a start installs a component from its entry
+ * only when the entry names one, so the other keys a variable keeps for the name, `install` and `credentials`
+ * included, reinstall nothing.
+ */
+function contradictedKeys(entry: unknown, effect: RootConfigEffect): string[][] {
+	switch (effect.kind) {
+		case 'keep':
+			return [];
+		case 'set':
+			return leafPaths(effect.entry).filter(
+				(keyPath) => !isDeepStrictEqual(valueAt(entry, keyPath), valueAt(effect.entry, keyPath))
+			);
+		case 'unset-package':
+		case 'remove':
+			return isPlainObject(entry) && 'package' in entry ? [['package']] : [];
+	}
+}
+
+function leafPaths(value: Record<string, unknown>, prefix: string[] = []): string[][] {
+	return Object.entries(value).flatMap(([key, child]) =>
+		isPlainObject(child) && Object.keys(child).length > 0 ? leafPaths(child, [...prefix, key]) : [[...prefix, key]]
+	);
+}
+
+function valueAt(value: unknown, keyPath: string[]): unknown {
+	for (const key of keyPath) {
+		if (!isPlainObject(value)) return undefined;
+		value = value[key];
+	}
+	return value;
+}
+
+/** Whether an entry a variable composes on its own sets the key at `keyPath`, or one of its ancestors outright. */
+function setsKey(entry: unknown, keyPath: string[]): boolean {
+	let value = entry;
+	for (const key of keyPath) {
+		if (value === undefined) return false;
+		if (!isPlainObject(value)) return true;
+		value = value[key];
+	}
+	return value !== undefined;
+}
+
+function formatKeyPath(component: string, keyPath: string[]): string {
+	return [component, ...keyPath].join('.');
 }
 
 function errorMessage(error: unknown): string {

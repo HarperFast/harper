@@ -28,6 +28,10 @@ const OPERATION_API_NAME_ALIASES = new Map([
 	['drop_schema', 'drop_database'],
 	['describe_database', 'describe_schema'],
 	['search_by_id', 'search_by_hash'],
+	['add_custom_function_project', 'add_component'],
+	['package_custom_function_project', 'package_component'],
+	['deploy_custom_function_project', 'deploy_component'],
+	['delete_records_before', 'delete_files_before'],
 ]);
 
 const STRUCTURE_TABLE_OPERATIONS = new Set(['create_table', 'drop_table', 'create_attribute', 'drop_attribute']);
