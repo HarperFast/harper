@@ -28,6 +28,10 @@ const { registryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
 const { schema: schemaHandler } = require('#js/server/itc/serverHandlers');
 const { OPERATIONS_ENUM } = require('#src/utility/hdbTerms');
 const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
+const {
+	claimDatabaseDropPreparation,
+	releaseDatabaseDropPreparation,
+} = require('#src/resources/databaseDropPreparation');
 
 describe('RocksDB handle release', function () {
 	before(function () {
@@ -47,6 +51,22 @@ describe('RocksDB handle release', function () {
 	function refCountFor(dbPath) {
 		return registryStatus().find((e) => e.path === dbPath)?.refCount ?? 0;
 	}
+
+	it('returns a stable conflict error for a concurrent database drop', function () {
+		const databaseName = 'drop_schema_conflict';
+		claimDatabaseDropPreparation(databaseName, 'first-drop');
+		try {
+			assert.throws(
+				() => claimDatabaseDropPreparation(databaseName, 'second-drop'),
+				(error) =>
+					error.name === 'DatabaseDroppingError' &&
+					error.code === 'DATABASE_DROP_IN_PROGRESS' &&
+					error.statusCode === 409
+			);
+		} finally {
+			releaseDatabaseDropPreparation(databaseName, 'first-drop');
+		}
+	});
 
 	it('closeDatabase releases all of a database’s native handles (refCount → 0)', async function () {
 		this.timeout(30000);

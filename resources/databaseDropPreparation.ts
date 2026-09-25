@@ -2,13 +2,20 @@ import { workerData } from 'node:worker_threads';
 
 const databaseDropPreparations = new Map<string, string>(workerData?.databaseDropPreparations ?? []);
 
+class DatabaseDroppingError extends Error {
+	statusCode = 409;
+	code = 'DATABASE_DROP_IN_PROGRESS';
+	constructor(databaseName: string) {
+		super(`Database '${databaseName}' is already being dropped`);
+		this.name = 'DatabaseDroppingError';
+	}
+}
+
 export function claimDatabaseDropPreparation(databaseName: string, preparationId: string): boolean {
 	const current = databaseDropPreparations.get(databaseName);
 	if (current === preparationId) return false;
 	if (current) {
-		const error: any = new Error(`Database '${databaseName}' is already being dropped`);
-		error.statusCode = 409;
-		throw error;
+		throw new DatabaseDroppingError(databaseName);
 	}
 	databaseDropPreparations.set(databaseName, preparationId);
 	return true;
