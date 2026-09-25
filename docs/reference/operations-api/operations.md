@@ -727,6 +727,20 @@ Names are validated when the policy is written, against the same registry `add_r
 So `operations` bounds what a CI credential can _administer_, not what data it can read or write. If that matters, point the policy's `user` at a role that is itself least-privilege for the data the token can reach, rather than relying on the scope alone.
 :::
 
+A deploy user does not need `super_user`. A role that lists the deploy operation, plus `get_deployment` if the pipeline polls for the outcome, is enough:
+
+```json
+{
+	"operation": "add_role",
+	"role": "ci_deploy",
+	"permission": {
+		"operations": ["deploy_component", "get_deployment"]
+	}
+}
+```
+
+Deploying is still administrative authority, since the deployed component runs inside the Harper process. A deploy that passes a literal registry or git `token` in `credentials` needs `super_user` on a node that holds secret custody, because Harper seals that token into the secrets store; give a least-privilege role a `secret` reference instead.
+
 A scoped token also cannot trade itself for a browser session: `create_authentication_tokens` with `purpose: "login"` is refused, because a session carries no operation scope and would silently restore the user's full role.
 
 `user` is resolved at write time. A policy naming a user that does not exist, or one that is inactive, is rejected — otherwise it would fail only at exchange time, inside CI, with nothing to point at. If the named user is a **super_user**, the policy is still created but the response carries a `warning`: any run matching it gains full administrative access.
