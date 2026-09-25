@@ -1006,3 +1006,14 @@ environment is a use-after-free (an intermittent segfault in the lmdb unit run).
 an LMDB root once, only while `open`, skips its dbis, and closes every alias sharing it. RocksDB
 column families are independently refcounted handles, so they are still closed one by one. Enforced by
 the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.
+
+## Destructive database DDL fences the physical store, not its catalog names (`databaseDropPreparation.ts`)
+
+A configured database name and a directory discovered by the storage scan can refer to the same
+RocksDB or LMDB root. Drop preparation is therefore keyed by the canonical root-store path and sends
+those paths to every worker. Each worker rejects new access to a fenced path, closes every loaded
+catalog entry that points to it, and acknowledges only after its local handles settle. The initiating
+worker destroys the store after all acknowledgements, broadcasts completion, and then releases the
+same path keys. A worker that starts during preparation inherits the active path fences. If the
+initiator exits, peers retain their fences until local preparation settles and then release them, so
+an owner failure cannot strand admission or race a still-closing handle.

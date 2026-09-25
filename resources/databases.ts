@@ -118,6 +118,7 @@ import {
 import {
 	claimDatabaseDropPreparations,
 	databaseDropPrepared,
+	databaseDropPreparedWithin,
 	releaseDatabaseDropPreparations,
 	trackDatabaseDropPreparationTask,
 } from './databaseDropPreparation.ts';
@@ -725,7 +726,7 @@ export function getDatabases(): Databases {
 			if (databaseEntry.name === BRANCH_ROOT_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dbPath = join(databasePath, databaseEntry.name);
-			if (databaseDropPrepared(dbName)) continue;
+			if (databaseDropPrepared(dbPath)) continue;
 			if (blockedByRestore.has(dbName)) continue;
 			if (isOpenBranchPath(dbPath)) continue;
 
@@ -760,20 +761,15 @@ export function getDatabases(): Databases {
 	const baseSchemaPath = getBaseSchemaPath();
 	if (existsSync(baseSchemaPath)) {
 		for (const schemaEntry of readdirSync(baseSchemaPath, { withFileTypes: true })) {
-			if (databaseDropPrepared(schemaEntry.name)) continue;
 			if (!schemaEntry.isFile()) {
 				const schemaPath = join(baseSchemaPath, schemaEntry.name);
 				const schemaAuditPath = join(getTransactionAuditStoreBasePath(), schemaEntry.name);
 				for (const tableEntry of readdirSync(schemaPath, { withFileTypes: true })) {
 					if (tableEntry.isFile() && extname(tableEntry.name).toLowerCase() === '.mdb') {
+						const tablePath = join(schemaPath, tableEntry.name);
+						if (databaseDropPrepared(tablePath)) continue;
 						const auditPath = join(schemaAuditPath, tableEntry.name);
-						readMetaDb(
-							join(schemaPath, tableEntry.name),
-							basename(tableEntry.name, '.mdb'),
-							schemaEntry.name,
-							auditPath,
-							true
-						);
+						readMetaDb(tablePath, basename(tableEntry.name, '.mdb'), schemaEntry.name, auditPath, true);
 					}
 				}
 			}
@@ -782,7 +778,6 @@ export function getDatabases(): Databases {
 
 	if (schemaConfigs) {
 		for (const dbName in schemaConfigs) {
-			if (databaseDropPrepared(dbName)) continue;
 			const schemaConfig = schemaConfigs[dbName];
 			const databasePath = schemaConfig.path;
 			if (existsSync(databasePath)) {
@@ -793,12 +788,13 @@ export function getDatabases(): Databases {
 					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
 					if (databaseEntry.name === BRANCH_ROOT_DIR) continue; // reserved branch root
 					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
-					if (isOpenBranchPath(join(databasePath, databaseEntry.name))) continue;
+					const dbPath = join(databasePath, databaseEntry.name);
+					if (databaseDropPrepared(dbPath)) continue;
+					if (isOpenBranchPath(dbPath)) continue;
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {
-						readMetaDb(join(databasePath, databaseEntry.name), basename(databaseEntry.name, '.mdb'), dbName);
+						readMetaDb(dbPath, basename(databaseEntry.name, '.mdb'), dbName);
 					} else {
 						try {
-							const dbPath = join(databasePath, databaseEntry.name);
 							const files = readdirSync(dbPath, { withFileTypes: true });
 							if (
 								files.find((file) => file.name === 'CURRENT')?.isFile() &&
@@ -820,7 +816,7 @@ export function getDatabases(): Databases {
 				for (const tableName in tableConfigs) {
 					const tableConfig = tableConfigs[tableName];
 					const tablePath = join(tableConfig.path, basename(tableName + '.mdb'));
-					if (existsSync(tablePath)) {
+					if (!databaseDropPrepared(tablePath) && existsSync(tablePath)) {
 						readMetaDb(tablePath, tableName, dbName, null, true);
 					}
 				}
@@ -830,7 +826,7 @@ export function getDatabases(): Databases {
 	}
 	// now remove any databases or tables that have been removed
 	for (const dbName in databases) {
-		if (databaseDropPrepared(dbName)) continue;
+		if (databaseUsesPreparedRoot(dbName)) continue;
 		const definedTables = definedDatabases.get(dbName);
 		if (definedTables) {
 			const tables = databases[dbName];
@@ -2179,12 +2175,12 @@ function openDatabaseRoot(
 	{ allowPreparedDrop = false }: { allowPreparedDrop?: boolean } = {}
 ) {
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
-	if (!allowPreparedDrop && databaseDropPrepared(databaseName)) throw new DatabaseClosingError(databaseName);
 	getDatabases();
-	ensureDB(databaseName);
-	const definedDatabase = definedDatabases.get(databaseName);
+	let definedDatabase = definedDatabases.get(databaseName);
 	if ((definedDatabase as any)?.rootStore) {
-		return (definedDatabase as any).rootStore;
+		const rootStore = (definedDatabase as any).rootStore;
+		if (!allowPreparedDrop && databaseDropPrepared(rootStore.path)) throw new DatabaseClosingError(databaseName);
+		return rootStore;
 	}
 	const databaseConfig = envGet(CONFIG_PARAMS.DATABASES) || {};
 	if (process.env.SCHEMAS_DATA_PATH) {
@@ -2192,11 +2188,18 @@ function openDatabaseRoot(
 	}
 	const tablePath = tableName && databaseConfig[databaseName]?.tables?.[tableName]?.path;
 	const databasePath = resolveDatabaseStorageRoot(databaseName, tableName);
+	if (!allowPreparedDrop && databaseConfig[databaseName]?.path && databaseDropPreparedWithin(databasePath))
+		throw new DatabaseClosingError(databaseName);
 
 	let rootStore: RootDatabaseKind;
 	const useRocksdb = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb';
+	const path = useRocksdb
+		? join(databasePath, tablePath ? tableName : databaseName)
+		: join(databasePath, `${tablePath ? tableName : databaseName}.mdb`);
+	if (!allowPreparedDrop && databaseDropPrepared(path)) throw new DatabaseClosingError(databaseName);
+	ensureDB(databaseName);
+	definedDatabase = definedDatabases.get(databaseName);
 	if (useRocksdb) {
-		const path = join(databasePath, tablePath ? tableName : databaseName);
 		// the scan is not the only way to reach a branch's directory: a branch leaves its store in
 		// `rocksdbDatabaseEnvs`, so without this an on-demand open would staple it onto
 		// `definedDatabases` and the next `closeDatabase` would close it under the live handle
@@ -2218,7 +2221,6 @@ function openDatabaseRoot(
 			rocksdbDatabaseEnvs.set(path, rootStore as any);
 		}
 	} else {
-		const path = join(databasePath, `${tablePath ? tableName : databaseName}.mdb`);
 		rootStore = lmdbDatabaseEnvs.get(path);
 		if (!rootStore || rootStore.status === 'closed') {
 			// TODO: validate database name
@@ -2378,18 +2380,15 @@ export async function dropDatabase(databaseName) {
  * An LMDB database is closed by closing its environment, which releases every dbi in it, so every
  * other database alias sharing that environment is closed with it.
  */
-const databaseDropPreparationTasks = new Map<string, { id: string; task: Promise<void>; databaseNames: string[] }>();
+const databaseDropPreparationTasks = new Map<string, { id: string; task: Promise<void>; rootPaths: string[] }>();
 
 export function databaseDropPreparationTargets(databaseName: string): {
-	databaseNames: string[];
 	rootPaths: string[];
 } {
-	if (!databases[databaseName]) {
-		return { databaseNames: [databaseName], rootPaths: [resolveDatabasePath(databaseName)] };
-	}
+	getDatabases();
+	if (!databases[databaseName]) throw new Error(`Database '${databaseName}' does not exist`);
 	const graph = collectDatabaseGraph(databaseName);
 	return {
-		databaseNames: [...graph.databaseNames],
 		rootPaths: [...graph.rootStores].map((rootStore) => rootStore.path),
 	};
 }
@@ -2398,37 +2397,45 @@ export function prepareDatabaseDrop(
 	databaseName: string,
 	preparationId: string,
 	ownerThreadId: number,
-	requestedDatabaseNames: Iterable<string> = [databaseName],
 	requestedRootPaths: Iterable<string> = []
 ): Promise<void> {
 	const existing = databaseDropPreparationTasks.get(databaseName);
 	if (existing?.id === preparationId) return existing.task;
-	const databaseNames = new Set(requestedDatabaseNames);
 	const rootPaths = new Set(requestedRootPaths);
 	if (databases[databaseName]) {
 		const graph = collectDatabaseGraph(databaseName);
-		for (const name of graph.databaseNames) databaseNames.add(name);
 		for (const rootStore of graph.rootStores) rootPaths.add(rootStore.path);
 	}
+	const names: string[] = [];
 	for (const name of Object.keys(databases)) {
-		const graph = collectDatabaseGraph(name);
-		if (![...graph.rootStores].some((rootStore) => rootPaths.has(rootStore.path))) continue;
-		for (const aliasName of graph.databaseNames) databaseNames.add(aliasName);
+		const definedRoot = (definedDatabases?.get(name) as any)?.rootStore;
+		if (definedRoot && rootPaths.has(definedRoot.path)) {
+			names.push(name);
+			continue;
+		}
+		const tables = databases[name];
+		if (
+			Object.values(tables).some((table: any) => {
+				const rootStore = table?.primaryStore?.rootStore;
+				return rootStore && rootPaths.has(rootStore.path);
+			})
+		)
+			names.push(name);
 	}
-	const names = [...databaseNames];
-	claimDatabaseDropPreparations(names, preparationId, ownerThreadId);
+	const paths = [...rootPaths];
+	claimDatabaseDropPreparations(paths, preparationId, ownerThreadId, databaseName);
 	const task = (async () => {
 		for (const name of names) await closeDatabase(name, { requireClosed: true });
 	})();
-	databaseDropPreparationTasks.set(databaseName, { id: preparationId, task, databaseNames: names });
-	for (const name of names) trackDatabaseDropPreparationTask(name, preparationId, task);
+	databaseDropPreparationTasks.set(databaseName, { id: preparationId, task, rootPaths: paths });
+	for (const rootPath of paths) trackDatabaseDropPreparationTask(rootPath, preparationId, task);
 	return task;
 }
 
 export async function completeDatabaseDropPreparation(
 	databaseName: string,
 	preparationId: string,
-	requestedDatabaseNames: Iterable<string> = [databaseName]
+	requestedRootPaths: Iterable<string> = []
 ): Promise<void> {
 	const existing = databaseDropPreparationTasks.get(databaseName);
 	if (existing?.id === preparationId) {
@@ -2440,7 +2447,7 @@ export async function completeDatabaseDropPreparation(
 		}
 		databaseDropPreparationTasks.delete(databaseName);
 	}
-	releaseDatabaseDropPreparations(existing?.databaseNames ?? requestedDatabaseNames, preparationId);
+	releaseDatabaseDropPreparations(existing?.rootPaths ?? requestedRootPaths, preparationId);
 }
 
 export async function closeDatabase(
@@ -2572,6 +2579,17 @@ function databaseUsesRootStore(databaseName: string, rootStore: any): boolean {
 	if (!dbTables) return false;
 	for (const tableName in dbTables) {
 		if ((dbTables[tableName] as any)?.primaryStore?.rootStore === rootStore) return true;
+	}
+	return false;
+}
+
+function databaseUsesPreparedRoot(databaseName: string): boolean {
+	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
+	if (definedRoot && databaseDropPrepared(definedRoot.path)) return true;
+	const dbTables = databases[databaseName];
+	for (const tableName in dbTables) {
+		const rootStore = (dbTables[tableName] as any)?.primaryStore?.rootStore;
+		if (rootStore && databaseDropPrepared(rootStore.path)) return true;
 	}
 	return false;
 }

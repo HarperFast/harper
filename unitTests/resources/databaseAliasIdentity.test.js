@@ -248,17 +248,20 @@ describe('shared root-store database identity', function () {
 		await createPhysicalStore(storageRoot, 'physicalalias', tableName);
 		loadAliases(storageRoot, { configured: ['configuredalias'] });
 		loadedAliases = ['physicalalias', 'configuredalias'];
-		const { databaseNames, rootPaths } = databaseDropPreparationTargets('physicalalias');
+		const { rootPaths } = databaseDropPreparationTargets('physicalalias');
+		const databaseNames = ['physicalalias', 'configuredalias'];
 
-		await prepareDatabaseDrop('physicalalias', preparationId, 0, databaseNames, rootPaths);
-		for (const name of databaseNames) {
-			assert.throws(
-				() => database({ database: name }),
-				(error) => error.code === 'DATABASE_CLOSING'
-			);
+		try {
+			await prepareDatabaseDrop('physicalalias', preparationId, 0, rootPaths);
+			for (const name of databaseNames) {
+				assert.throws(
+					() => database({ database: name }),
+					(error) => error.code === 'DATABASE_CLOSING'
+				);
+			}
+		} finally {
+			await completeDatabaseDropPreparation('physicalalias', preparationId, rootPaths);
 		}
-
-		await completeDatabaseDropPreparation('physicalalias', preparationId, databaseNames);
 		assert.ok(database({ database: 'configuredalias' }));
 	});
 
@@ -270,14 +273,15 @@ describe('shared root-store database identity', function () {
 		await createPhysicalStore(storageRoot, 'physicalalias', tableName);
 		const loaded = loadAliases(storageRoot, { configured: ['configuredalias'] });
 		loadedAliases = ['physicalalias', 'configuredalias'];
-		const { databaseNames, rootPaths } = databaseDropPreparationTargets('physicalalias');
+		const { rootPaths } = databaseDropPreparationTargets('physicalalias');
+		const databaseNames = ['physicalalias', 'configuredalias'];
 		const path = loaded.configuredalias[tableName].primaryStore.rootStore.path;
 		for (const index of Object.values(loaded.physicalalias[tableName].indices)) await index.close();
 		await loaded.physicalalias[tableName].primaryStore.close();
 		delete loaded.physicalalias;
 
 		try {
-			await prepareDatabaseDrop('physicalalias', preparationId, 0, databaseNames, rootPaths);
+			await prepareDatabaseDrop('physicalalias', preparationId, 0, rootPaths);
 			assert.strictEqual(registryStatus().find((entry) => entry.path === path)?.refCount ?? 0, 0);
 			for (const name of databaseNames) {
 				assert.throws(
@@ -286,9 +290,33 @@ describe('shared root-store database identity', function () {
 				);
 			}
 		} finally {
-			await completeDatabaseDropPreparation('physicalalias', preparationId, databaseNames);
+			await completeDatabaseDropPreparation('physicalalias', preparationId, rootPaths);
 		}
 		assert.ok(database({ database: 'configuredalias' }));
+	});
+
+	it('rejects an alias configured after drop preparation begins', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const storageRoot = join(testRoot, 'alias-drop-late-config');
+		const tableName = 'AliasDropLateConfig';
+		const preparationId = 'alias-drop-late-config-test';
+		await createPhysicalStore(storageRoot, 'physicalalias', tableName);
+		loadAliases(storageRoot, { configured: ['configuredalias'] });
+		loadedAliases = ['physicalalias', 'configuredalias', 'latealias'];
+		const { rootPaths } = databaseDropPreparationTargets('physicalalias');
+
+		try {
+			await prepareDatabaseDrop('physicalalias', preparationId, 0, rootPaths);
+			env.setProperty(terms.CONFIG_PARAMS.DATABASES, { latealias: { path: storageRoot } });
+			resetDatabases();
+			assert.throws(
+				() => database({ database: 'latealias' }),
+				(error) => error.code === 'DATABASE_CLOSING'
+			);
+		} finally {
+			await completeDatabaseDropPreparation('physicalalias', preparationId, rootPaths);
+		}
+		assert.ok(database({ database: 'latealias' }));
 	});
 
 	it('prunes both aliases on the originating thread and another worker after the shared store is dropped', async function () {

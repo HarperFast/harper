@@ -233,7 +233,7 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 			const worker = await startFixtureWorker('acknowledge');
 			started.push(worker);
 			assert.deepStrictEqual(worker.databaseDropPreparations, [
-				[databaseName, { id: preparationId, ownerThreadId: 0 }],
+				[databaseName, { id: preparationId, ownerThreadId: 0, databaseName }],
 			]);
 		} finally {
 			releaseDatabaseDropPreparation(databaseName, preparationId);

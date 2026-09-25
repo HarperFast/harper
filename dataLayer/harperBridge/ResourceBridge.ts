@@ -200,18 +200,17 @@ export class ResourceBridge extends BridgeMethods {
 
 	async dropSchema(dropSchemaObj) {
 		const preparationId = randomUUID();
-		const { databaseNames, rootPaths } = databaseDropPreparationTargets(dropSchemaObj.schema);
+		const { rootPaths } = databaseDropPreparationTargets(dropSchemaObj.schema);
 		const completion = () => {
 			const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, dropSchemaObj.schema);
 			message.dropPreparationId = preparationId;
 			message.dropPreparationOwnerThreadId = threadId;
-			message.dropPreparationDatabaseNames = databaseNames;
 			message.dropPreparationRootPaths = rootPaths;
 			return message;
 		};
 		const preparation: any = completion();
 		preparation.prepareDrop = true;
-		claimDatabaseDropPreparations(databaseNames, preparationId, threadId);
+		claimDatabaseDropPreparations(rootPaths, preparationId, threadId, dropSchemaObj.schema);
 		try {
 			await signalling.signalSchemaChangeToPeers(preparation);
 			await dropDatabase(dropSchemaObj.schema);
@@ -223,7 +222,7 @@ export class ResourceBridge extends BridgeMethods {
 				includeJobWorkers: true,
 				peerRounds: 2,
 			});
-			releaseDatabaseDropPreparations(databaseNames, preparationId);
+			releaseDatabaseDropPreparations(rootPaths, preparationId);
 		}
 	}
 

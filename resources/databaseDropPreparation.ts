@@ -1,8 +1,10 @@
 import { threadId, workerData } from 'node:worker_threads';
+import { dirname } from 'node:path';
 
 type DatabaseDropPreparation = {
 	id: string;
 	ownerThreadId: number;
+	databaseName: string;
 	ownerExited?: boolean;
 	preparationTask?: Promise<void>;
 };
@@ -24,79 +26,95 @@ class DatabaseDroppingError extends Error {
 }
 
 export function claimDatabaseDropPreparation(
-	databaseName: string,
+	rootPath: string,
 	preparationId: string,
-	ownerThreadId = threadId
+	ownerThreadId = threadId,
+	databaseName = rootPath
 ): boolean {
-	const current = databaseDropPreparations.get(databaseName);
+	const current = databaseDropPreparations.get(rootPath);
 	if (current?.id === preparationId) return false;
 	if (current) {
-		throw new DatabaseDroppingError(databaseName);
+		throw new DatabaseDroppingError(current.databaseName);
 	}
-	databaseDropPreparations.set(databaseName, { id: preparationId, ownerThreadId });
+	databaseDropPreparations.set(rootPath, { id: preparationId, ownerThreadId, databaseName });
 	return true;
 }
 
-export function releaseDatabaseDropPreparation(databaseName: string, preparationId: string): void {
-	if (databaseDropPreparations.get(databaseName)?.id === preparationId) databaseDropPreparations.delete(databaseName);
+export function releaseDatabaseDropPreparation(rootPath: string, preparationId: string): void {
+	if (databaseDropPreparations.get(rootPath)?.id === preparationId) databaseDropPreparations.delete(rootPath);
 }
 
 export function claimDatabaseDropPreparations(
-	databaseNames: Iterable<string>,
+	rootPaths: Iterable<string>,
 	preparationId: string,
-	ownerThreadId = threadId
+	ownerThreadId = threadId,
+	databaseName?: string
 ): void {
 	const claimed: string[] = [];
 	try {
-		for (const databaseName of new Set(databaseNames)) {
-			if (claimDatabaseDropPreparation(databaseName, preparationId, ownerThreadId)) claimed.push(databaseName);
+		for (const rootPath of new Set(rootPaths)) {
+			if (claimDatabaseDropPreparation(rootPath, preparationId, ownerThreadId, databaseName)) claimed.push(rootPath);
 		}
 	} catch (error) {
-		for (const databaseName of claimed) releaseDatabaseDropPreparation(databaseName, preparationId);
+		for (const rootPath of claimed) releaseDatabaseDropPreparation(rootPath, preparationId);
 		throw error;
 	}
 }
 
-export function releaseDatabaseDropPreparations(databaseNames: Iterable<string>, preparationId: string): void {
-	for (const databaseName of new Set(databaseNames)) releaseDatabaseDropPreparation(databaseName, preparationId);
+export function releaseDatabaseDropPreparations(rootPaths: Iterable<string>, preparationId: string): void {
+	for (const rootPath of new Set(rootPaths)) releaseDatabaseDropPreparation(rootPath, preparationId);
 }
 
 export function trackDatabaseDropPreparationTask(
-	databaseName: string,
+	rootPath: string,
 	preparationId: string,
 	preparationTask: Promise<void>
 ): void {
-	const preparation = databaseDropPreparations.get(databaseName);
+	const preparation = databaseDropPreparations.get(rootPath);
 	if (preparation?.id !== preparationId) return;
 	preparation.preparationTask = preparationTask;
 	if (preparation.ownerExited) {
-		const release = () => releaseDatabaseDropPreparation(databaseName, preparationId);
+		const release = () => releaseDatabaseDropPreparation(rootPath, preparationId);
 		preparationTask.then(release, release);
 	}
 }
 
 export function handleDatabaseDropPreparationOwnerExit(ownerThreadId: number): void {
-	for (const [databaseName, preparation] of databaseDropPreparations) {
+	for (const [rootPath, preparation] of databaseDropPreparations) {
 		if (preparation.ownerThreadId !== ownerThreadId) continue;
 		preparation.ownerExited = true;
 		// A peer may still be closing its local handles when the owner dies. Keep that peer fenced
 		// until its own preparation settles; a worker created afterward has no old handles to drain.
 		if (preparation.preparationTask) {
-			const release = () => releaseDatabaseDropPreparation(databaseName, preparation.id);
+			const release = () => releaseDatabaseDropPreparation(rootPath, preparation.id);
 			preparation.preparationTask.then(release, release);
-		} else databaseDropPreparations.delete(databaseName);
+		} else databaseDropPreparations.delete(rootPath);
 	}
 }
 
-export function databaseDropPrepared(databaseName: string): boolean {
-	return databaseDropPreparations.size > 0 && databaseDropPreparations.has(databaseName);
+export function databaseDropPrepared(rootPath: string): boolean {
+	return databaseDropPreparations.size > 0 && databaseDropPreparations.has(rootPath);
 }
 
-export function databaseDropPreparationSnapshot(): [string, Pick<DatabaseDropPreparation, 'id' | 'ownerThreadId'>][] {
-	const snapshot: [string, Pick<DatabaseDropPreparation, 'id' | 'ownerThreadId'>][] = [];
-	for (const [databaseName, preparation] of databaseDropPreparations) {
+export function databaseDropPreparedWithin(directoryPath: string): boolean {
+	if (databaseDropPreparations.size === 0) return false;
+	for (const rootPath of databaseDropPreparations.keys()) {
+		if (dirname(rootPath) === directoryPath) return true;
+	}
+	return false;
+}
+
+export function databaseDropPreparationSnapshot(): [
+	string,
+	Pick<DatabaseDropPreparation, 'id' | 'ownerThreadId' | 'databaseName'>,
+][] {
+	const snapshot: [string, Pick<DatabaseDropPreparation, 'id' | 'ownerThreadId' | 'databaseName'>][] = [];
+	for (const [rootPath, preparation] of databaseDropPreparations) {
 		if (!preparation.ownerExited)
-			snapshot.push([databaseName, { id: preparation.id, ownerThreadId: preparation.ownerThreadId }]);
+			snapshot.push([
+				rootPath,
+				{ id: preparation.id, ownerThreadId: preparation.ownerThreadId, databaseName: preparation.databaseName },
+			]);
 	}
 	return snapshot;
 }

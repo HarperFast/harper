@@ -57,7 +57,6 @@ async function schemaHandler(event) {
 				event.message.schema,
 				event.message.dropPreparationId,
 				event.message.dropPreparationOwnerThreadId,
-				event.message.dropPreparationDatabaseNames,
 				event.message.dropPreparationRootPaths
 			);
 			return;
@@ -66,7 +65,7 @@ async function schemaHandler(event) {
 			await completeDatabaseDropPreparation(
 				event.message.schema,
 				event.message.dropPreparationId,
-				event.message.dropPreparationDatabaseNames
+				event.message.dropPreparationRootPaths
 			);
 	}
 	// restore_backup: this thread must release its store handles so the restore can purge and

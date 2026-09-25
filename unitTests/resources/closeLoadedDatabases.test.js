@@ -206,7 +206,11 @@ describe('RocksDB handle release', function () {
 			() => database({ database: databaseName }),
 			(error) => error.code === 'DATABASE_CLOSING'
 		);
-		assert.strictEqual(databases[databaseName], undefined, 'a partially closed graph must be unregistered');
+		assert.strictEqual(
+			databases[databaseName]?.pkg,
+			undefined,
+			'a partially closed graph must not remain available through a table'
+		);
 		assert.strictEqual(databaseCommitsSuspended(rootStore), true, 'the abandoned root must remain fenced');
 		assert.strictEqual(
 			getSuspendedDatabaseRootCount(),
