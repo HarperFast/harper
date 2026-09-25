@@ -440,6 +440,21 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		assert.strictEqual(refCountFor(branchPath), 0);
 	});
 
+	it('restores a branch when audit cleanup cannot settle before handle teardown', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		const stopAuditCleanup = branch.rootStore.auditStore.stopAuditCleanup;
+		branch.rootStore.auditStore.stopAuditCleanup = () => Promise.reject(new Error('audit cleanup failed'));
+
+		await assert.rejects(branch.close(), /audit cleanup failed/);
+
+		assert.strictEqual(branch.rootStore.status, 'open');
+		assert.strictEqual(databaseCommitsSuspended(branch.rootStore), false);
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'), /already open/);
+		branch.rootStore.auditStore.stopAuditCleanup = stopAuditCleanup;
+		await branch.close();
+		assert.strictEqual(branch.rootStore.status, 'closed');
+	});
+
 	it('keeps a stale branch fenced when its native root close fails', async function () {
 		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
 		const suspendedBefore = getSuspendedDatabaseRootCount();

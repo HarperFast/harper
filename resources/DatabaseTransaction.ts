@@ -89,9 +89,8 @@ let oldestOutstandingCommit: OutstandingCommit | undefined;
 let newestOutstandingCommit: OutstandingCommit | undefined;
 let outstandingCommitCount = 0;
 const suspendedDatabaseCommits = new WeakMap<object, number>();
-const PERMANENTLY_SUSPENDED = -1;
+const permanentlySuspended = Symbol('permanentlySuspendedDatabaseCommits');
 let suspendedDatabaseRootCount = 0;
-let permanentlySuspendedDatabaseRootCount = 0;
 // Caps the stuck-commit log (checkOverloaded() below) to at most one line per this interval across
 // the whole thread, regardless of how many distinct commits individually cross the threshold — see
 // the comment at the log site for why a per-commit-only dedup isn't enough under sustained overload.
@@ -191,20 +190,18 @@ export function databaseCommitsSuspended(rootStore: object | undefined): boolean
 	if (rootStore == null) return false;
 	// Successful teardown releases the active fence so unrelated databases keep the zero-cost fast
 	// path, but a stale Table class must still reject writes against a closed or abandoned descriptor.
-	if ((rootStore as any).status === 'closed') return true;
-	if (suspendedDatabaseRootCount === 0 && permanentlySuspendedDatabaseRootCount === 0) return false;
-	const suspension = suspendedDatabaseCommits.get(rootStore) ?? 0;
-	return suspension === PERMANENTLY_SUSPENDED || suspension > 0;
+	if ((rootStore as any).status === 'closed' || (rootStore as any)[permanentlySuspended]) return true;
+	return suspendedDatabaseRootCount > 0 && (suspendedDatabaseCommits.get(rootStore) ?? 0) > 0;
 }
 
 /** Keep abandoned root wrappers fenced without retaining the process-wide active-fence counter. */
 export function permanentlySuspendDatabaseCommits(rootStores: Iterable<object>): void {
 	for (const rootStore of rootStores) {
+		if ((rootStore as any)[permanentlySuspended]) continue;
 		const suspension = suspendedDatabaseCommits.get(rootStore) ?? 0;
-		if (suspension === PERMANENTLY_SUSPENDED) continue;
 		if (suspension > 0) suspendedDatabaseRootCount--;
-		suspendedDatabaseCommits.set(rootStore, PERMANENTLY_SUSPENDED);
-		permanentlySuspendedDatabaseRootCount++;
+		suspendedDatabaseCommits.delete(rootStore);
+		(rootStore as any)[permanentlySuspended] = true;
 	}
 }
 
@@ -257,8 +254,8 @@ export function suspendDatabaseCommits(rootStores: Iterable<object>): {
 	const roots = [...new Set(rootStores)];
 	const rootSet = new Set(roots);
 	for (const rootStore of roots) {
+		if ((rootStore as any)[permanentlySuspended]) continue;
 		const count = suspendedDatabaseCommits.get(rootStore) ?? 0;
-		if (count === PERMANENTLY_SUSPENDED) continue;
 		if (count === 0) suspendedDatabaseRootCount++;
 		suspendedDatabaseCommits.set(rootStore, count + 1);
 	}
@@ -291,8 +288,8 @@ export function suspendDatabaseCommits(rootStores: Iterable<object>): {
 			if (released) return;
 			released = true;
 			for (const rootStore of roots) {
+				if ((rootStore as any)[permanentlySuspended]) continue;
 				const count = suspendedDatabaseCommits.get(rootStore) ?? 0;
-				if (count === PERMANENTLY_SUSPENDED) continue;
 				if (count <= 1) {
 					suspendedDatabaseCommits.delete(rootStore);
 					suspendedDatabaseRootCount--;

@@ -118,6 +118,24 @@ describe('RocksDB handle release', function () {
 		}
 	});
 
+	it('restores admission when audit cleanup cannot settle before handle teardown', async function () {
+		this.timeout(30000);
+		const databaseName = 'close_audit_cleanup_failure';
+		const rootStore = openRocksDb(databaseName);
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const suspendedBefore = getSuspendedDatabaseRootCount();
+		const stopAuditCleanup = rootStore.auditStore.stopAuditCleanup;
+		rootStore.auditStore.stopAuditCleanup = () => Promise.reject(new Error('audit cleanup failed'));
+
+		await assert.rejects(closeDatabase(databaseName), /audit cleanup failed/);
+
+		assert.strictEqual(databases[databaseName].pkg.primaryStore.rootStore, rootStore);
+		assert.strictEqual(databaseCommitsSuspended(rootStore), false);
+		assert.strictEqual(getSuspendedDatabaseRootCount(), suspendedBefore);
+		rootStore.auditStore.stopAuditCleanup = stopAuditCleanup;
+		await closeDatabase(databaseName);
+	});
+
 	it('a drop-schema preparation event closes the peer database before acknowledging', async function () {
 		this.timeout(30000);
 		const databaseName = 'drop_schema_prepare';

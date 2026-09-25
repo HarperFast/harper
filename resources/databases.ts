@@ -1895,6 +1895,24 @@ export function openBranchDatabase(
 		throw error;
 	}
 	let closing: Promise<void> | undefined;
+	let handleTeardownStarted = false;
+	const unregisterBranch = () => {
+		if (openBranches.get(path) === branch) openBranches.delete(path);
+		releaseBranchIdentity(storeName);
+		rocksdbDatabaseEnvs.delete(path);
+		manageThreads.markBranchStorePath(path, false);
+	};
+	const closeRemainingHandles = () => {
+		let closeFailures: unknown[];
+		try {
+			closeFailures = closeBranchHandles(path, rootStore, openedStores, tables);
+		} finally {
+			unregisterBranch();
+		}
+		if (closeFailures.length) {
+			throw new AggregateError(closeFailures, `Could not close branch database '${databaseName}'`);
+		}
+	};
 	const branch: BranchDatabase = {
 		tables,
 		rootStore,
@@ -1907,31 +1925,34 @@ export function openBranchDatabase(
 			// guard on the handle, not on the registrations: those are keyed by path, and a closed
 			// branch frees its path, so a stale handle would otherwise tear down its successor
 			if (closing) return closing;
+			if (handleTeardownStarted) {
+				const operation = Promise.resolve().then(closeRemainingHandles);
+				const retryable = operation.catch((error) => {
+					if (closing === retryable) closing = undefined;
+					throw error;
+				});
+				closing = retryable;
+				closing.catch(() => {});
+				return closing;
+			}
 			const releaseActivation = suspendDerivedIndexActivation(rootStore);
 			const commitSuspension = suspendDatabaseCommits([rootStore]);
 			const deadline = Date.now() + getDatabaseCommitDrainTimeoutMilliseconds();
 			let closed = false;
-			let handleCloseStarted = false;
 			const operation = commitSuspension
 				.waitForDrain({ deadline, databaseName })
 				.then(() => settleTableMaintenance(tables, deadline))
 				.then(() => settleBranchDerivedIndexes(tables))
+				.then(() => (rootStore as any).auditStore?.stopAuditCleanup?.())
 				.then(() => {
-					handleCloseStarted = true;
-					const closeFailures = closeBranchHandles(path, rootStore, openedStores, tables);
-					if (openBranches.get(path) === branch) openBranches.delete(path);
-					releaseBranchIdentity(storeName);
-					rocksdbDatabaseEnvs.delete(path);
-					manageThreads.markBranchStorePath(path, false);
-					if (closeFailures.length) {
-						throw new AggregateError(closeFailures, `Could not close branch database '${databaseName}'`);
-					}
+					handleTeardownStarted = true;
+					closeRemainingHandles();
 					commitSuspension.release();
 					releaseActivation();
 					closed = true;
 				})
 				.finally(() => {
-					if (!closed && !handleCloseStarted) {
+					if (!closed && !handleTeardownStarted) {
 						commitSuspension.release();
 						releaseActivation();
 						resumeTableMaintenance(tables);
@@ -1975,7 +1996,6 @@ function closeBranchHandles(
 ): unknown[] {
 	const reclamationPaths = new Set<string>([path]);
 	const closeFailures: unknown[] = [];
-	(rootStore as any)?.auditStore?.stopAuditCleanup?.();
 	const closeStore = (store: any, description: string) => {
 		if (!store || store.status === 'closed') return;
 		if (store.path) reclamationPaths.add(store.path);
@@ -2393,6 +2413,7 @@ export async function closeDatabase(
 		false,
 		definedRoot ? [definedRoot] : []
 	);
+	let databaseClosed = false;
 	let handleCloseStarted = false;
 	const rootStores = new Set<any>();
 	try {
@@ -2417,8 +2438,8 @@ export async function closeDatabase(
 		// an open root store, tracked only on the defined-database entry rather than any table — include
 		// it so its handles are released too (the Set dedupes it against the per-table root stores above)
 		if (definedRoot) rootStores.add(definedRoot);
-		handleCloseStarted = true;
 		await Promise.all([...rootStores].map((rootStore) => rootStore.auditStore?.stopAuditCleanup?.()));
+		handleCloseStarted = true;
 		const lmdbRootStores = new Set([...rootStores].filter((rootStore) => !(rootStore instanceof RocksDatabase)));
 		for (const tableName in dbTables) {
 			const table: any = dbTables[tableName];
@@ -2464,6 +2485,7 @@ export async function closeDatabase(
 				}
 			}
 		}
+		databaseClosed = true;
 		return true;
 	} finally {
 		const hasOpenRoot = [...rootStores].some((rootStore) => rootStore.status === 'open');
@@ -2472,6 +2494,9 @@ export async function closeDatabase(
 			// Root-local state avoids charging unrelated databases through the active-fence counter.
 			permanentlySuspendDatabaseCommits(rootStores);
 			for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);
+		} else if (!databaseClosed && !handleCloseStarted) {
+			resumeTableMaintenance(dbTables);
+			for (const table of Object.values(dbTables)) refreshDerivedIndexes(table);
 		}
 		releaseDerivedIndexActivation();
 	}
