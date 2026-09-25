@@ -3149,6 +3149,7 @@ export function makeTable(options) {
 				commit: (txnTime, existingEntry, retry, transaction: any) => {
 					write.stagedEntry = undefined; // reset per round; set below once the removal is applied
 					write.superseded = false; // reset per round, as in the update path
+					write.skipped = false;
 					// what a preceding write in this transaction left for this key is what gets removed
 					// from the indices here, not the pre-transaction record (harper#1968)
 					const priorStagedOp = priorStagedWrite(write);
@@ -3165,6 +3166,20 @@ export function makeTable(options) {
 					// write (a concurrent transaction observed on a retry round, or an out-of-order delivery)
 					// that a chained delete must not destroy.
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
+						return;
+					}
+					const removalNodeId = options?.nodeId ?? getThisNodeId(auditStore) ?? 0;
+					const stagedRemoval = { value: undefined, version: txnTime, nodeId: removalNodeId };
+					// re-delivered onto the removal it already made: writing again would append an audit entry
+					// that every peer forwards and re-logs in turn. A retry round reads back this write's own staged
+					// removal, so it repeats the first round's decision.
+					const redelivered = retry
+						? write.redelivered
+						: existingRecord == null && isSameRemoval(removalBefore(write, existingEntry), txnTime, removalNodeId);
+					write.redelivered = redelivered;
+					if (redelivered) {
+						write.stagedEntry = stagedRemoval;
+						write.skipped = true;
 						return;
 					}
 					updateIndices(id, existingRecord, null, transaction && { transaction });
@@ -3190,7 +3205,7 @@ export function makeTable(options) {
 						// Only RocksDB's remove() takes an options object; on LMDB the 2nd arg is ifVersion, and its writes already join the batched txn.
 						removeEntry(primaryStore, existingEntry, isRocksDB && transaction ? { transaction } : undefined);
 					}
-					write.stagedEntry = { value: undefined }; // the key holds no record for the rest of this transaction
+					write.stagedEntry = stagedRemoval; // the key holds no record for the rest of this transaction
 					// the removal supersedes the nearest record an earlier write in this transaction stored
 					// (older ones were already marked by their staged successors), so its saved blobs are
 					// cleaned up post-commit unless its audit entry references them
@@ -4299,7 +4314,7 @@ export function makeTable(options) {
 								logger.error?.('Error getting history entry', auditRecord.localTime, error);
 							}
 						}
-						for (let i = history.length; i > 0;) {
+						for (let i = history.length; i > 0; ) {
 							if (!send(history[--i], true)) return;
 						}
 						// Use the latest record cursor saw (history[0] = most recent due to reverse
@@ -4415,7 +4430,7 @@ export function makeTable(options) {
 								nodeId = auditRecord.previousNodeId;
 							} else break;
 						} while (nextTime > startTime && count !== 0);
-						for (let i = history.length; i > 0;) {
+						for (let i = history.length; i > 0; ) {
 							if (!send(history[--i], true)) return;
 						}
 					}
@@ -4749,10 +4764,12 @@ export function makeTable(options) {
 									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a number`);
 								break;
 							case 'ID':
-								if (!(
-									typeof value === 'string' ||
-									(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
-								))
+								if (
+									!(
+										typeof value === 'string' ||
+										(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
+									)
+								)
 									addError(
 										name,
 										'type',
@@ -5961,6 +5978,23 @@ export function makeTable(options) {
 			return results;
 		}
 		return ids;
+	}
+
+	/**
+	 * What left a delete's key without a record: the nearest earlier write in the transaction that staged
+	 * state, else the stored entry. Only writes marked skipped are passed over, because an invalidate or
+	 * relocate stores a null stub without staging it.
+	 */
+	function removalBefore(write: any, existingEntry: Entry | undefined): Partial<Entry> | undefined {
+		for (let prior = write.priorWrite; prior; prior = prior.priorWrite) {
+			if (prior.stagedEntry) return prior.stagedEntry;
+			if (!prior.skipped) return;
+		}
+		if (!(existingEntry?.metadataFlags & INVALIDATED)) return existingEntry;
+	}
+
+	function isSameRemoval(entry: Partial<Entry> | undefined, txnTime: number, nodeId: number): boolean {
+		return entry != null && entry.value == null && entry.version === txnTime && (entry.nodeId ?? 0) === nodeId;
 	}
 
 	function precedesExistingVersion(txnTime: number, existingEntry: Partial<Entry>, nodeId?: number): number {
