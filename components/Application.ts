@@ -3,18 +3,13 @@ import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUti
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
-<<<<<<< HEAD
 import { withComponentPreparationLock } from './componentPreparationLock.ts';
-import { isThreadRunning, registerProcessGroup, unregisterProcessGroup } from '../server/threads/manageThreads.js';
-=======
-import { ComponentPreparationLockTimeoutError, withComponentPreparationLock } from './componentPreparationLock.ts';
 import {
 	isThreadRunning,
 	isProcessGroupAlive,
 	registerProcessGroup,
 	unregisterProcessGroup,
 } from '../server/threads/manageThreads.js';
->>>>>>> b092e32ba (fix(components): stop polling zombie process groups)
 import type { CredentialReference, ResolvedCredential, ResolvedRegistryCredential } from './secretOperations.ts';
 import {
 	GIT_CREDENTIAL_SOCKET_ENV,
