@@ -62,25 +62,22 @@ async function countFiles(dir: string): Promise<number> {
 }
 
 /**
- * Wait until `countFiles(dir)` reaches `expected`, or has not changed for `minStableMs` (longer than
- * the blob retention window, so a file still waiting out retention is not reported as a leak), or
- * `timeoutMs` runs out.
+ * Wait until `countFiles(dir)` reaches `expected` or `timeoutMs` runs out. No early exit on a plateau:
+ * reclamation of a superseded file can be deferred while a snapshot still sees it, which looks like
+ * a leak until it lands.
  */
 async function waitForFileCount(
 	dir: string,
 	expected: number,
-	{ timeoutMs = 20_000, intervalMs = 250, minStableMs = 6_000 } = {}
-): Promise<{ count: number; timedOut: boolean; waitedMs: number }> {
+	{ timeoutMs = 20_000, intervalMs = 250 } = {}
+): Promise<{ count: number; waitedMs: number }> {
 	const start = Date.now();
 	let count = await countFiles(dir);
-	let stableSince = start;
-	while (count !== expected && Date.now() - start < timeoutMs && Date.now() - stableSince < minStableMs) {
+	while (count !== expected && Date.now() - start < timeoutMs) {
 		await sleep(intervalMs);
-		const next = await countFiles(dir);
-		if (next !== count) stableSince = Date.now();
-		count = next;
+		count = await countFiles(dir);
 	}
-	return { count, timedOut: Date.now() - start >= timeoutMs, waitedMs: Date.now() - start };
+	return { count, waitedMs: Date.now() - start };
 }
 
 for (const engine of ENGINES) {
@@ -186,7 +183,7 @@ for (const engine of ENGINES) {
 				settled.count,
 				1,
 				`expected only D's file after A, B and C were superseded; ${settled.count - 1} superseded ` +
-					`blob file(s) remain after ${settled.waitedMs}ms (${settled.timedOut ? 'timed out' : 'count stopped changing'})`
+					`blob file(s) remain after ${settled.waitedMs}ms`
 			);
 
 			const v = await getJSON('/VerifyBlobChain/?id=blob-1');
@@ -208,21 +205,22 @@ for (const engine of ENGINES) {
 				ok(Date.now() < deadline, 'the chain never staged its first write');
 				await sleep(10);
 			}
-			// commit other writes to the row while the chain's transaction is open between its two writes
-			const writers = await Promise.all(
+			// Not awaited before the release: on RocksDB a writer that conflicts with the chain's write
+			// intent is parked until the chain commits.
+			const writersDone = Promise.all(
 				Array.from({ length: 5 }, (_, i) =>
 					post('/SingleStepWrite/', { id: 'wf-1', newStatus: `WRITER_${i}`, owner: `writer_${i}` })
 				)
 			);
+			while (!String((await getJSON('/VerifyWorkflow/?id=wf-1')).status).startsWith('WRITER_')) {
+				ok(Date.now() < deadline, 'no writer committed while the chain was open');
+				await sleep(10);
+			}
 			strictEqual((await postOk('/TwoStepRelease/', { id: 'wf-1' })).released, true);
-			const chainResult = await chain;
+			const [chainResult, writers] = await Promise.all([chain, writersDone]);
 			const results = JSON.stringify({ chain: chainResult, writers });
 
 			deepStrictEqual(chainResult, { status: 200, body: { won: true, released: true } }, results);
-			ok(
-				writers.some((w) => w.status === 200 && w.body?.won === true),
-				`no writer committed while the chain was open: ${results}`
-			);
 			ok(
 				writers.every((w) => w.body?.seenStatus !== 'LOCKED'),
 				`a writer read the chain's uncommitted LOCKED: ${results}`

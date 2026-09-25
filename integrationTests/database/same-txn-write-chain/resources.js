@@ -101,12 +101,10 @@ export class WorkflowSeed extends Resource {
 	}
 }
 
-// In-process handshake between TwoStepWrite and the test, so the spec (not a sleep) decides when the
-// chain's second write runs. Needs every request on one worker thread.
+// TwoStepWrite's release handles, shared with TwoStepState/TwoStepRelease: every request must reach
+// one worker thread.
 const pendingChains = new Map();
 
-// If the row is A: write LOCKED, hold the transaction open until TwoStepRelease (or maxWaitMs), then
-// write DONE.
 export class TwoStepWrite extends Resource {
 	static loadAsInstance = false;
 	async post(target, body) {
@@ -143,7 +141,6 @@ export class TwoStepRelease extends Resource {
 	}
 }
 
-// If the row is A, move it to newStatus.
 export class SingleStepWrite extends Resource {
 	static loadAsInstance = false;
 	async post(target, body) {
