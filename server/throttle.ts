@@ -13,7 +13,6 @@ let averageEventCycleTime = 0;
  * @param fn
  * @param onLimitExceeded
  * @param maxQueueTimeLimit
- * @param name
  */
 export function throttle(
 	fn: (...args: any) => any,
