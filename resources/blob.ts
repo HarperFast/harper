@@ -2646,6 +2646,10 @@ export async function deleteRootBlobPathsForDB(store: RootDatabase): Promise<voi
 	}
 }
 
+export async function deleteBlobPathsForDatabaseName(databaseName: string): Promise<void> {
+	await Promise.all(getBlobPathsForDatabaseName(databaseName).map((path) => rimrafSteadily(path)));
+}
+
 /**
  * recursively delete a directory and all of its contents, but do it one at a time, so that we don't run out of memory and hog resources
  * @param path

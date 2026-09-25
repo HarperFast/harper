@@ -16,8 +16,12 @@ const { tmpdir } = require('node:os');
 const { tryFileLock, fileLockRelease } = require('@harperfast/rocksdb-js');
 const {
 	beginRestore,
+	beginDatabaseDrop,
 	completeRestore,
+	completeDatabaseDrop,
 	abandonRestore,
+	abandonDatabaseDrop,
+	cancelDatabaseDrop,
 	acquireRestoreLock,
 	releaseRestoreLock,
 	clearRestoreMarker,
@@ -25,8 +29,10 @@ const {
 	restoreMarkerPresent,
 	restoreLockPath,
 	restoringMarkerPath,
+	droppingMarkerPath,
 	restoreMetaDir,
 	scanBlockedRestores,
+	scanBlockedDatabaseDrops,
 	RESTORE_META_DIR,
 } = require('#src/dataLayer/restoreMarker');
 
@@ -332,6 +338,63 @@ describe('restoreMarker', function () {
 
 		it('returns [] when there is no .restore directory', function () {
 			assert.deepStrictEqual(scanBlockedRestores(join(tempDir, 'no-such-root')), []);
+		});
+	});
+
+	describe('database drop markers', function () {
+		it('blocks each physical root until the whole drop completes', function () {
+			const a = join(tempDir, 'alpha');
+			const b = join(tempDir, 'beta');
+			mkdirSync(a);
+			mkdirSync(b);
+			const locks = [beginDatabaseDrop(a, 'catalog'), beginDatabaseDrop(b, 'catalog')];
+			try {
+				assert.deepStrictEqual(
+					scanBlockedDatabaseDrops(tempDir)
+						.map(({ rootPath, databaseName }) => [basename(rootPath), databaseName])
+						.sort(),
+					[
+						['alpha', 'catalog'],
+						['beta', 'catalog'],
+					]
+				);
+			} finally {
+				for (const lock of locks) completeDatabaseDrop(lock);
+			}
+			assert.deepStrictEqual(scanBlockedDatabaseDrops(tempDir), []);
+		});
+
+		it('retains an interrupted drop marker and rejects restore', function () {
+			abandonDatabaseDrop(beginDatabaseDrop(dbPath, 'catalog'));
+			assert.ok(existsSync(droppingMarkerPath(dbPath)));
+			assert.throws(
+				() => beginRestore(dbPath),
+				(error) => error.statusCode === 409 && /incomplete drop/.test(error.message)
+			);
+			const retry = beginDatabaseDrop(dbPath, 'catalog');
+			assert.strictEqual(retry.preexisting, true);
+			completeDatabaseDrop(retry);
+		});
+
+		it('cancels a new marker but preserves a marker owned by a retry', function () {
+			const first = beginDatabaseDrop(dbPath, 'catalog');
+			cancelDatabaseDrop(first);
+			assert.ok(!existsSync(droppingMarkerPath(dbPath)));
+
+			abandonDatabaseDrop(beginDatabaseDrop(dbPath, 'catalog'));
+			const retry = beginDatabaseDrop(dbPath, 'catalog');
+			cancelDatabaseDrop(retry);
+			assert.ok(existsSync(droppingMarkerPath(dbPath)));
+			completeDatabaseDrop(beginDatabaseDrop(dbPath, 'catalog'));
+		});
+
+		it('blocks an existing root without trusting corrupt marker contents', function () {
+			mkdirSync(dbPath);
+			mkdirSync(restoreMetaDir(dbPath));
+			writeFileSync(droppingMarkerPath(dbPath), 'corrupt');
+			assert.deepStrictEqual(scanBlockedDatabaseDrops(tempDir), [
+				{ rootPath: dbPath, databaseName: undefined, markerPath: droppingMarkerPath(dbPath) },
+			]);
 		});
 	});
 });

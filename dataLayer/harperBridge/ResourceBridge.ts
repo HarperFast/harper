@@ -213,7 +213,7 @@ export class ResourceBridge extends BridgeMethods {
 		claimDatabaseDropPreparations(rootPaths, preparationId, threadId, dropSchemaObj.schema);
 		try {
 			await signalling.signalSchemaChangeToPeers(preparation);
-			await dropDatabase(dropSchemaObj.schema);
+			await dropDatabase(dropSchemaObj.schema, rootPaths);
 		} finally {
 			// Match preparation's two rounds so a worker that inherited the fence while joining the
 			// topology cannot miss the completion between its workerData snapshot and port registration.

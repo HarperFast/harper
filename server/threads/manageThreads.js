@@ -1092,7 +1092,7 @@ function broadcastWithAcknowledgement(
 			}
 			if (strict && failures.length > 0) {
 				const error = new AggregateError(failures, 'A worker could not prepare for the schema change');
-				for (const property of ['name', 'code', 'statusCode']) {
+				for (const property of ['name', 'code', 'statusCode', 'retryable']) {
 					const value = failures[0][property];
 					if (property === 'name' && value === 'Error') continue;
 					if (value != null && failures.every((failure) => failure[property] === value)) error[property] = value;
@@ -1114,7 +1114,7 @@ function broadcastWithAcknowledgement(
 							`Worker ${port.threadId} could not prepare for the schema change: ${response.error.message ?? response.error}`
 						);
 						error.cause = response.error;
-						for (const property of ['name', 'code', 'statusCode']) {
+						for (const property of ['name', 'code', 'statusCode', 'retryable']) {
 							if (response.error[property] != null) error[property] = response.error[property];
 						}
 						failures.push(error);

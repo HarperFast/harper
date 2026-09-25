@@ -2,13 +2,14 @@
 
 require('../testUtils');
 const assert = require('node:assert');
-const { mkdirSync } = require('node:fs');
+const { existsSync, mkdirSync } = require('node:fs');
 const { join } = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 const { dropSchema } = require('#src/dataLayer/schema');
-const { registryStatus } = require('@harperfast/rocksdb-js');
+const { registryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
+const { abandonDatabaseDrop, beginDatabaseDrop, scanBlockedDatabaseDrops } = require('#src/dataLayer/restoreMarker');
 const {
 	table,
 	database,
@@ -317,6 +318,67 @@ describe('shared root-store database identity', function () {
 			await completeDatabaseDropPreparation('physicalalias', preparationId, rootPaths);
 		}
 		assert.ok(database({ database: 'latealias' }));
+	});
+
+	it('keeps every root blocked after a partial multi-root drop and completes on retry', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const storageRoot = join(testRoot, 'alias-drop-recovery');
+		await createPhysicalStore(storageRoot, 'physicala', 'TableA');
+		await createPhysicalStore(storageRoot, 'physicalb', 'TableB');
+		loadAliases(storageRoot, { configured: ['configuredalias'] });
+		loadedAliases = ['physicala', 'physicalb', 'configuredalias'];
+		const rootPaths = [
+			getDatabases().physicala.TableA.primaryStore.rootStore.path,
+			getDatabases().physicalb.TableB.primaryStore.rootStore.path,
+		];
+		const originalDestroy = RocksDatabase.prototype.destroy;
+		let destroyCount = 0;
+		RocksDatabase.prototype.destroy = function () {
+			if (destroyCount++ === 1) throw new Error('simulated second-root destroy failure');
+			return originalDestroy.call(this);
+		};
+		try {
+			await assert.rejects(
+				dropSchema({ operation: terms.OPERATIONS_ENUM.DROP_SCHEMA, schema: 'configuredalias' }),
+				/simulated second-root destroy failure/
+			);
+		} finally {
+			RocksDatabase.prototype.destroy = originalDestroy;
+		}
+
+		resetDatabases();
+		assert.strictEqual(databases.configuredalias, undefined);
+		assert.strictEqual(databases.physicala, undefined);
+		assert.strictEqual(databases.physicalb, undefined);
+		assert.strictEqual(scanBlockedDatabaseDrops(storageRoot).length, 2);
+
+		await dropSchema({ operation: terms.OPERATIONS_ENUM.DROP_SCHEMA, schema: 'configuredalias' });
+		loadedAliases = [];
+		assert.deepStrictEqual(scanBlockedDatabaseDrops(storageRoot), []);
+		for (const rootPath of rootPaths) assert.strictEqual(existsSync(rootPath), false);
+	});
+
+	it('completes a drop whose marker publication was interrupted before deletion', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const storageRoot = join(testRoot, 'alias-drop-marker-recovery');
+		await createPhysicalStore(storageRoot, 'physicala', 'TableA');
+		await createPhysicalStore(storageRoot, 'physicalb', 'TableB');
+		loadAliases(storageRoot, { configured: ['configuredalias'] });
+		loadedAliases = ['physicala', 'physicalb', 'configuredalias'];
+		const rootPaths = [
+			getDatabases().physicala.TableA.primaryStore.rootStore.path,
+			getDatabases().physicalb.TableB.primaryStore.rootStore.path,
+		];
+		await closeAliases(loadedAliases);
+		abandonDatabaseDrop(beginDatabaseDrop(rootPaths[0], 'configuredalias'));
+		resetDatabases();
+		assert.strictEqual(databases.physicala, undefined);
+		assert.ok(databases.physicalb);
+
+		await dropSchema({ operation: terms.OPERATIONS_ENUM.DROP_SCHEMA, schema: 'configuredalias' });
+		loadedAliases = [];
+		assert.deepStrictEqual(scanBlockedDatabaseDrops(storageRoot), []);
+		for (const rootPath of rootPaths) assert.strictEqual(existsSync(rootPath), false);
 	});
 
 	it('prunes both aliases on the originating thread and another worker after the shared store is dropped', async function () {

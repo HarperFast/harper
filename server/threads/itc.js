@@ -33,6 +33,7 @@ onMessageFromWorkers(async (event, sender) => {
 			message: caught?.message ?? String(caught),
 			code: caught?.code,
 			statusCode: caught?.statusCode,
+			retryable: caught?.retryable,
 		};
 	}
 	if (event.requestId && sender)

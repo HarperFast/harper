@@ -109,11 +109,12 @@ Three non-obvious mechanics keep that safe:
   exited job worker leaves no residual handle to be mistaken for a live holder.
 - **`dropDatabase` and `restore_backup` serialize on the same lock, not a check-then-act probe.**
   A drop's `destroy()` interleaving with a restore's purge-and-copy on the same directory would gut
-  a "successful" restore (or vice versa). `dropDatabase` therefore _acquires_ the restore lock
-  (`acquireRestoreLock`, marker-less) for each RocksDB root store and holds it across the whole drop,
-  releasing in a `finally`; a restore in progress makes the acquire fail with 409, and a leftover
-  incomplete-restore marker (lock free, detected via `restoreMarkerPresent`, which — unlike
-  `checkRestoreState` — is safe while this thread holds the lock) is refused rather than dropped over.
+  a "successful" restore (or vice versa). `dropDatabase` takes the restore lock for every RocksDB or
+  LMDB root and publishes a positional `.dropping` marker beside each root before deleting any of
+  them. A restore in progress makes the acquire fail with 409; `beginRestore` likewise refuses a
+  surviving drop marker. Markers are removed only after every root and blob path has been removed.
+  Startup scans and cold opens reject marked roots, and retrying `drop_database` completes the
+  deletion from the markers even when the in-memory catalog is gone.
   `database()`'s on-demand open still uses the read-only `throwIfBlockedByRestore` (a
   `create_table`/`create_schema` must not resurrect a half-purged directory as a fresh empty DB), but
   the destructive drop path now uses the exclusive lock so the race is closed, not merely narrowed.

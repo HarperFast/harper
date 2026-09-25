@@ -743,6 +743,8 @@ export function makeTable(options) {
 		fullTextIndexGenerations = Object.create(null),
 		fullTextIndexRetirements = [],
 	} = options;
+	const tableRootStore = primaryStore.rootStore;
+	const tableRootPath = tableRootStore.path;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
 	// an isolated application's schema was declared here. Hydrating persisted metadata does not set it:
@@ -975,7 +977,7 @@ export function makeTable(options) {
 	// dropping one would advance the source cursor past a write that never landed. Database teardown is
 	// different: its submission barrier rejects every producer before the underlying store is closed.
 	function assertDerivedIndexAdmission(options: any, transaction: any) {
-		if (databaseDropPrepared(primaryStore.rootStore.path) || databaseCommitsSuspended(primaryStore.rootStore))
+		if (databaseDropPrepared(tableRootPath) || databaseCommitsSuspended(tableRootStore))
 			throw new DatabaseClosingError(databaseName, !transaction?.root && !transaction?.snapshotFree);
 		if (options?.isNotification || transaction?.sourceApply || transaction?.isReplay) return;
 		const reason = derivedIndexWriteRejection(auditStore, tableId);
@@ -1743,7 +1745,7 @@ export function makeTable(options) {
 			request: Context,
 			resourceOptions?: any
 		): Promise<TableResource<Record>> | TableResource<Record> {
-			if (databaseDropPrepared(primaryStore.rootStore.path) || databaseCommitsSuspended(primaryStore.rootStore))
+			if (databaseDropPrepared(tableRootPath) || databaseCommitsSuspended(tableRootStore))
 				throw new DatabaseClosingError(
 					databaseName,
 					!(request as any)?.transaction?.root && !(request as any)?.transaction?.snapshotFree
@@ -7340,7 +7342,7 @@ export function makeTable(options) {
 			} while (count < 1000 && nextVersion);
 			return history.reverse();
 		}
-		static clear() {
+		static async clear() {
 			const rootStore = primaryStore.rootStore;
 			const assertNoFullTextDeclaration = () => {
 				const namedPrimaryDescriptor = (dbisDb as any).getSync(`${tableName}/${primaryKey}`);

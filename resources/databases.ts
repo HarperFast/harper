@@ -14,7 +14,7 @@ import {
 	realpathSync,
 	unlinkSync,
 } from 'node:fs';
-import { unlink } from 'node:fs/promises';
+import { rm, unlink } from 'node:fs/promises';
 import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
@@ -56,6 +56,7 @@ import {
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
 import {
 	databasePaths,
+	deleteBlobPathsForDatabaseName,
 	deleteBlobAndWait,
 	deleteBlobsInObject,
 	deleteRootBlobPathsForDB,
@@ -66,7 +67,7 @@ import { commonValidators, schemaRegex } from '../validation/common_validators.t
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
 import { planeFilePathFor, planeStalePathFor } from './indexes/hnswPlaneBinding.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
-import { RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
+import { registryStatus, RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
 import {
 	databaseCommitsSuspended,
@@ -107,13 +108,16 @@ import {
 	serializeFullTextState,
 } from './fullTextSchemaLifecycle.ts';
 import {
-	acquireRestoreLock,
+	abandonDatabaseDrop,
+	beginDatabaseDrop,
+	cancelDatabaseDrop,
 	checkRestoreState,
-	releaseRestoreLock,
-	restoreMarkerPresent,
+	completeDatabaseDrop,
+	databaseDropMarkerPresent,
+	scanBlockedDatabaseDrops,
 	scanBlockedRestores,
 	RESTORE_META_DIR,
-	type RestoreLock,
+	type DatabaseDropLock,
 } from '../dataLayer/restoreMarker.ts';
 import {
 	claimDatabaseDropPreparations,
@@ -715,6 +719,7 @@ export function getDatabases(): Databases {
 		// TODO: Load any databases defined with explicit storage paths from the config
 		const entries = readdirSync(databasePath, { withFileTypes: true });
 		const blockedByRestore = databasesBlockedByRestore(databasePath);
+		const blockedByDrop = databaseRootsBlockedByDrop(databasePath);
 		for (const databaseEntry of entries) {
 			// in-progress migration staging dirs are not databases until atomically renamed into place
 			if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue;
@@ -727,6 +732,7 @@ export function getDatabases(): Databases {
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dbPath = join(databasePath, databaseEntry.name);
 			if (databaseDropPrepared(dbPath)) continue;
+			if (blockedByDrop.has(dbPath)) continue;
 			if (blockedByRestore.has(dbName)) continue;
 			if (isOpenBranchPath(dbPath)) continue;
 
@@ -764,10 +770,12 @@ export function getDatabases(): Databases {
 			if (!schemaEntry.isFile()) {
 				const schemaPath = join(baseSchemaPath, schemaEntry.name);
 				const schemaAuditPath = join(getTransactionAuditStoreBasePath(), schemaEntry.name);
+				const blockedByDrop = databaseRootsBlockedByDrop(schemaPath);
 				for (const tableEntry of readdirSync(schemaPath, { withFileTypes: true })) {
 					if (tableEntry.isFile() && extname(tableEntry.name).toLowerCase() === '.mdb') {
 						const tablePath = join(schemaPath, tableEntry.name);
 						if (databaseDropPrepared(tablePath)) continue;
+						if (blockedByDrop.has(tablePath)) continue;
 						const auditPath = join(schemaAuditPath, tableEntry.name);
 						readMetaDb(tablePath, basename(tableEntry.name, '.mdb'), schemaEntry.name, auditPath, true);
 					}
@@ -783,6 +791,7 @@ export function getDatabases(): Databases {
 			if (existsSync(databasePath)) {
 				const entries = readdirSync(databasePath, { withFileTypes: true });
 				const blockedByRestore = databasesBlockedByRestore(databasePath);
+				const blockedByDrop = databaseRootsBlockedByDrop(databasePath);
 				for (const databaseEntry of entries) {
 					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
 					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
@@ -790,6 +799,7 @@ export function getDatabases(): Databases {
 					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
 					const dbPath = join(databasePath, databaseEntry.name);
 					if (databaseDropPrepared(dbPath)) continue;
+					if (blockedByDrop.has(dbPath)) continue;
 					if (isOpenBranchPath(dbPath)) continue;
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {
 						readMetaDb(dbPath, basename(databaseEntry.name, '.mdb'), dbName);
@@ -816,7 +826,7 @@ export function getDatabases(): Databases {
 				for (const tableName in tableConfigs) {
 					const tableConfig = tableConfigs[tableName];
 					const tablePath = join(tableConfig.path, basename(tableName + '.mdb'));
-					if (!databaseDropPrepared(tablePath) && existsSync(tablePath)) {
+					if (!databaseDropPrepared(tablePath) && !databaseDropMarkerPresent(tablePath) && existsSync(tablePath)) {
 						readMetaDb(tablePath, tableName, dbName, null, true);
 					}
 				}
@@ -1053,6 +1063,17 @@ function databasesBlockedByRestore(databasePath: string): Set<string> {
 			);
 			blocked.add(dbName);
 		}
+	}
+	return blocked;
+}
+
+function databaseRootsBlockedByDrop(databasePath: string): Set<string> {
+	const blocked = new Set<string>();
+	for (const drop of scanBlockedDatabaseDrops(databasePath)) {
+		logger.error(
+			`Incomplete drop of database '${drop.databaseName ?? basename(drop.rootPath)}' detected; not loading ${drop.rootPath} — retry drop_database to recover (${drop.markerPath})`
+		);
+		blocked.add(drop.rootPath);
 	}
 	return blocked;
 }
@@ -2188,8 +2209,18 @@ function openDatabaseRoot(
 	}
 	const tablePath = tableName && databaseConfig[databaseName]?.tables?.[tableName]?.path;
 	const databasePath = resolveDatabaseStorageRoot(databaseName, tableName);
-	if (!allowPreparedDrop && databaseConfig[databaseName]?.path && databaseDropPreparedWithin(databasePath))
-		throw new DatabaseClosingError(databaseName);
+	// A configured path is a scan root, not an exact database path, so an unresolved alias can
+	// target any child store. Keep first-open fenced until the destructive operation completes.
+	if (!allowPreparedDrop && databaseConfig[databaseName]?.path) {
+		if (databaseDropPreparedWithin(databasePath)) throw new DatabaseClosingError(databaseName);
+		if (scanBlockedDatabaseDrops(databasePath).length > 0) {
+			const error: any = new Error(
+				`Database '${databaseName}' shares a configured path with an incomplete drop; retry drop_database to recover it`
+			);
+			error.statusCode = 409;
+			throw error;
+		}
+	}
 
 	let rootStore: RootDatabaseKind;
 	const useRocksdb = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb';
@@ -2197,6 +2228,7 @@ function openDatabaseRoot(
 		? join(databasePath, tablePath ? tableName : databaseName)
 		: join(databasePath, `${tablePath ? tableName : databaseName}.mdb`);
 	if (!allowPreparedDrop && databaseDropPrepared(path)) throw new DatabaseClosingError(databaseName);
+	if (!allowPreparedDrop) throwIfBlockedByRestore(path, databaseName);
 	ensureDB(databaseName);
 	definedDatabase = definedDatabases.get(databaseName);
 	if (useRocksdb) {
@@ -2213,7 +2245,6 @@ function openDatabaseRoot(
 			// this on-demand open (create_table/create_database and friends) must not resurrect a
 			// database that a restore is rewriting (or left half-purged) — the scan-time restore
 			// checks don't cover this path
-			throwIfBlockedByRestore(path, databaseName);
 			rootStore = openRocksDatabase(path, {
 				disableWAL: false,
 				enableStats: true,
@@ -2236,6 +2267,13 @@ function openDatabaseRoot(
 	return rootStore;
 }
 function throwIfBlockedByRestore(dbPath: string, databaseName: string): void {
+	if (databaseDropMarkerPresent(dbPath)) {
+		const error: any = new Error(
+			`Database '${databaseName}' has an incomplete drop; retry drop_database to recover it`
+		);
+		error.statusCode = 409;
+		throw error;
+	}
 	const restoreState = checkRestoreState(dbPath);
 	if (restoreState !== 'clear') {
 		const error: any = new Error(
@@ -2248,52 +2286,97 @@ function throwIfBlockedByRestore(dbPath: string, databaseName: string): void {
 	}
 }
 
-/**
- * Take the per-database restore lock for a drop, refusing (409) if a restore holds it (in-progress)
- * or a crashed restore left a marker (incomplete). Pushes the acquired lock onto `held` so the
- * caller releases it after the drop. On refusal, releases anything already held and throws.
- *
- * The lock is not reentrant within a process, so a path already in `held` must be skipped — every
- * table in a RocksDB database shares one root store (and one lock path), and re-acquiring it in the
- * same drop would spuriously 409 on the second table.
- */
-function lockDatabaseForDrop(dbPath: string, databaseName: string, held: RestoreLock[]): void {
-	if (held.some((h) => h.dbPath === dbPath)) return;
-	let lock: RestoreLock;
+function lockDatabaseForDrop(dbPath: string, databaseName: string, held: DatabaseDropLock[]): void {
+	if (held.some((lock) => lock.dbPath === dbPath)) return;
 	try {
-		lock = acquireRestoreLock(dbPath);
+		held.push(beginDatabaseDrop(dbPath, databaseName));
 	} catch (error) {
-		for (const h of held) releaseRestoreLock(h);
-		throw error; // 409: a restore is in progress and holds the lock
-	}
-	// We now hold the lock, so no restore is active. A surviving marker is therefore debris from a
-	// crashed restore (incomplete) — refuse rather than delete a directory that still needs recovery.
-	if (restoreMarkerPresent(dbPath)) {
-		releaseRestoreLock(lock);
-		for (const h of held) releaseRestoreLock(h);
-		const error: any = new Error(
-			`Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`
-		);
-		error.statusCode = 409;
+		const cleanupFailures = [];
+		for (const lock of held.splice(0)) {
+			try {
+				cancelDatabaseDrop(lock);
+			} catch (cleanupError) {
+				cleanupFailures.push(cleanupError);
+			}
+		}
+		if (cleanupFailures.length > 0)
+			throw new AggregateError([error, ...cleanupFailures], `Could not cancel database drop '${databaseName}'`);
 		throw error;
 	}
-	held.push(lock);
+}
+
+function releaseDatabaseDropLocks(locks: DatabaseDropLock[], retainMarkers: boolean): void {
+	const failures = [];
+	while (locks.length > 0) {
+		try {
+			const lock = locks.shift()!;
+			if (retainMarkers) abandonDatabaseDrop(lock);
+			else cancelDatabaseDrop(lock);
+		} catch (error) {
+			failures.push(error);
+		}
+	}
+	if (failures.length > 0) throw new AggregateError(failures, 'Could not release database drop locks');
+}
+
+const incompleteDatabaseDropStores = new Map<string, RootDatabaseKind>();
+
+async function destroyIncompleteDatabaseRoot(rootPath: string): Promise<void> {
+	const rootStore = incompleteDatabaseDropStores.get(rootPath);
+	if (!rootStore || !existsSync(rootPath)) {
+		incompleteDatabaseDropStores.delete(rootPath);
+		await rm(rootPath, { recursive: true, force: true });
+		return;
+	}
+	if (rootStore instanceof RocksDatabase) {
+		if (rootStore.status === 'open') {
+			await (rootStore as any).dbisDb?.close?.();
+			await rootStore.close();
+		}
+		await rootStore.destroy();
+	} else {
+		if (rootStore.status === 'open') await rootStore.close();
+		await rm(rootPath, { force: true });
+	}
+	incompleteDatabaseDropStores.delete(rootPath);
+}
+
+async function resumeIncompleteDatabaseDrop(databaseName: string, rootPaths: Iterable<string>): Promise<void> {
+	const dropLocks: DatabaseDropLock[] = [];
+	let destructiveWorkStarted = false;
+	try {
+		const paths = new Set(rootPaths);
+		if (
+			registryStatus().some(
+				(entry) => paths.has(entry.path) && entry.refCount > 0 && !incompleteDatabaseDropStores.has(entry.path)
+			)
+		)
+			throw new DatabaseClosingError(databaseName);
+		for (const rootPath of paths) lockDatabaseForDrop(rootPath, databaseName, dropLocks);
+		destructiveWorkStarted = true;
+		for (const lock of dropLocks) await destroyIncompleteDatabaseRoot(lock.dbPath);
+		await deleteBlobPathsForDatabaseName(databaseName);
+		while (dropLocks.length > 0) completeDatabaseDrop(dropLocks.shift()!);
+	} finally {
+		releaseDatabaseDropLocks(dropLocks, destructiveWorkStarted);
+	}
 }
 
 /**
  * Delete the database
  * @param databaseName
  */
-export async function dropDatabase(databaseName) {
-	if (!databases[databaseName]) throw new Error('Database does not exist');
+export async function dropDatabase(databaseName, requestedRootPaths: Iterable<string> = []) {
+	if (!databases[databaseName]) {
+		const rootPaths = new Set(requestedRootPaths);
+		if (rootPaths.size === 0) throw new Error('Database does not exist');
+		return resumeIncompleteDatabaseDrop(databaseName, rootPaths);
+	}
 	const { databaseNames, dbTables, rootStores } = collectDatabaseGraph(databaseName);
 
-	// Hold the per-database restore lock across the entire drop so its file deletion can never
-	// interleave with a restore's purge-and-copy on the same directory — a destroy landing after a
-	// restore's copy would gut a "successful" restore, and vice versa. Restore takes the same lock
-	// (before writing its marker), so both operations serialize on this one primitive rather than on
-	// a check-then-act marker probe. Released in the finally below.
-	const restoreLocks: RestoreLock[] = [];
+	// All root markers become durable before the first destructive step. The shared restore locks
+	// also keep restore and drop from mutating the same path concurrently.
+	const dropLocks: DatabaseDropLock[] = [];
 	let releaseDerivedIndexActivation: (() => void) | undefined;
 	let destructiveWorkStarted = false;
 	try {
@@ -2303,9 +2386,8 @@ export async function dropDatabase(databaseName) {
 		if (rootStores.size === 0) {
 			rootStores.add(openDatabaseRoot({ database: databaseName }, { allowPreparedDrop: true }));
 		}
-		for (const rootStore of rootStores) {
-			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
-		}
+		for (const rootPath of new Set([...requestedRootPaths, ...[...rootStores].map((rootStore) => rootStore.path)]))
+			lockDatabaseForDrop(rootPath, databaseName, dropLocks);
 		releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, true, rootStores);
 		destructiveWorkStarted = true;
 		for (const rootStore of rootStores) {
@@ -2355,18 +2437,27 @@ export async function dropDatabase(databaseName) {
 				}
 			}
 		}
+		const openedRootPaths = new Set([...rootStores].map((rootStore) => rootStore.path));
+		const detachedRootPaths = dropLocks.map((lock) => lock.dbPath).filter((rootPath) => !openedRootPaths.has(rootPath));
+		if (registryStatus().some((entry) => detachedRootPaths.includes(entry.path) && entry.refCount > 0))
+			throw new DatabaseClosingError(databaseName);
+		for (const rootPath of detachedRootPaths) await rm(rootPath, { recursive: true, force: true });
 
 		for (const rootStore of rootStores) await deleteRootBlobPathsForDB(rootStore);
+		while (dropLocks.length > 0) completeDatabaseDrop(dropLocks.shift()!);
 	} finally {
 		if (destructiveWorkStarted) {
 			for (const rootStore of rootStores) databasePaths.delete(rootStore as RootDatabase);
+			for (const rootStore of rootStores) {
+				if (databaseDropMarkerPresent(rootStore.path)) incompleteDatabaseDropStores.set(rootStore.path, rootStore);
+			}
 			if ([...rootStores].some((rootStore) => rootStore.status === 'open')) {
 				permanentlySuspendDatabaseCommits(rootStores);
 				for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);
 			}
 		}
 		releaseDerivedIndexActivation?.();
-		for (const lock of restoreLocks) releaseRestoreLock(lock);
+		releaseDatabaseDropLocks(dropLocks, destructiveWorkStarted);
 	}
 }
 
@@ -2382,14 +2473,45 @@ export async function dropDatabase(databaseName) {
  */
 const databaseDropPreparationTasks = new Map<string, { id: string; task: Promise<void>; rootPaths: string[] }>();
 
+function incompleteDatabaseDropPaths(databaseName: string): string[] {
+	const directories = new Set<string>();
+	try {
+		directories.add(resolveDatabaseStorageRoot(databaseName));
+	} catch {
+		// A configured table path below may still contain the durable marker.
+	}
+	directories.add(join(getBaseSchemaPath(), databaseName));
+	const databaseConfig = (envGet(CONFIG_PARAMS.DATABASES) || {})[databaseName];
+	if (databaseConfig?.path) directories.add(databaseConfig.path);
+	for (const tableConfig of Object.values(databaseConfig?.tables || {}) as any[]) {
+		if (tableConfig?.path) directories.add(tableConfig.path);
+	}
+	const rootPaths = new Set<string>();
+	for (const directory of directories) {
+		for (const drop of scanBlockedDatabaseDrops(directory)) {
+			if (drop.databaseName === databaseName) rootPaths.add(drop.rootPath);
+		}
+	}
+	return [...rootPaths];
+}
+
+export function databaseDropRecoveryPending(databaseName: string): boolean {
+	return incompleteDatabaseDropPaths(databaseName).length > 0;
+}
+
 export function databaseDropPreparationTargets(databaseName: string): {
 	rootPaths: string[];
 } {
 	getDatabases();
-	if (!databases[databaseName]) throw new Error(`Database '${databaseName}' does not exist`);
+	const incompleteRootPaths = incompleteDatabaseDropPaths(databaseName);
+	if (!databases[databaseName]) {
+		if (incompleteRootPaths.length > 0) return { rootPaths: incompleteRootPaths };
+		throw new Error(`Database '${databaseName}' does not exist`);
+	}
 	const graph = collectDatabaseGraph(databaseName);
+	if (graph.rootStores.size === 0) graph.rootStores.add(openDatabaseRoot({ database: databaseName }));
 	return {
-		rootPaths: [...graph.rootStores].map((rootStore) => rootStore.path),
+		rootPaths: [...new Set([...incompleteRootPaths, ...[...graph.rootStores].map((rootStore) => rootStore.path)])],
 	};
 }
 

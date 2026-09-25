@@ -184,6 +184,20 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		});
 	});
 
+	it('preserves retryable worker failures on a strict broadcast', async function () {
+		const worker = await startFixtureWorker('reject-retryable');
+		started.push(worker);
+		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000), (error) => {
+			assert(error instanceof AggregateError);
+			assert.strictEqual(error.name, 'DatabaseDrainTimeoutError');
+			assert.strictEqual(error.code, 'DATABASE_DRAIN_TIMEOUT');
+			assert.strictEqual(error.statusCode, 503);
+			assert.strictEqual(error.retryable, true);
+			assert.strictEqual(error.errors[0].retryable, true);
+			return true;
+		});
+	});
+
 	it('rejects a strict broadcast when a worker exits before acknowledging', async function () {
 		const worker = await startFixtureWorker('exit');
 		started.push(worker);

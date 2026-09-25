@@ -234,7 +234,7 @@ describe('@fullText derived-index activation', () => {
 		await waitFor(() => state.documents.size === 1 && state.payload, 30_000);
 		const document = [...state.documents.values()][0];
 		assert.deepStrictEqual({ ...document.fields }, { title: 'Trail shoe', tags: ['trail', 'waterproof'] });
-		assert.throws(() => Product.clear(), /whole-table invalidation is crash-safe/);
+		await assert.rejects(Product.clear(), /whole-table invalidation is crash-safe/);
 	});
 
 	rocksOnly('keeps quarantined full-text metadata inert during clear and drop', async () => {
@@ -472,7 +472,7 @@ describe('@fullText derived-index activation', () => {
 		Product = undefined;
 	});
 
-	rocksOnly('rejects clear when a stale table view misses a durable full-text declaration', () => {
+	rocksOnly('rejects clear when a stale table view misses a durable full-text declaration', async () => {
 		const database = `fulltext-stale-clear-${Date.now()}`;
 		const attributes = [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
@@ -490,7 +490,7 @@ describe('@fullText derived-index activation', () => {
 		const shadowPrimaryKey = `${Product.tableName}/${Product.primaryKey}`;
 		Product.dbisDB.putSync(shadowPrimaryKey, { name: Product.primaryKey, type: 'String' });
 
-		assert.throws(() => Product.clear(), /whole-table invalidation is crash-safe/);
+		await assert.rejects(Product.clear(), /whole-table invalidation is crash-safe/);
 
 		Product.dbisDB.removeSync(shadowPrimaryKey);
 		Product = table({ database, table: 'Product', audit: true, attributes, fullTextIndexes: [] });

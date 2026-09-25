@@ -14,7 +14,7 @@ import { handleHDBError, ClientError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 
 import { SchemaEventMsg } from '../server/threads/itc.js';
-import { getDatabases, dropTableMeta, isBranchIdentity } from '../resources/databases.ts';
+import { databaseDropRecoveryPending, getDatabases, dropTableMeta, isBranchIdentity } from '../resources/databases.ts';
 import { transformReq } from '../utility/common_utils.ts';
 import { server } from '../server/Server.ts';
 import { cleanupOrphans } from '../resources/blob.ts';
@@ -184,7 +184,7 @@ export async function dropSchema(dropSchemaObject: any) {
 	transformReq(dropSchemaObject);
 
 	let invalidSchemaMsg = await schemaMetadataValidator.checkSchemaExists(dropSchemaObject.schema);
-	if (invalidSchemaMsg) {
+	if (invalidSchemaMsg && !databaseDropRecoveryPending(dropSchemaObject.schema)) {
 		throw handleHDBError(
 			new Error(),
 			invalidSchemaMsg,

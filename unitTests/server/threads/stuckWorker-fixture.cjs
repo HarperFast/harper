@@ -28,6 +28,18 @@ parentPort.on('message', (message) => {
 				statusCode: 409,
 			},
 		});
+	} else if (message.requestId && process.argv.includes('--reject-retryable')) {
+		parentPort.postMessage({
+			type: 'ack',
+			id: message.requestId,
+			error: {
+				name: 'DatabaseDrainTimeoutError',
+				message: 'fixture database drain timed out',
+				code: 'DATABASE_DRAIN_TIMEOUT',
+				statusCode: 503,
+				retryable: true,
+			},
+		});
 	} else if (message.requestId && process.argv.includes('--exit')) {
 		clearInterval(keepAlive);
 		parentPort.close();
