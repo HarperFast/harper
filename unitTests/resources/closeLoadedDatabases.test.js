@@ -61,6 +61,7 @@ describe('RocksDB handle release', function () {
 	it('a drop-schema preparation event closes the peer database before acknowledging', async function () {
 		this.timeout(30000);
 		const databaseName = 'drop_schema_prepare';
+		const dropPreparationId = 'drop-schema-prepare-test';
 		const rootStore = openRocksDb(databaseName);
 		if (!(rootStore instanceof RocksDatabase)) return this.skip();
 
@@ -71,11 +72,70 @@ describe('RocksDB handle release', function () {
 				operation: OPERATIONS_ENUM.DROP_SCHEMA,
 				schema: databaseName,
 				prepareDrop: true,
+				dropPreparationId,
 			},
 		});
 
 		assert.strictEqual(databases[databaseName], undefined);
 		assert.strictEqual(refCountFor(rootStore.path), 0);
+		assert.throws(
+			() => database({ database: databaseName }),
+			(error) => error.code === 'DATABASE_CLOSING'
+		);
+
+		await schemaHandler({
+			type: 'schema',
+			message: {
+				originator: process.pid,
+				operation: OPERATIONS_ENUM.DROP_SCHEMA,
+				schema: databaseName,
+				dropPreparationId,
+			},
+		});
+		assert.ok(database({ database: databaseName }));
+		await closeDatabase(databaseName);
+	});
+
+	it('a peer preparation reports close failures and stays fenced until completion', async function () {
+		this.timeout(30000);
+		const databaseName = 'drop_schema_close_failure';
+		const dropPreparationId = 'drop-schema-close-failure-test';
+		const rootStore = openRocksDb(databaseName);
+		const close = rootStore.close;
+		rootStore.close = () => {
+			throw new Error('root close failed');
+		};
+
+		await assert.rejects(
+			schemaHandler({
+				type: 'schema',
+				message: {
+					originator: process.pid,
+					operation: OPERATIONS_ENUM.DROP_SCHEMA,
+					schema: databaseName,
+					prepareDrop: true,
+					dropPreparationId,
+				},
+			}),
+			/Could not close database/
+		);
+		assert.throws(
+			() => database({ database: databaseName }),
+			(error) => error.code === 'DATABASE_CLOSING'
+		);
+		rootStore.close = close;
+		await schemaHandler({
+			type: 'schema',
+			message: {
+				originator: process.pid,
+				operation: OPERATIONS_ENUM.DROP_SCHEMA,
+				schema: databaseName,
+				dropPreparationId,
+			},
+		});
+		const reopened = database({ database: databaseName });
+		assert.strictEqual(reopened.status, 'open');
+		await closeDatabase(databaseName);
 	});
 
 	it('dropSchema coordinates peer preparation before destroying the local database', async function () {

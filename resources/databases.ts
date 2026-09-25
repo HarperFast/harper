@@ -36,7 +36,7 @@ import {
 	RESERVED_DATABASE_NAMES,
 } from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
-import { ClientError } from '../utility/errors/hdbError.ts';
+import { ClientError, DatabaseClosingError } from '../utility/errors/hdbError.ts';
 import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
@@ -109,6 +109,11 @@ import {
 	RESTORE_META_DIR,
 	type RestoreLock,
 } from '../dataLayer/restoreMarker.ts';
+import {
+	claimDatabaseDropPreparation,
+	databaseDropPrepared,
+	releaseDatabaseDropPreparation,
+} from './databaseDropPreparation.ts';
 
 /**
  * Check if Harper is running in read-only mode.
@@ -713,6 +718,7 @@ export function getDatabases(): Databases {
 			if (databaseEntry.name === BRANCH_ROOT_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dbPath = join(databasePath, databaseEntry.name);
+			if (databaseDropPrepared(dbName)) continue;
 			if (blockedByRestore.has(dbName)) continue;
 			if (isOpenBranchPath(dbPath)) continue;
 
@@ -747,6 +753,7 @@ export function getDatabases(): Databases {
 	const baseSchemaPath = getBaseSchemaPath();
 	if (existsSync(baseSchemaPath)) {
 		for (const schemaEntry of readdirSync(baseSchemaPath, { withFileTypes: true })) {
+			if (databaseDropPrepared(schemaEntry.name)) continue;
 			if (!schemaEntry.isFile()) {
 				const schemaPath = join(baseSchemaPath, schemaEntry.name);
 				const schemaAuditPath = join(getTransactionAuditStoreBasePath(), schemaEntry.name);
@@ -768,6 +775,7 @@ export function getDatabases(): Databases {
 
 	if (schemaConfigs) {
 		for (const dbName in schemaConfigs) {
+			if (databaseDropPrepared(dbName)) continue;
 			const schemaConfig = schemaConfigs[dbName];
 			const databasePath = schemaConfig.path;
 			if (existsSync(databasePath)) {
@@ -815,6 +823,7 @@ export function getDatabases(): Databases {
 	}
 	// now remove any databases or tables that have been removed
 	for (const dbName in databases) {
+		if (databaseDropPrepared(dbName)) continue;
 		const definedTables = definedDatabases.get(dbName);
 		if (definedTables) {
 			const tables = databases[dbName];
@@ -2115,6 +2124,7 @@ export function resolveDatabasePath(databaseName: string): string {
  */
 export function database({ database: databaseName, table: tableName }) {
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
+	if (databaseDropPrepared(databaseName)) throw new DatabaseClosingError(databaseName);
 	getDatabases();
 	ensureDB(databaseName);
 	const definedDatabase = definedDatabases.get(databaseName);
@@ -2293,7 +2303,27 @@ export async function dropDatabase(databaseName) {
  * An LMDB database is closed by closing its environment, which releases every dbi in it, so every
  * other database alias sharing that environment is closed with it.
  */
-export async function closeDatabase(databaseName: string): Promise<boolean> {
+const databaseDropPreparationTasks = new Map<string, { id: string; task: Promise<void> }>();
+
+export function prepareDatabaseDrop(databaseName: string, preparationId: string): Promise<void> {
+	const existing = databaseDropPreparationTasks.get(databaseName);
+	if (existing?.id === preparationId) return existing.task;
+	claimDatabaseDropPreparation(databaseName, preparationId);
+	const task = closeDatabase(databaseName, { requireClosed: true }).then(() => undefined);
+	databaseDropPreparationTasks.set(databaseName, { id: preparationId, task });
+	return task;
+}
+
+export function completeDatabaseDropPreparation(databaseName: string, preparationId: string): void {
+	const existing = databaseDropPreparationTasks.get(databaseName);
+	if (existing?.id === preparationId) databaseDropPreparationTasks.delete(databaseName);
+	releaseDatabaseDropPreparation(databaseName, preparationId);
+}
+
+export async function closeDatabase(
+	databaseName: string,
+	{ requireClosed = false }: { requireClosed?: boolean } = {}
+): Promise<boolean> {
 	const dbTables = databases[databaseName];
 	if (!dbTables) return false;
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
@@ -2305,11 +2335,16 @@ export async function closeDatabase(databaseName: string): Promise<boolean> {
 	let databaseClosed = false;
 	try {
 		const rootStores = new Set<any>();
+		const rootStorePaths: string[] = [];
+		const closeFailures: unknown[] = [];
 		const closeStore = async (store: any, description: string) => {
 			try {
 				await store?.close?.();
+				return true;
 			} catch (error) {
 				logger.warn(`Error closing ${description} while closing database ${databaseName}:`, error);
+				closeFailures.push(error);
+				return false;
 			}
 		};
 		for (const tableName in dbTables) {
@@ -2333,18 +2368,26 @@ export async function closeDatabase(databaseName: string): Promise<boolean> {
 		}
 		for (const rootStore of rootStores) {
 			removeStorageReclamation(rootStore.path);
+			let rootClosed = rootStore.status !== 'open';
 			if (!lmdbRootStores.has(rootStore)) {
 				await closeStore(rootStore.dbisDb, 'attributes store');
-				await closeStore(rootStore, 'root store');
-			} else if (rootStore.status === 'open') await closeStore(rootStore, 'root store');
-			lmdbDatabaseEnvs.delete(rootStore.path);
-			rocksdbDatabaseEnvs.delete(rootStore.path);
+				rootClosed = await closeStore(rootStore, 'root store');
+			} else if (!rootClosed) rootClosed = await closeStore(rootStore, 'root store');
+			if (rootClosed || !requireClosed) rootStorePaths.push(rootStore.path);
+		}
+		for (const path of rootStorePaths) {
+			lmdbDatabaseEnvs.delete(path);
+			rocksdbDatabaseEnvs.delete(path);
+		}
+		if (requireClosed && closeFailures.length > 0) {
+			if (rootStorePaths.length === rootStores.size) unregisterDatabase(databaseName);
+			throw new AggregateError(closeFailures, `Could not close database '${databaseName}' for destructive DDL`);
 		}
 		unregisterDatabase(databaseName);
 		for (const aliasName of Object.keys(databases)) {
 			for (const rootStore of lmdbRootStores) {
 				if (databaseUsesRootStore(aliasName, rootStore)) {
-					await closeDatabase(aliasName);
+					await closeDatabase(aliasName, { requireClosed });
 					break;
 				}
 			}

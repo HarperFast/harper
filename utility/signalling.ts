@@ -27,7 +27,10 @@ export async function signalSchemaChange(message: any) {
 export async function signalSchemaChangeToPeers(message: any): Promise<void> {
 	hdbLogger.debug('signalSchemaChangeToPeers called with message:', message);
 	const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
-	await sendItcEventStrict(itcEventSchema);
+	// Native derived-index shutdown has a 70-second backstop. The extra round closes the topology
+	// race: after the main thread installs the preparation fence, any worker started during round one
+	// inherits it and is present for round two.
+	for (let round = 0; round < 2; round++) await sendItcEventStrict(itcEventSchema, 90_000, true);
 }
 
 /**

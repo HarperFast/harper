@@ -11,6 +11,8 @@ const {
 	databases,
 	resetDatabases,
 	closeDatabase,
+	prepareDatabaseDrop,
+	completeDatabaseDropPreparation,
 	reloadBranchAt,
 	markDropInProgress,
 } = require('../../resources/databases.ts');
@@ -46,13 +48,14 @@ async function schemaHandler(event) {
 	}
 
 	hdbLogger.trace(`ITC schemaHandler received schema event:`, event);
-	if (
-		event.message?.operation === hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA &&
-		event.message.schema &&
-		event.message.prepareDrop
-	) {
-		await closeDatabase(event.message.schema);
-		return;
+	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA && event.message.schema) {
+		if (event.message.prepareDrop) {
+			if (!event.message.dropPreparationId) throw new Error('Drop-schema preparation is missing its id');
+			await prepareDatabaseDrop(event.message.schema, event.message.dropPreparationId);
+			return;
+		}
+		if (event.message.dropPreparationId)
+			completeDatabaseDropPreparation(event.message.schema, event.message.dropPreparationId);
 	}
 	// restore_backup: this thread must release its store handles so the restore can purge and
 	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while

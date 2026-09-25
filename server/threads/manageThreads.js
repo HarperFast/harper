@@ -24,6 +24,7 @@ const { resolvePreloadModules } = require('./resolvePreload.ts');
 const { resolveThreadHeapMemoryMb } = require('./threadHeapMemory.ts');
 const { getConfigPath } = require('../../config/configUtils.ts');
 const { resolveWatchTarget } = require('../../utility/watchPath.ts');
+const { databaseDropPreparationSnapshot } = require('../../resources/databaseDropPreparation.ts');
 const {
 	DIRECTORY_POLLING_FALLBACK_OPTIONS,
 	claimLostNativeWatchError,
@@ -361,6 +362,7 @@ const RESERVED_WORKER_DATA_KEYS = [
 	'restartNumber',
 	'processIncarnation',
 	'ticketKeys',
+	'databaseDropPreparations',
 	'noServerStart',
 	'isolatedApplication',
 	'__proto__', // never a legitimate payload name; spread would define it as an own property
@@ -572,6 +574,7 @@ function startWorker(path, options = {}) {
 			restartNumber: module.exports.restartNumber,
 			processIncarnation: module.exports.processIncarnation,
 			ticketKeys: getTicketKeys(),
+			databaseDropPreparations: databaseDropPreparationSnapshot(),
 		},
 		transferList: portsToSend,
 		...options,
@@ -1064,7 +1067,12 @@ let nextId = 1;
 // whose port hasn't closed) can't hang a mutating admin/DDL op forever. Ordinary broadcasts happen
 // after the durable write and proceed best-effort; strict preparation broadcasts reject on timeout.
 const DEFAULT_ACK_TIMEOUT_MS = 30000;
-function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS, strict = false) {
+function broadcastWithAcknowledgement(
+	message,
+	timeout = DEFAULT_ACK_TIMEOUT_MS,
+	strict = false,
+	includeJobWorkers = false
+) {
 	return new Promise((resolve, reject) => {
 		let waitingCount = 0;
 		let timer;
@@ -1084,11 +1092,9 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS,
 			else resolve();
 		};
 		for (let port of connectedPorts) {
-			// Job workers run a single isolated task and exit; they don't participate in
-			// schema-change gossip. Including them causes a deadlock: the broadcast waits for
-			// the job worker's ACK while the job worker's event loop is busy waiting for the
-			// same broadcast to complete (re-entrant schema change triggered by the job op).
-			if (!isEligibleBroadcastRecipient(port)) continue;
+			// Ordinary schema gossip excludes job workers to avoid re-entrant waits. Destructive
+			// preparation opts them in because every native handle must be closed before deletion.
+			if (!includeJobWorkers && !isEligibleBroadcastRecipient(port)) continue;
 			let ackHandler;
 			try {
 				let requestId = nextId++;
@@ -1120,7 +1126,7 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS,
 					port.on(port.close ? 'close' : 'exit', () => {
 						for (let [, ackHandler] of awaitingResponses) {
 							if (ackHandler.port === port) {
-								ackHandler();
+								ackHandler(strict ? { error: { message: 'exited before acknowledging preparation' } } : undefined);
 							}
 						}
 					});
@@ -1157,8 +1163,8 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS,
 	});
 }
 
-function broadcastWithStrictAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
-	return broadcastWithAcknowledgement(message, timeout, true);
+function broadcastWithStrictAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS, includeJobWorkers = false) {
+	return broadcastWithAcknowledgement(message, timeout, true, includeJobWorkers);
 }
 
 // Linux only: /proc/thread-self resolves to <pid>/task/<tid> for the calling thread.

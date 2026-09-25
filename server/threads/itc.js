@@ -55,9 +55,9 @@ function sendItcEvent(event) {
 	return broadcastWithAcknowledgement(event);
 }
 
-function sendItcEventStrict(event) {
+function sendItcEventStrict(event, timeout, includeJobWorkers = false) {
 	if (event.message) event.message.originator = threadId;
-	return broadcastWithStrictAcknowledgement(event);
+	return broadcastWithStrictAcknowledgement(event, timeout, includeJobWorkers);
 }
 
 /**

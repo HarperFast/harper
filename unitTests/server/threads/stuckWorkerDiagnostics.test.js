@@ -13,20 +13,27 @@ const {
 } = require('#js/server/threads/manageThreads');
 const { pinLogConfig } = require('../../logConfigFixture.js');
 const { waitFor } = require('../../waitFor.js');
+const {
+	claimDatabaseDropPreparation,
+	releaseDatabaseDropPreparation,
+} = require('#src/resources/databaseDropPreparation');
 
 const FIXTURE = path.join(__dirname, 'stuckWorker-fixture.cjs');
 
-function startFixtureWorker(mode) {
+function startFixtureWorker(mode, name = 'http') {
 	return new Promise((resolve, reject) => {
 		startWorker(FIXTURE, {
-			name: 'http',
+			name,
 			workerIndex: 0,
 			threadCount: 2,
 			autoRestart: false,
 			argv: [`--${mode}`],
 			onStarted(worker) {
 				worker.on('message', (message) => {
-					if (message.type === 'fixture-ready') resolve(worker);
+					if (message.type === 'fixture-ready') {
+						worker.databaseDropPreparations = message.databaseDropPreparations;
+						resolve(worker);
+					}
 				});
 				worker.once('error', reject);
 				worker.once('exit', (code) => reject(new Error(`Worker exited before reporting (code ${code})`)));
@@ -158,5 +165,38 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 			assert.match(error.errors[0].message, /could not prepare for the schema change: fixture preparation failed/);
 			return true;
 		});
+	});
+
+	it('rejects a strict broadcast when a worker exits before acknowledging', async function () {
+		const worker = await startFixtureWorker('exit');
+		started.push(worker);
+		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000), (error) => {
+			assert(error instanceof AggregateError);
+			assert.match(error.errors[0].message, /exited before acknowledging preparation/);
+			return true;
+		});
+	});
+
+	it('includes job workers when destructive preparation requests it', async function () {
+		const worker = await startFixtureWorker('reject', 'job');
+		started.push(worker);
+		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000, true), (error) => {
+			assert(error instanceof AggregateError);
+			assert.match(error.errors[0].message, /fixture preparation failed/);
+			return true;
+		});
+	});
+
+	it('passes active database-drop fences to workers started during preparation', async function () {
+		const databaseName = 'worker-start-during-drop';
+		const preparationId = 'worker-start-during-drop-test';
+		claimDatabaseDropPreparation(databaseName, preparationId);
+		try {
+			const worker = await startFixtureWorker('acknowledge');
+			started.push(worker);
+			assert.deepStrictEqual(worker.databaseDropPreparations, [[databaseName, preparationId]]);
+		} finally {
+			releaseDatabaseDropPreparation(databaseName, preparationId);
+		}
 	});
 });

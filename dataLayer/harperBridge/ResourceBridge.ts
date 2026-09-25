@@ -1,6 +1,11 @@
 import searchValidator from '../../validation/searchValidator.ts';
+import { randomUUID } from 'node:crypto';
 import { handleHDBError, ClientError, hdbErrors } from '../../utility/errors/hdbError.ts';
 import { table, getDatabases, database, dropDatabase, type Table } from '../../resources/databases.ts';
+import {
+	claimDatabaseDropPreparation,
+	releaseDatabaseDropPreparation,
+} from '../../resources/databaseDropPreparation.ts';
 import insertUpdateValidate from './bridgeUtility/insertUpdateValidate.js';
 import SearchObject from '../SearchObject.ts';
 import {
@@ -186,17 +191,22 @@ export class ResourceBridge extends BridgeMethods {
 	}
 
 	async dropSchema(dropSchemaObj) {
-		const completion = () => new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, dropSchemaObj.schema);
+		const preparationId = randomUUID();
+		const completion = () => {
+			const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, dropSchemaObj.schema);
+			message.dropPreparationId = preparationId;
+			return message;
+		};
 		const preparation: any = completion();
 		preparation.prepareDrop = true;
+		claimDatabaseDropPreparation(dropSchemaObj.schema, preparationId);
 		try {
 			await signalling.signalSchemaChangeToPeers(preparation);
 			await dropDatabase(dropSchemaObj.schema);
-		} catch (error) {
+		} finally {
+			releaseDatabaseDropPreparation(dropSchemaObj.schema, preparationId);
 			await signalling.signalSchemaChange(completion());
-			throw error;
 		}
-		await signalling.signalSchemaChange(completion());
 	}
 
 	async updateRecords(updateObj) {

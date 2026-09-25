@@ -51,6 +51,7 @@ import {
 import { getThisNodeName } from '../server/nodeName.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { addSubscription } from './transactionBroadcast.ts';
+import { databaseDropPrepared } from './databaseDropPreparation.ts';
 import {
 	DerivedIndexLagError,
 	DatabaseClosingError,
@@ -968,7 +969,7 @@ export function makeTable(options) {
 	// dropping one would advance the source cursor past a write that never landed. Database teardown is
 	// different: its submission barrier rejects every producer before the underlying store is closed.
 	function assertDerivedIndexAdmission(options: any, transaction: any) {
-		if (databaseCommitsSuspended(primaryStore.rootStore))
+		if (databaseDropPrepared(databaseName) || databaseCommitsSuspended(primaryStore.rootStore))
 			throw new DatabaseClosingError(databaseName, !transaction?.root && !transaction?.snapshotFree);
 		if (options?.isNotification || transaction?.sourceApply || transaction?.isReplay) return;
 		const reason = derivedIndexWriteRejection(auditStore, tableId);
@@ -1714,7 +1715,7 @@ export function makeTable(options) {
 			request: Context,
 			resourceOptions?: any
 		): Promise<TableResource<Record>> | TableResource<Record> {
-			if (databaseCommitsSuspended(primaryStore.rootStore))
+			if (databaseDropPrepared(databaseName) || databaseCommitsSuspended(primaryStore.rootStore))
 				throw new DatabaseClosingError(
 					databaseName,
 					!(request as any)?.transaction?.root && !(request as any)?.transaction?.snapshotFree
