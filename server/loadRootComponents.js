@@ -67,6 +67,18 @@ async function loadRootComponents(isWorkerThread = false) {
 	getTables();
 	resources.isWorker = isWorkerThread;
 
+	// Settle jobs whose owning process is gone, before anything can start a new one. Required on the
+	// main thread only, and deliberately not fatal: an unreconciled job row is misleading, but failing
+	// to reconcile it is no reason to refuse to boot. Loading the module here also mints the owner id
+	// before any worker is spawned, so every worker inherits it.
+	if (isMainThread) {
+		try {
+			await require('./jobs/jobOwnership.ts').reconcileInterruptedJobs();
+		} catch (error) {
+			console.error(errorForLog(error));
+		}
+	}
+
 	await loadCertificates();
 	// the Harper root component
 	await loadComponent(dirname(configUtils.getConfigFilePath()), resources, 'hdb', {
