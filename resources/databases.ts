@@ -2389,7 +2389,10 @@ export async function closeDatabase(
 			rocksdbDatabaseEnvs.delete(path);
 		}
 		if (requireClosed && closeFailures.length > 0) {
-			if (rootStorePaths.length === rootStores.size) unregisterDatabase(databaseName);
+			// Some child stores may already be closed even when the root close fails. Never return
+			// that partially closed graph to service; the preparation fence holds until completion,
+			// after which the next lookup rebuilds a fresh graph from the still-authoritative files.
+			unregisterDatabase(databaseName);
 			throw new AggregateError(closeFailures, `Could not close database '${databaseName}' for destructive DDL`);
 		}
 		unregisterDatabase(databaseName);

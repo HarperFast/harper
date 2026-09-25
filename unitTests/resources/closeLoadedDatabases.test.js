@@ -103,6 +103,7 @@ describe('RocksDB handle release', function () {
 		const databaseName = 'drop_schema_close_failure';
 		const dropPreparationId = 'drop-schema-close-failure-test';
 		const rootStore = openRocksDb(databaseName);
+		const originalPrimaryStore = databases[databaseName].pkg.primaryStore;
 		const close = rootStore.close;
 		rootStore.close = () => {
 			throw new Error('root close failed');
@@ -125,6 +126,7 @@ describe('RocksDB handle release', function () {
 			() => database({ database: databaseName }),
 			(error) => error.code === 'DATABASE_CLOSING'
 		);
+		assert.strictEqual(databases[databaseName], undefined, 'a partially closed graph must be unregistered');
 		rootStore.close = close;
 		await schemaHandler({
 			type: 'schema',
@@ -135,8 +137,13 @@ describe('RocksDB handle release', function () {
 				dropPreparationId,
 			},
 		});
-		const reopened = database({ database: databaseName });
-		assert.strictEqual(reopened.status, 'open');
+		const Reopened = table({
+			table: 'pkg',
+			database: databaseName,
+			attributes: [{ attribute: 'id', isPrimaryKey: true }, { attribute: 'name' }],
+		});
+		assert.notStrictEqual(Reopened.primaryStore, originalPrimaryStore);
+		assert.strictEqual(Reopened.primaryStore.status, 'open');
 		await closeDatabase(databaseName);
 	});
 
