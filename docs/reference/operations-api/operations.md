@@ -1203,7 +1203,7 @@ The deployment must be in a terminal status (`success`, `failed`, or `rolled_bac
 
 ### `add_ssh_key`
 
-Adds an SSH key (must be ed25519) for authenticating deployments from private repositories. Supply the private key with `key`, or omit it and pass `generate: true` to have Harper mint the keypair itself.
+Adds an SSH key for authenticating deployments from private repositories. Supply the private key with `key`, or omit it and pass `generate: true` to have Harper mint the keypair itself.
 
 `list_ssh_keys` and the logs never return key material.
 
@@ -1226,6 +1226,31 @@ Adding an existing key:
 	"hostname": "github.com"
 }
 ```
+
+#### What `key`, `host` and `hostname` must be
+
+<VersionBadge type="changed" version="v5.3.0" />
+
+Nothing reads a stored key again until ssh loads it for a git deploy, where a key it can't use fails as a generic authentication error. So `add_ssh_key` and `update_ssh_key` check a supplied key first, and refuse one ssh couldn't load with a `400` that names the problem.
+
+`key` must be an unencrypted private key in one of the formats ssh reads:
+
+- **OpenSSH** (`-----BEGIN OPENSSH PRIVATE KEY-----`, what `ssh-keygen` writes by default), with nothing before the `BEGIN` line
+- **PEM**: PKCS#1 (`RSA PRIVATE KEY`), SEC1 (`EC PRIVATE KEY`) or PKCS#8 (`PRIVATE KEY`)
+
+holding an **Ed25519**, **ECDSA** (P-256, P-384 or P-521) or **RSA** key of at least 1024 bits. These are refused:
+
+- a public key — the `.pub` file, or a public key exported as PEM or RFC 4716 — in place of the private one
+- a PuTTY key (`.ppk`); export it from PuTTYgen with **Conversions → Export OpenSSH key**
+- a passphrase-protected key: Harper runs git without a terminal, so ssh has nowhere to ask for the passphrase
+- a DSA key, which OpenSSH 10 no longer supports
+- a FIDO security key (`sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com`), which signs only with its hardware authenticator attached
+- any other algorithm or curve ssh doesn't support
+- a key that is cut off, has lines missing or repeated, or is otherwise damaged — including one whose private half doesn't match its public half, which ssh may load but can never authenticate with
+
+Harper stores the key the way ssh needs it: each line trimmed, blank lines dropped, and a final newline added. An indented or CRLF paste therefore works. A value already sealed as `enc:v1:` (for example one copied from another node's `get_ssh_key`) is stored as-is, since it can't be read without decrypting it.
+
+`host` and `hostname` are written into the ssh config that every key on the node shares, so a value that would break it is refused: a space, tab or line break (`Host my key` matches two aliases, and `HostName my key` stops ssh for every key), a quote, an `=`, or a leading `#`. A leading `-` is refused too, because no host can start with one, and so is a pattern (`*`, `?`, `!`) in `host`, whose block would also apply to other keys' aliases. Surrounding whitespace is trimmed.
 
 #### Server-side key generation (`generate`)
 

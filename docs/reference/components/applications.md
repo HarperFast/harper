@@ -443,9 +443,9 @@ For deploying from private repositories, SSH keys must be registered on the Harp
 #### `add_ssh_key`
 
 - `name` _(required)_ — Key name
-- `key` _(required)_ — Private key contents (must be ed25519; use `\n` for line breaks with trailing `\n`)
-- `host` _(required)_ — Host alias for SSH config (used in `package` URL)
-- `hostname` _(required)_ — Actual domain (e.g., `github.com`)
+- `key` _(required)_ — Private key contents, with `\n` for line breaks. An unencrypted OpenSSH or PEM private key (Ed25519, ECDSA, or RSA of at least 1024 bits); a key ssh couldn't use is refused — see [what `key` must be](../operations-api/operations.md#what-key-host-and-hostname-must-be)
+- `host` _(required)_ — Host alias for SSH config (used in `package` URL); one alias, not a pattern, with no spaces, quotes or `=`
+- `hostname` _(required)_ — Actual domain (e.g., `github.com`); no spaces, quotes or `=`
 - `known_hosts` _(optional)_ — Public SSH keys of the host. Auto-retrieved for `github.com`
 - `replicated` _(optional)_ — Replicate to all cluster nodes
 
