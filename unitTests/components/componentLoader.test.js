@@ -509,6 +509,111 @@ describe('ComponentLoader Status Integration', function () {
 		});
 	});
 
+	describe('deploy validation loads never wait on a deploy', function () {
+		const { threadId } = require('node:worker_threads');
+		const { deployLifecycle } = require('#src/components/deployLifecycle');
+
+		// The deploy's own validation load runs inside that deploy's lifecycle bracket, and passes no appName,
+		// so its Scopes carry the loader's default name — `harper`, which is also a component name users deploy.
+		function startDeploy(name) {
+			const deploymentId = `validation-probe-${name}-${Math.random()}`;
+			deployLifecycle._handle({ name, phase: 'start', deploymentId, ownerThreadId: threadId });
+			return () => deployLifecycle._handle({ name, phase: 'end', deploymentId, ownerThreadId: threadId });
+		}
+
+		function settlesWithin(promise, ms, what) {
+			let timer;
+			return Promise.race([
+				promise,
+				new Promise((_resolve, reject) => {
+					timer = setTimeout(() => reject(new Error(`${what} did not settle within ${ms}ms`)), ms);
+				}),
+			]).finally(() => clearTimeout(timer));
+		}
+
+		function makeProbeComponent(pluginName, pluginConfig, handleApplication) {
+			const componentDir = path.join(tempDir, `validation-probe-${pluginName}`);
+			mkdirSync(componentDir, { recursive: true });
+			writeFileSync(path.join(componentDir, 'config.yaml'), `${pluginName}:\n${pluginConfig}`);
+			writeFileSync(path.join(componentDir, 'entry.txt'), 'entry');
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName] = { handleApplication };
+			return componentDir;
+		}
+
+		// The shape operations.js `validateComponentLoads` loads a candidate with.
+		async function validate(componentDir) {
+			componentLoader.loadedPaths.clear();
+			const collectScopes = new Set();
+			try {
+				await componentLoader.loadComponent(componentDir, { isWorker: true, set: sinon.stub() }, undefined, {
+					collectScopes,
+				});
+			} finally {
+				await Promise.allSettled([...collectScopes].map((scope) => scope.close()));
+			}
+		}
+
+		async function removeProbe(pluginName, componentDir) {
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName];
+			componentLoader.loadedPaths.clear();
+			await fs.rm(componentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+
+		it('loads the candidate while a deploy of a component named harper is in flight', async function () {
+			const pluginName = 'validationProbeInFlight';
+			const entries = [];
+			const componentDir = makeProbeComponent(pluginName, "  files: '*.txt'\n", (scope) => {
+				scope.handleEntry((entry) => {
+					entries.push(path.basename(entry.absolutePath));
+				});
+			});
+			const endDeploy = startDeploy('harper');
+			try {
+				await settlesWithin(validate(componentDir), 5000, 'validation load');
+				assert.deepStrictEqual(entries, ['entry.txt']);
+			} finally {
+				endDeploy();
+				await removeProbe(pluginName, componentDir);
+			}
+		});
+
+		it('keeps loading when a deploy of a component named harper starts during it', async function () {
+			const pluginName = 'validationProbeDeployStarts';
+			const entries = [];
+			let endDeploy;
+			const componentDir = makeProbeComponent(pluginName, "  files: '*.txt'\n", (scope) => {
+				scope.handleEntry((entry) => {
+					entries.push(path.basename(entry.absolutePath));
+				});
+				endDeploy = startDeploy('harper');
+			});
+			try {
+				await settlesWithin(validate(componentDir), 5000, 'validation load');
+				assert.deepStrictEqual(entries, ['entry.txt']);
+			} finally {
+				endDeploy?.();
+				await removeProbe(pluginName, componentDir);
+			}
+		});
+
+		it('still times out a hung plugin while a deploy of a component named harper is in flight', async function () {
+			const pluginName = 'validationProbeHung';
+			const componentDir = makeProbeComponent(pluginName, '  timeout: 100\n', () => new Promise(() => {}));
+			let reported;
+			const priorReporter = componentLoader.getErrorReporter();
+			componentLoader.setErrorReporter((error) => (reported = error));
+			const endDeploy = startDeploy('harper');
+			try {
+				await settlesWithin(validate(componentDir), 5000, 'validation load');
+				assert.match(reported?.message ?? '', /handleApplication timed out after 100ms/);
+			} finally {
+				endDeploy();
+				componentLoader.setErrorReporter(priorReporter);
+				await removeProbe(pluginName, componentDir);
+			}
+		});
+	});
+
 	it('serializes deferred readiness per component without blocking unrelated loads', async function () {
 		this.timeout(15000);
 		const appName = 'deferred-generation-probe';

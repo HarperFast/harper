@@ -610,6 +610,19 @@ const RECOVERY_LOCK_WAIT = {
 const COMPONENT_RECOVERY_LOCK_PURPOSE = 'component-recovery';
 const MAX_GIT_EXTRACTION_COMMANDS = 4;
 const MAX_INSTALL_COMMANDS = 2;
+
+/**
+ * The longest one preparation may legitimately run: the longest extraction path runs clone, tag listing,
+ * checkout, and npm pack, and a custom package manager configured to warn can then fall back to npm, yielding
+ * two install commands. What a preparation lock waits on, and what an origin allows a peer's replicated deploy.
+ */
+export function componentPreparationBudgetMs(installTimeoutMs: number = DEFAULT_COMMAND_TIMEOUT_MS): number {
+	return (
+		MAX_GIT_EXTRACTION_COMMANDS * DEFAULT_COMMAND_TIMEOUT_MS +
+		MAX_INSTALL_COMMANDS * installTimeoutMs +
+		COMPONENT_PREPARATION_WAIT_MARGIN_MS
+	);
+}
 const PRODUCTION_DEPENDENCY_FIELDS = ['dependencies', 'optionalDependencies', 'peerDependencies'] as const;
 const INSTALL_LIFECYCLE_SCRIPTS = new Set([
 	'preinstall',
@@ -4407,13 +4420,8 @@ export async function prepareApplication(application: Application, options: Prep
 				}
 			},
 			{
-				// The longest extraction path runs clone, tag listing, checkout, and npm pack. A custom
-				// package manager configured to warn can then fall back to npm, yielding two install
-				// commands. Bound orphaned same-process worker locks without rejecting behind a valid holder.
-				timeoutMs:
-					MAX_GIT_EXTRACTION_COMMANDS * DEFAULT_COMMAND_TIMEOUT_MS +
-					MAX_INSTALL_COMMANDS * commandTimeoutMs +
-					COMPONENT_PREPARATION_WAIT_MARGIN_MS,
+				// Bound orphaned same-process worker locks without rejecting behind a valid holder.
+				timeoutMs: componentPreparationBudgetMs(commandTimeoutMs),
 				onWait: (owner) =>
 					application.logger.info(
 						`Waiting for in-progress preparation of ${application.name}` +
