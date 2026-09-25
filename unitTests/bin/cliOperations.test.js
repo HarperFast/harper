@@ -999,14 +999,8 @@ describe('cliOperations', () => {
 		});
 	});
 
-	// `deploy setup=true` introduced `token=` as an arg carrying a durable PAT. A mistyped invocation
-	// (`harper deploy setup token=…` — bare `setup` is dropped by buildRequest) falls through to an
-	// ordinary deploy, so the token must not be loggable or serializable on ANY path, not just the
-	// setup one.
-	// What a server writes when it labels a reply as an event stream without a `done` or `error` event:
-	// older servers negotiate a pre-stream refusal (and, when the version probe could not tell, a
-	// pre-5.1 result) into one unnamed frame. Served from a real socket so the CLI's own request,
-	// streaming and parsing all run.
+	// Older servers write a refusal made before the stream starts, or a result the version probe could
+	// not route to the legacy path, as one unnamed event-stream frame.
 	describe('deploy_component replies labeled as an event stream', () => {
 		const http = require('node:http');
 		let server;
@@ -1129,6 +1123,10 @@ describe('cliOperations', () => {
 		});
 	});
 
+	// `deploy setup=true` introduced `token=` as an arg carrying a durable PAT. A mistyped invocation
+	// (`harper deploy setup token=…` — bare `setup` is dropped by buildRequest) falls through to an
+	// ordinary deploy, so the token must not be loggable or serializable on ANY path, not just the
+	// setup one.
 	describe('token= is never logged or sent', () => {
 		it('redacts token in the parsed-request trace log', () => {
 			const redacted = cliOperationsModule.redactCredentials({

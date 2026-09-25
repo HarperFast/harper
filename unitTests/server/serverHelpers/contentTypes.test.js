@@ -485,6 +485,21 @@ describe('contentTypes – an operations-server error to a request that negotiat
 		assert.strictEqual(res.body, 'refused');
 	});
 
+	// An object with a route serializer does reach the hook, unlike a stream or a string.
+	it('leaves an error a route chose to send as an event stream alone', async function () {
+		await serve(async (request, reply) =>
+			reply
+				.code(403)
+				.type('text/event-stream')
+				.serializer(JSON.stringify)
+				.send({ event: 'error', data: { message: 'refused' } })
+		);
+		const res = await post('text/event-stream');
+		assert.strictEqual(res.statusCode, 403);
+		assert.match(res.headers['content-type'], /^text\/event-stream/);
+		assert.strictEqual(res.body, 'event: error\ndata: {"message":"refused"}\n\n');
+	});
+
 	for (const accept of ['application/cbor', 'application/cbor, text/event-stream;q=0.1']) {
 		it(`still answers an error as CBOR when that is negotiated (${accept})`, async function () {
 			await serve(async () => {

@@ -387,7 +387,6 @@ suite('QA-579 CLI exit-code contract matrix (PR #1801)', (ctx: ContextWithHarper
 				headers: { 'Content-Type': 'application/json', 'Authorization': adminAuth },
 				body: JSON.stringify(body),
 			});
-		// An allowlist without deploy_component: dispatch refuses the deploy before any event is streamed.
 		const role = await asAdmin({
 			operation: 'add_role',
 			role: 'qa579_no_deploy',
@@ -407,8 +406,8 @@ suite('QA-579 CLI exit-code contract matrix (PR #1801)', (ctx: ContextWithHarper
 			[
 				'deploy_component',
 				`target=${operationsAPIURL}`,
-				'username=qa579_deployer',
-				'password=Qa579-deployer!',
+				'auth_username=qa579_deployer',
+				'auth_password=Qa579-deployer!',
 				'project=qa579-refused',
 				'package=@harperfast/qa579-never-installed',
 			],

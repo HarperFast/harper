@@ -989,8 +989,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			let finalResult;
 			let sseError;
 			let terminated = false;
-			// A reply written as unnamed frames instead of a `done` event: an older server's generic
-			// serialization of the result, reached when the version probe could not tell.
+			// Older servers write a result as unnamed frames, with no `done` event.
 			let lastUnnamedData: string | undefined;
 			for await (const message of parseSSE(response)) {
 				renderer?.renderEvent(message);
