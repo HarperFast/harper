@@ -8406,11 +8406,20 @@ export function makeTable(options) {
 			return primaryStore.remove(id, version);
 		});
 	}
-	// RocksDB has no ifVersion: the removal is its own transaction instead, so a concurrent write that re-adds
-	// this entry conflicts with it rather than losing its index entry.
+	// RocksDB has no ifVersion: the removal is its own transaction instead, which re-reads the record (it may
+	// have been written again since the sweep saw it missing) and conflicts with a write that re-adds the entry.
 	function removeIndexEntryOfMissingRecord(index: any, key: any, id: Id) {
 		const transaction = txnForContext({ transaction: new DatabaseTransaction() }).getReadTxn() as any;
-		index.remove(key, id, { transaction });
+		try {
+			if (primaryStore.getEntry(id, { transaction })?.value) {
+				transaction.abort();
+				return;
+			}
+			index.remove(key, id, { transaction });
+		} catch (error) {
+			transaction.abort();
+			throw error;
+		}
 		transaction.commit().catch((error) => {
 			try {
 				transaction.abort();

@@ -28,7 +28,6 @@ describe('@expiresAt eviction survives a catalog load', function () {
 		});
 	}
 
-	// Runs `arm` and returns the expiry sweep callbacks it armed.
 	function capturingSweeps(arm) {
 		const originalSetInterval = global.setInterval;
 		const sweeps = [];
@@ -143,6 +142,28 @@ describe('@expiresAt eviction survives a catalog load', function () {
 			message: 'the sweep did not remove the orphaned index entry and evict the expired record behind it',
 		});
 		assert.deepStrictEqual(indexedIds(Expiring), ['in-window']);
+	});
+
+	it('the expiry sweep keeps the index entry of a record written again after it saw the record missing', async () => {
+		const { Expiring, sweep } = declareWithSweep('ExpiresAtSweepRecreated');
+		const writtenAgain = { id: 'written-again', expiresAt: Date.now() - 1000 };
+		await Expiring.put('written-again', writtenAgain, { expiresAt: Date.now() + 3_600_000 });
+		// the sweep's first look finds no record, as if it looked just before the record was written again
+		const store = Expiring.primaryStore;
+		const ownGetEntry = Object.hasOwn(store, 'getEntry');
+		const getEntry = store.getEntry;
+		store.getEntry = function (id, options) {
+			return id === 'written-again' && !options ? undefined : getEntry.call(this, id, options);
+		};
+		try {
+			await sweep();
+		} finally {
+			if (ownGetEntry) store.getEntry = getEntry;
+			else delete store.getEntry;
+		}
+
+		assert(resident(Expiring, 'written-again'));
+		assert.deepStrictEqual(indexedIds(Expiring), ['written-again']);
 	});
 
 	it('arms the sweep of a table loaded before its thread became worker 0, once it is', async () => {
