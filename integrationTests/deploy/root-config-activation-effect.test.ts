@@ -196,3 +196,53 @@ suite('deploy_component publishes root config as an effect of the activation', (
 		);
 	});
 });
+
+// The harness hands a suite's `config` to Harper through HARPER_SET_CONFIG, which reasserts every key it names at
+// each start and config refresh — over the file, and over any edit a deploy or a drop makes to it.
+suite('an entry a config env var names', (ctx: ContextWithHarper) => {
+	const project = `${PREFIX}-forced`;
+	let fixturesDir: string;
+	let packagedV1: string;
+	let packagedV2: string;
+
+	before(async () => {
+		fixturesDir = await mkdtemp(join(tmpdir(), `${PREFIX}-forced-`));
+		packagedV1 = join(fixturesDir, 'app-v1.tgz');
+		packagedV2 = join(fixturesDir, 'app-v2.tgz');
+		await writeFile(packagedV1, Buffer.from(await buildPayload(project, 1), 'base64'));
+		await writeFile(packagedV2, Buffer.from(await buildPayload(project, 2), 'base64'));
+		await startHarper(ctx, { config: { [project]: { package: packagedV1 } }, env: {} });
+	});
+
+	after(async () => {
+		await teardownHarper(ctx);
+		await rm(fixturesDir, { recursive: true, force: true });
+	});
+
+	test('refuses a package deploy it would undo, leaving the release and its entry as they were', async () => {
+		strictEqual(await liveVersion(ctx, project), '1', 'the forced package is what boot installed');
+
+		const response = await rawOperation(ctx, {
+			operation: 'deploy_component',
+			project,
+			package: packagedV2,
+			restart: false,
+		});
+
+		strictEqual(response.status, 409, JSON.stringify(response.body));
+		ok(
+			JSON.stringify(response.body).includes(`HARPER_SET_CONFIG sets ${project}.package`),
+			JSON.stringify(response.body)
+		);
+		strictEqual(await liveVersion(ctx, project), '1', 'the release was never replaced');
+		deepStrictEqual(await rootConfigEntry(ctx, project), { package: packagedV1 });
+	});
+
+	test('refuses a drop whose entry it would put back, leaving the component whole', async () => {
+		const response = await rawOperation(ctx, { operation: 'drop_component', project });
+
+		strictEqual(response.status, 409, JSON.stringify(response.body));
+		strictEqual(await liveVersion(ctx, project), '1', 'the tree stays');
+		deepStrictEqual(await rootConfigEntry(ctx, project), { package: packagedV1 }, 'and so does its entry');
+	});
+});
