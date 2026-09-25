@@ -314,7 +314,13 @@ const registerFastifySerializers = fp(
 		fastify.addHook('preSerialization', async (request, reply) => {
 			const contentType = reply.raw.getHeader('content-type');
 			if (contentType) return;
-			const { serializer, type } = findBestSerializer(request.raw);
+			let { serializer, type } = findBestSerializer(request.raw);
+			// An error is an ordinary response, not a stream that started: written as an unnamed event it
+			// reads to an SSE client as a stream that ended without a result.
+			if (type === 'text/event-stream' && reply.statusCode >= 400) {
+				serializer = mediaTypes.get('application/json');
+				type = 'application/json';
+			}
 			reply.type(type);
 			reply.serializer(function (data: any) {
 				let serialize: (data: any, context: any) => any;

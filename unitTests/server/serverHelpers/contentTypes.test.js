@@ -401,3 +401,99 @@ describe('contentTypes – text/event-stream (SSE)', function () {
 		}
 	});
 });
+
+describe('contentTypes – an operations-server error to a request that negotiates an event stream', function () {
+	const Fastify = require('fastify');
+	const { Readable } = require('node:stream');
+	const { decode: decodeCbor } = require('cbor-x');
+	const { registerContentHandlers } = require('#src/server/serverHelpers/contentTypes');
+	const { serverErrorHandler } = require('#js/server/serverHelpers/serverHandlers');
+
+	// The shape chooseOperation throws when the role allowlist refuses an operation.
+	const refusal = {
+		error: 'This operation is not authorized due to role restrictions and/or invalid database items',
+		unauthorized_access: ["Operation 'deploy_component' is not permitted for this role's operations configuration"],
+		invalid_schema_items: [],
+	};
+	const failure = (statusCode, http_resp_msg = refusal) => Object.assign(new Error(), { statusCode, http_resp_msg });
+
+	let app;
+	async function serve(handler, hook) {
+		app = Fastify();
+		registerContentHandlers(app);
+		app.setErrorHandler(serverErrorHandler);
+		if (hook) app.addHook('preValidation', hook);
+		app.post('/', handler);
+		await app.ready();
+	}
+	const post = (accept) =>
+		app.inject({ method: 'POST', url: '/', headers: { accept }, payload: { operation: 'deploy_component' } });
+
+	afterEach(async () => {
+		await app?.close();
+		app = undefined;
+	});
+
+	for (const statusCode of [400, 401, 403, 500]) {
+		it(`answers a ${statusCode} as JSON, not as an event stream`, async function () {
+			await serve(async () => {
+				throw failure(statusCode);
+			});
+			const res = await post('text/event-stream');
+			assert.strictEqual(res.statusCode, statusCode);
+			assert.match(res.headers['content-type'], /^application\/json/);
+			assert.deepStrictEqual(JSON.parse(res.body), refusal);
+		});
+	}
+
+	it('answers a refusal from a request hook as JSON too', async function () {
+		await serve(
+			async () => ({ ok: true }),
+			(request, reply, done) => done(Object.assign(new Error('Login failed'), { statusCode: 401 }))
+		);
+		const res = await post('text/event-stream');
+		assert.strictEqual(res.statusCode, 401);
+		assert.match(res.headers['content-type'], /^application\/json/);
+		assert.deepStrictEqual(JSON.parse(res.body), { error: 'Login failed' });
+	});
+
+	it('still negotiates an event stream for a successful reply', async function () {
+		await serve(async () => ({ ok: true }));
+		const res = await post('text/event-stream');
+		assert.strictEqual(res.statusCode, 200);
+		assert.match(res.headers['content-type'], /^text\/event-stream/);
+		assert.strictEqual(res.body, 'data: {"ok":true}\n\n');
+	});
+
+	it('leaves a stream that set its own event-stream type alone, error events included', async function () {
+		const body = 'event: error\ndata: {"message":"install failed"}\n\n';
+		await serve(async (request, reply) => {
+			reply.header('Content-Type', 'text/event-stream');
+			return Readable.from([body]);
+		});
+		const res = await post('text/event-stream');
+		assert.strictEqual(res.statusCode, 200);
+		assert.match(res.headers['content-type'], /^text\/event-stream/);
+		assert.strictEqual(res.body, body);
+	});
+
+	it('leaves an error with an explicit type alone', async function () {
+		await serve(async (request, reply) => reply.code(403).type('text/plain').send('refused'));
+		const res = await post('text/event-stream');
+		assert.strictEqual(res.statusCode, 403);
+		assert.match(res.headers['content-type'], /^text\/plain/);
+		assert.strictEqual(res.body, 'refused');
+	});
+
+	for (const accept of ['application/cbor', 'application/cbor, text/event-stream;q=0.1']) {
+		it(`still answers an error as CBOR when that is negotiated (${accept})`, async function () {
+			await serve(async () => {
+				throw failure(403);
+			});
+			const res = await post(accept);
+			assert.strictEqual(res.statusCode, 403);
+			assert.match(res.headers['content-type'], /^application\/cbor/);
+			assert.deepStrictEqual(decodeCbor(res.rawPayload), refusal);
+		});
+	}
+});

@@ -1003,6 +1003,132 @@ describe('cliOperations', () => {
 	// (`harper deploy setup token=…` — bare `setup` is dropped by buildRequest) falls through to an
 	// ordinary deploy, so the token must not be loggable or serializable on ANY path, not just the
 	// setup one.
+	// What a server writes when it labels a reply as an event stream without a `done` or `error` event:
+	// older servers negotiate a pre-stream refusal (and, when the version probe could not tell, a
+	// pre-5.1 result) into one unnamed frame. Served from a real socket so the CLI's own request,
+	// streaming and parsing all run.
+	describe('deploy_component replies labeled as an event stream', () => {
+		const http = require('node:http');
+		let server;
+		let target;
+		let respond;
+		let originalExit;
+		let originalConsoleError;
+		let exitCalls;
+		let consoleErrorLines;
+
+		before(async () => {
+			server = http.createServer((req, res) => {
+				let body = '';
+				req.on('data', (chunk) => (body += chunk));
+				req.on('end', () => {
+					if (JSON.parse(body).operation === 'registration_info') {
+						res.writeHead(200, { 'content-type': 'application/json' });
+						res.end(JSON.stringify({ version: '5.3.0' }));
+					} else {
+						respond(res);
+					}
+				});
+			});
+			await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+			target = `http://127.0.0.1:${server.address().port}`;
+		});
+
+		after(() => new Promise((resolve) => server.close(resolve)));
+
+		beforeEach(() => {
+			commonUtilsModule.httpRequest = originalHttpRequest;
+			exitCalls = [];
+			originalExit = process.exit;
+			process.exit = (code) => {
+				exitCalls.push(code);
+			};
+			consoleErrorLines = [];
+			originalConsoleError = console.error;
+			console.error = (...args) => {
+				consoleErrorLines.push(args.join(' '));
+			};
+		});
+
+		afterEach(() => {
+			process.exit = originalExit;
+			console.error = originalConsoleError;
+		});
+
+		const eventStream = (status, body) => (res) => {
+			res.writeHead(status, { 'content-type': 'text/event-stream' });
+			res.end(body);
+		};
+		const deploy = () =>
+			cliOperationsModule.cliOperations(
+				{
+					operation: 'deploy_component',
+					package: '@scope/widget',
+					project: 'widget',
+					target,
+					auth_username: 'admin',
+					auth_password: 'admin-secret',
+				},
+				true
+			);
+		const refusal = {
+			error: 'This operation is not authorized due to role restrictions and/or invalid database items',
+			unauthorized_access: ["Operation 'deployComponent' is not permitted for this role's operations configuration"],
+			invalid_schema_items: [],
+		};
+
+		it('prints a refusal written as an unnamed frame', async () => {
+			respond = eventStream(403, `data: ${JSON.stringify(refusal)}\n\n`);
+			await deploy();
+			assert.deepStrictEqual(exitCalls, [1]);
+			// YAML folds long lines, so compare with whitespace collapsed.
+			const printed = consoleErrorLines.join(' ').replace(/\s+/g, ' ');
+			assert.ok(
+				printed.includes("Operation 'deployComponent' is not permitted for this role's operations configuration"),
+				printed
+			);
+			assert.ok(!printed.includes('no result payload'), printed);
+		});
+
+		it('prints an error body with no frames as it came', async () => {
+			respond = eventStream(502, '<html><body>Bad Gateway</body></html>');
+			await deploy();
+			assert.deepStrictEqual(exitCalls, [1]);
+			assert.match(consoleErrorLines.join('\n'), /Bad Gateway/);
+		});
+
+		it('returns the last unnamed frame when the stream ends without a done event', async () => {
+			respond = eventStream(
+				200,
+				`data: ${JSON.stringify({ message: 'first' })}\n\ndata: ${JSON.stringify({ message: 'Successfully deployed: widget' })}\n\n`
+			);
+			const result = await deploy();
+			assert.deepStrictEqual(exitCalls, []);
+			assert.strictEqual(result.message, 'Successfully deployed: widget');
+		});
+
+		it('keeps an unnamed frame that is not JSON as text', async () => {
+			respond = eventStream(200, 'data: deployed widget\n\n');
+			const result = await deploy();
+			assert.strictEqual(result.message, 'deployed widget');
+		});
+
+		it('does not promote an unnamed frame over a done event without a result', async () => {
+			respond = eventStream(200, `data: ${JSON.stringify({ message: 'diagnostic' })}\n\nevent: done\ndata: {}\n\n`);
+			const result = await deploy();
+			assert.strictEqual(result.message, 'Deploy completed (no result payload).');
+		});
+
+		it('fails when the stream breaks after an unnamed frame', async () => {
+			respond = (res) => {
+				res.writeHead(200, { 'content-type': 'text/event-stream' });
+				res.write(`data: ${JSON.stringify({ message: 'partial' })}\n\n`, () => res.destroy());
+			};
+			await deploy();
+			assert.deepStrictEqual(exitCalls, [1]);
+		});
+	});
+
 	describe('token= is never logged or sent', () => {
 		it('redacts token in the parsed-request trace log', () => {
 			const redacted = cliOperationsModule.redactCredentials({

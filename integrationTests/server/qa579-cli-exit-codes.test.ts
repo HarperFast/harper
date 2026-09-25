@@ -22,6 +22,7 @@
  *                           HARPER_CLI_TIMEOUT_MS so the test stays fast
  *   4. failed operation   — describe_table against a nonexistent table
  *   5. success control    — describe_all against the real instance
+ *   6. refused deploy     — deploy_component refused before its event stream starts
  *
  * Each CLI invocation is also wrapped in a hard child-process timeout well
  * above the CLI's own configured timeout: if the fix regressed and the CLI
@@ -39,6 +40,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server } from 'node:net';
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import {
 	setupHarperWithFixture,
 	teardownHarper,
@@ -375,5 +377,66 @@ suite('QA-579 CLI exit-code contract matrix (PR #1801)', (ctx: ContextWithHarper
 			/schema:\s*data\b/.test(result.stdout) && result.stdout.includes('Item'),
 			`Expected describe_all output to list the "data" database's "Item" table, got: ${result.stdout}`
 		);
+	});
+
+	test('Cell 6: refused deploy (refused before its event stream starts) -> non-zero exit naming the refusal', async () => {
+		const adminAuth = 'Basic ' + Buffer.from(`${DEFAULT_ADMIN_USERNAME}:${DEFAULT_ADMIN_PASSWORD}`).toString('base64');
+		const asAdmin = (body: object) =>
+			fetch(operationsAPIURL, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Authorization': adminAuth },
+				body: JSON.stringify(body),
+			});
+		// An allowlist without deploy_component: dispatch refuses the deploy before any event is streamed.
+		const role = await asAdmin({
+			operation: 'add_role',
+			role: 'qa579_no_deploy',
+			permission: { operations: ['describe_all'] },
+		});
+		equal(role.status, 200, `add_role: ${await role.text()}`);
+		const user = await asAdmin({
+			operation: 'add_user',
+			role: 'qa579_no_deploy',
+			username: 'qa579_deployer',
+			password: 'Qa579-deployer!',
+			active: true,
+		});
+		equal(user.status, 200, `add_user: ${await user.text()}`);
+
+		const result = runCli(
+			[
+				'deploy_component',
+				`target=${operationsAPIURL}`,
+				'username=qa579_deployer',
+				'password=Qa579-deployer!',
+				'project=qa579-refused',
+				'package=@harperfast/qa579-never-installed',
+			],
+			{},
+			scratchHome
+		);
+
+		// YAML folds long lines, so compare with whitespace collapsed.
+		const combined = (result.stdout + result.stderr).replace(/\s+/g, ' ').trim();
+		matrix.push({
+			cell: '6. refused-deploy',
+			expectedNonZero: true,
+			status: result.status,
+			verdict: !result.hung && result.status !== 0 ? 'EXPECTED' : result.hung ? 'DEFECT(hang)' : 'DEFECT',
+			message: combined.slice(0, 160).replace(/\n/g, ' '),
+		});
+
+		ok(!result.hung, `CLI hung instead of exiting — stderr: ${result.stderr}`);
+		notEqual(
+			result.status,
+			0,
+			`Expected non-zero exit for a refused deploy, got ${result.status}. stderr: ${result.stderr}`
+		);
+		ok(
+			combined.includes("is not permitted for this role's operations configuration"),
+			`Expected the server's refusal in the CLI output, got: ${combined}`
+		);
+		ok(!combined.includes('no result payload'), `Expected the refusal, not a missing-result message: ${combined}`);
+		ok(!existsSync(join(ctx.harper.dataRootDir, 'components', 'qa579-refused')), 'the refused deploy wrote nothing');
 	});
 });
