@@ -164,10 +164,11 @@ declarations (dataLayer/DESIGN.md, "System table bootstrap"). A row's expiry is 
 - A revocation (`hdb_revoked_certificates`) lives until `crl_next_update + gracePeriod`, the window
   `performCRLCheck` honors while it decides by `crl_next_update`. Expiring it at `nextUpdate` made that branch
   unreachable and reported a revoked certificate on an overdue CRL as good.
-- A CRL's revocations replace the previous set all or nothing, in a transaction of their own committed before
-  `performCRLCheck` reads them back, and that read runs outside the verdict fill's transaction `performCRLCheck`
-  otherwise joins: on LMDB that transaction neither reads its own staged writes nor sees rows committed after
-  its snapshot, so a revoked certificate read as good on its first check.
+- A CRL's revocations replace the previous set all or nothing, in a transaction of their own rather than the
+  verdict fill's `performCRLCheck` runs in, so other checks see a complete set once it commits. The check that
+  downloaded the CRL decides from the CRL itself: by the time it could read the table, another worker may have
+  replaced the set with a different generation of that CRL. A check answered by a cached CRL reads the table
+  outside the verdict fill's transaction, whose LMDB snapshot misses rows committed after it.
 
 ## A component-facing export needs BOTH `index.ts` and `getHarperExports` (`security/jsLoader.ts`, `index.ts`)
 
