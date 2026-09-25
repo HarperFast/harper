@@ -116,9 +116,9 @@ import {
 	type RestoreLock,
 } from '../dataLayer/restoreMarker.ts';
 import {
-	claimDatabaseDropPreparation,
+	claimDatabaseDropPreparations,
 	databaseDropPrepared,
-	releaseDatabaseDropPreparation,
+	releaseDatabaseDropPreparations,
 	trackDatabaseDropPreparationTask,
 } from './databaseDropPreparation.ts';
 
@@ -2378,19 +2378,35 @@ export async function dropDatabase(databaseName) {
  * An LMDB database is closed by closing its environment, which releases every dbi in it, so every
  * other database alias sharing that environment is closed with it.
  */
-const databaseDropPreparationTasks = new Map<string, { id: string; task: Promise<void> }>();
+const databaseDropPreparationTasks = new Map<string, { id: string; task: Promise<void>; databaseNames: string[] }>();
 
-export function prepareDatabaseDrop(databaseName: string, preparationId: string, ownerThreadId: number): Promise<void> {
+export function databaseAliasNames(databaseName: string): string[] {
+	return databases[databaseName] ? [...collectDatabaseGraph(databaseName).databaseNames] : [databaseName];
+}
+
+export function prepareDatabaseDrop(
+	databaseName: string,
+	preparationId: string,
+	ownerThreadId: number,
+	requestedDatabaseNames: Iterable<string> = [databaseName]
+): Promise<void> {
 	const existing = databaseDropPreparationTasks.get(databaseName);
 	if (existing?.id === preparationId) return existing.task;
-	claimDatabaseDropPreparation(databaseName, preparationId, ownerThreadId);
+	const databaseNames = [
+		...new Set([...requestedDatabaseNames, ...(databases[databaseName] ? databaseAliasNames(databaseName) : [])]),
+	];
+	claimDatabaseDropPreparations(databaseNames, preparationId, ownerThreadId);
 	const task = closeDatabase(databaseName, { requireClosed: true }).then(() => undefined);
-	databaseDropPreparationTasks.set(databaseName, { id: preparationId, task });
-	trackDatabaseDropPreparationTask(databaseName, preparationId, task);
+	databaseDropPreparationTasks.set(databaseName, { id: preparationId, task, databaseNames });
+	for (const name of databaseNames) trackDatabaseDropPreparationTask(name, preparationId, task);
 	return task;
 }
 
-export async function completeDatabaseDropPreparation(databaseName: string, preparationId: string): Promise<void> {
+export async function completeDatabaseDropPreparation(
+	databaseName: string,
+	preparationId: string,
+	requestedDatabaseNames: Iterable<string> = [databaseName]
+): Promise<void> {
 	const existing = databaseDropPreparationTasks.get(databaseName);
 	if (existing?.id === preparationId) {
 		try {
@@ -2401,7 +2417,7 @@ export async function completeDatabaseDropPreparation(databaseName: string, prep
 		}
 		databaseDropPreparationTasks.delete(databaseName);
 	}
-	releaseDatabaseDropPreparation(databaseName, preparationId);
+	releaseDatabaseDropPreparations(existing?.databaseNames ?? requestedDatabaseNames, preparationId);
 }
 
 export async function closeDatabase(
@@ -2432,10 +2448,11 @@ export async function closeDatabase(
 		for (const tableName in dbTables) {
 			const table: any = dbTables[tableName];
 			if (!table?.primaryStore || lmdbRootStores.has(table.primaryStore.rootStore)) continue;
+			const tableIdentity = `${table.databaseName ?? databaseName}.${table.tableName ?? tableName}`;
 			for (const indexName in table.indices || {}) {
-				await closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
+				await closeStore(table.indices[indexName], `index ${tableIdentity}.${indexName}`);
 			}
-			await closeStore(table.primaryStore, `table ${tableName}`);
+			await closeStore(table.primaryStore, `table ${tableIdentity}`);
 		}
 		for (const rootStore of rootStores) {
 			removeStorageReclamation(rootStore.path);
@@ -2462,7 +2479,10 @@ export async function closeDatabase(
 				rocksdbDatabaseEnvs.delete(rootStore.path);
 			}
 			for (const name of databaseNames) unregisterDatabase(name);
-			throw new AggregateError(closeFailures, `Could not close database '${databaseName}' for destructive DDL`);
+			throw new AggregateError(
+				closeFailures,
+				`Could not close database graph '${[...databaseNames].join("', '")}' for destructive DDL`
+			);
 		}
 		for (const name of databaseNames) unregisterDatabase(name);
 		databaseClosed = true;

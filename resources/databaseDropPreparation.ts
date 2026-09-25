@@ -7,7 +7,11 @@ type DatabaseDropPreparation = {
 	preparationTask?: Promise<void>;
 };
 
-const databaseDropPreparations = new Map<string, DatabaseDropPreparation>(workerData?.databaseDropPreparations ?? []);
+const inheritedDatabaseDropPreparations = (workerData?.databaseDropPreparations ?? []).filter(
+	([, preparation]: [string, DatabaseDropPreparation]) =>
+		preparation.ownerThreadId === 0 || workerData?.addThreadIds?.includes(preparation.ownerThreadId)
+);
+const databaseDropPreparations = new Map<string, DatabaseDropPreparation>(inheritedDatabaseDropPreparations);
 
 class DatabaseDroppingError extends Error {
 	statusCode = 409;
@@ -34,6 +38,26 @@ export function claimDatabaseDropPreparation(
 
 export function releaseDatabaseDropPreparation(databaseName: string, preparationId: string): void {
 	if (databaseDropPreparations.get(databaseName)?.id === preparationId) databaseDropPreparations.delete(databaseName);
+}
+
+export function claimDatabaseDropPreparations(
+	databaseNames: Iterable<string>,
+	preparationId: string,
+	ownerThreadId = threadId
+): void {
+	const claimed: string[] = [];
+	try {
+		for (const databaseName of new Set(databaseNames)) {
+			if (claimDatabaseDropPreparation(databaseName, preparationId, ownerThreadId)) claimed.push(databaseName);
+		}
+	} catch (error) {
+		for (const databaseName of claimed) releaseDatabaseDropPreparation(databaseName, preparationId);
+		throw error;
+	}
+}
+
+export function releaseDatabaseDropPreparations(databaseNames: Iterable<string>, preparationId: string): void {
+	for (const databaseName of new Set(databaseNames)) releaseDatabaseDropPreparation(databaseName, preparationId);
 }
 
 export function trackDatabaseDropPreparationTask(

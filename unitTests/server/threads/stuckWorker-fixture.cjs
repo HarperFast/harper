@@ -1,7 +1,8 @@
 'use strict';
 
-const { parentPort, workerData } = require('node:worker_threads');
+const { parentPort } = require('node:worker_threads');
 const { broadcastWithAcknowledgement } = require('#js/server/threads/manageThreads');
+const { databaseDropPreparationSnapshot } = require('#src/resources/databaseDropPreparation');
 let acknowledgementCount = 0;
 
 parentPort.on('message', (message) => {
@@ -40,6 +41,6 @@ parentPort.on('message', (message) => {
 });
 // manageThreads unrefs parentPort, so something must keep a non-blocking fixture alive.
 const keepAlive = setInterval(() => {}, 10000);
-parentPort.postMessage({ type: 'fixture-ready', databaseDropPreparations: workerData.databaseDropPreparations });
+parentPort.postMessage({ type: 'fixture-ready', databaseDropPreparations: databaseDropPreparationSnapshot() });
 if (process.argv.includes('--block')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
 if (process.argv.includes('--spin')) for (;;);

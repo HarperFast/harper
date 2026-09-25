@@ -2,10 +2,17 @@ import searchValidator from '../../validation/searchValidator.ts';
 import { randomUUID } from 'node:crypto';
 import { threadId } from 'node:worker_threads';
 import { handleHDBError, ClientError, hdbErrors } from '../../utility/errors/hdbError.ts';
-import { table, getDatabases, database, dropDatabase, type Table } from '../../resources/databases.ts';
 import {
-	claimDatabaseDropPreparation,
-	releaseDatabaseDropPreparation,
+	table,
+	getDatabases,
+	database,
+	databaseAliasNames,
+	dropDatabase,
+	type Table,
+} from '../../resources/databases.ts';
+import {
+	claimDatabaseDropPreparations,
+	releaseDatabaseDropPreparations,
 } from '../../resources/databaseDropPreparation.ts';
 import insertUpdateValidate from './bridgeUtility/insertUpdateValidate.js';
 import SearchObject from '../SearchObject.ts';
@@ -193,15 +200,17 @@ export class ResourceBridge extends BridgeMethods {
 
 	async dropSchema(dropSchemaObj) {
 		const preparationId = randomUUID();
+		const databaseNames = databaseAliasNames(dropSchemaObj.schema);
 		const completion = () => {
 			const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, dropSchemaObj.schema);
 			message.dropPreparationId = preparationId;
 			message.dropPreparationOwnerThreadId = threadId;
+			message.dropPreparationDatabaseNames = databaseNames;
 			return message;
 		};
 		const preparation: any = completion();
 		preparation.prepareDrop = true;
-		claimDatabaseDropPreparation(dropSchemaObj.schema, preparationId, threadId);
+		claimDatabaseDropPreparations(databaseNames, preparationId, threadId);
 		try {
 			await signalling.signalSchemaChangeToPeers(preparation);
 			await dropDatabase(dropSchemaObj.schema);
@@ -213,7 +222,7 @@ export class ResourceBridge extends BridgeMethods {
 				includeJobWorkers: true,
 				peerRounds: 2,
 			});
-			releaseDatabaseDropPreparation(dropSchemaObj.schema, preparationId);
+			releaseDatabaseDropPreparations(databaseNames, preparationId);
 		}
 	}
 

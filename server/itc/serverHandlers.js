@@ -56,12 +56,17 @@ async function schemaHandler(event) {
 			await prepareDatabaseDrop(
 				event.message.schema,
 				event.message.dropPreparationId,
-				event.message.dropPreparationOwnerThreadId
+				event.message.dropPreparationOwnerThreadId,
+				event.message.dropPreparationDatabaseNames
 			);
 			return;
 		}
 		if (event.message.dropPreparationId)
-			await completeDatabaseDropPreparation(event.message.schema, event.message.dropPreparationId);
+			await completeDatabaseDropPreparation(
+				event.message.schema,
+				event.message.dropPreparationId,
+				event.message.dropPreparationDatabaseNames
+			);
 	}
 	// restore_backup: this thread must release its store handles so the restore can purge and
 	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while

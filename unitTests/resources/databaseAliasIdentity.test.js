@@ -9,7 +9,16 @@ const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 const { dropSchema } = require('#src/dataLayer/schema');
 const { registryStatus } = require('@harperfast/rocksdb-js');
-const { table, closeDatabase, getDatabases, resetDatabases } = require('#src/resources/databases');
+const {
+	table,
+	database,
+	databaseAliasNames,
+	closeDatabase,
+	completeDatabaseDropPreparation,
+	getDatabases,
+	prepareDatabaseDrop,
+	resetDatabases,
+} = require('#src/resources/databases');
 const { databasePaths, getRootBlobPathsForDB } = require('#src/resources/blob');
 const {
 	onMessageByType,
@@ -229,6 +238,28 @@ describe('shared root-store database identity', function () {
 		assert.strictEqual(remaining.physicalalias, undefined);
 		assert.strictEqual(remaining.configuredalias, undefined);
 		assert.strictEqual(await closeDatabase('configuredalias'), false);
+	});
+
+	it('fences every alias between destructive preparation and completion', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const storageRoot = join(testRoot, 'alias-drop-fence');
+		const tableName = 'AliasDropFence';
+		const preparationId = 'alias-drop-fence-test';
+		await createPhysicalStore(storageRoot, 'physicalalias', tableName);
+		loadAliases(storageRoot, { configured: ['configuredalias'] });
+		loadedAliases = ['physicalalias', 'configuredalias'];
+		const databaseNames = databaseAliasNames('physicalalias');
+
+		await prepareDatabaseDrop('physicalalias', preparationId, 0, databaseNames);
+		for (const name of databaseNames) {
+			assert.throws(
+				() => database({ database: name }),
+				(error) => error.code === 'DATABASE_CLOSING'
+			);
+		}
+
+		await completeDatabaseDropPreparation('physicalalias', preparationId, databaseNames);
+		assert.ok(database({ database: 'configuredalias' }));
 	});
 
 	it('prunes both aliases on the originating thread and another worker after the shared store is dropped', async function () {

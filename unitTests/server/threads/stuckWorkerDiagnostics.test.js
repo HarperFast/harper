@@ -240,6 +240,19 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		}
 	});
 
+	it('does not inherit a fence whose owner is absent from the new worker topology', async function () {
+		const databaseName = 'worker-start-after-drop-owner-exit';
+		const preparationId = 'worker-start-after-drop-owner-exit-test';
+		claimDatabaseDropPreparation(databaseName, preparationId, 999_999);
+		try {
+			const worker = await startFixtureWorker('acknowledge');
+			started.push(worker);
+			assert.deepStrictEqual(worker.databaseDropPreparations, []);
+		} finally {
+			releaseDatabaseDropPreparation(databaseName, preparationId);
+		}
+	});
+
 	it('releases a database-drop fence when its owning worker exits', async function () {
 		const worker = await startFixtureWorker('acknowledge');
 		started.push(worker);
