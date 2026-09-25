@@ -1909,6 +1909,19 @@ export function closeBranchDatabases(): void {
 	for (const branch of [...openBranches.values()]) branch?.close();
 }
 
+/**
+ * Re-evaluates worker 0's `@expiresAt` sweep for the tables this thread has loaded. The main thread becomes
+ * worker 0 only when it serves requests itself (`threads: 0`), after bin/run.ts has already loaded and
+ * declared tables, and a table arms that sweep only on a thread that owns it at the time.
+ */
+export function armLoadedExpirySweeps(): void {
+	for (const tables of Object.values(databases)) {
+		for (const Table of Object.values(tables) as any[]) {
+			if (Table?.attributes?.some((attribute) => attribute.expiresAt)) Table.setTTLExpiration({ fromSchema: true });
+		}
+	}
+}
+
 export function resetDatabases() {
 	loadedDatabases = false;
 	for (const store of Object.values(lmdbDatabaseEnvs)) {
@@ -3916,6 +3929,20 @@ async function markAbandonedIndexBuild(Table, rootStore, buildIds: Map<any, stri
 		}
 	}
 }
+/**
+ * Writes a build's progress through `attribute`, the object the declaration that started the build handed
+ * it. A later declaration that changed only `expiresAt` rewrote the descriptor without restarting the build
+ * (it is not a structural change), so that flag is read back from the catalog rather than reverted.
+ */
+function persistBuildState(Table, attribute) {
+	const durable = Table.dbisDB.getSync(attribute.key);
+	if (durable && !durable.expiresAt !== !attribute.expiresAt) {
+		if (durable.expiresAt) attribute.expiresAt = true;
+		else delete attribute.expiresAt;
+	}
+	return Table.dbisDB.put(attribute.key, attribute);
+}
+
 async function runIndexing(Table, attributes, indicesToRemove, branchPath?: string) {
 	let checkpointing;
 	let hadIndexingErrors = false;
@@ -4007,7 +4034,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 						attribute.lastIndexedKey = key;
 						attribute.checkpointCertified = key;
 						attribute.checkpointAlgorithm = CHECKPOINT_ALGORITHM;
-						puts.push(Table.dbisDB.put(attribute.key, attribute));
+						puts.push(persistBuildState(Table, attribute));
 					}
 					await Promise.all(puts);
 				} catch (error) {
@@ -4114,7 +4141,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			for (const attribute of attributes) {
 				attribute.indexingFailed = true;
 				// Preserve lastIndexedKey so the retry resumes from the last checkpoint.
-				lastResolution = Table.dbisDB.put(attribute.key, attribute);
+				lastResolution = persistBuildState(Table, attribute);
 				// Keep isIndexing = true on both the attribute.dbi and the currently-active dbi
 				// in Table.indices (which may differ if resetDatabases() ran during this pass).
 				attribute.dbi.isIndexing = true;
@@ -4146,7 +4173,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 				// opened a new dbi and registered it there.
 				const activeDbi = Table.indices[attribute.name];
 				if (activeDbi) activeDbi.isIndexing = false;
-				lastResolution = Table.dbisDB.put(attribute.key, attribute);
+				lastResolution = persistBuildState(Table, attribute);
 			}
 			await lastResolution;
 			// now notify all the threads that we are done and the index is ready to use
@@ -4180,7 +4207,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			const puts: Promise<unknown>[] = [];
 			for (const attribute of attributes) {
 				attribute.indexingFailed = true;
-				puts.push(Table.dbisDB.put(attribute.key, attribute));
+				puts.push(persistBuildState(Table, attribute));
 				attribute.dbi.isIndexing = true;
 				const activeDbi = Table.indices[attribute.name];
 				if (activeDbi) activeDbi.isIndexing = true;

@@ -1,10 +1,6 @@
-// The ops API denies writes to the `system` database (403), and describe_table does not report an
-// attribute's expiresAt flag, so the suite reaches system.hdb_oidc_token_use in-process.
-//
-//   GET  /TokenUseTable/          — the table's declared shape (live and in __dbis__) and every stored row
-//                                   read straight from the primary store, so an expired row still shows
-//                                   until the expiry sweep physically removes it.
-//   POST /TokenUseTable/ { rows } — write replay rows the way a replicated exchange leaves them.
+// The ops API denies writes to the `system` database (403) and describe_table omits an attribute's expiresAt
+// flag, so the suite reaches system.hdb_oidc_token_use in-process. Rows are read from the primary store, not
+// through a get or search, because those hide an expired row that the sweep has not physically removed yet.
 
 const TABLE = 'hdb_oidc_token_use';
 

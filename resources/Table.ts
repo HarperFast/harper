@@ -8406,14 +8406,17 @@ export function makeTable(options) {
 			return primaryStore.remove(id, version);
 		});
 	}
-	function* expiresAtIndexEntries(index: any, end: number): Generator<{ key: any; id: Id }> {
-		if (isRocksDB) {
-			// a RocksIndexStore holds each [value, primary key] pair as its own composite key and has no getValues
-			for (const { key, value } of index.getRange({ start: true, end, snapshot: false })) yield { key, id: value };
-		} else {
-			for (const key of index.getRange({ start: true, values: false, end, snapshot: false }))
-				for (const id of index.getValues(key)) yield { key, id };
-		}
+	// RocksDB has no ifVersion: the removal is its own transaction instead, so a concurrent write that re-adds
+	// this entry conflicts with it rather than losing its index entry.
+	function removeIndexEntryOfMissingRecord(index: any, key: any, id: Id) {
+		const transaction = txnForContext({ transaction: new DatabaseTransaction() }).getReadTxn() as any;
+		index.remove(key, id, { transaction });
+		transaction.commit().catch((error) => {
+			try {
+				transaction.abort();
+			} catch {}
+			if (error?.code !== 'ERR_BUSY') logger.warn?.('Error removing the index entry of a missing record', id, error);
+		});
 	}
 	function runRecordExpirationEviction() {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
@@ -8430,16 +8433,32 @@ export function makeTable(options) {
 					const expiresAtName = expiresAtProperty.name;
 					const index = indices[expiresAtName];
 					if (!index) throw new Error(`expiresAt attribute ${expiresAtProperty} must be indexed`);
-					for (const { key, id } of expiresAtIndexEntries(index, Date.now())) {
+					const evictIfExpired = (key: any, id: Id) => {
 						const recordEntry = primaryStore.getEntry(id);
 						if (!recordEntry?.value) {
 							// cleanup the index if the record is gone
-							primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id));
-						} else if (recordEntry.value[expiresAtName] < Date.now()) {
+							if (primaryStore.ifVersion) primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id));
+							else removeIndexEntryOfMissingRecord(index, key, id);
+						} else if (
+							// the stored expiry is the effective one (an explicit expiresAt on the write outranks the
+							// field); a row stored without one falls back to the field it is indexed by
+							(recordEntry.expiresAt >= 0 ? recordEntry.expiresAt : recordEntry.value[expiresAtName]) < Date.now()
+						) {
 							// make sure the record hasn't changed and won't change while removing
 							TableResource.evict(id, recordEntry.value, recordEntry.version);
 						}
-						await rest();
+					};
+					if (isRocksDB) {
+						// a RocksIndexStore holds each [value, primary key] pair as its own composite key and has no getValues
+						for (const { key, value: id } of index.getRange({ start: true, end: Date.now(), snapshot: false })) {
+							evictIfExpired(key, id);
+							await rest();
+						}
+					} else {
+						for (const key of index.getRange({ start: true, values: false, end: Date.now(), snapshot: false })) {
+							for (const id of index.getValues(key)) evictIfExpired(key, id);
+							await rest();
+						}
 					}
 				} catch (error) {
 					logger.error?.('Error in evicting old records', error);

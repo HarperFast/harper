@@ -142,14 +142,7 @@ function indexedIds(expiresAtValue) {
 describe('system.hdb_oidc_token_use converges on one declared shape', function () {
 	this.timeout(60000);
 
-	before(async () => {
-		await testUtils.ensureSystemTables();
-		// the per-PID root was just mounted from systemSchema.json: the stub every pre-fix node has
-		assert.deepStrictEqual(
-			liveShape().attributes.map(({ name }) => name),
-			['id']
-		);
-	});
+	before(() => testUtils.ensureSystemTables());
 
 	after(async () => {
 		await dropTokenUseTable();

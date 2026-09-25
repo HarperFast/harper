@@ -1,11 +1,7 @@
 /**
- * The one definition of system.hdb_oidc_token_use, the spent-identity-token table the OIDC exchange
- * checks for replay.
- *
- * Every node must hold it in this shape whether or not it ever performs an exchange: passive cluster
- * members receive every replicated replay row, and only an `expiresAt` declared on the node itself
- * evicts them. So it is declared on every boot, by the 5.3.0 directive, and by the exchange path — see
- * dataLayer/DESIGN.md, "System table bootstrap".
+ * Every node must declare system.hdb_oidc_token_use in this shape whether or not it ever performs an
+ * exchange: passive cluster members receive every replicated replay row, and only an `expiresAt` declared
+ * on the node itself evicts them. See dataLayer/DESIGN.md, "System table bootstrap".
  */
 
 import { table, type Table } from '../../../resources/databases.ts';
@@ -31,11 +27,7 @@ export function declareTokenUseTable(): Table {
 	});
 }
 
-/**
- * Declares the table and waits for any `expiresAt` backfill that started. A backfill that fails still
- * settles, so its outcome is read back from the catalog; until a later declaration completes it, this
- * node's replay rows do not expire.
- */
+/** A failed `expiresAt` backfill still settles, so its outcome is read back from the catalog. */
 export async function ensureTokenUseTable(): Promise<void> {
 	const TokenUseTable = declareTokenUseTable();
 	await TokenUseTable.indexingOperation;
