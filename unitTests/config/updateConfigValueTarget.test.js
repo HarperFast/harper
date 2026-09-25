@@ -9,7 +9,9 @@ const YAML = require('yaml');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { getConfigFilePath, updateConfigValue } = require('#src/config/configUtils');
+const { getConfigFilePath, getConfigValue, updateConfigObject, updateConfigValue } = require('#src/config/configUtils');
+const { CONFIG_PARAM_MAP } = require('#src/utility/hdbTerms');
+const { HOME_ENV_KEYS } = require('../bootPropsFixture.js');
 const { preserveRootConfig, readRootConfig } = require('../rootConfigFixture.js');
 
 describe('updateConfigValue', () => {
@@ -18,7 +20,6 @@ describe('updateConfigValue', () => {
 
 	beforeEach(() => {
 		elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'update-config-elsewhere-'));
-		// Config validation requires the paths the document resolves against its rootPath to exist.
 		for (const dir of ['database', 'log', 'components']) fs.mkdirSync(path.join(elsewhere, dir));
 	});
 
@@ -27,8 +28,6 @@ describe('updateConfigValue', () => {
 	});
 
 	it('writes the file boot reads, even when the document names another rootPath', () => {
-		// A layout whose config file is not at `<rootPath>/harper-config.yaml`, which is also what a
-		// `set_configuration` of `rootPath` produces for every write after it.
 		const doc = YAML.parseDocument(fs.readFileSync(getConfigFilePath(), 'utf8'));
 		doc.setIn(['rootPath'], elsewhere);
 		fs.writeFileSync(getConfigFilePath(), String(doc));
@@ -43,40 +42,47 @@ describe('updateConfigValue', () => {
 		);
 	});
 
-	/** Run `body` with the process's boot source replaced, restoring it before returning. */
-	function withBootSource({ rootPath, home }, body) {
-		const saved = { ROOTPATH: process.env.ROOTPATH, HOME: process.env.HOME };
-		const set = (name, value) => (value === undefined ? delete process.env[name] : (process.env[name] = value));
-		set('ROOTPATH', rootPath);
-		set('HOME', home);
+	/** Run `body` with ROOTPATH replaced and a home directory holding no boot props, restoring both after. */
+	function withBootSource(rootPath, body) {
+		const saved = ['ROOTPATH', ...HOME_ENV_KEYS].map((key) => [key, process.env[key]]);
+		if (rootPath === undefined) delete process.env.ROOTPATH;
+		else process.env.ROOTPATH = rootPath;
+		for (const key of HOME_ENV_KEYS) process.env[key] = elsewhere;
 		try {
 			return body();
 		} finally {
-			set('ROOTPATH', saved.ROOTPATH);
-			set('HOME', saved.HOME);
+			for (const [key, value] of saved) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
 		}
 	}
 
 	it('fails rather than writing another copy when the file boot reads is missing', () => {
 		const before = fs.readFileSync(getConfigFilePath(), 'utf8');
 
-		// Boot would read `<elsewhere>/harper-config.yaml`, which does not exist, while the copy under the cached
+		// Boot would read `<elsewhere>/harper-config.yaml`, which does not exist, while the copy under the configured
 		// rootPath does: rewriting that copy would report success for a change the next boot never sees.
-		assert.throws(
-			() =>
-				withBootSource({ rootPath: elsewhere, home: process.env.HOME }, () =>
-					updateConfigValue('logging_level', 'fatal')
-				),
-			/ENOENT/
-		);
+		assert.throws(() => withBootSource(elsewhere, () => updateConfigValue('logging_level', 'fatal')), /ENOENT/);
 
 		assert.strictEqual(fs.readFileSync(getConfigFilePath(), 'utf8'), before, 'the other copy was not rewritten');
 	});
 
-	it('falls back to the rootPath the document names when there is no boot source at all, as during an install', () => {
-		// No ROOTPATH and no boot props file: the state an install is in before it writes the boot props.
-		withBootSource({ rootPath: undefined, home: elsewhere }, () => updateConfigValue('logging_level', 'fatal'));
+	it('writes the copy under the configured rootPath when there is no boot source at all, as during an install', () => {
+		const bootConfig = fs.readFileSync(getConfigFilePath(), 'utf8');
+		const installConfigPath = path.join(elsewhere, 'harper-config.yaml');
+		const doc = YAML.parseDocument(bootConfig);
+		doc.setIn(['rootPath'], elsewhere);
+		fs.writeFileSync(installConfigPath, String(doc));
+		const configuredRoot = getConfigValue(CONFIG_PARAM_MAP.hdb_root);
+		updateConfigObject(CONFIG_PARAM_MAP.hdb_root, elsewhere);
+		try {
+			withBootSource(undefined, () => updateConfigValue('logging_level', 'fatal'));
+		} finally {
+			updateConfigObject(CONFIG_PARAM_MAP.hdb_root, configuredRoot);
+		}
 
-		assert.strictEqual(readRootConfig().logging?.level, 'fatal');
+		assert.strictEqual(YAML.parse(fs.readFileSync(installConfigPath, 'utf8')).logging?.level, 'fatal');
+		assert.strictEqual(fs.readFileSync(getConfigFilePath(), 'utf8'), bootConfig, 'the per-PID copy is untouched');
 	});
 });

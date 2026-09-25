@@ -38,4 +38,4 @@ function clearRootPath() {
 	});
 }
 
-module.exports = { clearRootPath };
+module.exports = { clearRootPath, HOME_ENV_KEYS };

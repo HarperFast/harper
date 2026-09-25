@@ -29,12 +29,12 @@ entries under (`components/rootConfigPublication.ts`; the design is in
 [components/DESIGN.md](../components/DESIGN.md#root-config-is-an-effect-of-the-activation)), because all
 three parse and rewrite the whole document and the last rename otherwise drops the others' change. The
 lock is held around `updateConfigValue` only — never across replication, which is other nodes' writes.
-`updateConfigValue` reads and writes one file: the one `getConfigFilePath()` names, which is what boot reads
-and what the lock is keyed by. Deriving it from the document's `rootPath` put the write where boot does not
-look whenever the config file is named by the boot props, and after any change to `rootPath` itself. The boot
-path is used whenever a boot source exists — `ROOTPATH`, or a boot props file — even if that file is missing,
-in which case the write fails rather than landing in a copy boot will not read. Only with no boot source at all,
-as during an install before the boot props are written, is the path derived from the document's `rootPath`.
+`updateConfigValue` reads and writes one file, `getRootConfigFilePath()`, which is also what the lock is keyed
+by. Deriving it from the document's `rootPath` put the write where boot does not look whenever the config file
+is named by the boot props, and after any change to `rootPath` itself. The boot path is used whenever a boot
+source exists — `ROOTPATH`, or a boot props file — even if that file is missing, in which case the write fails
+rather than landing in a copy boot will not read. Only with no boot source at all, as during an install before
+the boot props are written, is the path derived from the configured `rootPath`.
 Stranded earlier writes are not merged: choosing between divergent documents is the operator's call.
 A write another durable record depends on passes `atomicWriteFile({ durable: true })`, which fsyncs the
 content through its write handle before the rename and the directory after it; the default stays

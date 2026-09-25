@@ -1026,24 +1026,6 @@ function findUnrecognizedParams(args: object): string[] {
 }
 
 /**
- * The root config file a rewrite reads AND writes: the one boot reads, which is also what the root-config
- * publication lock is keyed by. Taken from the boot source whenever there is one, even if that file is missing
- * right now — a rewrite of some other copy would report success for a change the next boot never sees. Only
- * with no boot source at all, as an install has before it writes the boot props, is the path derived from the
- * document's rootPath.
- */
-function configFileToRewrite(hdbRoot: string): string {
-	if (hdbUtils.getEnvCliRootPath() || fs.statSync(hdbUtils.getPropsFilePath(), { throwIfNoEntry: false })) {
-		return getConfigFilePath();
-	}
-	const configFilePath = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
-	if (!fs.existsSync(configFilePath) && fs.existsSync(path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE))) {
-		return path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE);
-	}
-	return configFilePath;
-}
-
-/**
  * Updates and validates a config value in config file. Can also create a backup of config before updating.
  * @param param - the config value to update
  * @param value - the value to set the config to
@@ -1063,7 +1045,7 @@ export function updateConfigValue(
 		initConfig();
 	}
 
-	const configFilePath = configFileToRewrite(getConfigValue(CONFIG_PARAM_MAP.hdb_root));
+	const configFilePath = getRootConfigFilePath(getConfigValue(CONFIG_PARAM_MAP.hdb_root));
 	const configDoc = parseYamlDoc(configFilePath);
 	let schemasArgs;
 
