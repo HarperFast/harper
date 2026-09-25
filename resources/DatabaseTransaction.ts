@@ -69,6 +69,7 @@ interface OutstandingCommit {
 	start: number;
 	prev: OutstandingCommit | undefined;
 	next: OutstandingCommit | undefined;
+	commitResolution: Promise<number | void>;
 	// Identity for the one-time checkOverloaded() log below (harper#2001) — otherwise a stuck commit
 	// gives no indication of which database/table/resource to investigate. Snapshotted at arm time
 	// (not read from `this.writes`/`this.startedFrom` lazily off the DatabaseTransaction object)
@@ -85,7 +86,6 @@ interface OutstandingCommit {
 let oldestOutstandingCommit: OutstandingCommit | undefined;
 let newestOutstandingCommit: OutstandingCommit | undefined;
 let outstandingCommitCount = 0;
-const outstandingCommitsByRoot = new WeakMap<object, Set<Promise<number | void>>>();
 const suspendedDatabaseCommits = new WeakMap<object, number>();
 let suspendedDatabaseRootCount = 0;
 // Caps the stuck-commit log (checkOverloaded() below) to at most one line per this interval across
@@ -150,6 +150,7 @@ export function trackOutstandingCommit(
 		start: performance.now(),
 		prev: newestOutstandingCommit,
 		next: undefined,
+		commitResolution,
 		store,
 		startedFrom,
 		nativeTransaction,
@@ -159,13 +160,6 @@ export function trackOutstandingCommit(
 	else oldestOutstandingCommit = outstanding;
 	newestOutstandingCommit = outstanding;
 	outstandingCommitCount++;
-	const rootStore = store?.rootStore;
-	let rootCommits: Set<Promise<number | void>> | undefined;
-	if (rootStore && typeof rootStore === 'object') {
-		rootCommits = outstandingCommitsByRoot.get(rootStore);
-		if (!rootCommits) outstandingCommitsByRoot.set(rootStore, (rootCommits = new Set()));
-		rootCommits.add(commitResolution);
-	}
 	// Doubles as the write-queue-depth high-water mark (see getTransactionQueueDepths): every
 	// outstanding commit is a write-queue entry, so the peak of one is the peak of the other.
 	if (outstandingCommitCount > writeTxnQueueDepthHighWater) writeTxnQueueDepthHighWater = outstandingCommitCount;
@@ -182,9 +176,6 @@ export function trackOutstandingCommit(
 		if (outstanding.next != null) outstanding.next.prev = outstanding.prev;
 		else newestOutstandingCommit = outstanding.prev;
 		outstandingCommitCount--;
-		if (rootCommits) {
-			rootCommits.delete(commitResolution);
-		}
 	};
 	commitResolution.then(untrack, untrack);
 }
@@ -203,6 +194,7 @@ export function suspendDatabaseCommits(rootStores: Iterable<object>): {
 	release(): void;
 } {
 	const roots = [...new Set(rootStores)];
+	const rootSet = new Set(roots);
 	for (const rootStore of roots) {
 		const count = suspendedDatabaseCommits.get(rootStore) ?? 0;
 		if (count === 0) suspendedDatabaseRootCount++;
@@ -212,7 +204,10 @@ export function suspendDatabaseCommits(rootStores: Iterable<object>): {
 	return {
 		async waitForDrain() {
 			for (;;) {
-				const pending = roots.flatMap((rootStore) => [...(outstandingCommitsByRoot.get(rootStore) ?? [])]);
+				const pending: Promise<number | void>[] = [];
+				for (let outstanding = oldestOutstandingCommit; outstanding; outstanding = outstanding.next) {
+					if (rootSet.has(outstanding.store?.rootStore)) pending.push(outstanding.commitResolution);
+				}
 				if (pending.length === 0) return;
 				await Promise.allSettled(pending);
 			}
