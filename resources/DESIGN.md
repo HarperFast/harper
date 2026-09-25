@@ -569,7 +569,8 @@ reuse the same `ImmediateTransaction` object even after its first cycle has clos
 CLOSED`). The second `save()` re-enters `ImmediateTransaction.save()` with `isCommitting` false, so it
 calls `this.commit()` again; that `commit()`'s own sweep loop calls `this.save(newWrite, ...)` — a
 **polymorphic re-dispatch to `ImmediateTransaction.save()`**, now with `isCommitting` true, which takes
-the `super.save(operation, null, true)` branch and (since `this.open` is still `CLOSED`) creates its own
+the `super.save(operation, transaction, true)` branch with no handle to forward (a CLOSED context has
+none) and so creates its own
 brand-new `RocksTransaction` and immediately commits it, stashing the real commit promise on
 `operation.innerCommit`. But the outer `commit()`'s sweep loop discards the return value of
 `this.save(operation, ...)` for every write it processes — that's fine when the write commits inline,
@@ -585,6 +586,20 @@ operation.innerCommit)`. `operation.innerCommit` is `undefined` when a write com
 immediateCommit), so this is safe for the common case. Found via record-lock scoped-lock staging
 (harper#483), which is what first made this reused-closed-context pattern reachable for an ordinary
 resource, but the gap is general to `Table.save()`, not lock-specific.
+
+## A commit retry re-saves into the transaction it is retrying; `ImmediateTransaction.save()` must forward it
+
+Every retry and replay round of `commit()` (`ERR_BUSY`/`ERR_TRY_AGAIN`, `RETRY_NOW`, the
+retained-iterator replay) passes its native transaction into the save loop so each re-save re-stages
+into the handle being retried. `ImmediateTransaction.save()`'s `isCommitting` branch is the one
+`save` that could drop that argument: with none, `DatabaseTransaction.save()` opens a fresh handle and,
+the wrapper being `CLOSED` by then, commits it through a nested `commit()` whose own retry loop
+(`retries > 0` skips nothing) re-enters the override — unbounded, synchronously (`RangeError` on the
+first conflicting hold-lock save of a request). The override forwards the handle; the named test
+`immediateTransactionConflictRetry.test.js` asserts two commit attempts on one native transaction id.
+A retry round's handle is not `this.transaction` (detached before the first submission), so a throw
+from the re-save loop — a lapsed lease refusing the re-save — releases it explicitly before `abort()`,
+or its write intents park other writers until GC.
 
 ## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
 
@@ -686,6 +701,10 @@ When `signalSchemaChange('schema-change')` fires at the start of `runIndexing`, 
 The additive-only rule above repairs the _consumer_ of a partial peer snapshot; this rule stops the snapshot from existing. Every worker thread has its own `Table` map, rebuilt by `resetDatabases()` → `initStores` scanning the `__dbis__` catalog whenever any schema-change ITC signal arrives — including one for an unrelated database. On RocksDB catalog rows are individual `putSync` writes and the cross-thread `update-attributes` lock is taken only by writers, so a scan that lands inside a `create_table` used to see the primary row with none or some of the attribute rows, build a `Table` whose `attributes` was that partial list, and emit `updateTable` for it — which harper-pro forwards to peers as a DB_SCHEMA announcement. On a peer whose replication thread had not loaded the table yet, the announcement was applied as an authoritative definition and deleted the locally declared attributes (harper-pro `replicationLoad` "unknown attribute 'name'"; the partial announcement is visible in the node log as `(Re)creating { ... attributes: [ { name: 'id', ... } ] }`).
 
 `table()` therefore writes the primary-key descriptor (`<table>/` — the row `initStores` needs before it will load a table; a row carrying `isPrimaryKey` is accepted too, for pre-5.x catalogs, so the primary-key descriptor must stay the last row written whatever key it lands on) only after every attribute row, still under the exclusive lock, and registers the class in this worker's `databases` map immediately after it. That write is also where the rollback stops: the row is durable the moment the put returns — on LMDB the `finally` that releases the exclusive lock commits the create's write transaction whether or not an error is unwinding — so a create that throws past it (registering the class, persisting relationships) keeps every row it wrote, and undoing them would leave the primary-only catalog this rule exists to prevent. `initStores` skips — with a warn — a table that has attribute rows but no primary row. The catalog is either invisible or complete to every other thread, so no thread can build or announce a partial `Table`. A scan that finds the incomplete catalog also drops a class it still holds from a dropped same-name table, rather than serving that stale generation through the recreate. A create that throws before its primary row is registered nowhere, and `table()` releases what it had opened for the class (primary store, index stores, the audit delete-removal callback, and its storage-reclamation handler — `removeStorageReclamationHandler`, because a RocksDB column family shares its reclamation path with every other family in the database). LMDB already had this property because `exclusiveLock()` there is an environment-wide write transaction. Consequence for an interrupted create: orphan attribute rows, no primary row, and the column families opened before the crash (as before), so the table does not load at all instead of loading with whatever attributes had landed; re-running `create_table` writes the rows, reuses the families, and the new-table reconcile removes any orphan row the new definition does not declare. The guarantee holds only once every schema-creating node runs this code: an older peer still announces primary-first snapshots, so the receiver-side additive rule above stays necessary. Regression coverage: `unitTests/resources/createTableCatalogOrder.test.js` (write order, a create failing on either side of the publish point, and a second worker thread scanning the catalog while the create is paused).
+
+## Subscription version selection (`Table.ts`)
+
+`Table.subscribe` resolves audit events through `eventFromAudit` for both replay and live delivery: unless `includeSuperseded` (defaulting to `rawEvents`) is enabled, record mutations must match the current primary version; an absent primary entry cannot establish a current version and is skipped. Publishing advances that primary version too: a put followed by a publish replays the message but not the put under the default rule. Messages and control events are independent. Version filtering precedes historical reconstruction and `previousCount` acceptance, while audit cursors advance over rejected entries. Single-record replay retains its bounded history walk because it also contains independent published messages; only an accepted replay event suppresses the current snapshot, and `eventFilter` also applies to that fallback. Default replay reads the current primary entry for each mutation. Opting into superseded full records retains audit-history reconstruction costs and retention limits, including patch reconstruction on durable MQTT live delivery.
 
 ## Audit-store `'committed'` notification batching (`transactionBroadcast.ts`)
 

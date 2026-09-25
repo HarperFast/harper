@@ -215,7 +215,13 @@ boundary settles config to the same end state as the tree. `deploy_component` on
 - `keep` — a caller installing FROM root config (`installApplications()`, `add_component`, harper-pro's
   clone) owns no effect. It returns before taking any lock, so a boot re-install never waits on a config
   writer.
-- `remove` — `drop_component`. Never journaled.
+- `remove` — `drop_component`. Never journaled, so the drop orders itself instead: what the removal would refuse is
+  refused before anything moves, the tree is renamed aside, and the entry goes last, the tree being renamed back if
+  the removal fails while the entry is still on disk. Both renames are flushed before the entry's removal is made
+  durable. A failed drop therefore never leaves a live component whose entry — its package, settings and
+  isolation — is gone. The `node_modules` link and the aside tree are cleaned up after, and a failure there is
+  logged, not thrown. A crash between the rename and the removal leaves the entry without its tree: the next start
+  reinstalls a package component, and a repeated drop finishes the job.
 
 **The effect is written into `.activation.json` (journal v2) before the first rename, and applied after the
 commit** — after the swap is flushed and dependency links are re-pointed, and before the rollback record is
@@ -277,6 +283,17 @@ predecessor can have renamed it in unflushed. Deciding outside the lock is safe 
 replaced by rename. A document that does not parse cleanly is refused, never rewritten from what the parser
 recovered.
 
+**An effect the config environment would undo is refused.** `HARPER_CONFIG` and `HARPER_SET_CONFIG` rewrite every
+key they name at each start and each config refresh, over the file and over edits to it. A package activation whose
+entry one of them contradicts would go live under the forced entry, and a dropped component would be reinstalled
+from the install keys one of them put back. Settings such as `isolated` or `host` a variable keeps for a dropped
+component's name install nothing, and do not block the drop. So the pre-flight composes those two variables
+together over the document it would write and refuses, with a 409 naming the variable that wins each key, an effect
+they contradict; the writer repeats the check under the lock. Keys a variable adds beside the ones an effect
+declares are no contradiction: an operator-forced `isolated: true` stays beside a deploy's `package`. After its
+refresh, the writer re-reads the file and throws if the effect no longer holds — the backstop for what composing
+those two cannot predict, such as `HARPER_DEFAULT_CONFIG` filling a removed key back in on the main thread.
+
 **Boot ordering depends on the refresh.** `env.initSync()` memoizes the config object, so publishing to disk
 during recovery is not enough on its own: `applyRootConfigEffect` re-inits THIS thread's config, and boot
 recovery runs on main before `installApplications()` reads `getConfigObj()`.
@@ -322,7 +339,7 @@ directories are preserved by design and can still fill a volume.
 
 `prepareApplication()` performs one transaction per component: build the replacement, validate it, then swap it in (see "A deploy builds off to the side" below). Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
 
-The deploy lifecycle broadcast deliberately sits _outside_ the lock. Overlapping requests therefore increment the existing per-component lifecycle refcount before queueing; watchers remain suppressed continuously until the final queued preparation ends. The lock itself covers credential materialization, extraction, and installation. Its fully-written owner record is published with an atomic rename, so contenders never observe a partially initialized lock. A preparation caller never steals a lock from a known-live owner based on elapsed wall time: installs can be long-running and clocks can jump. Locks from a dead process are reclaimed, and a same-process contender asks the main thread whether the owning worker still exists so a worker crash does not wedge that component until Harper restarts. A ticket its owner could not remove — a Windows sharing violation, a scanner holding the file — would name a finished holder that is still alive, so a release whose unlink keeps failing publishes a `<lockName>.released.<token>` marker instead, which contenders honour by clearing both. Only the ticket's owner writes one, after confirming it still owns the ticket, and tokens are never reused, so a marker cannot retire a holder that has not finished. A process running an older build ignores markers, so overlapping processes of mixed versions do not get this guarantee, and a ticket left live-looking before the upgrade stays until that process restarts. Windows refuses to open a claim whose unlink is in progress (`EPERM`) until the unlinking handle closes, so a contender retries that read until the claim reads or is gone; one that stays unreadable fails the scan instead of reading as absent, since dropping a live ticket would admit a second holder. An older build fails the acquire on that `EPERM`. The boot-time bulk-recovery probe is deliberately different: it never renews its 250 ms deadline, even behind another live recovery, so it can defer that component and let the worker bind its listener.
+The deploy lifecycle broadcast deliberately sits _outside_ the lock. Overlapping requests therefore increment the existing per-component lifecycle refcount before queueing; watchers remain suppressed continuously until the final queued preparation ends. The lock itself covers credential materialization, extraction, and installation. Its fully-written owner record is published with an atomic rename, so contenders never observe a partially initialized lock. A preparation caller never steals a lock from a known-live owner based on elapsed wall time: installs can be long-running and clocks can jump. Locks from a dead process are reclaimed, and a same-process contender asks the main thread whether the owning worker still exists so a worker crash does not wedge that component until Harper restarts. A ticket its owner could not remove — a Windows sharing violation, a scanner holding the file — would name a finished holder that is still alive, so a release whose unlink keeps failing publishes a `<lockName>.released.<token>` marker instead, which contenders honour by clearing both. Only the ticket's owner writes one, after confirming it still owns the ticket — or, when a scanner holding the ticket without read sharing hides its record, knowing it can only be its own, since the ticket's name carries its token — and tokens are never reused, so a marker cannot retire a holder that has not finished. A process running an older build ignores markers, so overlapping processes of mixed versions do not get this guarantee, and a ticket left live-looking before the upgrade stays until that process restarts. Windows refuses to open a claim whose unlink is in progress (`EPERM`) until the unlinking handle closes, so a contender retries that read until the claim reads or is gone; one that stays unreadable fails the scan instead of reading as absent, since dropping a live ticket would admit a second holder. An older build fails the acquire on that `EPERM`. The boot-time bulk-recovery probe is deliberately different: it never renews its 250 ms deadline, even behind another live recovery, so it can defer that component and let the worker bind its listener.
 
 A plugin load that begins while its component is being deployed waits for that lifecycle to end before
 starting `handleApplication`; if a deploy begins during the load, the plugin timeout counts only active,

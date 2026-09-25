@@ -175,14 +175,6 @@ suite(
 			assertRowsAsWritten(state.rows);
 		});
 
-		test('a read-only boot of this build leaves it as it is', async () => {
-			await killHarper(ctx);
-			await boot(() => startHarper(ctx, { config: BOOT_CONFIG, env: { HARPER_READONLY: '1' } }));
-			const state = await readState();
-			assertUndeclared(state);
-			assertRowsAsWritten(state.rows);
-		});
-
 		test("the next writable boot declares it with its expiration, keeping each row's expiry", async () => {
 			await killHarper(ctx);
 			await boot(() => startHarper(ctx, { config: BOOT_CONFIG, env: {} }));
@@ -195,6 +187,20 @@ suite(
 				strictEqual(expiresAt, written[id as keyof typeof written], `${id} keeps the expiry it was written with`);
 			strictEqual(await isVisible('in-window'), true, 'an in-window replay row still blocks its token');
 			strictEqual(await isVisible('spent-1'), false, 'a replay row past its expiry reads as absent');
+		});
+
+		// After the upgrade: a read-only boot over data from an older version exits at the upgrade step.
+		test('a read-only boot of this build starts with the repaired table as it is', async () => {
+			await killHarper(ctx);
+			await boot(() => startHarper(ctx, { config: BOOT_CONFIG, env: { HARPER_READONLY: '1' } }));
+			const state = await readState();
+			assertDeclared(state);
+			strictEqual(
+				state.rows.find(({ id }) => id === 'in-window')?.expiresAt,
+				written['in-window'],
+				'the in-window row is kept with its expiry'
+			);
+			strictEqual(await isVisible('in-window'), true, 'an in-window replay row still blocks its token');
 		});
 	}
 );

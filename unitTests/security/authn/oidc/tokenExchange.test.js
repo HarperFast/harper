@@ -351,8 +351,8 @@ describe('exchangeOidcToken', () => {
 		const [[fingerprint, record]] = [...useTable.mock.rows.entries()];
 		assert.strictEqual(record.policy_id, 'my-app-prod');
 		assert.ok(!('expiresAt' in record), 'the expiry is record metadata, not a field');
-		const tokenExpiryMs = decodeJWT(token).exp * 1000;
-		assert.ok(useTable.mock.expiries.get(fingerprint) > tokenExpiryMs, 'record must outlive the token it guards');
+		// the token's expiry plus the padding that outlasts the verifier's clock tolerance
+		assert.strictEqual(useTable.mock.expiries.get(fingerprint), decodeJWT(token).exp * 1000 + 120_000);
 	});
 
 	it('rejects a token minted for a different audience', async () => {

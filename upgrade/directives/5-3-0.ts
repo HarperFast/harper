@@ -66,8 +66,8 @@ async function createHdbOidcTrustIfMissing() {
  *
  * harperdb@4.x reads is_hash_attribute from __dbis__ to derive the LMDB DBI open flags; without it
  * the DBI is opened with the opposite flags (DUPSORT set) and LMDB throws MDB_INCOMPATIBLE, breaking
- * downgrade — the same guard 5-1-0.ts and 5-2-0.ts apply to their tables. Both tables here get it;
- * exempting one would be a silent asymmetry rather than a decision. Idempotent: no-op when already set.
+ * downgrade — the same guard 5-1-0.ts and 5-2-0.ts apply to their tables, so both tables here get it.
+ * Idempotent: no-op when already set.
  */
 async function patchIsHashAttribute(tableName: string) {
 	const systemTable = (databases as any).system?.[tableName];

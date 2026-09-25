@@ -1300,6 +1300,10 @@ export class DatabaseTransaction implements Transaction {
 				this.save(operation, transaction, i < this.validated, options);
 			}
 		} catch (error) {
+			// abort() releases only this.transaction; a retry round's handle was detached before its
+			// first submission and would otherwise hold its write intents until GC.
+			if (transaction !== this.transaction)
+				abortNativeTransaction(transaction, 'aborting a retry transaction whose re-save threw');
 			this.abort();
 			throw error;
 		}
@@ -1381,8 +1385,14 @@ export class DatabaseTransaction implements Transaction {
 							);
 							if (this.timestamp) replayTransaction.setTimestamp(this.timestamp);
 							this.retries++; // a replay round: commit handlers re-base on the reloaded entries
-							for (const operation of this.writes) {
-								this.save(operation, replayTransaction, true, options);
+							try {
+								for (const operation of this.writes) {
+									this.save(operation, replayTransaction, true, options);
+								}
+							} catch (error) {
+								abortNativeTransaction(replayTransaction, 'aborting a replay transaction whose re-save threw');
+								this.abort();
+								throw error;
 							}
 							transaction = replayTransaction;
 						}
@@ -2015,8 +2025,9 @@ export class ImmediateTransaction extends DatabaseTransaction {
 	save(...args: any[]): any {
 		const operation = args[0]; // the staged write, not a transaction — commit() re-enters here with it
 		if (this.isCommitting) {
-			// if we are in the commit, do the save and force a reload so we get a read within the transaction
-			super.save(operation, null as any, true);
+			// Stage into the transaction commit() is committing (on a retry round, the one being retried)
+			// and reload within it; with no handle super.save() would open its own and nest a commit().
+			super.save(operation, args[1], true);
 		} else {
 			this.isCommitting = true;
 			// A synchronous throw from commit() (e.g. a 409 from an expired lock handle) would
