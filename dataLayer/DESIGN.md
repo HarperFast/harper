@@ -52,7 +52,7 @@ A local `table()` declaration is authoritative, so repeating it repairs any of t
 - Under `threads: 0` the main thread loads and declares the table before `startHTTPThreads` makes it worker 0. `scheduleCleanup` records an interval only once its thread has a worker index, so the first expiring write or declaration after that arms the scan; a single-threaded node that writes nothing after a restart does not scan until it does.
 - An attribute a declaration drops keeps its index store on disk: `table()` looks that store up by table name rather than attribute name, so it never drops it. A node that served exchanges on 5.3.0-beta.2 keeps its old `expiresAt` index; after a restart nothing opens it.
 
-`hdb_certificate_cache` has the same lazy-only extension and has not been moved to this yet.
+The certificate verification tables (`hdb_certificate_cache`, `hdb_crl_cache`, `hdb_revoked_certificates`) follow the same pattern through `security/certificateVerification/verificationTables.ts`, applied in `initialize()` right after the OIDC table and by the verification path's getters. `ensureCertificateVerificationTables` also waits for the revoked table's index backfill and reads its outcome back from the catalog, since a failed backfill still settles. What their rows hold is in security/DESIGN.md.
 
 ## RocksDB backup/restore: the restore lock + marker protocol (`dataLayer/restoreMarker.ts`, `dataLayer/rocksdbBackup.ts`)
 

@@ -185,11 +185,17 @@ export function makeExtKeyUsageExt(oids: string[]): pkijs.Extension {
 
 export { OCSP_SIGNING_OID, CLIENT_AUTH_OID };
 
-/** Create a signed X.509v2 CRL */
+export interface CrlValidity {
+	thisUpdate: Date;
+	nextUpdate: Date;
+}
+
+/** Create a signed X.509v2 CRL, current for 30 days unless `validity` says otherwise */
 export async function createCRL(
 	issuerCert: pkijs.Certificate,
 	issuerKey: CryptoKey,
-	revokedSerials: number[]
+	revokedSerials: number[],
+	validity?: CrlValidity
 ): Promise<pkijs.CertificateRevocationList> {
 	const crl = new pkijs.CertificateRevocationList();
 	crl.version = 1; // CRLv2 = version field value 1
@@ -197,8 +203,8 @@ export async function createCRL(
 	// Copy issuer from CA cert subject
 	crl.issuer = issuerCert.subject;
 
-	const now = new Date();
-	const next = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+	const now = validity?.thisUpdate ?? new Date();
+	const next = validity?.nextUpdate ?? new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
 	crl.thisUpdate = new pkijs.Time({ type: 0, value: now });
 	crl.nextUpdate = new pkijs.Time({ type: 0, value: next });
 

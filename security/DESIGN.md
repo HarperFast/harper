@@ -2,7 +2,7 @@
 
 Authentication tokens, OIDC exchange and TLS material.
 
-**Read this when:** touching `tokenAuthentication.ts`, `impersonation.ts`, `authn/oidc/` or `keys.ts`.
+**Read this when:** touching `tokenAuthentication.ts`, `impersonation.ts`, `authn/oidc/`, `keys.ts` or `certificateVerification/`.
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -149,6 +149,25 @@ debounce. `loadAndWatch` latches its mtime before the callback for chokidar/poll
 the latch back on a synchronous throw or a rejected callback promise (equality-guarded so a stale
 rejection cannot unlatch a newer reload) — the latch means "last successfully applied", so the
 periodic poll can heal a lost `hdb_certificate` write instead of deduplicating it forever.
+
+## Client-certificate revocation checking keeps three tables (`security/certificateVerification/`)
+
+`verificationTables.ts` declares them, and every writable start and the verification path apply the same
+declarations (dataLayer/DESIGN.md, "System table bootstrap"). A row's expiry is record metadata; a table's
+`expiration` is only the fallback for a row written without one.
+
+- A verdict (`hdb_certificate_cache`) expires `cacheTtl` after its check because `CertificateVerificationSource`
+  sets `context.expiresAt`: a caching table decides staleness by the stored expiry, and a source fill stores
+  `sourceContext.expiresAt`, never a field the source returns. `createCacheKey` hashes a key version, so a
+  verdict cached before verdicts carried an expiry, which has none and would read as fresh forever, is never
+  read again.
+- A revocation (`hdb_revoked_certificates`) lives until `crl_next_update + gracePeriod`, the window
+  `performCRLCheck` honors while it decides by `crl_next_update`. Expiring it at `nextUpdate` made that branch
+  unreachable and reported a revoked certificate on an overdue CRL as good.
+- A CRL's revocations replace the previous set all or nothing, in a transaction of their own committed before
+  `performCRLCheck` reads them back, and that read runs outside the verdict fill's transaction `performCRLCheck`
+  otherwise joins: on LMDB that transaction neither reads its own staged writes nor sees rows committed after
+  its snapshot, so a revoked certificate read as good on its first check.
 
 ## A component-facing export needs BOTH `index.ts` and `getHarperExports` (`security/jsLoader.ts`, `index.ts`)
 
