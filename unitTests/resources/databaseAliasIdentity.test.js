@@ -195,13 +195,13 @@ describe('shared root-store database identity', function () {
 			Object.defineProperty(store.db, 'close', { value: () => nativeCloses.push(store.name), configurable: true });
 		}
 
-		assert.strictEqual(closeDatabase('physicalalias'), true);
+		assert.strictEqual(await closeDatabase('physicalalias'), true);
 		assert.deepStrictEqual(nativeCloses, []);
 		assert.notStrictEqual(rootStore.status, 'open');
 		const remaining = getDatabases();
 		assert.strictEqual(remaining.physicalalias, undefined);
 		assert.strictEqual(remaining.configuredalias, undefined);
-		assert.strictEqual(closeDatabase('configuredalias'), false);
+		assert.strictEqual(await closeDatabase('configuredalias'), false);
 		assert.deepStrictEqual(nativeCloses, []);
 
 		const reopened = loadAliases(storageRoot, { configured: ['configuredalias'] });
@@ -222,7 +222,7 @@ describe('shared root-store database identity', function () {
 		const handlesOn = () => registryStatus().find((db) => db.path === path)?.refCount ?? 0;
 		assert(handlesOn() > 0);
 
-		closeAliases(loadedAliases);
+		await closeAliases(loadedAliases);
 		loadedAliases = [];
 		assert.strictEqual(handlesOn(), 0);
 	});
