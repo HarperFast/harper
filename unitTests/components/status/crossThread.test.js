@@ -57,7 +57,7 @@ describe('CrossThread Module', function () {
 		});
 
 		it('should collect status from multiple threads', async function () {
-			this.timeout(5000); // mocha has no default timeout; bound a collector regression that never settles
+			this.timeout(5000);
 			registry.setStatus('sharedComp', 'healthy', 'Local is healthy');
 			// Test with main thread (undefined)
 			getWorkerIndexStub.returns(undefined);
@@ -165,7 +165,7 @@ describe('CrossThread Module', function () {
 		});
 
 		it('should complete early when all threads respond', async function () {
-			this.timeout(5000); // mocha has no default timeout; bound a collector regression that never settles
+			this.timeout(5000);
 			registry.setStatus('fastComp', 'healthy', 'Main thread');
 			getWorkerIndexStub.returns(0);
 
@@ -173,13 +173,18 @@ describe('CrossThread Module', function () {
 
 			sendItcEventStub.resolves();
 
+			// A long internal timeout here, distinct from the shared 1s collector in the outer
+			// beforeEach, so the pending-state check below can't race the collector's own timeout
+			// under a loaded runner
+			const earlyCollector = new CrossThreadStatusCollector(60_000);
+
 			let handler;
 			onMessageByTypeStub.callsFake((eventType, responseHandler) => {
 				handler = responseHandler;
 			});
 
 			let settled = false;
-			const collectPromise = collector.collect(registry).then((collected) => {
+			const collectPromise = earlyCollector.collect(registry).then((collected) => {
 				settled = true;
 				return collected;
 			});
@@ -207,8 +212,6 @@ describe('CrossThread Module', function () {
 				},
 			});
 
-			// Prove collect() resolves once responses are in, rather than waiting out
-			// the collector's own internal 1s timeout (set in the outer beforeEach)
 			let sentinelFired = false;
 			const sentinel = new Promise((resolve) =>
 				setImmediate(() => {
@@ -222,6 +225,7 @@ describe('CrossThread Module', function () {
 			await sentinel;
 
 			assert.equal(collected.size, 3); // local + 2 workers
+			earlyCollector.cleanup();
 		});
 
 		describe('expectedResponses sizing (connectedPorts-based)', function () {
