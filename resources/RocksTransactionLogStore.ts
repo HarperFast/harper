@@ -1,6 +1,6 @@
 import { TransactionLog, RocksDatabase, shutdown, type TransactionEntry } from '@harperfast/rocksdb-js';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
-import { getIdOfRemoteNode } from './nodeIdMapping.ts';
+import { exportIdMapping, getIdOfRemoteNode, getNodeNameForId } from './nodeIdMapping.ts';
 import { Decoder, readAuditEntry, ENTRY_DATAVIEW, AuditRecord, createAuditEntry } from './auditStore.ts';
 import { HAS_STRUCTURE_UPDATE } from './RecordEncoder.ts';
 import {
@@ -85,7 +85,12 @@ export class RocksTransactionLogStore extends EventEmitter {
 			// do not record transaction entries on retry
 			return;
 		}
-		const log = this.logById(options.nodeId) ?? this.logById(options.viaNodeId) ?? this.log;
+		const log =
+			options.nodeId === undefined
+				? this.log
+				: options.nodeId === 0
+					? (this.logById(0) ?? this.log)
+					: this.logForOrigin(options.nodeId, options.viaNodeId !== undefined && options.viaNodeId !== options.nodeId);
 		let entryBinary: Uint8Array;
 		if (auditRecord instanceof Uint8Array) entryBinary = auditRecord;
 		else {
@@ -164,6 +169,21 @@ export class RocksTransactionLogStore extends EventEmitter {
 		log.addEntry(entryBinary, options.transaction.id);
 	}
 
+	/** A log holds one origin, which keeps `txnLogKey` unique within it; see resources/DESIGN.md. */
+	logForOrigin(nodeId: number, relayed: boolean) {
+		const log = this.logById(nodeId);
+		if (log) return log;
+		let nodeName = getNodeNameForId(this, nodeId, true);
+		// the cached name map can miss an id another worker minted moments ago
+		if (nodeName === undefined && relayed)
+			nodeName = Object.entries(exportIdMapping(this) ?? {}).find(([, id]) => id === nodeId)?.[0];
+		if (nodeName === undefined) {
+			if (relayed) throw new Error(`No node name is mapped to origin id ${nodeId}`);
+			return this.log;
+		}
+		this.ensureLogExists(nodeName);
+		return this.logById(nodeId);
+	}
 	logById(nodeId: number) {
 		return nodeId > -1 ? (this.nodeLogs?.[nodeId] ?? this.loadLogs()[nodeId]) : undefined;
 	}

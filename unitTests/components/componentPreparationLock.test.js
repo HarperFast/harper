@@ -5,7 +5,9 @@ const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 const { Worker, threadId } = require('node:worker_threads');
 const { constants: fsConstants } = require('node:fs');
-const { chmod, mkdtemp, mkdir, open, readdir, rm, utimes, writeFile } = require('node:fs/promises');
+const fsPromises = require('node:fs/promises');
+const { chmod, mkdtemp, mkdir, open, readdir, rm, utimes, writeFile } = fsPromises;
+const { syncBuiltinESMExports } = require('node:module');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -42,6 +44,25 @@ function startLockWorker(componentDirPath, hold = false) {
 		});`,
 		{ eval: true, workerData: { componentDirPath, hold, lockModulePath, ownerPid: process.pid } }
 	);
+}
+
+// Windows refuses to open a file whose unlink is in progress with EPERM; POSIX has no such state, so the
+// refusal is injected. The ESM binding of readFile follows the stub only through syncBuiltinESMExports.
+async function withRefusedReads(refuse, run) {
+	const { readFile } = fsPromises;
+	fsPromises.readFile = async (path, ...rest) => {
+		if (await refuse(String(path))) {
+			throw Object.assign(new Error(`EPERM: operation not permitted, open '${path}'`), { code: 'EPERM' });
+		}
+		return readFile(path, ...rest);
+	};
+	syncBuiltinESMExports();
+	try {
+		return await run();
+	} finally {
+		fsPromises.readFile = readFile;
+		syncBuiltinESMExports();
+	}
 }
 
 describe('component preparation lock', () => {
@@ -415,6 +436,75 @@ describe('component preparation lock', () => {
 
 		assert.equal(result.choosing.length, 0);
 		assert.equal(result.tickets.length, 0);
+	});
+
+	it('reads a choosing claim refused mid-unlink as removed, and finds the ticket it upgraded to', async () => {
+		const { lockRoot, lockName } = componentPreparationLockPaths(join(rootDir, 'unlinking-choosing'));
+		await mkdir(lockRoot, { recursive: true, mode: 0o700 });
+		const owner = {
+			pid: process.pid,
+			threadId: 0,
+			processInstanceId: COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
+			token: 'unlinking-token',
+			ticket: 3,
+		};
+		const choosingPath = join(lockRoot, `${lockName}.choosing.${owner.token}.json`);
+		const ticketPath = join(lockRoot, `${lockName}.ticket.${owner.ticket}.${owner.token}.json`);
+		await writeFile(choosingPath, JSON.stringify(owner));
+
+		let choosingReads = 0;
+		const result = await withRefusedReads(
+			async (path) => {
+				if (path !== choosingPath || choosingReads++ > 0) return false;
+				await rm(choosingPath);
+				return true;
+			},
+			() => scanLiveClaims(lockRoot, lockName, {}, undefined, () => writeFile(ticketPath, JSON.stringify(owner)))
+		);
+
+		assert.equal(choosingReads, 2, 'the refused read is retried');
+		assert.deepStrictEqual(result.choosing, []);
+		assert.deepStrictEqual(
+			result.tickets.map((ticket) => ticket.token),
+			['unlinking-token']
+		);
+	});
+
+	it('never drops a live ticket whose read is refused', async () => {
+		const { lockRoot, lockName } = componentPreparationLockPaths(join(rootDir, 'refused-ticket'));
+		await mkdir(lockRoot, { recursive: true, mode: 0o700 });
+		const ticketName = `${lockName}.ticket.1.refused-token.json`;
+		const ticketPath = join(lockRoot, ticketName);
+		await writeFile(
+			ticketPath,
+			JSON.stringify({
+				pid: process.pid,
+				threadId: 0,
+				processInstanceId: COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
+				token: 'refused-token',
+				ticket: 1,
+			})
+		);
+
+		let ticketReads = 0;
+		const refusedOnce = await withRefusedReads(
+			async (path) => path === ticketPath && ticketReads++ === 0,
+			() => scanLiveClaims(lockRoot, lockName, {})
+		);
+		assert.deepStrictEqual(
+			refusedOnce.tickets.map((ticket) => ticket.token),
+			['refused-token']
+		);
+
+		await assert.rejects(
+			withRefusedReads(
+				async (path) => path === ticketPath,
+				() => scanLiveClaims(lockRoot, lockName, {})
+			),
+			{ code: 'EPERM' },
+			'a claim that stays unreadable fails the scan'
+		);
+		assert.deepStrictEqual(await readdir(lockRoot), [ticketName]);
 	});
 
 	it('removes a ticket whose record does not parse, even from a scan that holds no claim', async () => {

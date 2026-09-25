@@ -16,6 +16,7 @@ const DEFAULT_LOCK_WAIT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 // `.publishing` file surviving this long can only be a crash orphan (a write that was never
 // followed by its rename), never an in-flight publish.
 const STALE_PUBLISHING_SWEEP_AGE_MS = 60_000;
+const TRANSIENT_FILE_RETRY_DELAYS_MS = [10, 40, 160];
 
 export interface ComponentPreparationLockOwner {
 	pid: number;
@@ -66,11 +67,17 @@ function isProcessAlive(pid: number): boolean {
 }
 
 async function readOwner(claimPath: string): Promise<ComponentPreparationLockOwner | null> {
-	try {
-		return JSON.parse(await readFile(claimPath, 'utf8'));
-	} catch (error: any) {
-		if (error.code === 'ENOENT' || error instanceof SyntaxError) return null;
-		throw error;
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return JSON.parse(await readFile(claimPath, 'utf8'));
+		} catch (error: any) {
+			if (error.code === 'ENOENT' || error instanceof SyntaxError) return null;
+			// Windows refuses to open a file whose unlink is in progress (EPERM) until the unlinking handle
+			// closes and the name is gone. A claim that stays unreadable is not absent: dropping a live
+			// ticket would admit a second holder.
+			if (error.code !== 'EPERM' || attempt >= TRANSIENT_FILE_RETRY_DELAYS_MS.length) throw error;
+		}
+		await delay(TRANSIENT_FILE_RETRY_DELAYS_MS[attempt]);
 	}
 }
 
@@ -210,32 +217,6 @@ export async function scanLiveClaims(
 	return { choosing, tickets };
 }
 
-// Windows answers a read of a claim another contender is deleting (delete pending), or that a scanner holds without read
-// sharing, with EPERM or EBUSY. Both clear within moments, so a scan that meets one is repeated rather than failing
-// the acquisition; anything that outlasts the window, or the caller's own deadline, is a real failure and still fails.
-const TRANSIENT_CLAIM_READ_CODES = new Set(process.platform === 'win32' ? ['EBUSY', 'EPERM'] : []);
-const TRANSIENT_CLAIM_READ_WINDOW_MS = 2_000;
-
-async function scanLiveClaimsPatiently(
-	lockRoot: string,
-	lockName: string,
-	options: ComponentPreparationLockOptions,
-	ownToken: string,
-	deadline: number
-): Promise<LiveClaims> {
-	const giveUpAt = Math.min(performance.now() + TRANSIENT_CLAIM_READ_WINDOW_MS, deadline);
-	for (;;) {
-		try {
-			return await scanLiveClaims(lockRoot, lockName, options, ownToken);
-		} catch (error) {
-			if (!TRANSIENT_CLAIM_READ_CODES.has((error as NodeJS.ErrnoException)?.code) || performance.now() >= giveUpAt) {
-				throw error;
-			}
-			await delay(LOCK_POLL_INTERVAL_MS);
-		}
-	}
-}
-
 function ticketPrecedes(left: ComponentPreparationLockOwner, right: ComponentPreparationLockOwner): boolean {
 	const leftTicket = left.ticket ?? Number.MAX_SAFE_INTEGER;
 	const rightTicket = right.ticket ?? Number.MAX_SAFE_INTEGER;
@@ -310,13 +291,7 @@ async function acquireComponentPreparationLock(
 		// Bakery "choosing" flag: an earlier contender will wait for this file to disappear before
 		// comparing tickets, while a later contender necessarily observes our published ticket.
 		await publishClaim(choosingPath, owner);
-		const initialClaims = await scanLiveClaimsPatiently(
-			lockRoot,
-			lockName,
-			options,
-			owner.token,
-			performance.now() + (options.timeoutMs ?? DEFAULT_LOCK_WAIT_TIMEOUT_MS)
-		);
+		const initialClaims = await scanLiveClaims(lockRoot, lockName, options, owner.token);
 		owner.ticket = initialClaims.tickets.reduce((max, contender) => Math.max(max, contender.ticket ?? 0), 0) + 1;
 		ticketPath = join(lockRoot, `${lockName}.ticket.${owner.ticket}.${owner.token}.json`);
 		await publishClaim(ticketPath, owner);
@@ -327,7 +302,7 @@ async function acquireComponentPreparationLock(
 	let waitingReportedForToken: string | undefined;
 	try {
 		for (;;) {
-			const claims = await scanLiveClaimsPatiently(lockRoot, lockName, options, owner.token, deadline);
+			const claims = await scanLiveClaims(lockRoot, lockName, options, owner.token);
 			const precedingTicket = claims.tickets
 				.filter((contender) => ticketPrecedes(contender, owner))
 				.sort((a, b) => {
@@ -378,7 +353,6 @@ async function acquireComponentPreparationLock(
 	};
 }
 
-const TICKET_REMOVAL_RETRY_DELAYS_MS = [10, 40, 160];
 const HELD_RECORD_READ_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
 
 function releasedMarkerPath(lockRoot: string, lockName: string, token: string): string {
@@ -402,14 +376,14 @@ export async function releaseTicket(
 			await removeTicket(ticketPath);
 			return;
 		} catch (error) {
-			if (attempt >= TICKET_REMOVAL_RETRY_DELAYS_MS.length) {
+			if (attempt >= TRANSIENT_FILE_RETRY_DELAYS_MS.length) {
 				await writeFile(releasedMarkerPath(lockRoot, lockName, token), '', { mode: 0o600 }).catch(() => {
 					throw error;
 				});
 				return;
 			}
 		}
-		await delay(TICKET_REMOVAL_RETRY_DELAYS_MS[attempt]);
+		await delay(TRANSIENT_FILE_RETRY_DELAYS_MS[attempt]);
 	}
 }
 

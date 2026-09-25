@@ -456,9 +456,14 @@ describe('mcp/toolRegistry', () => {
 			assert.equal(listed(['drop_database'], 'drop_schema'), true);
 			assert.equal(listed(['describe_schema'], 'describe_database'), true);
 			assert.equal(listed(['search_by_hash'], 'search_by_id'), true);
+			assert.equal(listed(['add_component'], 'add_custom_function_project'), true);
+			assert.equal(listed(['package_component'], 'package_custom_function_project'), true);
+			assert.equal(listed(['deploy_component'], 'deploy_custom_function_project'), true);
+			assert.equal(listed(['delete_files_before'], 'delete_records_before'), true);
 			// The alias name is not what dispatch tests, so it grants neither.
 			assert.equal(listed(['create_schema'], 'create_schema'), false);
 			assert.equal(listed(['drop_schema'], 'drop_schema'), false);
+			assert.equal(listed(['deploy_custom_function_project'], 'deploy_component'), false);
 		});
 
 		it('an array structure_user does not reach the database-level structure ops', () => {

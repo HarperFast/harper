@@ -107,13 +107,16 @@ const DATA_EXPORT = {
 
 class permission {
 	requires_su: boolean;
-	perms: any;
-	api_name: string;
-	constructor(requiresSu, perms, apiName) {
+	perms: string[];
+	api_name: string | null;
+	/**
+	 * `apiName` is the snake_case API operation (from OPERATIONS_ENUM) a role's `operations` allowlist
+	 * grants this entry by, or `null` when no allowlist may grant it. Required, so no registration can
+	 * leave gate 1 checking a handler name, which no role can list.
+	 */
+	constructor(requiresSu: boolean, perms: string[], apiName: string | null) {
 		this.requires_su = requiresSu;
 		this.perms = perms;
-		// snake_case API operation name (from OPERATIONS_ENUM) for operations allowlist checks.
-		// Undefined for ops that aren't user-addressable (SQL sub-ops, internal-only ops).
 		this.api_name = apiName;
 	}
 }
@@ -129,7 +132,7 @@ export function registerOperationPermission(
 	apiName: string,
 	{ requiresSu = false, perms = [] }: { requiresSu?: boolean; perms?: string[] } = {}
 ) {
-	requiredPermissions.set(apiName, new (permission as any)(requiresSu, perms, apiName));
+	requiredPermissions.set(apiName, new permission(requiresSu, perms, apiName));
 	// Also make the op grantable in a role's `operations` allowlist (validateOperations), so a
 	// declared permission can be both enforced AND granted — not just enforced.
 	registerGrantableOperation(apiName);
@@ -145,190 +148,215 @@ export function unregisterOperationPermission(apiName: string) {
 	unregisterGrantableOperation(apiName);
 }
 
-requiredPermissions.set(write.insert.name, new (permission as any)(false, [INSERT_PERM], terms.OPERATIONS_ENUM.INSERT));
-requiredPermissions.set(write.update.name, new (permission as any)(false, [UPDATE_PERM], terms.OPERATIONS_ENUM.UPDATE));
+requiredPermissions.set(write.insert.name, new permission(false, [INSERT_PERM], terms.OPERATIONS_ENUM.INSERT));
+requiredPermissions.set(write.update.name, new permission(false, [UPDATE_PERM], terms.OPERATIONS_ENUM.UPDATE));
 requiredPermissions.set(
 	write.upsert.name,
-	new (permission as any)(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.UPSERT)
+	new permission(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.UPSERT)
 );
 // Same grants as `upsert`, and the same as REST `PUT` enforces: creating needs insert, replacing an
 // existing record needs update. A full replace can DROP attributes, which is why the
 // attribute-scoped denial below applies to it.
-requiredPermissions.set(
-	write.put.name,
-	new (permission as any)(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.PUT)
-);
+requiredPermissions.set(write.put.name, new permission(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.PUT));
 requiredPermissions.set(
 	search.searchByConditions.name,
-	new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS)
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS)
 );
 requiredPermissions.set(
 	search.searchByHash.name,
-	new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH_BY_HASH)
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH_BY_HASH)
 );
 requiredPermissions.set(
 	search.searchByValue.name,
-	new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH_BY_VALUE)
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH_BY_VALUE)
 );
-requiredPermissions.set(search.search.name, new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH));
-requiredPermissions.set(
-	schema.createSchema.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.CREATE_DATABASE)
-);
-requiredPermissions.set(schema.createTable.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.CREATE_TABLE));
+requiredPermissions.set(search.search.name, new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH));
+requiredPermissions.set(schema.createSchema.name, new permission(true, [], terms.OPERATIONS_ENUM.CREATE_DATABASE));
+requiredPermissions.set(schema.createTable.name, new permission(true, [], terms.OPERATIONS_ENUM.CREATE_TABLE));
 requiredPermissions.set(
 	schema.createAttribute.name,
-	new (permission as any)(false, [INSERT_PERM], terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE)
+	new permission(false, [INSERT_PERM], terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE)
 );
-requiredPermissions.set(schema.dropSchema.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.DROP_DATABASE));
-requiredPermissions.set(schema.dropTable.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.DROP_TABLE));
-requiredPermissions.set(
-	schema.dropAttribute.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.DROP_ATTRIBUTE)
-);
+requiredPermissions.set(schema.dropSchema.name, new permission(true, [], terms.OPERATIONS_ENUM.DROP_DATABASE));
+requiredPermissions.set(schema.dropTable.name, new permission(true, [], terms.OPERATIONS_ENUM.DROP_TABLE));
+requiredPermissions.set(schema.dropAttribute.name, new permission(true, [], terms.OPERATIONS_ENUM.DROP_ATTRIBUTE));
 requiredPermissions.set(
 	schemaDescribe.describeSchema.name,
-	new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA)
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA)
 );
 requiredPermissions.set(
 	schemaDescribe.describeTable.name,
-	new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.DESCRIBE_TABLE)
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.DESCRIBE_TABLE)
+);
+requiredPermissions.set(delete_.deleteRecord.name, new permission(false, [DELETE_PERM], terms.OPERATIONS_ENUM.DELETE));
+requiredPermissions.set(user.addUser.name, new permission(true, [], terms.OPERATIONS_ENUM.ADD_USER));
+requiredPermissions.set(user.alterUser.name, new permission(true, [], terms.OPERATIONS_ENUM.ALTER_USER));
+requiredPermissions.set(user.dropUser.name, new permission(true, [], terms.OPERATIONS_ENUM.DROP_USER));
+requiredPermissions.set(user.listUsersExternal.name, new permission(true, [], terms.OPERATIONS_ENUM.LIST_USERS));
+requiredPermissions.set(role.listRoles.name, new permission(true, [], terms.OPERATIONS_ENUM.LIST_ROLES));
+requiredPermissions.set(role.addRole.name, new permission(true, [], terms.OPERATIONS_ENUM.ADD_ROLE));
+requiredPermissions.set(role.alterRole.name, new permission(true, [], terms.OPERATIONS_ENUM.ALTER_ROLE));
+requiredPermissions.set(role.dropRole.name, new permission(true, [], terms.OPERATIONS_ENUM.DROP_ROLE));
+requiredPermissions.set(readLog.name, new permission(true, [], terms.OPERATIONS_ENUM.READ_LOG));
+requiredPermissions.set(
+	configUtils.setConfiguration.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.SET_CONFIGURATION)
 );
 requiredPermissions.set(
-	delete_.deleteRecord.name,
-	new (permission as any)(false, [DELETE_PERM], terms.OPERATIONS_ENUM.DELETE)
+	delete_.deleteFilesBefore.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE)
 );
-requiredPermissions.set(user.addUser.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.ADD_USER));
-requiredPermissions.set(user.alterUser.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.ALTER_USER));
-requiredPermissions.set(user.dropUser.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.DROP_USER));
 requiredPermissions.set(
-	user.listUsersExternal.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.LIST_USERS)
+	delete_.deleteAuditLogsBefore.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.DELETE_AUDIT_LOGS_BEFORE)
 );
-requiredPermissions.set(role.listRoles.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.LIST_ROLES));
-requiredPermissions.set(role.addRole.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.ADD_ROLE));
-requiredPermissions.set(role.alterRole.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.ALTER_ROLE));
-requiredPermissions.set(role.dropRole.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.DROP_ROLE));
-requiredPermissions.set(readLog.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.READ_LOG));
-requiredPermissions.set(configUtils.setConfiguration.name, new (permission as any)(true, []));
-requiredPermissions.set(delete_.deleteFilesBefore.name, new (permission as any)(true, []));
-requiredPermissions.set(delete_.deleteAuditLogsBefore.name, new (permission as any)(true, []));
-requiredPermissions.set(restart.restart.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.RESTART));
-requiredPermissions.set(restart.restartService.name, new (permission as any)(true, []));
-requiredPermissions.set(readAuditLog.name, new (permission as any)(true, [], terms.OPERATIONS_ENUM.READ_AUDIT_LOG));
-requiredPermissions.set(getBackup.name, new (permission as any)(true, [READ_PERM]));
+requiredPermissions.set(restart.restart.name, new permission(true, [], terms.OPERATIONS_ENUM.RESTART));
+requiredPermissions.set(restart.restartService.name, new permission(true, [], terms.OPERATIONS_ENUM.RESTART_SERVICE));
+requiredPermissions.set(readAuditLog.name, new permission(true, [], terms.OPERATIONS_ENUM.READ_AUDIT_LOG));
+// No allowlist may grant it: gate 2 would return before this READ check, and the dispatched handler
+// copies a whole database, `system` included.
+requiredPermissions.set(getBackup.name, new permission(true, [READ_PERM], null));
 requiredPermissions.set(
 	rocksdbBackup.createBackup.name,
-	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.CREATE_BACKUP)
+	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.CREATE_BACKUP)
 );
 requiredPermissions.set(
 	rocksdbBackup.listBackups.name,
-	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.LIST_BACKUPS)
+	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.LIST_BACKUPS)
 );
 requiredPermissions.set(
 	rocksdbBackup.verifyBackup.name,
-	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.VERIFY_BACKUP)
+	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.VERIFY_BACKUP)
 );
 requiredPermissions.set(
 	rocksdbBackup.deleteBackup.name,
-	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.DELETE_BACKUP)
+	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.DELETE_BACKUP)
 );
 requiredPermissions.set(
 	rocksdbBackup.purgeBackups.name,
-	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.PURGE_BACKUPS)
+	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.PURGE_BACKUPS)
 );
 requiredPermissions.set(
 	rocksdbBackup.restoreBackup.name,
-	new (permission as any)(true, [READ_PERM], terms.OPERATIONS_ENUM.RESTORE_BACKUP)
+	new permission(true, [READ_PERM], terms.OPERATIONS_ENUM.RESTORE_BACKUP)
 );
-requiredPermissions.set(schema.cleanupOrphanBlobs.name, new (permission as any)(true, []));
 requiredPermissions.set(
-	systemInformation.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.SYSTEM_INFORMATION)
+	schema.cleanupOrphanBlobs.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.CLEANUP_ORPHAN_BLOBS)
 );
+requiredPermissions.set(systemInformation.name, new permission(true, [], terms.OPERATIONS_ENUM.SYSTEM_INFORMATION));
 requiredPermissions.set(
 	configUtils.getConfiguration.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_CONFIGURATION)
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_CONFIGURATION)
 );
-requiredPermissions.set(transactionLog.readTransactionLog.name, new (permission as any)(true, []));
-requiredPermissions.set(transactionLog.deleteTransactionLogsBefore.name, new (permission as any)(true, []));
-requiredPermissions.set(npmUtilities.installModules.name, new (permission as any)(true, []));
+// No allowlist may grant it: it reads the same records as read_audit_log without that operation's
+// system.hdb_secret guard, and those records carry secret envelopes.
+requiredPermissions.set(transactionLog.readTransactionLog.name, new permission(true, [], null));
 requiredPermissions.set(
-	analytics.getOp.name,
-	new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.GET_ANALYTICS)
+	transactionLog.deleteTransactionLogsBefore.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE)
 );
+requiredPermissions.set(
+	npmUtilities.installModules.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.INSTALL_NODE_MODULES)
+);
+requiredPermissions.set(analytics.getOp.name, new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.GET_ANALYTICS));
 requiredPermissions.set(
 	analytics.listMetricsOp.name,
-	new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.LIST_METRICS)
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.LIST_METRICS)
 );
 requiredPermissions.set(
 	analytics.describeMetricOp.name,
-	new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.DESCRIBE_METRIC)
+	new permission(false, [READ_PERM], terms.OPERATIONS_ENUM.DESCRIBE_METRIC)
 );
-requiredPermissions.set(status.clear.name, new (permission as any)(true, []));
-requiredPermissions.set(status.get.name, new (permission as any)(true, []));
-requiredPermissions.set(status.set.name, new (permission as any)(true, []));
+requiredPermissions.set(status.clear.name, new permission(true, [], terms.OPERATIONS_ENUM.CLEAR_STATUS));
+requiredPermissions.set(status.get.name, new permission(true, [], terms.OPERATIONS_ENUM.GET_STATUS));
+requiredPermissions.set(status.set.name, new permission(true, [], terms.OPERATIONS_ENUM.SET_STATUS));
 
 //this operation must be available to all users so they can create authentication tokens and login
 requiredPermissions.set(
 	tokenAuthentication.createTokens.name,
-	new (permission as any)(false, [], terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS)
+	new permission(false, [], terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS)
 );
 requiredPermissions.set(
 	tokenAuthentication.refreshOperationToken.name,
-	new (permission as any)(false, [], terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN)
+	new permission(false, [], terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN)
 );
-requiredPermissions.set(auth.login.name, new (permission as any)(false, []));
-requiredPermissions.set(auth.logout.name, new (permission as any)(false, []));
+requiredPermissions.set(auth.login.name, new permission(false, [], terms.OPERATIONS_ENUM.LOGIN));
+requiredPermissions.set(auth.logout.name, new permission(false, [], terms.OPERATIONS_ENUM.LOGOUT));
 
 //Operations specific to HDB Functions
 requiredPermissions.set(
 	functionsOperations.customFunctionsStatus.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.CUSTOM_FUNCTIONS_STATUS)
+	new permission(true, [], terms.OPERATIONS_ENUM.CUSTOM_FUNCTIONS_STATUS)
 );
 requiredPermissions.set(
 	functionsOperations.getCustomFunctions.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTIONS)
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTIONS)
 );
 requiredPermissions.set(
 	functionsOperations.getComponents.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_COMPONENTS)
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_COMPONENTS)
 );
 requiredPermissions.set(
 	functionsOperations.getComponentFile.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_COMPONENT_FILE)
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_COMPONENT_FILE)
 );
-requiredPermissions.set(functionsOperations.setComponentFile.name, new (permission as any)(true, []));
+requiredPermissions.set(
+	functionsOperations.setComponentFile.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.SET_COMPONENT_FILE)
+);
 requiredPermissions.set(
 	functionsOperations.getEnvKeys.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_ENV_KEYS)
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_ENV_KEYS)
 );
 requiredPermissions.set(
 	functionsOperations.setEnvValue.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.SET_ENV_VALUE)
+	new permission(true, [], terms.OPERATIONS_ENUM.SET_ENV_VALUE)
 );
 requiredPermissions.set(
 	functionsOperations.deleteEnvValue.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.DELETE_ENV_VALUE)
+	new permission(true, [], terms.OPERATIONS_ENUM.DELETE_ENV_VALUE)
 );
-requiredPermissions.set(functionsOperations.dropComponent.name, new (permission as any)(true, []));
+requiredPermissions.set(
+	functionsOperations.dropComponent.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.DROP_COMPONENT)
+);
 requiredPermissions.set(
 	functionsOperations.getCustomFunction.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTION)
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTION)
 );
-requiredPermissions.set(functionsOperations.setCustomFunction.name, new (permission as any)(true, []));
-requiredPermissions.set(functionsOperations.dropCustomFunction.name, new (permission as any)(true, []));
-requiredPermissions.set(functionsOperations.addComponent.name, new (permission as any)(true, []));
-requiredPermissions.set(functionsOperations.dropCustomFunctionProject.name, new (permission as any)(true, []));
-requiredPermissions.set(functionsOperations.packageComponent.name, new (permission as any)(true, []));
-requiredPermissions.set(functionsOperations.deployComponent.name, new (permission as any)(true, []));
+requiredPermissions.set(
+	functionsOperations.setCustomFunction.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.SET_CUSTOM_FUNCTION)
+);
+requiredPermissions.set(
+	functionsOperations.dropCustomFunction.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION)
+);
+requiredPermissions.set(
+	functionsOperations.addComponent.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.ADD_COMPONENT)
+);
+requiredPermissions.set(
+	functionsOperations.dropCustomFunctionProject.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION_PROJECT)
+);
+requiredPermissions.set(
+	functionsOperations.packageComponent.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.PACKAGE_COMPONENT)
+);
+requiredPermissions.set(
+	functionsOperations.deployComponent.name,
+	new permission(true, [], terms.OPERATIONS_ENUM.DEPLOY_COMPONENT)
+);
 requiredPermissions.set(
 	deploymentOperations.handleListDeployments.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.LIST_DEPLOYMENTS)
+	new permission(true, [], terms.OPERATIONS_ENUM.LIST_DEPLOYMENTS)
 );
 requiredPermissions.set(
 	deploymentOperations.handleGetDeployment.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT)
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT)
 );
 // get_deployment_payload streams the full tarball (which can embed secrets), unlike
 // get_deployment/list_deployments (metadata only), so it ALSO enforces super_user directly in
@@ -336,38 +364,35 @@ requiredPermissions.set(
 // below), matching the secrets-store ops.
 requiredPermissions.set(
 	deploymentOperations.handleGetDeploymentPayload.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT_PAYLOAD)
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_DEPLOYMENT_PAYLOAD)
 );
 requiredPermissions.set(
 	deploymentOperations.handleDeleteDeploymentPayload.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.DELETE_DEPLOYMENT_PAYLOAD)
+	new permission(true, [], terms.OPERATIONS_ENUM.DELETE_DEPLOYMENT_PAYLOAD)
 );
 
 // Secrets-store operations. All SU-only; the handlers ALSO enforce super_user directly, so these
 // cannot be delegated through a role's `operations` allowlist (gate-2 bypass below).
-requiredPermissions.set(
-	secretOperations.setSecret.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.SET_SECRET)
-);
+requiredPermissions.set(secretOperations.setSecret.name, new permission(true, [], terms.OPERATIONS_ENUM.SET_SECRET));
 requiredPermissions.set(
 	secretOperations.grantSecret.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GRANT_SECRET)
+	new permission(true, [], terms.OPERATIONS_ENUM.GRANT_SECRET)
 );
 requiredPermissions.set(
 	secretOperations.revokeSecret.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.REVOKE_SECRET)
+	new permission(true, [], terms.OPERATIONS_ENUM.REVOKE_SECRET)
 );
 requiredPermissions.set(
 	secretOperations.listSecrets.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.LIST_SECRETS)
+	new permission(true, [], terms.OPERATIONS_ENUM.LIST_SECRETS)
 );
 requiredPermissions.set(
 	secretOperations.deleteSecret.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.DELETE_SECRET)
+	new permission(true, [], terms.OPERATIONS_ENUM.DELETE_SECRET)
 );
 requiredPermissions.set(
 	secretOperations.getSecretsPublicKey.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_SECRETS_PUBLIC_KEY)
+	new permission(true, [], terms.OPERATIONS_ENUM.GET_SECRETS_PUBLIC_KEY)
 );
 
 // OIDC trust policies (#2171). A policy lets an external CI run authenticate as a Harper user, so
@@ -375,66 +400,66 @@ requiredPermissions.set(
 // through a role's `operations` allowlist (gate-2 bypass below).
 requiredPermissions.set(
 	trustPolicyOperations.addOidcTrust.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.ADD_OIDC_TRUST)
+	new permission(true, [], terms.OPERATIONS_ENUM.ADD_OIDC_TRUST)
 );
 requiredPermissions.set(
 	trustPolicyOperations.listOidcTrust.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.LIST_OIDC_TRUST)
+	new permission(true, [], terms.OPERATIONS_ENUM.LIST_OIDC_TRUST)
 );
 requiredPermissions.set(
 	trustPolicyOperations.dropOidcTrust.name,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.DROP_OIDC_TRUST)
+	new permission(true, [], terms.OPERATIONS_ENUM.DROP_OIDC_TRUST)
 );
 // The exchange is unauthenticated by design — it authenticates its own caller against a trust
 // policy, the way create_authentication_tokens does against a password.
 requiredPermissions.set(
 	tokenExchange.exchangeOidcToken.name,
-	new (permission as any)(false, [], terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN)
+	new permission(false, [], terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN)
 );
 
 //Below are functions that are currently open to all roles
-requiredPermissions.set(regDeprecated.getRegistrationInfo.name, new (permission as any)(false, []));
-requiredPermissions.set(user.userInfo.name, new (permission as any)(false, [], terms.OPERATIONS_ENUM.USER_INFO));
-//DescribeAll will only return the schema values a user has permissions for
 requiredPermissions.set(
-	schemaDescribe.describeAll.name,
-	new (permission as any)(false, [], terms.OPERATIONS_ENUM.DESCRIBE_ALL)
+	regDeprecated.getRegistrationInfo.name,
+	new permission(false, [], terms.OPERATIONS_ENUM.REGISTRATION_INFO)
 );
+requiredPermissions.set(user.userInfo.name, new permission(false, [], terms.OPERATIONS_ENUM.USER_INFO));
+//DescribeAll will only return the schema values a user has permissions for
+requiredPermissions.set(schemaDescribe.describeAll.name, new permission(false, [], terms.OPERATIONS_ENUM.DESCRIBE_ALL));
 
 //Below function names are hardcoded b/c of circular dependency issues
-requiredPermissions.set(HANDLE_GET_JOB, new (permission as any)(false, [], terms.OPERATIONS_ENUM.GET_JOB));
-requiredPermissions.set(HANDLE_GET_JOB_BY_START_DATE, new (permission as any)(true, []));
-requiredPermissions.set(CATCHUP, new (permission as any)(true, []));
+requiredPermissions.set(HANDLE_GET_JOB, new permission(false, [], terms.OPERATIONS_ENUM.GET_JOB));
+requiredPermissions.set(
+	HANDLE_GET_JOB_BY_START_DATE,
+	new permission(true, [], terms.OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE)
+);
+// No allowlist may grant it: this legacy clustering operation applies writes to any table with no
+// table permission check.
+requiredPermissions.set(CATCHUP, new permission(true, [], null));
 requiredPermissions.set(
 	BULK_OPS.CSV_DATA_LOAD,
-	new (permission as any)(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.CSV_DATA_LOAD)
+	new permission(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.CSV_DATA_LOAD)
 );
 requiredPermissions.set(
 	BULK_OPS.CSV_URL_LOAD,
-	new (permission as any)(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.CSV_URL_LOAD)
+	new permission(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.CSV_URL_LOAD)
 );
 requiredPermissions.set(
 	BULK_OPS.CSV_FILE_LOAD,
-	new (permission as any)(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.CSV_FILE_LOAD)
+	new permission(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.CSV_FILE_LOAD)
 );
 requiredPermissions.set(
 	BULK_OPS.IMPORT_FROM_S3,
-	new (permission as any)(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.IMPORT_FROM_S3)
+	new permission(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.IMPORT_FROM_S3)
 );
-requiredPermissions.set(
-	DATA_EXPORT.EXPORT_TO_S3,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.EXPORT_TO_S3)
-);
-requiredPermissions.set(
-	DATA_EXPORT.EXPORT_LOCAL,
-	new (permission as any)(true, [], terms.OPERATIONS_ENUM.EXPORT_LOCAL)
-);
+requiredPermissions.set(DATA_EXPORT.EXPORT_TO_S3, new permission(true, [], terms.OPERATIONS_ENUM.EXPORT_TO_S3));
+requiredPermissions.set(DATA_EXPORT.EXPORT_LOCAL, new permission(true, [], terms.OPERATIONS_ENUM.EXPORT_LOCAL));
 
 // SQL operations are distinct from operations above, so we need to store required perms for both.
-requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.DELETE, new (permission as any)(false, [DELETE_PERM]));
-requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.SELECT, new (permission as any)(false, [READ_PERM]));
-requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.INSERT, new (permission as any)(false, [INSERT_PERM]));
-requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.UPDATE, new (permission as any)(false, [UPDATE_PERM]));
+// These are statement variants inside `sql`, which the allowlist gates by its own name.
+requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.DELETE, new permission(false, [DELETE_PERM], null));
+requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.SELECT, new permission(false, [READ_PERM], null));
+requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.INSERT, new permission(false, [INSERT_PERM], null));
+requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.UPDATE, new permission(false, [UPDATE_PERM], null));
 
 module.exports = {
 	verifyPerms,
@@ -477,10 +502,9 @@ module.exports = {
  *
  * `apiOperation` MUST be the snake_case API operation the caller actually invoked (`deploy_component`,
  * `sql`, `export_local`, ...) — i.e. `requestJson.operation`, the same namespace the policy's scope is
- * written in. It is emphatically NOT the handler function name: many handlers have no `api_name`
- * mapping (deploy_component → `deployComponent`) and some are shared across operations
- * (`search_by_id`/`search_by_hash`), so resolving the scope name from the handler both denies the
- * feature's own headline op and conflates aliases. Callers pass the real operation.
+ * written in. It is emphatically NOT the handler function name: some handlers are shared across
+ * operations (`search_by_id`/`search_by_hash`) and their `api_name` names only one of them, so resolving
+ * the scope name from the handler conflates aliases. Callers pass the real operation.
  */
 function tokenScopeDenial(userObject: any, apiOperation: string) {
 	// `!= null`, not `!== undefined`: an unscoped policy stores `operations: null`, and expanding a
@@ -646,11 +670,14 @@ export function verifyOperationsAllowlist(requestJson: any, operationFunctionNam
 	// _expandedOperations is pre-built at cache-load time (O(1) lookup).
 	// Fall back to on-demand expansion for inline-asserted roles (e.g. impersonation via hdb_user in body).
 	const allowedOps = rolePermission._expandedOperations ?? expandOperationsPerms(allowedOperationsList);
-	// operationFunctionName is the internal camelCase function name; allowedOps contains snake_case
-	// API names. Resolve via the api_name stored on the permission entry (set at registration time).
-	const opApiName = requiredPermissions.get(operationFunctionName)?.api_name ?? operationFunctionName;
-	if (!allowedOps.has(opApiName)) {
-		return new PermissionResponseObject().handleUnauthorizedItem(HDB_ERROR_MSGS.OP_NOT_IN_OPERATIONS(opApiName));
+	// operationFunctionName is the internal handler name and allowedOps holds API names, so a registered
+	// handler is checked under its entry's api_name — never under its own name, which would grant it
+	// whenever the two happened to match. Only a name with no entry (`sql`) is checked as given.
+	const permissionEntry = requiredPermissions.get(operationFunctionName);
+	const opApiName = permissionEntry ? permissionEntry.api_name : operationFunctionName;
+	if (opApiName == null || !allowedOps.has(opApiName)) {
+		const refused = opApiName ?? requestJson.operation ?? operationFunctionName;
+		return new PermissionResponseObject().handleUnauthorizedItem(HDB_ERROR_MSGS.OP_NOT_IN_OPERATIONS(refused));
 	}
 	return null;
 }
@@ -722,7 +749,7 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	// For a job (export_local/export_to_s3), the dispatcher passes the nested search_operation as
 	// requestJson, so requestJson.operation is the *inner* op (e.g. search_by_conditions); the caller
 	// threads the real top-level op through `options.apiOperation` so a read-scoped token cannot ride
-	// an export. Never `op` (the handler name), which would deny deploy_component and conflate aliases.
+	// an export. Never `op` (the handler name), which would conflate aliases.
 	const scopeDenial = tokenScopeDenial(requestJson.hdb_user, options?.apiOperation ?? requestJson.operation);
 	if (scopeDenial) return scopeDenial;
 
@@ -803,8 +830,8 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	// CRUD check bypassed here. Should fall through for those instead of returning null
 	// unconditionally. The managed-backup ops share this shape but self-enforce super_user in their
 	// handlers/validators (dataLayer/rocksdbBackup.ts requireSuperUser), so they are not delegable
-	// regardless; get_backup remains the one that relies solely on this gate. Low risk today but
-	// worth tightening.
+	// regardless; get_backup is kept out of reach by registering it without an api_name, which gate 1
+	// can never match.
 	if (allowedOperationsList !== undefined && requiredPermissions.get(op)?.requires_su) {
 		return null;
 	}
