@@ -6,7 +6,6 @@ let lastWarning = 0;
 const WARNING_INTERVAL = 30000;
 const EVENT_QUEUE_MONITORING_INTERVAL = 3000;
 const LIMIT_EXCEEDED_LOG_INTERVAL = 5000;
-let lastLimitExceededLog = -Infinity;
 let lastEventQueueCheck = performance.now() + EVENT_QUEUE_MONITORING_INTERVAL;
 let averageEventCycleTime = 0;
 /**
@@ -14,23 +13,25 @@ let averageEventCycleTime = 0;
  * @param fn
  * @param onLimitExceeded
  * @param maxQueueTimeLimit
+ * @param name names this queue in the shed warning
  */
 export function throttle(
 	fn: (...args: any) => any,
 	onLimitExceeded?: (...args: any) => any,
-	maxQueueTimeLimit = DEFAULT_MAX_QUEUE_TIME
+	maxQueueTimeLimit = DEFAULT_MAX_QUEUE_TIME,
+	name?: string
 ) {
 	let queuedCalls: any[];
+	let lastLimitExceededLog = -Infinity;
 	return function (...args: any[]) {
 		if (queuedCalls) {
 			// this is an estimate of the time an event will take to process, based on the average event cycle time and the queue depth
 			if (queuedCalls.length * averageEventCycleTime > maxQueueTimeLimit) {
-				// The only server-side record of a shed: onLimitExceeded answers the caller and nothing more.
 				const now = performance.now();
 				if (now - lastLimitExceededLog > LIMIT_EXCEEDED_LOG_INTERVAL) {
 					lastLimitExceededLog = now;
 					logger.warn?.(
-						`Rejecting queued calls: ${queuedCalls.length} already queued at ~${Math.round(averageEventCycleTime)}ms per event cycle, an estimated wait past the ${maxQueueTimeLimit}ms limit`
+						`Rejecting queued calls${name ? ` (${name})` : ''}: ${queuedCalls.length} already queued at ~${Math.round(averageEventCycleTime)}ms per event cycle, an estimated wait past the ${maxQueueTimeLimit}ms limit`
 					);
 				}
 				return onLimitExceeded(...args);

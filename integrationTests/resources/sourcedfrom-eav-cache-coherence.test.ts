@@ -52,10 +52,10 @@ const SETTLE_MS = 2500; // extra buffer past TTL before trusting convergence
 
 const N_PRODUCTS = 60; // 60 x 5 attrs = 300 EAV rows for the bulk probe
 const READS_PER_PRODUCT_DURING_BURST = 3;
-const PUT_SHED_RETRIES = 10; // attempts per PUT before a request-queue shed fails the probe
-const PUT_SHED_BACKOFF_MS = 100; // per attempt, linear: 4.5s of backoff across the 9 retries
-// The literal body server/http.ts sends when the request-queue throttle sheds a non-GET request.
-const REQUEST_QUEUE_SHED_BODY = 'exceeded request queue limit';
+const PUT_SHED_RETRIES = 10;
+const PUT_SHED_BACKOFF_MS = 100; // × attempt: 4.5s across the 9 retries
+// server/http.ts's body when the request-queue throttle sheds a non-GET request
+const REQUEST_QUEUE_SHED_BODY = 'Service unavailable, exceeded request queue limit';
 
 interface ProductBody {
 	id: string;
@@ -74,8 +74,7 @@ suite('QA-595 EAV catalog x sourcedFrom cache coherence', { skip: skipSuite }, (
 	let restURL: string;
 	let headers: Record<string, string>;
 
-	// A request-queue shed is the server's backpressure under the 300-PUT burst, not the coherence
-	// defect this probe hunts; any other 503 (a write-queue or conflict shed) still fails the probe.
+	// A request-queue shed is backpressure under the burst, not a coherence defect; any other 503 fails.
 	let shedRetries = 0;
 	async function putAttribute(entityId: string, attrName: string, gen: number): Promise<number> {
 		const key = `${entityId}:${attrName}`;
@@ -87,7 +86,7 @@ suite('QA-595 EAV catalog x sourcedFrom cache coherence', { skip: skipSuite }, (
 			});
 			const text = await res.text().catch(() => '');
 			if ([200, 201, 204].includes(res.status)) return res.status;
-			if (res.status === 503 && text.includes(REQUEST_QUEUE_SHED_BODY) && attempt < PUT_SHED_RETRIES) {
+			if (res.status === 503 && text.trim() === REQUEST_QUEUE_SHED_BODY && attempt < PUT_SHED_RETRIES) {
 				shedRetries++;
 				await sleep(PUT_SHED_BACKOFF_MS * attempt);
 				continue;
