@@ -10,10 +10,10 @@ function getTable(name) {
 	return t;
 }
 
-function requiredId(query) {
-	const id = query.get('id');
-	if (!id) throw new Error('missing required query parameter "id"');
-	return id;
+function requiredParam(query, name) {
+	const value = query.get(name);
+	if (!value) throw new Error(`missing required query parameter "${name}"`);
+	return value;
 }
 
 function requiredInt(value, name) {
@@ -39,8 +39,7 @@ function sha256(buf) {
 	return createHash('sha256').update(buf).digest('hex');
 }
 
-// Which engine backs the tables: LMDB opens its root store at a path ending in `.mdb`, RocksDB at a
-// bare directory. Lets the spec assert the engine in effect instead of trusting the env var.
+// LMDB opens its root store at a path ending in `.mdb`, RocksDB at a bare directory.
 export class StorageEngineInfo extends Resource {
 	static loadAsInstance = false;
 	async get() {
@@ -50,8 +49,6 @@ export class StorageEngineInfo extends Resource {
 	}
 }
 
-// ---- @computed via the PATCH merge base ----
-
 export class ComputedSeed extends Resource {
 	static loadAsInstance = false;
 	async post(target, body) {
@@ -60,7 +57,6 @@ export class ComputedSeed extends Resource {
 	}
 }
 
-// body.ops: [{a} | {b}, ...] -- one PATCH per op, each touching only the field it names.
 export class ComputedChainWrite extends Resource {
 	static loadAsInstance = false;
 	async post(target, body) {
@@ -78,44 +74,80 @@ export class ComputedChainWrite extends Resource {
 export class VerifyComputed extends Resource {
 	static loadAsInstance = false;
 	async get(target) {
-		const id = requiredId(target);
+		const id = requiredParam(target, 'id');
 		const rec = await getTable('Computed').get(id);
 		if (!rec) return { present: false, id };
 		return { present: true, id, a: rec.a, b: rec.b, sum: rec.sum };
 	}
 }
 
-// ---- two-step chain vs racing single-step writers ----
+export class ComputedBySum extends Resource {
+	static loadAsInstance = false;
+	async get(target) {
+		const sum = requiredInt(requiredParam(target, 'sum'), 'sum');
+		const ids = [];
+		for await (const rec of getTable('Computed').search({ conditions: [{ attribute: 'sum', value: sum }] })) {
+			ids.push(rec.id);
+		}
+		return { sum, ids };
+	}
+}
 
-export class CasSeed extends Resource {
+export class WorkflowSeed extends Resource {
 	static loadAsInstance = false;
 	async post(target, body) {
-		await getTable('CasChain').put({ id: body.id, status: 'A', seq: 0, owner: null });
+		await getTable('Workflow').put({ id: body.id, status: 'A', seq: 0, owner: null });
 		return { ok: true };
 	}
 }
 
-// Reads the row, and if it is still A writes LOCKED, waits `delayMs` with the transaction open, then
-// writes DONE -- both writes in this request's transaction.
-export class CasChainSlow extends Resource {
+// In-process handshake between TwoStepWrite and the test, so the spec (not a sleep) decides when the
+// chain's second write runs. Needs every request on one worker thread.
+const pendingChains = new Map();
+
+// If the row is A: write LOCKED, hold the transaction open until TwoStepRelease (or maxWaitMs), then
+// write DONE.
+export class TwoStepWrite extends Resource {
 	static loadAsInstance = false;
 	async post(target, body) {
-		const delayMs = requiredInt(body.delayMs, 'delayMs');
-		const t = getTable('CasChain');
+		const maxWaitMs = requiredInt(body.maxWaitMs, 'maxWaitMs');
+		const t = getTable('Workflow');
 		const cur = await t.get(body.id);
 		if (cur?.status !== 'A') return { won: false, seenStatus: cur?.status };
 		await t.patch({ id: body.id, status: 'LOCKED', seq: cur.seq + 1, owner: body.owner });
-		await new Promise((resolve) => setTimeout(resolve, delayMs));
+		let timer;
+		const released = await new Promise((resolve) => {
+			pendingChains.set(body.id, () => resolve(true));
+			timer = setTimeout(() => resolve(false), maxWaitMs);
+		});
+		clearTimeout(timer);
+		pendingChains.delete(body.id);
 		await t.patch({ id: body.id, status: 'DONE', seq: cur.seq + 2, owner: body.owner });
-		return { won: true };
+		return { won: true, released };
 	}
 }
 
-// Single-step: if the row is still A, move it to newStatus.
-export class CasAttempt extends Resource {
+export class TwoStepState extends Resource {
+	static loadAsInstance = false;
+	async get(target) {
+		return { staged: pendingChains.has(requiredParam(target, 'id')) };
+	}
+}
+
+export class TwoStepRelease extends Resource {
 	static loadAsInstance = false;
 	async post(target, body) {
-		const t = getTable('CasChain');
+		const release = pendingChains.get(body.id);
+		release?.();
+		return { released: Boolean(release) };
+	}
+}
+
+// If the row is A, move it to newStatus.
+export class SingleStepWrite extends Resource {
+	static loadAsInstance = false;
+	async post(target, body) {
+		const t = getTable('Workflow');
 		const cur = await t.get(body.id);
 		if (cur?.status !== 'A') return { won: false, seenStatus: cur?.status };
 		await t.patch({ id: body.id, status: body.newStatus, seq: cur.seq + 1, owner: body.owner });
@@ -123,17 +155,15 @@ export class CasAttempt extends Resource {
 	}
 }
 
-export class VerifyCas extends Resource {
+export class VerifyWorkflow extends Resource {
 	static loadAsInstance = false;
 	async get(target) {
-		const id = requiredId(target);
-		const rec = await getTable('CasChain').get(id);
+		const id = requiredParam(target, 'id');
+		const rec = await getTable('Workflow').get(id);
 		if (!rec) return { present: false, id };
 		return { present: true, id, status: rec.status, seq: rec.seq, owner: rec.owner };
 	}
 }
-
-// ---- blob reclamation across a same-key chain ----
 
 export class BlobSeed extends Resource {
 	static loadAsInstance = false;
@@ -148,7 +178,6 @@ export class BlobSeed extends Resource {
 	}
 }
 
-// body.ops: [{seed, size, tag}, ...] -- one blob-replacing PATCH per op.
 export class BlobChainWrite extends Resource {
 	static loadAsInstance = false;
 	async post(target, body) {
@@ -166,7 +195,7 @@ export class BlobChainWrite extends Resource {
 export class VerifyBlobChain extends Resource {
 	static loadAsInstance = false;
 	async get(target) {
-		const id = requiredId(target);
+		const id = requiredParam(target, 'id');
 		const rec = await getTable('BlobChain').get(id);
 		if (!rec?.blob) return { present: false, id };
 		const bytes = Buffer.from(await rec.blob.bytes());
