@@ -110,7 +110,10 @@ async function observeDuringFlight(inFlight: Promise<unknown>, dir: string): Pro
 					const [content, fileStat] = await Promise.all([readFile(filePath, 'utf8'), stat(filePath)]);
 					keyFiles.push({ name, content, mode: fileStat.mode & 0o777 });
 				}
-				if (keyFiles.length > 0) return { tempDir, keyFiles, dirMode: dirStat.mode & 0o777 };
+				// writeFile creates the 0600 file before its content lands, so an empty read is a key
+				// still being written, not a materialized one; keep polling until every key has content.
+				if (keyFiles.length > 0 && keyFiles.every((key) => key.content.length > 0))
+					return { tempDir, keyFiles, dirMode: dirStat.mode & 0o777 };
 			} catch {
 				// cleanup removed it between readdir and stat; keep polling for a snapshot with content
 			}
