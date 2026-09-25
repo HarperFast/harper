@@ -143,6 +143,7 @@ function isFrozenRecordObject(value: any): boolean {
 	);
 }
 export const INVALIDATED = 1;
+const MIXED_WRITES = Symbol('mixed writes');
 export const EVICTED = 8; // note that 2 is reserved for timestamps
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
@@ -2541,11 +2542,13 @@ export function makeTable(options) {
 			const transaction = txnForContext(context);
 			checkValidId(id);
 			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
-
-			transaction.addWrite({
+			const sourceTransaction = transaction;
+			const write = {
 				key: id,
 				store: primaryStore,
 				entry,
+				deleteNodeId: options?.nodeId ?? null,
+				redelivered: false,
 				nodeName: (context as any)?.nodeName,
 				before:
 					(this.constructor as any).source?.delete && !(context as any)?.source
@@ -2558,9 +2561,25 @@ export function makeTable(options) {
 							context.lastModified = existingEntry.version;
 						TableResource._updateResource(this, existingEntry);
 					}
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
+					const precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					if (precedesExisting < 0) {
 						return;
 					} // a newer record exists locally
+					// A delete re-delivered onto the removal it already made (same version and origin) must not write
+					// again: the audit entry it would append is forwarded and re-logged by every peer. Each write sees
+					// the entry from before the transaction, so this holds only when every write to the key in the
+					// transaction is this origin's delete. A retry round reads back this write's own staged removal, so
+					// it repeats the first round's decision instead.
+					const redelivered = retry
+						? write.redelivered
+						: precedesExisting === 0 &&
+							existingEntry?.version === txnTime &&
+							(existingEntry.nodeId ?? 0) === (options?.nodeId ?? getThisNodeId(auditStore) ?? 0) &&
+							existingRecord == null &&
+							!(existingEntry.metadataFlags & INVALIDATED) &&
+							onlyDeletesFrom(sourceTransaction, id, write.deleteNodeId);
+					write.redelivered = redelivered;
+					if (redelivered) return;
 					updateIndices(id, existingRecord, null, transaction && { transaction });
 					if (audit || trackDeletes) {
 						updateRecord(
@@ -2584,7 +2603,8 @@ export function makeTable(options) {
 						removeEntry(primaryStore, existingEntry);
 					}
 				},
-			} as any);
+			} as any;
+			transaction.addWrite(write);
 			return true;
 		}
 
@@ -4750,6 +4770,24 @@ export function makeTable(options) {
 			return results;
 		}
 		return ids;
+	}
+
+	/**
+	 * Whether every write to `key` in the transaction is a delete from origin `deleteNodeId`. The index of
+	 * the transaction's writes is extended as writes are added, so a transaction's checks cost O(writes).
+	 */
+	function onlyDeletesFrom(transaction: any, key: Id, deleteNodeId: number | null): boolean {
+		const writes = transaction.writes;
+		let index = transaction.deleteOriginsByKey;
+		if (index?.writes !== writes) transaction.deleteOriginsByKey = index = { writes, scanned: 0, origins: new Map() };
+		for (; index.scanned < writes.length; index.scanned++) {
+			const other = writes[index.scanned];
+			if (!other || other.store !== primaryStore) continue;
+			const origin = other.deleteNodeId === undefined ? MIXED_WRITES : other.deleteNodeId;
+			const prior = index.origins.get(other.key);
+			index.origins.set(other.key, prior === undefined || prior === origin ? origin : MIXED_WRITES);
+		}
+		return index.origins.get(key) === deleteNodeId;
 	}
 
 	function precedesExistingVersion(txnTime: number, existingEntry: Partial<Entry>, nodeId?: number): number {
