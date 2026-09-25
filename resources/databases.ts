@@ -2391,7 +2391,13 @@ export async function closeDatabase(
 		if (requireClosed && closeFailures.length > 0) {
 			// Some child stores may already be closed even when the root close fails. Never return
 			// that partially closed graph to service; the preparation fence holds until completion,
-			// after which the next lookup rebuilds a fresh graph from the still-authoritative files.
+			// after which the next lookup rebuilds fresh wrappers from the still-authoritative files.
+			// rocksdb-js serializes a new open with a native descriptor close, so retaining neither
+			// Harper's root wrapper nor its child handles is safe even if native teardown is in flight.
+			for (const rootStore of rootStores) {
+				lmdbDatabaseEnvs.delete(rootStore.path);
+				rocksdbDatabaseEnvs.delete(rootStore.path);
+			}
 			unregisterDatabase(databaseName);
 			throw new AggregateError(closeFailures, `Could not close database '${databaseName}' for destructive DDL`);
 		}

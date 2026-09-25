@@ -143,6 +143,7 @@ describe('RocksDB handle release', function () {
 			attributes: [{ attribute: 'id', isPrimaryKey: true }, { attribute: 'name' }],
 		});
 		assert.notStrictEqual(Reopened.primaryStore, originalPrimaryStore);
+		assert.notStrictEqual(Reopened.primaryStore.rootStore, rootStore);
 		assert.strictEqual(Reopened.primaryStore.status, 'open');
 		await closeDatabase(databaseName);
 	});
