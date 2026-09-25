@@ -808,21 +808,12 @@ number into its write instruction synchronously and the native writer consumes i
 (`node_modules/lmdb/write.js`), so a pass suspended inside `await removeAuditEntry()` still has a
 delete pending against the primary and audit DBIs, and LMDB forbids closing a DBI an existing
 transaction has modified. `dropDatabase()` and the legacy arm of `Table.dropTable()` await it.
-`closeDatabase()` and branch `close()` are asynchronous and await writer drain plus derived-index
-settlement before their stores close. What covers reset paths is that every
-environment touch remaining in a resumed pass — cursor advance, cursor release, marker write, re-arm —
-re-checks `rootStore.status`, plus the fact that their production callers reach them only for RocksDB
-stores, whose pass is one synchronous `purgeLogs()` call with nothing suspended mid-removal.
-`resetDatabases()` closes LMDB roots with no retirement call at all, so that re-check is a routine
+`closeDatabase()` and branch `close()` close commit admission, then drain tracked Rocks transactions,
+table maintenance, audit cleanup, and derived-index work before closing stores. Every environment
+touch remaining in a resumed cleanup pass — cursor advance, cursor release, marker write, re-arm —
+also re-checks `rootStore.status`. `resetDatabases()` closes LMDB roots with no retirement call at all,
+so that re-check is a routine
 path rather than a defensive one.
-
-RocksDB teardown closes commit admission before it drains. Every raw `RocksTransaction` writer must
-therefore submit through `commitTrackedRocksTransaction`, the same outstanding-commit queue used by
-`DatabaseTransaction`; a direct `transaction.commit()` is invisible to database close and can race
-handle destruction. Commit and table-maintenance drains share one absolute 120-second deadline. A
-timeout is a retryable close failure: handles stay open, admission and maintenance are restored, and
-the caller may retry. This is separate from derived-index shutdown because replication cursors,
-eviction, and optimistic primary-store removal write RocksDB without going through a derived index.
 
 The last-removed marker is retained until it commits. A rejected write is logged and carried to the
 next pass rather than dropped: a pass that deletes nothing never reaches the write again, so one
@@ -1006,24 +997,3 @@ environment is a use-after-free (an intermittent segfault in the lmdb unit run).
 an LMDB root once, only while `open`, skips its dbis, and closes every alias sharing it. RocksDB
 column families are independently refcounted handles, so they are still closed one by one. Enforced by
 the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.
-
-## Destructive database DDL fences the physical store, not its catalog names (`databaseDropPreparation.ts`)
-
-A configured database name and a directory discovered by the storage scan can refer to the same
-RocksDB or LMDB root. Drop preparation is therefore keyed by the canonical root-store path and sends
-those paths to every worker. Each worker rejects new access to a fenced path, closes every loaded
-catalog entry that points to it, and acknowledges only after its local handles settle. The initiating
-worker destroys the store after all acknowledgements, broadcasts completion, and then releases the
-same path keys. A worker that starts during preparation inherits the active path fences. If the
-initiator exits, peers retain their fences until local preparation settles and then release them, so
-an owner failure cannot strand admission or race a still-closing handle.
-
-Before the first physical deletion, the drop owner publishes one fsynced `.dropping` marker beside
-every root while holding the existing restore locks. All scan layouts and cold opens reject marked
-roots; a surviving marker also blocks the rest of its logical graph, preventing a crash during
-multi-root marker publication or cancellation from exposing only part of a database. A failed or
-interrupted drop keeps those markers; retrying `drop_database` re-enumerates the graph even when no
-catalog entry survived, removes the remaining stores and every blob directory recorded for their
-physical store identities, and clears the markers last. A restore is rejected while drop intent
-exists. This makes multi-root drop fail closed without putting filesystem work on the record or query
-path.

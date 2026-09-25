@@ -3,7 +3,6 @@
 import {
 	closeSync,
 	existsSync,
-	fsyncSync,
 	mkdirSync,
 	openSync,
 	readdirSync,
@@ -15,6 +14,7 @@ import {
 import { basename, dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
+import { fsyncTolerantSync, isUnsupportedSyncError } from '../utility/fsync.ts';
 
 /**
  * Restore lock + marker protocol for RocksDB database restores (online operation and offline CLI),
@@ -170,11 +170,11 @@ function fsyncDir(dir: string): void {
 	try {
 		dirFd = openSync(dir, 'r');
 	} catch (error: any) {
-		if (error.code === 'EPERM' || error.code === 'EISDIR' || error.code === 'ENOTSUP') return;
+		if (isUnsupportedSyncError(error)) return;
 		throw error;
 	}
 	try {
-		fsyncSync(dirFd);
+		fsyncTolerantSync(dirFd);
 	} finally {
 		closeSync(dirFd);
 	}
@@ -228,7 +228,7 @@ function publishMarker(dbPath: string, markerPath: string, content: string): voi
 		const fd = openSync(tempPath, 'w');
 		try {
 			writeSync(fd, content);
-			fsyncSync(fd);
+			fsyncTolerantSync(fd);
 		} finally {
 			closeSync(fd);
 		}
@@ -407,6 +407,7 @@ export function beginDatabaseDrop(
 				throw error;
 			}
 			blobDatabaseName = marker.blobDatabaseName;
+			fsyncDir(restoreMetaDir(dbPath));
 		} else {
 			const rootName = basename(dbPath);
 			publishMarker(

@@ -495,7 +495,10 @@ type IncompleteDatabaseClose = {
 const incompleteDatabaseCloses = new Map<string, IncompleteDatabaseClose>();
 
 function databaseRootUnavailable(rootPath: string): boolean {
-	return databaseDropPrepared(rootPath) || incompleteDatabaseCloses.has(resolve(rootPath));
+	return (
+		databaseDropPrepared(rootPath) ||
+		(incompleteDatabaseCloses.size > 0 && incompleteDatabaseCloses.has(resolve(rootPath)))
+	);
 }
 
 // set the following in both global and exports
@@ -2411,6 +2414,10 @@ function rememberIncompleteDatabaseClose(rootPaths: Iterable<string>, retry: () 
 	const normalizedPaths = [...new Set([...rootPaths].map((rootPath) => resolve(rootPath)))];
 	const incompleteClose: IncompleteDatabaseClose = { rootPaths: normalizedPaths, retry };
 	for (const rootPath of normalizedPaths) incompleteDatabaseCloses.set(rootPath, incompleteClose);
+	logger.warn(
+		`Database handles remain partially closed on this worker; the affected roots stay unavailable until drop_database is retried or the worker restarts`,
+		normalizedPaths
+	);
 }
 
 async function retryIncompleteDatabaseClose(rootPath: string): Promise<void> {
@@ -2487,8 +2494,7 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 	}
 	const { databaseNames, dbTables, rootStores } = collectDatabaseGraph(databaseName);
 
-	// All root markers become durable before the first destructive step. The shared restore locks
-	// also keep restore and drop from mutating the same path concurrently.
+	// All root markers become durable before the first destructive step.
 	const dropLocks: DatabaseDropLock[] = [];
 	let releaseDerivedIndexActivation: (() => void) | undefined;
 	let destructiveWorkStarted = false;
@@ -2716,12 +2722,31 @@ export function prepareDatabaseDrop(
 	const paths = [...rootPaths];
 	claimDatabaseDropPreparations(paths, preparationId, ownerThreadId, databaseName);
 	const task = (async () => {
-		for (const rootPath of paths) await retryIncompleteDatabaseClose(rootPath);
-		for (const name of names) await closeDatabase(name, { requireClosed: true });
-		// A previous destroy attempt can leave a native lifecycle entry owned by this worker.
+		const failures: unknown[] = [];
 		for (const rootPath of paths) {
-			if (incompleteDatabaseDropStores.has(rootPath)) await destroyIncompleteDatabaseRoot(rootPath);
+			try {
+				await retryIncompleteDatabaseClose(rootPath);
+			} catch (error) {
+				failures.push(error);
+			}
 		}
+		for (const name of names) {
+			try {
+				await closeDatabase(name, { requireClosed: true });
+			} catch (error) {
+				failures.push(error);
+			}
+		}
+		for (const rootPath of paths) {
+			if (!incompleteDatabaseDropStores.has(rootPath)) continue;
+			try {
+				await destroyIncompleteDatabaseRoot(rootPath);
+			} catch (error) {
+				failures.push(error);
+			}
+		}
+		if (failures.length > 0)
+			throw new AggregateError(failures, `Could not prepare database '${databaseName}' for drop`);
 	})();
 	databaseDropPreparationTasks.set(databaseName, { id: preparationId, task, rootPaths: paths });
 	for (const rootPath of paths) trackDatabaseDropPreparationTask(rootPath, preparationId, task);

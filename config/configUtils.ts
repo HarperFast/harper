@@ -32,6 +32,9 @@ import * as env from '../utility/environment/environmentManager.ts';
 import { prepareRuntimeEnvConfig, hasPersistedEnvConfigState, discardConfigState } from './harperConfigEnvVars.ts';
 import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
 import { isStartableThreadHeapMemory } from '../server/threads/threadHeapMemory.ts';
+import { fsyncTolerantSync, isUnsupportedSyncError } from '../utility/fsync.ts';
+
+export { isUnsupportedSyncError } from '../utility/fsync.ts';
 
 const { DATABASES_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdbTerms;
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
@@ -132,25 +135,6 @@ type AtomicWriteOptions = RenameRetryOptions & {
 	 */
 	durable?: boolean;
 };
-
-// Codes that mean "this platform or filesystem will not fsync this handle", as opposed to "the write did
-// not reach storage". Windows raises EPERM fsyncing perfectly healthy files and cannot open a directory
-// for fsync at all; network and overlay mounts return EINVAL or ENOTSUP. None of those say anything about
-// durability, and treating them as failures would fail every durable write on those platforms. EIO and
-// ENOSPC are not in the set on purpose.
-const UNSUPPORTED_SYNC_CODES = new Set(['EPERM', 'EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'EBADF', 'EISDIR']);
-
-export function isUnsupportedSyncError(error: unknown): boolean {
-	return UNSUPPORTED_SYNC_CODES.has((error as NodeJS.ErrnoException)?.code ?? '');
-}
-
-function fsyncTolerantSync(fd: number) {
-	try {
-		fs.fsyncSync(fd);
-	} catch (error) {
-		if (!isUnsupportedSyncError(error)) throw error;
-	}
-}
 
 // `flags` matters on Windows, which only flushes a handle opened for writing; a directory cannot be opened
 // for writing anywhere, and Windows cannot open one for fsync at all.
