@@ -3502,7 +3502,14 @@ export async function retireComponentDirectory(
 		try {
 			await syncBothParents();
 		} catch (error) {
-			await rename(droppedPath, componentDirPath).catch(() => {});
+			await rename(droppedPath, componentDirPath)
+				.then(syncBothParents)
+				.catch((restoreError) =>
+					componentLogger.error(
+						`Could not put ${componentName} back from ${droppedPath} after its move aside failed to flush:`,
+						errorForLog(restoreError)
+					)
+				);
 			throw error;
 		}
 	}

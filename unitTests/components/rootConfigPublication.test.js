@@ -15,6 +15,7 @@ const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const {
 	applyRootConfigEffect,
 	assertRootConfigEffectPublishable,
+	hasRootConfigEntry,
 	isRootConfigEffect,
 	rootConfigEffectFromDeclaration,
 	withRootConfigPublicationLock,
@@ -508,6 +509,15 @@ describe('drop_component', () => {
 
 		assert.strictEqual(readRootConfig()['drop-refresh'], undefined, 'the removal was written before the refresh');
 		assert.strictEqual(fs.existsSync(componentDir), false, 'so the tree is not put back without it');
+	});
+
+	it('counts the entry as still there while the document does not parse, so a failed drop keeps its tree', () => {
+		fs.writeFileSync(
+			getConfigFilePath(),
+			fs.readFileSync(getConfigFilePath(), 'utf8') + '\nunparseable: [unterminated\n'
+		);
+
+		assert.strictEqual(hasRootConfigEntry('drop-unparseable'), true);
 	});
 
 	it('completes when the node_modules link cannot be removed, since that is cleanup after the entry', async function () {

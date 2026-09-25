@@ -142,7 +142,8 @@ export async function applyRootConfigEffect(component: string, effect: RootConfi
  */
 export function hasRootConfigEntry(component: string): boolean {
 	try {
-		return parseYamlDoc(getRootConfigFilePath()).toJSON()?.[component] !== undefined;
+		const configDoc = parseYamlDoc(getRootConfigFilePath());
+		return configDoc.errors?.length > 0 || configDoc.toJSON()?.[component] !== undefined;
 	} catch {
 		return true;
 	}
@@ -200,13 +201,13 @@ function assertEnvLayersKeepEffect(
 	if (setVars.length === 0) return;
 	// Composed together, as a refresh applies them: HARPER_CONFIG yields to HARPER_SET_CONFIG on a key both name.
 	const contradicted = contradictedKeys(composeReassertedEnvConfig(resultingConfig, setVars)[component], effect);
+	if (contradicted.length === 0) return;
+	const entryByVar = [...setVars].reverse().map((name) => [name, composeReassertedEnvConfig({}, [name])[component]]);
 	const keysByVar = new Map<string, string[]>();
 	for (const keyPath of contradicted) {
 		// Attributed to the variable that wins it. A key none of them sets is an artifact of composing the document,
 		// not something a refresh would do to it: composition splits a key with a dot in it into nested keys.
-		const envVarName = [...setVars]
-			.reverse()
-			.find((name) => setsKey(composeReassertedEnvConfig({}, [name])[component], keyPath));
+		const envVarName = entryByVar.find(([, entry]) => setsKey(entry, keyPath))?.[0];
 		if (envVarName)
 			keysByVar.set(envVarName, [...(keysByVar.get(envVarName) ?? []), formatKeyPath(component, keyPath)]);
 	}
