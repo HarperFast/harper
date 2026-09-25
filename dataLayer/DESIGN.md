@@ -49,7 +49,7 @@ If the table needs `audit: true`, set it both in the schema (for fresh installs)
 A local `table()` declaration is authoritative, so repeating it repairs any of those shapes in place, keeping every row and its expiry, and is a no-op once the shape matches (measured 2026-09-25: under 1 ms; repairing a copy holding 100,000 replay rows, under 10 ms on either engine, since no row is rewritten and no index is built). Limits that come from the storage layer rather than this table:
 
 - A thread that only loads the table scans daily (the load path keeps the default interval; only a declaring thread uses a quarter of the `expiration`), so a spent row can stay on disk up to a day past its expiry. Reads skip it meanwhile.
-- Under `threads: 0` the main thread loads and declares the table before `startHTTPThreads` makes it worker 0, and `scheduleCleanup` does not re-arm a scan whose interval has not changed, so no scan runs there.
+- Under `threads: 0` the main thread loads and declares the table before `startHTTPThreads` makes it worker 0. `scheduleCleanup` records an interval only on the thread that owns the scan, so the first expiring write or declaration after that arms it; a single-threaded node that writes nothing after a restart does not scan until it does.
 - An attribute a declaration drops keeps its index store on disk: `table()` looks that store up by table name rather than attribute name, so it never drops it. A node that served exchanges on 5.3.0-beta.2 keeps its old `expiresAt` index; after a restart nothing opens it.
 
 `hdb_certificate_cache` has the same lazy-only extension and has not been moved to this yet.

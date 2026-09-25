@@ -33,7 +33,6 @@ let signingJwk;
 
 function installMockTable(name, primaryKey) {
 	const rows = new Map();
-	// the expiry a write passed as record metadata (the context's expiresAt), by primary key
 	const expiries = new Map();
 	const mock = {
 		rows,

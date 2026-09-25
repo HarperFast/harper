@@ -190,8 +190,7 @@ async function recordTokenUse(fingerprint: string, claims: TokenClaims, policyId
 	const useTable = getTokenUseTable();
 	if (await useTable.get(fingerprint)) rejectToken(`token ${fingerprint.slice(0, 12)} has already been exchanged`);
 
-	// The expiry is record metadata rather than a field: replication carries it to every node, and it
-	// outranks the table's fallback expiration.
+	// record metadata rather than a field, so replication carries it with the row
 	await useTable.put(
 		{ id: fingerprint, policy_id: policyId, used_at: Date.now() },
 		{ expiresAt: (claims.exp as number) * 1000 + REPLAY_RECORD_PADDING_MS }

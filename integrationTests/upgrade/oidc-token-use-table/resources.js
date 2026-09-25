@@ -13,7 +13,6 @@ export class TokenUseTable extends Resource {
 
 	async get(target) {
 		const Table = tokenUseTable();
-		// what the replay check sees for one fingerprint
 		if (target?.id) return { id: target.id, visible: Boolean(await Table.get(target.id)) };
 		const durable = {};
 		let durableExpiration = null;
@@ -29,7 +28,6 @@ export class TokenUseTable extends Resource {
 		return {
 			audit: Table.audit,
 			schemaDefined: Table.schemaDefined,
-			// as loaded by the worker serving this request
 			expiration: Table.expirationMS ? Table.expirationMS / 1000 : null,
 			durableExpiration,
 			attributes: Table.attributes.map(({ name, indexed, expiresAt }) => ({

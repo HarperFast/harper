@@ -10,11 +10,7 @@ import { SYSTEM_SCHEMA_NAME, SYSTEM_TABLE_NAMES } from '../../../utility/hdbTerm
 
 export const TOKEN_USE_TABLE = SYSTEM_TABLE_NAMES.OIDC_TOKEN_USE_TABLE_NAME;
 
-/**
- * A replay record's own expiry (its token's `exp` plus padding, written as record metadata and
- * replicated with it) outranks this, so it only bounds a row written without one. It is here because a
- * stored table-level expiration is what arms the cleanup scan when a node loads the table.
- */
+/** Bounds only a row written without an expiry of its own; each replay record carries its token's. */
 const FALLBACK_EXPIRATION_SECONDS = 86_400;
 
 export function declareTokenUseTable(): Table {

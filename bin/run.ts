@@ -185,9 +185,8 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 		process.exit(1);
 	}
 
-	// Every boot rather than only in the 5.3.0 directive, which never runs on data already at a 5.3.0
-	// pre-release (compareVersions sorts those above 5.3.0). Before worker threads start, so they load the
-	// table with its expiration and arm its cleanup scan.
+	// Every boot: data already at a 5.3.0 pre-release never runs the 5.3.0 directive (compareVersions sorts
+	// those versions above 5.3.0). Before worker threads start, so they load the table with its expiration.
 	if (!isReadOnlyMode()) {
 		try {
 			declareTokenUseTable();

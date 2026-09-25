@@ -146,12 +146,12 @@ function storedExpiresAt(id) {
 	return tokenUseTable().primaryStore.getEntry(id)?.expiresAt;
 }
 
-// The spent row reads as absent before any cleanup removes it; the in-window one still blocks a replay.
+// Not a get of the spent row: on RocksDB, evicting it on read leaves a tracked transaction behind that
+// later suites' transaction monitors report.
 async function assertExpiryKept(spentAt, liveUntil) {
 	assert.strictEqual(storedExpiresAt('spent'), spentAt);
 	assert.strictEqual(storedExpiresAt('in-window'), liveUntil);
 	assert.strictEqual((await tokenUseTable().get('in-window'))?.policy_id, 'deploy');
-	assert.ok(!(await tokenUseTable().get('spent')), 'a row past its expiry reads as absent');
 }
 
 // What a worker that never declares the table holds: a class built from the catalog alone.
@@ -164,8 +164,7 @@ function loadFromCatalog() {
 	return tokenUseTable();
 }
 
-// The cleanup scans armed while `arm` runs, each callable in place of its timer.
-function capturingCleanupScans(arm) {
+async function capturingCleanupScans(arm) {
 	const originalSetTimeout = global.setTimeout;
 	const scans = [];
 	global.setTimeout = (callback, delay, ...args) => {
@@ -173,7 +172,7 @@ function capturingCleanupScans(arm) {
 		return originalSetTimeout(callback, delay, ...args);
 	};
 	try {
-		arm();
+		await arm();
 	} finally {
 		global.setTimeout = originalSetTimeout;
 	}
@@ -308,12 +307,45 @@ describe('system.hdb_oidc_token_use converges on one declared shape', function (
 		manageThreads.setMainIsWorker(true);
 		let scans;
 		try {
-			scans = capturingCleanupScans(loadFromCatalog);
+			scans = await capturingCleanupScans(loadFromCatalog);
 		} finally {
 			manageThreads.setMainIsWorker(wasWorker);
 		}
 		assert.strictEqual(tokenUseTable().expirationMS, CANONICAL.expiration * 1000);
 		assert.strictEqual(scans.length, 1, 'loading the table arms its cleanup scan');
+
+		await scans[0]();
+
+		await waitFor(() => tokenUseTable().primaryStore.getEntry('spent') === undefined, {
+			timeout: 10000,
+			message: 'the cleanup scan left the expired replay row in place',
+		});
+		assert.strictEqual(storedExpiresAt('in-window'), liveUntil);
+	});
+
+	it('under threads: 0, the first expiring write after the main thread becomes the worker arms the cleanup scan', async () => {
+		await dropTokenUseTable();
+		declareTokenUseTable();
+		const spentAt = Date.now() - 60_000;
+		const liveUntil = Date.now() + 3_600_000;
+		await writeReplicatedRow('spent', spentAt);
+
+		const wasWorker = manageThreads.getWorkerIndex() === 0;
+		let scans;
+		try {
+			// startHTTPThreads makes the main thread the worker only after it has loaded and declared the table
+			manageThreads.setMainIsWorker(false);
+			const beforeOwnership = await capturingCleanupScans(() => {
+				loadFromCatalog();
+				declareTokenUseTable();
+			});
+			assert.strictEqual(beforeOwnership.length, 0);
+			manageThreads.setMainIsWorker(true);
+			scans = await capturingCleanupScans(() => writeReplicatedRow('in-window', liveUntil));
+		} finally {
+			manageThreads.setMainIsWorker(wasWorker);
+		}
+		assert.strictEqual(scans.length, 1, 'the write armed the cleanup scan');
 
 		await scans[0]();
 
