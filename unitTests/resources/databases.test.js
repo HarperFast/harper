@@ -3,7 +3,15 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { existsSync, mkdirSync, writeFileSync } = require('node:fs');
 const { dirname, join } = require('node:path');
-const { table, flushDatabases, dropDatabase, getDatabases, resetDatabases } = require('#src/resources/databases');
+const {
+	table,
+	database,
+	flushDatabases,
+	closeDatabase,
+	dropDatabase,
+	getDatabases,
+	resetDatabases,
+} = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { databaseCommitsSuspended } = require('#src/resources/DatabaseTransaction');
@@ -28,6 +36,19 @@ describe('flushDatabases', () => {
 
 	it('flushes all databases without error', async function () {
 		await assert.doesNotReject(() => flushDatabases());
+	});
+
+	it('unregisters a tableless database before closing its root store', async function () {
+		const rootStore = database({ database: 'flush_tableless_drop' });
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+
+		await dropDatabase('flush_tableless_drop');
+
+		await assert.doesNotReject(() => flushDatabases());
+		const reopened = database({ database: 'flush_tableless_drop' });
+		assert.notStrictEqual(reopened, rootStore);
+		assert.strictEqual(reopened.status, 'open');
+		await closeDatabase('flush_tableless_drop');
 	});
 });
 

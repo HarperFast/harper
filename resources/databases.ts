@@ -2241,7 +2241,8 @@ function lockDatabaseForDrop(dbPath: string, databaseName: string, held: Restore
 export async function dropDatabase(databaseName) {
 	if (!databases[databaseName]) throw new Error('Database does not exist');
 	const dbTables = databases[databaseName];
-	let rootStore;
+	const rootStores = new Set<any>();
+	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
 
 	// Hold the per-database restore lock across the entire drop so its file deletion can never
 	// interleave with a restore's purge-and-copy on the same directory — a destroy landing after a
@@ -2254,21 +2255,19 @@ export async function dropDatabase(databaseName) {
 	let destructiveWorkStarted = false;
 	try {
 		for (const tableName in dbTables) {
-			const table = dbTables[tableName];
-			rootStore = table.primaryStore.rootStore;
+			const rootStore = dbTables[tableName].primaryStore.rootStore;
+			rootStores.add(rootStore);
+		}
+		if (definedRoot) rootStores.add(definedRoot);
+		if (rootStores.size === 0) throw new Error(`Database '${databaseName}' has no loaded root store`);
+		for (const rootStore of rootStores) {
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
 		}
-		if (!rootStore) {
-			rootStore = (definedDatabases?.get(databaseName) as any)?.rootStore;
-			if (!rootStore) throw new Error(`Database '${databaseName}' has no loaded root store`);
-			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
-		}
-		releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, true, [rootStore]);
+		releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, true, rootStores);
 		destructiveWorkStarted = true;
-		for (const tableName in dbTables) {
-			const tableRoot = dbTables[tableName].primaryStore.rootStore;
-			lmdbDatabaseEnvs.delete(tableRoot.path);
-			rocksdbDatabaseEnvs.delete(tableRoot.path);
+		for (const rootStore of rootStores) {
+			lmdbDatabaseEnvs.delete(rootStore.path);
+			rocksdbDatabaseEnvs.delete(rootStore.path);
 		}
 
 		for (const tableName in dbTables) {
@@ -2282,25 +2281,28 @@ export async function dropDatabase(databaseName) {
 			delete tables[DEFINED_TABLES];
 		}
 		delete databases[databaseName];
+		definedDatabases?.delete(databaseName);
 
 		databaseEventsEmitter.emit('dropDatabase', databaseName);
 
-		// awaited: retirement stops the loop admitting work, the barrier is what says the pass that was
-		// already running has released the stores this is about to close and unlink
-		await rootStore.auditStore?.stopAuditCleanup?.();
-		removeStorageReclamation(rootStore.path);
-		if (rootStore.status === 'open') {
-			if (rootStore instanceof RocksDatabase) {
-				rootStore.close();
-				rootStore.destroy();
-			} else {
-				await rootStore.close();
-				await unlink(rootStore.path);
+		for (const rootStore of rootStores) {
+			// awaited: retirement stops the loop admitting work, the barrier is what says the pass that was
+			// already running has released the stores this is about to close and unlink
+			await rootStore.auditStore?.stopAuditCleanup?.();
+			removeStorageReclamation(rootStore.path);
+			if (rootStore.status === 'open') {
+				if (rootStore instanceof RocksDatabase) {
+					rootStore.close();
+					rootStore.destroy();
+				} else {
+					await rootStore.close();
+					await unlink(rootStore.path);
+				}
 			}
 		}
 
 		databaseRemoved = true;
-		await deleteRootBlobPathsForDB(rootStore);
+		for (const rootStore of rootStores) await deleteRootBlobPathsForDB(rootStore);
 	} finally {
 		if (!databaseRemoved && !destructiveWorkStarted) releaseDerivedIndexActivation?.();
 		for (const lock of restoreLocks) releaseRestoreLock(lock);
