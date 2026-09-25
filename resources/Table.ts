@@ -199,7 +199,7 @@ const SOURCE_APPLY_POSITION = Symbol('sourceApplyPosition');
 type SourceTxnStream = {
 	txn: any;
 	lastSequenceId: number | undefined;
-	failure?: { error: unknown; position: number | undefined };
+	failure?: { error: unknown; position: number | undefined; event: any };
 	held?: boolean;
 };
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
@@ -1246,6 +1246,10 @@ export function makeTable(options) {
 							const txnStreamKey = event?.txnStream;
 							let stream = defaultStream;
 							if (txnStreamKey !== undefined) {
+								if (typeof txnStreamKey !== 'object' || txnStreamKey === null) {
+									logger.error?.('A source event txnStream must be an object; dropping the event', txnStreamKey);
+									continue;
+								}
 								stream = (taggedStreams ??= new WeakMap()).get(txnStreamKey);
 								if (!stream) taggedStreams.set(txnStreamKey, (stream = { txn: undefined, lastSequenceId: undefined }));
 							}
@@ -1408,8 +1412,20 @@ export function makeTable(options) {
 											await event.onCommit(committed);
 										}
 									} catch (error) {
+										const failure = stream.failure ?? { error, position: failurePosition, event: failureEvent };
 										stream.failure = undefined;
-										if (await event.onFailure?.(error, failurePosition)) stream.held = true;
+										if (event.onFailure && (await event.onFailure(failure.error, failure.position))) {
+											stream.held = true;
+											applied = true; // the replay applies it, so there is no hole to report
+										} else if (failure.error !== error) {
+											await notifyReplicatedApplyFailure(
+												databaseName,
+												failure.event,
+												failure.position,
+												failure.error,
+												tableName
+											);
+										}
 										throw error;
 									} finally {
 										// Always clear the completed transaction so a later standalone write isn't appended
@@ -1421,9 +1437,17 @@ export function makeTable(options) {
 									// neither onCommit nor the sequence id may pass it; the source decides whether to replay.
 									const failure = stream.failure;
 									stream.failure = undefined;
-									if (failure !== undefined && event.onFailure) {
-										if (await event.onFailure?.(failure.error, failure.position)) stream.held = true;
-										continue;
+									if (failure !== undefined) {
+										if (event.onFailure && (await event.onFailure(failure.error, failure.position))) stream.held = true;
+										else
+											await notifyReplicatedApplyFailure(
+												databaseName,
+												failure.event,
+												failure.position,
+												failure.error,
+												tableName
+											);
+										if (event.onFailure) continue;
 									}
 									// Only reached when the commit succeeded; a failure propagates to the handler's catch
 									// and the sequence id is intentionally not advanced past the unapplied write.
@@ -1446,14 +1470,21 @@ export function makeTable(options) {
 											// than rethrow) so the current beginTxn still starts a fresh transaction with
 											// correct boundaries instead of having its writes applied as standalone ones.
 											logger.error?.('source-applied transaction commit failed during apply', error);
-											stream.failure ??= { error, position: txnInProgress[SOURCE_APPLY_POSITION] };
-											await notifyReplicatedApplyFailure(
-												databaseName,
-												txnInProgress,
-												txnInProgress[SOURCE_APPLY_POSITION],
-												error,
-												tableName
-											);
+											// a tagged stream's end_txn reports it, once the source has decided whether to replay it
+											if (txnStreamKey === undefined)
+												await notifyReplicatedApplyFailure(
+													databaseName,
+													txnInProgress,
+													txnInProgress[SOURCE_APPLY_POSITION],
+													error,
+													tableName
+												);
+											else
+												stream.failure ??= {
+													error,
+													position: txnInProgress[SOURCE_APPLY_POSITION],
+													event: txnInProgress,
+												};
 										} finally {
 											// Clear it regardless of outcome so a rejected commit isn't re-awaited on the
 											// next beginTxn (which would brick the apply loop).

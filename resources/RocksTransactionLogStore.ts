@@ -173,10 +173,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 	logForOrigin(nodeId: number, relayed: boolean) {
 		const log = this.logById(nodeId);
 		if (log) return log;
+		let nodeName = getNodeNameForId(this, nodeId, true);
 		// the cached name map can miss an id another worker minted moments ago
-		const nodeName =
-			getNodeNameForId(this, nodeId, true) ??
-			Object.entries(exportIdMapping(this) ?? {}).find(([, id]) => id === nodeId)?.[0];
+		if (nodeName === undefined && relayed)
+			nodeName = Object.entries(exportIdMapping(this) ?? {}).find(([, id]) => id === nodeId)?.[0];
 		if (nodeName === undefined) {
 			if (relayed) throw new Error(`No node name is mapped to origin id ${nodeId}`);
 			return this.log;

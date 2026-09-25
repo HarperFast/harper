@@ -3,6 +3,10 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { waitFor } = require('../waitFor');
+const {
+	registerReplicatedApplyFailureListener,
+	unregisterReplicatedApplyFailureListener,
+} = require('#src/resources/replicatedApplyFailure');
 
 const DATABASE = 'source-txn-streams';
 const NOW = Date.now();
@@ -182,6 +186,29 @@ describe('source transactions keyed by stream', function () {
 		assert.equal(laterCommits, 0);
 		assert.equal(Table.dbisDB.getSync([Symbol.for('seq'), 79]), undefined);
 	});
+
+	for (const hold of [true, false]) {
+		it(`${hold ? 'does not report' : 'reports'} a failed segment to apply-failure listeners when the source ${hold ? 'holds' : 'moves past'} it`, async () => {
+			const reported = [];
+			const listener = (failure) => reported.push(failure.position);
+			registerReplicatedApplyFailureListener(DATABASE, listener);
+			try {
+				const stream = {};
+				const decided = [];
+				const position = NOW + (hold ? 16.1 : 17.1);
+				const { applied } = start([
+					failingWrite(`listener-${hold}`, position, { beginTxn: true, nodeId: 21, txnStream: stream }),
+					put(`listener-ok-${hold}`, position, { beginTxn: true, nodeId: 21, txnStream: stream }),
+					{ type: 'end_txn', txnStream: stream, onFailure: () => (decided.push(hold), hold) },
+				]);
+				await waitFor(() => applied.length === 3 && decided.length === 1);
+				await new Promise((resolve) => setTimeout(resolve, 50));
+				assert.deepEqual(reported, hold ? [] : [position]);
+			} finally {
+				unregisterReplicatedApplyFailureListener(DATABASE, listener);
+			}
+		});
+	}
 
 	it('reports a commit that fails at the end_txn', async () => {
 		const stream = {};
