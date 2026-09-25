@@ -3168,11 +3168,11 @@ export function makeTable(options) {
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
 						return;
 					}
-					const removalNodeId = options?.nodeId ?? getThisNodeId(auditStore) ?? 0;
+					const removalNodeId = options?.nodeId ?? 0; // this node's own id is 0
 					const stagedRemoval = { value: undefined, version: txnTime, nodeId: removalNodeId };
 					// re-delivered onto the removal it already made: writing again would append an audit entry
-					// that every peer forwards and re-logs in turn. A retry round reads back this write's own staged
-					// removal, so it repeats the first round's decision.
+					// that every peer forwards and re-logs in turn. On a recommit the kept write batch shows this write's own
+					// round-one tombstone as the existing entry, so a retry round repeats the first round's decision.
 					const redelivered = retry
 						? write.redelivered
 						: existingRecord == null && isSameRemoval(removalBefore(write, existingEntry), txnTime, removalNodeId);
@@ -4314,7 +4314,7 @@ export function makeTable(options) {
 								logger.error?.('Error getting history entry', auditRecord.localTime, error);
 							}
 						}
-						for (let i = history.length; i > 0; ) {
+						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;
 						}
 						// Use the latest record cursor saw (history[0] = most recent due to reverse
@@ -4430,7 +4430,7 @@ export function makeTable(options) {
 								nodeId = auditRecord.previousNodeId;
 							} else break;
 						} while (nextTime > startTime && count !== 0);
-						for (let i = history.length; i > 0; ) {
+						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;
 						}
 					}
@@ -4764,12 +4764,10 @@ export function makeTable(options) {
 									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a number`);
 								break;
 							case 'ID':
-								if (
-									!(
-										typeof value === 'string' ||
-										(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
-									)
-								)
+								if (!(
+									typeof value === 'string' ||
+									(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
+								))
 									addError(
 										name,
 										'type',
