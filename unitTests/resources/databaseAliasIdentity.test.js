@@ -373,16 +373,28 @@ describe('shared root-store database identity', function () {
 			getDatabases().physicala.TableA.primaryStore.rootStore.path,
 			getDatabases().physicalb.TableB.primaryStore.rootStore.path,
 		];
+		const blobPaths = [
+			...new Set([
+				...getRootBlobPathsForDB(getDatabases().physicala.TableA.primaryStore.rootStore),
+				...getRootBlobPathsForDB(getDatabases().physicalb.TableB.primaryStore.rootStore),
+			]),
+		];
+		for (const blobPath of blobPaths) mkdirSync(blobPath, { recursive: true });
 		await closeAliases(loadedAliases);
 		abandonDatabaseDrop(beginDatabaseDrop(rootPaths[0], 'configuredalias', 'physicala'));
 		resetDatabases();
 		assert.strictEqual(databases.physicala, undefined);
 		assert.strictEqual(databases.physicalb, undefined);
+		assert.throws(
+			() => database({ database: 'physicalb' }),
+			(error) => error.code === 'DATABASE_CLOSING'
+		);
 
 		await dropSchema({ operation: terms.OPERATIONS_ENUM.DROP_SCHEMA, schema: 'configuredalias' });
 		loadedAliases = [];
 		assert.deepStrictEqual(scanBlockedDatabaseDrops(storageRoot), []);
 		for (const rootPath of rootPaths) assert.strictEqual(existsSync(rootPath), false);
+		for (const blobPath of blobPaths) assert.strictEqual(existsSync(blobPath), false);
 	});
 
 	it('prunes both aliases on the originating thread and another worker after the shared store is dropped', async function () {

@@ -3,7 +3,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
-import { join, extname, basename, resolve } from 'node:path';
+import { join, extname, basename, dirname, resolve } from 'node:path';
 import {
 	closeSync,
 	existsSync,
@@ -1095,6 +1095,16 @@ function databaseRootsBlockedByDrop(databasePath: string): {
 		if (drop.databaseName) databaseNames.add(drop.databaseName);
 	}
 	return { rootPaths, databaseNames };
+}
+
+function configuredDropPendingWithin(databasePath: string, schemaConfigs: Record<string, any>): boolean {
+	const normalizedPath = resolve(databasePath);
+	return Object.entries(schemaConfigs).some(
+		([name, config]: [string, any]) =>
+			config?.path &&
+			resolve(config.path) === normalizedPath &&
+			scanBlockedDatabaseDrops(config.path).some((drop) => drop.databaseName === name)
+	);
 }
 
 /**
@@ -2228,6 +2238,8 @@ function openDatabaseRoot(
 	}
 	const tablePath = tableName && databaseConfig[databaseName]?.tables?.[tableName]?.path;
 	const databasePath = resolveDatabaseStorageRoot(databaseName, tableName);
+	if (!allowPreparedDrop && configuredDropPendingWithin(databasePath, databaseConfig))
+		throw new DatabaseClosingError(databaseName);
 	// A configured path is a scan root, not an exact database path, so an unresolved alias can
 	// target any child store. Keep first-open fenced until the destructive operation completes.
 	if (!allowPreparedDrop && databaseConfig[databaseName]?.path) {
@@ -2343,6 +2355,35 @@ function releaseDatabaseDropLocks(locks: DatabaseDropLock[], retainMarkers: bool
 	if (failures.length > 0) throw new AggregateError(failures, 'Could not release database drop locks');
 }
 
+function inferDropBlobDatabaseName(databaseName: string, rootPath: string): string {
+	const schemaConfigs = envGet(CONFIG_PARAMS.DATABASES) || {};
+	const databaseConfig = schemaConfigs[databaseName];
+	const normalizedRootPath = resolve(rootPath);
+	for (const [tableName, tableConfig] of Object.entries(databaseConfig?.tables || {}) as [string, any][]) {
+		if (!tableConfig?.path) continue;
+		if (
+			[resolve(tableConfig.path, tableName), resolve(tableConfig.path, `${tableName}.mdb`)].includes(normalizedRootPath)
+		)
+			return databaseName;
+	}
+	if (resolve(dirname(rootPath)) === resolve(getBaseSchemaPath(), databaseName)) return databaseName;
+
+	const physicalName = basename(rootPath).replace(/\.mdb$/, '');
+	const rootDirectory = resolve(dirname(rootPath));
+	if (databaseConfig?.path && resolve(databaseConfig.path) === rootDirectory) {
+		if (!schemaConfigs[physicalName]?.path) return physicalName;
+		for (const [configuredName, configured] of Object.entries(schemaConfigs) as [string, any][]) {
+			if (configured?.path && resolve(configured.path) === rootDirectory) return configuredName;
+		}
+	}
+	try {
+		const storageRoot = resolveDatabaseStorageRoot(databaseName);
+		if ([resolve(storageRoot, databaseName), resolve(storageRoot, `${databaseName}.mdb`)].includes(normalizedRootPath))
+			return databaseName;
+	} catch {}
+	return physicalName;
+}
+
 const incompleteDatabaseDropStores = new Map<string, RootDatabaseKind>();
 
 async function destroyIncompleteDatabaseRoot(rootPath: string): Promise<void> {
@@ -2376,7 +2417,8 @@ async function resumeIncompleteDatabaseDrop(databaseName: string, rootPaths: Ite
 			)
 		)
 			throw new DatabaseClosingError(databaseName);
-		for (const rootPath of paths) lockDatabaseForDrop(rootPath, databaseName, dropLocks);
+		for (const rootPath of paths)
+			lockDatabaseForDrop(rootPath, databaseName, dropLocks, inferDropBlobDatabaseName(databaseName, rootPath));
 		destructiveWorkStarted = true;
 		for (const lock of dropLocks) await destroyIncompleteDatabaseRoot(lock.dbPath);
 		for (const blobDatabaseName of new Set(dropLocks.map((lock) => lock.blobDatabaseName)))
@@ -2415,12 +2457,11 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 			[...rootStores].map((rootStore) => [rootStore.path, rootStore.databaseName ?? databaseName])
 		);
 		for (const rootPath of new Set([...requestedRootPaths, ...blobDatabaseNamesByRootPath.keys()])) {
-			const inferredBlobDatabaseName = basename(rootPath).replace(/\.mdb$/, '');
 			lockDatabaseForDrop(
 				rootPath,
 				databaseName,
 				dropLocks,
-				blobDatabaseNamesByRootPath.get(rootPath) ?? inferredBlobDatabaseName
+				blobDatabaseNamesByRootPath.get(rootPath) ?? inferDropBlobDatabaseName(databaseName, rootPath)
 			);
 		}
 		releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, true, rootStores);
