@@ -77,14 +77,15 @@ export function declareRevokedCertificatesTable(): Table {
 
 /**
  * Declares the three tables and waits for any index backfill that starts, reading its outcome back from the
- * catalog because a failed backfill still settles. Before the first declaration on a node, it reclaims the
+ * catalog because a failed backfill still settles. After the first declaration on a node, it reclaims the
  * verdicts cached before a verdict carried its own expiry.
  */
 export async function ensureCertificateVerificationTables(): Promise<void> {
-	const CertificateCache = databases.system?.[CERTIFICATE_CACHE_TABLE];
-	if (CertificateCache && !CertificateCache.expirationMS) await evictVerdictsWithoutExpiry(CertificateCache);
+	const reclaimLegacyVerdicts = databases.system?.[CERTIFICATE_CACHE_TABLE]?.expirationMS === undefined;
+	const declared = [declareCertificateCacheTable(), declareCRLCacheTable(), declareRevokedCertificatesTable()];
+	if (reclaimLegacyVerdicts) await evictVerdictsWithoutExpiry(declared[0]);
 	const incomplete: string[] = [];
-	for (const Table of [declareCertificateCacheTable(), declareCRLCacheTable(), declareRevokedCertificatesTable()]) {
+	for (const Table of declared) {
 		await Table.indexingOperation;
 		for (const { name, indexed } of Table.attributes) {
 			if (!indexed) continue;

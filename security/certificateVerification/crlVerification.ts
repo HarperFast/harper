@@ -69,7 +69,7 @@ class CertificateRevocationListSource extends Resource {
 		const { distributionPoint, issuerPem: issuerPemStr, config } = requestContext;
 
 		try {
-			const result = await downloadAndParseCRL(distributionPoint, issuerPemStr, config);
+			const result = await downloadAndParseCRLOnce(distributionPoint, issuerPemStr, config);
 
 			// Set expiration - use the CRL's nextUpdate time or configured TTL, whichever is sooner
 			context.expiresAt = Math.min(result.next_update, Date.now() + config.cacheTtl);
@@ -346,7 +346,7 @@ async function checkCRLFreshness(
 
 			// If no valid cached CRL, download and parse fresh
 			if (!crlData) {
-				crlData = await downloadAndParseCRL(distributionPoint, issuerPem, config);
+				crlData = await downloadAndParseCRLOnce(distributionPoint, issuerPem, config);
 			}
 
 			// Check if CRL is current
@@ -378,6 +378,21 @@ async function checkCRLFreshness(
 	}
 
 	return { upToDate: false, reason: 'no-current-crl-data' };
+}
+
+// Concurrent checks of certificates from one CA share one download and replacement per distribution point on
+// this thread; each replacing the same rows would make their commits conflict, and past the retry limit that
+// fails the check.
+const crlDownloads = new Map<string, Promise<CRLCacheEntry>>();
+
+function downloadAndParseCRLOnce(distributionPoint: string, issuerPemStr: string, config: CRLConfig) {
+	const key = `${distributionPoint}\n${config.gracePeriod}\n${issuerPemStr}`;
+	let download = crlDownloads.get(key);
+	if (!download) {
+		download = downloadAndParseCRL(distributionPoint, issuerPemStr, config).finally(() => crlDownloads.delete(key));
+		crlDownloads.set(key, download);
+	}
+	return download;
 }
 
 /**
@@ -487,7 +502,6 @@ async function processRevokedCertificates(
 	// as good. Its own transaction, not the verdict fill's, so the rows are committed before performCRLCheck
 	// reads them back; the context's expiresAt is what each row stores as its expiry.
 	await transaction({ expiresAt: nextUpdate + gracePeriod }, async () => {
-		// Clear existing entries for this CRL: certificates removed from an updated CRL must not stay revoked
 		await clearExistingCRLEntries(revokedTable, cacheKey);
 
 		for (const revokedCert of crl.revokedCertificates ?? []) {
@@ -526,7 +540,6 @@ async function clearExistingCRLEntries(
 	revokedTable: ReturnType<typeof getRevokedCertificateTable>,
 	crlSource: string
 ): Promise<void> {
-	// Relies on crl_source being indexed
 	const compositeIds: string[] = [];
 	for await (const entry of (revokedTable as any).search([{ attribute: 'crl_source', value: crlSource }])) {
 		compositeIds.push((entry as any).composite_id);

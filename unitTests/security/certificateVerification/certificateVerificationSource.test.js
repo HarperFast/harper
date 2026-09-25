@@ -105,7 +105,6 @@ describe('certificateVerification/certificateVerificationSource.ts', function ()
 			await source.get({ id: 'crl:test' });
 			const afterTime = Date.now();
 
-			// the source context's expiresAt should be approximately now + cacheTtl
 			assert.ok(context.expiresAt >= beforeTime + cacheTtl);
 			assert.ok(context.expiresAt <= afterTime + cacheTtl);
 		});

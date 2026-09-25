@@ -41,24 +41,29 @@ const SECOND = 1000;
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
-// Each attribute maps to whether it is indexed.
 const TABLES = {
 	[CERTIFICATE_CACHE_TABLE]: {
 		primaryKey: 'certificate_id',
 		expiration: 3_600,
-		attributes: { status: false, reason: false, checked_at: false, method: false },
+		indexedByAttribute: { status: false, reason: false, checked_at: false, method: false },
 		declare: declareCertificateCacheTable,
 	},
 	[CRL_CACHE_TABLE]: {
 		primaryKey: 'distribution_point',
 		expiration: 86_400,
-		attributes: { issuer_dn: false, crl_blob: false, this_update: false, next_update: false, signature_valid: false },
+		indexedByAttribute: {
+			issuer_dn: false,
+			crl_blob: false,
+			this_update: false,
+			next_update: false,
+			signature_valid: false,
+		},
 		declare: declareCRLCacheTable,
 	},
 	[REVOKED_CERTIFICATES_TABLE]: {
 		primaryKey: 'composite_id',
 		expiration: 691_200,
-		attributes: {
+		indexedByAttribute: {
 			serial_number: true,
 			issuer_key_id: true,
 			revocation_date: false,
@@ -79,16 +84,19 @@ function storedExpiresAt(tableName, id) {
 	return systemTable(tableName).primaryStore.getEntry(id)?.expiresAt;
 }
 
-// ---- shape ----
-
 function canonicalShape(tableName) {
-	const { primaryKey, expiration, attributes } = TABLES[tableName];
+	const { primaryKey, expiration, indexedByAttribute } = TABLES[tableName];
 	return {
 		schemaDefined: true,
 		expiration,
 		attributes: [
 			{ name: primaryKey, type: undefined, isPrimaryKey: true },
-			...Object.entries(attributes).map(([name, indexed]) => ({ name, type: undefined, expiresAt: false, indexed })),
+			...Object.entries(indexedByAttribute).map(([name, indexed]) => ({
+				name,
+				type: undefined,
+				expiresAt: false,
+				indexed,
+			})),
 		].sort((a, b) => a.name.localeCompare(b.name)),
 	};
 }
@@ -139,14 +147,12 @@ function assertCanonical(tableName) {
 		canonicalShape(tableName),
 		`${tableName} as declared on this thread`
 	);
-	for (const name of Object.keys(TABLES[tableName].attributes)) {
+	for (const name of Object.keys(TABLES[tableName].indexedByAttribute)) {
 		const descriptor = Table.dbisDB.getSync(`${tableName}/${name}`);
 		assert.strictEqual(descriptor.indexingFailed, undefined, `${tableName}.${name} indexing failed`);
 		assert.strictEqual(descriptor.indexingPID, undefined, `${tableName}.${name} is still indexing`);
 	}
 }
-
-// ---- starting shapes ----
 
 async function dropTables() {
 	for (const tableName of TABLE_NAMES) await systemTable(tableName)?.dropTable();
@@ -163,13 +169,13 @@ async function createAsSystemSchemaStub(tableName) {
 
 // What the verification path declared before this change.
 function preChangeDeclaration(tableName) {
-	const { primaryKey, attributes } = TABLES[tableName];
+	const { primaryKey, indexedByAttribute } = TABLES[tableName];
 	return {
 		table: tableName,
 		database: 'system',
 		attributes: [
 			{ name: primaryKey, isPrimaryKey: true },
-			...Object.entries(attributes).map(([name, indexed]) => (indexed ? { name, indexed: true } : { name })),
+			...Object.entries(indexedByAttribute).map(([name, indexed]) => (indexed ? { name, indexed: true } : { name })),
 			{ name: 'expiresAt', expiresAt: true, indexed: true },
 		],
 	};
@@ -261,8 +267,6 @@ async function writePreChangeVerdict(id) {
 	);
 }
 
-// ---- loading ----
-
 // What a worker that never declares the table holds: a class built from the catalog alone.
 function loadFromCatalog(tableName) {
 	const Declared = systemTable(tableName);
@@ -287,8 +291,6 @@ async function capturingCleanupScans(arm) {
 	}
 	return scans;
 }
-
-// ---- a certificate authority whose CRL is served over HTTP ----
 
 const SIGNING = { name: 'ECDSA', namedCurve: 'P-256' };
 
@@ -355,7 +357,9 @@ function wholeSecond(time) {
 /** `publish` replaces the served CRL and `unpublish` makes the distribution point fail. */
 async function startCertificateAuthority() {
 	let crlBody = null;
+	let crlRequests = 0;
 	const server = createServer((request, response) => {
+		crlRequests++;
 		if (!crlBody) {
 			response.writeHead(503);
 			return response.end();
@@ -405,6 +409,9 @@ async function startCertificateAuthority() {
 		unpublish() {
 			crlBody = null;
 		},
+		get crlRequests() {
+			return crlRequests;
+		},
 		close: () => new Promise((resolve) => server.close(resolve)),
 	};
 }
@@ -442,7 +449,153 @@ describe('certificate verification tables', function () {
 
 	before(() => testUtils.ensureSystemTables());
 
-	// These run first: the verification modules memoize their tables, which the shape tests below drop.
+	describe('every node declares the tables in one shape', () => {
+		after(async () => {
+			await dropTables();
+			await ensureCertificateVerificationTables();
+		});
+
+		it('declares a fresh install’s primary-key stubs in full, keeping the expiry of each replicated row', async () => {
+			await dropTables();
+			for (const tableName of TABLE_NAMES) await createAsSystemSchemaStub(tableName);
+			const liveUntil = Date.now() + HOUR;
+			const laterUntil = Date.now() + 2 * HOUR;
+			for (const tableName of TABLE_NAMES) {
+				await writeReplicatedRow(tableName, 'in-window', liveUntil);
+				await writeReplicatedRow(tableName, 'later', laterUntil);
+			}
+			await writeReplicatedRow(CERTIFICATE_CACHE_TABLE, 'pre-change-verdict', undefined);
+			assert.strictEqual(storedExpiresAt(CERTIFICATE_CACHE_TABLE, 'pre-change-verdict'), undefined);
+
+			await ensureCertificateVerificationTables();
+
+			for (const tableName of TABLE_NAMES) {
+				assertCanonical(tableName);
+				assert.strictEqual(storedExpiresAt(tableName, 'in-window'), liveUntil, `${tableName} kept its expiry`);
+				assert.strictEqual(storedExpiresAt(tableName, 'later'), laterUntil, `${tableName} kept its expiry`);
+			}
+			assert.strictEqual(
+				systemTable(CERTIFICATE_CACHE_TABLE).primaryStore.getEntry('pre-change-verdict'),
+				undefined,
+				'a verdict stored with no expiry is evicted'
+			);
+
+			// a pre-change peer keeps replicating verdicts with no expiry until it upgrades
+			const before = Date.now();
+			await writeReplicatedRow(CERTIFICATE_CACHE_TABLE, 'late-pre-change-verdict', undefined);
+			const fallback = storedExpiresAt(CERTIFICATE_CACHE_TABLE, 'late-pre-change-verdict');
+			const expiration = TABLES[CERTIFICATE_CACHE_TABLE].expiration * 1000;
+			assert.ok(fallback >= before + expiration && fallback <= Date.now() + expiration, `${fallback}`);
+		});
+
+		it('completes a copy that a replication handshake took from a pre-change peer', async () => {
+			await dropTables();
+			for (const tableName of TABLE_NAMES) createAsPeerHandshake(tableName);
+			const liveUntil = Date.now() + HOUR;
+			for (const tableName of TABLE_NAMES) await writeReplicatedRow(tableName, 'in-window', liveUntil);
+
+			await ensureCertificateVerificationTables();
+
+			for (const tableName of TABLE_NAMES) {
+				assertCanonical(tableName);
+				assert.strictEqual(storedExpiresAt(tableName, 'in-window'), liveUntil, `${tableName} kept its expiry`);
+			}
+		});
+
+		it('makes a dynamic copy schema-defined', async () => {
+			await dropTables();
+			for (const tableName of TABLE_NAMES) createAsPeerHandshake(tableName, { schemaDefined: false });
+			assert.strictEqual(systemTable(REVOKED_CERTIFICATES_TABLE).schemaDefined, false);
+
+			await ensureCertificateVerificationTables();
+
+			for (const tableName of TABLE_NAMES) assertCanonical(tableName);
+		});
+
+		it('repairs the tables of a node that verified certificates before this change, keeping each stored expiry', async () => {
+			await dropTables();
+			for (const tableName of TABLE_NAMES) await createAsPreChangeVerifyingNode(tableName);
+			const liveUntil = Date.now() + HOUR;
+			const laterUntil = Date.now() + 2 * HOUR;
+			await writePreChangePut(CRL_CACHE_TABLE, 'in-window', liveUntil);
+			await writePreChangePut(REVOKED_CERTIFICATES_TABLE, 'in-window', liveUntil);
+			await writePreChangePut(REVOKED_CERTIFICATES_TABLE, 'later', laterUntil);
+			await writePreChangeVerdict('pre-change-verdict');
+			assert.strictEqual(storedExpiresAt(CERTIFICATE_CACHE_TABLE, 'pre-change-verdict'), undefined);
+
+			await ensureCertificateVerificationTables();
+
+			for (const tableName of TABLE_NAMES) assertCanonical(tableName);
+			assert.strictEqual(storedExpiresAt(CRL_CACHE_TABLE, 'in-window'), liveUntil);
+			assert.strictEqual(storedExpiresAt(REVOKED_CERTIFICATES_TABLE, 'in-window'), liveUntil);
+			assert.strictEqual(storedExpiresAt(REVOKED_CERTIFICATES_TABLE, 'later'), laterUntil);
+			assert.strictEqual(
+				systemTable(CERTIFICATE_CACHE_TABLE).primaryStore.getEntry('pre-change-verdict'),
+				undefined,
+				'a verdict stored with no expiry is evicted'
+			);
+			// Only the declaring thread's class still holds a dropped index; the store stays on disk, unused.
+			for (const tableName of TABLE_NAMES)
+				assert.ok(!('expiresAt' in loadFromCatalog(tableName).indices), `${tableName} opens no expiresAt index`);
+		});
+
+		it('leaves tables already in the declared shape untouched', async () => {
+			await dropTables();
+			await ensureCertificateVerificationTables();
+			const before = TABLE_NAMES.map((tableName) => descriptors(tableName));
+			const builds = TABLE_NAMES.map((tableName) => systemTable(tableName).indexingOperation);
+
+			await ensureCertificateVerificationTables();
+
+			assert.deepStrictEqual(
+				TABLE_NAMES.map((tableName) => descriptors(tableName)),
+				before
+			);
+			TABLE_NAMES.forEach((tableName, index) =>
+				assert.ok(systemTable(tableName).indexingOperation === builds[index], `${tableName} was not rebuilt`)
+			);
+		});
+
+		it('the verification path declares the same tables', async () => {
+			await ensureCertificateVerificationTables();
+			for (const tableName of TABLE_NAMES) {
+				assert.ok(TABLES[tableName].declare() === systemTable(tableName), `${tableName} is the same class`);
+				assertCanonical(tableName);
+			}
+		});
+
+		for (const tableName of TABLE_NAMES)
+			it(`a node that only loads ${tableName} from its catalog removes the rows past their expiry`, async () => {
+				await dropTables();
+				await ensureCertificateVerificationTables();
+				const spentAt = Date.now() - 60_000;
+				const liveUntil = Date.now() + HOUR;
+				await writeReplicatedRow(tableName, 'spent', spentAt);
+				await writeReplicatedRow(tableName, 'in-window', liveUntil);
+
+				// This thread stands in for the last worker, which owns the store's cleanup scan.
+				const wasWorker = manageThreads.getWorkerIndex() === 0;
+				manageThreads.setMainIsWorker(true);
+				let scans;
+				try {
+					scans = await capturingCleanupScans(() => loadFromCatalog(tableName));
+				} finally {
+					manageThreads.setMainIsWorker(wasWorker);
+				}
+				assert.strictEqual(systemTable(tableName).expirationMS, TABLES[tableName].expiration * 1000);
+				assert.strictEqual(scans.length, 1, 'loading the table arms its cleanup scan');
+
+				await scans[0]();
+
+				await waitFor(() => systemTable(tableName).primaryStore.getEntry('spent') === undefined, {
+					timeout: 10000,
+					message: 'the cleanup scan left the expired row in place',
+				});
+				assert.strictEqual(storedExpiresAt(tableName, 'in-window'), liveUntil);
+			});
+	});
+
+	// After the shape tests: the verification modules memoize the tables they first see, which those tests drop.
 	describe('verification writes each expiry as record metadata', () => {
 		let authority;
 		beforeEach(async () => {
@@ -536,6 +689,33 @@ describe('certificate verification tables', function () {
 
 			assert.strictEqual(result.status, 'revoked');
 			assert.strictEqual(result.valid, false);
+		});
+
+		it('concurrent checks of certificates from one CA share one CRL download and replacement', async () => {
+			const clients = [];
+			for (let i = 0; i < 24; i++) clients.push(await authority.issue());
+			const revoked = new Set(clients.filter((_, index) => index % 3 === 0).map((client) => client.serialNumber));
+			await authority.publish({
+				revokedSerials: [...revoked],
+				thisUpdate: Date.now() - HOUR,
+				nextUpdate: Date.now() + DAY,
+			});
+
+			const results = await Promise.all(
+				clients.map((client) =>
+					verifyCertificate(peerCertificate(authority, client), crlOnlyVerification('fail-closed'))
+				)
+			);
+
+			assert.deepStrictEqual(
+				results.map((result) => result.status),
+				clients.map((client) => (revoked.has(client.serialNumber) ? 'revoked' : 'good'))
+			);
+			// every check that reached the download while one was in flight joined it
+			assert.ok(
+				authority.crlRequests < clients.length,
+				`${authority.crlRequests} downloads for ${clients.length} checks`
+			);
 		});
 
 		for (const failureMode of ['fail-closed', 'fail-open'])
@@ -642,151 +822,5 @@ describe('certificate verification tables', function () {
 			);
 			assert.strictEqual(Revoked.primaryStore.getEntry(failingId), undefined);
 		});
-	});
-
-	describe('every node declares the tables in one shape', () => {
-		after(async () => {
-			await dropTables();
-			await ensureCertificateVerificationTables();
-		});
-
-		it('declares a fresh install’s primary-key stubs in full, keeping the expiry of each replicated row', async () => {
-			await dropTables();
-			for (const tableName of TABLE_NAMES) await createAsSystemSchemaStub(tableName);
-			const spentAt = Date.now() - 60_000;
-			const liveUntil = Date.now() + HOUR;
-			for (const tableName of TABLE_NAMES) {
-				await writeReplicatedRow(tableName, 'spent', spentAt);
-				await writeReplicatedRow(tableName, 'in-window', liveUntil);
-			}
-			await writeReplicatedRow(CERTIFICATE_CACHE_TABLE, 'pre-change-verdict', undefined);
-			assert.strictEqual(storedExpiresAt(CERTIFICATE_CACHE_TABLE, 'pre-change-verdict'), undefined);
-
-			await ensureCertificateVerificationTables();
-
-			for (const tableName of TABLE_NAMES) {
-				assertCanonical(tableName);
-				assert.strictEqual(storedExpiresAt(tableName, 'spent'), spentAt, `${tableName} kept the spent row's expiry`);
-				assert.strictEqual(storedExpiresAt(tableName, 'in-window'), liveUntil, `${tableName} kept its expiry`);
-			}
-			assert.strictEqual(
-				systemTable(CERTIFICATE_CACHE_TABLE).primaryStore.getEntry('pre-change-verdict'),
-				undefined,
-				'a verdict stored with no expiry is evicted'
-			);
-
-			// a pre-change peer keeps replicating verdicts with no expiry until it upgrades
-			const before = Date.now();
-			await writeReplicatedRow(CERTIFICATE_CACHE_TABLE, 'late-pre-change-verdict', undefined);
-			const fallback = storedExpiresAt(CERTIFICATE_CACHE_TABLE, 'late-pre-change-verdict');
-			const expiration = TABLES[CERTIFICATE_CACHE_TABLE].expiration * 1000;
-			assert.ok(fallback >= before + expiration && fallback <= Date.now() + expiration, `${fallback}`);
-		});
-
-		it('completes a copy that a replication handshake took from a pre-change peer', async () => {
-			await dropTables();
-			for (const tableName of TABLE_NAMES) createAsPeerHandshake(tableName);
-			const liveUntil = Date.now() + HOUR;
-			for (const tableName of TABLE_NAMES) await writeReplicatedRow(tableName, 'in-window', liveUntil);
-
-			await ensureCertificateVerificationTables();
-
-			for (const tableName of TABLE_NAMES) {
-				assertCanonical(tableName);
-				assert.strictEqual(storedExpiresAt(tableName, 'in-window'), liveUntil, `${tableName} kept its expiry`);
-			}
-		});
-
-		it('makes a dynamic copy schema-defined', async () => {
-			await dropTables();
-			for (const tableName of TABLE_NAMES) createAsPeerHandshake(tableName, { schemaDefined: false });
-			assert.strictEqual(systemTable(REVOKED_CERTIFICATES_TABLE).schemaDefined, false);
-
-			await ensureCertificateVerificationTables();
-
-			for (const tableName of TABLE_NAMES) assertCanonical(tableName);
-		});
-
-		it('repairs the tables of a node that verified certificates before this change, keeping each stored expiry', async () => {
-			await dropTables();
-			for (const tableName of TABLE_NAMES) await createAsPreChangeVerifyingNode(tableName);
-			const spentAt = Date.now() - 60_000;
-			const liveUntil = Date.now() + HOUR;
-			await writePreChangePut(CRL_CACHE_TABLE, 'in-window', liveUntil);
-			await writePreChangePut(REVOKED_CERTIFICATES_TABLE, 'spent', spentAt);
-			await writePreChangePut(REVOKED_CERTIFICATES_TABLE, 'in-window', liveUntil);
-			await writePreChangeVerdict('pre-change-verdict');
-			assert.strictEqual(storedExpiresAt(CERTIFICATE_CACHE_TABLE, 'pre-change-verdict'), undefined);
-
-			await ensureCertificateVerificationTables();
-
-			for (const tableName of TABLE_NAMES) assertCanonical(tableName);
-			assert.strictEqual(storedExpiresAt(CRL_CACHE_TABLE, 'in-window'), liveUntil);
-			assert.strictEqual(storedExpiresAt(REVOKED_CERTIFICATES_TABLE, 'spent'), spentAt);
-			assert.strictEqual(storedExpiresAt(REVOKED_CERTIFICATES_TABLE, 'in-window'), liveUntil);
-			assert.strictEqual(
-				systemTable(CERTIFICATE_CACHE_TABLE).primaryStore.getEntry('pre-change-verdict'),
-				undefined,
-				'a verdict stored with no expiry is evicted'
-			);
-			// Only the declaring thread's class still holds a dropped index; the store stays on disk, unused.
-			for (const tableName of TABLE_NAMES)
-				assert.ok(!('expiresAt' in loadFromCatalog(tableName).indices), `${tableName} opens no expiresAt index`);
-		});
-
-		it('leaves tables already in the declared shape untouched', async () => {
-			await dropTables();
-			await ensureCertificateVerificationTables();
-			const before = TABLE_NAMES.map((tableName) => descriptors(tableName));
-			const builds = TABLE_NAMES.map((tableName) => systemTable(tableName).indexingOperation);
-
-			await ensureCertificateVerificationTables();
-
-			assert.deepStrictEqual(
-				TABLE_NAMES.map((tableName) => descriptors(tableName)),
-				before
-			);
-			TABLE_NAMES.forEach((tableName, index) =>
-				assert.ok(systemTable(tableName).indexingOperation === builds[index], `${tableName} was not rebuilt`)
-			);
-		});
-
-		it('the verification path declares the same tables', async () => {
-			await ensureCertificateVerificationTables();
-			for (const tableName of TABLE_NAMES) {
-				assert.ok(TABLES[tableName].declare() === systemTable(tableName), `${tableName} is the same class`);
-				assertCanonical(tableName);
-			}
-		});
-
-		for (const tableName of TABLE_NAMES)
-			it(`a node that only loads ${tableName} from its catalog removes the rows past their expiry`, async () => {
-				await dropTables();
-				await ensureCertificateVerificationTables();
-				const spentAt = Date.now() - 60_000;
-				const liveUntil = Date.now() + HOUR;
-				await writeReplicatedRow(tableName, 'spent', spentAt);
-				await writeReplicatedRow(tableName, 'in-window', liveUntil);
-
-				// This thread stands in for the last worker, which owns the store's cleanup scan.
-				const wasWorker = manageThreads.getWorkerIndex() === 0;
-				manageThreads.setMainIsWorker(true);
-				let scans;
-				try {
-					scans = await capturingCleanupScans(() => loadFromCatalog(tableName));
-				} finally {
-					manageThreads.setMainIsWorker(wasWorker);
-				}
-				assert.strictEqual(systemTable(tableName).expirationMS, TABLES[tableName].expiration * 1000);
-				assert.strictEqual(scans.length, 1, 'loading the table arms its cleanup scan');
-
-				await scans[0]();
-
-				await waitFor(() => systemTable(tableName).primaryStore.getEntry('spent') === undefined, {
-					timeout: 10000,
-					message: 'the cleanup scan left the expired row in place',
-				});
-				assert.strictEqual(storedExpiresAt(tableName, 'in-window'), liveUntil);
-			});
 	});
 });
