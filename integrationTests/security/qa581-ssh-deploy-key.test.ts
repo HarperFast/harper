@@ -12,8 +12,10 @@
  * This drives the real path end to end: `deploy_component` clones a `git+ssh://` URL from a local
  * bare repo through an unprivileged sshd on a free 127.0.0.1 port (throwaway host key, key auth
  * only). The deploy key's `authorized_keys` entry forces `sleep 2` before running git, which holds
- * the transient key on disk long enough for a 10 ms poller to capture its modes and content; sshd's
- * `Accepted publickey` line proves the copy is what authenticated.
+ * the transient key on disk long enough for a 10 ms poller to capture its modes and content. The
+ * sealed-key test is what proves the transient copy authenticated: ssh cannot parse the envelope
+ * the durable file holds, and `IdentitiesOnly yes` rules out any other key. Harper runs with a
+ * private TMPDIR, so the poller and the leftover checks see only this instance's dirs.
  *
  * Core ships no decryptor and no `add_ssh_key` (both Harper Pro), so the spec writes `<rootPath>/ssh`
  * directly and registers a base64 fake decryptor as a builtin component (see
@@ -67,6 +69,7 @@ function waitForTcp(host: string, port: number, timeoutMs: number): Promise<void
 				socket.end();
 				resolve();
 			});
+			socket.setTimeout(1_000, () => socket.destroy(new Error('connect timed out')));
 			socket.on('error', () => {
 				socket.destroy();
 				if (Date.now() > deadline) reject(new Error(`sshd never opened ${host}:${port}`));
@@ -77,10 +80,9 @@ function waitForTcp(host: string, port: number, timeoutMs: number): Promise<void
 	});
 }
 
-/** `materializeGitSSH`'s transient dirs (its `mkdtemp` prefix) currently in the OS tmpdir. */
-async function scanTransientSshDirs(): Promise<string[]> {
-	const entries = await readdir(tmpdir()).catch(() => [] as string[]);
-	return entries.filter((name) => name.startsWith('harper-ssh-'));
+/** `materializeGitSSH`'s transient dirs (its `mkdtemp` prefix) in `dir`. */
+async function scanTransientSshDirs(dir: string): Promise<string[]> {
+	return (await readdir(dir)).filter((name) => name.startsWith('harper-ssh-'));
 }
 
 interface ObservedMaterialization {
@@ -90,20 +92,21 @@ interface ObservedMaterialization {
 }
 
 /**
- * Poll for a transient ssh dir while `inFlight` is pending and snapshot the first one that still
- * holds a key file. Returns null if none was seen.
+ * Poll `dir` for a transient ssh dir while `inFlight` is pending and snapshot the first one that
+ * still holds a key file. Returns null if none was seen.
  */
-async function observeDuringFlight(inFlight: Promise<unknown>): Promise<ObservedMaterialization | null> {
+async function observeDuringFlight(inFlight: Promise<unknown>, dir: string): Promise<ObservedMaterialization | null> {
 	let observed: ObservedMaterialization | null = null;
 	let polling = true;
-	inFlight.finally(() => {
+	const stopPolling = () => {
 		polling = false;
-	});
+	};
+	inFlight.then(stopPolling, stopPolling);
 	while (polling) {
-		const dirs = await scanTransientSshDirs();
+		const dirs = await scanTransientSshDirs(dir);
 		if (dirs.length > 0 && !observed) {
 			try {
-				const tempDir = join(tmpdir(), dirs[0]);
+				const tempDir = join(dir, dirs[0]);
 				const dirStat = await stat(tempDir);
 				const names = (await readdir(tempDir)).filter((n) => n.endsWith('.key'));
 				const keyFiles = [];
@@ -122,14 +125,35 @@ async function observeDuringFlight(inFlight: Promise<unknown>): Promise<Observed
 	return observed;
 }
 
-/** A 40-char slice of the key body: distinctive enough that a log hit means key bytes leaked. */
-function keyMarker(pemContent: string): string {
-	const body = pemContent
-		.split('\n')
-		.filter((line) => line && !line.startsWith('-----'))
-		.join('');
-	ok(body.length > 60, 'key body too short to slice a marker from');
-	return body.slice(20, 60);
+/** The base64 characters of `bytes`' encoding that encode only bytes [from, to). */
+function base64Covering(bytes: Buffer, from: number, to: number): string {
+	return bytes.toString('base64').slice(Math.ceil(from / 3) * 4, Math.floor(to / 3) * 4);
+}
+
+/**
+ * Strings that appear in a log only if the private key's secret bytes leaked: the ed25519 seed as it
+ * appears in the PEM text, and as it appears in the `enc:v1:` envelope of that text. An OpenSSH key
+ * blob's leading bytes (magic, cipher and KDF names, key type) are identical across keys, so a
+ * marker taken from them would match any key and prove nothing.
+ */
+function secretMarkers(pem: string, publicKeyLine: string): { inPem: string; inEnvelope: string } {
+	const blob = Buffer.from(
+		pem
+			.split('\n')
+			.filter((line) => line && !line.startsWith('-----'))
+			.join(''),
+		'base64'
+	);
+	const publicKey = Buffer.from(publicKeyLine.split(' ')[1], 'base64').subarray(-32);
+	// the private section stores seed || publicKey, and is the last place the public key appears
+	const seedEnd = blob.lastIndexOf(publicKey);
+	ok(seedEnd >= 32, 'ed25519 seed not found in the private key blob');
+	const inPem = base64Covering(blob, seedEnd - 32, seedEnd);
+	const pemOffset = pem.indexOf(inPem);
+	ok(pemOffset >= 0, 'seed marker spans a PEM line break');
+	const inEnvelope = base64Covering(Buffer.from(pem, 'utf8'), pemOffset, pemOffset + inPem.length);
+	ok(inPem.length >= 40 && inEnvelope.length >= 40, 'secret markers too short to be distinctive');
+	return { inPem, inEnvelope };
 }
 
 suite(
@@ -137,13 +161,14 @@ suite(
 	{ skip: !process.env.HARPER_TEST_REQUIRE_SSHD && sshdMissingReason },
 	(ctx: ContextWithHarper) => {
 		let sshWorkDir: string;
+		let harperTmpDir: string;
 		let sshdProcess: ChildProcess;
 		const sshdLog: string[] = [];
 		let sshdPort: number;
 		let bareRepoPath: string;
 		let hostKnownHostsLine: string;
 		let deployPrivateKeyContent: string;
-		let deployMarker: string;
+		let secrets: { inPem: string; inEnvelope: string };
 		let client: ReturnType<typeof createApiClient>;
 		const currentUser = userInfo().username;
 
@@ -152,11 +177,13 @@ suite(
 				throw new Error(`HARPER_TEST_REQUIRE_SSHD is set but ${sshdMissingReason}; this suite cannot run`);
 			}
 			sshWorkDir = await mkdtemp(join(tmpdir(), 'qa581-sshenv-'));
+			harperTmpDir = join(sshWorkDir, 'harper-tmp');
+			await mkdir(harperTmpDir);
 
 			execFileSync('ssh-keygen', ['-t', 'ed25519', '-f', join(sshWorkDir, 'hostkey'), '-N', '', '-q']);
 			execFileSync('ssh-keygen', ['-t', 'ed25519', '-f', join(sshWorkDir, 'deploykey'), '-N', '', '-q']);
 			deployPrivateKeyContent = await readFile(join(sshWorkDir, 'deploykey'), 'utf8');
-			deployMarker = keyMarker(deployPrivateKeyContent);
+			secrets = secretMarkers(deployPrivateKeyContent, await readFile(join(sshWorkDir, 'deploykey.pub'), 'utf8'));
 
 			bareRepoPath = join(sshWorkDir, 'repo.git');
 			const workTree = join(sshWorkDir, 'work');
@@ -200,13 +227,17 @@ suite(
 			});
 			sshdProcess.stdout?.on('data', (chunk) => sshdLog.push(chunk.toString()));
 			sshdProcess.stderr?.on('data', (chunk) => sshdLog.push(chunk.toString()));
-			await waitForTcp('127.0.0.1', sshdPort, 5_000);
+			sshdProcess.on('error', (error) => sshdLog.push(`spawn error: ${error.message}`));
+			await waitForTcp('127.0.0.1', sshdPort, 5_000).catch((error) => {
+				throw new Error(`${error.message}; sshd output: ${sshdLog.join('')}`);
+			});
 
 			const [hostKeyType, hostKey] = (await readFile(join(sshWorkDir, 'hostkey.pub'), 'utf8')).trim().split(' ');
 			hostKnownHostsLine = `[127.0.0.1]:${sshdPort} ${hostKeyType} ${hostKey}`;
 
 			await setupHarperWithFixture(ctx, join(FIXTURE_ROOT, 'decryptor-trigger'), {
 				env: {
+					TMPDIR: harperTmpDir,
 					HARPER_BUILTIN_COMPONENTS:
 						'qa581FakeDecryptor=@/integrationTests/security/qa581-ssh-deploy-key/registerFakeDecryptor.js',
 				},
@@ -245,7 +276,7 @@ suite(
 		function deploy(project: string, repoPath: string) {
 			return fetch(ctx.harper.operationsAPIURL, {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
+				headers: { 'Content-Type': 'application/json', 'Authorization': client.headers.Authorization },
 				body: JSON.stringify({
 					operation: 'deploy_component',
 					project,
@@ -255,24 +286,28 @@ suite(
 		}
 
 		test('control: the leftover-dir scan detects a planted harper-ssh-* dir', async () => {
-			strictEqual((await scanTransientSshDirs()).length, 0, 'tmpdir must start clean of harper-ssh-* dirs');
-			const plantedDir = await mkdtemp(join(tmpdir(), 'harper-ssh-controlprobe-'));
+			strictEqual((await scanTransientSshDirs(harperTmpDir)).length, 0, 'tmpdir must start clean of harper-ssh-* dirs');
+			const plantedDir = await mkdtemp(join(harperTmpDir, 'harper-ssh-controlprobe-'));
 			await writeFile(join(plantedDir, 'planted.key'), 'control probe', { mode: 0o600 });
 			try {
-				strictEqual((await scanTransientSshDirs()).length, 1, 'scan failed to detect a planted harper-ssh-* dir');
+				strictEqual(
+					(await scanTransientSshDirs(harperTmpDir)).length,
+					1,
+					'scan failed to detect a planted harper-ssh-* dir'
+				);
 			} finally {
 				await rm(plantedDir, { recursive: true, force: true });
 			}
-			strictEqual((await scanTransientSshDirs()).length, 0);
+			strictEqual((await scanTransientSshDirs(harperTmpDir)).length, 0);
 		});
 
 		test('plaintext key: deploy over ssh succeeds from a 0600 copy in a 0700 tmpdir, removed afterwards', async () => {
-			strictEqual((await scanTransientSshDirs()).length, 0, 'leftover transient dirs before this test');
+			strictEqual((await scanTransientSshDirs(harperTmpDir)).length, 0, 'leftover transient dirs before this test');
 			await writeDurableSshDir('legacy.key', deployPrivateKeyContent);
 
 			const project = 'qa581-legacy';
 			const inFlight = deploy(project, bareRepoPath);
-			const observed = await observeDuringFlight(inFlight);
+			const observed = await observeDuringFlight(inFlight, harperTmpDir);
 			const response = await inFlight;
 			const body = await response.json();
 
@@ -282,7 +317,7 @@ suite(
 			ok(materializedKey, `legacy.key not materialized: ${JSON.stringify(observed.keyFiles.map((k) => k.name))}`);
 			strictEqual(materializedKey.mode, 0o600, `materialized key mode ${materializedKey.mode.toString(8)}`);
 			strictEqual(materializedKey.content, deployPrivateKeyContent, 'a plaintext key must be copied byte for byte');
-			ok(observed.tempDir.startsWith(tmpdir()), `transient dir ${observed.tempDir} is not under the OS tmpdir`);
+			ok(observed.tempDir.startsWith(harperTmpDir), `transient dir ${observed.tempDir} is not under Harper's tmpdir`);
 			ok(!observed.tempDir.startsWith(ctx.harper.dataRootDir), 'transient dir must not be under the root path');
 
 			strictEqual(response.status, 200, `deploy failed: ${JSON.stringify(body)}`);
@@ -290,18 +325,18 @@ suite(
 			ok(existsSync(join(ctx.harper.dataRootDir, 'components', project)), 'component directory missing after deploy');
 			ok(sshdLog.join('').includes('Accepted publickey'), 'sshd never accepted the deploy key');
 
-			const remaining = await scanTransientSshDirs();
+			const remaining = await scanTransientSshDirs(harperTmpDir);
 			strictEqual(remaining.length, 0, `transient ssh dir leaked after a successful deploy: ${remaining}`);
 		});
 
 		test('sealed key: deploy authenticates with the decrypted copy; the durable key stays sealed', async () => {
-			strictEqual((await scanTransientSshDirs()).length, 0, 'leftover transient dirs before this test');
+			strictEqual((await scanTransientSshDirs(harperTmpDir)).length, 0, 'leftover transient dirs before this test');
 			const sealed = ENC_PREFIX + Buffer.from(deployPrivateKeyContent, 'utf8').toString('base64');
 			await writeDurableSshDir('sealed.key', sealed);
 
 			const project = 'qa581-sealed';
 			const inFlight = deploy(project, bareRepoPath);
-			const observed = await observeDuringFlight(inFlight);
+			const observed = await observeDuringFlight(inFlight, harperTmpDir);
 			const response = await inFlight;
 			const body = await response.json();
 
@@ -320,17 +355,17 @@ suite(
 			strictEqual(body.message, `Successfully deployed: ${project}`);
 			ok(existsSync(join(ctx.harper.dataRootDir, 'components', project)), 'component directory missing after deploy');
 
-			const remaining = await scanTransientSshDirs();
+			const remaining = await scanTransientSshDirs(harperTmpDir);
 			strictEqual(remaining.length, 0, `transient ssh dir leaked after a successful deploy: ${remaining}`);
 		});
 
 		test('failed clone (auth succeeds, repo missing) still removes the transient key', async () => {
-			strictEqual((await scanTransientSshDirs()).length, 0, 'leftover transient dirs before this test');
+			strictEqual((await scanTransientSshDirs(harperTmpDir)).length, 0, 'leftover transient dirs before this test');
 			const sealed = ENC_PREFIX + Buffer.from(deployPrivateKeyContent, 'utf8').toString('base64');
 			await writeDurableSshDir('sealed.key', sealed);
 
 			const inFlight = deploy('qa581-error-path', join(sshWorkDir, 'does-not-exist.git'));
-			const observed = await observeDuringFlight(inFlight);
+			const observed = await observeDuringFlight(inFlight, harperTmpDir);
 			const response = await inFlight;
 			const body = await response.json();
 
@@ -342,7 +377,7 @@ suite(
 			);
 			notStrictEqual(response.status, 200, `expected the deploy to fail, got 200: ${JSON.stringify(body)}`);
 
-			const remaining = await scanTransientSshDirs();
+			const remaining = await scanTransientSshDirs(harperTmpDir);
 			strictEqual(remaining.length, 0, `transient ssh dir leaked after a failed deploy: ${remaining}`);
 		});
 
@@ -352,10 +387,9 @@ suite(
 			const allMessages = (logResponse.body as any[]).map((entry) => entry.message ?? '').join('\n');
 
 			ok(allMessages.includes('qa581-legacy'), 'the log scan must see the deploys above for its zero hits to count');
-			const sealedEnvelope = ENC_PREFIX + Buffer.from(deployPrivateKeyContent, 'utf8').toString('base64');
-			ok(!allMessages.includes(deployMarker), `key body leaked into the server log: ${deployMarker}`);
+			ok(!allMessages.includes(secrets.inPem), 'private key bytes leaked into the server log');
+			ok(!allMessages.includes(secrets.inEnvelope), 'enc:v1: envelope bytes leaked into the server log');
 			ok(!allMessages.includes('BEGIN OPENSSH PRIVATE KEY'), 'a private key header leaked into the server log');
-			ok(!allMessages.includes(sealedEnvelope), 'the enc:v1: envelope leaked into the server log');
 		});
 	}
 );
