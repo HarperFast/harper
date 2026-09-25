@@ -42,7 +42,6 @@ describe('updateConfigValue', () => {
 		);
 	});
 
-	/** Run `body` with ROOTPATH replaced and a home directory holding no boot props, restoring both after. */
 	function withBootSource(rootPath, body) {
 		const saved = ['ROOTPATH', ...HOME_ENV_KEYS].map((key) => [key, process.env[key]]);
 		if (rootPath === undefined) delete process.env.ROOTPATH;
