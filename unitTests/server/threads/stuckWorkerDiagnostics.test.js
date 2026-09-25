@@ -177,6 +177,17 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		});
 	});
 
+	it('does not inherit best-effort exit handling from an earlier broadcast', async function () {
+		const worker = await startFixtureWorker('ack-then-exit');
+		started.push(worker);
+		await broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, 2000);
+		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000), (error) => {
+			assert(error instanceof AggregateError);
+			assert.match(error.errors[0].message, /exited before acknowledging preparation/);
+			return true;
+		});
+	});
+
 	it('includes job workers when destructive preparation requests it', async function () {
 		const worker = await startFixtureWorker('reject', 'job');
 		started.push(worker);

@@ -2,6 +2,7 @@
 
 const { parentPort, workerData } = require('node:worker_threads');
 const { broadcastWithAcknowledgement } = require('#js/server/threads/manageThreads');
+let acknowledgementCount = 0;
 
 parentPort.on('message', (message) => {
 	if (message.type === 'send-probe') {
@@ -15,6 +16,12 @@ parentPort.on('message', (message) => {
 	} else if (message.requestId && process.argv.includes('--exit')) {
 		clearInterval(keepAlive);
 		parentPort.close();
+	} else if (message.requestId && process.argv.includes('--ack-then-exit')) {
+		if (acknowledgementCount++ === 0) parentPort.postMessage({ type: 'ack', id: message.requestId });
+		else {
+			clearInterval(keepAlive);
+			parentPort.close();
+		}
 	}
 });
 // manageThreads unrefs parentPort, so something must keep a non-blocking fixture alive.

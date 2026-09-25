@@ -11,13 +11,17 @@ import { sendItcEvent, sendItcEventStrict } from '../server/threads/itc.js';
 // before its own cache caught up, so the next request it served observed stale state even though
 // the op awaited propagation to the other workers — the originator half of #1497. Both legs
 // resolve without rejecting (each handler has its own try/catch; the broadcast always resolves),
-// so Promise.all is safe here. Callers that don't await keep their prior fire-and-forget behavior.
-export async function signalSchemaChange(message: any) {
+// so Promise.all is safe here. Destructive abort/completion can order peers first so the local
+// admission fence remains in place until remote workers have processed the same transition.
+export async function signalSchemaChange(message: any, { peersFirst = false }: { peersFirst?: boolean } = {}) {
 	try {
 		hdbLogger.debug('signalSchemaChange called with message:', message);
 		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
 		const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
-		await Promise.all([serverItcHandlers.schema(itcEventSchema), sendItcEvent(itcEventSchema)]);
+		if (peersFirst) {
+			await sendItcEvent(itcEventSchema);
+			await serverItcHandlers.schema(itcEventSchema);
+		} else await Promise.all([serverItcHandlers.schema(itcEventSchema), sendItcEvent(itcEventSchema)]);
 	} catch (err) {
 		hdbLogger.error(err);
 	}
@@ -30,7 +34,10 @@ export async function signalSchemaChangeToPeers(message: any): Promise<void> {
 	// Native derived-index shutdown has a 70-second backstop. The extra round closes the topology
 	// race: after the main thread installs the preparation fence, any worker started during round one
 	// inherits it and is present for round two.
-	for (let round = 0; round < 2; round++) await sendItcEventStrict(itcEventSchema, 90_000, true);
+	for (let round = 0; round < 2; round++) {
+		await sendItcEventStrict(itcEventSchema, 90_000, true);
+		if (round === 0) await new Promise(setImmediate);
+	}
 }
 
 /**

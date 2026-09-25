@@ -150,6 +150,18 @@ describe('RocksDB handle release', function () {
 		assert.strictEqual(refCountFor(rootStore.path), 0);
 	});
 
+	it('dropSchema destroys a tableless database without tripping its own fence', async function () {
+		this.timeout(30000);
+		const databaseName = 'drop_schema_tableless';
+		const rootStore = database({ database: databaseName });
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+
+		await new ResourceBridge().dropSchema({ schema: databaseName });
+
+		assert.strictEqual(databases[databaseName], undefined);
+		assert.strictEqual(refCountFor(rootStore.path), 0);
+	});
+
 	it('closeLoadedDatabases releases every loaded user database (what a job worker does on exit)', async function () {
 		this.timeout(30000);
 		const a = openRocksDb('closerelease2a');

@@ -2247,7 +2247,8 @@ export async function dropDatabase(databaseName) {
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
 		}
 		if (!rootStore) {
-			rootStore = database({ database: databaseName, table: null });
+			rootStore = (definedDatabases?.get(databaseName) as any)?.rootStore;
+			if (!rootStore) throw new Error(`Database '${databaseName}' has no loaded root store`);
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
 		}
 		releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, true, [rootStore]);

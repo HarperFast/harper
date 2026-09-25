@@ -1116,6 +1116,9 @@ function broadcastWithAcknowledgement(
 					}
 				};
 				ackHandler.port = port;
+				ackHandler.closeResponse = strict
+					? { error: { message: 'exited before acknowledging preparation' } }
+					: undefined;
 				pending.add(ackHandler);
 				port.ref();
 				port.refCount = (port.refCount || 0) + 1;
@@ -1126,7 +1129,7 @@ function broadcastWithAcknowledgement(
 					port.on(port.close ? 'close' : 'exit', () => {
 						for (let [, ackHandler] of awaitingResponses) {
 							if (ackHandler.port === port) {
-								ackHandler(strict ? { error: { message: 'exited before acknowledging preparation' } } : undefined);
+								ackHandler(ackHandler.closeResponse);
 							}
 						}
 					});
