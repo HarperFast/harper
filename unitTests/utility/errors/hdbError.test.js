@@ -135,7 +135,11 @@ describe('HdbError built from a structured response message', () => {
 		assert.ok(err.message.includes("reason: 'loop'"), err.message);
 	});
 
-	// The #1734 shape: an HTTP client error carrying the credential it sent.
+	it('lists an Error in the response message by its class and message', () => {
+		const err = handleHDBError(new Error(), { error: 'Fetch failed', detail: [new Error('upstream refused')] }, 502);
+		assert.strictEqual(err.message, 'Fetch failed: Error: upstream refused');
+	});
+
 	it('does not expose the properties of an Error nested in the response message', () => {
 		const upstream = new Error('upstream refused');
 		upstream.config = { headers: { Authorization: 'Bearer super-secret-token' } };

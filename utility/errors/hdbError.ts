@@ -1,14 +1,12 @@
 'use strict';
-import logger, { inspectForLog } from '../logging/harper_logger.ts';
+import logger, { errorToString, inspectForLog, isErrorLike } from '../logging/harper_logger.ts';
 import * as hdbErrors from './commonErrors.ts';
 import * as hdbTerms from '../hdbTerms.ts';
 
 /**
- * `message` has to be a string, because it is what the logger and `String(error)` render. A response
- * message can be a structured body instead, such as the permission report a refused operation
- * answers with, so describe one by its `error` summary followed by the reasons it lists. Anything
- * else is rendered the way the logger renders a structured value, which cannot throw and does not
- * expose the properties of an Error nested in it.
+ * The logger and `String(error)` render `message`, so it must be a string even when the response
+ * message is a structured body. A report reads as its `error` summary and the reasons it lists;
+ * anything else goes through inspectForLog, which cannot throw or expose a nested Error's properties.
  */
 function messageText(message: any): string {
 	if (typeof message === 'string') return message;
@@ -18,14 +16,22 @@ function messageText(message: any): string {
 		if (typeof error === 'string') {
 			const reasons = Object.values(detail)
 				.flat()
-				.filter((reason) => reason != null && (typeof reason !== 'object' || Object.keys(reason).length > 0))
-				.map((reason) => (typeof reason === 'string' ? reason : renderValue(reason)));
+				.filter(
+					(reason) =>
+						reason != null && (typeof reason !== 'object' || isErrorLike(reason) || Object.keys(reason).length > 0)
+				)
+				.map(reasonText);
 			return reasons.length > 0 ? `${error}: ${reasons.join('; ')}` : error;
 		}
 	} catch {
-		// a getter or proxy that throws; render the value as a whole instead
+		// a getter or proxy that throws
 	}
 	return renderValue(message);
+}
+
+function reasonText(reason: any): string {
+	if (typeof reason === 'string') return reason;
+	return isErrorLike(reason) ? errorToString(reason) : renderValue(reason);
 }
 
 function renderValue(value: any): string {

@@ -42,14 +42,15 @@ async function failPostRequest(body) {
 	return { error, reply };
 }
 
+// An `operations` allowlist refuses anything the role does not list.
+const limitedUser = () => ({
+	username: 'limited',
+	active: true,
+	role: { role: 'limited', permission: { super_user: false, operations: ['user_info'] } },
+});
+
 function refuse(body) {
-	// An `operations` allowlist refuses anything the role does not list.
-	const hdb_user = {
-		username: 'limited',
-		active: true,
-		role: { role: 'limited', permission: { super_user: false, operations: ['user_info'] } },
-	};
-	return failPostRequest({ ...body, hdb_user });
+	return failPostRequest({ ...body, hdb_user: limitedUser() });
 }
 
 let markers = 0;
@@ -125,6 +126,27 @@ describe('An operation refused by the permission check', function () {
 		serverErrorHandler(handleHDBError(new Error(), message, 400), { body: {} }, new RecordedReply());
 		const lines = (await linesLoggedSince(offset)).filter((line) => line.includes(message));
 		assert.strictEqual(lines.length, 1, lines.join('\n'));
+	});
+
+	it('logs each of several failures in one request once', async function () {
+		const offset = logLength();
+		const limited = limitedUser();
+		const request = { body: { operation: 'list_roles', hdb_user: limited } };
+		const first = await handlePostRequest(request).then(
+			() => assert.fail('list_roles was not refused'),
+			(failure) => failure
+		);
+		request.body = { operation: 'drop_role', id: 'none', hdb_user: limited };
+		await handlePostRequest(request).then(
+			() => assert.fail('drop_role was not refused'),
+			(failure) => failure
+		);
+		serverErrorHandler(first, request, new RecordedReply());
+		const lines = await linesLoggedSince(offset);
+		for (const operation of ['list_roles', 'drop_role']) {
+			const reasonLines = lines.filter((line) => line.includes(notInOperations(operation)));
+			assert.strictEqual(reasonLines.length, 1, lines.join('\n'));
+		}
 	});
 
 	it('still logs an error object that another request already logged', async function () {

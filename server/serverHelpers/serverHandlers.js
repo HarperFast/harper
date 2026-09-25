@@ -70,14 +70,13 @@ function handleServerUncaughtException(err) {
 	realExit(1);
 }
 
-// handlePostRequest logs what it throws (serverErrorHandler alone would log most of it at info,
-// below the default level), and serverErrorHandler skips that error for the same request. Keyed by
-// request, so an error object that surfaces again in another request is still logged there.
-const errorLoggedByRequest = new WeakMap();
+// The errors handlePostRequest has logged, per request (see server/DESIGN.md for why it, not
+// serverErrorHandler, owns that log). Per request, so one that surfaces again elsewhere is logged there.
+const errorsLoggedByRequest = new WeakMap();
 const LEVELS_ABOVE_ERROR = new Set([terms.LOG_LEVELS.FATAL, terms.LOG_LEVELS.NOTIFY]);
 
 function serverErrorHandler(error, req, resp) {
-	if (errorLoggedByRequest.get(req) !== error) harperLogger[error.logLevel || 'info'](error);
+	if (!errorsLoggedByRequest.get(req)?.has(error)) harperLogger[error.logLevel || 'info'](error);
 	if (error.statusCode) {
 		if (typeof error.http_resp_msg !== 'object') {
 			const body = { error: error.http_resp_msg || error.message };
@@ -227,7 +226,9 @@ async function handlePostRequest(req, res, _bypassAuth = false) {
 		return result;
 	} catch (error) {
 		harperLogger[LEVELS_ABOVE_ERROR.has(error?.logLevel) ? error.logLevel : 'error'](error);
-		errorLoggedByRequest.set(req, error);
+		let logged = errorsLoggedByRequest.get(req);
+		if (!logged) errorsLoggedByRequest.set(req, (logged = new Set()));
+		logged.add(error);
 		throw error;
 	}
 }

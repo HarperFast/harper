@@ -1,11 +1,7 @@
 /**
- * An operation refused by the operations-API permission check still answers 403 with the structured
- * permission report as its body, and is logged once, saying what was refused.
- *
- * The refusal is an HdbError whose response message is that report object. Its `message` used to be
- * the same object, so every log line rendered it as `Error: [object Object] statusCode=403`, and
- * each refusal was logged twice: once where handlePostRequest caught it and again in the Fastify
- * error handler.
+ * An operation refused by the operations-API permission check: the 403 body is the structured
+ * permission report, byte for byte; hdb.log carries the reason once and never `[object Object]`;
+ * and a bulk load refused inside its job still reports the permission report as its `get_job` message.
  *
  * Run:
  *   npm run build && npm run test:integration -- "integrationTests/security/operation-denial-log.test.ts"
