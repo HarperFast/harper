@@ -36,10 +36,18 @@ describe('peerDeployAnswerTimeoutMs', function () {
 		assert.ok(timeoutMs >= DEFAULT_AWAIT_ROW_TIMEOUT_MS + componentPreparationBudgetMs());
 	});
 
-	it('scales with install_timeout for both install commands', function () {
+	it('waits out one other preparation of the same component, as long as the preparation lock waits on it', function () {
+		const timeoutMs = peerDeployAnswerTimeoutMs({ operation: 'deploy_component', project: 'app' });
+		assert.ok(
+			timeoutMs >= DEFAULT_AWAIT_ROW_TIMEOUT_MS + 2 * componentPreparationBudgetMs(),
+			`${timeoutMs}ms does not cover the lock's wait on another preparation as well as its own`
+		);
+	});
+
+	it('scales with install_timeout for both install commands of both preparations', function () {
 		const shorter = peerDeployAnswerTimeoutMs({ install_timeout: 10 * MINUTE });
 		const longer = peerDeployAnswerTimeoutMs({ install_timeout: 30 * MINUTE });
-		assert.strictEqual(longer - shorter, 2 * 20 * MINUTE);
+		assert.strictEqual(longer - shorter, 2 * 2 * 20 * MINUTE);
 	});
 
 	it('adds the deployment_timeout payload wait, twice when the peer must also wait for credential references', function () {

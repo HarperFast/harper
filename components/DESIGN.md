@@ -425,18 +425,23 @@ inputs retain their existing symlink behavior.
 The origin of a replicated `deploy_component` hands `server.replication.replicateOperation` a `timeoutMs`
 from `peerDeployAnswerTimeoutMs(req)` (`components/operations.js`). It is the sum of what the peer is
 allowed for that request: its payload wait (`deployment_timeout`, counted twice when credential references
-must also replicate in), one full preparation budget (`componentPreparationBudgetMs`, the same figure the
-preparation lock waits on: every extraction command and both install commands at their allowances), a
-margin for validation and the swap, and the restart ceiling when the peer restarts before answering. It
-is clamped to the longest delay a timer holds.
+must also replicate in), two full preparation budgets (`componentPreparationBudgetMs`: every extraction
+command and both install commands at their allowances), a margin for validation and the swap, and the
+restart ceiling when the peer restarts before answering. It is clamped to the longest delay a timer holds.
+One budget is the peer's own preparation. The other is the preparation lock's wait: a peer already preparing
+the same component for another deploy holds this one at the lock for a budget before the lock re-checks the
+holder.
 
 It must never undercut a healthy peer. A shorter bound turns a slow success into a reported failure, and a
 two-command install (a custom package manager falling back to npm) is exactly such a success. So the
 default is hours, and its job is only that the origin eventually settles, rather than holding the
 operation, the deployment row and its own restart for as long as a wedged peer stays wedged. Two things are
-not budgeted: queueing behind another preparation of the same component, and plugin `timeout`s a component
-configures beyond the validation margin, which live in the payload the origin does not parse. The deadline is not cancellation: a
-peer past it may still finish, so the failure the replicator records says the outcome there is unknown.
+not budgeted. The lock keeps waiting while its holder is alive, so queueing behind a preparation that
+outlasts the lock's wait, or behind several, can run past the deadline. So can plugin `timeout`s a component
+configures beyond the validation margin, which live in the payload the origin does not parse. Covering the
+first would take a deadline that follows the peer's progress rather than a sum of its allowances. The
+deadline is not cancellation: a peer past it may still finish, so the failure the replicator records says
+the outcome there is unknown.
 It stays a `failed` peer result, because `getFailedPeers()` counts only that status, and a new one would
 read as success.
 

@@ -574,9 +574,11 @@ const PEER_DEPLOY_VALIDATION_MARGIN_MS = 10 * 60 * 1000;
 
 /**
  * How long the origin waits for each peer to answer a replicated deploy: every wait and command the peer is
- * allowed for this request, each at its full allowance. A peer queued behind another preparation of the same
- * component, or validating plugins whose configured timeouts outlast the margin, can take longer, and is then
- * reported as not answering — which says nothing of its outcome.
+ * allowed for this request, each at its full allowance. That includes the preparation lock's wait: a peer already
+ * preparing the same component for another deploy holds this one there for a preparation budget before the lock
+ * re-checks the holder. The lock keeps waiting while that holder is alive, so a peer queued behind a longer
+ * preparation, or behind several, can take longer; so can one validating plugins whose configured timeouts outlast
+ * the margin. Such a peer is reported as not answering, which says nothing of its outcome.
  */
 function peerDeployAnswerTimeoutMs(req) {
 	const { RESTART_WAIT_CEILING_MS } = require('./awaitRestart.ts');
@@ -584,7 +586,8 @@ function peerDeployAnswerTimeoutMs(req) {
 	const installTimeoutMs = coerceTimeoutMs(req.install_timeout, undefined);
 	return Math.min(
 		payloadWaitMs * (req.credentials?.length ? 2 : 1) +
-			componentPreparationBudgetMs(installTimeoutMs) +
+			// the lock's wait on another deploy's preparation, then this deploy's own
+			2 * componentPreparationBudgetMs(installTimeoutMs) +
 			PEER_DEPLOY_VALIDATION_MARGIN_MS +
 			(req.restart === true ? RESTART_WAIT_CEILING_MS : 0),
 		hdbTerms.MAX_SET_TIMEOUT_MS
