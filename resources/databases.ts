@@ -2135,8 +2135,19 @@ export function resolveDatabasePath(databaseName: string): string {
  * @returns
  */
 export function database({ database: databaseName, table: tableName }) {
+	return openDatabaseRoot({ database: databaseName, table: tableName });
+}
+
+/**
+ * Open a database root. Destructive DDL uses the internal bypass only after it owns the database's
+ * drop-preparation fence; public callers must continue to fail while that fence is held.
+ */
+function openDatabaseRoot(
+	{ database: databaseName, table: tableName }: { database: string; table?: string },
+	{ allowPreparedDrop = false }: { allowPreparedDrop?: boolean } = {}
+) {
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
-	if (databaseDropPrepared(databaseName)) throw new DatabaseClosingError(databaseName);
+	if (!allowPreparedDrop && databaseDropPrepared(databaseName)) throw new DatabaseClosingError(databaseName);
 	getDatabases();
 	ensureDB(databaseName);
 	const definedDatabase = definedDatabases.get(databaseName);
@@ -2260,7 +2271,12 @@ export async function dropDatabase(databaseName) {
 			rootStores.add(rootStore);
 		}
 		if (definedRoot) rootStores.add(definedRoot);
-		if (rootStores.size === 0) throw new Error(`Database '${databaseName}' has no loaded root store`);
+		// A tableless database may exist on disk without this worker ever having opened its root. The
+		// drop owner must open that root to destroy it; the private bypass is safe because ResourceBridge
+		// already owns the preparation fence that intentionally rejects every public open.
+		if (rootStores.size === 0) {
+			rootStores.add(openDatabaseRoot({ database: databaseName }, { allowPreparedDrop: true }));
+		}
 		for (const rootStore of rootStores) {
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
 		}

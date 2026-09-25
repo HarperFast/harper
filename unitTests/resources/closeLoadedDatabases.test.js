@@ -18,6 +18,7 @@ const {
 	getDatabases,
 	closeDatabase,
 	closeLoadedDatabases,
+	resetDatabases,
 	openBranchDatabase,
 	closeBranchDatabases,
 	prepareDatabaseDrop,
@@ -278,6 +279,23 @@ describe('RocksDB handle release', function () {
 		assert.strictEqual(databases[databaseName], undefined);
 		assert.strictEqual(refCountFor(rootStore.path), 0);
 		assert.strictEqual(getSuspendedDatabaseRootCount(), suspendedBefore);
+	});
+
+	it('dropSchema opens and destroys a tableless database root not attached to this worker’s catalog', async function () {
+		this.timeout(30000);
+		const databaseName = 'drop_schema_unloaded_tableless';
+		const rootStore = database({ database: databaseName });
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const dbPath = rootStore.path;
+		await closeDatabase(databaseName);
+		resetDatabases();
+		assert.ok(databases[databaseName], 'the on-disk database should be discovered');
+		assert.deepStrictEqual(Object.keys(databases[databaseName]), [], 'no table can expose the root to dropSchema');
+
+		await new ResourceBridge().dropSchema({ schema: databaseName });
+
+		assert.strictEqual(databases[databaseName], undefined);
+		assert.strictEqual(refCountFor(dbPath), 0);
 	});
 
 	it('closeLoadedDatabases releases every loaded user database (what a job worker does on exit)', async function () {
