@@ -452,8 +452,12 @@ describe('Test operation_authorization', function () {
 	describe('every dispatched operation is grantable by the API name a role lists', function () {
 		const { canRoleInvokeOperation } = require('#src/components/mcp/operationVisibility');
 		const ALL_OPERATIONS = Object.values(terms.OPERATIONS_ENUM);
-		// Registered without an api_name on purpose; the reasons are at their registrations.
-		const UNGRANTABLE = [terms.OPERATIONS_ENUM.GET_BACKUP, terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG];
+		// Registered with a null api_name on purpose; the reasons are at their registrations.
+		const UNGRANTABLE = [
+			terms.OPERATIONS_ENUM.GET_BACKUP,
+			terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG,
+			terms.OPERATIONS_ENUM.CATCHUP,
+		];
 		// Built-ins only, since other suites register throwaway operations on this map; `sql` reaches gate 1
 		// by its API name, not through a handler.
 		const dispatched = [...OPERATION_FUNCTION_MAP.keys()].filter(
@@ -479,17 +483,19 @@ describe('Test operation_authorization', function () {
 			assert.deepEqual(offenders, []);
 		});
 
-		it('keeps get_backup and read_transaction_log ungrantable', function () {
+		it('keeps get_backup, read_transaction_log and catchup ungrantable, even by a matching handler name', function () {
 			for (const operation of UNGRANTABLE) {
 				assert.ok(dispatched.includes(operation), `${operation} is dispatched`);
-				assert.notEqual(
-					op_auth.verifyOperationsAllowlist(allowlisted(ALL_OPERATIONS), dispatchedHandlerName(operation)),
-					null
+				const listed = [...ALL_OPERATIONS, dispatchedHandlerName(operation)];
+				const denial = op_auth.verifyOperationsAllowlist(
+					{ ...allowlisted(listed), operation },
+					dispatchedHandlerName(operation)
 				);
+				assert.deepEqual(denial?.unauthorized_access, [TEST_OPERATION_AUTH_ERROR.OP_NOT_IN_OPERATIONS(operation)]);
 			}
 		});
 
-		// Discovery does not model the two ungrantable operations: it still advertises them to a role that
+		// Discovery does not model the ungrantable operations: it still advertises them to a role that
 		// lists them.
 		it('is advertised by MCP discovery exactly when gate 1 grants it', function () {
 			const disagreements = [];
