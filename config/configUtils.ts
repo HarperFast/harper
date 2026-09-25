@@ -519,6 +519,23 @@ export function getConfigFilePath(bootPropsFilePath = hdbUtils.getPropsFilePath(
 }
 
 /**
+ * The root config file runtime writers read and write, and the root-config publication lock is keyed by: the one
+ * boot reads whenever there is a boot source (`ROOTPATH`, or a boot props file), even if that file is missing
+ * right now. With no boot source at all — an install before it writes the boot props, a unit run with no Harper
+ * installed — it is the one under the configured root.
+ */
+export function getRootConfigFilePath(hdbRoot: string | undefined = env.getHdbBasePath()): string {
+	if (hdbUtils.getEnvCliRootPath() || fs.statSync(hdbUtils.getPropsFilePath(), { throwIfNoEntry: false }) || !hdbRoot) {
+		return getConfigFilePath();
+	}
+	const configFilePath = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
+	if (!fs.existsSync(configFilePath) && fs.existsSync(path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE))) {
+		return path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE);
+	}
+	return configFilePath;
+}
+
+/**
  * Ensure the given top-level keys exist in the on-disk config file, writing an empty block (`{}`)
  * for each one that is absent. Only missing keys are added — existing values are never touched.
  *
