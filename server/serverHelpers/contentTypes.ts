@@ -320,7 +320,9 @@ const registerFastifySerializers = fp(
 			if (
 				type === 'text/event-stream' &&
 				reply.statusCode >= 400 &&
-				!String(reply.getHeader('content-type') ?? '').startsWith('text/event-stream')
+				!String(reply.getHeader('content-type') ?? '')
+					.toLowerCase()
+					.startsWith('text/event-stream')
 			) {
 				serializer = mediaTypes.get('application/json');
 				type = 'application/json';
