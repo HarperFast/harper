@@ -33,13 +33,17 @@ let signingJwk;
 
 function installMockTable(name, primaryKey) {
 	const rows = new Map();
+	// the expiry a write passed as record metadata (the context's expiresAt), by primary key
+	const expiries = new Map();
 	const mock = {
 		rows,
+		expiries,
 		async get(id) {
 			return rows.get(id);
 		},
-		async put(row) {
+		async put(row, context) {
 			rows.set(row[primaryKey], row);
+			if (context?.expiresAt !== undefined) expiries.set(row[primaryKey], context.expiresAt);
 		},
 		async delete(id) {
 			return rows.delete(id);
@@ -345,10 +349,11 @@ describe('exchangeOidcToken', () => {
 		const token = identityToken();
 		await exchangeOidcToken({ operation: 'exchange_oidc_token', token });
 
-		const [record] = [...useTable.mock.rows.values()];
+		const [[fingerprint, record]] = [...useTable.mock.rows.entries()];
 		assert.strictEqual(record.policy_id, 'my-app-prod');
+		assert.ok(!('expiresAt' in record), 'the expiry is record metadata, not a field');
 		const tokenExpiryMs = decodeJWT(token).exp * 1000;
-		assert.ok(record.expiresAt > tokenExpiryMs, 'record must outlive the token it guards');
+		assert.ok(useTable.mock.expiries.get(fingerprint) > tokenExpiryMs, 'record must outlive the token it guards');
 	});
 
 	it('rejects a token minted for a different audience', async () => {

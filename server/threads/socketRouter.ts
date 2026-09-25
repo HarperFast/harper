@@ -19,7 +19,6 @@ import * as harperLogger from '../../utility/logging/harper_logger.ts';
 import { recordHostname } from '../../resources/analytics/write.ts';
 import { startTransactionLogCooling } from '../transactionLogCooling.ts';
 import { startLongLivedTransactionReporting } from '../../resources/longLivedTransactions.ts';
-import { armLoadedExpirySweeps } from '../../resources/databases.ts';
 import { isMainThread } from 'node:worker_threads';
 import { join } from 'node:path';
 
@@ -83,7 +82,6 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 			const { loadRootComponents } = require('../loadRootComponents.js');
 			if (threadCount === 0) {
 				setMainIsWorker(true);
-				armLoadedExpirySweeps();
 				const threadServer = require('./threadServer.js');
 				await threadServer.startServers();
 				// startServers() schedules listener startup after loading components; await its cached

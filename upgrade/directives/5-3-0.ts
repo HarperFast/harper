@@ -21,14 +21,15 @@ const OIDC_TOKEN_USE_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TOKEN_USE_TABLE_NAME;
 
 /**
  * Not skipped when the table exists: the node that upgrades second can already hold a copy its
- * pre-upgrade replication handshake created from a peer, with none of the attribute flags.
+ * pre-upgrade replication handshake created from a peer, which carries attribute names but not the
+ * table's expiration.
  */
 async function declareHdbOidcTokenUse() {
 	if (!databases.system?.[OIDC_TOKEN_USE_TABLE]) {
 		hdbLogger.info(`Creating system.${OIDC_TOKEN_USE_TABLE} table for OIDC replay protection.`);
 		initPaths.initSystemSchemaPaths(terms.SYSTEM_SCHEMA_NAME, OIDC_TOKEN_USE_TABLE);
 	}
-	await declareTokenUseTable().indexingOperation;
+	declareTokenUseTable();
 	await patchIsHashAttribute(OIDC_TOKEN_USE_TABLE);
 }
 

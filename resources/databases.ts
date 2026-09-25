@@ -1909,18 +1909,6 @@ export function closeBranchDatabases(): void {
 	for (const branch of [...openBranches.values()]) branch?.close();
 }
 
-/**
- * A table arms worker 0's `@expiresAt` sweep only on a thread that owns it when the class is built or
- * declared, and under `threads: 0` the main thread becomes worker 0 after bin/run.ts has loaded its tables.
- */
-export function armLoadedExpirySweeps(): void {
-	for (const tables of Object.values(databases)) {
-		for (const Table of Object.values(tables) as any[]) {
-			if (Table?.attributes?.some((attribute) => attribute.expiresAt)) Table.setTTLExpiration({ fromSchema: true });
-		}
-	}
-}
-
 export function resetDatabases() {
 	loadedDatabases = false;
 	for (const store of Object.values(lmdbDatabaseEnvs)) {
@@ -3445,12 +3433,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements) ||
 				// Include `embed` so a source/model change refreshes the embed registry.
 				JSON.stringify(attributeDescriptor.embed) !== JSON.stringify(attribute.embed);
-			// any metadata difference (drives persistence). `expiresAt` changes only what the loader arms, not
-			// the index contents, so it is persisted here but is not a structural change.
+			// any metadata difference (drives persistence)
 			const changed =
-				commonChanged ||
-				JSON.stringify(attributeDescriptor?.indexed) !== JSON.stringify(attribute.indexed) ||
-				!attributeDescriptor?.expiresAt !== !attribute.expiresAt;
+				commonChanged || JSON.stringify(attributeDescriptor?.indexed) !== JSON.stringify(attribute.indexed);
 			// structure-affecting difference (drives reindex) — ignores search-only option changes and
 			// representation-only differences (key order, string-vs-number) via canonicalIndexKey
 			const indexOptionsStructurallyChanged =
@@ -3928,31 +3913,6 @@ async function markAbandonedIndexBuild(Table, rootStore, buildIds: Map<any, stri
 		}
 	}
 }
-/**
- * A build writes through the attribute object of the declaration that started it, so an `expiresAt` that a
- * later metadata-only declaration persisted meanwhile is read back from the catalog instead of reverted. The
- * read and write share the catalog's serialization with declarations, as in markAbandonedIndexBuild.
- */
-function persistBuildState(Table, attribute) {
-	const mergeAndWrite = () => {
-		const durable = Table.dbisDB.getSync(attribute.key);
-		if (durable && !durable.expiresAt !== !attribute.expiresAt) {
-			if (durable.expiresAt) attribute.expiresAt = true;
-			else delete attribute.expiresAt;
-		}
-		Table.dbisDB.putSync(attribute.key, attribute);
-	};
-	const rootStore = Table.primaryStore.rootStore;
-	if (rootStore instanceof RocksDatabase) {
-		acquireUpdateAttributesLock(rootStore, `the index build of '${Table.tableName}.${attribute.name}'`);
-		try {
-			mergeAndWrite();
-		} finally {
-			releaseUpdateAttributesLock(rootStore);
-		}
-	} else rootStore.transactionSync(mergeAndWrite);
-}
-
 async function runIndexing(Table, attributes, indicesToRemove, branchPath?: string) {
 	let checkpointing;
 	let hadIndexingErrors = false;
@@ -3969,6 +3929,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 		await signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
 		);
+		let lastResolution;
 		// The checkpoint and completion barriers have to cover every mutation still in flight: any of them
 		// may reject after those barriers read hadIndexingErrors.
 		const pendingMutations = new Set();
@@ -4038,12 +3999,14 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 					const failed = await drainMutations();
 					if (failed) return;
 					await flushIndexStores(Table.primaryStore.rootStore);
+					const puts = [];
 					for (const attribute of attributes) {
 						attribute.lastIndexedKey = key;
 						attribute.checkpointCertified = key;
 						attribute.checkpointAlgorithm = CHECKPOINT_ALGORITHM;
-						persistBuildState(Table, attribute);
+						puts.push(Table.dbisDB.put(attribute.key, attribute));
 					}
+					await Promise.all(puts);
 				} catch (error) {
 					logger.warn(`Could not persist the indexing checkpoint for ${Table.tableName}`, error);
 				}
@@ -4148,13 +4111,14 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			for (const attribute of attributes) {
 				attribute.indexingFailed = true;
 				// Preserve lastIndexedKey so the retry resumes from the last checkpoint.
-				persistBuildState(Table, attribute);
+				lastResolution = Table.dbisDB.put(attribute.key, attribute);
 				// Keep isIndexing = true on both the attribute.dbi and the currently-active dbi
 				// in Table.indices (which may differ if resetDatabases() ran during this pass).
 				attribute.dbi.isIndexing = true;
 				const activeDbi = Table.indices[attribute.name];
 				if (activeDbi) activeDbi.isIndexing = true;
 			}
+			await lastResolution;
 			logger.warn(
 				`Indexing of ${Table.tableName} encountered errors on some records - index will remain incomplete. ` +
 					`On next restart the migration will be retried from the last checkpoint (indexingFailed=true). ` +
@@ -4179,8 +4143,9 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 				// opened a new dbi and registered it there.
 				const activeDbi = Table.indices[attribute.name];
 				if (activeDbi) activeDbi.isIndexing = false;
-				persistBuildState(Table, attribute);
+				lastResolution = Table.dbisDB.put(attribute.key, attribute);
 			}
+			await lastResolution;
 			// now notify all the threads that we are done and the index is ready to use
 			await signalling.signalSchemaChange(
 				new SchemaEventMsg(process.pid, 'indexing-finished', Table.databaseName, Table.tableName, undefined, branchPath)
@@ -4209,13 +4174,15 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 		// but indexingFailed is never set, leaving isIndexing stuck with no recovery
 		// signal. Mirrors the hadIndexingErrors path. harper#843
 		try {
+			const puts: Promise<unknown>[] = [];
 			for (const attribute of attributes) {
 				attribute.indexingFailed = true;
-				persistBuildState(Table, attribute);
+				puts.push(Table.dbisDB.put(attribute.key, attribute));
 				attribute.dbi.isIndexing = true;
 				const activeDbi = Table.indices[attribute.name];
 				if (activeDbi) activeDbi.isIndexing = true;
 			}
+			await Promise.all(puts);
 		} catch (persistError) {
 			logger.warn('Failed to persist indexing failure state', persistError);
 		}

@@ -1,30 +1,28 @@
 'use strict';
 
 // system.hdb_oidc_token_use must end up in one shape on every node however its copy arrived, so a
-// passive node (one that never runs an OIDC exchange) evicts the replay rows replicated to it. Each
+// passive node (one that never runs an OIDC exchange) removes the replay rows replicated to it. Each
 // starting shape below is made by the exact call its producer makes, and the assertions read the
 // durable __dbis__ descriptors, which are what a restart loads.
 
 const assert = require('node:assert');
 const testUtils = require('../testUtils.js');
-const { databases, table } = require('#src/resources/databases');
+const { waitFor } = require('../waitFor.js');
+const { databases, table, resetDatabases } = require('#src/resources/databases');
 const bridge = require('#src/dataLayer/harperBridge/harperBridge').default;
 const CreateTableObject = require('#src/dataLayer/CreateTableObject').default;
 const directive530 = require('#src/upgrade/directives/5-3-0').default;
 const { getVersionsForUpgrade } = require('#src/upgrade/directives/directivesController');
-const {
-	declareTokenUseTable,
-	ensureTokenUseTable,
-	TOKEN_USE_TABLE,
-} = require('#src/security/authn/oidc/tokenUseTable');
+const { declareTokenUseTable, TOKEN_USE_TABLE } = require('#src/security/authn/oidc/tokenUseTable');
 const manageThreads = require('#js/server/threads/manageThreads');
 
-const ATTRIBUTE_NAMES = ['id', 'policy_id', 'used_at', 'expiresAt'];
+// What a 5.3.0-beta.2 node that served exchanges declared, and so what its handshake sends a peer.
+const BETA2_EXCHANGING_ATTRIBUTE_NAMES = ['id', 'policy_id', 'used_at', 'expiresAt'];
 const CANONICAL = {
 	audit: true,
 	schemaDefined: true,
+	expiration: 86_400,
 	attributes: [
-		{ name: 'expiresAt', type: undefined, expiresAt: true, indexed: true },
 		{ name: 'id', type: undefined, isPrimaryKey: true },
 		{ name: 'policy_id', type: undefined, expiresAt: false, indexed: false },
 		{ name: 'used_at', type: undefined, expiresAt: false, indexed: false },
@@ -43,11 +41,12 @@ function descriptors() {
 	return rows;
 }
 
-// The declared shape only; build bookkeeping (checkpoints, format, generation) legitimately differs by history.
+// The declared shape only; bookkeeping (format, generation, table id) legitimately differs by history.
 function declaredShape(attributes, primary) {
 	return {
 		audit: primary.audit,
 		schemaDefined: primary.schemaDefined,
+		expiration: primary.expiration,
 		attributes: attributes
 			.map((attribute) =>
 				attribute.isPrimaryKey
@@ -73,15 +72,16 @@ function durableShape() {
 
 function liveShape() {
 	const Table = tokenUseTable();
-	return declaredShape(Table.attributes, { audit: Table.audit, schemaDefined: Table.schemaDefined });
+	return declaredShape(Table.attributes, {
+		audit: Table.audit,
+		schemaDefined: Table.schemaDefined,
+		expiration: Table.expirationMS && Table.expirationMS / 1000,
+	});
 }
 
 function assertCanonical() {
 	assert.deepStrictEqual(durableShape(), CANONICAL);
 	assert.deepStrictEqual(liveShape(), CANONICAL);
-	const expiresAt = tokenUseTable().dbisDB.getSync(`${TOKEN_USE_TABLE}/expiresAt`);
-	assert.strictEqual(expiresAt.indexingFailed, undefined);
-	assert.strictEqual(expiresAt.indexingPID, undefined);
 }
 
 async function dropTokenUseTable() {
@@ -112,8 +112,8 @@ function createAsPeerHandshake(peerAttributeNames, options = {}) {
 	});
 }
 
-// The node that serves the exchanges: the pre-fix bootstrap plus the pre-fix exchange path's declaration.
-async function createAsExchangingNode() {
+// A 5.3.0-beta.2 node that served exchanges: the bootstrap plus its exchange path's @expiresAt declaration.
+async function createAsBeta2ExchangingNode() {
 	await createAsPreFixBootstrap();
 	table({
 		table: TOKEN_USE_TABLE,
@@ -129,14 +129,55 @@ async function createAsExchangingNode() {
 	await tokenUseTable().indexingOperation;
 }
 
-function replayRow(id, expiresAt) {
-	return { id, policy_id: 'deploy', used_at: Date.now(), expiresAt };
+// A replay row as replication applies it: the sender's expiry arrives as the write's metadata. A beta.2
+// sender's record also carries the field its @expiresAt declaration read.
+function writeReplicatedRow(id, expiresAt, { withField = false } = {}) {
+	const row = { id, policy_id: 'deploy', used_at: Date.now() };
+	if (withField) row.expiresAt = expiresAt;
+	return tokenUseTable().put(row, { expiresAt });
 }
 
-function indexedIds(expiresAtValue) {
-	return Array.from(tokenUseTable().indices.expiresAt.getRange({ start: true }))
-		.filter(({ key }) => key === expiresAtValue)
-		.map(({ value }) => value);
+// A beta.2 exchange's own write, whose expiry came from the field alone.
+function writeBeta2ExchangeRow(id, expiresAt) {
+	return tokenUseTable().put({ id, policy_id: 'deploy', used_at: Date.now(), expiresAt });
+}
+
+function storedExpiresAt(id) {
+	return tokenUseTable().primaryStore.getEntry(id)?.expiresAt;
+}
+
+// The spent row reads as absent before any cleanup removes it; the in-window one still blocks a replay.
+async function assertExpiryKept(spentAt, liveUntil) {
+	assert.strictEqual(storedExpiresAt('spent'), spentAt);
+	assert.strictEqual(storedExpiresAt('in-window'), liveUntil);
+	assert.strictEqual((await tokenUseTable().get('in-window'))?.policy_id, 'deploy');
+	assert.ok(!(await tokenUseTable().get('spent')), 'a row past its expiry reads as absent');
+}
+
+// What a worker that never declares the table holds: a class built from the catalog alone.
+function loadFromCatalog() {
+	const Declared = tokenUseTable();
+	Declared.cleanup();
+	delete databases.system[TOKEN_USE_TABLE];
+	resetDatabases();
+	assert.ok(tokenUseTable() !== Declared, 'the table was rebuilt from the catalog');
+	return tokenUseTable();
+}
+
+// The cleanup scans armed while `arm` runs, each callable in place of its timer.
+function capturingCleanupScans(arm) {
+	const originalSetTimeout = global.setTimeout;
+	const scans = [];
+	global.setTimeout = (callback, delay, ...args) => {
+		if (new Error().stack.includes('scheduleCleanup')) scans.push(callback);
+		return originalSetTimeout(callback, delay, ...args);
+	};
+	try {
+		arm();
+	} finally {
+		global.setTimeout = originalSetTimeout;
+	}
+	return scans;
 }
 
 describe('system.hdb_oidc_token_use converges on one declared shape', function () {
@@ -146,7 +187,7 @@ describe('system.hdb_oidc_token_use converges on one declared shape', function (
 
 	after(async () => {
 		await dropTokenUseTable();
-		await ensureTokenUseTable();
+		declareTokenUseTable();
 	});
 
 	it('the node that upgrades first: the 5.3.0 directive creates the table in the canonical shape', async () => {
@@ -155,94 +196,83 @@ describe('system.hdb_oidc_token_use converges on one declared shape', function (
 		assertCanonical();
 	});
 
-	it('the node that upgrades second, after a pre-fix peer created its copy: the directive completes it', async () => {
-		await dropTokenUseTable();
-		createAsPeerHandshake(['id']);
-		await runDirective530();
-		assertCanonical();
-	});
+	const peerShapes = {
+		'a beta.2 peer that never exchanged': ['id'],
+		'a beta.2 peer that exchanged': BETA2_EXCHANGING_ATTRIBUTE_NAMES,
+		'an upgraded peer': ['id', 'policy_id', 'used_at'],
+	};
+	for (const [peer, names] of Object.entries(peerShapes)) {
+		it(`the node that upgrades second: the directive completes the copy its handshake took from ${peer}`, async () => {
+			await dropTokenUseTable();
+			createAsPeerHandshake(names);
+			await runDirective530();
+			assertCanonical();
+		});
+	}
 
-	it('the node that upgrades second, after a fixed peer created its copy: the directive flags and backfills expiresAt, keeping unexpired fingerprints', async () => {
+	it('keeps the expiry of every row replicated to the copy it repairs', async () => {
 		await dropTokenUseTable();
-		createAsPeerHandshake(ATTRIBUTE_NAMES);
+		createAsPeerHandshake(BETA2_EXCHANGING_ATTRIBUTE_NAMES);
 		const spentAt = Date.now() - 60_000;
 		const liveUntil = Date.now() + 3_600_000;
-		await tokenUseTable().put(replayRow('spent', spentAt));
-		await tokenUseTable().put(replayRow('in-window', liveUntil));
+		await writeReplicatedRow('spent', spentAt, { withField: true });
+		await writeReplicatedRow('in-window', liveUntil, { withField: true });
 
 		await runDirective530();
 
 		assertCanonical();
-		assert.deepStrictEqual(indexedIds(spentAt), ['spent']);
-		assert.deepStrictEqual(indexedIds(liveUntil), ['in-window']);
-		assert.strictEqual((await tokenUseTable().get('in-window'))?.expiresAt, liveUntil);
+		await assertExpiryKept(spentAt, liveUntil);
 	});
 
-	it('both orders leave the passive node with every (name, type) the exchanging node replicates', async () => {
-		await dropTokenUseTable();
-		await createAsExchangingNode();
-		const exchanging = tokenUseTable().attributes.map(({ name, type }) => ({ name, type }));
-
-		for (const createPassive of [() => createAsPeerHandshake(['id']), () => createAsPreFixBootstrap()]) {
-			await dropTokenUseTable();
-			await createPassive();
-			await ensureTokenUseTable();
-			// harper-pro's ensureTableIfChanged logs "is defined locally, but attribute ..." for any of these it cannot find
-			for (const { name, type } of exchanging)
-				assert(
-					tokenUseTable().attributes.some((attribute) => attribute.name === name && attribute.type === type),
-					`passive node lacks ${name}`
-				);
-		}
-	});
-
-	it('an install already on a pre-fix 5.3.0 pre-release, which no directive reaches, is repaired by the boot declaration', async () => {
+	it('no directive reaches an install already on a 5.3.0 pre-release', () => {
 		for (const upgradeVersion of ['5.3.0', '5.3.0-beta.3', '5.3.1'])
 			assert.deepStrictEqual(
 				getVersionsForUpgrade({ data_version: '5.3.0-beta.2', upgrade_version: upgradeVersion }),
 				[],
 				`a directive would run for 5.3.0-beta.2 -> ${upgradeVersion}`
 			);
-
-		await dropTokenUseTable();
-		await createAsPreFixBootstrap();
-		const spentAt = Date.now() - 60_000;
-		await tokenUseTable().put(replayRow('replicated', spentAt));
-
-		await ensureTokenUseTable();
-
-		assertCanonical();
-		assert.deepStrictEqual(indexedIds(spentAt), ['replicated']);
 	});
 
-	it('leaves the exchanging node, already in the canonical shape, untouched', async () => {
+	const beta2Nodes = {
+		'never exchanged': async (spentAt, liveUntil) => {
+			await createAsPreFixBootstrap();
+			await writeReplicatedRow('spent', spentAt, { withField: true });
+			await writeReplicatedRow('in-window', liveUntil, { withField: true });
+		},
+		'exchanged': async (spentAt, liveUntil) => {
+			await createAsBeta2ExchangingNode();
+			await writeBeta2ExchangeRow('spent', spentAt);
+			await writeBeta2ExchangeRow('in-window', liveUntil);
+		},
+	};
+	for (const [node, create] of Object.entries(beta2Nodes)) {
+		it(`the boot declaration repairs the table of a 5.3.0-beta.2 node that ${node}, keeping each row's expiry`, async () => {
+			const spentAt = Date.now() - 60_000;
+			const liveUntil = Date.now() + 3_600_000;
+			await dropTokenUseTable();
+			await create(spentAt, liveUntil);
+
+			declareTokenUseTable();
+
+			assertCanonical();
+			// Only the declaring thread's class still holds a dropped index; the store stays on disk, unused.
+			assert.ok(!('expiresAt' in loadFromCatalog().indices), 'a worker loading the table opens no expiresAt index');
+			await assertExpiryKept(spentAt, liveUntil);
+		});
+	}
+
+	it('leaves a table already in the canonical shape untouched', async () => {
 		await dropTokenUseTable();
-		await createAsExchangingNode();
+		declareTokenUseTable();
 		const before = descriptors();
 		const buildBefore = tokenUseTable().indexingOperation;
 
 		await runDirective530();
-		await ensureTokenUseTable();
+		declareTokenUseTable();
 
 		assert.deepStrictEqual(descriptors(), before);
 		assert.strictEqual(tokenUseTable().indexingOperation, buildBefore);
 		assertCanonical();
-	});
-
-	it('flags an expiresAt that create_attribute left indexed but unflagged, without rebuilding its index', async () => {
-		await dropTokenUseTable();
-		await createAsPreFixBootstrap();
-		// what `create_attribute` does for each of the missing names
-		await tokenUseTable().addAttributes(ATTRIBUTE_NAMES.slice(1).map((name) => ({ name, indexed: true })));
-		await tokenUseTable().indexingOperation;
-		const spentAt = Date.now() - 60_000;
-		await tokenUseTable().put(replayRow('spent', spentAt));
-		assert.strictEqual(tokenUseTable().dbisDB.getSync(`${TOKEN_USE_TABLE}/expiresAt`).expiresAt, undefined);
-
-		await ensureTokenUseTable();
-
-		assertCanonical();
-		assert.deepStrictEqual(indexedIds(spentAt), ['spent']);
 	});
 
 	it('audits a copy that replication created while logging.auditLog was off', async () => {
@@ -250,7 +280,7 @@ describe('system.hdb_oidc_token_use converges on one declared shape', function (
 		createAsPeerHandshake(['id'], { audit: false });
 		assert.strictEqual(tokenUseTable().audit, false);
 
-		await ensureTokenUseTable();
+		declareTokenUseTable();
 
 		assertCanonical();
 	});
@@ -260,48 +290,38 @@ describe('system.hdb_oidc_token_use converges on one declared shape', function (
 		createAsPeerHandshake(['id'], { schemaDefined: false });
 		assert.strictEqual(tokenUseTable().schemaDefined, false);
 
-		await ensureTokenUseTable();
+		declareTokenUseTable();
 
 		assertCanonical();
 	});
 
-	it('completes an expiresAt backfill that a previous start left failed', async () => {
+	it('a node that only loads the table from its catalog removes the rows past their expiry', async () => {
 		await dropTokenUseTable();
-		await createAsPreFixBootstrap();
+		declareTokenUseTable();
 		const spentAt = Date.now() - 60_000;
-		await tokenUseTable().put(replayRow('spent', spentAt));
-		await ensureTokenUseTable();
-		const key = `${TOKEN_USE_TABLE}/expiresAt`;
-		tokenUseTable().dbisDB.putSync(key, { ...tokenUseTable().dbisDB.getSync(key), indexingFailed: true });
+		const liveUntil = Date.now() + 3_600_000;
+		await writeReplicatedRow('spent', spentAt);
+		await writeReplicatedRow('in-window', liveUntil);
 
-		await ensureTokenUseTable();
+		// This thread stands in for the last worker, which owns the store's cleanup scan.
+		const wasWorker = manageThreads.getWorkerIndex() === 0;
+		manageThreads.setMainIsWorker(true);
+		let scans;
+		try {
+			scans = capturingCleanupScans(loadFromCatalog);
+		} finally {
+			manageThreads.setMainIsWorker(wasWorker);
+		}
+		assert.strictEqual(tokenUseTable().expirationMS, CANONICAL.expiration * 1000);
+		assert.strictEqual(scans.length, 1, 'loading the table arms its cleanup scan');
 
-		assertCanonical();
-		assert.deepStrictEqual(indexedIds(spentAt), ['spent']);
-	});
+		await scans[0]();
 
-	it('reports an expiresAt index that is still not complete after the declaration', async () => {
-		await dropTokenUseTable();
-		await ensureTokenUseTable();
-		const key = `${TOKEN_USE_TABLE}/expiresAt`;
-		// a build this process owns and has not finished, so the declaration leaves it alone
-		tokenUseTable().dbisDB.putSync(key, {
-			...tokenUseTable().dbisDB.getSync(key),
-			indexingPID: process.pid,
-			restartNumber: manageThreads.restartNumber,
-			indexingIncarnation: manageThreads.processIncarnation,
+		await waitFor(() => tokenUseTable().primaryStore.getEntry('spent') === undefined, {
+			timeout: 10000,
+			message: 'the cleanup scan left the expired replay row in place',
 		});
-
-		await assert.rejects(
-			ensureTokenUseTable(),
-			/system\.hdb_oidc_token_use\.expiresAt is not yet a completed expiration index/
-		);
-
-		const descriptor = tokenUseTable().dbisDB.getSync(key);
-		delete descriptor.indexingPID;
-		delete descriptor.restartNumber;
-		delete descriptor.indexingIncarnation;
-		tokenUseTable().dbisDB.putSync(key, descriptor);
+		assert.strictEqual(storedExpiresAt('in-window'), liveUntil);
 	});
 
 	it('the exchange path declares the same table', () => {
