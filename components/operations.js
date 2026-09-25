@@ -1514,7 +1514,7 @@ async function dropComponent(req) {
 				await retired.discard();
 				const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
 				await fs.unlink(componentSymlink).catch((error) => {
-					if (error.code !== 'ENOENT') log.warn(`Dropped ${project} but could not remove ${componentSymlink}:`, error);
+					if (error?.code !== 'ENOENT') log.warn(`Dropped ${project} but could not remove ${componentSymlink}:`, error);
 				});
 			} else if (await fs.pathExists(pathToComponent)) {
 				await fs.remove(pathToComponent);
