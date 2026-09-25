@@ -1924,9 +1924,12 @@ export function openBranchDatabase(
 				})
 				.finally(() => {
 					if (!closed && !handleCloseStarted) {
-						if (maintenanceQuiesced) resumeTableMaintenance(tables);
 						commitSuspension.release();
 						releaseActivation();
+						if (maintenanceQuiesced) {
+							resumeTableMaintenance(tables);
+							for (const table of Object.values(tables)) refreshDerivedIndexes(table);
+						}
 					}
 				});
 			const retryable = operation.catch((error) => {
@@ -2248,6 +2251,7 @@ export async function dropDatabase(databaseName) {
 	const restoreLocks: RestoreLock[] = [];
 	let releaseDerivedIndexActivation: (() => void) | undefined;
 	let databaseRemoved = false;
+	let destructiveWorkStarted = false;
 	try {
 		for (const tableName in dbTables) {
 			const table = dbTables[tableName];
@@ -2260,6 +2264,7 @@ export async function dropDatabase(databaseName) {
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
 		}
 		releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, true, [rootStore]);
+		destructiveWorkStarted = true;
 		for (const tableName in dbTables) {
 			const tableRoot = dbTables[tableName].primaryStore.rootStore;
 			lmdbDatabaseEnvs.delete(tableRoot.path);
@@ -2297,7 +2302,7 @@ export async function dropDatabase(databaseName) {
 		databaseRemoved = true;
 		await deleteRootBlobPathsForDB(rootStore);
 	} finally {
-		if (!databaseRemoved) releaseDerivedIndexActivation?.();
+		if (!databaseRemoved && !destructiveWorkStarted) releaseDerivedIndexActivation?.();
 		for (const lock of restoreLocks) releaseRestoreLock(lock);
 	}
 }
@@ -2350,6 +2355,7 @@ export async function closeDatabase(
 		definedRoot ? [definedRoot] : []
 	);
 	let databaseClosed = false;
+	let handleCloseStarted = false;
 	try {
 		const rootStores = new Set<any>();
 		const rootStorePaths: string[] = [];
@@ -2373,6 +2379,7 @@ export async function closeDatabase(
 		// an open root store, tracked only on the defined-database entry rather than any table — include
 		// it so its handles are released too (the Set dedupes it against the per-table root stores above)
 		if (definedRoot) rootStores.add(definedRoot);
+		handleCloseStarted = true;
 		await Promise.all([...rootStores].map((rootStore) => rootStore.auditStore?.stopAuditCleanup?.()));
 		const lmdbRootStores = new Set([...rootStores].filter((rootStore) => !(rootStore instanceof RocksDatabase)));
 		for (const tableName in dbTables) {
@@ -2421,7 +2428,7 @@ export async function closeDatabase(
 		databaseClosed = true;
 		return true;
 	} finally {
-		if (!databaseClosed) releaseDerivedIndexActivation();
+		if (!databaseClosed && !handleCloseStarted) releaseDerivedIndexActivation();
 	}
 }
 
