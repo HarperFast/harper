@@ -16,6 +16,17 @@ parentPort.on('message', (message) => {
 		parentPort.postMessage({ type: 'ack', id: message.requestId });
 	} else if (message.requestId && process.argv.includes('--reject')) {
 		parentPort.postMessage({ type: 'ack', id: message.requestId, error: { message: 'fixture preparation failed' } });
+	} else if (message.requestId && process.argv.includes('--reject-conflict')) {
+		parentPort.postMessage({
+			type: 'ack',
+			id: message.requestId,
+			error: {
+				name: 'DatabaseDroppingError',
+				message: 'fixture database is already being dropped',
+				code: 'DATABASE_DROP_IN_PROGRESS',
+				statusCode: 409,
+			},
+		});
 	} else if (message.requestId && process.argv.includes('--exit')) {
 		clearInterval(keepAlive);
 		parentPort.close();

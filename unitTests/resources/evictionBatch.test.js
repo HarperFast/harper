@@ -146,4 +146,50 @@ describe('Batched eviction (RocksDB)', () => {
 			Transaction.prototype.commit = originalCommit;
 		}
 	});
+
+	it('does not re-arm cleanup after maintenance closes', async function () {
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const originalCommit = Transaction.prototype.commit;
+		const originalGetRange = RetryTable.primaryStore.getRange;
+		const id = 2000;
+		let scanCount = 0;
+		let releaseCommit;
+		let commitStarted;
+		let blocked = false;
+		const started = new Promise((resolve) => (commitStarted = resolve));
+		const release = new Promise((resolve) => (releaseCommit = resolve));
+
+		try {
+			RetryTable.setTTLExpiration(HOLD);
+			await RetryTable.get(id);
+			assert.equal(await waitForResident(RetryTable, [id]), 1, 'record should be resident before cleanup');
+			RetryTable.primaryStore.getRange = function (...args) {
+				scanCount++;
+				return originalGetRange.apply(this, args);
+			};
+			Transaction.prototype.commit = async function (...args) {
+				if (!blocked && scanCount > 0) {
+					blocked = true;
+					commitStarted();
+					await release;
+				}
+				return originalCommit.apply(this, args);
+			};
+
+			RetryTable.setTTLExpiration(EVICT_NOW);
+			await started;
+			// Let the scan's short-interval successor fire and queue behind the blocked commit.
+			await delay(20);
+			const closing = RetryTable.closeMaintenance();
+			releaseCommit();
+			await closing;
+			const settledScanCount = scanCount;
+			await delay(30);
+			assert.equal(scanCount, settledScanCount, 'no cleanup scan may start after maintenance has closed');
+		} finally {
+			releaseCommit?.();
+			Transaction.prototype.commit = originalCommit;
+			RetryTable.primaryStore.getRange = originalGetRange;
+		}
+	});
 });

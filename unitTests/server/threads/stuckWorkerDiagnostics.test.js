@@ -168,6 +168,20 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		});
 	});
 
+	it('preserves a shared worker conflict on a strict broadcast', async function () {
+		const worker = await startFixtureWorker('reject-conflict');
+		started.push(worker);
+		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000), (error) => {
+			assert(error instanceof AggregateError);
+			assert.strictEqual(error.code, 'DATABASE_DROP_IN_PROGRESS');
+			assert.strictEqual(error.statusCode, 409);
+			assert.strictEqual(error.errors[0].name, 'DatabaseDroppingError');
+			assert.strictEqual(error.errors[0].code, 'DATABASE_DROP_IN_PROGRESS');
+			assert.strictEqual(error.errors[0].statusCode, 409);
+			return true;
+		});
+	});
+
 	it('rejects a strict broadcast when a worker exits before acknowledging', async function () {
 		const worker = await startFixtureWorker('exit');
 		started.push(worker);

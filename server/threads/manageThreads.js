@@ -1087,9 +1087,14 @@ function broadcastWithAcknowledgement(
 				clearTimeout(timer);
 				timer = undefined;
 			}
-			if (strict && failures.length > 0)
-				reject(new AggregateError(failures, 'A worker could not prepare for the schema change'));
-			else resolve();
+			if (strict && failures.length > 0) {
+				const error = new AggregateError(failures, 'A worker could not prepare for the schema change');
+				for (const property of ['code', 'statusCode']) {
+					const value = failures[0][property];
+					if (value != null && failures.every((failure) => failure[property] === value)) error[property] = value;
+				}
+				reject(error);
+			} else resolve();
 		};
 		for (let port of connectedPorts) {
 			// Ordinary schema gossip excludes job workers to avoid re-entrant waits. Destructive
@@ -1105,6 +1110,9 @@ function broadcastWithAcknowledgement(
 							`Worker ${port.threadId} could not prepare for the schema change: ${response.error.message ?? response.error}`
 						);
 						error.cause = response.error;
+						for (const property of ['name', 'code', 'statusCode']) {
+							if (response.error[property] != null) error[property] = response.error[property];
+						}
 						failures.push(error);
 					}
 					awaitingResponses.delete(requestId);
