@@ -188,9 +188,9 @@ export function trackOutstandingCommit(
 
 export function databaseCommitsSuspended(rootStore: object | undefined): boolean {
 	if (rootStore == null) return false;
-	// Successful teardown releases the active fence so unrelated databases keep the zero-cost fast
-	// path, but a stale Table class must still reject writes against a closed or abandoned descriptor.
-	if ((rootStore as any).status === 'closed' || (rootStore as any)[permanentlySuspended]) return true;
+	// Closed and abandoned wrappers carry the same root-local fence, keeping the healthy path to one
+	// property read before the process-wide active-fence counter.
+	if ((rootStore as any)[permanentlySuspended]) return true;
 	return suspendedDatabaseRootCount > 0 && (suspendedDatabaseCommits.get(rootStore) ?? 0) > 0;
 }
 

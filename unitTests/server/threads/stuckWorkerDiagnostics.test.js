@@ -229,10 +229,30 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		});
 	});
 
-	it('accepts a job worker that closes normally before acknowledging preparation', async function () {
+	it('rejects a job worker that exits without confirming handle cleanup', async function () {
 		const worker = await startFixtureWorker('exit', 'job');
 		started.push(worker);
+		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000, true));
+	});
+
+	it('accepts a job worker that confirms handle cleanup before exiting', async function () {
+		const worker = await startFixtureWorker('exit-clean', 'job');
+		started.push(worker);
 		await broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000, true);
+	});
+
+	it('accepts confirmed job cleanup from a worker-originated preparation', async function () {
+		const broadcaster = await startFixtureWorker('acknowledge');
+		const jobWorker = await startFixtureWorker('exit-clean', 'job');
+		started.push(broadcaster, jobWorker);
+		const settled = new Promise((resolve) => {
+			broadcaster.on('message', (message) => {
+				if (message.type === 'strict-probe-settled' || message.type === 'strict-probe-rejected') resolve(message);
+			});
+		});
+		broadcaster.postMessage({ type: 'send-strict-probe', timeout: 2000 });
+		const result = await settled;
+		assert.strictEqual(result.type, 'strict-probe-settled', result.error);
 	});
 
 	it('includes job workers when destructive completion requests it', async function () {

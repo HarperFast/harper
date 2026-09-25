@@ -227,6 +227,39 @@ describe('RocksDB handle release', function () {
 				dropPreparationId,
 			},
 		});
+		assert.throws(
+			() => database({ database: databaseName }),
+			(error) => error.code === 'DATABASE_CLOSING',
+			'a failed native close must remain fenced after the failed preparation is released'
+		);
+		const retryPreparationId = `${dropPreparationId}-retry`;
+		await schemaHandler({
+			type: 'schema',
+			message: {
+				originator: process.pid,
+				operation: OPERATIONS_ENUM.DROP_SCHEMA,
+				schema: databaseName,
+				prepareDrop: true,
+				dropPreparationId: retryPreparationId,
+				dropPreparationOwnerThreadId: 0,
+				dropPreparationRootPaths: [rootStore.path],
+			},
+		});
+		assert.strictEqual(
+			refCountFor(rootStore.path),
+			0,
+			`a retry must release the stranded native wrapper (${rootStore.status}): ${JSON.stringify(registryStatus())}`
+		);
+		await schemaHandler({
+			type: 'schema',
+			message: {
+				originator: process.pid,
+				operation: OPERATIONS_ENUM.DROP_SCHEMA,
+				schema: databaseName,
+				dropPreparationId: retryPreparationId,
+				dropPreparationRootPaths: [rootStore.path],
+			},
+		});
 		const Reopened = table({
 			table: 'pkg',
 			database: databaseName,
@@ -401,7 +434,7 @@ describe('RocksDB handle release', function () {
 		}
 	});
 
-	it('continues closing regular databases when one branch writer cannot settle', async function () {
+	it('strict job cleanup reports a branch failure after closing regular databases', async function () {
 		this.timeout(30000);
 		const rootStore = openRocksDb('closerelease5');
 		if (!(rootStore instanceof RocksDatabase)) return this.skip();
@@ -415,7 +448,10 @@ describe('RocksDB handle release', function () {
 			const BranchTable = branch.tables[Object.keys(branch.tables)[0]];
 			BranchTable.derivedIndexRuntime = { close: () => Promise.reject(new Error('writer still active')) };
 
-			await closeLoadedDatabases();
+			await assert.rejects(
+				closeLoadedDatabases({ requireClosed: true }),
+				/Could not close every database during worker teardown/
+			);
 
 			assert.strictEqual(refCountFor(rootStore.path), 0, 'regular database handles are still released');
 			assert.ok(refCountFor(branch.rootStore.path) > 0, 'the unsafe branch close remains fail-closed');

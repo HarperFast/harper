@@ -147,6 +147,14 @@ function restoreShutdownDeadline() {
 	} catch {}
 }
 
+function notifyJobCleanupComplete() {
+	for (const port of connectedPorts) {
+		try {
+			port.postMessage({ type: hdbTerms.ITC_EVENT_TYPES.JOB_CLEANUP_COMPLETE });
+		} catch {}
+	}
+}
+
 const listenersByType = new Map();
 const messagesQueuedByType = new Map();
 
@@ -183,6 +191,7 @@ module.exports = {
 	setTerminateTimeout,
 	extendShutdownDeadline,
 	restoreShutdownDeadline,
+	notifyJobCleanupComplete,
 	beginProcessShutdown,
 	registerWorkerDataProvider,
 	onThreadExit,
@@ -1070,6 +1079,13 @@ let nextId = 1;
 // whose port hasn't closed) can't hang a mutating admin/DDL op forever. Ordinary broadcasts happen
 // after the durable write and proceed best-effort; strict preparation broadcasts reject on timeout.
 const DEFAULT_ACK_TIMEOUT_MS = 30000;
+function settleAcknowledgementsForClosedPort(port, jobCleanupComplete = false) {
+	for (const [, ackHandler] of awaitingResponses) {
+		if (ackHandler.port !== port) continue;
+		ackHandler(ackHandler.allowNormalJobExit && jobCleanupComplete ? undefined : ackHandler.closeResponse);
+	}
+}
+
 function broadcastWithAcknowledgement(
 	message,
 	timeout = DEFAULT_ACK_TIMEOUT_MS,
@@ -1139,13 +1155,9 @@ function broadcastWithAcknowledgement(
 				if (!port.hasAckCloseListener) {
 					// just set a single close listener that can clean up all the ack handlers for a port that is closed
 					port.hasAckCloseListener = true;
-					port.on(port.close ? 'close' : 'exit', (exitCode) => {
-						for (let [, ackHandler] of awaitingResponses) {
-							if (ackHandler.port === port) {
-								ackHandler(ackHandler.allowNormalJobExit && exitCode === 0 ? undefined : ackHandler.closeResponse);
-							}
-						}
-					});
+					port.on(port.close ? 'close' : 'exit', () =>
+						settleAcknowledgementsForClosedPort(port, port.jobCleanupComplete === true)
+					);
 				}
 				waitingCount++;
 				port.postMessage(message);
@@ -1871,6 +1883,7 @@ function removePort(port, deadThreadId) {
 	// A sibling may already have announced this dead thread and removed its port. Process-group
 	// cleanup must still run when the authoritative close/exit event reaches this thread.
 	if (deadThreadId != null) terminateProcessGroupsForThread(deadThreadId);
+	settleAcknowledgementsForClosedPort(port, port.jobCleanupComplete === true);
 	const idx = connectedPorts.indexOf(port);
 	if (idx === -1) return;
 	connectedPorts.splice(idx, 1);
@@ -1883,7 +1896,11 @@ function removePort(port, deadThreadId) {
 	if (deadThreadId != null) {
 		for (let remainingPort of connectedPorts) {
 			try {
-				remainingPort.postMessage({ type: REMOVE_PORT, threadId: deadThreadId });
+				remainingPort.postMessage({
+					type: REMOVE_PORT,
+					threadId: deadThreadId,
+					jobCleanupComplete: port.jobCleanupComplete === true,
+				});
 			} catch {
 				// port may already be dead; ignore
 			}
@@ -1902,6 +1919,8 @@ function addPort(port, keepRef, isJobWorker) {
 				addProcessGroup(portThreadId, message.processGroupId);
 			} else if (message.type === UNREGISTER_PROCESS_GROUP) {
 				removeProcessGroup(portThreadId, message.processGroupId);
+			} else if (message.type === hdbTerms.ITC_EVENT_TYPES.JOB_CLEANUP_COMPLETE) {
+				port.jobCleanupComplete = true;
 			} else if (message.type === ADDED_PORT) {
 				message.port.threadId = message.threadId;
 				addPort(message.port, false, message.isJobWorker);
@@ -1911,8 +1930,12 @@ function addPort(port, keepRef, isJobWorker) {
 					completion(message);
 				}
 			} else if (message.type === REMOVE_PORT) {
-				const idx = connectedPorts.findIndex((p) => p.threadId === message.threadId);
-				if (idx !== -1) connectedPorts.splice(idx, 1);
+				const removedPort = connectedPorts.find((candidate) => candidate.threadId === message.threadId);
+				if (removedPort) {
+					if (message.jobCleanupComplete) removedPort.jobCleanupComplete = true;
+					settleAcknowledgementsForClosedPort(removedPort, removedPort.jobCleanupComplete === true);
+					connectedPorts.splice(connectedPorts.indexOf(removedPort), 1);
+				}
 				// A sibling's port-to-the-dead-worker can close (and broadcast this) before this
 				// thread's OWN port to that worker fires its 'close'/'exit' — at which point
 				// removePort() would no-op (already spliced) and threadExitListeners would never

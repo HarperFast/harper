@@ -8719,6 +8719,7 @@ export function makeTable(options) {
 										}
 										await rest();
 									}
+									await Promise.all(outstandingCleanupOperations.filter(Boolean));
 									if (batcher) await batcher.drain();
 									logger.debug?.(`Finished cleanup scan for ${tableName}, evicted ${count} entries`);
 								} catch (error) {

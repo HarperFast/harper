@@ -1,7 +1,12 @@
 'use strict';
 
 const { parentPort } = require('node:worker_threads');
-const { broadcastWithAcknowledgement } = require('#js/server/threads/manageThreads');
+const {
+	broadcastWithAcknowledgement,
+	broadcastWithStrictAcknowledgement,
+	notifyJobCleanupComplete,
+	onMessageFromWorkers,
+} = require('#js/server/threads/manageThreads');
 const { databaseDropPreparationSnapshot } = require('#src/resources/databaseDropPreparation');
 let acknowledgementCount = 0;
 
@@ -10,15 +15,29 @@ parentPort.on('message', (message) => {
 		broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, message.timeout).then(() =>
 			parentPort.postMessage({ type: 'probe-settled' })
 		);
-	} else if (message.requestId && process.argv.includes('--report-acknowledge')) {
-		parentPort.postMessage({ type: 'fixture-received', requestId: message.requestId });
-		parentPort.postMessage({ type: 'ack', id: message.requestId });
-	} else if (message.requestId && process.argv.includes('--acknowledge')) {
-		parentPort.postMessage({ type: 'ack', id: message.requestId });
-	} else if (message.requestId && process.argv.includes('--reject')) {
-		parentPort.postMessage({ type: 'ack', id: message.requestId, error: { message: 'fixture preparation failed' } });
-	} else if (message.requestId && process.argv.includes('--reject-conflict')) {
-		parentPort.postMessage({
+	} else if (message.type === 'send-strict-probe') {
+		broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, message.timeout, true).then(
+			() => parentPort.postMessage({ type: 'strict-probe-settled' }),
+			(error) =>
+				parentPort.postMessage({
+					type: 'strict-probe-rejected',
+					error: `${error.message}: ${(error.errors || []).map((nested) => nested.message).join('; ')}`,
+				})
+		);
+	}
+});
+
+onMessageFromWorkers((message, port) => {
+	if (!message.requestId || !port) return;
+	if (process.argv.includes('--report-acknowledge')) {
+		port.postMessage({ type: 'fixture-received', requestId: message.requestId });
+		port.postMessage({ type: 'ack', id: message.requestId });
+	} else if (process.argv.includes('--acknowledge')) {
+		port.postMessage({ type: 'ack', id: message.requestId });
+	} else if (process.argv.includes('--reject')) {
+		port.postMessage({ type: 'ack', id: message.requestId, error: { message: 'fixture preparation failed' } });
+	} else if (process.argv.includes('--reject-conflict')) {
+		port.postMessage({
 			type: 'ack',
 			id: message.requestId,
 			error: {
@@ -28,8 +47,8 @@ parentPort.on('message', (message) => {
 				statusCode: 409,
 			},
 		});
-	} else if (message.requestId && process.argv.includes('--reject-retryable')) {
-		parentPort.postMessage({
+	} else if (process.argv.includes('--reject-retryable')) {
+		port.postMessage({
 			type: 'ack',
 			id: message.requestId,
 			error: {
@@ -40,11 +59,12 @@ parentPort.on('message', (message) => {
 				retryable: true,
 			},
 		});
-	} else if (message.requestId && process.argv.includes('--exit')) {
+	} else if (process.argv.includes('--exit') || process.argv.includes('--exit-clean')) {
+		if (process.argv.includes('--exit-clean')) notifyJobCleanupComplete();
 		clearInterval(keepAlive);
 		parentPort.close();
-	} else if (message.requestId && process.argv.includes('--ack-then-exit')) {
-		if (acknowledgementCount++ === 0) parentPort.postMessage({ type: 'ack', id: message.requestId });
+	} else if (process.argv.includes('--ack-then-exit')) {
+		if (acknowledgementCount++ === 0) port.postMessage({ type: 'ack', id: message.requestId });
 		else {
 			clearInterval(keepAlive);
 			parentPort.close();
