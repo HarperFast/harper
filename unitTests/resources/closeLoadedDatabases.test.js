@@ -32,6 +32,7 @@ const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge')
 const { dropSchema } = require('#src/dataLayer/schema');
 const {
 	claimDatabaseDropPreparation,
+	handleDatabaseDropPreparationOwnerExit,
 	releaseDatabaseDropPreparation,
 } = require('#src/resources/databaseDropPreparation');
 const {
@@ -151,6 +152,7 @@ describe('RocksDB handle release', function () {
 				schema: databaseName,
 				prepareDrop: true,
 				dropPreparationId,
+				dropPreparationOwnerThreadId: 0,
 			},
 		});
 
@@ -195,6 +197,7 @@ describe('RocksDB handle release', function () {
 					schema: databaseName,
 					prepareDrop: true,
 					dropPreparationId,
+					dropPreparationOwnerThreadId: 0,
 				},
 			}),
 			/Could not close database/
@@ -247,7 +250,7 @@ describe('RocksDB handle release', function () {
 			return close.call(rootStore);
 		};
 
-		const preparation = prepareDatabaseDrop(databaseName, dropPreparationId);
+		const preparation = prepareDatabaseDrop(databaseName, dropPreparationId, 0);
 		await started;
 		let completed = false;
 		const completion = completeDatabaseDropPreparation(databaseName, dropPreparationId).then(() => (completed = true));
@@ -261,6 +264,39 @@ describe('RocksDB handle release', function () {
 		continueClose();
 		await Promise.all([preparation, completion]);
 		assert.ok(database({ database: databaseName }));
+		await closeDatabase(databaseName);
+	});
+
+	it('keeps admission fenced until a dead owner’s local preparation settles', async function () {
+		this.timeout(30000);
+		const databaseName = 'drop_schema_dead_owner_close';
+		const dropPreparationId = 'drop-schema-dead-owner-close-test';
+		const ownerThreadId = 42;
+		const rootStore = openRocksDb(databaseName);
+		const close = rootStore.close;
+		let continueClose;
+		let closeStarted;
+		const started = new Promise((resolve) => (closeStarted = resolve));
+		const blocked = new Promise((resolve) => (continueClose = resolve));
+		rootStore.close = async () => {
+			closeStarted();
+			await blocked;
+			return close.call(rootStore);
+		};
+
+		const preparation = prepareDatabaseDrop(databaseName, dropPreparationId, ownerThreadId);
+		await started;
+		handleDatabaseDropPreparationOwnerExit(ownerThreadId);
+		assert.throws(
+			() => database({ database: databaseName }),
+			(error) => error.code === 'DATABASE_CLOSING'
+		);
+
+		continueClose();
+		await preparation;
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.ok(database({ database: databaseName }));
+		await completeDatabaseDropPreparation(databaseName, dropPreparationId);
 		await closeDatabase(databaseName);
 	});
 

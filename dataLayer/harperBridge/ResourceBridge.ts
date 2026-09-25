@@ -1,5 +1,6 @@
 import searchValidator from '../../validation/searchValidator.ts';
 import { randomUUID } from 'node:crypto';
+import { threadId } from 'node:worker_threads';
 import { handleHDBError, ClientError, hdbErrors } from '../../utility/errors/hdbError.ts';
 import { table, getDatabases, database, dropDatabase, type Table } from '../../resources/databases.ts';
 import {
@@ -195,11 +196,12 @@ export class ResourceBridge extends BridgeMethods {
 		const completion = () => {
 			const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, dropSchemaObj.schema);
 			message.dropPreparationId = preparationId;
+			message.dropPreparationOwnerThreadId = threadId;
 			return message;
 		};
 		const preparation: any = completion();
 		preparation.prepareDrop = true;
-		claimDatabaseDropPreparation(dropSchemaObj.schema, preparationId);
+		claimDatabaseDropPreparation(dropSchemaObj.schema, preparationId, threadId);
 		try {
 			await signalling.signalSchemaChangeToPeers(preparation);
 			await dropDatabase(dropSchemaObj.schema);

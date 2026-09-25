@@ -119,6 +119,7 @@ import {
 	claimDatabaseDropPreparation,
 	databaseDropPrepared,
 	releaseDatabaseDropPreparation,
+	trackDatabaseDropPreparationTask,
 } from './databaseDropPreparation.ts';
 
 /**
@@ -2374,12 +2375,13 @@ export async function dropDatabase(databaseName) {
  */
 const databaseDropPreparationTasks = new Map<string, { id: string; task: Promise<void> }>();
 
-export function prepareDatabaseDrop(databaseName: string, preparationId: string): Promise<void> {
+export function prepareDatabaseDrop(databaseName: string, preparationId: string, ownerThreadId: number): Promise<void> {
 	const existing = databaseDropPreparationTasks.get(databaseName);
 	if (existing?.id === preparationId) return existing.task;
-	claimDatabaseDropPreparation(databaseName, preparationId);
+	claimDatabaseDropPreparation(databaseName, preparationId, ownerThreadId);
 	const task = closeDatabase(databaseName, { requireClosed: true }).then(() => undefined);
 	databaseDropPreparationTasks.set(databaseName, { id: preparationId, task });
+	trackDatabaseDropPreparationTask(databaseName, preparationId, task);
 	return task;
 }
 

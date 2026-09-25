@@ -16,6 +16,7 @@ const { waitFor } = require('../../waitFor.js');
 const { sendItcEvent } = require('#js/server/threads/itc');
 const {
 	claimDatabaseDropPreparation,
+	databaseDropPrepared,
 	releaseDatabaseDropPreparation,
 } = require('#src/resources/databaseDropPreparation');
 
@@ -231,9 +232,28 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		try {
 			const worker = await startFixtureWorker('acknowledge');
 			started.push(worker);
-			assert.deepStrictEqual(worker.databaseDropPreparations, [[databaseName, preparationId]]);
+			assert.deepStrictEqual(worker.databaseDropPreparations, [
+				[databaseName, { id: preparationId, ownerThreadId: 0 }],
+			]);
 		} finally {
 			releaseDatabaseDropPreparation(databaseName, preparationId);
 		}
+	});
+
+	it('releases a database-drop fence when its owning worker exits', async function () {
+		const worker = await startFixtureWorker('acknowledge');
+		started.push(worker);
+		const databaseName = 'worker-exits-during-drop';
+		const preparationId = 'worker-exits-during-drop-test';
+		claimDatabaseDropPreparation(databaseName, preparationId, worker.threadId);
+		assert.strictEqual(databaseDropPrepared(databaseName), true);
+
+		worker.wasShutdown = true;
+		await worker.terminate();
+		started.pop();
+		await waitFor(() => !databaseDropPrepared(databaseName));
+
+		assert.strictEqual(claimDatabaseDropPreparation(databaseName, 'retry-after-worker-exit'), true);
+		releaseDatabaseDropPreparation(databaseName, 'retry-after-worker-exit');
 	});
 });

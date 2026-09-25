@@ -24,7 +24,10 @@ const { resolvePreloadModules } = require('./resolvePreload.ts');
 const { resolveThreadHeapMemoryMb } = require('./threadHeapMemory.ts');
 const { getConfigPath } = require('../../config/configUtils.ts');
 const { resolveWatchTarget } = require('../../utility/watchPath.ts');
-const { databaseDropPreparationSnapshot } = require('../../resources/databaseDropPreparation.ts');
+const {
+	databaseDropPreparationSnapshot,
+	handleDatabaseDropPreparationOwnerExit,
+} = require('../../resources/databaseDropPreparation.ts');
 const {
 	DIRECTORY_POLLING_FALLBACK_OPTIONS,
 	claimLostNativeWatchError,
@@ -1158,7 +1161,7 @@ function broadcastWithAcknowledgement(
 				const stuck = [];
 				for (let ackHandler of [...pending]) {
 					stuck.push(ackHandler.port);
-					ackHandler(strict ? { error: { message: `did not acknowledge within ${timeout}ms` } } : undefined); // same cleanup path as an ack/close; drives waitingCount to 0 and resolves
+					ackHandler(strict ? { error: { message: `did not acknowledge within ${timeout}ms` } } : undefined); // same cleanup path as an ack/close; drives waitingCount to 0 and settles
 				}
 				harperLogger.warn(
 					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.map((port) => port?.threadId).join(', ')} within ${timeout}ms; ${strict ? 'failing the coordinated operation' : 'proceeding best-effort'}`
@@ -1853,6 +1856,7 @@ function hasThreadExited(threadId) {
 function notifyThreadExit(deadThreadId) {
 	if (deadThreadId == null || notifiedDeadThreadIds.has(deadThreadId)) return;
 	notifiedDeadThreadIds.add(deadThreadId);
+	handleDatabaseDropPreparationOwnerExit(deadThreadId);
 	for (const listener of threadExitListeners) {
 		try {
 			listener(deadThreadId);

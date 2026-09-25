@@ -51,7 +51,13 @@ async function schemaHandler(event) {
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA && event.message.schema) {
 		if (event.message.prepareDrop) {
 			if (!event.message.dropPreparationId) throw new Error('Drop-schema preparation is missing its id');
-			await prepareDatabaseDrop(event.message.schema, event.message.dropPreparationId);
+			if (!Number.isInteger(event.message.dropPreparationOwnerThreadId))
+				throw new Error('Drop-schema preparation is missing its owner thread id');
+			await prepareDatabaseDrop(
+				event.message.schema,
+				event.message.dropPreparationId,
+				event.message.dropPreparationOwnerThreadId
+			);
 			return;
 		}
 		if (event.message.dropPreparationId)
