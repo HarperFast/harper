@@ -14,8 +14,6 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 const describeUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
 
-// Call-through observer: replay transactions are internal to replayLogs, and a commit boundary is
-// not otherwise observable before the process runs out of heap.
 function spyOnReplayTransactions(onCommit) {
 	const outcomes = [];
 	const { directCommitSync } = DatabaseTransaction.prototype;
@@ -43,13 +41,16 @@ function replayAgain(rootStore, tables) {
 	replayLogs(rootStore, tables);
 }
 
-function replayStream(entries, { onCommit } = {}) {
+// Only the cases a real log cannot produce (entries without an endTxn marker, a replay that outlives
+// its wall-clock budget) run against a synthetic stream.
+function replayStream(entries, { onCommit, onWrite } = {}) {
 	const stagedIn = new Map();
 	const stubTable = {
 		tableId: 7,
 		getResource(target, context) {
 			return {
 				_writeUpdate(id) {
+					onWrite?.(id);
 					stagedIn.set(id, context.transaction);
 				},
 				save() {},
@@ -247,29 +248,49 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 		assert.deepStrictEqual([...new Set(groups.map(({ ids, outcome }) => `${outcome}:${ids.length}`))], ['committed:1']);
 	});
 
-	it('ends a commit at an endTxn marker carried by a skipped entry', function () {
-		const { groups } = replayStream([
-			{ id: 'a', key: 5, endTxn: false },
-			// a table this node no longer has: skipped, but it still closes its native commit
-			{ id: 'dropped', key: 5, endTxn: true, tableId: 99 },
-			{ id: 'b', key: 5, endTxn: true },
+	it('ends a commit at an endTxn marker carried by an entry replay skips', async function () {
+		const attributes = [{ name: 'id', isPrimaryKey: true }, { name: 'n' }];
+		const Kept = table({ table: 'KeptRows', database: 'replayskipped', attributes });
+		const Dropped = table({ table: 'DroppedRows', database: 'replayskipped', attributes });
+		const logKey = Date.now();
+		// a commit whose last entry belongs to a table the replay does not know, then one whose first does
+		await transaction({ timestamp: logKey }, async () => {
+			await Kept.put({ id: 'a', n: 1 });
+			await Dropped.put({ id: 'x', n: 0 });
+		});
+		await transaction({ timestamp: logKey }, async () => {
+			await Dropped.put({ id: 'y', n: 0 });
+			await Kept.put({ id: 'b', n: 2 });
+		});
+		await transaction({ timestamp: logKey }, () => Kept.put({ id: 'c', n: 3 }));
+		const logged = [...Kept.auditStore.getRange({ start: 0, end: Infinity })]
+			.filter((entry) => entry.version === logKey)
+			.map(({ tableId, recordId, endTxn }) => [tableId === Kept.tableId ? 'kept' : 'dropped', recordId, endTxn]);
+		assert.deepStrictEqual(logged, [
+			['kept', 'a', false],
+			['dropped', 'x', true],
+			['dropped', 'y', false],
+			['kept', 'b', true],
+			['kept', 'c', true],
 		]);
-		assert.deepStrictEqual(groups, [
-			{ ids: ['a'], outcome: 'committed' },
-			{ ids: ['b'], outcome: 'committed' },
-		]);
-	});
 
-	it('closes an ended commit before a skipped first entry of the next one', function () {
-		const { groups } = replayStream([
-			{ id: 'a', key: 5, endTxn: true },
-			{ id: 'dropped', key: 5, endTxn: false, tableId: 99 },
-			{ id: 'b', key: 5, endTxn: true },
-		]);
-		assert.deepStrictEqual(groups, [
-			{ ids: ['a'], outcome: 'committed' },
-			{ ids: ['b'], outcome: 'committed' },
-		]);
+		const outcomes = spyOnReplayTransactions();
+		try {
+			replayAgain(database({ database: 'replayskipped', table: undefined }), { KeptRows: Kept });
+		} finally {
+			outcomes.restore();
+		}
+		assert.deepStrictEqual(
+			outcomes
+				.filter(({ transaction }) => transaction.timestamp === logKey)
+				.map(({ outcome, writes }) => [outcome, writes]),
+			[
+				['committed', 1],
+				['committed', 1],
+				['committed', 1],
+			],
+			'a skipped last entry still closes its commit, and a skipped first entry opens none'
+		);
 	});
 
 	it('still delimits entries without endTxn markers by log key', function () {
@@ -295,7 +316,10 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 					{ id: 'c', key: 5, endTxn: true },
 				],
 				{
-					onCommit: () => {
+					// the budget is already spent while a's commit is still open: a per-entry check would
+					// abort before b and tear the commit
+					onWrite: (id) => {
+						if (id !== 'a') return;
 						const until = performance.now() + 5;
 						while (performance.now() < until);
 					},

@@ -114,11 +114,9 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 				endTxn,
 			} = auditRecord;
 			try {
-				// A replay transaction is one native commit: it ends at the commit's last entry (`endTxn`) or
-				// at a change of log key, checked before the skip paths so a commit whose last entry is
-				// skipped still closes. A log key alone is not a commit: a replication receiver commits every
-				// re-delivery of a source transaction under the origin's key, and grouping by key staged all
-				// of them into one transaction until the main thread ran out of heap (harper#2161).
+				// A replay transaction is one native commit ("Boot replay transactions" in DESIGN.md): it ends at
+				// the commit's last entry or at a change of log key, before the skip paths so a skipped last
+				// entry still closes it.
 				if (transaction && (openCommitEnded || lastTimestamp !== version)) {
 					const ending = transaction;
 					transaction = undefined;
@@ -127,12 +125,8 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					} catch (error) {
 						logger.error('Error committing replay transaction', error);
 					}
-					// Abort if replay has exceeded the total wall-clock budget even while making progress
-					// (harper#1316, facet a). shouldAbortStalledReplay resets its counters on every write,
-					// so a slow-but-progressing replay (deep out-of-order audit chain walk per entry) can
-					// peg the boot thread indefinitely without tripping it. Checked only here, between native
-					// commits with nothing staged, so aborting never tears a commit in half. Re-clone to
-					// recover the unreplayed remainder.
+					// The wall-clock budget (harper#1316) is checked only here, between native commits with
+					// nothing staged, so aborting never tears a commit in half.
 					if (shouldAbortSlowReplay(performance.now() - replayStartTime, replayTimeoutMs)) {
 						logger.fatal(
 							`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). The transaction log contains a pathologically deep out-of-order write history that is too expensive to reconcile during boot (harper#1316). Re-clone this node from a healthy leader to recover the unreplayed data.`
