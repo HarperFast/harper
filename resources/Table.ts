@@ -196,6 +196,7 @@ NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const sourceWriteTypes = new Set(['put', 'patch', 'delete', 'publish', 'message', 'invalidate', 'relocate']);
 const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
 const SOURCE_APPLY_POSITION = Symbol('sourceApplyPosition');
+type SourceTxnStream = { txn: any; lastSequenceId: number | undefined };
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
@@ -1064,7 +1065,6 @@ export function makeTable(options) {
 			// as they come in, and directly writing them to this table. We use the notification option to ensure
 			// that we don't re-broadcast these as "requested" changes back to the source.
 			(async () => {
-				let lastSequenceId;
 				let pendingApplyFailures: Promise<void> | undefined;
 				const reportDroppedWrite = (event, context, error) => {
 					const position =
@@ -1232,9 +1232,19 @@ export function makeTable(options) {
 						: runsApplicationCodeSingletons(); // set up by the defining application's code, so it runs where that code does
 					const subscription = hasSubscribe && subscribeOnThisThread && (await source.subscribe?.(subscriptionOptions));
 					if (subscription) {
-						let txnInProgress;
+						// A replication receiver tags each event with its connection (`txnStream`); events from several
+						// connections interleave in this one subscription, and a transaction is delimited per connection.
+						const defaultStream: SourceTxnStream = { txn: undefined, lastSequenceId: undefined };
+						let taggedStreams: Map<unknown, SourceTxnStream> | undefined;
 						// we listen for events by iterating through the async iterator provided by the subscription
 						for await (const event of subscription) {
+							const txnStreamKey = event?.txnStream;
+							let stream = defaultStream;
+							if (txnStreamKey !== undefined) {
+								stream = (taggedStreams ??= new Map()).get(txnStreamKey);
+								if (!stream) taggedStreams.set(txnStreamKey, (stream = { txn: undefined, lastSequenceId: undefined }));
+							}
+							let txnInProgress = stream.txn;
 							let failureEvent = event;
 							let failurePosition: number | undefined;
 							let applied = false;
@@ -1263,6 +1273,18 @@ export function makeTable(options) {
 								// commit retries such conflicts without a cap (see DatabaseTransaction commit).
 								event.sourceApply = true;
 								event[SOURCE_APPLY_POSITION] = failurePosition;
+								if (event.type === 'abort_txn') {
+									taggedStreams?.delete(txnStreamKey);
+									stream.txn = undefined;
+									if (txnInProgress) {
+										txnInProgress.abortSource(new Error('Source connection ended mid-transaction'));
+										try {
+											await txnInProgress.committed;
+										} catch {}
+									}
+									applied = true;
+									continue;
+								}
 								if (event.type === 'end_txn') {
 									// Capture the in-progress transaction in a stable local: the loop variable is reset
 									// once this transaction completes (below), but the seq-id closure and the commit await
@@ -1274,7 +1296,7 @@ export function makeTable(options) {
 									}
 									committingTxn?.resolve();
 									let updateRecordedSequenceId: () => MaybePromise<void>;
-									if (event.localTime && lastSequenceId !== event.localTime) {
+									if (event.localTime && stream.lastSequenceId !== event.localTime) {
 										if (event.remoteNodeIds?.length > 0) {
 											updateRecordedSequenceId = () => {
 												// the key for tracking the sequence ids and txn times received from this node
@@ -1351,7 +1373,7 @@ export function makeTable(options) {
 												}
 												return dbisDb.put(seqKey, seqRecord);
 											};
-											lastSequenceId = event.localTime;
+											stream.lastSequenceId = event.localTime;
 										}
 									}
 									// Backpressure: wait for the transaction's commit to land before recording the sequence
@@ -1372,7 +1394,7 @@ export function makeTable(options) {
 										// Always clear the completed transaction so a later standalone write isn't appended
 										// to it (and lost), and a failed commit's rejected promise isn't re-awaited on the
 										// next beginTxn (which would brick the apply loop).
-										txnInProgress = undefined;
+										txnInProgress = stream.txn = undefined;
 									}
 									// Only reached when the commit succeeded; a failure propagates to the handler's catch
 									// and the sequence id is intentionally not advanced past the unapplied write.
@@ -1405,7 +1427,7 @@ export function makeTable(options) {
 										} finally {
 											// Clear it regardless of outcome so a rejected commit isn't re-awaited on the
 											// next beginTxn (which would brick the apply loop).
-											txnInProgress = undefined;
+											txnInProgress = stream.txn = undefined;
 										}
 									} else {
 										// write in the current transaction if one is in progress
@@ -1460,11 +1482,12 @@ export function makeTable(options) {
 											// if we are beginning a new transaction, we record the current
 											// event/context as transaction in progress and then future events
 											// are applied with that context until the next transaction begins/ends
-											txnInProgress = event;
-											txnInProgress.writePromises = [stageWrite(event, event)];
-											return new Promise((resolve) => {
+											const txn = (txnInProgress = stream.txn = event);
+											txn.writePromises = [stageWrite(event, event)];
+											return new Promise((resolve, reject) => {
 												// callback for when this transaction is finished (will be called on next txn begin/end).
-												txnInProgress.resolve = () => resolve(Promise.all(txnInProgress.writePromises)); // and make sure we wait for the write update to finish
+												txn.resolve = () => resolve(Promise.all(txn.writePromises)); // and make sure we wait for the write update to finish
+												txn.abortSource = reject;
 											});
 										}
 										return writeUpdate(event, event);
@@ -1476,7 +1499,7 @@ export function makeTable(options) {
 									if (txnInProgress) {
 										// begin_txn: commitResolution stays pending until the matching end_txn, so it
 										// can't be awaited here; onCommit is awaited at end_txn once the commit lands.
-										if (commitResolution) commitResolution.then(event.onCommit);
+										if (commitResolution) commitResolution.then(event.onCommit, noop);
 										else event.onCommit();
 									} else {
 										// standalone write: backpressure on the commit before pulling the next event,

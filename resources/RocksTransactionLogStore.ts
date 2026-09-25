@@ -1,6 +1,6 @@
 import { TransactionLog, RocksDatabase, shutdown, type TransactionEntry } from '@harperfast/rocksdb-js';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
-import { getIdOfRemoteNode } from './nodeIdMapping.ts';
+import { getIdOfRemoteNode, getNodeNameForId } from './nodeIdMapping.ts';
 import { Decoder, readAuditEntry, ENTRY_DATAVIEW, AuditRecord, createAuditEntry } from './auditStore.ts';
 import { HAS_STRUCTURE_UPDATE } from './RecordEncoder.ts';
 import {
@@ -85,7 +85,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			// do not record transaction entries on retry
 			return;
 		}
-		const log = this.logById(options.nodeId) ?? this.logById(options.viaNodeId) ?? this.log;
+		const log = options.nodeId === undefined ? this.log : this.logForOrigin(options.nodeId);
 		let entryBinary: Uint8Array;
 		if (auditRecord instanceof Uint8Array) entryBinary = auditRecord;
 		else {
@@ -164,6 +164,18 @@ export class RocksTransactionLogStore extends EventEmitter {
 		log.addEntry(entryBinary, options.transaction.id);
 	}
 
+	/**
+	 * The log for an origin's entries, created on first use: a log holds one origin, which keeps `txnLogKey`
+	 * unique within it (the key alone repeats across origins).
+	 */
+	logForOrigin(nodeId: number) {
+		const log = this.logById(nodeId);
+		if (log) return log;
+		const nodeName = getNodeNameForId(this, nodeId, true);
+		if (nodeName === undefined) throw new Error(`No node name is mapped to origin id ${nodeId}`);
+		this.ensureLogExists(nodeName);
+		return this.logById(nodeId);
+	}
 	logById(nodeId: number) {
 		return nodeId > -1 ? (this.nodeLogs?.[nodeId] ?? this.loadLogs()[nodeId]) : undefined;
 	}
