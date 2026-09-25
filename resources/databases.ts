@@ -1903,15 +1903,11 @@ export function openBranchDatabase(
 		manageThreads.markBranchStorePath(path, false);
 	};
 	const closeRemainingHandles = () => {
-		let closeFailures: unknown[];
-		try {
-			closeFailures = closeBranchHandles(path, rootStore, openedStores, tables);
-		} finally {
-			unregisterBranch();
-		}
+		const closeFailures = closeBranchHandles(path, rootStore, openedStores, tables);
 		if (closeFailures.length) {
 			throw new AggregateError(closeFailures, `Could not close branch database '${databaseName}'`);
 		}
+		unregisterBranch();
 	};
 	const branch: BranchDatabase = {
 		tables,

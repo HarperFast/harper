@@ -470,6 +470,11 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		assert.strictEqual(branch.rootStore.status, 'open');
 		assert.strictEqual(databaseCommitsSuspended(branch.rootStore), true);
 		assert.strictEqual(getSuspendedDatabaseRootCount(), suspendedBefore);
+		assert.throws(
+			() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'),
+			/already open/,
+			'a replacement must wait until the failed native root close is retried'
+		);
 		failClose = false;
 		await branch.close();
 		assert.strictEqual(branch.rootStore.status, 'closed');
