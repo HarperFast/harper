@@ -185,7 +185,7 @@ export async function scanLiveClaims(
 	const unremovedTicketTokens = releasedTokens && new Set<string>();
 	for (const claim of claims) {
 		const released = Boolean(claim.owner && releasedTokens?.has(claim.owner.token));
-		if (claim.owner?.token !== ownToken && (!claim.owner || !claim.alive || released)) {
+		if (!claim.owner || (claim.owner.token !== ownToken && (!claim.alive || released))) {
 			// Claim filenames contain a random owner token and are never reused. Removing this exact
 			// stale claim therefore cannot delete a fresh acquisition, unlike renaming a common lock path.
 			const removed = await rm(claim.claimPath, { force: true }).then(

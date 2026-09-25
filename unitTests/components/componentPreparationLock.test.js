@@ -416,6 +416,17 @@ describe('component preparation lock', () => {
 		assert.equal(result.tickets.length, 0);
 	});
 
+	it('removes a ticket whose record does not parse, even from a scan that holds no claim', async () => {
+		const { lockRoot, lockName } = componentPreparationLockPaths(join(rootDir, 'unparseable-ticket'));
+		await mkdir(lockRoot, { recursive: true, mode: 0o700 });
+		await writeFile(join(lockRoot, `${lockName}.ticket.1.unparseable.json`), '{');
+
+		const result = await scanLiveClaims(lockRoot, lockName, {});
+
+		assert.deepStrictEqual(result, { choosing: [], tickets: [] });
+		assert.deepStrictEqual(await readdir(lockRoot), []);
+	});
+
 	describe('a ticket its owner could not remove', () => {
 		// Owned by this very thread, so without a released marker it reads as a live holder.
 		async function plantLiveTicket(componentDirPath, token) {
