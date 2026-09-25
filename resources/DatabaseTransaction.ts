@@ -1302,11 +1302,8 @@ export class DatabaseTransaction implements Transaction {
 		} catch (error) {
 			// abort() releases only this.transaction; a retry round's handle was detached before its
 			// first submission and would otherwise hold its write intents until GC.
-			if (transaction && transaction !== this.transaction) {
-				try {
-					transaction.abort();
-				} catch {}
-			}
+			if (transaction !== this.transaction)
+				abortNativeTransaction(transaction, 'aborting a retry transaction whose re-save threw');
 			this.abort();
 			throw error;
 		}
@@ -1393,10 +1390,7 @@ export class DatabaseTransaction implements Transaction {
 									this.save(operation, replayTransaction, true, options);
 								}
 							} catch (error) {
-								// Same cleanup as the save loop above: the replay handle is never this.transaction.
-								try {
-									replayTransaction.abort();
-								} catch {}
+								abortNativeTransaction(replayTransaction, 'aborting a replay transaction whose re-save threw');
 								this.abort();
 								throw error;
 							}

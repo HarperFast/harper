@@ -10,8 +10,7 @@ require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
-// A conflict retry in commit() re-saves every write into the native transaction it is retrying;
-// ImmediateTransaction.save() must stage into that one rather than open its own (resources/DESIGN.md).
+// Conflict retries of writes that commit per write; the invariant is in resources/DESIGN.md.
 describe('ImmediateTransaction conflict retry', () => {
 	let Locked;
 	let nextId = 1;
@@ -32,9 +31,10 @@ describe('ImmediateTransaction conflict retry', () => {
 		process.on('unhandledRejection', onUnhandled);
 	});
 	after(() => process.removeListener('unhandledRejection', onUnhandled));
-	afterEach(() => {
-		unhandled.length = 0;
+	afterEach(async () => {
 		while (pendingRestores.length) pendingRestores.pop()();
+		await delay(20); // a rejection raised after a test's last assertion still fails that test
+		assert.deepStrictEqual(unhandled.splice(0), []);
 	});
 
 	// ERR_BUSY on the first `failFirst` native commits against the test table's db, then real commits;
