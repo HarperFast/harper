@@ -40,7 +40,6 @@ export class TokenUseTable extends Resource {
 		};
 	}
 
-	// Writes each row as replication applies a peer's: its expiry arrives as the write's metadata.
 	async post(query, body) {
 		const { rows } = body || query || {};
 		for (const { id, expiresAt } of rows)
