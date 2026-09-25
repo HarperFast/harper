@@ -6,7 +6,7 @@ import {
 	table,
 	getDatabases,
 	database,
-	databaseAliasNames,
+	databaseDropPreparationTargets,
 	dropDatabase,
 	type Table,
 } from '../../resources/databases.ts';
@@ -200,12 +200,13 @@ export class ResourceBridge extends BridgeMethods {
 
 	async dropSchema(dropSchemaObj) {
 		const preparationId = randomUUID();
-		const databaseNames = databaseAliasNames(dropSchemaObj.schema);
+		const { databaseNames, rootPaths } = databaseDropPreparationTargets(dropSchemaObj.schema);
 		const completion = () => {
 			const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, dropSchemaObj.schema);
 			message.dropPreparationId = preparationId;
 			message.dropPreparationOwnerThreadId = threadId;
 			message.dropPreparationDatabaseNames = databaseNames;
+			message.dropPreparationRootPaths = rootPaths;
 			return message;
 		};
 		const preparation: any = completion();

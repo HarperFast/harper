@@ -57,7 +57,8 @@ async function schemaHandler(event) {
 				event.message.schema,
 				event.message.dropPreparationId,
 				event.message.dropPreparationOwnerThreadId,
-				event.message.dropPreparationDatabaseNames
+				event.message.dropPreparationDatabaseNames,
+				event.message.dropPreparationRootPaths
 			);
 			return;
 		}

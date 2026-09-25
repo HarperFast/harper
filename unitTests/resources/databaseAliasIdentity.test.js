@@ -12,7 +12,7 @@ const { registryStatus } = require('@harperfast/rocksdb-js');
 const {
 	table,
 	database,
-	databaseAliasNames,
+	databaseDropPreparationTargets,
 	closeDatabase,
 	completeDatabaseDropPreparation,
 	getDatabases,
@@ -248,9 +248,9 @@ describe('shared root-store database identity', function () {
 		await createPhysicalStore(storageRoot, 'physicalalias', tableName);
 		loadAliases(storageRoot, { configured: ['configuredalias'] });
 		loadedAliases = ['physicalalias', 'configuredalias'];
-		const databaseNames = databaseAliasNames('physicalalias');
+		const { databaseNames, rootPaths } = databaseDropPreparationTargets('physicalalias');
 
-		await prepareDatabaseDrop('physicalalias', preparationId, 0, databaseNames);
+		await prepareDatabaseDrop('physicalalias', preparationId, 0, databaseNames, rootPaths);
 		for (const name of databaseNames) {
 			assert.throws(
 				() => database({ database: name }),
@@ -259,6 +259,35 @@ describe('shared root-store database identity', function () {
 		}
 
 		await completeDatabaseDropPreparation('physicalalias', preparationId, databaseNames);
+		assert.ok(database({ database: 'configuredalias' }));
+	});
+
+	it('closes a loaded sibling when the requested alias is absent from the local catalog', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const storageRoot = join(testRoot, 'alias-drop-sibling-only');
+		const tableName = 'AliasDropSiblingOnly';
+		const preparationId = 'alias-drop-sibling-only-test';
+		await createPhysicalStore(storageRoot, 'physicalalias', tableName);
+		const loaded = loadAliases(storageRoot, { configured: ['configuredalias'] });
+		loadedAliases = ['physicalalias', 'configuredalias'];
+		const { databaseNames, rootPaths } = databaseDropPreparationTargets('physicalalias');
+		const path = loaded.configuredalias[tableName].primaryStore.rootStore.path;
+		for (const index of Object.values(loaded.physicalalias[tableName].indices)) await index.close();
+		await loaded.physicalalias[tableName].primaryStore.close();
+		delete loaded.physicalalias;
+
+		try {
+			await prepareDatabaseDrop('physicalalias', preparationId, 0, databaseNames, rootPaths);
+			assert.strictEqual(registryStatus().find((entry) => entry.path === path)?.refCount ?? 0, 0);
+			for (const name of databaseNames) {
+				assert.throws(
+					() => database({ database: name }),
+					(error) => error.code === 'DATABASE_CLOSING'
+				);
+			}
+		} finally {
+			await completeDatabaseDropPreparation('physicalalias', preparationId, databaseNames);
+		}
 		assert.ok(database({ database: 'configuredalias' }));
 	});
 

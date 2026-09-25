@@ -8,6 +8,7 @@ type DatabaseDropPreparation = {
 };
 
 const inheritedDatabaseDropPreparations = (workerData?.databaseDropPreparations ?? []).filter(
+	// Main reaches a child through parentPort rather than addThreadIds; worker owners must be in the initial peer topology.
 	([, preparation]: [string, DatabaseDropPreparation]) =>
 		preparation.ownerThreadId === 0 || workerData?.addThreadIds?.includes(preparation.ownerThreadId)
 );

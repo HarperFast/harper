@@ -2380,25 +2380,48 @@ export async function dropDatabase(databaseName) {
  */
 const databaseDropPreparationTasks = new Map<string, { id: string; task: Promise<void>; databaseNames: string[] }>();
 
-export function databaseAliasNames(databaseName: string): string[] {
-	return databases[databaseName] ? [...collectDatabaseGraph(databaseName).databaseNames] : [databaseName];
+export function databaseDropPreparationTargets(databaseName: string): {
+	databaseNames: string[];
+	rootPaths: string[];
+} {
+	if (!databases[databaseName]) {
+		return { databaseNames: [databaseName], rootPaths: [resolveDatabasePath(databaseName)] };
+	}
+	const graph = collectDatabaseGraph(databaseName);
+	return {
+		databaseNames: [...graph.databaseNames],
+		rootPaths: [...graph.rootStores].map((rootStore) => rootStore.path),
+	};
 }
 
 export function prepareDatabaseDrop(
 	databaseName: string,
 	preparationId: string,
 	ownerThreadId: number,
-	requestedDatabaseNames: Iterable<string> = [databaseName]
+	requestedDatabaseNames: Iterable<string> = [databaseName],
+	requestedRootPaths: Iterable<string> = []
 ): Promise<void> {
 	const existing = databaseDropPreparationTasks.get(databaseName);
 	if (existing?.id === preparationId) return existing.task;
-	const databaseNames = [
-		...new Set([...requestedDatabaseNames, ...(databases[databaseName] ? databaseAliasNames(databaseName) : [])]),
-	];
-	claimDatabaseDropPreparations(databaseNames, preparationId, ownerThreadId);
-	const task = closeDatabase(databaseName, { requireClosed: true }).then(() => undefined);
-	databaseDropPreparationTasks.set(databaseName, { id: preparationId, task, databaseNames });
-	for (const name of databaseNames) trackDatabaseDropPreparationTask(name, preparationId, task);
+	const databaseNames = new Set(requestedDatabaseNames);
+	const rootPaths = new Set(requestedRootPaths);
+	if (databases[databaseName]) {
+		const graph = collectDatabaseGraph(databaseName);
+		for (const name of graph.databaseNames) databaseNames.add(name);
+		for (const rootStore of graph.rootStores) rootPaths.add(rootStore.path);
+	}
+	for (const name of Object.keys(databases)) {
+		const graph = collectDatabaseGraph(name);
+		if (![...graph.rootStores].some((rootStore) => rootPaths.has(rootStore.path))) continue;
+		for (const aliasName of graph.databaseNames) databaseNames.add(aliasName);
+	}
+	const names = [...databaseNames];
+	claimDatabaseDropPreparations(names, preparationId, ownerThreadId);
+	const task = (async () => {
+		for (const name of names) await closeDatabase(name, { requireClosed: true });
+	})();
+	databaseDropPreparationTasks.set(databaseName, { id: preparationId, task, databaseNames: names });
+	for (const name of names) trackDatabaseDropPreparationTask(name, preparationId, task);
 	return task;
 }
 
