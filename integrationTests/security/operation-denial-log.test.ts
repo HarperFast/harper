@@ -137,8 +137,7 @@ suite('an operation refused by the permission check', (ctx: ContextWithHarper) =
 		ok(!written.includes('[object Object]'), `a refusal was logged as [object Object]:\n${written}`);
 	});
 
-	// The refusal happens in the job worker, and get_job has always answered it with the report
-	// object as the job's message.
+	// Refused in the job worker, after the request itself was accepted.
 	test('a bulk load refused on an attribute permission keeps the report as its job message', async () => {
 		const started = await client
 			.reqAs(createHeaders(LOADER.username, LOADER.password))

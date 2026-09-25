@@ -70,8 +70,7 @@ function handleServerUncaughtException(err) {
 	realExit(1);
 }
 
-// The errors handlePostRequest has logged, per request (see server/DESIGN.md for why it, not
-// serverErrorHandler, owns that log). Per request, so one that surfaces again elsewhere is logged there.
+// The errors handlePostRequest logged, per request; see server/DESIGN.md.
 const errorsLoggedByRequest = new WeakMap();
 const LEVELS_ABOVE_ERROR = new Set([terms.LOG_LEVELS.FATAL, terms.LOG_LEVELS.NOTIFY]);
 

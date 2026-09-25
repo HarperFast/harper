@@ -3,11 +3,8 @@ import logger, { errorToString, inspectForLog, isErrorLike } from '../logging/ha
 import * as hdbErrors from './commonErrors.ts';
 import * as hdbTerms from '../hdbTerms.ts';
 
-/**
- * The logger and `String(error)` render `message`, so it must be a string even when the response
- * message is a structured body. A report reads as its `error` summary and the reasons it lists;
- * anything else goes through inspectForLog, which cannot throw or expose a nested Error's properties.
- */
+// `message` must be a string even for a structured response message; inspectForLog renders what is
+// not a report without throwing or exposing a nested Error's properties.
 function messageText(message: any): string {
 	if (typeof message === 'string') return message;
 	try {

@@ -1,10 +1,6 @@
 'use strict';
 
-/**
- * An operation refused by the permission check, taken through the operations API's own handlers:
- * handlePostRequest, which runs the check, then serverErrorHandler, which Fastify hands the error
- * along with the same request.
- */
+// Through handlePostRequest, then serverErrorHandler with the same request, as Fastify calls them.
 const assert = require('assert');
 const { existsSync, readFileSync } = require('node:fs');
 const logger = require('#src/utility/logging/harper_logger');
