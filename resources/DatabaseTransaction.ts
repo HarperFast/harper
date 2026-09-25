@@ -1300,6 +1300,14 @@ export class DatabaseTransaction implements Transaction {
 				this.save(operation, transaction, i < this.validated, options);
 			}
 		} catch (error) {
+			// A retry round's transaction was detached before its first submission, so abort() below
+			// cannot reach it; released here or its write intents stay parked until GC (a lapsed lease
+			// refusing the re-save is the case that reaches this).
+			if (transaction && transaction !== this.transaction) {
+				try {
+					transaction.abort();
+				} catch {}
+			}
 			this.abort();
 			throw error;
 		}
@@ -2015,8 +2023,12 @@ export class ImmediateTransaction extends DatabaseTransaction {
 	save(...args: any[]): any {
 		const operation = args[0]; // the staged write, not a transaction — commit() re-enters here with it
 		if (this.isCommitting) {
-			// if we are in the commit, do the save and force a reload so we get a read within the transaction
-			super.save(operation, null as any, true);
+			// commit() re-enters here for every staged write, passing the native transaction it is
+			// committing — on a retry or replay round, the one being retried. The re-save must stage into
+			// that transaction: with none, super.save() opens its own and (CLOSED by now) commits it
+			// through a nested commit(), whose retry loop re-enters here again, without bound.
+			// Reload so the read happens within that transaction.
+			super.save(operation, args[1], true);
 		} else {
 			this.isCommitting = true;
 			// A synchronous throw from commit() (e.g. a 409 from an expired lock handle) would
