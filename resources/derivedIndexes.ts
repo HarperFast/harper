@@ -81,7 +81,7 @@ type FullTextTestConfiguration = {
 };
 const runtimes = new WeakMap<object, Registered>();
 const suspendedActivation = new WeakMap<object, number>();
-const retryUnavailableByStore = new Set<string>();
+const retryUnavailableByStore = new WeakMap<object, Set<string>>();
 let fullTextTestConfiguration: FullTextTestConfiguration | undefined;
 
 /** Prevent new derived-index attachments while a root store is being torn down. */
@@ -99,16 +99,17 @@ export function suspendDerivedIndexActivation(rootStore: object): () => void {
 
 function activationSuspended(Table: any): boolean {
 	const rootStore = Table.primaryStore?.rootStore;
-	return rootStore != null && suspendedActivation.has(rootStore);
-}
-
-function retryUnavailableKey(auditStore: RocksTransactionLogStore, backendId: string): string {
-	return `${auditStore.rootStore.path}\0${backendId}`;
+	// Closed roots no longer retain an active suspension count, but stale table classes must not
+	// resurrect their derived-index runtime after successful teardown.
+	return rootStore != null && (rootStore.status === 'closed' || suspendedActivation.has(rootStore));
 }
 
 function markUnavailableRetry(registered: Registered, auditStore: RocksTransactionLogStore, backendId: string): void {
 	registered.retryUnavailable.add(backendId);
-	retryUnavailableByStore.add(retryUnavailableKey(auditStore, backendId));
+	const rootStore = auditStore.rootStore;
+	let retries = retryUnavailableByStore.get(rootStore);
+	if (!retries) retryUnavailableByStore.set(rootStore, (retries = new Set()));
+	retries.add(backendId);
 }
 
 function consumeUnavailableRetry(
@@ -117,7 +118,10 @@ function consumeUnavailableRetry(
 	backendId: string
 ): boolean {
 	const local = registered.retryUnavailable.delete(backendId);
-	const storeScoped = retryUnavailableByStore.delete(retryUnavailableKey(auditStore, backendId));
+	const rootStore = auditStore.rootStore;
+	const retries = retryUnavailableByStore.get(rootStore);
+	const storeScoped = retries?.delete(backendId) ?? false;
+	if (retries?.size === 0) retryUnavailableByStore.delete(rootStore);
 	return local || storeScoped;
 }
 

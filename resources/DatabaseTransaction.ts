@@ -186,7 +186,15 @@ export function trackOutstandingCommit(
 }
 
 export function databaseCommitsSuspended(rootStore: object | undefined): boolean {
-	return suspendedDatabaseRootCount > 0 && rootStore != null && (suspendedDatabaseCommits.get(rootStore) ?? 0) > 0;
+	if (rootStore == null) return false;
+	// Successful teardown releases the active fence so unrelated databases keep the zero-cost fast
+	// path, but a stale Table class must still reject writes against its closed native descriptor.
+	if ((rootStore as any).status === 'closed') return true;
+	return suspendedDatabaseRootCount > 0 && (suspendedDatabaseCommits.get(rootStore) ?? 0) > 0;
+}
+
+export function getSuspendedDatabaseRootCount(): number {
+	return suspendedDatabaseRootCount;
 }
 
 export function commitTrackedRocksTransaction(

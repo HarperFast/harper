@@ -1921,6 +1921,8 @@ export function openBranchDatabase(
 					releaseBranchIdentity(storeName);
 					rocksdbDatabaseEnvs.delete(path);
 					manageThreads.markBranchStorePath(path, false);
+					commitSuspension.release();
+					releaseActivation();
 					closed = true;
 				})
 				.finally(() => {
@@ -2301,6 +2303,7 @@ export async function dropDatabase(databaseName) {
 		}
 
 		databaseRemoved = true;
+		releaseDerivedIndexActivation();
 		for (const rootStore of rootStores) await deleteRootBlobPathsForDB(rootStore);
 	} finally {
 		if (!databaseRemoved && !destructiveWorkStarted) releaseDerivedIndexActivation?.();
@@ -2357,8 +2360,8 @@ export async function closeDatabase(
 	);
 	let databaseClosed = false;
 	let handleCloseStarted = false;
+	const rootStores = new Set<any>();
 	try {
-		const rootStores = new Set<any>();
 		const rootStorePaths: string[] = [];
 		const closeFailures: unknown[] = [];
 		const closeStore = async (store: any, description: string) => {
@@ -2427,6 +2430,7 @@ export async function closeDatabase(
 			}
 		}
 		databaseClosed = true;
+		if ([...rootStores].every((rootStore) => rootStore.status !== 'open')) releaseDerivedIndexActivation();
 		return true;
 	} finally {
 		if (!databaseClosed && !handleCloseStarted) releaseDerivedIndexActivation();

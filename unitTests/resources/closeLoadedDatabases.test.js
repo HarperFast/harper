@@ -34,6 +34,7 @@ const {
 	releaseDatabaseDropPreparation,
 } = require('#src/resources/databaseDropPreparation');
 const {
+	getSuspendedDatabaseRootCount,
 	setDatabaseCommitDrainTimeoutMilliseconds,
 	trackOutstandingCommit,
 } = require('#src/resources/DatabaseTransaction');
@@ -75,6 +76,7 @@ describe('RocksDB handle release', function () {
 
 	it('closeDatabase releases all of a database’s native handles (refCount → 0)', async function () {
 		this.timeout(30000);
+		const suspendedBefore = getSuspendedDatabaseRootCount();
 		const rootStore = openRocksDb('closerelease1');
 		if (!(rootStore instanceof RocksDatabase)) return this.skip();
 		const dbPath = rootStore.path;
@@ -83,6 +85,11 @@ describe('RocksDB handle release', function () {
 		await closeDatabase('closerelease1');
 
 		assert.strictEqual(refCountFor(dbPath), 0, 'no native handles should remain after closeDatabase');
+		assert.strictEqual(
+			getSuspendedDatabaseRootCount(),
+			suspendedBefore,
+			'a closed root must not keep the process-wide active-suspension fast path engaged'
+		);
 	});
 
 	it('keeps database handles open when an outstanding commit misses the drain deadline', async function () {
@@ -264,11 +271,13 @@ describe('RocksDB handle release', function () {
 		const databaseName = 'drop_schema_tableless';
 		const rootStore = database({ database: databaseName });
 		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const suspendedBefore = getSuspendedDatabaseRootCount();
 
 		await new ResourceBridge().dropSchema({ schema: databaseName });
 
 		assert.strictEqual(databases[databaseName], undefined);
 		assert.strictEqual(refCountFor(rootStore.path), 0);
+		assert.strictEqual(getSuspendedDatabaseRootCount(), suspendedBefore);
 	});
 
 	it('closeLoadedDatabases releases every loaded user database (what a job worker does on exit)', async function () {
@@ -294,12 +303,14 @@ describe('RocksDB handle release', function () {
 			await rootStore.createCheckpoint(checkpointDir);
 			const branch = openBranchDatabase(checkpointDir, 'closerelease4', 'appA__closerelease4');
 			assert.ok(refCountFor(branch.rootStore.path) > 0, 'branch should be open');
+			const suspendedBefore = getSuspendedDatabaseRootCount();
 
 			await closeLoadedDatabases();
 
 			// a branch is not in `databases`, so the walk below cannot reach it — an exiting job worker
 			// would leak its handles process-wide unless this is the single teardown entry point
 			assert.strictEqual(refCountFor(checkpointDir), 0, 'branch should be released on thread teardown');
+			assert.strictEqual(getSuspendedDatabaseRootCount(), suspendedBefore);
 		} finally {
 			await closeBranchDatabases();
 			rmSync(scratchRoot, { recursive: true, force: true });
