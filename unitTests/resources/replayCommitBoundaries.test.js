@@ -41,8 +41,8 @@ function replayAgain(rootStore, tables) {
 	replayLogs(rootStore, tables);
 }
 
-// Only the cases a real log cannot produce (entries without an endTxn marker, a replay that outlives
-// its wall-clock budget) run against a synthetic stream.
+// Only the inputs a real table cannot stage on demand (entries without an endTxn marker, a budget spent
+// inside an open commit) run against a synthetic stream.
 function replayStream(entries, { onCommit, onWrite } = {}) {
 	const stagedIn = new Map();
 	const stubTable = {
