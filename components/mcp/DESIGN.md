@@ -92,12 +92,17 @@ A handful of design points are non-obvious and easy to break:
   1. **The `operations` allowlist.** `verifyOperationsAllowlist` runs _ahead of every privilege
      early-return_ in `verifyPerms` (harper#2176), super_user and structure_user included, so a
      helper that short-circuits on a privilege flag advertises tools that fail closed on call.
-  2. **The `api_name` alias.** Dispatch tests the handler's canonical `api_name`, and four ops are
+  2. **The `api_name` alias.** Dispatch tests the handler's canonical `api_name`, and eight ops are
      published under a different name — `create_schema`/`drop_schema` (handlers
      `createSchema`/`dropSchema`, api_names `create_database`/`drop_database`),
-     `describe_database`→`describe_schema`, `search_by_id`→`search_by_hash`. Matching the raw tool
-     name disagrees in BOTH directions. The alias table is hand-maintained because
-     `OPERATION_FUNCTION_MAP` pulls in the server and cannot be imported here.
+     `describe_database`→`describe_schema`, `search_by_id`→`search_by_hash`, and the legacy
+     `add_`/`package_`/`deploy_custom_function_project` → `add_`/`package_`/`deploy_component`,
+     `delete_records_before`→`delete_files_before`. Matching the raw tool name disagrees in BOTH
+     directions. The alias table is hand-maintained because `OPERATION_FUNCTION_MAP` pulls in the
+     server and cannot be imported here; `unitTests/utility/operation_authorization.test.js` compares
+     discovery with gate 1 for every dispatched operation, so a drift fails there. Discovery still
+     advertises `get_backup` and `read_transaction_log` to a role that lists them, while dispatch
+     refuses them (their registrations deliberately carry no `api_name`).
   3. **`structure_user` is not one grant.** `STRUCTURE_USER_OPS` holds only the four
      table/attribute ops; create/drop schema-or-database needs `structure_user === true`, so an
      array grant (and `[]`, which is truthy) is denied for those four.

@@ -67,6 +67,16 @@ on translated table CRUD permissions only. A scoped token intended to be read-on
 endpoints must carry restrictive table permissions; `operations: ['read_only']` alone does not
 constrain REST writes if table perms allow them.
 
+Which name the allowlist is checked against: `verifyPerms` is handed the handler, not the invoked
+operation, and gate 1 resolves `requiredPermissions.get(handler.name).api_name ?? handler.name`. A
+registration without its `api_name` therefore leaves the operation grantable by no name — a role
+listing it validates, saves, and is refused, because no role can list a camelCase handler name.
+Aliases share a handler, so listing the canonical name grants both spellings and the alias spelling
+grants neither. `get_backup` and `read_transaction_log` are registered without an `api_name` on
+purpose: gate 2 would grant `get_backup` ahead of its READ check on a whole-database copy, and
+`read_transaction_log` lacks `read_audit_log`'s `system.hdb_secret` guard. A test in
+`unitTests/utility/operation_authorization.test.js` holds every dispatched operation to this.
+
 The invariant to preserve when touching any synthetic (inline/impersonated/scoped) role:
 `permissionsTranslator.getRolePermissions` memoizes translated permissions **by role name** (keyed
 further by `__updatedtime__` + schema). A synthetic role must therefore never carry a constant
