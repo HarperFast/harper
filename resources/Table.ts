@@ -1401,7 +1401,7 @@ export function makeTable(options) {
 									try {
 										committed = committingTxn ? await committingTxn.committed : undefined;
 										applied = true;
-										if (event.onCommit && stream.failure === undefined) {
+										if (event.onCommit && (stream.failure === undefined || !event.onFailure)) {
 											// the onCommit callback can be async and carry associated work (e.g. blob
 											// transfer); wait for it too before recording the sequence id. Pass the commit
 											// resolution through, as callbacks may use the committed txn time.
@@ -1419,9 +1419,9 @@ export function makeTable(options) {
 									}
 									// A transaction this end_txn closes over failed earlier (when a later beginTxn closed it), so
 									// neither onCommit nor the sequence id may pass it; the source decides whether to replay.
-									if (stream.failure !== undefined) {
-										const failure = stream.failure;
-										stream.failure = undefined;
+									const failure = stream.failure;
+									stream.failure = undefined;
+									if (failure !== undefined && event.onFailure) {
 										if (await event.onFailure?.(failure.error, failure.position)) stream.held = true;
 										continue;
 									}

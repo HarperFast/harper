@@ -86,9 +86,11 @@ export class RocksTransactionLogStore extends EventEmitter {
 			return;
 		}
 		const log =
-			options.nodeId === undefined || options.nodeId === 0
+			options.nodeId === undefined
 				? this.log
-				: this.logForOrigin(options.nodeId, options.viaNodeId !== undefined && options.viaNodeId !== options.nodeId);
+				: options.nodeId === 0
+					? (this.logById(0) ?? this.log)
+					: this.logForOrigin(options.nodeId, options.viaNodeId !== undefined && options.viaNodeId !== options.nodeId);
 		let entryBinary: Uint8Array;
 		if (auditRecord instanceof Uint8Array) entryBinary = auditRecord;
 		else {
