@@ -361,7 +361,7 @@ export function makeOperationToolHandler(operationName: string) {
 			const e = err as { message?: string; http_resp_msg?: string; statusCode?: number };
 			const message = e?.http_resp_msg ?? e?.message ?? `operation '${operationName}' failed`;
 			harperLogger.trace(
-				`MCP operations/${operationName} threw: ${(err as Error).stack ?? (err as Error).message ?? message}`
+				`MCP operations/${operationName} threw: ${(err as Error)?.stack ?? (err as Error)?.message ?? message}`
 			);
 			return {
 				isError: true,

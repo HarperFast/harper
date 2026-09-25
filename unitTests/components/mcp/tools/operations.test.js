@@ -515,6 +515,20 @@ describe('mcp/tools/operations — handler dispatch', () => {
 		assert.match(payload.message, /not permitted/);
 	});
 
+	it('maps a rejection with no reason to isError=true', async () => {
+		_setChooseOperationForTest(() => {
+			throw undefined;
+		});
+		_setProcessLocalTransactionForTest(async () => null);
+		_setOperationFunctionMapForTest(makeOpMap([['describe_all', null]]));
+		registerOperationsTools();
+
+		const res = await getTool('describe_all').handler({}, { user: NOBODY, profile: 'operations', sessionId: 's' });
+
+		assert.equal(res.isError, true);
+		assert.equal(JSON.parse(res.content[0].text).message, "operation 'describe_all' failed");
+	});
+
 	it('traces a refusal by its reason and returns the permission report as the message', async () => {
 		const reason = "Operation 'describe_all' is not permitted for this role's operations configuration";
 		const report = new PermissionResponseObject().handleUnauthorizedItem(reason);

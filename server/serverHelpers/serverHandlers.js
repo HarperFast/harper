@@ -75,6 +75,8 @@ const errorsLoggedByRequest = new WeakMap();
 const LEVELS_ABOVE_ERROR = new Set([terms.LOG_LEVELS.FATAL, terms.LOG_LEVELS.NOTIFY]);
 
 function serverErrorHandler(error, req, resp) {
+	// Fastify passes a handler's reason through as-is, so a rejection with none arrives here as nullish.
+	error ??= handleHDBError(new Error('The request failed without an error'), undefined, 500);
 	if (!errorsLoggedByRequest.get(req)?.has(error)) harperLogger[error.logLevel || 'info'](error);
 	if (error.statusCode) {
 		if (typeof error.http_resp_msg !== 'object') {
