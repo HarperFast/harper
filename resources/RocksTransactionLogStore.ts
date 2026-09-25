@@ -337,19 +337,17 @@ export class RocksTransactionLogStore extends EventEmitter {
 			iterator.lastEndTxn = undefined;
 			return iterator;
 		};
-		if (options.log !== undefined) {
-			let log = typeof options.log === 'number' ? this.nodeLogs?.[options.log] : this.logByName.get(options.log);
+		let log: TransactionLog | undefined;
+		if (typeof options.log === 'number') {
+			log = this.logById(options.log);
+		} else if (options.log !== undefined) {
+			log = this.logByName.get(options.log);
 			if (!log) {
 				this.loadLogs();
-				if (typeof options.log === 'number') {
-					log = this.nodeLogs?.[options.log];
-				} else {
-					log = this.logByName.get(options.log);
-				}
-				if (!log) {
-					log = this.rootStore.useLog(options.log);
-				}
+				log = this.logByName.get(options.log) ?? this.rootStore.useLog(options.log);
 			}
+		}
+		if (log) {
 			const resumeAfterExactStart =
 				options.resumeAfterExactStart === true && options.exactStart === true && options.start !== undefined;
 			const queryOptions = resumeAfterExactStart ? { ...options, exclusiveStart: false } : options;
@@ -378,6 +376,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 							},
 						})
 					: () => queryIterator;
+		} else if (typeof options.log === 'number') {
+			// A node id is a key into the id→log map, never a log name (useLog would create one): a node
+			// with no log of its own has no entries here.
+			iterable.iterate = () => [][Symbol.iterator]();
 		} else {
 			const onlyKeys = options.onlyKeys;
 			let logs: TransactionLog[] = [];

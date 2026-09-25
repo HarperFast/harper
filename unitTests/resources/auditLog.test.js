@@ -1414,6 +1414,47 @@ describe('Audit log', () => {
 		assert.strictEqual(store.nodeLogs[0], fakeLog, 'nodeLogs[0] must be the local log');
 	});
 
+	it('a numeric log id with no log misses without creating one', async function () {
+		if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // numeric log ids are RocksDB-only
+		const auditStore = AuditedTable.auditStore;
+		const id = 'numeric-log-miss';
+		await AuditedTable.put(id, { name: 'numeric-log-miss' });
+		const { localTime } = AuditedTable.primaryStore.getEntry(id);
+		assert.equal(auditStore.get(localTime, AuditedTable.tableId, id, 0)?.recordId, id);
+
+		const peerId = 'numeric-log-peer';
+		const peerNodeId = auditStore.ensureLogExists('numeric-log-peer');
+		const peerTime = Date.now() - 1000;
+		const context = { source: {}, sourceApply: true, timestamp: peerTime };
+		await transaction(context, async () => {
+			const resource = await AuditedTable.getResource(peerId, context);
+			return resource._writeUpdate(peerId, { name: 'numeric-log-peer' }, true, {
+				isNotification: true,
+				nodeId: peerNodeId,
+				version: peerTime,
+			});
+		});
+		assert.equal(auditStore.get(peerTime, AuditedTable.tableId, peerId, peerNodeId)?.recordId, peerId);
+		assert.equal(
+			auditStore.get(peerTime, AuditedTable.tableId, peerId, undefined)?.recordId,
+			peerId,
+			'an absent node id must still search every log'
+		);
+
+		const unknownNodeId = auditStore.loadLogs().length + 1000;
+		assert.equal(auditStore.get(localTime, AuditedTable.tableId, id, unknownNodeId), undefined);
+		const range = auditStore.getRange({ start: 1, log: unknownNodeId });
+		assert.deepEqual(Array.from(range), []);
+		assert.equal(range.failedLogs.size, 0);
+		assert.equal(range.exactStartFailures.size, 0);
+		assert.ok(
+			!auditStore.rootStore.listLogs().includes(String(unknownNodeId)),
+			`reading by node id ${unknownNodeId} must not create a transaction log named after it`
+		);
+		Array.from(auditStore.getRange({ start: 1, log: 'numeric-log-by-name' }));
+		assert.ok(auditStore.rootStore.listLogs().includes('numeric-log-by-name'), 'a log name keeps get-or-create');
+	});
+
 	it('local audited write stores nodeId 0 in the primary record', async function () {
 		const key = 9001;
 		await AuditedTable.put(key, { name: 'nodeId-test' });
