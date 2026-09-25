@@ -8349,10 +8349,10 @@ export function makeTable(options) {
 		}
 		// Periodically evict expired records and deleted records searching for records who expiresAt timestamp is before now
 		if (cleanupInterval === lastCleanupInterval && !runImmediately) return;
+		// Left unrecorded by a thread with no worker index yet: under threads: 0 the main thread loads tables
+		// before it becomes worker 0, and its next call for this interval has to arm the scan then.
+		if (getWorkerIndex() !== undefined) lastCleanupInterval = cleanupInterval;
 		if (ownsStoreMaintenance(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker())) {
-			// Recorded only by the owner: under threads: 0 the main thread loads tables before it becomes the
-			// worker, and its next call for this interval has to arm the scan then.
-			lastCleanupInterval = cleanupInterval;
 			// run on the last thread so we aren't overloading lower-numbered threads
 			if (cleanupTimer) clearTimeout(cleanupTimer);
 			if (!cleanupInterval) {
