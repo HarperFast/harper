@@ -66,7 +66,7 @@ function waitForTcp(host: string, port: number, timeoutMs: number): Promise<void
 	return new Promise((resolve, reject) => {
 		const attempt = () => {
 			const socket = createConnection({ host, port }, () => {
-				socket.end();
+				socket.destroy();
 				resolve();
 			});
 			socket.setTimeout(1_000, () => socket.destroy(new Error('connect timed out')));
@@ -80,7 +80,6 @@ function waitForTcp(host: string, port: number, timeoutMs: number): Promise<void
 	});
 }
 
-/** `materializeGitSSH`'s transient dirs (its `mkdtemp` prefix) in `dir`. */
 async function scanTransientSshDirs(dir: string): Promise<string[]> {
 	return (await readdir(dir)).filter((name) => name.startsWith('harper-ssh-'));
 }
@@ -91,12 +90,8 @@ interface ObservedMaterialization {
 	dirMode: number;
 }
 
-/**
- * Poll `dir` for a transient ssh dir while `inFlight` is pending and snapshot the first one that
- * still holds a key file. Returns null if none was seen.
- */
+/** Snapshot the first transient ssh dir in `dir` that holds a key file while `inFlight` is pending. */
 async function observeDuringFlight(inFlight: Promise<unknown>, dir: string): Promise<ObservedMaterialization | null> {
-	let observed: ObservedMaterialization | null = null;
 	let polling = true;
 	const stopPolling = () => {
 		polling = false;
@@ -104,7 +99,7 @@ async function observeDuringFlight(inFlight: Promise<unknown>, dir: string): Pro
 	inFlight.then(stopPolling, stopPolling);
 	while (polling) {
 		const dirs = await scanTransientSshDirs(dir);
-		if (dirs.length > 0 && !observed) {
+		if (dirs.length > 0) {
 			try {
 				const tempDir = join(dir, dirs[0]);
 				const dirStat = await stat(tempDir);
@@ -115,14 +110,14 @@ async function observeDuringFlight(inFlight: Promise<unknown>, dir: string): Pro
 					const [content, fileStat] = await Promise.all([readFile(filePath, 'utf8'), stat(filePath)]);
 					keyFiles.push({ name, content, mode: fileStat.mode & 0o777 });
 				}
-				if (keyFiles.length > 0) observed = { tempDir, keyFiles, dirMode: dirStat.mode & 0o777 };
+				if (keyFiles.length > 0) return { tempDir, keyFiles, dirMode: dirStat.mode & 0o777 };
 			} catch {
 				// cleanup removed it between readdir and stat; keep polling for a snapshot with content
 			}
 		}
 		await sleep(10);
 	}
-	return observed;
+	return null;
 }
 
 /** The base64 characters of `bytes`' encoding that encode only bytes [from, to). */
