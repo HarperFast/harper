@@ -204,7 +204,7 @@ export class ResourceBridge extends BridgeMethods {
 			await signalling.signalSchemaChangeToPeers(preparation);
 			await dropDatabase(dropSchemaObj.schema);
 		} finally {
-			await signalling.signalSchemaChange(completion(), { peersFirst: true });
+			await signalling.signalSchemaChange(completion(), { peersFirst: true, includeJobWorkers: true });
 			releaseDatabaseDropPreparation(dropSchemaObj.schema, preparationId);
 		}
 	}

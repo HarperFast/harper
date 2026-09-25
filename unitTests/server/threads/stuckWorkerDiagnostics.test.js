@@ -13,6 +13,7 @@ const {
 } = require('#js/server/threads/manageThreads');
 const { pinLogConfig } = require('../../logConfigFixture.js');
 const { waitFor } = require('../../waitFor.js');
+const { sendItcEvent } = require('#js/server/threads/itc');
 const {
 	claimDatabaseDropPreparation,
 	releaseDatabaseDropPreparation,
@@ -196,6 +197,16 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 			assert.match(error.errors[0].message, /fixture preparation failed/);
 			return true;
 		});
+	});
+
+	it('includes job workers when destructive completion requests it', async function () {
+		const worker = await startFixtureWorker('report-acknowledge', 'job');
+		started.push(worker);
+		const received = new Promise((resolve) =>
+			worker.on('message', (message) => message.type === 'fixture-received' && resolve(message))
+		);
+		await sendItcEvent({ type: 'diagnostic-probe', message: {} }, true);
+		assert.ok(await received);
 	});
 
 	it('passes active database-drop fences to workers started during preparation', async function () {

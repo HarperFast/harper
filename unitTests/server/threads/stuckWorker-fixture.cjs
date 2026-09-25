@@ -9,6 +9,9 @@ parentPort.on('message', (message) => {
 		broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, message.timeout).then(() =>
 			parentPort.postMessage({ type: 'probe-settled' })
 		);
+	} else if (message.requestId && process.argv.includes('--report-acknowledge')) {
+		parentPort.postMessage({ type: 'fixture-received', requestId: message.requestId });
+		parentPort.postMessage({ type: 'ack', id: message.requestId });
 	} else if (message.requestId && process.argv.includes('--acknowledge')) {
 		parentPort.postMessage({ type: 'ack', id: message.requestId });
 	} else if (message.requestId && process.argv.includes('--reject')) {

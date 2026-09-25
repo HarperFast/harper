@@ -2315,9 +2315,17 @@ export function prepareDatabaseDrop(databaseName: string, preparationId: string)
 	return task;
 }
 
-export function completeDatabaseDropPreparation(databaseName: string, preparationId: string): void {
+export async function completeDatabaseDropPreparation(databaseName: string, preparationId: string): Promise<void> {
 	const existing = databaseDropPreparationTasks.get(databaseName);
-	if (existing?.id === preparationId) databaseDropPreparationTasks.delete(databaseName);
+	if (existing?.id === preparationId) {
+		try {
+			await existing.task;
+		} catch {
+			// Preparation already reported this failure to the strict broadcaster. Keep admission
+			// fenced until the close attempt settles, then allow the database to reopen normally.
+		}
+		databaseDropPreparationTasks.delete(databaseName);
+	}
 	releaseDatabaseDropPreparation(databaseName, preparationId);
 }
 

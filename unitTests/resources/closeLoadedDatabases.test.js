@@ -20,6 +20,8 @@ const {
 	closeLoadedDatabases,
 	openBranchDatabase,
 	closeBranchDatabases,
+	prepareDatabaseDrop,
+	completeDatabaseDropPreparation,
 	databases,
 } = require('#src/resources/databases');
 const { registryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
@@ -135,6 +137,41 @@ describe('RocksDB handle release', function () {
 		});
 		const reopened = database({ database: databaseName });
 		assert.strictEqual(reopened.status, 'open');
+		await closeDatabase(databaseName);
+	});
+
+	it('keeps admission fenced when completion arrives before preparation finishes closing', async function () {
+		this.timeout(30000);
+		const databaseName = 'drop_schema_late_close';
+		const dropPreparationId = 'drop-schema-late-close-test';
+		const rootStore = openRocksDb(databaseName);
+		const close = rootStore.close;
+		let continueClose;
+		let closeStarted;
+		const started = new Promise((resolve) => (closeStarted = resolve));
+		const blocked = new Promise((resolve) => (continueClose = resolve));
+		rootStore.close = async () => {
+			closeStarted();
+			await blocked;
+			return close.call(rootStore);
+		};
+
+		const preparation = prepareDatabaseDrop(databaseName, dropPreparationId);
+		await started;
+		let completed = false;
+		const completion = completeDatabaseDropPreparation(databaseName, dropPreparationId).then(
+			() => (completed = true)
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(completed, false);
+		assert.throws(
+			() => database({ database: databaseName }),
+			(error) => error.code === 'DATABASE_CLOSING'
+		);
+
+		continueClose();
+		await Promise.all([preparation, completion]);
+		assert.ok(database({ database: databaseName }));
 		await closeDatabase(databaseName);
 	});
 
