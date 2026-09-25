@@ -1245,7 +1245,7 @@ holding an **Ed25519**, **ECDSA** (P-256, P-384 or P-521) or **RSA** key of at l
 - a passphrase-protected key: Harper runs git without a terminal, so ssh has nowhere to ask for the passphrase
 - a DSA key, which OpenSSH 10 no longer supports
 - a FIDO security key (`sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com`), which signs only with its hardware authenticator attached
-- any other algorithm or curve ssh doesn't support
+- any other algorithm or curve ssh doesn't support, or an SSH certificate in place of a plain key
 - a key that is cut off, has lines missing or repeated, or is otherwise damaged — including one whose private half doesn't match its public half, which ssh may load but can never authenticate with
 
 Harper stores the key the way ssh needs it: each line trimmed, blank lines dropped, and a final newline added. An indented or CRLF paste therefore works. A value already sealed as `enc:v1:` (for example one copied from another node's `get_ssh_key`) is stored as-is, since it can't be read without decrypting it.
