@@ -38,13 +38,8 @@ import { table } from '../resources/databases.ts';
 import { getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import * as auth from '../security/auth.ts';
 import * as mqtt from '../server/mqtt.ts';
-<<<<<<< HEAD
-import { getConfigObj, getConfigPath } from '../config/configUtils.ts';
-import { bootstrapModels } from '../resources/models/bootstrap.ts';
-=======
 import { getConfigFilePath, getConfigObj, getConfigPath } from '../config/configUtils.ts';
-import { bootstrapModels, startModelsConfigHotReload } from '../resources/models/bootstrap.ts';
->>>>>>> ac6a3cbc6 (fix(components): start secret custody before boot-time application installs)
+import { bootstrapModels } from '../resources/models/bootstrap.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
 import { Scope } from './Scope.ts';
 import { ApplicationScope } from './ApplicationScope.ts';

@@ -44,18 +44,7 @@ The sharing cuts both ways: the caller's mutations are visible to the **commit**
 
 Blobs flagged with `saveBeforeCommit` (or `saveInRecord`) are written to disk in the `beforeIntermediate` phase of a `TransactionWrite`, _before_ the LMDB/RocksDB write commits. The write's commit callback can still skip the actual record write — for older versions, supersedence by future updates, residency mismatches, or full transaction abort. In every such path the file is on disk but no record references it.
 
-<<<<<<< HEAD
 The mitigations live in three places:
-=======
-- [A deploy builds off to the side, is validated, and only then goes live](components/DESIGN.md#a-deploy-builds-off-to-the-side-is-validated-and-only-then-goes-live) — A deploy builds in `.deploy-staging`, validates that tree, then swaps live to `.deploy-aside` and the candidate in, waiting out handle holders with the old version in place.
-- [Component preparation is serialized across worker threads](components/DESIGN.md#component-preparation-is-serialized-across-worker-threads) — One component transaction at a time across workers; the lifecycle broadcast sits outside the lock; the load lock is keyed by plugin type.
-- [Peer-side deploy_component payload read: retryable blob stalls and `Readable.from()` cancellation](components/DESIGN.md#peer-side-deploy_component-payload-read-retryable-blob-stalls-and-readablefrom-cancellation) — Retry a `BLOB_UNAVAILABLE` read only before any byte reached the consumer; use `Readable.from()` for cancellation, not a hand-rolled `ReadableStream`.
-- [A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)](components/DESIGN.md#a-dangling-symlink-silently-truncates-the-deploy-tarball-componentspackagecomponentts) — tar-fs treats a dangling symlink's ENOENT as end-of-stream, so `scanPackageDirectory()` pre-walks the tree.
-- [Deploy watcher generations preserve logical entry events](components/DESIGN.md#deploy-watcher-generations-preserve-logical-entry-events) — `EntryHandler` snapshots matching paths across a deploy so consumers see logical change and delete events, not raw rescan adds.
-- [Restart-free deploys require proof of runtime equivalence](components/DESIGN.md#restart-free-deploys-require-proof-of-runtime-equivalence) — A deploy stays restart-free only when declared files, the imported runtime and installed dependencies are all proven equivalent.
-- [Secret custody starts before boot-time installs](components/DESIGN.md#secret-custody-starts-before-boot-time-installs) — `startSecretCustodyOnMainThread()` runs the custody built-in ahead of `installApplications()`; the root load reuses it.
-- [Startup waits for component preparation only up to `deployment.startupInstallTimeout`](components/DESIGN.md#startup-waits-for-component-preparation-only-up-to-deploymentstartupinstalltimeout) — One stalled install cannot hold listeners closed; it finishes in the background under its lock, and lock-file transitions are read-modify-write.
->>>>>>> ac6a3cbc6 (fix(components): start secret custody before boot-time application installs)
 
 - `startPreCommitBlobsForRecord` (`blob.ts`) returns the blob list alongside its completion callback so each `TransactionWrite` can attach a `savedBlobs: Blob[]`.
 - `cleanupUnusedBlobs(blobs)` (`blob.ts`) waits for each blob's `saving` promise to settle, then `deleteBlob`s the file. It clears the input list so it's idempotent across repeated calls (e.g. an early-return that also gets caught by the abort path).
@@ -904,6 +893,14 @@ not restart a fully observed runtime, but a changed or missing imported helper, 
 input, changed dependency evidence, or any genuinely opaque runtime does. Entry changes themselves
 remain consumer-directed: the static plugin applies asset changes incrementally, while executable
 consumers such as `jsResource` request a restart on their logical `change` or `unlink` events.
+
+## Secret custody starts before boot-time installs
+
+`installApplications()` decrypts sealed SSH deploy keys and resolves stored registry credentials through
+secret custody, which is itself a root built-in (Harper Pro's `secretCustody`). `loadRootComponents()`
+therefore starts that one built-in through `startSecretCustodyOnMainThread()` before installing, and the
+root load reuses the start through the shared `mainThreadInitialized` gate ([#2780](https://github.com/HarperFast/harper/issues/2780)).
+Enforced by `integrationTests/components/boot-install-secret-custody.test.ts`.
 
 ## Graph size on the HNSW query path must come from node ids (`resources/indexes/HierarchicalNavigableSmallWorld.ts`)
 

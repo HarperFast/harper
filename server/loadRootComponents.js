@@ -1,15 +1,10 @@
 const { isMainThread } = require('worker_threads');
 const { getTables } = require('../resources/databases.ts');
-<<<<<<< HEAD
-const { loadComponentDirectories, loadComponent } = require('../components/componentLoader.ts');
-=======
 const {
 	loadComponentDirectories,
 	loadComponent,
-	readyComponentModules,
 	startSecretCustodyOnMainThread,
 } = require('../components/componentLoader.ts');
->>>>>>> ac6a3cbc6 (fix(components): start secret custody before boot-time application installs)
 const { resetResources } = require('../resources/Resources.ts');
 const configUtils = require('../config/configUtils.ts');
 const { dirname } = require('path');
