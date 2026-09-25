@@ -13,7 +13,7 @@ let averageEventCycleTime = 0;
  * @param fn
  * @param onLimitExceeded
  * @param maxQueueTimeLimit
- * @param name names this queue in the shed warning
+ * @param name
  */
 export function throttle(
 	fn: (...args: any) => any,

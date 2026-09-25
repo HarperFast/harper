@@ -46,7 +46,9 @@ describe('throttle test', () => {
 		const { logger } = require('#src/utility/logging/logger');
 		const warnings = [];
 		const originalWarn = logger.warn;
-		logger.warn = (message) => warnings.push(message);
+		logger.warn = (message) => {
+			if (String(message).startsWith('Rejecting queued calls (test queue)')) warnings.push(message);
+		};
 		try {
 			let shed = 0;
 			let throttledFunction = throttle(

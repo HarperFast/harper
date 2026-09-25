@@ -54,7 +54,6 @@ const N_PRODUCTS = 60; // 60 x 5 attrs = 300 EAV rows for the bulk probe
 const READS_PER_PRODUCT_DURING_BURST = 3;
 const PUT_SHED_RETRIES = 10;
 const PUT_SHED_BACKOFF_MS = 100; // × attempt: 4.5s across the 9 retries
-// server/http.ts's body when the request-queue throttle sheds a non-GET request
 const REQUEST_QUEUE_SHED_BODY = 'Service unavailable, exceeded request queue limit';
 
 interface ProductBody {
