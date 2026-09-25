@@ -677,6 +677,8 @@ export const CONFIG_PARAMS = {
 	// receive path's frame queue is unbounded and a receiver slower than its peer grows it at the full
 	// inbound line rate until the worker is OOM-killed (harper#2226, harper-pro#659).
 	REPLICATION_RECEIVEQUEUEHIGHWATERMARK: 'replication_receiveQueueHighWaterMark',
+	// Times a replicated frame whose transaction failed is replayed before the receiver moves past it (harper#1162).
+	REPLICATION_FAILEDFRAMEREPLAYS: 'replication_failedFrameReplays',
 	REPLICATION_PINGINTERVAL: 'replication_pingInterval',
 	REPLICATION_PINGTIMEOUT: 'replication_pingTimeout',
 	REPLICATION_COPYTIMEOUT: 'replication_copyTimeout',
