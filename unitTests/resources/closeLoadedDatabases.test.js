@@ -159,9 +159,7 @@ describe('RocksDB handle release', function () {
 		const preparation = prepareDatabaseDrop(databaseName, dropPreparationId);
 		await started;
 		let completed = false;
-		const completion = completeDatabaseDropPreparation(databaseName, dropPreparationId).then(
-			() => (completed = true)
-		);
+		const completion = completeDatabaseDropPreparation(databaseName, dropPreparationId).then(() => (completed = true));
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.strictEqual(completed, false);
 		assert.throws(
