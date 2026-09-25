@@ -25,9 +25,7 @@ export function throttle(
 		if (queuedCalls) {
 			// this is an estimate of the time an event will take to process, based on the average event cycle time and the queue depth
 			if (queuedCalls.length * averageEventCycleTime > maxQueueTimeLimit) {
-				// Rate-limited: the shed itself is silent (a 503 the HTTP layer reports at most as an
-				// analytics action), and without this line a burst of rejected writes leaves no
-				// server-side record of the queue depth and event-loop cycle time that caused it.
+				// The only server-side record of a shed: onLimitExceeded answers the caller and nothing more.
 				const now = performance.now();
 				if (now - lastLimitExceededLog > LIMIT_EXCEEDED_LOG_INTERVAL) {
 					lastLimitExceededLog = now;
