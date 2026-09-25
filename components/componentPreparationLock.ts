@@ -210,6 +210,31 @@ export async function scanLiveClaims(
 	return { choosing, tickets };
 }
 
+// Windows answers a read of a claim another contender is deleting (delete pending), or that a scanner holds without read
+// sharing, with EPERM or EBUSY. Both clear within moments, so a scan that meets one is repeated rather than failing
+// the acquisition; anything that outlasts the window is a real failure, and still fails fast.
+const TRANSIENT_CLAIM_READ_CODES = new Set(process.platform === 'win32' ? ['EBUSY', 'EPERM'] : []);
+const TRANSIENT_CLAIM_READ_WINDOW_MS = 2_000;
+
+async function scanLiveClaimsPatiently(
+	lockRoot: string,
+	lockName: string,
+	options: ComponentPreparationLockOptions,
+	ownToken: string
+): Promise<LiveClaims> {
+	const giveUpAt = performance.now() + TRANSIENT_CLAIM_READ_WINDOW_MS;
+	for (;;) {
+		try {
+			return await scanLiveClaims(lockRoot, lockName, options, ownToken);
+		} catch (error) {
+			if (!TRANSIENT_CLAIM_READ_CODES.has((error as NodeJS.ErrnoException)?.code) || performance.now() >= giveUpAt) {
+				throw error;
+			}
+			await delay(LOCK_POLL_INTERVAL_MS);
+		}
+	}
+}
+
 function ticketPrecedes(left: ComponentPreparationLockOwner, right: ComponentPreparationLockOwner): boolean {
 	const leftTicket = left.ticket ?? Number.MAX_SAFE_INTEGER;
 	const rightTicket = right.ticket ?? Number.MAX_SAFE_INTEGER;
@@ -284,7 +309,7 @@ async function acquireComponentPreparationLock(
 		// Bakery "choosing" flag: an earlier contender will wait for this file to disappear before
 		// comparing tickets, while a later contender necessarily observes our published ticket.
 		await publishClaim(choosingPath, owner);
-		const initialClaims = await scanLiveClaims(lockRoot, lockName, options, owner.token);
+		const initialClaims = await scanLiveClaimsPatiently(lockRoot, lockName, options, owner.token);
 		owner.ticket = initialClaims.tickets.reduce((max, contender) => Math.max(max, contender.ticket ?? 0), 0) + 1;
 		ticketPath = join(lockRoot, `${lockName}.ticket.${owner.ticket}.${owner.token}.json`);
 		await publishClaim(ticketPath, owner);
@@ -295,7 +320,7 @@ async function acquireComponentPreparationLock(
 	let waitingReportedForToken: string | undefined;
 	try {
 		for (;;) {
-			const claims = await scanLiveClaims(lockRoot, lockName, options, owner.token);
+			const claims = await scanLiveClaimsPatiently(lockRoot, lockName, options, owner.token);
 			const precedingTicket = claims.tickets
 				.filter((contender) => ticketPrecedes(contender, owner))
 				.sort((a, b) => {

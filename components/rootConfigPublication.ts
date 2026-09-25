@@ -214,7 +214,7 @@ function assertEnvLayersKeepEffect(
 	if (keysByVar.size === 0) return;
 	const reasons = [...keysByVar].map(([envVarName, keys]) => `${envVarName} sets ${keys.join(', ')}`);
 	const outcome =
-		effect.kind === 'remove' ? 'the entry would come back' : 'the entry this release publishes would not last';
+		effect.kind === 'remove' ? 'the next start would reinstall it' : 'the entry this release publishes would not last';
 	throw new ServerError(
 		`Cannot ${effect.kind === 'remove' ? 'remove' : 'publish'} the root config entry of ${component}: ` +
 			`${reasons.join('; ')}, which the config environment reasserts at every start and config refresh, so ` +
@@ -225,7 +225,8 @@ function assertEnvLayersKeepEffect(
 
 /**
  * The keys, as paths into the component's entry, that contradict what the effect wants of it; none when the
- * effect holds. An empty path is the entry itself.
+ * effect holds. For a payload deploy and a drop that is only the keys that say how to install the component: a
+ * drop leaves settings a variable keeps for its name, such as `isolated`, which install nothing.
  */
 function contradictedKeys(entry: unknown, effect: RootConfigEffect): string[][] {
 	switch (effect.kind) {
@@ -236,10 +237,8 @@ function contradictedKeys(entry: unknown, effect: RootConfigEffect): string[][] 
 				(keyPath) => !isDeepStrictEqual(valueAt(entry, keyPath), valueAt(effect.entry, keyPath))
 			);
 		case 'unset-package':
-			return isPlainObject(entry) ? PACKAGE_INSTALL_KEYS.filter((key) => key in entry).map((key) => [key]) : [];
 		case 'remove':
-			if (entry === undefined) return [];
-			return isPlainObject(entry) && Object.keys(entry).length > 0 ? Object.keys(entry).map((key) => [key]) : [[]];
+			return isPlainObject(entry) ? PACKAGE_INSTALL_KEYS.filter((key) => key in entry).map((key) => [key]) : [];
 	}
 }
 

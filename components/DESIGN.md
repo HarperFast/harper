@@ -285,13 +285,14 @@ recovered.
 
 **An effect the config environment would undo is refused.** `HARPER_CONFIG` and `HARPER_SET_CONFIG` rewrite every
 key they name at each start and each config refresh, over the file and over edits to it. A package activation whose
-entry one of them contradicts would go live under the forced entry, and a dropped component's entry would come
-back. So the pre-flight composes those two variables together over the document it would write and refuses, with a
-409 naming the variable that wins each key, an effect they contradict; the writer repeats the check under the lock.
-Keys a variable adds beside the ones an effect declares are no contradiction: an operator-forced `isolated: true`
-stays beside a deploy's `package`. After its refresh, the writer re-reads the file and throws if the effect no
-longer holds — the backstop for what composing those two cannot predict, such as `HARPER_DEFAULT_CONFIG` filling a
-removed key back in on the main thread.
+entry one of them contradicts would go live under the forced entry, and a dropped component would be reinstalled
+from the install keys one of them put back. Settings such as `isolated` or `host` a variable keeps for a dropped
+component's name install nothing, and do not block the drop. So the pre-flight composes those two variables
+together over the document it would write and refuses, with a 409 naming the variable that wins each key, an effect
+they contradict; the writer repeats the check under the lock. Keys a variable adds beside the ones an effect
+declares are no contradiction: an operator-forced `isolated: true` stays beside a deploy's `package`. After its
+refresh, the writer re-reads the file and throws if the effect no longer holds — the backstop for what composing
+those two cannot predict, such as `HARPER_DEFAULT_CONFIG` filling a removed key back in on the main thread.
 
 **Boot ordering depends on the refresh.** `env.initSync()` memoizes the config object, so publishing to disk
 during recovery is not enough on its own: `applyRootConfigEffect` re-inits THIS thread's config, and boot

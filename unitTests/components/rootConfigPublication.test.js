@@ -403,17 +403,26 @@ describe('an effect the config environment would undo', () => {
 		);
 	});
 
-	it('is refused for a drop when a variable would put the entry back', async () => {
+	it('is refused for a drop when a variable would put back the package it installs from', async () => {
 		writeEntry('env-web', { package: 'npm:env-web@1' });
 
-		await withConfigEnv({ HARPER_CONFIG: JSON.stringify({ 'env-web': { isolated: true } }) }, () =>
+		await withConfigEnv({ HARPER_CONFIG: JSON.stringify({ 'env-web': { package: 'npm:env-web@1' } }) }, () =>
 			assert.rejects(
 				applyRootConfigEffect('env-web', { kind: 'remove' }),
-				/HARPER_CONFIG sets env-web\.isolated\b.*would come back/
+				/HARPER_CONFIG sets env-web\.package\b.*would reinstall it/
 			)
 		);
 
 		assert.deepStrictEqual(readRootConfig()['env-web'], { package: 'npm:env-web@1' });
+	});
+
+	it('is not refused for a drop over settings a variable keeps for the name, which install nothing', async () => {
+		writeEntry('env-web', { package: 'npm:env-web@1', isolated: true });
+
+		await withConfigEnv(
+			{ HARPER_SET_CONFIG: JSON.stringify({ 'env-web': { isolated: true, host: 'web.test' } }) },
+			() => assertRootConfigEffectPublishable('env-web', { kind: 'remove' })
+		);
 	});
 
 	it('is not refused over a key HARPER_SET_CONFIG already sets to the declared value, whatever HARPER_CONFIG says', async () => {
