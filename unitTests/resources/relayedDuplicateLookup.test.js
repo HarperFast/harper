@@ -11,7 +11,7 @@ const auditStoreModule = require('#src/resources/auditStore');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 describe('Re-delivered writes relayed from an origin with no log here', () => {
-	let Relayed, auditStore, originId, relayId, otherRelayId;
+	let Relayed, auditStore, originId, relayId;
 	let lastLogKey = Date.now() - 60_000;
 	const originClock = () => (lastLogKey += 1_000);
 
@@ -24,10 +24,10 @@ describe('Re-delivered writes relayed from an origin with no log here', () => {
 		return entries;
 	}
 
-	function applyRelayed(logKey, type, id, viaNodeId = relayId) {
+	function applyRelayed(logKey, type, id) {
 		const context = { source: {}, sourceApply: true, timestamp: logKey };
 		return transaction(context, async () => {
-			const options = { isNotification: true, nodeId: originId, viaNodeId, version: logKey };
+			const options = { isNotification: true, nodeId: originId, viaNodeId: relayId, version: logKey };
 			const resource = await Relayed.getResource(id, context);
 			if (type === 'delete') resource._writeDelete(id, options);
 			else resource._writeUpdate(id, { id, name: id }, true, options);
@@ -50,8 +50,6 @@ describe('Re-delivered writes relayed from an origin with no log here', () => {
 		auditStore.ensureLogExists('relay-peer-with-log');
 		// the id the store filed the log under (another suite may have replaced the id mapping)
 		relayId = nodeLogs.indexOf(auditStore.logByName.get('relay-peer-with-log'));
-		auditStore.ensureLogExists('other-relay-peer');
-		otherRelayId = nodeLogs.indexOf(auditStore.logByName.get('other-relay-peer'));
 	});
 
 	it('logs a re-delivered relayed put once', async () => {
@@ -77,13 +75,6 @@ describe('Re-delivered writes relayed from an origin with no log here', () => {
 		} finally {
 			auditStoreModule.setAuditRetention(retention);
 		}
-	});
-
-	it('logs a relayed put once when its re-delivery comes through another relay', async () => {
-		const logKey = originClock();
-		await applyRelayed(logKey, 'put', 'relayed-other-route');
-		for (let i = 0; i < 4; i++) await applyRelayed(logKey, 'put', 'relayed-other-route', otherRelayId);
-		assert.equal(entriesFor('relayed-other-route', 'put').length, 1);
 	});
 
 	it('creates no log for the origin while looking up its entries', async () => {

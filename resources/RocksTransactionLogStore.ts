@@ -140,7 +140,8 @@ export class RocksTransactionLogStore extends EventEmitter {
 		log.addEntry(entryBinary, options.transaction.id);
 	}
 
-	logFor(nodeId?: number, viaNodeId?: number) {
+	/** A lookup of a write's entry must read the log its write was filed in. */
+	logFor(nodeId: number, viaNodeId: number) {
 		return this.logById(nodeId) ?? this.logById(viaNodeId) ?? this.log;
 	}
 	logById(nodeId: number) {
@@ -163,18 +164,15 @@ export class RocksTransactionLogStore extends EventEmitter {
 			if (recordId === undefined) {
 				throw new Error('recordId must be provided');
 			}
-			const find = (log?: string) => {
-				for (const entry of this.getRange({ start: key, exactStart: true, log })) {
-					// a relay log holds several origins' entries, and (version, nodeId) identifies one
-					if (entry.recordId === recordId && entry.tableId === tableId && !(nodeId > 0 && entry.nodeId !== nodeId))
-						return entry;
-					if (entry.version !== key) return; // no longer in this transaction
+			// this a request for a transaction log entry by a timestamp
+			const log = nodeId === undefined ? undefined : this.logFor(nodeId, viaNodeId ?? nodeId).name;
+			for (const entry of this.getRange({ start: key, exactStart: true, log })) {
+				// a relay log holds several origins' entries, and (version, nodeId) identifies one
+				if (entry.recordId === recordId && entry.tableId === tableId && !(nodeId > 0 && entry.nodeId !== nodeId)) {
+					return entry;
 				}
-			};
-			if (nodeId === undefined) return find();
-			// An entry is filed in the log that served its origin when it was written: its own, else the relay's.
-			// Either can differ now (another relay, or the origin's log created since), so a miss reads every log.
-			return find(this.logFor(nodeId, viaNodeId ?? nodeId).name) ?? (nodeId > 0 ? find() : undefined);
+				if (entry.version !== key) return; // no longer in this transaction
+			}
 		} else {
 			// Harper puts some metadata in the database, we will just put this in the root store instead
 			return this.rootStore.getSync(key);
