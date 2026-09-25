@@ -4,7 +4,8 @@ const assert = require('node:assert');
 const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 const { Worker, threadId } = require('node:worker_threads');
-const { chmod, mkdtemp, mkdir, readdir, rm, utimes, writeFile } = require('node:fs/promises');
+const { constants: fsConstants } = require('node:fs');
+const { chmod, mkdtemp, mkdir, open, readdir, rm, utimes, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -605,6 +606,33 @@ describe('component preparation lock', () => {
 			let acquired = false;
 			await withComponentPreparationLock(componentDirPath, async () => (acquired = true), boundedWait);
 			assert.equal(acquired, true, 'once the ticket can be read again, it reads as released, not live');
+		});
+
+		// Node opens every file sharing read, write and delete unless asked for libuv's UV_FS_O_EXLOCK, which shares
+		// nothing: the handle of a scanner holding the ticket without read or delete sharing.
+		const UV_FS_O_EXLOCK = 0x10000000;
+
+		it('is released through a handle that shares nothing, and the next holder acquires once it closes', async function () {
+			if (process.platform !== 'win32') return this.skip();
+			const componentDirPath = join(rootDir, 'exclusive-at-release');
+			const { lockRoot, lockName } = componentPreparationLockPaths(componentDirPath);
+			let handle;
+			try {
+				await withComponentPreparationLock(componentDirPath, async () => {
+					const ticketPath = join(lockRoot, (await ticketNames(lockRoot, lockName))[0]);
+					handle = await open(ticketPath, fsConstants.O_RDONLY | UV_FS_O_EXLOCK);
+				});
+				assert.ok(
+					(await readdir(lockRoot)).some((name) => name.startsWith(`${lockName}.released.`)),
+					'the release published a marker for the ticket it could neither read nor remove'
+				);
+			} finally {
+				await handle?.close();
+			}
+
+			let acquired = false;
+			await withComponentPreparationLock(componentDirPath, async () => (acquired = true), boundedWait);
+			assert.equal(acquired, true);
 		});
 
 		it('still fails when neither the ticket nor a marker can be written', async () => {
