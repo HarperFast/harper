@@ -100,6 +100,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [TLS hot-reload: cert vs. private key follow two different propagation paths (`security/keys.ts`)](security/DESIGN.md#tls-hot-reload-cert-vs-private-key-follow-two-different-propagation-paths-securitykeysts) — Certificates propagate through `hdb_certificate` subscriptions, private keys through each worker's own file watch; the two must reconverge.
 - [A component-facing export needs BOTH `index.ts` and `getHarperExports` (`security/jsLoader.ts`, `index.ts`)](security/DESIGN.md#a-component-facing-export-needs-both-indexts-and-getharperexports-securityjsloaderts-indexts) — A compartment resolves `harper` to `getHarperExports()`, not to `index.ts`; a value in only one list fails at component load, and only a fixture importing from `'harper'` catches it.
 - [Authentication converts every principal-resolution failure into a decision (`security/auth.ts`)](security/DESIGN.md#authentication-converts-every-principal-resolution-failure-into-a-decision-securityauthts) — A failed `server.getUser` becomes an in-place 401 or a deferred rejection, never a throw; an in-place answer must be recorded or a WebSocket/MQTT upgrade proceeds with no principal.
+- [User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)](security/DESIGN.md#user-and-role-lookups-read-the-records-and-nothing-derived-from-them-outlives-them-securityuserts) — No per-thread copy and no change broadcast; derived data and cached principals are validated against entry versions.
 
 ## components/ — deploys and the load lifecycle
 
@@ -110,6 +111,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)](components/DESIGN.md#a-dangling-symlink-silently-truncates-the-deploy-tarball-componentspackagecomponentts) — tar-fs treats a dangling symlink's ENOENT as end-of-stream, so `scanPackageDirectory()` pre-walks the tree.
 - [Deploy watcher generations preserve logical entry events](components/DESIGN.md#deploy-watcher-generations-preserve-logical-entry-events) — `EntryHandler` snapshots matching paths across a deploy so consumers see logical change and delete events, not raw rescan adds.
 - [Restart-free deploys require proof of runtime equivalence](components/DESIGN.md#restart-free-deploys-require-proof-of-runtime-equivalence) — A deploy stays restart-free only when declared files, the imported runtime and installed dependencies are all proven equivalent.
+- [Startup waits for component preparation only up to `deployment.startupInstallTimeout`](components/DESIGN.md#startup-waits-for-component-preparation-only-up-to-deploymentstartupinstalltimeout) — One stalled install cannot hold listeners closed; it finishes in the background under its lock, and lock-file transitions are read-modify-write.
 
 ## components/mcp/
 

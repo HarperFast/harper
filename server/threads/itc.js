@@ -10,7 +10,6 @@ module.exports = {
 	sendItcEvent,
 	validateEvent,
 	SchemaEventMsg,
-	UserEventMsg,
 };
 let serverItcHandlers;
 onMessageFromWorkers(async (event, sender) => {
@@ -90,13 +89,4 @@ function SchemaEventMsg(
 	this.table = table;
 	this.attribute = attribute;
 	if (branchPath) this.branchPath = branchPath;
-}
-
-/**
- * Constructor function for the message of user ITC events
- * @param originator
- * @constructor
- */
-function UserEventMsg(originator) {
-	this.originator = originator;
 }

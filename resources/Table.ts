@@ -4,13 +4,7 @@
  * table-level interactions, loading records, updating records, querying, and more.
  */
 
-import {
-	CONFIG_PARAMS,
-	OPERATIONS_ENUM,
-	SYSTEM_TABLE_NAMES,
-	SYSTEM_SCHEMA_NAME,
-	MAX_SET_TIMEOUT_MS,
-} from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, OPERATIONS_ENUM, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
 import { type Database } from 'lmdb';
 import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
@@ -69,7 +63,7 @@ import {
 	type ValidationIssue,
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
-import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc.js';
+import { SchemaEventMsg } from '../server/threads/itc.js';
 import {
 	databases,
 	table,
@@ -1070,7 +1064,6 @@ export function makeTable(options) {
 			// as they come in, and directly writing them to this table. We use the notification option to ensure
 			// that we don't re-broadcast these as "requested" changes back to the source.
 			(async () => {
-				let userRoleUpdate = false;
 				let lastSequenceId;
 				let pendingApplyFailures: Promise<void> | undefined;
 				const reportDroppedWrite = (event, context, error) => {
@@ -1133,12 +1126,6 @@ export function makeTable(options) {
 					if (isLockControlType(event.type)) return applyLockControlEvent(event, context);
 					const value = event.value;
 					const Table = event.table ? databases[databaseName][event.table] : TableResource;
-					if (
-						databaseName === SYSTEM_SCHEMA_NAME &&
-						(event.table === SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME || event.table === SYSTEM_TABLE_NAMES.USER_TABLE_NAME)
-					) {
-						userRoleUpdate = true;
-					}
 					if (event.id === undefined) {
 						event.id = value[Table.primaryKey];
 						if (event.id === undefined) throw new Error('Replication message without an id ' + JSON.stringify(event));
@@ -1484,11 +1471,6 @@ export function makeTable(options) {
 									}
 								});
 								if (txnInProgress) txnInProgress.committed = commitResolution;
-								if (userRoleUpdate && commitResolution && !(commitResolution as any).waitingForUserChange) {
-									// if the user role changed, asynchronously signal the user change (but don't block this function)
-									commitResolution.then(() => signalling.signalUserChange(new UserEventMsg(process.pid)));
-									(commitResolution as any).waitingForUserChange = true; // only need to send one signal per transaction
-								}
 
 								if (event.onCommit) {
 									if (txnInProgress) {
