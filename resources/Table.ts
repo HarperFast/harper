@@ -764,6 +764,9 @@ export function makeTable(options) {
 	let hasSourceGet: any;
 	let primaryKeyAttribute: Attribute | undefined;
 	let lastEvictionCompletion: Promise<void> = Promise.resolve();
+	let recordExpirationCompletion: Promise<void> = Promise.resolve();
+	const maintenanceCommits = new Set<Promise<unknown>>();
+	let maintenanceClosed = false;
 	let droppingTable = false;
 	let createdTimeProperty: Attribute | undefined,
 		updatedTimeProperty: Attribute | undefined,
@@ -2285,6 +2288,7 @@ export function makeTable(options) {
 			// invisible, and the tombstone guarantees the drop completes on the
 			// next startup (or on a same-name create).
 			if (databases[databaseName]?.[tableName] === TableResource) delete databases[databaseName][tableName];
+			await TableResource.closeMaintenance();
 			TableResource.cleanup();
 			if (databaseName === databasePath && rootStore instanceof RocksDatabase) {
 				try {
@@ -3124,6 +3128,7 @@ export function makeTable(options) {
 		 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
 		 */
 		static evict(id, existingRecord, existingVersion) {
+			if (maintenanceClosed) return Promise.resolve();
 			let entry;
 			const lmdbTransaction = txnForContext({ transaction: new DatabaseTransaction() });
 			let transaction = lmdbTransaction.getReadTxn();
@@ -3170,23 +3175,27 @@ export function makeTable(options) {
 					// a plain resolution object rather than a promise — return the store's write promises instead, so
 					// the caller gets a real thenable that resolves once the removal is durable.
 					(lmdbTransaction as any).commit();
-					return Promise.resolve(lmdbCompletion).catch((error) => {
-						logger.warn?.('Error evicting record', id, error);
-					});
+					return trackMaintenanceCommit(
+						Promise.resolve(lmdbCompletion).catch((error) => {
+							logger.warn?.('Error evicting record', id, error);
+						})
+					);
 				}
 				// RocksDB: eviction writes went directly into the raw transaction via options; commit it directly,
 				// as DatabaseTransaction.commit() would abort it (no tracked writes). The raw commit bypasses
 				// DatabaseTransaction's ERR_BUSY retry, so a concurrent-write conflict rejects here — swallow it
 				// (abandon the eviction) and log anything unexpected, rather than letting it crash the process.
-				return (transaction as any).commit().catch((error) => {
-					// The commit failed, so the read-snapshot/transaction handle is still open — release it, as the
-					// batched-eviction path does on its own commit failures. committed===true skips the finally abort.
-					try {
-						(transaction as any).abort();
-					} catch {}
-					if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned eviction of busy record', id);
-					else logger.warn?.('Error evicting record', id, error);
-				});
+				return trackMaintenanceCommit(
+					(transaction as any).commit().catch((error) => {
+						// The commit failed, so the read-snapshot/transaction handle is still open — release it, as the
+						// batched-eviction path does on its own commit failures. committed===true skips the finally abort.
+						try {
+							(transaction as any).abort();
+						} catch {}
+						if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned eviction of busy record', id);
+						else logger.warn?.('Error evicting record', id, error);
+					})
+				);
 			} finally {
 				if (!committed) {
 					// Skip path or thrown error: abort instead of committing so we don't apply
@@ -7373,11 +7382,18 @@ export function makeTable(options) {
 			void TableResource.derivedIndexRuntime
 				?.close()
 				.catch((error) => logger.warn?.(`Derived index shutdown failed for ${databaseName}.${tableName}`, error));
-			clearTimeout(cleanupTimer);
-			settlePendingCleanup();
-			clearInterval(recordExpirationInterval);
+			stopMaintenance();
 			deleteCallbackHandle?.remove();
 			removeStorageReclamationHandler(primaryStore.path, reclamationHandler);
+		}
+		static async closeMaintenance(): Promise<void> {
+			stopMaintenance();
+			await Promise.allSettled([lastEvictionCompletion, recordExpirationCompletion]);
+			for (;;) {
+				const pending = [...maintenanceCommits];
+				if (pending.length === 0) return;
+				await Promise.allSettled(pending);
+			}
 		}
 		static _readTxnForContext(context) {
 			return txnForContext(context).getReadTxn();
@@ -8413,6 +8429,17 @@ export function makeTable(options) {
 			throw new ClientError('Can not specify replication confirmation without super user permissions', 403);
 		return true;
 	}
+	function trackMaintenanceCommit<T>(commit: Promise<T>): Promise<T> {
+		const tracked = commit.finally(() => maintenanceCommits.delete(tracked));
+		maintenanceCommits.add(tracked);
+		return tracked;
+	}
+	function stopMaintenance() {
+		maintenanceClosed = true;
+		clearTimeout(cleanupTimer);
+		settlePendingCleanup();
+		clearInterval(recordExpirationInterval);
+	}
 	// RocksDB-only: coalesces eviction/tombstone removals into shared transactions so the cleanup
 	// scan pays one commit per batch instead of one per record. Descriptors hold only the decoded
 	// primary key and the version seen during the scan (both stable primitives — the scanned record
@@ -8521,7 +8548,7 @@ export function makeTable(options) {
 	}
 	function scheduleCleanup(priority?: number): Promise<void> | void {
 		// a reclamation run may still hold this class's handler after cleanup(); a promise here would never settle
-		if (disposed) return;
+		if (disposed || maintenanceClosed) return;
 		let runImmediately = false;
 		if (priority) {
 			// run immediately if there is a big increase in priority
@@ -8675,17 +8702,18 @@ export function makeTable(options) {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
 		if (ownsStoreExpiration(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker())) {
 			// we want to run the pruning of expired records on only one thread so we don't have conflicts in evicting
-			recordExpirationInterval = setInterval(async () => {
+			recordExpirationInterval = setInterval(() => {
 				// go through each database and table and then search for expired entries
 				// find any entries that are set to expire before now
 				// updatedAttributes() clears expiresAtProperty when a live redeclaration drops the directive,
 				// and there is nothing left for this interval to scan by
 				if (disposed || runningRecordExpiration || !expiresAtProperty) return;
 				runningRecordExpiration = true;
-				try {
+				recordExpirationCompletion = (async () => {
 					const expiresAtName = expiresAtProperty.name;
 					const index = indices[expiresAtName];
 					if (!index) throw new Error(`expiresAt attribute ${expiresAtProperty} must be indexed`);
+					const inFlight = new Set<Promise<unknown>>();
 					for (const key of index.getRange({
 						start: true,
 						values: false,
@@ -8699,16 +8727,20 @@ export function makeTable(options) {
 								primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id));
 							} else if (recordEntry.value[expiresAtName] < Date.now()) {
 								// make sure the record hasn't changed and won't change while removing
-								TableResource.evict(id, recordEntry.value, recordEntry.version);
+								const eviction = TableResource.evict(id, recordEntry.value, recordEntry.version);
+								if (eviction) {
+									const tracked = eviction.finally(() => inFlight.delete(tracked));
+									inFlight.add(tracked);
+									if (inFlight.size >= 50) await Promise.race(inFlight);
+								}
 							}
 						}
 						await rest();
 					}
-				} catch (error) {
-					logger.error?.('Error in evicting old records', error);
-				} finally {
-					runningRecordExpiration = false;
-				}
+					await Promise.all(inFlight);
+				})()
+					.catch((error) => logger.error?.('Error in evicting old records', error))
+					.finally(() => (runningRecordExpiration = false));
 			}, RECORD_PRUNING_INTERVAL).unref();
 		}
 	}

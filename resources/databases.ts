@@ -1907,6 +1907,7 @@ export function openBranchDatabase(
 			const operation = commitSuspension
 				.waitForDrain()
 				.then(() => settleBranchDerivedIndexes(tables))
+				.then(() => settleTableMaintenance(tables))
 				.then(() => {
 					closeBranchHandles(path, rootStore, openedStores, tables);
 					if (openBranches.get(path) === branch) openBranches.delete(path);
@@ -2252,6 +2253,7 @@ export async function dropDatabase(databaseName) {
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
 		}
 		releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, true, [rootStore]);
+		await settleTableMaintenance(dbTables);
 		for (const tableName in dbTables) {
 			const tableRoot = dbTables[tableName].primaryStore.rootStore;
 			lmdbDatabaseEnvs.delete(tableRoot.path);
@@ -2341,6 +2343,7 @@ export async function closeDatabase(
 		false,
 		definedRoot ? [definedRoot] : []
 	);
+	await settleTableMaintenance(dbTables);
 	let databaseClosed = false;
 	try {
 		const rootStores = new Set<any>();
@@ -2479,6 +2482,18 @@ export async function closeLoadedDatabases(): Promise<void> {
 				logger.warn(`Error closing database ${databaseName} during worker teardown`, error);
 			}
 	}
+}
+
+async function settleTableMaintenance(dbTables: Record<string, any>): Promise<void> {
+	await Promise.all(
+		Object.values(dbTables).map((table: any) =>
+			table
+				?.closeMaintenance?.()
+				.catch((error) =>
+					logger.warn(`Error settling maintenance for ${table?.databaseName}.${table?.tableName}`, error)
+				)
+		)
+	);
 }
 
 async function settleDatabaseDerivedIndexes(

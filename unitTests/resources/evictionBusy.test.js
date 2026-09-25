@@ -63,4 +63,34 @@ describe('evict() swallows a commit conflict instead of rejecting (#1287)', () =
 			unregister();
 		}
 	});
+
+	it('waits for a maintenance commit before disposing the table', async function () {
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const originalCommit = Transaction.prototype.commit;
+		await BusyTable.put('b2', { id: 'b2' });
+		const entry = BusyTable.primaryStore.getEntry('b2');
+		let releaseCommit;
+		let commitStarted;
+		const started = new Promise((resolve) => (commitStarted = resolve));
+		const blocked = new Promise((resolve) => (releaseCommit = resolve));
+		Transaction.prototype.commit = async function (...args) {
+			commitStarted();
+			await blocked;
+			return originalCommit.apply(this, args);
+		};
+
+		try {
+			const eviction = BusyTable.evict('b2', entry.value, entry.version);
+			await started;
+			let closed = false;
+			const close = BusyTable.closeMaintenance().then(() => (closed = true));
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.strictEqual(closed, false, 'maintenance close must wait for the in-flight eviction');
+			releaseCommit();
+			await Promise.all([eviction, close]);
+			assert.strictEqual(closed, true);
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+		}
+	});
 });
