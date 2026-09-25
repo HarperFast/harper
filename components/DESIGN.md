@@ -259,11 +259,11 @@ config document besides `set_configuration`, which takes the same lock around `u
 `rootPath` rather than the file it parsed. The lock is the component preparation lock primitive keyed by
 `getRootConfigFilePath()`: the file actually written, which is the one boot reads whenever a boot source exists
 and so is fixed for the life of the process — not a configured path `set_configuration` could move under a
-concurrent writer. Lock order is always component preparation
-lock, then this one. Its wait is bounded (30 s) and never renewed, and a ticket left by a dead worker of this
-process is reclaimed through `isThreadRunning` — without it a same-process ticket reads as live and every
-config writer on the node times out behind it. Each write is `atomicWriteFile({ durable: true })`: the temp
-file is fsynced through its write handle (Windows only flushes a handle opened for writing) and the directory
+concurrent writer. Lock order is always component preparation lock, then this one. Its wait is bounded (30 s)
+and never renewed, and a ticket left by a dead worker of this process is reclaimed through `isThreadRunning` —
+without it a same-process ticket reads as live and every config writer on the node times out behind it. Each
+write is `atomicWriteFile({ durable: true })`: the temp file is fsynced through its write handle (Windows only
+flushes a handle opened for writing) and the directory
 after the rename, tolerating the platform's "cannot sync" codes and nothing else. An effect the document
 already satisfies — a replayed journal, or a payload deploy of a component with no entry, which is most of
 them — is answered before the lock and needs no write access at all, provided this thread's memoized view of
