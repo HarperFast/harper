@@ -258,8 +258,9 @@ config document besides `set_configuration`, which takes the same lock around `u
 reads and writes the same file the lock is keyed by, the one boot reads.
 `addConfig` and `deleteConfigFromFile` are gone — the latter wrote to a path rebuilt from the document's
 `rootPath` rather than the file it parsed. The lock is the component preparation lock primitive keyed by
-`getConfigFilePath()`, the file actually written and fixed for the life of the process, not by a configured
-path `set_configuration` could move under a concurrent writer. Lock order is always component preparation
+`getRootConfigFilePath()`: the file actually written, which is the one boot reads whenever a boot source exists
+and so is fixed for the life of the process — not a configured path `set_configuration` could move under a
+concurrent writer. Lock order is always component preparation
 lock, then this one. Its wait is bounded (30 s) and never renewed, and a ticket left by a dead worker of this
 process is reclaimed through `isThreadRunning` — without it a same-process ticket reads as live and every
 config writer on the node times out behind it. Each write is `atomicWriteFile({ durable: true })`: the temp
