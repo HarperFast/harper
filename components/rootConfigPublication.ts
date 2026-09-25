@@ -128,11 +128,24 @@ export async function applyRootConfigEffect(component: string, effect: RootConfi
 		if (contradicted.length > 0) {
 			throw new ServerError(
 				`The root config entry of ${component} did not take effect: after the config refresh, ${configFilePath} ` +
-					`contradicts it at ${formatKeys(component, contradicted)}`
+					`contradicts it at ${contradicted.map((keyPath) => formatKeyPath(component, keyPath)).join(', ')}`,
+				409
 			);
 		}
 		return changed;
 	});
+}
+
+/**
+ * Whether the root config file on disk names an entry for the component — true when it cannot tell, since a caller
+ * deciding whether the entry is gone must not guess that it is.
+ */
+export function hasRootConfigEntry(component: string): boolean {
+	try {
+		return parseYamlDoc(getRootConfigFilePath()).toJSON()?.[component] !== undefined;
+	} catch {
+		return true;
+	}
 }
 
 /**
@@ -183,13 +196,22 @@ function assertEnvLayersKeepEffect(
 	resultingConfig: Record<string, unknown>
 ): void {
 	if (effect.kind === 'keep') return;
-	const reasons: string[] = [];
-	for (const envVarName of REASSERTING_CONFIG_ENV_VARS) {
-		if (!process.env[envVarName]) continue;
-		const keys = contradictedKeys(composeReassertedEnvConfig(resultingConfig, [envVarName])[component], effect);
-		if (keys.length > 0) reasons.push(`${envVarName} sets ${formatKeys(component, keys)}`);
+	const setVars = REASSERTING_CONFIG_ENV_VARS.filter((envVarName) => process.env[envVarName]);
+	if (setVars.length === 0) return;
+	// Composed together, as a refresh applies them: HARPER_CONFIG yields to HARPER_SET_CONFIG on a key both name.
+	const contradicted = contradictedKeys(composeReassertedEnvConfig(resultingConfig, setVars)[component], effect);
+	const keysByVar = new Map<string, string[]>();
+	for (const keyPath of contradicted) {
+		// Attributed to the variable that wins it. A key none of them sets is an artifact of composing the document,
+		// not something a refresh would do to it: composition splits a key with a dot in it into nested keys.
+		const envVarName = [...setVars]
+			.reverse()
+			.find((name) => setsKey(composeReassertedEnvConfig({}, [name])[component], keyPath));
+		if (envVarName)
+			keysByVar.set(envVarName, [...(keysByVar.get(envVarName) ?? []), formatKeyPath(component, keyPath)]);
 	}
-	if (reasons.length === 0) return;
+	if (keysByVar.size === 0) return;
+	const reasons = [...keysByVar].map(([envVarName, keys]) => `${envVarName} sets ${keys.join(', ')}`);
 	const outcome =
 		effect.kind === 'remove' ? 'the entry would come back' : 'the entry this release publishes would not last';
 	throw new ServerError(
@@ -200,8 +222,11 @@ function assertEnvLayersKeepEffect(
 	);
 }
 
-/** The keys of the component's entry that contradict what the effect wants of it; none when the effect holds. */
-function contradictedKeys(entry: unknown, effect: RootConfigEffect): string[] {
+/**
+ * The keys, as paths into the component's entry, that contradict what the effect wants of it; none when the
+ * effect holds. An empty path is the entry itself.
+ */
+function contradictedKeys(entry: unknown, effect: RootConfigEffect): string[][] {
 	switch (effect.kind) {
 		case 'keep':
 			return [];
@@ -210,29 +235,40 @@ function contradictedKeys(entry: unknown, effect: RootConfigEffect): string[] {
 				(keyPath) => !isDeepStrictEqual(valueAt(entry, keyPath), valueAt(effect.entry, keyPath))
 			);
 		case 'unset-package':
-			return isPlainObject(entry) ? PACKAGE_INSTALL_KEYS.filter((key) => key in entry) : [];
+			return isPlainObject(entry) ? PACKAGE_INSTALL_KEYS.filter((key) => key in entry).map((key) => [key]) : [];
 		case 'remove':
 			if (entry === undefined) return [];
-			return isPlainObject(entry) && Object.keys(entry).length > 0 ? Object.keys(entry) : [''];
+			return isPlainObject(entry) && Object.keys(entry).length > 0 ? Object.keys(entry).map((key) => [key]) : [[]];
 	}
 }
 
-function leafPaths(value: Record<string, unknown>, prefix = ''): string[] {
+function leafPaths(value: Record<string, unknown>, prefix: string[] = []): string[][] {
 	return Object.entries(value).flatMap(([key, child]) =>
-		isPlainObject(child) && Object.keys(child).length > 0 ? leafPaths(child, `${prefix}${key}.`) : [`${prefix}${key}`]
+		isPlainObject(child) && Object.keys(child).length > 0 ? leafPaths(child, [...prefix, key]) : [[...prefix, key]]
 	);
 }
 
-function valueAt(value: unknown, keyPath: string): unknown {
-	for (const key of keyPath.split('.')) {
+function valueAt(value: unknown, keyPath: string[]): unknown {
+	for (const key of keyPath) {
 		if (!isPlainObject(value)) return undefined;
 		value = value[key];
 	}
 	return value;
 }
 
-function formatKeys(component: string, keys: string[]): string {
-	return keys.map((key) => (key ? `${component}.${key}` : component)).join(', ');
+/** Whether an entry a variable composes on its own sets the key at `keyPath`, or one of its ancestors outright. */
+function setsKey(entry: unknown, keyPath: string[]): boolean {
+	let value = entry;
+	for (const key of keyPath) {
+		if (value === undefined) return false;
+		if (!isPlainObject(value)) return true;
+		value = value[key];
+	}
+	return value !== undefined;
+}
+
+function formatKeyPath(component: string, keyPath: string[]): string {
+	return [component, ...keyPath].join('.');
 }
 
 function errorMessage(error: unknown): string {

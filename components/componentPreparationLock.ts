@@ -332,7 +332,13 @@ async function acquireComponentPreparationLock(
 	}
 
 	return async () => {
-		const currentOwner = await readOwner(ticketPath!);
+		// A record that is there but cannot be read is still this acquisition's own: only it publishes a ticket at a
+		// path its token names. That is how a Windows scanner holding the ticket without read sharing looks, and the
+		// release has to go ahead then, or the ticket outlives the holder as a live one once the scanner lets go.
+		const currentOwner = await readOwner(ticketPath!).catch((error) => {
+			if (HELD_RECORD_READ_CODES.has(error?.code)) return owner;
+			throw error;
+		});
 		if (currentOwner?.token !== owner.token) {
 			throw new Error(`Lost ownership of component preparation lock for ${canonicalPath}`);
 		}
@@ -341,6 +347,7 @@ async function acquireComponentPreparationLock(
 }
 
 const TICKET_REMOVAL_RETRY_DELAYS_MS = [10, 40, 160];
+const HELD_RECORD_READ_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
 
 function releasedMarkerPath(lockRoot: string, lockName: string, token: string): string {
 	return join(lockRoot, `${lockName}.released.${token}`);

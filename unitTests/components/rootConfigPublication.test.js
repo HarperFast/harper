@@ -415,6 +415,18 @@ describe('an effect the config environment would undo', () => {
 		assert.deepStrictEqual(readRootConfig()['env-web'], { package: 'npm:env-web@1' });
 	});
 
+	it('is not refused over a key HARPER_SET_CONFIG already sets to the declared value, whatever HARPER_CONFIG says', async () => {
+		writeEntry('env-web', { package: 'npm:env-web@1' });
+
+		await withConfigEnv(
+			{
+				HARPER_CONFIG: JSON.stringify({ 'env-web': { package: 'npm:env-web@1' } }),
+				HARPER_SET_CONFIG: JSON.stringify({ 'env-web': { package: 'npm:env-web@2' } }),
+			},
+			() => assertRootConfigEffectPublishable('env-web', { kind: 'set', entry: { package: 'npm:env-web@2' } })
+		);
+	});
+
 	it('is not refused over a key the variable adds beside the ones the effect declares', async () => {
 		writeEntry('env-web', { package: 'npm:env-web@1', isolated: true });
 
@@ -431,7 +443,9 @@ describe('an effect the config environment would undo', () => {
 			() =>
 				assert.rejects(
 					applyRootConfigEffect('env-web', { kind: 'unset-package' }),
-					/did not take effect: .* contradicts it at env-web\.package\b/
+					(error) =>
+						error.statusCode === 409 &&
+						/did not take effect: .* contradicts it at env-web\.package\b/.test(error.message)
 				)
 		);
 	});
@@ -480,6 +494,20 @@ describe('drop_component', () => {
 
 		assert.ok(fs.existsSync(path.join(componentDir, 'index.js')), 'the tree is back');
 		assert.deepStrictEqual(readRootConfig()['drop-back'], entry);
+	});
+
+	it('finishes the drop when the refresh after the entry removal fails, rather than putting the tree back', async () => {
+		liveComponent('drop-refresh');
+
+		await withRefreshThat(
+			() => {
+				throw new Error('the refresh failed');
+			},
+			() => assert.rejects(() => dropComponent({ project: 'drop-refresh' }), /the refresh failed/)
+		);
+
+		assert.strictEqual(readRootConfig()['drop-refresh'], undefined, 'the removal was written before the refresh');
+		assert.strictEqual(fs.existsSync(componentDir), false, 'so the tree is not put back without it');
 	});
 
 	it('completes when the node_modules link cannot be removed, since that is cleanup after the entry', async function () {

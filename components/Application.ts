@@ -3466,7 +3466,6 @@ export async function dropComponentDirectory(
 }
 
 export interface RetiredComponentDirectory {
-	/** Put the tree back where it was. */
 	restore(): Promise<void>;
 	/** Delete the tree and the component's dormant builds, reporting failures to the log rather than throwing. */
 	discard(): Promise<void>;
@@ -3486,6 +3485,12 @@ export async function retireComponentDirectory(
 	const asideStagingDir = extractionStagingDirectory(componentDirPath);
 	await ensureExtractionStagingDirectory(asideStagingDir);
 	const droppedPath = join(asideStagingDir, `.dropped-${process.pid}-${Date.now()}-${randomUUID()}`);
+	// Durable before the caller removes the entry, which it writes durably: otherwise power loss can keep the removal
+	// and lose the rename, putting the tree back live with no entry.
+	const syncBothParents = async () => {
+		await syncDirectory(dirname(componentDirPath));
+		await syncDirectory(asideStagingDir);
+	};
 	let retired = true;
 	try {
 		await rename(componentDirPath, droppedPath);
@@ -3493,11 +3498,20 @@ export async function retireComponentDirectory(
 		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
 		retired = false;
 	}
+	if (retired) {
+		try {
+			await syncBothParents();
+		} catch (error) {
+			await rename(droppedPath, componentDirPath).catch(() => {});
+			throw error;
+		}
+	}
 	return {
 		async restore() {
 			if (!retired) return;
 			try {
 				await rename(droppedPath, componentDirPath);
+				await syncBothParents();
 			} catch (error) {
 				throw new Error(`Could not put ${componentName} back from ${droppedPath}: ${errorMessage(error)}`, {
 					cause: error,

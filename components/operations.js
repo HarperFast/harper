@@ -41,6 +41,7 @@ const { COMPONENT_PREPARATION_LOCK_DIR, withComponentPreparationLock } = require
 const {
 	applyRootConfigEffect,
 	assertRootConfigEffectPublishable,
+	hasRootConfigEntry,
 	withRootConfigPublicationLock,
 } = require('./rootConfigPublication.ts');
 const { server } = require('../server/Server.ts');
@@ -1498,14 +1499,16 @@ async function dropComponent(req) {
 				if (runningApplications.includes(project)) restartScope = project;
 			}
 			if (!file) {
-				// The entry goes last, so a failed drop never leaves the component live without it: what the removal
-				// would refuse is refused before anything moves, and a removal that fails anyway puts the tree back.
+				// The entry goes last, so a failed drop never leaves the component live without it.
 				await assertRootConfigEffectPublishable(project, { kind: 'remove' });
 				const retired = await retireComponentDirectory(componentPath, project, log);
 				try {
 					await applyRootConfigEffect(project, { kind: 'remove' });
 				} catch (error) {
-					await retired.restore().catch((restoreError) => log.error(restoreError));
+					// Only while the entry is still there: a failure after the removal was written, in the refresh that
+					// follows it, leaves the drop committed, and the tree goes with it.
+					if (hasRootConfigEntry(project)) await retired.restore().catch((restoreError) => log.error(restoreError));
+					else await retired.discard();
 					throw error;
 				}
 				await retired.discard();

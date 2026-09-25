@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 const { Worker, threadId } = require('node:worker_threads');
-const { mkdtemp, mkdir, readdir, rm, utimes, writeFile } = require('node:fs/promises');
+const { chmod, mkdtemp, mkdir, readdir, rm, utimes, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -559,6 +559,52 @@ describe('component preparation lock', () => {
 				releaseHolder();
 				await holding;
 			}
+		});
+
+		// A mode its owner cannot read refuses the release's ownership read the way a Windows scanner holding the
+		// ticket without read sharing does. Root reads through it, and Windows does not model it this way.
+		const readCanBeRefused = () => process.platform !== 'win32' && process.getuid?.() !== 0;
+
+		it('is released even when its record cannot be read at release', async function () {
+			if (!readCanBeRefused()) return this.skip();
+			const componentDirPath = join(rootDir, 'unreadable-at-release');
+			const { lockRoot, lockName } = componentPreparationLockPaths(componentDirPath);
+
+			await withComponentPreparationLock(componentDirPath, async () => {
+				await chmod(join(lockRoot, (await ticketNames(lockRoot, lockName))[0]), 0o000);
+			});
+
+			assert.deepStrictEqual(await ticketNames(lockRoot, lockName), [], 'the ticket went');
+			let acquired = false;
+			await withComponentPreparationLock(componentDirPath, async () => (acquired = true), boundedWait);
+			assert.equal(acquired, true);
+		});
+
+		it('publishes the marker when its record can be neither read nor removed at release', async function () {
+			if (process.platform !== 'darwin') return this.skip();
+			const componentDirPath = join(rootDir, 'held-at-release');
+			const { lockRoot, lockName } = componentPreparationLockPaths(componentDirPath);
+			let ticketPath;
+			try {
+				await withComponentPreparationLock(componentDirPath, async () => {
+					ticketPath = join(lockRoot, (await ticketNames(lockRoot, lockName))[0]);
+					await chmod(ticketPath, 0o000);
+					undeletable(ticketPath, true);
+				});
+				assert.ok(
+					(await readdir(lockRoot)).some((name) => name.startsWith(`${lockName}.released.`)),
+					'the release published a marker for the ticket it could neither read nor remove'
+				);
+			} finally {
+				if (ticketPath) {
+					undeletable(ticketPath, false);
+					await chmod(ticketPath, 0o600);
+				}
+			}
+
+			let acquired = false;
+			await withComponentPreparationLock(componentDirPath, async () => (acquired = true), boundedWait);
+			assert.equal(acquired, true, 'once the ticket can be read again, it reads as released, not live');
 		});
 
 		it('still fails when neither the ticket nor a marker can be written', async () => {
