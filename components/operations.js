@@ -577,7 +577,8 @@ const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 /**
  * How long the origin waits for each peer to answer a replicated deploy: every wait and command the peer is
  * allowed for this request, each at its full allowance. A peer queued behind another preparation of the same
- * component can take longer, and is then reported as not answering — which says nothing of its outcome.
+ * component, or validating plugins whose configured timeouts outlast the margin, can take longer, and is then
+ * reported as not answering — which says nothing of its outcome.
  */
 function peerDeployAnswerTimeoutMs(req) {
 	const { RESTART_WAIT_CEILING_MS } = require('./awaitRestart.ts');

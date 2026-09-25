@@ -540,14 +540,12 @@ describe('ComponentLoader Status Integration', function () {
 			return componentDir;
 		}
 
-		// The shape operations.js `validateComponentLoads` loads a candidate with.
+		// Loaded as operations.js `validateComponentLoads` loads a candidate: no origin or appName, scopes collected.
 		async function validate(componentDir) {
 			componentLoader.loadedPaths.clear();
 			const collectScopes = new Set();
 			try {
-				await componentLoader.loadComponent(componentDir, { isWorker: true, set: sinon.stub() }, undefined, {
-					collectScopes,
-				});
+				await componentLoader.loadComponent(componentDir, { isWorker: true, set() {} }, undefined, { collectScopes });
 			} finally {
 				await Promise.allSettled([...collectScopes].map((scope) => scope.close()));
 			}

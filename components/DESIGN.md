@@ -433,8 +433,9 @@ is clamped to the longest delay a timer holds.
 It must never undercut a healthy peer. A shorter bound turns a slow success into a reported failure, and a
 two-command install (a custom package manager falling back to npm) is exactly such a success. So the
 default is hours, and its job is only that the origin eventually settles, rather than holding the
-operation, the deployment row and its own restart for as long as a wedged peer stays wedged. Queueing
-behind another preparation of the same component is not budgeted. The deadline is not cancellation: a
+operation, the deployment row and its own restart for as long as a wedged peer stays wedged. Two things are
+not budgeted: queueing behind another preparation of the same component, and plugin `timeout`s a component
+configures beyond the validation margin, which live in the payload the origin does not parse. The deadline is not cancellation: a
 peer past it may still finish, so the failure the replicator records says the outcome there is unknown.
 It stays a `failed` peer result, because `getFailedPeers()` counts only that status, and a new one would
 read as success.
