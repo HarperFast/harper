@@ -14,7 +14,7 @@ const {
 } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
-const { databaseCommitsSuspended } = require('#src/resources/DatabaseTransaction');
+const { databaseCommitsSuspended, getSuspendedDatabaseRootCount } = require('#src/resources/DatabaseTransaction');
 const {
 	beginRestore,
 	completeRestore,
@@ -49,6 +49,27 @@ describe('flushDatabases', () => {
 		assert.notStrictEqual(reopened, rootStore);
 		assert.strictEqual(reopened.status, 'open');
 		await closeDatabase('flush_tableless_drop');
+	});
+
+	it('keeps a failed destructive drop root-local without taxing unrelated commits', async function () {
+		const Probe = table({
+			table: 'pkg',
+			database: 'failed_destructive_drop',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = Probe.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const suspendedBefore = getSuspendedDatabaseRootCount();
+		const stopAuditCleanup = rootStore.auditStore.stopAuditCleanup;
+		rootStore.auditStore.stopAuditCleanup = () => Promise.reject(new Error('audit cleanup failed'));
+
+		await assert.rejects(dropDatabase('failed_destructive_drop'), /audit cleanup failed/);
+
+		assert.strictEqual(databaseCommitsSuspended(rootStore), true);
+		assert.strictEqual(getSuspendedDatabaseRootCount(), suspendedBefore);
+		rootStore.auditStore.stopAuditCleanup = stopAuditCleanup;
+		rootStore.close();
+		rootStore.destroy();
 	});
 });
 
@@ -417,6 +438,26 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 
 		await branch.close();
 		assert.strictEqual(refCountFor(branchPath), 0);
+	});
+
+	it('keeps a stale branch fenced when its native root close fails', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		const suspendedBefore = getSuspendedDatabaseRootCount();
+		const close = branch.rootStore.close.bind(branch.rootStore);
+		let failClose = true;
+		branch.rootStore.close = () => {
+			if (failClose) throw new Error('branch root close failed');
+			return close();
+		};
+
+		await assert.rejects(branch.close(), /Could not close branch database/);
+
+		assert.strictEqual(branch.rootStore.status, 'open');
+		assert.strictEqual(databaseCommitsSuspended(branch.rootStore), true);
+		assert.strictEqual(getSuspendedDatabaseRootCount(), suspendedBefore);
+		failClose = false;
+		await branch.close();
+		assert.strictEqual(branch.rootStore.status, 'closed');
 	});
 
 	it('tolerates a repeated close', async function () {

@@ -1918,11 +1918,14 @@ export function openBranchDatabase(
 				.then(() => settleBranchDerivedIndexes(tables))
 				.then(() => {
 					handleCloseStarted = true;
-					closeBranchHandles(path, rootStore, openedStores, tables);
+					const closeFailures = closeBranchHandles(path, rootStore, openedStores, tables);
 					if (openBranches.get(path) === branch) openBranches.delete(path);
 					releaseBranchIdentity(storeName);
 					rocksdbDatabaseEnvs.delete(path);
 					manageThreads.markBranchStorePath(path, false);
+					if (closeFailures.length) {
+						throw new AggregateError(closeFailures, `Could not close branch database '${databaseName}'`);
+					}
 					commitSuspension.release();
 					releaseActivation();
 					closed = true;
@@ -1969,8 +1972,9 @@ function closeBranchHandles(
 	rootStore?: RootDatabaseKind,
 	openedStores: any[] = [],
 	tables: Tables = {}
-): void {
+): unknown[] {
 	const reclamationPaths = new Set<string>([path]);
+	const closeFailures: unknown[] = [];
 	(rootStore as any)?.auditStore?.stopAuditCleanup?.();
 	const closeStore = (store: any, description: string) => {
 		if (!store || store.status === 'closed') return;
@@ -1979,6 +1983,7 @@ function closeBranchHandles(
 			store.close?.();
 		} catch (error) {
 			logger.warn(`Error closing ${description} for branch database at ${path}`, error);
+			closeFailures.push(error);
 		}
 	};
 	// the class, before its stores: an expiration timer or a reclamation handler on a closed store
@@ -1996,6 +2001,7 @@ function closeBranchHandles(
 	closeStore(rootStore, 'root store');
 	if (rootStore) databasePaths.delete(rootStore as RootDatabase);
 	for (const reclamationPath of reclamationPaths) removeStorageReclamation(reclamationPath);
+	return closeFailures;
 }
 
 async function settleBranchDerivedIndexes(tables: Tables): Promise<void> {
@@ -2272,7 +2278,6 @@ export async function dropDatabase(databaseName) {
 	// a check-then-act marker probe. Released in the finally below.
 	const restoreLocks: RestoreLock[] = [];
 	let releaseDerivedIndexActivation: (() => void) | undefined;
-	let databaseRemoved = false;
 	let destructiveWorkStarted = false;
 	try {
 		for (const tableName in dbTables) {
@@ -2327,11 +2332,16 @@ export async function dropDatabase(databaseName) {
 			}
 		}
 
-		databaseRemoved = true;
-		releaseDerivedIndexActivation();
 		for (const rootStore of rootStores) await deleteRootBlobPathsForDB(rootStore);
 	} finally {
-		if (!databaseRemoved && !destructiveWorkStarted) releaseDerivedIndexActivation?.();
+		if (destructiveWorkStarted) {
+			for (const rootStore of rootStores) databasePaths.delete(rootStore as RootDatabase);
+			if ([...rootStores].some((rootStore) => rootStore.status === 'open')) {
+				permanentlySuspendDatabaseCommits(rootStores);
+				for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);
+			}
+		}
+		releaseDerivedIndexActivation?.();
 		for (const lock of restoreLocks) releaseRestoreLock(lock);
 	}
 }
@@ -2420,6 +2430,7 @@ export async function closeDatabase(
 		}
 		for (const rootStore of rootStores) {
 			removeStorageReclamation(rootStore.path);
+			databasePaths.delete(rootStore as RootDatabase);
 			let rootClosed = rootStore.status !== 'open';
 			if (!lmdbRootStores.has(rootStore)) {
 				await closeStore(rootStore.dbisDb, 'attributes store');
@@ -2458,7 +2469,7 @@ export async function closeDatabase(
 		const hasOpenRoot = [...rootStores].some((rootStore) => rootStore.status === 'open');
 		if (handleCloseStarted && hasOpenRoot) {
 			// The catalog graph has been or will be discarded; keep only those stale wrappers fenced.
-			// Weak ownership lets garbage collection reclaim the fence with the abandoned wrappers.
+			// Root-local state avoids charging unrelated databases through the active-fence counter.
 			permanentlySuspendDatabaseCommits(rootStores);
 			for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);
 		}

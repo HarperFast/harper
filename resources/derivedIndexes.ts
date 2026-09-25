@@ -81,18 +81,21 @@ type FullTextTestConfiguration = {
 };
 const runtimes = new WeakMap<object, Registered>();
 const suspendedActivation = new WeakMap<object, number>();
-const permanentlySuspendedActivation = new WeakSet<object>();
+const PERMANENTLY_SUSPENDED = -1;
 const retryUnavailableByStore = new WeakMap<object, Set<string>>();
 let fullTextTestConfiguration: FullTextTestConfiguration | undefined;
 
 /** Prevent new derived-index attachments while a root store is being torn down. */
 export function suspendDerivedIndexActivation(rootStore: object): () => void {
-	suspendedActivation.set(rootStore, (suspendedActivation.get(rootStore) ?? 0) + 1);
+	const current = suspendedActivation.get(rootStore) ?? 0;
+	if (current !== PERMANENTLY_SUSPENDED) suspendedActivation.set(rootStore, current + 1);
 	let released = false;
 	return () => {
 		if (released) return;
 		released = true;
-		const remaining = (suspendedActivation.get(rootStore) ?? 1) - 1;
+		const current = suspendedActivation.get(rootStore);
+		if (current === PERMANENTLY_SUSPENDED) return;
+		const remaining = (current ?? 1) - 1;
 		if (remaining > 0) suspendedActivation.set(rootStore, remaining);
 		else suspendedActivation.delete(rootStore);
 	};
@@ -100,19 +103,14 @@ export function suspendDerivedIndexActivation(rootStore: object): () => void {
 
 /** Prevent abandoned root wrappers from reattaching derived indexes after a failed native close. */
 export function permanentlySuspendDerivedIndexActivation(rootStore: object): void {
-	permanentlySuspendedActivation.add(rootStore);
+	suspendedActivation.set(rootStore, PERMANENTLY_SUSPENDED);
 }
 
 function activationSuspended(Table: any): boolean {
 	const rootStore = Table.primaryStore?.rootStore;
 	// Closed roots no longer retain an active suspension count, but stale table classes must not
 	// resurrect their derived-index runtime after successful teardown.
-	return (
-		rootStore != null &&
-		(rootStore.status === 'closed' ||
-			permanentlySuspendedActivation.has(rootStore) ||
-			suspendedActivation.has(rootStore))
-	);
+	return rootStore != null && (rootStore.status === 'closed' || suspendedActivation.has(rootStore));
 }
 
 function markUnavailableRetry(registered: Registered, auditStore: RocksTransactionLogStore, backendId: string): void {
