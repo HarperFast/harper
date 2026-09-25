@@ -38,7 +38,7 @@ import { table } from '../resources/databases.ts';
 import { getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import * as auth from '../security/auth.ts';
 import * as mqtt from '../server/mqtt.ts';
-import { getConfigObj, getConfigPath } from '../config/configUtils.ts';
+import { getConfigFilePath, getConfigObj, getConfigPath } from '../config/configUtils.ts';
 import { bootstrapModels } from '../resources/models/bootstrap.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
 import { Scope } from './Scope.ts';
@@ -231,6 +231,66 @@ export const loadedPaths = new Map();
 // re-invoking `startOnMainThread` on every reload accumulated watchers/routes and re-ran
 // destructive one-time scans (e.g. the replicator's hdb_nodes subscription scan).
 export const mainThreadInitialized = new Map<string, any>();
+const mainThreadInitializing = new Map<string, Promise<any>>();
+
+function mainThreadKeyFor(componentName: string, resolvedFolder: string, isRoot: boolean): string {
+	return `${isRoot ? '' : basename(resolvedFolder)}/${componentName}@${resolvedFolder}`;
+}
+
+/**
+ * Run the component's `startOnMainThread` unless it already ran (see `mainThreadInitialized`), and return the
+ * module to use from then on. Concurrent callers share one start; a failed start is not recorded, so the next
+ * load retries it.
+ */
+function startOnMainThreadOnce(mainThreadKey: string, extensionModule: any, options: any): Promise<any> {
+	if (mainThreadInitialized.has(mainThreadKey)) return Promise.resolve(mainThreadInitialized.get(mainThreadKey));
+	let starting = mainThreadInitializing.get(mainThreadKey);
+	if (!starting) {
+		starting = (async () => (await extensionModule.startOnMainThread(options)) || extensionModule)();
+		mainThreadInitializing.set(mainThreadKey, starting);
+		starting.then(
+			(initialized) => {
+				mainThreadInitialized.set(mainThreadKey, initialized);
+				mainThreadInitializing.delete(mainThreadKey);
+			},
+			() => mainThreadInitializing.delete(mainThreadKey)
+		);
+	}
+	return starting;
+}
+
+async function importTrustedPlugin(componentName: string): Promise<any> {
+	const plugin = TRUSTED_RESOURCE_PLUGINS[componentName];
+	return typeof plugin === 'string'
+		? await import(plugin.startsWith('@/') ? pathToFileURL(join(PACKAGE_ROOT, plugin.slice(1))).toString() : plugin)
+		: plugin;
+}
+
+const SECRET_CUSTODY_COMPONENT = 'secretCustody';
+
+/**
+ * Start the secret-custody built-in ahead of the root load, so boot-time application installs can decrypt
+ * sealed SSH deploy keys and resolve stored registry credentials. The root load then reuses the started
+ * module. Any failure is logged and left to the root load to retry and report.
+ */
+export async function startSecretCustodyOnMainThread(): Promise<void> {
+	try {
+		const componentConfig = getConfigObj()[SECRET_CUSTODY_COMPONENT];
+		if (!componentConfig || !Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, SECRET_CUSTODY_COMPONENT)) return;
+		const rootFolder = realpathSync(dirname(getConfigFilePath()));
+		const mainThreadKey = mainThreadKeyFor(SECRET_CUSTODY_COMPONENT, rootFolder, true);
+		if (mainThreadInitialized.has(mainThreadKey)) return;
+		const extensionModule = await importTrustedPlugin(SECRET_CUSTODY_COMPONENT);
+		if (typeof extensionModule.startOnMainThread !== 'function') return;
+		// Precedes the root load, which builds this generation's `resources`, ports and table factory.
+		await startOnMainThreadOnce(mainThreadKey, extensionModule, { server, ...componentConfig });
+	} catch (error) {
+		harperLogger.error(
+			'Secret custody could not start before installing applications; boot-time installs proceed without it:',
+			errorForLog(error)
+		);
+	}
+}
 
 let errorReporter;
 export function setErrorReporter(reporter) {
@@ -621,13 +681,7 @@ export async function loadComponent(
 						throw new Error(`Unable to find package ${componentName}:${pkg}`);
 					}
 				} else {
-					const plugin = TRUSTED_RESOURCE_PLUGINS[componentName];
-					extensionModule =
-						typeof plugin === 'string'
-							? await import(
-									plugin.startsWith('@/') ? pathToFileURL(join(PACKAGE_ROOT, plugin.slice(1))).toString() : plugin
-								)
-							: plugin;
+					extensionModule = await importTrustedPlugin(componentName);
 				}
 
 				if (!extensionModule) {
@@ -750,32 +804,15 @@ export async function loadComponent(
 				}
 
 				if (isMainThread) {
-					// `startOnMainThread` is one-time main-thread init: run it at most once per component
-					// for the life of the process (first load / first deploy). On a reload of an
-					// already-initialized component, skip the call and reuse the previously-initialized
-					// module so downstream wiring (handleFile/handleDirectory, loadedComponents) is
-					// preserved without re-running main-thread setup. Only components that actually
-					// export `startOnMainThread` are gated — a component with only setup handlers has no
-					// one-time hook to dedupe and must keep picking up its freshly loaded module on
-					// reload. See #460.
+					// Only components that actually export `startOnMainThread` are gated — a component with
+					// only setup handlers has no one-time hook to dedupe and must keep picking up its freshly
+					// loaded module on reload.
 					if (typeof extensionModule.startOnMainThread === 'function') {
-						// Reuse the already-resolved realpath (line 308) instead of a second realpathSync —
-						// same value, avoids a redundant sync FS call (PR #1464 review).
-						const mainThreadKey = `${isRoot ? '' : basename(resolvedFolder)}/${componentName}@${resolvedFolder}`;
-						if (mainThreadInitialized.has(mainThreadKey)) {
-							extensionModule = mainThreadInitialized.get(mainThreadKey);
-						} else {
-							extensionModule =
-								(await extensionModule.startOnMainThread({
-									server,
-									ensureTable,
-									port,
-									securePort,
-									resources,
-									...componentConfig,
-								})) || extensionModule;
-							mainThreadInitialized.set(mainThreadKey, extensionModule);
-						}
+						extensionModule = await startOnMainThreadOnce(
+							mainThreadKeyFor(componentName, resolvedFolder, isRoot),
+							extensionModule,
+							{ server, ensureTable, port, securePort, resources, ...componentConfig }
+						);
 					}
 					if (isRoot && network) {
 						if (env.get(CONFIG_PARAMS.HTTP_SESSIONAFFINITY))
