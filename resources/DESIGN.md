@@ -569,7 +569,8 @@ reuse the same `ImmediateTransaction` object even after its first cycle has clos
 CLOSED`). The second `save()` re-enters `ImmediateTransaction.save()` with `isCommitting` false, so it
 calls `this.commit()` again; that `commit()`'s own sweep loop calls `this.save(newWrite, ...)` — a
 **polymorphic re-dispatch to `ImmediateTransaction.save()`**, now with `isCommitting` true, which takes
-the `super.save(operation, null, true)` branch and (since `this.open` is still `CLOSED`) creates its own
+the `super.save(operation, transaction, true)` branch with no handle to forward (a CLOSED context has
+none) and so creates its own
 brand-new `RocksTransaction` and immediately commits it, stashing the real commit promise on
 `operation.innerCommit`. But the outer `commit()`'s sweep loop discards the return value of
 `this.save(operation, ...)` for every write it processes — that's fine when the write commits inline,
@@ -585,6 +586,20 @@ operation.innerCommit)`. `operation.innerCommit` is `undefined` when a write com
 immediateCommit), so this is safe for the common case. Found via record-lock scoped-lock staging
 (harper#483), which is what first made this reused-closed-context pattern reachable for an ordinary
 resource, but the gap is general to `Table.save()`, not lock-specific.
+
+## A commit retry re-saves into the transaction it is retrying; `ImmediateTransaction.save()` must forward it
+
+Every retry and replay round of `commit()` (`ERR_BUSY`/`ERR_TRY_AGAIN`, `RETRY_NOW`, the
+retained-iterator replay) passes its native transaction into the save loop so each re-save re-stages
+into the handle being retried. `ImmediateTransaction.save()`'s `isCommitting` branch is the one
+`save` that could drop that argument: with none, `DatabaseTransaction.save()` opens a fresh handle and,
+the wrapper being `CLOSED` by then, commits it through a nested `commit()` whose own retry loop
+(`retries > 0` skips nothing) re-enters the override — unbounded, synchronously (`RangeError` on the
+first conflicting hold-lock save of a request). The override forwards the handle; the named test
+`immediateTransactionConflictRetry.test.js` asserts two commit attempts on one native transaction id.
+A retry round's handle is not `this.transaction` (detached before the first submission), so a throw
+from the re-save loop — a lapsed lease refusing the re-save — releases it explicitly before `abort()`,
+or its write intents park other writers until GC.
 
 ## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
 
