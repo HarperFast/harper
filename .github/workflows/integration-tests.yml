@@ -154,6 +154,18 @@ jobs:
           mkdir -p /tmp/harper-legacy-530-prerelease
           npm install --ignore-scripts --prefix /tmp/harper-legacy-530-prerelease harper@5.3.0-beta.2
 
+      # The SSH deploy-key suite (security/qa581-ssh-deploy-key) starts its own unprivileged sshd with
+      # an isolated config on a free loopback port; it only needs the binary. The runner image ships
+      # openssh-server, so the install runs only if an image change drops it.
+      - name: Ensure sshd for SSH deploy-key tests
+        timeout-minutes: 3
+        run: |
+          if [ ! -x /usr/sbin/sshd ]; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q --no-install-recommends openssh-server
+          fi
+          dpkg-query -W openssh-server
+
       - name: Run Integration Test Shard ${{ matrix.shard }}
         timeout-minutes: 15
         env:
@@ -165,6 +177,8 @@ jobs:
           # Linux runners have working inotify, so the file-watch-dependent TLS regression
           # tests (cert-key-reload) must run rather than skip — this pipeline owns #2382.
           HARPER_TEST_REQUIRE_FILE_WATCHERS: '1'
+          # Same for the SSH deploy-key regression test (#1795): fail, don't skip, without sshd.
+          HARPER_TEST_REQUIRE_SSHD: '1'
         run: |
           npm run test:integration:all -- --shard=${{ matrix.shard }}/6
 
@@ -261,6 +275,9 @@ jobs:
           if-no-files-found: ignore
 
   run-integration-tests-bun:
+    # No legacy-harper-version provisioning: every suite reading HARPER_LEGACY_VERSION_PATH
+    # skips under HARPER_RUNTIME=bun (integrationTests/upgrade/4.x-upgrade.test.ts,
+    # qa606-upgrade-structgrowth.test.ts).
     name: Integration Tests ${{matrix.shard}}/6 (Bun)
     runs-on: ubuntu-latest
     timeout-minutes: 25

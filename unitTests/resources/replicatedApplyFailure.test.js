@@ -131,7 +131,7 @@ describe('replicated apply failure listeners', function () {
 	for (const boundary of ['beginTxn', 'end_txn', 'standalone', 'standalone with onCommit']) {
 		it(`awaits every listener after a ${boundary} commit rejection before staging the next write`, async () => {
 			const { Table, pulls, start } = fixture();
-			const failed = put('failed', { localTime: 123, version: 456, viaNodeId: 99, remoteNodeIds: [99] });
+			const failed = put('failed', { localTime: 123, version: 456, remoteNodeIds: [99] });
 			if (boundary === 'beginTxn' || boundary === 'end_txn') failed.beginTxn = true;
 			let onCommitCalls = 0;
 			if (boundary === 'standalone with onCommit') failed.onCommit = () => onCommitCalls++;
