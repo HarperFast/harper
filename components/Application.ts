@@ -3462,29 +3462,96 @@ export async function dropComponentDirectory(
 	componentName = basename(componentDirPath),
 	componentLogger: Logger = logger
 ): Promise<void> {
+	await (await retireComponentDirectory(componentDirPath, componentName, componentLogger)).discard();
+}
+
+export interface RetiredComponentDirectory {
+	restore(): Promise<void>;
+	/** Delete the tree and the component's dormant builds, reporting failures to the log rather than throwing. */
+	discard(): Promise<void>;
+}
+
+/**
+ * Move a component's tree out of its live path with a single rename, reversibly: what `drop_component` does before it
+ * removes the component's root config entry, so that a failed removal can put the tree back instead of leaving a live
+ * component whose entry is gone.
+ */
+export async function retireComponentDirectory(
+	componentDirPath: string,
+	componentName = basename(componentDirPath),
+	componentLogger: Logger = logger
+): Promise<RetiredComponentDirectory> {
 	await retireComponentExtractionStaging(componentDirPath, componentName, componentLogger);
 	const asideStagingDir = extractionStagingDirectory(componentDirPath);
 	await ensureExtractionStagingDirectory(asideStagingDir);
 	const droppedPath = join(asideStagingDir, `.dropped-${process.pid}-${Date.now()}-${randomUUID()}`);
+	// Durable before the caller removes the entry, which it writes durably: otherwise power loss can keep the removal
+	// and lose the rename, putting the tree back live with no entry.
+	const syncBothParents = async () => {
+		await syncDirectory(dirname(componentDirPath));
+		await syncDirectory(asideStagingDir);
+	};
+	let retired = true;
 	try {
 		await rename(componentDirPath, droppedPath);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+		retired = false;
 	}
-	await cleanupExtractionPaths(
-		{ name: componentName, dirPath: componentDirPath, logger: componentLogger },
-		asideStagingDir,
-		new Set([droppedPath])
-	);
-	// A dropped component has no next deploy to bound its dormant builds.
-	try {
-		await pruneDormantBuilds(componentName, await dormantBuildsOf(dirname(componentDirPath), componentName), 0);
-	} catch (error) {
-		componentLogger.warn(
-			`Dropped ${componentName} but could not reclaim its dormant staged builds:`,
-			errorForLog(error)
-		);
+	if (retired) {
+		try {
+			await syncBothParents();
+		} catch (error) {
+			try {
+				await rename(droppedPath, componentDirPath);
+			} catch (restoreError) {
+				componentLogger.error(
+					`Could not put ${componentName} back from ${droppedPath} after its move aside failed to flush:`,
+					errorForLog(restoreError)
+				);
+				throw error;
+			}
+			await syncBothParents().catch((syncError) =>
+				componentLogger.warn(`Put ${componentName} back, but could not flush that either:`, errorForLog(syncError))
+			);
+			throw error;
+		}
 	}
+	return {
+		async restore() {
+			if (!retired) return;
+			try {
+				await rename(droppedPath, componentDirPath);
+			} catch (error) {
+				throw new Error(`Could not put ${componentName} back from ${droppedPath}: ${errorMessage(error)}`, {
+					cause: error,
+				});
+			}
+			try {
+				await syncBothParents();
+			} catch (error) {
+				throw new Error(`Put ${componentName} back, but could not flush its directories: ${errorMessage(error)}`, {
+					cause: error,
+				});
+			}
+		},
+		async discard() {
+			await cleanupExtractionPaths(
+				{ name: componentName, dirPath: componentDirPath, logger: componentLogger },
+				asideStagingDir,
+				new Set([droppedPath])
+			);
+			// A dropped component has no next deploy to bound its dormant builds.
+			try {
+				await pruneDormantBuilds(componentName, await dormantBuildsOf(dirname(componentDirPath), componentName), 0);
+			} catch (error) {
+				componentLogger.warn(
+					`Dropped ${componentName} but could not reclaim its dormant staged builds:`,
+					errorForLog(error)
+				);
+			}
+		},
+	};
 }
 
 async function cleanupExtractionPaths(

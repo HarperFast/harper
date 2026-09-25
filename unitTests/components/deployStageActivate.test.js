@@ -828,6 +828,40 @@ describe('an activation that fails before it commits', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
+	// HARPER_SET_CONFIG reasserts the keys it names at every start and config refresh, so the entry would be undone
+	// by the refresh right after publishing it, leaving v2 live under v1's package.
+	it('refuses, before anything moves, an entry a config env var would undo', async function () {
+		this.timeout(20000);
+		const root = await newRoot('preflight-env');
+		await writeLive(root, 'web', 'LIVE v1\n');
+		const app = applicationAt(
+			root,
+			'web',
+			await makeTarball({ 'package.json': '{"name":"web","version":"2.0.0"}\n', 'index.js': 'DEPLOYED v2\n' })
+		);
+		setRootConfigEntry('web', { package: 'npm:web@1' });
+		const configBefore = readFileSync(getConfigFilePath(), 'utf8');
+		const savedSetConfig = process.env.HARPER_SET_CONFIG;
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ web: { package: 'npm:web@1' } });
+		try {
+			await assert.rejects(
+				() =>
+					prepareApplication(app, {
+						artifactId: 'd1',
+						describeArtifact: () => ({ rootConfig: { package: 'npm:web@2' }, isolated: false }),
+					}),
+				/HARPER_SET_CONFIG sets web\.package\b/
+			);
+		} finally {
+			if (savedSetConfig === undefined) delete process.env.HARPER_SET_CONFIG;
+			else process.env.HARPER_SET_CONFIG = savedSetConfig;
+		}
+
+		assert.strictEqual(await readLive(root, 'web'), 'LIVE v1\n', 'the previous release was never moved');
+		assert.strictEqual(readFileSync(getConfigFilePath(), 'utf8'), configBefore, 'and config was not rewritten');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
 	// The window the entry used to be published in: after B1 has displaced the live tree, before B2. B1 is
 	// parked in its retry by a read-only root until the journal is on disk; the deployment directory — B2's
 	// source parent — is then made read-only and B1 let through, so the live tree is displaced and the swap
