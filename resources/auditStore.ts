@@ -303,8 +303,7 @@ export function openAuditStore(rootStore) {
 									await removeAuditEntry(auditStore, auditRecord);
 								} catch (error) {
 									harperLogger.warn('Error removing audit entry', error);
-									// ends the pass so the marker and backoff count cover only a contiguous removed
-									// prefix; the next pass retries this entry first (see DESIGN.md)
+									// not continue: the marker and backoff must cover a contiguous removed prefix (DESIGN.md)
 									break;
 								}
 								lastKey = auditRecord.key;

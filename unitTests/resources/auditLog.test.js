@@ -799,9 +799,10 @@ describe('Audit log', () => {
 			);
 		});
 	}
-	// A corrupt recordId decodes to undefined, and lmdb-js getEntry(undefined) throws synchronously. That
-	// failure is the tombstone's, so it must not fail the audit entry's removal: the automatic cleanup
-	// pass ends at a failed removal, and an entry that fails every time would stop it for good.
+	// A corrupt recordId decodes to undefined, and the lookup then throws: from lmdb-js getEntry(undefined),
+	// or — when the log sink throws — from the recordId getter's own decode warning. Either is the
+	// tombstone's failure, so it must not fail the audit entry's removal: the automatic cleanup pass ends
+	// at a failed removal, and an entry that fails every time would stop it for good.
 	for (const loggingThrows of [true, false]) {
 		it(`removeAuditEntry still removes a delete entry whose tombstone lookup throws (failure logging ${
 			loggingThrows ? 'throws' : 'succeeds'
