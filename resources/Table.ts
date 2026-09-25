@@ -196,7 +196,12 @@ NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const sourceWriteTypes = new Set(['put', 'patch', 'delete', 'publish', 'message', 'invalidate', 'relocate']);
 const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
 const SOURCE_APPLY_POSITION = Symbol('sourceApplyPosition');
-type SourceTxnStream = { txn: any; lastSequenceId: number | undefined };
+type SourceTxnStream = {
+	txn: any;
+	lastSequenceId: number | undefined;
+	failure?: { error: unknown; position: number | undefined };
+	held?: boolean;
+};
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
@@ -1235,13 +1240,13 @@ export function makeTable(options) {
 						// A replication receiver tags each event with its connection (`txnStream`); events from several
 						// connections interleave in this one subscription, and a transaction is delimited per connection.
 						const defaultStream: SourceTxnStream = { txn: undefined, lastSequenceId: undefined };
-						let taggedStreams: Map<unknown, SourceTxnStream> | undefined;
+						let taggedStreams: WeakMap<object, SourceTxnStream> | undefined;
 						// we listen for events by iterating through the async iterator provided by the subscription
 						for await (const event of subscription) {
 							const txnStreamKey = event?.txnStream;
 							let stream = defaultStream;
 							if (txnStreamKey !== undefined) {
-								stream = (taggedStreams ??= new Map()).get(txnStreamKey);
+								stream = (taggedStreams ??= new WeakMap()).get(txnStreamKey);
 								if (!stream) taggedStreams.set(txnStreamKey, (stream = { txn: undefined, lastSequenceId: undefined }));
 							}
 							let txnInProgress = stream.txn;
@@ -1295,6 +1300,17 @@ export function makeTable(options) {
 										failurePosition = committingTxn[SOURCE_APPLY_POSITION];
 									}
 									committingTxn?.resolve();
+									if (stream.held) {
+										// The source is replaying from before an earlier failure, which re-delivers this
+										// transaction too: commit it, but record nothing past the failure.
+										try {
+											if (committingTxn) await committingTxn.committed;
+										} finally {
+											txnInProgress = stream.txn = undefined;
+										}
+										applied = true;
+										continue;
+									}
 									let updateRecordedSequenceId: () => MaybePromise<void>;
 									if (event.localTime && stream.lastSequenceId !== event.localTime) {
 										if (event.remoteNodeIds?.length > 0) {
@@ -1390,11 +1406,23 @@ export function makeTable(options) {
 											// resolution through, as callbacks may use the committed txn time.
 											await event.onCommit(committed);
 										}
+									} catch (error) {
+										stream.failure = undefined;
+										if (await event.onFailure?.(error, failurePosition)) stream.held = true;
+										throw error;
 									} finally {
 										// Always clear the completed transaction so a later standalone write isn't appended
 										// to it (and lost), and a failed commit's rejected promise isn't re-awaited on the
 										// next beginTxn (which would brick the apply loop).
 										txnInProgress = stream.txn = undefined;
+									}
+									// A transaction this end_txn closes over failed earlier (when a later beginTxn closed it),
+									// so the sequence id must not advance past it either; the source decides whether to replay.
+									if (stream.failure !== undefined) {
+										const failure = stream.failure;
+										stream.failure = undefined;
+										if (await event.onFailure?.(failure.error, failure.position)) stream.held = true;
+										continue;
 									}
 									// Only reached when the commit succeeded; a failure propagates to the handler's catch
 									// and the sequence id is intentionally not advanced past the unapplied write.
@@ -1417,6 +1445,7 @@ export function makeTable(options) {
 											// than rethrow) so the current beginTxn still starts a fresh transaction with
 											// correct boundaries instead of having its writes applied as standalone ones.
 											logger.error?.('source-applied transaction commit failed during apply', error);
+											stream.failure ??= { error, position: txnInProgress[SOURCE_APPLY_POSITION] };
 											await notifyReplicatedApplyFailure(
 												databaseName,
 												txnInProgress,

@@ -109,6 +109,78 @@ describe('source transactions keyed by stream', function () {
 		assert.deepEqual(await recordIds(Table, ['a1', 'b1', 'b2']), ['b1', 'b2']);
 	});
 
+	function failingWrite(id, timestamp, extra) {
+		return put(id, timestamp, {
+			...extra,
+			finished: {
+				then(resolve, reject) {
+					reject(new Error(`injected failure for ${id}`));
+				},
+			},
+		});
+	}
+
+	it('holds the cursor and reports a failed earlier segment at the frame end_txn', async () => {
+		const stream = {};
+		const failures = [];
+		const { Table, applied } = start([
+			failingWrite('seg-failed', NOW + 9.1, { beginTxn: true, txnStream: stream }),
+			put('seg-ok', NOW + 9.1, { beginTxn: true, txnStream: stream }),
+			{
+				type: 'end_txn',
+				txnStream: stream,
+				localTime: NOW + 9.1,
+				remoteNodeIds: [77],
+				onFailure: (error, position) => failures.push([error.message, position]),
+			},
+		]);
+		await waitFor(() => applied.length === 3);
+		await waitFor(() => failures.length === 1);
+		assert.deepEqual(await recordIds(Table, ['seg-failed', 'seg-ok']), ['seg-ok']);
+		assert.equal(Table.dbisDB.getSync([Symbol.for('seq'), 77]), undefined);
+		assert.match(failures[0][0], /injected failure for seg-failed/);
+		assert.equal(failures[0][1], NOW + 9.1);
+	});
+
+	it('records no cursor and runs no onCommit for a held stream after its failure', async () => {
+		const stream = {};
+		let laterCommits = 0;
+		const { Table, applied } = start([
+			failingWrite('held-failed', NOW + 11.1, { beginTxn: true, txnStream: stream }),
+			{ type: 'end_txn', txnStream: stream, localTime: NOW + 11.1, remoteNodeIds: [79], onFailure: () => true },
+			put('held-later', NOW + 12.1, { beginTxn: true, txnStream: stream }),
+			{
+				type: 'end_txn',
+				txnStream: stream,
+				localTime: NOW + 12.1,
+				remoteNodeIds: [79],
+				onCommit: () => laterCommits++,
+			},
+			put('other-stream', NOW + 13.1, { beginTxn: true, txnStream: {} }),
+		]);
+		await waitFor(() => applied.length === 5);
+		await waitFor(async () => (await recordIds(Table, ['held-later'])).length === 1);
+		assert.equal(laterCommits, 0);
+		assert.equal(Table.dbisDB.getSync([Symbol.for('seq'), 79]), undefined);
+	});
+
+	it('reports a commit that fails at the end_txn', async () => {
+		const stream = {};
+		const failures = [];
+		const { applied } = start([
+			failingWrite('end-failed', NOW + 10.1, { beginTxn: true, txnStream: stream }),
+			{
+				type: 'end_txn',
+				txnStream: stream,
+				localTime: NOW + 10.1,
+				remoteNodeIds: [78],
+				onFailure: (error) => failures.push(error),
+			},
+		]);
+		await waitFor(() => applied.length === 2);
+		await waitFor(() => failures.length === 1);
+	});
+
 	it('applies untagged events positionally, as one default stream', async () => {
 		const { Table } = start([put('d1', NOW + 5.1, { beginTxn: true }), put('d2', NOW + 5.1), { type: 'end_txn' }]);
 		await waitFor(async () => (await recordIds(Table, ['d1', 'd2'])).length === 2);
