@@ -1,8 +1,7 @@
 // A replicated delete re-delivered onto the state it already produced must not re-log: in a mesh every
 // re-logged copy is new log tail that peers forward and re-log in turn (harper-pro#826).
-// Backport of main's harper#2761 test. Omitted here: the multi-write transaction cases ([put, delete],
-// [delete, put], [delete, put, delete], a partially applied transaction), which depend on in-transaction
-// write staging (harper#1968) that this branch does not have, and fail identically without this change.
+// Multi-write transaction cases ([put, delete], [delete, put, delete], ...) are not covered here: they need
+// in-transaction write staging, which this line does not have.
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
