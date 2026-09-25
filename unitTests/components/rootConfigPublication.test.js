@@ -45,7 +45,6 @@ async function withConfigEnv(vars, body) {
 	}
 }
 
-/** Make the config refresh also run `afterRefresh`, the way an env layer rewriting the file would. */
 async function withRefreshThat(afterRefresh, body) {
 	const initSync = envModule.initSync;
 	envModule.initSync = (force) => {
@@ -425,6 +424,17 @@ describe('an effect the config environment would undo', () => {
 		);
 	});
 
+	it('is not refused for a drop over install options or credentials a variable keeps without a package', async () => {
+		writeEntry('env-web', { package: 'npm:env-web@1' });
+
+		await withConfigEnv(
+			{
+				HARPER_SET_CONFIG: JSON.stringify({ 'env-web': { install: { command: 'npm ci' }, credentials: { npm: 'x' } } }),
+			},
+			() => assertRootConfigEffectPublishable('env-web', { kind: 'remove' })
+		);
+	});
+
 	it('is not refused over a key HARPER_SET_CONFIG already sets to the declared value, whatever HARPER_CONFIG says', async () => {
 		writeEntry('env-web', { package: 'npm:env-web@1' });
 
@@ -442,6 +452,19 @@ describe('an effect the config environment would undo', () => {
 
 		await withConfigEnv({ HARPER_SET_CONFIG: JSON.stringify({ 'env-web': { isolated: true } }) }, () =>
 			assertRootConfigEffectPublishable('env-web', { kind: 'set', entry: { package: 'npm:env-web@2' } })
+		);
+	});
+
+	it('throws when the file stops parsing across the refresh, rather than reading what the parser recovered', async () => {
+		writeEntry('env-web', { package: 'npm:env-web@1', urlPath: '/web' });
+
+		await withRefreshThat(
+			() => fs.appendFileSync(getConfigFilePath(), '\nunparseable: [unterminated\n'),
+			() =>
+				assert.rejects(
+					applyRootConfigEffect('env-web', { kind: 'unset-package' }),
+					/cannot be confirmed: after the config refresh, .* does not parse/
+				)
 		);
 	});
 
@@ -466,7 +489,6 @@ describe('drop_component', () => {
 	const dropComponent = (req) => require('#src/components/operations').dropComponent(req);
 	let componentDir;
 
-	/** A live component `name` with an entry, dropped by each test below. */
 	function liveComponent(name, entry = { package: `npm:${name}`, isolated: true }) {
 		componentDir = path.join(getConfigPath(CONFIG_PARAMS.COMPONENTSROOT), name);
 		fs.mkdirSync(componentDir, { recursive: true });

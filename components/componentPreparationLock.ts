@@ -212,7 +212,7 @@ export async function scanLiveClaims(
 
 // Windows answers a read of a claim another contender is deleting (delete pending), or that a scanner holds without read
 // sharing, with EPERM or EBUSY. Both clear within moments, so a scan that meets one is repeated rather than failing
-// the acquisition; anything that outlasts the window is a real failure, and still fails fast.
+// the acquisition; anything that outlasts the window, or the caller's own deadline, is a real failure and still fails.
 const TRANSIENT_CLAIM_READ_CODES = new Set(process.platform === 'win32' ? ['EBUSY', 'EPERM'] : []);
 const TRANSIENT_CLAIM_READ_WINDOW_MS = 2_000;
 
@@ -220,9 +220,10 @@ async function scanLiveClaimsPatiently(
 	lockRoot: string,
 	lockName: string,
 	options: ComponentPreparationLockOptions,
-	ownToken: string
+	ownToken: string,
+	deadline: number
 ): Promise<LiveClaims> {
-	const giveUpAt = performance.now() + TRANSIENT_CLAIM_READ_WINDOW_MS;
+	const giveUpAt = Math.min(performance.now() + TRANSIENT_CLAIM_READ_WINDOW_MS, deadline);
 	for (;;) {
 		try {
 			return await scanLiveClaims(lockRoot, lockName, options, ownToken);
@@ -309,7 +310,13 @@ async function acquireComponentPreparationLock(
 		// Bakery "choosing" flag: an earlier contender will wait for this file to disappear before
 		// comparing tickets, while a later contender necessarily observes our published ticket.
 		await publishClaim(choosingPath, owner);
-		const initialClaims = await scanLiveClaimsPatiently(lockRoot, lockName, options, owner.token);
+		const initialClaims = await scanLiveClaimsPatiently(
+			lockRoot,
+			lockName,
+			options,
+			owner.token,
+			performance.now() + (options.timeoutMs ?? DEFAULT_LOCK_WAIT_TIMEOUT_MS)
+		);
 		owner.ticket = initialClaims.tickets.reduce((max, contender) => Math.max(max, contender.ticket ?? 0), 0) + 1;
 		ticketPath = join(lockRoot, `${lockName}.ticket.${owner.ticket}.${owner.token}.json`);
 		await publishClaim(ticketPath, owner);
@@ -320,7 +327,7 @@ async function acquireComponentPreparationLock(
 	let waitingReportedForToken: string | undefined;
 	try {
 		for (;;) {
-			const claims = await scanLiveClaimsPatiently(lockRoot, lockName, options, owner.token);
+			const claims = await scanLiveClaimsPatiently(lockRoot, lockName, options, owner.token, deadline);
 			const precedingTicket = claims.tickets
 				.filter((contender) => ticketPrecedes(contender, owner))
 				.sort((a, b) => {

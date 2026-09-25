@@ -3502,14 +3502,18 @@ export async function retireComponentDirectory(
 		try {
 			await syncBothParents();
 		} catch (error) {
-			await rename(droppedPath, componentDirPath)
-				.then(syncBothParents)
-				.catch((restoreError) =>
-					componentLogger.error(
-						`Could not put ${componentName} back from ${droppedPath} after its move aside failed to flush:`,
-						errorForLog(restoreError)
-					)
+			try {
+				await rename(droppedPath, componentDirPath);
+			} catch (restoreError) {
+				componentLogger.error(
+					`Could not put ${componentName} back from ${droppedPath} after its move aside failed to flush:`,
+					errorForLog(restoreError)
 				);
+				throw error;
+			}
+			await syncBothParents().catch((syncError) =>
+				componentLogger.warn(`Put ${componentName} back, but could not flush that either:`, errorForLog(syncError))
+			);
 			throw error;
 		}
 	}
@@ -3518,9 +3522,15 @@ export async function retireComponentDirectory(
 			if (!retired) return;
 			try {
 				await rename(droppedPath, componentDirPath);
-				await syncBothParents();
 			} catch (error) {
 				throw new Error(`Could not put ${componentName} back from ${droppedPath}: ${errorMessage(error)}`, {
+					cause: error,
+				});
+			}
+			try {
+				await syncBothParents();
+			} catch (error) {
+				throw new Error(`Put ${componentName} back, but could not flush its directories: ${errorMessage(error)}`, {
 					cause: error,
 				});
 			}

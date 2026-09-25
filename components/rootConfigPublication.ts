@@ -124,7 +124,14 @@ export async function applyRootConfigEffect(component: string, effect: RootConfi
 		else syncFileToStorageSync(configFilePath);
 		// Inside the lock: on the main thread a refresh re-applies the env config layers and can rewrite the file.
 		env.initSync(true);
-		const contradicted = contradictedKeys(parseYamlDoc(configFilePath).toJSON()?.[component], effect);
+		const refreshedDoc = parseYamlDoc(configFilePath);
+		if (refreshedDoc.errors?.length > 0) {
+			throw new Error(
+				`The root config entry of ${component} cannot be confirmed: after the config refresh, ${configFilePath} ` +
+					`does not parse: ${refreshedDoc.errors}`
+			);
+		}
+		const contradicted = contradictedKeys(refreshedDoc.toJSON()?.[component], effect);
 		if (contradicted.length > 0) {
 			throw new ServerError(
 				`The root config entry of ${component} did not take effect: after the config refresh, ${configFilePath} ` +
@@ -225,8 +232,9 @@ function assertEnvLayersKeepEffect(
 
 /**
  * The keys, as paths into the component's entry, that contradict what the effect wants of it; none when the
- * effect holds. For a payload deploy and a drop that is only the keys that say how to install the component: a
- * drop leaves settings a variable keeps for its name, such as `isolated`, which install nothing.
+ * effect holds. For a payload deploy and a drop that is only `package`: a start installs a component from its entry
+ * only when the entry names one, so the other keys a variable keeps for the name, `install` and `credentials`
+ * included, reinstall nothing.
  */
 function contradictedKeys(entry: unknown, effect: RootConfigEffect): string[][] {
 	switch (effect.kind) {
@@ -238,7 +246,7 @@ function contradictedKeys(entry: unknown, effect: RootConfigEffect): string[][] 
 			);
 		case 'unset-package':
 		case 'remove':
-			return isPlainObject(entry) ? PACKAGE_INSTALL_KEYS.filter((key) => key in entry).map((key) => [key]) : [];
+			return isPlainObject(entry) && 'package' in entry ? [['package']] : [];
 	}
 }
 
