@@ -1,6 +1,13 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { ServerError } from '../../utility/errors/hdbError.ts';
-import type { DefineBackendSpec, GenerateResult, ModelBackend, ModelCapabilities, ToolCall } from './types.ts';
+import type {
+	DefineBackendSpec,
+	GenerateResult,
+	ModelBackend,
+	ModelCapabilities,
+	ModelKind,
+	ToolCall,
+} from './types.ts';
 
 /**
  * Process-wide model backend registry.
@@ -20,10 +27,11 @@ import type { DefineBackendSpec, GenerateResult, ModelBackend, ModelCapabilities
  * step) lands in Phase 2 alongside the first real backend.
  */
 
-type ModelKind = 'embedding' | 'generative';
-
-const embedding: Map<string, ModelBackend> = new Map();
-const generative: Map<string, ModelBackend> = new Map();
+const registries: Record<ModelKind, Map<string, ModelBackend>> = {
+	embedding: new Map(),
+	generative: new Map(),
+	decision: new Map(),
+};
 
 /** A registration a factory made during construction, deferred to the caller. */
 export interface CapturedInstall {
@@ -54,7 +62,7 @@ function install(kind: ModelKind, logicalName: string, backend: ModelBackend): v
 		else slot.extras.push({ kind, logicalName, backend });
 		return;
 	}
-	(kind === 'embedding' ? embedding : generative).set(logicalName, backend);
+	registries[kind].set(logicalName, backend);
 }
 
 /** Map `logicalName` to a backend for embedding calls. Re-set replaces. */
@@ -65,6 +73,11 @@ export function setEmbedding(logicalName: string, backend: ModelBackend): void {
 /** Map `logicalName` to a backend for generative calls. Re-set replaces. */
 export function setGenerative(logicalName: string, backend: ModelBackend): void {
 	install('generative', logicalName, backend);
+}
+
+/** Map `logicalName` to a backend for decide calls. Re-set replaces. */
+export function setDecision(logicalName: string, backend: ModelBackend): void {
+	install('decision', logicalName, backend);
 }
 
 /**
@@ -99,7 +112,7 @@ export function replaceIfCurrent(
 	expected: ModelBackend | undefined,
 	next: ModelBackend
 ): boolean {
-	const map = kind === 'embedding' ? embedding : generative;
+	const map = registries[kind];
 	if (map.get(logicalName) !== expected) return false;
 	map.set(logicalName, next);
 	return true;
@@ -110,7 +123,7 @@ export function replaceIfCurrent(
  * removed. Withdrawing a credential must not delete a slot another writer has since taken over.
  */
 export function removeIfCurrent(kind: ModelKind, logicalName: string, expected: ModelBackend | undefined): boolean {
-	const map = kind === 'embedding' ? embedding : generative;
+	const map = registries[kind];
 	if (map.get(logicalName) !== expected) return false;
 	map.delete(logicalName);
 	return true;
@@ -118,7 +131,7 @@ export function removeIfCurrent(kind: ModelKind, logicalName: string, expected: 
 
 /** Non-throwing lookup of the backend mapped to `logicalName` for `kind`, or `undefined`. Used by the router to assemble + filter candidate lists without exceptions. */
 export function getBackend(kind: ModelKind, logicalName: string): ModelBackend | undefined {
-	return (kind === 'embedding' ? embedding : generative).get(logicalName);
+	return registries[kind].get(logicalName);
 }
 
 /**
@@ -127,8 +140,7 @@ export function getBackend(kind: ModelKind, logicalName: string): ModelBackend |
  * caller passes as `opts.model`, not the backend's own `.name`.
  */
 export function listBackends(kind: ModelKind): Array<{ logicalName: string; backend: ModelBackend }> {
-	const map = kind === 'embedding' ? embedding : generative;
-	return [...map.entries()].map(([logicalName, backend]) => ({ logicalName, backend }));
+	return [...registries[kind].entries()].map(([logicalName, backend]) => ({ logicalName, backend }));
 }
 
 /**
@@ -136,7 +148,7 @@ export function listBackends(kind: ModelKind): Array<{ logicalName: string; back
  * Throws `ModelBackendNotFoundError` if no backend is mapped.
  */
 export function resolveEmbedding(logicalName: string = 'default'): ModelBackend {
-	const backend = embedding.get(logicalName);
+	const backend = registries.embedding.get(logicalName);
 	if (!backend) throw new ModelBackendNotFoundError('embedding', logicalName);
 	return backend;
 }
@@ -146,8 +158,18 @@ export function resolveEmbedding(logicalName: string = 'default'): ModelBackend 
  * Throws `ModelBackendNotFoundError` if no backend is mapped.
  */
 export function resolveGenerative(logicalName: string = 'default'): ModelBackend {
-	const backend = generative.get(logicalName);
+	const backend = registries.generative.get(logicalName);
 	if (!backend) throw new ModelBackendNotFoundError('generative', logicalName);
+	return backend;
+}
+
+/**
+ * Resolve the decision backend mapped to `logicalName` (default: `'default'`).
+ * Throws `ModelBackendNotFoundError` if no backend is mapped.
+ */
+export function resolveDecision(logicalName: string = 'default'): ModelBackend {
+	const backend = registries.decision.get(logicalName);
+	if (!backend) throw new ModelBackendNotFoundError('decision', logicalName);
 	return backend;
 }
 
@@ -170,8 +192,10 @@ export function resolveGenerative(logicalName: string = 'default'): ModelBackend
  * derives them for you, so prefer it.
  */
 export function registerBackend(kind: ModelKind, id: string, backend: ModelBackend): void {
-	if (kind !== 'embedding' && kind !== 'generative')
-		throw new ModelBackendRegistrationError(`kind must be 'embedding' or 'generative', got '${String(kind)}'`);
+	if (kind !== 'embedding' && kind !== 'generative' && kind !== 'decision')
+		throw new ModelBackendRegistrationError(
+			`kind must be 'embedding', 'generative' or 'decision', got '${String(kind)}'`
+		);
 	if (typeof id !== 'string' || id.length === 0)
 		throw new ModelBackendRegistrationError('backend id must be a non-empty string');
 	if (
@@ -185,6 +209,10 @@ export function registerBackend(kind: ModelKind, id: string, backend: ModelBacke
 		if (typeof backend.embed !== 'function')
 			throw new ModelBackendRegistrationError(`embedding backend '${id}' must implement embed()`);
 		setEmbedding(id, backend);
+	} else if (kind === 'decision') {
+		if (typeof backend.decide !== 'function')
+			throw new ModelBackendRegistrationError(`decision backend '${id}' must implement decide()`);
+		setDecision(id, backend);
 	} else {
 		if (typeof backend.generate !== 'function' && typeof backend.generateStream !== 'function')
 			throw new ModelBackendRegistrationError(
@@ -204,15 +232,16 @@ export function registerBackend(kind: ModelKind, id: string, backend: ModelBacke
 export function defineBackend(spec: DefineBackendSpec): ModelBackend {
 	if (!spec || typeof spec.name !== 'string' || spec.name.length === 0)
 		throw new ModelBackendRegistrationError('defineBackend requires a non-empty name');
-	const { name, embed, generate, generateStream, tools = false, adapters = false } = spec;
+	const { name, embed, generate, generateStream, decide, tools = false, adapters = false, calibrated = false } = spec;
 	// Gate on function-ness, not truthiness: a non-function value (`generate: 'oops'`)
 	// must be rejected at definition time, not assigned and crash at call time.
 	const hasEmbed = typeof embed === 'function';
 	const hasGenerate = typeof generate === 'function';
 	const hasStream = typeof generateStream === 'function';
-	if (!hasEmbed && !hasGenerate && !hasStream)
+	const hasDecide = typeof decide === 'function';
+	if (!hasEmbed && !hasGenerate && !hasStream && !hasDecide)
 		throw new ModelBackendRegistrationError(
-			`backend '${name}' must implement at least one of embed / generate / generateStream (as functions)`
+			`backend '${name}' must implement at least one of embed / generate / generateStream / decide (as functions)`
 		);
 	const capabilities: ModelCapabilities = Object.freeze({
 		embed: hasEmbed,
@@ -221,11 +250,14 @@ export function defineBackend(spec: DefineBackendSpec): ModelBackend {
 		stream: hasStream,
 		tools,
 		adapters,
+		decide: hasDecide,
+		calibrated: hasDecide && calibrated,
 	});
 	const backend: ModelBackend = { name, capabilities: () => capabilities };
 	if (hasEmbed) backend.embed = embed;
 	if (hasGenerate) backend.generate = generate;
 	if (hasStream) backend.generateStream = generateStream;
+	if (hasDecide) backend.decide = decide;
 	// Stream-only generative backend: synthesize generate() by draining the stream,
 	// so a plain models.generate() works without the backend implementing both.
 	if (hasStream && !hasGenerate) backend.generate = synthesizeGenerateFromStream(generateStream!);
@@ -261,8 +293,7 @@ function synthesizeGenerateFromStream(
 
 /** Remove all registrations. Test-only hygiene. */
 export function clearRegistry(): void {
-	embedding.clear();
-	generative.clear();
+	for (const map of Object.values(registries)) map.clear();
 }
 
 export class ModelBackendNotFoundError extends ServerError {

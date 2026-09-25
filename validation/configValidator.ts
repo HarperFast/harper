@@ -187,21 +187,49 @@ const bedrockEntrySchema = Joi.object({
 	region: string.optional(),
 	...commonEntryFields,
 }).unknown(false);
+// The built-in vote adapter for `models.decision` entries (#2779). `model` is deliberately absent:
+// the adapter names a generative logical name, not a provider model.
+const generativeDecisionEntrySchema = Joi.object({
+	backend: string.valid('generative').required(),
+	generative: string.optional(),
+	samples: number.integer().min(1).max(25).optional(),
+	concurrency: number.integer().min(1).max(25).optional(),
+	temperature: number.min(0).optional(),
+	requestTimeoutMs: number.min(1).optional(),
+	fallback: Joi.array().items(string).optional(),
+}).unknown(false);
 const unknownBackendEntrySchema = Joi.object({
 	backend: string.required(),
 }).unknown(true);
-const modelEntrySchema = Joi.alternatives().conditional('.backend', {
+// A built-in that cannot serve the kind it is listed under fails here, with the kind named, rather
+// than passing as a module specifier and failing at boot.
+function rejectWrongKind(kind) {
+	return (value, helpers) => helpers.message(`backend '${value.backend}' cannot serve models.${kind} entries`);
+}
+const wrongKindEntrySchema = (kind) =>
+	Joi.object({ backend: string.required() }).unknown(true).custom(rejectWrongKind(kind));
+const providerEntrySchema = (kind) =>
+	Joi.alternatives().conditional('.backend', {
+		switch: [
+			{ is: 'ollama', then: ollamaEntrySchema },
+			{ is: 'openai', then: openaiEntrySchema },
+			{ is: 'anthropic', then: anthropicEntrySchema },
+			{ is: 'bedrock', then: bedrockEntrySchema },
+			{ is: 'generative', then: wrongKindEntrySchema(kind) },
+		],
+		otherwise: unknownBackendEntrySchema,
+	});
+const decisionEntrySchema = Joi.alternatives().conditional('.backend', {
 	switch: [
-		{ is: 'ollama', then: ollamaEntrySchema },
-		{ is: 'openai', then: openaiEntrySchema },
-		{ is: 'anthropic', then: anthropicEntrySchema },
-		{ is: 'bedrock', then: bedrockEntrySchema },
+		{ is: 'generative', then: generativeDecisionEntrySchema },
+		{ is: Joi.valid('ollama', 'openai', 'anthropic', 'bedrock'), then: wrongKindEntrySchema('decision') },
 	],
 	otherwise: unknownBackendEntrySchema,
 });
 const modelsSchema = Joi.object({
-	embedding: Joi.object().pattern(Joi.string(), modelEntrySchema).optional(),
-	generative: Joi.object().pattern(Joi.string(), modelEntrySchema).optional(),
+	embedding: Joi.object().pattern(Joi.string(), providerEntrySchema('embedding')).optional(),
+	generative: Joi.object().pattern(Joi.string(), providerEntrySchema('generative')).optional(),
+	decision: Joi.object().pattern(Joi.string(), decisionEntrySchema).optional(),
 });
 
 /**

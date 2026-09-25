@@ -11,10 +11,15 @@ import { getModelCallAnalyticsWriter, type ModelCallAnalyticsWriter, type ModelC
 import { recordAction } from '../analytics/write.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import { runAgentLoop, runAgentLoopStream } from './agentLoop.ts';
+import { normalizeDecision, stateToText, validateDecisionSchema } from './decision.ts';
 import type {
 	AccountingContext,
 	BackendOpts,
 	Capability,
+	DecideInput,
+	DecideOpts,
+	Decision,
+	DecisionSchema,
 	DefineBackendSpec,
 	EmbedOpts,
 	GenerateChunk,
@@ -22,6 +27,7 @@ import type {
 	GenerateOpts,
 	GenerateResult,
 	ModelBackend,
+	ModelKind,
 	ModelRouter,
 	ModelCallResult,
 	Models as ModelsContract,
@@ -67,7 +73,7 @@ export class Models implements ModelsContract {
 	 * `models.defineBackend` to build the backend from a few methods. Namespaced
 	 * under `models` (`scope.models.registerBackend(...)`), not a generic global. See #1325.
 	 */
-	registerBackend(kind: 'embedding' | 'generative', id: string, backend: ModelBackend): void {
+	registerBackend(kind: ModelKind, id: string, backend: ModelBackend): void {
 		registerBackendImpl(kind, id, backend);
 	}
 
@@ -259,6 +265,47 @@ export class Models implements ModelsContract {
 		}
 	}
 
+	/**
+	 * Choose from the closed set `schema` defines, with the distribution over it (#2779). A malformed
+	 * schema or state rejects before routing, with no analytics row: nothing was called.
+	 */
+	async decide<T = unknown>(state: DecideInput, schema: DecisionSchema, opts: DecideOpts = {}): Promise<Decision<T>> {
+		validateDecisionSchema(schema);
+		stateToText(state);
+		const { accounting, signal } = resolveCallContext(opts.signal);
+		const startedAt = performance.now();
+		const resolved = resolveCandidates('decision', opts.model, buildRequires('decide', opts.requires, false));
+		if ('error' in resolved) {
+			this.#recordFailure(resolved.backend, 'decide', opts.model, accounting, undefined, startedAt, resolved.error);
+			throw resolved.error;
+		}
+		// Same fallback loop as embed(); an output that violates the decision contract is a backend
+		// error, so it is recorded against that backend and the next candidate is tried.
+		let firstError: unknown = undefined;
+		let hasError = false;
+		for (const backend of resolved.candidates) {
+			signal?.throwIfAborted();
+			const attemptStart = performance.now();
+			try {
+				const backendOpts = toBackendOpts(opts, signal, accounting);
+				const result = await backend.decide!(state, schema, backendOpts);
+				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
+				const calibrated = backend.capabilities()?.calibrated === true;
+				const decision = normalizeDecision<T>(schema, result.output, backend.name, calibrated);
+				const id = this.#record(backend, 'decide', opts.model, accounting, undefined, result, attemptStart);
+				return result.usage ? { id: String(id), ...decision, usage: result.usage } : { id: String(id), ...decision };
+			} catch (err) {
+				this.#recordFailure(backend, 'decide', opts.model, accounting, undefined, attemptStart, err);
+				if (!hasError) {
+					firstError = err;
+					hasError = true;
+				}
+				if (signal?.aborted) throw err;
+			}
+		}
+		throw firstError;
+	}
+
 	#record(
 		backend: ModelBackend,
 		method: CallMethod,
@@ -267,9 +314,11 @@ export class Models implements ModelsContract {
 		opts: GenerateOpts | undefined,
 		result: ModelCallResult<unknown> | undefined,
 		startedAt: number
-	): void {
+	): number {
 		const usage = result?.status === 'completed' ? result.usage : undefined;
-		this.#analyticsWriter.write(buildRecord(backend, method, model, accounting, opts, usage, startedAt, true));
+		const id = this.#analyticsWriter.write(
+			buildRecord(backend, method, model, accounting, opts, usage, startedAt, true)
+		);
 		// Also emit aggregate analytics into hdb_raw_analytics so model usage rolls up
 		// into the same per-period analytics that license enforcement and admin
 		// dashboards consume — mirrors the `db-read` pattern in Table.ts. The detailed
@@ -281,6 +330,7 @@ export class Models implements ModelsContract {
 			const tokens = (usage.embeddingTokens ?? 0) + (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0);
 			if (tokens > 0) this.#emit(tokens, `model-${method}-tokens`, backend.name);
 		}
+		return id;
 	}
 
 	#recordFailure(
@@ -350,7 +400,6 @@ function inputHasTools(input: GenerateInput): boolean {
 	return typeof input === 'object' && !Array.isArray(input) && Array.isArray(input.tools) && input.tools.length > 0;
 }
 
-type ResolveKind = 'embedding' | 'generative';
 type Resolution = { candidates: ModelBackend[] } | { error: Error; backend: ModelBackend | undefined };
 
 /**
@@ -381,7 +430,7 @@ function toBackendOpts<TOpts extends { model?: string; signal?: AbortSignal }>(
 	return backendOpts;
 }
 
-function resolveCandidates(kind: ResolveKind, model: string | undefined, requires: Capability[]): Resolution {
+function resolveCandidates(kind: ModelKind, model: string | undefined, requires: Capability[]): Resolution {
 	const logicalName = model ?? 'default';
 	const candidates = getRouter().route({ kind, logicalName, requires });
 	if (candidates.length > 0) return { candidates };

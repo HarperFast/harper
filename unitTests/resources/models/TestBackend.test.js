@@ -17,6 +17,8 @@ describe('TestBackend', () => {
 				stream: true,
 				tools: false,
 				adapters: false,
+				decide: true,
+				calibrated: false,
 			});
 		});
 

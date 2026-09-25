@@ -1055,6 +1055,67 @@ describe('Test configValidator module', () => {
 			expect(result.error.message).to.include('bakend');
 		});
 
+		// #2779: `models.decision` entries and the built-in generative vote adapter.
+		describe('decision entries', () => {
+			it('accepts a generative adapter entry with its tuning fields', () => {
+				const config = baseConfig();
+				config.models = {
+					decision: {
+						default: {
+							backend: 'generative',
+							generative: 'default',
+							samples: 7,
+							concurrency: 3,
+							temperature: 0.5,
+							requestTimeoutMs: 5000,
+							fallback: ['alt'],
+						},
+					},
+				};
+				expect(configValidator(config, true).error).to.be.undefined;
+			});
+
+			it('rejects samples or concurrency outside 1..25, non-integers, and unknown fields', () => {
+				for (const entry of [
+					{ backend: 'generative', samples: 0 },
+					{ backend: 'generative', samples: 26 },
+					{ backend: 'generative', samples: 2.5 },
+					{ backend: 'generative', concurrency: 0 },
+					{ backend: 'generative', model: 'gpt-4o' },
+				]) {
+					const config = baseConfig();
+					config.models = { decision: { default: entry } };
+					expect(configValidator(config, true).error, JSON.stringify(entry)).to.not.be.undefined;
+				}
+			});
+
+			it('rejects a provider backend under decision, naming the kind', () => {
+				const config = baseConfig();
+				config.models = { decision: { default: { backend: 'openai', apiKey: 'k', model: 'gpt-4o' } } };
+				const result = configValidator(config, true);
+				expect(result.error).to.not.be.undefined;
+				expect(result.error.message).to.include('cannot serve models.decision');
+			});
+
+			it('rejects the generative adapter under embedding or generative', () => {
+				for (const kind of ['embedding', 'generative']) {
+					const config = baseConfig();
+					config.models = { [kind]: { default: { backend: 'generative' } } };
+					const result = configValidator(config, true);
+					expect(result.error, kind).to.not.be.undefined;
+					expect(result.error.message).to.include(`cannot serve models.${kind}`);
+				}
+			});
+
+			it('accepts a module backend under decision with arbitrary fields', () => {
+				const config = baseConfig();
+				config.models = {
+					decision: { default: { backend: '@acme/harper-decision', apiKey: '${JEV_API_KEY}', fallback: ['llm'] } },
+				};
+				expect(configValidator(config, true).error).to.be.undefined;
+			});
+		});
+
 		it('accepts multiple logical names per kind', () => {
 			const config = baseConfig();
 			config.models = {

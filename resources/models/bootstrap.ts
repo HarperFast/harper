@@ -48,7 +48,8 @@ import {
 } from './backendRegistry.ts';
 import { getSharedRootConfigWatcher, RootConfigWatcher } from '../../config/RootConfigWatcher.ts';
 import { validateModelsBlock } from '../../validation/configValidator.ts';
-import type { ModelBackend } from './types.ts';
+import { registerGenerativeDecisionBackend, type GenerativeDecisionConfig } from './generativeDecision.ts';
+import type { ModelBackend, ModelKind } from './types.ts';
 
 /**
  * Field names treated as credentials. When present in config as a literal
@@ -57,8 +58,6 @@ import type { ModelBackend } from './types.ts';
  * Extend this list as future backends add credential fields.
  */
 const CREDENTIAL_FIELDS = new Set(['apiKey']);
-
-type ModelKind = 'embedding' | 'generative';
 
 interface ModelEntry {
 	backend?: string;
@@ -71,6 +70,11 @@ interface ModelEntry {
 	organization?: string;
 	// bedrock
 	region?: string;
+	// generative decision adapter (#2779)
+	generative?: string;
+	samples?: number;
+	concurrency?: number;
+	temperature?: number;
 	/** Ordered fallback group: other logical names tried, in order, after this one (#1326). */
 	fallback?: string[];
 }
@@ -78,6 +82,7 @@ interface ModelEntry {
 interface ModelsConfig {
 	embedding?: Record<string, ModelEntry>;
 	generative?: Record<string, ModelEntry>;
+	decision?: Record<string, ModelEntry>;
 }
 
 interface RootConfig {
@@ -85,13 +90,32 @@ interface RootConfig {
 }
 
 type BackendRegisterFn = (args: { logicalName: string; kind: ModelKind; config: object }) => void | Promise<void>;
+type ProviderKind = Exclude<ModelKind, 'decision'>;
 
+// The provider casts hold because `builtinServesKind` refuses a `decision` entry before any factory runs.
 const FACTORIES: Record<string, BackendRegisterFn> = {
-	ollama: (args) => registerOllamaBackend({ ...args, config: args.config as OllamaBackendConfig }),
-	openai: (args) => registerOpenAIBackend({ ...args, config: args.config as OpenAIBackendConfig }),
-	anthropic: (args) => registerAnthropicBackend({ ...args, config: args.config as AnthropicBackendConfig }),
-	bedrock: (args) => registerBedrockBackend({ ...args, config: args.config as BedrockBackendConfig }),
+	ollama: (args) =>
+		registerOllamaBackend({ ...args, kind: args.kind as ProviderKind, config: args.config as OllamaBackendConfig }),
+	openai: (args) =>
+		registerOpenAIBackend({ ...args, kind: args.kind as ProviderKind, config: args.config as OpenAIBackendConfig }),
+	anthropic: (args) =>
+		registerAnthropicBackend({
+			...args,
+			kind: args.kind as ProviderKind,
+			config: args.config as AnthropicBackendConfig,
+		}),
+	bedrock: (args) =>
+		registerBedrockBackend({ ...args, kind: args.kind as ProviderKind, config: args.config as BedrockBackendConfig }),
+	generative: (args) => registerGenerativeDecisionBackend({ ...args, config: args.config as GenerativeDecisionConfig }),
 };
+
+// The provider factories treat every non-embedding kind as generative, so a `decision` entry naming
+// one would silently register a backend with no `decide`; the adapter is the only built-in for that kind.
+const DECISION_BUILTINS = new Set(['generative']);
+
+function builtinServesKind(backend: string, kind: ModelKind): boolean {
+	return (kind === 'decision') === DECISION_BUILTINS.has(backend);
+}
 
 // What the config projection currently has installed, per kind+logicalName slot. `backend` is the
 // exact instance this module put in the registry: reload swaps compare against it, so a
@@ -339,6 +363,7 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 	const presentKeys = new Set<string>();
 	collectKind('embedding', block?.embedding, desired, presentKeys);
 	collectKind('generative', block?.generative, desired, presentKeys);
+	collectKind('decision', block?.decision, desired, presentKeys);
 
 	const staged = new Map<string, { desiredEntry: DesiredEntry; backend: ModelBackend; extras: CapturedInstall[] }>();
 	const failedKeys = new Set<string>();
@@ -358,6 +383,13 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 		// the incoming backend AND a currently-installed module-backed slot: a module→built-in rewrite
 		// is still a change of a restart-managed entry, so it must not live-replace the module (which
 		// would drop its helpers with none of the disposal a restart performs).
+		if (FACTORIES[entry.backend as string] && !builtinServesKind(entry.backend as string, kind)) {
+			harperLogger.error(
+				`models.${kind}.${logicalName}: backend '${entry.backend}' cannot serve ${kind} entries; skipping`
+			);
+			failedKeys.add(key);
+			continue;
+		}
 		if (!isBoot && (!FACTORIES[entry.backend as string] || slot?.builtin === false)) {
 			harperLogger.warn(
 				`models.${kind}.${logicalName}: module-backed entries require a restart to add or change; ` +

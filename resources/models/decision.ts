@@ -1,0 +1,298 @@
+/**
+ * The decision contract shared by the facade, the backends, and the generative adapter (#2779):
+ * schema validation, the allowed-value expansion every party agrees on, the backend-output
+ * check, and the JSON Schema a generative backend is asked to honor.
+ */
+import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
+import type {
+	DecideInput,
+	Decision,
+	DecisionLeaf,
+	DecisionOutcome,
+	DecisionOutput,
+	DecisionSchema,
+	FieldDecision,
+} from './types.ts';
+
+export const MAX_LEAF_VALUES = 255;
+export const MAX_OBJECT_FIELDS = 32;
+/** Aggregate allowed values across an object schema; also the ceiling strict structured-output providers place on enum values per request. */
+export const MAX_SCHEMA_VALUES = 500;
+const PROBABILITY_SUM_TOLERANCE = 1e-3;
+const UNSAFE_FIELD_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
+
+export type ObjectDecisionSchema = Extract<DecisionSchema, { type: 'object' }>;
+
+export function isObjectSchema(schema: DecisionSchema): schema is ObjectDecisionSchema {
+	return (schema as { type?: unknown }).type === 'object';
+}
+
+export class DecisionSchemaError extends ClientError {
+	constructor(message: string) {
+		super(`Invalid decision schema: ${message}`, 400);
+		this.name = 'DecisionSchemaError';
+	}
+}
+
+export class DecisionInputError extends ClientError {
+	constructor(message: string) {
+		super(`Invalid decision input: ${message}`, 400);
+		this.name = 'DecisionInputError';
+	}
+}
+
+/** A backend's output violated the decision contract. A backend error: the facade records it and tries the next candidate. */
+export class DecisionContractError extends ServerError {
+	constructor(backendName: string, message: string) {
+		super(`Backend '${backendName}' returned an invalid decision: ${message}`);
+		this.name = 'DecisionContractError';
+	}
+}
+
+export function validateDecisionSchema(schema: unknown): asserts schema is DecisionSchema {
+	if (!schema || typeof schema !== 'object' || Array.isArray(schema))
+		throw new DecisionSchemaError('schema must be an object');
+	const candidate = schema as Record<string, unknown>;
+	if (candidate.type === 'object') {
+		const properties = candidate.properties;
+		if (!properties || typeof properties !== 'object' || Array.isArray(properties))
+			throw new DecisionSchemaError('an object schema needs a properties map');
+		if (candidate.description !== undefined && typeof candidate.description !== 'string')
+			throw new DecisionSchemaError('description must be a string');
+		const names = Object.keys(properties);
+		if (names.length === 0) throw new DecisionSchemaError('an object schema needs at least one property');
+		if (names.length > MAX_OBJECT_FIELDS)
+			throw new DecisionSchemaError(
+				`an object schema has at most ${MAX_OBJECT_FIELDS} properties, got ${names.length}`
+			);
+		let total = 0;
+		for (const name of names) {
+			if (name.length === 0 || UNSAFE_FIELD_NAMES.has(name))
+				throw new DecisionSchemaError(`property name '${name}' is not allowed`);
+			total += validateLeaf((properties as Record<string, unknown>)[name], `property '${name}'`).length;
+		}
+		if (total > MAX_SCHEMA_VALUES)
+			throw new DecisionSchemaError(
+				`an object schema spans at most ${MAX_SCHEMA_VALUES} values across its properties, got ${total}`
+			);
+		return;
+	}
+	validateLeaf(schema, 'schema');
+}
+
+function validateLeaf(leaf: unknown, label: string): readonly unknown[] {
+	if (!leaf || typeof leaf !== 'object' || Array.isArray(leaf))
+		throw new DecisionSchemaError(`${label} must be an object`);
+	const candidate = leaf as Record<string, unknown>;
+	if (candidate.description !== undefined && typeof candidate.description !== 'string')
+		throw new DecisionSchemaError(`${label}: description must be a string`);
+	if (Array.isArray(candidate.enum)) {
+		if (candidate.enum.length < 2 || candidate.enum.length > MAX_LEAF_VALUES)
+			throw new DecisionSchemaError(`${label}: enum needs 2..${MAX_LEAF_VALUES} values, got ${candidate.enum.length}`);
+		const seen = new Set<unknown>();
+		for (const value of candidate.enum) {
+			const type = typeof value;
+			if (type !== 'string' && type !== 'boolean' && (type !== 'number' || !Number.isFinite(value)))
+				throw new DecisionSchemaError(`${label}: enum values must be strings, finite numbers or booleans`);
+			if (seen.has(value)) throw new DecisionSchemaError(`${label}: enum values must be distinct`);
+			seen.add(value);
+		}
+		return candidate.enum;
+	}
+	if (candidate.type === 'boolean') return BOOLEAN_VALUES;
+	if (candidate.type === 'integer') {
+		const { minimum, maximum } = candidate;
+		if (!Number.isInteger(minimum) || !Number.isInteger(maximum))
+			throw new DecisionSchemaError(`${label}: integer minimum and maximum must be integers`);
+		const span = (maximum as number) - (minimum as number) + 1;
+		if (span < 2 || span > MAX_LEAF_VALUES)
+			throw new DecisionSchemaError(`${label}: an integer range spans 2..${MAX_LEAF_VALUES} values, got ${span}`);
+		return integerRange(minimum as number, maximum as number);
+	}
+	throw new DecisionSchemaError(`${label} must be an enum, a boolean, or a bounded integer`);
+}
+
+const BOOLEAN_VALUES: readonly boolean[] = Object.freeze([false, true]);
+
+function integerRange(minimum: number, maximum: number): number[] {
+	const values: number[] = [];
+	for (let value = minimum; value <= maximum; value++) values.push(value);
+	return values;
+}
+
+/** The closed set a leaf ranges over, in the order ties resolve. Assumes a validated leaf. */
+export function allowedValues(leaf: DecisionLeaf): readonly unknown[] {
+	if ('enum' in leaf) return leaf.enum;
+	if (leaf.type === 'boolean') return BOOLEAN_VALUES;
+	return integerRange(leaf.minimum, leaf.maximum);
+}
+
+/** The text form of a `decide` state, or a `DecisionInputError` for a value no backend could serialize. */
+export function stateToText(state: DecideInput): string {
+	if (typeof state === 'string') return state;
+	if (!state || typeof state !== 'object') throw new DecisionInputError('state must be a string or an object');
+	let text: string | undefined;
+	try {
+		text = JSON.stringify(state);
+	} catch (err) {
+		throw new DecisionInputError(`state is not JSON-serializable (${(err as Error)?.message ?? err})`);
+	}
+	if (typeof text !== 'string') throw new DecisionInputError('state is not JSON-serializable');
+	return text;
+}
+
+/**
+ * Check a backend's output against the schema and shape it for the caller: complete distributions
+ * sorted descending (ties keep schema order), the argmax as `value`, per-field marginals for object
+ * schemas. `calibrated` falls back to the backend's capability when the output does not say.
+ */
+export function normalizeDecision<T>(
+	schema: DecisionSchema,
+	output: DecisionOutput<unknown>,
+	backendName: string,
+	calibratedDefault: boolean
+): Omit<Decision<T>, 'id' | 'usage'> {
+	if (!output || typeof output !== 'object') throw new DecisionContractError(backendName, 'output must be an object');
+	const calibrated = typeof output.calibrated === 'boolean' ? output.calibrated : calibratedDefault;
+	if (isObjectSchema(schema)) {
+		const fields = output.fields;
+		if (!fields || typeof fields !== 'object')
+			throw new DecisionContractError(backendName, 'an object schema needs a fields map');
+		const marginals: Record<string, FieldDecision> = {};
+		const value: Record<string, unknown> = {};
+		for (const name of Object.keys(schema.properties)) {
+			if (!Object.hasOwn(fields, name)) throw new DecisionContractError(backendName, `missing field '${name}'`);
+			const marginal = normalizeLeaf(schema.properties[name], fields[name], backendName, `field '${name}'`);
+			marginals[name] = marginal;
+			value[name] = marginal.value;
+		}
+		for (const name of Object.keys(fields)) {
+			if (!Object.hasOwn(schema.properties, name))
+				throw new DecisionContractError(backendName, `unexpected field '${name}'`);
+		}
+		return { value: value as T, fields: marginals, calibrated };
+	}
+	const leaf = normalizeLeaf(schema, output, backendName, 'output');
+	return { value: leaf.value as T, probability: leaf.probability, distribution: leaf.distribution, calibrated };
+}
+
+function normalizeLeaf(
+	leaf: DecisionLeaf,
+	output: DecisionOutput<unknown> | undefined,
+	backendName: string,
+	label: string
+): FieldDecision {
+	const allowed = allowedValues(leaf);
+	const distribution = output?.distribution;
+	if (!Array.isArray(distribution)) throw new DecisionContractError(backendName, `${label}: distribution is required`);
+	if (distribution.length !== allowed.length)
+		throw new DecisionContractError(
+			backendName,
+			`${label}: distribution needs one entry per allowed value (${allowed.length}), got ${distribution.length}`
+		);
+	const byValue = new Map<unknown, number>();
+	let sum = 0;
+	for (const entry of distribution) {
+		if (!entry || typeof entry !== 'object')
+			throw new DecisionContractError(backendName, `${label}: distribution entries must be objects`);
+		const { value, probability } = entry;
+		if (!allowed.includes(value))
+			throw new DecisionContractError(backendName, `${label}: ${JSON.stringify(value)} is not an allowed value`);
+		if (typeof probability !== 'number' || !Number.isFinite(probability) || probability < 0 || probability > 1)
+			throw new DecisionContractError(
+				backendName,
+				`${label}: probability of ${JSON.stringify(value)} must be a finite number in [0, 1]`
+			);
+		if (byValue.has(value))
+			throw new DecisionContractError(backendName, `${label}: duplicate entry for ${JSON.stringify(value)}`);
+		byValue.set(value, probability);
+		sum += probability;
+	}
+	if (Math.abs(sum - 1) > PROBABILITY_SUM_TOLERANCE)
+		throw new DecisionContractError(backendName, `${label}: probabilities sum to ${sum}, expected 1`);
+	const sorted: DecisionOutcome[] = allowed.map((value) => ({ value, probability: byValue.get(value)! }));
+	sorted.sort((a, b) => b.probability - a.probability);
+	const top = sorted[0].probability;
+	let value = sorted[0].value;
+	if (output!.value !== undefined) {
+		if (byValue.get(output!.value) !== top)
+			throw new DecisionContractError(
+				backendName,
+				`${label}: value ${JSON.stringify(output!.value)} is not a most-probable outcome`
+			);
+		value = output!.value;
+	}
+	return { value, probability: top, distribution: sorted };
+}
+
+/**
+ * The JSON Schema a generative backend is asked to honor for one sample: an object at the root
+ * (leaf answers wrapped as `{ value }`), every property required, no additional properties, and
+ * bounded integers as an explicit enum — the shape strict structured-output modes accept.
+ */
+export function toResponseSchema(schema: DecisionSchema): object {
+	if (isObjectSchema(schema)) {
+		const properties: Record<string, object> = {};
+		for (const [name, leaf] of Object.entries(schema.properties)) properties[name] = leafJsonSchema(leaf);
+		const out: Record<string, unknown> = {
+			type: 'object',
+			properties,
+			required: Object.keys(schema.properties),
+			additionalProperties: false,
+		};
+		if (schema.description) out.description = schema.description;
+		return out;
+	}
+	return {
+		type: 'object',
+		properties: { value: leafJsonSchema(schema) },
+		required: ['value'],
+		additionalProperties: false,
+	};
+}
+
+function leafJsonSchema(leaf: DecisionLeaf): object {
+	const out: Record<string, unknown> = {};
+	if ('enum' in leaf) {
+		const types = new Set(leaf.enum.map((value) => (typeof value === 'number' ? 'number' : typeof value)));
+		if (types.size === 1) out.type = [...types][0];
+		out.enum = [...leaf.enum];
+	} else if (leaf.type === 'boolean') {
+		out.type = 'boolean';
+	} else {
+		out.type = 'integer';
+		out.enum = integerRange(leaf.minimum, leaf.maximum);
+	}
+	if (leaf.description) out.description = leaf.description;
+	return out;
+}
+
+/**
+ * Parse one generative sample against the schema: the leaf value, or a `{ [property]: value }`
+ * map for object schemas. Throws a plain `Error` naming what did not fit; the caller wraps it.
+ */
+export function parseDecisionSample(schema: DecisionSchema, content: string): unknown {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(content);
+	} catch {
+		throw new Error('the sample is not valid JSON');
+	}
+	if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+		throw new Error('the sample is not a JSON object');
+	const sample = parsed as Record<string, unknown>;
+	if (isObjectSchema(schema)) {
+		const values: Record<string, unknown> = {};
+		for (const [name, leaf] of Object.entries(schema.properties)) {
+			if (!Object.hasOwn(sample, name)) throw new Error(`the sample has no '${name}'`);
+			values[name] = checkSampleValue(leaf, sample[name], `'${name}'`);
+		}
+		return values;
+	}
+	return checkSampleValue(schema, sample.value, "'value'");
+}
+
+function checkSampleValue(leaf: DecisionLeaf, raw: unknown, label: string): unknown {
+	if (allowedValues(leaf).includes(raw)) return raw;
+	throw new Error(`${label} is ${JSON.stringify(raw)}, which is not an allowed value`);
+}
