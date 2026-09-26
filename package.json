@@ -240,7 +240,7 @@
 		"node-stream-zip": "1.16.0",
 		"normalize-path": "^3.0.0",
 		"ora": "8.2.0",
-		"ordered-binary": "1.6.1",
+		"ordered-binary": "1.6.2",
 		"papaparse": "5.6.0",
 		"passport": "0.7.0",
 		"passport-http": "0.3.0",
