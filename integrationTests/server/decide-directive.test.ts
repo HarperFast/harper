@@ -425,38 +425,43 @@ suite('@decide directive end-to-end with fake Ollama', (ctx: any) => {
 		strictEqual(res.body.length, 1, `only the linked write is recorded: ${JSON.stringify(res.body)}`);
 	});
 
-	test('a read-only node serves uncached rows without calling a model or caching them (#2850)', async () => {
-		await killHarper(ctx);
-		await startHarper(ctx, {
-			config: {
-				logging: { auditLog: true },
-				storage: { readOnly: true },
-				models: {
-					embedding: { default: { backend: 'ollama', host: fake.host, model: 'fake-embed' } },
-					generative: { default: { backend: 'ollama', host: fake.host, model: 'fake-gen' } },
-					decision: { default: { backend: 'generative', samples: SAMPLES, concurrency: 2 } },
+	// Read-only startup fails on Windows before this test's behavior is reached (#2853).
+	test(
+		'a read-only node serves uncached rows without calling a model or caching them (#2850)',
+		{ skip: process.platform === 'win32' },
+		async () => {
+			await killHarper(ctx);
+			await startHarper(ctx, {
+				config: {
+					logging: { auditLog: true },
+					storage: { readOnly: true },
+					models: {
+						embedding: { default: { backend: 'ollama', host: fake.host, model: 'fake-embed' } },
+						generative: { default: { backend: 'ollama', host: fake.host, model: 'fake-gen' } },
+						decision: { default: { backend: 'generative', samples: SAMPLES, concurrency: 2 } },
+					},
 				},
-			},
-			env: {},
-		});
-		client = createApiClient(ctx.harper);
-		fake.reset();
-		for (const id of ['ro-1', 'ro-1', 'ro-2']) {
-			const body = (await client.reqRest(`/CachedTicket/${id}`).expect(200)).body;
-			strictEqual(body.body, `bug report ${id}`);
-			strictEqual(body.route ?? null, null, 'the uncached read carries no decision');
+				env: {},
+			});
+			client = createApiClient(ctx.harper);
+			fake.reset();
+			for (const id of ['ro-1', 'ro-1', 'ro-2']) {
+				const body = (await client.reqRest(`/CachedTicket/${id}`).expect(200)).body;
+				strictEqual(body.body, `bug report ${id}`);
+				strictEqual(body.route ?? null, null, 'the uncached read carries no decision');
+			}
+			strictEqual(fake.chatCallCount(), 0, 'no model call for a fill that cannot be stored');
+			const search = await client
+				.req()
+				.send({
+					operation: 'search_by_hash',
+					database: 'decidetest',
+					table: 'CachedTicket',
+					hash_values: ['ro-1'],
+					get_attributes: ['*'],
+				})
+				.expect(200);
+			strictEqual(search.body.length, 0, 'nothing is cached on a read-only node');
 		}
-		strictEqual(fake.chatCallCount(), 0, 'no model call for a fill that cannot be stored');
-		const search = await client
-			.req()
-			.send({
-				operation: 'search_by_hash',
-				database: 'decidetest',
-				table: 'CachedTicket',
-				hash_values: ['ro-1'],
-				get_attributes: ['*'],
-			})
-			.expect(200);
-		strictEqual(search.body.length, 0, 'nothing is cached on a read-only node');
-	});
+	);
 });
