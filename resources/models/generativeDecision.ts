@@ -246,8 +246,10 @@ function leafSize(leaf: DecisionLeaf): number {
 	if (!leaf || typeof leaf !== 'object') return Infinity;
 	if (Array.isArray((leaf as { enum?: unknown }).enum)) return (leaf as { enum: unknown[] }).enum.length;
 	if ((leaf as { type?: unknown }).type === 'boolean') return 2;
-	const size = (leaf as { maximum: number }).maximum - (leaf as { minimum: number }).minimum + 1;
-	return Number.isFinite(size) && size > 0 ? size : Infinity;
+	const { type, minimum, maximum } = leaf as { type?: unknown; minimum?: unknown; maximum?: unknown };
+	if (type !== 'integer' || !Number.isSafeInteger(minimum) || !Number.isSafeInteger(maximum)) return Infinity;
+	const size = (maximum as number) - (minimum as number) + 1;
+	return size > 0 ? size : Infinity;
 }
 
 function largestLeaf(schema: DecisionSchema): number {

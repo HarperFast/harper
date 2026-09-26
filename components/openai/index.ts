@@ -127,15 +127,8 @@ const CAPABILITIES: ModelCapabilities = Object.freeze({
 	maxScoredChoices: MAX_SCORED_CHOICES,
 });
 // The same shape for a model that refused `logprobs`; two frozen objects, so `capabilities()` allocates nothing.
-const CAPABILITIES_WITHOUT_SCORING: ModelCapabilities = Object.freeze({
-	embed: true,
-	generate: true,
-	stream: true,
-	tools: true,
-	adapters: false,
-	scoreChoices: false,
-	structuredOutput: true,
-});
+const { maxScoredChoices: _scoringLimit, ...UNLIMITED } = CAPABILITIES;
+const CAPABILITIES_WITHOUT_SCORING: ModelCapabilities = Object.freeze({ ...UNLIMITED, scoreChoices: false });
 
 export class OpenAIBackend implements ModelBackend {
 	readonly name = 'openai';
