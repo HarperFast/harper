@@ -150,7 +150,7 @@ describe('generative decision adapter', () => {
 			{ value: 'other', probability: 0 },
 		]);
 		assert.strictEqual(s.calls.length, 5);
-		assert.strictEqual(result.output.signature, 'generative=default;samples=5;temperature=default');
+		assert.strictEqual(result.output.signature, 'generative=default;mode=vote;samples=5;temperature=default');
 	});
 
 	it('passes the strict response schema, the generative logical name, temperature and a signal to every sample', async () => {
