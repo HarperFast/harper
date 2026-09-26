@@ -59,6 +59,15 @@ export interface OllamaBackendConfig {
  * support exists on some models but is uneven across the model catalog; we keep
  * the v1 portability guarantee honest and skip them here.
  */
+const CAPABILITIES: ModelCapabilities = Object.freeze({
+	embed: true,
+	generate: true,
+	stream: true,
+	tools: false,
+	adapters: false,
+	structuredOutput: true,
+});
+
 export class OllamaBackend implements ModelBackend {
 	readonly name = 'ollama';
 	readonly #origin: string;
@@ -74,7 +83,7 @@ export class OllamaBackend implements ModelBackend {
 	}
 
 	capabilities(): ModelCapabilities {
-		return { embed: true, generate: true, stream: true, tools: false, adapters: false, structuredOutput: true };
+		return CAPABILITIES;
 	}
 
 	async embed(input: string | string[], opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>> {

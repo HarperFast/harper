@@ -640,21 +640,76 @@ describe('required capabilities are checked on the candidate about to be invoked
 		assert.strictEqual(calls, 0);
 	});
 
-	it('applies to decide and to generateStream, which throws synchronously before yielding', async () => {
+	it('applies to decide and to generateStream, which rejects when the stream is first pulled', async () => {
 		const noDecide = defineBackend({ name: 'no-decide', generate: async () => genOut('x') });
 		registerRouter({ route: () => [noDecide] });
 		await assert.rejects(models.decide('x', { enum: ['a', 'b'] }), ModelCapabilityError);
 		assert.strictEqual(writer.records.at(-1).error_code, 'capability_unsupported');
-		assert.throws(() => models.generateStream('hi', { requires: ['structuredOutput'] }), ModelCapabilityError);
+		await assert.rejects(
+			(async () => {
+				for await (const _chunk of models.generateStream('hi', { requires: ['structuredOutput'] })) {
+					// never reached
+				}
+			})(),
+			ModelCapabilityError
+		);
 		assert.strictEqual(writer.records.at(-1).method, 'generateStream');
 		assert.strictEqual(writer.records.at(-1).error_code, 'capability_unsupported');
 	});
 
-	it('costs nothing when the default router already filtered', async () => {
+	it('reads one frozen capabilities object per candidate on the default path', async () => {
 		setGenerative('default', new TestBackend());
 		const result = await models.generate('hi');
 		assert.match(result.content, /TestBackend/);
 		assert.strictEqual(writer.records.length, 1);
 		assert.strictEqual(writer.records[0].success, true);
+	});
+
+	it('built-in providers return one frozen capabilities object, so the check allocates nothing', () => {
+		const { OpenAIBackend } = require('#src/components/openai/index');
+		const { OllamaBackend } = require('#src/components/ollama/index');
+		const { AnthropicBackend } = require('#src/components/anthropic/index');
+		const { BedrockBackend } = require('#src/components/bedrock/index');
+		for (const backend of [
+			new OpenAIBackend({ apiKey: 'k', model: 'm' }),
+			new OllamaBackend({ model: 'm' }),
+			new AnthropicBackend({ apiKey: 'k', model: 'm' }),
+			new BedrockBackend({ region: 'us-east-1', model: 'anthropic.m' }),
+		]) {
+			assert.strictEqual(backend.capabilities(), backend.capabilities());
+			assert.ok(Object.isFrozen(backend.capabilities()));
+		}
+	});
+
+	it('checks the stream candidate when the stream is first pulled, not when the iterable is built', async () => {
+		let reported = {
+			embed: false,
+			generate: true,
+			stream: true,
+			tools: false,
+			adapters: false,
+			structuredOutput: true,
+		};
+		const mutable = {
+			name: 'mutable',
+			capabilities: () => reported,
+			async *generateStream() {
+				yield { deltaContent: 'x' };
+				yield { finishReason: 'stop' };
+			},
+		};
+		registerRouter({ route: () => [mutable] });
+		const stream = models.generateStream('hi', { requires: ['structuredOutput'] });
+		reported = { ...reported, structuredOutput: false };
+		await assert.rejects(
+			(async () => {
+				for await (const _chunk of stream) {
+					// never reached
+				}
+			})(),
+			ModelCapabilityError
+		);
+		assert.strictEqual(writer.records.at(-1).method, 'generateStream');
+		assert.strictEqual(writer.records.at(-1).error_code, 'capability_unsupported');
 	});
 });

@@ -103,6 +103,15 @@ export interface OpenAIBackendConfig {
  * externally. `toolMode: 'return'` (Phase 1 default) is supported end-to-end;
  * `toolMode: 'auto'` is reserved for #612.
  */
+const CAPABILITIES: ModelCapabilities = Object.freeze({
+	embed: true,
+	generate: true,
+	stream: true,
+	tools: true,
+	adapters: false,
+	structuredOutput: true,
+});
+
 export class OpenAIBackend implements ModelBackend {
 	readonly name = 'openai';
 	readonly #baseUrl: string;
@@ -131,7 +140,7 @@ export class OpenAIBackend implements ModelBackend {
 	}
 
 	capabilities(): ModelCapabilities {
-		return { embed: true, generate: true, stream: true, tools: true, adapters: false, structuredOutput: true };
+		return CAPABILITIES;
 	}
 
 	async embed(input: string | string[], opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>> {
