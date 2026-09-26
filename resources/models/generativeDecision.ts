@@ -183,8 +183,6 @@ export function createGenerativeDecisionBackend(
 		return { fields: Object.fromEntries(entries.map(([name], i) => [name, { distribution: marginals[i] }])) };
 	};
 
-	// What this adapter controls of its scoring configuration; the model behind the logical name is
-	// identified by the config hash the facade records beside it.
 	const signatureFor = (mode: ScoringMode) =>
 		`generative=${logicalName};mode=${mode};samples=${samples};temperature=${temperature ?? 'default'}`;
 

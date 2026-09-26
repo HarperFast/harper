@@ -34,7 +34,6 @@ function makeMockWriter() {
 	};
 }
 
-/** A decision store that keeps rows in memory: these tests cover the facade, not storage (#2840). */
 function makeMemoryStore() {
 	const rows = [];
 	return {

@@ -361,7 +361,6 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 			return;
 		}
 	}
-	setModelsConfigHash(block ?? undefined);
 	const desired: DesiredEntry[] = [];
 	const presentKeys = new Set<string>();
 	collectKind('embedding', block?.embedding, desired, presentKeys);
@@ -497,6 +496,16 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 			setFallbackGroup(slot.kind, slot.logicalName, slot.fallback);
 		}
 	}
+	setModelsConfigHash(installedConfiguration());
+}
+
+/** The configuration behind every slot the projection serves, expanded as its factory saw it. */
+function installedConfiguration(): Record<string, unknown> | undefined {
+	const configuration: Record<string, unknown> = {};
+	for (const [key, slot] of installedSlots) {
+		if (slot.backend) configuration[key] = expandEnvVarsDeep(JSON.parse(slot.entryJson));
+	}
+	return Object.keys(configuration).length > 0 ? configuration : undefined;
 }
 
 // ── Hot reload wiring ─────────────────────────────────────────────────────────

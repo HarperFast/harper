@@ -223,6 +223,20 @@ describe('DecisionStore against the system database', () => {
 		assert.strictEqual((await store.get(untenanted.id, 'globex')).id, untenanted.id);
 	});
 
+	it('on a read-only node takes the tables the catalog holds without declaring, and reads nothing when they are absent', async () => {
+		const stored = row();
+		await store.persist(stored);
+		resetDecisionTables();
+		const readOnly = new DecisionStore({ getTables: () => getDecisionTables(true), isReadOnly: () => true });
+		assert.strictEqual((await readOnly.get(stored.id)).id, stored.id);
+		resetDecisionTables();
+		const empty = new DecisionStore({
+			getTables: () => ({ decisions: undefined, outcomes: undefined }),
+			isReadOnly: () => true,
+		});
+		assert.strictEqual(await empty.get(stored.id), undefined);
+	});
+
 	it('refuses to record on a read-only node before touching storage', async () => {
 		const readOnly = new DecisionStore({ isReadOnly: () => true, getTables: () => assert.fail('no table access') });
 		assert.throws(
@@ -271,5 +285,9 @@ describe('schema identity', () => {
 			properties: { queue: QUEUE, urgent: { type: 'boolean' } },
 		});
 		assert.deepStrictEqual(scoringSchema({ ...QUEUE, description: 'q' }), QUEUE);
+		const extra = { ...QUEUE, meta: 1n, description: 'q' };
+		assert.strictEqual(hashSchema(extra), hashSchema({ ...QUEUE, description: 'q' }));
+		assert.deepStrictEqual(scoringSchema(extra), QUEUE);
+		assert.strictEqual(hashSchema(extra), hashSchema(extra), 'memoized per object');
 	});
 });
