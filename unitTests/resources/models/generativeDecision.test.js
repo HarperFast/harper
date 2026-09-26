@@ -845,3 +845,89 @@ describe('models.decision config → module decision backend (through bootstrap)
 		assert.deepStrictEqual(candidates, [resolveDecision('default'), resolveDecision('llm')]);
 	});
 });
+
+describe('the voting backend requires a schema-enforcing generative candidate (#2842)', () => {
+	const FIXTURE = join(__dirname, 'fixtures', 'json-generative-module.cjs');
+	const { ModelCapabilityError } = require('#src/resources/models/Models');
+	const { applyModelsConfig } = require('#src/resources/models/bootstrap');
+
+	beforeEach(() => {
+		clearRegistry();
+		clearRouting();
+		resetModelsProjection();
+	});
+
+	afterEach(() => {
+		clearRegistry();
+		clearRouting();
+		resetModelsProjection();
+	});
+
+	it('passes requires: [structuredOutput] on every sample by default and omits it when the entry opts out', async () => {
+		const s = scriptedGenerate([{ value: 'bug' }]);
+		await createGenerativeDecisionBackend({ samples: 2 }, s.generate).decide('x', QUEUE, { accounting });
+		assert.deepStrictEqual(
+			s.calls.map(({ opts }) => opts.requires),
+			[['structuredOutput'], ['structuredOutput']]
+		);
+		const s2 = scriptedGenerate([{ value: 'bug' }]);
+		await createGenerativeDecisionBackend({ samples: 1, requireStructuredOutput: false }, s2.generate).decide(
+			'x',
+			QUEUE,
+			{ accounting }
+		);
+		assert.strictEqual(s2.calls[0].opts.requires, undefined);
+	});
+
+	it('refuses a prompt-only generative backend before any completion, naming the capability', async () => {
+		await bootstrapModels({
+			models: {
+				generative: { default: { backend: FIXTURE, answers: ['{"value":"bug"}'], structuredOutput: false } },
+				decision: { default: { backend: 'generative', samples: 3 } },
+			},
+		});
+		await assert.rejects(
+			models.decide('x', QUEUE),
+			(err) => err instanceof ModelCapabilityError && /structuredOutput/.test(err.message)
+		);
+	});
+
+	it('samples a prompt-only backend when the entry opts out', async () => {
+		await bootstrapModels({
+			models: {
+				generative: { default: { backend: FIXTURE, answers: ['{"value":"bug"}'], structuredOutput: false } },
+				decision: { default: { backend: 'generative', samples: 2, requireStructuredOutput: false } },
+			},
+		});
+		assert.strictEqual((await models.decide('x', QUEUE)).value, 'bug');
+	});
+
+	it('falls through a fallback group to the candidate that enforces the schema', async () => {
+		await bootstrapModels({
+			models: {
+				generative: {
+					default: { backend: FIXTURE, answers: ['{"value":"other"}'], structuredOutput: false, fallback: ['strict'] },
+					strict: { backend: FIXTURE, answers: ['{"value":"bug"}'] },
+				},
+				decision: { default: { backend: 'generative', samples: 1 } },
+			},
+		});
+		assert.strictEqual((await models.decide('x', QUEUE)).value, 'bug');
+	});
+
+	it('honors a hot reload that swaps the generative entry to a prompt-only backend on the next decision', async () => {
+		await bootstrapModels({
+			models: {
+				generative: { default: { backend: 'ollama', model: 'llama3.2' } },
+				decision: { default: { backend: 'generative', samples: 1 } },
+			},
+		});
+		assert.strictEqual(resolveGenerative('default').capabilities().structuredOutput, true);
+		await applyModelsConfig({
+			generative: { default: { backend: 'anthropic', apiKey: 'k', model: 'claude' } },
+			decision: { default: { backend: 'generative', samples: 1 } },
+		});
+		assert.strictEqual(resolveGenerative('default').capabilities().structuredOutput, false);
+		await assert.rejects(models.decide('x', QUEUE), ModelCapabilityError);
+	});
+});

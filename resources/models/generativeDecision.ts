@@ -18,6 +18,7 @@ import { getRouter } from './routing.ts';
 import type {
 	BackendOpts,
 	ChoiceScores,
+	Capability,
 	DecideInput,
 	DecideOpts,
 	DecisionLeaf,
@@ -52,11 +53,19 @@ export interface GenerativeDecisionConfig {
 	 * never votes; `vote` never scores, which makes it the rollback setting.
 	 */
 	scoring?: ScoringMode;
+	/**
+	 * Route each sample only to a generative candidate that sends the response schema as a
+	 * decoding constraint (`structuredOutput`); default `true`. `false` samples prompt-only
+	 * backends, whose replies are parsed leniently and fail the decision when no in-schema
+	 * answer is found.
+	 */
+	requireStructuredOutput?: boolean;
 }
 
 export const DEFAULT_SAMPLES = 5;
 export const MAX_SAMPLES = 25;
 const DEFAULT_CONCURRENCY = 5;
+const STRUCTURED_OUTPUT: readonly Capability[] = Object.freeze(['structuredOutput'] as Capability[]);
 
 const CAPABILITIES: ModelCapabilities = Object.freeze({
 	embed: false,
@@ -127,7 +136,13 @@ export function createGenerativeDecisionBackend(
 		const responseFormat = { schema: toResponseSchema(schema) };
 		const votes = await runPool(
 			Array.from({ length: samples }, () => async (sampleSignal: AbortSignal) => {
-				const result = await generate(input, { model: logicalName, responseFormat, temperature, signal: sampleSignal });
+				const result = await generate(input, {
+					model: logicalName,
+					responseFormat,
+					temperature,
+					signal: sampleSignal,
+					requires,
+				});
 				return parseSample(schema, result.content, logicalName);
 			}),
 			concurrency,
@@ -186,6 +201,7 @@ export function createGenerativeDecisionBackend(
 	const signatureFor = (mode: ScoringMode) =>
 		`generative=${logicalName};mode=${mode};samples=${samples};temperature=${temperature ?? 'default'}`;
 
+	const requires = config.requireStructuredOutput === false ? undefined : (STRUCTURED_OUTPUT as Capability[]);
 	return {
 		name: 'generative',
 		capabilities: () => CAPABILITIES,

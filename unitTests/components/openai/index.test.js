@@ -57,6 +57,7 @@ describe('OpenAIBackend', () => {
 				tools: true,
 				adapters: false,
 				scoreChoices: true,
+				structuredOutput: true,
 			});
 		});
 

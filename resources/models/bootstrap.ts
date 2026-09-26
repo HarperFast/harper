@@ -77,6 +77,7 @@ interface ModelEntry {
 	concurrency?: number;
 	temperature?: number;
 	scoring?: 'auto' | 'vote' | 'score';
+	requireStructuredOutput?: boolean;
 	/** Ordered fallback group: other logical names tried, in order, after this one (#1326). */
 	fallback?: string[];
 }

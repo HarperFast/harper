@@ -65,6 +65,11 @@ export interface ModelCapabilities {
 	calibrated?: boolean;
 	/** Implements `scoreChoices`. Absent reads as false. */
 	scoreChoices?: boolean;
+	/**
+	 * `generate` sends `responseFormat: { schema }` to the provider as a decoding constraint rather
+	 * than a hint. Says what Harper sends, not what a remote endpoint honors. Absent reads as false.
+	 */
+	structuredOutput?: boolean;
 }
 
 /** A capability a call can require of its backend (a key of `ModelCapabilities`). */
@@ -114,6 +119,8 @@ export interface DefineBackendSpec {
 	adapters?: boolean;
 	/** `decide` probabilities are calibrated as returned. Default `false`. */
 	calibrated?: boolean;
+	/** `generate` sends `responseFormat: { schema }` as a decoding constraint. Default `false`. */
+	structuredOutput?: boolean;
 }
 
 export type EmbedOpts = {

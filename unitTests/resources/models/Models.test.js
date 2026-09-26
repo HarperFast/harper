@@ -6,7 +6,8 @@ const assert = require('node:assert');
 // DatabaseTransaction/blob require chain hits a cycle when loaded ESM-first by mocha.
 require('#src/resources/databases');
 const { contextStorage } = require('#src/resources/transaction');
-const { setEmbedding, setGenerative, clearRegistry } = require('#src/resources/models/backendRegistry');
+const { setEmbedding, setGenerative, clearRegistry, defineBackend } = require('#src/resources/models/backendRegistry');
+const { registerRouter, clearRouting } = require('#src/resources/models/routing');
 const { TestBackend } = require('#src/resources/models/TestBackend');
 const {
 	Models,
@@ -579,5 +580,81 @@ describe('logical model name is not forwarded as the wire model (#1593)', () => 
 		}
 		assert.ok(seenOpts, 'backend was called');
 		assert.ok(!('model' in seenOpts), 'the logical model name must not reach the backend as a wire model override');
+	});
+});
+
+describe('required capabilities are checked on the candidate about to be invoked (#2842)', () => {
+	const genOut = (content) => ({ status: 'completed', output: { content, finishReason: 'stop' } });
+	let writer;
+	let models;
+
+	beforeEach(() => {
+		clearRegistry();
+		clearRouting();
+		writer = makeMockWriter();
+		models = new Models(writer, () => {});
+	});
+
+	afterEach(() => {
+		clearRegistry();
+		clearRouting();
+	});
+
+	it('skips a candidate a custom router returned without the required capability and serves from the next one', async () => {
+		let promptOnlyCalls = 0;
+		const promptOnly = defineBackend({
+			name: 'prompt-only',
+			generate: async () => {
+				promptOnlyCalls++;
+				return genOut('nope');
+			},
+		});
+		const strict = defineBackend({ name: 'strict', generate: async () => genOut('ok'), structuredOutput: true });
+		registerRouter({ route: () => [promptOnly, strict] });
+		const result = await models.generate('hi', { requires: ['structuredOutput'] });
+		assert.strictEqual(result.content, 'ok');
+		assert.strictEqual(promptOnlyCalls, 0);
+		assert.deepStrictEqual(
+			writer.records.map((r) => [r.backend, r.success, r.error_code]),
+			[
+				['prompt-only', false, 'capability_unsupported'],
+				['strict', true, undefined],
+			]
+		);
+	});
+
+	it('surfaces the primary capability error when every routed candidate lacks it', async () => {
+		let calls = 0;
+		const backend = defineBackend({
+			name: 'prompt-only',
+			generate: async () => {
+				calls++;
+				return genOut('nope');
+			},
+		});
+		registerRouter({ route: () => [backend] });
+		await assert.rejects(
+			models.generate('hi', { requires: ['structuredOutput'] }),
+			(err) => err instanceof ModelCapabilityError && /structuredOutput/.test(err.message)
+		);
+		assert.strictEqual(calls, 0);
+	});
+
+	it('applies to decide and to generateStream, which throws synchronously before yielding', async () => {
+		const noDecide = defineBackend({ name: 'no-decide', generate: async () => genOut('x') });
+		registerRouter({ route: () => [noDecide] });
+		await assert.rejects(models.decide('x', { enum: ['a', 'b'] }), ModelCapabilityError);
+		assert.strictEqual(writer.records.at(-1).error_code, 'capability_unsupported');
+		assert.throws(() => models.generateStream('hi', { requires: ['structuredOutput'] }), ModelCapabilityError);
+		assert.strictEqual(writer.records.at(-1).method, 'generateStream');
+		assert.strictEqual(writer.records.at(-1).error_code, 'capability_unsupported');
+	});
+
+	it('costs nothing when the default router already filtered', async () => {
+		setGenerative('default', new TestBackend());
+		const result = await models.generate('hi');
+		assert.match(result.content, /TestBackend/);
+		assert.strictEqual(writer.records.length, 1);
+		assert.strictEqual(writer.records[0].success, true);
 	});
 });

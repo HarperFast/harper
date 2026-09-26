@@ -160,6 +160,7 @@ export class Models implements ModelsContract {
 			signal?.throwIfAborted();
 			const attemptStart = performance.now();
 			try {
+				assertCapabilities(backend, resolved.requires);
 				const backendOpts = toBackendOpts(opts, signal, accounting);
 				const result = await backend.embed!(input, backendOpts);
 				// Throw on `pending` BEFORE recording success — otherwise we'd write a
@@ -214,6 +215,7 @@ export class Models implements ModelsContract {
 			signal?.throwIfAborted();
 			const attemptStart = performance.now();
 			try {
+				assertCapabilities(backend, resolved.requires);
 				const backendOpts = toBackendOpts(opts, signal, accounting);
 				const result = await backend.generate!(input, backendOpts);
 				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
@@ -258,6 +260,12 @@ export class Models implements ModelsContract {
 		}
 		// First candidate only — mid-stream fallback would mean replaying already-yielded chunks.
 		const backend = resolved.candidates[0];
+		try {
+			assertCapabilities(backend, resolved.requires);
+		} catch (err) {
+			this.#recordFailure(backend, 'generateStream', opts.model, accounting, opts, startedAt, err);
+			throw err;
+		}
 		const backendOpts = toBackendOpts(opts, signal, accounting);
 		return this.#wrapStream(backend, input, backendOpts, opts, accounting, startedAt);
 	}
@@ -330,6 +338,7 @@ export class Models implements ModelsContract {
 			let result: ModelCallResult<DecisionOutput<unknown>>;
 			let decision: Omit<Decision<T>, 'id' | 'usage'>;
 			try {
+				assertCapabilities(backend, resolved.requires);
 				const backendOpts = toBackendOpts(callOpts, signal, accounting);
 				result = await backend.decide!(state, call, backendOpts);
 				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
@@ -622,7 +631,21 @@ function inputHasTools(input: GenerateInput): boolean {
 	return typeof input === 'object' && !Array.isArray(input) && Array.isArray(input.tools) && input.tools.length > 0;
 }
 
-type Resolution = { candidates: ModelBackend[] } | { error: Error; backend: ModelBackend | undefined };
+type Resolution =
+	{ candidates: ModelBackend[]; requires: Capability[] } | { error: Error; backend: ModelBackend | undefined };
+
+/**
+ * The router's list is advisory: a custom router may return a backend that lacks a required
+ * capability, and the facade must not invoke it. Checked immediately before each candidate is
+ * called, fallbacks included, so a reload between candidates is seen too. `caps?.[…]` treats a
+ * backend whose `capabilities()` returns nullish as satisfying nothing.
+ */
+function assertCapabilities(backend: ModelBackend, requires: Capability[]): void {
+	const caps = backend.capabilities();
+	for (const capability of requires) {
+		if (!caps?.[capability]) throw new ModelCapabilityError(backend.name, capability);
+	}
+}
 
 /**
  * Resolve a call to its ordered candidate backends via the active router (#1326),
@@ -655,7 +678,7 @@ function toBackendOpts<TOpts extends { model?: string; signal?: AbortSignal }>(
 function resolveCandidates(kind: ModelKind, model: string | undefined, requires: Capability[]): Resolution {
 	const logicalName = model ?? 'default';
 	const candidates = getRouter().route({ kind, logicalName, requires });
-	if (candidates.length > 0) return { candidates };
+	if (candidates.length > 0) return { candidates, requires };
 	const primary = getBackend(kind, logicalName);
 	if (!primary) return { error: new ModelBackendNotFoundError(kind, logicalName), backend: undefined };
 	// `caps?.[…]` guards a custom backend whose capabilities() returns nullish — a

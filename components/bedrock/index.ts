@@ -159,7 +159,7 @@ export class BedrockBackend implements ModelBackend {
 	}
 
 	capabilities(): ModelCapabilities {
-		return { embed: true, generate: true, stream: true, tools: true, adapters: false };
+		return { embed: true, generate: true, stream: true, tools: true, adapters: false, structuredOutput: false };
 	}
 
 	async embed(input: string | string[], opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>> {

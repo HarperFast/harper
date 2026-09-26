@@ -196,6 +196,7 @@ const generativeDecisionEntrySchema = Joi.object({
 	temperature: number.min(0).optional(),
 	requestTimeoutMs: number.min(1).optional(),
 	scoring: string.valid('auto', 'vote', 'score').optional(),
+	requireStructuredOutput: Joi.boolean().optional(),
 	fallback: Joi.array().items(string).optional(),
 }).unknown(false);
 const unknownBackendEntrySchema = Joi.object({

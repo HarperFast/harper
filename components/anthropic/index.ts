@@ -106,7 +106,7 @@ export class AnthropicBackend implements ModelBackend {
 	}
 
 	capabilities(): ModelCapabilities {
-		return { embed: false, generate: true, stream: true, tools: true, adapters: false };
+		return { embed: false, generate: true, stream: true, tools: true, adapters: false, structuredOutput: false };
 	}
 
 	async generate(input: GenerateInput, opts: BackendOpts<GenerateOpts>): Promise<ModelCallResult<GenerateResult>> {

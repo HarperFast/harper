@@ -151,7 +151,15 @@ export class OpenAIBackend implements ModelBackend {
 
 	capabilities(): ModelCapabilities {
 		const scoreChoices = this.#defaultModel === undefined || !this.#logprobsRejected.has(this.#defaultModel);
-		return { embed: true, generate: true, stream: true, tools: true, adapters: false, scoreChoices };
+		return {
+			embed: true,
+			generate: true,
+			stream: true,
+			tools: true,
+			adapters: false,
+			scoreChoices,
+			structuredOutput: true,
+		};
 	}
 
 	async embed(input: string | string[], opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>> {

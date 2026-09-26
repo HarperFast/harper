@@ -260,6 +260,7 @@ describe('decision backends in the registry', () => {
 			scoreChoices: false,
 			decide: true,
 			calibrated: true,
+			structuredOutput: false,
 		});
 		registerBackend('decision', 'd', b);
 		assert.strictEqual(resolveDecision('d'), b);
