@@ -26,11 +26,12 @@ export async function signalSchemaChange(
 		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
 		const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
 		if (peersFirst) {
-			for (let round = 0; round < peerRounds; round++) {
-				await sendItcEvent(itcEventSchema, includeJobWorkers);
-				if (round + 1 < peerRounds) await new Promise(setImmediate);
-			}
+			await sendItcEvent(itcEventSchema, includeJobWorkers);
 			await serverItcHandlers.schema(itcEventSchema);
+			for (let round = 1; round < peerRounds; round++) {
+				await new Promise(setImmediate);
+				await sendItcEvent(itcEventSchema, includeJobWorkers);
+			}
 		} else
 			await Promise.all([serverItcHandlers.schema(itcEventSchema), sendItcEvent(itcEventSchema, includeJobWorkers)]);
 	} catch (err) {

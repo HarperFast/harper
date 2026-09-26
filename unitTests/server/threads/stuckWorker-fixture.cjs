@@ -46,6 +46,7 @@ onMessageFromWorkers((message, port) => {
 				message: 'fixture database is already being dropped',
 				code: 'DATABASE_DROP_IN_PROGRESS',
 				statusCode: 409,
+				retryable: true,
 			},
 		});
 	} else if (process.argv.includes('--reject-retryable')) {

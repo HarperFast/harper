@@ -215,8 +215,8 @@ export class ResourceBridge extends BridgeMethods {
 			await signalling.signalSchemaChangeToPeers(preparation);
 			await dropDatabase(dropSchemaObj.schema, rootPaths);
 		} finally {
-			// Match preparation's two rounds so a worker that inherited the fence while joining cannot miss
-			// completion. Cleanup-proven job workers are exiting; active jobs still need their fence released.
+			// The first round reaches current peers before local release; the second catches a worker whose
+			// startup snapshot inherited the fence. Cleanup-proven job workers are already exiting.
 			await signalling.signalSchemaChange(completion(), {
 				peersFirst: true,
 				includeJobWorkers: 'active',

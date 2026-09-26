@@ -194,6 +194,7 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 			assert.strictEqual(error.name, 'DatabaseDroppingError');
 			assert.strictEqual(error.code, 'DATABASE_DROP_IN_PROGRESS');
 			assert.strictEqual(error.statusCode, 409);
+			assert.strictEqual(error.retryable, true);
 			return true;
 		});
 	});

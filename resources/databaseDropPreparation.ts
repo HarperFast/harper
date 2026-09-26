@@ -19,6 +19,7 @@ const databaseDropPreparations = new Map<string, DatabaseDropPreparation>(inheri
 class DatabaseDroppingError extends Error {
 	statusCode = 409;
 	code = 'DATABASE_DROP_IN_PROGRESS';
+	retryable = true;
 	constructor(databaseName: string) {
 		super(`Database '${databaseName}' is already being dropped`);
 		this.name = 'DatabaseDroppingError';
