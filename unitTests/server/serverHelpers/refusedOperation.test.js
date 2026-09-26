@@ -107,7 +107,7 @@ describe('An operation refused by the permission check', function () {
 	});
 
 	// serverErrorHandler alone would log this at info, below the default level.
-	it('keeps the error-level line for an operation error without a log level of its own', async function () {
+	it('keeps the error-level line for a failed request without a log level of its own', async function () {
 		const offset = logLength();
 		const { error } = await failPostRequest(JSON.parse('{"operation": "user_info", "__proto__": {}}'));
 		assert.strictEqual(error.logLevel, undefined);
