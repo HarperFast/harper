@@ -474,3 +474,14 @@ describe('parseDecisionSample with brace pairs inside a string (#2845)', () => {
 		assert.throws(() => parseDecisionSample(QUEUE, `${'{} '.repeat(70)}{"value":"bug"}`), /too many objects/);
 	});
 });
+
+describe('parseDecisionSample on deeply nested replies', () => {
+	it('finds the answer inside nested objects whose strings hold braces, in one pass', () => {
+		const level = (inner) => `{"n":"${'{'.repeat(40)}","a":"{","l":${inner},"z":"}"}`;
+		let reply = '{"value":"bug","n":"{}"}';
+		for (let depth = 0; depth < 30; depth++) reply = level(reply);
+		assert.strictEqual(parseDecisionSample(QUEUE, reply), 'bug');
+		assert.strictEqual(parseDecisionSample(QUEUE, `${reply} and {"value":"bug"}`), 'bug');
+		assert.throws(() => parseDecisionSample(QUEUE, `${reply} then {"value":"refund"}`), /more than one answer/);
+	});
+});

@@ -325,15 +325,20 @@ const MAX_SCAN_STEPS_PER_CHAR = 256;
  * is what tells the answer from the rest, so no span is preferred over another. String tracking
  * starts at each opening brace, so quotes in the prose before an object cannot hide it, while
  * braces inside the object's own strings are text and are never tried as starts once that object
- * has parsed. The scan fails loudly, never partially: past `MAX_OBJECT_SPANS` balanced spans, or
- * once the character steps exceed `MAX_SCAN_STEPS_PER_CHAR` times the reply's length.
+ * has parsed. Those string ranges are recorded once, from the outermost object that parses, so
+ * they stay in text order and the skip is one forward pass over them. The scan fails loudly, never
+ * partially: past `MAX_OBJECT_SPANS` balanced spans, or once the character steps exceed
+ * `MAX_SCAN_STEPS_PER_CHAR` times the reply's length.
  */
 function* jsonObjectSpans(text: string): Generator<Record<string, unknown>> {
 	const work = { left: MAX_SCAN_STEPS_PER_CHAR * text.length };
 	const stringRanges: Array<[number, number]> = [];
+	let range = 0;
+	let recordedEnd = -1;
 	let spans = 0;
 	for (let start = text.indexOf('{'); start >= 0; start = text.indexOf('{', start + 1)) {
-		if (stringRanges.some(([from, to]) => start > from && start < to)) continue;
+		while (range < stringRanges.length && stringRanges[range][1] < start) range++;
+		if (range < stringRanges.length && stringRanges[range][0] < start) continue;
 		const strings: Array<[number, number]> = [];
 		const end = balancedClose(text, start, work, strings);
 		if (end < 0) continue;
@@ -344,7 +349,10 @@ function* jsonObjectSpans(text: string): Generator<Record<string, unknown>> {
 		} catch {
 			continue;
 		}
-		stringRanges.push(...strings);
+		if (start > recordedEnd) {
+			stringRanges.push(...strings);
+			recordedEnd = end;
+		}
 		if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) yield parsed as Record<string, unknown>;
 	}
 }
