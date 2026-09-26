@@ -1,4 +1,4 @@
-/** `@decide` directive write-time hook, the sibling of `embedHook.ts`. */
+/** Write-time hook for `@decide`: the chosen value and its probability land on the record before it commits. */
 import { isAllowedValue } from './decision.ts';
 import {
 	runWriteJobs,
@@ -94,9 +94,8 @@ export function buildDecideBefore(
 				try {
 					result = await decider(record, { signal: jobSignal });
 				} catch (err) {
-					// A sibling's failure aborted this one; that failure is the one reported and logged.
-					if (jobSignal.aborted) throw err;
-					throw sanitizedHookError('Decider', 'decision', attr.name, err);
+					// An aborted job failed because a sibling did; only that failure is worth a log line.
+					throw sanitizedHookError('Decider', 'decision', attr.name, err, !jobSignal.aborted);
 				}
 				if (result == null) return clear();
 				// The facade validates `models.decide` output; an author override is checked here so the

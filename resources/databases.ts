@@ -2625,9 +2625,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	if ((RESERVED_DATABASE_NAMES as readonly string[]).includes(databaseName)) {
 		throw new ClientError(`'${databaseName}' is a reserved name and cannot be used as a database name`);
 	}
-	// Before anything is saved: a redeclaration that fails this check must neither reach the
-	// catalog nor replace the live table's derived-field registries.
-	if (Array.isArray(attributes)) assertDerivedFieldOwnership(attributes as any[]);
+	// A peer sends only its new fields, so its list is checked once merged with the live ones below.
+	if (origin !== 'cluster' && Array.isArray(attributes)) assertDerivedFieldOwnership(attributes as any[]);
 	// A branch resolves its blob root from its store identity, so a database created under that same
 	// name would share the root: two allocators minting the same file paths and truncating each other,
 	// and the branch's teardown removing the database's blobs.
@@ -3012,6 +3011,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 								.join('; ')}); the local schema is authoritative`
 						);
 				}
+				// A peer sends only its new fields; the conflict, if any, is with the fields it did not send.
+				assertDerivedFieldOwnership(merged as any[]);
 				attributes = merged;
 			} else if (!attributes.some((attribute) => attribute.isPrimaryKey)) {
 				const existingPrimary = Table.attributes.find((attribute: any) => attribute.isPrimaryKey);
