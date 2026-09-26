@@ -56,6 +56,8 @@ export function validateDecisionSchema(schema: unknown): asserts schema is Decis
 			throw new DecisionSchemaError('an object schema needs a properties map');
 		if (candidate.description !== undefined && typeof candidate.description !== 'string')
 			throw new DecisionSchemaError('description must be a string');
+		if (candidate.noMatch !== undefined)
+			throw new DecisionSchemaError('noMatch belongs on a property, not on an object schema');
 		const names = Object.keys(properties);
 		if (names.length === 0) throw new DecisionSchemaError('an object schema needs at least one property');
 		if (names.length > MAX_OBJECT_FIELDS)
@@ -83,6 +85,8 @@ function validateLeaf(leaf: unknown, label: string): number {
 	const candidate = leaf as Record<string, unknown>;
 	if (candidate.description !== undefined && typeof candidate.description !== 'string')
 		throw new DecisionSchemaError(`${label}: description must be a string`);
+	if (candidate.noMatch !== undefined && typeof candidate.noMatch !== 'boolean')
+		throw new DecisionSchemaError(`${label}: noMatch must be a boolean`);
 	if (Array.isArray(candidate.enum)) {
 		if (candidate.enum.length < 2 || candidate.enum.length > MAX_LEAF_VALUES)
 			throw new DecisionSchemaError(`${label}: enum needs 2..${MAX_LEAF_VALUES} values, got ${candidate.enum.length}`);
@@ -135,6 +139,13 @@ export function isAllowedValue(leaf: DecisionLeaf, raw: unknown): boolean {
 	return Number.isInteger(raw) && (raw as number) >= leaf.minimum && (raw as number) <= leaf.maximum;
 }
 
+/** Whether any leaf of a validated schema asked for a no-match score. */
+export function wantsNoMatch(schema: DecisionSchema): boolean {
+	if (!isObjectSchema(schema)) return schema.noMatch === true;
+	for (const leaf of Object.values(schema.properties)) if (leaf.noMatch === true) return true;
+	return false;
+}
+
 /** The text form of a `decide` state, or a `DecisionInputError` for a value no backend could serialize. */
 export function stateToText(state: DecideInput): string {
 	if (typeof state === 'string') return state;
@@ -159,10 +170,12 @@ export function normalizeDecision<T>(
 	schema: DecisionSchema,
 	output: DecisionOutput<unknown>,
 	backendName: string,
-	calibratedDefault: boolean
+	calibratedDefault: boolean,
+	calibratedNoMatch = false
 ): Omit<Decision<T>, 'id' | 'usage'> {
 	if (!output || typeof output !== 'object') throw new DecisionContractError(backendName, 'output must be an object');
-	const calibrated = typeof output.calibrated === 'boolean' ? output.calibrated : calibratedDefault;
+	const reported = typeof output.calibrated === 'boolean' ? output.calibrated : calibratedDefault;
+	const calibrated = reported && (calibratedNoMatch || !wantsNoMatch(schema));
 	if (isObjectSchema(schema)) {
 		const fields = output.fields;
 		if (!fields || typeof fields !== 'object')
@@ -182,7 +195,14 @@ export function normalizeDecision<T>(
 		return { value: value as T, fields: marginals, calibrated };
 	}
 	const leaf = normalizeLeaf(schema, output, backendName, 'output');
-	return { value: leaf.value as T, probability: leaf.probability, distribution: leaf.distribution, calibrated };
+	const decision: Omit<Decision<T>, 'id' | 'usage'> = {
+		value: leaf.value as T,
+		probability: leaf.probability,
+		distribution: leaf.distribution,
+		calibrated,
+	};
+	if (leaf.noMatch !== undefined) decision.noMatch = leaf.noMatch;
+	return decision;
 }
 
 function normalizeLeaf(
@@ -230,7 +250,14 @@ function normalizeLeaf(
 		const index = sorted.findIndex((entry) => entry.value === chosen);
 		sorted.unshift(...sorted.splice(index, 1));
 	}
-	return { value: sorted[0].value, probability: top, distribution: sorted };
+	const marginal: FieldDecision = { value: sorted[0].value, probability: top, distribution: sorted };
+	if (leaf.noMatch === true) {
+		const score = output!.noMatch;
+		if (typeof score !== 'number' || !Number.isFinite(score) || score < 0 || score > 1)
+			throw new DecisionContractError(backendName, `${label}: noMatch must be a finite number in [0, 1]`);
+		marginal.noMatch = score;
+	}
+	return marginal;
 }
 
 /**
@@ -241,7 +268,8 @@ function normalizeLeaf(
 export function toResponseSchema(schema: DecisionSchema): object {
 	if (isObjectSchema(schema)) {
 		const properties: Record<string, object> = {};
-		for (const [name, leaf] of Object.entries(schema.properties)) properties[name] = leafJsonSchema(leaf);
+		for (const [name, leaf] of Object.entries(schema.properties))
+			properties[name] = leaf.noMatch === true ? pairJsonSchema(leafJsonSchema(leaf)) : leafJsonSchema(leaf);
 		const out: Record<string, unknown> = {
 			type: 'object',
 			properties,
@@ -251,10 +279,21 @@ export function toResponseSchema(schema: DecisionSchema): object {
 		if (schema.description) out.description = schema.description;
 		return out;
 	}
+	if (schema.noMatch === true) return pairJsonSchema(leafJsonSchema(schema));
 	return {
 		type: 'object',
 		properties: { value: leafJsonSchema(schema) },
 		required: ['value'],
+		additionalProperties: false,
+	};
+}
+
+/** An opted-in leaf's answer: the closest allowed value plus whether none of them truly fits. */
+function pairJsonSchema(value: object): object {
+	return {
+		type: 'object',
+		properties: { value, noMatch: { type: 'boolean' } },
+		required: ['value', 'noMatch'],
 		additionalProperties: false,
 	};
 }
@@ -309,11 +348,29 @@ function extractSampleValues(schema: DecisionSchema, sample: Record<string, unkn
 		const values: Record<string, unknown> = {};
 		for (const [name, leaf] of Object.entries(schema.properties)) {
 			if (!Object.hasOwn(sample, name)) throw new Error(`the sample has no '${name}'`);
-			values[name] = checkSampleValue(leaf, sample[name], `'${name}'`);
+			values[name] =
+				leaf.noMatch === true
+					? checkSamplePair(leaf, sample[name], `'${name}'`)
+					: checkSampleValue(leaf, sample[name], `'${name}'`);
 		}
 		return values;
 	}
+	if (schema.noMatch === true) return checkSamplePair(schema, sample, 'the sample');
 	return checkSampleValue(schema, sample.value, "'value'");
+}
+
+/** An opted-in leaf's `{ value, noMatch }` answer, as `{ value, noMatch }` with the value checked. */
+function checkSamplePair(leaf: DecisionLeaf, raw: unknown, label: string): SamplePair {
+	if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(`${label} needs { value, noMatch }`);
+	const pair = raw as Record<string, unknown>;
+	if (typeof pair.noMatch !== 'boolean') throw new Error(`${label} has no boolean noMatch`);
+	return { value: checkSampleValue(leaf, pair.value, `${label} value`), noMatch: pair.noMatch };
+}
+
+/** A parsed opted-in answer. */
+export interface SamplePair {
+	value: unknown;
+	noMatch: boolean;
 }
 
 const MAX_OBJECT_SPANS = 64;
@@ -445,6 +502,7 @@ function knownLeaf(leaf: DecisionLeaf, withDescriptions: boolean): DecisionLeaf 
 			: leaf.type === 'boolean'
 				? { type: 'boolean' }
 				: { type: 'integer', minimum: leaf.minimum, maximum: leaf.maximum };
+	if (leaf.noMatch === true) known.noMatch = true;
 	if (withDescriptions && leaf.description !== undefined) known.description = leaf.description;
 	return known as DecisionLeaf;
 }

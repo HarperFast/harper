@@ -43,6 +43,7 @@ export interface DecisionRow {
 	probability?: number;
 	distribution?: DecisionRecord['distribution'];
 	fields?: DecisionRecord['fields'];
+	noMatch?: number;
 	calibrated: boolean;
 }
 
@@ -81,6 +82,7 @@ export const DECISION_ATTRIBUTES = [
 	{ name: 'probability', type: 'number' },
 	{ name: 'distribution' },
 	{ name: 'fields' },
+	{ name: 'noMatch', type: 'number' },
 	{ name: 'calibrated', type: 'boolean' },
 ];
 

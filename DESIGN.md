@@ -88,6 +88,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [`@decide` and `@embed` share one trigger rule](resources/models/DESIGN.md#decide-and-embed-share-one-trigger-rule) — One predicate decides when a write derives; `@decide` writes value and probability from one call or fails the write; every derived field has one writer; a `decide` change never reindexes.
 - [Built-ins serve one kind](resources/models/DESIGN.md#built-ins-serve-one-kind) — Provider factories cannot serve `models.decision` and the adapter cannot serve the other kinds; refused at validation and at boot.
 - [A decision is committed before its id is returned, and its facts are separate rows](resources/models/DESIGN.md#a-decision-is-committed-before-its-id-is-returned-and-its-facts-are-separate-rows) — `decide` commits its `hdb_model_decisions` row in its own transaction before returning; truth and action are separate `hdb_model_outcomes` rows that copy the decision's expiry, so facts from different nodes never overwrite each other.
+- [No-match is a separate score, never a value](resources/models/DESIGN.md#no-match-is-a-separate-score-never-a-value) — An opted-in leaf gets a no-match score beside the unchanged distribution; no sentinel, capability-gated per candidate, dropped where not asked for.
 
 ## server/ — HTTP stacks, threads, operation dispatch
 
