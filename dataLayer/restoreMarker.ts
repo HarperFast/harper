@@ -484,18 +484,18 @@ export function scanBlockedDatabaseDrops(databasesRoot: string): BlockedDatabase
 		if (!entry.isFile() || !entry.name.endsWith(DROPPING_MARKER_SUFFIX)) continue;
 		const markerPath = join(metaDir, entry.name);
 		let rootName = rootsByMarker.get(entry.name);
-		let databaseName: string | undefined;
-		try {
-			const [recordedRootName, recordedDatabaseName] = readFileSync(markerPath, 'utf8').split('\n', 2);
-			if (!rootName) rootName = recordedRootName;
-			if (recordedRootName === rootName) databaseName = recordedDatabaseName || undefined;
-		} catch {
-			if (!rootName) continue;
+		if (!rootName) {
+			try {
+				const [recordedRootName] = readFileSync(markerPath, 'utf8').split('\n', 1);
+				if (validDatabaseDropMarkerField(recordedRootName)) rootName = recordedRootName;
+			} catch {
+				continue;
+			}
 		}
 		if (!rootName) continue;
 		const rootPath = join(databasesRoot, rootName);
 		if (droppingMarkerPath(rootPath) !== markerPath) continue;
-		blocked.push({ rootPath, databaseName, markerPath });
+		blocked.push({ rootPath, databaseName: readDatabaseDropMarker(rootPath)?.databaseName, markerPath });
 	}
 	return blocked;
 }

@@ -421,7 +421,7 @@ describe('restoreMarker', function () {
 		it('blocks an existing root without trusting corrupt marker contents', function () {
 			mkdirSync(dbPath);
 			mkdirSync(restoreMetaDir(dbPath));
-			writeFileSync(droppingMarkerPath(dbPath), 'corrupt');
+			writeFileSync(droppingMarkerPath(dbPath), `${basename(dbPath)}\nbad\ndatabase\ninvalid`);
 			assert.deepStrictEqual(scanBlockedDatabaseDrops(tempDir), [
 				{ rootPath: dbPath, databaseName: undefined, markerPath: droppingMarkerPath(dbPath) },
 			]);
