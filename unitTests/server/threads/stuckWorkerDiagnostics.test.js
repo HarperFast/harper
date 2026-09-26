@@ -173,13 +173,10 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		const worker = await startFixtureWorker('reject-conflict');
 		started.push(worker);
 		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000), (error) => {
-			assert(error instanceof AggregateError);
+			assert(!(error instanceof AggregateError));
 			assert.strictEqual(error.name, 'DatabaseDroppingError');
 			assert.strictEqual(error.code, 'DATABASE_DROP_IN_PROGRESS');
 			assert.strictEqual(error.statusCode, 409);
-			assert.strictEqual(error.errors[0].name, 'DatabaseDroppingError');
-			assert.strictEqual(error.errors[0].code, 'DATABASE_DROP_IN_PROGRESS');
-			assert.strictEqual(error.errors[0].statusCode, 409);
 			return true;
 		});
 	});
@@ -188,12 +185,11 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		const worker = await startFixtureWorker('reject-retryable');
 		started.push(worker);
 		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000), (error) => {
-			assert(error instanceof AggregateError);
+			assert(!(error instanceof AggregateError));
 			assert.strictEqual(error.name, 'DatabaseDrainTimeoutError');
 			assert.strictEqual(error.code, 'DATABASE_DRAIN_TIMEOUT');
 			assert.strictEqual(error.statusCode, 503);
 			assert.strictEqual(error.retryable, true);
-			assert.strictEqual(error.errors[0].retryable, true);
 			return true;
 		});
 	});

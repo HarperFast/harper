@@ -360,12 +360,21 @@ describe('restoreMarker', function () {
 		it('blocks each physical root until the whole drop completes', function () {
 			const a = join(tempDir, 'alpha');
 			const b = join(tempDir, 'beta');
+			const blobA = join(tempDir, 'blobs-a');
+			const blobB = join(tempDir, 'blobs-b');
 			mkdirSync(a);
 			mkdirSync(b);
-			const locks = [beginDatabaseDrop(a, 'catalog', 'physical-a'), beginDatabaseDrop(b, 'catalog', 'physical-b')];
+			const locks = [
+				beginDatabaseDrop(a, 'catalog', 'physical-a', [blobA]),
+				beginDatabaseDrop(b, 'catalog', 'physical-b', [blobB]),
+			];
 			assert.deepStrictEqual(
 				locks.map((lock) => lock.blobDatabaseName),
 				['physical-a', 'physical-b']
+			);
+			assert.deepStrictEqual(
+				locks.map((lock) => lock.blobPaths),
+				[[blobA], [blobB]]
 			);
 			try {
 				assert.deepStrictEqual(
@@ -384,7 +393,8 @@ describe('restoreMarker', function () {
 		});
 
 		it('retains an interrupted drop marker and rejects restore', function () {
-			abandonDatabaseDrop(beginDatabaseDrop(dbPath, 'catalog'));
+			const blobPath = join(tempDir, 'original-blobs');
+			abandonDatabaseDrop(beginDatabaseDrop(dbPath, 'catalog', 'catalog', [blobPath]));
 			assert.ok(existsSync(droppingMarkerPath(dbPath)));
 			assert.throws(
 				() => beginRestore(dbPath),
@@ -392,6 +402,7 @@ describe('restoreMarker', function () {
 			);
 			const retry = beginDatabaseDrop(dbPath, 'catalog');
 			assert.strictEqual(retry.preexisting, true);
+			assert.deepStrictEqual(retry.blobPaths, [blobPath]);
 			completeDatabaseDrop(retry);
 		});
 

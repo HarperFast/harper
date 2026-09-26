@@ -159,6 +159,7 @@ describe('shared root-store database identity', function () {
 			fixture = undefined;
 			await closeAliases(loadedAliases);
 			loadedAliases = [];
+			env.setProperty(terms.CONFIG_PARAMS.STORAGE_BLOBPATHS, undefined);
 			setupTestDBPath();
 		}
 	});
@@ -352,6 +353,10 @@ describe('shared root-store database identity', function () {
 		await prepareDatabaseDrop('configuredalias', 'alias-drop-recovery-peer', 1, rootPaths);
 		await completeDatabaseDropPreparation('configuredalias', 'alias-drop-recovery-peer', rootPaths);
 
+		const unrelatedBlobRoot = join(testRoot, 'new-blob-root');
+		env.setProperty(terms.CONFIG_PARAMS.STORAGE_BLOBPATHS, [unrelatedBlobRoot]);
+		const unrelatedBlobPaths = ['physicala', 'physicalb'].map((name) => join(unrelatedBlobRoot, name));
+		for (const blobPath of unrelatedBlobPaths) mkdirSync(blobPath, { recursive: true });
 		resetDatabases();
 		assert.strictEqual(databases.configuredalias, undefined);
 		assert.strictEqual(databases.physicala, undefined);
@@ -363,6 +368,7 @@ describe('shared root-store database identity', function () {
 		assert.deepStrictEqual(scanBlockedDatabaseDrops(storageRoot), []);
 		for (const rootPath of rootPaths) assert.strictEqual(existsSync(rootPath), false);
 		for (const blobPath of blobPaths) assert.strictEqual(existsSync(blobPath), false);
+		for (const blobPath of unrelatedBlobPaths) assert.strictEqual(existsSync(blobPath), true);
 	});
 
 	it('refuses a detached root with a foreign handle before destroying loaded roots', async function () {
@@ -394,19 +400,17 @@ describe('shared root-store database identity', function () {
 		await createPhysicalStore(storageRoot, 'physicalb', 'TableB');
 		loadAliases(storageRoot, { configured: ['configuredalias'] });
 		loadedAliases = ['physicala', 'physicalb', 'configuredalias'];
-		const rootPaths = [
-			getDatabases().physicala.TableA.primaryStore.rootStore.path,
-			getDatabases().physicalb.TableB.primaryStore.rootStore.path,
+		const rootStores = [
+			getDatabases().physicala.TableA.primaryStore.rootStore,
+			getDatabases().physicalb.TableB.primaryStore.rootStore,
 		];
-		const blobPaths = [
-			...new Set([
-				...getRootBlobPathsForDB(getDatabases().physicala.TableA.primaryStore.rootStore),
-				...getRootBlobPathsForDB(getDatabases().physicalb.TableB.primaryStore.rootStore),
-			]),
-		];
+		const rootPaths = rootStores.map((rootStore) => rootStore.path);
+		const blobPaths = [...new Set(rootStores.flatMap((rootStore) => getRootBlobPathsForDB(rootStore)))];
 		for (const blobPath of blobPaths) mkdirSync(blobPath, { recursive: true });
 		await closeAliases(loadedAliases);
-		abandonDatabaseDrop(beginDatabaseDrop(rootPaths[0], 'configuredalias', 'physicala'));
+		abandonDatabaseDrop(
+			beginDatabaseDrop(rootPaths[0], 'configuredalias', 'physicala', getRootBlobPathsForDB(rootStores[0]))
+		);
 		resetDatabases();
 		assert.strictEqual(databases.physicala, undefined);
 		assert.strictEqual(databases.physicalb, undefined);

@@ -2647,7 +2647,12 @@ export async function deleteRootBlobPathsForDB(store: RootDatabase): Promise<voi
 }
 
 export async function deleteBlobPathsForDatabaseName(databaseName: string): Promise<void> {
-	await Promise.all(getBlobPathsForDatabaseName(databaseName).map((path) => rimrafSteadily(path)));
+	await deleteBlobPaths(getBlobPathsForDatabaseName(databaseName));
+}
+
+/** Delete the exact blob roots pinned to a database handle or durable drop marker. */
+export async function deleteBlobPaths(paths: Iterable<string>): Promise<void> {
+	await Promise.all([...new Set(paths)].map((path) => rimrafSteadily(path)));
 }
 
 /**

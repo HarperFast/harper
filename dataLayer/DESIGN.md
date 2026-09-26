@@ -112,9 +112,10 @@ Three non-obvious mechanics keep that safe:
   a "successful" restore (or vice versa). `dropDatabase` takes the restore lock for every RocksDB or
   LMDB root and publishes a positional `.dropping` marker beside each root before deleting any of
   them. A restore in progress makes the acquire fail with 409; `beginRestore` likewise refuses a
-  surviving drop marker. Each marker also records the root store's blob identity, so a retry can
-  remove every physical store's blob directories even when only a configured alias survives; an
-  integrity digest makes damaged identity content fail closed instead of redirecting deletion.
+  surviving drop marker. Each marker records the root store's blob identity and exact pinned blob
+  paths, so a retry removes what that handle owned even if `storage.blobPaths` changes; it cannot
+  re-resolve a newly configured directory and delete unrelated data. An integrity digest makes
+  damaged identity content fail closed instead of redirecting deletion.
   Markers are removed only after every root and blob path has been removed.
   Startup scans and cold opens reject the marked root and the rest of its logical database graph, so
   a crash while publishing or canceling several markers cannot expose a partial database. Retrying

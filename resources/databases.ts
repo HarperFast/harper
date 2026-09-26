@@ -56,10 +56,12 @@ import {
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
 import {
 	databasePaths,
-	deleteBlobPathsForDatabaseName,
+	deleteBlobPaths,
 	deleteBlobAndWait,
 	deleteBlobsInObject,
 	findBlobsInObject,
+	getBlobPathsForDatabaseName,
+	getRootBlobPathsForDB,
 } from './blob.ts';
 import { removeStorageReclamation } from '../server/storageReclamation.ts';
 import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
@@ -2345,11 +2347,12 @@ function lockDatabaseForDrop(
 	dbPath: string,
 	databaseName: string,
 	held: DatabaseDropLock[],
-	blobDatabaseName = databaseName
+	blobDatabaseName = databaseName,
+	blobPaths = getBlobPathsForDatabaseName(blobDatabaseName)
 ): void {
 	if (held.some((lock) => lock.dbPath === dbPath)) return;
 	try {
-		held.push(beginDatabaseDrop(dbPath, databaseName, blobDatabaseName));
+		held.push(beginDatabaseDrop(dbPath, databaseName, blobDatabaseName, blobPaths));
 	} catch (error) {
 		const cleanupFailures = [];
 		for (const lock of held.splice(0)) {
@@ -2489,8 +2492,7 @@ async function resumeIncompleteDatabaseDrop(databaseName: string, rootPaths: Ite
 			lockDatabaseForDrop(rootPath, databaseName, dropLocks, inferDropBlobDatabaseName(databaseName, rootPath));
 		destructiveWorkStarted = true;
 		for (const lock of dropLocks) await destroyIncompleteDatabaseRoot(lock.dbPath);
-		for (const blobDatabaseName of new Set(dropLocks.map((lock) => lock.blobDatabaseName)))
-			await deleteBlobPathsForDatabaseName(blobDatabaseName);
+		await deleteBlobPaths(dropLocks.flatMap((lock) => lock.blobPaths));
 		while (dropLocks.length > 0) completeDatabaseDrop(dropLocks.shift()!);
 	} finally {
 		releaseDatabaseDropLocks(dropLocks, destructiveWorkStarted);
@@ -2520,15 +2522,24 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 		if (rootStores.size === 0) {
 			rootStores.add(openDatabaseRoot({ database: databaseName }, { allowPreparedDrop: true }));
 		}
-		const blobDatabaseNamesByRootPath = new Map(
-			[...rootStores].map((rootStore) => [rootStore.path, rootStore.databaseName ?? databaseName])
+		const blobStorageByRootPath = new Map(
+			[...rootStores].map((rootStore) => [
+				rootStore.path,
+				{
+					databaseName: rootStore.databaseName ?? databaseName,
+					paths: getRootBlobPathsForDB(rootStore as RootDatabase),
+				},
+			])
 		);
-		for (const rootPath of new Set([...requestedRootPaths, ...blobDatabaseNamesByRootPath.keys()])) {
+		for (const rootPath of new Set([...requestedRootPaths, ...blobStorageByRootPath.keys()])) {
+			const blobStorage = blobStorageByRootPath.get(rootPath);
+			const blobDatabaseName = blobStorage?.databaseName ?? inferDropBlobDatabaseName(databaseName, rootPath);
 			lockDatabaseForDrop(
 				rootPath,
 				databaseName,
 				dropLocks,
-				blobDatabaseNamesByRootPath.get(rootPath) ?? inferDropBlobDatabaseName(databaseName, rootPath)
+				blobDatabaseName,
+				blobStorage?.paths ?? getBlobPathsForDatabaseName(blobDatabaseName)
 			);
 		}
 		const openedRootPaths = new Set([...rootStores].map((rootStore) => rootStore.path));
@@ -2592,8 +2603,7 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 		if (detachedRootHasForeignHandle()) throw new DatabaseClosingError(databaseName);
 		for (const rootPath of detachedRootPaths) await rm(rootPath, { recursive: true, force: true });
 
-		for (const blobDatabaseName of new Set(dropLocks.map((lock) => lock.blobDatabaseName)))
-			await deleteBlobPathsForDatabaseName(blobDatabaseName);
+		await deleteBlobPaths(dropLocks.flatMap((lock) => lock.blobPaths));
 		while (dropLocks.length > 0) completeDatabaseDrop(dropLocks.shift()!);
 	} finally {
 		if (destructiveWorkStarted) {

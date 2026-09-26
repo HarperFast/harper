@@ -1107,6 +1107,13 @@ function broadcastWithAcknowledgement(
 				timer = undefined;
 			}
 			if (strict && failures.length > 0) {
+				if (
+					failures.length === 1 &&
+					(failures[0].name === 'DatabaseDroppingError' || failures[0].name === 'DatabaseDrainTimeoutError')
+				) {
+					reject(failures[0]);
+					return;
+				}
 				const error = new AggregateError(failures, 'A worker could not prepare for the schema change');
 				for (const property of ['name', 'code', 'statusCode', 'retryable']) {
 					const value = failures[0][property];

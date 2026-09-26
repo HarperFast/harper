@@ -8,10 +8,11 @@ import {
 	readdirSync,
 	readFileSync,
 	renameSync,
+	fsyncSync,
 	unlinkSync,
 	writeSync,
 } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
 import { fsyncTolerantSync, isUnsupportedSyncError } from '../utility/fsync.ts';
@@ -228,7 +229,7 @@ function publishMarker(dbPath: string, markerPath: string, content: string): voi
 		const fd = openSync(tempPath, 'w');
 		try {
 			writeSync(fd, content);
-			fsyncTolerantSync(fd);
+			fsyncSync(fd);
 		} finally {
 			closeSync(fd);
 		}
@@ -334,6 +335,7 @@ export function clearRestoreMarker(lock: RestoreLock): void {
 export type DatabaseDropLock = RestoreLock & {
 	databaseName: string;
 	blobDatabaseName: string;
+	blobPaths: string[];
 };
 
 function validDatabaseDropMarkerField(value: string | undefined): value is string {
@@ -357,7 +359,30 @@ function validBlobDatabaseName(databaseName: string | undefined): databaseName i
 	);
 }
 
-function databaseDropMarkerDigest(rootName: string, databaseName: string, blobDatabaseName: string): string {
+function encodeBlobPaths(blobPaths: string[]): string {
+	return Buffer.from(JSON.stringify(blobPaths)).toString('base64url');
+}
+
+function decodeBlobPaths(encoded: string | undefined): string[] | undefined {
+	try {
+		const blobPaths = JSON.parse(Buffer.from(encoded ?? '', 'base64url').toString());
+		if (
+			!Array.isArray(blobPaths) ||
+			!blobPaths.every((blobPath) => typeof blobPath === 'string' && isAbsolute(blobPath))
+		)
+			return undefined;
+		return blobPaths;
+	} catch {
+		return undefined;
+	}
+}
+
+function databaseDropMarkerDigest(
+	rootName: string,
+	databaseName: string,
+	blobDatabaseName: string,
+	encodedBlobPaths: string
+): string {
 	return createHash('sha256')
 		.update('database-drop\0')
 		.update(rootName)
@@ -365,23 +390,29 @@ function databaseDropMarkerDigest(rootName: string, databaseName: string, blobDa
 		.update(databaseName)
 		.update('\0')
 		.update(blobDatabaseName)
+		.update('\0')
+		.update(encodedBlobPaths)
 		.digest('hex');
 }
 
-function readDatabaseDropMarker(dbPath: string): { databaseName: string; blobDatabaseName: string } | undefined {
+function readDatabaseDropMarker(
+	dbPath: string
+): { databaseName: string; blobDatabaseName: string; blobPaths: string[] } | undefined {
 	try {
-		const [rootName, databaseName, blobDatabaseName, digest] = readFileSync(droppingMarkerPath(dbPath), 'utf8').split(
-			'\n',
-			4
-		);
+		const [rootName, databaseName, blobDatabaseName, encodedBlobPaths, digest] = readFileSync(
+			droppingMarkerPath(dbPath),
+			'utf8'
+		).split('\n', 5);
+		const blobPaths = decodeBlobPaths(encodedBlobPaths);
 		if (
 			rootName !== basename(dbPath) ||
 			!validDatabaseDropMarkerField(databaseName) ||
 			!validBlobDatabaseName(blobDatabaseName) ||
-			digest !== databaseDropMarkerDigest(rootName, databaseName, blobDatabaseName)
+			!blobPaths ||
+			digest !== databaseDropMarkerDigest(rootName, databaseName, blobDatabaseName, encodedBlobPaths)
 		)
 			return undefined;
-		return { databaseName, blobDatabaseName };
+		return { databaseName, blobDatabaseName, blobPaths };
 	} catch {
 		return undefined;
 	}
@@ -390,9 +421,11 @@ function readDatabaseDropMarker(dbPath: string): { databaseName: string; blobDat
 export function beginDatabaseDrop(
 	dbPath: string,
 	databaseName: string,
-	blobDatabaseName = databaseName
+	blobDatabaseName = databaseName,
+	blobPaths: string[] = []
 ): DatabaseDropLock {
 	const rootName = basename(dbPath);
+	blobPaths = [...new Set(blobPaths.map((blobPath) => resolve(blobPath)))];
 	if (!validDatabaseDropMarkerField(rootName) || !validDatabaseDropMarkerField(databaseName)) {
 		const error: any = new Error(`Database drop marker identity for '${databaseName}' is invalid`);
 		error.statusCode = 409;
@@ -422,19 +455,21 @@ export function beginDatabaseDrop(
 				throw error;
 			}
 			blobDatabaseName = marker.blobDatabaseName;
+			blobPaths = marker.blobPaths;
 			fsyncDir(restoreMetaDir(dbPath));
 		} else {
+			const encodedBlobPaths = encodeBlobPaths(blobPaths);
 			publishMarker(
 				dbPath,
 				markerPath,
-				`${rootName}\n${databaseName}\n${blobDatabaseName}\n${databaseDropMarkerDigest(rootName, databaseName, blobDatabaseName)}\ndrop started ${new Date().toISOString()}\n`
+				`${rootName}\n${databaseName}\n${blobDatabaseName}\n${encodedBlobPaths}\n${databaseDropMarkerDigest(rootName, databaseName, blobDatabaseName, encodedBlobPaths)}\ndrop started ${new Date().toISOString()}\n`
 			);
 		}
 	} catch (error) {
 		fileLockRelease(lock.token);
 		throw error;
 	}
-	return { ...lock, preexisting, databaseName, blobDatabaseName };
+	return { ...lock, preexisting, databaseName, blobDatabaseName, blobPaths };
 }
 
 function removeDatabaseDropMarker(lock: DatabaseDropLock): void {
