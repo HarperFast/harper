@@ -84,10 +84,12 @@ describe('derived index registration tracking', () => {
 		const store = lockStore();
 		const release = acquireFullTextRetirementFence(store, 'Product');
 		try {
-			await assert.rejects(
-				waitForFullTextRetirement(store, 'Product', { timeoutMilliseconds: 5 }),
-				/Timed out waiting/
-			);
+			await assert.rejects(waitForFullTextRetirement(store, 'Product', { timeoutMilliseconds: 5 }), (error) => {
+				assert.strictEqual(error.name, 'DerivedIndexLagError');
+				assert.strictEqual(error.statusCode, 503);
+				assert.strictEqual(error.retryable, true);
+				return /Timed out waiting/.test(error.message);
+			});
 		} finally {
 			release();
 		}

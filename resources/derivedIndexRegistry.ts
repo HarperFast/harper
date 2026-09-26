@@ -1,3 +1,5 @@
+import { DerivedIndexLagError } from '../utility/errors/hdbError.ts';
+
 const registrations = new WeakMap<object, Map<number, number>>();
 const admissions = new WeakMap<object, Map<number, Array<() => string | undefined>>>();
 type LockStore = { status?: string; tryLock(key: string): boolean; unlock(key: string): void };
@@ -114,7 +116,8 @@ async function waitForFenceLease(
 			throw new Error(`Cannot wait for ${description} on a ${rootStore.status} store`);
 		const release = acquire();
 		if (release) return release;
-		if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${description}`);
+		if (Date.now() >= deadline)
+			throw new DerivedIndexLagError(`Timed out waiting for ${description}; retry the operation`);
 		await new Promise((resolve) => setTimeout(resolve, retryDelayMilliseconds));
 		retryDelayMilliseconds = Math.min(retryDelayMilliseconds * 2, 50);
 	}
