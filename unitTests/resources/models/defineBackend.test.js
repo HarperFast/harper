@@ -35,6 +35,8 @@ describe('defineBackend', () => {
 			calibrated: false,
 			scoreChoices: false,
 			structuredOutput: false,
+			noMatch: false,
+			calibratedNoMatch: false,
 		});
 		assert.strictEqual(typeof b.embed, 'function');
 		assert.strictEqual(b.generate, undefined);
@@ -57,6 +59,8 @@ describe('defineBackend', () => {
 			calibrated: false,
 			scoreChoices: false,
 			structuredOutput: false,
+			noMatch: false,
+			calibratedNoMatch: false,
 		});
 	});
 

@@ -12,7 +12,15 @@
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import { composeSignal } from './backendHelpers.ts';
 import { setDecision } from './backendRegistry.ts';
-import { allowedValues, isObjectSchema, parseDecisionSample, stateToText, toResponseSchema } from './decision.ts';
+import {
+	allowedValues,
+	isObjectSchema,
+	parseDecisionSample,
+	type SamplePair,
+	stateToText,
+	toResponseSchema,
+	wantsNoMatch,
+} from './decision.ts';
 import { models } from './Models.ts';
 import { getRouter } from './routing.ts';
 import type {
@@ -75,11 +83,16 @@ const CAPABILITIES: ModelCapabilities = Object.freeze({
 	adapters: false,
 	decide: true,
 	calibrated: false,
+	noMatch: true,
+	calibratedNoMatch: false,
 });
 
 const VOTE_SYSTEM_PROMPT =
 	'You make a decision about the input. Reply with a single JSON object that matches the required schema, choosing only from the allowed values.';
 const SCORE_SYSTEM_PROMPT = 'You make a decision about the input, choosing only from the allowed values.';
+const SCORE_NO_MATCH_SYSTEM_PROMPT =
+	'You make a decision about the input. Choose the allowed value that fits it, or the final option when none of the allowed values fits.';
+const NO_MATCH_CHOICE = '(none of the listed values)';
 
 export type GenerateFn = (input: GenerateInput, opts: GenerateOpts) => Promise<GenerateResult>;
 export type ScoreFn = (
@@ -132,7 +145,13 @@ export function createGenerativeDecisionBackend(
 		instructions: string | undefined,
 		signal: AbortSignal | undefined
 	): Promise<DecisionOutput<unknown>> => {
-		const input = buildInput(state, schema, instructions, VOTE_SYSTEM_PROMPT, undefined);
+		const input = buildInput(
+			state,
+			schema,
+			instructions,
+			wantsNoMatch(schema) ? `${VOTE_SYSTEM_PROMPT} ${voteNoMatchLine(schema)}` : VOTE_SYSTEM_PROMPT,
+			undefined
+		);
 		const responseFormat = { schema: toResponseSchema(schema) };
 		const votes = await runPool(
 			Array.from({ length: samples }, () => async (sampleSignal: AbortSignal) => {
@@ -158,15 +177,24 @@ export function createGenerativeDecisionBackend(
 		leaf: DecisionLeaf,
 		instructions: string | undefined,
 		signal: AbortSignal
-	): Promise<DecisionOutcome[]> => {
+	): Promise<LeafScore> => {
 		const values = allowedValues(leaf);
-		const input = buildInput(state, schema, instructions, SCORE_SYSTEM_PROMPT, field);
-		const scored = await score(
-			input,
-			values.map((value) => String(value)),
-			{ model: logicalName, signal }
-		);
-		return softmax(values, scored?.logLikelihoods, logicalName);
+		const choices = values.map((value) => String(value));
+		if (leaf.noMatch !== true) {
+			const input = buildInput(state, schema, instructions, SCORE_SYSTEM_PROMPT, field);
+			const scored = await score(input, choices, { model: logicalName, signal });
+			return { distribution: softmax(values, scored?.logLikelihoods, logicalName) };
+		}
+		const input = buildInput(state, schema, instructions, SCORE_NO_MATCH_SYSTEM_PROMPT, field);
+		const scored = await score(input, [...choices, noMatchChoice(choices)], { model: logicalName, signal });
+		const all = softmax([...values, NO_MATCH], scored?.logLikelihoods, logicalName);
+		const none = all.pop()!.probability;
+		const rest = 1 - none;
+		const distribution =
+			rest > 0
+				? all.map(({ value, probability }) => ({ value, probability: probability / rest }))
+				: all.map(({ value }) => ({ value, probability: 1 / all.length }));
+		return { distribution, noMatch: none };
 	};
 
 	// One scoring call per leaf, through the same pool and budget as voting, so a 32-field schema
@@ -178,12 +206,12 @@ export function createGenerativeDecisionBackend(
 		signal: AbortSignal | undefined
 	): Promise<DecisionOutput<unknown>> => {
 		if (!isObjectSchema(schema)) {
-			const [distribution] = await runPool(
+			const [scored] = await runPool(
 				[(leafSignal: AbortSignal) => scoreLeaf(state, schema, undefined, schema, instructions, leafSignal)],
 				concurrency,
 				signal
 			);
-			return { distribution };
+			return scored;
 		}
 		const entries = Object.entries(schema.properties);
 		const marginals = await runPool(
@@ -195,7 +223,7 @@ export function createGenerativeDecisionBackend(
 			concurrency,
 			signal
 		);
-		return { fields: Object.fromEntries(entries.map(([name], i) => [name, { distribution: marginals[i] }])) };
+		return { fields: Object.fromEntries(entries.map(([name], i) => [name, marginals[i]])) };
 	};
 
 	const signatureFor = (mode: ScoringMode) =>
@@ -352,17 +380,52 @@ function describeLeaf(leaf: DecisionLeaf): string {
 function tally(schema: DecisionSchema, votes: unknown[]): DecisionOutput<unknown> {
 	if (isObjectSchema(schema)) {
 		const fields: Record<string, DecisionOutput<unknown>> = {};
-		for (const [name, leaf] of Object.entries(schema.properties)) {
-			fields[name] = {
-				distribution: frequencies(
-					leaf,
-					votes.map((vote) => (vote as Record<string, unknown>)[name])
-				),
-			};
-		}
+		for (const [name, leaf] of Object.entries(schema.properties))
+			fields[name] = tallyLeaf(
+				leaf,
+				votes.map((vote) => (vote as Record<string, unknown>)[name])
+			);
 		return { fields };
 	}
-	return { distribution: frequencies(schema, votes) };
+	return tallyLeaf(schema, votes);
+}
+
+function tallyLeaf(leaf: DecisionLeaf, votes: unknown[]): DecisionOutput<unknown> {
+	if (leaf.noMatch !== true) return { distribution: frequencies(leaf, votes) };
+	const pairs = votes as SamplePair[];
+	return {
+		distribution: frequencies(
+			leaf,
+			pairs.map((pair) => pair.value)
+		),
+		noMatch: pairs.filter((pair) => pair.noMatch).length / pairs.length,
+	};
+}
+
+const NO_MATCH = Symbol('noMatch');
+
+/** A leaf's scored distribution, plus its no-match score when it opted in. */
+interface LeafScore {
+	distribution: DecisionOutcome[];
+	noMatch?: number;
+}
+
+/** How an opted-in answer is shaped: the root for a leaf schema, or the named fields of an object schema. */
+function voteNoMatchLine(schema: DecisionSchema): string {
+	const rule =
+		'give the closest allowed value as "value", and set "noMatch" to true only when none of the allowed values truly fits the input.';
+	if (!isObjectSchema(schema)) return `Answer as { "value", "noMatch" }: ${rule}`;
+	const names = Object.entries(schema.properties)
+		.filter(([, leaf]) => leaf.noMatch === true)
+		.map(([name]) => JSON.stringify(name));
+	return `Answer ${names.join(', ')} each as { "value", "noMatch" }: ${rule}`;
+}
+
+/** The extra choice's text, kept distinct from every allowed value's text. */
+function noMatchChoice(choices: readonly string[]): string {
+	let text = NO_MATCH_CHOICE;
+	while (choices.includes(text)) text = `(${text})`;
+	return text;
 }
 
 function frequencies(leaf: DecisionLeaf, votes: unknown[]): DecisionOutcome[] {

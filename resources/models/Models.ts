@@ -18,6 +18,7 @@ import {
 	hashSchema,
 	hashText,
 	normalizeDecision,
+	wantsNoMatch,
 	scoringSchema,
 	snapshotSchema,
 	stateToText,
@@ -329,7 +330,12 @@ export class Models implements ModelsContract {
 		};
 		const { accounting, signal } = resolveCallContext(callOpts.signal);
 		const startedAt = performance.now();
-		const resolved = resolveCandidates('decision', callOpts.model, buildRequires('decide', callOpts.requires, false));
+		const requires = buildRequires('decide', callOpts.requires, false);
+		if (wantsNoMatch(call)) {
+			if (!requires.includes('noMatch')) requires.push('noMatch');
+			if (requires.includes('calibrated') && !requires.includes('calibratedNoMatch')) requires.push('calibratedNoMatch');
+		}
+		const resolved = resolveCandidates('decision', callOpts.model, requires);
 		if ('error' in resolved) {
 			this.#recordFailure(resolved.backend, 'decide', callOpts.model, accounting, undefined, startedAt, resolved.error);
 			throw resolved.error;
@@ -346,8 +352,14 @@ export class Models implements ModelsContract {
 				const backendOpts = toBackendOpts(callOpts, signal, accounting);
 				result = await backend.decide!(state, call, backendOpts);
 				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
-				const calibrated = backend.capabilities()?.calibrated === true;
-				decision = normalizeDecision<T>(call, result.output, backend.name, calibrated);
+				const caps = backend.capabilities();
+				decision = normalizeDecision<T>(
+					call,
+					result.output,
+					backend.name,
+					caps?.calibrated === true,
+					caps?.calibratedNoMatch === true
+				);
 				// A backend may report a single call as uncalibrated; the caller's requirement still holds.
 				if (!decision.calibrated && callOpts.requires?.includes('calibrated'))
 					throw new DecisionContractError(
@@ -504,6 +516,7 @@ export class Models implements ModelsContract {
 			probability: decision.probability,
 			distribution: decision.distribution,
 			fields: decision.fields,
+			noMatch: decision.noMatch,
 			calibrated: decision.calibrated,
 		};
 		try {

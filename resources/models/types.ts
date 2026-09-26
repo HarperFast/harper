@@ -65,6 +65,10 @@ export interface ModelCapabilities {
 	calibrated?: boolean;
 	/** Implements `scoreChoices`. Absent reads as false. */
 	scoreChoices?: boolean;
+	/** `decide` returns a no-match score for leaves that opt in with `noMatch: true` (#2846). Absent reads as false. */
+	noMatch?: boolean;
+	/** That no-match score is calibrated as returned. Absent reads as false. */
+	calibratedNoMatch?: boolean;
 	/**
 	 * `generate` sends `responseFormat: { schema }` to the provider as a decoding constraint rather
 	 * than a hint. Says what Harper sends, not what a remote endpoint honors. Absent reads as false.
@@ -119,6 +123,10 @@ export interface DefineBackendSpec {
 	adapters?: boolean;
 	/** `decide` probabilities are calibrated as returned. Default `false`. */
 	calibrated?: boolean;
+	/** `decide` returns a no-match score for opted-in leaves. Default `false`. */
+	noMatch?: boolean;
+	/** That no-match score is calibrated as returned. Default `false`. */
+	calibratedNoMatch?: boolean;
 	/** `generate` sends `responseFormat: { schema }` as a decoding constraint. Default `false`. */
 	structuredOutput?: boolean;
 }
@@ -140,7 +148,7 @@ export type DecideInput = string | object;
  * 2..255 distinct values of one type; an integer range spans at most 255 values; booleans order
  * as `[false, true]` for tie-breaking.
  */
-export type DecisionLeaf = { description?: string } & (
+export type DecisionLeaf = { description?: string; noMatch?: boolean } & (
 	| { enum: readonly string[] | readonly number[] | readonly boolean[] }
 	| { type: 'boolean' }
 	| { type: 'integer'; minimum: number; maximum: number }
@@ -176,6 +184,8 @@ export interface DecisionOutput<T = unknown> {
 	probability?: number;
 	distribution?: DecisionOutcome[];
 	fields?: Record<string, DecisionOutput<unknown>>;
+	/** For a leaf that opted in: the score in [0, 1] that the input matches none of the allowed values. */
+	noMatch?: number;
 	calibrated?: boolean;
 	/**
 	 * Opaque identity of the configuration that produced the scores (sampling, scoring method,
@@ -198,6 +208,8 @@ export interface Decision<T = unknown> {
 	probability?: number;
 	distribution?: DecisionOutcome[];
 	fields?: Record<string, FieldDecision>;
+	/** Leaf schemas that opted in: the score that the input matches none of the allowed values (#2846). */
+	noMatch?: number;
 	/** Whether the probabilities come from a calibrated source, as the backend reports it. */
 	calibrated: boolean;
 	usage?: TokenUsage;
@@ -208,6 +220,8 @@ export interface FieldDecision {
 	value: unknown;
 	probability: number;
 	distribution: DecisionOutcome[];
+	/** Fields that opted in: the no-match score. */
+	noMatch?: number;
 }
 
 export type ScoreChoicesOpts = {
@@ -273,6 +287,7 @@ export interface DecisionRecord<T = unknown> {
 	probability?: number;
 	distribution?: DecisionOutcome[];
 	fields?: Record<string, FieldDecision>;
+	noMatch?: number;
 	calibrated: boolean;
 	outcome: RecordedOutcome;
 }

@@ -139,6 +139,8 @@ describe('generative decision adapter', () => {
 			adapters: false,
 			decide: true,
 			calibrated: false,
+			noMatch: true,
+			calibratedNoMatch: false,
 		});
 		const result = await backend.decide('ticket', QUEUE, { accounting });
 		assert.strictEqual(result.status, 'completed');
