@@ -9,9 +9,25 @@ import {
 import { getRouter, registerRouter as registerRouterImpl } from './routing.ts';
 import { getModelCallAnalyticsWriter, type ModelCallAnalyticsWriter, type ModelCallRecord } from './analyticsTable.ts';
 import { recordAction } from '../analytics/write.ts';
-import { ServerError } from '../../utility/errors/hdbError.ts';
+import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import { runAgentLoop, runAgentLoopStream } from './agentLoop.ts';
-import { DecisionContractError, normalizeDecision, stateToText, validateDecisionSchema } from './decision.ts';
+import {
+	DecisionContractError,
+	hashSchema,
+	normalizeDecision,
+	scoringSchema,
+	stateToText,
+	validateDecisionSchema,
+} from './decision.ts';
+import {
+	DECISION_RETENTION_MS,
+	DecisionPersistenceError,
+	type DecisionRow,
+	type DecisionStore,
+	getDecisionStore,
+	getModelsConfigHash,
+	newDecisionId,
+} from './decisionStore.ts';
 import type {
 	AccountingContext,
 	BackendOpts,
@@ -19,6 +35,8 @@ import type {
 	DecideInput,
 	DecideOpts,
 	Decision,
+	DecisionOutput,
+	DecisionRecord,
 	DecisionSchema,
 	DefineBackendSpec,
 	EmbedOpts,
@@ -31,6 +49,7 @@ import type {
 	ModelRouter,
 	ModelCallResult,
 	Models as ModelsContract,
+	OutcomeReport,
 	TokenUsage,
 } from './types.ts';
 
@@ -56,14 +75,17 @@ type MetricEmitter = (value: number, metric: string, path?: string) => void;
 export class Models implements ModelsContract {
 	#analyticsWriter: ModelCallAnalyticsWriter;
 	#emit: MetricEmitter;
+	#decisionStore: DecisionStore;
 
 	constructor(
 		analyticsWriter: ModelCallAnalyticsWriter = getModelCallAnalyticsWriter(),
 		// DI'd for unit tests; production wires up the module-scope `recordAction`.
-		metricEmitter: MetricEmitter = recordAction
+		metricEmitter: MetricEmitter = recordAction,
+		decisionStore: DecisionStore = getDecisionStore()
 	) {
 		this.#analyticsWriter = analyticsWriter;
 		this.#emit = metricEmitter;
+		this.#decisionStore = decisionStore;
 	}
 
 	/**
@@ -267,11 +289,15 @@ export class Models implements ModelsContract {
 
 	/**
 	 * Choose from the closed set `schema` defines, with the distribution over it (#2779). A malformed
-	 * schema or state rejects before routing, with no analytics row: nothing was called.
+	 * schema or state rejects before routing, with no analytics row: nothing was called. The decision
+	 * is committed to `hdb_model_decisions` before it is returned (#2840): a read-only node rejects
+	 * before routing, and a commit failure rejects after the backend succeeded without trying another
+	 * candidate, so a storage fault never bills a second model call.
 	 */
 	async decide<T = unknown>(state: DecideInput, schema: DecisionSchema, opts: DecideOpts = {}): Promise<Decision<T>> {
 		validateDecisionSchema(schema);
 		stateToText(state);
+		this.#decisionStore.assertWritable('Decisions');
 		const { accounting, signal } = resolveCallContext(opts.signal);
 		const startedAt = performance.now();
 		const resolved = resolveCandidates('decision', opts.model, buildRequires('decide', opts.requires, false));
@@ -284,20 +310,20 @@ export class Models implements ModelsContract {
 		for (const backend of resolved.candidates) {
 			signal?.throwIfAborted();
 			const attemptStart = performance.now();
+			let result: ModelCallResult<DecisionOutput<unknown>>;
+			let decision: Omit<Decision<T>, 'id' | 'usage'>;
 			try {
 				const backendOpts = toBackendOpts(opts, signal, accounting);
-				const result = await backend.decide!(state, schema, backendOpts);
+				result = await backend.decide!(state, schema, backendOpts);
 				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
 				const calibrated = backend.capabilities()?.calibrated === true;
-				const decision = normalizeDecision<T>(schema, result.output, backend.name, calibrated);
+				decision = normalizeDecision<T>(schema, result.output, backend.name, calibrated);
 				// A backend may report a single call as uncalibrated; the caller's requirement still holds.
 				if (!decision.calibrated && opts.requires?.includes('calibrated'))
 					throw new DecisionContractError(
 						backend.name,
 						"probabilities are not calibrated, but 'calibrated' was required"
 					);
-				const id = this.#record(backend, 'decide', opts.model, accounting, undefined, result, attemptStart);
-				return result.usage ? { id: String(id), ...decision, usage: result.usage } : { id: String(id), ...decision };
 			} catch (err) {
 				this.#recordFailure(backend, 'decide', opts.model, accounting, undefined, attemptStart, err);
 				if (!hasError) {
@@ -305,9 +331,73 @@ export class Models implements ModelsContract {
 					hasError = true;
 				}
 				if (signal?.aborted) throw err;
+				continue;
 			}
+			const callId = this.#record(backend, 'decide', opts.model, accounting, undefined, result, attemptStart);
+			const id = await this.#persistDecision(callId, backend, opts.model, accounting, result.output, schema, decision);
+			return result.usage ? { id, ...decision, usage: result.usage } : { id, ...decision };
 		}
 		throw firstError;
+	}
+
+	/** The durable record of a decision with its recorded facts, or undefined (#2840). */
+	getDecision<T = unknown>(id: string): Promise<DecisionRecord<T> | undefined> {
+		checkDecisionId(id);
+		return this.#decisionStore.get(id, resolveCallContext().accounting.tenantId) as Promise<
+			DecisionRecord<T> | undefined
+		>;
+	}
+
+	/**
+	 * Record what actually happened for a decision (#2840): its truth, the action taken, or both,
+	 * per field for object schemas. Each fact is stored on its own and an identical report changes
+	 * nothing. Not a model call: no analytics row, no metric.
+	 */
+	recordOutcome<T = unknown>(id: string, outcome: OutcomeReport): Promise<DecisionRecord<T>> {
+		checkDecisionId(id);
+		return this.#decisionStore.recordOutcome(id, outcome, resolveCallContext().accounting.tenantId) as Promise<
+			DecisionRecord<T>
+		>;
+	}
+
+	async #persistDecision<T>(
+		callId: number,
+		backend: ModelBackend,
+		model: string | undefined,
+		accounting: AccountingContext,
+		output: DecisionOutput<unknown>,
+		schema: DecisionSchema,
+		decision: Omit<Decision<T>, 'id' | 'usage'>
+	): Promise<string> {
+		const id = newDecisionId();
+		const at = Date.now();
+		const row: DecisionRow = {
+			id,
+			callId,
+			at,
+			expiresAt: at + DECISION_RETENTION_MS,
+			tenant: accounting.tenantId,
+			app: accounting.app,
+			backend: backend.name,
+			model: model ?? 'default',
+			signature: typeof output.signature === 'string' ? output.signature : undefined,
+			configHash: getModelsConfigHash(),
+			schema: scoringSchema(schema),
+			schemaHash: hashSchema(schema),
+			value: decision.value,
+			probability: decision.probability,
+			distribution: decision.distribution,
+			fields: decision.fields,
+			calibrated: decision.calibrated,
+		};
+		try {
+			await this.#decisionStore.persist(row);
+		} catch (err) {
+			const error = new DecisionPersistenceError(`Decision could not be recorded: ${(err as Error)?.message ?? err}`);
+			(error as Error & { cause?: unknown }).cause = err;
+			throw error;
+		}
+		return id;
 	}
 
 	#record(
@@ -497,3 +587,7 @@ _assignPackageExport('models', models);
 // The backend-registration API is reachable as `models.registerBackend(...)` /
 // `models.defineBackend(...)` — methods on the `models` singleton above, not generic
 // free globals (#1534). Custom routers install via `models.registerRouter(...)` (#1326).
+
+function checkDecisionId(id: unknown): asserts id is string {
+	if (typeof id !== 'string' || id.length === 0) throw new ClientError('A decision id must be a non-empty string', 400);
+}

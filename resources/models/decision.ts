@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import type {
 	DecideInput,
@@ -385,4 +386,41 @@ function balancedClose(text: string, start: number, work: { left: number }, stri
 function checkSampleValue(leaf: DecisionLeaf, raw: unknown, label: string): unknown {
 	if (isAllowedValue(leaf, raw)) return raw;
 	throw new Error(`${label} is not an allowed value`);
+}
+
+/** JSON with object keys sorted at every level; array order is kept because enum order is meaning. */
+export function canonicalJson(value: unknown): string {
+	return JSON.stringify(sortKeys(value));
+}
+
+function sortKeys(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(sortKeys);
+	if (!value || typeof value !== 'object') return value;
+	const sorted: Record<string, unknown> = {};
+	for (const key of Object.keys(value as object).sort())
+		sorted[key] = sortKeys((value as Record<string, unknown>)[key]);
+	return sorted;
+}
+
+/** Identity of the full schema, descriptions included, because they reach the prompt. */
+export function hashSchema(schema: DecisionSchema): string {
+	return createHash('sha256').update(canonicalJson(schema)).digest('hex');
+}
+
+/**
+ * The schema without its descriptions: the allowed values, which is all that validating an outcome
+ * needs. Descriptions are free text that can carry request data, so they are hashed, not stored.
+ */
+export function scoringSchema(schema: DecisionSchema): DecisionSchema {
+	if (isObjectSchema(schema)) {
+		const properties: Record<string, DecisionLeaf> = {};
+		for (const [name, leaf] of Object.entries(schema.properties)) properties[name] = scoringLeaf(leaf);
+		return { type: 'object', properties };
+	}
+	return scoringLeaf(schema);
+}
+
+function scoringLeaf(leaf: DecisionLeaf): DecisionLeaf {
+	const { description: _description, ...rest } = leaf;
+	return rest as DecisionLeaf;
 }

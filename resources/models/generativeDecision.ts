@@ -85,6 +85,9 @@ export function createGenerativeDecisionBackend(
 	const samples = boundedCount(config.samples, DEFAULT_SAMPLES);
 	const concurrency = Math.min(boundedCount(config.concurrency, DEFAULT_CONCURRENCY), samples);
 	const { temperature, requestTimeoutMs } = config;
+	// What this adapter controls of its scoring configuration; the model behind the logical name is
+	// identified by the config hash the facade records beside it.
+	const signature = `generative=${logicalName};samples=${samples};temperature=${temperature ?? 'default'}`;
 	return {
 		name: 'generative',
 		capabilities: () => CAPABILITIES,
@@ -134,7 +137,7 @@ export function createGenerativeDecisionBackend(
 			}
 			if (failed) throw failure;
 			signal?.throwIfAborted();
-			return { status: 'completed', output: tally(schema, votes) };
+			return { status: 'completed', output: { ...tally(schema, votes), signature } };
 		},
 	};
 }

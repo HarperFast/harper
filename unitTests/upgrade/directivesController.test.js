@@ -84,3 +84,35 @@ describe('directivesController — hdb_secret table-creation directive', () => {
 		expect(versions).to.not.include('5.2.0');
 	});
 });
+
+// Durable decisions (#2840) ship with a 5.4.0-tagged directive that creates hdb_model_decisions and
+// hdb_model_outcomes. Same invariant as above: if the feature is released in a 5.3.x instead, the
+// directive MUST be retagged to that exact release (see upgrade/directives/5-4-0.ts) and these tests
+// updated with it.
+describe('directivesController — decision table-creation directive', () => {
+	it('registers a 5.4.0 directive that provisions system.hdb_model_decisions and system.hdb_model_outcomes', () => {
+		const directive = directivesController.getDirectiveByVersion('5.4.0');
+		expect(directive, 'expected a directive registered for version 5.4.0').to.exist;
+		expect(directive.version).to.equal('5.4.0');
+		expect(directive.description).to.be.a('string').that.is.not.empty;
+		expect(directive.async_functions.map((fn) => fn.name)).to.include.members([
+			'createHdbModelDecisionsIfMissing',
+			'createHdbModelOutcomesIfMissing',
+		]);
+	});
+
+	it('runs on the 5.3.x -> 5.4.0 upgrade path', () => {
+		const versions = directivesController.getVersionsForUpgrade(new UpgradeObject('5.3.2', '5.4.0'));
+		expect(versions).to.include('5.4.0');
+	});
+
+	it('does not run on a 5.2.x -> 5.3.x upgrade (not yet shipped there)', () => {
+		const versions = directivesController.getVersionsForUpgrade(new UpgradeObject('5.2.1', '5.3.0'));
+		expect(versions).to.not.include('5.4.0');
+	});
+
+	it('does not re-run when the install is already at or past 5.4.0', () => {
+		const versions = directivesController.getVersionsForUpgrade(new UpgradeObject('5.4.0', '5.4.1'));
+		expect(versions).to.not.include('5.4.0');
+	});
+});

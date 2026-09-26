@@ -84,6 +84,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [Decision outputs are validated at the facade](resources/models/DESIGN.md#decision-outputs-are-validated-at-the-facade) — `normalizeDecision` checks every backend's distribution (complete, in-set, sums to one) before a `Decision` is returned; a violation is a backend error, so fallback applies.
 - [The generative adapter reports no usage of its own](resources/models/DESIGN.md#the-generative-adapter-reports-no-usage-of-its-own) — Each vote sample is its own `generate` row; the decide row reports no tokens, and samples settle before the adapter throws.
 - [Built-ins serve one kind](resources/models/DESIGN.md#built-ins-serve-one-kind) — Provider factories cannot serve `models.decision` and the adapter cannot serve the other kinds; refused at validation and at boot.
+- [A decision is committed before its id is returned, and its facts are separate rows](resources/models/DESIGN.md#a-decision-is-committed-before-its-id-is-returned-and-its-facts-are-separate-rows) — `decide` commits its `hdb_model_decisions` row in its own transaction before returning; truth and action are separate `hdb_model_outcomes` rows that copy the decision's expiry, so facts from different nodes never overwrite each other.
 
 ## server/ — HTTP stacks, threads, operation dispatch
 

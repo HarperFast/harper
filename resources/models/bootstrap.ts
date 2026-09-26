@@ -34,6 +34,7 @@ import { registerOllamaBackend, type OllamaBackendConfig } from '../../component
 import { registerOpenAIBackend, type OpenAIBackendConfig } from '../../components/openai/index.ts';
 import { registerAnthropicBackend, type AnthropicBackendConfig } from '../../components/anthropic/index.ts';
 import { registerBedrockBackend, type BedrockBackendConfig } from '../../components/bedrock/index.ts';
+import { setModelsConfigHash } from './decisionStore.ts';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
@@ -359,6 +360,7 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 			return;
 		}
 	}
+	setModelsConfigHash(block ?? undefined);
 	const desired: DesiredEntry[] = [];
 	const presentKeys = new Set<string>();
 	collectKind('embedding', block?.embedding, desired, presentKeys);
