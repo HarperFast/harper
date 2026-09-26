@@ -2672,9 +2672,7 @@ function databaseDropRecoveryGraphPaths(databaseName: string, incompleteRootPath
 		for (const rootPath of [join(storageRoot, databaseName), join(storageRoot, `${databaseName}.mdb`)]) {
 			if (existsSync(rootPath)) rootPaths.add(rootPath);
 		}
-	} catch {
-		// Configured and legacy roots above may still be recoverable without the default storage path.
-	}
+	} catch {}
 	return [...rootPaths];
 }
 
@@ -2682,9 +2680,7 @@ function incompleteDatabaseDropPaths(databaseName: string): string[] {
 	const directories = new Set<string>();
 	try {
 		directories.add(resolveDatabaseStorageRoot(databaseName));
-	} catch {
-		// A configured table path below may still contain the durable marker.
-	}
+	} catch {}
 	directories.add(join(getBaseSchemaPath(), databaseName));
 	const databaseConfig = (envGet(CONFIG_PARAMS.DATABASES) || {})[databaseName];
 	if (databaseConfig?.path) directories.add(databaseConfig.path);
@@ -2973,15 +2969,12 @@ function unregisterDatabase(databaseName: string): void {
 }
 
 /**
- * Close every RocksDB (user) database this thread has open, releasing its native handles.
+ * Close every user database this thread has open, releasing its native handles.
  *
- * rocksdb-js's registry is process-global across worker threads, and a thread that exits WITHOUT
- * closing leaks its handles (the process-global refCount never drops), while the only alternative,
- * `shutdown()`, tears down rocksdb for the entire process. So a worker thread that opens databases
- * and then exits — notably a job worker (jobProcess), which opens the whole database graph via
- * `getDatabases()` and exits when the job finishes — must close its handles explicitly, or those
- * handles linger process-wide (and, e.g., block an online `restore_backup` from confirming the
- * database is closed). The `system` database is intentionally left open: it is non-enumerable here
+ * A job worker opens the database graph and must prove every handle is closed before its exit can
+ * satisfy destructive-DDL preparation. RocksDB handles otherwise leak in the process-global
+ * registry; an open LMDB handle can likewise prevent deletion on Windows. The `system` database is
+ * intentionally left open: it is non-enumerable here
  * (skipped by the loop), is never restored online, and the exiting worker may still touch the job
  * table during teardown. Best-effort: closing failures are swallowed inside `closeDatabase`.
  *
@@ -2999,25 +2992,12 @@ export async function closeLoadedDatabases({ requireClosed = false }: { requireC
 	for (const databaseName of Object.keys(databases)) {
 		const dbTables = databases[databaseName];
 		if (!dbTables) continue;
-		let isRocks = false;
-		for (const tableName in dbTables) {
-			if (dbTables[tableName]?.primaryStore?.rootStore instanceof RocksDatabase) {
-				isRocks = true;
-				break;
-			}
+		try {
+			await closeDatabase(databaseName, { requireClosed });
+		} catch (error) {
+			logger.warn(`Error closing database ${databaseName} during worker teardown`, error);
+			closeFailures.push(error);
 		}
-		// a tableless database exposes no table root store, so also check the defined-database
-		// entry — otherwise its open root store would leak on worker exit
-		if (!isRocks && (definedDatabases?.get(databaseName) as any)?.rootStore instanceof RocksDatabase) {
-			isRocks = true;
-		}
-		if (isRocks)
-			try {
-				await closeDatabase(databaseName, { requireClosed });
-			} catch (error) {
-				logger.warn(`Error closing database ${databaseName} during worker teardown`, error);
-				closeFailures.push(error);
-			}
 	}
 	if (requireClosed && closeFailures.length > 0)
 		throw new AggregateError(closeFailures, 'Could not close every database during worker teardown');

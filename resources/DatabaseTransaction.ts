@@ -91,6 +91,7 @@ let outstandingCommitCount = 0;
 const suspendedDatabaseCommits = new WeakMap<object, number>();
 const permanentlySuspended = Symbol('permanentlySuspendedDatabaseCommits');
 let suspendedDatabaseRootCount = 0;
+let hasPermanentlySuspendedDatabaseRoots = false;
 // Caps the stuck-commit log (checkOverloaded() below) to at most one line per this interval across
 // the whole thread, regardless of how many distinct commits individually cross the threshold — see
 // the comment at the log site for why a per-commit-only dedup isn't enough under sustained overload.
@@ -188,6 +189,7 @@ export function trackOutstandingCommit(
 
 export function databaseCommitsSuspended(rootStore: object | undefined): boolean {
 	if (rootStore == null) return false;
+	if (suspendedDatabaseRootCount === 0 && !hasPermanentlySuspendedDatabaseRoots) return false;
 	if ((rootStore as any)[permanentlySuspended]) return true;
 	return suspendedDatabaseRootCount > 0 && (suspendedDatabaseCommits.get(rootStore) ?? 0) > 0;
 }
@@ -200,6 +202,7 @@ export function permanentlySuspendDatabaseCommits(rootStores: Iterable<object>):
 		if (suspension > 0) suspendedDatabaseRootCount--;
 		suspendedDatabaseCommits.delete(rootStore);
 		(rootStore as any)[permanentlySuspended] = true;
+		hasPermanentlySuspendedDatabaseRoots = true;
 	}
 }
 

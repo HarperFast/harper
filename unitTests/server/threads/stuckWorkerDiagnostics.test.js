@@ -240,7 +240,15 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 	it('settles a job worker as soon as it confirms handle cleanup', async function () {
 		const worker = await startFixtureWorker('report-clean-stay', 'job');
 		started.push(worker);
+		let received = 0;
+		worker.on('message', (message) => {
+			if (message.type === 'fixture-received') received++;
+		});
 		await broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000, true);
+		await waitFor(() => received === 1);
+		assert.strictEqual(received, 1);
+		await sendItcEvent({ type: 'diagnostic-probe', message: {} }, 'active');
+		assert.strictEqual(received, 1, 'cleanup-proven job workers must not receive completion');
 		assert.strictEqual(worker.threadId > 0, true);
 	});
 

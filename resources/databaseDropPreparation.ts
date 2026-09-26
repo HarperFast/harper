@@ -1,5 +1,5 @@
 import { threadId, workerData } from 'node:worker_threads';
-import { dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
 
 type DatabaseDropPreparation = {
 	id: string;
@@ -97,8 +97,9 @@ export function databaseDropPrepared(rootPath: string): boolean {
 
 export function databaseDropPreparedWithin(directoryPath: string): boolean {
 	if (databaseDropPreparations.size === 0) return false;
+	const normalizedDirectoryPath = resolve(directoryPath);
 	for (const rootPath of databaseDropPreparations.keys()) {
-		if (dirname(rootPath) === directoryPath) return true;
+		if (resolve(dirname(rootPath)) === normalizedDirectoryPath) return true;
 	}
 	return false;
 }

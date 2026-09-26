@@ -19,7 +19,7 @@ export async function signalSchemaChange(
 		peersFirst = false,
 		includeJobWorkers = false,
 		peerRounds = 1,
-	}: { peersFirst?: boolean; includeJobWorkers?: boolean; peerRounds?: number } = {}
+	}: { peersFirst?: boolean; includeJobWorkers?: boolean | 'active'; peerRounds?: number } = {}
 ) {
 	try {
 		hdbLogger.debug('signalSchemaChange called with message:', message);

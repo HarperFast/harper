@@ -973,9 +973,7 @@ export function makeTable(options) {
 		}
 		return { txnLogKey: version, nodeId };
 	}
-	// Canonical-source applies (sourceApply), replay and replication notifications bypass lag shedding;
-	// dropping one would advance the source cursor past a write that never landed. Database teardown is
-	// different: its submission barrier rejects every producer before the underlying store is closed.
+	// Teardown rejects every producer; source/replay paths only bypass derived-index lag shedding.
 	function assertDerivedIndexAdmission(options: any, transaction: any) {
 		if (databaseDropPrepared(tableRootPath) || databaseCommitsSuspended(tableRootStore))
 			throw new DatabaseClosingError(databaseName, !transaction?.root && !transaction?.snapshotFree);

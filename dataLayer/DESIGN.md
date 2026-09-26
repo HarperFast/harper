@@ -120,8 +120,11 @@ Three non-obvious mechanics keep that safe:
   Startup scans and cold opens reject the marked root and the rest of its logical database graph, so
   a crash while publishing or canceling several markers cannot expose a partial database. Retrying
   `drop_database` re-enumerates that graph and completes the deletion even when the in-memory catalog
-  is gone. A strict worker-close failure similarly keeps that worker's physical roots fenced and
-  remembered; a same-name drop retry re-attempts those closes before marker publication or deletion.
+  is gone. A configured `databases.<name>.path` is the exclusive root of that logical graph: every
+  physical database found directly beneath it belongs to the configured name, and independent
+  databases must not be co-located there. A strict worker-close failure similarly keeps that
+  worker's physical roots fenced and remembered; a same-name drop retry re-attempts those closes
+  before marker publication or deletion.
   `database()`'s on-demand open still uses the read-only `throwIfBlockedByRestore` (a
   `create_table`/`create_schema` must not resurrect a half-purged directory as a fresh empty DB), but
   the destructive drop path now uses the exclusive lock so the race is closed, not merely narrowed.

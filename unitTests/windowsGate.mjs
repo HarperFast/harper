@@ -54,6 +54,8 @@ const GROUPS = [
 	// Individually verified files from directories not yet covered wholesale.
 	'unitTests/dataLayer/restoreMarker.test.js',
 	'unitTests/resources/blob.test.js',
+	'unitTests/resources/closeLoadedDatabases.test.js',
+	'unitTests/resources/databaseAliasIdentity.test.js',
 	'unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js',
 ];
 

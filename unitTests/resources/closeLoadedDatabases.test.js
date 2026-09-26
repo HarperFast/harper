@@ -11,7 +11,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { mkdtempSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
-const { join } = require('node:path');
+const { dirname, join, relative, sep } = require('node:path');
 const {
 	table,
 	database,
@@ -32,6 +32,7 @@ const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge')
 const { dropSchema } = require('#src/dataLayer/schema');
 const {
 	claimDatabaseDropPreparation,
+	databaseDropPreparedWithin,
 	handleDatabaseDropPreparationOwnerExit,
 	releaseDatabaseDropPreparation,
 } = require('#src/resources/databaseDropPreparation');
@@ -74,6 +75,18 @@ describe('RocksDB handle release', function () {
 			);
 		} finally {
 			releaseDatabaseDropPreparation(databaseName, 'first-drop');
+		}
+	});
+
+	it('normalizes directory spellings when checking a drop fence', function () {
+		const rootPath = join(process.cwd(), 'prepared-root', 'database');
+		const preparationId = 'normalized-drop-path';
+		claimDatabaseDropPreparation(rootPath, preparationId);
+		try {
+			assert.strictEqual(databaseDropPreparedWithin(dirname(rootPath) + sep), true);
+			assert.strictEqual(databaseDropPreparedWithin(relative(process.cwd(), dirname(rootPath))), true);
+		} finally {
+			releaseDatabaseDropPreparation(rootPath, preparationId);
 		}
 	});
 

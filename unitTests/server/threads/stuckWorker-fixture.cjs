@@ -65,6 +65,7 @@ onMessageFromWorkers((message, port) => {
 		clearInterval(keepAlive);
 		parentPort.close();
 	} else if (process.argv.includes('--report-clean-stay')) {
+		parentPort.postMessage({ type: 'fixture-received', requestId: message.requestId });
 		notifyJobCleanupComplete();
 	} else if (process.argv.includes('--exit') || process.argv.includes('--exit-clean')) {
 		if (process.argv.includes('--exit-clean')) notifyJobCleanupComplete();

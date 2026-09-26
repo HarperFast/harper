@@ -1099,6 +1099,7 @@ function settleAcknowledgementsForClosedThread(threadId, jobCleanupComplete = fa
 	);
 }
 
+/** @param {boolean|'active'} includeJobWorkers */
 function broadcastWithAcknowledgement(
 	message,
 	timeout = DEFAULT_ACK_TIMEOUT_MS,
@@ -1139,7 +1140,11 @@ function broadcastWithAcknowledgement(
 		for (let port of connectedPorts) {
 			// Ordinary schema gossip excludes job workers to avoid re-entrant waits. Destructive
 			// preparation opts them in because every native handle must be closed before deletion.
-			if (!includeJobWorkers && !isEligibleBroadcastRecipient(port)) continue;
+			if (
+				port.isJobWorker &&
+				(!includeJobWorkers || (includeJobWorkers === 'active' && port.jobCleanupComplete === true))
+			)
+				continue;
 			let ackHandler;
 			try {
 				let requestId = nextId++;
@@ -1211,6 +1216,7 @@ function broadcastWithAcknowledgement(
 	});
 }
 
+/** @param {boolean|'active'} includeJobWorkers */
 function broadcastWithStrictAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS, includeJobWorkers = false) {
 	return broadcastWithAcknowledgement(message, timeout, true, includeJobWorkers);
 }

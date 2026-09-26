@@ -47,6 +47,7 @@ onMessageFromWorkers(async (event, sender) => {
 /**
  * Emits an ITC event to the ITC server.
  * @param event
+ * @param {boolean|'active'} includeJobWorkers
  */
 function sendItcEvent(event, includeJobWorkers = false) {
 	// Always stamp originator so handlers can send direct responses back.
@@ -56,6 +57,7 @@ function sendItcEvent(event, includeJobWorkers = false) {
 	return broadcastWithAcknowledgement(event, undefined, false, includeJobWorkers);
 }
 
+/** @param {boolean|'active'} includeJobWorkers */
 function sendItcEventStrict(event, timeout, includeJobWorkers = false) {
 	if (event.message) event.message.originator = threadId;
 	return broadcastWithStrictAcknowledgement(event, timeout, includeJobWorkers);
