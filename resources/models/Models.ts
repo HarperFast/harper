@@ -309,7 +309,7 @@ export class Models implements ModelsContract {
 		if (opts.instructions !== undefined && typeof opts.instructions !== 'string')
 			throw new DecisionInputError('instructions must be a string');
 		const instructions = opts.instructions || undefined;
-		const callOpts: DecideOpts = { ...opts, instructions };
+		const callOpts: DecideOpts = { ...opts, instructions, requires: opts.requires ? [...opts.requires] : undefined };
 		const identity: CallIdentity = {
 			hash: hashSchema(call),
 			scoring: scoringSchema(call),
@@ -445,18 +445,19 @@ export class Models implements ModelsContract {
 		throw hasFailure ? firstFailure : firstError;
 	}
 
-	getDecision<T = unknown>(id: string): Promise<DecisionRecord<T> | undefined> {
+	async getDecision<T = unknown>(id: string): Promise<DecisionRecord<T> | undefined> {
 		checkDecisionId(id);
-		return this.#decisionStore.get(id, resolveCallContext().accounting.tenantId) as Promise<
-			DecisionRecord<T> | undefined
-		>;
+		return (await this.#decisionStore.get(id, resolveCallContext().accounting.tenantId)) as
+			DecisionRecord<T> | undefined;
 	}
 
-	recordOutcome<T = unknown>(id: string, outcome: OutcomeReport): Promise<DecisionRecord<T>> {
+	async recordOutcome<T = unknown>(id: string, outcome: OutcomeReport): Promise<DecisionRecord<T>> {
 		checkDecisionId(id);
-		return this.#decisionStore.recordOutcome(id, outcome, resolveCallContext().accounting.tenantId) as Promise<
-			DecisionRecord<T>
-		>;
+		return (await this.#decisionStore.recordOutcome(
+			id,
+			outcome,
+			resolveCallContext().accounting.tenantId
+		)) as DecisionRecord<T>;
 	}
 
 	async #persistDecision<T>(

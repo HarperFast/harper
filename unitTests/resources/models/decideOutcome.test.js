@@ -230,14 +230,8 @@ describe('models.decide persists its decision and models.recordOutcome scores it
 
 	it('rejects a missing or non-string id with a 400', async () => {
 		for (const bad of ['', 5, undefined, null]) {
-			assert.throws(
-				() => models.getDecision(bad),
-				(err) => err.statusCode === 400
-			);
-			assert.throws(
-				() => models.recordOutcome(bad, { truth: { kind: 'noMatch' } }),
-				(err) => err.statusCode === 400
-			);
+			await assert.rejects(models.getDecision(bad), (err) => err.statusCode === 400);
+			await assert.rejects(models.recordOutcome(bad, { truth: { kind: 'noMatch' } }), (err) => err.statusCode === 400);
 		}
 	});
 });
