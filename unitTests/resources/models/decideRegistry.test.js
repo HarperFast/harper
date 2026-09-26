@@ -150,6 +150,106 @@ describe('@decide registry (setDecideAttribute + schema reload)', () => {
 		assert.equal(Reloaded.attributes.find((a) => a.name === 'urgent').decide.confidence, 'urgentConfidence');
 	});
 
+	it('a peer declaration that conflicts only once merged with the live fields is rejected before it lands', () => {
+		const Live = table({
+			table: 'DecideRegPeer',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'body', type: 'String' },
+				{
+					name: 'route',
+					type: 'String',
+					decide: { source: 'body', model: 'default', confidence: 'routeConfidence', schema: { enum: ['a', 'b'] } },
+				},
+				{ name: 'routeConfidence', type: 'Float' },
+			],
+		});
+		assert.throws(
+			() =>
+				table({
+					table: 'DecideRegPeer',
+					database: 'test',
+					origin: 'cluster',
+					attributes: [
+						{
+							name: 'flag',
+							type: 'Boolean',
+							decide: { source: 'body', model: 'default', confidence: 'routeConfidence', schema: { type: 'boolean' } },
+						},
+					],
+				}),
+			/both write "routeConfidence"/
+		);
+		assert.equal(
+			Live.attributes.find((a) => a.name === 'flag'),
+			undefined,
+			'the peer field did not land'
+		);
+		assert.equal(Live.decideAttributes.length, 1, 'the live hook list is unchanged');
+	});
+
+	it('a code-declared table gets the same field rules as a schema', () => {
+		const declare = (name, attributes) => () => table({ table: name, database: 'test', attributes });
+		const base = [
+			{ name: 'id', isPrimaryKey: true },
+			{ name: 'body', type: 'String' },
+		];
+		assert.throws(
+			declare('DecideRegBoth', [
+				...base,
+				{
+					name: 'both',
+					type: 'String',
+					embed: { source: 'body', model: 'default' },
+					decide: { source: 'body', model: 'default', schema: { enum: ['a', 'b'] } },
+				},
+			]),
+			/@decide on "both" and @embed on "both" both write "both"/
+		);
+		assert.throws(
+			declare('DecideRegNoSource', [
+				...base,
+				{ name: 'route', type: 'String', decide: { source: 'bdoy', model: 'default', schema: { enum: ['a', 'b'] } } },
+			]),
+			/unknown source field "bdoy"/
+		);
+		assert.throws(
+			declare('DecideRegNoConf', [
+				...base,
+				{
+					name: 'route',
+					type: 'String',
+					decide: { source: 'body', model: 'default', confidence: 'nope', schema: { enum: ['a', 'b'] } },
+				},
+			]),
+			/unknown confidence field "nope"/
+		);
+		assert.throws(
+			declare('DecideRegConfType', [
+				...base,
+				{
+					name: 'route',
+					type: 'String',
+					decide: { source: 'body', model: 'default', confidence: 'score', schema: { enum: ['a', 'b'] } },
+				},
+				{ name: 'score', type: 'String' },
+			]),
+			/requires a Float confidence attribute/
+		);
+		assert.throws(
+			declare('DecideRegConfPk', [
+				...base,
+				{
+					name: 'route',
+					type: 'String',
+					decide: { source: 'body', model: 'default', confidence: 'id', schema: { enum: ['a', 'b'] } },
+				},
+			]),
+			/cannot be @primaryKey or @computed/
+		);
+	});
+
 	it('refuses an override for an attribute without @decide, or that does not exist', () => {
 		const errors = [];
 		const original = console.error;

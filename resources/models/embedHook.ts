@@ -1,7 +1,4 @@
-/**
- * `@embed` directive write-time hook, and the trigger, cancellation, sanitizing and ownership
- * rules it shares with the `@decide` hook (`decideHook.ts`).
- */
+/** Write-time hook for `@embed`, and the rules every write-time model hook shares. */
 import { ClientError } from '../../utility/errors/hdbError.ts';
 
 // Lazily resolved to avoid a require cycle on the unit-test load path; only needed on failure.
@@ -130,8 +127,14 @@ const SAFE_ERROR_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
  * `upstreamStatus` is the provider's status — NOT ServerError's statusCode, which is Harper's
  * own response status and would misleadingly read 500 here.
  */
-export function sanitizedHookError(actor: string, product: string, attributeName: string, err: unknown): Error {
-	getLogger().error?.(`${actor} for attribute "${attributeName}" failed:`, err);
+export function sanitizedHookError(
+	actor: string,
+	product: string,
+	attributeName: string,
+	err: unknown,
+	log = true
+): Error {
+	if (log) getLogger().error?.(`${actor} for attribute "${attributeName}" failed:`, err);
 	const status = (err as any)?.upstreamStatus;
 	const errName = (err as any)?.name;
 	const detail =
@@ -144,6 +147,10 @@ export function sanitizedHookError(actor: string, product: string, attributeName
 
 type DerivedAttribute = {
 	name: string;
+	type?: string;
+	nullable?: boolean;
+	isPrimaryKey?: boolean;
+	computed?: unknown;
 	embed?: { source: string };
 	decide?: { source: string; confidence?: string };
 };
@@ -151,42 +158,73 @@ type DerivedAttribute = {
 /**
  * Every derived field (an `@embed` target, a `@decide` target or confidence) has exactly one
  * writer, and no directive derives from another directive's output: the hooks run concurrently
- * within one write, so the stored pair would otherwise depend on scheduling. None of those
- * fields may be named after an `Object.prototype` key, because `sourceState` tests presence
- * with `in`. Run by the schema loader, by `declareTable` before a declaration is saved, and by
+ * within one write, so the stored pair would otherwise depend on scheduling. A source and a
+ * confidence field must be declared, a confidence field must be a nullable `Float` that is
+ * neither the primary key nor computed, and none of those fields may be named after an
+ * `Object.prototype` key, because `sourceState` tests presence with `in`. Run on the complete
+ * attribute list by the schema loader, by `declareTable` before a declaration is saved, and by
  * `updatedAttributes` before it assigns anything, so a programmatic declaration is held to the
- * same rule and a rejected one changes nothing.
+ * same rules and a rejected one changes nothing.
  */
 export function assertDerivedFieldOwnership(attributes: DerivedAttribute[]): void {
+	const declared = new Map<string, DerivedAttribute>();
+	for (const attribute of attributes) declared.set(attribute.name, attribute);
 	const writers = new Map<string, string>();
 	const claim = (field: string, writer: string) => {
 		const prior = writers.get(field);
 		if (prior) throw new ClientError(`${writer} and ${prior} both write "${field}"`, 400);
 		writers.set(field, writer);
 	};
+	const directives = (attribute: DerivedAttribute): Array<[string, { source: string; confidence?: string }]> => {
+		const out: Array<[string, { source: string; confidence?: string }]> = [];
+		if (attribute.embed) out.push(['@embed', attribute.embed]);
+		if (attribute.decide) out.push(['@decide', attribute.decide]);
+		return out;
+	};
 	for (const attribute of attributes) {
-		const directive = attribute.embed ? '@embed' : attribute.decide ? '@decide' : undefined;
-		if (!directive) continue;
-		const writer = `${directive} on "${attribute.name}"`;
-		for (const field of [attribute.name, (attribute.embed ?? attribute.decide)!.source, attribute.decide?.confidence])
-			if (field && Object.hasOwn(Object.prototype, field))
-				throw new ClientError(
-					`${writer}: "${field}" is an Object.prototype key and cannot be a derived, source or confidence field`,
-					400
-				);
-		claim(attribute.name, writer);
-		if (attribute.decide?.confidence) claim(attribute.decide.confidence, writer);
+		for (const [directive, config] of directives(attribute)) {
+			const writer = `${directive} on "${attribute.name}"`;
+			for (const field of [attribute.name, config.source, config.confidence])
+				if (field && Object.hasOwn(Object.prototype, field))
+					throw new ClientError(
+						`${writer}: "${field}" is an Object.prototype key and cannot be a derived, source or confidence field`,
+						400
+					);
+			if (!declared.has(config.source))
+				throw new ClientError(`${writer} references unknown source field "${config.source}"`, 400);
+			claim(attribute.name, writer);
+			if (config.confidence) {
+				const confidence = declared.get(config.confidence);
+				if (!confidence)
+					throw new ClientError(`${writer} references unknown confidence field "${config.confidence}"`, 400);
+				if (confidence.type !== undefined && confidence.type !== 'Float')
+					throw new ClientError(
+						`${writer} requires a Float confidence attribute; "${config.confidence}" is ${confidence.type === 'array' ? '[...]' : confidence.type}`,
+						400
+					);
+				if (confidence.nullable === false)
+					throw new ClientError(
+						`${writer}: confidence attribute "${config.confidence}" cannot be declared non-null: a null source clears it`,
+						400
+					);
+				if (confidence.isPrimaryKey || confidence.computed)
+					throw new ClientError(
+						`${writer}: confidence attribute "${config.confidence}" cannot be @primaryKey or @computed`,
+						400
+					);
+				claim(config.confidence, writer);
+			}
+		}
 	}
 	for (const attribute of attributes) {
-		const directive = attribute.embed ? '@embed' : attribute.decide ? '@decide' : undefined;
-		if (!directive) continue;
-		const source = (attribute.embed ?? attribute.decide)!.source;
-		const sourceWriter = writers.get(source);
-		if (sourceWriter)
-			throw new ClientError(
-				`${directive} on "${attribute.name}" derives from "${source}", which ${sourceWriter} writes`,
-				400
-			);
+		for (const [directive, config] of directives(attribute)) {
+			const sourceWriter = writers.get(config.source);
+			if (sourceWriter)
+				throw new ClientError(
+					`${directive} on "${attribute.name}" derives from "${config.source}", which ${sourceWriter} writes`,
+					400
+				);
+		}
 	}
 }
 
@@ -243,9 +281,8 @@ export function buildEmbedBefore(
 				try {
 					vector = await embedder(record, { signal: jobSignal });
 				} catch (err) {
-					// A sibling's failure aborted this one; that failure is the one reported and logged.
-					if (jobSignal.aborted) throw err;
-					throw sanitizedHookError('Embedder', 'embedding', attr.name, err);
+					// An aborted job failed because a sibling did; only that failure is worth a log line.
+					throw sanitizedHookError('Embedder', 'embedding', attr.name, err, !jobSignal.aborted);
 				}
 				record[attr.name] = normalizeVector(vector);
 			}),

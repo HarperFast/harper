@@ -436,42 +436,9 @@ async function processGraphQLSchema(
 					}
 					if (property.decide) property.decide = parseDecideDirective(property.decide, property);
 				}
+				// Source and confidence references, one writer per derived field, and the rest of what
+				// a derived attribute may name; the same check a programmatic declaration passes.
 				assertDerivedFieldOwnership(attributes as any[]);
-				// A source must reference a declared field; a typo would silently leave the derived
-				// attribute unpopulated (the source key never appears in write payloads).
-				for (const prop of attributes as any[]) {
-					const directive = prop.embed ? '@embed' : prop.decide ? '@decide' : undefined;
-					if (!directive) continue;
-					const source: string = (prop.embed ?? prop.decide).source;
-					// Object.hasOwn (not `in`): `attributesObject` is a plain object, so `in` would
-					// match inherited prototype keys (toString, constructor) and pass a bad source.
-					if (!Object.hasOwn(attributesObject, source))
-						throw new ClientError(`${directive} on "${prop.name}" references unknown source field "${source}"`, 400);
-					const confidence: string | undefined = prop.decide?.confidence;
-					if (confidence) {
-						const confidenceAttribute = (attributes as any[]).find((a) => a.name === confidence);
-						if (!confidenceAttribute)
-							throw new ClientError(
-								`@decide on "${prop.name}" references unknown confidence field "${confidence}"`,
-								400
-							);
-						if (confidenceAttribute.type !== 'Float')
-							throw new ClientError(
-								`@decide on "${prop.name}" requires a Float confidence attribute; "${confidence}" is ${confidenceAttribute.type === 'array' ? '[...]' : confidenceAttribute.type}`,
-								400
-							);
-						if (confidenceAttribute.nullable === false)
-							throw new ClientError(
-								`@decide on "${prop.name}": confidence attribute "${confidence}" cannot be declared non-null: a null source clears it`,
-								400
-							);
-						if (confidenceAttribute.isPrimaryKey || confidenceAttribute.computed)
-							throw new ClientError(
-								`@decide on "${prop.name}": confidence attribute "${confidence}" cannot be @primaryKey or @computed`,
-								400
-							);
-					}
-				}
 				if (typeDef.fullTextIndexes.length > 0 && !typeDef.table)
 					throw new ClientError('@fullText is only supported on a @table type', 400);
 				typeDef.fullTextIndexes = compileFullTextDefinitions(typeDef.fullTextIndexes, attributes);

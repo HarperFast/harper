@@ -319,6 +319,16 @@ describe('@decide directive parsing', () => {
 		);
 	});
 
+	it('rejects a field that carries both @embed and @decide', () =>
+		rejects(
+			`type DecideBoth @table {
+				id: ID @primaryKey
+				body: String
+				both: [Float] @embed(source: "body", model: "default") @decide(source: "body", values: ["a", "b"])
+			}`,
+			/String, Boolean or Int|both write "both"/
+		));
+
 	it('rejects two directives writing one field, and a directive deriving from another directive’s output', async () => {
 		await rejects(
 			`type DecideSharedConfidence @table {

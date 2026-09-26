@@ -4613,12 +4613,9 @@ export function makeTable(options) {
 				},
 			};
 			this.#savingOperation = write;
-			// The `@embed` and `@decide` hooks must run before `addWrite` so the derived values are
-			// on the record when `commit` runs (the txn `before` slot runs after commit). Known
-			// limitation of this placement: the hooks see this write's payload before table
-			// validation, so a write that later fails validation still calls the backend, and a
-			// tracked-instance mutation that sets the source via accessors after update() won't
-			// re-derive. A resource-layer re-run is the proper fix; tracked as a follow-up.
+			// The hooks run before `addWrite` so the derived values are on the record at commit (the
+			// txn `before` slot runs after commit). They see the payload before table validation, and a
+			// tracked-instance mutation that sets the source via accessors after update() is not seen.
 			const modelHooksBefore = combineWriteHooks(
 				buildEmbedBefore(recordUpdate, context, options, TableResource.embedAttributes, TableResource.userEmbedders),
 				buildDecideBefore(recordUpdate, context, options, TableResource.decideAttributes, TableResource.userDeciders)
@@ -6904,7 +6901,6 @@ export function makeTable(options) {
 		static updatedAttributes() {
 			// Refresh on every call: schema reload mutates `attributes` in place, so the
 			// class-construction snapshot would otherwise go stale.
-			// Before anything is assigned, so a rejected declaration leaves the live registries as they were.
 			assertDerivedFieldOwnership(this.attributes as any[]);
 			this.embedAttributes = (this.attributes as any[]).filter((a) => a?.embed);
 			this.decideAttributes = (this.attributes as any[]).filter((a) => a?.decide);
