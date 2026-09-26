@@ -333,7 +333,8 @@ export class Models implements ModelsContract {
 		const requires = buildRequires('decide', callOpts.requires, false);
 		if (wantsNoMatch(call)) {
 			if (!requires.includes('noMatch')) requires.push('noMatch');
-			if (requires.includes('calibrated') && !requires.includes('calibratedNoMatch')) requires.push('calibratedNoMatch');
+			if (requires.includes('calibrated') && !requires.includes('calibratedNoMatch'))
+				requires.push('calibratedNoMatch');
 		}
 		const resolved = resolveCandidates('decision', callOpts.model, requires);
 		if ('error' in resolved) {
