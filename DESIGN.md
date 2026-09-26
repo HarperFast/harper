@@ -143,6 +143,10 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [Every path handed to a native file watch must be canonicalized (`utility/watchPath.ts`)](utility/DESIGN.md#every-path-handed-to-a-native-file-watch-must-be-canonicalized-utilitywatchpathts) — Every native file-watch path is canonicalized first: libuv aborts the process on a Windows 8.3 short-path mismatch.
 - [Interactive CLI prompts go through `utility/interactivePrompts.ts`](utility/DESIGN.md#interactive-cli-prompts-go-through-utilityinteractivepromptsts) — Every `@inquirer` prompt uses this seam, which lazy-loads packages off the boot path, exits 130 on Ctrl-C and gives tests a stubbable raw layer.
 
+## integrationTests/ — end-to-end suite and fixtures
+
+- [A deployed fixture must not install from the npm registry (`integrationTests/fixtures/`)](integrationTests/DESIGN.md#a-deployed-fixture-must-not-install-from-the-npm-registry-integrationtestsfixtures) — A fixture with production dependencies and no bundled `node_modules` puts the npm registry on the test's critical path; vendor them or neutralize the install.
+
 ## build-tools/ — packaging and published artifacts
 
 - [The published shrinkwrap governs registry installs but not tarball installs (`build-tools/`)](build-tools/DESIGN.md#the-published-shrinkwrap-governs-registry-installs-but-not-tarball-installs-build-tools) — Registry installs honor the shrinkwrap through the packument flag; tarball installs re-resolve from `package.json`.
