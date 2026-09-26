@@ -139,10 +139,9 @@ export function isAllowedValue(leaf: DecisionLeaf, raw: unknown): boolean {
 	return Number.isInteger(raw) && (raw as number) >= leaf.minimum && (raw as number) <= leaf.maximum;
 }
 
-/** Whether any leaf of a validated schema asked for a no-match score. */
 export function wantsNoMatch(schema: DecisionSchema): boolean {
 	if (!isObjectSchema(schema)) return schema.noMatch === true;
-	for (const leaf of Object.values(schema.properties)) if (leaf.noMatch === true) return true;
+	for (const name in schema.properties) if (schema.properties[name].noMatch === true) return true;
 	return false;
 }
 
@@ -288,7 +287,6 @@ export function toResponseSchema(schema: DecisionSchema): object {
 	};
 }
 
-/** An opted-in leaf's answer: the closest allowed value plus whether none of them truly fits. */
 function pairJsonSchema(value: object): object {
 	return {
 		type: 'object',
@@ -359,7 +357,6 @@ function extractSampleValues(schema: DecisionSchema, sample: Record<string, unkn
 	return checkSampleValue(schema, sample.value, "'value'");
 }
 
-/** An opted-in leaf's `{ value, noMatch }` answer, as `{ value, noMatch }` with the value checked. */
 function checkSamplePair(leaf: DecisionLeaf, raw: unknown, label: string): SamplePair {
 	if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(`${label} needs { value, noMatch }`);
 	const pair = raw as Record<string, unknown>;
@@ -367,7 +364,6 @@ function checkSamplePair(leaf: DecisionLeaf, raw: unknown, label: string): Sampl
 	return { value: checkSampleValue(leaf, pair.value, `${label} value`), noMatch: pair.noMatch };
 }
 
-/** A parsed opted-in answer. */
 export interface SamplePair {
 	value: unknown;
 	noMatch: boolean;

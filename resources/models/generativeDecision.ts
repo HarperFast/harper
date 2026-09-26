@@ -188,13 +188,9 @@ export function createGenerativeDecisionBackend(
 		const input = buildInput(state, schema, instructions, SCORE_NO_MATCH_SYSTEM_PROMPT, field);
 		const scored = await score(input, [...choices, noMatchChoice(choices)], { model: logicalName, signal });
 		const all = softmax([...values, NO_MATCH], scored?.logLikelihoods, logicalName);
-		const none = all.pop()!.probability;
-		const rest = 1 - none;
-		const distribution =
-			rest > 0
-				? all.map(({ value, probability }) => ({ value, probability: probability / rest }))
-				: all.map(({ value }) => ({ value, probability: 1 / all.length }));
-		return { distribution, noMatch: none };
+		// Normalized over the allowed values' own scores, not by dividing out the none share, which can underflow to zero.
+		const distribution = softmax(values, (scored!.logLikelihoods as number[]).slice(0, values.length), logicalName);
+		return { distribution, noMatch: all[values.length].probability };
 	};
 
 	// One scoring call per leaf, through the same pool and budget as voting, so a 32-field schema
@@ -392,25 +388,23 @@ function tally(schema: DecisionSchema, votes: unknown[]): DecisionOutput<unknown
 
 function tallyLeaf(leaf: DecisionLeaf, votes: unknown[]): DecisionOutput<unknown> {
 	if (leaf.noMatch !== true) return { distribution: frequencies(leaf, votes) };
-	const pairs = votes as SamplePair[];
-	return {
-		distribution: frequencies(
-			leaf,
-			pairs.map((pair) => pair.value)
-		),
-		noMatch: pairs.filter((pair) => pair.noMatch).length / pairs.length,
-	};
+	const values: unknown[] = new Array(votes.length);
+	let none = 0;
+	for (let i = 0; i < votes.length; i++) {
+		const pair = votes[i] as SamplePair;
+		values[i] = pair.value;
+		if (pair.noMatch) none++;
+	}
+	return { distribution: frequencies(leaf, values), noMatch: none / votes.length };
 }
 
 const NO_MATCH = Symbol('noMatch');
 
-/** A leaf's scored distribution, plus its no-match score when it opted in. */
 interface LeafScore {
 	distribution: DecisionOutcome[];
 	noMatch?: number;
 }
 
-/** How an opted-in answer is shaped: the root for a leaf schema, or the named fields of an object schema. */
 function voteNoMatchLine(schema: DecisionSchema): string {
 	const rule =
 		'give the closest allowed value as "value", and set "noMatch" to true only when none of the allowed values truly fits the input.';
