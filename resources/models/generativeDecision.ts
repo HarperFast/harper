@@ -192,16 +192,12 @@ export function createGenerativeDecisionBackend(
 			opts: BackendOpts<DecideOpts>
 		): Promise<ModelCallResult<DecisionOutput<unknown>>> {
 			const signal = composeSignal(opts.signal, requestTimeoutMs);
-			// `auto` asks the router first: a generative backend without the hook then costs no
-			// scoring attempt, no exception and no analytics row.
 			const mode: ScoringMode = scoring === 'auto' ? (canScore(logicalName) ? 'score' : 'vote') : scoring;
 			if (mode === 'score') {
 				try {
 					return { status: 'completed', output: await scoreAll(state, schema, opts.instructions, signal) };
 				} catch (err) {
-					// Unsupported scoring is not a failure in `auto`: the scoring rows already say why,
-					// and voting under the same budget is what the caller would otherwise have got.
-					// Any leaf already scored is discarded; a decision is never part scored, part voted.
+					// Any leaf already scored is discarded: a decision is wholly scored or wholly voted.
 					if (scoring !== 'auto' || !isScoringUnsupported(err)) throw err;
 				}
 			}
@@ -224,6 +220,8 @@ function isScoringUnsupported(err: unknown): boolean {
  * Run `tasks` with at most `concurrency` in flight under one AbortController. The first failure
  * aborts the rest, and the pool settles before that failure is thrown, so no task rejects
  * unobserved and the facade never falls back to another candidate while calls are in flight.
+ * Siblings are aborted with a fresh reason, not the failure itself: a call that was cut short is
+ * recorded as aborted, not as a second copy of the failure with the same billed usage.
  */
 async function runPool<T>(
 	tasks: ReadonlyArray<(signal: AbortSignal) => Promise<T>>,
@@ -248,7 +246,7 @@ async function runPool<T>(
 					failed = true;
 					failure = err;
 				}
-				controller.abort(err);
+				controller.abort(new DOMException('another call in this decision failed', 'AbortError'));
 				return;
 			}
 		}
