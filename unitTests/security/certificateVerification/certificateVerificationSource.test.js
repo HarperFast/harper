@@ -46,9 +46,7 @@ describe('certificateVerification/certificateVerificationSource.ts', function ()
 	describe('get() method - CRL verification', function () {
 		it('should handle CRL cache key and return result structure', async function () {
 			const source = new CertificateVerificationSourceClass();
-
-			// Mock getContext to return request context
-			sinon.stub(source, 'getContext').returns({
+			const context = {
 				requestContext: {
 					certPem: '-----BEGIN CERTIFICATE-----\ncert\n-----END CERTIFICATE-----',
 					issuerPem: '-----BEGIN CERTIFICATE-----\nissuer\n-----END CERTIFICATE-----',
@@ -61,7 +59,10 @@ describe('certificateVerification/certificateVerificationSource.ts', function ()
 						},
 					},
 				},
-			});
+			};
+
+			// Mock getContext to return request context
+			sinon.stub(source, 'getContext').returns(context);
 
 			// Stub CRL check to return revoked status
 			performCRLCheckStub.resolves({
@@ -76,18 +77,18 @@ describe('certificateVerification/certificateVerificationSource.ts', function ()
 			assert.strictEqual(result.certificate_id, 'crl:abc123');
 			assert.strictEqual(result.method, 'crl');
 			assert.ok(result.checked_at);
-			assert.ok(result.expiresAt);
-			assert.ok(result.expiresAt > Date.now());
+			assert.ok(!('expiresAt' in result), 'the expiry is set on the source context, not returned as a field');
+			assert.ok(context.expiresAt > Date.now());
 			// Result will have some status (good/revoked/unknown)
 			assert.ok(['good', 'revoked', 'unknown'].includes(result.status));
 		});
 
-		it('should calculate expiresAt based on cacheTtl', async function () {
+		it('should set the source context expiresAt from cacheTtl', async function () {
 			const source = new CertificateVerificationSourceClass();
 			const cacheTtl = 3600000; // 1 hour
 			const beforeTime = Date.now();
 
-			sinon.stub(source, 'getContext').returns({
+			const context = {
 				requestContext: {
 					certPem: 'cert',
 					issuerPem: 'issuer',
@@ -95,16 +96,16 @@ describe('certificateVerification/certificateVerificationSource.ts', function ()
 						crl: { cacheTtl, timeout: 10000, failureMode: 'fail-closed', gracePeriod: 86400000 },
 					},
 				},
-			});
+			};
+			sinon.stub(source, 'getContext').returns(context);
 
 			performCRLCheckStub.resolves({ status: 'good' });
 
-			const result = await source.get({ id: 'crl:test' });
+			await source.get({ id: 'crl:test' });
 			const afterTime = Date.now();
 
-			// expiresAt should be approximately now + cacheTtl
-			assert.ok(result.expiresAt >= beforeTime + cacheTtl);
-			assert.ok(result.expiresAt <= afterTime + cacheTtl + 100); // Allow 100ms tolerance
+			assert.ok(context.expiresAt >= beforeTime + cacheTtl);
+			assert.ok(context.expiresAt <= afterTime + cacheTtl);
 		});
 	});
 
@@ -261,7 +262,6 @@ describe('certificateVerification/certificateVerificationSource.ts', function ()
 			assert.ok(result.certificate_id);
 			assert.ok(result.status);
 			assert.ok(result.checked_at);
-			assert.ok(result.expiresAt);
 			assert.ok(result.method);
 		});
 	});
