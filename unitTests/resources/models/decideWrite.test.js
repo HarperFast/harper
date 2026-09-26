@@ -229,7 +229,8 @@ describe('@decide write path (real table)', () => {
 			available: () => true,
 		});
 		let failures = 0;
-		Cached.setDecideAttribute('route', async (record) => {
+		Cached.setDecideAttribute('route', async (record, { signal }) => {
+			if (signal?.aborted) throw new Error('aborted by the reader');
 			if (record.body === 'boom') {
 				failures++;
 				throw new Error('backend down');
@@ -249,6 +250,15 @@ describe('@decide write path (real table)', () => {
 			}
 			assert.equal(stored?.route, 'bug', 'the cache write carries the decision');
 			assert.equal(stored?.routeConfidence, 1);
+
+			const dropped = await Cached.get('c2', { signal: AbortSignal.abort() });
+			assert.equal(dropped.body, 'bug report c2');
+			let storedAfterDrop;
+			for (let attempt = 0; attempt < 40 && !storedAfterDrop?.route; attempt++) {
+				await delay(25);
+				storedAfterDrop = Cached.primaryStore.get('c2');
+			}
+			assert.equal(storedAfterDrop?.route, 'bug', 'a dropped client does not abort the shared cache fill');
 
 			const failed = await Cached.get('fail1');
 			assert.equal(failed.body, 'boom', 'the reader gets the source record even when the fill cannot decide');

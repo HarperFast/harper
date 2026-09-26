@@ -139,9 +139,11 @@ export function sanitizedHookError(
 	const detail =
 		(typeof errName === 'string' && errName !== 'Error' && SAFE_ERROR_NAME.test(errName) ? ` [${errName}]` : '') +
 		(Number.isInteger(status) && status >= 100 && status <= 599 ? ` (backend HTTP ${status})` : '');
-	return new Error(
+	const error = new Error(
 		`Failed to compute ${product} for attribute "${attributeName}"${detail} — see server log for details`
 	);
+	if (errName === 'AbortError') error.name = 'AbortError';
+	return error;
 }
 
 type DerivedAttribute = {
@@ -161,8 +163,12 @@ const INT32_MAX = 2147483647;
 // load and then fail every write.
 const LEAF_KIND_BY_TYPE: Record<string, (schema: any) => boolean> = {
 	String: (schema) => Array.isArray(schema?.enum) && schema.enum.every((value: unknown) => typeof value === 'string'),
-	Boolean: (schema) => schema?.type === 'boolean',
-	Int: (schema) => schema?.type === 'integer' && schema.minimum >= INT32_MIN && schema.maximum <= INT32_MAX,
+	Boolean: (schema) => schema?.type === 'boolean' && !Array.isArray(schema.enum),
+	Int: (schema) =>
+		schema?.type === 'integer' &&
+		!Array.isArray(schema.enum) &&
+		schema.minimum >= INT32_MIN &&
+		schema.maximum <= INT32_MAX,
 };
 
 /**
@@ -176,7 +182,7 @@ const LEAF_KIND_BY_TYPE: Record<string, (schema: any) => boolean> = {
  */
 export function assertDerivedFieldOwnership(attributes: DerivedAttribute[]): void {
 	const declared = new Map<string, DerivedAttribute>();
-	for (const attribute of attributes) declared.set(attribute.name, attribute);
+	for (const attribute of attributes) if (attribute) declared.set(attribute.name, attribute);
 	const writers = new Map<string, string>();
 	const claim = (field: string, writer: string) => {
 		const prior = writers.get(field);
@@ -192,6 +198,7 @@ export function assertDerivedFieldOwnership(attributes: DerivedAttribute[]): voi
 		return out;
 	};
 	for (const attribute of attributes) {
+		if (!attribute) continue;
 		for (const [directive, config] of directives(attribute)) {
 			const writer = `${directive} on "${attribute.name}"`;
 			for (const field of [attribute.name, config.source, config.confidence])
@@ -248,6 +255,7 @@ export function assertDerivedFieldOwnership(attributes: DerivedAttribute[]): voi
 		}
 	}
 	for (const attribute of attributes) {
+		if (!attribute) continue;
 		for (const [directive, config] of directives(attribute)) {
 			const sourceWriter = writers.get(config.source);
 			if (sourceWriter)

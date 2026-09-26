@@ -433,8 +433,8 @@ function plainOrQuoted(choice: string): string {
 	return JSON.stringify(choice).replace(LINE_TERMINATOR, (c) => `\\u${c.charCodeAt(0).toString(16)}`);
 }
 
-// How far below the smallest listed alternative an unlisted label is placed when the list leaves
-// no mass over: finite, so the vector normalizes, and never above anything listed.
+// How far below the smallest listed alternative an unlisted label sits when the list leaves no mass
+// over: finite, so the vector normalizes.
 const UNLISTED_MARGIN = Math.log(1e6);
 
 /**
@@ -443,9 +443,9 @@ const UNLISTED_MARGIN = Math.log(1e6);
  * spellings; spellings outside the list are unknown, bounded together by the mass the list leaves
  * over. A label with no listed spelling is placed only when that leftover is smaller than the
  * leading observed label's mass, so a wholly unlisted label can never be the chosen value;
- * otherwise the call is declined rather than guessed. Unlisted labels then tie at a floor no
- * higher than the smallest listed alternative or the leftover, finite even when the list leaves
- * nothing over. Every placed score is still an estimate: an observed label's own unlisted
+ * otherwise the call is declined rather than guessed. Unlisted labels then share the leftover
+ * equally, so together they never exceed it and each stays below the leader; when the list leaves
+ * nothing over they sit a fixed margin below its smallest entry. Every placed score is still an estimate: an observed label's own unlisted
  * spellings can add up to the leftover to it, so two observed labels closer than that may be
  * ordered wrongly. No label at all means the model was not answering with a letter, and the call
  * is declined. A malformed entry is a bad response, not a decline. Messages never quote tokens,
@@ -490,8 +490,11 @@ function scoreLabels(
 	const leftover = Math.max(0, 1 - listedMass);
 	if (leftover >= Math.exp(Math.max(...observed)))
 		throw unsupported('left too much probability outside its listed alternatives to know the leading choice', false);
-	const cap = leftover > 0 ? Math.min(smallestListed, Math.log(leftover)) : -Infinity;
-	const floor = Number.isFinite(cap) ? cap : smallestListed - UNLISTED_MARGIN;
+	// The leftover is every token outside the list, so it bounds the unlisted labels together; each
+	// takes an equal share of it, because one token's worth understates a label whose spellings are
+	// all unlisted. A share of nothing sits a fixed margin below the list.
+	const share = leftover / (count - observed.length);
+	const floor = share > 0 ? Math.log(share) : smallestListed - UNLISTED_MARGIN;
 	return scores.map((score) => score ?? floor);
 }
 

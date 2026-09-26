@@ -328,6 +328,32 @@ describe('@decide registry (setDecideAttribute + schema reload)', () => {
 			/does not fit a String attribute/
 		);
 		assert.throws(
+			declare('DecideRegBooleanEnum', [
+				...base,
+				{
+					name: 'urgent',
+					type: 'Boolean',
+					decide: { source: 'body', model: 'default', schema: { type: 'boolean', enum: ['a', 'b'] } },
+				},
+			]),
+			/does not fit a Boolean attribute/
+		);
+		assert.throws(
+			declare('DecideRegIntEnum', [
+				...base,
+				{
+					name: 'severity',
+					type: 'Int',
+					decide: {
+						source: 'body',
+						model: 'default',
+						schema: { type: 'integer', minimum: 1, maximum: 5, enum: [1, 2] },
+					},
+				},
+			]),
+			/does not fit a Int attribute/
+		);
+		assert.throws(
 			declare('DecideRegIntBounds', [
 				...base,
 				{

@@ -475,6 +475,7 @@ describe('OpenAIBackend', () => {
 			{ token: 'The', logprob: -4 },
 		];
 		const USAGE = { prompt_tokens: 30, completion_tokens: 1 };
+		const TOP_LEFTOVER = 1 - TOP.reduce((sum, entry) => sum + Math.exp(entry.logprob), 0);
 		const close = (actual, expected, label) =>
 			assert.ok(Math.abs(actual - expected) < 1e-9, `${label ?? ''} ${actual} ≠ ${expected}`);
 
@@ -565,17 +566,19 @@ describe('OpenAIBackend', () => {
 			assert.strictEqual(input.messages.length, 1);
 		});
 
-		it('scores observed labels from their logprobs and places an unobserved label no higher than the smallest listed alternative', async () => {
+		it('scores observed labels from their logprobs and places an unobserved label at the mass the list leaves over', async () => {
 			const fetch = mockFetch(() => scoredResponse(TOP));
 			const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
 			const { output } = await b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING });
-			// A, B, C observed; D is absent. The list leaves about 3% over (log ≈ -3.5), but 'The' at -4
-			// is smaller, and an unlisted token cannot exceed the smallest listed one.
-			assert.deepStrictEqual(output.logLikelihoods, [-0.2, -3, -2.5, -4]);
+			// A, B, C observed; D is absent and alone takes the ~3% the list leaves over, more than the
+			// smallest listed token, because every unlisted spelling of D is in that leftover.
+			assert.deepStrictEqual(output.logLikelihoods.slice(0, 3), [-0.2, -3, -2.5]);
+			const leftover = 1 - TOP.reduce((sum, entry) => sum + Math.exp(entry.logprob), 0);
+			close(output.logLikelihoods[3], Math.log(leftover), 'D');
 		});
 
-		it('places an unobserved label at the leftover mass when the few listed alternatives leave less than the smallest of them', async () => {
-			// Two spellings of the answer carry 99.5%; the remaining 0.5% bounds every unlisted token.
+		it('shares the leftover mass equally among unobserved labels', async () => {
+			// Two spellings of the answer carry 99.5%; the remaining 0.5% is split among B, C and D.
 			const top = [
 				{ token: 'A', logprob: Math.log(0.99) },
 				{ token: ' A', logprob: Math.log(0.005) },
@@ -584,7 +587,7 @@ describe('OpenAIBackend', () => {
 			const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
 			const { output } = await b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING });
 			close(output.logLikelihoods[0], Math.log(0.995), 'A');
-			for (const i of [1, 2, 3]) close(output.logLikelihoods[i], Math.log(0.005), `label ${i}`);
+			for (const i of [1, 2, 3]) close(output.logLikelihoods[i], Math.log(0.005 / 3), `label ${i}`);
 			const total = output.logLikelihoods.reduce((sum, x) => sum + Math.exp(x), 0);
 			assert.ok(Math.exp(output.logLikelihoods[0]) / total > 0.98);
 		});
@@ -640,7 +643,7 @@ describe('OpenAIBackend', () => {
 			close(output.logLikelihoods[2], Math.log(0.02237), 'C');
 		});
 
-		it('places unlisted labels when the leftover cannot outrank the leader, even where it could outrank a listed tail label', async () => {
+		it('places unlisted labels when the leftover cannot outrank the leader, above a listed tail label when their share exceeds it', async () => {
 			// A clear winner; B is listed deep in the tail below the ~1e-5 leftover, C and D are unlisted.
 			const top = [
 				{ token: 'A', logprob: Math.log(0.9999) },
@@ -652,11 +655,8 @@ describe('OpenAIBackend', () => {
 			const { output } = await b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING });
 			close(output.logLikelihoods[0], Math.log(0.9999), 'A');
 			close(output.logLikelihoods[1], Math.log(0.000001), 'B');
-			for (const i of [2, 3])
-				assert.ok(
-					output.logLikelihoods[i] <= Math.log(0.000001),
-					`label ${i} is at or below the smallest listed entry`
-				);
+			const share = (1 - 0.9999 - 0.00009 - 0.000001) / 2;
+			for (const i of [2, 3]) close(output.logLikelihoods[i], Math.log(share), `label ${i}`);
 			const total = output.logLikelihoods.reduce((sum, x) => sum + Math.exp(x), 0);
 			assert.ok(Math.exp(output.logLikelihoods[0]) / total > 0.9999);
 		});
@@ -757,7 +757,8 @@ describe('OpenAIBackend', () => {
 				);
 				assert.strictEqual(b.capabilities().scoreChoices, true, label);
 				const { output } = await b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING });
-				assert.deepStrictEqual(output.logLikelihoods, [-0.2, -3, -2.5, -4], `${label}: the next call scores`);
+				assert.deepStrictEqual(output.logLikelihoods.slice(0, 3), [-0.2, -3, -2.5], `${label}: the next call scores`);
+				close(output.logLikelihoods[3], Math.log(TOP_LEFTOVER), `${label}: D takes the leftover`);
 			}
 		});
 

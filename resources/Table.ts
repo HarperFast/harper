@@ -4616,10 +4616,25 @@ export function makeTable(options) {
 			// The hooks run before `addWrite` so the derived values are on the record at commit (the
 			// txn `before` slot runs after commit). They see the payload before table validation, and a
 			// tracked-instance mutation that sets the source via accessors after update() is not seen.
-			const modelHooksBefore = combineWriteHooks(
-				buildEmbedBefore(recordUpdate, context, options, TableResource.embedAttributes, TableResource.userEmbedders),
-				buildDecideBefore(recordUpdate, context, options, TableResource.decideAttributes, TableResource.userDeciders)
-			);
+			const modelHooksBefore =
+				TableResource.embedAttributes.length || TableResource.decideAttributes.length
+					? combineWriteHooks(
+							buildEmbedBefore(
+								recordUpdate,
+								context,
+								options,
+								TableResource.embedAttributes,
+								TableResource.userEmbedders
+							),
+							buildDecideBefore(
+								recordUpdate,
+								context,
+								options,
+								TableResource.decideAttributes,
+								TableResource.userDeciders
+							)
+						)
+					: undefined;
 			const proceed = (): any => {
 				// On a source/replication apply (`isNotification`), the record's already-saved blobs were
 				// received out-of-band for THIS write, so track them for skip/abort cleanup (harper-pro#406).
@@ -4632,7 +4647,6 @@ export function makeTable(options) {
 				);
 				return transaction.addWrite(write as any);
 			};
-			// A request is its own transaction context and carries the client's abort signal.
 			return modelHooksBefore ? modelHooksBefore((context as any)?.signal).then(proceed) : proceed();
 		}
 
@@ -8466,11 +8480,9 @@ export function makeTable(options) {
 						}
 					},
 				};
-				// The cache-from-source write bypasses `_writeUpdate`, so wire the embed and decide hooks
-				// here too (always the originating node). They run after the client GET has resolved with
-				// fresh source data, so it's a background commit: a hook failure aborts the cache
-				// write via the outer error handler (row re-derives next read) and never reaches the
-				// caller. Source-resolution errors are handled earlier, with the stale-data fallback.
+				// The cache-from-source write bypasses `_writeUpdate`, so the hooks run here too. The fill is
+				// shared by every reader, so it takes no request signal; a hook failure aborts only the cache
+				// write (the row re-derives on the next read) and never reaches the caller.
 				const modelHooksBefore = combineWriteHooks(
 					buildEmbedBefore(
 						updatedRecord,
@@ -8487,7 +8499,7 @@ export function makeTable(options) {
 						TableResource.userDeciders
 					)
 				);
-				if (modelHooksBefore) await modelHooksBefore((sourceContext as any)?.requestContext?.signal);
+				if (modelHooksBefore) await modelHooksBefore();
 				if (droppingTable) {
 					// Re-check right before staging the write: dropTable() may have started
 					// while we were awaiting the embed step above (harper#1381).

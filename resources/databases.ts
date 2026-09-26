@@ -3665,9 +3665,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					}
 				}
 				fullTextValidationAttributes = validationAttributes;
-				// Before any branch below can write an interim descriptor, so a refused redeclaration that
-				// also changes @fullText leaves the catalog untouched; the check on the merged list further
-				// down stays authoritative.
+				// Before the full-text branches can write an interim descriptor; the check on the merged list
+				// below stays authoritative.
 				assertDerivedFieldOwnership(validationAttributes as any[]);
 
 				const persistedAudit = persistedPrimary.descriptor?.audit;

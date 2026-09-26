@@ -2,7 +2,12 @@
 
 const assert = require('node:assert');
 const { buildDecideBefore, createDefaultDecider, __setDecideFnForTest } = require('#src/resources/models/decideHook');
-const { buildEmbedBefore, combineWriteHooks } = require('#src/resources/models/embedHook');
+const {
+	buildEmbedBefore,
+	combineWriteHooks,
+	assertDerivedFieldOwnership,
+	sanitizedHookError,
+} = require('#src/resources/models/embedHook');
 
 const ROUTES = ['billing', 'refund', 'bug'];
 const config = { source: 'body', model: 'default', confidence: 'routeConfidence', schema: { enum: ROUTES } };
@@ -388,5 +393,30 @@ describe('decideHook', () => {
 			await assert.rejects(combined(), /embed failed/);
 			assert.ok(Date.now() - started < 1000, 'the write did not wait for the slow hook');
 		});
+	});
+});
+
+describe('shared hook helpers', () => {
+	it('assertDerivedFieldOwnership skips holes in a sparse attribute list', () => {
+		const attributes = [
+			{ name: 'id', isPrimaryKey: true },
+			{ name: 'body', type: 'String' },
+		];
+		attributes[5] = {
+			name: 'route',
+			type: 'String',
+			decide: { source: 'body', model: 'default', schema: { enum: ['a', 'b'] } },
+		};
+		assert.doesNotThrow(() => assertDerivedFieldOwnership(attributes));
+	});
+
+	it('sanitizedHookError keeps an abort classified as an abort and drops everything else', () => {
+		const aborted = new Error('upstream https://secret.example/token');
+		aborted.name = 'AbortError';
+		const sanitized = sanitizedHookError('decider', 'decision', 'route', aborted, false);
+		assert.equal(sanitized.name, 'AbortError');
+		assert.ok(!sanitized.message.includes('secret.example'));
+		const plain = sanitizedHookError('decider', 'decision', 'route', new Error('x'), false);
+		assert.equal(plain.name, 'Error');
 	});
 });
