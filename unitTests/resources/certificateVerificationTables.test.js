@@ -8,6 +8,7 @@
 
 const assert = require('node:assert');
 const { createServer } = require('node:http');
+const { setTimeout: delay } = require('node:timers/promises');
 const { webcrypto } = require('node:crypto');
 const pkijs = require('pkijs');
 const asn1js = require('asn1js');
@@ -167,7 +168,6 @@ async function createAsSystemSchemaStub(tableName) {
 	await bridge.createTable(tableName, createTable);
 }
 
-// What the verification path declared before this change.
 function preChangeDeclaration(tableName) {
 	const { primaryKey, indexedByAttribute } = TABLES[tableName];
 	return {
@@ -199,7 +199,6 @@ function createAsPeerHandshake(tableName, options = {}) {
 	});
 }
 
-// A node that verified certificates before this change: the stub plus the verification path's declaration.
 async function createAsPreChangeVerifyingNode(tableName) {
 	await createAsSystemSchemaStub(tableName);
 	table(preChangeDeclaration(tableName));
@@ -354,17 +353,21 @@ function wholeSecond(time) {
 	return Math.floor(time / SECOND) * SECOND;
 }
 
-/** `publish` replaces the served CRL and `unpublish` makes the distribution point fail. */
 async function startCertificateAuthority() {
 	let crlBody = null;
 	let crlRequests = 0;
+	let stallNext = false;
 	const server = createServer((request, response) => {
 		crlRequests++;
 		if (!crlBody) {
 			response.writeHead(503);
 			return response.end();
 		}
-		response.writeHead(200, { 'Content-Type': 'application/pkix-crl' });
+		response.writeHead(200, { 'Content-Type': 'application/pkix-crl', 'Content-Length': crlBody.length });
+		if (stallNext) {
+			stallNext = false;
+			return response.write(crlBody.subarray(0, 16));
+		}
 		response.end(crlBody);
 	});
 	await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -409,10 +412,17 @@ async function startCertificateAuthority() {
 		unpublish() {
 			crlBody = null;
 		},
+		stallNextResponse() {
+			stallNext = true;
+		},
 		get crlRequests() {
 			return crlRequests;
 		},
-		close: () => new Promise((resolve) => server.close(resolve)),
+		close: () =>
+			new Promise((resolve) => {
+				server.close(resolve);
+				server.closeAllConnections();
+			}),
 	};
 }
 
@@ -742,6 +752,29 @@ describe('certificate verification tables', function () {
 				authority.crlRequests < clients.length,
 				`${authority.crlRequests} downloads for ${clients.length} checks`
 			);
+		});
+
+		it('a CRL response that stalls after its headers fails its check at the timeout, and the next check downloads again', async () => {
+			const stalled = await authority.issue();
+			const client = await authority.issue();
+			await authority.publish({
+				revokedSerials: [client.serialNumber],
+				thisUpdate: Date.now() - HOUR,
+				nextUpdate: Date.now() + DAY,
+			});
+			authority.stallNextResponse();
+			const config = crlOnlyVerification('fail-closed', { timeout: SECOND });
+
+			const outcome = await Promise.race([
+				verifyCertificate(peerCertificate(authority, stalled), config),
+				delay(10 * SECOND, 'still waiting'),
+			]);
+			assert.notStrictEqual(outcome, 'still waiting', 'the check waited on the stalled body past its timeout');
+			assert.strictEqual(outcome.valid, false);
+
+			const result = await verifyCertificate(peerCertificate(authority, client), config);
+			assert.strictEqual(result.status, 'revoked');
+			assert.strictEqual(authority.crlRequests, 2);
 		});
 
 		for (const failureMode of ['fail-closed', 'fail-open'])

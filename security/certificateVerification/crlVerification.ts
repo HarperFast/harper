@@ -403,7 +403,6 @@ function downloadAndParseCRLOnce(distributionPoint: string, issuerPemStr: string
 
 interface DownloadedCRL {
 	entry: CRLCacheEntry;
-	/** The composite ids of the certificates the CRL revokes */
 	revokedIds: Set<string>;
 }
 
@@ -432,8 +431,6 @@ async function downloadAndParseCRL(
 				'User-Agent': CRL_USER_AGENT,
 			},
 		});
-
-		clearTimeout(timeoutId);
 
 		if (!response.ok) {
 			throw new Error(`CRL download failed: ${response.status}`);
