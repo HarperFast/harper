@@ -2,7 +2,8 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { parseQuery } = require('#src/resources/search');
-const { table } = require('#src/resources/databases');
+const { table, databases } = require('#src/resources/databases');
+const { loadGQLSchema } = require('#src/resources/graphql');
 const { transaction } = require('#src/resources/transaction');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -922,6 +923,126 @@ describe('Querying through Resource API', () => {
 			let instance = await QueryTable.get('id-1');
 			let related = await instance.related;
 			assert.equal(related.name, 'related name 1');
+		});
+
+		describe('@relationship with both from and to', function () {
+			const loggedErrors = [];
+			let Team;
+			before(async function () {
+				const originalError = console.error;
+				console.error = (...args) => loggedErrors.push(args.join(' '));
+				try {
+					await loadGQLSchema(`
+						type FromToTeam @table(database: "relationshipFromTo") {
+							id: ID @primaryKey
+							code: String @indexed
+							league: String @indexed
+							players: [FromToPlayer] @relationship(from: "code", to: "teamCode")
+							captain: FromToPlayer @relationship(from: "code", to: "teamCode")
+						}
+						type FromToPlayer @table(database: "relationshipFromTo") {
+							id: ID @primaryKey
+							name: String @indexed
+							teamCode: String @indexed
+						}
+					`);
+				} finally {
+					console.error = originalError;
+				}
+				Team = databases.relationshipFromTo.FromToTeam;
+				const Player = databases.relationshipFromTo.FromToPlayer;
+				await Team.put({ id: 'team-1', code: 'red' });
+				await Team.put({ id: 'team-2', code: 'blue' });
+				await Player.put({ id: 'player-1', name: 'alice', teamCode: 'red' });
+				await Player.put({ id: 'player-2', name: 'bob', teamCode: 'red' });
+				// joins team-1 only if the primary key were used in place of `from`
+				await Player.put({ id: 'player-3', name: 'carol', teamCode: 'team-1' });
+				await Player.put({ id: 'player-4', name: 'dave', teamCode: 'blue' });
+				for (const suffix of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']) {
+					await Team.put({ id: `team-${suffix}`, code: `code-${suffix}`, league: suffix < 'f' ? 'north' : 'south' });
+					// a join filter's miss on a bench player is what switches it to an id set
+					await Player.put({ id: `bench-${suffix}`, name: 'bench', teamCode: `code-${suffix}` });
+				}
+				await Player.put({ id: 'erin-1', name: 'erin', teamCode: 'code-e' });
+				await Player.put({ id: 'erin-2', name: 'erin', teamCode: 'team-b' });
+				await Player.put({ id: 'erin-3', name: 'erin', teamCode: 'code-f' });
+				await Player.put({ id: 'erin-4', name: 'erin', teamCode: 'code-g' });
+			});
+
+			async function teamsWithPlayerNamed(name, conditions = []) {
+				const teams = [];
+				for await (const record of Team.search({
+					conditions: [{ attribute: ['players', 'name'], value: name }, ...conditions],
+					select: ['id', { name: 'players', select: ['id'] }],
+				})) {
+					teams.push({ id: record.id, players: record.players.map((player) => player.id) });
+				}
+				return teams;
+			}
+
+			it('resolves an array of the records whose `to` attribute equals the local `from` value', async function () {
+				const team = await Team.get('team-1');
+				const players = await team.players;
+				assert(Array.isArray(players));
+				assert.deepStrictEqual(players.map((player) => player.id).sort(), ['player-1', 'player-2']);
+			});
+
+			it('selects the same records through search', async function () {
+				const results = [];
+				for await (const record of Team.search({
+					conditions: [{ attribute: 'id', value: 'team-1' }],
+					select: ['id', { name: 'players', select: ['id'] }],
+				})) {
+					results.push(record);
+				}
+				assert.equal(results.length, 1);
+				assert(Array.isArray(results[0].players));
+				assert.deepStrictEqual(results[0].players.map((player) => player.id).sort(), ['player-1', 'player-2']);
+			});
+
+			it('matches a joined condition against the local `from` value', async function () {
+				assert.deepStrictEqual(await teamsWithPlayerNamed('alice'), [{ id: 'team-1', players: ['player-1'] }]);
+				assert.deepStrictEqual(await teamsWithPlayerNamed('dave'), [{ id: 'team-2', players: ['player-4'] }]);
+				assert.deepStrictEqual(await teamsWithPlayerNamed('carol'), []);
+				const byId = [{ attribute: 'id', value: 'team-1' }];
+				assert.deepStrictEqual(await teamsWithPlayerNamed('alice', byId), [{ id: 'team-1', players: ['player-1'] }]);
+				assert.deepStrictEqual(await teamsWithPlayerNamed('carol', byId), []);
+			});
+
+			it('matches a joined condition against the local `from` value after switching to an id set', async function () {
+				const north = [{ attribute: 'league', value: 'north' }];
+				const explanation = Team.search({
+					conditions: [{ attribute: ['players', 'name'], value: 'erin' }, ...north],
+					explain: true,
+				});
+				assert.equal(explanation.conditions[0].attribute, 'league');
+				assert(explanation.conditions[0].estimated_count > 3);
+				assert.deepStrictEqual(await teamsWithPlayerNamed('erin', north), [{ id: 'team-e', players: ['erin-1'] }]);
+			});
+
+			it('does not resolve the scalar form and logs that it must be an array type', async function () {
+				assert(
+					loggedErrors.some(
+						(message) =>
+							message.includes('"captain"') &&
+							message.includes('"FromToTeam"') &&
+							message.includes('must have an array type')
+					),
+					`logged: ${JSON.stringify(loggedErrors)}`
+				);
+				assert(!loggedErrors.some((message) => message.includes('"players"')));
+				const team = await Team.get('team-1');
+				assert.equal(team.captain, undefined);
+				const results = [];
+				for await (const record of Team.search({
+					conditions: [{ attribute: 'id', value: 'team-1' }],
+					select: ['id', 'captain'],
+				})) {
+					results.push(record);
+				}
+				assert.equal(results.length, 1);
+				assert.equal(results[0].captain, undefined);
+			});
 		});
 	});
 	describe('Sorting', function () {
