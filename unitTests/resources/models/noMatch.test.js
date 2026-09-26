@@ -409,6 +409,45 @@ describe('generative adapter scoring with noMatch (#2846)', () => {
 		assert.doesNotMatch(s.calls[1].input.system, /final option/);
 	});
 
+	it('keeps the ranking of the allowed values when the none choice takes almost all the mass', async () => {
+		const s = scriptedScore([[0, -1, -2, -3, 1000]]);
+		const out = (
+			await createGenerativeDecisionBackend({ scoring: 'score' }, { score: s.score, canScore: () => true }).decide(
+				'x',
+				QUEUE_NM,
+				{ accounting }
+			)
+		).output;
+		close(out.noMatch, 1);
+		const expected = [0, -1, -2, -3].map((x) => Math.exp(x));
+		const total = expected.reduce((a, b) => a + b, 0);
+		out.distribution.forEach((entry, i) => close(entry.probability, expected[i] / total, QUEUE.enum[i]));
+	});
+
+	it('votes without a scoring request when an opted-in 20-value leaf exceeds OpenAI scoring by the extra choice', async () => {
+		let requests = 0;
+		const openai = new OpenAIBackend({ apiKey: 'k', model: 'm' }, async () => {
+			requests++;
+			throw new Error('no request expected');
+		});
+		const values = Array.from({ length: 20 }, (_, i) => `v${i}`);
+		const g = scriptedGenerate([{ value: 'v3', noMatch: false }]);
+		const out = (
+			await createGenerativeDecisionBackend(
+				{ samples: 2 },
+				{
+					generate: g.generate,
+					score: (input, choices, opts) => openai.scoreChoices(input, choices, { ...opts, accounting }),
+					canScore: () => true,
+				}
+			).decide('x', { enum: values, noMatch: true }, { accounting })
+		).output;
+		assert.strictEqual(requests, 0);
+		assert.strictEqual(g.calls.length, 2);
+		assert.strictEqual(out.noMatch, 0);
+		assert.match(out.signature, /mode=vote/);
+	});
+
 	it('an opted-in leaf of 20 values exceeds OpenAI scoring by one choice, declined before any request', async () => {
 		let requests = 0;
 		const backend = new OpenAIBackend({ apiKey: 'k', model: 'm' }, async () => {
