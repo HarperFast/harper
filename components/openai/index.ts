@@ -19,6 +19,7 @@
 import { setEmbedding, setGenerative } from '../../resources/models/backendRegistry.ts';
 import {
 	assignFiniteTokenCount,
+	ChoiceScoringUnsupportedError,
 	composeSignal,
 	MAX_ERROR_BODY_BYTES,
 	normalizeOrigin,
@@ -31,6 +32,7 @@ import { ServerError } from '../../utility/errors/hdbError.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import type {
 	BackendOpts,
+	ChoiceScores,
 	EmbedOpts,
 	GenerateChunk,
 	GenerateInput,
@@ -40,6 +42,7 @@ import type {
 	ModelBackend,
 	ModelCallResult,
 	ModelCapabilities,
+	ScoreChoicesOpts,
 	ToolCall,
 	ToolDef,
 	TokenUsage,
@@ -71,6 +74,14 @@ const MAX_TOOL_CALL_ACCUMULATOR_ENTRIES = 128;
 // cap (1 MiB) plus the 128-entry cap still allows ~128 MiB accumulated; this cap
 // keeps any single stream well-bounded. Real responses use tens of KB.
 const MAX_TOTAL_TOOL_CALL_ARGS_CHARS = 8 * 1024 * 1024; // 8 MiB
+// `top_logprobs` accepts at most 20, so one scoring request can cover at most 20 choices with a
+// single-letter label each; more must be declined (#2838).
+const MAX_SCORED_CHOICES = 20;
+const CHOICE_LABELS = 'ABCDEFGHIJKLMNOPQRST';
+// A scoring response is one content token with at most 20 alternatives, a few KiB. The general
+// 256 MiB cap is sized for embedding batches; an object schema scores its fields concurrently,
+// so a faulty endpoint must not be able to hold that much per call.
+const MAX_SCORE_RESPONSE_BODY_BYTES = 1 << 20; // 1 MiB
 
 const log = harperLogger.forComponent('openai').conditional;
 
@@ -97,6 +108,8 @@ export interface OpenAIBackendConfig {
  * - `generate` → `POST {baseUrl}/chat/completions` (always chat shape)
  * - `generateStream` → same with `stream: true`; consumes SSE wire format and
  *   yields `GenerateChunk` per delta.
+ * - `scoreChoices` → `POST {baseUrl}/chat/completions` with `logprobs` for one
+ *   token, the choices labelled `A`..`T` (#2838).
  *
  * Capabilities advertise `tools: true` — first backend with native tool-call
  * support. `adapters: false` — OpenAI doesn't expose LoRA adapter selection
@@ -115,6 +128,10 @@ export class OpenAIBackend implements ModelBackend {
 	// (o-series, gpt-5 family) reject `max_tokens` in favour of `max_completion_tokens`;
 	// OpenAI-compatible shims (vLLM, Ollama-compat, older gateways) only know `max_tokens`.
 	readonly #isNativeOpenAI: boolean;
+	// Models this instance has seen reject `logprobs` with a 400 (OpenAI's reasoning models do).
+	// Scoring stays off for them until a reload builds a new instance, so a decision against
+	// such a model does not pay a refused request before every vote.
+	readonly #logprobsRejected = new Set<string>();
 
 	constructor(config: OpenAIBackendConfig = {}, fetchImpl: typeof fetch = fetch) {
 		this.#apiKey = requireCredential(config.apiKey, 'OpenAI', 'apiKey', OpenAIBackendError);
@@ -131,7 +148,7 @@ export class OpenAIBackend implements ModelBackend {
 	}
 
 	capabilities(): ModelCapabilities {
-		return { embed: true, generate: true, stream: true, tools: true, adapters: false };
+		return { embed: true, generate: true, stream: true, tools: true, adapters: false, scoreChoices: true };
 	}
 
 	async embed(input: string | string[], opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>> {
@@ -242,7 +259,69 @@ export class OpenAIBackend implements ModelBackend {
 		}
 	}
 
-	async #post(path: string, body: object, callerSignal?: AbortSignal): Promise<Response> {
+	/**
+	 * Score `choices` from the first completion token's alternatives (#2838). The choices are
+	 * listed under single-letter labels and the model is asked for the letter alone, so every
+	 * choice is one token and the `top_logprobs` list can cover the whole set. What this model or
+	 * endpoint cannot do is declined with `ChoiceScoringUnsupportedError`, not failed: more than
+	 * 20 choices, a 400 that names `logprobs`, a response with no content token, no alternatives,
+	 * or no label among them.
+	 */
+	async scoreChoices(
+		input: GenerateInput,
+		choices: readonly string[],
+		opts: BackendOpts<ScoreChoicesOpts>
+	): Promise<ModelCallResult<ChoiceScores>> {
+		const model = opts.model ?? this.#defaultModel;
+		requireModel(model, 'scoreChoices', OpenAIBackendError);
+		if (choices.length < 1 || choices.length > MAX_SCORED_CHOICES)
+			throw new ChoiceScoringUnsupportedError(
+				`OpenAI scoreChoices covers 1 to ${MAX_SCORED_CHOICES} choices per call; got ${choices.length}`
+			);
+		if (this.#logprobsRejected.has(model))
+			throw new ChoiceScoringUnsupportedError(
+				`OpenAI model '${model}' rejects log-probabilities; scoring stays off for it until the backend is reloaded`
+			);
+		const messages = normalizeMessages(input);
+		messages.push({ role: 'user', content: labeledChoices(choices) });
+		const body: Record<string, unknown> = {
+			model,
+			messages,
+			stream: false,
+			logprobs: true,
+			top_logprobs: MAX_SCORED_CHOICES,
+		};
+		// One content token carries the letter; the field split mirrors buildChatRequest.
+		if (this.#isNativeOpenAI) body.max_completion_tokens = 1;
+		else body.max_tokens = 1;
+		const res = await this.#post('/chat/completions', body, opts.signal, (status, error) => {
+			if (!rejectsLogprobs(status, error)) return undefined;
+			this.#logprobsRejected.add(model);
+			return new ChoiceScoringUnsupportedError(`OpenAI model '${model}' rejects log-probabilities (HTTP ${status})`);
+		});
+		const data = await readBoundedJson<OpenAIChatResponse>(
+			res,
+			'OpenAI /chat/completions',
+			OpenAIBackendError,
+			MAX_SCORE_RESPONSE_BODY_BYTES
+		);
+		const usage: TokenUsage = {};
+		assignFiniteTokenCount(usage, 'promptTokens', data.usage?.prompt_tokens);
+		assignFiniteTokenCount(usage, 'completionTokens', data.usage?.completion_tokens);
+		const logLikelihoods = scoreLabels(
+			data.choices?.[0]?.logprobs?.content?.[0],
+			choices.length,
+			(reason) => new ChoiceScoringUnsupportedError(`OpenAI model '${model}' ${reason}`, usage)
+		);
+		return { status: 'completed', output: { logLikelihoods }, usage };
+	}
+
+	async #post(
+		path: string,
+		body: object,
+		callerSignal?: AbortSignal,
+		translate?: (status: number, error: OpenAIErrorEnvelope) => Error | undefined
+	): Promise<Response> {
 		const signal = composeSignal(callerSignal, this.#requestTimeoutMs);
 		const headers: Record<string, string> = {
 			'Content-Type': 'application/json',
@@ -262,35 +341,117 @@ export class OpenAIBackend implements ModelBackend {
 			// doesn't leak request content. Cap length defensively against a
 			// misbehaving compat shim. Falls back to status-only if the body
 			// isn't JSON or doesn't have the envelope.
-			throw new OpenAIBackendError(
-				`OpenAI ${path} returned HTTP ${res.status}${await readErrorSuffix(res)}`,
-				res.status
-			);
+			const error = await readErrorEnvelope(res);
+			const translated = translate?.(res.status, error);
+			if (translated) throw translated;
+			throw new OpenAIBackendError(`OpenAI ${path} returned HTTP ${res.status}${errorSuffix(error)}`, res.status);
 		}
 		return res;
 	}
 }
 
-async function readErrorSuffix(res: Response): Promise<string> {
+interface OpenAIErrorEnvelope {
+	message?: string;
+	param?: string;
+	code?: string;
+}
+
+async function readErrorEnvelope(res: Response): Promise<OpenAIErrorEnvelope> {
 	try {
-		const body = await readBoundedJson<{ error?: { message?: unknown; type?: unknown } }>(
+		const body = await readBoundedJson<{ error?: { message?: unknown; param?: unknown; code?: unknown } }>(
 			res,
 			'OpenAI error response',
 			OpenAIBackendError,
 			MAX_ERROR_BODY_BYTES
 		);
-		const message = body?.error?.message;
-		if (typeof message === 'string' && message.length > 0) {
-			const truncated =
-				message.length > MAX_UPSTREAM_ERROR_MESSAGE_CHARS
-					? message.slice(0, MAX_UPSTREAM_ERROR_MESSAGE_CHARS) + '…'
-					: message;
-			return `: ${truncated}`;
-		}
-		return '';
+		const error: OpenAIErrorEnvelope = {};
+		if (typeof body?.error?.message === 'string') error.message = body.error.message;
+		if (typeof body?.error?.param === 'string') error.param = body.error.param;
+		if (typeof body?.error?.code === 'string') error.code = body.error.code;
+		return error;
 	} catch {
-		return '';
+		return {};
 	}
+}
+
+function errorSuffix(error: OpenAIErrorEnvelope): string {
+	const message = error.message;
+	if (typeof message !== 'string' || message.length === 0) return '';
+	const truncated =
+		message.length > MAX_UPSTREAM_ERROR_MESSAGE_CHARS
+			? message.slice(0, MAX_UPSTREAM_ERROR_MESSAGE_CHARS) + '…'
+			: message;
+	return `: ${truncated}`;
+}
+
+/**
+ * Whether an error response says this model or endpoint does not take log-probabilities, as
+ * opposed to failing for an unrelated reason (bad key, rate limit, server fault, malformed
+ * request). OpenAI names the parameter (`param: 'logprobs'`); compatible shims tend to mention
+ * it only in the message.
+ */
+function rejectsLogprobs(status: number, error: OpenAIErrorEnvelope): boolean {
+	if (status !== 400) return false;
+	if (error.param === 'logprobs' || error.param === 'top_logprobs') return true;
+	return /logprobs/i.test(error.message ?? '');
+}
+
+function labeledChoices(choices: readonly string[]): string {
+	const lines = ['Choose exactly one option and reply with its letter only.'];
+	choices.forEach((choice, i) => lines.push(`${CHOICE_LABELS[i]}. ${choice}`));
+	return lines.join('\n');
+}
+
+/**
+ * One log-likelihood per label from the first content token's alternatives. Spellings of the same
+ * letter (`A`, ` A`, `a.`) combine by log-sum-exp. A label the provider did not list is bounded
+ * above by the smallest log-probability it did report, which stands in as its score: a censored
+ * estimate, not a measurement. No label at all means the model was not answering with a letter,
+ * and the call is declined rather than reported as a uniform guess. Messages never quote tokens,
+ * which are upstream text.
+ */
+function scoreLabels(
+	first: OpenAITokenLogprob | undefined,
+	count: number,
+	unsupported: (reason: string) => Error
+): number[] {
+	if (!first) throw unsupported('returned no scored content token');
+	if (!Array.isArray(first.top_logprobs) || first.top_logprobs.length === 0)
+		throw unsupported('returned no alternatives for the scored token');
+	const seen = new Map<string, number>();
+	for (const alternative of [first, ...first.top_logprobs]) {
+		const token = alternative?.token;
+		const logprob = alternative?.logprob;
+		if (typeof token !== 'string' || typeof logprob !== 'number' || !Number.isFinite(logprob))
+			throw unsupported('returned a malformed log-probability entry');
+		if (!seen.has(token)) seen.set(token, logprob);
+	}
+	const scores: Array<number | undefined> = new Array(count).fill(undefined);
+	let floor = Infinity;
+	for (const [token, logprob] of seen) {
+		floor = Math.min(floor, logprob);
+		const index = labelIndex(token);
+		if (index === undefined || index >= count) continue;
+		const current = scores[index];
+		scores[index] = current === undefined ? logprob : logAddExp(current, logprob);
+	}
+	if (scores.every((score) => score === undefined)) throw unsupported('did not answer with one of the choice labels');
+	return scores.map((score) => score ?? floor);
+}
+
+function labelIndex(token: string): number | undefined {
+	const letter = token
+		.trim()
+		.replace(/^[("'[]+|[.)\]:"',]+$/g, '')
+		.toUpperCase();
+	if (letter.length !== 1) return undefined;
+	const index = CHOICE_LABELS.indexOf(letter);
+	return index === -1 ? undefined : index;
+}
+
+function logAddExp(a: number, b: number): number {
+	const max = Math.max(a, b);
+	return max + Math.log(Math.exp(a - max) + Math.exp(b - max));
 }
 
 /**
@@ -588,8 +749,16 @@ interface OpenAIChatResponse {
 	choices?: Array<{
 		message?: { role: string; content?: string | null; tool_calls?: OpenAIToolCall[] };
 		finish_reason?: string | null;
+		logprobs?: { content?: OpenAITokenLogprob[] | null } | null;
 	}>;
 	usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+}
+
+/** One scored token position; fields are `unknown` because a compatible endpoint's shape is not trusted. */
+interface OpenAITokenLogprob {
+	token?: unknown;
+	logprob?: unknown;
+	top_logprobs?: Array<{ token?: unknown; logprob?: unknown }> | null;
 }
 
 interface OpenAIToolCall {

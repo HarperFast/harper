@@ -12,10 +12,12 @@ import { recordAction } from '../analytics/write.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import { runAgentLoop, runAgentLoopStream } from './agentLoop.ts';
 import { DecisionContractError, normalizeDecision, stateToText, validateDecisionSchema } from './decision.ts';
+import { assignFiniteTokenCount } from './backendHelpers.ts';
 import type {
 	AccountingContext,
 	BackendOpts,
 	Capability,
+	ChoiceScores,
 	DecideInput,
 	DecideOpts,
 	Decision,
@@ -31,6 +33,7 @@ import type {
 	ModelRouter,
 	ModelCallResult,
 	Models as ModelsContract,
+	ScoreChoicesOpts,
 	TokenUsage,
 } from './types.ts';
 
@@ -310,6 +313,61 @@ export class Models implements ModelsContract {
 		throw firstError;
 	}
 
+	/**
+	 * Score `choices` as answers to `input` with a generative backend that implements
+	 * `scoreChoices` (#2838): the decision adapter's likelihood path. Routes `generative` with
+	 * `scoreChoices` required, tries candidates like `embed`, and records one `scoreChoices` row
+	 * per attempt; a `ChoiceScoringUnsupportedError` is recorded as `scoring_unsupported` with the
+	 * usage it consumed. Internal, like `embedWithUsage`: not part of the stable models API.
+	 */
+	async scoreChoices(
+		input: GenerateInput,
+		choices: readonly string[],
+		opts: ScoreChoicesOpts = {}
+	): Promise<ChoiceScores & { usage?: TokenUsage }> {
+		const { accounting, signal } = resolveCallContext(opts.signal);
+		const startedAt = performance.now();
+		const resolved = resolveCandidates('generative', opts.model, buildRequires('scoreChoices', opts.requires, false));
+		if ('error' in resolved) {
+			this.#recordFailure(
+				resolved.backend,
+				'scoreChoices',
+				opts.model,
+				accounting,
+				undefined,
+				startedAt,
+				resolved.error
+			);
+			throw resolved.error;
+		}
+		let firstError: unknown = undefined;
+		let hasError = false;
+		for (const backend of resolved.candidates) {
+			signal?.throwIfAborted();
+			const attemptStart = performance.now();
+			try {
+				// A router may hand back a backend whose capabilities claim more than it implements;
+				// that is this backend's contract failure, recorded against it, not a crash.
+				if (typeof backend.scoreChoices !== 'function')
+					throw new ServerError(`Backend '${backend.name}' advertises 'scoreChoices' but does not implement it`);
+				const result = await backend.scoreChoices(input, choices, toBackendOpts(opts, signal, accounting));
+				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
+				this.#record(backend, 'scoreChoices', opts.model, accounting, undefined, result, attemptStart);
+				return result.usage
+					? { logLikelihoods: result.output.logLikelihoods, usage: result.usage }
+					: { logLikelihoods: result.output.logLikelihoods };
+			} catch (err) {
+				this.#recordFailure(backend, 'scoreChoices', opts.model, accounting, undefined, attemptStart, err);
+				if (!hasError) {
+					firstError = err;
+					hasError = true;
+				}
+				if (signal?.aborted) throw err;
+			}
+		}
+		throw firstError;
+	}
+
 	#record(
 		backend: ModelBackend,
 		method: CallMethod,
@@ -330,11 +388,14 @@ export class Models implements ModelsContract {
 		// Path is the backend name (analogous to tableName for db-read) so dashboards
 		// can break usage down by backend.
 		this.#emit(1, `model-${method}`, backend.name);
-		if (usage) {
-			const tokens = (usage.embeddingTokens ?? 0) + (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0);
-			if (tokens > 0) this.#emit(tokens, `model-${method}-tokens`, backend.name);
-		}
+		this.#emitTokens(method, backend.name, usage);
 		return id;
+	}
+
+	#emitTokens(method: CallMethod, backendName: string, usage: TokenUsage | undefined): void {
+		if (!usage) return;
+		const tokens = (usage.embeddingTokens ?? 0) + (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0);
+		if (tokens > 0) this.#emit(tokens, `model-${method}-tokens`, backendName);
 	}
 
 	#recordFailure(
@@ -347,11 +408,26 @@ export class Models implements ModelsContract {
 		errOrCode: unknown
 	): void {
 		const error_code = typeof errOrCode === 'string' ? errOrCode : classifyError(errOrCode);
+		// A failed attempt can still have consumed tokens (a scoring completion that came back
+		// without log-probabilities is billed): they land on the failure row and in the token
+		// metric, while the call-count metric stays a count of successes.
+		const usage = backend ? usageFromError(errOrCode) : undefined;
 		this.#analyticsWriter.write({
-			...buildRecord(backend, method, model, accounting, opts, undefined, startedAt, false),
+			...buildRecord(backend, method, model, accounting, opts, usage, startedAt, false),
 			error_code,
 		});
+		if (backend) this.#emitTokens(method, backend.name, usage);
 	}
+}
+
+/** Tokens a failed attempt consumed, when the error reports them (`ChoiceScoringUnsupportedError.usage`); finite counts only. */
+function usageFromError(err: unknown): TokenUsage | undefined {
+	const reported = (err as { usage?: unknown } | null)?.usage;
+	if (!reported || typeof reported !== 'object') return undefined;
+	const usage: TokenUsage = {};
+	for (const key of ['promptTokens', 'completionTokens', 'embeddingTokens'] as const)
+		assignFiniteTokenCount(usage, key, (reported as Record<string, unknown>)[key]);
+	return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
 function buildRecord(
@@ -460,6 +536,7 @@ function classifyError(err: unknown): string {
 		const e = err as { name?: string; code?: string };
 		if (e.name === 'AbortError' || e.code === 'ABORT_ERR') return 'aborted';
 		if (e.name === 'ModelCapabilityError') return 'capability_unsupported';
+		if (e.name === 'ChoiceScoringUnsupportedError') return 'scoring_unsupported';
 		if (e.name === 'ModelBackendNotFoundError') return 'backend_not_found';
 		if (e.name === 'ModelPendingNotSupportedError') return 'pending_unsupported';
 	}

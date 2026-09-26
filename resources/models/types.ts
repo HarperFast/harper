@@ -32,6 +32,18 @@ export interface ModelBackend {
 		schema: DecisionSchema,
 		opts: BackendOpts<DecideOpts>
 	): Promise<ModelCallResult<DecisionOutput<unknown>>>;
+	/**
+	 * Score every entry of `choices` as the answer to `input` from the model's own likelihoods
+	 * (#2838): one finite, unnormalized log-likelihood per choice, in order. A call the backend
+	 * cannot score (too many choices for its alternatives list, a model that rejects
+	 * log-probabilities, a response with no scored label) throws `ChoiceScoringUnsupportedError`
+	 * so the caller can fall back; any other error is a failure.
+	 */
+	scoreChoices?(
+		input: GenerateInput,
+		choices: readonly string[],
+		opts: BackendOpts<ScoreChoicesOpts>
+	): Promise<ModelCallResult<ChoiceScores>>;
 }
 
 /** Registry kinds a backend is mapped under; a `decision` backend implements `decide` (#2779). */
@@ -47,6 +59,8 @@ export interface ModelCapabilities {
 	decide?: boolean;
 	/** `decide` probabilities are calibrated as returned. Absent reads as false. */
 	calibrated?: boolean;
+	/** Implements `scoreChoices` (#2838). Absent reads as false. */
+	scoreChoices?: boolean;
 }
 
 /** A capability a call can require of its backend (a key of `ModelCapabilities`). */
@@ -89,6 +103,7 @@ export interface DefineBackendSpec {
 	generate?: ModelBackend['generate'];
 	generateStream?: ModelBackend['generateStream'];
 	decide?: ModelBackend['decide'];
+	scoreChoices?: ModelBackend['scoreChoices'];
 	/** Backend supports tool calls in `generate` / `generateStream`. Default `false`. */
 	tools?: boolean;
 	/** Backend supports per-call LoRA / adapter selection. Default `false`. */
@@ -177,6 +192,18 @@ export interface FieldDecision {
 	value: unknown;
 	probability: number;
 	distribution: DecisionOutcome[];
+}
+
+export type ScoreChoicesOpts = {
+	model?: string;
+	/** Capabilities the chosen backend must satisfy, beyond `scoreChoices` itself; the router filters candidates (#1326). */
+	requires?: Capability[];
+	signal?: AbortSignal;
+};
+
+/** What `scoreChoices` returns: one finite log-likelihood per choice, aligned with the choices. Unnormalized; the caller normalizes. */
+export interface ChoiceScores {
+	logLikelihoods: number[];
 }
 
 export type GenerateOpts = {

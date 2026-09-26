@@ -75,6 +75,7 @@ interface ModelEntry {
 	samples?: number;
 	concurrency?: number;
 	temperature?: number;
+	scoring?: 'auto' | 'vote' | 'score';
 	/** Ordered fallback group: other logical names tried, in order, after this one (#1326). */
 	fallback?: string[];
 }

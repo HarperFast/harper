@@ -1068,6 +1068,7 @@ describe('Test configValidator module', () => {
 							concurrency: 3,
 							temperature: 0.5,
 							requestTimeoutMs: 5000,
+							scoring: 'auto',
 							fallback: ['alt'],
 						},
 					},
@@ -1075,13 +1076,23 @@ describe('Test configValidator module', () => {
 				expect(configValidator(config, true).error).to.be.undefined;
 			});
 
-			it('rejects samples or concurrency outside 1..25, non-integers, and unknown fields', () => {
+			it('accepts each scoring mode (#2838)', () => {
+				for (const scoring of ['auto', 'vote', 'score']) {
+					const config = baseConfig();
+					config.models = { decision: { default: { backend: 'generative', scoring } } };
+					expect(configValidator(config, true).error, scoring).to.be.undefined;
+				}
+			});
+
+			it('rejects samples or concurrency outside 1..25, non-integers, unknown fields, and an unknown scoring mode', () => {
 				for (const entry of [
 					{ backend: 'generative', samples: 0 },
 					{ backend: 'generative', samples: 26 },
 					{ backend: 'generative', samples: 2.5 },
 					{ backend: 'generative', concurrency: 0 },
 					{ backend: 'generative', model: 'gpt-4o' },
+					{ backend: 'generative', scoring: 'always' },
+					{ backend: 'generative', scoring: true },
 				]) {
 					const config = baseConfig();
 					config.models = { decision: { default: entry } };
