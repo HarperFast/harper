@@ -1,9 +1,6 @@
 /**
- * `@embed` directive write-time hook. `createDefaultEmbedder` builds the embedder
- * a table registers for an `@embed` attribute; `buildEmbedBefore` produces the
- * pre-commit callback that runs registered embedders and writes their vectors onto
- * the record before it commits. The trigger rules, source handling, error sanitizing,
- * cancellation and hook composition are shared with the `@decide` hook (`decideHook.ts`).
+ * `@embed` directive write-time hook, and the trigger, cancellation, sanitizing and ownership
+ * rules it shares with the `@decide` hook (`decideHook.ts`).
  */
 import { ClientError } from '../../utility/errors/hdbError.ts';
 
@@ -83,11 +80,6 @@ export function sourceState(record: any, sourceKey: string | undefined): SourceS
 	return 'value';
 }
 
-export function anySourcePresent(record: any, sources: Array<string | undefined>): boolean {
-	for (const source of sources) if (sourceState(record, source) !== 'absent') return true;
-	return false;
-}
-
 /**
  * Run the jobs of one write. The first failure aborts the others, and every job settles before
  * that failure is reported: a rejected write neither waits on a sibling that honors the signal
@@ -122,7 +114,7 @@ export async function runWriteJobs(
 	if (failed) throw failure;
 }
 
-/** The `@embed` and `@decide` callbacks of one write as one; fixed arity, so a write with neither allocates nothing. */
+/** The `@embed` and `@decide` callbacks of one write as one. */
 export function combineWriteHooks(a: WriteHook | undefined, b: WriteHook | undefined): WriteHook | undefined {
 	if (!a) return b;
 	if (!b) return a;
@@ -159,9 +151,11 @@ type DerivedAttribute = {
 /**
  * Every derived field (an `@embed` target, a `@decide` target or confidence) has exactly one
  * writer, and no directive derives from another directive's output: the hooks run concurrently
- * within one write, so the stored pair would otherwise depend on scheduling. Run by the schema
- * loader and by the table on every attribute refresh, so a programmatic declaration is held
- * to the same rule.
+ * within one write, so the stored pair would otherwise depend on scheduling. None of those
+ * fields may be named after an `Object.prototype` key, because `sourceState` tests presence
+ * with `in`. Run by the schema loader, by `declareTable` before a declaration is saved, and by
+ * `updatedAttributes` before it assigns anything, so a programmatic declaration is held to the
+ * same rule and a rejected one changes nothing.
  */
 export function assertDerivedFieldOwnership(attributes: DerivedAttribute[]): void {
 	const writers = new Map<string, string>();
@@ -171,11 +165,17 @@ export function assertDerivedFieldOwnership(attributes: DerivedAttribute[]): voi
 		writers.set(field, writer);
 	};
 	for (const attribute of attributes) {
-		if (attribute.embed) claim(attribute.name, `@embed on "${attribute.name}"`);
-		if (attribute.decide) {
-			claim(attribute.name, `@decide on "${attribute.name}"`);
-			if (attribute.decide.confidence) claim(attribute.decide.confidence, `@decide on "${attribute.name}"`);
-		}
+		const directive = attribute.embed ? '@embed' : attribute.decide ? '@decide' : undefined;
+		if (!directive) continue;
+		const writer = `${directive} on "${attribute.name}"`;
+		for (const field of [attribute.name, (attribute.embed ?? attribute.decide)!.source, attribute.decide?.confidence])
+			if (field && Object.hasOwn(Object.prototype, field))
+				throw new ClientError(
+					`${writer}: "${field}" is an Object.prototype key and cannot be a derived, source or confidence field`,
+					400
+				);
+		claim(attribute.name, writer);
+		if (attribute.decide?.confidence) claim(attribute.decide.confidence, writer);
 	}
 	for (const attribute of attributes) {
 		const directive = attribute.embed ? '@embed' : attribute.decide ? '@decide' : undefined;
@@ -225,13 +225,9 @@ export function buildEmbedBefore(
 ): WriteHook | undefined {
 	if (!embedAttributes || embedAttributes.length === 0) return undefined;
 	if (!writeHookApplies(record, context, options)) return undefined;
-	if (
-		!anySourcePresent(
-			record,
-			embedAttributes.map((attr) => attr.embed?.source)
-		)
-	)
-		return undefined;
+	let present = false;
+	for (const attr of embedAttributes) if (sourceState(record, attr.embed?.source) !== 'absent') present = true;
+	if (!present) return undefined;
 	return (signal) =>
 		runWriteJobs(
 			embedAttributes.map((attr) => async (jobSignal) => {
@@ -247,6 +243,8 @@ export function buildEmbedBefore(
 				try {
 					vector = await embedder(record, { signal: jobSignal });
 				} catch (err) {
+					// A sibling's failure aborted this one; that failure is the one reported and logged.
+					if (jobSignal.aborted) throw err;
 					throw sanitizedHookError('Embedder', 'embedding', attr.name, err);
 				}
 				record[attr.name] = normalizeVector(vector);

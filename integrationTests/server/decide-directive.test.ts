@@ -63,7 +63,6 @@ interface FakeOllama {
 	reset: () => void;
 }
 
-/** The number of decisions the Ticket schema makes per write that carries `body`. */
 const DECISIONS_PER_WRITE = 3;
 
 /**
@@ -84,7 +83,6 @@ function answer(prompt: string, callIndexForBody: number): string {
 	return JSON.stringify({ value: 'other' });
 }
 
-/** Deterministic 3-element vector from the input text. */
 function deterministicVector(input: string): number[] {
 	let h1 = 0;
 	let h2 = 0;

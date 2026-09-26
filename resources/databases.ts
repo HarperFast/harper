@@ -108,6 +108,7 @@ import {
 	retainFullTextDefinitions,
 	serializeFullTextState,
 } from './fullTextSchemaLifecycle.ts';
+import { assertDerivedFieldOwnership } from './models/embedHook.ts';
 import {
 	abandonDatabaseDrop,
 	beginDatabaseDrop,
@@ -3365,6 +3366,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	if ((RESERVED_DATABASE_NAMES as readonly string[]).includes(databaseName)) {
 		throw new ClientError(`'${databaseName}' is a reserved name and cannot be used as a database name`);
 	}
+	// Before anything is saved: a redeclaration that fails this check must neither reach the
+	// catalog nor replace the live table's derived-field registries.
+	if (Array.isArray(attributes)) assertDerivedFieldOwnership(attributes as any[]);
 	// A branch resolves its blob root from its store identity, so a database created under that same
 	// name would share the root: two allocators minting the same file paths and truncating each other,
 	// and the branch's teardown removing the database's blobs.
