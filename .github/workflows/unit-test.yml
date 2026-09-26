@@ -95,9 +95,11 @@ jobs:
       # Derived 2026-09-18 over the 30 `Unit Test` pushes since 2026-09-14, and only `resources`
       # was re-budgeted — capped at 7m off a ~4m30-5m25 estimate nobody re-measured, it reached
       # 6m58 completed, went red on main, and needed ~7m40 at its worst. `main` (3m19) and `lmdb`
-      # (3m17) sit at ~1.2x their own worst, not 1.5x. `lmdb` has been killed at 4m twice on main,
-      # but from its LMDB-`resources` phase running ~2x its usual time rather than from drift, so
-      # that one wants a diagnosis and not a bigger number.
+      # (3m17) sit at ~1.2x their own worst, not 1.5x. `lmdb` has been killed at 4m on main when its
+      # LMDB-`resources` phase ran ~2x its usual time on a slow runner: the tests that commit one
+      # write at a time stretch with disk latency. The largest of those, the previousCount
+      # scan-bound fixture (10,250 separate commits, 5s-70s), now commits in batches; look for
+      # another per-write commit loop before raising this cap.
       #
       # `resources` is two steps so that budget stays spendable as the suite grows, and so a
       # wedged run is reported in 8 minutes rather than 12 (harper#2660). They partition the
