@@ -16,8 +16,12 @@ const { tmpdir } = require('node:os');
 const { tryFileLock, fileLockRelease } = require('@harperfast/rocksdb-js');
 const {
 	beginRestore,
+	beginDatabaseDrop,
 	completeRestore,
+	completeDatabaseDrop,
 	abandonRestore,
+	abandonDatabaseDrop,
+	cancelDatabaseDrop,
 	acquireRestoreLock,
 	releaseRestoreLock,
 	clearRestoreMarker,
@@ -25,8 +29,10 @@ const {
 	restoreMarkerPresent,
 	restoreLockPath,
 	restoringMarkerPath,
+	droppingMarkerPath,
 	restoreMetaDir,
 	scanBlockedRestores,
+	scanBlockedDatabaseDrops,
 	RESTORE_META_DIR,
 } = require('#src/dataLayer/restoreMarker');
 
@@ -332,6 +338,104 @@ describe('restoreMarker', function () {
 
 		it('returns [] when there is no .restore directory', function () {
 			assert.deepStrictEqual(scanBlockedRestores(join(tempDir, 'no-such-root')), []);
+		});
+	});
+
+	describe('database drop markers', function () {
+		it('rejects control characters that would corrupt the line-delimited marker', function () {
+			assert.throws(
+				() => beginDatabaseDrop(join(tempDir, 'bad\nroot'), 'database'),
+				(error) => error.statusCode === 409
+			);
+			assert.throws(
+				() => beginDatabaseDrop(dbPath, 'bad\ndatabase'),
+				(error) => error.statusCode === 409
+			);
+			assert.throws(
+				() => beginDatabaseDrop(dbPath, 'database', 'bad\nblob'),
+				(error) => error.statusCode === 409
+			);
+		});
+
+		it('blocks each physical root until the whole drop completes', function () {
+			const a = join(tempDir, 'alpha');
+			const b = join(tempDir, 'beta');
+			const blobA = join(tempDir, 'blobs-a');
+			const blobB = join(tempDir, 'blobs-b');
+			mkdirSync(a);
+			mkdirSync(b);
+			const locks = [
+				beginDatabaseDrop(a, 'catalog', 'physical-a', [blobA]),
+				beginDatabaseDrop(b, 'catalog', 'physical-b', [blobB]),
+			];
+			assert.deepStrictEqual(
+				locks.map((lock) => lock.blobDatabaseName),
+				['physical-a', 'physical-b']
+			);
+			assert.deepStrictEqual(
+				locks.map((lock) => lock.blobPaths),
+				[[blobA], [blobB]]
+			);
+			try {
+				assert.deepStrictEqual(
+					scanBlockedDatabaseDrops(tempDir)
+						.map(({ rootPath, databaseName }) => [basename(rootPath), databaseName])
+						.sort(),
+					[
+						['alpha', 'catalog'],
+						['beta', 'catalog'],
+					]
+				);
+			} finally {
+				for (const lock of locks) completeDatabaseDrop(lock);
+			}
+			assert.deepStrictEqual(scanBlockedDatabaseDrops(tempDir), []);
+		});
+
+		it('retains an interrupted drop marker and rejects restore', function () {
+			const blobPath = join(tempDir, 'original-blobs');
+			abandonDatabaseDrop(beginDatabaseDrop(dbPath, 'catalog', 'catalog', [blobPath]));
+			assert.ok(existsSync(droppingMarkerPath(dbPath)));
+			assert.throws(
+				() => beginRestore(dbPath),
+				(error) => error.statusCode === 409 && /incomplete drop/.test(error.message)
+			);
+			const retry = beginDatabaseDrop(dbPath, 'catalog');
+			assert.strictEqual(retry.preexisting, true);
+			assert.deepStrictEqual(retry.blobPaths, [blobPath]);
+			completeDatabaseDrop(retry);
+		});
+
+		it('rejects a marker whose recorded blob identity was altered', function () {
+			abandonDatabaseDrop(beginDatabaseDrop(dbPath, 'catalog', 'physical'));
+			const markerPath = droppingMarkerPath(dbPath);
+			const marker = readFileSync(markerPath, 'utf8').split('\n');
+			marker[2] = 'unrelated';
+			writeFileSync(markerPath, marker.join('\n'));
+
+			assert.throws(() => beginDatabaseDrop(dbPath, 'catalog', 'physical'), /drop marker.*invalid/);
+			assert.ok(existsSync(markerPath));
+		});
+
+		it('cancels a new marker but preserves a marker owned by a retry', function () {
+			const first = beginDatabaseDrop(dbPath, 'catalog');
+			cancelDatabaseDrop(first);
+			assert.ok(!existsSync(droppingMarkerPath(dbPath)));
+
+			abandonDatabaseDrop(beginDatabaseDrop(dbPath, 'catalog'));
+			const retry = beginDatabaseDrop(dbPath, 'catalog');
+			cancelDatabaseDrop(retry);
+			assert.ok(existsSync(droppingMarkerPath(dbPath)));
+			completeDatabaseDrop(beginDatabaseDrop(dbPath, 'catalog'));
+		});
+
+		it('blocks an existing root without trusting corrupt marker contents', function () {
+			mkdirSync(dbPath);
+			mkdirSync(restoreMetaDir(dbPath));
+			writeFileSync(droppingMarkerPath(dbPath), `${basename(dbPath)}\nbad\ndatabase\ninvalid`);
+			assert.deepStrictEqual(scanBlockedDatabaseDrops(tempDir), [
+				{ rootPath: dbPath, databaseName: undefined, markerPath: droppingMarkerPath(dbPath) },
+			]);
 		});
 	});
 });

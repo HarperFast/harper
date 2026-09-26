@@ -954,6 +954,7 @@ export const ITC_EVENT_TYPES = {
 	GET_METRICS: 'get_metrics',
 	RESTART: 'restart',
 	START_JOB: 'start_job',
+	JOB_CLEANUP_COMPLETE: 'job_cleanup_complete',
 	COMPONENT_STATUS_REQUEST: 'component_status_request',
 	COMPONENT_STATUS_RESPONSE: 'component_status_response',
 	RESOURCE_OPENAPI_REQUEST: 'resource_openapi_request',

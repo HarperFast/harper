@@ -7,25 +7,35 @@ const harperLogger = require('#src/utility/logging/harper_logger');
 const {
 	startWorker,
 	broadcastWithAcknowledgement,
+	broadcastWithStrictAcknowledgement,
 	onMessageFromWorkers,
 	workers,
 } = require('#js/server/threads/manageThreads');
 const { pinLogConfig } = require('../../logConfigFixture.js');
 const { waitFor } = require('../../waitFor.js');
+const { sendItcEvent } = require('#js/server/threads/itc');
+const {
+	claimDatabaseDropPreparation,
+	databaseDropPrepared,
+	releaseDatabaseDropPreparation,
+} = require('#src/resources/databaseDropPreparation');
 
 const FIXTURE = path.join(__dirname, 'stuckWorker-fixture.cjs');
 
-function startFixtureWorker(mode) {
+function startFixtureWorker(mode, name = 'http') {
 	return new Promise((resolve, reject) => {
 		startWorker(FIXTURE, {
-			name: 'http',
+			name,
 			workerIndex: 0,
 			threadCount: 2,
 			autoRestart: false,
 			argv: [`--${mode}`],
 			onStarted(worker) {
 				worker.on('message', (message) => {
-					if (message.type === 'fixture-ready') resolve(worker);
+					if (message.type === 'fixture-ready') {
+						worker.databaseDropPreparations = message.databaseDropPreparations;
+						resolve(worker);
+					}
 				});
 				worker.once('error', reject);
 				worker.once('exit', (code) => reject(new Error(`Worker exited before reporting (code ${code})`)));
@@ -147,5 +157,185 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		await broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, 2000);
 		assert.equal(logLine('not acknowledged'), undefined);
 		assert.equal(logLine('Worker thread'), undefined);
+	});
+
+	it('rejects a strict broadcast when a worker reports preparation failure', async function () {
+		const worker = await startFixtureWorker('reject');
+		started.push(worker);
+		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000), (error) => {
+			assert(error instanceof AggregateError);
+			assert.match(error.errors[0].message, /could not prepare for the schema change: fixture preparation failed/);
+			return true;
+		});
+	});
+
+	it('settles immediately when recipient setup fails', async function () {
+		const worker = await startFixtureWorker('acknowledge');
+		started.push(worker);
+		const originalRef = worker.ref;
+		worker.ref = () => {
+			throw new Error('fixture ref failure');
+		};
+		try {
+			await assert.rejects(
+				broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000),
+				(error) => error instanceof AggregateError && /fixture ref failure/.test(error.errors[0]?.message)
+			);
+		} finally {
+			worker.ref = originalRef;
+		}
+	});
+
+	it('preserves a shared worker conflict on a strict broadcast', async function () {
+		const worker = await startFixtureWorker('reject-conflict');
+		started.push(worker);
+		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000), (error) => {
+			assert(!(error instanceof AggregateError));
+			assert.strictEqual(error.name, 'DatabaseDroppingError');
+			assert.strictEqual(error.code, 'DATABASE_DROP_IN_PROGRESS');
+			assert.strictEqual(error.statusCode, 409);
+			assert.strictEqual(error.retryable, true);
+			return true;
+		});
+	});
+
+	it('preserves retryable worker failures on a strict broadcast', async function () {
+		const worker = await startFixtureWorker('reject-retryable');
+		started.push(worker);
+		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000), (error) => {
+			assert(!(error instanceof AggregateError));
+			assert.strictEqual(error.name, 'DatabaseDrainTimeoutError');
+			assert.strictEqual(error.code, 'DATABASE_DRAIN_TIMEOUT');
+			assert.strictEqual(error.statusCode, 503);
+			assert.strictEqual(error.retryable, true);
+			return true;
+		});
+	});
+
+	it('rejects a strict broadcast when a worker exits before acknowledging', async function () {
+		const worker = await startFixtureWorker('exit');
+		started.push(worker);
+		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000), (error) => {
+			assert(error instanceof AggregateError);
+			assert.match(error.errors[0].message, /exited before acknowledging preparation/);
+			return true;
+		});
+	});
+
+	it('does not inherit best-effort exit handling from an earlier broadcast', async function () {
+		const worker = await startFixtureWorker('ack-then-exit');
+		started.push(worker);
+		await broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, 2000);
+		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000), (error) => {
+			assert(error instanceof AggregateError);
+			assert.match(error.errors[0].message, /exited before acknowledging preparation/);
+			return true;
+		});
+	});
+
+	it('includes job workers when destructive preparation requests it', async function () {
+		const worker = await startFixtureWorker('reject', 'job');
+		started.push(worker);
+		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000, true), (error) => {
+			assert(error instanceof AggregateError);
+			assert.match(error.errors[0].message, /fixture preparation failed/);
+			return true;
+		});
+	});
+
+	it('rejects a job worker that exits without confirming handle cleanup', async function () {
+		const worker = await startFixtureWorker('exit', 'job');
+		started.push(worker);
+		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000, true));
+	});
+
+	it('accepts a job worker that confirms handle cleanup before exiting', async function () {
+		const worker = await startFixtureWorker('exit-clean', 'job');
+		started.push(worker);
+		await broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000, true);
+	});
+
+	it('settles a job worker as soon as it confirms handle cleanup', async function () {
+		const worker = await startFixtureWorker('report-clean-stay', 'job');
+		started.push(worker);
+		let received = 0;
+		worker.on('message', (message) => {
+			if (message.type === 'fixture-received') received++;
+		});
+		await broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000, true);
+		await waitFor(() => received === 1);
+		assert.strictEqual(received, 1);
+		await sendItcEvent({ type: 'diagnostic-probe', message: {} }, 'active');
+		assert.strictEqual(received, 1, 'cleanup-proven job workers must not receive completion');
+		assert.strictEqual(worker.threadId > 0, true);
+	});
+
+	it('accepts confirmed job cleanup from a worker-originated preparation', async function () {
+		const broadcaster = await startFixtureWorker('acknowledge');
+		const jobWorker = await startFixtureWorker('exit-clean-parent-only', 'job');
+		started.push(broadcaster, jobWorker);
+		const settled = new Promise((resolve) => {
+			broadcaster.on('message', (message) => {
+				if (message.type === 'strict-probe-settled' || message.type === 'strict-probe-rejected') resolve(message);
+			});
+		});
+		broadcaster.postMessage({ type: 'send-strict-probe', timeout: 2000 });
+		const result = await settled;
+		assert.strictEqual(result.type, 'strict-probe-settled', result.error);
+	});
+
+	it('includes job workers when destructive completion requests it', async function () {
+		const worker = await startFixtureWorker('report-acknowledge', 'job');
+		started.push(worker);
+		const received = new Promise((resolve) =>
+			worker.on('message', (message) => message.type === 'fixture-received' && resolve(message))
+		);
+		await sendItcEvent({ type: 'diagnostic-probe', message: {} }, true);
+		assert.ok(await received);
+	});
+
+	it('passes active database-drop fences to workers started during preparation', async function () {
+		const databaseName = 'worker-start-during-drop';
+		const preparationId = 'worker-start-during-drop-test';
+		claimDatabaseDropPreparation(databaseName, preparationId);
+		try {
+			const worker = await startFixtureWorker('acknowledge');
+			started.push(worker);
+			assert.deepStrictEqual(worker.databaseDropPreparations, [
+				[databaseName, { id: preparationId, ownerThreadId: 0, databaseName }],
+			]);
+		} finally {
+			releaseDatabaseDropPreparation(databaseName, preparationId);
+		}
+	});
+
+	it('does not inherit a fence whose owner is absent from the new worker topology', async function () {
+		const databaseName = 'worker-start-after-drop-owner-exit';
+		const preparationId = 'worker-start-after-drop-owner-exit-test';
+		claimDatabaseDropPreparation(databaseName, preparationId, 999_999);
+		try {
+			const worker = await startFixtureWorker('acknowledge');
+			started.push(worker);
+			assert.deepStrictEqual(worker.databaseDropPreparations, []);
+		} finally {
+			releaseDatabaseDropPreparation(databaseName, preparationId);
+		}
+	});
+
+	it('releases a database-drop fence when its owning worker exits', async function () {
+		const worker = await startFixtureWorker('acknowledge');
+		started.push(worker);
+		const databaseName = 'worker-exits-during-drop';
+		const preparationId = 'worker-exits-during-drop-test';
+		claimDatabaseDropPreparation(databaseName, preparationId, worker.threadId);
+		assert.strictEqual(databaseDropPrepared(databaseName), true);
+
+		worker.wasShutdown = true;
+		await worker.terminate();
+		started.pop();
+		await waitFor(() => !databaseDropPrepared(databaseName));
+
+		assert.strictEqual(claimDatabaseDropPreparation(databaseName, 'retry-after-worker-exit'), true);
+		releaseDatabaseDropPreparation(databaseName, 'retry-after-worker-exit');
 	});
 });

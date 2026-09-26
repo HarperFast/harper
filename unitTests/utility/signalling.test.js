@@ -56,4 +56,21 @@ describe('Test signalling module', () => {
 		signalling.signalSchemaChange('message');
 		expect(log_error_stub.lastCall.args[0].name).to.equal(TEST_ERROR);
 	});
+
+	it('broadcasts a peer-first schema completion twice when requested', async () => {
+		const message = {
+			operation: 'drop_schema',
+			schema: 'late_joining_worker_test',
+			dropPreparationId: 'late-join-test',
+		};
+
+		await signalling.signalSchemaChange(message, {
+			peersFirst: true,
+			includeJobWorkers: true,
+			peerRounds: 2,
+		});
+
+		expect(send_itc_event_stub).to.have.been.calledTwice;
+		expect(send_itc_event_stub).to.always.have.been.calledWith(sinon.match({ message }), true);
+	});
 });

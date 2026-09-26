@@ -286,3 +286,15 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 - Binary compilation: Supported Linux glibc x64/arm64, macOS arm64, and Windows x64 targets use prebuilds. Other targets attempt a Rust source build. Because the root package is optional Harper still installs if that build fails, but opted-in indexes remain unavailable until the module is present.
 - Can be deferred: Yes by setting `nativePlane: false` per index or `HNSW_NO_NATIVE_DEFAULT=1` before declaring new indexes. During a rolling cluster upgrade, keep the switch enabled everywhere until every node supports replicated-attribute fallback. An explicitly enabled or persisted native index returns 503 and retries rebuild when the module is unavailable.
 - Eventual removal: Set `nativePlane: false` on native indexes, allow each schema reindex to rebuild the ordinary JS/CF graph, disable the automatic default, then remove the optional dependency and adapter integration.
+
+## @harperfast/fulltext (optional dependency)
+
+- Need for usage: Supplies the Tantivy-backed native index used by Harper full-text derived indexes. Harper remains the source of truth; each node builds and advances its local index from committed records through the shared derived-index runtime.
+- Size/memory cost: The root package is about 260 KB installed, plus one platform-specific native package (about 6.1 MB on macOS arm64). Runtime memory and native index size depend on the indexed text, analyzer, and stored-field options.
+- Security: First-party Apache-2.0 Harper package wrapping Tantivy. It runs native code in-process, so Harper exact-pins the root package and the package exact-pins every platform prebuild to the same version.
+- Environment interaction: Lazily loaded only when a full-text index is activated. It creates Tantivy index files in Harper's derived-index directory; those files are disposable local state and are rebuilt or replayed from Harper records after loss or incompatibility.
+- Overlap: None. Harper owns schema, transactions, replication, source-record reads, and derived-index coordination; the package owns native indexing, persistence, and search execution.
+- Transitive dependencies: Only exact-version, platform-specific optional prebuild packages; no JavaScript runtime dependency tree.
+- Binary compilation: Supported Linux glibc x64/arm64, macOS arm64, and Windows x64 targets use prebuilds. Because the root package is optional, Harper still installs if a native package is unavailable, but a declared full-text index cannot activate until the module is installed.
+- Can be deferred: Yes. The module is not loaded for tables without full-text indexes.
+- Eventual removal: Remove full-text declarations and their local derived-index files, then remove the optional dependency and Harper adapter. Source records remain authoritative and unaffected.

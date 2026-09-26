@@ -3,7 +3,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
-import { join, extname, basename } from 'node:path';
+import { join, extname, basename, dirname, resolve } from 'node:path';
 import {
 	closeSync,
 	existsSync,
@@ -14,7 +14,7 @@ import {
 	realpathSync,
 	unlinkSync,
 } from 'node:fs';
-import { unlink } from 'node:fs/promises';
+import { rm, unlink } from 'node:fs/promises';
 import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
@@ -25,6 +25,7 @@ import {
 	acquireUpdateAttributesLock,
 	releaseUpdateAttributesLock,
 	tryUpdateAttributesLock,
+	withUpdateAttributesLockNonBlocking,
 } from './Table.ts';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
 import {
@@ -35,7 +36,7 @@ import {
 	RESERVED_DATABASE_NAMES,
 } from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
-import { ClientError } from '../utility/errors/hdbError.ts';
+import { ClientError, DatabaseClosingError } from '../utility/errors/hdbError.ts';
 import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
@@ -55,43 +56,77 @@ import {
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
 import {
 	databasePaths,
+	deleteBlobPaths,
 	deleteBlobAndWait,
 	deleteBlobsInObject,
-	deleteRootBlobPathsForDB,
 	findBlobsInObject,
+	getBlobPathsForDatabaseName,
+	getRootBlobPathsForDB,
 } from './blob.ts';
 import { removeStorageReclamation } from '../server/storageReclamation.ts';
 import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
 import { planeFilePathFor, planeStalePathFor } from './indexes/hnswPlaneBinding.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
-import { RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
+import { registryStatus, RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
+import {
+	databaseCommitsSuspended,
+	getDatabaseCommitDrainTimeoutMilliseconds,
+	permanentlySuspendDatabaseCommits,
+	suspendDatabaseCommits,
+} from './DatabaseTransaction.ts';
 import { replayLogs } from './replayLogs.ts';
-import { attachDerivedIndexes } from './indexes/hnswDerivedIndex.ts';
+import {
+	assertFullTextActivationSupported,
+	permanentlySuspendDerivedIndexActivation,
+	refreshDerivedIndexes,
+	retireFullTextIndexes,
+	suspendDerivedIndexActivation,
+} from './derivedIndexes.ts';
+import {
+	acquireFullTextRetirementFence,
+	fullTextClearInProgress,
+	fullTextRetirementInProgress,
+} from './derivedIndexRegistry.ts';
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
-import { compileFullTextDefinitions, type FullTextDefinition } from './fullTextSchema.ts';
+import {
+	compileFullTextDefinitions,
+	persistedFullTextIndexNames,
+	reconcileFullTextIndexGenerations,
+	type FullTextDefinition,
+	type FullTextIndexGenerations,
+} from './fullTextSchema.ts';
 import { projectAttributesToProperties } from './jsonSchemaTypes.ts';
 import {
 	definitionsEqual,
 	mergePeerFullTextDefinitions,
 	readPersistedFullTextDefinitions,
 	retainFullTextDefinitions,
-	safeInterimFullTextDefinitions,
 	serializeFullTextState,
 } from './fullTextSchemaLifecycle.ts';
 import {
-	acquireRestoreLock,
+	abandonDatabaseDrop,
+	beginDatabaseDrop,
+	cancelDatabaseDrop,
 	checkRestoreState,
-	releaseRestoreLock,
-	restoreMarkerPresent,
+	completeDatabaseDrop,
+	databaseDropMarkerPresent,
+	scanBlockedDatabaseDrops,
 	scanBlockedRestores,
 	RESTORE_META_DIR,
-	type RestoreLock,
+	type DatabaseDropLock,
 } from '../dataLayer/restoreMarker.ts';
+import {
+	claimDatabaseDropPreparations,
+	databaseDropPrepared,
+	databaseDropPreparedWithin,
+	releaseDatabaseDropPreparations,
+	trackDatabaseDropPreparationTask,
+} from './databaseDropPreparation.ts';
 
 /**
  * Check if Harper is running in read-only mode.
@@ -454,6 +489,20 @@ export function openRocksDatabase(path: string, options: RocksDatabaseOptions & 
 
 const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
 const rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
+type IncompleteDatabaseClose = {
+	databaseNames: Set<string>;
+	rootPaths: string[];
+	retry: () => Promise<void>;
+	task?: Promise<void>;
+};
+const incompleteDatabaseCloses = new Map<string, IncompleteDatabaseClose>();
+
+function databaseRootUnavailable(rootPath: string): boolean {
+	return (
+		databaseDropPrepared(rootPath) ||
+		(incompleteDatabaseCloses.size > 0 && incompleteDatabaseCloses.has(resolve(rootPath)))
+	);
+}
 
 // set the following in both global and exports
 _assignPackageExport('databases', databases);
@@ -486,6 +535,24 @@ function applyDurableDeclaration(attribute: any, descriptor: any) {
 		if (field in descriptor) attribute[field] = descriptor[field];
 		else delete attribute[field];
 	}
+}
+
+function persistedFullTextIndexGenerations(
+	value: unknown,
+	definitions: readonly FullTextDefinition[]
+): FullTextIndexGenerations {
+	const persisted =
+		value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+	const generations: FullTextIndexGenerations = Object.create(null);
+	for (const { name } of definitions) {
+		const generation = persisted[name];
+		if (typeof generation === 'string' && generation.length > 0) generations[name] = generation;
+	}
+	return generations;
+}
+
+function createFullTextIndexGeneration(): string {
+	return randomBytes(16).toString('hex');
 }
 
 /**
@@ -667,6 +734,11 @@ export function getDatabases(): Databases {
 		// TODO: Load any databases defined with explicit storage paths from the config
 		const entries = readdirSync(databasePath, { withFileTypes: true });
 		const blockedByRestore = databasesBlockedByRestore(databasePath);
+		const blockedByDrop = databaseRootsBlockedByDrop(databasePath);
+		const configuredDropCoversDirectory = Object.entries(schemaConfigs).some(
+			([name, config]: [string, any]) =>
+				config?.path && resolve(config.path) === resolve(databasePath) && blockedByDrop.databaseNames.has(name)
+		);
 		for (const databaseEntry of entries) {
 			// in-progress migration staging dirs are not databases until atomically renamed into place
 			if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue;
@@ -678,6 +750,13 @@ export function getDatabases(): Databases {
 			if (databaseEntry.name === BRANCH_ROOT_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dbPath = join(databasePath, databaseEntry.name);
+			if (databaseRootUnavailable(dbPath)) continue;
+			if (
+				configuredDropCoversDirectory ||
+				blockedByDrop.rootPaths.has(dbPath) ||
+				blockedByDrop.databaseNames.has(dbName)
+			)
+				continue;
 			if (blockedByRestore.has(dbName)) continue;
 			if (isOpenBranchPath(dbPath)) continue;
 
@@ -715,16 +794,14 @@ export function getDatabases(): Databases {
 			if (!schemaEntry.isFile()) {
 				const schemaPath = join(baseSchemaPath, schemaEntry.name);
 				const schemaAuditPath = join(getTransactionAuditStoreBasePath(), schemaEntry.name);
+				const blockedByDrop = databaseRootsBlockedByDrop(schemaPath);
 				for (const tableEntry of readdirSync(schemaPath, { withFileTypes: true })) {
 					if (tableEntry.isFile() && extname(tableEntry.name).toLowerCase() === '.mdb') {
+						const tablePath = join(schemaPath, tableEntry.name);
+						if (databaseRootUnavailable(tablePath)) continue;
+						if (blockedByDrop.rootPaths.has(tablePath) || blockedByDrop.databaseNames.has(schemaEntry.name)) continue;
 						const auditPath = join(schemaAuditPath, tableEntry.name);
-						readMetaDb(
-							join(schemaPath, tableEntry.name),
-							basename(tableEntry.name, '.mdb'),
-							schemaEntry.name,
-							auditPath,
-							true
-						);
+						readMetaDb(tablePath, basename(tableEntry.name, '.mdb'), schemaEntry.name, auditPath, true);
 					}
 				}
 			}
@@ -734,21 +811,25 @@ export function getDatabases(): Databases {
 	if (schemaConfigs) {
 		for (const dbName in schemaConfigs) {
 			const schemaConfig = schemaConfigs[dbName];
+			if (databaseDropRecoveryPending(dbName)) continue;
 			const databasePath = schemaConfig.path;
 			if (existsSync(databasePath)) {
 				const entries = readdirSync(databasePath, { withFileTypes: true });
 				const blockedByRestore = databasesBlockedByRestore(databasePath);
+				const blockedByDrop = databaseRootsBlockedByDrop(databasePath);
 				for (const databaseEntry of entries) {
 					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
 					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
 					if (databaseEntry.name === BRANCH_ROOT_DIR) continue; // reserved branch root
 					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
-					if (isOpenBranchPath(join(databasePath, databaseEntry.name))) continue;
+					const dbPath = join(databasePath, databaseEntry.name);
+					if (databaseRootUnavailable(dbPath)) continue;
+					if (blockedByDrop.rootPaths.has(dbPath) || blockedByDrop.databaseNames.has(dbName)) continue;
+					if (isOpenBranchPath(dbPath)) continue;
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {
-						readMetaDb(join(databasePath, databaseEntry.name), basename(databaseEntry.name, '.mdb'), dbName);
+						readMetaDb(dbPath, basename(databaseEntry.name, '.mdb'), dbName);
 					} else {
 						try {
-							const dbPath = join(databasePath, databaseEntry.name);
 							const files = readdirSync(dbPath, { withFileTypes: true });
 							if (
 								files.find((file) => file.name === 'CURRENT')?.isFile() &&
@@ -770,7 +851,7 @@ export function getDatabases(): Databases {
 				for (const tableName in tableConfigs) {
 					const tableConfig = tableConfigs[tableName];
 					const tablePath = join(tableConfig.path, basename(tableName + '.mdb'));
-					if (existsSync(tablePath)) {
+					if (!databaseRootUnavailable(tablePath) && !databaseDropMarkerPresent(tablePath) && existsSync(tablePath)) {
 						readMetaDb(tablePath, tableName, dbName, null, true);
 					}
 				}
@@ -780,6 +861,7 @@ export function getDatabases(): Databases {
 	}
 	// now remove any databases or tables that have been removed
 	for (const dbName in databases) {
+		if (databaseUsesPreparedRoot(dbName)) continue;
 		const definedTables = definedDatabases.get(dbName);
 		if (definedTables) {
 			const tables = databases[dbName];
@@ -1010,6 +1092,42 @@ function databasesBlockedByRestore(databasePath: string): Set<string> {
 	return blocked;
 }
 
+const loggedDropMarkersByDirectory = new Map<string, Set<string>>();
+
+function databaseRootsBlockedByDrop(databasePath: string): {
+	rootPaths: Set<string>;
+	databaseNames: Set<string>;
+} {
+	const rootPaths = new Set<string>();
+	const databaseNames = new Set<string>();
+	const directoryKey = resolve(databasePath);
+	const previouslyLogged = loggedDropMarkersByDirectory.get(directoryKey) ?? new Set<string>();
+	const currentMarkers = new Set<string>();
+	for (const drop of scanBlockedDatabaseDrops(databasePath)) {
+		currentMarkers.add(drop.markerPath);
+		const message = drop.databaseName
+			? `Incomplete drop of database '${drop.databaseName}' detected; not loading ${drop.rootPath} — retry drop_database to recover (${drop.markerPath})`
+			: `Incomplete database drop with invalid marker metadata detected; not loading ${drop.rootPath} — inspect the root and marker before manual recovery (${drop.markerPath})`;
+		if (previouslyLogged.has(drop.markerPath)) logger.trace(message);
+		else logger.error(message);
+		rootPaths.add(drop.rootPath);
+		if (drop.databaseName) databaseNames.add(drop.databaseName);
+	}
+	if (currentMarkers.size > 0) loggedDropMarkersByDirectory.set(directoryKey, currentMarkers);
+	else loggedDropMarkersByDirectory.delete(directoryKey);
+	return { rootPaths, databaseNames };
+}
+
+function configuredDropPendingWithin(databasePath: string, schemaConfigs: Record<string, any>): boolean {
+	const normalizedPath = resolve(databasePath);
+	return Object.entries(schemaConfigs).some(
+		([name, config]: [string, any]) =>
+			config?.path &&
+			resolve(config.path) === normalizedPath &&
+			scanBlockedDatabaseDrops(config.path).some((drop) => drop.databaseName === name)
+	);
+}
+
 /**
  * This is responsible for reading the internal dbi of a single database file to get a list of all the tables and
  * their indexed or registered attributes
@@ -1220,14 +1338,14 @@ function initStores(
 		}
 		if (failedAttempts < MAX_INTERRUPTED_DROP_ATTEMPTS) {
 			try {
-				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+				const completed = completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
 				// Sweep every generation this worker has ever tracked for this table, not
 				// just the one just resolved: if a prior generation was exhausted here,
 				// then resolved+recreated+re-dropped by another worker as this generation
 				// without this worker ever observing a live row in between (the only other
 				// place that sweeps), the prior generation's entry would otherwise never
 				// be cleared.
-				clearInterruptedDropEntries(path, tableName);
+				if (completed) clearInterruptedDropEntries(path, tableName);
 				definedTables?.delete(tableName);
 			} catch (error) {
 				const attempt = failedAttempts + 1;
@@ -1319,9 +1437,16 @@ function initStores(
 				for (const warning of warnings) logger.warn(warning);
 			} else if (warnings.length === 0) warnedFullTextStates.delete(warningKey);
 		}
+		const fullTextIndexGenerations = persistedFullTextIndexGenerations(
+			primaryAttribute.fullTextIndexGenerations,
+			fullTextIndexes
+		);
+		const fullTextIndexRetirements = persistedFullTextIndexNames(primaryAttribute.fullTextIndexRetirements);
 		if (table && !recreateTable) {
 			if (primaryAttribute.audit === true && table.audit !== true) table.enableAuditing();
 			table.fullTextIndexes = fullTextIndexes;
+			table.fullTextIndexGenerations = fullTextIndexGenerations;
+			table.fullTextIndexRetirements = fullTextIndexRetirements;
 			indices = table.indices;
 			existingAttributes = table.attributes;
 			table.schemaVersion++;
@@ -1474,6 +1599,8 @@ function initStores(
 					indices,
 					attributes,
 					fullTextIndexes,
+					fullTextIndexGenerations,
+					fullTextIndexRetirements,
 					schemaDefined: primaryAttribute.schemaDefined,
 					dbisDB: attributesDbi,
 				})
@@ -1481,8 +1608,7 @@ function initStores(
 			table.schemaVersion = 1;
 			if (!destination) databaseEventsEmitter.emit('updateTable', table);
 		}
-		void table.derivedIndexRuntime?.close();
-		table.derivedIndexRuntime = attachDerivedIndexes(table);
+		refreshDerivedIndexes(table);
 		if (Array.isArray(primaryAttribute.relationships)) {
 			relationshipsToHydrate.push({ table, databaseName, tableName, definitions: primaryAttribute.relationships });
 		} else if (primaryAttribute.relationships !== undefined) {
@@ -1557,7 +1683,7 @@ export interface BranchDatabase {
 	 * a relationship whose target the application also branched against that branch.
 	 */
 	relatedBranches?: Map<string, BranchDatabase>;
-	close(): void;
+	close(): Promise<void>;
 }
 
 /** `undefined` marks a path reserved by an open still in flight, which owns it just as firmly. */
@@ -1833,10 +1959,28 @@ export function openBranchDatabase(
 		releaseBranchIdentity(storeName);
 		const stranded = rocksdbDatabaseEnvs.get(path);
 		rocksdbDatabaseEnvs.delete(path);
+		const auditCleanup = (stranded as any)?.auditStore?.stopAuditCleanup?.();
+		auditCleanup?.catch((cleanupError) =>
+			logger.warn(`Error retiring audit cleanup for branch database at ${path}`, cleanupError)
+		);
 		closeBranchHandles(path, stranded, openedStores, tables);
 		throw error;
 	}
-	let closed = false;
+	let closing: Promise<void> | undefined;
+	let handleTeardownStarted = false;
+	const unregisterBranch = () => {
+		if (openBranches.get(path) === branch) openBranches.delete(path);
+		releaseBranchIdentity(storeName);
+		rocksdbDatabaseEnvs.delete(path);
+		manageThreads.markBranchStorePath(path, false);
+	};
+	const closeRemainingHandles = () => {
+		const closeFailures = closeBranchHandles(path, rootStore, openedStores, tables);
+		if (closeFailures.length) {
+			throw new AggregateError(closeFailures, `Could not close branch database '${databaseName}'`);
+		}
+		unregisterBranch();
+	};
 	const branch: BranchDatabase = {
 		tables,
 		rootStore,
@@ -1848,13 +1992,54 @@ export function openBranchDatabase(
 		close() {
 			// guard on the handle, not on the registrations: those are keyed by path, and a closed
 			// branch frees its path, so a stale handle would otherwise tear down its successor
-			if (closed) return;
-			closed = true;
-			openBranches.delete(path);
-			releaseBranchIdentity(storeName);
-			rocksdbDatabaseEnvs.delete(path);
-			manageThreads.markBranchStorePath(path, false);
-			closeBranchHandles(path, rootStore, openedStores, tables);
+			if (closing) return closing;
+			if (handleTeardownStarted) {
+				const operation = Promise.resolve().then(closeRemainingHandles);
+				const retryable = operation.catch((error) => {
+					if (closing === retryable) closing = undefined;
+					throw error;
+				});
+				closing = retryable;
+				closing.catch(() => {});
+				return closing;
+			}
+			const releaseActivation = suspendDerivedIndexActivation(rootStore);
+			const commitSuspension = suspendDatabaseCommits([rootStore]);
+			const deadline = Date.now() + getDatabaseCommitDrainTimeoutMilliseconds();
+			let closed = false;
+			const operation = commitSuspension
+				.waitForDrain({ deadline, databaseName })
+				.then(() => settleTableMaintenance(tables, deadline))
+				.then(() => settleBranchDerivedIndexes(tables))
+				.then(() => (rootStore as any).auditStore?.stopAuditCleanup?.())
+				.then(() => {
+					handleTeardownStarted = true;
+					closeRemainingHandles();
+					commitSuspension.release();
+					releaseActivation();
+					closed = true;
+				})
+				.finally(() => {
+					if (!closed && !handleTeardownStarted) {
+						commitSuspension.release();
+						releaseActivation();
+						resumeTableMaintenance(tables);
+						for (const table of Object.values(tables)) refreshDerivedIndexes(table);
+					} else if (!closed) {
+						// Native handle teardown started, so this wrapper graph cannot safely return to service.
+						permanentlySuspendDatabaseCommits([rootStore]);
+						permanentlySuspendDerivedIndexActivation(rootStore);
+						commitSuspension.release();
+						releaseActivation();
+					}
+				});
+			const retryable = operation.catch((error) => {
+				if (closing === retryable) closing = undefined;
+				throw error;
+			});
+			closing = retryable;
+			closing.catch(() => {});
+			return closing;
 		},
 	};
 	openBranches.set(path, branch);
@@ -1875,9 +2060,9 @@ function closeBranchHandles(
 	rootStore?: RootDatabaseKind,
 	openedStores: any[] = [],
 	tables: Tables = {}
-): void {
+): unknown[] {
 	const reclamationPaths = new Set<string>([path]);
-	(rootStore as any)?.auditStore?.stopAuditCleanup?.();
+	const closeFailures: unknown[] = [];
 	const closeStore = (store: any, description: string) => {
 		if (!store || store.status === 'closed') return;
 		if (store.path) reclamationPaths.add(store.path);
@@ -1885,6 +2070,7 @@ function closeBranchHandles(
 			store.close?.();
 		} catch (error) {
 			logger.warn(`Error closing ${description} for branch database at ${path}`, error);
+			closeFailures.push(error);
 		}
 	};
 	// the class, before its stores: an expiration timer or a reclamation handler on a closed store
@@ -1902,11 +2088,34 @@ function closeBranchHandles(
 	closeStore(rootStore, 'root store');
 	if (rootStore) databasePaths.delete(rootStore as RootDatabase);
 	for (const reclamationPath of reclamationPaths) removeStorageReclamation(reclamationPath);
+	return closeFailures;
+}
+
+async function settleBranchDerivedIndexes(tables: Tables): Promise<void> {
+	const attachments = new Set<any>();
+	for (const tableName in tables) {
+		const attachment = tables[tableName]?.derivedIndexRuntime;
+		if (attachment) attachments.add(attachment);
+	}
+	await Promise.all([...attachments].map((attachment) => attachment.close()));
 }
 
 /** Branches are process-local, so this is shutdown, not a data operation. */
-export function closeBranchDatabases(): void {
-	for (const branch of [...openBranches.values()]) branch?.close();
+export function branchDatabasesHaveWork(): boolean {
+	return openBranches.size > 0;
+}
+
+export async function closeBranchDatabases(requireClosed = false): Promise<void> {
+	const results = await Promise.allSettled([...openBranches.values()].map((branch) => branch?.close()));
+	const failures: unknown[] = [];
+	for (const result of results) {
+		if (result.status === 'rejected') {
+			logger.warn('Error closing branch database during worker teardown', result.reason);
+			failures.push(result.reason);
+		}
+	}
+	if (requireClosed && failures.length > 0)
+		throw new AggregateError(failures, 'Could not close every branch database during worker teardown');
 }
 
 export function resetDatabases() {
@@ -2037,12 +2246,24 @@ export function resolveDatabasePath(databaseName: string): string {
  * @returns
  */
 export function database({ database: databaseName, table: tableName }) {
+	return openDatabaseRoot({ database: databaseName, table: tableName });
+}
+
+/**
+ * Open a database root. Destructive DDL uses the internal bypass only after it owns the database's
+ * drop-preparation fence; public callers must continue to fail while that fence is held.
+ */
+function openDatabaseRoot(
+	{ database: databaseName, table: tableName }: { database: string; table?: string },
+	{ allowPreparedDrop = false }: { allowPreparedDrop?: boolean } = {}
+) {
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
 	getDatabases();
-	ensureDB(databaseName);
-	const definedDatabase = definedDatabases.get(databaseName);
+	let definedDatabase = definedDatabases.get(databaseName);
 	if ((definedDatabase as any)?.rootStore) {
-		return (definedDatabase as any).rootStore;
+		const rootStore = (definedDatabase as any).rootStore;
+		if (!allowPreparedDrop && databaseRootUnavailable(rootStore.path)) throw new DatabaseClosingError(databaseName);
+		return rootStore;
 	}
 	const databaseConfig = envGet(CONFIG_PARAMS.DATABASES) || {};
 	if (process.env.SCHEMAS_DATA_PATH) {
@@ -2050,11 +2271,39 @@ export function database({ database: databaseName, table: tableName }) {
 	}
 	const tablePath = tableName && databaseConfig[databaseName]?.tables?.[tableName]?.path;
 	const databasePath = resolveDatabaseStorageRoot(databaseName, tableName);
+	if (!allowPreparedDrop && configuredDropPendingWithin(databasePath, databaseConfig))
+		throw new DatabaseClosingError(databaseName);
+	// A configured path is a scan root, not an exact database path, so an unresolved alias can
+	// target any child store. Keep first-open fenced until the destructive operation completes.
+	if (!allowPreparedDrop && databaseConfig[databaseName]?.path) {
+		const blockedRestores = scanBlockedRestores(databasePath);
+		if (blockedRestores.length > 0) {
+			const error: any = new Error(
+				`Database '${databaseName}' shares a configured path with an ${blockedRestores[0][1]} restore of '${blockedRestores[0][0]}'; complete that restore before reopening it`
+			);
+			error.statusCode = 409;
+			throw error;
+		}
+		if (databaseDropPreparedWithin(databasePath)) throw new DatabaseClosingError(databaseName);
+		if (scanBlockedDatabaseDrops(databasePath).length > 0) {
+			const error: any = new Error(
+				`Database '${databaseName}' shares a configured path with an incomplete drop; retry drop_database to recover it`
+			);
+			error.statusCode = 409;
+			throw error;
+		}
+	}
 
 	let rootStore: RootDatabaseKind;
 	const useRocksdb = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb';
+	const path = useRocksdb
+		? join(databasePath, tablePath ? tableName : databaseName)
+		: join(databasePath, `${tablePath ? tableName : databaseName}.mdb`);
+	if (!allowPreparedDrop && databaseRootUnavailable(path)) throw new DatabaseClosingError(databaseName);
+	throwIfBlockedByRestore(path, databaseName);
+	ensureDB(databaseName);
+	definedDatabase = definedDatabases.get(databaseName);
 	if (useRocksdb) {
-		const path = join(databasePath, tablePath ? tableName : databaseName);
 		// the scan is not the only way to reach a branch's directory: a branch leaves its store in
 		// `rocksdbDatabaseEnvs`, so without this an on-demand open would staple it onto
 		// `definedDatabases` and the next `closeDatabase` would close it under the live handle
@@ -2068,7 +2317,6 @@ export function database({ database: databaseName, table: tableName }) {
 			// this on-demand open (create_table/create_database and friends) must not resurrect a
 			// database that a restore is rewriting (or left half-purged) — the scan-time restore
 			// checks don't cover this path
-			throwIfBlockedByRestore(path, databaseName);
 			rootStore = openRocksDatabase(path, {
 				disableWAL: false,
 				enableStats: true,
@@ -2076,7 +2324,6 @@ export function database({ database: databaseName, table: tableName }) {
 			rocksdbDatabaseEnvs.set(path, rootStore as any);
 		}
 	} else {
-		const path = join(databasePath, `${tablePath ? tableName : databaseName}.mdb`);
 		rootStore = lmdbDatabaseEnvs.get(path);
 		if (!rootStore || rootStore.status === 'closed') {
 			// TODO: validate database name
@@ -2092,6 +2339,13 @@ export function database({ database: databaseName, table: tableName }) {
 	return rootStore;
 }
 function throwIfBlockedByRestore(dbPath: string, databaseName: string): void {
+	if (databaseDropMarkerPresent(dbPath)) {
+		const error: any = new Error(
+			`Database '${databaseName}' has an incomplete drop; retry drop_database to recover it`
+		);
+		error.statusCode = 409;
+		throw error;
+	}
 	const restoreState = checkRestoreState(dbPath);
 	if (restoreState !== 'clear') {
 		const error: any = new Error(
@@ -2104,185 +2358,608 @@ function throwIfBlockedByRestore(dbPath: string, databaseName: string): void {
 	}
 }
 
-/**
- * Take the per-database restore lock for a drop, refusing (409) if a restore holds it (in-progress)
- * or a crashed restore left a marker (incomplete). Pushes the acquired lock onto `held` so the
- * caller releases it after the drop. On refusal, releases anything already held and throws.
- *
- * The lock is not reentrant within a process, so a path already in `held` must be skipped — every
- * table in a RocksDB database shares one root store (and one lock path), and re-acquiring it in the
- * same drop would spuriously 409 on the second table.
- */
-function lockDatabaseForDrop(dbPath: string, databaseName: string, held: RestoreLock[]): void {
-	if (held.some((h) => h.dbPath === dbPath)) return;
-	let lock: RestoreLock;
+function lockDatabaseForDrop(
+	dbPath: string,
+	databaseName: string,
+	held: DatabaseDropLock[],
+	blobDatabaseName = databaseName,
+	blobPaths = getBlobPathsForDatabaseName(blobDatabaseName)
+): void {
+	if (held.some((lock) => lock.dbPath === dbPath)) return;
 	try {
-		lock = acquireRestoreLock(dbPath);
+		held.push(beginDatabaseDrop(dbPath, databaseName, blobDatabaseName, blobPaths));
 	} catch (error) {
-		for (const h of held) releaseRestoreLock(h);
-		throw error; // 409: a restore is in progress and holds the lock
-	}
-	// We now hold the lock, so no restore is active. A surviving marker is therefore debris from a
-	// crashed restore (incomplete) — refuse rather than delete a directory that still needs recovery.
-	if (restoreMarkerPresent(dbPath)) {
-		releaseRestoreLock(lock);
-		for (const h of held) releaseRestoreLock(h);
-		const error: any = new Error(
-			`Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`
-		);
-		error.statusCode = 409;
+		const cleanupFailures = [];
+		for (const lock of held.splice(0)) {
+			try {
+				cancelDatabaseDrop(lock);
+			} catch (cleanupError) {
+				cleanupFailures.push(cleanupError);
+			}
+		}
+		if (cleanupFailures.length > 0)
+			throw new AggregateError([error, ...cleanupFailures], `Could not cancel database drop '${databaseName}'`);
 		throw error;
 	}
-	held.push(lock);
+}
+
+function releaseDatabaseDropLocks(locks: DatabaseDropLock[], retainMarkers: boolean): void {
+	const failures = [];
+	while (locks.length > 0) {
+		try {
+			const lock = locks.shift()!;
+			if (retainMarkers) abandonDatabaseDrop(lock);
+			else cancelDatabaseDrop(lock);
+		} catch (error) {
+			failures.push(error);
+		}
+	}
+	if (failures.length > 0) throw new AggregateError(failures, 'Could not release database drop locks');
+}
+
+function inferDropBlobDatabaseName(databaseName: string, rootPath: string): string {
+	const schemaConfigs = envGet(CONFIG_PARAMS.DATABASES) || {};
+	const databaseConfig = schemaConfigs[databaseName];
+	const normalizedRootPath = resolve(rootPath);
+	for (const [tableName, tableConfig] of Object.entries(databaseConfig?.tables || {}) as [string, any][]) {
+		if (!tableConfig?.path) continue;
+		if (
+			[resolve(tableConfig.path, tableName), resolve(tableConfig.path, `${tableName}.mdb`)].includes(normalizedRootPath)
+		)
+			return databaseName;
+	}
+	if (resolve(dirname(rootPath)) === resolve(getBaseSchemaPath(), databaseName)) return databaseName;
+
+	const physicalName = basename(rootPath).replace(/\.mdb$/, '');
+	const rootDirectory = resolve(dirname(rootPath));
+	if (databaseConfig?.path && resolve(databaseConfig.path) === rootDirectory) {
+		if (!schemaConfigs[physicalName]?.path) return physicalName;
+		for (const [configuredName, configured] of Object.entries(schemaConfigs) as [string, any][]) {
+			if (configured?.path && resolve(configured.path) === rootDirectory) return configuredName;
+		}
+	}
+	try {
+		const storageRoot = resolveDatabaseStorageRoot(databaseName);
+		if ([resolve(storageRoot, databaseName), resolve(storageRoot, `${databaseName}.mdb`)].includes(normalizedRootPath))
+			return databaseName;
+	} catch {}
+	return physicalName;
+}
+
+const incompleteDatabaseDropStores = new Map<string, RootDatabaseKind>();
+
+function rememberIncompleteDatabaseClose(
+	databaseNames: Iterable<string>,
+	rootPaths: Iterable<string>,
+	retry: () => Promise<void>
+): void {
+	const names = new Set(databaseNames);
+	const normalizedPaths = [...new Set([...rootPaths].map((rootPath) => resolve(rootPath)))];
+	const incompleteClose: IncompleteDatabaseClose = { databaseNames: names, rootPaths: normalizedPaths, retry };
+	for (const rootPath of normalizedPaths) incompleteDatabaseCloses.set(rootPath, incompleteClose);
+	logger.warn(
+		`Database '${[...names].join("', '")}' handles remain partially closed on this worker; the affected roots stay unavailable until drop_database is retried or the worker restarts`,
+		normalizedPaths
+	);
+}
+
+function incompleteDatabaseClosePaths(databaseName: string): string[] {
+	const rootPaths = new Set<string>();
+	for (const incompleteClose of new Set(incompleteDatabaseCloses.values())) {
+		if (!incompleteClose.databaseNames.has(databaseName)) continue;
+		for (const rootPath of incompleteClose.rootPaths) rootPaths.add(rootPath);
+	}
+	return [...rootPaths];
+}
+
+async function retryIncompleteDatabaseClose(rootPath: string): Promise<void> {
+	const incompleteClose = incompleteDatabaseCloses.get(resolve(rootPath));
+	if (!incompleteClose) return;
+	if (!incompleteClose.task) {
+		const operation = incompleteClose.retry().then(() => {
+			for (const path of incompleteClose.rootPaths) {
+				if (incompleteDatabaseCloses.get(path) === incompleteClose) incompleteDatabaseCloses.delete(path);
+			}
+		});
+		let retryable: Promise<void>;
+		retryable = operation.catch((error) => {
+			if (incompleteClose.task === retryable) incompleteClose.task = undefined;
+			throw error;
+		});
+		incompleteClose.task = retryable;
+	}
+	await incompleteClose.task;
+}
+
+async function destroyIncompleteDatabaseRoot(rootPath: string): Promise<void> {
+	const rootStore = incompleteDatabaseDropStores.get(rootPath);
+	if (!rootStore || !existsSync(rootPath)) {
+		incompleteDatabaseDropStores.delete(rootPath);
+		await rm(rootPath, { recursive: true, force: true });
+		return;
+	}
+	if (rootStore instanceof RocksDatabase) {
+		if (rootStore.status === 'open') {
+			await (rootStore as any).dbisDb?.close?.();
+			await rootStore.close();
+		}
+		await rootStore.destroy();
+	} else {
+		if (rootStore.status === 'open') await rootStore.close();
+		await rm(rootPath, { force: true });
+	}
+	incompleteDatabaseDropStores.delete(rootPath);
+}
+
+async function resumeIncompleteDatabaseDrop(databaseName: string, rootPaths: Iterable<string>): Promise<void> {
+	const dropLocks: DatabaseDropLock[] = [];
+	let destructiveWorkStarted = false;
+	try {
+		const paths = new Set(rootPaths);
+		for (const rootPath of paths) await retryIncompleteDatabaseClose(rootPath);
+		if (
+			registryStatus().some(
+				(entry) => paths.has(entry.path) && entry.refCount > 0 && !incompleteDatabaseDropStores.has(entry.path)
+			)
+		)
+			throw new DatabaseClosingError(databaseName);
+		for (const rootPath of paths)
+			lockDatabaseForDrop(rootPath, databaseName, dropLocks, inferDropBlobDatabaseName(databaseName, rootPath));
+		destructiveWorkStarted = true;
+		for (const lock of dropLocks) await destroyIncompleteDatabaseRoot(lock.dbPath);
+		await deleteBlobPaths(dropLocks.flatMap((lock) => lock.blobPaths));
+		while (dropLocks.length > 0) completeDatabaseDrop(dropLocks.shift()!);
+	} finally {
+		releaseDatabaseDropLocks(dropLocks, destructiveWorkStarted);
+	}
 }
 
 /**
  * Delete the database
  * @param databaseName
  */
-export async function dropDatabase(databaseName) {
-	if (!databases[databaseName]) throw new Error('Database does not exist');
-	const dbTables = databases[databaseName];
-	let rootStore;
+export async function dropDatabase(databaseName, requestedRootPaths: Iterable<string> = []) {
+	if (!databases[databaseName]) {
+		const rootPaths = new Set(requestedRootPaths);
+		if (rootPaths.size === 0) throw new Error('Database does not exist');
+		return resumeIncompleteDatabaseDrop(databaseName, rootPaths);
+	}
+	const { databaseNames, dbTables, rootStores } = collectDatabaseGraph(databaseName);
 
-	// Hold the per-database restore lock across the entire drop so its file deletion can never
-	// interleave with a restore's purge-and-copy on the same directory — a destroy landing after a
-	// restore's copy would gut a "successful" restore, and vice versa. Restore takes the same lock
-	// (before writing its marker), so both operations serialize on this one primitive rather than on
-	// a check-then-act marker probe. Released in the finally below.
-	const restoreLocks: RestoreLock[] = [];
+	const dropLocks: DatabaseDropLock[] = [];
+	let releaseDerivedIndexActivation: (() => void) | undefined;
+	let destructiveWorkStarted = false;
+	let dropCompleted = false;
 	try {
-		for (const tableName in dbTables) {
-			const table = dbTables[tableName];
-			rootStore = table.primaryStore.rootStore;
-			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
+		if (rootStores.size === 0) {
+			rootStores.add(openDatabaseRoot({ database: databaseName }, { allowPreparedDrop: true }));
+		}
+		const blobStorageByRootPath = new Map(
+			[...rootStores].map((rootStore) => [
+				rootStore.path,
+				{
+					databaseName: rootStore.databaseName ?? databaseName,
+					paths: getRootBlobPathsForDB(rootStore as RootDatabase),
+				},
+			])
+		);
+		for (const rootPath of new Set([...requestedRootPaths, ...blobStorageByRootPath.keys()])) {
+			const blobStorage = blobStorageByRootPath.get(rootPath);
+			const blobDatabaseName = blobStorage?.databaseName ?? inferDropBlobDatabaseName(databaseName, rootPath);
+			lockDatabaseForDrop(
+				rootPath,
+				databaseName,
+				dropLocks,
+				blobDatabaseName,
+				blobStorage?.paths ?? getBlobPathsForDatabaseName(blobDatabaseName)
+			);
+		}
+		const openedRootPaths = new Set([...rootStores].map((rootStore) => rootStore.path));
+		const detachedRootPaths = dropLocks.map((lock) => lock.dbPath).filter((rootPath) => !openedRootPaths.has(rootPath));
+		const detachedRootPathSet = new Set(detachedRootPaths);
+		const detachedRootHasForeignHandle = () =>
+			registryStatus().some(
+				(entry) =>
+					detachedRootPathSet.has(entry.path) && entry.refCount > 0 && !incompleteDatabaseDropStores.has(entry.path)
+			);
+		if (detachedRootHasForeignHandle()) throw new DatabaseClosingError(databaseName);
+		releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, true, rootStores);
+		destructiveWorkStarted = true;
+		for (const rootStore of rootStores) {
 			lmdbDatabaseEnvs.delete(rootStore.path);
 			rocksdbDatabaseEnvs.delete(rootStore.path);
 		}
 
-		for (const tableName in dbTables) {
-			databaseEventsEmitter.emit('dropTable', tableName, databaseName);
+		for (const [tableName, table] of Object.entries(dbTables)) {
+			databaseEventsEmitter.emit('dropTable', (table as any).tableName ?? tableName, (table as any).databaseName);
 		}
 
-		if (databaseName === 'data') {
-			for (const tableName in tables) {
-				delete tables[tableName];
+		for (const name of databaseNames) {
+			if (name === 'data') {
+				for (const tableName in tables) {
+					delete tables[tableName];
+				}
+				delete tables[DEFINED_TABLES];
 			}
-			delete tables[DEFINED_TABLES];
+			delete databases[name];
+			definedDatabases?.delete(name);
+			databaseEventsEmitter.emit('dropDatabase', name);
 		}
-		delete databases[databaseName];
 
-		databaseEventsEmitter.emit('dropDatabase', databaseName);
+		const closedStores = new Set<any>();
+		for (const table of Object.values(dbTables) as any[]) {
+			if (!(table?.primaryStore?.rootStore instanceof RocksDatabase)) continue;
+			for (const store of [...Object.values(table.indices || {}), table.primaryStore] as any[]) {
+				if (!store || closedStores.has(store)) continue;
+				closedStores.add(store);
+				await store.close?.();
+			}
+		}
 
-		if (rootStore) {
-			// awaited: retirement stops the loop admitting work, the barrier is what says the pass that was
-			// already running has released the stores this is about to close and unlink
+		for (const rootStore of rootStores) {
 			await rootStore.auditStore?.stopAuditCleanup?.();
 			removeStorageReclamation(rootStore.path);
 			if (rootStore.status === 'open') {
 				if (rootStore instanceof RocksDatabase) {
-					rootStore.close();
-					rootStore.destroy();
+					await (rootStore as any).dbisDb?.close?.();
+					await rootStore.close();
+					await rootStore.destroy();
 				} else {
 					await rootStore.close();
 					await unlink(rootStore.path);
 				}
 			}
-		} else {
-			rootStore = database({ database: databaseName, table: null });
-			// a tableless database resolves its root store here rather than in the loop above, so take
-			// the drop lock now (still before any destructive step)
-			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
-			await rootStore.auditStore?.stopAuditCleanup?.();
-			removeStorageReclamation(rootStore.path);
-			if (rootStore instanceof RocksDatabase) {
-				rootStore.close();
-				rootStore.destroy();
-			} else if (rootStore.status === 'open') {
-				await rootStore.close();
-				await unlink(rootStore.path);
+		}
+		if (detachedRootHasForeignHandle()) throw new DatabaseClosingError(databaseName);
+		for (const rootPath of detachedRootPaths) await rm(rootPath, { recursive: true, force: true });
+
+		await deleteBlobPaths(dropLocks.flatMap((lock) => lock.blobPaths));
+		while (dropLocks.length > 0) completeDatabaseDrop(dropLocks.shift()!);
+		dropCompleted = true;
+	} finally {
+		if (destructiveWorkStarted) {
+			for (const rootStore of rootStores) databasePaths.delete(rootStore as RootDatabase);
+			for (const rootStore of rootStores) {
+				if (databaseDropMarkerPresent(rootStore.path)) incompleteDatabaseDropStores.set(rootStore.path, rootStore);
+			}
+			if (!dropCompleted) {
+				permanentlySuspendDatabaseCommits(rootStores);
+				for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);
 			}
 		}
-
-		await deleteRootBlobPathsForDB(rootStore);
-	} finally {
-		for (const lock of restoreLocks) releaseRestoreLock(lock);
+		releaseDerivedIndexActivation?.();
+		releaseDatabaseDropLocks(dropLocks, destructiveWorkStarted);
 	}
 }
 
-/**
- * Close a database's store handles on the current thread and unregister it, without
- * touching its files. Used by the restore_backup flow: every thread must release its handles so
- * `backups.restore()` can purge and rewrite the (fully closed) database directory. A subsequent
- * `resetDatabases()`/`getDatabases()` rescan reloads it (or skips it while a restore is in
- * progress, per the restore marker checks in the scan).
- *
- * An LMDB database is closed by closing its environment, which releases every dbi in it, so every
- * other database alias sharing that environment is closed with it.
- */
-export function closeDatabase(databaseName: string): boolean {
-	const dbTables = databases[databaseName];
-	if (!dbTables) return false;
-	const rootStores = new Set<any>();
-	const closeStore = (store: any, description: string) => {
+const databaseDropPreparationTasks = new Map<string, { id: string; task: Promise<void>; rootPaths: string[] }>();
+
+function addPhysicalDatabaseRoots(directory: string, rootPaths: Set<string>): void {
+	if (!existsSync(directory)) return;
+	for (const entry of readdirSync(directory, { withFileTypes: true })) {
+		if (entry.name === RESTORE_META_DIR || entry.name === BRANCH_ROOT_DIR || entry.name.endsWith(MIGRATING_DIR_SUFFIX))
+			continue;
+		const rootPath = join(directory, entry.name);
+		if (entry.isFile()) {
+			if (extname(entry.name).toLowerCase() === '.mdb') rootPaths.add(rootPath);
+			continue;
+		}
+		if (!entry.isDirectory()) continue;
 		try {
-			store?.close?.();
+			const files = readdirSync(rootPath, { withFileTypes: true });
+			if (
+				files.find((file) => file.name === 'CURRENT')?.isFile() &&
+				files.some((file) => file.name.startsWith('MANIFEST-'))
+			)
+				rootPaths.add(rootPath);
+		} catch (error) {
+			if (!('code' in error && error.code === 'ENOENT')) throw error;
+		}
+	}
+}
+
+function databaseDropRecoveryGraphPaths(databaseName: string, incompleteRootPaths: string[]): string[] {
+	const rootPaths = new Set(incompleteRootPaths);
+	if (incompleteRootPaths.length === 0) return [];
+	const databaseConfig = (envGet(CONFIG_PARAMS.DATABASES) || {})[databaseName];
+	if (databaseConfig?.path) addPhysicalDatabaseRoots(databaseConfig.path, rootPaths);
+	addPhysicalDatabaseRoots(join(getBaseSchemaPath(), databaseName), rootPaths);
+	for (const [tableName, tableConfig] of Object.entries(databaseConfig?.tables || {}) as [string, any][]) {
+		if (!tableConfig?.path) continue;
+		for (const rootPath of [join(tableConfig.path, tableName), join(tableConfig.path, `${tableName}.mdb`)]) {
+			if (existsSync(rootPath)) rootPaths.add(rootPath);
+		}
+	}
+	try {
+		const storageRoot = resolveDatabaseStorageRoot(databaseName);
+		for (const rootPath of [join(storageRoot, databaseName), join(storageRoot, `${databaseName}.mdb`)]) {
+			if (existsSync(rootPath)) rootPaths.add(rootPath);
+		}
+	} catch {}
+	return [...rootPaths];
+}
+
+function incompleteDatabaseDropPaths(databaseName: string): string[] {
+	const directories = new Set<string>();
+	try {
+		directories.add(resolveDatabaseStorageRoot(databaseName));
+	} catch {}
+	directories.add(join(getBaseSchemaPath(), databaseName));
+	const databaseConfig = (envGet(CONFIG_PARAMS.DATABASES) || {})[databaseName];
+	if (databaseConfig?.path) directories.add(databaseConfig.path);
+	for (const tableConfig of Object.values(databaseConfig?.tables || {}) as any[]) {
+		if (tableConfig?.path) directories.add(tableConfig.path);
+	}
+	const rootPaths = new Set<string>();
+	for (const directory of directories) {
+		for (const drop of scanBlockedDatabaseDrops(directory)) {
+			if (drop.databaseName === databaseName) rootPaths.add(drop.rootPath);
+		}
+	}
+	return [...rootPaths];
+}
+
+export function databaseDropRecoveryPending(databaseName: string): boolean {
+	return incompleteDatabaseDropPaths(databaseName).length > 0 || incompleteDatabaseClosePaths(databaseName).length > 0;
+}
+
+export function databaseDropPreparationTargets(databaseName: string): {
+	rootPaths: string[];
+} {
+	getDatabases();
+	const incompleteRootPaths = [
+		...new Set([...incompleteDatabaseDropPaths(databaseName), ...incompleteDatabaseClosePaths(databaseName)]),
+	];
+	const recoveryRootPaths = databaseDropRecoveryGraphPaths(databaseName, incompleteRootPaths);
+	if (!databases[databaseName]) {
+		if (recoveryRootPaths.length > 0) return { rootPaths: recoveryRootPaths };
+		throw new Error(`Database '${databaseName}' does not exist`);
+	}
+	const graph = collectDatabaseGraph(databaseName);
+	if (graph.rootStores.size === 0) graph.rootStores.add(openDatabaseRoot({ database: databaseName }));
+	return {
+		rootPaths: [...new Set([...recoveryRootPaths, ...[...graph.rootStores].map((rootStore) => rootStore.path)])],
+	};
+}
+
+export function prepareDatabaseDrop(
+	databaseName: string,
+	preparationId: string,
+	ownerThreadId: number,
+	requestedRootPaths: Iterable<string> = []
+): Promise<void> {
+	const existing = databaseDropPreparationTasks.get(databaseName);
+	if (existing?.id === preparationId) return existing.task;
+	const rootPaths = new Set(requestedRootPaths);
+	if (databases[databaseName]) {
+		const graph = collectDatabaseGraph(databaseName);
+		for (const rootStore of graph.rootStores) rootPaths.add(rootStore.path);
+	}
+	const names: string[] = [];
+	for (const name of Object.keys(databases)) {
+		const definedRoot = (definedDatabases?.get(name) as any)?.rootStore;
+		if (definedRoot && rootPaths.has(definedRoot.path)) {
+			names.push(name);
+			continue;
+		}
+		const tables = databases[name];
+		if (
+			Object.values(tables).some((table: any) => {
+				const rootStore = table?.primaryStore?.rootStore;
+				return rootStore && rootPaths.has(rootStore.path);
+			})
+		)
+			names.push(name);
+	}
+	const paths = [...rootPaths];
+	claimDatabaseDropPreparations(paths, preparationId, ownerThreadId, databaseName);
+	const task = (async () => {
+		const failures: unknown[] = [];
+		for (const rootPath of paths) {
+			try {
+				await retryIncompleteDatabaseClose(rootPath);
+			} catch (error) {
+				failures.push(error);
+			}
+		}
+		for (const name of names) {
+			try {
+				await closeDatabase(name, { requireClosed: true });
+			} catch (error) {
+				failures.push(error);
+			}
+		}
+		for (const rootPath of paths) {
+			if (!incompleteDatabaseDropStores.has(rootPath)) continue;
+			try {
+				await destroyIncompleteDatabaseRoot(rootPath);
+			} catch (error) {
+				failures.push(error);
+			}
+		}
+		if (failures.length > 0)
+			throw new AggregateError(failures, `Could not prepare database '${databaseName}' for drop`);
+	})();
+	databaseDropPreparationTasks.set(databaseName, { id: preparationId, task, rootPaths: paths });
+	for (const rootPath of paths) trackDatabaseDropPreparationTask(rootPath, preparationId, task);
+	return task;
+}
+
+export async function completeDatabaseDropPreparation(
+	databaseName: string,
+	preparationId: string,
+	requestedRootPaths: Iterable<string> = []
+): Promise<void> {
+	const existing = databaseDropPreparationTasks.get(databaseName);
+	if (existing?.id === preparationId) {
+		try {
+			await existing.task;
+		} catch {
+			// Preparation already reported this failure to the strict broadcaster.
+		}
+		databaseDropPreparationTasks.delete(databaseName);
+	}
+	releaseDatabaseDropPreparations(existing?.rootPaths ?? requestedRootPaths, preparationId);
+}
+
+async function closeDatabaseStores(
+	databaseName: string,
+	dbTables: Record<string, any>,
+	rootStores: Set<any>,
+	requireClosed: boolean
+): Promise<unknown[]> {
+	const rootStorePaths: string[] = [];
+	const closeFailures: unknown[] = [];
+	const closeStore = async (store: any, description: string) => {
+		if (!store || store.status === 'closed') return true;
+		try {
+			await store.close?.();
+			return true;
 		} catch (error) {
 			logger.warn(`Error closing ${description} while closing database ${databaseName}:`, error);
+			closeFailures.push(error);
+			return false;
 		}
 	};
-	for (const tableName in dbTables) {
-		const table: any = dbTables[tableName];
-		if (!table?.primaryStore) continue;
-		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
-	}
-	// a database with no tables (an empty schema, or one whose tables were all dropped) still holds
-	// an open root store, tracked only on the defined-database entry rather than any table — include
-	// it so its handles are released too (the Set dedupes it against the per-table root stores above)
-	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
-	if (definedRoot) rootStores.add(definedRoot);
-	// before any table store closes, so no further pass is admitted. This is synchronous, so it cannot
-	// await the drain barrier stopAuditCleanup() returns; what covers it is the in-pass status checks,
-	// plus the fact that its production callers reach it only for RocksDB databases, whose pass is one
-	// synchronous purgeLogs() call with nothing suspended mid-removal.
-	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
 	const lmdbRootStores = new Set([...rootStores].filter((rootStore) => !(rootStore instanceof RocksDatabase)));
 	for (const tableName in dbTables) {
 		const table: any = dbTables[tableName];
-		// a dbi closed natively after its environment closed (through another alias sharing it) runs
-		// mdb_dbi_close against the freed environment
 		if (!table?.primaryStore || lmdbRootStores.has(table.primaryStore.rootStore)) continue;
+		const tableIdentity = `${table.databaseName ?? databaseName}.${table.tableName ?? tableName}`;
 		for (const indexName in table.indices || {}) {
-			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
+			await closeStore(table.indices[indexName], `index ${tableIdentity}.${indexName}`);
 		}
-		closeStore(table.primaryStore, `table ${tableName}`);
+		await closeStore(table.primaryStore, `table ${tableIdentity}`);
 	}
 	for (const rootStore of rootStores) {
 		removeStorageReclamation(rootStore.path);
+		databasePaths.delete(rootStore as RootDatabase);
+		let rootClosed = rootStore.status !== 'open';
 		if (!lmdbRootStores.has(rootStore)) {
-			closeStore(rootStore.dbisDb, 'attributes store');
-			closeStore(rootStore, 'root store');
-		} else if (rootStore.status === 'open') closeStore(rootStore, 'root store');
-		lmdbDatabaseEnvs.delete(rootStore.path);
-		rocksdbDatabaseEnvs.delete(rootStore.path);
+			await closeStore(rootStore.dbisDb, 'attributes store');
+			rootClosed = await closeStore(rootStore, 'root store');
+		} else if (!rootClosed) rootClosed = await closeStore(rootStore, 'root store');
+		if (rootClosed || !requireClosed) rootStorePaths.push(rootStore.path);
 	}
-	unregisterDatabase(databaseName);
-	for (const aliasName of Object.keys(databases)) {
-		for (const rootStore of lmdbRootStores) {
-			if (databaseUsesRootStore(aliasName, rootStore)) {
-				closeDatabase(aliasName);
+	for (const path of rootStorePaths) {
+		lmdbDatabaseEnvs.delete(path);
+		rocksdbDatabaseEnvs.delete(path);
+	}
+	return closeFailures;
+}
+
+/**
+ * Close a database's store handles on this thread and unregister every alias sharing those roots,
+ * without touching files. Restore uses this before rewriting the closed directory. With
+ * `requireClosed`, any handle failure rejects and leaves the affected wrappers permanently fenced
+ * for an explicit retry. Closing an LMDB environment closes every DBI and alias that shares it.
+ */
+export async function closeDatabase(
+	databaseName: string,
+	{ requireClosed = false }: { requireClosed?: boolean } = {}
+): Promise<boolean> {
+	if (!databases[databaseName]) return false;
+	const { databaseNames, dbTables, rootStores } = collectDatabaseGraph(databaseName);
+	const releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, false, rootStores);
+	let databaseClosed = false;
+	let handleCloseStarted = false;
+	try {
+		await Promise.all([...rootStores].map((rootStore) => rootStore.auditStore?.stopAuditCleanup?.()));
+		handleCloseStarted = true;
+		const closeFailures = await closeDatabaseStores(databaseName, dbTables, rootStores, requireClosed);
+		if (requireClosed && closeFailures.length > 0) {
+			for (const rootStore of rootStores) {
+				lmdbDatabaseEnvs.delete(rootStore.path);
+				rocksdbDatabaseEnvs.delete(rootStore.path);
+			}
+			for (const name of databaseNames) unregisterDatabase(name);
+			rememberIncompleteDatabaseClose(
+				databaseNames,
+				[...rootStores].map((rootStore) => rootStore.path),
+				async () => {
+					const retryFailures = await closeDatabaseStores(databaseName, dbTables, rootStores, true);
+					if (retryFailures.length > 0)
+						throw new AggregateError(retryFailures, `Could not finish closing database graph '${databaseName}'`);
+				}
+			);
+			throw new AggregateError(
+				closeFailures,
+				`Could not close database graph '${[...databaseNames].join("', '")}' for destructive DDL`
+			);
+		}
+		for (const name of databaseNames) unregisterDatabase(name);
+		databaseClosed = true;
+		return true;
+	} finally {
+		if (handleCloseStarted && !databaseClosed) {
+			permanentlySuspendDatabaseCommits(rootStores);
+			for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);
+		} else if (!databaseClosed && !handleCloseStarted) {
+			resumeTableMaintenance(dbTables);
+			for (const table of Object.values(dbTables)) refreshDerivedIndexes(table);
+		}
+		releaseDerivedIndexActivation();
+	}
+}
+
+function collectDatabaseGraph(databaseName: string): {
+	databaseNames: Set<string>;
+	dbTables: Record<string, any>;
+	rootStores: Set<any>;
+} {
+	const databaseNames = new Set([databaseName]);
+	const processedNames = new Set<string>();
+	const rootStores = new Set<any>();
+	const tableSet = new Set<any>();
+	for (;;) {
+		for (const name of databaseNames) {
+			if (processedNames.has(name)) continue;
+			processedNames.add(name);
+			const tables = databases[name];
+			for (const tableName in tables) {
+				const table = tables[tableName];
+				tableSet.add(table);
+				if (table?.primaryStore?.rootStore) rootStores.add(table.primaryStore.rootStore);
+			}
+			const definedRoot = (definedDatabases?.get(name) as any)?.rootStore;
+			if (definedRoot) rootStores.add(definedRoot);
+		}
+		let foundAlias = false;
+		for (const aliasName of Object.keys(databases)) {
+			if (databaseNames.has(aliasName)) continue;
+			for (const rootStore of rootStores) {
+				if (!databaseUsesRootStore(aliasName, rootStore)) continue;
+				databaseNames.add(aliasName);
+				foundAlias = true;
 				break;
 			}
 		}
+		if (!foundAlias) break;
 	}
-	return true;
+	return {
+		databaseNames,
+		dbTables: Object.fromEntries([...tableSet].map((table, index) => [index, table])),
+		rootStores,
+	};
 }
 
 function databaseUsesRootStore(databaseName: string, rootStore: any): boolean {
 	if ((definedDatabases?.get(databaseName) as any)?.rootStore === rootStore) return true;
 	const dbTables = databases[databaseName];
+	if (!dbTables) return false;
 	for (const tableName in dbTables) {
 		if ((dbTables[tableName] as any)?.primaryStore?.rootStore === rootStore) return true;
+	}
+	return false;
+}
+
+function databaseUsesPreparedRoot(databaseName: string): boolean {
+	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
+	if (definedRoot && databaseDropPrepared(definedRoot.path)) return true;
+	const dbTables = databases[databaseName];
+	for (const tableName in dbTables) {
+		const rootStore = (dbTables[tableName] as any)?.primaryStore?.rootStore;
+		if (rootStore && databaseDropPrepared(rootStore.path)) return true;
 	}
 	return false;
 }
@@ -2300,41 +2977,105 @@ function unregisterDatabase(databaseName: string): void {
 }
 
 /**
- * Close every RocksDB (user) database this thread has open, releasing its native handles.
+ * Close every user database this thread has open, releasing its native handles.
  *
- * rocksdb-js's registry is process-global across worker threads, and a thread that exits WITHOUT
- * closing leaks its handles (the process-global refCount never drops), while the only alternative,
- * `shutdown()`, tears down rocksdb for the entire process. So a worker thread that opens databases
- * and then exits — notably a job worker (jobProcess), which opens the whole database graph via
- * `getDatabases()` and exits when the job finishes — must close its handles explicitly, or those
- * handles linger process-wide (and, e.g., block an online `restore_backup` from confirming the
- * database is closed). The `system` database is intentionally left open: it is non-enumerable here
+ * A job worker opens the database graph and must prove every handle is closed before its exit can
+ * satisfy destructive-DDL preparation. RocksDB handles otherwise leak in the process-global
+ * registry; an open LMDB handle can likewise prevent deletion on Windows. The `system` database is
+ * intentionally left open: it is non-enumerable here
  * (skipped by the loop), is never restored online, and the exiting worker may still touch the job
  * table during teardown. Best-effort: closing failures are swallowed inside `closeDatabase`.
  *
  * Branches are invisible to the loop below but hold handles from the same registry, so this — the
  * thread's one teardown entry point — closes them too.
  */
-export function closeLoadedDatabases(): void {
-	closeBranchDatabases();
+export async function closeLoadedDatabases({ requireClosed = false }: { requireClosed?: boolean } = {}): Promise<void> {
+	const closeFailures: unknown[] = [];
+	try {
+		await closeBranchDatabases(requireClosed);
+	} catch (error) {
+		closeFailures.push(error);
+	}
 	// snapshot the names first: closeDatabase() deletes from `databases` as it goes
 	for (const databaseName of Object.keys(databases)) {
 		const dbTables = databases[databaseName];
 		if (!dbTables) continue;
-		let isRocks = false;
-		for (const tableName in dbTables) {
-			if (dbTables[tableName]?.primaryStore?.rootStore instanceof RocksDatabase) {
-				isRocks = true;
-				break;
-			}
+		try {
+			await closeDatabase(databaseName, { requireClosed });
+		} catch (error) {
+			logger.warn(`Error closing database ${databaseName} during worker teardown`, error);
+			closeFailures.push(error);
 		}
-		// a tableless database exposes no table root store, so also check the defined-database
-		// entry — otherwise its open root store would leak on worker exit
-		if (!isRocks && (definedDatabases?.get(databaseName) as any)?.rootStore instanceof RocksDatabase) {
-			isRocks = true;
-		}
-		if (isRocks) closeDatabase(databaseName);
 	}
+	if (requireClosed && closeFailures.length > 0)
+		throw new AggregateError(closeFailures, 'Could not close every database during worker teardown');
+}
+
+async function settleTableMaintenance(dbTables: Record<string, any>, deadline: number): Promise<void> {
+	await Promise.all(Object.values(dbTables).map((table: any) => table?.closeMaintenance?.(deadline)));
+}
+
+function resumeTableMaintenance(dbTables: Record<string, any>): void {
+	for (const table of Object.values(dbTables)) table?.resumeMaintenance?.();
+}
+
+async function settleDatabaseDerivedIndexes(
+	dbTables: Record<string, any>,
+	dropping: boolean,
+	additionalRootStores: Iterable<object> = []
+): Promise<() => void> {
+	const rootStores = new Set<object>(additionalRootStores);
+	for (const tableName in dbTables) {
+		const rootStore = dbTables[tableName]?.primaryStore?.rootStore;
+		if (rootStore) rootStores.add(rootStore);
+	}
+	const activationReleases = [...rootStores].map(suspendDerivedIndexActivation);
+	const commitSuspension = suspendDatabaseCommits(rootStores);
+	const deadline = Date.now() + getDatabaseCommitDrainTimeoutMilliseconds();
+	const databaseName = ([...rootStores][0] as any)?.databaseName ?? 'unknown';
+	let lifecycleReleased = false;
+	const releaseLifecycle = () => {
+		if (lifecycleReleased) return;
+		lifecycleReleased = true;
+		commitSuspension.release();
+		for (const release of activationReleases) release();
+	};
+	const attachments = new Map<any, any[]>();
+	for (const tableName in dbTables) {
+		const table = dbTables[tableName];
+		const attachment = table?.derivedIndexRuntime;
+		if (!attachment) continue;
+		let tables = attachments.get(attachment);
+		if (!tables) attachments.set(attachment, (tables = []));
+		tables.push(table);
+	}
+	const entries = [...attachments];
+	try {
+		await commitSuspension.waitForDrain({ deadline, databaseName });
+		await settleInterruptedDropRetirements(rootStores);
+		await settleTableMaintenance(dbTables, deadline);
+		if (attachments.size === 0) return releaseLifecycle;
+		const results = await Promise.allSettled(entries.map(async ([attachment]) => attachment.close(dropping)));
+		const failures = results
+			.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+			.map((result) => result.reason);
+		if (failures.length === 1) throw failures[0];
+		if (failures.length)
+			throw new AggregateError(failures, 'Could not settle derived indexes before closing the database');
+	} catch (error) {
+		resumeTableMaintenance(dbTables);
+		releaseLifecycle();
+		for (const [attachment, tables] of entries) {
+			if (dropping) attachment.completeDrop?.(false);
+			for (const table of tables) refreshDerivedIndexes(table);
+		}
+		throw error;
+	}
+	for (const [attachment, tables] of entries) {
+		if (dropping) attachment.completeDrop?.();
+		for (const table of tables) if (table.derivedIndexRuntime === attachment) table.derivedIndexRuntime = undefined;
+	}
+	return releaseLifecycle;
 }
 // HNSW_NO_AUTOVERSION kill-switch: when set, a NEW index initializes as legacy rather than
 // versioned. process.env values are strings, so a bare truthiness check would treat "0"/"false"
@@ -2809,6 +3550,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	let fullTextValuesForPersistence: unknown;
 	let fullTextPersistencePending = false;
 	let activeFullTextIndexes: FullTextDefinition[] | undefined;
+	let fullTextIndexGenerationMap: FullTextIndexGenerations = Object.create(null);
+	let fullTextIndexRetirementNames: string[] | undefined;
 	let restoreFullTextLiveState: (() => void) | undefined;
 	let armFullTextLiveStateRestore: (() => void) | undefined;
 	const attributesToIndex = [];
@@ -2857,8 +3600,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			let persistedPrimary = persistedPrimaryDescriptor(Table.dbisDB);
 			let persistedFullTextValues = persistedPrimary.descriptor?.fullTextIndexes;
 			const incomingFullTextValues = fullTextIndexesExplicit ? fullTextIndexes : [];
+			let fullTextValidationAttributes: any[] | undefined;
 			if (
 				(persistedFullTextValues !== undefined && (rootStore instanceof RocksDatabase || fullTextIndexesExplicit)) ||
+				persistedPrimary.descriptor?.fullTextIndexRetirements !== undefined ||
 				Table.fullTextIndexes?.length > 0 ||
 				(fullTextIndexesExplicit && (!Array.isArray(incomingFullTextValues) || incomingFullTextValues.length > 0))
 			) {
@@ -2868,6 +3613,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					persistedFullTextValues = persistedPrimary.descriptor?.fullTextIndexes;
 				}
 				const originalAttributes = Table.attributes.slice();
+				fullTextIndexRetirementNames = persistedFullTextIndexNames(
+					persistedPrimary.descriptor?.fullTextIndexRetirements
+				);
 				const relationshipAttributes = originalAttributes.filter((attribute: any) => attribute.relationship);
 				const originalMetadata = {
 					description: Table.description,
@@ -2886,14 +3634,19 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						Object.assign(Table, originalMetadata);
 						Table.properties = projectAttributesToProperties(restored);
 						const restoredPrimary = persistedPrimaryDescriptor(Table.dbisDB).descriptor;
-						Table.fullTextIndexes =
+						const restoredFullTextIndexes =
 							rootStore instanceof RocksDatabase && restoredPrimary?.audit === true
 								? readPersistedFullTextDefinitions(restoredPrimary?.fullTextIndexes, restored, fullTextWarning)
 								: [];
+						Table.fullTextIndexes = restoredFullTextIndexes;
+						Table.fullTextIndexGenerations = persistedFullTextIndexGenerations(
+							restoredPrimary?.fullTextIndexGenerations,
+							restoredFullTextIndexes
+						);
+						Table.fullTextIndexRetirements = persistedFullTextIndexNames(restoredPrimary?.fullTextIndexRetirements);
 						Table.schemaVersion++;
 						Table.updatedAttributes();
-						void Table.derivedIndexRuntime?.close();
-						Table.derivedIndexRuntime = attachDerivedIndexes(Table);
+						refreshDerivedIndexes(Table);
 					};
 				};
 				const durableAttributes = catalogAttributes(Table.dbisDB);
@@ -2909,6 +3662,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						if (durablePrimary) validationAttributes.unshift(durablePrimary);
 					}
 				}
+				fullTextValidationAttributes = validationAttributes;
 
 				const persistedAudit = persistedPrimary.descriptor?.audit;
 				const durableAudit = persistedAudit === true;
@@ -2947,21 +3701,59 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							`Table '${databaseName}.${tableName}' must enable audit logging before using @fullText because its transaction log is the derived-index recovery source`,
 							400
 						);
-					const interim = safeInterimFullTextDefinitions(persistedFullTextValues, validationAttributes, compiled);
 					const pinAudit = compiled.length > 0 && persistedPrimary.descriptor?.audit !== true;
-					if (pinAudit || !definitionsEqual(interim, persistedFullTextValues)) {
+					const requestedNames = new Set(compiled.map(({ name }) => name));
+					const durableDefinitions = readPersistedFullTextDefinitions(
+						persistedFullTextValues,
+						durableAttributes,
+						fullTextWarning
+					);
+					const removedNames = durableDefinitions.map(({ name }) => name).filter((name) => !requestedNames.has(name));
+					const invalidatedNames = durableDefinitions
+						.filter(({ name }) => requestedNames.has(name))
+						.filter((definition) => {
+							try {
+								compileFullTextDefinitions([definition], validationAttributes);
+								return false;
+							} catch (error) {
+								if (error instanceof ClientError) return true;
+								throw error;
+							}
+						})
+						.map(({ name }) => name);
+					const transitionRetirements = new Set([...removedNames, ...invalidatedNames]);
+					if (pinAudit || transitionRetirements.size > 0) {
 						const interimPrimary = { ...persistedPrimary.descriptor };
 						if (pinAudit) interimPrimary.audit = true;
-						if (interim.length > 0) interimPrimary.fullTextIndexes = interim;
-						else delete interimPrimary.fullTextIndexes;
+						if (transitionRetirements.size > 0) {
+							const interimDefinitions = durableDefinitions.filter(({ name }) => requestedNames.has(name));
+							if (interimDefinitions.length > 0) {
+								interimPrimary.fullTextIndexes = interimDefinitions;
+								interimPrimary.fullTextIndexGenerations = persistedFullTextIndexGenerations(
+									persistedPrimary.descriptor?.fullTextIndexGenerations,
+									interimDefinitions
+								);
+							} else {
+								delete interimPrimary.fullTextIndexes;
+								delete interimPrimary.fullTextIndexGenerations;
+							}
+							const retirements = new Set(
+								persistedFullTextIndexNames(persistedPrimary.descriptor?.fullTextIndexRetirements)
+							);
+							for (const name of transitionRetirements) retirements.add(name);
+							for (const name of requestedNames) if (!transitionRetirements.has(name)) retirements.delete(name);
+							fullTextIndexRetirementNames = [...retirements].sort();
+							if (fullTextIndexRetirementNames.length > 0)
+								interimPrimary.fullTextIndexRetirements = fullTextIndexRetirementNames.map((name) => ({ name }));
+							else delete interimPrimary.fullTextIndexRetirements;
+						}
 						armFullTextLiveStateRestore?.();
 						Table.dbisDB.put(persistedPrimary.key, interimPrimary);
 						if (pinAudit && Table.audit !== true) Table.enableAuditing();
-						Table.fullTextIndexes = rootStore instanceof RocksDatabase && finalAudit ? interim : [];
 						hasChanges = true;
 					}
 					fullTextValuesForPersistence = compiled;
-					fullTextPersistencePending = !definitionsEqual(compiled, interim);
+					fullTextPersistencePending = !definitionsEqual(compiled, persistedFullTextValues);
 					activeFullTextIndexes = compiled;
 				} else {
 					const retained = retainFullTextDefinitions(
@@ -2978,6 +3770,34 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					fullTextValuesForPersistence = persistedFullTextValues;
 					activeFullTextIndexes = rootStore instanceof RocksDatabase && finalAudit ? retained : [];
 				}
+			}
+			if (activeFullTextIndexes !== undefined) {
+				const durableGenerationDefinitions = readPersistedFullTextDefinitions(
+					persistedFullTextValues,
+					fullTextValidationAttributes ?? Table.attributes,
+					fullTextWarning
+				);
+				const finalGenerationDefinitions = readPersistedFullTextDefinitions(
+					fullTextValuesForPersistence ?? persistedFullTextValues,
+					fullTextValidationAttributes ?? Table.attributes,
+					fullTextWarning
+				);
+				fullTextIndexGenerationMap = reconcileFullTextIndexGenerations(
+					durableGenerationDefinitions,
+					persistedPrimary.descriptor?.fullTextIndexGenerations,
+					finalGenerationDefinitions,
+					createFullTextIndexGeneration
+				);
+				assertFullTextActivationSupported(rootStore, databaseName, tableName, activeFullTextIndexes);
+				if (
+					activeFullTextIndexes.length > 0 &&
+					rootStore instanceof RocksDatabase &&
+					fullTextClearInProgress(rootStore, Table.tableId)
+				)
+					throw new ClientError(
+						`Cannot activate @fullText on '${databaseName}.${tableName}' while Table.clear() is in progress`,
+						409
+					);
 			}
 			// it table already exists, get the split segments setting
 			if (splitSegments == undefined) splitSegments = Table.splitSegments;
@@ -3064,8 +3884,21 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			primaryKeyAttribute.schemaDefined = schemaDefined;
 			// Old readers treat every attribute row as live schema, so relationships stay on the ignored primary descriptor.
 			if (relationshipDefinitions) primaryKeyAttribute.relationships = relationshipDefinitions;
-			if (Array.isArray(fullTextValuesForPersistence) && fullTextValuesForPersistence.length > 0)
+			if (Array.isArray(fullTextValuesForPersistence) && fullTextValuesForPersistence.length > 0) {
+				const durableFullTextIndexes = readPersistedFullTextDefinitions(
+					fullTextValuesForPersistence,
+					attributes,
+					fullTextWarning
+				);
+				fullTextIndexGenerationMap = reconcileFullTextIndexGenerations(
+					[],
+					undefined,
+					durableFullTextIndexes,
+					createFullTextIndexGeneration
+				);
 				primaryKeyAttribute.fullTextIndexes = fullTextValuesForPersistence;
+				primaryKeyAttribute.fullTextIndexGenerations = fullTextIndexGenerationMap;
+			}
 			// can't change compression after the fact (except threshold), so save only when we create the table
 			primaryKeyAttribute.compression = getDefaultCompression();
 			if (trackDeletes) primaryKeyAttribute.trackDeletes = true;
@@ -3117,6 +3950,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			markInternalDbiNonVersioned(attributesDbi);
 
 			exclusiveLock(); // get an exclusive lock on the database so we can verify that we are the only thread creating the table (and assigning the table id)
+			if (rootStore instanceof RocksDatabase && fullTextRetirementInProgress(rootStore, tableName))
+				throw new ClientError(
+					`Cannot create '${databaseName}.${tableName}' while its previous full-text storage is being retired`,
+					409
+				);
 			const existingTableMeta = (attributesDbi as any).getSync(dbiName);
 			if (existingTableMeta && !existingTableMeta.dropping) {
 				// table was created while we were setting up; the lock is not reentrant, so release
@@ -3133,7 +3971,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// create below starts from a clean slate; treating the tombstoned
 				// entry as an existing table would recurse forever on the stale
 				// catalog row.
-				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+				if (!completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName))
+					throw new ClientError(
+						`Cannot create '${databaseName}.${tableName}' while its interrupted full-text drop is being retired`,
+						409
+					);
 				// This resolves the drop without ever going through the schema-load
 				// reconcile below, which is the only other place that returns a spent
 				// budget. Without clearing it here too, a table that gets dropped again
@@ -3188,6 +4030,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				indices: {},
 				attributes,
 				fullTextIndexes: activeFullTextIndexes ?? [],
+				fullTextIndexGenerations: fullTextIndexGenerationMap,
+				fullTextIndexRetirements: fullTextIndexRetirementNames ?? [],
 				schemaDefined,
 				dbisDB: attributesDbi,
 				description,
@@ -3599,14 +4443,39 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attributesDbi.put(dbiKey, attribute);
 			}
 		}
-		if (fullTextPersistencePending && !deferredPrimaryRow) {
+		if (
+			!deferredPrimaryRow &&
+			(fullTextPersistencePending ||
+				(rootStore instanceof RocksDatabase &&
+					activeFullTextIndexes !== undefined &&
+					Array.isArray(fullTextValuesForPersistence)))
+		) {
 			const { key, descriptor } = persistedPrimaryDescriptor(attributesDbi);
 			if (descriptor && !tableIsDropping(descriptor, key)) {
 				const updatedPrimary = { ...descriptor };
-				if (Array.isArray(fullTextValuesForPersistence) && fullTextValuesForPersistence.length > 0)
+				if (Array.isArray(fullTextValuesForPersistence) && fullTextValuesForPersistence.length > 0) {
 					updatedPrimary.fullTextIndexes = fullTextValuesForPersistence;
-				else delete updatedPrimary.fullTextIndexes;
-				if (!definitionsEqual(descriptor.fullTextIndexes, updatedPrimary.fullTextIndexes)) {
+					updatedPrimary.fullTextIndexGenerations = fullTextIndexGenerationMap;
+				} else {
+					delete updatedPrimary.fullTextIndexes;
+					delete updatedPrimary.fullTextIndexGenerations;
+				}
+				const activeNames = new Set(persistedFullTextIndexNames(updatedPrimary.fullTextIndexes));
+				const retirements = new Set(persistedFullTextIndexNames(descriptor.fullTextIndexRetirements));
+				for (const name of persistedFullTextIndexNames(descriptor.fullTextIndexes))
+					if (!activeNames.has(name)) retirements.add(name);
+				for (const name of activeNames) retirements.delete(name);
+				fullTextIndexRetirementNames = [...retirements].sort();
+				if (fullTextIndexRetirementNames.length > 0)
+					updatedPrimary.fullTextIndexRetirements = fullTextIndexRetirementNames.map((name) => ({ name }));
+				else delete updatedPrimary.fullTextIndexRetirements;
+				if (
+					!definitionsEqual(descriptor.fullTextIndexes, updatedPrimary.fullTextIndexes) ||
+					JSON.stringify(descriptor.fullTextIndexGenerations ?? {}) !==
+						JSON.stringify(updatedPrimary.fullTextIndexGenerations ?? {}) ||
+					JSON.stringify(descriptor.fullTextIndexRetirements ?? []) !==
+						JSON.stringify(updatedPrimary.fullTextIndexRetirements ?? [])
+				) {
 					exclusiveLock();
 					attributesDbi.put(key, updatedPrimary);
 					hasChanges = true;
@@ -3674,7 +4543,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	} finally {
 		releaseLock();
 	}
-	if (activeFullTextIndexes !== undefined) Table.fullTextIndexes = activeFullTextIndexes;
+	if (activeFullTextIndexes !== undefined) {
+		Table.fullTextIndexes = activeFullTextIndexes;
+		Table.fullTextIndexGenerations = fullTextIndexGenerationMap;
+		Table.fullTextIndexRetirements = fullTextIndexRetirementNames ?? [];
+	}
 	if (hasChanges || refreshRelationshipAttributes) Table.schemaVersion++;
 	if (hasChanges || refreshRelationshipAttributes || refreshedLiveAttributes) Table.updatedAttributes();
 	logger.trace(`${tableName} table loading, running index`);
@@ -3691,8 +4564,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
 		);
-	void Table.derivedIndexRuntime?.close();
-	Table.derivedIndexRuntime = attachDerivedIndexes(Table);
+	refreshDerivedIndexes(Table);
 
 	Table.origin = origin;
 	// scope-private: replication and other global subscribers must not learn of a branch class
@@ -4537,8 +5409,34 @@ function scheduleGenerationReclaim(rootStore: RocksDatabase, attributesDbi, data
 	state.delay = Math.min(state.delay * 2, 60_000);
 }
 
+const interruptedDropRetirements = new WeakMap<object, Set<Promise<void>>>();
+
+function trackInterruptedDropRetirement(rootStore: object, task: Promise<void>): void {
+	let tasks = interruptedDropRetirements.get(rootStore);
+	if (!tasks) interruptedDropRetirements.set(rootStore, (tasks = new Set()));
+	tasks.add(task);
+	const remove = () => {
+		tasks.delete(task);
+	};
+	task.then(remove, remove);
+}
+
+async function settleInterruptedDropRetirements(rootStores: Iterable<object>): Promise<void> {
+	for (;;) {
+		const tasks = [...rootStores].flatMap((rootStore) => [...(interruptedDropRetirements.get(rootStore) ?? [])]);
+		if (tasks.length === 0) return;
+		await Promise.allSettled(tasks);
+	}
+}
+
 /** Finishes the durable logical state of a drop that stopped after writing its tombstone. */
-function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string, tableName: string) {
+function completeInterruptedDrop(
+	rootStore,
+	attributesDbi,
+	databaseName: string,
+	tableName: string,
+	fullTextRetired = false
+): boolean {
 	logger.debug(`Completing interrupted drop of table ${databaseName}.${tableName}`);
 	const catalogRows = [...attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })] as Array<{
 		key: string;
@@ -4548,6 +5446,40 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 	const primaryEntry =
 		(bareEntry?.value?.isPrimaryKey ? bareEntry : undefined) ?? catalogRows.find(({ value }) => value?.isPrimaryKey);
 	const tombstoneEntry = bareEntry ?? primaryEntry;
+	if (rootStore instanceof RocksDatabase && !fullTextRetired) {
+		const names = [
+			...new Set([
+				...persistedFullTextIndexNames(primaryEntry?.value?.fullTextIndexes),
+				...persistedFullTextIndexNames(primaryEntry?.value?.fullTextIndexRetirements),
+			]),
+		];
+		if (names.length > 0) {
+			const releaseRetirement = acquireFullTextRetirementFence(rootStore, tableName);
+			if (releaseRetirement) {
+				const retirement = (async () => {
+					try {
+						const retired = await retireFullTextIndexes(
+							{ databaseName, tableName, primaryStore: { rootStore } },
+							names.map((name) => ({ name })),
+							() => rootStore.status === 'open' && !databaseCommitsSuspended(rootStore)
+						);
+						if (!retired || rootStore.status === 'closed' || databaseCommitsSuspended(rootStore)) return;
+						await withUpdateAttributesLockNonBlocking(
+							rootStore,
+							`complete interrupted drop of '${databaseName}.${tableName}'`,
+							() => completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName, true)
+						);
+					} catch (error) {
+						logger.warn(`Could not retire full-text storage for interrupted drop ${databaseName}.${tableName}`, error);
+					} finally {
+						releaseRetirement();
+					}
+				})();
+				trackInterruptedDropRetirement(rootStore, retirement);
+			}
+			return false;
+		}
+	}
 	if (rootStore instanceof RocksDatabase) {
 		const tombstone = tombstoneEntry?.value;
 		const generation = tombstone?.generation ?? primaryEntry?.value?.generation;
@@ -4598,6 +5530,7 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 		(attributesDbi as any).removeSync(key);
 	}
 	if (tombstoneEntry) (attributesDbi as any).removeSync(tombstoneEntry.key);
+	return true;
 }
 
 export function dropTableMeta({ table: tableName, database: databaseName }) {

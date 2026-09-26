@@ -34,21 +34,6 @@ export function readPersistedFullTextDefinitions(
 	});
 }
 
-/**
- * Produces the catalog state that is safe while source descriptors transition. The caller publishes
- * the requested definitions only after their source descriptors are durable.
- */
-export function safeInterimFullTextDefinitions(
-	values: unknown,
-	attributes: readonly FullTextSchemaAttribute[],
-	requested: readonly FullTextDefinition[]
-): FullTextDefinition[] {
-	const requestedByName = new Map(requested.map((definition) => [definition.name, definition]));
-	return compileValidFullTextDefinitions(values ?? [], attributes, () => {}).filter((definition) =>
-		definitionsEqual(definition, requestedByName.get(definition.name))
-	);
-}
-
 export function retainFullTextDefinitions(
 	values: unknown,
 	durableAttributes: readonly FullTextSchemaAttribute[],

@@ -19,6 +19,7 @@ import { cloneDeep } from 'lodash';
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 import { parentPort } from 'node:worker_threads';
+import { notifyJobCleanupComplete } from '../threads/manageThreads.js';
 import { getEnvBuiltInComponents } from './../../components/Application.ts';
 import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 const JOB_NAME = process.env[(hdbTerms as any).PROCESS_NAME_ENV_PROP] as string;
@@ -95,12 +96,15 @@ const JOB_ID = JOB_NAME.substring(4);
 		// that exits without closing leaks its handles process-wide, which (among other costs)
 		// blocks an online restore_backup from confirming the target database is closed. Best
 		// effort — never let cleanup mask the job result.
+		let databaseHandlesReleased = false;
 		try {
 			const { closeLoadedDatabases } = await import('../../resources/databases.ts');
-			closeLoadedDatabases();
+			await closeLoadedDatabases({ requireClosed: true });
+			databaseHandlesReleased = true;
 		} catch (closeErr) {
 			harperLogger.warn('Error releasing database handles on job worker exit:', closeErr);
 		}
+		if (databaseHandlesReleased) notifyJobCleanupComplete();
 		// On Bun 1.3.13, calling process.exit() in a worker thread with lmdb-js loaded
 		// while sibling workers are running causes a NAPI fatal error crash. Unref
 		// parentPort (which broadcastWithAcknowledgement may have ref'd during schema

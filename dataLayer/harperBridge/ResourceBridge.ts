@@ -1,6 +1,19 @@
 import searchValidator from '../../validation/searchValidator.ts';
+import { randomUUID } from 'node:crypto';
+import { threadId } from 'node:worker_threads';
 import { handleHDBError, ClientError, hdbErrors } from '../../utility/errors/hdbError.ts';
-import { table, getDatabases, database, dropDatabase, type Table } from '../../resources/databases.ts';
+import {
+	table,
+	getDatabases,
+	database,
+	databaseDropPreparationTargets,
+	dropDatabase,
+	type Table,
+} from '../../resources/databases.ts';
+import {
+	claimDatabaseDropPreparations,
+	releaseDatabaseDropPreparations,
+} from '../../resources/databaseDropPreparation.ts';
 import insertUpdateValidate from './bridgeUtility/insertUpdateValidate.js';
 import SearchObject from '../SearchObject.ts';
 import {
@@ -186,8 +199,31 @@ export class ResourceBridge extends BridgeMethods {
 	}
 
 	async dropSchema(dropSchemaObj) {
-		await dropDatabase(dropSchemaObj.schema);
-		signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, dropSchemaObj.schema));
+		const preparationId = randomUUID();
+		const { rootPaths } = databaseDropPreparationTargets(dropSchemaObj.schema);
+		const completion = () => {
+			const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, dropSchemaObj.schema);
+			message.dropPreparationId = preparationId;
+			message.dropPreparationOwnerThreadId = threadId;
+			message.dropPreparationRootPaths = rootPaths;
+			return message;
+		};
+		const preparation: any = completion();
+		preparation.prepareDrop = true;
+		claimDatabaseDropPreparations(rootPaths, preparationId, threadId, dropSchemaObj.schema);
+		try {
+			await signalling.signalSchemaChangeToPeers(preparation);
+			await dropDatabase(dropSchemaObj.schema, rootPaths);
+		} finally {
+			// The first round reaches current peers before local release; the second catches a worker whose
+			// startup snapshot inherited the fence. Cleanup-proven job workers are already exiting.
+			await signalling.signalSchemaChange(completion(), {
+				peersFirst: true,
+				includeJobWorkers: 'active',
+				peerRounds: 2,
+			});
+			releaseDatabaseDropPreparations(rootPaths, preparationId);
+		}
 	}
 
 	async updateRecords(updateObj) {

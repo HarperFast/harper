@@ -18,10 +18,10 @@ function run() {
 	setMainIsWorker(true);
 	onMessageByType(CONTROL_TYPE, () => {});
 	const keepAlive = setInterval(() => {}, 1000);
-	parentPort.on('message', (message) => {
+	parentPort.on('message', async (message) => {
 		if (message.type === CONTROL_TYPE && message.command === 'inspect') report('inspected', { aliases: aliasState() });
 		if (message.type === CONTROL_TYPE && message.command === 'close') {
-			closeLoadedDatabases();
+			await closeLoadedDatabases();
 			clearInterval(keepAlive);
 			report('closed');
 			parentPort.close();

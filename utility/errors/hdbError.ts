@@ -78,6 +78,27 @@ export class DerivedIndexLagError extends ServerError {
 	}
 }
 
+/** Retryable admission failure while a database is draining writes for close, restore, or drop. */
+export class DatabaseClosingError extends ServerError {
+	code: string;
+	retryable: boolean;
+	constructor(databaseName: string, retryable = true) {
+		super(`Database '${databaseName}' is closing; retry after it is available`, 503);
+		this.name = 'DatabaseClosingError';
+		this.code = 'DATABASE_CLOSING';
+		this.retryable = retryable;
+	}
+}
+
+export class DatabaseDrainTimeoutError extends DatabaseClosingError {
+	constructor(databaseName: string, timeoutMilliseconds: number) {
+		super(databaseName);
+		this.message = `Timed out after ${timeoutMilliseconds}ms waiting for database '${databaseName}' writes to drain; retry the operation`;
+		this.name = 'DatabaseDrainTimeoutError';
+		this.code = 'DATABASE_DRAIN_TIMEOUT';
+	}
+}
+
 /**
  * Thrown when a query targets an attribute whose secondary index is still being (re)built. It is a
  * distinct, retryable 503 so callers can tell a transient "index rebuilding" condition apart from a

@@ -11,6 +11,8 @@ const {
 	databases,
 	resetDatabases,
 	closeDatabase,
+	prepareDatabaseDrop,
+	completeDatabaseDropPreparation,
 	reloadBranchAt,
 	markDropInProgress,
 } = require('../../resources/databases.ts');
@@ -46,11 +48,37 @@ async function schemaHandler(event) {
 	}
 
 	hdbLogger.trace(`ITC schemaHandler received schema event:`, event);
+	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA && event.message.schema) {
+		if (event.message.prepareDrop) {
+			if (!event.message.dropPreparationId) throw new Error('Drop-schema preparation is missing its id');
+			if (!Number.isInteger(event.message.dropPreparationOwnerThreadId))
+				throw new Error('Drop-schema preparation is missing its owner thread id');
+			await prepareDatabaseDrop(
+				event.message.schema,
+				event.message.dropPreparationId,
+				event.message.dropPreparationOwnerThreadId,
+				event.message.dropPreparationRootPaths
+			);
+			return;
+		}
+		if (event.message.dropPreparationId)
+			await completeDatabaseDropPreparation(
+				event.message.schema,
+				event.message.dropPreparationId,
+				event.message.dropPreparationRootPaths
+			);
+	}
 	// restore_backup: this thread must release its store handles so the restore can purge and
 	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
 	// the restoring marker is present, and reloads it on the completion signal (marker gone).
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {
-		closeDatabase(event.message.schema);
+		try {
+			await closeDatabase(event.message.schema);
+		} catch (error) {
+			// Let the originator's process-wide closure check fail the restore immediately instead of
+			// withholding this worker's acknowledgement until the broadcast timeout.
+			hdbLogger.error(`Could not release database '${event.message.schema}' for restore`, error);
+		}
 	}
 	await cleanLmdbMap(event.message);
 	await syncSchemaMetadata(event.message);

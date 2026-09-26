@@ -25,6 +25,10 @@ const { resolveThreadHeapMemoryMb } = require('./threadHeapMemory.ts');
 const { getConfigPath } = require('../../config/configUtils.ts');
 const { resolveWatchTarget } = require('../../utility/watchPath.ts');
 const {
+	databaseDropPreparationSnapshot,
+	handleDatabaseDropPreparationOwnerExit,
+} = require('../../resources/databaseDropPreparation.ts');
+const {
 	DIRECTORY_POLLING_FALLBACK_OPTIONS,
 	claimLostNativeWatchError,
 	guardedWatch,
@@ -143,6 +147,14 @@ function restoreShutdownDeadline() {
 	} catch {}
 }
 
+function notifyJobCleanupComplete() {
+	for (const port of connectedPorts) {
+		try {
+			port.postMessage({ type: hdbTerms.ITC_EVENT_TYPES.JOB_CLEANUP_COMPLETE });
+		} catch {}
+	}
+}
+
 const listenersByType = new Map();
 const messagesQueuedByType = new Map();
 
@@ -170,6 +182,7 @@ module.exports = {
 	onMessageByType,
 	broadcast,
 	broadcastWithAcknowledgement,
+	broadcastWithStrictAcknowledgement,
 	getWorkerIndex,
 	getWorkerCount,
 	getEligibleBroadcastRecipientThreadIds,
@@ -178,6 +191,7 @@ module.exports = {
 	setTerminateTimeout,
 	extendShutdownDeadline,
 	restoreShutdownDeadline,
+	notifyJobCleanupComplete,
 	beginProcessShutdown,
 	registerWorkerDataProvider,
 	onThreadExit,
@@ -360,6 +374,7 @@ const RESERVED_WORKER_DATA_KEYS = [
 	'restartNumber',
 	'processIncarnation',
 	'ticketKeys',
+	'databaseDropPreparations',
 	'noServerStart',
 	'isolatedApplication',
 	'__proto__', // never a legitimate payload name; spread would define it as an own property
@@ -571,6 +586,7 @@ function startWorker(path, options = {}) {
 			restartNumber: module.exports.restartNumber,
 			processIncarnation: module.exports.processIncarnation,
 			ticketKeys: getTicketKeys(),
+			databaseDropPreparations: databaseDropPreparationSnapshot(),
 		},
 		transferList: portsToSend,
 		...options,
@@ -1060,14 +1076,41 @@ async function broadcast(message, includeSelf) {
 const awaitingResponses = new Map();
 let nextId = 1;
 // Backstop so a wedged-but-alive worker (one whose event loop is blocked and never acks, yet
-// whose port hasn't closed) can't hang a mutating admin/DDL op forever. The durable write has
-// already succeeded by the time we broadcast, and the health monitor restarts a truly stuck
-// worker (its port close fires the same ack handlers), so on timeout we proceed best-effort.
+// whose port hasn't closed) can't hang a mutating admin/DDL op forever. Ordinary broadcasts happen
+// after the durable write and proceed best-effort; strict preparation broadcasts reject on timeout.
 const DEFAULT_ACK_TIMEOUT_MS = 30000;
-function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
-	return new Promise((resolve) => {
+function settleAcknowledgementsForClosedWorker(matches, jobCleanupComplete, exitConfirmed) {
+	for (const [, ackHandler] of awaitingResponses) {
+		if (!matches(ackHandler.port)) continue;
+		if (ackHandler.allowNormalJobExit && !jobCleanupComplete && !exitConfirmed) continue;
+		ackHandler(ackHandler.allowNormalJobExit && jobCleanupComplete ? undefined : ackHandler.closeResponse);
+	}
+}
+
+function settleAcknowledgementsForClosedPort(port, jobCleanupComplete = false, exitConfirmed = false) {
+	settleAcknowledgementsForClosedWorker((candidate) => candidate === port, jobCleanupComplete, exitConfirmed);
+}
+
+function settleAcknowledgementsForClosedThread(threadId, jobCleanupComplete = false, exitConfirmed = false) {
+	settleAcknowledgementsForClosedWorker(
+		(candidate) => candidate.threadId === threadId,
+		jobCleanupComplete,
+		exitConfirmed
+	);
+}
+
+/** @param {boolean|'active'} includeJobWorkers */
+function broadcastWithAcknowledgement(
+	message,
+	timeout = DEFAULT_ACK_TIMEOUT_MS,
+	strict = false,
+	includeJobWorkers = false
+) {
+	return new Promise((resolve, reject) => {
 		let waitingCount = 0;
 		let timer;
+		let initializing = true;
+		const failures = [];
 		// Tracks the handlers still awaiting an ack for THIS broadcast. Doubles as an
 		// idempotency guard: a port's handler runs at most once whether it's driven by an ack,
 		// the close listener, or the timeout below.
@@ -1077,20 +1120,48 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 				clearTimeout(timer);
 				timer = undefined;
 			}
-			resolve();
+			if (strict && failures.length > 0) {
+				if (
+					failures.length === 1 &&
+					(failures[0].name === 'DatabaseDroppingError' || failures[0].name === 'DatabaseDrainTimeoutError')
+				) {
+					reject(failures[0]);
+					return;
+				}
+				const error = new AggregateError(failures, 'A worker could not prepare for the schema change');
+				for (const property of ['name', 'code', 'statusCode', 'retryable']) {
+					const value = failures[0][property];
+					if (property === 'name' && value === 'Error') continue;
+					if (value != null && failures.every((failure) => failure[property] === value)) error[property] = value;
+				}
+				reject(error);
+			} else resolve();
 		};
 		for (let port of connectedPorts) {
-			// Job workers run a single isolated task and exit; they don't participate in
-			// schema-change gossip. Including them causes a deadlock: the broadcast waits for
-			// the job worker's ACK while the job worker's event loop is busy waiting for the
-			// same broadcast to complete (re-entrant schema change triggered by the job op).
-			if (!isEligibleBroadcastRecipient(port)) continue;
+			// Ordinary schema gossip excludes job workers to avoid re-entrant waits. Destructive
+			// preparation opts them in because every native handle must be closed before deletion.
+			if (
+				port.isJobWorker &&
+				(!includeJobWorkers || (includeJobWorkers === 'active' && port.jobCleanupComplete === true))
+			)
+				continue;
+			let ackHandler;
 			try {
 				let requestId = nextId++;
-				const ackHandler = () => {
+				ackHandler = (response) => {
 					if (!pending.delete(ackHandler)) return; // already settled for this port
+					if (response?.error) {
+						const error = new Error(
+							`Worker ${port.threadId} could not prepare for the schema change: ${response.error.message ?? response.error}`
+						);
+						error.cause = response.error;
+						for (const property of ['name', 'code', 'statusCode', 'retryable']) {
+							if (response.error[property] != null) error[property] = response.error[property];
+						}
+						failures.push(error);
+					}
 					awaitingResponses.delete(requestId);
-					if (--waitingCount === 0) {
+					if (--waitingCount === 0 && !initializing) {
 						finish();
 					}
 					if (port !== parentPort && --port.refCount === 0) {
@@ -1098,38 +1169,40 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 					}
 				};
 				ackHandler.port = port;
+				ackHandler.closeResponse = strict
+					? { error: { message: 'exited before acknowledging preparation' } }
+					: undefined;
+				ackHandler.allowNormalJobExit = strict && includeJobWorkers && port.isJobWorker;
 				pending.add(ackHandler);
-				port.ref();
+				waitingCount++;
 				port.refCount = (port.refCount || 0) + 1;
+				port.ref();
 				awaitingResponses.set((message.requestId = requestId), ackHandler);
 				if (!port.hasAckCloseListener) {
 					// just set a single close listener that can clean up all the ack handlers for a port that is closed
 					port.hasAckCloseListener = true;
-					port.on(port.close ? 'close' : 'exit', () => {
-						for (let [, ackHandler] of awaitingResponses) {
-							if (ackHandler.port === port) {
-								ackHandler();
-							}
-						}
-					});
+					port.on(port.close ? 'close' : 'exit', () =>
+						settleAcknowledgementsForClosedPort(port, port.jobCleanupComplete === true)
+					);
 				}
 				port.postMessage(message);
-				waitingCount++;
 			} catch (error) {
 				harperLogger.error(`Unable to send message to worker`, error);
+				ackHandler?.({ error: { message: error.message ?? String(error) } });
 			}
 		}
-		if (waitingCount === 0) return resolve();
+		initializing = false;
+		if (waitingCount === 0) return finish();
 		if (timeout > 0) {
 			timer = setTimeout(() => {
 				timer = undefined;
 				const stuck = [];
 				for (let ackHandler of [...pending]) {
 					stuck.push(ackHandler.port);
-					ackHandler(); // same cleanup path as an ack/close; drives waitingCount to 0 and resolves
+					ackHandler(strict ? { error: { message: `did not acknowledge within ${timeout}ms` } } : undefined); // same cleanup path as an ack/close; drives waitingCount to 0 and settles
 				}
 				harperLogger.warn(
-					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.map((port) => port?.threadId).join(', ')} within ${timeout}ms; proceeding best-effort`
+					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.map((port) => port?.threadId).join(', ')} within ${timeout}ms; ${strict ? 'failing the coordinated operation' : 'proceeding best-effort'}`
 				);
 				if (isMainThread) for (let port of stuck) logStuckWorkerDiagnostics(port);
 				else if (parentPort) {
@@ -1141,6 +1214,11 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 			timer.unref?.();
 		}
 	});
+}
+
+/** @param {boolean|'active'} includeJobWorkers */
+function broadcastWithStrictAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS, includeJobWorkers = false) {
+	return broadcastWithAcknowledgement(message, timeout, true, includeJobWorkers);
 }
 
 // Linux only: /proc/thread-self resolves to <pid>/task/<tid> for the calling thread.
@@ -1817,6 +1895,7 @@ function hasThreadExited(threadId) {
 function notifyThreadExit(deadThreadId) {
 	if (deadThreadId == null || notifiedDeadThreadIds.has(deadThreadId)) return;
 	notifiedDeadThreadIds.add(deadThreadId);
+	handleDatabaseDropPreparationOwnerExit(deadThreadId);
 	for (const listener of threadExitListeners) {
 		try {
 			listener(deadThreadId);
@@ -1830,6 +1909,8 @@ function removePort(port, deadThreadId) {
 	// A sibling may already have announced this dead thread and removed its port. Process-group
 	// cleanup must still run when the authoritative close/exit event reaches this thread.
 	if (deadThreadId != null) terminateProcessGroupsForThread(deadThreadId);
+	const exitConfirmed = !port.close;
+	settleAcknowledgementsForClosedPort(port, port.jobCleanupComplete === true, exitConfirmed);
 	const idx = connectedPorts.indexOf(port);
 	if (idx === -1) return;
 	connectedPorts.splice(idx, 1);
@@ -1842,7 +1923,12 @@ function removePort(port, deadThreadId) {
 	if (deadThreadId != null) {
 		for (let remainingPort of connectedPorts) {
 			try {
-				remainingPort.postMessage({ type: REMOVE_PORT, threadId: deadThreadId });
+				remainingPort.postMessage({
+					type: REMOVE_PORT,
+					threadId: deadThreadId,
+					jobCleanupComplete: port.jobCleanupComplete === true,
+					exitConfirmed,
+				});
 			} catch {
 				// port may already be dead; ignore
 			}
@@ -1861,17 +1947,30 @@ function addPort(port, keepRef, isJobWorker) {
 				addProcessGroup(portThreadId, message.processGroupId);
 			} else if (message.type === UNREGISTER_PROCESS_GROUP) {
 				removeProcessGroup(portThreadId, message.processGroupId);
+			} else if (message.type === hdbTerms.ITC_EVENT_TYPES.JOB_CLEANUP_COMPLETE) {
+				port.jobCleanupComplete = true;
+				settleAcknowledgementsForClosedPort(port, true);
 			} else if (message.type === ADDED_PORT) {
 				message.port.threadId = message.threadId;
 				addPort(message.port, false, message.isJobWorker);
 			} else if (message.type === ACKNOWLEDGEMENT) {
 				let completion = awaitingResponses.get(message.id);
 				if (completion) {
-					completion();
+					completion(message);
 				}
 			} else if (message.type === REMOVE_PORT) {
-				const idx = connectedPorts.findIndex((p) => p.threadId === message.threadId);
-				if (idx !== -1) connectedPorts.splice(idx, 1);
+				const removedPort = connectedPorts.find((candidate) => candidate.threadId === message.threadId);
+				if (removedPort && !removedPort.close && !message.exitConfirmed) return;
+				settleAcknowledgementsForClosedThread(
+					message.threadId,
+					message.jobCleanupComplete === true,
+					message.exitConfirmed === true
+				);
+				if (removedPort) {
+					if (message.jobCleanupComplete) removedPort.jobCleanupComplete = true;
+					settleAcknowledgementsForClosedPort(removedPort, removedPort.jobCleanupComplete === true);
+					connectedPorts.splice(connectedPorts.indexOf(removedPort), 1);
+				}
 				// A sibling's port-to-the-dead-worker can close (and broadcast this) before this
 				// thread's OWN port to that worker fires its 'close'/'exit' — at which point
 				// removePort() would no-op (already spliced) and threadExitListeners would never
@@ -1885,7 +1984,10 @@ function addPort(port, keepRef, isJobWorker) {
 			removePort(port, portThreadId);
 		})
 		.on('exit', () => {
-			removePort(port, portThreadId);
+			// Let a cleanup proof already queued by the worker reach this port before exit becomes
+			// authoritative. The next turn still fails closed if no proof arrives.
+			if (port.isJobWorker && !port.jobCleanupComplete) setImmediate(() => removePort(port, portThreadId));
+			else removePort(port, portThreadId);
 		});
 	if (keepRef) port.refCount = 100;
 	else port.unref();

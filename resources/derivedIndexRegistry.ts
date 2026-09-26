@@ -1,5 +1,127 @@
+import { DerivedIndexLagError } from '../utility/errors/hdbError.ts';
+
 const registrations = new WeakMap<object, Map<number, number>>();
 const admissions = new WeakMap<object, Map<number, Array<() => string | undefined>>>();
+type LockStore = { status?: string; tryLock(key: string): boolean; unlock(key: string): void };
+type FenceWaitOptions = { shouldContinue?: () => boolean; timeoutMilliseconds?: number };
+const DEFAULT_FENCE_WAIT_MILLISECONDS = 70_000;
+
+function fullTextClearLockKey(tableId: number): string {
+	return `derived-index:fulltext:${tableId}:table-clear`;
+}
+
+function fullTextRetirementLockKey(tableName: string): string {
+	return `derived-index:fulltext:${tableName}:retirement`;
+}
+
+/** Hold this node-wide fence for the full duration of an asynchronous table clear. */
+export function acquireFullTextClearFence(rootStore: LockStore, tableId: number): (() => void) | undefined {
+	const key = fullTextClearLockKey(tableId);
+	if (!rootStore.tryLock(key)) return;
+	let held = true;
+	return () => {
+		if (!held) return;
+		held = false;
+		rootStore.unlock(key);
+	};
+}
+
+/** Probe without waiting; callers hold the schema lock so a clear cannot start between this and persistence. */
+export function fullTextClearInProgress(rootStore: LockStore, tableId: number): boolean {
+	const release = acquireFullTextClearFence(rootStore, tableId);
+	if (!release) return true;
+	release();
+	return false;
+}
+
+/** Wait until the current clear releases its fence; callers retry admission afterwards. */
+export function waitForFullTextClear(
+	rootStore: LockStore,
+	tableId: number,
+	options?: FenceWaitOptions
+): Promise<boolean> {
+	return waitForFence(rootStore, () => acquireFullTextClearFence(rootStore, tableId), 'table clear', options);
+}
+
+/** Fence same-name recreation while a dropped table's native directories are being retired. */
+export function acquireFullTextRetirementFence(rootStore: LockStore, tableName: string): (() => void) | undefined {
+	const key = fullTextRetirementLockKey(tableName);
+	if (!rootStore.tryLock(key)) return;
+	let held = true;
+	return () => {
+		if (!held) return;
+		held = false;
+		rootStore.unlock(key);
+	};
+}
+
+/** Probe under the schema lock so recreation cannot pass between the probe and catalog persistence. */
+export function fullTextRetirementInProgress(rootStore: LockStore, tableName: string): boolean {
+	const release = acquireFullTextRetirementFence(rootStore, tableName);
+	if (!release) return true;
+	release();
+	return false;
+}
+
+/** Wait until the current retirement releases its fence; the caller must recheck its generation afterwards. */
+export function waitForFullTextRetirement(
+	rootStore: LockStore,
+	tableName: string,
+	options?: FenceWaitOptions
+): Promise<boolean> {
+	return waitForFence(
+		rootStore,
+		() => acquireFullTextRetirementFence(rootStore, tableName),
+		`retirement of full-text storage for '${tableName}'`,
+		options
+	);
+}
+
+export function waitForFullTextRetirementLease(
+	rootStore: LockStore,
+	tableName: string,
+	options?: FenceWaitOptions
+): Promise<(() => void) | undefined> {
+	return waitForFenceLease(
+		rootStore,
+		() => acquireFullTextRetirementFence(rootStore, tableName),
+		`retirement of full-text storage for '${tableName}'`,
+		options
+	);
+}
+
+async function waitForFence(
+	rootStore: LockStore,
+	acquire: () => (() => void) | undefined,
+	description: string,
+	options: FenceWaitOptions = {}
+): Promise<boolean> {
+	const release = await waitForFenceLease(rootStore, acquire, description, options);
+	if (!release) return false;
+	release();
+	return true;
+}
+
+async function waitForFenceLease(
+	rootStore: LockStore,
+	acquire: () => (() => void) | undefined,
+	description: string,
+	options: FenceWaitOptions = {}
+): Promise<(() => void) | undefined> {
+	const deadline = Date.now() + (options.timeoutMilliseconds ?? DEFAULT_FENCE_WAIT_MILLISECONDS);
+	let retryDelayMilliseconds = 1;
+	for (;;) {
+		if (options.shouldContinue && !options.shouldContinue()) return;
+		if (rootStore.status !== undefined && rootStore.status !== 'open')
+			throw new Error(`Cannot wait for ${description} on a ${rootStore.status} store`);
+		const release = acquire();
+		if (release) return release;
+		if (Date.now() >= deadline)
+			throw new DerivedIndexLagError(`Timed out waiting for ${description}; retry the operation`);
+		await new Promise((resolve) => setTimeout(resolve, retryDelayMilliseconds));
+		retryDelayMilliseconds = Math.min(retryDelayMilliseconds * 2, 50);
+	}
+}
 
 /** `admission` returns a reason while writes to these tables must be rejected. */
 export function registerDerivedIndexTables(

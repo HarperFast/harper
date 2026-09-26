@@ -4,22 +4,51 @@ import * as hdbTerms from './hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import ITCEventObject from '../server/itc/utility/ITCEventObject.js';
 let serverItcHandlers;
-import { sendItcEvent } from '../server/threads/itc.js';
+import { sendItcEvent, sendItcEventStrict } from '../server/threads/itc.js';
 
 // Await BOTH the local handler and the cross-worker broadcast. The local handler is what
 // rebuilds THIS thread's cache; firing it un-awaited let the originating worker return success
 // before its own cache caught up, so the next request it served observed stale state even though
 // the op awaited propagation to the other workers — the originator half of #1497. Both legs
 // resolve without rejecting (each handler has its own try/catch; the broadcast always resolves),
-// so Promise.all is safe here. Callers that don't await keep their prior fire-and-forget behavior.
-export async function signalSchemaChange(message: any) {
+// so Promise.all is safe here. Destructive abort/completion can order peers first so the local
+// admission fence remains in place until remote workers have processed the same transition.
+export async function signalSchemaChange(
+	message: any,
+	{
+		peersFirst = false,
+		includeJobWorkers = false,
+		peerRounds = 1,
+	}: { peersFirst?: boolean; includeJobWorkers?: boolean | 'active'; peerRounds?: number } = {}
+) {
 	try {
 		hdbLogger.debug('signalSchemaChange called with message:', message);
 		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
 		const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
-		await Promise.all([serverItcHandlers.schema(itcEventSchema), sendItcEvent(itcEventSchema)]);
+		if (peersFirst) {
+			await sendItcEvent(itcEventSchema, includeJobWorkers);
+			await serverItcHandlers.schema(itcEventSchema);
+			for (let round = 1; round < peerRounds; round++) {
+				await new Promise(setImmediate);
+				await sendItcEvent(itcEventSchema, includeJobWorkers);
+			}
+		} else
+			await Promise.all([serverItcHandlers.schema(itcEventSchema), sendItcEvent(itcEventSchema, includeJobWorkers)]);
 	} catch (err) {
 		hdbLogger.error(err);
+	}
+}
+
+/** Prepare peer workers for destructive DDL without applying the completion event locally. */
+export async function signalSchemaChangeToPeers(message: any): Promise<void> {
+	hdbLogger.debug('signalSchemaChangeToPeers called with message:', message);
+	const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
+	// Commit draining can consume 120 seconds and native derived-index shutdown another 70. The
+	// extra round closes the topology race: after the main thread installs the preparation fence, any
+	// worker started during round one inherits it and is present for round two.
+	for (let round = 0; round < 2; round++) {
+		await sendItcEventStrict(itcEventSchema, 210_000, true);
+		if (round === 0) await new Promise(setImmediate);
 	}
 }
 

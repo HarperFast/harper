@@ -3,9 +3,18 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { existsSync, mkdirSync, writeFileSync } = require('node:fs');
 const { dirname, join } = require('node:path');
-const { table, flushDatabases, dropDatabase, getDatabases, resetDatabases } = require('#src/resources/databases');
+const {
+	table,
+	database,
+	flushDatabases,
+	closeDatabase,
+	dropDatabase,
+	getDatabases,
+	resetDatabases,
+} = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { databaseCommitsSuspended, getSuspendedDatabaseRootCount } = require('#src/resources/DatabaseTransaction');
 const {
 	beginRestore,
 	completeRestore,
@@ -27,6 +36,40 @@ describe('flushDatabases', () => {
 
 	it('flushes all databases without error', async function () {
 		await assert.doesNotReject(() => flushDatabases());
+	});
+
+	it('unregisters a tableless database before closing its root store', async function () {
+		const rootStore = database({ database: 'flush_tableless_drop' });
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+
+		await dropDatabase('flush_tableless_drop');
+
+		await assert.doesNotReject(() => flushDatabases());
+		const reopened = database({ database: 'flush_tableless_drop' });
+		assert.notStrictEqual(reopened, rootStore);
+		assert.strictEqual(reopened.status, 'open');
+		await closeDatabase('flush_tableless_drop');
+	});
+
+	it('keeps a failed destructive drop root-local without taxing unrelated commits', async function () {
+		const Probe = table({
+			table: 'pkg',
+			database: 'failed_destructive_drop',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = Probe.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const suspendedBefore = getSuspendedDatabaseRootCount();
+		const stopAuditCleanup = rootStore.auditStore.stopAuditCleanup;
+		rootStore.auditStore.stopAuditCleanup = () => Promise.reject(new Error('audit cleanup failed'));
+
+		await assert.rejects(dropDatabase('failed_destructive_drop'), /audit cleanup failed/);
+
+		assert.strictEqual(databaseCommitsSuspended(rootStore), true);
+		assert.strictEqual(getSuspendedDatabaseRootCount(), suspendedBefore);
+		rootStore.auditStore.stopAuditCleanup = stopAuditCleanup;
+		rootStore.close();
+		rootStore.destroy();
 	});
 });
 
@@ -235,8 +278,8 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		await BranchSource.primaryStore.rootStore.createCheckpoint(checkpointDir);
 	});
 
-	afterEach(function () {
-		closeBranchDatabases();
+	afterEach(async function () {
+		await closeBranchDatabases();
 	});
 
 	after(function () {
@@ -280,9 +323,9 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'), /already open/);
 	});
 
-	it('closes what nothing else can: the store is gone from the env map after close', function () {
+	it('closes what nothing else can: the store is gone from the env map after close', async function () {
 		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
-		branch.close();
+		await branch.close();
 
 		assert.doesNotThrow(
 			() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'),
@@ -320,7 +363,7 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		);
 	});
 
-	it('refuses an on-demand database() open of a directory a branch owns', function () {
+	it('refuses an on-demand database() open of a directory a branch owns', async function () {
 		const { database } = require('#src/resources/databases');
 		// database() resolves an unconfigured name against the same root the base database sits in
 		const probeDir = join(dirname(databases.branchbase.BranchSource.primaryStore.rootStore.path), 'branchdbprobe');
@@ -335,34 +378,122 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 			assert.throws(() => database({ database: 'branchdbprobe' }), /scope-private branch/);
 			assert.strictEqual(branch.rootStore.status, 'open', 'the branch store must survive the refused open');
 		} finally {
-			branch?.close();
+			await branch?.close();
 			rmSync(probeDir, { recursive: true, force: true });
 		}
 	});
 
-	it('releases every native handle it opened, not just the root', function () {
+	it('releases every native handle it opened, not just the root', async function () {
 		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
 		const branchPath = branch.rootStore.path;
 		assert.ok(refCountFor(branchPath) > 0, 'the branch should hold native handles while open');
 
-		branch.close();
+		await branch.close();
 
 		assert.strictEqual(refCountFor(branchPath), 0, 'close() must release every column family it opened');
 	});
 
-	it('tolerates a repeated close', function () {
+	it('settles branch derived indexes before releasing their stores', async function () {
 		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
-		branch.close();
-		assert.doesNotThrow(() => branch.close(), 'a second close must not close the store twice');
+		const branchPath = branch.rootStore.path;
+		let finishClose;
+		const stopped = new Promise((resolve) => (finishClose = resolve));
+		branch.tables.BranchSource.derivedIndexRuntime = { close: () => stopped };
+
+		const closing = branch.close();
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(databaseCommitsSuspended(branch.rootStore), true);
+		assert.throws(
+			() => branch.tables.BranchSource.put('closing-write', { note: 'late' }),
+			(error) => {
+				assert.strictEqual(error.code, 'DATABASE_CLOSING');
+				return true;
+			}
+		);
+		assert.ok(refCountFor(branchPath) > 0, 'the branch stores stay open while a native writer is settling');
+		assert.throws(
+			() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'),
+			/already open/,
+			'a replacement cannot open until the old writer and stores are closed'
+		);
+		finishClose();
+		await closing;
+
+		assert.strictEqual(refCountFor(branchPath), 0);
+		assert.strictEqual(branch.rootStore.status, 'closed');
+		assert.strictEqual(databaseCommitsSuspended(branch.rootStore), true);
+	});
+
+	it('keeps a branch registered and retryable when its derived writer cannot settle', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		const branchPath = branch.rootStore.path;
+		let attempts = 0;
+		branch.tables.BranchSource.derivedIndexRuntime = {
+			close: () => (++attempts === 1 ? Promise.reject(new Error('writer still active')) : Promise.resolve()),
+		};
+
+		await assert.rejects(branch.close(), /writer still active/);
+		assert.strictEqual(databaseCommitsSuspended(branch.rootStore), false);
+		assert.ok(refCountFor(branchPath) > 0, 'a failed settle must leave the stores open');
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'), /already open/);
+
+		await branch.close();
+		assert.strictEqual(refCountFor(branchPath), 0);
+	});
+
+	it('restores a branch when audit cleanup cannot settle before handle teardown', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		const stopAuditCleanup = branch.rootStore.auditStore.stopAuditCleanup;
+		branch.rootStore.auditStore.stopAuditCleanup = () => Promise.reject(new Error('audit cleanup failed'));
+
+		await assert.rejects(branch.close(), /audit cleanup failed/);
+
+		assert.strictEqual(branch.rootStore.status, 'open');
+		assert.strictEqual(databaseCommitsSuspended(branch.rootStore), false);
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'), /already open/);
+		branch.rootStore.auditStore.stopAuditCleanup = stopAuditCleanup;
+		await branch.close();
+		assert.strictEqual(branch.rootStore.status, 'closed');
+	});
+
+	it('keeps a stale branch fenced when its native root close fails', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		const suspendedBefore = getSuspendedDatabaseRootCount();
+		const close = branch.rootStore.close.bind(branch.rootStore);
+		let failClose = true;
+		branch.rootStore.close = () => {
+			if (failClose) throw new Error('branch root close failed');
+			return close();
+		};
+
+		await assert.rejects(branch.close(), /Could not close branch database/);
+
+		assert.strictEqual(branch.rootStore.status, 'open');
+		assert.strictEqual(databaseCommitsSuspended(branch.rootStore), true);
+		assert.strictEqual(getSuspendedDatabaseRootCount(), suspendedBefore);
+		assert.throws(
+			() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'),
+			/already open/,
+			'a replacement must wait until the failed native root close is retried'
+		);
+		failClose = false;
+		await branch.close();
+		assert.strictEqual(branch.rootStore.status, 'closed');
+	});
+
+	it('tolerates a repeated close', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		await branch.close();
+		await branch.close();
 		assert.strictEqual(refCountFor(branch.rootStore.path), 0, 'a second close must not double-release');
 	});
 
-	it('a stale handle closed twice does not tear down a later open of the same directory', function () {
+	it('a stale handle closed twice does not tear down a later open of the same directory', async function () {
 		const stale = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
-		stale.close();
+		await stale.close();
 		const live = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
 
-		stale.close();
+		await stale.close();
 
 		assert.throws(
 			() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'),
@@ -372,13 +503,13 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		assert.ok(refCountFor(live.rootStore.path) > 0, 'the live branch must still hold its handles');
 	});
 
-	it('drops the memoized blob roots pinning the store', function () {
+	it('drops the memoized blob roots pinning the store', async function () {
 		const { databasePaths, getRootBlobPathsForDB } = require('#src/resources/blob');
 		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
 		getRootBlobPathsForDB(branch.rootStore);
 		assert.ok(databasePaths.has(branch.rootStore), 'resolving blob roots memoizes them against the store');
 
-		branch.close();
+		await branch.close();
 
 		assert.ok(!databasePaths.has(branch.rootStore), 'close() must drop the memoized blob roots');
 	});
@@ -411,7 +542,7 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 				'adoption would overwrite the store identity the branch blob roots resolve from'
 			);
 		} finally {
-			branch?.close();
+			await branch?.close();
 			rmSync(probeDir, { recursive: true, force: true });
 		}
 	});
@@ -429,7 +560,7 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 			await runReclamationHandlers();
 			assert.ok(queried.includes(branchPath), 'opening a branch registers a reclamation handler for its path');
 
-			branch.close();
+			await branch.close();
 			queried.length = 0;
 			await runReclamationHandlers();
 
@@ -457,7 +588,7 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 			await runReclamationHandlers();
 			assert.ok(queried.includes(rootPath), 'opening a database registers a reclamation handler for its root path');
 
-			closeDatabase('reclaimprobe');
+			await closeDatabase('reclaimprobe');
 			queried.length = 0;
 			await runReclamationHandlers();
 
