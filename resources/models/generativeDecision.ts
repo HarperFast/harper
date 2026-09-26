@@ -183,6 +183,11 @@ export function createGenerativeDecisionBackend(
 		return { fields: Object.fromEntries(entries.map(([name], i) => [name, { distribution: marginals[i] }])) };
 	};
 
+	// What this adapter controls of its scoring configuration; the model behind the logical name is
+	// identified by the config hash the facade records beside it.
+	const signatureFor = (mode: ScoringMode) =>
+		`generative=${logicalName};mode=${mode};samples=${samples};temperature=${temperature ?? 'default'}`;
+
 	return {
 		name: 'generative',
 		capabilities: () => CAPABILITIES,
@@ -195,12 +200,18 @@ export function createGenerativeDecisionBackend(
 			const mode: ScoringMode = scoring === 'auto' ? (canScore(logicalName) ? 'score' : 'vote') : scoring;
 			if (mode === 'score') {
 				try {
-					return { status: 'completed', output: await scoreAll(state, schema, opts.instructions, signal) };
+					return {
+						status: 'completed',
+						output: { ...(await scoreAll(state, schema, opts.instructions, signal)), signature: signatureFor('score') },
+					};
 				} catch (err) {
 					if (scoring !== 'auto' || !isScoringUnsupported(err)) throw err;
 				}
 			}
-			return { status: 'completed', output: await vote(state, schema, opts.instructions, signal) };
+			return {
+				status: 'completed',
+				output: { ...(await vote(state, schema, opts.instructions, signal)), signature: signatureFor('vote') },
+			};
 		},
 	};
 }

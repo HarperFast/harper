@@ -34,6 +34,22 @@ function makeMockWriter() {
 	};
 }
 
+/** A decision store that keeps rows in memory: these tests cover the facade, not storage (#2840). */
+function makeMemoryStore() {
+	const rows = [];
+	return {
+		rows,
+		assertWritable() {},
+		async persist(row) {
+			rows.push(row);
+		},
+		async get(id) {
+			const row = rows.find((r) => r.id === id);
+			return row && { ...row, outcome: {} };
+		},
+	};
+}
+
 function makeMetricSpy() {
 	const calls = [];
 	return { calls, emitter: (value, metric, path) => calls.push({ value, metric, path }) };
@@ -56,6 +72,7 @@ function scripted(name, outputs, extra = {}) {
 describe('models.decide', () => {
 	let writer;
 	let metricSpy;
+	let store;
 	let models;
 
 	beforeEach(() => {
@@ -63,7 +80,8 @@ describe('models.decide', () => {
 		clearRouting();
 		writer = makeMockWriter();
 		metricSpy = makeMetricSpy();
-		models = new Models(writer, metricSpy.emitter);
+		store = makeMemoryStore();
+		models = new Models(writer, metricSpy.emitter, store);
 		setDecision('default', new TestBackend());
 	});
 
@@ -105,7 +123,7 @@ describe('models.decide', () => {
 		assert.strictEqual(d.fields.urgent.distribution.length, 2);
 	});
 
-	it('records an hdb_model_calls row with method=decide whose id the Decision references, and emits metrics', async () => {
+	it('records an hdb_model_calls row with method=decide that the persisted decision links by callId, and emits metrics', async () => {
 		const d = await models.decide('x', QUEUE, { model: 'default' });
 		assert.strictEqual(writer.records.length, 1);
 		const r = writer.records[0];
@@ -114,7 +132,9 @@ describe('models.decide', () => {
 		assert.strictEqual(r.model, 'default');
 		assert.strictEqual(r.success, true);
 		assert.strictEqual(r.prompt_tokens, 1);
-		assert.strictEqual(d.id, '1000');
+		assert.strictEqual(store.rows.length, 1);
+		assert.strictEqual(store.rows[0].id, d.id);
+		assert.strictEqual(store.rows[0].callId, 1000);
 		assert.ok(metricSpy.calls.some((c) => c.metric === 'model-decide' && c.value === 1 && c.path === 'test'));
 		assert.ok(metricSpy.calls.some((c) => c.metric === 'model-decide-tokens' && c.value === 1));
 	});
@@ -255,7 +275,7 @@ describe('decision backends in the registry', () => {
 	});
 
 	it('models.registerBackend + models.defineBackend + models.decide work end to end for a decision backend', async () => {
-		const models = new Models(makeMockWriter(), () => {});
+		const models = new Models(makeMockWriter(), () => {}, makeMemoryStore());
 		models.registerBackend(
 			'decision',
 			'local:cls',
@@ -280,7 +300,7 @@ describe('models.decide calibration requirement and metrics', () => {
 		clearRouting();
 		writer = makeMockWriter();
 		metricSpy = makeMetricSpy();
-		models = new Models(writer, metricSpy.emitter);
+		models = new Models(writer, metricSpy.emitter, makeMemoryStore());
 	});
 
 	afterEach(() => {

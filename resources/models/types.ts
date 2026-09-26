@@ -13,6 +13,10 @@ export interface Models {
 	generateStream(input: GenerateInput, opts?: GenerateOpts): AsyncIterable<GenerateChunk>;
 	/** Choose from a closed, schema-defined set and return the distribution over it. See #2779. */
 	decide<T = unknown>(state: DecideInput, schema: DecisionSchema, opts?: DecideOpts): Promise<Decision<T>>;
+	/** The durable record of a decision with its recorded outcome, or undefined. See #2840. */
+	getDecision<T = unknown>(id: string): Promise<DecisionRecord<T> | undefined>;
+	/** Record what actually happened for a decision: its truth, the action taken, or both. See #2840. */
+	recordOutcome<T = unknown>(id: string, outcome: OutcomeReport): Promise<DecisionRecord<T>>;
 	/** Register a custom backend under a logical id, selectable via `opts.model`. See #1325. */
 	registerBackend(kind: ModelKind, id: string, backend: ModelBackend): void;
 	/** Build a `ModelBackend` from a spec; pair with `registerBackend`. See #1325. */
@@ -166,6 +170,11 @@ export interface DecisionOutput<T = unknown> {
 	distribution?: DecisionOutcome[];
 	fields?: Record<string, DecisionOutput<unknown>>;
 	calibrated?: boolean;
+	/**
+	 * Opaque identity of the configuration that produced the scores (sampling, scoring method,
+	 * prompt revision), stored with the decision so calibration is keyed per configuration (#2841).
+	 */
+	signature?: string;
 }
 
 /**
@@ -176,7 +185,7 @@ export interface DecisionOutput<T = unknown> {
  * have produced — and the marginals live in `fields`.
  */
 export interface Decision<T = unknown> {
-	/** Id of this call's `hdb_model_calls` row. Rows are buffered before they are written, so treat it as a best-effort correlation key. */
+	/** Cluster-unique id of the decision's record in `hdb_model_decisions`, committed before the decision is returned; pass it to `recordOutcome` (#2840). */
 	id: string;
 	value: T;
 	probability?: number;
@@ -204,6 +213,59 @@ export type ScoreChoicesOpts = {
 /** Unnormalized; the caller normalizes. */
 export interface ChoiceScores {
 	logLikelihoods: number[];
+}
+
+/** What turned out to be true for a decision: an allowed value, none of them, or not known. Tagged, so no label is a sentinel. */
+export type OutcomeTruth = { kind: 'value'; value: unknown } | { kind: 'noMatch' } | { kind: 'unknown' };
+
+/** What the application did with a decision: acted on a value, routed it as no-match, abstained by policy, or not known. */
+export type OutcomeAction =
+	{ kind: 'value'; value: unknown } | { kind: 'noMatch' } | { kind: 'abstained' } | { kind: 'unknown' };
+
+/** The facts reported for one leaf: either, or both. Each is stored on its own, so reports never overwrite each other. */
+export interface LeafOutcomeReport {
+	truth?: OutcomeTruth;
+	action?: OutcomeAction;
+}
+
+/** A `recordOutcome` report: leaf facts for a leaf schema, or per-field facts for an object schema. */
+export type OutcomeReport = LeafOutcomeReport | { fields: Record<string, LeafOutcomeReport> };
+
+export interface RecordedLeafOutcome extends LeafOutcomeReport {
+	truthAt?: number;
+	actionAt?: number;
+}
+
+export type RecordedOutcome = RecordedLeafOutcome | { fields: Record<string, RecordedLeafOutcome> };
+
+/**
+ * The durable record of one decision (#2840): what was asked, what was answered, who answered,
+ * and what was recorded afterwards. Written once by `decide`; only `outcome` grows.
+ */
+export interface DecisionRecord<T = unknown> {
+	id: string;
+	/** The `hdb_model_calls` row of the call that produced it; correlation only. */
+	callId: number;
+	at: number;
+	/** When the record and its facts expire; a fact never extends it. */
+	expiresAt: number;
+	tenant?: string;
+	app?: string;
+	backend: string;
+	model: string;
+	signature?: string;
+	/** Identity of the `models` config block in force when the decision was made. */
+	configHash?: string;
+	/** The schema's allowed values, without descriptions. */
+	schema: DecisionSchema;
+	/** Identity of the full schema, descriptions included. */
+	schemaHash: string;
+	value: T;
+	probability?: number;
+	distribution?: DecisionOutcome[];
+	fields?: Record<string, FieldDecision>;
+	calibrated: boolean;
+	outcome: RecordedOutcome;
 }
 
 export type GenerateOpts = {
