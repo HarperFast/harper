@@ -95,6 +95,39 @@ describe('models.decide persists its decision and models.recordOutcome scores it
 		assert.strictEqual(writer.records.length, 1, 'recording an outcome writes no analytics row');
 	});
 
+	it('stores the schema as it was at the call, hashes per-call instructions, and reads storage faults as its own error', async () => {
+		const mutable = { enum: ['billing', 'refund'] };
+		const first = await models.decide('x', mutable);
+		mutable.enum.push('bug');
+		const second = await models.decide('x', mutable, { instructions: 'Prefer bug when unsure.' });
+		assert.deepStrictEqual((await models.getDecision(first.id)).schema, { enum: ['billing', 'refund'] });
+		const record = await models.getDecision(second.id);
+		assert.deepStrictEqual(record.schema, { enum: ['billing', 'refund', 'bug'] });
+		assert.match(record.instructionsHash, /^[0-9a-f]{64}$/);
+		assert.strictEqual((await models.getDecision(first.id)).instructionsHash, undefined);
+		const faulty = new Models(
+			writer,
+			() => {},
+			new DecisionStore({
+				getTables: () => ({
+					decisions: {
+						get() {
+							throw new Error('IO error at /data/path');
+						},
+					},
+					outcomes: {},
+				}),
+			})
+		);
+		await assert.rejects(
+			faulty.getDecision(first.id),
+			(err) =>
+				err instanceof DecisionPersistenceError &&
+				err.message === 'Decision could not be read' &&
+				/data\/path/.test(err.cause.message)
+		);
+	});
+
 	it('mints a distinct id per decision', async () => {
 		const ids = new Set();
 		for (let i = 0; i < 25; i++) ids.add((await models.decide('x', QUEUE)).id);

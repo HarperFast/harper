@@ -85,8 +85,6 @@ describe('directivesController — hdb_secret table-creation directive', () => {
 	});
 });
 
-// If a 5.3.0 tag is cut before the decision tables (#2840) merge, their two functions move to a
-// 5-4-0.ts directive and these tests move with them.
 describe('directivesController — decision tables in the 5.3.0 directive', () => {
 	it('registers the decision table creators on the 5.3.0 directive', () => {
 		const directive = directivesController.getDirectiveByVersion('5.3.0');

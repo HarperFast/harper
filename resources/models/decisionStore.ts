@@ -36,6 +36,7 @@ export interface DecisionRow {
 	model: string;
 	signature?: string;
 	configHash?: string;
+	instructionsHash?: string;
 	schema: DecisionSchema;
 	schemaHash: string;
 	value: unknown;
@@ -73,6 +74,7 @@ export const DECISION_ATTRIBUTES = [
 	{ name: 'model', type: 'string' },
 	{ name: 'signature', type: 'string' },
 	{ name: 'configHash', type: 'string' },
+	{ name: 'instructionsHash', type: 'string' },
 	{ name: 'schema' },
 	{ name: 'schemaHash', type: 'string' },
 	{ name: 'value' },
@@ -127,7 +129,6 @@ export function getDecisionTables(readOnly = isReadOnlyMode()): DecisionTables {
 	return resolved;
 }
 
-/** Test-only: forget the memoized handles so a reopened database is declared again. */
 export function resetDecisionTables(): void {
 	tables = undefined;
 }
@@ -170,9 +171,7 @@ export class DecisionPersistenceError extends ServerError {
 }
 
 export interface DecisionStoreOpts {
-	/** Override the table accessor; tests inject an in-memory pair. */
 	getTables?: () => DecisionTables;
-	/** Override the read-only probe; tests flip it. */
 	isReadOnly?: () => boolean;
 }
 
@@ -205,41 +204,43 @@ export class DecisionStore {
 		await transaction(freshContext(), () => decisions.put(row));
 	}
 
-	/** The decision with its recorded facts, or undefined when absent, expired, or another tenant's. */
 	async get(id: string, tenant?: string): Promise<DecisionRecord | undefined> {
-		return transaction(freshContext(), async () => {
-			const found = await this.#read(id, tenant);
-			return found && { ...found.row, outcome: assembleOutcome(found.row.schema, found.facts) };
-		});
+		return storageFaultsAs('Decision could not be read', () =>
+			transaction(freshContext(), async () => {
+				const found = await this.#read(id, tenant);
+				return found && { ...found.row, outcome: assembleOutcome(found.row.schema, found.facts) };
+			})
+		);
 	}
 
-	/** Writes the reported facts that differ from what is stored, in one transaction, and returns the record as written. */
 	async recordOutcome(id: string, report: OutcomeReport, tenant?: string): Promise<DecisionRecord> {
 		this.assertWritable('Outcomes');
 		const { outcomes } = this.#getTables();
-		return transaction(freshContext(), async () => {
-			const found = await this.#read(id, tenant);
-			if (!found) throw new DecisionNotFoundError(id);
-			const { row, facts } = found;
-			const at = Date.now();
-			for (const reported of validateReport(row.schema, report)) {
-				const index = factIndex(row.schema, reported.fact, reported.field);
-				const existing = facts[index];
-				if (existing && canonicalJson(existing.state) === canonicalJson(reported.state)) continue;
-				const written: OutcomeRow = {
-					id: factKey(id, reported.fact, reported.field),
-					decisionId: id,
-					fact: reported.fact,
-					field: reported.field,
-					state: reported.state,
-					at,
-					expiresAt: row.expiresAt,
-				};
-				await outcomes.put(written);
-				facts[index] = written;
-			}
-			return { ...row, outcome: assembleOutcome(row.schema, facts) };
-		});
+		return storageFaultsAs('Outcome could not be recorded', () =>
+			transaction(freshContext(), async () => {
+				const found = await this.#read(id, tenant);
+				if (!found) throw new DecisionNotFoundError(id);
+				const { row, facts } = found;
+				const at = Date.now();
+				for (const reported of validateReport(row.schema, report)) {
+					const index = factIndex(row.schema, reported.fact, reported.field);
+					const existing = facts[index];
+					if (existing && canonicalJson(existing.state) === canonicalJson(reported.state)) continue;
+					const written: OutcomeRow = {
+						id: factKey(id, reported.fact, reported.field),
+						decisionId: id,
+						fact: reported.fact,
+						field: reported.field,
+						state: reported.state,
+						at,
+						expiresAt: row.expiresAt,
+					};
+					await outcomes.put(written);
+					facts[index] = written;
+				}
+				return { ...row, outcome: assembleOutcome(row.schema, facts) };
+			})
+		);
 	}
 
 	async #read(id: string, tenant: string | undefined): Promise<Found | undefined> {
@@ -270,7 +271,6 @@ function freshContext(): Context {
 	return (user ? { user } : {}) as Context;
 }
 
-/** A record with a tenant is visible to that tenant and to callers without one; the rest see nothing. */
 function visibleTo(row: DecisionRow, tenant: string | undefined): boolean {
 	return tenant === undefined || row.tenant === undefined || row.tenant === tenant;
 }
@@ -400,4 +400,16 @@ function withoutCredentials(value: unknown): unknown {
 		if (!CREDENTIAL_KEY.test(key)) kept[key] = withoutCredentials(entry);
 	}
 	return kept;
+}
+
+/** A fault from the storage layer can name a data path; only its class and a fixed message may reach a response body. */
+async function storageFaultsAs<T>(message: string, run: () => Promise<T>): Promise<T> {
+	try {
+		return await run();
+	} catch (err) {
+		if (err instanceof ClientError || err instanceof DecisionPersistenceError) throw err;
+		const error = new DecisionPersistenceError(message);
+		(error as Error & { cause?: unknown }).cause = err;
+		throw error;
+	}
 }

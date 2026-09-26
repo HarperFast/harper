@@ -2,7 +2,7 @@
 
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../../testUtils');
-const { resetDatabases } = require('#src/resources/databases');
+const { resetDatabases, getDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const {
 	DecisionStore,
@@ -12,6 +12,7 @@ const {
 	DECISION_RETENTION_MS,
 	getDecisionTables,
 	resetDecisionTables,
+	declareDecisionTablesAtBoot,
 	newDecisionId,
 	setModelsConfigHash,
 	getModelsConfigHash,
@@ -223,6 +224,14 @@ describe('DecisionStore against the system database', () => {
 		assert.strictEqual((await store.get(untenanted.id, 'globex')).id, untenanted.id);
 	});
 
+	it('declares both tables at boot on a writable node', () => {
+		resetDecisionTables();
+		declareDecisionTablesAtBoot();
+		const declared = getDatabases().system?.hdb_model_outcomes;
+		assert.ok(declared, 'hdb_model_outcomes is in the catalog');
+		assert.ok(declared.attributes.some((attribute) => attribute.name === 'expiresAt' && attribute.expiresAt));
+	});
+
 	it('on a read-only node takes the tables the catalog holds without declaring, and reads nothing when they are absent', async () => {
 		const stored = row();
 		await store.persist(stored);
@@ -288,6 +297,10 @@ describe('schema identity', () => {
 		const extra = { ...QUEUE, meta: 1n, description: 'q' };
 		assert.strictEqual(hashSchema(extra), hashSchema({ ...QUEUE, description: 'q' }));
 		assert.deepStrictEqual(scoringSchema(extra), QUEUE);
-		assert.strictEqual(hashSchema(extra), hashSchema(extra), 'memoized per object');
+		const mutable = { enum: ['a', 'b'] };
+		const before = hashSchema(mutable);
+		mutable.enum.push('c');
+		assert.notStrictEqual(hashSchema(mutable), before, 'identity follows the current schema, not the object');
+		assert.deepStrictEqual(scoringSchema(mutable), { enum: ['a', 'b', 'c'] });
 	});
 });
