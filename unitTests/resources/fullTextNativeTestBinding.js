@@ -1,5 +1,7 @@
 'use strict';
 
+const { mkdirSync, rmSync } = require('node:fs');
+
 class FullTextNativeTestBinding {
 	constructor() {
 		this.states = new Map();
@@ -41,6 +43,7 @@ class FullTextNativeTestBinding {
 
 	async openNativeFullTextIndex(options) {
 		this.opens.push(options);
+		mkdirSync(options.path, { recursive: true });
 		const binding = this;
 		let state = this.states.get(key(options));
 		if (!state) this.states.set(key(options), (state = { documents: new Map(), payload: undefined }));
@@ -85,6 +88,7 @@ class FullTextNativeTestBinding {
 			this.states.delete(stateKey);
 			removed = true;
 		}
+		if (removed) rmSync(options.path, { recursive: true, force: true });
 		return removed ? { state: 'reset', retiredPath: 'test-retired' } : { state: 'missing' };
 	}
 

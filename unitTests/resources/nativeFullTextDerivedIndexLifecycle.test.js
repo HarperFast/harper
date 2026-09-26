@@ -6,6 +6,7 @@ const { setupTestDBPath } = require('../testUtils');
 const {
 	createNativeFullTextDerivedIndexBackend,
 	NativeFullTextDerivedIndexLifecycle,
+	retireNativeFullTextDerivedIndexStorage,
 } = require('#src/resources/indexes/nativeFullTextDerivedIndexLifecycle');
 const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNativeBinding');
 const { DERIVED_INDEX_ACCEPTED, DERIVED_INDEX_DEFERRED } = require('#src/resources/derivedIndexRuntime');
@@ -242,6 +243,20 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		await waitFor(() => binding.reclaims.length === 2);
 		assert.deepStrictEqual(binding.reclaims.at(-1), { path: lifecycle.path, retiredPath: 'wrapper-owned' });
 		finishReclaim();
+	});
+
+	it('retires a missing native directory without loading the optional binding', async () => {
+		fs.mkdirSync(path.join(storePath, '.fulltext-retired'));
+		await assert.doesNotReject(
+			retireNativeFullTextDerivedIndexStorage({
+				storePath,
+				storeName: 'catalog.Product.missing',
+				indexId: 'missing-index',
+				binding: async () => {
+					throw new Error('native module unavailable');
+				},
+			})
+		);
 	});
 
 	it('serializes best-effort retired storage reclamation', async () => {

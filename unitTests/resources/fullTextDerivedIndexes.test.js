@@ -1208,6 +1208,38 @@ describe('@fullText derived-index activation', () => {
 		Product = undefined;
 	});
 
+	rocksOnly('resumes table maintenance when drop preparation fails', async () => {
+		Product = table({
+			database: `fulltext-drop-maintenance-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'tags', type: 'array', elements: { type: 'String' } },
+			],
+			fullTextIndexes: [definition()],
+		});
+		const closeMaintenance = Product.closeMaintenance;
+		const resumeMaintenance = Product.resumeMaintenance;
+		let resumed = 0;
+		Product.closeMaintenance = async () => {
+			throw new Error('maintenance drain failed');
+		};
+		Product.resumeMaintenance = () => {
+			resumed++;
+			return resumeMaintenance.call(Product);
+		};
+		try {
+			await assert.rejects(Product.dropTable(), /maintenance drain failed/);
+			assert.strictEqual(resumed, 1);
+			assert.strictEqual(databases[Product.databaseName][Product.tableName], Product);
+		} finally {
+			Product.closeMaintenance = closeMaintenance;
+			Product.resumeMaintenance = resumeMaintenance;
+		}
+	});
+
 	rocksOnly('retires durable native storage when the in-memory attachment is absent', async () => {
 		Product = table({
 			database: `fulltext-detached-drop-${Date.now()}`,

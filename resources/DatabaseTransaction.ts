@@ -2109,8 +2109,8 @@ export class DatabaseTransaction implements Transaction {
 	}
 	directCommitSync(): void {
 		const transaction = this.transaction;
+		if (transaction) this.assertDatabaseCommitAllowed(transaction);
 		try {
-			if (transaction) this.assertDatabaseCommitAllowed(transaction);
 			transaction?.commitSync();
 		} catch (error) {
 			// Still uncommitted and still holding its write intents, and no caller aborts after this

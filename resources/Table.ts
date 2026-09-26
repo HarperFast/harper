@@ -2186,7 +2186,12 @@ export function makeTable(options) {
 					);
 				}
 			};
-			await TableResource.closeMaintenance();
+			try {
+				await TableResource.closeMaintenance();
+			} catch (error) {
+				TableResource.resumeMaintenance();
+				throw error;
+			}
 			try {
 				await derivedIndexRuntime?.close(true);
 			} catch (error) {

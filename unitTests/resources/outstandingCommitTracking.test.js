@@ -5,6 +5,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const {
+	DatabaseTransaction,
 	getOutstandingCommits,
 	trackOutstandingCommit,
 	commitTrackedRocksTransaction,
@@ -183,6 +184,28 @@ describe('Outstanding commit tracking', () => {
 		}
 		assert.strictEqual(await TrackA.get(7), null);
 		await assertAllUntracked('the rejected pre-barrier write should leave no submitted commit');
+	});
+
+	it('aborts a direct commit once when its database is suspended', function () {
+		if (isLMDB) return;
+		const rootStore = { databaseName: 'direct-commit-suspension' };
+		const txn = new DatabaseTransaction();
+		let aborted = 0;
+		txn.writes.push({ store: { rootStore } });
+		txn.transaction = {
+			commitSync: () => assert.fail('a suspended direct commit must not be submitted'),
+			abort: () => aborted++,
+		};
+		const suspension = suspendDatabaseCommits([rootStore]);
+		try {
+			assert.throws(
+				() => txn.directCommitSync(),
+				(error) => error.code === 'DATABASE_CLOSING'
+			);
+			assert.strictEqual(aborted, 1);
+		} finally {
+			suspension.release();
+		}
 	});
 
 	// The defect this guards: tracking used to occupy a single shared slot, claimed by whichever

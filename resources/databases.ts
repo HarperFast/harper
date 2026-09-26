@@ -1954,6 +1954,10 @@ export function openBranchDatabase(
 		releaseBranchIdentity(storeName);
 		const stranded = rocksdbDatabaseEnvs.get(path);
 		rocksdbDatabaseEnvs.delete(path);
+		const auditCleanup = (stranded as any)?.auditStore?.stopAuditCleanup?.();
+		auditCleanup?.catch((cleanupError) =>
+			logger.warn(`Error retiring audit cleanup for branch database at ${path}`, cleanupError)
+		);
 		closeBranchHandles(path, stranded, openedStores, tables);
 		throw error;
 	}

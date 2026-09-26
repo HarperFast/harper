@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { isAbsolute, join, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 import {
 	FullTextDerivedIndexBackend,
@@ -157,8 +158,21 @@ export async function retireNativeFullTextDerivedIndexStorage(
 	if (!isAbsolute(options.storePath)) throw new TypeError('Full-text storePath must be absolute');
 	if (!options.storeName) throw new TypeError('Full-text storeName is required');
 	if (!options.indexId) throw new TypeError('Full-text indexId is required');
-	const binding = await resolveNativeFullTextBinding(options.binding);
 	const path = nativeFullTextIndexPath(options.storePath, options.storeName);
+	if (!existsSync(path)) {
+		if (existsSync(join(dirname(path), '.fulltext-retired'))) {
+			try {
+				const binding = await resolveNativeFullTextBinding(options.binding);
+				const reclaimed = await binding.reclaimRetiredNativeFullTextIndexes({ path });
+				if (reclaimed.failed > 0)
+					logWarning(`Could not remove ${reclaimed.failed} retired paths for full-text index '${options.indexId}'`);
+			} catch (error) {
+				logWarning(`Could not reclaim retired storage for full-text index '${options.indexId}'`, error);
+			}
+		}
+		return;
+	}
+	const binding = await resolveNativeFullTextBinding(options.binding);
 	// The wrapper owns the physical lifecycle fence: reset refuses an active/unproven writer and
 	// takes Tantivy's writer lock before renaming. Harper treats that refusal as best-effort cleanup,
 	// never as permission to remove a live directory itself.
