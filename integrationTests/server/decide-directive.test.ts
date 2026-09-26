@@ -1,25 +1,9 @@
 /**
- * `@decide` directive integration test, the sibling of embed-directive.test.ts.
- *
- * Spins up a fake Ollama HTTP server inside the test, points Harper's models config at
- * it (a generative logical name over fake `/api/chat`, and the built-in `generative`
- * decision adapter over that), deploys a schema with `@decide`, and exercises:
- *
- *   1. **Schema** — describe surfaces the parsed `@decide` config and the resolved leaf.
- *   2. **Happy path** — POST a record → the adapter samples the fake model → the chosen
- *      value and its vote fraction land on the decorated field and its confidence field.
- *   3. **Source-unchanged PATCH** — no model call; the stored pair survives patch-merge.
- *   4. **Source-changing PATCH** — the model is sampled again; the pair reflects the new body.
- *   5. **Replication-receiver skip** — `x-replicate-from: none` with a supplied pair → no
- *      model call; the supplied pair is stored as-is.
- *   6. **Indexed confidence query** — a review queue is an ordinary range condition on the
- *      confidence field.
- *   7. **Failure atomicity** — a body the fake answers with junk fails the POST and stores
- *      nothing.
- *   8. **Caching-table `@decide`** — the cache-from-source write also decides.
- *
- * The fake answers deterministically from the body text, and gives one dissenting vote per
- * four samples for a "refund" body, so the stored confidence is exactly 0.75.
+ * `@decide` directive end to end, the sibling of embed-directive.test.ts: a fake Ollama serves
+ * `/api/chat` (sampled by the built-in `generative` decision adapter) and `/api/embed`, so the
+ * schema below exercises every leaf kind beside an `@embed` attribute on one table. The fake
+ * answers from the body text, with one dissenting vote per SAMPLES for a "refund" body, so the
+ * stored confidence is exactly 0.75.
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert';
@@ -43,6 +27,9 @@ const SCHEMA_GRAPHQL = [
 	'\trouteConfidence: Float @indexed',
 	'\turgent: Boolean @decide(source: "body", confidence: "urgentConfidence")',
 	'\turgentConfidence: Float',
+	'\tseverity: Int @decide(source: "body", minimum: 1, maximum: 5, confidence: "severityConfidence")',
+	'\tseverityConfidence: Float',
+	'\tembedding: [Float] @embed(source: "body", model: "default")',
 	'}',
 	'',
 	'type CachedTicket @table(database: "decidetest") @sealed @export {',
@@ -72,20 +59,24 @@ interface FakeOllama {
 	host: string;
 	close: () => Promise<void>;
 	chatCallCount: () => number;
+	embedCallCount: () => number;
 	reset: () => void;
 }
+
+/** The number of decisions the Ticket schema makes per write that carries `body`. */
+const DECISIONS_PER_WRITE = 3;
 
 /**
  * The fake model answers from the body text in the prompt. A "refund" body gets one
  * dissenting "billing" vote per SAMPLES calls; "garbage" bodies get prose with no JSON
- * object; anything else routes by keyword with full agreement. Urgency is decided by
- * the word "urgent".
+ * object; anything else routes by keyword with full agreement. Urgency is decided by the
+ * word "urgent", and severity is 5 for an urgent body and 2 otherwise.
  */
 function answer(prompt: string, callIndexForBody: number): string {
 	const body = prompt.slice(prompt.lastIndexOf('Input:\n') + 'Input:\n'.length);
-	const isRoute = prompt.includes('"billing"');
 	if (body.includes('garbage')) return 'I cannot decide.';
-	if (!isRoute) return JSON.stringify({ value: body.includes('urgent') });
+	if (prompt.includes('an integer from 1 to 5')) return JSON.stringify({ value: body.includes('urgent') ? 5 : 2 });
+	if (!prompt.includes('"billing"')) return JSON.stringify({ value: body.includes('urgent') });
 	if (body.includes('refund'))
 		return JSON.stringify({ value: callIndexForBody % SAMPLES === SAMPLES - 1 ? 'billing' : 'refund' });
 	if (body.includes('bug')) return JSON.stringify({ value: 'bug' });
@@ -93,10 +84,37 @@ function answer(prompt: string, callIndexForBody: number): string {
 	return JSON.stringify({ value: 'other' });
 }
 
+/** Deterministic 3-element vector from the input text. */
+function deterministicVector(input: string): number[] {
+	let h1 = 0;
+	let h2 = 0;
+	let h3 = 0;
+	for (let i = 0; i < input.length; i++) {
+		const c = input.charCodeAt(i);
+		h1 = (h1 * 31 + c) % 9973;
+		h2 = (h2 * 37 + c) % 9967;
+		h3 = (h3 * 41 + c) % 9941;
+	}
+	return [h1 / 9973, h2 / 9967, h3 / 9941];
+}
+
 async function startFakeOllama(): Promise<FakeOllama> {
 	let chatCalls = 0;
+	let embedCalls = 0;
 	const callsPerKey = new Map<string, number>();
 	const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
+		if (req.method === 'POST' && req.url === '/api/embed') {
+			let raw = '';
+			req.on('data', (chunk) => (raw += chunk));
+			req.on('end', () => {
+				const parsed = JSON.parse(raw) as { input: string | string[] };
+				const inputs = Array.isArray(parsed.input) ? parsed.input : [parsed.input];
+				embedCalls++;
+				res.writeHead(200, { 'Content-Type': 'application/json' });
+				res.end(JSON.stringify({ embeddings: inputs.map(deterministicVector), prompt_eval_count: 3 }));
+			});
+			return;
+		}
 		if (req.method === 'POST' && req.url === '/api/chat') {
 			let raw = '';
 			req.on('data', (chunk) => (raw += chunk));
@@ -105,7 +123,7 @@ async function startFakeOllama(): Promise<FakeOllama> {
 					const parsed = JSON.parse(raw) as { messages: { role: string; content: string }[] };
 					const prompt = parsed.messages.map((m) => m.content).join('\n');
 					chatCalls++;
-					const key = prompt.includes('"billing"') + prompt.slice(prompt.lastIndexOf('Input:\n'));
+					const key = prompt.slice(prompt.indexOf('Decide "value"'));
 					const index = callsPerKey.get(key) ?? 0;
 					callsPerKey.set(key, index + 1);
 					res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -134,8 +152,10 @@ async function startFakeOllama(): Promise<FakeOllama> {
 		host: `127.0.0.1:${addr.port}`,
 		close: () => new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve()))),
 		chatCallCount: () => chatCalls,
+		embedCallCount: () => embedCalls,
 		reset: () => {
 			chatCalls = 0;
+			embedCalls = 0;
 			callsPerKey.clear();
 		},
 	};
@@ -160,6 +180,9 @@ suite('@decide directive end-to-end with fake Ollama', (ctx: any) => {
 			config: {
 				logging: { auditLog: true },
 				models: {
+					embedding: {
+						default: { backend: 'ollama', host: fake.host, model: 'fake-embed' },
+					},
 					generative: {
 						default: { backend: 'ollama', host: fake.host, model: 'fake-gen' },
 					},
@@ -214,22 +237,31 @@ suite('@decide directive end-to-end with fake Ollama', (ctx: any) => {
 		strictEqual(JSON.stringify(route.decide.schema), JSON.stringify({ enum: ['billing', 'refund', 'bug', 'other'] }));
 		const urgent = (ticket.attributes || []).find((a: any) => a.attribute === 'urgent');
 		strictEqual(JSON.stringify(urgent?.decide?.schema), JSON.stringify({ type: 'boolean' }));
+		const severity = (ticket.attributes || []).find((a: any) => a.attribute === 'severity');
+		strictEqual(JSON.stringify(severity?.decide?.schema), JSON.stringify({ type: 'integer', minimum: 1, maximum: 5 }));
 		const confidence = (ticket.attributes || []).find((a: any) => a.attribute === 'routeConfidence');
 		ok(confidence?.indexed, 'the confidence attribute keeps its explicit index');
 	});
 
-	test('happy path: POST → adapter samples the model → value and vote fraction stored', async () => {
+	test('happy path: POST → every decision samples the model, the embedding is computed → all pairs stored', async () => {
 		fake.reset();
-		await post('/Ticket/', { id: 't-refund', body: 'please refund my order, it is urgent' }).expect((r: any) =>
+		const text = 'please refund my order, it is urgent';
+		await post('/Ticket/', { id: 't-refund', body: text }).expect((r: any) =>
 			ok([200, 201, 204].includes(r.status), `unexpected status ${r.status}: ${r.text}`)
 		);
-		strictEqual(fake.chatCallCount(), 2 * SAMPLES, 'each of the two decisions samples the model SAMPLES times');
+		strictEqual(fake.chatCallCount(), DECISIONS_PER_WRITE * SAMPLES, 'each decision samples the model SAMPLES times');
+		strictEqual(fake.embedCallCount(), 1, 'the @embed attribute on the same table is computed once, alongside');
 
 		const body = (await client.reqRest('/Ticket/t-refund').expect(200)).body;
 		strictEqual(body.route, 'refund');
 		strictEqual(body.routeConfidence, 0.75, 'three of four votes');
 		strictEqual(body.urgent, true);
 		strictEqual(body.urgentConfidence, 1);
+		strictEqual(body.severity, 5, 'the Int leaf round-trips through the generative prompt');
+		strictEqual(body.severityConfidence, 1);
+		const expected = deterministicVector(text);
+		ok(Array.isArray(body.embedding) && body.embedding.length === 3, `embedding: ${JSON.stringify(body.embedding)}`);
+		for (let i = 0; i < 3; i++) ok(Math.abs(body.embedding[i] - expected[i]) < 1e-5, `embedding[${i}]`);
 	});
 
 	test('PATCH of an unrelated field does not call the model; the stored pair survives', async () => {
@@ -259,12 +291,17 @@ suite('@decide directive end-to-end with fake Ollama', (ctx: any) => {
 			.set(client.headers)
 			.send({ body: 'this is a bug' })
 			.expect((r: any) => ok([200, 204].includes(r.status), `PATCH status ${r.status}: ${r.text}`));
-		strictEqual(fake.chatCallCount(), baseline + 2 * SAMPLES, 'both decisions run again on a source PATCH');
+		strictEqual(
+			fake.chatCallCount(),
+			baseline + DECISIONS_PER_WRITE * SAMPLES,
+			'every decision runs again on a source PATCH'
+		);
 		const body = (await client.reqRest('/Ticket/t-source-patch').expect(200)).body;
 		strictEqual(body.body, 'this is a bug');
 		strictEqual(body.route, 'bug');
 		strictEqual(body.routeConfidence, 1);
 		strictEqual(body.urgent, false);
+		strictEqual(body.severity, 2);
 	});
 
 	test('replication receiver: x-replicate-from: none with a supplied pair → no model call, pair stored as-is', async () => {

@@ -34,6 +34,67 @@ describe('@decide registry (setDecideAttribute + schema reload)', () => {
 		assert.equal(T.decideAttributes.length, 1);
 	});
 
+	it('table() registers the default decider before the class is returned', () => {
+		const Fresh = table({
+			table: 'DecideRegFresh',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'body', type: 'String' },
+				{ name: 'urgent', type: 'Boolean', decide: { source: 'body', model: 'default', schema: { type: 'boolean' } } },
+			],
+		});
+		assert.equal(typeof Fresh.userDeciders.urgent, 'function', 'a write can never precede registration');
+	});
+
+	it('a programmatic declaration is held to the one-writer rule', () => {
+		assert.throws(
+			() =>
+				table({
+					table: 'DecideRegShared',
+					database: 'test',
+					attributes: [
+						{ name: 'id', isPrimaryKey: true },
+						{ name: 'body', type: 'String' },
+						{
+							name: 'route',
+							type: 'String',
+							decide: { source: 'body', model: 'default', confidence: 'confidence', schema: { enum: ['a', 'b'] } },
+						},
+						{
+							name: 'urgent',
+							type: 'Boolean',
+							decide: { source: 'body', model: 'default', confidence: 'confidence', schema: { type: 'boolean' } },
+						},
+						{ name: 'confidence', type: 'Float' },
+					],
+				}),
+			(err) => {
+				assert.equal(err.statusCode, 400);
+				assert.match(err.message, /both write "confidence"/);
+				return true;
+			}
+		);
+		assert.throws(
+			() =>
+				table({
+					table: 'DecideRegChain',
+					database: 'test',
+					attributes: [
+						{ name: 'id', isPrimaryKey: true },
+						{ name: 'body', type: 'String' },
+						{
+							name: 'route',
+							type: 'String',
+							decide: { source: 'body', model: 'default', schema: { enum: ['a', 'b'] } },
+						},
+						{ name: 'vector', type: 'Array', embed: { source: 'route', model: 'default' }, indexed: { type: 'HNSW' } },
+					],
+				}),
+			/derives from "route", which @decide on "route" writes/
+		);
+	});
+
 	it('refuses an override for an attribute without @decide, or that does not exist', () => {
 		const errors = [];
 		const original = console.error;

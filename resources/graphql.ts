@@ -10,6 +10,7 @@ import { attributeToFragment, type JsonSchemaFragment } from './jsonSchemaTypes.
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { compileFullTextDefinitions } from './fullTextSchema.ts';
 import { validateDecisionSchema } from './models/decision.ts';
+import { assertDerivedFieldOwnership } from './models/embedHook.ts';
 import type { DecideConfig } from './models/decideHook.ts';
 import type { DecisionLeaf } from './models/types.ts';
 
@@ -126,6 +127,14 @@ function parseDecideDirective(directive: DirectiveNode, property: any): DecideCo
 	const fields = new Set([property.name, args.source, args.confidence].filter(Boolean));
 	if (fields.size !== 2 + (args.confidence ? 1 : 0))
 		throw new ClientError(`${target}: the attribute, "source" and "confidence" must be different fields`, 400);
+	// The hook tests source presence with `in`, so a payload without an `Object.prototype`-named
+	// field would still read as carrying it.
+	for (const name of fields)
+		if (Object.hasOwn(Object.prototype, name))
+			throw new ClientError(
+				`${target}: "${name}" is an Object.prototype key and cannot be a decided, source or confidence field`,
+				400
+			);
 	const config: DecideConfig = { source: args.source, model: args.model ?? 'default', schema };
 	if (args.confidence) config.confidence = args.confidence;
 	if (args.instructions) config.instructions = args.instructions;
@@ -436,23 +445,7 @@ async function processGraphQLSchema(
 					if (property.decide) property.decide = parseDecideDirective(property.decide, property);
 				}
 				// A source must reference a declared field; a typo would silently leave the derived
-				// attribute unpopulated (the source key never appears in write payloads). A derived
-				// field (an @embed target, a @decide target or confidence) has exactly one writer, and no
-				// directive derives from another's output: the hooks run concurrently within one write,
-				// so the stored pair would otherwise depend on scheduling.
-				const derivedFieldWriters = new Map<string, string>();
-				const claim = (field: string, writer: string) => {
-					const prior = derivedFieldWriters.get(field);
-					if (prior) throw new ClientError(`${writer} and ${prior} both write "${field}"`, 400);
-					derivedFieldWriters.set(field, writer);
-				};
-				for (const prop of attributes as any[]) {
-					if (prop.embed) claim(prop.name, `@embed on "${prop.name}"`);
-					if (prop.decide) {
-						claim(prop.name, `@decide on "${prop.name}"`);
-						if (prop.decide.confidence) claim(prop.decide.confidence, `@decide on "${prop.name}"`);
-					}
-				}
+				// attribute unpopulated (the source key never appears in write payloads).
 				for (const prop of attributes as any[]) {
 					const directive = prop.embed ? '@embed' : prop.decide ? '@decide' : undefined;
 					if (!directive) continue;
@@ -461,12 +454,6 @@ async function processGraphQLSchema(
 					// match inherited prototype keys (toString, constructor) and pass a bad source.
 					if (!Object.hasOwn(attributesObject, source))
 						throw new ClientError(`${directive} on "${prop.name}" references unknown source field "${source}"`, 400);
-					const sourceWriter = derivedFieldWriters.get(source);
-					if (sourceWriter)
-						throw new ClientError(
-							`${directive} on "${prop.name}" derives from "${source}", which ${sourceWriter} writes`,
-							400
-						);
 					const confidence: string | undefined = prop.decide?.confidence;
 					if (confidence) {
 						const confidenceAttribute = (attributes as any[]).find((a) => a.name === confidence);
@@ -492,6 +479,7 @@ async function processGraphQLSchema(
 							);
 					}
 				}
+				assertDerivedFieldOwnership(attributes as any[]);
 				if (typeDef.fullTextIndexes.length > 0 && !typeDef.table)
 					throw new ClientError('@fullText is only supported on a @table type', 400);
 				typeDef.fullTextIndexes = compileFullTextDefinitions(typeDef.fullTextIndexes, attributes);

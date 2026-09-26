@@ -31,7 +31,11 @@ describe('decideHook', () => {
 			assert.equal(decideFn.calls.length, 1);
 			assert.equal(decideFn.calls[0].state, 'refund me');
 			assert.deepEqual(decideFn.calls[0].schema, { enum: ROUTES });
-			assert.deepEqual(decideFn.calls[0].opts, { model: 'default', instructions: 'Route the ticket.' });
+			assert.deepEqual(decideFn.calls[0].opts, {
+				model: 'default',
+				instructions: 'Route the ticket.',
+				signal: undefined,
+			});
 		});
 
 		it('returns null without calling the model when the source is null or undefined', async () => {
@@ -51,6 +55,14 @@ describe('decideHook', () => {
 			assert.deepEqual(decideFn.calls[0].state, { subject: 'x', lines: 3 });
 			await decider({ body: 42 });
 			assert.equal(decideFn.calls[1].state, '42');
+		});
+
+		it('forwards the write hook signal to Models.decide so a sibling failure cancels the call', async () => {
+			const decideFn = fakeDecideCapturing();
+			__setDecideFnForTest(decideFn);
+			const signal = new AbortController().signal;
+			await createDefaultDecider(config)({ body: 'x' }, { signal });
+			assert.equal(decideFn.calls[0].opts.signal, signal);
 		});
 	});
 
@@ -138,15 +150,36 @@ describe('decideHook', () => {
 			assert.equal(record.routeConfidence, null);
 		});
 
-		it('writes a null confidence when an override returns no probability', async () => {
+		it('fails the write when an override returns no probability for a declared confidence attribute', async () => {
 			const record = { body: 'x' };
-			const before = buildDecideBefore(record, {}, {}, attrs, { route: async () => ({ value: 'bug' }) });
-			await before();
-			assert.equal(record.route, 'bug');
-			assert.equal(record.routeConfidence, null);
+			await assert.rejects(
+				buildDecideBefore(record, {}, {}, attrs, { route: async () => ({ value: 'bug' }) })(),
+				/must return a probability in \[0, 1\] for its confidence attribute "routeConfidence"/
+			);
+			assert.equal(record.route, undefined, 'the value is not written without its probability');
+			assert.equal(record.routeConfidence, undefined);
 		});
 
-		it('skips attributes whose source is not in the payload and attributes with no registered decider', async () => {
+		it('ignores a probability when the directive names no confidence attribute', async () => {
+			const record = { body: 'x' };
+			const noConfidence = [{ name: 'route', decide: { ...config, confidence: undefined } }];
+			await buildDecideBefore(record, {}, {}, noConfidence, {
+				route: async () => ({ value: 'bug', probability: 7 }),
+			})();
+			assert.equal(record.route, 'bug');
+			assert.equal('routeConfidence' in record, false);
+		});
+
+		it('fails the write when the source is present and no decider is registered', async () => {
+			const record = { body: 'x' };
+			await assert.rejects(
+				buildDecideBefore(record, {}, {}, attrs, {})(),
+				/No decider is registered for the @decide attribute "route"/
+			);
+			assert.deepEqual(record, { body: 'x' });
+		});
+
+		it('skips attributes whose source is not in the payload', async () => {
 			const multi = [
 				attrs[0],
 				{ name: 'urgent', decide: { source: 'title', model: 'default', schema: { type: 'boolean' } } },
@@ -164,10 +197,6 @@ describe('decideHook', () => {
 			assert.equal(urgentCalls, 0);
 			assert.equal(record.urgent, undefined);
 			assert.equal(record.route, 'refund');
-
-			const unregistered = { body: 'x' };
-			await buildDecideBefore(unregistered, {}, {}, attrs, {})();
-			assert.deepEqual(unregistered, { body: 'x' });
 		});
 
 		it('skips the decider when the source payload is a CRDT operation', async () => {
@@ -187,9 +216,9 @@ describe('decideHook', () => {
 		it('fails the write when an override returns a value outside the closed set or a bad probability', async () => {
 			for (const [result, pattern] of [
 				[{ value: 'shipping', probability: 1 }, /outside its @decide set/],
-				[{ value: 'bug', probability: 1.5 }, /not a number in \[0, 1\]/],
-				[{ value: 'bug', probability: NaN }, /not a number in \[0, 1\]/],
-				[{ value: 'bug', probability: '0.5' }, /not a number in \[0, 1\]/],
+				[{ value: 'bug', probability: 1.5 }, /must return a probability in \[0, 1\]/],
+				[{ value: 'bug', probability: NaN }, /must return a probability in \[0, 1\]/],
+				[{ value: 'bug', probability: '0.5' }, /must return a probability in \[0, 1\]/],
 			]) {
 				const record = { body: 'x' };
 				await assert.rejects(buildDecideBefore(record, {}, {}, attrs, { route: async () => result })(), pattern);
@@ -263,28 +292,44 @@ describe('decideHook', () => {
 			);
 		});
 
-		it('settles every decider before reporting a failure, so a slow one cannot write after the rejection', async () => {
+		it('aborts the siblings of a failed decider and settles them before reporting the failure', async () => {
 			const multi = [
 				attrs[0],
 				{ name: 'urgent', decide: { source: 'body', model: 'default', schema: { type: 'boolean' } } },
 			];
 			const record = { body: 'x' };
 			let slowDone = false;
+			let aborted = false;
 			await assert.rejects(
 				buildDecideBefore(record, {}, {}, multi, {
 					route: async () => {
 						throw new Error('fast failure');
 					},
-					urgent: async () => {
+					urgent: async (r, { signal }) => {
 						await new Promise((resolve) => setTimeout(resolve, 20));
+						aborted = signal.aborted;
 						slowDone = true;
 						return { value: true, probability: 1 };
 					},
 				})(),
 				/decision for attribute "route"/
 			);
-			assert.equal(slowDone, true, 'the slow decider settled before the failure was reported');
+			assert.equal(aborted, true, 'the sibling saw the abort');
+			assert.equal(slowDone, true, 'a sibling that ignores the signal still settled before the failure was reported');
 			assert.equal(record.urgent, true);
+		});
+
+		it('an aborted write signal reaches every decider', async () => {
+			const controller = new AbortController();
+			controller.abort(new Error('caller gave up'));
+			let seen;
+			await buildDecideBefore({ body: 'x' }, {}, {}, attrs, {
+				route: async (r, { signal }) => {
+					seen = signal.aborted;
+					return REFUND;
+				},
+			})(controller.signal);
+			assert.equal(seen, true);
 		});
 	});
 
@@ -293,6 +338,7 @@ describe('decideHook', () => {
 			assert.equal(combineWriteHooks(undefined, undefined), undefined);
 			const only = async () => {};
 			assert.equal(combineWriteHooks(undefined, only), only);
+			assert.equal(combineWriteHooks(only, undefined), only);
 			const record = { content: 'x', body: 'refund me' };
 			const combined = combineWriteHooks(
 				buildEmbedBefore(record, {}, {}, [{ name: 'embedding', embed: { source: 'content', model: 'default' } }], {
@@ -306,19 +352,41 @@ describe('decideHook', () => {
 			assert.equal(record.routeConfidence, 0.75);
 		});
 
-		it('settles the other hook before reporting one hook’s failure', async () => {
+		it('aborts the other hook on one hook’s failure and settles it before reporting', async () => {
 			let slowDone = false;
+			let aborted = false;
 			const combined = combineWriteHooks(
 				async () => {
 					throw new Error('embed failed');
 				},
-				async () => {
+				async (signal) => {
 					await new Promise((resolve) => setTimeout(resolve, 20));
+					aborted = signal.aborted;
 					slowDone = true;
 				}
 			);
 			await assert.rejects(combined(), /embed failed/);
+			assert.equal(aborted, true);
 			assert.equal(slowDone, true);
+		});
+
+		it('a hook that honors the signal lets the write fail promptly', async () => {
+			const combined = combineWriteHooks(
+				async () => {
+					throw new Error('embed failed');
+				},
+				(signal) =>
+					new Promise((resolve, reject) => {
+						const timer = setTimeout(resolve, 60_000);
+						signal.addEventListener('abort', () => {
+							clearTimeout(timer);
+							reject(signal.reason);
+						});
+					})
+			);
+			const started = Date.now();
+			await assert.rejects(combined(), /embed failed/);
+			assert.ok(Date.now() - started < 1000, 'the write did not wait for the slow hook');
 		});
 	});
 });
