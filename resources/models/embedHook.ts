@@ -201,6 +201,12 @@ export function assertDerivedFieldOwnership(attributes: DerivedAttribute[]): voi
 		if (!attribute) continue;
 		for (const [directive, config] of directives(attribute)) {
 			const writer = `${directive} on "${attribute.name}"`;
+			for (const [name, field] of [
+				['confidence', config.confidence],
+				['decision', config.decision],
+			] as const)
+				if (field !== undefined && (typeof field !== 'string' || field === ''))
+					throw new ClientError(`${writer}: "${name}" must name a field`, 400);
 			for (const field of [attribute.name, config.source, config.confidence, config.decision])
 				if (field && Object.hasOwn(Object.prototype, field))
 					throw new ClientError(

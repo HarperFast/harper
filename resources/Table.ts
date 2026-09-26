@@ -4640,7 +4640,6 @@ export function makeTable(options) {
 							)
 						: undefined;
 			} catch (err) {
-				// A payload the hooks refuse fails the write before any of them calls a model.
 				return Promise.reject(err);
 			}
 			const proceed = (): any => {
