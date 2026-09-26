@@ -11,7 +11,7 @@ import { getModelCallAnalyticsWriter, type ModelCallAnalyticsWriter, type ModelC
 import { recordAction } from '../analytics/write.ts';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import { runAgentLoop, runAgentLoopStream } from './agentLoop.ts';
-import { assignFiniteTokenCount } from './backendHelpers.ts';
+import { assignFiniteTokenCount, ChoiceScoringUnsupportedError } from './backendHelpers.ts';
 import {
 	DecisionContractError,
 	DecisionInputError,
@@ -35,6 +35,7 @@ import {
 } from './decisionStore.ts';
 import type {
 	AccountingContext,
+	ModelCapabilities,
 	BackendOpts,
 	Capability,
 	ChoiceScores,
@@ -427,11 +428,16 @@ export class Models implements ModelsContract {
 			signal?.throwIfAborted();
 			const attemptStart = performance.now();
 			try {
-				assertCapabilities(backend, resolved.requires);
+				const caps = assertCapabilities(backend, resolved.requires);
 				// A router may hand back a backend whose capabilities claim more than it implements;
 				// that is this backend's contract failure, recorded against it, not a crash.
 				if (typeof backend.scoreChoices !== 'function')
 					throw new ServerError(`Backend '${backend.name}' advertises 'scoreChoices' but does not implement it`);
+				const limit = scoringLimit(caps);
+				if (limit !== undefined && choices.length > limit)
+					throw new ChoiceScoringUnsupportedError(
+						`Backend '${backend.name}' scores at most ${limit} choices per call; got ${choices.length}`
+					);
 				const result = await backend.scoreChoices(input, choices, toBackendOpts(opts, signal, accounting));
 				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
 				const logLikelihoods = result.output?.logLikelihoods;
@@ -658,11 +664,18 @@ type Resolution =
  * capability, and the facade must not invoke it. Checked immediately before each candidate is
  * invoked, fallbacks included.
  */
-function assertCapabilities(backend: ModelBackend, requires: Capability[]): void {
+function assertCapabilities(backend: ModelBackend, requires: Capability[]): ModelCapabilities | undefined {
 	const caps = backend.capabilities();
 	for (const capability of requires) {
 		if (!caps?.[capability]) throw new ModelCapabilityError(backend.name, capability);
 	}
+	return caps;
+}
+
+/** A positive integer limit from a candidate's capabilities, or undefined for none or a malformed one. */
+export function scoringLimit(caps: ModelCapabilities | undefined): number | undefined {
+	const limit = caps?.maxScoredChoices;
+	return Number.isSafeInteger(limit) && (limit as number) > 0 ? (limit as number) : undefined;
 }
 
 /**

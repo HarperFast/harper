@@ -74,10 +74,15 @@ export interface ModelCapabilities {
 	 * than a hint. Says what Harper sends, not what a remote endpoint honors. Absent reads as false.
 	 */
 	structuredOutput?: boolean;
+	/**
+	 * The most choices one `scoreChoices` call accepts. Absent means no stated limit. A limit, not a
+	 * capability: it cannot be required, and a call above it is declined without a request.
+	 */
+	maxScoredChoices?: number;
 }
 
-/** A capability a call can require of its backend (a key of `ModelCapabilities`). */
-export type Capability = keyof ModelCapabilities;
+/** A capability a call can require of its backend (a boolean key of `ModelCapabilities`). */
+export type Capability = Exclude<keyof ModelCapabilities, 'maxScoredChoices'>;
 
 /** What the router is asked to resolve for a single call. See #1326. */
 export interface RouteRequest {
@@ -129,6 +134,8 @@ export interface DefineBackendSpec {
 	calibratedNoMatch?: boolean;
 	/** `generate` sends `responseFormat: { schema }` as a decoding constraint. Default `false`. */
 	structuredOutput?: boolean;
+	/** The most choices one `scoreChoices` call accepts, a positive integer. Default: no limit. */
+	maxScoredChoices?: number;
 }
 
 export type EmbedOpts = {

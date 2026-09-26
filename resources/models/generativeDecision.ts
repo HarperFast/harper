@@ -21,7 +21,7 @@ import {
 	toResponseSchema,
 	wantsNoMatch,
 } from './decision.ts';
-import { models } from './Models.ts';
+import { models, scoringLimit } from './Models.ts';
 import { getRouter } from './routing.ts';
 import type {
 	BackendOpts,
@@ -106,7 +106,7 @@ export interface GenerativeDecisionDeps {
 	generate?: GenerateFn;
 	score?: ScoreFn;
 	/** Whether the generative name currently routes to a backend that scores; `auto` asks before every decision. */
-	canScore?: (logicalName: string) => boolean;
+	canScore?: (logicalName: string, largestLeaf: number) => boolean;
 }
 
 export class GenerativeDecisionError extends ServerError {
@@ -235,7 +235,8 @@ export function createGenerativeDecisionBackend(
 			opts: BackendOpts<DecideOpts>
 		): Promise<ModelCallResult<DecisionOutput<unknown>>> {
 			const signal = composeSignal(opts.signal, requestTimeoutMs);
-			const mode: ScoringMode = scoring === 'auto' ? (canScore(logicalName) ? 'score' : 'vote') : scoring;
+			const mode: ScoringMode =
+				scoring === 'auto' ? (canScore(logicalName, largestLeaf(schema)) ? 'score' : 'vote') : scoring;
 			if (mode === 'score') {
 				try {
 					return {
@@ -254,8 +255,27 @@ export function createGenerativeDecisionBackend(
 	};
 }
 
-function routesToScorer(logicalName: string): boolean {
-	return getRouter().route({ kind: 'generative', logicalName, requires: ['scoreChoices'] }).length > 0;
+// A candidate that advertises scoring without implementing it counts as able, so the facade reports
+// that contract failure instead of the decision quietly voting.
+function routesToScorer(logicalName: string, largestLeafSize: number): boolean {
+	for (const backend of getRouter().route({ kind: 'generative', logicalName, requires: ['scoreChoices'] })) {
+		const limit = scoringLimit(backend.capabilities());
+		if (limit === undefined || largestLeafSize <= limit || typeof backend.scoreChoices !== 'function') return true;
+	}
+	return false;
+}
+
+function leafSize(leaf: DecisionLeaf): number {
+	if ('enum' in leaf) return leaf.enum.length;
+	if (leaf.type === 'boolean') return 2;
+	return leaf.maximum - leaf.minimum + 1;
+}
+
+function largestLeaf(schema: DecisionSchema): number {
+	if (!isObjectSchema(schema)) return leafSize(schema);
+	let largest = 0;
+	for (const name in schema.properties) largest = Math.max(largest, leafSize(schema.properties[name]));
+	return largest;
 }
 
 /** The errors after which `auto` votes: the backend declined this call, or lost the capability since the probe. */
