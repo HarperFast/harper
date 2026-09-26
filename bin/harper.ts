@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 
+// Must stay the first import — it sizes libuv's thread pool before anything below can initialize it.
+import './uvThreadPool.ts';
+
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import logger from '../utility/logging/harper_logger.ts';
