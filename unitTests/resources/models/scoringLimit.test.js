@@ -237,3 +237,34 @@ describe('scoring limits (#2849)', () => {
 		});
 	});
 });
+
+describe('scoring limits: hardening (#2849)', () => {
+	afterEach(() => {
+		clearRegistry();
+		clearRouting();
+	});
+
+	it('an OpenAI model that refused logprobs reports no scoring limit', async () => {
+		const fetch = async () =>
+			new Response(JSON.stringify({ error: { message: 'logprobs is not supported', param: 'logprobs' } }), {
+				status: 400,
+				headers: { 'Content-Type': 'application/json' },
+			});
+		const b = new OpenAIBackend({ apiKey: 'k', model: 'o1' }, fetch);
+		await assert.rejects(b.scoreChoices('q', ['a', 'b'], { accounting: {} }));
+		assert.strictEqual(b.capabilities().scoreChoices, false);
+		assert.strictEqual(b.capabilities().maxScoredChoices, undefined);
+	});
+
+	it('the auto probe treats a malformed leaf as above every limit rather than throwing', async () => {
+		setGenerative('default', limitedScorer('limited', 20));
+		const votes = firstValueVotes({ enum: ['a', 'b'] });
+		const backend = createGenerativeDecisionBackend({ samples: 1 }, { generate: votes.generate });
+		const malformed = { type: 'integer' };
+		const err = await backend.decide('x', malformed, {}).then(
+			() => undefined,
+			(e) => e
+		);
+		assert.ok(!(err instanceof TypeError), String(err));
+	});
+});
