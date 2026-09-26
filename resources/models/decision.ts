@@ -141,7 +141,8 @@ export function isAllowedValue(leaf: DecisionLeaf, raw: unknown): boolean {
 
 export function wantsNoMatch(schema: DecisionSchema): boolean {
 	if (!isObjectSchema(schema)) return schema.noMatch === true;
-	for (const name in schema.properties) if (schema.properties[name].noMatch === true) return true;
+	for (const name in schema.properties)
+		if (Object.hasOwn(schema.properties, name) && schema.properties[name].noMatch === true) return true;
 	return false;
 }
 

@@ -522,3 +522,20 @@ describe('noMatch end to end through bootstrap (#2846)', () => {
 		close(record.noMatch, 0.5);
 	});
 });
+
+describe('wantsNoMatch (#2846)', () => {
+	const { wantsNoMatch } = require('#src/resources/models/decision');
+	it('reads only a schema’s own properties', () => {
+		Object.defineProperty(Object.prototype, 'polluted', {
+			value: { enum: ['a', 'b'], noMatch: true },
+			enumerable: true,
+			configurable: true,
+		});
+		try {
+			assert.strictEqual(wantsNoMatch({ type: 'object', properties: { route: QUEUE } }), false);
+			assert.strictEqual(wantsNoMatch({ type: 'object', properties: { route: QUEUE_NM } }), true);
+		} finally {
+			delete Object.prototype.polluted;
+		}
+	});
+});
