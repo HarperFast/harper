@@ -1,4 +1,3 @@
-// `@decide` end to end against a fake Ollama that serves `/api/chat` and `/api/embed`.
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert';
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';

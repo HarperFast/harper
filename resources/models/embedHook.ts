@@ -154,10 +154,15 @@ type DerivedAttribute = {
 	decide?: { source: string; confidence?: string; schema?: unknown };
 };
 
+const INT32_MIN = -2147483648;
+const INT32_MAX = 2147483647;
+
+// Table validation holds a String to strings and an Int to 32 bits, so a leaf outside either would
+// load and then fail every write.
 const LEAF_KIND_BY_TYPE: Record<string, (schema: any) => boolean> = {
-	String: (schema) => Array.isArray(schema?.enum),
+	String: (schema) => Array.isArray(schema?.enum) && schema.enum.every((value: unknown) => typeof value === 'string'),
 	Boolean: (schema) => schema?.type === 'boolean',
-	Int: (schema) => schema?.type === 'integer',
+	Int: (schema) => schema?.type === 'integer' && schema.minimum >= INT32_MIN && schema.maximum <= INT32_MAX,
 };
 
 /**

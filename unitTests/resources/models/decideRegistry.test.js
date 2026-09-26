@@ -147,6 +147,43 @@ describe('@decide registry (setDecideAttribute + schema reload)', () => {
 		assert.equal(Reloaded.attributes.find((a) => a.name === 'urgent').decide.confidence, 'urgentConfidence');
 	});
 
+	(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
+		'a refused redeclaration that also changes @fullText leaves the persisted definitions untouched',
+		() => {
+			const declare = (urgentConfidence, indexName) =>
+				table({
+					table: 'DecideRegFullText',
+					database: 'test',
+					audit: true,
+					attributes: [
+						{ name: 'id', isPrimaryKey: true },
+						{ name: 'body', type: 'String' },
+						{
+							name: 'route',
+							type: 'String',
+							decide: { source: 'body', model: 'default', confidence: 'routeConfidence', schema: { enum: ['a', 'b'] } },
+						},
+						{ name: 'routeConfidence', type: 'Float' },
+						{
+							name: 'urgent',
+							type: 'Boolean',
+							decide: { source: 'body', model: 'default', confidence: urgentConfidence, schema: { type: 'boolean' } },
+						},
+						{ name: 'urgentConfidence', type: 'Float' },
+					],
+					fullTextIndexes: [{ name: indexName, fields: [{ name: 'body' }] }],
+				});
+			const Live = declare('urgentConfidence', 'search');
+			const persisted = () =>
+				Live.dbisDB.getSync(`${Live.tableName}/${Live.primaryKey}`) ?? Live.dbisDB.getSync(`${Live.tableName}/`);
+			assert.strictEqual(persisted().fullTextIndexes[0].name, 'search');
+			assert.throws(() => declare('routeConfidence', 'renamed'), /both write "routeConfidence"/);
+			assert.strictEqual(persisted().fullTextIndexes[0].name, 'search', 'the persisted definitions are unchanged');
+			assert.strictEqual(persisted().fullTextIndexRetirements, undefined, 'no retirement was recorded');
+			assert.strictEqual(Live.fullTextIndexes[0].name, 'search', 'the live definitions are unchanged');
+		}
+	);
+
 	it('a peer declaration that conflicts only once merged with the live fields is rejected before it lands', () => {
 		const Live = table({
 			table: 'DecideRegPeer',
@@ -282,6 +319,28 @@ describe('@decide registry (setDecideAttribute + schema reload)', () => {
 				{ name: 'urgent', type: 'Boolean', decide: { source: 'body', model: 'default', schema: { enum: ['a', 'b'] } } },
 			]),
 			/does not fit a Boolean attribute/
+		);
+		assert.throws(
+			declare('DecideRegStringEnumKind', [
+				...base,
+				{ name: 'route', type: 'String', decide: { source: 'body', model: 'default', schema: { enum: [1, 2] } } },
+			]),
+			/does not fit a String attribute/
+		);
+		assert.throws(
+			declare('DecideRegIntBounds', [
+				...base,
+				{
+					name: 'severity',
+					type: 'Int',
+					decide: {
+						source: 'body',
+						model: 'default',
+						schema: { type: 'integer', minimum: 2147483640, maximum: 2147483650 },
+					},
+				},
+			]),
+			/does not fit a Int attribute/
 		);
 		assert.throws(
 			declare('DecideRegBadSchema', [

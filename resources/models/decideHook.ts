@@ -57,12 +57,6 @@ export function createDefaultDecider(config: DecideConfig): Decider {
 	};
 }
 
-/**
- * Build the pre-commit callback that runs deciders for every `@decide` attribute whose source
- * field is present in this write, or `undefined` when nothing applies. Same source-field
- * semantics as `buildEmbedBefore`: a PATCH that omits the source leaves the value and
- * confidence untouched; an explicit `source: null` clears both.
- */
 export function buildDecideBefore(
 	record: any,
 	context: any,
