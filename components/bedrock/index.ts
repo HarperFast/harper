@@ -145,6 +145,15 @@ export function _injectSdkForTests(sdk: SdkLike): void {
  * support tools (or that haven't been wired into the per-family dispatcher
  * yet) raise structured errors.
  */
+const CAPABILITIES: ModelCapabilities = Object.freeze({
+	embed: true,
+	generate: true,
+	stream: true,
+	tools: true,
+	adapters: false,
+	structuredOutput: false,
+});
+
 export class BedrockBackend implements ModelBackend {
 	readonly name = 'bedrock';
 	readonly #region?: string;
@@ -159,7 +168,7 @@ export class BedrockBackend implements ModelBackend {
 	}
 
 	capabilities(): ModelCapabilities {
-		return { embed: true, generate: true, stream: true, tools: true, adapters: false, structuredOutput: false };
+		return CAPABILITIES;
 	}
 
 	async embed(input: string | string[], opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>> {

@@ -260,14 +260,8 @@ export class Models implements ModelsContract {
 		}
 		// First candidate only — mid-stream fallback would mean replaying already-yielded chunks.
 		const backend = resolved.candidates[0];
-		try {
-			assertCapabilities(backend, resolved.requires);
-		} catch (err) {
-			this.#recordFailure(backend, 'generateStream', opts.model, accounting, opts, startedAt, err);
-			throw err;
-		}
 		const backendOpts = toBackendOpts(opts, signal, accounting);
-		return this.#wrapStream(backend, input, backendOpts, opts, accounting, startedAt);
+		return this.#wrapStream(backend, input, backendOpts, opts, accounting, startedAt, resolved.requires);
 	}
 
 	async *#wrapStream(
@@ -276,11 +270,14 @@ export class Models implements ModelsContract {
 		backendOpts: BackendOpts<GenerateOpts>,
 		opts: GenerateOpts,
 		accounting: AccountingContext,
-		startedAt: number
+		startedAt: number,
+		requires: Capability[]
 	): AsyncIterable<GenerateChunk> {
 		let caught: unknown;
 		let completed = false;
 		try {
+			// Runs on the first next(), the moment the backend is actually invoked.
+			assertCapabilities(backend, requires);
 			for await (const chunk of backend.generateStream!(input, backendOpts)) {
 				yield chunk;
 			}
@@ -637,8 +634,7 @@ type Resolution =
 /**
  * The router's list is advisory: a custom router may return a backend that lacks a required
  * capability, and the facade must not invoke it. Checked immediately before each candidate is
- * called, fallbacks included, so a reload between candidates is seen too. `caps?.[…]` treats a
- * backend whose `capabilities()` returns nullish as satisfying nothing.
+ * invoked, fallbacks included.
  */
 function assertCapabilities(backend: ModelBackend, requires: Capability[]): void {
 	const caps = backend.capabilities();

@@ -116,6 +116,18 @@ export interface OpenAIBackendConfig {
  * externally. `toolMode: 'return'` (Phase 1 default) is supported end-to-end;
  * `toolMode: 'auto'` is reserved for #612.
  */
+const CAPABILITIES: ModelCapabilities = Object.freeze({
+	embed: true,
+	generate: true,
+	stream: true,
+	tools: true,
+	adapters: false,
+	scoreChoices: true,
+	structuredOutput: true,
+});
+// The same shape for a model that refused `logprobs`; two frozen objects, so `capabilities()` allocates nothing.
+const CAPABILITIES_WITHOUT_SCORING: ModelCapabilities = Object.freeze({ ...CAPABILITIES, scoreChoices: false });
+
 export class OpenAIBackend implements ModelBackend {
 	readonly name = 'openai';
 	readonly #baseUrl: string;
@@ -150,16 +162,9 @@ export class OpenAIBackend implements ModelBackend {
 	}
 
 	capabilities(): ModelCapabilities {
-		const scoreChoices = this.#defaultModel === undefined || !this.#logprobsRejected.has(this.#defaultModel);
-		return {
-			embed: true,
-			generate: true,
-			stream: true,
-			tools: true,
-			adapters: false,
-			scoreChoices,
-			structuredOutput: true,
-		};
+		return this.#defaultModel === undefined || !this.#logprobsRejected.has(this.#defaultModel)
+			? CAPABILITIES
+			: CAPABILITIES_WITHOUT_SCORING;
 	}
 
 	async embed(input: string | string[], opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>> {
