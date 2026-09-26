@@ -402,26 +402,11 @@ function sortKeys(value: unknown): unknown {
 	return sorted;
 }
 
-// keyed by object identity: a schema mutated in place after its first use keeps its first identity
-const identities = new WeakMap<DecisionSchema, { hash: string; scoring: DecisionSchema }>();
-
-function identity(schema: DecisionSchema): { hash: string; scoring: DecisionSchema } {
-	let cached = identities.get(schema);
-	if (!cached) {
-		cached = {
-			hash: createHash('sha256')
-				.update(canonicalJson(knownSchema(schema, true)))
-				.digest('hex'),
-			scoring: knownSchema(schema, false),
-		};
-		identities.set(schema, cached);
-	}
-	return cached;
-}
-
 /** Identity of the schema as the model saw it: the allowed values and the descriptions, nothing else. */
 export function hashSchema(schema: DecisionSchema): string {
-	return identity(schema).hash;
+	return createHash('sha256')
+		.update(canonicalJson(knownSchema(schema, true)))
+		.digest('hex');
 }
 
 /**
@@ -429,7 +414,12 @@ export function hashSchema(schema: DecisionSchema): string {
  * text that can carry request data, so they are hashed, never stored.
  */
 export function scoringSchema(schema: DecisionSchema): DecisionSchema {
-	return identity(schema).scoring;
+	return knownSchema(schema, false);
+}
+
+/** sha256 of a caller's per-call text, so decisions made under different instructions do not share an identity. */
+export function hashText(text: string): string {
+	return createHash('sha256').update(text).digest('hex');
 }
 
 function knownSchema(schema: DecisionSchema, withDescriptions: boolean): DecisionSchema {

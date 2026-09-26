@@ -15,6 +15,7 @@ import { assignFiniteTokenCount } from './backendHelpers.ts';
 import {
 	DecisionContractError,
 	hashSchema,
+	hashText,
 	normalizeDecision,
 	scoringSchema,
 	stateToText,
@@ -336,7 +337,16 @@ export class Models implements ModelsContract {
 				continue;
 			}
 			const callId = this.#record(backend, 'decide', opts.model, accounting, undefined, result, attemptStart);
-			const id = await this.#persistDecision(callId, backend, opts.model, accounting, result.output, schema, decision);
+			const id = await this.#persistDecision(
+				callId,
+				backend,
+				opts.model,
+				opts.instructions,
+				accounting,
+				result.output,
+				schema,
+				decision
+			);
 			return result.usage ? { id, ...decision, usage: result.usage } : { id, ...decision };
 		}
 		throw firstError;
@@ -421,7 +431,6 @@ export class Models implements ModelsContract {
 		throw hasFailure ? firstFailure : firstError;
 	}
 
-	/** The durable record of a decision with its recorded facts, or undefined. */
 	getDecision<T = unknown>(id: string): Promise<DecisionRecord<T> | undefined> {
 		checkDecisionId(id);
 		return this.#decisionStore.get(id, resolveCallContext().accounting.tenantId) as Promise<
@@ -429,7 +438,6 @@ export class Models implements ModelsContract {
 		>;
 	}
 
-	/** Record the truth, the action taken, or both. Not a model call: no analytics row, no metric. */
 	recordOutcome<T = unknown>(id: string, outcome: OutcomeReport): Promise<DecisionRecord<T>> {
 		checkDecisionId(id);
 		return this.#decisionStore.recordOutcome(id, outcome, resolveCallContext().accounting.tenantId) as Promise<
@@ -441,6 +449,7 @@ export class Models implements ModelsContract {
 		callId: number,
 		backend: ModelBackend,
 		model: string | undefined,
+		instructions: string | undefined,
 		accounting: AccountingContext,
 		output: DecisionOutput<unknown>,
 		schema: DecisionSchema,
@@ -459,6 +468,7 @@ export class Models implements ModelsContract {
 			model: model ?? 'default',
 			signature: typeof output.signature === 'string' ? output.signature : undefined,
 			configHash: getModelsConfigHash(),
+			instructionsHash: typeof instructions === 'string' ? hashText(instructions) : undefined,
 			schema: scoringSchema(schema),
 			schemaHash: hashSchema(schema),
 			value: decision.value,

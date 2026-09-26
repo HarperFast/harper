@@ -256,6 +256,8 @@ export interface DecisionRecord<T = unknown> {
 	signature?: string;
 	/** Identity of the `models` config block in force when the decision was made. */
 	configHash?: string;
+	/** sha256 of the per-call `instructions`, when any were given. */
+	instructionsHash?: string;
 	/** The schema's allowed values, without descriptions. */
 	schema: DecisionSchema;
 	/** Identity of the full schema, descriptions included. */

@@ -125,11 +125,7 @@ async function patchIsHashAttribute(tableName: string) {
 	);
 }
 
-/**
- * The decision tables get only their primary key here; resources/models/decisionStore.ts declares the
- * attributes and the indexed `expiresAt` TTL at boot on every writable node, so the TTL exists on
- * nodes that never decide. `audit: true` must match systemSchema.json: both tables replicate.
- */
+/** `audit: true` must match systemSchema.json: both decision tables replicate. */
 async function createSystemTableIfMissing(tableName: string, purpose: string) {
 	if (databases.system?.[tableName]) {
 		hdbLogger.info(`system.${tableName} already exists; skipping create.`);
