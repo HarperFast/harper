@@ -232,7 +232,17 @@ export function registerBackend(kind: ModelKind, id: string, backend: ModelBacke
 export function defineBackend(spec: DefineBackendSpec): ModelBackend {
 	if (!spec || typeof spec.name !== 'string' || spec.name.length === 0)
 		throw new ModelBackendRegistrationError('defineBackend requires a non-empty name');
-	const { name, embed, generate, generateStream, decide, tools = false, adapters = false, calibrated = false } = spec;
+	const {
+		name,
+		embed,
+		generate,
+		generateStream,
+		decide,
+		tools = false,
+		adapters = false,
+		calibrated = false,
+		structuredOutput = false,
+	} = spec;
 	// Gate on function-ness, not truthiness: a non-function value (`generate: 'oops'`)
 	// must be rejected at definition time, not assigned and crash at call time.
 	const hasEmbed = typeof embed === 'function';
@@ -252,6 +262,7 @@ export function defineBackend(spec: DefineBackendSpec): ModelBackend {
 		adapters,
 		decide: hasDecide,
 		calibrated: hasDecide && calibrated,
+		structuredOutput: (hasGenerate || hasStream) && structuredOutput,
 	});
 	const backend: ModelBackend = { name, capabilities: () => capabilities };
 	if (hasEmbed) backend.embed = embed;

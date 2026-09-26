@@ -33,6 +33,7 @@ describe('defineBackend', () => {
 			adapters: false,
 			decide: false,
 			calibrated: false,
+			structuredOutput: false,
 		});
 		assert.strictEqual(typeof b.embed, 'function');
 		assert.strictEqual(b.generate, undefined);
@@ -53,6 +54,7 @@ describe('defineBackend', () => {
 			adapters: false,
 			decide: false,
 			calibrated: false,
+			structuredOutput: false,
 		});
 	});
 
@@ -155,5 +157,26 @@ describe('registerBackend + defineBackend end-to-end through Models', () => {
 		const result = await models.generate('hi', { model: 'local:stream-only' });
 		assert.strictEqual(result.content, 'Hello, world');
 		assert.strictEqual(result.finishReason, 'stop');
+	});
+});
+
+describe('defineBackend structuredOutput', () => {
+	const gen = async () => ({ status: 'completed', output: { content: '{}', finishReason: 'stop' } });
+
+	it('is declared explicitly, defaults to false, and only holds for a backend that generates', () => {
+		assert.strictEqual(defineBackend({ name: 'g', generate: gen }).capabilities().structuredOutput, false);
+		assert.strictEqual(
+			defineBackend({ name: 'g', generate: gen, structuredOutput: true }).capabilities().structuredOutput,
+			true
+		);
+		assert.strictEqual(
+			defineBackend({ name: 's', generateStream: async function* () {}, structuredOutput: true }).capabilities()
+				.structuredOutput,
+			true
+		);
+		assert.strictEqual(
+			defineBackend({ name: 'e', embed: embedFn, structuredOutput: true }).capabilities().structuredOutput,
+			false
+		);
 	});
 });

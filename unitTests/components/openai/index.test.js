@@ -55,6 +55,7 @@ describe('OpenAIBackend', () => {
 				stream: true,
 				tools: true,
 				adapters: false,
+				structuredOutput: true,
 			});
 		});
 

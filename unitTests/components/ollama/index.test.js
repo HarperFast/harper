@@ -52,6 +52,7 @@ describe('OllamaBackend', () => {
 				stream: true,
 				tools: false,
 				adapters: false,
+				structuredOutput: true,
 			});
 		});
 	});

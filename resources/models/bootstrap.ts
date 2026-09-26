@@ -75,6 +75,7 @@ interface ModelEntry {
 	samples?: number;
 	concurrency?: number;
 	temperature?: number;
+	requireStructuredOutput?: boolean;
 	/** Ordered fallback group: other logical names tried, in order, after this one (#1326). */
 	fallback?: string[];
 }

@@ -14,6 +14,7 @@ import { allowedValues, isObjectSchema, parseDecisionSample, stateToText, toResp
 import { models } from './Models.ts';
 import type {
 	BackendOpts,
+	Capability,
 	DecideInput,
 	DecideOpts,
 	DecisionLeaf,
@@ -39,11 +40,19 @@ export interface GenerativeDecisionConfig {
 	temperature?: number;
 	/** Budget for the whole decision, composed with the caller's signal. */
 	requestTimeoutMs?: number;
+	/**
+	 * Route each sample only to a generative candidate that sends the response schema as a
+	 * decoding constraint (`structuredOutput`); default `true`. `false` samples prompt-only
+	 * backends, whose replies are parsed leniently and fail the decision when no in-schema
+	 * answer is found.
+	 */
+	requireStructuredOutput?: boolean;
 }
 
 export const DEFAULT_SAMPLES = 5;
 export const MAX_SAMPLES = 25;
 const DEFAULT_CONCURRENCY = 5;
+const STRUCTURED_OUTPUT: readonly Capability[] = Object.freeze(['structuredOutput'] as Capability[]);
 
 const CAPABILITIES: ModelCapabilities = Object.freeze({
 	embed: false,
@@ -85,6 +94,7 @@ export function createGenerativeDecisionBackend(
 	const samples = boundedCount(config.samples, DEFAULT_SAMPLES);
 	const concurrency = Math.min(boundedCount(config.concurrency, DEFAULT_CONCURRENCY), samples);
 	const { temperature, requestTimeoutMs } = config;
+	const requires = config.requireStructuredOutput === false ? undefined : (STRUCTURED_OUTPUT as Capability[]);
 	return {
 		name: 'generative',
 		capabilities: () => CAPABILITIES,
@@ -112,6 +122,7 @@ export function createGenerativeDecisionBackend(
 					try {
 						const result = await generate(input, {
 							model: logicalName,
+							requires,
 							responseFormat,
 							temperature,
 							signal: controller.signal,
