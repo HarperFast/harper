@@ -443,3 +443,14 @@ describe('parseDecisionSample on long or brace-heavy replies', () => {
 		assert.throws(() => parseDecisionSample(QUEUE, '{}'.repeat(70)), /too many objects/);
 	});
 });
+
+describe('parseDecisionSample with unbalanced quotes in the prose', () => {
+	it('starts string tracking at each object, so prose quotes cannot hide an answer', () => {
+		assert.strictEqual(parseDecisionSample(QUEUE, 'The 12" model: {"value":"bug"}'), 'bug');
+		assert.throws(
+			() => parseDecisionSample(QUEUE, 'Example: {"value":"other"} (a 12" screen) Final: {"value":"bug"}'),
+			/more than one answer/
+		);
+		assert.strictEqual(parseDecisionSample(QUEUE, 'He said "look: {"value":"bug"}'), 'bug');
+	});
+});

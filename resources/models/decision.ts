@@ -318,40 +318,46 @@ function extractSampleValues(schema: DecisionSchema, sample: Record<string, unkn
 const MAX_OBJECT_SPANS = 64;
 
 /**
- * Every balanced `{`…`}` span that parses to a JSON object, innermost first. A backend that
- * ignores `responseFormat` (Anthropic, Bedrock) answers from the prompt alone and may wrap the
- * object in code fences or prose with braces of its own; the schema check on each candidate is
- * what tells the answer from the rest, so no span is preferred over another. Braces inside JSON
- * strings are text, and a reply with more than `MAX_OBJECT_SPANS` balanced spans fails rather
- * than being searched partially.
+ * Every balanced `{`…`}` span that parses to a JSON object. A backend that ignores
+ * `responseFormat` (Anthropic, Bedrock) answers from the prompt alone and may wrap the object in
+ * code fences or prose with braces and stray quotes of its own; the schema check on each candidate
+ * is what tells the answer from the rest, so no span is preferred over another. String tracking
+ * starts at each opening brace, so quotes in the prose before an object cannot hide it, while
+ * braces inside the object's own strings are text. A reply with more than `MAX_OBJECT_SPANS`
+ * opening braces fails rather than being searched partially.
  */
 function* jsonObjectSpans(text: string): Generator<Record<string, unknown>> {
-	const opens: number[] = [];
+	let spans = 0;
+	for (let start = text.indexOf('{'); start >= 0; start = text.indexOf('{', start + 1)) {
+		if (++spans > MAX_OBJECT_SPANS) throw new Error('the sample has too many objects');
+		const end = balancedClose(text, start);
+		if (end < 0) continue;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(text.slice(start, end + 1));
+		} catch {
+			continue;
+		}
+		if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) yield parsed as Record<string, unknown>;
+	}
+}
+
+/** Index of the `}` that balances the `{` at `start`, reading JSON strings as text, or -1. */
+function balancedClose(text: string, start: number): number {
+	let depth = 0;
 	let inString = false;
 	let escaped = false;
-	let spans = 0;
-	for (let i = 0; i < text.length; i++) {
+	for (let i = start; i < text.length; i++) {
 		const ch = text[i];
 		if (inString) {
 			if (escaped) escaped = false;
 			else if (ch === '\\') escaped = true;
 			else if (ch === '"') inString = false;
-			continue;
-		}
-		if (ch === '"') inString = true;
-		else if (ch === '{') opens.push(i);
-		else if (ch === '}' && opens.length > 0) {
-			const start = opens.pop()!;
-			if (++spans > MAX_OBJECT_SPANS) throw new Error('the sample has too many objects');
-			let parsed: unknown;
-			try {
-				parsed = JSON.parse(text.slice(start, i + 1));
-			} catch {
-				continue;
-			}
-			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) yield parsed as Record<string, unknown>;
-		}
+		} else if (ch === '"') inString = true;
+		else if (ch === '{') depth++;
+		else if (ch === '}' && --depth === 0) return i;
 	}
+	return -1;
 }
 
 function checkSampleValue(leaf: DecisionLeaf, raw: unknown, label: string): unknown {
