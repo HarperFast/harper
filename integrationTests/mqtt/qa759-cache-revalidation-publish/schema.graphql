@@ -1,0 +1,23 @@
+# eviction: 3600 on Item keeps the SETUP stable, and is not what proves the branch under test. With
+# the default eviction of 0 the cleanup scan runs every (expiration + eviction) / 4 — every 300ms
+# here — and deletes the expired row while the test is still waiting for it to become
+# resident-and-expired, so the arm times out in setup. What refuses a read that refilled an absent
+# row instead of revalidating a resident one is the replacingRecord assertion in the test.
+
+type Source @table @export {
+	id: ID @primaryKey
+	value: String
+	nonce: Int
+}
+
+type Counter @table @export {
+	id: ID @primaryKey
+	count: Int
+	replacedValue: String
+}
+
+type Item @table(expiration: 1.2, eviction: 3600) @export {
+	id: ID @primaryKey
+	value: String
+	nonce: Int
+}
