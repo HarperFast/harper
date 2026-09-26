@@ -288,11 +288,10 @@ export class Models implements ModelsContract {
 	}
 
 	/**
-	 * Choose from the closed set `schema` defines, with the distribution over it (#2779). A malformed
-	 * schema or state rejects before routing, with no analytics row: nothing was called. The decision
-	 * is committed to `hdb_model_decisions` before it is returned (#2840): a read-only node rejects
-	 * before routing, and a commit failure rejects after the backend succeeded without trying another
-	 * candidate, so a storage fault never bills a second model call.
+	 * Choose from the closed set `schema` defines, with the distribution over it. A malformed schema or
+	 * state rejects before routing, with no analytics row: nothing was called. The record is committed
+	 * before the decision is returned: a read-only node rejects before routing, and a commit failure
+	 * rejects without another candidate, so a storage fault never bills a second model call.
 	 */
 	async decide<T = unknown>(state: DecideInput, schema: DecisionSchema, opts: DecideOpts = {}): Promise<Decision<T>> {
 		validateDecisionSchema(schema);
@@ -340,7 +339,7 @@ export class Models implements ModelsContract {
 		throw firstError;
 	}
 
-	/** The durable record of a decision with its recorded facts, or undefined (#2840). */
+	/** The durable record of a decision with its recorded facts, or undefined. */
 	getDecision<T = unknown>(id: string): Promise<DecisionRecord<T> | undefined> {
 		checkDecisionId(id);
 		return this.#decisionStore.get(id, resolveCallContext().accounting.tenantId) as Promise<
@@ -348,11 +347,7 @@ export class Models implements ModelsContract {
 		>;
 	}
 
-	/**
-	 * Record what actually happened for a decision (#2840): its truth, the action taken, or both,
-	 * per field for object schemas. Each fact is stored on its own and an identical report changes
-	 * nothing. Not a model call: no analytics row, no metric.
-	 */
+	/** Record the truth, the action taken, or both. Not a model call: no analytics row, no metric. */
 	recordOutcome<T = unknown>(id: string, outcome: OutcomeReport): Promise<DecisionRecord<T>> {
 		checkDecisionId(id);
 		return this.#decisionStore.recordOutcome(id, outcome, resolveCallContext().accounting.tenantId) as Promise<
@@ -393,7 +388,8 @@ export class Models implements ModelsContract {
 		try {
 			await this.#decisionStore.persist(row);
 		} catch (err) {
-			const error = new DecisionPersistenceError(`Decision could not be recorded: ${(err as Error)?.message ?? err}`);
+			// the fault stays on `cause`: its message can name a data path and this error can reach an HTTP body
+			const error = new DecisionPersistenceError('Decision could not be recorded');
 			(error as Error & { cause?: unknown }).cause = err;
 			throw error;
 		}

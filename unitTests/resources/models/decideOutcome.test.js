@@ -144,7 +144,8 @@ describe('models.decide persists its decision and models.recordOutcome scores it
 			(err) =>
 				err instanceof DecisionPersistenceError &&
 				err.statusCode === 500 &&
-				/disk full/.test(err.message) &&
+				err.message === 'Decision could not be recorded' &&
+				/disk full/.test(err.cause?.message) &&
 				err.cause instanceof Error
 		);
 		assert.strictEqual(backupCalls, 0);
@@ -176,28 +177,5 @@ describe('models.decide persists its decision and models.recordOutcome scores it
 				(err) => err.statusCode === 400
 			);
 		}
-	});
-
-	it('costs one committed write per decision: sequential and concurrent timings are reported, not asserted', async () => {
-		const memory = { assertWritable() {}, async persist() {} };
-		const baseline = new Models(makeMockWriter(), () => {}, memory);
-		const time = async (label, run) => {
-			const samples = [];
-			for (let i = 0; i < 5; i++) {
-				const start = performance.now();
-				await run();
-				samples.push(performance.now() - start);
-			}
-			samples.sort((a, b) => a - b);
-			console.log(`    ${label}: p50 ${samples[2].toFixed(1)} ms, max ${samples[4].toFixed(1)} ms per 20 decisions`);
-		};
-		const sequential = (m) => async () => {
-			for (let i = 0; i < 20; i++) await m.decide('x', QUEUE);
-		};
-		const concurrent = (m) => () => Promise.all(Array.from({ length: 20 }, () => m.decide('x', QUEUE)));
-		await time('store-less sequential', sequential(baseline));
-		await time('persisted sequential', sequential(models));
-		await time('store-less concurrent', concurrent(baseline));
-		await time('persisted concurrent', concurrent(models));
 	});
 });

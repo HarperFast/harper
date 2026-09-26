@@ -402,25 +402,54 @@ function sortKeys(value: unknown): unknown {
 	return sorted;
 }
 
-/** Identity of the full schema, descriptions included, because they reach the prompt. */
+// keyed by object identity: a schema mutated in place after its first use keeps its first identity
+const identities = new WeakMap<DecisionSchema, { hash: string; scoring: DecisionSchema }>();
+
+function identity(schema: DecisionSchema): { hash: string; scoring: DecisionSchema } {
+	let cached = identities.get(schema);
+	if (!cached) {
+		cached = {
+			hash: createHash('sha256')
+				.update(canonicalJson(knownSchema(schema, true)))
+				.digest('hex'),
+			scoring: knownSchema(schema, false),
+		};
+		identities.set(schema, cached);
+	}
+	return cached;
+}
+
+/** Identity of the schema as the model saw it: the allowed values and the descriptions, nothing else. */
 export function hashSchema(schema: DecisionSchema): string {
-	return createHash('sha256').update(canonicalJson(schema)).digest('hex');
+	return identity(schema).hash;
 }
 
 /**
- * The schema without its descriptions: the allowed values, which is all that validating an outcome
- * needs. Descriptions are free text that can carry request data, so they are hashed, not stored.
+ * The allowed values alone, for validating outcomes against. Descriptions and unknown keys are free
+ * text that can carry request data, so they are hashed, never stored.
  */
 export function scoringSchema(schema: DecisionSchema): DecisionSchema {
-	if (isObjectSchema(schema)) {
-		const properties: Record<string, DecisionLeaf> = {};
-		for (const [name, leaf] of Object.entries(schema.properties)) properties[name] = scoringLeaf(leaf);
-		return { type: 'object', properties };
-	}
-	return scoringLeaf(schema);
+	return identity(schema).scoring;
 }
 
-function scoringLeaf(leaf: DecisionLeaf): DecisionLeaf {
-	const { description: _description, ...rest } = leaf;
-	return rest as DecisionLeaf;
+function knownSchema(schema: DecisionSchema, withDescriptions: boolean): DecisionSchema {
+	if (isObjectSchema(schema)) {
+		const properties: Record<string, DecisionLeaf> = {};
+		for (const [name, leaf] of Object.entries(schema.properties)) properties[name] = knownLeaf(leaf, withDescriptions);
+		const known: Record<string, unknown> = { type: 'object', properties };
+		if (withDescriptions && schema.description !== undefined) known.description = schema.description;
+		return known as DecisionSchema;
+	}
+	return knownLeaf(schema, withDescriptions);
+}
+
+function knownLeaf(leaf: DecisionLeaf, withDescriptions: boolean): DecisionLeaf {
+	const known: Record<string, unknown> =
+		'enum' in leaf
+			? { enum: Array.from(leaf.enum as readonly unknown[]) }
+			: leaf.type === 'boolean'
+				? { type: 'boolean' }
+				: { type: 'integer', minimum: leaf.minimum, maximum: leaf.maximum };
+	if (withDescriptions && leaf.description !== undefined) known.description = leaf.description;
+	return known as DecisionLeaf;
 }

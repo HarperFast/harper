@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { isReadOnlyMode, table } from '../databases.ts';
-import { transaction } from '../transaction.ts';
+import { getDatabases, isReadOnlyMode, table } from '../databases.ts';
+import { contextStorage, transaction } from '../transaction.ts';
 import type { Context } from '../ResourceInterface.ts';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
@@ -21,10 +21,8 @@ const log = harperLogger.forComponent('models').conditional;
 
 export const DECISIONS_TABLE = 'hdb_model_decisions';
 export const OUTCOMES_TABLE = 'hdb_model_outcomes';
-/** A year. Facts copy the decision's instant, so a report never extends a decision's life. */
+/** Facts copy the decision's instant, so a report never extends a decision's life. */
 export const DECISION_RETENTION_MS = 365 * 24 * 60 * 60 * 1000;
-/** The expiration scan interval; the table default is a quarter of the TTL, a season for a year. */
-const EXPIRATION_SCAN_SECONDS = 24 * 60 * 60;
 
 /** A `hdb_model_decisions` row: written once by `models.decide`, never rewritten. */
 export interface DecisionRow {
@@ -60,10 +58,9 @@ interface OutcomeRow {
 }
 
 /**
- * Both tables are provisioned with only their primary key by `json/systemSchema.json` and the
- * upgrade directive; these declarations layer the attributes and the indexed `expiresAt` TTL the
- * catalog cannot express, the two-step `hdb_oidc_token_use` uses. Writes go through the Resource
- * API, which maintains the index, so `indexed` is real here, unlike `hdb_model_calls`.
+ * The catalog stub (`systemSchema.json` and the upgrade directive) declares only the primary key;
+ * these declarations add the attributes and the indexed `expiresAt` TTL. Writes go through the
+ * Resource API, which maintains the index, so `indexed` holds here, unlike in `hdb_model_calls`.
  */
 export const DECISION_ATTRIBUTES = [
 	{ name: 'id', isPrimaryKey: true },
@@ -102,27 +99,32 @@ export interface DecisionTables {
 
 let tables: DecisionTables | undefined;
 
-/** Declares both tables (creating them if absent) and memoizes the handles for this process. */
-export function getDecisionTables(): DecisionTables {
+/**
+ * Declares both tables and memoizes the handles. A read-only node cannot write the catalog, so it
+ * takes whatever the catalog already holds and declares nothing; a table not there yet reads as empty.
+ */
+export function getDecisionTables(readOnly = isReadOnlyMode()): DecisionTables {
 	if (tables) return tables;
-	const declare = (name: string, attributes: object[]) => {
-		// `audit: true` explicitly: auditing is the replication feed, and both tables must replicate so an
-		// outcome can be recorded through any node.
-		const declared: any = table({
-			table: name,
-			database: 'system',
-			audit: true,
-			scanInterval: EXPIRATION_SCAN_SECONDS,
-			attributes,
-		});
-		declared.loadAsInstance = false;
-		return declared;
+	const resolve = (name: string, attributes: object[]) => {
+		const handle: any = readOnly
+			? getDatabases().system?.[name]
+			: table({
+					table: name,
+					database: 'system',
+					// auditing is the replication feed, and both tables must replicate so an outcome can be
+					// recorded through any node; must match systemSchema.json
+					audit: true,
+					attributes,
+				});
+		if (handle) handle.loadAsInstance = false;
+		return handle;
 	};
-	tables = {
-		decisions: declare(DECISIONS_TABLE, DECISION_ATTRIBUTES),
-		outcomes: declare(OUTCOMES_TABLE, OUTCOME_ATTRIBUTES),
+	const resolved = {
+		decisions: resolve(DECISIONS_TABLE, DECISION_ATTRIBUTES),
+		outcomes: resolve(OUTCOMES_TABLE, OUTCOME_ATTRIBUTES),
 	};
-	return tables;
+	if (resolved.decisions && resolved.outcomes) tables = resolved;
+	return resolved;
 }
 
 /** Test-only: forget the memoized handles so a reopened database is declared again. */
@@ -131,10 +133,8 @@ export function resetDecisionTables(): void {
 }
 
 /**
- * Boot-time declaration on every node, so the TTL index exists where decisions are never made and
- * a replicated row is never the first thing to touch the table. Skipped on a read-only node, where
- * the declaration could try to write the catalog and where `decide` refuses anyway; a failure is
- * logged rather than thrown because the first `decide` declares again and reports its own error.
+ * Declared at boot on every writable node so the TTL index exists where decisions are never made.
+ * A failure is logged, not thrown: the first `decide` declares again and reports its own error.
  */
 export function declareDecisionTablesAtBoot(): void {
 	if (isReadOnlyMode()) return;
@@ -176,8 +176,13 @@ export interface DecisionStoreOpts {
 	isReadOnly?: () => boolean;
 }
 
+interface Found {
+	row: DecisionRow;
+	facts: Array<OutcomeRow | undefined>;
+}
+
 /**
- * Durable decisions and their recorded facts. Every write runs in a transaction of its own
+ * Durable decisions and their recorded facts. Every operation runs in a transaction of its own
  * (`transaction` with a context object that is not the ALS store), so a decision made inside an
  * application transaction survives that transaction's abort, and the commit is awaited before the
  * id is returned to the caller.
@@ -191,7 +196,6 @@ export class DecisionStore {
 		this.#isReadOnly = opts.isReadOnly ?? isReadOnlyMode;
 	}
 
-	/** Throws before any model call or write when this node cannot store a decision or a fact. */
 	assertWritable(what: 'Decisions' | 'Outcomes'): void {
 		if (this.#isReadOnly()) throw new DecisionPersistenceError(`${what} cannot be recorded on a read-only node`, 503);
 	}
@@ -203,42 +207,50 @@ export class DecisionStore {
 
 	/** The decision with its recorded facts, or undefined when absent, expired, or another tenant's. */
 	async get(id: string, tenant?: string): Promise<DecisionRecord | undefined> {
-		const { decisions, outcomes } = this.#getTables();
 		return transaction(freshContext(), async () => {
-			const row: DecisionRow | undefined = await decisions.get(id);
-			if (!row || !visibleTo(row, tenant)) return undefined;
-			const facts: Array<OutcomeRow | undefined> = await Promise.all(
-				factKeys(row.id, row.schema).map((key) => outcomes.get(key))
-			);
+			const found = await this.#read(id, tenant);
+			return found && { ...found.row, outcome: assembleOutcome(found.row.schema, found.facts) };
+		});
+	}
+
+	/** Writes the reported facts that differ from what is stored, in one transaction, and returns the record as written. */
+	async recordOutcome(id: string, report: OutcomeReport, tenant?: string): Promise<DecisionRecord> {
+		this.assertWritable('Outcomes');
+		const { outcomes } = this.#getTables();
+		return transaction(freshContext(), async () => {
+			const found = await this.#read(id, tenant);
+			if (!found) throw new DecisionNotFoundError(id);
+			const { row, facts } = found;
+			const at = Date.now();
+			for (const reported of validateReport(row.schema, report)) {
+				const index = factIndex(row.schema, reported.fact, reported.field);
+				const existing = facts[index];
+				if (existing && canonicalJson(existing.state) === canonicalJson(reported.state)) continue;
+				const written: OutcomeRow = {
+					id: factKey(id, reported.fact, reported.field),
+					decisionId: id,
+					fact: reported.fact,
+					field: reported.field,
+					state: reported.state,
+					at,
+					expiresAt: row.expiresAt,
+				};
+				await outcomes.put(written);
+				facts[index] = written;
+			}
 			return { ...row, outcome: assembleOutcome(row.schema, facts) };
 		});
 	}
 
-	async recordOutcome(id: string, report: OutcomeReport, tenant?: string): Promise<DecisionRecord> {
-		this.assertWritable('Outcomes');
-		const { outcomes } = this.#getTables();
-		const record = await this.get(id, tenant);
-		if (!record) throw new DecisionNotFoundError(id);
-		const facts = validateReport(record.schema, report);
-		const at = Date.now();
-		await transaction(freshContext(), async () => {
-			for (const fact of facts) {
-				const key = factKey(id, fact.fact, fact.field);
-				const existing: OutcomeRow | undefined = await outcomes.get(key);
-				if (existing && canonicalJson(existing.state) === canonicalJson(fact.state)) continue;
-				const row: OutcomeRow = {
-					id: key,
-					decisionId: id,
-					fact: fact.fact,
-					field: fact.field,
-					state: fact.state,
-					at,
-					expiresAt: record.expiresAt,
-				};
-				await outcomes.put(row);
-			}
-		});
-		return (await this.get(id, tenant))!;
+	async #read(id: string, tenant: string | undefined): Promise<Found | undefined> {
+		const { decisions, outcomes } = this.#getTables();
+		if (!decisions || !outcomes) return undefined;
+		const row: DecisionRow | undefined = await decisions.get(id);
+		if (!row || !visibleTo(row, tenant)) return undefined;
+		const facts: Array<OutcomeRow | undefined> = await Promise.all(
+			factKeys(row.id, row.schema).map((key) => outcomes.get(key))
+		);
+		return { row, facts };
 	}
 }
 
@@ -252,8 +264,10 @@ export function newDecisionId(): string {
 	return randomUUID();
 }
 
+/** A context of its own, so the transaction is separate, carrying the caller's user for the audit entry. */
 function freshContext(): Context {
-	return {} as Context;
+	const user = contextStorage.getStore()?.user;
+	return (user ? { user } : {}) as Context;
 }
 
 /** A record with a tenant is visible to that tenant and to callers without one; the rest see nothing. */
@@ -265,9 +279,16 @@ function factKey(id: string, fact: Fact, field?: string): string {
 	return field === undefined ? `${id}/${fact}` : `${id}/${fact}/${field}`;
 }
 
+/** Truth then action, per property in schema order for object schemas; `factIndex` follows the same order. */
 function factKeys(id: string, schema: DecisionSchema): string[] {
 	if (!isObjectSchema(schema)) return [factKey(id, 'truth'), factKey(id, 'action')];
 	return Object.keys(schema.properties).flatMap((field) => [factKey(id, 'truth', field), factKey(id, 'action', field)]);
+}
+
+function factIndex(schema: DecisionSchema, fact: Fact, field: string | undefined): number {
+	const offset = fact === 'truth' ? 0 : 1;
+	if (!isObjectSchema(schema)) return offset;
+	return Object.keys(schema.properties).indexOf(field as string) * 2 + offset;
 }
 
 function assembleOutcome(schema: DecisionSchema, facts: Array<OutcomeRow | undefined>): RecordedOutcome {
@@ -353,14 +374,14 @@ function checkState(leaf: DecisionLeaf, state: unknown, kinds: string[], label: 
 let modelsConfigHash: string | undefined;
 
 /**
- * Identity of the `models` config block in force, recorded on each decision so a hot reload that
- * changes the model behind an unchanged logical name still separates the decisions it produced.
- * Credential-looking keys are dropped before hashing; unexpanded `${ENV}` placeholders stay.
+ * Identity of the model configuration actually installed, recorded on each decision so a reload
+ * that changes the model behind an unchanged logical name still separates the decisions it produced.
+ * Credential-looking keys are dropped before hashing.
  */
-export function setModelsConfigHash(block: unknown): void {
-	modelsConfigHash = block
+export function setModelsConfigHash(installed: unknown): void {
+	modelsConfigHash = installed
 		? createHash('sha256')
-				.update(canonicalJson(withoutCredentials(block)))
+				.update(canonicalJson(withoutCredentials(installed)))
 				.digest('hex')
 		: undefined;
 }
@@ -369,7 +390,7 @@ export function getModelsConfigHash(): string | undefined {
 	return modelsConfigHash;
 }
 
-const CREDENTIAL_KEY = /key|secret|token|password|credential/i;
+const CREDENTIAL_KEY = /key|secret|token|password|credential|auth/i;
 
 function withoutCredentials(value: unknown): unknown {
 	if (Array.isArray(value)) return value.map(withoutCredentials);
