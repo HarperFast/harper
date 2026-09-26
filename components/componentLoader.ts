@@ -719,6 +719,7 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 
 function withDeployAwareTimeout<T>(operation: Promise<T>, scope: Scope, timeout: number): Promise<T> {
 	return new Promise((resolve, reject) => {
+		const followsDeploys = !scope.isTransientValidation;
 		const absoluteTimeout = timeout + 6 * 60 * 60 * 1000;
 		let remaining = timeout;
 		let activeSince = 0;
@@ -739,7 +740,7 @@ function withDeployAwareTimeout<T>(operation: Promise<T>, scope: Scope, timeout:
 		absoluteTimer = setTimeout(() => rejectTimeout(absoluteTimeout), absoluteTimeout);
 		absoluteTimer.unref?.();
 		const arm = () => {
-			if (timer || deployLifecycle.loadsAwaitDeploy(scope.appName)) return;
+			if (timer || (followsDeploys && deployLifecycle.loadsAwaitDeploy(scope.appName))) return;
 			if (remaining <= 0) return rejectTimeout();
 			activeSince = Date.now();
 			timer = setTimeout(rejectTimeout, remaining);
@@ -754,8 +755,10 @@ function withDeployAwareTimeout<T>(operation: Promise<T>, scope: Scope, timeout:
 			if (componentName === scope.appName) arm();
 		}
 
-		deployLifecycle.on('deploy:start', handleDeployStart);
-		deployLifecycle.on('deploy:end', handleDeployEnd);
+		if (followsDeploys) {
+			deployLifecycle.on('deploy:start', handleDeployStart);
+			deployLifecycle.on('deploy:end', handleDeployEnd);
+		}
 		operation.then(
 			(value) => {
 				cleanup();
@@ -1073,19 +1076,18 @@ export async function loadComponent(
 						isRoot,
 						// A root-declared plugin reads its own `host`/`urlPath` straight from this
 						// config, so only an inherited application mount applies here.
-						mount
+						mount,
+						// Marked so plugins with process-global side effects (e.g. the scheduler
+						// registering jobs into its engine) can validate without activating —
+						// validation scopes may reuse a live component's identity, so activating
+						// from one can displace the real component's registrations.
+						Boolean(options.collectScopes)
 					);
 
 					if (options.collectScopes) {
 						// A transient/validation load owns these scopes and closes them itself once the
 						// load is validated (see operations.js deploy pre-flight). Skip the worker-shutdown
-						// auto-close so their deploy-lifecycle listeners — and this SHUTDOWN handler — don't
-						// accumulate across deploys (#1462).
-						// Mark it so plugins with process-global side effects (e.g. the scheduler
-						// registering jobs into its engine) can validate without activating —
-						// validation scopes may reuse a live component's identity, so activating
-						// from one can displace the real component's registrations.
-						scope.isTransientValidation = true;
+						// auto-close so this SHUTDOWN handler doesn't accumulate across deploys (#1462).
 						options.collectScopes.add(scope);
 					} else {
 						// Track the close so the worker's shutdown path waits for it (and thus for any async

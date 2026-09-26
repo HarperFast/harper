@@ -32,6 +32,7 @@ const { Resources } = require('../resources/Resources.ts');
 const {
 	Application,
 	prepareApplication,
+	componentPreparationBudgetMs,
 	ASIDE_STAGING_DIR,
 	DEPLOY_STAGING_DIR,
 	dropComponentDirectory,
@@ -573,6 +574,32 @@ function logRestartOutcome(restart, what) {
 			`The restart after ${what} was still running after ${RESTART_WAIT_CEILING_MS}ms; worker threads may still be running the previous code`
 		);
 }
+
+// A peer's validation load and swap, which have no allowance of their own to sum.
+const PEER_DEPLOY_VALIDATION_MARGIN_MS = 10 * 60 * 1000;
+
+/**
+ * How long the origin waits for each peer to answer a replicated deploy: every wait and command the peer is
+ * allowed for this request, each at its full allowance. That includes the preparation lock's wait: a peer already
+ * preparing the same component for another deploy holds this one there for a preparation budget before the lock
+ * re-checks the holder. The lock keeps waiting while that holder is alive, so a peer queued behind a longer
+ * preparation, or behind several, can take longer; so can one validating plugins whose configured timeouts outlast
+ * the margin. Such a peer is reported as not answering, which says nothing of its outcome.
+ */
+function peerDeployAnswerTimeoutMs(req) {
+	const { RESTART_WAIT_CEILING_MS } = require('./awaitRestart.ts');
+	const payloadWaitMs = coerceTimeoutMs(req.deployment_timeout, DEFAULT_AWAIT_ROW_TIMEOUT_MS);
+	const installTimeoutMs = coerceTimeoutMs(req.install_timeout, undefined);
+	return Math.min(
+		payloadWaitMs * (req.credentials?.length ? 2 : 1) +
+			// the lock's wait on another deploy's preparation, then this deploy's own
+			2 * componentPreparationBudgetMs(installTimeoutMs) +
+			PEER_DEPLOY_VALIDATION_MARGIN_MS +
+			(req.restart === true ? RESTART_WAIT_CEILING_MS : 0),
+		hdbTerms.MAX_SET_TIMEOUT_MS
+	);
+}
+
 /**
  * Can deploy a component in multiple ways. If a 'package' is provided all it will do is write that package to
  * harperdb-config, when HDB is restarted the package will be installed in hdb/nodeModules. If a base64 encoded string is passed it
@@ -890,7 +917,10 @@ async function deployComponent(req) {
 		// finish()'s single write; live SSE 'peer' events still fire below.
 		recorder?.seal();
 		emit('phase', { phase: 'replicate', status: 'start' });
-		let response = await server.replication.replicateOperation(req, { onPeerResult });
+		let response = await server.replication.replicateOperation(req, {
+			onPeerResult,
+			timeoutMs: peerDeployAnswerTimeoutMs(req),
+		});
 		emit('phase', { phase: 'replicate', status: 'done' });
 		if (recorder && response?.replicated) {
 			// Fallback path for replicators that don't honor onPeerResult: re-record the
@@ -1589,6 +1619,7 @@ exports.dropCustomFunctionProject = dropCustomFunctionProject;
 exports.packageComponent = packageComponent;
 exports.deployComponent = deployComponent;
 exports.unconfirmedStagingPeers = unconfirmedStagingPeers;
+exports.peerDeployAnswerTimeoutMs = peerDeployAnswerTimeoutMs;
 exports.getComponents = getComponents;
 exports.getComponentFile = getComponentFile;
 exports.setComponentFile = setComponentFile;
