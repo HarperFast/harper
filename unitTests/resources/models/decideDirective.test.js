@@ -68,6 +68,10 @@ describe('@decide directive parsing', () => {
 			/must be different fields/
 		);
 		await rejects(
+			`type DecideLinkedEmpty @table { id: ID @primaryKey body: String route: String @decide(source: "body", values: ["a", "b"], decision: "") }`,
+			/"decision" must name a field/
+		);
+		await rejects(
 			`type DecideLinkedLiteral @table { id: ID @primaryKey body: String route: String @decide(source: "body", values: ["a", "b"], decision: 5) d: String }`,
 			/expects a string literal/
 		);

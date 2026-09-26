@@ -85,6 +85,8 @@ function parseDecideDirective(directive: DirectiveNode, property: any): DecideCo
 		} else throw new ClientError(`${target} has an unknown argument "${name}"`, 400);
 	}
 	if (!args.source) throw new ClientError(`${target} requires a "source" argument`, 400);
+	for (const name of ['confidence', 'decision'] as const)
+		if (args[name] === '') throw new ClientError(`${target}: "${name}" must name a field`, 400);
 	const hasRange = args.minimum !== undefined || args.maximum !== undefined;
 	let schema: DecisionLeaf;
 	switch (property.type) {

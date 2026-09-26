@@ -83,14 +83,12 @@ export function buildDecideBefore(
 			const { decision, source } = attr.decide;
 			if (!decision || !(decision in record)) continue;
 			const state = applies ? sourceState(record, source) : 'absent';
-			// The id is provenance a later outcome report trusts, so only a write that derives or clears it may carry it.
-			if (state !== 'value' && state !== 'null') {
-				const error = new ClientError(
+			// An outcome report trusts this id, so only a write that derives or clears it may carry it.
+			if (state !== 'value' && state !== 'null')
+				throw new ClientError(
 					`"${decision}" is written by @decide on "${attr.name}"; a write may carry it only with a value for "${source}"`,
 					400
 				);
-				return () => Promise.reject(error);
-			}
 		}
 	if (!applies) return undefined;
 	let present = false;

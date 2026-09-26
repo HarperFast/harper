@@ -458,13 +458,13 @@ describe('@decide decision id (#2852)', () => {
 		await buildDecideBefore(withSource, {}, {}, linkedAttrs, decider)();
 		assert.equal(withSource.routeDecision, 'fresh', 'the decision overwrites a supplied id');
 		const rejects = (record, context, options) =>
-			assert.rejects(
-				buildDecideBefore(record, context, options, linkedAttrs, decider)(),
+			assert.throws(
+				() => buildDecideBefore(record, context, options, linkedAttrs, decider),
 				(err) => err.statusCode === 400 && /"routeDecision" is written by @decide on "route"/.test(err.message)
 			);
-		await rejects({ tag: 'x', routeDecision: 'forged' }, {}, {});
-		await rejects({ body: 'refund me', routeDecision: 'forged' }, { replicateFrom: false }, {});
-		await rejects({ body: { __op__: 'add', value: 'x' }, routeDecision: 'forged' }, {}, {});
+		rejects({ tag: 'x', routeDecision: 'forged' }, {}, {});
+		rejects({ body: 'refund me', routeDecision: 'forged' }, { replicateFrom: false }, {});
+		rejects({ body: { __op__: 'add', value: 'x' }, routeDecision: 'forged' }, {}, {});
 		assert.equal(
 			buildDecideBefore({ routeDecision: 'peer' }, {}, { isNotification: true }, linkedAttrs, decider),
 			undefined

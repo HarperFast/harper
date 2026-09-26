@@ -267,7 +267,7 @@ describe('@decide write path (real table)', () => {
 			assert.equal(Cached.primaryStore.get('fail1'), undefined, 'the failed fill is not cached');
 			assert.deepEqual(unhandled, []);
 			await Cached.put('w1', { body: 'refund please' }).catch(() => {});
-			assert.equal(decideFn.calls.length, 0, 'no model call for a write on a read-only node');
+			assert.equal(decideFn.calls.length, 0, 'no model call for a write while the node reports read-only');
 		} finally {
 			process.off('unhandledRejection', onUnhandled);
 		}

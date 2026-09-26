@@ -144,6 +144,7 @@ import {
 	assertDerivedFieldOwnership,
 	buildEmbedBefore,
 	combineWriteHooks,
+	type WriteHook,
 	createDefaultEmbedder,
 	type EmbedAttribute,
 	type Embedder,
@@ -4617,25 +4618,31 @@ export function makeTable(options) {
 			// The hooks run before `addWrite` so the derived values are on the record at commit (the
 			// txn `before` slot runs after commit). They see the payload before table validation, and a
 			// tracked-instance mutation that sets the source via accessors after update() is not seen.
-			const modelHooksBefore =
-				(TableResource.embedAttributes.length || TableResource.decideAttributes.length) && !isReadOnlyMode()
-					? combineWriteHooks(
-							buildEmbedBefore(
-								recordUpdate,
-								context,
-								options,
-								TableResource.embedAttributes,
-								TableResource.userEmbedders
-							),
-							buildDecideBefore(
-								recordUpdate,
-								context,
-								options,
-								TableResource.decideAttributes,
-								TableResource.userDeciders
+			let modelHooksBefore: WriteHook | undefined;
+			try {
+				modelHooksBefore =
+					(TableResource.embedAttributes.length || TableResource.decideAttributes.length) && !isReadOnlyMode()
+						? combineWriteHooks(
+								buildEmbedBefore(
+									recordUpdate,
+									context,
+									options,
+									TableResource.embedAttributes,
+									TableResource.userEmbedders
+								),
+								buildDecideBefore(
+									recordUpdate,
+									context,
+									options,
+									TableResource.decideAttributes,
+									TableResource.userDeciders
+								)
 							)
-						)
-					: undefined;
+						: undefined;
+			} catch (err) {
+				// A payload the hooks refuse fails the write before any of them calls a model.
+				return Promise.reject(err);
+			}
 			const proceed = (): any => {
 				// On a source/replication apply (`isNotification`), the record's already-saved blobs were
 				// received out-of-band for THIS write, so track them for skip/abort cleanup (harper-pro#406).
