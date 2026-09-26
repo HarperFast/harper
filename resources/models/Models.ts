@@ -304,7 +304,7 @@ export class Models implements ModelsContract {
 		validateDecisionSchema(schema);
 		stateToText(state);
 		this.#decisionStore.assertWritable('Decisions');
-		// the call and its record share one snapshot; nothing the caller mutates afterwards reaches either
+		// the call and its record share one snapshot of the schema and options; nothing the caller mutates afterwards reaches either
 		const call = snapshotSchema(schema);
 		if (opts.instructions !== undefined && typeof opts.instructions !== 'string')
 			throw new DecisionInputError('instructions must be a string');
@@ -315,11 +315,11 @@ export class Models implements ModelsContract {
 			scoring: scoringSchema(call),
 			configHash: getModelsConfigHash(),
 		};
-		const { accounting, signal } = resolveCallContext(opts.signal);
+		const { accounting, signal } = resolveCallContext(callOpts.signal);
 		const startedAt = performance.now();
-		const resolved = resolveCandidates('decision', opts.model, buildRequires('decide', opts.requires, false));
+		const resolved = resolveCandidates('decision', callOpts.model, buildRequires('decide', callOpts.requires, false));
 		if ('error' in resolved) {
-			this.#recordFailure(resolved.backend, 'decide', opts.model, accounting, undefined, startedAt, resolved.error);
+			this.#recordFailure(resolved.backend, 'decide', callOpts.model, accounting, undefined, startedAt, resolved.error);
 			throw resolved.error;
 		}
 		let firstError: unknown = undefined;
@@ -336,13 +336,13 @@ export class Models implements ModelsContract {
 				const calibrated = backend.capabilities()?.calibrated === true;
 				decision = normalizeDecision<T>(call, result.output, backend.name, calibrated);
 				// A backend may report a single call as uncalibrated; the caller's requirement still holds.
-				if (!decision.calibrated && opts.requires?.includes('calibrated'))
+				if (!decision.calibrated && callOpts.requires?.includes('calibrated'))
 					throw new DecisionContractError(
 						backend.name,
 						"probabilities are not calibrated, but 'calibrated' was required"
 					);
 			} catch (err) {
-				this.#recordFailure(backend, 'decide', opts.model, accounting, undefined, attemptStart, err);
+				this.#recordFailure(backend, 'decide', callOpts.model, accounting, undefined, attemptStart, err);
 				if (!hasError) {
 					firstError = err;
 					hasError = true;
@@ -350,11 +350,11 @@ export class Models implements ModelsContract {
 				if (signal?.aborted) throw err;
 				continue;
 			}
-			const callId = this.#record(backend, 'decide', opts.model, accounting, undefined, result, attemptStart);
+			const callId = this.#record(backend, 'decide', callOpts.model, accounting, undefined, result, attemptStart);
 			const id = await this.#persistDecision(
 				callId,
 				backend,
-				opts.model,
+				callOpts.model,
 				instructions,
 				accounting,
 				result.output,
