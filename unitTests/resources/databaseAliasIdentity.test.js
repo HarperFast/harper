@@ -11,6 +11,7 @@ const { dropSchema } = require('#src/dataLayer/schema');
 const { registryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
 const { abandonDatabaseDrop, beginDatabaseDrop, scanBlockedDatabaseDrops } = require('#src/dataLayer/restoreMarker');
 const {
+	databases,
 	table,
 	database,
 	databaseDropPreparationTargets,
