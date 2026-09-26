@@ -273,6 +273,10 @@ describe('models config hash', () => {
 		const withOptions = getModelsConfigHash();
 		setModelsConfigHash({ generative: { default: { backend: 'openai', model: 'a', maxTokens: 2, tokenizer: 't' } } });
 		assert.notStrictEqual(getModelsConfigHash(), withOptions, 'maxTokens is configuration, not a credential');
+		setModelsConfigHash({ generative: { default: { backend: 'acme', model: 'a', accessToken: 'one' } } });
+		const withToken = getModelsConfigHash();
+		setModelsConfigHash({ generative: { default: { backend: 'acme', model: 'a', accessToken: 'two' } } });
+		assert.strictEqual(getModelsConfigHash(), withToken, 'a rotated token is not a configuration change');
 		setModelsConfigHash({
 			generative: { default: { backend: 'bedrock', accessKeyId: 'a', secretAccessKey: 's', sessionToken: 't' } },
 		});

@@ -107,6 +107,11 @@ describe('models.decide persists its decision and models.recordOutcome scores it
 		assert.strictEqual((await models.getDecision(first.id)).instructionsHash, undefined);
 		const blank = await models.decide('x', mutable, { instructions: '' });
 		assert.strictEqual((await models.getDecision(blank.id)).instructionsHash, undefined, 'empty instructions are none');
+		await assert.rejects(
+			models.decide('x', mutable, { instructions: 5 }),
+			(err) => err.statusCode === 400 && /instructions must be a string/.test(err.message)
+		);
+		assert.strictEqual(writer.records.length, 3, 'a non-string instructions option rejects before any call');
 		const racing = { enum: ['a', 'b'] };
 		setDecision(
 			'racer',
