@@ -7455,7 +7455,9 @@ export function makeTable(options) {
 		},
 		() => {
 			throw new ServerError('Service unavailable, exceeded request queue limit for resolving cache record', 503);
-		}
+		},
+		undefined,
+		`cache resolution for ${tableName}`
 	);
 
 	try {
