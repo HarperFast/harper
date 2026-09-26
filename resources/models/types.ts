@@ -59,7 +59,7 @@ export interface ModelCapabilities {
 	decide?: boolean;
 	/** `decide` probabilities are calibrated as returned. Absent reads as false. */
 	calibrated?: boolean;
-	/** Implements `scoreChoices` (#2838). Absent reads as false. */
+	/** Implements `scoreChoices`. Absent reads as false. */
 	scoreChoices?: boolean;
 }
 

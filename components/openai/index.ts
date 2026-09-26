@@ -268,9 +268,8 @@ export class OpenAIBackend implements ModelBackend {
 	 * choice is one token and the `top_logprobs` list can cover the whole set. What this model or
 	 * endpoint cannot do is declined with `ChoiceScoringUnsupportedError`, not failed: more than
 	 * 20 choices, a 400 that refuses `logprobs`, a response with no log-probabilities, no content
-	 * token or no alternatives, no label among them, or too much mass outside the list to place
-	 * every label below the observed ones. A malformed alternative is a failure like any other
-	 * bad response.
+	 * token or no alternatives, no label among them, or too much mass outside the list to know the
+	 * leading label. A malformed alternative is a failure like any other bad response.
 	 */
 	async scoreChoices(
 		input: GenerateInput,
@@ -442,16 +441,18 @@ const UNLISTED_MARGIN = Math.log(1e6);
  * One log-likelihood per label from the first content token's alternatives. Spellings of the same
  * letter (`A`, ` A`, `a.`) combine by log-sum-exp, so a label's score is the mass of its listed
  * spellings; spellings outside the list are unknown, bounded together by the mass the list leaves
- * over. A label with no listed spelling is placed only when that leftover is smaller than every
- * observed label's mass, so every observed label truly outranks it whatever its unlisted
- * spellings carried; otherwise the call is declined rather than guessed. Unlisted labels then tie
- * at a floor no higher than the smallest listed alternative or the leftover, finite even when the
- * list leaves nothing over. No label at all means the model was not answering with a letter, and
- * the call is declined. A malformed entry is a bad response, not a decline. Messages never quote
- * tokens, which are upstream text.
+ * over. A label with no listed spelling is placed only when that leftover is smaller than the
+ * leading observed label's mass, so the leading label truly leads whatever the unlisted spellings
+ * carried; otherwise the call is declined rather than guessed. Unlisted labels then tie at a floor
+ * no higher than the smallest listed alternative or the leftover, finite even when the list leaves
+ * nothing over, so the order among low-mass labels is an estimate while the leader is not. No
+ * label at all means the model was not answering with a letter, and the call is declined. A
+ * malformed entry is a bad response, not a decline. Messages never quote tokens, which are
+ * upstream text.
  *
  * `unsupported(reason, structural)`: `structural` marks a response with no log-probability field
- * or no alternatives list at all, which the caller may remember for the model.
+ * at all, which the caller may remember for the model; a missing or empty alternatives list is
+ * this call's.
  */
 function scoreLabels(
 	logprobs: OpenAIChatLogprobs | null | undefined,
@@ -461,8 +462,8 @@ function scoreLabels(
 	if (logprobs == null || logprobs.content === undefined) throw unsupported('returned no log-probabilities', true);
 	const first = Array.isArray(logprobs.content) ? logprobs.content[0] : undefined;
 	if (!first) throw unsupported('returned no scored content token', false);
-	if (!Array.isArray(first.top_logprobs)) throw unsupported('returned no alternatives for the scored token', true);
-	if (first.top_logprobs.length === 0) throw unsupported('returned an empty alternatives list', false);
+	if (!Array.isArray(first.top_logprobs) || first.top_logprobs.length === 0)
+		throw unsupported('returned no alternatives for the scored token', false);
 	const seen = new Map<string, number>();
 	for (const alternative of [first, ...first.top_logprobs]) {
 		const token = alternative?.token;
@@ -486,8 +487,8 @@ function scoreLabels(
 	if (observed.length === 0) throw unsupported('did not answer with one of the choice labels', false);
 	if (observed.length === count) return observed;
 	const leftover = Math.max(0, 1 - listedMass);
-	if (leftover >= Math.exp(Math.min(...observed)))
-		throw unsupported('left too much probability outside its listed alternatives to place every choice', false);
+	if (leftover >= Math.exp(Math.max(...observed)))
+		throw unsupported('left too much probability outside its listed alternatives to know the leading choice', false);
 	const cap = leftover > 0 ? Math.min(smallestListed, Math.log(leftover)) : -Infinity;
 	const floor = Number.isFinite(cap) ? cap : smallestListed - UNLISTED_MARGIN;
 	return scores.map((score) => score ?? floor);

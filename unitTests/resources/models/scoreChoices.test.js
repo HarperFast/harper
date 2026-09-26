@@ -140,7 +140,6 @@ describe('models.scoreChoices (internal, #2838)', () => {
 		assert.strictEqual(row.error_code, 'scoring_unsupported');
 		assert.strictEqual(row.prompt_tokens, 40);
 		assert.strictEqual(row.completion_tokens, 1);
-		// The tokens are billed; the call is not counted as a success.
 		assert.deepStrictEqual(metricSpy.calls, [{ value: 41, metric: 'model-scoreChoices-tokens', path: 'declines' }]);
 	});
 

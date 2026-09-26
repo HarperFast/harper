@@ -640,6 +640,27 @@ describe('OpenAIBackend', () => {
 			close(output.logLikelihoods[2], Math.log(0.02237), 'C');
 		});
 
+		it('places unlisted labels when the leftover cannot outrank the leader, even where it could outrank a listed tail label', async () => {
+			// A clear winner; B is listed deep in the tail below the ~1e-5 leftover, C and D are unlisted.
+			const top = [
+				{ token: 'A', logprob: Math.log(0.9999) },
+				{ token: 'f0', logprob: Math.log(0.00009) },
+				{ token: 'B', logprob: Math.log(0.000001) },
+			];
+			const fetch = mockFetch(() => scoredResponse(top, { token: 'A', logprob: Math.log(0.9999) }));
+			const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
+			const { output } = await b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING });
+			close(output.logLikelihoods[0], Math.log(0.9999), 'A');
+			close(output.logLikelihoods[1], Math.log(0.000001), 'B');
+			for (const i of [2, 3])
+				assert.ok(
+					output.logLikelihoods[i] <= Math.log(0.000001),
+					`label ${i} is at or below the smallest listed entry`
+				);
+			const total = output.logLikelihoods.reduce((sum, x) => sum + Math.exp(x), 0);
+			assert.ok(Math.exp(output.logLikelihoods[0]) / total > 0.9999);
+		});
+
 		it('never places an unobserved label above a listed tail entry', async () => {
 			// The list carries essentially all the mass, with observed A deep in the tail.
 			const top = [
@@ -682,24 +703,22 @@ describe('OpenAIBackend', () => {
 			await assert.rejects(b.scoreChoices('q', many, { accounting: ACCOUNTING }), ChoiceScoringUnsupportedError);
 			await assert.rejects(b.scoreChoices('q', [], { accounting: ACCOUNTING }), ChoiceScoringUnsupportedError);
 			assert.strictEqual(fetch.calls.length, 0);
-			// Twenty is the most one request covers, and is accepted.
 			await b.scoreChoices('q', many.slice(0, 20), { accounting: ACCOUNTING });
 			assert.strictEqual(fetch.calls.length, 1);
 		});
 
-		it('declines an answer that carries no log-probabilities or no alternatives list, keeping the usage, and remembers the model', async () => {
+		it('declines an answer that carries no log-probability field, keeping the usage, and remembers the model', async () => {
 			for (const [label, options] of [
 				['logprobs null', { logprobs: null }],
 				['logprobs without content', { logprobs: {} }],
-				['no top_logprobs', {}],
 			]) {
-				const fetch = mockFetch(() => scoredResponse(label === 'no top_logprobs' ? undefined : TOP, options));
+				const fetch = mockFetch(() => scoredResponse(TOP, options));
 				const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
 				await assert.rejects(
 					b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING }),
 					(err) =>
 						err instanceof ChoiceScoringUnsupportedError &&
-						/no log-probabilities|no alternatives/.test(err.message) &&
+						/no log-probabilities/.test(err.message) &&
 						err.usage.promptTokens === 30 &&
 						err.usage.completionTokens === 1,
 					label
@@ -710,10 +729,11 @@ describe('OpenAIBackend', () => {
 			}
 		});
 
-		it('declines an empty completion for that call only: no content token, an empty alternatives list, or no log-probabilities without an answer', async () => {
+		it('declines an incomplete completion for that call only: no content token, no or empty alternatives, or no log-probabilities without an answer', async () => {
 			const cases = [
 				['empty content list', () => scoredResponse(TOP, { logprobs: { content: [] } })],
 				['null content list', () => scoredResponse(TOP, { logprobs: { content: null } })],
+				['no alternatives array', () => scoredResponse(undefined)],
 				['empty alternatives', () => scoredResponse([], { token: 'The', logprob: -0.5 })],
 				[
 					'filtered answer without log-probabilities',
