@@ -4423,7 +4423,8 @@ export function makeTable(options) {
 				);
 				return transaction.addWrite(write as any);
 			};
-			return modelHooksBefore ? modelHooksBefore().then(proceed) : proceed();
+			// A request is its own transaction context and carries the client's abort signal.
+			return modelHooksBefore ? modelHooksBefore((context as any)?.signal).then(proceed) : proceed();
 		}
 
 		async delete(target: RequestTargetOrId): Promise<boolean> {
@@ -6692,7 +6693,13 @@ export function makeTable(options) {
 		static updatedAttributes() {
 			// Refresh on every call: schema reload mutates `attributes` in place, so the
 			// class-construction snapshot would otherwise go stale.
-			assertDerivedFieldOwnership(this.attributes as any[]);
+			// Declarations are refused before they are saved; here a descriptor an earlier build
+			// accepted must still load, so a violation is logged and the table keeps working.
+			try {
+				assertDerivedFieldOwnership(this.attributes as any[]);
+			} catch (error) {
+				console.error(`Derived attributes of table "${tableName}" conflict: ${(error as Error).message}`);
+			}
 			this.embedAttributes = (this.attributes as any[]).filter((a) => a?.embed);
 			this.decideAttributes = (this.attributes as any[]).filter((a) => a?.decide);
 			expiresAtProperty = this.attributes.find((attribute) => attribute.expiresAt);
@@ -8203,7 +8210,7 @@ export function makeTable(options) {
 						TableResource.userDeciders
 					)
 				);
-				if (modelHooksBefore) await modelHooksBefore();
+				if (modelHooksBefore) await modelHooksBefore((sourceContext as any)?.requestContext?.signal);
 				if (droppingTable) {
 					// Re-check right before staging the write: dropTable() may have started
 					// while we were awaiting the embed step above (harper#1381).

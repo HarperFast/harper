@@ -1,4 +1,3 @@
-/** Write-time hook for `@decide`: the chosen value and its probability land on the record before it commits. */
 import { isAllowedValue } from './decision.ts';
 import {
 	runWriteJobs,

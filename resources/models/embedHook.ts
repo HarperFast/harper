@@ -1,5 +1,5 @@
-/** Write-time hook for `@embed`, and the rules every write-time model hook shares. */
 import { ClientError } from '../../utility/errors/hdbError.ts';
+import { validateDecisionSchema } from './decision.ts';
 
 // Lazily resolved to avoid a require cycle on the unit-test load path; only needed on failure.
 function getLogger(): { error?: (...args: any[]) => void } {
@@ -111,7 +111,6 @@ export async function runWriteJobs(
 	if (failed) throw failure;
 }
 
-/** The `@embed` and `@decide` callbacks of one write as one. */
 export function combineWriteHooks(a: WriteHook | undefined, b: WriteHook | undefined): WriteHook | undefined {
 	if (!a) return b;
 	if (!b) return a;
@@ -152,19 +151,23 @@ type DerivedAttribute = {
 	isPrimaryKey?: boolean;
 	computed?: unknown;
 	embed?: { source: string };
-	decide?: { source: string; confidence?: string };
+	decide?: { source: string; confidence?: string; schema?: unknown };
+};
+
+const LEAF_KIND_BY_TYPE: Record<string, (schema: any) => boolean> = {
+	String: (schema) => Array.isArray(schema?.enum),
+	Boolean: (schema) => schema?.type === 'boolean',
+	Int: (schema) => schema?.type === 'integer',
 };
 
 /**
  * Every derived field (an `@embed` target, a `@decide` target or confidence) has exactly one
  * writer, and no directive derives from another directive's output: the hooks run concurrently
  * within one write, so the stored pair would otherwise depend on scheduling. A source and a
- * confidence field must be declared, a confidence field must be a nullable `Float` that is
- * neither the primary key nor computed, and none of those fields may be named after an
- * `Object.prototype` key, because `sourceState` tests presence with `in`. Run on the complete
- * attribute list by the schema loader, by `declareTable` before a declaration is saved, and by
- * `updatedAttributes` before it assigns anything, so a programmatic declaration is held to the
- * same rules and a rejected one changes nothing.
+ * confidence field must be declared; a decided field and its confidence field are nullable,
+ * neither the primary key nor computed, the decided field's type matches its leaf and the leaf
+ * is a valid decision schema; and none of those fields may be named after an `Object.prototype`
+ * key, because `sourceState` tests presence with `in`. Run on the complete attribute list.
  */
 export function assertDerivedFieldOwnership(attributes: DerivedAttribute[]): void {
 	const declared = new Map<string, DerivedAttribute>();
@@ -175,8 +178,10 @@ export function assertDerivedFieldOwnership(attributes: DerivedAttribute[]): voi
 		if (prior) throw new ClientError(`${writer} and ${prior} both write "${field}"`, 400);
 		writers.set(field, writer);
 	};
-	const directives = (attribute: DerivedAttribute): Array<[string, { source: string; confidence?: string }]> => {
-		const out: Array<[string, { source: string; confidence?: string }]> = [];
+	const directives = (
+		attribute: DerivedAttribute
+	): Array<[string, { source: string; confidence?: string; schema?: unknown }]> => {
+		const out: Array<[string, { source: string; confidence?: string; schema?: unknown }]> = [];
 		if (attribute.embed) out.push(['@embed', attribute.embed]);
 		if (attribute.decide) out.push(['@decide', attribute.decide]);
 		return out;
@@ -192,6 +197,27 @@ export function assertDerivedFieldOwnership(attributes: DerivedAttribute[]): voi
 					);
 			if (!declared.has(config.source))
 				throw new ClientError(`${writer} references unknown source field "${config.source}"`, 400);
+			if (directive === '@decide') {
+				if (attribute.isPrimaryKey || attribute.computed)
+					throw new ClientError(`${writer} cannot combine with @primaryKey or @computed`, 400);
+				if (attribute.nullable === false)
+					throw new ClientError(`${writer} cannot be declared non-null: a null source clears the attribute`, 400);
+				try {
+					validateDecisionSchema(config.schema);
+				} catch (err) {
+					throw new ClientError(`${writer}: ${(err as Error).message}`, 400);
+				}
+				if (attribute.type !== undefined) {
+					const matches = LEAF_KIND_BY_TYPE[attribute.type];
+					if (!matches)
+						throw new ClientError(
+							`${writer} requires a String, Boolean or Int attribute type; got "${attribute.type === 'array' ? '[...]' : attribute.type}"`,
+							400
+						);
+					if (!matches(config.schema))
+						throw new ClientError(`${writer}: the decision schema does not fit a ${attribute.type} attribute`, 400);
+				}
+			}
 			claim(attribute.name, writer);
 			if (config.confidence) {
 				const confidence = declared.get(config.confidence);

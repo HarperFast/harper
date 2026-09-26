@@ -2625,8 +2625,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	if ((RESERVED_DATABASE_NAMES as readonly string[]).includes(databaseName)) {
 		throw new ClientError(`'${databaseName}' is a reserved name and cannot be used as a database name`);
 	}
-	// A peer sends only its new fields, so its list is checked once merged with the live ones below.
-	if (origin !== 'cluster' && Array.isArray(attributes)) assertDerivedFieldOwnership(attributes as any[]);
 	// A branch resolves its blob root from its store identity, so a database created under that same
 	// name would share the root: two allocators minting the same file paths and truncating each other,
 	// and the branch's teardown removing the database's blobs.
@@ -3011,8 +3009,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 								.join('; ')}); the local schema is authoritative`
 						);
 				}
-				// A peer sends only its new fields; the conflict, if any, is with the fields it did not send.
-				assertDerivedFieldOwnership(merged as any[]);
 				attributes = merged;
 			} else if (!attributes.some((attribute) => attribute.isPrimaryKey)) {
 				const existingPrimary = Table.attributes.find((attribute: any) => attribute.isPrimaryKey);
@@ -3022,6 +3018,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					);
 				if (existingPrimary) attributes = [existingPrimary, ...attributes];
 			}
+			// On the complete list (a peer's fields merged, an omitted primary key inherited) and before
+			// it replaces the live one or reaches the catalog, so a refused declaration changes nothing.
+			assertDerivedFieldOwnership(attributes as any[]);
 			armFullTextLiveStateRestore?.();
 			Table.attributes.splice(0, Table.attributes.length, ...attributes);
 			// Re-assert from the live declaration so a stale value on disk (replicated event,
@@ -3037,6 +3036,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			// undefined means a non-schema caller (add_attribute, cluster schema events) — don't clobber
 			if (cacheControl !== undefined) Table.cacheControl = cacheControl;
 		} else {
+			if (Array.isArray(attributes)) assertDerivedFieldOwnership(attributes as any[]);
 			if (fullTextIndexesExplicit) {
 				if (origin === 'cluster') {
 					const merged = mergePeerFullTextDefinitions([], fullTextIndexes, attributes, fullTextWarning);

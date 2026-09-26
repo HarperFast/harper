@@ -4,9 +4,6 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../../testUtils');
 const { table } = require('#src/resources/databases');
 
-// The per-table `@decide` registry on the Table class: default-decider registration, the
-// component-author override (setDecideAttribute) surviving a schema reload, and stale-entry
-// pruning when an attribute's `@decide` is dropped. Mirrors embedRegistry.test.js.
 describe('@decide registry (setDecideAttribute + schema reload)', () => {
 	let T;
 	before(() => {
@@ -248,6 +245,62 @@ describe('@decide registry (setDecideAttribute + schema reload)', () => {
 			]),
 			/cannot be @primaryKey or @computed/
 		);
+		assert.throws(
+			declare('DecideRegTargetPk', [
+				{
+					name: 'id',
+					isPrimaryKey: true,
+					type: 'String',
+					decide: { source: 'body', model: 'default', schema: { enum: ['a', 'b'] } },
+				},
+				{ name: 'body', type: 'String' },
+			]),
+			/@decide on "id" cannot combine with @primaryKey or @computed/
+		);
+		assert.throws(
+			declare('DecideRegTargetNonNull', [
+				...base,
+				{
+					name: 'route',
+					type: 'String',
+					nullable: false,
+					decide: { source: 'body', model: 'default', schema: { enum: ['a', 'b'] } },
+				},
+			]),
+			/cannot be declared non-null/
+		);
+		assert.throws(
+			declare('DecideRegTargetType', [
+				...base,
+				{ name: 'score', type: 'Float', decide: { source: 'body', model: 'default', schema: { enum: ['a', 'b'] } } },
+			]),
+			/requires a String, Boolean or Int attribute type; got "Float"/
+		);
+		assert.throws(
+			declare('DecideRegLeafMismatch', [
+				...base,
+				{ name: 'urgent', type: 'Boolean', decide: { source: 'body', model: 'default', schema: { enum: ['a', 'b'] } } },
+			]),
+			/does not fit a Boolean attribute/
+		);
+		assert.throws(
+			declare('DecideRegBadSchema', [
+				...base,
+				{ name: 'route', type: 'String', decide: { source: 'body', model: 'default', schema: { enum: ['only'] } } },
+			]),
+			/@decide on "route":/
+		);
+	});
+
+	it('a redeclaration that omits the primary key still resolves a directive sourced from it', () => {
+		const attributes = (withId) => [
+			...(withId ? [{ name: 'id', isPrimaryKey: true }] : []),
+			{ name: 'label', type: 'String', decide: { source: 'id', model: 'default', schema: { enum: ['a', 'b'] } } },
+		];
+		table({ table: 'DecideRegInheritPk', database: 'test', attributes: attributes(true) });
+		const Redeclared = table({ table: 'DecideRegInheritPk', database: 'test', attributes: attributes(false) });
+		assert.ok(Redeclared.attributes.find((a) => a.name === 'id')?.isPrimaryKey, 'the primary key is inherited');
+		assert.equal(typeof Redeclared.userDeciders.label, 'function');
 	});
 
 	it('refuses an override for an attribute without @decide, or that does not exist', () => {

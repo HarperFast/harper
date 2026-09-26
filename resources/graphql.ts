@@ -436,8 +436,6 @@ async function processGraphQLSchema(
 					}
 					if (property.decide) property.decide = parseDecideDirective(property.decide, property);
 				}
-				// Source and confidence references, one writer per derived field, and the rest of what
-				// a derived attribute may name; the same check a programmatic declaration passes.
 				assertDerivedFieldOwnership(attributes as any[]);
 				if (typeDef.fullTextIndexes.length > 0 && !typeDef.table)
 					throw new ClientError('@fullText is only supported on a @table type', 400);

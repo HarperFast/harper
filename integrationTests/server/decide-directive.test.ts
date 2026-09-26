@@ -1,10 +1,4 @@
-/**
- * `@decide` directive end to end, the sibling of embed-directive.test.ts: a fake Ollama serves
- * `/api/chat` (sampled by the built-in `generative` decision adapter) and `/api/embed`, so the
- * schema below exercises every leaf kind beside an `@embed` attribute on one table. The fake
- * answers from the body text, with one dissenting vote per SAMPLES for a "refund" body, so the
- * stored confidence is exactly 0.75.
- */
+// `@decide` end to end against a fake Ollama that serves `/api/chat` and `/api/embed`.
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert';
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
@@ -65,12 +59,7 @@ interface FakeOllama {
 
 const DECISIONS_PER_WRITE = 3;
 
-/**
- * The fake model answers from the body text in the prompt. A "refund" body gets one
- * dissenting "billing" vote per SAMPLES calls; "garbage" bodies get prose with no JSON
- * object; anything else routes by keyword with full agreement. Urgency is decided by the
- * word "urgent", and severity is 5 for an urgent body and 2 otherwise.
- */
+// A "refund" body gets one dissenting vote per SAMPLES calls, so its stored confidence is exactly 0.75.
 function answer(prompt: string, callIndexForBody: number): string {
 	const body = prompt.slice(prompt.lastIndexOf('Input:\n') + 'Input:\n'.length);
 	if (body.includes('garbage')) return 'I cannot decide.';
