@@ -43,7 +43,6 @@ function makeMockWriter() {
 	};
 }
 
-/** A decision backend returning `output` for every call; its capabilities are declared through `defineBackend`. */
 function decider(name, output, spec = {}) {
 	const calls = [];
 	const backend = defineBackend({
