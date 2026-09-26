@@ -34,8 +34,6 @@ async function drain(iterable) {
 	return out;
 }
 
-// `@decide` through a real table: the pair is on the committed record, a confidence query
-// works against the index, PATCH/null/replication semantics hold, and a failure stores nothing.
 describe('@decide write path (real table)', () => {
 	let T;
 	let decideFn;
@@ -155,6 +153,25 @@ describe('@decide write path (real table)', () => {
 		assert.equal(peer1.body, 'please refund');
 		assert.equal(peer1.route, undefined, 'a mixed-version originator wrote no pair; the receiver adds none');
 		assert.equal(decideFn.calls.length, 0);
+	});
+
+	it("the request's cancellation signal reaches the deciders", async () => {
+		let seenAborted;
+		T.setDecideAttribute('route', async (record, { signal }) => {
+			seenAborted = signal.aborted;
+			return { value: 'other', probability: 1 };
+		});
+		try {
+			const context = { source: {}, signal: AbortSignal.abort(new Error('client gone')) };
+			await transaction(context, async () => {
+				const resource = await T.getResource('gone1', context);
+				return resource._writeUpdate('gone1', { id: 'gone1', body: 'anything' }, true);
+			});
+			assert.equal(seenAborted, true, 'an already-aborted request signal is what the decider sees');
+		} finally {
+			T.userSetDeciders.delete('route');
+			T.updatedAttributes();
+		}
 	});
 
 	it('an override that returns a value outside the closed set fails the write and stores nothing', async () => {
