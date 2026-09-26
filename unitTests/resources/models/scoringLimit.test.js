@@ -286,3 +286,38 @@ describe('scoring limits: hardening (#2849)', () => {
 		assert.ok(!(err instanceof TypeError), String(err));
 	});
 });
+
+describe('scoring limits with no-match (#2849 with #2846)', () => {
+	afterEach(() => {
+		clearRegistry();
+		clearRouting();
+	});
+
+	it('counts the none choice, so a 20-value no-match leaf votes against a 20-choice limit without a scoring attempt', async () => {
+		const s = limitedScorer('limited', 20);
+		setGenerative('default', s);
+		const samples = [];
+		const backend = createGenerativeDecisionBackend(
+			{ samples: 2 },
+			{
+				generate: async (input, opts) => {
+					samples.push(opts);
+					return { content: JSON.stringify({ value: 'v0', noMatch: false }), finishReason: 'stop' };
+				},
+			}
+		);
+		const result = await backend.decide('x', { enum: letters(20), noMatch: true }, {});
+		assert.strictEqual(s.calls, 0);
+		assert.strictEqual(samples.length, 2);
+		assert.match(result.output.signature, /mode=vote/);
+	});
+
+	it('still scores a 19-value no-match leaf within the same limit', async () => {
+		const s = limitedScorer('limited', 20);
+		setGenerative('default', s);
+		const backend = createGenerativeDecisionBackend({ samples: 2 }, { generate: () => assert.fail('voted') });
+		const result = await backend.decide('x', { enum: letters(19), noMatch: true }, {});
+		assert.match(result.output.signature, /mode=score/);
+		assert.strictEqual(s.calls, 1);
+	});
+});

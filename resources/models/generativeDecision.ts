@@ -276,11 +276,16 @@ function leafSize(leaf: DecisionLeaf): number {
 	return size > 0 ? size : Infinity;
 }
 
+// A leaf that opted into no-match is scored with one extra choice, the "none" continuation.
+function scoredChoices(leaf: DecisionLeaf): number {
+	return leafSize(leaf) + ((leaf as { noMatch?: unknown } | undefined)?.noMatch === true ? 1 : 0);
+}
+
 function largestLeaf(schema: DecisionSchema): number {
-	if (!isObjectSchema(schema)) return leafSize(schema);
+	if (!isObjectSchema(schema)) return scoredChoices(schema);
 	let largest = 0;
 	for (const name in schema.properties)
-		if (Object.hasOwn(schema.properties, name)) largest = Math.max(largest, leafSize(schema.properties[name]));
+		if (Object.hasOwn(schema.properties, name)) largest = Math.max(largest, scoredChoices(schema.properties[name]));
 	return largest;
 }
 
