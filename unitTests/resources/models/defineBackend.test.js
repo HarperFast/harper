@@ -31,6 +31,8 @@ describe('defineBackend', () => {
 			stream: false,
 			tools: false,
 			adapters: false,
+			decide: false,
+			calibrated: false,
 		});
 		assert.strictEqual(typeof b.embed, 'function');
 		assert.strictEqual(b.generate, undefined);
@@ -49,6 +51,8 @@ describe('defineBackend', () => {
 			stream: true,
 			tools: false,
 			adapters: false,
+			decide: false,
+			calibrated: false,
 		});
 	});
 

@@ -20,7 +20,7 @@ export interface ModelCallRecord {
 	app?: string;
 	model?: string;
 	backend: string;
-	method: 'embed' | 'generate' | 'generateStream';
+	method: 'embed' | 'generate' | 'generateStream' | 'decide';
 	adapter?: string;
 	conversation_id?: string;
 	prompt_tokens?: number;
@@ -134,15 +134,17 @@ export class ModelCallAnalyticsWriter {
 		this.#cleanupTimer.unref?.();
 	}
 
-	write(record: ModelCallRecord): void {
-		if (this.#stopped) return;
+	write(record: ModelCallRecord): number {
+		const id = getNextMonotonicTime();
+		if (this.#stopped) return id;
 		// id last so a record that accidentally carries an `id` field can't override
 		// the monotonic primary key.
-		this.#buffer.push({ ...record, id: getNextMonotonicTime() });
+		this.#buffer.push({ ...record, id });
 		if (this.#buffer.length >= this.#maxBufferSize) {
 			// Out-of-cadence flush; swallow errors so a failing flush doesn't escape into the caller.
 			this.flush().catch((err) => log.warn?.(`Model-call analytics flush failed: ${err?.message ?? err}`));
 		}
+		return id;
 	}
 
 	async flush(): Promise<void> {

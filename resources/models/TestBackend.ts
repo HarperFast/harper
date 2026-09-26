@@ -1,5 +1,12 @@
+import { allowedValues, isObjectSchema } from './decision.ts';
 import type {
 	BackendOpts,
+	DecideInput,
+	DecideOpts,
+	DecisionLeaf,
+	DecisionOutcome,
+	DecisionOutput,
+	DecisionSchema,
 	EmbedOpts,
 	GenerateChunk,
 	GenerateInput,
@@ -21,7 +28,15 @@ export class TestBackend implements ModelBackend {
 	readonly name = 'test';
 
 	capabilities(): ModelCapabilities {
-		return { embed: true, generate: true, stream: true, tools: false, adapters: false };
+		return {
+			embed: true,
+			generate: true,
+			stream: true,
+			tools: false,
+			adapters: false,
+			decide: true,
+			calibrated: false,
+		};
 	}
 
 	async embed(input: string | string[], _opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>> {
@@ -49,12 +64,39 @@ export class TestBackend implements ModelBackend {
 		}
 		yield { finishReason: 'stop' };
 	}
+
+	async decide(
+		state: DecideInput,
+		schema: DecisionSchema,
+		_opts: BackendOpts<DecideOpts>
+	): Promise<ModelCallResult<DecisionOutput<unknown>>> {
+		const text = typeof state === 'string' ? state : JSON.stringify(state);
+		const output: DecisionOutput<unknown> = isObjectSchema(schema)
+			? {
+					fields: Object.fromEntries(
+						Object.entries(schema.properties).map(([name, leaf]) => [
+							name,
+							{ distribution: deterministicDistribution(`${text}\n${name}`, leaf) },
+						])
+					),
+				}
+			: { distribution: deterministicDistribution(text, schema) };
+		return { status: 'completed', output, usage: { promptTokens: text.length, latencyMs: 0 } };
+	}
 }
 
 function stringFromInput(input: GenerateInput): string {
 	if (typeof input === 'string') return input;
 	const messages = Array.isArray(input) ? input : input.messages;
 	return messages.map((m) => m.content).join(' ');
+}
+
+/** A complete distribution over the leaf's values, seeded by the text so the same input always decides the same way. */
+function deterministicDistribution(text: string, leaf: DecisionLeaf): DecisionOutcome[] {
+	const values = allowedValues(leaf);
+	const weights = Array.from(deterministicVector(text, values.length), (w) => (w + 1) / 2 + 0.01);
+	const total = weights.reduce((sum, w) => sum + w, 0);
+	return values.map((value, i) => ({ value, probability: weights[i] / total }));
 }
 
 /**

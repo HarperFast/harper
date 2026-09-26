@@ -79,6 +79,12 @@ Index of the design notes for the harper core: one line per note, grouped by the
 
 - [Analytics aggregation resumes from a raw cursor, which is not a clock (`resources/analytics/write.ts`)](resources/analytics/DESIGN.md#analytics-aggregation-resumes-from-a-raw-cursor-which-is-not-a-clock-resourcesanalyticswritets) — `rawCursor` moves only to a record a cycle actually read and is separate from the cadence marker.
 
+## resources/models/ — model facade, backends, decisions
+
+- [Decision outputs are validated at the facade](resources/models/DESIGN.md#decision-outputs-are-validated-at-the-facade) — `normalizeDecision` checks every backend's distribution (complete, in-set, sums to one) before a `Decision` is returned; a violation is a backend error, so fallback applies.
+- [The generative adapter reports no usage of its own](resources/models/DESIGN.md#the-generative-adapter-reports-no-usage-of-its-own) — Each vote sample is its own `generate` row; the decide row reports no tokens, and samples settle before the adapter throws.
+- [Built-ins serve one kind](resources/models/DESIGN.md#built-ins-serve-one-kind) — Provider factories cannot serve `models.decision` and the adapter cannot serve the other kinds; refused at validation and at boot.
+
 ## server/ — HTTP stacks, threads, operation dispatch
 
 - [Three HTTP stacks coexist — know which one](server/DESIGN.md#three-http-stacks-coexist--know-which-one) — Node, Bun and uWS stacks and how a request lands on one.

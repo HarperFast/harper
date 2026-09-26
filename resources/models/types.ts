@@ -11,8 +11,10 @@ export interface Models {
 	embed(input: string | string[], opts?: EmbedOpts): Promise<Float32Array[]>;
 	generate(input: GenerateInput, opts?: GenerateOpts): Promise<GenerateResult>;
 	generateStream(input: GenerateInput, opts?: GenerateOpts): AsyncIterable<GenerateChunk>;
+	/** Choose from a closed, schema-defined set and return the distribution over it. See #2779. */
+	decide<T = unknown>(state: DecideInput, schema: DecisionSchema, opts?: DecideOpts): Promise<Decision<T>>;
 	/** Register a custom backend under a logical id, selectable via `opts.model`. See #1325. */
-	registerBackend(kind: 'embedding' | 'generative', id: string, backend: ModelBackend): void;
+	registerBackend(kind: ModelKind, id: string, backend: ModelBackend): void;
 	/** Build a `ModelBackend` from a spec; pair with `registerBackend`. See #1325. */
 	defineBackend(spec: DefineBackendSpec): ModelBackend;
 	/** Replace the model selection policy with a custom router. See #1326. */
@@ -25,7 +27,15 @@ export interface ModelBackend {
 	embed?(input: string | string[], opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>>;
 	generate?(input: GenerateInput, opts: BackendOpts<GenerateOpts>): Promise<ModelCallResult<GenerateResult>>;
 	generateStream?(input: GenerateInput, opts: BackendOpts<GenerateOpts>): AsyncIterable<GenerateChunk>;
+	decide?(
+		state: DecideInput,
+		schema: DecisionSchema,
+		opts: BackendOpts<DecideOpts>
+	): Promise<ModelCallResult<DecisionOutput<unknown>>>;
 }
+
+/** Registry kinds a backend is mapped under; a `decision` backend implements `decide` (#2779). */
+export type ModelKind = 'embedding' | 'generative' | 'decision';
 
 export interface ModelCapabilities {
 	embed: boolean;
@@ -33,6 +43,10 @@ export interface ModelCapabilities {
 	stream: boolean;
 	tools: boolean;
 	adapters: boolean;
+	/** Implements `decide`. Optional so pre-#2779 backends stay source-compatible; absent reads as false. */
+	decide?: boolean;
+	/** `decide` probabilities are calibrated as returned. Absent reads as false. */
+	calibrated?: boolean;
 }
 
 /** A capability a call can require of its backend (a key of `ModelCapabilities`). */
@@ -40,7 +54,7 @@ export type Capability = keyof ModelCapabilities;
 
 /** What the router is asked to resolve for a single call. See #1326. */
 export interface RouteRequest {
-	kind: 'embedding' | 'generative';
+	kind: ModelKind;
 	/** Logical name from `opts.model` (a role or a concrete backend id); defaults to `'default'`. */
 	logicalName: string;
 	/** Capabilities the chosen backend must satisfy — explicit `opts.requires` plus any auto-derived (e.g. tools present in the input). */
@@ -74,10 +88,13 @@ export interface DefineBackendSpec {
 	embed?: ModelBackend['embed'];
 	generate?: ModelBackend['generate'];
 	generateStream?: ModelBackend['generateStream'];
+	decide?: ModelBackend['decide'];
 	/** Backend supports tool calls in `generate` / `generateStream`. Default `false`. */
 	tools?: boolean;
 	/** Backend supports per-call LoRA / adapter selection. Default `false`. */
 	adapters?: boolean;
+	/** `decide` probabilities are calibrated as returned. Default `false`. */
+	calibrated?: boolean;
 }
 
 export type EmbedOpts = {
@@ -88,6 +105,79 @@ export type EmbedOpts = {
 	inputType?: 'document' | 'query';
 	signal?: AbortSignal;
 };
+
+/** Text, or JSON-serializable program state, for `decide`. */
+export type DecideInput = string | object;
+
+/**
+ * One leaf of a decision schema: a closed set every backend family can score. `enum` holds
+ * 2..255 distinct values of one type; an integer range spans at most 255 values; booleans order
+ * as `[false, true]` for tie-breaking.
+ */
+export type DecisionLeaf = { description?: string } & (
+	| { enum: readonly string[] | readonly number[] | readonly boolean[] }
+	| { type: 'boolean' }
+	| { type: 'integer'; minimum: number; maximum: number }
+);
+
+/** A decision schema: one leaf, or one level of named leaves. Deeper nesting is deliberately unsupported. */
+export type DecisionSchema =
+	DecisionLeaf | { type: 'object'; description?: string; properties: Record<string, DecisionLeaf> };
+
+export type DecideOpts = {
+	model?: string;
+	/** Capabilities the chosen backend must satisfy, e.g. `['calibrated']`; the router filters candidates (#1326). */
+	requires?: Capability[];
+	/** Task framing beyond the schema's own descriptions. */
+	instructions?: string;
+	signal?: AbortSignal;
+};
+
+export interface DecisionOutcome {
+	value: unknown;
+	probability: number;
+}
+
+/**
+ * What a `decision` backend returns for one call. For a leaf schema `distribution` is required
+ * and complete (one entry per allowed value, summing to one); for an object schema `fields`
+ * carries one such entry per property. The facade derives `value` and `probability`, so a
+ * backend may omit them; a `value` it does supply must be a most-probable outcome, and on a
+ * tie it leads the distribution.
+ */
+export interface DecisionOutput<T = unknown> {
+	value?: T;
+	probability?: number;
+	distribution?: DecisionOutcome[];
+	fields?: Record<string, DecisionOutput<unknown>>;
+	calibrated?: boolean;
+}
+
+/**
+ * Result of `models.decide`. For a leaf schema `value` is the first entry of `distribution`,
+ * which is sorted descending with ties in schema order unless the backend chose one of the tied
+ * values; `probability` is its entry. For an object schema
+ * `value` is assembled from each field's marginal argmax — a combination no single sample may
+ * have produced — and the marginals live in `fields`.
+ */
+export interface Decision<T = unknown> {
+	/** Id of this call's `hdb_model_calls` row. Rows are buffered before they are written, so treat it as a best-effort correlation key. */
+	id: string;
+	value: T;
+	probability?: number;
+	distribution?: DecisionOutcome[];
+	fields?: Record<string, FieldDecision>;
+	/** Whether the probabilities come from a calibrated source, as the backend reports it. */
+	calibrated: boolean;
+	usage?: TokenUsage;
+}
+
+/** One field's marginal in an object-schema `Decision`. */
+export interface FieldDecision {
+	value: unknown;
+	probability: number;
+	distribution: DecisionOutcome[];
+}
 
 export type GenerateOpts = {
 	model?: string;
