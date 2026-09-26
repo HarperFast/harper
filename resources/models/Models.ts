@@ -13,6 +13,7 @@ import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import { runAgentLoop, runAgentLoopStream } from './agentLoop.ts';
 import {
 	DecisionContractError,
+	DecisionInputError,
 	hashSchema,
 	hashText,
 	normalizeDecision,
@@ -302,7 +303,10 @@ export class Models implements ModelsContract {
 		this.#decisionStore.assertWritable('Decisions');
 		// the call and its record share one snapshot; nothing the caller mutates afterwards reaches either
 		const call = snapshotSchema(schema);
+		if (opts.instructions !== undefined && typeof opts.instructions !== 'string')
+			throw new DecisionInputError('instructions must be a string');
 		const instructions = opts.instructions || undefined;
+		const callOpts: DecideOpts = { ...opts, instructions };
 		const identity: CallIdentity = {
 			hash: hashSchema(call),
 			scoring: scoringSchema(call),
@@ -323,7 +327,7 @@ export class Models implements ModelsContract {
 			let result: ModelCallResult<DecisionOutput<unknown>>;
 			let decision: Omit<Decision<T>, 'id' | 'usage'>;
 			try {
-				const backendOpts = toBackendOpts(opts, signal, accounting);
+				const backendOpts = toBackendOpts(callOpts, signal, accounting);
 				result = await backend.decide!(state, call, backendOpts);
 				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
 				const calibrated = backend.capabilities()?.calibrated === true;

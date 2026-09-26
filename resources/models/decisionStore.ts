@@ -390,8 +390,7 @@ export function getModelsConfigHash(): string | undefined {
 	return modelsConfigHash;
 }
 
-const CREDENTIAL_KEY =
-	/^(apiKey|accessKeyId|sessionToken|token|authorization|.*secret.*|.*password.*|.*credential.*|.*key)$/i;
+const CREDENTIAL_KEY = /^(apiKey|accessKeyId|authorization|.*secret.*|.*password.*|.*credential.*|.*key|.*token)$/i;
 
 function withoutCredentials(value: unknown): unknown {
 	if (Array.isArray(value)) return value.map(withoutCredentials);
