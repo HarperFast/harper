@@ -301,6 +301,9 @@ export class Models implements ModelsContract {
 		validateDecisionSchema(schema);
 		stateToText(state);
 		this.#decisionStore.assertWritable('Decisions');
+		// what the backend is about to see; arguments mutated while the call is pending do not reach the record
+		const instructions = opts.instructions;
+		const identity = { hash: hashSchema(schema), scoring: scoringSchema(schema) };
 		const { accounting, signal } = resolveCallContext(opts.signal);
 		const startedAt = performance.now();
 		const resolved = resolveCandidates('decision', opts.model, buildRequires('decide', opts.requires, false));
@@ -341,10 +344,10 @@ export class Models implements ModelsContract {
 				callId,
 				backend,
 				opts.model,
-				opts.instructions,
+				instructions,
 				accounting,
 				result.output,
-				schema,
+				identity,
 				decision
 			);
 			return result.usage ? { id, ...decision, usage: result.usage } : { id, ...decision };
@@ -452,7 +455,7 @@ export class Models implements ModelsContract {
 		instructions: string | undefined,
 		accounting: AccountingContext,
 		output: DecisionOutput<unknown>,
-		schema: DecisionSchema,
+		identity: { hash: string; scoring: DecisionSchema },
 		decision: Omit<Decision<T>, 'id' | 'usage'>
 	): Promise<string> {
 		const id = newDecisionId();
@@ -469,8 +472,8 @@ export class Models implements ModelsContract {
 			signature: typeof output.signature === 'string' ? output.signature : undefined,
 			configHash: getModelsConfigHash(),
 			instructionsHash: typeof instructions === 'string' ? hashText(instructions) : undefined,
-			schema: scoringSchema(schema),
-			schemaHash: hashSchema(schema),
+			schema: identity.scoring,
+			schemaHash: identity.hash,
 			value: decision.value,
 			probability: decision.probability,
 			distribution: decision.distribution,

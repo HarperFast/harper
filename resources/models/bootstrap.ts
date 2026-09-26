@@ -132,7 +132,6 @@ interface InstalledSlot {
 	entryJson: string;
 	/** The entry's fallback group as applied, so a retained backend keeps its routing. */
 	fallback?: string[];
-	/** The expanded configuration the factory received, hashed into each decision's identity. */
 	configJson?: string;
 	/** Whether the entry's backend is a built-in. Module-backed entries are restart-managed: reload
 	 * refuses to add, change, OR remove them, so a rename cannot half-apply as a bare removal. */

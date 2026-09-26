@@ -410,8 +410,8 @@ export function hashSchema(schema: DecisionSchema): string {
 }
 
 /**
- * The allowed values alone, for validating outcomes against. Descriptions and unknown keys are free
- * text that can carry request data, so they are hashed, never stored.
+ * The allowed values alone, for validating outcomes against. Descriptions are hashed, never stored,
+ * because they are free text that can carry request data; unknown keys are dropped from both.
  */
 export function scoringSchema(schema: DecisionSchema): DecisionSchema {
 	return knownSchema(schema, false);
