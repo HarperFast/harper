@@ -215,9 +215,9 @@ export class DecisionStore {
 
 	async recordOutcome(id: string, report: OutcomeReport, tenant?: string): Promise<DecisionRecord> {
 		this.assertWritable('Outcomes');
-		const { outcomes } = this.#getTables();
 		return storageFaultsAs('Outcome could not be recorded', () =>
 			transaction(freshContext(), async () => {
+				const { outcomes } = this.#getTables();
 				const found = await this.#read(id, tenant);
 				if (!found) throw new DecisionNotFoundError(id);
 				const { row, facts } = found;
