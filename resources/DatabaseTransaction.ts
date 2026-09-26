@@ -189,6 +189,7 @@ export function trackOutstandingCommit(
 
 export function databaseCommitsSuspended(rootStore: object | undefined): boolean {
 	if (rootStore == null) return false;
+	if ((rootStore as any).status === 'closed') return true;
 	if (suspendedDatabaseRootCount === 0 && !hasPermanentlySuspendedDatabaseRoots) return false;
 	if ((rootStore as any)[permanentlySuspended]) return true;
 	return suspendedDatabaseRootCount > 0 && (suspendedDatabaseCommits.get(rootStore) ?? 0) > 0;

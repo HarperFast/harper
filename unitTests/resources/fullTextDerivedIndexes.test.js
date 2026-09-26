@@ -331,6 +331,7 @@ describe('@fullText derived-index activation', () => {
 			releaseClose?.();
 		}
 		assert.strictEqual(Product.primaryStore.rootStore.status, 'closed');
+		assert.strictEqual(databaseCommitsSuspended(Product.primaryStore.rootStore), true);
 		assert.throws(
 			() => Product.put('stale-write', { title: 'Stale write' }),
 			(error) => {

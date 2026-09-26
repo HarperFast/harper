@@ -421,6 +421,7 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 
 		assert.strictEqual(refCountFor(branchPath), 0);
 		assert.strictEqual(branch.rootStore.status, 'closed');
+		assert.strictEqual(databaseCommitsSuspended(branch.rootStore), true);
 	});
 
 	it('keeps a branch registered and retryable when its derived writer cannot settle', async function () {
