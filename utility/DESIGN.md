@@ -2,7 +2,7 @@
 
 Cross-cutting helpers.
 
-**Read this when:** touching `watchPath.ts` or anything that arms a native file watch, or adding an interactive CLI prompt (`interactivePrompts.ts`).
+**Read this when:** touching `watchPath.ts` or anything that arms a native file watch, adding an interactive CLI prompt (`interactivePrompts.ts`), or passing an object to `handleHDBError` (`errors/hdbError.ts`).
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -57,3 +57,7 @@ that degrades to polling stays there for its lifetime, so a caller with no polli
 ## Interactive CLI prompts go through `utility/interactivePrompts.ts`
 
 Every `@inquirer`-based one-shot prompt in the codebase (`bin/login.ts`, `bin/deploySetup.ts`, `utility/install/installer.ts`, `upgrade/upgradePrompt.ts`) calls the `prompts` object (or `promptYesNo`) exported from `utility/interactivePrompts.ts` — never `@inquirer/*` directly. Reuse that seam for any new `@inquirer`-style prompt rather than importing an `@inquirer` subpath yourself: it lazy-loads each prompt package on first real call (this module sits on the server boot path via `upgradePrompt`, so eager imports would cost every rolling-restart node), restores clean-exit-on-Ctrl-C (`ExitPromptError` → exit 130, not a logged stack), and disables the password prompt's plaintext-reveal keypress. `rawPromptsForTesting` is the underlying, pre-guard layer tests stub — `@inquirer/*` packages are real ES modules, so `require('@inquirer/input').default = stub` silently no-ops even through CJS interop. Out of scope: line-oriented REPLs like `bin/agentCli.ts`'s `readline.question` flow are a different interaction model and don't go through this seam.
+
+## An HdbError's `message` is a string; the structured body is `http_resp_msg` (`utility/errors/hdbError.ts`)
+
+`handleHDBError(new Error(), <object>, status)` is how a permission report or validation report becomes an error: the object is the response body. `serverErrorHandler` sends an object `http_resp_msg` verbatim, and the job worker (`server/jobs/jobProcess.ts`) records it as the job's `message`, which is what `get_job` answers a refused bulk load with. The constructor derives `message` from it — the `error` summary followed by the reasons the object lists, anything else through `inspectForLog`, which cannot throw and does not expose a nested Error's properties — because the logger, `String(error)` and `errorToString` (HTTP error bodies, replication replies) all need a string. A non-string `message` rendered as `Error: [object Object]`. Read the structure from `http_resp_msg`, never from `message`.

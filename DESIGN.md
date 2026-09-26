@@ -97,6 +97,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [`withNodeAdapter()`'s response is the body `PassThrough` it resolves with (`server/serverHelpers/NodeAdapterResponse.ts`)](server/DESIGN.md#withnodeadapters-response-is-the-body-passthrough-it-resolves-with-serverserverhelpersnodeadapterresponsets) — The adapter response is the `PassThrough` it resolves with; headers commit once through `writeHead`; Express is not a target.
 - [`manageThreads` has two different `workerCount`s (`server/threads/manageThreads.js`)](server/DESIGN.md#managethreads-has-two-different-workercounts-serverthreadsmanagethreadsjs) — The module-global `workerCount` sizes only the rolling-restart throttle; `getWorkerCount()` reads `workerData.workerCount`, frozen at spawn.
 - [A WebSocket close reason must be bounded to 123 bytes (`server/serverHelpers/webSocketCloseReason.ts`)](server/DESIGN.md#a-websocket-close-reason-must-be-bounded-to-123-bytes-serverserverhelperswebsocketclosereasonts) — `ws` throws past 123 bytes from a rejection handler; every dynamic reason goes through `toCloseReason()`, and all three terminal handlers render the error code alike.
+- [`serverErrorHandler` skips what `handlePostRequest` already logged (`server/serverHelpers/serverHandlers.js`)](server/DESIGN.md#servererrorhandler-skips-what-handlepostrequest-already-logged-serverserverhelpersserverhandlersjs) — One Error line per failure raised before an operation runs; an error thrown while it runs is also logged by `OperationFunctionCaller`.
 
 ## security/ — tokens, OIDC, TLS
 
@@ -142,6 +143,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 
 - [Every path handed to a native file watch must be canonicalized (`utility/watchPath.ts`)](utility/DESIGN.md#every-path-handed-to-a-native-file-watch-must-be-canonicalized-utilitywatchpathts) — Every native file-watch path is canonicalized first: libuv aborts the process on a Windows 8.3 short-path mismatch.
 - [Interactive CLI prompts go through `utility/interactivePrompts.ts`](utility/DESIGN.md#interactive-cli-prompts-go-through-utilityinteractivepromptsts) — Every `@inquirer` prompt uses this seam, which lazy-loads packages off the boot path, exits 130 on Ctrl-C and gives tests a stubbable raw layer.
+- [An HdbError's `message` is a string; the structured body is `http_resp_msg` (`utility/errors/hdbError.ts`)](utility/DESIGN.md#an-hdberrors-message-is-a-string-the-structured-body-is-http_resp_msg-utilityerrorshdberrorts) — A report object passed to `handleHDBError` is the response body and the job message; `message` is a string derived from it.
 
 ## build-tools/ — packaging and published artifacts
 

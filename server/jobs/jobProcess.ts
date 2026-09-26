@@ -80,7 +80,9 @@ const JOB_ID = JOB_NAME.substring(4);
 		exitCode = 1;
 		harperLogger.error(err);
 		jobObj.status = hdbTerms.JOB_STATUS_ENUM.ERROR;
-		jobObj.message = err.message ? err.message : err;
+		// get_job answers a refused bulk load with its structured permission report as the message.
+		const report = err?.http_resp_msg;
+		jobObj.message = report !== null && typeof report === 'object' ? report : err?.message ? err.message : err;
 		jobObj.end_datetime = moment().valueOf();
 	} finally {
 		// A rejected updateJob must not skip handle cleanup and exit scheduling below (that would

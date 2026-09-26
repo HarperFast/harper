@@ -70,8 +70,14 @@ function handleServerUncaughtException(err) {
 	realExit(1);
 }
 
+// The errors handlePostRequest logged, per request; see server/DESIGN.md.
+const errorsLoggedByRequest = new WeakMap();
+const LEVELS_ABOVE_ERROR = new Set([terms.LOG_LEVELS.FATAL, terms.LOG_LEVELS.NOTIFY]);
+
 function serverErrorHandler(error, req, resp) {
-	harperLogger[error.logLevel || 'info'](error);
+	// Fastify passes a handler's reason through as-is, so a rejection with none arrives here as nullish.
+	error ??= handleHDBError(new Error('The request failed without an error'), undefined, 500);
+	if (!errorsLoggedByRequest.get(req)?.has(error)) harperLogger[error.logLevel || 'info'](error);
 	if (error.statusCode) {
 		if (typeof error.http_resp_msg !== 'object') {
 			const body = { error: error.http_resp_msg || error.message };
@@ -220,7 +226,10 @@ async function handlePostRequest(req, res, _bypassAuth = false) {
 		}
 		return result;
 	} catch (error) {
-		harperLogger.error(error);
+		harperLogger[LEVELS_ABOVE_ERROR.has(error?.logLevel) ? error.logLevel : 'error'](error);
+		let logged = errorsLoggedByRequest.get(req);
+		if (!logged) errorsLoggedByRequest.set(req, (logged = new Set()));
+		logged.add(error);
 		throw error;
 	}
 }
