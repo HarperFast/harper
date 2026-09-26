@@ -34,6 +34,7 @@ import { registerOllamaBackend, type OllamaBackendConfig } from '../../component
 import { registerOpenAIBackend, type OpenAIBackendConfig } from '../../components/openai/index.ts';
 import { registerAnthropicBackend, type AnthropicBackendConfig } from '../../components/anthropic/index.ts';
 import { registerBedrockBackend, type BedrockBackendConfig } from '../../components/bedrock/index.ts';
+import { setModelsConfigHash } from './decisionStore.ts';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
@@ -75,6 +76,8 @@ interface ModelEntry {
 	samples?: number;
 	concurrency?: number;
 	temperature?: number;
+	scoring?: 'auto' | 'vote' | 'score';
+	requireStructuredOutput?: boolean;
 	/** Ordered fallback group: other logical names tried, in order, after this one (#1326). */
 	fallback?: string[];
 }
@@ -130,6 +133,7 @@ interface InstalledSlot {
 	entryJson: string;
 	/** The entry's fallback group as applied, so a retained backend keeps its routing. */
 	fallback?: string[];
+	configJson?: string;
 	/** Whether the entry's backend is a built-in. Module-backed entries are restart-managed: reload
 	 * refuses to add, change, OR remove them, so a rename cannot half-apply as a bare removal. */
 	builtin?: boolean;
@@ -247,6 +251,7 @@ interface DesiredEntry {
 	logicalName: string;
 	entry: ModelEntry;
 	entryJson: string;
+	configJson?: string;
 }
 
 function collectKind(
@@ -315,6 +320,7 @@ function publishEntry(
 	const builtin = Boolean(FACTORIES[entry.backend as string]);
 	if (replaceIfCurrent(kind, logicalName, expected, backend)) {
 		installedSlots.set(key, {
+			configJson: desiredEntry.configJson,
 			kind,
 			logicalName,
 			backend,
@@ -327,6 +333,7 @@ function publishEntry(
 		// Record the ask with no installed instance, so unchanged reloads skip instead of
 		// re-losing this swap every apply; installed helpers stay recorded and removable.
 		installedSlots.set(key, {
+			configJson: desiredEntry.configJson,
 			kind,
 			logicalName,
 			entryJson,
@@ -410,6 +417,7 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 			// (env var unset) pass through unchanged — backend's required-field
 			// validation catches them with a meaningful error.
 			const config = expandEnvVarsDeep(entry);
+			desiredEntry.configJson = JSON.stringify(config);
 			const { backend, extras } = await constructBackend(kind, logicalName, async () => {
 				const builtin = FACTORIES[entry.backend as string];
 				if (builtin) {
@@ -494,6 +502,16 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 			setFallbackGroup(slot.kind, slot.logicalName, slot.fallback);
 		}
 	}
+	setModelsConfigHash(installedConfiguration());
+}
+
+function installedConfiguration(): Record<string, unknown> | undefined {
+	const configuration: Record<string, unknown> = {};
+	for (const [key, slot] of installedSlots) {
+		if (slot.backend)
+			configuration[key] = JSON.parse(slot.configJson ?? JSON.stringify(expandEnvVarsDeep(JSON.parse(slot.entryJson))));
+	}
+	return Object.keys(configuration).length > 0 ? configuration : undefined;
 }
 
 // ── Hot reload wiring ─────────────────────────────────────────────────────────

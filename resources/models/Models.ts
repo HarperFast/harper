@@ -9,16 +9,39 @@ import {
 import { getRouter, registerRouter as registerRouterImpl } from './routing.ts';
 import { getModelCallAnalyticsWriter, type ModelCallAnalyticsWriter, type ModelCallRecord } from './analyticsTable.ts';
 import { recordAction } from '../analytics/write.ts';
-import { ServerError } from '../../utility/errors/hdbError.ts';
+import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import { runAgentLoop, runAgentLoopStream } from './agentLoop.ts';
-import { DecisionContractError, normalizeDecision, stateToText, validateDecisionSchema } from './decision.ts';
+import { assignFiniteTokenCount } from './backendHelpers.ts';
+import {
+	DecisionContractError,
+	DecisionInputError,
+	hashSchema,
+	hashText,
+	normalizeDecision,
+	scoringSchema,
+	snapshotSchema,
+	stateToText,
+	validateDecisionSchema,
+} from './decision.ts';
+import {
+	DECISION_RETENTION_MS,
+	DecisionPersistenceError,
+	type DecisionRow,
+	type DecisionStore,
+	getDecisionStore,
+	getModelsConfigHash,
+	newDecisionId,
+} from './decisionStore.ts';
 import type {
 	AccountingContext,
 	BackendOpts,
 	Capability,
+	ChoiceScores,
 	DecideInput,
 	DecideOpts,
 	Decision,
+	DecisionOutput,
+	DecisionRecord,
 	DecisionSchema,
 	DefineBackendSpec,
 	EmbedOpts,
@@ -31,10 +54,13 @@ import type {
 	ModelRouter,
 	ModelCallResult,
 	Models as ModelsContract,
+	ScoreChoicesOpts,
+	OutcomeReport,
 	TokenUsage,
 } from './types.ts';
 
 type CallMethod = ModelCallRecord['method'];
+type CallIdentity = { hash: string; scoring: DecisionSchema; configHash?: string };
 type MetricEmitter = (value: number, metric: string, path?: string) => void;
 
 /**
@@ -56,14 +82,17 @@ type MetricEmitter = (value: number, metric: string, path?: string) => void;
 export class Models implements ModelsContract {
 	#analyticsWriter: ModelCallAnalyticsWriter;
 	#emit: MetricEmitter;
+	#decisionStore: DecisionStore;
 
 	constructor(
 		analyticsWriter: ModelCallAnalyticsWriter = getModelCallAnalyticsWriter(),
 		// DI'd for unit tests; production wires up the module-scope `recordAction`.
-		metricEmitter: MetricEmitter = recordAction
+		metricEmitter: MetricEmitter = recordAction,
+		decisionStore: DecisionStore = getDecisionStore()
 	) {
 		this.#analyticsWriter = analyticsWriter;
 		this.#emit = metricEmitter;
+		this.#decisionStore = decisionStore;
 	}
 
 	/**
@@ -131,6 +160,7 @@ export class Models implements ModelsContract {
 			signal?.throwIfAborted();
 			const attemptStart = performance.now();
 			try {
+				assertCapabilities(backend, resolved.requires);
 				const backendOpts = toBackendOpts(opts, signal, accounting);
 				const result = await backend.embed!(input, backendOpts);
 				// Throw on `pending` BEFORE recording success — otherwise we'd write a
@@ -185,6 +215,7 @@ export class Models implements ModelsContract {
 			signal?.throwIfAborted();
 			const attemptStart = performance.now();
 			try {
+				assertCapabilities(backend, resolved.requires);
 				const backendOpts = toBackendOpts(opts, signal, accounting);
 				const result = await backend.generate!(input, backendOpts);
 				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
@@ -229,8 +260,16 @@ export class Models implements ModelsContract {
 		}
 		// First candidate only — mid-stream fallback would mean replaying already-yielded chunks.
 		const backend = resolved.candidates[0];
+		// Checked here, before the iterable exists, so an incapable first candidate from a custom router
+		// is a 400 rather than an error frame inside a 200; #wrapStream checks again on the first next().
+		try {
+			assertCapabilities(backend, resolved.requires);
+		} catch (err) {
+			this.#recordFailure(backend, 'generateStream', opts.model, accounting, opts, startedAt, err);
+			throw err;
+		}
 		const backendOpts = toBackendOpts(opts, signal, accounting);
-		return this.#wrapStream(backend, input, backendOpts, opts, accounting, startedAt);
+		return this.#wrapStream(backend, input, backendOpts, opts, accounting, startedAt, resolved.requires);
 	}
 
 	async *#wrapStream(
@@ -239,11 +278,13 @@ export class Models implements ModelsContract {
 		backendOpts: BackendOpts<GenerateOpts>,
 		opts: GenerateOpts,
 		accounting: AccountingContext,
-		startedAt: number
+		startedAt: number,
+		requires: Capability[]
 	): AsyncIterable<GenerateChunk> {
 		let caught: unknown;
 		let completed = false;
 		try {
+			assertCapabilities(backend, requires);
 			for await (const chunk of backend.generateStream!(input, backendOpts)) {
 				yield chunk;
 			}
@@ -266,17 +307,31 @@ export class Models implements ModelsContract {
 	}
 
 	/**
-	 * Choose from the closed set `schema` defines, with the distribution over it (#2779). A malformed
-	 * schema or state rejects before routing, with no analytics row: nothing was called.
+	 * Choose from the closed set `schema` defines, with the distribution over it. A malformed schema or
+	 * state rejects before routing, with no analytics row: nothing was called. The record is committed
+	 * before the decision is returned: a read-only node rejects before routing, and a commit failure
+	 * rejects without another candidate, so a storage fault never bills a second model call.
 	 */
 	async decide<T = unknown>(state: DecideInput, schema: DecisionSchema, opts: DecideOpts = {}): Promise<Decision<T>> {
 		validateDecisionSchema(schema);
 		stateToText(state);
-		const { accounting, signal } = resolveCallContext(opts.signal);
+		this.#decisionStore.assertWritable('Decisions');
+		// the call and its record share one snapshot of the schema and options; nothing the caller mutates afterwards reaches either
+		const call = snapshotSchema(schema);
+		if (opts.instructions !== undefined && typeof opts.instructions !== 'string')
+			throw new DecisionInputError('instructions must be a string');
+		const instructions = opts.instructions || undefined;
+		const callOpts: DecideOpts = { ...opts, instructions, requires: opts.requires ? [...opts.requires] : undefined };
+		const identity: CallIdentity = {
+			hash: hashSchema(call),
+			scoring: scoringSchema(call),
+			configHash: getModelsConfigHash(),
+		};
+		const { accounting, signal } = resolveCallContext(callOpts.signal);
 		const startedAt = performance.now();
-		const resolved = resolveCandidates('decision', opts.model, buildRequires('decide', opts.requires, false));
+		const resolved = resolveCandidates('decision', callOpts.model, buildRequires('decide', callOpts.requires, false));
 		if ('error' in resolved) {
-			this.#recordFailure(resolved.backend, 'decide', opts.model, accounting, undefined, startedAt, resolved.error);
+			this.#recordFailure(resolved.backend, 'decide', callOpts.model, accounting, undefined, startedAt, resolved.error);
 			throw resolved.error;
 		}
 		let firstError: unknown = undefined;
@@ -284,30 +339,182 @@ export class Models implements ModelsContract {
 		for (const backend of resolved.candidates) {
 			signal?.throwIfAborted();
 			const attemptStart = performance.now();
+			let result: ModelCallResult<DecisionOutput<unknown>>;
+			let decision: Omit<Decision<T>, 'id' | 'usage'>;
 			try {
-				const backendOpts = toBackendOpts(opts, signal, accounting);
-				const result = await backend.decide!(state, schema, backendOpts);
+				assertCapabilities(backend, resolved.requires);
+				const backendOpts = toBackendOpts(callOpts, signal, accounting);
+				result = await backend.decide!(state, call, backendOpts);
 				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
 				const calibrated = backend.capabilities()?.calibrated === true;
-				const decision = normalizeDecision<T>(schema, result.output, backend.name, calibrated);
+				decision = normalizeDecision<T>(call, result.output, backend.name, calibrated);
 				// A backend may report a single call as uncalibrated; the caller's requirement still holds.
-				if (!decision.calibrated && opts.requires?.includes('calibrated'))
+				if (!decision.calibrated && callOpts.requires?.includes('calibrated'))
 					throw new DecisionContractError(
 						backend.name,
 						"probabilities are not calibrated, but 'calibrated' was required"
 					);
-				const id = this.#record(backend, 'decide', opts.model, accounting, undefined, result, attemptStart);
-				return result.usage ? { id: String(id), ...decision, usage: result.usage } : { id: String(id), ...decision };
 			} catch (err) {
-				this.#recordFailure(backend, 'decide', opts.model, accounting, undefined, attemptStart, err);
+				this.#recordFailure(backend, 'decide', callOpts.model, accounting, undefined, attemptStart, err);
 				if (!hasError) {
 					firstError = err;
 					hasError = true;
 				}
 				if (signal?.aborted) throw err;
+				continue;
 			}
+			const callId = this.#record(backend, 'decide', callOpts.model, accounting, undefined, result, attemptStart);
+			const id = await this.#persistDecision(
+				callId,
+				backend,
+				callOpts.model,
+				instructions,
+				accounting,
+				result.output,
+				identity,
+				decision
+			);
+			return result.usage ? { id, ...decision, usage: result.usage } : { id, ...decision };
 		}
 		throw firstError;
+	}
+
+	/**
+	 * Score `choices` as answers to `input` with a generative backend that implements
+	 * `scoreChoices` (#2838): the decision adapter's likelihood path. Routes `generative` with
+	 * `scoreChoices` required, tries candidates like `embed`, and records one `scoreChoices` row
+	 * per attempt; a `ChoiceScoringUnsupportedError` is recorded as `scoring_unsupported` with the
+	 * usage it consumed. Internal, like `embedWithUsage`: not part of the stable models API.
+	 */
+	async scoreChoices(
+		input: GenerateInput,
+		choices: readonly string[],
+		opts: ScoreChoicesOpts = {}
+	): Promise<ChoiceScores & { usage?: TokenUsage }> {
+		const { accounting, signal } = resolveCallContext(opts.signal);
+		const startedAt = performance.now();
+		const resolved = resolveCandidates('generative', opts.model, buildRequires('scoreChoices', opts.requires, false));
+		if ('error' in resolved) {
+			this.#recordFailure(
+				resolved.backend,
+				'scoreChoices',
+				opts.model,
+				accounting,
+				undefined,
+				startedAt,
+				resolved.error
+			);
+			throw resolved.error;
+		}
+		let firstError: unknown = undefined;
+		let hasError = false;
+		let firstFailure: unknown = undefined;
+		let hasFailure = false;
+		for (const backend of resolved.candidates) {
+			signal?.throwIfAborted();
+			const attemptStart = performance.now();
+			try {
+				assertCapabilities(backend, resolved.requires);
+				// A router may hand back a backend whose capabilities claim more than it implements;
+				// that is this backend's contract failure, recorded against it, not a crash.
+				if (typeof backend.scoreChoices !== 'function')
+					throw new ServerError(`Backend '${backend.name}' advertises 'scoreChoices' but does not implement it`);
+				const result = await backend.scoreChoices(input, choices, toBackendOpts(opts, signal, accounting));
+				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
+				const logLikelihoods = result.output?.logLikelihoods;
+				if (
+					!Array.isArray(logLikelihoods) ||
+					logLikelihoods.length !== choices.length ||
+					!logLikelihoods.every((x) => typeof x === 'number' && Number.isFinite(x))
+				)
+					throw new ServerError(
+						`Backend '${backend.name}' did not return one finite log-likelihood per choice (${choices.length})`
+					);
+				this.#record(backend, 'scoreChoices', opts.model, accounting, undefined, result, attemptStart);
+				return result.usage ? { logLikelihoods, usage: result.usage } : { logLikelihoods };
+			} catch (err) {
+				// Only this attempt's own decline bills its tokens: the error may travel on as an abort
+				// reason or through the decision adapter, and those rows must not count it again.
+				this.#recordFailure(
+					backend,
+					'scoreChoices',
+					opts.model,
+					accounting,
+					undefined,
+					attemptStart,
+					err,
+					usageFromError(err)
+				);
+				if (!hasError) {
+					firstError = err;
+					hasError = true;
+				}
+				if (!hasFailure && !isChoiceScoringUnsupported(err)) {
+					firstFailure = err;
+					hasFailure = true;
+				}
+				if (signal?.aborted) throw err;
+			}
+		}
+		throw hasFailure ? firstFailure : firstError;
+	}
+
+	async getDecision<T = unknown>(id: string): Promise<DecisionRecord<T> | undefined> {
+		checkDecisionId(id);
+		return (await this.#decisionStore.get(id, resolveCallContext().accounting.tenantId)) as
+			DecisionRecord<T> | undefined;
+	}
+
+	async recordOutcome<T = unknown>(id: string, outcome: OutcomeReport): Promise<DecisionRecord<T>> {
+		checkDecisionId(id);
+		return (await this.#decisionStore.recordOutcome(
+			id,
+			outcome,
+			resolveCallContext().accounting.tenantId
+		)) as DecisionRecord<T>;
+	}
+
+	async #persistDecision<T>(
+		callId: number,
+		backend: ModelBackend,
+		model: string | undefined,
+		instructions: string | undefined,
+		accounting: AccountingContext,
+		output: DecisionOutput<unknown>,
+		identity: CallIdentity,
+		decision: Omit<Decision<T>, 'id' | 'usage'>
+	): Promise<string> {
+		const id = newDecisionId();
+		const at = Date.now();
+		const row: DecisionRow = {
+			id,
+			callId,
+			at,
+			expiresAt: at + DECISION_RETENTION_MS,
+			tenant: accounting.tenantId,
+			app: accounting.app,
+			backend: backend.name,
+			model: model ?? 'default',
+			signature: typeof output.signature === 'string' ? output.signature : undefined,
+			configHash: identity.configHash,
+			instructionsHash: instructions ? hashText(instructions) : undefined,
+			schema: identity.scoring,
+			schemaHash: identity.hash,
+			value: decision.value,
+			probability: decision.probability,
+			distribution: decision.distribution,
+			fields: decision.fields,
+			calibrated: decision.calibrated,
+		};
+		try {
+			await this.#decisionStore.persist(row);
+		} catch (err) {
+			// the fault stays on `cause`: its message can name a data path and this error can reach an HTTP body
+			const error = new DecisionPersistenceError('Decision could not be recorded');
+			(error as Error & { cause?: unknown }).cause = err;
+			throw error;
+		}
+		return id;
 	}
 
 	#record(
@@ -330,11 +537,14 @@ export class Models implements ModelsContract {
 		// Path is the backend name (analogous to tableName for db-read) so dashboards
 		// can break usage down by backend.
 		this.#emit(1, `model-${method}`, backend.name);
-		if (usage) {
-			const tokens = (usage.embeddingTokens ?? 0) + (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0);
-			if (tokens > 0) this.#emit(tokens, `model-${method}-tokens`, backend.name);
-		}
+		this.#emitTokens(method, backend.name, usage);
 		return id;
+	}
+
+	#emitTokens(method: CallMethod, backendName: string, usage: TokenUsage | undefined): void {
+		if (!usage) return;
+		const tokens = (usage.embeddingTokens ?? 0) + (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0);
+		if (tokens > 0) this.#emit(tokens, `model-${method}-tokens`, backendName);
 	}
 
 	#recordFailure(
@@ -344,14 +554,36 @@ export class Models implements ModelsContract {
 		accounting: AccountingContext,
 		opts: GenerateOpts | undefined,
 		startedAt: number,
-		errOrCode: unknown
+		errOrCode: unknown,
+		usage?: TokenUsage
 	): void {
 		const error_code = typeof errOrCode === 'string' ? errOrCode : classifyError(errOrCode);
 		this.#analyticsWriter.write({
-			...buildRecord(backend, method, model, accounting, opts, undefined, startedAt, false),
+			...buildRecord(backend, method, model, accounting, opts, usage, startedAt, false),
 			error_code,
 		});
+		if (backend) this.#emitTokens(method, backend.name, usage);
 	}
+}
+
+function isChoiceScoringUnsupported(err: unknown): boolean {
+	return (err as { name?: string } | null)?.name === 'ChoiceScoringUnsupportedError';
+}
+
+/**
+ * Tokens a declined scoring call consumed (`ChoiceScoringUnsupportedError.usage`), finite counts
+ * only: a completion that came back without log-probabilities was billed, so they land on that
+ * attempt's failure row and in the token metric while the call-count metric stays a count of
+ * successes. No other error's `usage` is read, and no other method's failure row carries usage.
+ */
+function usageFromError(err: unknown): TokenUsage | undefined {
+	if (!isChoiceScoringUnsupported(err)) return undefined;
+	const reported = (err as { usage?: unknown }).usage;
+	if (!reported || typeof reported !== 'object') return undefined;
+	const usage: TokenUsage = {};
+	for (const key of ['promptTokens', 'completionTokens', 'embeddingTokens'] as const)
+		assignFiniteTokenCount(usage, key, (reported as Record<string, unknown>)[key]);
+	return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
 function buildRecord(
@@ -404,7 +636,20 @@ function inputHasTools(input: GenerateInput): boolean {
 	return typeof input === 'object' && !Array.isArray(input) && Array.isArray(input.tools) && input.tools.length > 0;
 }
 
-type Resolution = { candidates: ModelBackend[] } | { error: Error; backend: ModelBackend | undefined };
+type Resolution =
+	{ candidates: ModelBackend[]; requires: Capability[] } | { error: Error; backend: ModelBackend | undefined };
+
+/**
+ * The router's list is advisory: a custom router may return a backend that lacks a required
+ * capability, and the facade must not invoke it. Checked immediately before each candidate is
+ * invoked, fallbacks included.
+ */
+function assertCapabilities(backend: ModelBackend, requires: Capability[]): void {
+	const caps = backend.capabilities();
+	for (const capability of requires) {
+		if (!caps?.[capability]) throw new ModelCapabilityError(backend.name, capability);
+	}
+}
 
 /**
  * Resolve a call to its ordered candidate backends via the active router (#1326),
@@ -436,8 +681,8 @@ function toBackendOpts<TOpts extends { model?: string; signal?: AbortSignal }>(
 
 function resolveCandidates(kind: ModelKind, model: string | undefined, requires: Capability[]): Resolution {
 	const logicalName = model ?? 'default';
-	const candidates = getRouter().route({ kind, logicalName, requires });
-	if (candidates.length > 0) return { candidates };
+	const candidates = getRouter().route({ kind, logicalName, requires: [...requires] });
+	if (candidates.length > 0) return { candidates, requires };
 	const primary = getBackend(kind, logicalName);
 	if (!primary) return { error: new ModelBackendNotFoundError(kind, logicalName), backend: undefined };
 	// `caps?.[…]` guards a custom backend whose capabilities() returns nullish — a
@@ -460,6 +705,7 @@ function classifyError(err: unknown): string {
 		const e = err as { name?: string; code?: string };
 		if (e.name === 'AbortError' || e.code === 'ABORT_ERR') return 'aborted';
 		if (e.name === 'ModelCapabilityError') return 'capability_unsupported';
+		if (e.name === 'ChoiceScoringUnsupportedError') return 'scoring_unsupported';
 		if (e.name === 'ModelBackendNotFoundError') return 'backend_not_found';
 		if (e.name === 'ModelPendingNotSupportedError') return 'pending_unsupported';
 	}
@@ -497,3 +743,7 @@ _assignPackageExport('models', models);
 // The backend-registration API is reachable as `models.registerBackend(...)` /
 // `models.defineBackend(...)` — methods on the `models` singleton above, not generic
 // free globals (#1534). Custom routers install via `models.registerRouter(...)` (#1326).
+
+function checkDecisionId(id: unknown): asserts id is string {
+	if (typeof id !== 'string' || id.length === 0) throw new ClientError('A decision id must be a non-empty string', 400);
+}

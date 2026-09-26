@@ -108,6 +108,7 @@ import {
 	retainFullTextDefinitions,
 	serializeFullTextState,
 } from './fullTextSchemaLifecycle.ts';
+import { assertDerivedFieldOwnership } from './models/embedHook.ts';
 import {
 	abandonDatabaseDrop,
 	beginDatabaseDrop,
@@ -523,6 +524,7 @@ const PEER_REDEFINABLE_FIELDS = [
 	'elements',
 	'properties',
 	'embed',
+	'decide',
 ];
 // `indexNulls` is derived from the durable descriptor, never sent by a peer, so naming it in the
 // discard warn would blame the peer for a field it did not write.
@@ -3663,6 +3665,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					}
 				}
 				fullTextValidationAttributes = validationAttributes;
+				// Before the full-text branches can write an interim descriptor; the check on the merged list
+				// below stays authoritative.
+				assertDerivedFieldOwnership(validationAttributes as any[]);
 
 				const persistedAudit = persistedPrimary.descriptor?.audit;
 				const durableAudit = persistedAudit === true;
@@ -3836,6 +3841,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					);
 				if (existingPrimary) attributes = [existingPrimary, ...attributes];
 			}
+			// On the complete list (a peer's fields merged, an omitted primary key inherited) and before
+			// it replaces the live one or reaches the catalog, so a refused declaration changes nothing.
+			assertDerivedFieldOwnership(attributes as any[]);
 			armFullTextLiveStateRestore?.();
 			Table.attributes.splice(0, Table.attributes.length, ...attributes);
 			// Re-assert from the live declaration so a stale value on disk (replicated event,
@@ -3851,6 +3859,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			// undefined means a non-schema caller (add_attribute, cluster schema events) — don't clobber
 			if (cacheControl !== undefined) Table.cacheControl = cacheControl;
 		} else {
+			if (Array.isArray(attributes)) assertDerivedFieldOwnership(attributes as any[]);
 			if (fullTextIndexesExplicit) {
 				if (origin === 'cluster') {
 					const merged = mergePeerFullTextDefinitions([], fullTextIndexes, attributes, fullTextWarning);
@@ -4277,9 +4286,13 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements) ||
 				// Include `embed` so a source/model change refreshes the embed registry.
 				JSON.stringify(attributeDescriptor.embed) !== JSON.stringify(attribute.embed);
-			// any metadata difference (drives persistence)
+			// any metadata difference (drives persistence). `decide` is compared here and not in
+			// `commonChanged`: a changed directive refreshes the decide registry, and a stored decision
+			// does not depend on the model, so an indexed decision attribute must not rebuild its index.
 			const changed =
-				commonChanged || JSON.stringify(attributeDescriptor?.indexed) !== JSON.stringify(attribute.indexed);
+				commonChanged ||
+				JSON.stringify(attributeDescriptor?.indexed) !== JSON.stringify(attribute.indexed) ||
+				JSON.stringify(attributeDescriptor?.decide) !== JSON.stringify(attribute.decide);
 			// structure-affecting difference (drives reindex) — ignores search-only option changes and
 			// representation-only differences (key order, string-vs-number) via canonicalIndexKey
 			const indexOptionsStructurallyChanged =

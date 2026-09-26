@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import type {
 	DecideInput,
@@ -385,4 +386,65 @@ function balancedClose(text: string, start: number, work: { left: number }, stri
 function checkSampleValue(leaf: DecisionLeaf, raw: unknown, label: string): unknown {
 	if (isAllowedValue(leaf, raw)) return raw;
 	throw new Error(`${label} is not an allowed value`);
+}
+
+/** JSON with object keys sorted at every level; array order is kept because enum order is meaning. */
+export function canonicalJson(value: unknown): string {
+	return JSON.stringify(sortKeys(value));
+}
+
+function sortKeys(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(sortKeys);
+	if (!value || typeof value !== 'object') return value;
+	const sorted: Record<string, unknown> = {};
+	for (const key of Object.keys(value as object).sort())
+		sorted[key] = sortKeys((value as Record<string, unknown>)[key]);
+	return sorted;
+}
+
+/** Identity of the schema as the model saw it: the allowed values and the descriptions, nothing else. */
+export function hashSchema(schema: DecisionSchema): string {
+	return createHash('sha256')
+		.update(canonicalJson(knownSchema(schema, true)))
+		.digest('hex');
+}
+
+/**
+ * The allowed values alone, for validating outcomes against. Descriptions are hashed, never stored,
+ * because they are free text that can carry request data; unknown keys are dropped from both.
+ */
+export function scoringSchema(schema: DecisionSchema): DecisionSchema {
+	return knownSchema(schema, false);
+}
+
+/** A copy of a validated schema with only its known keys, so a call and its record see one schema whatever the caller mutates afterwards. */
+export function snapshotSchema(schema: DecisionSchema): DecisionSchema {
+	return knownSchema(schema, true);
+}
+
+/** sha256 of a caller's per-call text, so decisions made under different instructions do not share an identity. */
+export function hashText(text: string): string {
+	return createHash('sha256').update(text).digest('hex');
+}
+
+function knownSchema(schema: DecisionSchema, withDescriptions: boolean): DecisionSchema {
+	if (isObjectSchema(schema)) {
+		const properties: Record<string, DecisionLeaf> = {};
+		for (const [name, leaf] of Object.entries(schema.properties)) properties[name] = knownLeaf(leaf, withDescriptions);
+		const known: Record<string, unknown> = { type: 'object', properties };
+		if (withDescriptions && schema.description !== undefined) known.description = schema.description;
+		return known as DecisionSchema;
+	}
+	return knownLeaf(schema, withDescriptions);
+}
+
+function knownLeaf(leaf: DecisionLeaf, withDescriptions: boolean): DecisionLeaf {
+	const known: Record<string, unknown> =
+		'enum' in leaf
+			? { enum: Array.from(leaf.enum as readonly unknown[]) }
+			: leaf.type === 'boolean'
+				? { type: 'boolean' }
+				: { type: 'integer', minimum: leaf.minimum, maximum: leaf.maximum };
+	if (withDescriptions && leaf.description !== undefined) known.description = leaf.description;
+	return known as DecisionLeaf;
 }

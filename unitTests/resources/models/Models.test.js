@@ -6,7 +6,8 @@ const assert = require('node:assert');
 // DatabaseTransaction/blob require chain hits a cycle when loaded ESM-first by mocha.
 require('#src/resources/databases');
 const { contextStorage } = require('#src/resources/transaction');
-const { setEmbedding, setGenerative, clearRegistry } = require('#src/resources/models/backendRegistry');
+const { setEmbedding, setGenerative, clearRegistry, defineBackend } = require('#src/resources/models/backendRegistry');
+const { registerRouter, clearRouting } = require('#src/resources/models/routing');
 const { TestBackend } = require('#src/resources/models/TestBackend');
 const {
 	Models,
@@ -579,5 +580,141 @@ describe('logical model name is not forwarded as the wire model (#1593)', () => 
 		}
 		assert.ok(seenOpts, 'backend was called');
 		assert.ok(!('model' in seenOpts), 'the logical model name must not reach the backend as a wire model override');
+	});
+});
+
+describe('required capabilities are checked on the candidate about to be invoked (#2842)', () => {
+	const genOut = (content) => ({ status: 'completed', output: { content, finishReason: 'stop' } });
+	let writer;
+	let models;
+
+	beforeEach(() => {
+		clearRegistry();
+		clearRouting();
+		writer = makeMockWriter();
+		models = new Models(writer, () => {});
+	});
+
+	afterEach(() => {
+		clearRegistry();
+		clearRouting();
+	});
+
+	it('skips a candidate a custom router returned without the required capability and serves from the next one', async () => {
+		let promptOnlyCalls = 0;
+		const promptOnly = defineBackend({
+			name: 'prompt-only',
+			generate: async () => {
+				promptOnlyCalls++;
+				return genOut('nope');
+			},
+		});
+		const strict = defineBackend({ name: 'strict', generate: async () => genOut('ok'), structuredOutput: true });
+		registerRouter({ route: () => [promptOnly, strict] });
+		const result = await models.generate('hi', { requires: ['structuredOutput'] });
+		assert.strictEqual(result.content, 'ok');
+		assert.strictEqual(promptOnlyCalls, 0);
+		assert.deepStrictEqual(
+			writer.records.map((r) => [r.backend, r.success, r.error_code]),
+			[
+				['prompt-only', false, 'capability_unsupported'],
+				['strict', true, undefined],
+			]
+		);
+	});
+
+	it('surfaces the primary capability error when every routed candidate lacks it', async () => {
+		let calls = 0;
+		const backend = defineBackend({
+			name: 'prompt-only',
+			generate: async () => {
+				calls++;
+				return genOut('nope');
+			},
+		});
+		registerRouter({ route: () => [backend] });
+		await assert.rejects(
+			models.generate('hi', { requires: ['structuredOutput'] }),
+			(err) => err instanceof ModelCapabilityError && /structuredOutput/.test(err.message)
+		);
+		assert.strictEqual(calls, 0);
+	});
+
+	it('applies to decide and to generateStream, which throws before the iterable is returned', async () => {
+		const noDecide = defineBackend({ name: 'no-decide', generate: async () => genOut('x') });
+		registerRouter({ route: () => [noDecide] });
+		await assert.rejects(models.decide('x', { enum: ['a', 'b'] }), ModelCapabilityError);
+		assert.strictEqual(writer.records.at(-1).error_code, 'capability_unsupported');
+		// Synchronous: a stream over HTTP must be a 400, not an error frame inside a 200.
+		assert.throws(() => models.generateStream('hi', { requires: ['structuredOutput'] }), ModelCapabilityError);
+		assert.strictEqual(writer.records.at(-1).method, 'generateStream');
+		assert.strictEqual(writer.records.at(-1).error_code, 'capability_unsupported');
+	});
+
+	it('a router that mutates the requirements it was handed cannot empty the check at call time', async () => {
+		const promptOnly = defineBackend({ name: 'prompt-only', generate: async () => genOut('nope') });
+		registerRouter({
+			route: ({ requires }) => {
+				requires.length = 0;
+				return [promptOnly];
+			},
+		});
+		await assert.rejects(models.generate('hi', { requires: ['structuredOutput'] }), ModelCapabilityError);
+	});
+
+	it('reads one frozen capabilities object per candidate on the default path', async () => {
+		setGenerative('default', new TestBackend());
+		const result = await models.generate('hi');
+		assert.match(result.content, /TestBackend/);
+		assert.strictEqual(writer.records.length, 1);
+		assert.strictEqual(writer.records[0].success, true);
+	});
+
+	it('built-in providers return one frozen capabilities object, so the check allocates nothing', () => {
+		const { OpenAIBackend } = require('#src/components/openai/index');
+		const { OllamaBackend } = require('#src/components/ollama/index');
+		const { AnthropicBackend } = require('#src/components/anthropic/index');
+		const { BedrockBackend } = require('#src/components/bedrock/index');
+		for (const backend of [
+			new OpenAIBackend({ apiKey: 'k', model: 'm' }),
+			new OllamaBackend({ model: 'm' }),
+			new AnthropicBackend({ apiKey: 'k', model: 'm' }),
+			new BedrockBackend({ region: 'us-east-1', model: 'anthropic.m' }),
+		]) {
+			assert.strictEqual(backend.capabilities(), backend.capabilities());
+			assert.ok(Object.isFrozen(backend.capabilities()));
+		}
+	});
+
+	it('checks the stream candidate when the stream is first pulled, not when the iterable is built', async () => {
+		let reported = {
+			embed: false,
+			generate: true,
+			stream: true,
+			tools: false,
+			adapters: false,
+			structuredOutput: true,
+		};
+		const mutable = {
+			name: 'mutable',
+			capabilities: () => reported,
+			async *generateStream() {
+				yield { deltaContent: 'x' };
+				yield { finishReason: 'stop' };
+			},
+		};
+		registerRouter({ route: () => [mutable] });
+		const stream = models.generateStream('hi', { requires: ['structuredOutput'] });
+		reported = { ...reported, structuredOutput: false };
+		await assert.rejects(
+			(async () => {
+				for await (const _chunk of stream) {
+					// never reached
+				}
+			})(),
+			ModelCapabilityError
+		);
+		assert.strictEqual(writer.records.at(-1).method, 'generateStream');
+		assert.strictEqual(writer.records.at(-1).error_code, 'capability_unsupported');
 	});
 });

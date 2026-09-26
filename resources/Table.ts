@@ -139,7 +139,21 @@ import {
 	LockCoordinator,
 	type LockControlEntry,
 } from './recordLockCoordinator.ts';
-import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
+import {
+	assertDerivedFieldOwnership,
+	buildEmbedBefore,
+	combineWriteHooks,
+	createDefaultEmbedder,
+	type EmbedAttribute,
+	type Embedder,
+} from './models/embedHook.ts';
+import {
+	buildDecideBefore,
+	createDefaultDecider,
+	type DecideAttribute,
+	type DecideConfig,
+	type Decider,
+} from './models/decideHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
 import {
 	recordUpdater,
@@ -194,6 +208,7 @@ export type Attribute = {
 	resolve?: any;
 	computedFromExpression?: any;
 	embed?: { source: string; model: string };
+	decide?: DecideConfig;
 	version?: any;
 	properties?: Array<Attribute>;
 	elements?: Attribute;
@@ -1133,6 +1148,9 @@ export function makeTable(options) {
 		static userEmbedders: { [name: string]: Embedder } = {};
 		static userSetEmbedders: Set<string> = new Set();
 		static embedAttributes: EmbedAttribute[] = (attributes as any[]).filter((a) => a?.embed);
+		static userDeciders: { [name: string]: Decider } = {};
+		static userSetDeciders: Set<string> = new Set();
+		static decideAttributes: DecideAttribute[] = (attributes as any[]).filter((a) => a?.decide);
 		static source?: typeof TableResource;
 		declare static sourceOptions: any;
 		declare static intermediateSource: boolean;
@@ -4595,22 +4613,28 @@ export function makeTable(options) {
 				},
 			};
 			this.#savingOperation = write;
-			// `@embed` hook must run before `addWrite` so the embedder's vector is on the
-			// record when `commit` runs. (The txn `before` slot runs after commit, which
-			// suits blob writes but not embedding, where the vector must be present at commit.)
-			// Known limitation of this write-time placement (a validate-time alternative was
-			// tried and reverted as a Harper-foreign pattern): the embedder sees this write's
-			// payload, before table validation — so a write that later fails validation still
-			// calls the backend, and a tracked-instance mutation (update(id,{}); row.source=…;
-			// save()) that sets the source via accessors after update() won't re-embed. A
-			// resource-layer re-embed is the proper fix; tracked as a follow-up.
-			const embedBefore = buildEmbedBefore(
-				recordUpdate,
-				context,
-				options,
-				TableResource.embedAttributes,
-				TableResource.userEmbedders
-			);
+			// The hooks run before `addWrite` so the derived values are on the record at commit (the
+			// txn `before` slot runs after commit). They see the payload before table validation, and a
+			// tracked-instance mutation that sets the source via accessors after update() is not seen.
+			const modelHooksBefore =
+				TableResource.embedAttributes.length || TableResource.decideAttributes.length
+					? combineWriteHooks(
+							buildEmbedBefore(
+								recordUpdate,
+								context,
+								options,
+								TableResource.embedAttributes,
+								TableResource.userEmbedders
+							),
+							buildDecideBefore(
+								recordUpdate,
+								context,
+								options,
+								TableResource.decideAttributes,
+								TableResource.userDeciders
+							)
+						)
+					: undefined;
 			const proceed = (): any => {
 				// On a source/replication apply (`isNotification`), the record's already-saved blobs were
 				// received out-of-band for THIS write, so track them for skip/abort cleanup (harper-pro#406).
@@ -4623,7 +4647,7 @@ export function makeTable(options) {
 				);
 				return transaction.addWrite(write as any);
 			};
-			return embedBefore ? embedBefore().then(proceed) : proceed();
+			return modelHooksBefore ? modelHooksBefore((context as any)?.signal).then(proceed) : proceed();
 		}
 
 		async delete(target: RequestTargetOrId): Promise<boolean> {
@@ -6892,13 +6916,24 @@ export function makeTable(options) {
 		static updatedAttributes() {
 			// Refresh on every call: schema reload mutates `attributes` in place, so the
 			// class-construction snapshot would otherwise go stale.
+			// Declarations are refused before they are saved; here a descriptor an earlier build
+			// accepted must still load, so a violation is logged and the table keeps working.
+			try {
+				assertDerivedFieldOwnership(this.attributes as any[]);
+			} catch (error) {
+				console.error(`Derived attributes of table "${tableName}" conflict: ${(error as Error).message}`);
+			}
 			this.embedAttributes = (this.attributes as any[]).filter((a) => a?.embed);
+			this.decideAttributes = (this.attributes as any[]).filter((a) => a?.decide);
 			expiresAtProperty = this.attributes.find((attribute) => attribute.expiresAt);
-			// Drop registry entries for attributes that are no longer `@embed`, so a dropped
-			// directive doesn't leave a stale embedder or block a default refresh on re-add.
+			// Drop registry entries for attributes that are no longer `@embed` / `@decide`, so a dropped
+			// directive doesn't leave a stale hook or block a default refresh on re-add.
 			const embedNames = new Set(this.embedAttributes.map((a) => a.name));
 			for (const name of Object.keys(this.userEmbedders)) if (!embedNames.has(name)) delete this.userEmbedders[name];
 			for (const name of this.userSetEmbedders) if (!embedNames.has(name)) this.userSetEmbedders.delete(name);
+			const decideNames = new Set(this.decideAttributes.map((a) => a.name));
+			for (const name of Object.keys(this.userDeciders)) if (!decideNames.has(name)) delete this.userDeciders[name];
+			for (const name of this.userSetDeciders) if (!decideNames.has(name)) this.userSetDeciders.delete(name);
 			propertyResolvers = this.propertyResolvers = {
 				$id: (object, context, entry) => ({ value: entry.key }),
 				$updatedtime: (object, context, entry) => entry.version,
@@ -6935,8 +6970,11 @@ export function makeTable(options) {
 				const computed = attribute.computed;
 				// Register the default embedder unless an author override is set. Sits outside
 				// the resolver chain below so `@embed` fields still flow through auto-HNSW indexing.
-				if (attribute.embed && !TableResource.userSetEmbedders.has(attribute.name)) {
+				if (attribute.embed && !this.userSetEmbedders.has(attribute.name)) {
 					this.userEmbedders[attribute.name] = createDefaultEmbedder(attribute.embed);
+				}
+				if (attribute.decide && !this.userSetDeciders.has(attribute.name)) {
+					this.userDeciders[attribute.name] = createDefaultDecider(attribute.decide);
 				}
 				if (relationship) {
 					if (attribute.indexed) {
@@ -7168,6 +7206,26 @@ export function makeTable(options) {
 			}
 			this.userEmbedders[attribute_name] = embedder;
 			this.userSetEmbedders.add(attribute_name);
+		}
+		/**
+		 * Override the default decider for a `@decide` attribute. Return `{ value, probability }`
+		 * to store at the attribute and its confidence attribute, or `null` to clear both. The
+		 * value must be one the directive allows, and the probability is required when the
+		 * directive names a confidence attribute. Like an embedder, the decider receives the write
+		 * payload, not the post-merge record, and a `signal` that aborts when a sibling hook fails.
+		 */
+		static setDecideAttribute(attribute_name: string, decider: Decider): void {
+			const attribute = findAttribute(attributes, attribute_name);
+			if (!attribute) {
+				console.error(`The attribute "${attribute_name}" does not exist in the table "${tableName}"`);
+				return;
+			}
+			if (!attribute.decide) {
+				console.error(`The attribute "${attribute_name}" is not declared with @decide in the table "${tableName}"`);
+				return;
+			}
+			this.userDeciders[attribute_name] = decider;
+			this.userSetDeciders.add(attribute_name);
 		}
 		static async deleteHistory(endTime = 0, cleanupDeletedRecords = false): Promise<number> {
 			const maxConcurrentRemovals = isRocksDB ? MAX_CONCURRENT_HISTORY_REMOVALS : MAX_CONCURRENT_LMDB_HISTORY_REMOVALS;
@@ -8422,19 +8480,25 @@ export function makeTable(options) {
 						}
 					},
 				};
-				// The cache-from-source write bypasses `_writeUpdate`, so wire the embed hook here
-				// too (always the originating node). It runs after the client GET has resolved with
-				// fresh source data, so it's a background commit: an embedder failure aborts the cache
-				// write via the outer error handler (row re-embeds next read) and never reaches the
-				// caller. Source-resolution errors are handled earlier, with the stale-data fallback.
-				const embedBefore = buildEmbedBefore(
-					updatedRecord,
-					sourceContext,
-					undefined,
-					TableResource.embedAttributes,
-					TableResource.userEmbedders
+				// The fill is shared by every reader, so it takes no request signal; a hook failure aborts
+				// only the cache write.
+				const modelHooksBefore = combineWriteHooks(
+					buildEmbedBefore(
+						updatedRecord,
+						sourceContext,
+						undefined,
+						TableResource.embedAttributes,
+						TableResource.userEmbedders
+					),
+					buildDecideBefore(
+						updatedRecord,
+						sourceContext,
+						undefined,
+						TableResource.decideAttributes,
+						TableResource.userDeciders
+					)
 				);
-				if (embedBefore) await embedBefore();
+				if (modelHooksBefore) await modelHooksBefore();
 				if (droppingTable) {
 					// Re-check right before staging the write: dropTable() may have started
 					// while we were awaiting the embed step above (harper#1381).

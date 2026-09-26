@@ -224,7 +224,8 @@ export function registerBackend(kind: ModelKind, id: string, backend: ModelBacke
 
 /**
  * Build a `ModelBackend` from just the methods it implements. `capabilities()`
- * is derived from which of `embed` / `generate` / `generateStream` are present;
+ * is derived from which of `embed` / `generate` / `generateStream` / `decide` /
+ * `scoreChoices` are present;
  * `tools` and `adapters` aren't inferable from method presence, so pass them
  * explicitly (both default `false`). Lowers the bar from authoring a class to
  * supplying a function — pair with `registerBackend`. See #1325.
@@ -232,16 +233,28 @@ export function registerBackend(kind: ModelKind, id: string, backend: ModelBacke
 export function defineBackend(spec: DefineBackendSpec): ModelBackend {
 	if (!spec || typeof spec.name !== 'string' || spec.name.length === 0)
 		throw new ModelBackendRegistrationError('defineBackend requires a non-empty name');
-	const { name, embed, generate, generateStream, decide, tools = false, adapters = false, calibrated = false } = spec;
+	const {
+		name,
+		embed,
+		generate,
+		generateStream,
+		decide,
+		scoreChoices,
+		tools = false,
+		adapters = false,
+		calibrated = false,
+		structuredOutput = false,
+	} = spec;
 	// Gate on function-ness, not truthiness: a non-function value (`generate: 'oops'`)
 	// must be rejected at definition time, not assigned and crash at call time.
 	const hasEmbed = typeof embed === 'function';
 	const hasGenerate = typeof generate === 'function';
 	const hasStream = typeof generateStream === 'function';
 	const hasDecide = typeof decide === 'function';
-	if (!hasEmbed && !hasGenerate && !hasStream && !hasDecide)
+	const hasScore = typeof scoreChoices === 'function';
+	if (!hasEmbed && !hasGenerate && !hasStream && !hasDecide && !hasScore)
 		throw new ModelBackendRegistrationError(
-			`backend '${name}' must implement at least one of embed / generate / generateStream / decide (as functions)`
+			`backend '${name}' must implement at least one of embed / generate / generateStream / decide / scoreChoices (as functions)`
 		);
 	const capabilities: ModelCapabilities = Object.freeze({
 		embed: hasEmbed,
@@ -252,12 +265,15 @@ export function defineBackend(spec: DefineBackendSpec): ModelBackend {
 		adapters,
 		decide: hasDecide,
 		calibrated: hasDecide && calibrated,
+		scoreChoices: hasScore,
+		structuredOutput: (hasGenerate || hasStream) && structuredOutput,
 	});
 	const backend: ModelBackend = { name, capabilities: () => capabilities };
 	if (hasEmbed) backend.embed = embed;
 	if (hasGenerate) backend.generate = generate;
 	if (hasStream) backend.generateStream = generateStream;
 	if (hasDecide) backend.decide = decide;
+	if (hasScore) backend.scoreChoices = scoreChoices;
 	// Stream-only generative backend: synthesize generate() by draining the stream,
 	// so a plain models.generate() works without the backend implementing both.
 	if (hasStream && !hasGenerate) backend.generate = synthesizeGenerateFromStream(generateStream!);

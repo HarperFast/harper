@@ -19,11 +19,28 @@ describe('TestBackend', () => {
 				adapters: false,
 				decide: true,
 				calibrated: false,
+				scoreChoices: true,
 			});
 		});
 
 		it('reports name = "test"', () => {
 			assert.strictEqual(backend.name, 'test');
+		});
+	});
+
+	describe('scoreChoices', () => {
+		const accounting = { tenantId: 'tid', app: '/test' };
+
+		it('returns one finite log-likelihood per choice, deterministic in the input and the choices, with usage', async () => {
+			const a = await backend.scoreChoices('ticket', ['x', 'y', 'z'], { accounting });
+			const b = await backend.scoreChoices('ticket', ['x', 'y', 'z'], { accounting });
+			assert.strictEqual(a.status, 'completed');
+			assert.strictEqual(a.output.logLikelihoods.length, 3);
+			assert.ok(a.output.logLikelihoods.every(Number.isFinite));
+			assert.deepStrictEqual(a.output.logLikelihoods, b.output.logLikelihoods);
+			const c = await backend.scoreChoices('other ticket', ['x', 'y', 'z'], { accounting });
+			assert.notDeepStrictEqual(a.output.logLikelihoods, c.output.logLikelihoods);
+			assert.deepStrictEqual(a.usage, { promptTokens: 'ticket'.length, latencyMs: 0 });
 		});
 	});
 

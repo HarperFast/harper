@@ -89,6 +89,15 @@ export interface AnthropicBackendConfig {
  * `tools: true` — Anthropic has first-class tool-use support via
  * `tool_use` / `tool_result` content blocks.
  */
+const CAPABILITIES: ModelCapabilities = Object.freeze({
+	embed: false,
+	generate: true,
+	stream: true,
+	tools: true,
+	adapters: false,
+	structuredOutput: false,
+});
+
 export class AnthropicBackend implements ModelBackend {
 	readonly name = 'anthropic';
 	readonly #baseUrl: string;
@@ -106,7 +115,7 @@ export class AnthropicBackend implements ModelBackend {
 	}
 
 	capabilities(): ModelCapabilities {
-		return { embed: false, generate: true, stream: true, tools: true, adapters: false };
+		return CAPABILITIES;
 	}
 
 	async generate(input: GenerateInput, opts: BackendOpts<GenerateOpts>): Promise<ModelCallResult<GenerateResult>> {
