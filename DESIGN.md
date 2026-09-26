@@ -83,6 +83,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 
 - [Decision outputs are validated at the facade](resources/models/DESIGN.md#decision-outputs-are-validated-at-the-facade) — `normalizeDecision` checks every backend's distribution (complete, in-set, sums to one) before a `Decision` is returned; a violation is a backend error, so fallback applies.
 - [The generative adapter reports no usage of its own](resources/models/DESIGN.md#the-generative-adapter-reports-no-usage-of-its-own) — Each vote sample is its own `generate` row; the decide row reports no tokens, and samples settle before the adapter throws.
+- [`@decide` and `@embed` share one trigger rule](resources/models/DESIGN.md#decide-and-embed-share-one-trigger-rule) — One predicate decides when a write derives; `@decide` writes value and probability from one call or fails the write; every derived field has one writer; a `decide` change never reindexes.
 - [Built-ins serve one kind](resources/models/DESIGN.md#built-ins-serve-one-kind) — Provider factories cannot serve `models.decision` and the adapter cannot serve the other kinds; refused at validation and at boot.
 
 ## server/ — HTTP stacks, threads, operation dispatch
