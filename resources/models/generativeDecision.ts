@@ -241,16 +241,20 @@ function routesToScorer(logicalName: string, largestLeafSize: number): boolean {
 	return false;
 }
 
+// Infinity for anything that is not a well-formed leaf, so an unexpected shape never reads as within a limit.
 function leafSize(leaf: DecisionLeaf): number {
-	if ('enum' in leaf) return leaf.enum.length;
-	if (leaf.type === 'boolean') return 2;
-	return leaf.maximum - leaf.minimum + 1;
+	if (!leaf || typeof leaf !== 'object') return Infinity;
+	if (Array.isArray((leaf as { enum?: unknown }).enum)) return (leaf as { enum: unknown[] }).enum.length;
+	if ((leaf as { type?: unknown }).type === 'boolean') return 2;
+	const size = (leaf as { maximum: number }).maximum - (leaf as { minimum: number }).minimum + 1;
+	return Number.isFinite(size) && size > 0 ? size : Infinity;
 }
 
 function largestLeaf(schema: DecisionSchema): number {
 	if (!isObjectSchema(schema)) return leafSize(schema);
 	let largest = 0;
-	for (const name in schema.properties) largest = Math.max(largest, leafSize(schema.properties[name]));
+	for (const name in schema.properties)
+		if (Object.hasOwn(schema.properties, name)) largest = Math.max(largest, leafSize(schema.properties[name]));
 	return largest;
 }
 
