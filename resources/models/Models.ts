@@ -517,9 +517,9 @@ export class Models implements ModelsContract {
 			probability: decision.probability,
 			distribution: decision.distribution,
 			fields: decision.fields,
-			noMatch: decision.noMatch,
 			calibrated: decision.calibrated,
 		};
+		if (decision.noMatch !== undefined) row.noMatch = decision.noMatch;
 		try {
 			await this.#decisionStore.persist(row);
 		} catch (err) {
