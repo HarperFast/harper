@@ -8480,9 +8480,8 @@ export function makeTable(options) {
 						}
 					},
 				};
-				// The cache-from-source write bypasses `_writeUpdate`, so the hooks run here too. The fill is
-				// shared by every reader, so it takes no request signal; a hook failure aborts only the cache
-				// write (the row re-derives on the next read) and never reaches the caller.
+				// The fill is shared by every reader, so it takes no request signal; a hook failure aborts
+				// only the cache write.
 				const modelHooksBefore = combineWriteHooks(
 					buildEmbedBefore(
 						updatedRecord,

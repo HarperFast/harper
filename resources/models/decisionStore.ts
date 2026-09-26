@@ -272,11 +272,11 @@ function freshContext(): Context {
 }
 
 function visibleTo(row: DecisionRow, tenant: string | undefined): boolean {
-	return tenant === undefined || row.tenant === undefined || row.tenant === tenant;
+	return tenant == null || row.tenant == null || row.tenant === tenant;
 }
 
 function factKey(id: string, fact: Fact, field?: string): string {
-	return field === undefined ? `${id}/${fact}` : `${id}/${fact}/${field}`;
+	return field == null ? `${id}/${fact}` : `${id}/${fact}/${field}`;
 }
 
 /** Truth then action, per property in schema order for object schemas; `factIndex` follows the same order. */

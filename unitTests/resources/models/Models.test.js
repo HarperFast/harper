@@ -651,6 +651,17 @@ describe('required capabilities are checked on the candidate about to be invoked
 		assert.strictEqual(writer.records.at(-1).error_code, 'capability_unsupported');
 	});
 
+	it('a router that mutates the requirements it was handed cannot empty the check at call time', async () => {
+		const promptOnly = defineBackend({ name: 'prompt-only', generate: async () => genOut('nope') });
+		registerRouter({
+			route: ({ requires }) => {
+				requires.length = 0;
+				return [promptOnly];
+			},
+		});
+		await assert.rejects(models.generate('hi', { requires: ['structuredOutput'] }), ModelCapabilityError);
+	});
+
 	it('reads one frozen capabilities object per candidate on the default path', async () => {
 		setGenerative('default', new TestBackend());
 		const result = await models.generate('hi');

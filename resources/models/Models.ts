@@ -284,7 +284,6 @@ export class Models implements ModelsContract {
 		let caught: unknown;
 		let completed = false;
 		try {
-			// Runs on the first next(), the moment the backend is actually invoked.
 			assertCapabilities(backend, requires);
 			for await (const chunk of backend.generateStream!(input, backendOpts)) {
 				yield chunk;
@@ -682,7 +681,7 @@ function toBackendOpts<TOpts extends { model?: string; signal?: AbortSignal }>(
 
 function resolveCandidates(kind: ModelKind, model: string | undefined, requires: Capability[]): Resolution {
 	const logicalName = model ?? 'default';
-	const candidates = getRouter().route({ kind, logicalName, requires });
+	const candidates = getRouter().route({ kind, logicalName, requires: [...requires] });
 	if (candidates.length > 0) return { candidates, requires };
 	const primary = getBackend(kind, logicalName);
 	if (!primary) return { error: new ModelBackendNotFoundError(kind, logicalName), backend: undefined };
