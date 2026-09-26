@@ -390,6 +390,39 @@ function runSuite(threadCount: 1 | 4) {
 			});
 		}
 
+		test('startTime replay: includeOrigin names the origin node of every audit-built event', async () => {
+			const id = `replay-${threadCount}-origin`;
+			const sentinelId = `${id}-sentinel`;
+			await restPut(id, { id, seq: 1 }).expect(204);
+			await restPut(sentinelId, { id: sentinelId, seq: 1 }).expect(204);
+			const probe = (options: object) =>
+				request(restBase)
+					.post('/ReplayProbe/')
+					.set(client.headers)
+					.send({ ids: [id], sentinelId, ...options })
+					.timeout(15_000)
+					.expect(200);
+			type OriginEvent = { nodeId?: number; nodeName?: string };
+			const plain = (await probe({})).body as OriginEvent[];
+			ok(plain.length >= 1, 'the default probe replayed the write');
+			ok(
+				plain.every((event) => !('nodeName' in event) && !('nodeId' in event)),
+				'no origin field without includeOrigin'
+			);
+			const withOrigin = (await probe({ includeOrigin: true })).body as OriginEvent[];
+			ok(withOrigin.length >= 1, 'the includeOrigin probe replayed the write');
+			deepStrictEqual(
+				withOrigin.map((event) => event.nodeId),
+				withOrigin.map(() => 0),
+				'a local write is origin 0 on its own node'
+			);
+			ok(
+				withOrigin.every((event) => typeof event.nodeName === 'string' && event.nodeName.length > 0),
+				'every event names its origin node'
+			);
+			strictEqual(new Set(withOrigin.map((event) => event.nodeName)).size, 1, 'one origin, one name');
+		});
+
 		/**
 		 * Drive `count` writes to `id` at the given rate, with subscribers already attached on all
 		 * available surfaces, then report per-surface delivered/dropped counts.
