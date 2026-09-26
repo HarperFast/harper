@@ -405,3 +405,24 @@ describe('parseDecisionSample with several candidate objects', () => {
 		);
 	});
 });
+
+describe('parseDecisionSample with more than one code fence', () => {
+	it('sees every fence and the text between them', () => {
+		assert.throws(
+			() =>
+				parseDecisionSample(
+					QUEUE,
+					'Example:\n```json\n{"value":"other"}\n```\nFinal answer:\n```json\n{"value":"bug"}\n```'
+				),
+			/more than one answer/
+		);
+		assert.strictEqual(
+			parseDecisionSample(QUEUE, 'Context:\n```json\n{"step":1}\n```\nAnswer:\n{"value":"bug"}'),
+			'bug'
+		);
+		assert.strictEqual(
+			parseDecisionSample(QUEUE, '```json\n{"value":"bug"}\n```\nThe same again:\n```json\n{"value":"bug"}\n```'),
+			'bug'
+		);
+	});
+});

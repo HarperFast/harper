@@ -226,7 +226,6 @@ function normalizeLeaf(
 	if (chosen !== undefined && chosen !== sorted[0].value) {
 		if (byValue.get(chosen) !== top)
 			throw new DecisionContractError(backendName, `${label}: value is not a most-probable outcome`);
-		// A tied value the backend chose leads the distribution, so `value` stays its first entry.
 		const index = sorted.findIndex((entry) => entry.value === chosen);
 		sorted.unshift(...sorted.splice(index, 1));
 	}
@@ -284,7 +283,7 @@ export function parseDecisionSample(schema: DecisionSchema, content: unknown): u
 	let answer: unknown;
 	let answerKey: string | undefined;
 	let lastError: Error | undefined;
-	for (const candidate of jsonObjectCandidates(content)) {
+	for (const candidate of jsonObjectSpans(content)) {
 		let values: unknown;
 		try {
 			values = extractSampleValues(schema, candidate);
@@ -292,7 +291,6 @@ export function parseDecisionSample(schema: DecisionSchema, content: unknown): u
 			lastError = err as Error;
 			continue;
 		}
-		// Two different in-schema objects (an example and the answer) make the sample ambiguous.
 		const key = JSON.stringify(values);
 		if (answerKey === undefined) {
 			answer = values;
@@ -320,23 +318,11 @@ function extractSampleValues(schema: DecisionSchema, sample: Record<string, unkn
 const MAX_BRACE_CANDIDATES = 32;
 
 /**
- * Every `{`…`}` span that parses to a JSON object. A backend that ignores `responseFormat`
- * (Anthropic, Bedrock) answers from the prompt alone and may wrap the object in a code fence or
- * prose with braces of its own, so a fenced block is tried first and the whole text only when
- * the fence holds no object.
+ * Every `{`…`}` span that parses to a JSON object, outermost first. A backend that ignores
+ * `responseFormat` (Anthropic, Bedrock) answers from the prompt alone and may wrap the object in
+ * code fences or prose with braces of its own; the schema check on each candidate is what tells
+ * the answer from the rest, so no span is preferred over another.
  */
-function* jsonObjectCandidates(content: string): Generator<Record<string, unknown>> {
-	const fenced = /```[a-z]*\s*([\s\S]*?)```/i.exec(content);
-	let found = false;
-	if (fenced) {
-		for (const object of jsonObjectSpans(fenced[1])) {
-			found = true;
-			yield object;
-		}
-	}
-	if (!found) yield* jsonObjectSpans(content);
-}
-
 function* jsonObjectSpans(text: string): Generator<Record<string, unknown>> {
 	const opens: number[] = [];
 	const closes: number[] = [];
