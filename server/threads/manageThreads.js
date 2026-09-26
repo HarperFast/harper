@@ -1175,8 +1175,8 @@ function broadcastWithAcknowledgement(
 				ackHandler.allowNormalJobExit = strict && includeJobWorkers && port.isJobWorker;
 				pending.add(ackHandler);
 				waitingCount++;
-				port.ref();
 				port.refCount = (port.refCount || 0) + 1;
+				port.ref();
 				awaitingResponses.set((message.requestId = requestId), ackHandler);
 				if (!port.hasAckCloseListener) {
 					// just set a single close listener that can clean up all the ack handlers for a port that is closed
