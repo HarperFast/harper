@@ -417,6 +417,11 @@ export function scoringSchema(schema: DecisionSchema): DecisionSchema {
 	return knownSchema(schema, false);
 }
 
+/** A copy of a validated schema with only its known keys, so a call and its record see one schema whatever the caller mutates afterwards. */
+export function snapshotSchema(schema: DecisionSchema): DecisionSchema {
+	return knownSchema(schema, true);
+}
+
 /** sha256 of a caller's per-call text, so decisions made under different instructions do not share an identity. */
 export function hashText(text: string): string {
 	return createHash('sha256').update(text).digest('hex');

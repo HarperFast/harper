@@ -17,6 +17,7 @@ import {
 	hashText,
 	normalizeDecision,
 	scoringSchema,
+	snapshotSchema,
 	stateToText,
 	validateDecisionSchema,
 } from './decision.ts';
@@ -55,6 +56,7 @@ import type {
 } from './types.ts';
 
 type CallMethod = ModelCallRecord['method'];
+type CallIdentity = { hash: string; scoring: DecisionSchema; configHash?: string };
 type MetricEmitter = (value: number, metric: string, path?: string) => void;
 
 /**
@@ -298,9 +300,14 @@ export class Models implements ModelsContract {
 		validateDecisionSchema(schema);
 		stateToText(state);
 		this.#decisionStore.assertWritable('Decisions');
-		// what the backend is about to see; arguments mutated while the call is pending do not reach the record
-		const instructions = opts.instructions;
-		const identity = { hash: hashSchema(schema), scoring: scoringSchema(schema) };
+		// the call and its record share one snapshot; nothing the caller mutates afterwards reaches either
+		const call = snapshotSchema(schema);
+		const instructions = opts.instructions || undefined;
+		const identity: CallIdentity = {
+			hash: hashSchema(call),
+			scoring: scoringSchema(call),
+			configHash: getModelsConfigHash(),
+		};
 		const { accounting, signal } = resolveCallContext(opts.signal);
 		const startedAt = performance.now();
 		const resolved = resolveCandidates('decision', opts.model, buildRequires('decide', opts.requires, false));
@@ -317,10 +324,10 @@ export class Models implements ModelsContract {
 			let decision: Omit<Decision<T>, 'id' | 'usage'>;
 			try {
 				const backendOpts = toBackendOpts(opts, signal, accounting);
-				result = await backend.decide!(state, schema, backendOpts);
+				result = await backend.decide!(state, call, backendOpts);
 				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
 				const calibrated = backend.capabilities()?.calibrated === true;
-				decision = normalizeDecision<T>(schema, result.output, backend.name, calibrated);
+				decision = normalizeDecision<T>(call, result.output, backend.name, calibrated);
 				// A backend may report a single call as uncalibrated; the caller's requirement still holds.
 				if (!decision.calibrated && opts.requires?.includes('calibrated'))
 					throw new DecisionContractError(
@@ -373,7 +380,7 @@ export class Models implements ModelsContract {
 		instructions: string | undefined,
 		accounting: AccountingContext,
 		output: DecisionOutput<unknown>,
-		identity: { hash: string; scoring: DecisionSchema },
+		identity: CallIdentity,
 		decision: Omit<Decision<T>, 'id' | 'usage'>
 	): Promise<string> {
 		const id = newDecisionId();
@@ -388,8 +395,8 @@ export class Models implements ModelsContract {
 			backend: backend.name,
 			model: model ?? 'default',
 			signature: typeof output.signature === 'string' ? output.signature : undefined,
-			configHash: getModelsConfigHash(),
-			instructionsHash: typeof instructions === 'string' ? hashText(instructions) : undefined,
+			configHash: identity.configHash,
+			instructionsHash: instructions ? hashText(instructions) : undefined,
 			schema: identity.scoring,
 			schemaHash: identity.hash,
 			value: decision.value,
