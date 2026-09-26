@@ -415,7 +415,6 @@ function voteNoMatchLine(schema: DecisionSchema): string {
 	return `Answer ${names.join(', ')} each as { "value", "noMatch" }: ${rule}`;
 }
 
-/** The extra choice's text, kept distinct from every allowed value's text. */
 function noMatchChoice(choices: readonly string[]): string {
 	let text = NO_MATCH_CHOICE;
 	while (choices.includes(text)) text = `(${text})`;
