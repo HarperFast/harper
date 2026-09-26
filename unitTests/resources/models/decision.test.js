@@ -454,3 +454,12 @@ describe('parseDecisionSample with unbalanced quotes in the prose', () => {
 		assert.strictEqual(parseDecisionSample(QUEUE, 'He said "look: {"value":"bug"}'), 'bug');
 	});
 });
+
+describe('parseDecisionSample limits', () => {
+	it('counts objects, not raw braces, and bounds the scan work explicitly', () => {
+		assert.strictEqual(parseDecisionSample(QUEUE, `{"value":"bug","note":"${'{'.repeat(70)}"}`), 'bug');
+		assert.strictEqual(parseDecisionSample(QUEUE, `${'{ '.repeat(70)}{"value":"bug"}`), 'bug');
+		assert.throws(() => parseDecisionSample(QUEUE, `${'{} '.repeat(70)}{"value":"bug"}`), /too many objects/);
+		assert.throws(() => parseDecisionSample(QUEUE, `${'{ '.repeat(1200)}{"value":"bug"}`), /too long to scan/);
+	});
+});
