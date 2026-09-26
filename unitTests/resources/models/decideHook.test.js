@@ -492,6 +492,7 @@ describe('@decide decision id (#2852)', () => {
 		);
 		const rejects = (attributes, pattern) => assert.throws(() => assertDerivedFieldOwnership(attributes), pattern);
 		rejects([...base, route('missing')], /unknown decision field "missing"/);
+		rejects([...base, route('')], /"decision" must name a field/);
 		rejects(
 			[...base, route('routeDecision'), { name: 'routeDecision', type: 'Int' }],
 			/requires a String decision attribute/

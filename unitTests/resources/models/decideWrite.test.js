@@ -266,8 +266,6 @@ describe('@decide write path (real table)', () => {
 			assert.equal(failures, 1);
 			assert.equal(Cached.primaryStore.get('fail1'), undefined, 'the failed fill is not cached');
 			assert.deepEqual(unhandled, []);
-			await Cached.put('w1', { body: 'refund please' }).catch(() => {});
-			assert.equal(decideFn.calls.length, 0, 'no model call for a write while the node reports read-only');
 		} finally {
 			process.off('unhandledRejection', onUnhandled);
 		}
@@ -336,6 +334,14 @@ describe('@decide decision id and read-only nodes (#2852, #2850)', () => {
 		);
 		await assert.rejects(Linked.patch('l1', { routeDecision: 'forged' }), (err) => err.statusCode === 400);
 		assert.equal((await Linked.get('l1')).routeDecision, 'row');
+	});
+
+	it('on a read-only node a write calls no model', async () => {
+		const Plain = table({ table: 'DecideReadOnlyWrite', database: 'test', attributes: attributes('routeDecision') });
+		Plain.updatedAttributes();
+		__setReadOnlyModeForTest(true);
+		await Plain.put('w1', { body: 'refund please' }).catch(() => {});
+		assert.equal(decideFn.calls.length, 0);
 	});
 
 	it('on a read-only node no hook calls a model and a cache fill is served without being stored', async () => {
