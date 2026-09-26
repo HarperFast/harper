@@ -2519,9 +2519,6 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 	let releaseDerivedIndexActivation: (() => void) | undefined;
 	let destructiveWorkStarted = false;
 	try {
-		// A tableless database may exist on disk without this worker ever having opened its root. The
-		// drop owner must open that root to destroy it; the private bypass is safe because ResourceBridge
-		// already owns the preparation fence that intentionally rejects every public open.
 		if (rootStores.size === 0) {
 			rootStores.add(openDatabaseRoot({ database: databaseName }, { allowPreparedDrop: true }));
 		}
@@ -2867,7 +2864,6 @@ export async function closeDatabase(
 		handleCloseStarted = true;
 		const closeFailures = await closeDatabaseStores(databaseName, dbTables, rootStores, requireClosed);
 		if (requireClosed && closeFailures.length > 0) {
-			// The remembered close lets a later drop retry finish releasing the graph.
 			for (const rootStore of rootStores) {
 				lmdbDatabaseEnvs.delete(rootStore.path);
 				rocksdbDatabaseEnvs.delete(rootStore.path);
@@ -2892,7 +2888,6 @@ export async function closeDatabase(
 		return true;
 	} finally {
 		if (handleCloseStarted) {
-			// The catalog graph has been or will be discarded; keep its stale wrappers fenced.
 			permanentlySuspendDatabaseCommits(rootStores);
 			for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);
 		} else if (!databaseClosed && !handleCloseStarted) {

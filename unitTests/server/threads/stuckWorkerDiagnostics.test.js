@@ -237,6 +237,13 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		await broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000, true);
 	});
 
+	it('settles a job worker as soon as it confirms handle cleanup', async function () {
+		const worker = await startFixtureWorker('report-clean-stay', 'job');
+		started.push(worker);
+		await broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000, true);
+		assert.strictEqual(worker.threadId > 0, true);
+	});
+
 	it('accepts confirmed job cleanup from a worker-originated preparation', async function () {
 		const broadcaster = await startFixtureWorker('acknowledge');
 		const jobWorker = await startFixtureWorker('exit-clean-parent-only', 'job');

@@ -186,7 +186,10 @@ function fsyncDir(dir: string): void {
  * protocols on this shared exclusion primitive. Throws (statusCode 409) if the lock is already held.
  */
 export function acquireRestoreLock(dbPath: string): RestoreLock {
-	mkdirSync(restoreMetaDir(dbPath), { recursive: true });
+	const metaDir = restoreMetaDir(dbPath);
+	const createMetaDir = !existsSync(metaDir);
+	mkdirSync(metaDir, { recursive: true });
+	if (createMetaDir) fsyncDir(dirname(metaDir));
 	const token = tryFileLock(restoreLockPath(dbPath));
 	if (token === 0) {
 		const error: any = new Error(`Restore already in progress for database at ${dbPath}`);
@@ -482,6 +485,11 @@ function removeDatabaseDropMarker(lock: DatabaseDropLock): void {
 
 export function completeDatabaseDrop(lock: DatabaseDropLock): void {
 	try {
+		fsyncDir(dirname(lock.dbPath));
+		for (const blobPath of lock.blobPaths) {
+			const parent = dirname(blobPath);
+			if (existsSync(parent)) fsyncDir(parent);
+		}
 		removeDatabaseDropMarker(lock);
 	} finally {
 		fileLockRelease(lock.token);

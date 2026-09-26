@@ -42,7 +42,6 @@ const FULL_TEXT_LIMITS = Object.freeze({
 	maxBatchBytes: 8 * 1024 * 1024,
 });
 
-// One generation owns each physical backend; destructive cleanup also awaits superseded generations.
 type RegisteredTable = { current: { Table: any }; owners: Set<{ Table: any }> };
 type RegisteredBackend = {
 	settle: () => Promise<void>;
@@ -526,8 +525,10 @@ export function attachDerivedIndexes(
 			}
 			const operation = (async () => {
 				try {
-					if (dropping) await Promise.all(settlements);
-					else {
+					if (dropping) {
+						await Promise.all(settlements);
+						await persistedRetirementSettlement;
+					} else {
 						const results = await Promise.allSettled(settlements);
 						const failures: unknown[] = [];
 						for (const result of results) {

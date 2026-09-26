@@ -419,6 +419,54 @@ describe('@fullText derived-index activation', () => {
 		Product = undefined;
 	});
 
+	rocksOnly('waits for an in-progress persisted retirement before dropping a database', async () => {
+		const database = `fulltext-persisted-retirement-drop-${Date.now()}`;
+		const attributes = [
+			{ name: 'id', type: 'ID', isPrimaryKey: true },
+			{ name: 'title', type: 'String' },
+		];
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes,
+			fullTextIndexes: [{ ...definition(), fields: [{ name: 'title', weight: 1 }] }],
+		});
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+		const runtime = Product.derivedIndexRuntime;
+		Product.derivedIndexRuntime = undefined;
+		await runtime.close();
+
+		const primaryKey = `${Product.tableName}/`;
+		const descriptor = Product.dbisDB.getSync(primaryKey);
+		const retirementDescriptor = { ...descriptor, fullTextIndexRetirements: [{ name: 'search' }] };
+		delete retirementDescriptor.fullTextIndexes;
+		delete retirementDescriptor.fullTextIndexGenerations;
+		Product.dbisDB.putSync(primaryKey, retirementDescriptor);
+		Product.fullTextIndexes = [];
+		Product.fullTextIndexGenerations = {};
+		Product.fullTextIndexRetirements = ['search'];
+
+		let releaseReset;
+		binding.resetWait = new Promise((resolve) => (releaseReset = resolve));
+		refreshDerivedIndexes(Product);
+		await waitFor(() => binding.resets.length > 0, 30_000);
+		let dropped = false;
+		const dropping = dropDatabase(database).then(() => {
+			dropped = true;
+		});
+		try {
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.strictEqual(dropped, false);
+			releaseReset();
+			await dropping;
+			assert.strictEqual(dropped, true);
+		} finally {
+			releaseReset?.();
+		}
+		Product = undefined;
+	});
+
 	rocksOnly('keeps a database registered when a derived writer prevents its drop', async () => {
 		const database = `fulltext-failed-drop-database-${Date.now()}`;
 		Product = table({

@@ -215,11 +215,10 @@ export class ResourceBridge extends BridgeMethods {
 			await signalling.signalSchemaChangeToPeers(preparation);
 			await dropDatabase(dropSchemaObj.schema, rootPaths);
 		} finally {
-			// Match preparation's two rounds so a worker that inherited the fence while joining the
-			// topology cannot miss the completion between its workerData snapshot and port registration.
+			// Match preparation's two rounds so a serving worker that inherited the fence while joining
+			// cannot miss completion. Job workers proved cleanup immediately before exit and must not reopen.
 			await signalling.signalSchemaChange(completion(), {
 				peersFirst: true,
-				includeJobWorkers: true,
 				peerRounds: 2,
 			});
 			releaseDatabaseDropPreparations(rootPaths, preparationId);

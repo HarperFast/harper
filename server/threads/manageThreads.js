@@ -1943,6 +1943,7 @@ function addPort(port, keepRef, isJobWorker) {
 				removeProcessGroup(portThreadId, message.processGroupId);
 			} else if (message.type === hdbTerms.ITC_EVENT_TYPES.JOB_CLEANUP_COMPLETE) {
 				port.jobCleanupComplete = true;
+				settleAcknowledgementsForClosedPort(port, true);
 			} else if (message.type === ADDED_PORT) {
 				message.port.threadId = message.threadId;
 				addPort(message.port, false, message.isJobWorker);

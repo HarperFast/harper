@@ -64,6 +64,8 @@ onMessageFromWorkers((message, port) => {
 		parentPort.postMessage({ type: ITC_EVENT_TYPES.JOB_CLEANUP_COMPLETE });
 		clearInterval(keepAlive);
 		parentPort.close();
+	} else if (process.argv.includes('--report-clean-stay')) {
+		notifyJobCleanupComplete();
 	} else if (process.argv.includes('--exit') || process.argv.includes('--exit-clean')) {
 		if (process.argv.includes('--exit-clean')) notifyJobCleanupComplete();
 		clearInterval(keepAlive);
