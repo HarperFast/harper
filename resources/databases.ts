@@ -2015,8 +2015,6 @@ export function openBranchDatabase(
 				.then(() => {
 					handleTeardownStarted = true;
 					closeRemainingHandles();
-					permanentlySuspendDatabaseCommits([rootStore]);
-					permanentlySuspendDerivedIndexActivation(rootStore);
 					commitSuspension.release();
 					releaseActivation();
 					closed = true;
@@ -2278,6 +2276,14 @@ function openDatabaseRoot(
 	// A configured path is a scan root, not an exact database path, so an unresolved alias can
 	// target any child store. Keep first-open fenced until the destructive operation completes.
 	if (!allowPreparedDrop && databaseConfig[databaseName]?.path) {
+		const blockedRestores = scanBlockedRestores(databasePath);
+		if (blockedRestores.length > 0) {
+			const error: any = new Error(
+				`Database '${databaseName}' shares a configured path with an ${blockedRestores[0][1]} restore of '${blockedRestores[0][0]}'; complete that restore before reopening it`
+			);
+			error.statusCode = 409;
+			throw error;
+		}
 		if (databaseDropPreparedWithin(databasePath)) throw new DatabaseClosingError(databaseName);
 		if (scanBlockedDatabaseDrops(databasePath).length > 0) {
 			const error: any = new Error(
@@ -2523,6 +2529,7 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 	const dropLocks: DatabaseDropLock[] = [];
 	let releaseDerivedIndexActivation: (() => void) | undefined;
 	let destructiveWorkStarted = false;
+	let dropCompleted = false;
 	try {
 		if (rootStores.size === 0) {
 			rootStores.add(openDatabaseRoot({ database: databaseName }, { allowPreparedDrop: true }));
@@ -2608,14 +2615,17 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 
 		await deleteBlobPaths(dropLocks.flatMap((lock) => lock.blobPaths));
 		while (dropLocks.length > 0) completeDatabaseDrop(dropLocks.shift()!);
+		dropCompleted = true;
 	} finally {
 		if (destructiveWorkStarted) {
 			for (const rootStore of rootStores) databasePaths.delete(rootStore as RootDatabase);
 			for (const rootStore of rootStores) {
 				if (databaseDropMarkerPresent(rootStore.path)) incompleteDatabaseDropStores.set(rootStore.path, rootStore);
 			}
-			permanentlySuspendDatabaseCommits(rootStores);
-			for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);
+			if (!dropCompleted) {
+				permanentlySuspendDatabaseCommits(rootStores);
+				for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);
+			}
 		}
 		releaseDerivedIndexActivation?.();
 		releaseDatabaseDropLocks(dropLocks, destructiveWorkStarted);
@@ -2785,8 +2795,7 @@ export async function completeDatabaseDropPreparation(
 		try {
 			await existing.task;
 		} catch {
-			// Preparation already reported this failure to the strict broadcaster. Keep admission
-			// fenced until the close attempt settles, then allow the database to reopen normally.
+			// Preparation already reported this failure to the strict broadcaster.
 		}
 		databaseDropPreparationTasks.delete(databaseName);
 	}
@@ -2882,7 +2891,7 @@ export async function closeDatabase(
 		databaseClosed = true;
 		return true;
 	} finally {
-		if (handleCloseStarted) {
+		if (handleCloseStarted && !databaseClosed) {
 			permanentlySuspendDatabaseCommits(rootStores);
 			for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);
 		} else if (!databaseClosed && !handleCloseStarted) {

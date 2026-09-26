@@ -83,7 +83,6 @@ export function handleDatabaseDropPreparationOwnerExit(ownerThreadId: number): v
 	for (const [rootPath, preparation] of databaseDropPreparations) {
 		if (preparation.ownerThreadId !== ownerThreadId) continue;
 		preparation.ownerExited = true;
-		// An owner exit cannot release a peer's fence while that peer is still closing handles.
 		if (preparation.preparationTask) {
 			const release = () => releaseDatabaseDropPreparation(rootPath, preparation.id);
 			preparation.preparationTask.then(release, release);

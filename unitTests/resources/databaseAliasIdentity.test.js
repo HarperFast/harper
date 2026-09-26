@@ -9,7 +9,14 @@ const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 const { dropSchema } = require('#src/dataLayer/schema');
 const { registryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
-const { abandonDatabaseDrop, beginDatabaseDrop, scanBlockedDatabaseDrops } = require('#src/dataLayer/restoreMarker');
+const {
+	abandonDatabaseDrop,
+	abandonRestore,
+	beginDatabaseDrop,
+	beginRestore,
+	completeRestore,
+	scanBlockedDatabaseDrops,
+} = require('#src/dataLayer/restoreMarker');
 const {
 	databases,
 	table,
@@ -321,6 +328,25 @@ describe('shared root-store database identity', function () {
 			await completeDatabaseDropPreparation('physicalalias', preparationId, rootPaths);
 		}
 		assert.ok(database({ database: 'latealias' }));
+	});
+
+	it('does not cold-open a configured alias while a physical child has an incomplete restore', async function () {
+		const storageRoot = join(testRoot, 'alias-incomplete-restore');
+		const physicalRoot = join(storageRoot, 'physicalalias');
+		await createPhysicalStore(storageRoot, 'physicalalias', 'RestoreBlocked');
+		abandonRestore(beginRestore(physicalRoot));
+		try {
+			env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, storageRoot);
+			env.setProperty(terms.CONFIG_PARAMS.DATABASES, { configuredalias: { path: storageRoot } });
+			resetDatabases();
+			assert.throws(
+				() => database({ database: 'configuredalias' }),
+				(error) => error.statusCode === 409 && /incomplete restore/.test(error.message)
+			);
+			assert.strictEqual(existsSync(join(storageRoot, 'configuredalias')), false);
+		} finally {
+			completeRestore(beginRestore(physicalRoot));
+		}
 	});
 
 	it('keeps every root blocked after a partial multi-root drop and completes on retry', async function () {

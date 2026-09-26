@@ -975,7 +975,11 @@ export function makeTable(options) {
 	}
 	// Teardown rejects every producer; source/replay paths only bypass derived-index lag shedding.
 	function assertDerivedIndexAdmission(options: any, transaction: any) {
-		if (databaseDropPrepared(tableRootPath) || databaseCommitsSuspended(tableRootStore))
+		if (
+			tableRootStore?.status === 'closed' ||
+			databaseDropPrepared(tableRootPath) ||
+			databaseCommitsSuspended(tableRootStore)
+		)
 			throw new DatabaseClosingError(databaseName, !transaction?.root && !transaction?.snapshotFree);
 		if (options?.isNotification || transaction?.sourceApply || transaction?.isReplay) return;
 		const reason = derivedIndexWriteRejection(auditStore, tableId);
@@ -1743,7 +1747,11 @@ export function makeTable(options) {
 			request: Context,
 			resourceOptions?: any
 		): Promise<TableResource<Record>> | TableResource<Record> {
-			if (databaseDropPrepared(tableRootPath) || databaseCommitsSuspended(tableRootStore))
+			if (
+				tableRootStore?.status === 'closed' ||
+				databaseDropPrepared(tableRootPath) ||
+				databaseCommitsSuspended(tableRootStore)
+			)
 				throw new DatabaseClosingError(
 					databaseName,
 					!(request as any)?.transaction?.root && !(request as any)?.transaction?.snapshotFree
