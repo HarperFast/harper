@@ -167,6 +167,7 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 							source: att.decide.source,
 							model: att.decide.model,
 							confidence: att.decide.confidence,
+							decision: att.decide.decision,
 							instructions: att.decide.instructions,
 							schema: att.decide.schema,
 						}

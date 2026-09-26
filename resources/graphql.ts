@@ -45,14 +45,14 @@ function coerceDirectiveValue(node: ValueNode): any {
 	}
 }
 
-const DECIDE_STRING_ARGS = new Set(['source', 'model', 'confidence', 'instructions']);
+const DECIDE_STRING_ARGS = new Set(['source', 'model', 'confidence', 'decision', 'instructions']);
 const DECIDE_INT_ARGS = new Set(['minimum', 'maximum']);
 
 /**
- * `@decide(source, values | minimum/maximum, model?, confidence?, instructions?)`: the attribute
+ * `@decide(source, values | minimum/maximum, model?, confidence?, decision?, instructions?)`: the attribute
  * type selects the decision leaf (String → the `values` enum, Boolean, Int → a bounded range),
  * and the leaf is validated here so a bad closed set fails the schema load, not the first write.
- * Field references (source, confidence) are checked once every field of the type is known.
+ * Field references (source, confidence, decision) are checked once every field of the type is known.
  */
 function parseDecideDirective(directive: DirectiveNode, property: any): DecideConfig {
 	const target = `@decide on "${property.name}"`;
@@ -60,6 +60,7 @@ function parseDecideDirective(directive: DirectiveNode, property: any): DecideCo
 		source?: string;
 		model?: string;
 		confidence?: string;
+		decision?: string;
 		instructions?: string;
 		values?: string[];
 		minimum?: number;
@@ -124,11 +125,15 @@ function parseDecideDirective(directive: DirectiveNode, property: any): DecideCo
 		throw new ClientError(`${target} cannot be declared non-null: a null source clears the attribute`, 400);
 	if (property.isPrimaryKey || property.computed)
 		throw new ClientError(`${target} cannot combine with @primaryKey or @computed`, 400);
-	const fields = new Set([property.name, args.source, args.confidence].filter(Boolean));
-	if (fields.size !== 2 + (args.confidence ? 1 : 0))
-		throw new ClientError(`${target}: the attribute, "source" and "confidence" must be different fields`, 400);
+	const fields = new Set([property.name, args.source, args.confidence, args.decision].filter(Boolean));
+	if (fields.size !== 2 + (args.confidence ? 1 : 0) + (args.decision ? 1 : 0))
+		throw new ClientError(
+			`${target}: the attribute, "source", "confidence" and "decision" must be different fields`,
+			400
+		);
 	const config: DecideConfig = { source: args.source, model: args.model ?? 'default', schema };
 	if (args.confidence) config.confidence = args.confidence;
+	if (args.decision) config.decision = args.decision;
 	if (args.instructions) config.instructions = args.instructions;
 	return config;
 }

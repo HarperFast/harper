@@ -32,7 +32,7 @@ describe('decideHook', () => {
 			const decideFn = fakeDecideCapturing();
 			__setDecideFnForTest(decideFn);
 			const decider = createDefaultDecider({ ...config, instructions: 'Route the ticket.' });
-			assert.deepEqual(await decider({ body: 'refund me' }), REFUND);
+			assert.deepEqual(await decider({ body: 'refund me' }), { ...REFUND, id: 'row' });
 			assert.equal(decideFn.calls.length, 1);
 			assert.equal(decideFn.calls[0].state, 'refund me');
 			assert.deepEqual(decideFn.calls[0].schema, { enum: ROUTES });
@@ -40,6 +40,7 @@ describe('decideHook', () => {
 				model: 'default',
 				instructions: 'Route the ticket.',
 				signal: undefined,
+				persist: false,
 			});
 		});
 
@@ -418,5 +419,113 @@ describe('shared hook helpers', () => {
 		assert.ok(!sanitized.message.includes('secret.example'));
 		const plain = sanitizedHookError('decider', 'decision', 'route', new Error('x'), false);
 		assert.equal(plain.name, 'Error');
+	});
+});
+
+describe('@decide decision id (#2852)', () => {
+	const linked = { ...config, decision: 'routeDecision' };
+	const linkedAttrs = [{ name: 'route', decide: linked }];
+	afterEach(() => __setDecideFnForTest(undefined));
+
+	it('records the decision only when the directive names a decision attribute', async () => {
+		const decideFn = fakeDecideCapturing();
+		__setDecideFnForTest(decideFn);
+		await createDefaultDecider(config)({ body: 'refund me' });
+		await createDefaultDecider(linked)({ body: 'refund me' });
+		assert.deepEqual(
+			decideFn.calls.map((call) => call.opts.persist),
+			[false, true]
+		);
+	});
+
+	it('stores the id with the pair, clears all three on a null source, and stores null for an override without an id', async () => {
+		const record = { body: 'refund me' };
+		await buildDecideBefore(record, {}, {}, linkedAttrs, {
+			route: async () => ({ value: 'refund', probability: 0.5, id: 'decision-1' }),
+		})();
+		assert.deepEqual(record, { body: 'refund me', route: 'refund', routeConfidence: 0.5, routeDecision: 'decision-1' });
+		const cleared = { body: null };
+		await buildDecideBefore(cleared, {}, {}, linkedAttrs, { route: async () => REFUND })();
+		assert.deepEqual(cleared, { body: null, route: null, routeConfidence: null, routeDecision: null });
+		const overridden = { body: 'refund me' };
+		await buildDecideBefore(overridden, {}, {}, linkedAttrs, { route: async () => REFUND })();
+		assert.equal(overridden.routeDecision, null);
+	});
+
+	it('lets a write carry the id only when it derives or clears it, or arrives by replication or replay', async () => {
+		const decider = { route: async () => ({ ...REFUND, id: 'fresh' }) };
+		const withSource = { body: 'refund me', routeDecision: 'forged' };
+		await buildDecideBefore(withSource, {}, {}, linkedAttrs, decider)();
+		assert.equal(withSource.routeDecision, 'fresh', 'the decision overwrites a supplied id');
+		const rejects = (record, context, options) =>
+			assert.rejects(
+				buildDecideBefore(record, context, options, linkedAttrs, decider)(),
+				(err) => err.statusCode === 400 && /"routeDecision" is written by @decide on "route"/.test(err.message)
+			);
+		await rejects({ tag: 'x', routeDecision: 'forged' }, {}, {});
+		await rejects({ body: 'refund me', routeDecision: 'forged' }, { replicateFrom: false }, {});
+		await rejects({ body: { __op__: 'add', value: 'x' }, routeDecision: 'forged' }, {}, {});
+		assert.equal(
+			buildDecideBefore({ routeDecision: 'peer' }, {}, { isNotification: true }, linkedAttrs, decider),
+			undefined
+		);
+		assert.equal(
+			buildDecideBefore({ routeDecision: 'peer' }, { alreadyLogged: true }, {}, linkedAttrs, decider),
+			undefined
+		);
+		assert.equal(buildDecideBefore({ tag: 'x' }, {}, {}, linkedAttrs, decider), undefined);
+	});
+
+	it('holds the decision attribute to the ownership rules of a derived field', () => {
+		const base = [
+			{ name: 'id', isPrimaryKey: true },
+			{ name: 'body', type: 'String' },
+			{ name: 'routeConfidence', type: 'Float' },
+		];
+		const route = (decision) => ({
+			name: 'route',
+			type: 'String',
+			decide: { source: 'body', confidence: 'routeConfidence', decision, schema: { enum: ROUTES } },
+		});
+		assert.doesNotThrow(() =>
+			assertDerivedFieldOwnership([...base, route('routeDecision'), { name: 'routeDecision', type: 'String' }])
+		);
+		const rejects = (attributes, pattern) => assert.throws(() => assertDerivedFieldOwnership(attributes), pattern);
+		rejects([...base, route('missing')], /unknown decision field "missing"/);
+		rejects(
+			[...base, route('routeDecision'), { name: 'routeDecision', type: 'Int' }],
+			/requires a String decision attribute/
+		);
+		rejects(
+			[...base, route('routeDecision'), { name: 'routeDecision', type: 'String', nullable: false }],
+			/cannot be declared non-null/
+		);
+		rejects(
+			[...base, route('routeDecision'), { name: 'routeDecision', type: 'String', computed: {} }],
+			/cannot be @primaryKey or @computed/
+		);
+		rejects([...base, route('toString'), { name: 'toString', type: 'String' }], /Object\.prototype key/);
+		rejects(
+			[
+				...base,
+				route('routeDecision'),
+				{ name: 'routeDecision', type: 'String' },
+				{
+					name: 'urgent',
+					type: 'Boolean',
+					decide: { source: 'body', decision: 'routeDecision', schema: { type: 'boolean' } },
+				},
+			],
+			/both write "routeDecision"/
+		);
+		rejects(
+			[
+				...base,
+				route('routeDecision'),
+				{ name: 'routeDecision', type: 'String' },
+				{ name: 'label', type: 'String', decide: { source: 'routeDecision', schema: { enum: ROUTES } } },
+			],
+			/derives from "routeDecision", which @decide on "route" writes/
+		);
 	});
 });

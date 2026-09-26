@@ -2,7 +2,7 @@ import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert';
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { startHarper, teardownHarper } from '@harperfast/integration-testing';
+import { startHarper, teardownHarper, killHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
 // @ts-expect-error utils/lifecycle.mjs has no type declarations; runtime resolves fine
@@ -25,6 +25,14 @@ const SCHEMA_GRAPHQL = [
 	'\tembedding: [Float] @embed(source: "body", model: "default")',
 	'}',
 	'',
+	'type LinkedTicket @table(database: "decidetest") @sealed @export {',
+	'\tid: ID! @primaryKey',
+	'\tbody: String',
+	'\troute: String @decide(source: "body", values: ["billing", "refund", "bug", "other"], confidence: "routeConfidence", decision: "routeDecision")',
+	'\trouteConfidence: Float',
+	'\trouteDecision: String',
+	'}',
+	'',
 	'type CachedTicket @table(database: "decidetest") @sealed @export {',
 	'\tid: ID! @primaryKey',
 	'\tbody: String',
@@ -35,7 +43,18 @@ const SCHEMA_GRAPHQL = [
 ].join('\n');
 
 const RESOURCES_JS = [
-	'const { CachedTicket } = databases.decidetest;',
+	"import { models } from 'harper';",
+	'const { CachedTicket, LinkedTicket } = databases.decidetest;',
+	'',
+	'export class TicketOutcome extends Resource {',
+	'\tstatic loadAsInstance = false;',
+	'\tasync post(_query, body) {',
+	'\t\tconst ticket = await LinkedTicket.get(body.id);',
+	'\t\tconst before = await models.getDecision(ticket.routeDecision);',
+	"\t\tconst after = await models.recordOutcome(ticket.routeDecision, { truth: { kind: 'value', value: body.truth } });",
+	'\t\treturn { id: ticket.routeDecision, route: ticket.route, decided: before.value, truth: after.outcome.truth };',
+	'\t}',
+	'}',
 	'',
 	'export class CachedTicketSource extends Resource {',
 	'\tasync get() {',
@@ -364,5 +383,80 @@ suite('@decide directive end-to-end with fake Ollama', (ctx: any) => {
 		const callsAfterFirst = fake.chatCallCount();
 		await client.reqRest(`/CachedTicket/${id}`).expect(200);
 		strictEqual(fake.chatCallCount(), callsAfterFirst, 'a cache hit does not decide again');
+	});
+
+	test('a linked directive stores its decision id, and an outcome can be recorded for the stored value (#2852)', async () => {
+		fake.reset();
+		await post('/LinkedTicket/', { id: 'l-1', body: 'please refund my order' }).expect((r: any) =>
+			ok([200, 201, 204].includes(r.status), `unexpected status ${r.status}: ${r.text}`)
+		);
+		const stored = (await client.reqRest('/LinkedTicket/l-1').expect(200)).body;
+		ok(/^[0-9a-f-]{36}$/.test(stored.routeDecision), `routeDecision: ${stored.routeDecision}`);
+		const outcome = await post('/TicketOutcome/', { id: 'l-1', truth: 'bug' }).expect((r: any) =>
+			strictEqual(r.status, 200, r.text)
+		);
+		strictEqual(outcome.body.id, stored.routeDecision);
+		strictEqual(
+			outcome.body.decided,
+			stored.route,
+			'the stored id resolves to the decision that produced the stored value'
+		);
+		strictEqual(outcome.body.truth.kind, 'value');
+		strictEqual(outcome.body.truth.value, 'bug');
+		await request(ctx.harper.httpURL)
+			.patch('/LinkedTicket/l-1')
+			.set(client.headers)
+			.send({ routeDecision: '00000000-0000-4000-8000-000000000000' })
+			.expect((r: any) => strictEqual(r.status, 400, r.text));
+	});
+
+	test('an unlinked directive records no decisions', async () => {
+		const res = await client
+			.req()
+			.send({
+				operation: 'search_by_value',
+				database: 'system',
+				table: 'hdb_model_decisions',
+				search_attribute: 'id',
+				search_value: '*',
+				get_attributes: ['id', 'value'],
+			})
+			.expect(200);
+		strictEqual(res.body.length, 1, `only the linked write is recorded: ${JSON.stringify(res.body)}`);
+	});
+
+	test('a read-only node serves uncached rows without calling a model or caching them (#2850)', async () => {
+		await killHarper(ctx);
+		await startHarper(ctx, {
+			config: {
+				logging: { auditLog: true },
+				storage: { readOnly: true },
+				models: {
+					embedding: { default: { backend: 'ollama', host: fake.host, model: 'fake-embed' } },
+					generative: { default: { backend: 'ollama', host: fake.host, model: 'fake-gen' } },
+					decision: { default: { backend: 'generative', samples: SAMPLES, concurrency: 2 } },
+				},
+			},
+			env: {},
+		});
+		client = createApiClient(ctx.harper);
+		fake.reset();
+		for (const id of ['ro-1', 'ro-1', 'ro-2']) {
+			const body = (await client.reqRest(`/CachedTicket/${id}`).expect(200)).body;
+			strictEqual(body.body, `bug report ${id}`);
+			strictEqual(body.route ?? null, null, 'the uncached read carries no decision');
+		}
+		strictEqual(fake.chatCallCount(), 0, 'no model call for a fill that cannot be stored');
+		const search = await client
+			.req()
+			.send({
+				operation: 'search_by_hash',
+				database: 'decidetest',
+				table: 'CachedTicket',
+				hash_values: ['ro-1'],
+				get_attributes: ['*'],
+			})
+			.expect(200);
+		strictEqual(search.body.length, 0, 'nothing is cached on a read-only node');
 	});
 });

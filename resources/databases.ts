@@ -137,6 +137,11 @@ import {
  * - storage.readOnly config setting
  */
 let _isReadOnlyMode: boolean | undefined;
+/** Test seam: fix the memoized read-only answer, or pass `undefined` to recompute it. */
+export function __setReadOnlyModeForTest(value: boolean | undefined): void {
+	_isReadOnlyMode = value;
+}
+
 export function isReadOnlyMode(): boolean {
 	if (_isReadOnlyMode !== undefined) return _isReadOnlyMode;
 	// Check environment variable

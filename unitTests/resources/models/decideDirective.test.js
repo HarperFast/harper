@@ -45,6 +45,34 @@ describe('@decide directive parsing', () => {
 		});
 	});
 
+	it('keeps a decision attribute that receives the decision id, and rejects one that is unknown, not String, or shared (#2852)', async () => {
+		await loadGQLSchema(`type DecideLinked @table {
+			id: ID @primaryKey
+			body: String
+			route: String @decide(source: "body", values: ["a", "b"], confidence: "routeConfidence", decision: "routeDecision")
+			routeConfidence: Float
+			routeDecision: String
+		}`);
+		const attr = tables.DecideLinked.attributes.find((a) => a.name === 'route');
+		assert.equal(attr.decide.decision, 'routeDecision');
+		await rejects(
+			`type DecideLinkedUnknown @table { id: ID @primaryKey body: String route: String @decide(source: "body", values: ["a", "b"], decision: "nope") }`,
+			/unknown decision field "nope"/
+		);
+		await rejects(
+			`type DecideLinkedInt @table { id: ID @primaryKey body: String route: String @decide(source: "body", values: ["a", "b"], decision: "n") n: Int }`,
+			/requires a String decision attribute/
+		);
+		await rejects(
+			`type DecideLinkedSame @table { id: ID @primaryKey body: String route: String @decide(source: "body", values: ["a", "b"], confidence: "c", decision: "c") c: Float }`,
+			/must be different fields/
+		);
+		await rejects(
+			`type DecideLinkedLiteral @table { id: ID @primaryKey body: String route: String @decide(source: "body", values: ["a", "b"], decision: 5) d: String }`,
+			/expects a string literal/
+		);
+	});
+
 	it('resolves a Boolean attribute to a boolean leaf', async () => {
 		await loadGQLSchema(`type DecideBool @table {
 			id: ID @primaryKey
