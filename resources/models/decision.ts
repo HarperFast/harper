@@ -324,15 +324,18 @@ const MAX_SCAN_STEPS_PER_CHAR = 256;
  * code fences or prose with braces and stray quotes of its own; the schema check on each candidate
  * is what tells the answer from the rest, so no span is preferred over another. String tracking
  * starts at each opening brace, so quotes in the prose before an object cannot hide it, while
- * braces inside the object's own strings are text. The scan fails loudly, never partially: past
- * `MAX_OBJECT_SPANS` balanced spans, or once the character steps exceed
- * `MAX_SCAN_STEPS_PER_CHAR` times the reply's length.
+ * braces inside the object's own strings are text and are never tried as starts once that object
+ * has parsed. The scan fails loudly, never partially: past `MAX_OBJECT_SPANS` balanced spans, or
+ * once the character steps exceed `MAX_SCAN_STEPS_PER_CHAR` times the reply's length.
  */
 function* jsonObjectSpans(text: string): Generator<Record<string, unknown>> {
 	const work = { left: MAX_SCAN_STEPS_PER_CHAR * text.length };
+	const stringRanges: Array<[number, number]> = [];
 	let spans = 0;
 	for (let start = text.indexOf('{'); start >= 0; start = text.indexOf('{', start + 1)) {
-		const end = balancedClose(text, start, work);
+		if (stringRanges.some(([from, to]) => start > from && start < to)) continue;
+		const strings: Array<[number, number]> = [];
+		const end = balancedClose(text, start, work, strings);
 		if (end < 0) continue;
 		if (++spans > MAX_OBJECT_SPANS) throw new Error('the sample has too many objects');
 		let parsed: unknown;
@@ -341,23 +344,30 @@ function* jsonObjectSpans(text: string): Generator<Record<string, unknown>> {
 		} catch {
 			continue;
 		}
+		stringRanges.push(...strings);
 		if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) yield parsed as Record<string, unknown>;
 	}
 }
 
-/** Index of the `}` that balances the `{` at `start`, reading JSON strings as text, or -1. */
-function balancedClose(text: string, start: number, work: { left: number }): number {
+/**
+ * Index of the `}` that balances the `{` at `start`, reading JSON strings as text, or -1. The
+ * `[from, to]` index range of every string read on the way is appended to `strings`.
+ */
+function balancedClose(text: string, start: number, work: { left: number }, strings: Array<[number, number]>): number {
 	let depth = 0;
-	let inString = false;
+	let stringStart = -1;
 	let escaped = false;
 	for (let i = start; i < text.length; i++) {
 		if (--work.left < 0) throw new Error('the sample is too long to scan');
 		const ch = text[i];
-		if (inString) {
+		if (stringStart >= 0) {
 			if (escaped) escaped = false;
 			else if (ch === '\\') escaped = true;
-			else if (ch === '"') inString = false;
-		} else if (ch === '"') inString = true;
+			else if (ch === '"') {
+				strings.push([stringStart, i]);
+				stringStart = -1;
+			}
+		} else if (ch === '"') stringStart = i;
 		else if (ch === '{') depth++;
 		else if (ch === '}' && --depth === 0) return i;
 	}

@@ -463,3 +463,14 @@ describe('parseDecisionSample limits', () => {
 		assert.throws(() => parseDecisionSample(QUEUE, `${'{ '.repeat(1200)}{"value":"bug"}`), /too long to scan/);
 	});
 });
+
+describe('parseDecisionSample with brace pairs inside a string (#2845)', () => {
+	it('never counts braces inside an object string toward the object cap', () => {
+		assert.strictEqual(parseDecisionSample(QUEUE, `{"value":"bug","note":"${'{}'.repeat(70)}"}`), 'bug');
+		assert.strictEqual(
+			parseDecisionSample(QUEUE, `Note: {"aside":"${'{}'.repeat(70)}"} then {"value":"refund"}`),
+			'refund'
+		);
+		assert.throws(() => parseDecisionSample(QUEUE, `${'{} '.repeat(70)}{"value":"bug"}`), /too many objects/);
+	});
+});
