@@ -229,7 +229,6 @@ describe('models.scoreChoices (internal, #2838)', () => {
 		setGenerative('q', scorer('q', [Object.assign(new Error('q rate limited'), { upstreamStatus: 429 })]));
 		setFallbackGroup('generative', 'p', ['q']);
 		await assert.rejects(models.scoreChoices('t', CHOICES, { model: 'p' }), /q rate limited/);
-		// The other way round the primary failure already leads.
 		clearRegistry();
 		clearRouting();
 		setGenerative('p', scorer('p', [new Error('p down')]));

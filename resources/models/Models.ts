@@ -340,10 +340,6 @@ export class Models implements ModelsContract {
 			);
 			throw resolved.error;
 		}
-		// Surface the first FAILURE when every candidate fails. A decline (`ChoiceScoringUnsupportedError`)
-		// is weaker news than a failure: the adapter reads a surfaced decline as permission to vote,
-		// which would hide a broken fallback behind an unsupported primary. Only when every candidate
-		// declined is the primary's decline what the caller gets.
 		let firstError: unknown = undefined;
 		let hasError = false;
 		let firstFailure: unknown = undefined;

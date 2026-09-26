@@ -87,7 +87,6 @@ export class TestBackend implements ModelBackend {
 		return { status: 'completed', output, usage: { promptTokens: text.length, latencyMs: 0 } };
 	}
 
-	/** One log-likelihood per choice, seeded by the input and the choice text so the same call always scores the same. */
 	async scoreChoices(
 		input: GenerateInput,
 		choices: readonly string[],

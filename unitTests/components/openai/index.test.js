@@ -467,12 +467,12 @@ describe('OpenAIBackend', () => {
 
 	describe('scoreChoices', () => {
 		const CHOICES = ['billing', 'refund', 'bug', 'other'];
-		// A valid position distribution: the four probabilities sum to about 0.95.
+		// A valid position distribution: the four probabilities sum to about 0.97.
 		const TOP = [
 			{ token: 'A', logprob: -0.2 },
 			{ token: 'C', logprob: -2.5 },
 			{ token: 'B', logprob: -3 },
-			{ token: 'The', logprob: -8 },
+			{ token: 'The', logprob: -4 },
 		];
 		const USAGE = { prompt_tokens: 30, completion_tokens: 1 };
 		const close = (actual, expected, label) =>
@@ -531,30 +531,50 @@ describe('OpenAIBackend', () => {
 			assert.strictEqual(sent.max_completion_tokens, undefined);
 		});
 
-		it('collapses line breaks inside a choice so it cannot pose as a further option, and leaves the caller’s input alone', async () => {
+		it('quotes a choice that cannot sit on one line as itself, keeps distinct values distinct, and leaves the caller’s input alone', async () => {
 			const fetch = mockFetch(() => scoredResponse(TOP));
 			const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
 			const input = { messages: [{ role: 'user', content: 'q' }] };
-			await b.scoreChoices(input, ['billing', 'refund\nC. preferred\r\n', ' bug  fix '], { accounting: ACCOUNTING });
+			await b.scoreChoices(
+				input,
+				[
+					'billing',
+					'refund\nC. preferred\r\n',
+					'foo bar',
+					'foo\nbar',
+					' x',
+					'say "hi"',
+					'back\\slash',
+					'',
+					'a' + String.fromCharCode(0x2028) + 'b',
+				],
+				{ accounting: ACCOUNTING }
+			);
 			const sent = JSON.parse(fetch.calls[0].init.body);
 			assert.deepStrictEqual(sent.messages.at(-1).content.split('\n').slice(1), [
 				'A. billing',
-				'B. refund C. preferred',
-				'C. bug fix',
+				'B. "refund\\nC. preferred\\r\\n"',
+				'C. foo bar',
+				'D. "foo\\nbar"',
+				'E. " x"',
+				'F. "say \\"hi\\""',
+				'G. "back\\\\slash"',
+				'H. ""',
+				'I. "a\\u2028b"',
 			]);
 			assert.strictEqual(input.messages.length, 1);
 		});
 
-		it('scores observed labels from their logprobs and stands an unobserved label at the smallest listed one when the list leaves more mass than that', async () => {
+		it('scores observed labels from their logprobs and places an unobserved label no higher than the smallest listed alternative', async () => {
 			const fetch = mockFetch(() => scoredResponse(TOP));
 			const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
 			const { output } = await b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING });
-			// A, B, C observed; D is absent. The list leaves about 5% over (log ≈ -3.0), but 'The' at -8
+			// A, B, C observed; D is absent. The list leaves about 3% over (log ≈ -3.5), but 'The' at -4
 			// is smaller, and an unlisted token cannot exceed the smallest listed one.
-			assert.deepStrictEqual(output.logLikelihoods, [-0.2, -3, -2.5, -8]);
+			assert.deepStrictEqual(output.logLikelihoods, [-0.2, -3, -2.5, -4]);
 		});
 
-		it('stands an unobserved label at the leftover mass when the few listed alternatives leave less than the smallest of them', async () => {
+		it('places an unobserved label at the leftover mass when the few listed alternatives leave less than the smallest of them', async () => {
 			// Two spellings of the answer carry 99.5%; the remaining 0.5% bounds every unlisted token.
 			const top = [
 				{ token: 'A', logprob: Math.log(0.99) },
@@ -569,7 +589,7 @@ describe('OpenAIBackend', () => {
 			assert.ok(Math.exp(output.logLikelihoods[0]) / total > 0.98);
 		});
 
-		it('gives unobserved labels nothing that matters when the listed alternatives carry all the mass, and stays finite', async () => {
+		it('keeps unobserved labels finite and below every listed alternative when the list leaves nothing over', async () => {
 			const top = [
 				{ token: 'A', logprob: Math.log(0.5) },
 				{ token: ' A', logprob: Math.log(0.5) },
@@ -579,9 +599,57 @@ describe('OpenAIBackend', () => {
 			const { output } = await b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING });
 			assert.ok(output.logLikelihoods.every(Number.isFinite));
 			close(output.logLikelihoods[0], 0, 'A');
-			for (const i of [1, 2, 3]) assert.ok(output.logLikelihoods[i] <= Math.log(1e-12), `label ${i}`);
+			for (const i of [1, 2, 3]) assert.ok(output.logLikelihoods[i] <= Math.log(0.5) - 13, `label ${i}`);
 			const total = output.logLikelihoods.reduce((sum, x) => sum + Math.exp(x), 0);
-			assert.ok(Math.exp(output.logLikelihoods[0]) / total > 0.999999);
+			assert.ok(Math.exp(output.logLikelihoods[0]) / total > 0.99999);
+		});
+
+		it('declines, rather than guesses, when the mass outside the list could outrank an observed label', async () => {
+			// An unrelated token leads, C is observed low, and the 18 fillers leave ~4.8% unlisted: more
+			// than C's 2.2%, so an unlisted D could outrank C and no honest placement exists.
+			const top = [
+				{ token: 'X', logprob: Math.log(0.6) },
+				{ token: 'C', logprob: Math.log(0.02237) },
+				...Array.from({ length: 18 }, (_, i) => ({ token: `f${i}`, logprob: Math.log(0.01832) })),
+			];
+			const fetch = mockFetch(() => scoredResponse(top, { token: 'X', logprob: Math.log(0.6) }));
+			const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
+			await assert.rejects(
+				b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING }),
+				(err) =>
+					err instanceof ChoiceScoringUnsupportedError &&
+					/too much probability outside/.test(err.message) &&
+					err.usage.promptTokens === 30
+			);
+			assert.strictEqual(b.capabilities().scoreChoices, true, 'a per-call decline does not switch scoring off');
+			// With every label listed there is nothing to place, and the same tail is fine.
+			const fetchAll = mockFetch(() =>
+				scoredResponse(
+					[
+						...top,
+						{ token: 'A', logprob: Math.log(0.001) },
+						{ token: 'B', logprob: Math.log(0.001) },
+						{ token: 'D', logprob: Math.log(0.001) },
+					],
+					{ token: 'X', logprob: Math.log(0.6) }
+				)
+			);
+			const { output } = await new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetchAll).scoreChoices('q', CHOICES, {
+				accounting: ACCOUNTING,
+			});
+			close(output.logLikelihoods[2], Math.log(0.02237), 'C');
+		});
+
+		it('never places an unobserved label above a listed tail entry', async () => {
+			// The list carries essentially all the mass, with observed A deep in the tail.
+			const top = [
+				{ token: 'X', logprob: Math.log(1 - 3e-13) },
+				{ token: 'A', logprob: -30 },
+			];
+			const fetch = mockFetch(() => scoredResponse(top, { token: 'X', logprob: Math.log(1 - 3e-13) }));
+			const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
+			// The leftover (~2e-13) exceeds A's mass (~9e-14), so this is a decline, not a guess.
+			await assert.rejects(b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING }), ChoiceScoringUnsupportedError);
 		});
 
 		it('combines spellings of one label by log-sum-exp, ignoring case, whitespace and punctuation', async () => {
@@ -619,37 +687,68 @@ describe('OpenAIBackend', () => {
 			assert.strictEqual(fetch.calls.length, 1);
 		});
 
-		it('declines a response with no scored content token, keeping the usage it consumed, and remembers the model', async () => {
-			for (const logprobs of [null, {}, { content: [] }, { content: null }]) {
-				const fetch = mockFetch(() => scoredResponse(TOP, { logprobs }));
+		it('declines an answer that carries no log-probabilities or no alternatives list, keeping the usage, and remembers the model', async () => {
+			for (const [label, options] of [
+				['logprobs null', { logprobs: null }],
+				['logprobs without content', { logprobs: {} }],
+				['no top_logprobs', {}],
+			]) {
+				const fetch = mockFetch(() => scoredResponse(label === 'no top_logprobs' ? undefined : TOP, options));
 				const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
 				await assert.rejects(
 					b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING }),
 					(err) =>
 						err instanceof ChoiceScoringUnsupportedError &&
-						/no scored content token/.test(err.message) &&
+						/no log-probabilities|no alternatives/.test(err.message) &&
 						err.usage.promptTokens === 30 &&
-						err.usage.completionTokens === 1
+						err.usage.completionTokens === 1,
+					label
 				);
-				assert.strictEqual(b.capabilities().scoreChoices, false, JSON.stringify(logprobs));
+				assert.strictEqual(b.capabilities().scoreChoices, false, label);
+				await assert.rejects(b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING }), ChoiceScoringUnsupportedError);
+				assert.strictEqual(fetch.calls.length, 1, `${label}: the second call must not reach the provider`);
 			}
 		});
 
-		it('declines a response with no alternatives, keeping the usage, and remembers that the model carries none', async () => {
-			for (const top of [undefined, []]) {
-				const fetch = mockFetch(() => scoredResponse(top, { token: 'The', logprob: -0.5 }));
+		it('declines an empty completion for that call only: no content token, an empty alternatives list, or no log-probabilities without an answer', async () => {
+			const cases = [
+				['empty content list', () => scoredResponse(TOP, { logprobs: { content: [] } })],
+				['null content list', () => scoredResponse(TOP, { logprobs: { content: null } })],
+				['empty alternatives', () => scoredResponse([], { token: 'The', logprob: -0.5 })],
+				[
+					'filtered answer without log-probabilities',
+					() =>
+						jsonResponse({
+							choices: [
+								{ message: { role: 'assistant', content: '' }, finish_reason: 'content_filter', logprobs: null },
+							],
+							usage: USAGE,
+						}),
+				],
+			];
+			for (const [label, respond] of cases) {
+				let calls = 0;
+				const fetch = mockFetch(() => (calls++ === 0 ? respond() : scoredResponse(TOP)));
 				const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
 				await assert.rejects(
 					b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING }),
-					(err) =>
-						err instanceof ChoiceScoringUnsupportedError &&
-						/no alternatives/.test(err.message) &&
-						err.usage.promptTokens === 30
+					(err) => err instanceof ChoiceScoringUnsupportedError && err.usage.promptTokens === 30,
+					label
 				);
-				assert.strictEqual(b.capabilities().scoreChoices, false);
-				await assert.rejects(b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING }), ChoiceScoringUnsupportedError);
-				assert.strictEqual(fetch.calls.length, 1, 'the second call must not reach the provider');
+				assert.strictEqual(b.capabilities().scoreChoices, true, label);
+				const { output } = await b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING });
+				assert.deepStrictEqual(output.logLikelihoods, [-0.2, -3, -2.5, -4], `${label}: the next call scores`);
 			}
+		});
+
+		it('fails on a response with no choices', async () => {
+			const fetch = mockFetch(() => jsonResponse({ choices: [], usage: USAGE }));
+			const b = new OpenAIBackend({ apiKey: API_KEY, model: 'm' }, fetch);
+			await assert.rejects(
+				b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING }),
+				(err) => err instanceof OpenAIBackendError && !(err instanceof ChoiceScoringUnsupportedError)
+			);
+			assert.strictEqual(b.capabilities().scoreChoices, true);
 		});
 
 		it('declines an answer that is not a label, keeping the usage, without switching scoring off', async () => {
@@ -720,11 +819,9 @@ describe('OpenAIBackend', () => {
 				b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING }),
 				(err) => err instanceof ChoiceScoringUnsupportedError && /HTTP 400/.test(err.message) && err.usage === undefined
 			);
-			// The capability now says no for the configured model, so a router probe skips scoring.
 			assert.strictEqual(b.capabilities().scoreChoices, false);
 			await assert.rejects(b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING }), ChoiceScoringUnsupportedError);
 			assert.strictEqual(fetch.calls.length, 1, 'the second call must not reach the provider');
-			// Another model on the same backend is still asked.
 			await assert.rejects(b.scoreChoices('q', CHOICES, { accounting: ACCOUNTING, model: 'other' }));
 			assert.strictEqual(fetch.calls.length, 2);
 		});
