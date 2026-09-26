@@ -336,6 +336,21 @@ describe('@decide decision id and read-only nodes (#2852, #2850)', () => {
 		assert.equal((await Linked.get('l1')).routeDecision, 'row');
 	});
 
+	it('a tracked-instance edit keeps the decision id and neither decides again nor is refused', async () => {
+		const Tracked = table({ table: 'DecideLinkedTracked', database: 'test', attributes: attributes('routeDecision') });
+		Tracked.updatedAttributes();
+		await Tracked.put('t1', { body: 'refund please' });
+		const calls = decideFn.calls.length;
+		await transaction(async () => {
+			const ticket = await Tracked.update('t1');
+			ticket.tag = 'triaged';
+		});
+		const stored = await Tracked.get('t1');
+		assert.equal(stored.tag, 'triaged');
+		assert.equal(stored.routeDecision, 'row');
+		assert.equal(decideFn.calls.length, calls);
+	});
+
 	it('on a read-only node a write calls no model', async () => {
 		const Plain = table({ table: 'DecideReadOnlyWrite', database: 'test', attributes: attributes('routeDecision') });
 		Plain.updatedAttributes();
