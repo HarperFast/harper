@@ -169,6 +169,23 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		});
 	});
 
+	it('settles immediately when recipient setup fails', async function () {
+		const worker = await startFixtureWorker('acknowledge');
+		started.push(worker);
+		const originalRef = worker.ref;
+		worker.ref = () => {
+			throw new Error('fixture ref failure');
+		};
+		try {
+			await assert.rejects(
+				broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000),
+				(error) => error instanceof AggregateError && /fixture ref failure/.test(error.errors[0]?.message)
+			);
+		} finally {
+			worker.ref = originalRef;
+		}
+	});
+
 	it('preserves a shared worker conflict on a strict broadcast', async function () {
 		const worker = await startFixtureWorker('reject-conflict');
 		started.push(worker);

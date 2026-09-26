@@ -228,11 +228,6 @@ function registerBackend(
 
 const warnedAuditIndexes = new Set<string>();
 
-/**
- * Register every post-commit custom index of a table with the shared derived-index runtime of its
- * database. Returns the release for the table's registrations, or undefined when it has none. Runs
- * on every worker; the runtime elects one owner per index.
- */
 export function attachDerivedIndexes(
 	Table: any,
 	options: { retryUnavailableReadiness?: boolean } = {}

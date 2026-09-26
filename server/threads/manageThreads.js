@@ -1174,6 +1174,7 @@ function broadcastWithAcknowledgement(
 					: undefined;
 				ackHandler.allowNormalJobExit = strict && includeJobWorkers && port.isJobWorker;
 				pending.add(ackHandler);
+				waitingCount++;
 				port.ref();
 				port.refCount = (port.refCount || 0) + 1;
 				awaitingResponses.set((message.requestId = requestId), ackHandler);
@@ -1184,7 +1185,6 @@ function broadcastWithAcknowledgement(
 						settleAcknowledgementsForClosedPort(port, port.jobCleanupComplete === true)
 					);
 				}
-				waitingCount++;
 				port.postMessage(message);
 			} catch (error) {
 				harperLogger.error(`Unable to send message to worker`, error);
@@ -1984,7 +1984,10 @@ function addPort(port, keepRef, isJobWorker) {
 			removePort(port, portThreadId);
 		})
 		.on('exit', () => {
-			removePort(port, portThreadId);
+			// Let a cleanup proof already queued by the worker reach this port before exit becomes
+			// authoritative. The next turn still fails closed if no proof arrives.
+			if (port.isJobWorker && !port.jobCleanupComplete) setImmediate(() => removePort(port, portThreadId));
+			else removePort(port, portThreadId);
 		});
 	if (keepRef) port.refCount = 100;
 	else port.unref();

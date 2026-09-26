@@ -2644,7 +2644,6 @@ export async function deleteRootBlobPathsForDB(store: RootDatabase): Promise<voi
 	if (paths) await deleteBlobPaths(paths);
 }
 
-/** Delete the exact blob roots pinned to a database handle or durable drop marker. */
 export async function deleteBlobPaths(paths: Iterable<string>): Promise<void> {
 	const failures = (await Promise.all([...new Set(paths)].map((path) => rimrafSteadily(path)))).flat();
 	if (failures.length > 0) throw new AggregateError(failures, 'Could not delete blob storage');

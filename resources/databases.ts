@@ -1092,24 +1092,29 @@ function databasesBlockedByRestore(databasePath: string): Set<string> {
 	return blocked;
 }
 
+const loggedDropMarkersByDirectory = new Map<string, Set<string>>();
+
 function databaseRootsBlockedByDrop(databasePath: string): {
 	rootPaths: Set<string>;
 	databaseNames: Set<string>;
 } {
 	const rootPaths = new Set<string>();
 	const databaseNames = new Set<string>();
+	const directoryKey = resolve(databasePath);
+	const previouslyLogged = loggedDropMarkersByDirectory.get(directoryKey) ?? new Set<string>();
+	const currentMarkers = new Set<string>();
 	for (const drop of scanBlockedDatabaseDrops(databasePath)) {
-		if (drop.databaseName)
-			logger.error(
-				`Incomplete drop of database '${drop.databaseName}' detected; not loading ${drop.rootPath} — retry drop_database to recover (${drop.markerPath})`
-			);
-		else
-			logger.error(
-				`Incomplete database drop with invalid marker metadata detected; not loading ${drop.rootPath} — inspect the root and marker before manual recovery (${drop.markerPath})`
-			);
+		currentMarkers.add(drop.markerPath);
+		const message = drop.databaseName
+			? `Incomplete drop of database '${drop.databaseName}' detected; not loading ${drop.rootPath} — retry drop_database to recover (${drop.markerPath})`
+			: `Incomplete database drop with invalid marker metadata detected; not loading ${drop.rootPath} — inspect the root and marker before manual recovery (${drop.markerPath})`;
+		if (previouslyLogged.has(drop.markerPath)) logger.trace(message);
+		else logger.error(message);
 		rootPaths.add(drop.rootPath);
 		if (drop.databaseName) databaseNames.add(drop.databaseName);
 	}
+	if (currentMarkers.size > 0) loggedDropMarkersByDirectory.set(directoryKey, currentMarkers);
+	else loggedDropMarkersByDirectory.delete(directoryKey);
 	return { rootPaths, databaseNames };
 }
 
@@ -2289,7 +2294,7 @@ function openDatabaseRoot(
 		? join(databasePath, tablePath ? tableName : databaseName)
 		: join(databasePath, `${tablePath ? tableName : databaseName}.mdb`);
 	if (!allowPreparedDrop && databaseRootUnavailable(path)) throw new DatabaseClosingError(databaseName);
-	if (!allowPreparedDrop) throwIfBlockedByRestore(path, databaseName);
+	throwIfBlockedByRestore(path, databaseName);
 	ensureDB(databaseName);
 	definedDatabase = definedDatabases.get(databaseName);
 	if (useRocksdb) {
@@ -2585,8 +2590,6 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 		}
 
 		for (const rootStore of rootStores) {
-			// awaited: retirement stops the loop admitting work, the barrier is what says the pass that was
-			// already running has released the stores this is about to close and unlink
 			await rootStore.auditStore?.stopAuditCleanup?.();
 			removeStorageReclamation(rootStore.path);
 			if (rootStore.status === 'open') {
@@ -2619,16 +2622,6 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 	}
 }
 
-/**
- * Close a database's store handles on the current thread and unregister it, without
- * touching its files. Used by the restore_backup flow: every thread must release its handles so
- * `backups.restore()` can purge and rewrite the (fully closed) database directory. A subsequent
- * `resetDatabases()`/`getDatabases()` rescan reloads it (or skips it while a restore is in
- * progress, per the restore marker checks in the scan).
- *
- * An LMDB database is closed by closing its environment, which releases every dbi in it, so every
- * other database alias sharing that environment is closed with it.
- */
 const databaseDropPreparationTasks = new Map<string, { id: string; task: Promise<void>; rootPaths: string[] }>();
 
 function addPhysicalDatabaseRoots(directory: string, rootPaths: Set<string>): void {
@@ -2846,6 +2839,12 @@ async function closeDatabaseStores(
 	return closeFailures;
 }
 
+/**
+ * Close a database's store handles on this thread and unregister every alias sharing those roots,
+ * without touching files. Restore uses this before rewriting the closed directory. With
+ * `requireClosed`, any handle failure rejects and leaves the affected wrappers permanently fenced
+ * for an explicit retry. Closing an LMDB environment closes every DBI and alias that shares it.
+ */
 export async function closeDatabase(
 	databaseName: string,
 	{ requireClosed = false }: { requireClosed?: boolean } = {}
