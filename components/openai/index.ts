@@ -442,13 +442,14 @@ const UNLISTED_MARGIN = Math.log(1e6);
  * letter (`A`, ` A`, `a.`) combine by log-sum-exp, so a label's score is the mass of its listed
  * spellings; spellings outside the list are unknown, bounded together by the mass the list leaves
  * over. A label with no listed spelling is placed only when that leftover is smaller than the
- * leading observed label's mass, so the leading label truly leads whatever the unlisted spellings
- * carried; otherwise the call is declined rather than guessed. Unlisted labels then tie at a floor
- * no higher than the smallest listed alternative or the leftover, finite even when the list leaves
- * nothing over, so the order among low-mass labels is an estimate while the leader is not. No
- * label at all means the model was not answering with a letter, and the call is declined. A
- * malformed entry is a bad response, not a decline. Messages never quote tokens, which are
- * upstream text.
+ * leading observed label's mass, so a wholly unlisted label can never be the chosen value;
+ * otherwise the call is declined rather than guessed. Unlisted labels then tie at a floor no
+ * higher than the smallest listed alternative or the leftover, finite even when the list leaves
+ * nothing over. Every placed score is still an estimate: an observed label's own unlisted
+ * spellings can add up to the leftover to it, so two observed labels closer than that may be
+ * ordered wrongly. No label at all means the model was not answering with a letter, and the call
+ * is declined. A malformed entry is a bad response, not a decline. Messages never quote tokens,
+ * which are upstream text.
  *
  * `unsupported(reason, structural)`: `structural` marks a response with no log-probability field
  * at all, which the caller may remember for the model; a missing or empty alternatives list is
