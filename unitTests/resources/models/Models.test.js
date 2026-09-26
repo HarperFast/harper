@@ -640,19 +640,13 @@ describe('required capabilities are checked on the candidate about to be invoked
 		assert.strictEqual(calls, 0);
 	});
 
-	it('applies to decide and to generateStream, which rejects when the stream is first pulled', async () => {
+	it('applies to decide and to generateStream, which throws before the iterable is returned', async () => {
 		const noDecide = defineBackend({ name: 'no-decide', generate: async () => genOut('x') });
 		registerRouter({ route: () => [noDecide] });
 		await assert.rejects(models.decide('x', { enum: ['a', 'b'] }), ModelCapabilityError);
 		assert.strictEqual(writer.records.at(-1).error_code, 'capability_unsupported');
-		await assert.rejects(
-			(async () => {
-				for await (const _chunk of models.generateStream('hi', { requires: ['structuredOutput'] })) {
-					// never reached
-				}
-			})(),
-			ModelCapabilityError
-		);
+		// Synchronous: a stream over HTTP must be a 400, not an error frame inside a 200.
+		assert.throws(() => models.generateStream('hi', { requires: ['structuredOutput'] }), ModelCapabilityError);
 		assert.strictEqual(writer.records.at(-1).method, 'generateStream');
 		assert.strictEqual(writer.records.at(-1).error_code, 'capability_unsupported');
 	});

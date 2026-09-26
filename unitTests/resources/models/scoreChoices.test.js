@@ -35,6 +35,7 @@ function scorer(name, outputs) {
 	return defineBackend({
 		name,
 		generate,
+		structuredOutput: true,
 		scoreChoices: async () => {
 			const next = outputs[Math.min(i++, outputs.length - 1)];
 			if (next instanceof Error) throw next;
@@ -94,6 +95,7 @@ describe('models.scoreChoices (internal, #2838)', () => {
 			defineBackend({
 				name: 'spy',
 				generate,
+				structuredOutput: true,
 				scoreChoices: async (input, choices, opts) => {
 					seen = { input, choices, opts };
 					return { status: 'completed', output: { logLikelihoods: choices.map(() => 0) } };
@@ -110,7 +112,7 @@ describe('models.scoreChoices (internal, #2838)', () => {
 	});
 
 	it('throws ModelCapabilityError for a generative backend without the hook, recording capability_unsupported', async () => {
-		setGenerative('plain', defineBackend({ name: 'plain', generate }));
+		setGenerative('plain', defineBackend({ name: 'plain', generate, structuredOutput: true }));
 		await assert.rejects(models.scoreChoices('t', CHOICES, { model: 'plain' }), ModelCapabilityError);
 		const [row] = writer.records;
 		assert.strictEqual(row.method, 'scoreChoices');
@@ -238,7 +240,7 @@ describe('models.scoreChoices (internal, #2838)', () => {
 
 	it('only routes to candidates that score: a fallback without the hook is skipped', async () => {
 		setGenerative('p', scorer('p', [new ChoiceScoringUnsupportedError('p declined')]));
-		setGenerative('plain', defineBackend({ name: 'plain', generate }));
+		setGenerative('plain', defineBackend({ name: 'plain', generate, structuredOutput: true }));
 		setFallbackGroup('generative', 'p', ['plain']);
 		await assert.rejects(models.scoreChoices('t', CHOICES, { model: 'p' }), /p declined/);
 		assert.deepStrictEqual(

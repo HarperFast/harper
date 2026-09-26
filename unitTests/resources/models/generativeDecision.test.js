@@ -556,6 +556,7 @@ describe('generative decision adapter — a declined call’s tokens are billed 
 		let calls = 0;
 		return defineBackend({
 			name: 'declines',
+			structuredOutput: true,
 			generate: async () => ({
 				status: 'completed',
 				output: { content: '{"p":true,"q":false,"r":true}', finishReason: 'stop' },
@@ -865,17 +866,20 @@ describe('the voting backend requires a schema-enforcing generative candidate (#
 
 	it('passes requires: [structuredOutput] on every sample by default and omits it when the entry opts out', async () => {
 		const s = scriptedGenerate([{ value: 'bug' }]);
-		await createGenerativeDecisionBackend({ samples: 2 }, s.generate).decide('x', QUEUE, { accounting });
+		await createGenerativeDecisionBackend({ samples: 2 }, { generate: s.generate, canScore: () => false }).decide(
+			'x',
+			QUEUE,
+			{ accounting }
+		);
 		assert.deepStrictEqual(
 			s.calls.map(({ opts }) => opts.requires),
 			[['structuredOutput'], ['structuredOutput']]
 		);
 		const s2 = scriptedGenerate([{ value: 'bug' }]);
-		await createGenerativeDecisionBackend({ samples: 1, requireStructuredOutput: false }, s2.generate).decide(
-			'x',
-			QUEUE,
-			{ accounting }
-		);
+		await createGenerativeDecisionBackend(
+			{ samples: 1, requireStructuredOutput: false },
+			{ generate: s2.generate, canScore: () => false }
+		).decide('x', QUEUE, { accounting });
 		assert.strictEqual(s2.calls[0].opts.requires, undefined);
 	});
 

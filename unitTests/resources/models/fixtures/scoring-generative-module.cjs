@@ -18,6 +18,7 @@ module.exports = function register({ logicalName, kind, config }) {
 		logicalName,
 		defineBackend({
 			name: `module:scoring-${logicalName}`,
+			structuredOutput: true,
 			generate: async () => {
 				calls.push({ method: 'generate' });
 				return {

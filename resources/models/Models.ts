@@ -260,6 +260,14 @@ export class Models implements ModelsContract {
 		}
 		// First candidate only — mid-stream fallback would mean replaying already-yielded chunks.
 		const backend = resolved.candidates[0];
+		// Checked here, before the iterable exists, so an incapable first candidate from a custom router
+		// is a 400 rather than an error frame inside a 200; #wrapStream checks again on the first next().
+		try {
+			assertCapabilities(backend, resolved.requires);
+		} catch (err) {
+			this.#recordFailure(backend, 'generateStream', opts.model, accounting, opts, startedAt, err);
+			throw err;
+		}
 		const backendOpts = toBackendOpts(opts, signal, accounting);
 		return this.#wrapStream(backend, input, backendOpts, opts, accounting, startedAt, resolved.requires);
 	}
@@ -407,6 +415,7 @@ export class Models implements ModelsContract {
 			signal?.throwIfAborted();
 			const attemptStart = performance.now();
 			try {
+				assertCapabilities(backend, resolved.requires);
 				// A router may hand back a backend whose capabilities claim more than it implements;
 				// that is this backend's contract failure, recorded against it, not a crash.
 				if (typeof backend.scoreChoices !== 'function')
