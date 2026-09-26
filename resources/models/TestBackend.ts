@@ -1,6 +1,7 @@
 import { allowedValues, isObjectSchema } from './decision.ts';
 import type {
 	BackendOpts,
+	ChoiceScores,
 	DecideInput,
 	DecideOpts,
 	DecisionLeaf,
@@ -15,6 +16,7 @@ import type {
 	ModelBackend,
 	ModelCallResult,
 	ModelCapabilities,
+	ScoreChoicesOpts,
 } from './types.ts';
 
 /**
@@ -36,6 +38,7 @@ export class TestBackend implements ModelBackend {
 			adapters: false,
 			decide: true,
 			calibrated: false,
+			scoreChoices: true,
 		};
 	}
 
@@ -82,6 +85,17 @@ export class TestBackend implements ModelBackend {
 				}
 			: { distribution: deterministicDistribution(text, schema) };
 		return { status: 'completed', output, usage: { promptTokens: text.length, latencyMs: 0 } };
+	}
+
+	/** One log-likelihood per choice, seeded by the input and the choice text so the same call always scores the same. */
+	async scoreChoices(
+		input: GenerateInput,
+		choices: readonly string[],
+		_opts: BackendOpts<ScoreChoicesOpts>
+	): Promise<ModelCallResult<ChoiceScores>> {
+		const text = stringFromInput(input);
+		const logLikelihoods = choices.map((choice) => deterministicVector(`${text}\n${choice}`, 1)[0] * 4);
+		return { status: 'completed', output: { logLikelihoods }, usage: { promptTokens: text.length, latencyMs: 0 } };
 	}
 }
 

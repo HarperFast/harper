@@ -238,6 +238,7 @@ describe('decision backends in the registry', () => {
 			stream: false,
 			tools: false,
 			adapters: false,
+			scoreChoices: false,
 			decide: true,
 			calibrated: true,
 		});

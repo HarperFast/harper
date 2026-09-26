@@ -33,6 +33,7 @@ describe('defineBackend', () => {
 			adapters: false,
 			decide: false,
 			calibrated: false,
+			scoreChoices: false,
 		});
 		assert.strictEqual(typeof b.embed, 'function');
 		assert.strictEqual(b.generate, undefined);
@@ -53,6 +54,7 @@ describe('defineBackend', () => {
 			adapters: false,
 			decide: false,
 			calibrated: false,
+			scoreChoices: false,
 		});
 	});
 
@@ -89,6 +91,24 @@ describe('defineBackend', () => {
 		const b = defineBackend({ name: 'mixed', embed: embedFn, generate: 'oops' });
 		assert.strictEqual(b.generate, undefined);
 		assert.strictEqual(b.capabilities().generate, false);
+	});
+
+	it('derives scoreChoices from the hook, and accepts a scoring-only backend (#2838)', () => {
+		const scoreChoices = async (_input, choices) => ({
+			status: 'completed',
+			output: { logLikelihoods: choices.map(() => 0) },
+		});
+		const b = defineBackend({
+			name: 'local:score',
+			generate: async () => ({ status: 'completed', output: { content: '', finishReason: 'stop' } }),
+			scoreChoices,
+		});
+		assert.strictEqual(b.capabilities().scoreChoices, true);
+		assert.strictEqual(b.scoreChoices, scoreChoices);
+		assert.strictEqual(defineBackend({ name: 'local:only', scoreChoices }).capabilities().scoreChoices, true);
+		const plain = defineBackend({ name: 'local:plain', embed: embedFn, scoreChoices: 'oops' });
+		assert.strictEqual(plain.capabilities().scoreChoices, false);
+		assert.strictEqual(plain.scoreChoices, undefined);
 	});
 
 	it('synthesizes generate() for a stream-only backend (capabilities.generate = true)', () => {

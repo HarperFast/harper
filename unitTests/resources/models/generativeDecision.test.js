@@ -19,9 +19,62 @@ const {
 } = require('#src/resources/models/backendRegistry');
 const { clearRouting, getRouter } = require('#src/resources/models/routing');
 const { models } = require('#src/resources/models/Models');
+const { ChoiceScoringUnsupportedError } = require('#src/resources/models/backendHelpers');
 
 const QUEUE = { enum: ['billing', 'refund', 'bug', 'other'], description: 'Which queue?' };
 const accounting = {};
+const close = (actual, expected, label) =>
+	assert.ok(Math.abs(actual - expected) < 1e-9, `${label ?? ''} ${actual} ≠ ${expected}`);
+
+/** A fake `models.scoreChoices` that answers log-likelihood arrays from a script, records every call, and honors its signal. */
+function scriptedScore(answers, { delayMs = 0 } = {}) {
+	const calls = [];
+	let i = 0;
+	let inFlight = 0;
+	let maxInFlight = 0;
+	const score = async (input, choices, opts) => {
+		calls.push({ input, choices, opts });
+		inFlight++;
+		maxInFlight = Math.max(maxInFlight, inFlight);
+		try {
+			const answer = answers[i++ % answers.length];
+			if (delayMs) {
+				await new Promise((resolve, reject) => {
+					const timer = setTimeout(resolve, delayMs);
+					opts.signal?.addEventListener(
+						'abort',
+						() => {
+							clearTimeout(timer);
+							reject(opts.signal.reason ?? new Error('aborted'));
+						},
+						{ once: true }
+					);
+				});
+			}
+			if (answer instanceof Error) throw answer;
+			return { logLikelihoods: typeof answer === 'function' ? answer(choices) : answer };
+		} finally {
+			inFlight--;
+		}
+	};
+	return {
+		score,
+		calls,
+		get maxInFlight() {
+			return maxInFlight;
+		},
+		get inFlight() {
+			return inFlight;
+		},
+	};
+}
+
+const neverScore = async () => {
+	throw new Error('scoreChoices must not be called');
+};
+const neverGenerate = async () => {
+	throw new Error('generate must not be called');
+};
 
 /** A fake `models.generate` that answers from a script, records every call, and honors its signal. */
 function scriptedGenerate(answers, { delayMs = 0 } = {}) {
@@ -72,7 +125,7 @@ describe('generative decision adapter', () => {
 			{ value: 'refund' },
 			{ value: 'billing' },
 		]);
-		const backend = createGenerativeDecisionBackend({ samples: 5 }, s.generate);
+		const backend = createGenerativeDecisionBackend({ samples: 5 }, { generate: s.generate });
 		assert.strictEqual(backend.name, 'generative');
 		assert.deepStrictEqual(backend.capabilities(), {
 			embed: false,
@@ -97,7 +150,10 @@ describe('generative decision adapter', () => {
 
 	it('passes the strict response schema, the generative logical name, temperature and a signal to every sample', async () => {
 		const s = scriptedGenerate([{ value: true }]);
-		const backend = createGenerativeDecisionBackend({ generative: 'fast', samples: 2, temperature: 0.7 }, s.generate);
+		const backend = createGenerativeDecisionBackend(
+			{ generative: 'fast', samples: 2, temperature: 0.7 },
+			{ generate: s.generate }
+		);
 		await backend.decide(
 			{ text: 'urgent!' },
 			{ type: 'boolean', description: 'Is it urgent?' },
@@ -132,7 +188,7 @@ describe('generative decision adapter', () => {
 			{ queue: 'bug', urgent: false },
 			{ queue: 'refund', urgent: true },
 		]);
-		const backend = createGenerativeDecisionBackend({ samples: 3 }, s.generate);
+		const backend = createGenerativeDecisionBackend({ samples: 3 }, { generate: s.generate });
 		const schema = { type: 'object', properties: { queue: QUEUE, urgent: { type: 'boolean' } } };
 		const { output } = await backend.decide('x', schema, { accounting });
 		assert.deepStrictEqual(output.fields.urgent.distribution, [
@@ -150,7 +206,7 @@ describe('generative decision adapter', () => {
 		const s = scriptedGenerate([{ value: 'spam' }, { value: 'bug' }, { value: 'bug' }, { value: 'bug' }], {
 			delayMs: 20,
 		});
-		const backend = createGenerativeDecisionBackend({ samples: 4, concurrency: 4 }, s.generate);
+		const backend = createGenerativeDecisionBackend({ samples: 4, concurrency: 4 }, { generate: s.generate });
 		await assert.rejects(
 			backend.decide('x', QUEUE, { accounting }),
 			(err) => err instanceof GenerativeDecisionError && /outside the decision schema/.test(err.message)
@@ -164,14 +220,14 @@ describe('generative decision adapter', () => {
 
 	it('propagates a generate failure and starts no further samples', async () => {
 		const s = scriptedGenerate([new Error('provider down')]);
-		const backend = createGenerativeDecisionBackend({ samples: 5, concurrency: 1 }, s.generate);
+		const backend = createGenerativeDecisionBackend({ samples: 5, concurrency: 1 }, { generate: s.generate });
 		await assert.rejects(backend.decide('x', QUEUE, { accounting }), /provider down/);
 		assert.strictEqual(s.calls.length, 1);
 	});
 
 	it('honors the caller signal: an already-aborted signal rejects with the abort and calls nothing', async () => {
 		const s = scriptedGenerate([{ value: 'bug' }]);
-		const backend = createGenerativeDecisionBackend({ samples: 3 }, s.generate);
+		const backend = createGenerativeDecisionBackend({ samples: 3 }, { generate: s.generate });
 		const controller = new AbortController();
 		controller.abort();
 		await assert.rejects(
@@ -183,24 +239,28 @@ describe('generative decision adapter', () => {
 
 	it('bounds in-flight samples by concurrency and clamps samples/concurrency to the ceiling', async () => {
 		const s = scriptedGenerate([{ value: 'bug' }], { delayMs: 5 });
-		await createGenerativeDecisionBackend({ samples: 6, concurrency: 2 }, s.generate).decide('x', QUEUE, {
+		await createGenerativeDecisionBackend({ samples: 6, concurrency: 2 }, { generate: s.generate }).decide('x', QUEUE, {
 			accounting,
 		});
 		assert.strictEqual(s.calls.length, 6);
 		assert.strictEqual(s.maxInFlight, 2);
 		const s2 = scriptedGenerate([{ value: 'bug' }]);
-		await createGenerativeDecisionBackend({ samples: 999, concurrency: 999 }, s2.generate).decide('x', QUEUE, {
-			accounting,
-		});
+		await createGenerativeDecisionBackend({ samples: 999, concurrency: 999 }, { generate: s2.generate }).decide(
+			'x',
+			QUEUE,
+			{
+				accounting,
+			}
+		);
 		assert.strictEqual(s2.calls.length, MAX_SAMPLES);
 		const s3 = scriptedGenerate([{ value: 'bug' }]);
-		await createGenerativeDecisionBackend({ samples: 0 }, s3.generate).decide('x', QUEUE, { accounting });
+		await createGenerativeDecisionBackend({ samples: 0 }, { generate: s3.generate }).decide('x', QUEUE, { accounting });
 		assert.strictEqual(s3.calls.length, DEFAULT_SAMPLES);
 	});
 
 	it('applies requestTimeoutMs as a budget for the whole decision', async () => {
 		const s = scriptedGenerate([{ value: 'bug' }], { delayMs: 200 });
-		const backend = createGenerativeDecisionBackend({ samples: 2, requestTimeoutMs: 20 }, s.generate);
+		const backend = createGenerativeDecisionBackend({ samples: 2, requestTimeoutMs: 20 }, { generate: s.generate });
 		await assert.rejects(
 			backend.decide('x', QUEUE, { accounting }),
 			(err) => err.name === 'TimeoutError' || err.name === 'AbortError'
@@ -211,6 +271,198 @@ describe('generative decision adapter', () => {
 		assert.throws(
 			() => registerGenerativeDecisionBackend({ logicalName: 'x', kind: 'generative', config: {} }),
 			GenerativeDecisionError
+		);
+	});
+});
+
+describe('generative decision adapter — likelihood scoring (#2838)', () => {
+	const canScore = () => true;
+
+	it('scores every allowed value in one call and normalizes the log-likelihoods, with no usage', async () => {
+		const s = scriptedScore([[Math.log(0.6), Math.log(0.1), Math.log(0.2), Math.log(0.1)]]);
+		const backend = createGenerativeDecisionBackend(
+			{ generative: 'fast', scoring: 'score' },
+			{ generate: neverGenerate, score: s.score, canScore }
+		);
+		const result = await backend.decide('ticket', QUEUE, { accounting, instructions: 'Be strict.' });
+		assert.strictEqual(result.status, 'completed');
+		assert.strictEqual(result.usage, undefined);
+		const { distribution } = result.output;
+		assert.deepStrictEqual(
+			distribution.map((o) => o.value),
+			QUEUE.enum
+		);
+		close(distribution[0].probability, 0.6, 'billing');
+		close(distribution[1].probability, 0.1, 'refund');
+		close(distribution[2].probability, 0.2, 'bug');
+		close(distribution[3].probability, 0.1, 'other');
+		assert.strictEqual(s.calls.length, 1);
+		const [{ input, choices, opts }] = s.calls;
+		assert.deepStrictEqual(choices, QUEUE.enum);
+		assert.strictEqual(opts.model, 'fast');
+		assert.ok(opts.signal instanceof AbortSignal);
+		assert.strictEqual(typeof input.system, 'string');
+		assert.ok(!input.system.includes('JSON'), 'the scoring prompt does not ask for JSON');
+		const content = input.messages[0].content;
+		assert.ok(content.includes('Be strict.'));
+		assert.ok(content.includes('Which queue?'));
+		assert.ok(content.includes('Decide "value"'));
+		assert.ok(content.includes('ticket'));
+	});
+
+	it('stringifies boolean and integer choices and maps the scores back to typed values', async () => {
+		const s = scriptedScore([(choices) => choices.map((_, i) => i)]);
+		const backend = createGenerativeDecisionBackend(
+			{ scoring: 'score' },
+			{ generate: neverGenerate, score: s.score, canScore }
+		);
+		const bool = await backend.decide('x', { type: 'boolean' }, { accounting });
+		assert.deepStrictEqual(s.calls[0].choices, ['false', 'true']);
+		assert.deepStrictEqual(
+			bool.output.distribution.map((o) => o.value),
+			[false, true]
+		);
+		assert.ok(bool.output.distribution[1].probability > bool.output.distribution[0].probability);
+		const range = await backend.decide('x', { type: 'integer', minimum: 1, maximum: 3 }, { accounting });
+		assert.deepStrictEqual(s.calls[1].choices, ['1', '2', '3']);
+		assert.deepStrictEqual(
+			range.output.distribution.map((o) => o.value),
+			[1, 2, 3]
+		);
+	});
+
+	it('scores an object schema one field per call under the concurrency bound, with per-field marginals', async () => {
+		const properties = Object.fromEntries(Array.from({ length: 32 }, (_, i) => [`f${i}`, { type: 'boolean' }]));
+		const s = scriptedScore([[0, 1]], { delayMs: 2 });
+		const backend = createGenerativeDecisionBackend(
+			{ scoring: 'score', concurrency: 3 },
+			{ generate: neverGenerate, score: s.score, canScore }
+		);
+		const result = await backend.decide({ a: 1 }, { type: 'object', properties }, { accounting });
+		assert.strictEqual(s.calls.length, 32);
+		assert.ok(s.maxInFlight <= 3, `max in flight ${s.maxInFlight}`);
+		assert.deepStrictEqual(Object.keys(result.output.fields), Object.keys(properties));
+		for (const [name, field] of Object.entries(result.output.fields)) {
+			assert.deepStrictEqual(
+				field.distribution.map((o) => o.value),
+				[false, true]
+			);
+			close(field.distribution[1].probability, Math.exp(1) / (1 + Math.exp(1)), name);
+		}
+		// Each call names only its own field.
+		const first = s.calls.find((c) => c.input.messages[0].content.includes('Decide "f7"'));
+		assert.ok(first);
+		assert.ok(!first.input.messages[0].content.includes('"f8"'));
+	});
+
+	it('auto votes without a scoring attempt when the generative name cannot score', async () => {
+		const g = scriptedGenerate([{ value: 'bug' }]);
+		const backend = createGenerativeDecisionBackend(
+			{ samples: 2 },
+			{ generate: g.generate, score: neverScore, canScore: () => false }
+		);
+		const result = await backend.decide('x', QUEUE, { accounting });
+		assert.strictEqual(result.output.distribution[2].probability, 1);
+		assert.strictEqual(g.calls.length, 2);
+	});
+
+	it('auto falls back to voting when the backend declines a call, discarding any field already scored', async () => {
+		const schema = { type: 'object', properties: { p: { type: 'boolean' }, q: { type: 'boolean' } } };
+		const s = scriptedScore([[0, 1], new ChoiceScoringUnsupportedError('declined')]);
+		const g = scriptedGenerate([{ p: true, q: false }]);
+		const backend = createGenerativeDecisionBackend(
+			{ samples: 3, concurrency: 1 },
+			{ generate: g.generate, score: s.score, canScore }
+		);
+		const result = await backend.decide('x', schema, { accounting });
+		assert.strictEqual(s.calls.length, 2);
+		assert.strictEqual(g.calls.length, 3);
+		assert.deepStrictEqual(result.output.fields.p.distribution, [
+			{ value: false, probability: 0 },
+			{ value: true, probability: 1 },
+		]);
+		assert.deepStrictEqual(result.output.fields.q.distribution, [
+			{ value: false, probability: 1 },
+			{ value: true, probability: 0 },
+		]);
+	});
+
+	it('auto also votes after a ModelCapabilityError, the backend having lost the hook since the probe', async () => {
+		const s = scriptedScore([Object.assign(new Error('no longer'), { name: 'ModelCapabilityError' })]);
+		const g = scriptedGenerate([{ value: 'other' }]);
+		const backend = createGenerativeDecisionBackend({ samples: 1 }, { generate: g.generate, score: s.score, canScore });
+		const result = await backend.decide('x', QUEUE, { accounting });
+		assert.strictEqual(result.output.distribution[3].probability, 1);
+	});
+
+	it('auto rethrows any other scoring failure without voting', async () => {
+		const s = scriptedScore([new Error('provider down')]);
+		const backend = createGenerativeDecisionBackend({}, { generate: neverGenerate, score: s.score, canScore });
+		await assert.rejects(backend.decide('x', QUEUE, { accounting }), /provider down/);
+	});
+
+	it('score never votes: an unsupported call fails the decision', async () => {
+		const s = scriptedScore([new ChoiceScoringUnsupportedError('declined')]);
+		const backend = createGenerativeDecisionBackend(
+			{ scoring: 'score' },
+			{ generate: neverGenerate, score: s.score, canScore: () => false }
+		);
+		await assert.rejects(backend.decide('x', QUEUE, { accounting }), ChoiceScoringUnsupportedError);
+	});
+
+	it('vote never scores', async () => {
+		const g = scriptedGenerate([{ value: 'bug' }]);
+		const backend = createGenerativeDecisionBackend(
+			{ scoring: 'vote', samples: 1 },
+			{ generate: g.generate, score: neverScore, canScore }
+		);
+		const result = await backend.decide('x', QUEUE, { accounting });
+		assert.strictEqual(result.output.distribution[2].probability, 1);
+	});
+
+	it('rejects a score vector of the wrong length or with non-finite entries', async () => {
+		for (const answer of [[0, 1], [0, 1, 2, 3, 4], [0, NaN, 0, 0], [0, Infinity, 0, 0], ['0', 0, 0, 0], null]) {
+			const s = scriptedScore([answer]);
+			const backend = createGenerativeDecisionBackend(
+				{ scoring: 'score' },
+				{ generate: neverGenerate, score: s.score, canScore }
+			);
+			await assert.rejects(
+				backend.decide('x', QUEUE, { accounting }),
+				(err) =>
+					err instanceof GenerativeDecisionError &&
+					/one finite log-likelihood per allowed value \(4\)/.test(err.message),
+				JSON.stringify(answer)
+			);
+		}
+	});
+
+	it('a caller abort during scoring settles every in-flight call before rejecting', async () => {
+		const properties = Object.fromEntries(Array.from({ length: 4 }, (_, i) => [`f${i}`, { type: 'boolean' }]));
+		const s = scriptedScore([[0, 1]], { delayMs: 200 });
+		const backend = createGenerativeDecisionBackend(
+			{ scoring: 'score', concurrency: 4 },
+			{ generate: neverGenerate, score: s.score, canScore }
+		);
+		const controller = new AbortController();
+		const pending = backend.decide('x', { type: 'object', properties }, { accounting, signal: controller.signal });
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.strictEqual(s.inFlight, 4);
+		controller.abort();
+		await assert.rejects(pending, { name: 'AbortError' });
+		assert.strictEqual(s.inFlight, 0);
+		assert.ok(s.calls.every((c) => c.opts.signal.aborted));
+	});
+
+	it('applies requestTimeoutMs to scoring as the budget for the whole decision', async () => {
+		const s = scriptedScore([[0, 1, 2, 3]], { delayMs: 200 });
+		const backend = createGenerativeDecisionBackend(
+			{ scoring: 'score', requestTimeoutMs: 20 },
+			{ generate: neverGenerate, score: s.score, canScore }
+		);
+		await assert.rejects(
+			backend.decide('x', QUEUE, { accounting }),
+			(err) => err.name === 'TimeoutError' || err.name === 'AbortError'
 		);
 	});
 });
@@ -288,6 +540,112 @@ describe('models.decision config → generative adapter → facade (through boot
 		await assert.rejects(
 			models.decide('x', QUEUE),
 			(err) => err instanceof ModelBackendNotFoundError && /generative\.missing/.test(err.message)
+		);
+	});
+});
+
+describe('models.decision config → likelihood scoring → facade (through bootstrap, #2838)', () => {
+	const FIXTURE = join(__dirname, 'fixtures', 'scoring-generative-module.cjs');
+	const fixtureCalls = () => require(FIXTURE).calls;
+
+	beforeEach(() => {
+		clearRegistry();
+		clearRouting();
+		resetModelsProjection();
+		fixtureCalls().length = 0;
+	});
+
+	afterEach(() => {
+		clearRegistry();
+		clearRouting();
+		resetModelsProjection();
+	});
+
+	it('auto scores through the singleton when the generative module implements scoreChoices', async () => {
+		await bootstrapModels({
+			models: {
+				generative: { default: { backend: FIXTURE, scores: [[0, 0, 2, 0]] } },
+				decision: { default: { backend: 'generative', samples: 3 } },
+			},
+		});
+		const d = await models.decide('crash on save', QUEUE);
+		assert.strictEqual(d.value, 'bug');
+		close(d.probability, Math.exp(2) / (3 + Math.exp(2)));
+		assert.strictEqual(d.distribution.length, 4);
+		assert.strictEqual(d.calibrated, false);
+		assert.strictEqual(d.usage, undefined);
+		assert.strictEqual(typeof d.id, 'string');
+		assert.deepStrictEqual(
+			fixtureCalls().map((c) => c.method),
+			['scoreChoices']
+		);
+		assert.deepStrictEqual(fixtureCalls()[0].choices, QUEUE.enum);
+	});
+
+	it('auto votes when the generative module has no scoreChoices, without a scoring attempt', async () => {
+		await bootstrapModels({
+			models: {
+				generative: { default: { backend: FIXTURE, scoreless: true, answers: ['{"value":"refund"}'] } },
+				decision: { default: { backend: 'generative', samples: 2 } },
+			},
+		});
+		const d = await models.decide('x', QUEUE);
+		assert.strictEqual(d.value, 'refund');
+		assert.strictEqual(d.probability, 1);
+		assert.deepStrictEqual(
+			fixtureCalls().map((c) => c.method),
+			['generate', 'generate']
+		);
+	});
+
+	it('auto votes after the module declines, and score surfaces the refusal', async () => {
+		await bootstrapModels({
+			models: {
+				generative: { default: { backend: FIXTURE, unsupported: true, answers: ['{"value":"other"}'] } },
+				decision: {
+					default: { backend: 'generative', samples: 1 },
+					strict: { backend: 'generative', scoring: 'score' },
+				},
+			},
+		});
+		assert.strictEqual((await models.decide('x', QUEUE)).value, 'other');
+		assert.deepStrictEqual(
+			fixtureCalls().map((c) => c.method),
+			['scoreChoices', 'generate']
+		);
+		await assert.rejects(models.decide('x', QUEUE, { model: 'strict' }), ChoiceScoringUnsupportedError);
+	});
+
+	it('vote never scores, even against a scoring module', async () => {
+		await bootstrapModels({
+			models: {
+				generative: { default: { backend: FIXTURE, scores: [[0, 0, 2, 0]], answers: ['{"value":"billing"}'] } },
+				decision: { default: { backend: 'generative', scoring: 'vote', samples: 1 } },
+			},
+		});
+		assert.strictEqual((await models.decide('x', QUEUE)).value, 'billing');
+		assert.deepStrictEqual(
+			fixtureCalls().map((c) => c.method),
+			['generate']
+		);
+	});
+
+	it('a reload that swaps the generative module changes the path on the next decision', async () => {
+		const decision = { default: { backend: 'generative', samples: 1 } };
+		await bootstrapModels({
+			models: { generative: { default: { backend: FIXTURE, scores: [[0, 0, 2, 0]] } }, decision },
+		});
+		assert.strictEqual((await models.decide('x', QUEUE)).value, 'bug');
+		await bootstrapModels({
+			models: {
+				generative: { default: { backend: FIXTURE, scoreless: true, answers: ['{"value":"other"}'] } },
+				decision,
+			},
+		});
+		assert.strictEqual((await models.decide('x', QUEUE)).value, 'other');
+		assert.deepStrictEqual(
+			fixtureCalls().map((c) => c.method),
+			['scoreChoices', 'generate']
 		);
 	});
 });

@@ -20,7 +20,7 @@ export interface ModelCallRecord {
 	app?: string;
 	model?: string;
 	backend: string;
-	method: 'embed' | 'generate' | 'generateStream' | 'decide';
+	method: 'embed' | 'generate' | 'generateStream' | 'decide' | 'scoreChoices';
 	adapter?: string;
 	conversation_id?: string;
 	prompt_tokens?: number;
