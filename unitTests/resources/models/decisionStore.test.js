@@ -269,6 +269,17 @@ describe('models config hash', () => {
 		assert.strictEqual(getModelsConfigHash(), withOne);
 		setModelsConfigHash({ generative: { default: { backend: 'openai', model: 'b', apiKey: 'one' } } });
 		assert.notStrictEqual(getModelsConfigHash(), withOne);
+		setModelsConfigHash({ generative: { default: { backend: 'openai', model: 'a', maxTokens: 1, tokenizer: 't' } } });
+		const withOptions = getModelsConfigHash();
+		setModelsConfigHash({ generative: { default: { backend: 'openai', model: 'a', maxTokens: 2, tokenizer: 't' } } });
+		assert.notStrictEqual(getModelsConfigHash(), withOptions, 'maxTokens is configuration, not a credential');
+		setModelsConfigHash({
+			generative: { default: { backend: 'bedrock', accessKeyId: 'a', secretAccessKey: 's', sessionToken: 't' } },
+		});
+		assert.strictEqual(
+			getModelsConfigHash(),
+			(setModelsConfigHash({ generative: { default: { backend: 'bedrock' } } }), getModelsConfigHash())
+		);
 		setModelsConfigHash(undefined);
 		assert.strictEqual(getModelsConfigHash(), undefined);
 	});

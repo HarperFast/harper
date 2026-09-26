@@ -504,7 +504,6 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 	setModelsConfigHash(installedConfiguration());
 }
 
-/** The configuration behind every slot the projection serves, expanded as its factory saw it. */
 function installedConfiguration(): Record<string, unknown> | undefined {
 	const configuration: Record<string, unknown> = {};
 	for (const [key, slot] of installedSlots) {

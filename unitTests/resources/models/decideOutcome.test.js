@@ -105,6 +105,30 @@ describe('models.decide persists its decision and models.recordOutcome scores it
 		assert.deepStrictEqual(record.schema, { enum: ['billing', 'refund', 'bug'] });
 		assert.match(record.instructionsHash, /^[0-9a-f]{64}$/);
 		assert.strictEqual((await models.getDecision(first.id)).instructionsHash, undefined);
+		const blank = await models.decide('x', mutable, { instructions: '' });
+		assert.strictEqual((await models.getDecision(blank.id)).instructionsHash, undefined, 'empty instructions are none');
+		const racing = { enum: ['a', 'b'] };
+		setDecision(
+			'racer',
+			defineBackend({
+				name: 'racer',
+				decide: async (state, schema) => {
+					racing.enum.push('c');
+					assert.deepStrictEqual(schema, { enum: ['a', 'b'] }, 'the backend sees the snapshot');
+					return {
+						status: 'completed',
+						output: {
+							distribution: [
+								{ value: 'a', probability: 1 },
+								{ value: 'b', probability: 0 },
+							],
+						},
+					};
+				},
+			})
+		);
+		const raced = await models.decide('x', racing, { model: 'racer' });
+		assert.deepStrictEqual((await models.getDecision(raced.id)).schema, { enum: ['a', 'b'] });
 		const faulty = new Models(
 			writer,
 			() => {},
