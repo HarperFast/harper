@@ -134,7 +134,6 @@ export class ModelCallAnalyticsWriter {
 		this.#cleanupTimer.unref?.();
 	}
 
-	/** `Decision.id` carries the returned key. */
 	write(record: ModelCallRecord): number {
 		const id = getNextMonotonicTime();
 		if (this.#stopped) return id;

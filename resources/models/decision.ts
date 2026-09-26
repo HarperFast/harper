@@ -292,22 +292,34 @@ export function parseDecisionSample(schema: DecisionSchema, content: string): un
 	return checkSampleValue(schema, sample.value, "'value'");
 }
 
+const MAX_BRACE_CANDIDATES = 32;
+
 /**
  * A backend that ignores `responseFormat` (Anthropic, Bedrock) answers from the prompt alone and
- * may wrap the object in a code fence or prose, so the outermost `{`…`}` span is tried as well.
+ * may wrap the object in a code fence or prose that has braces of its own, so the fenced block is
+ * preferred and every `{`…`}` span in it is tried, outermost first.
  */
-function parseJsonObject(content: string): Record<string, unknown> {
-	const start = content.indexOf('{');
-	const end = content.lastIndexOf('}');
-	const candidates = start >= 0 && end > start ? [content, content.slice(start, end + 1)] : [content];
-	for (const candidate of candidates) {
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(candidate);
-		} catch {
-			continue;
+function parseJsonObject(content: unknown): Record<string, unknown> {
+	if (typeof content !== 'string') throw new Error('the sample has no text');
+	const fenced = /```[a-z]*\s*([\s\S]*?)```/i.exec(content);
+	const text = fenced ? fenced[1] : content;
+	const opens: number[] = [];
+	const closes: number[] = [];
+	for (let i = text.indexOf('{'); i >= 0 && opens.length < MAX_BRACE_CANDIDATES; i = text.indexOf('{', i + 1))
+		opens.push(i);
+	for (let i = text.lastIndexOf('}'); i >= 0 && closes.length < MAX_BRACE_CANDIDATES; i = text.lastIndexOf('}', i - 1))
+		closes.push(i);
+	for (const start of opens) {
+		for (const end of closes) {
+			if (end <= start) break;
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(text.slice(start, end + 1));
+			} catch {
+				continue;
+			}
+			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
 		}
-		if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
 	}
 	throw new Error('the sample contains no JSON object');
 }

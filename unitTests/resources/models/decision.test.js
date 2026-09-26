@@ -367,3 +367,23 @@ describe('parseDecisionSample on providers that ignore responseFormat', () => {
 		assert.throws(() => parseDecisionSample(QUEUE, 'x { not json } y'), /no JSON object/);
 	});
 });
+
+describe('parseDecisionSample with braces in the surrounding prose', () => {
+	it('finds the answer object among other brace pairs, prefers a fenced block, and rejects non-text content', () => {
+		assert.strictEqual(parseDecisionSample(QUEUE, 'For {queue} the answer is {"value":"bug"}'), 'bug');
+		assert.strictEqual(parseDecisionSample(QUEUE, '{"value":"refund"} and then a {note} for later'), 'refund');
+		assert.strictEqual(
+			parseDecisionSample(QUEUE, 'Ignore {this}. ```json\n{"value":"other"}\n``` Not {that}.'),
+			'other'
+		);
+		assert.deepStrictEqual(
+			parseDecisionSample(
+				{ type: 'object', properties: { queue: QUEUE, urgent: { type: 'boolean' } } },
+				'Reasoning: {billing vs bug}\n{"queue":"billing","urgent":false}\n{"aside":true}'
+			),
+			{ queue: 'billing', urgent: false }
+		);
+		assert.throws(() => parseDecisionSample(QUEUE, undefined), /has no text/);
+		assert.throws(() => parseDecisionSample(QUEUE, '{a} {b} {c}'), /no JSON object/);
+	});
+});
