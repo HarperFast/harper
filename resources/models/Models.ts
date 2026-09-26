@@ -323,12 +323,12 @@ export class Models implements ModelsContract {
 		schema: DecisionSchema,
 		opts: UnrecordedDecideOpts
 	): Promise<UnrecordedDecision<T>>;
+	decide<T = unknown>(state: DecideInput, schema: DecisionSchema, opts?: DecideOpts): Promise<Decision<T>>;
 	decide<T = unknown>(
 		state: DecideInput,
 		schema: DecisionSchema,
 		opts: PersistChoiceDecideOpts
 	): Promise<Decision<T> | UnrecordedDecision<T>>;
-	decide<T = unknown>(state: DecideInput, schema: DecisionSchema, opts?: DecideOpts): Promise<Decision<T>>;
 	async decide<T = unknown>(
 		state: DecideInput,
 		schema: DecisionSchema,
@@ -345,8 +345,8 @@ export class Models implements ModelsContract {
 		if (opts.instructions !== undefined && typeof opts.instructions !== 'string')
 			throw new DecisionInputError('instructions must be a string');
 		const instructions = opts.instructions || undefined;
-		const { persist: _persist, ...rest } = opts;
-		const callOpts: DecideOpts = { ...rest, instructions, requires: opts.requires ? [...opts.requires] : undefined };
+		const callOpts = { ...opts, instructions, requires: opts.requires ? [...opts.requires] : undefined } as DecideOpts;
+		if (opts.persist !== undefined) delete callOpts.persist;
 		const identity: CallIdentity | undefined = persist
 			? { hash: hashSchema(call), scoring: scoringSchema(call), configHash: getModelsConfigHash() }
 			: undefined;
