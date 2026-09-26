@@ -219,6 +219,8 @@ The `error` value is the stable programmatic discriminator; `message` is diagnos
 
 Clean stream completion does not prove completeness; clients must inspect SSE for the `harper-error` event and NDJSON for the `$harperStreamError` control record.
 
+The operations API keeps the same line for a request refused before its progress stream starts (authentication, the role allowlist, validation): the Fastify `preSerialization` hook in `contentTypes.ts` answers an error-status reply that would negotiate `text/event-stream` as JSON, unless the route itself set `text/event-stream`. A stream payload never reaches that hook, which is how the progress stream (`progressEmitter.ts`) keeps its in-band `event: error` at status 200. The hook is shared with the legacy custom-functions server (`fastifyRoutes.ts`), whose untyped errors follow the same rule. `harper deploy` unwraps the unnamed frame older servers still send in that case.
+
 ### Deferred credential rejection (#2418)
 
 `authentication` runs before route matching, so when it meets an `Authorization` header it cannot

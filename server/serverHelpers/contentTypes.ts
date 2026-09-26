@@ -314,7 +314,19 @@ const registerFastifySerializers = fp(
 		fastify.addHook('preSerialization', async (request, reply) => {
 			const contentType = reply.raw.getHeader('content-type');
 			if (contentType) return;
-			const { serializer, type } = findBestSerializer(request.raw);
+			let { serializer, type } = findBestSerializer(request.raw);
+			// An error that no route chose to stream is an ordinary response: written as an unnamed event,
+			// an SSE client reads it as a stream that ended without a result.
+			if (
+				type === 'text/event-stream' &&
+				reply.statusCode >= 400 &&
+				!String(reply.getHeader('content-type') ?? '')
+					.toLowerCase()
+					.startsWith('text/event-stream')
+			) {
+				serializer = mediaTypes.get('application/json');
+				type = 'application/json';
+			}
 			reply.type(type);
 			reply.serializer(function (data: any) {
 				let serialize: (data: any, context: any) => any;
