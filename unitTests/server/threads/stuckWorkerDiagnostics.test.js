@@ -239,7 +239,7 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 
 	it('accepts confirmed job cleanup from a worker-originated preparation', async function () {
 		const broadcaster = await startFixtureWorker('acknowledge');
-		const jobWorker = await startFixtureWorker('exit-clean', 'job');
+		const jobWorker = await startFixtureWorker('exit-clean-parent-only', 'job');
 		started.push(broadcaster, jobWorker);
 		const settled = new Promise((resolve) => {
 			broadcaster.on('message', (message) => {

@@ -1,6 +1,7 @@
 'use strict';
 
 const { parentPort } = require('node:worker_threads');
+const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
 const {
 	broadcastWithAcknowledgement,
 	broadcastWithStrictAcknowledgement,
@@ -59,6 +60,10 @@ onMessageFromWorkers((message, port) => {
 				retryable: true,
 			},
 		});
+	} else if (process.argv.includes('--exit-clean-parent-only')) {
+		parentPort.postMessage({ type: ITC_EVENT_TYPES.JOB_CLEANUP_COMPLETE });
+		clearInterval(keepAlive);
+		parentPort.close();
 	} else if (process.argv.includes('--exit') || process.argv.includes('--exit-clean')) {
 		if (process.argv.includes('--exit-clean')) notifyJobCleanupComplete();
 		clearInterval(keepAlive);

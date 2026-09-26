@@ -1079,11 +1079,24 @@ let nextId = 1;
 // whose port hasn't closed) can't hang a mutating admin/DDL op forever. Ordinary broadcasts happen
 // after the durable write and proceed best-effort; strict preparation broadcasts reject on timeout.
 const DEFAULT_ACK_TIMEOUT_MS = 30000;
-function settleAcknowledgementsForClosedPort(port, jobCleanupComplete = false) {
+function settleAcknowledgementsForClosedWorker(matches, jobCleanupComplete, exitConfirmed) {
 	for (const [, ackHandler] of awaitingResponses) {
-		if (ackHandler.port !== port) continue;
+		if (!matches(ackHandler.port)) continue;
+		if (ackHandler.allowNormalJobExit && !jobCleanupComplete && !exitConfirmed) continue;
 		ackHandler(ackHandler.allowNormalJobExit && jobCleanupComplete ? undefined : ackHandler.closeResponse);
 	}
+}
+
+function settleAcknowledgementsForClosedPort(port, jobCleanupComplete = false, exitConfirmed = false) {
+	settleAcknowledgementsForClosedWorker((candidate) => candidate === port, jobCleanupComplete, exitConfirmed);
+}
+
+function settleAcknowledgementsForClosedThread(threadId, jobCleanupComplete = false, exitConfirmed = false) {
+	settleAcknowledgementsForClosedWorker(
+		(candidate) => candidate.threadId === threadId,
+		jobCleanupComplete,
+		exitConfirmed
+	);
 }
 
 function broadcastWithAcknowledgement(
@@ -1890,7 +1903,8 @@ function removePort(port, deadThreadId) {
 	// A sibling may already have announced this dead thread and removed its port. Process-group
 	// cleanup must still run when the authoritative close/exit event reaches this thread.
 	if (deadThreadId != null) terminateProcessGroupsForThread(deadThreadId);
-	settleAcknowledgementsForClosedPort(port, port.jobCleanupComplete === true);
+	const exitConfirmed = !port.close;
+	settleAcknowledgementsForClosedPort(port, port.jobCleanupComplete === true, exitConfirmed);
 	const idx = connectedPorts.indexOf(port);
 	if (idx === -1) return;
 	connectedPorts.splice(idx, 1);
@@ -1907,6 +1921,7 @@ function removePort(port, deadThreadId) {
 					type: REMOVE_PORT,
 					threadId: deadThreadId,
 					jobCleanupComplete: port.jobCleanupComplete === true,
+					exitConfirmed,
 				});
 			} catch {
 				// port may already be dead; ignore
@@ -1938,6 +1953,12 @@ function addPort(port, keepRef, isJobWorker) {
 				}
 			} else if (message.type === REMOVE_PORT) {
 				const removedPort = connectedPorts.find((candidate) => candidate.threadId === message.threadId);
+				if (removedPort && !removedPort.close && !message.exitConfirmed) return;
+				settleAcknowledgementsForClosedThread(
+					message.threadId,
+					message.jobCleanupComplete === true,
+					message.exitConfirmed === true
+				);
 				if (removedPort) {
 					if (message.jobCleanupComplete) removedPort.jobCleanupComplete = true;
 					settleAcknowledgementsForClosedPort(removedPort, removedPort.jobCleanupComplete === true);
