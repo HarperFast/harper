@@ -279,8 +279,33 @@ function leafJsonSchema(leaf: DecisionLeaf): object {
  * map for object schemas. Throws a plain `Error` naming what did not fit, never quoting the
  * sample itself; the caller wraps it.
  */
-export function parseDecisionSample(schema: DecisionSchema, content: string): unknown {
-	const sample = parseJsonObject(content);
+export function parseDecisionSample(schema: DecisionSchema, content: unknown): unknown {
+	if (typeof content !== 'string') throw new Error('the sample has no text');
+	let answer: unknown;
+	let answerKey: string | undefined;
+	let lastError: Error | undefined;
+	for (const candidate of jsonObjectCandidates(content)) {
+		let values: unknown;
+		try {
+			values = extractSampleValues(schema, candidate);
+		} catch (err) {
+			lastError = err as Error;
+			continue;
+		}
+		// Two different in-schema objects (an example and the answer) make the sample ambiguous.
+		const key = JSON.stringify(values);
+		if (answerKey === undefined) {
+			answer = values;
+			answerKey = key;
+		} else if (key !== answerKey) {
+			throw new Error('the sample contains more than one answer');
+		}
+	}
+	if (answerKey !== undefined) return answer;
+	throw lastError ?? new Error('the sample contains no JSON object');
+}
+
+function extractSampleValues(schema: DecisionSchema, sample: Record<string, unknown>): unknown {
 	if (isObjectSchema(schema)) {
 		const values: Record<string, unknown> = {};
 		for (const [name, leaf] of Object.entries(schema.properties)) {
@@ -295,19 +320,29 @@ export function parseDecisionSample(schema: DecisionSchema, content: string): un
 const MAX_BRACE_CANDIDATES = 32;
 
 /**
- * A backend that ignores `responseFormat` (Anthropic, Bedrock) answers from the prompt alone and
- * may wrap the object in a code fence or prose that has braces of its own, so the fenced block is
- * preferred and every `{`…`}` span in it is tried, outermost first.
+ * Every `{`…`}` span that parses to a JSON object. A backend that ignores `responseFormat`
+ * (Anthropic, Bedrock) answers from the prompt alone and may wrap the object in a code fence or
+ * prose with braces of its own, so a fenced block is tried first and the whole text only when
+ * the fence holds no object.
  */
-function parseJsonObject(content: unknown): Record<string, unknown> {
-	if (typeof content !== 'string') throw new Error('the sample has no text');
+function* jsonObjectCandidates(content: string): Generator<Record<string, unknown>> {
 	const fenced = /```[a-z]*\s*([\s\S]*?)```/i.exec(content);
-	const text = fenced ? fenced[1] : content;
+	let found = false;
+	if (fenced) {
+		for (const object of jsonObjectSpans(fenced[1])) {
+			found = true;
+			yield object;
+		}
+	}
+	if (!found) yield* jsonObjectSpans(content);
+}
+
+function* jsonObjectSpans(text: string): Generator<Record<string, unknown>> {
 	const opens: number[] = [];
 	const closes: number[] = [];
 	for (let i = text.indexOf('{'); i >= 0 && opens.length < MAX_BRACE_CANDIDATES; i = text.indexOf('{', i + 1))
 		opens.push(i);
-	for (let i = text.lastIndexOf('}'); i >= 0 && closes.length < MAX_BRACE_CANDIDATES; i = text.lastIndexOf('}', i - 1))
+	for (let i = text.lastIndexOf('}'); i > 0 && closes.length < MAX_BRACE_CANDIDATES; i = text.lastIndexOf('}', i - 1))
 		closes.push(i);
 	for (const start of opens) {
 		for (const end of closes) {
@@ -318,10 +353,9 @@ function parseJsonObject(content: unknown): Record<string, unknown> {
 			} catch {
 				continue;
 			}
-			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) yield parsed as Record<string, unknown>;
 		}
 	}
-	throw new Error('the sample contains no JSON object');
 }
 
 function checkSampleValue(leaf: DecisionLeaf, raw: unknown, label: string): unknown {

@@ -387,3 +387,21 @@ describe('parseDecisionSample with braces in the surrounding prose', () => {
 		assert.throws(() => parseDecisionSample(QUEUE, '{a} {b} {c}'), /no JSON object/);
 	});
 });
+
+describe('parseDecisionSample with several candidate objects', () => {
+	it('rejects a sample whose in-schema objects disagree, and accepts repeats, wrappers and a fence without an object', () => {
+		assert.throws(
+			() => parseDecisionSample(QUEUE, 'Example: {"value":"other"}. Final answer: {"value":"bug"}'),
+			/more than one answer/
+		);
+		assert.strictEqual(parseDecisionSample(QUEUE, 'First {"value":"bug"}, again {"value":"bug"}'), 'bug');
+		assert.strictEqual(parseDecisionSample(QUEUE, '{"answer": {"value":"bug"}}'), 'bug');
+		assert.strictEqual(parseDecisionSample(QUEUE, '```\nqueue: bug\n```\n{"value":"bug"}'), 'bug');
+		assert.strictEqual(parseDecisionSample(QUEUE, '{"value":"bug"}}'), 'bug');
+		assert.throws(() => parseDecisionSample(QUEUE, '}{'), /no JSON object/);
+		assert.throws(
+			() => parseDecisionSample(QUEUE, 'Options: {"value":"spam"} then {"other":1}'),
+			/not an allowed value/
+		);
+	});
+});
