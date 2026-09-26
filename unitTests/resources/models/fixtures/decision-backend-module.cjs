@@ -1,6 +1,5 @@
 'use strict';
-// #2779 test fixture: a config-selectable decision backend. Registers under the kind
-// bootstrap passes (`decision`) and always chooses `config.winner` with certainty.
+// Chooses `config.winner` with certainty, under the kind bootstrap passes.
 const { registerBackend, defineBackend } = require('#src/resources/models/backendRegistry');
 const { allowedValues } = require('#src/resources/models/decision');
 

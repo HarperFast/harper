@@ -111,11 +111,11 @@ export type DecideInput = string | object;
 
 /**
  * One leaf of a decision schema: a closed set every backend family can score. `enum` holds
- * 2..255 distinct primitives; an integer range spans at most 255 values; booleans order as
- * `[false, true]` for tie-breaking.
+ * 2..255 distinct values of one type; an integer range spans at most 255 values; booleans order
+ * as `[false, true]` for tie-breaking.
  */
 export type DecisionLeaf = { description?: string } & (
-	| { enum: readonly (string | number | boolean)[] }
+	| { enum: readonly string[] | readonly number[] | readonly boolean[] }
 	| { type: 'boolean' }
 	| { type: 'integer'; minimum: number; maximum: number }
 );
@@ -142,7 +142,8 @@ export interface DecisionOutcome {
  * What a `decision` backend returns for one call. For a leaf schema `distribution` is required
  * and complete (one entry per allowed value, summing to one); for an object schema `fields`
  * carries one such entry per property. The facade derives `value` and `probability`, so a
- * backend may omit them; a `value` it does supply must be a most-probable outcome.
+ * backend may omit them; a `value` it does supply must be a most-probable outcome, and on a
+ * tie it leads the distribution.
  */
 export interface DecisionOutput<T = unknown> {
 	value?: T;
@@ -153,8 +154,9 @@ export interface DecisionOutput<T = unknown> {
 }
 
 /**
- * Result of `models.decide`. For a leaf schema `value` is the argmax of `distribution` (sorted
- * descending; ties keep schema order) and `probability` is its entry. For an object schema
+ * Result of `models.decide`. For a leaf schema `value` is the first entry of `distribution`,
+ * which is sorted descending with ties in schema order unless the backend chose one of the tied
+ * values; `probability` is its entry. For an object schema
  * `value` is assembled from each field's marginal argmax — a combination no single sample may
  * have produced — and the marginals live in `fields`.
  */

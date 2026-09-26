@@ -134,7 +134,7 @@ export class ModelCallAnalyticsWriter {
 		this.#cleanupTimer.unref?.();
 	}
 
-	/** Buffers the row and returns the primary key it will be written under (`Decision.id` references it). */
+	/** `Decision.id` carries the returned key. */
 	write(record: ModelCallRecord): number {
 		const id = getNextMonotonicTime();
 		if (this.#stopped) return id;

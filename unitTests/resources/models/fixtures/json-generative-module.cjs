@@ -1,9 +1,6 @@
 'use strict';
-// #2779 test fixture: a config-selectable generative backend that answers from
-// `config.answers` in order (cycling), so a `models.decision` entry backed by the
-// generative adapter can be driven end to end through bootstrap with scripted votes.
-// It refuses a request whose response schema is not the strict object shape a
-// structured-output provider requires, so the adapter's translation is exercised too.
+// Answers from `config.answers` in order, and refuses a response schema that is not the strict
+// object shape a structured-output provider requires.
 const { registerBackend, defineBackend } = require('#src/resources/models/backendRegistry');
 
 module.exports = function register({ logicalName, kind, config }) {

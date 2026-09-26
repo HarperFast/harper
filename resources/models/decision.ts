@@ -1,4 +1,3 @@
-/** The decision contract shared by the facade, the backends, and the generative adapter (#2779). */
 import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import type {
 	DecideInput,
@@ -77,7 +76,6 @@ export function validateDecisionSchema(schema: unknown): asserts schema is Decis
 	validateLeaf(schema, 'schema');
 }
 
-/** Validates one leaf and returns how many values it ranges over. */
 function validateLeaf(leaf: unknown, label: string): number {
 	if (!leaf || typeof leaf !== 'object' || Array.isArray(leaf))
 		throw new DecisionSchemaError(`${label} must be an object`);
@@ -122,16 +120,16 @@ function integerRange(minimum: number, maximum: number): number[] {
 	return values;
 }
 
-/** The closed set a leaf ranges over, in the order ties resolve. Assumes a validated leaf. */
+/** In the order ties resolve; assumes a validated leaf. */
 export function allowedValues(leaf: DecisionLeaf): readonly unknown[] {
 	if ('enum' in leaf) return leaf.enum;
 	if (leaf.type === 'boolean') return BOOLEAN_VALUES;
 	return integerRange(leaf.minimum, leaf.maximum);
 }
 
-/** Membership without materializing an integer range. Assumes a validated leaf. */
+/** Assumes a validated leaf. */
 export function isAllowedValue(leaf: DecisionLeaf, raw: unknown): boolean {
-	if ('enum' in leaf) return leaf.enum.includes(raw as string | number | boolean);
+	if ('enum' in leaf) return (leaf.enum as readonly unknown[]).includes(raw);
 	if (leaf.type === 'boolean') return typeof raw === 'boolean';
 	return Number.isInteger(raw) && (raw as number) >= leaf.minimum && (raw as number) <= leaf.maximum;
 }
@@ -282,15 +280,7 @@ function leafJsonSchema(leaf: DecisionLeaf): object {
  * sample itself; the caller wraps it.
  */
 export function parseDecisionSample(schema: DecisionSchema, content: string): unknown {
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(content);
-	} catch {
-		throw new Error('the sample is not valid JSON');
-	}
-	if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-		throw new Error('the sample is not a JSON object');
-	const sample = parsed as Record<string, unknown>;
+	const sample = parseJsonObject(content);
 	if (isObjectSchema(schema)) {
 		const values: Record<string, unknown> = {};
 		for (const [name, leaf] of Object.entries(schema.properties)) {
@@ -300,6 +290,26 @@ export function parseDecisionSample(schema: DecisionSchema, content: string): un
 		return values;
 	}
 	return checkSampleValue(schema, sample.value, "'value'");
+}
+
+/**
+ * A backend that ignores `responseFormat` (Anthropic, Bedrock) answers from the prompt alone and
+ * may wrap the object in a code fence or prose, so the outermost `{`…`}` span is tried as well.
+ */
+function parseJsonObject(content: string): Record<string, unknown> {
+	const start = content.indexOf('{');
+	const end = content.lastIndexOf('}');
+	const candidates = start >= 0 && end > start ? [content, content.slice(start, end + 1)] : [content];
+	for (const candidate of candidates) {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(candidate);
+		} catch {
+			continue;
+		}
+		if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+	}
+	throw new Error('the sample contains no JSON object');
 }
 
 function checkSampleValue(leaf: DecisionLeaf, raw: unknown, label: string): unknown {

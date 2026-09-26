@@ -331,8 +331,8 @@ describe('parseDecisionSample', () => {
 	});
 
 	it('rejects non-JSON, non-object, missing, out-of-set and mistyped samples without echoing the sample', () => {
-		assert.throws(() => parseDecisionSample(QUEUE, 'bug'), /not valid JSON/);
-		assert.throws(() => parseDecisionSample(QUEUE, '["bug"]'), /not a JSON object/);
+		assert.throws(() => parseDecisionSample(QUEUE, 'bug'), /no JSON object/);
+		assert.throws(() => parseDecisionSample(QUEUE, '["bug"]'), /no JSON object/);
 		assert.throws(() => parseDecisionSample(QUEUE, '{}'), /'value' is not an allowed value/);
 		assert.throws(
 			() => parseDecisionSample(QUEUE, '{"value":"SECRET-VALUE"}'),
@@ -346,5 +346,24 @@ describe('parseDecisionSample', () => {
 			() => parseDecisionSample({ type: 'object', properties: { queue: QUEUE } }, '{"other":1}'),
 			/has no 'queue'/
 		);
+	});
+});
+
+describe('parseDecisionSample on providers that ignore responseFormat', () => {
+	it('accepts a JSON object wrapped in a code fence or prose, but not text without one', () => {
+		assert.strictEqual(parseDecisionSample(QUEUE, '```json\n{"value":"bug"}\n```'), 'bug');
+		assert.strictEqual(
+			parseDecisionSample(QUEUE, 'Sure — here is the answer: {"value":"refund"}. Hope that helps.'),
+			'refund'
+		);
+		assert.deepStrictEqual(
+			parseDecisionSample(
+				{ type: 'object', properties: { queue: QUEUE, urgent: { type: 'boolean' } } },
+				'Result:\n{"queue":"bug","urgent":true}'
+			),
+			{ queue: 'bug', urgent: true }
+		);
+		assert.throws(() => parseDecisionSample(QUEUE, 'The answer is bug.'), /no JSON object/);
+		assert.throws(() => parseDecisionSample(QUEUE, 'x { not json } y'), /no JSON object/);
 	});
 });
