@@ -244,6 +244,7 @@ export function defineBackend(spec: DefineBackendSpec): ModelBackend {
 		adapters = false,
 		calibrated = false,
 		structuredOutput = false,
+		maxScoredChoices,
 	} = spec;
 	// Gate on function-ness, not truthiness: a non-function value (`generate: 'oops'`)
 	// must be rejected at definition time, not assigned and crash at call time.
@@ -256,6 +257,8 @@ export function defineBackend(spec: DefineBackendSpec): ModelBackend {
 		throw new ModelBackendRegistrationError(
 			`backend '${name}' must implement at least one of embed / generate / generateStream / decide / scoreChoices (as functions)`
 		);
+	if (maxScoredChoices !== undefined && !(Number.isSafeInteger(maxScoredChoices) && maxScoredChoices > 0))
+		throw new ModelBackendRegistrationError(`backend '${name}': maxScoredChoices must be a positive integer`);
 	const capabilities: ModelCapabilities = Object.freeze({
 		embed: hasEmbed,
 		// A stream-only backend gains generate() via the synthesis below.
@@ -267,6 +270,7 @@ export function defineBackend(spec: DefineBackendSpec): ModelBackend {
 		calibrated: hasDecide && calibrated,
 		scoreChoices: hasScore,
 		structuredOutput: (hasGenerate || hasStream) && structuredOutput,
+		...(hasScore && maxScoredChoices !== undefined ? { maxScoredChoices } : {}),
 	});
 	const backend: ModelBackend = { name, capabilities: () => capabilities };
 	if (hasEmbed) backend.embed = embed;

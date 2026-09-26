@@ -58,6 +58,7 @@ describe('OpenAIBackend', () => {
 				adapters: false,
 				scoreChoices: true,
 				structuredOutput: true,
+				maxScoredChoices: 20,
 			});
 		});
 

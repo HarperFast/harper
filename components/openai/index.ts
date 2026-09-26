@@ -124,6 +124,7 @@ const CAPABILITIES: ModelCapabilities = Object.freeze({
 	adapters: false,
 	scoreChoices: true,
 	structuredOutput: true,
+	maxScoredChoices: MAX_SCORED_CHOICES,
 });
 // The same shape for a model that refused `logprobs`; two frozen objects, so `capabilities()` allocates nothing.
 const CAPABILITIES_WITHOUT_SCORING: ModelCapabilities = Object.freeze({ ...CAPABILITIES, scoreChoices: false });
