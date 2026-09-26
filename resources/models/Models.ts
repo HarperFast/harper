@@ -672,7 +672,6 @@ function assertCapabilities(backend: ModelBackend, requires: Capability[]): Mode
 	return caps;
 }
 
-/** A positive integer limit from a candidate's capabilities, or undefined for none or a malformed one. */
 export function scoringLimit(caps: ModelCapabilities | undefined): number | undefined {
 	const limit = caps?.maxScoredChoices;
 	return Number.isSafeInteger(limit) && (limit as number) > 0 ? (limit as number) : undefined;
@@ -723,6 +722,8 @@ function resolveCandidates(kind: ModelKind, model: string | undefined, requires:
 /** Capabilities a call requires: its base method, the caller's `requires`, and `tools` when the input declares them. */
 function buildRequires(base: Capability, requires: Capability[] | undefined, includeTools: boolean): Capability[] {
 	const set = new Set<Capability>([base, ...(requires ?? [])]);
+	// A limit is not a capability; from untyped callers it would read as satisfied by any number.
+	set.delete('maxScoredChoices' as Capability);
 	if (includeTools) set.add('tools');
 	return [...set];
 }

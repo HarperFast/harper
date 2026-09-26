@@ -32,7 +32,6 @@ function makeMockWriter() {
 	};
 }
 
-/** A scoring backend with a stated limit that counts its calls. */
 function limitedScorer(name, maxScoredChoices) {
 	const backend = defineBackend({
 		name,
@@ -48,7 +47,6 @@ function limitedScorer(name, maxScoredChoices) {
 	return backend;
 }
 
-/** A vote generator that always answers with the first allowed value of every leaf. */
 function firstValueVotes(schema) {
 	const calls = [];
 	const answer = schema.properties
@@ -216,20 +214,40 @@ describe('scoring limits (#2849)', () => {
 		});
 
 		it('votes and persists a decision whose largest leaf exceeds 20 without sending a scoring request', async () => {
-			const requests = [];
+			const scoring = [];
+			const completions = [];
 			const fetch = async (url, init) => {
-				requests.push({ url, body: JSON.parse(init.body) });
-				throw new Error('no request is expected');
+				const body = JSON.parse(init.body);
+				if (body.logprobs) {
+					scoring.push(body);
+					throw new Error('no scoring request is expected');
+				}
+				completions.push(body);
+				return new Response(
+					JSON.stringify({
+						choices: [
+							{
+								message: { role: 'assistant', content: JSON.stringify({ small: 'v0', large: 'v0' }) },
+								finish_reason: 'stop',
+							},
+						],
+						usage: { prompt_tokens: 1, completion_tokens: 1 },
+					}),
+					{ status: 200, headers: { 'Content-Type': 'application/json' } }
+				);
 			};
 			setGenerative('default', new OpenAIBackend({ apiKey: 'k', model: 'gpt-4o-mini' }, fetch));
 			const schema = { type: 'object', properties: { small: { enum: letters(4) }, large: { enum: letters(25) } } };
-			const votes = firstValueVotes(schema);
-			setDecision('default', createGenerativeDecisionBackend({ samples: 2 }, { generate: votes.generate }));
+			setDecision('default', createGenerativeDecisionBackend({ samples: 2 }));
 			const writer = makeMockWriter();
 			const models = new Models(writer, () => {});
 			const decision = await models.decide('a ticket', schema);
-			assert.strictEqual(requests.length, 0);
-			assert.strictEqual(votes.calls.length, 2);
+			assert.strictEqual(scoring.length, 0);
+			assert.strictEqual(completions.length, 2);
+			assert.ok(
+				completions.every((c) => c.response_format),
+				'votes carry the response schema'
+			);
 			assert.deepStrictEqual(decision.value, { small: 'v0', large: 'v0' });
 			assert.ok(!writer.records.some((r) => r.method === 'scoreChoices'));
 			const stored = await models.getDecision(decision.id);
