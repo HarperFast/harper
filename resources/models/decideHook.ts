@@ -1,3 +1,4 @@
+import { ClientError } from '../../utility/errors/hdbError.ts';
 import { isAllowedValue } from './decision.ts';
 import {
 	runWriteJobs,
@@ -13,6 +14,8 @@ export type DecideConfig = {
 	source: string;
 	model: string;
 	confidence?: string;
+	/** A nullable `String` attribute that receives the durable `Decision.id`; the decision is recorded only when this is named (#2852). */
+	decision?: string;
 	instructions?: string;
 	/** Resolved from the attribute type and the directive arguments, and validated, when the schema loads. */
 	schema: DecisionLeaf;
@@ -23,11 +26,19 @@ export type DecideAttribute = {
 	decide: DecideConfig;
 };
 
-/** `null` clears the attribute and its confidence; `probability` is required when the directive names a confidence attribute. */
-export type DeciderResult = { value: unknown; probability?: number };
+/**
+ * `null` clears the attribute, its confidence and its decision id; `probability` is required when the
+ * directive names a confidence attribute. `id` must come from a `models.decide` call; an override for a
+ * directive without a `decision` attribute that calls `models.decide` passes `persist: false`.
+ */
+export type DeciderResult = { value: unknown; probability?: number; id?: string };
 export type Decider = (record: any, hook?: WriteHookContext) => Promise<DeciderResult | null | undefined>;
 
-type DecideFn = (state: DecideInput, schema: DecisionLeaf, opts: DecideOpts) => Promise<Decision>;
+type DecideFn = (
+	state: DecideInput,
+	schema: DecisionLeaf,
+	opts: Omit<DecideOpts, 'persist'> & { persist: boolean }
+) => Promise<Omit<Decision, 'id'> & { id?: string }>;
 
 // Lazy-imported so this module can be unit-tested without loading the transaction
 // stack `Models.ts` pulls in. Overridable via `__setDecideFnForTest`.
@@ -47,13 +58,14 @@ export function __setDecideFnForTest(fn: DecideFn | undefined): void {
 
 export function createDefaultDecider(config: DecideConfig): Decider {
 	const { source, model, instructions, schema } = config;
+	const persist = Boolean(config.decision);
 	return async (record: any, hook?: WriteHookContext): Promise<DeciderResult | null> => {
 		const sourceValue = record?.[source];
 		if (sourceValue == null) return null;
 		// An object source is program state the primitive serializes itself; anything else is text.
 		const state: DecideInput = typeof sourceValue === 'object' ? sourceValue : String(sourceValue);
-		const decision = await resolveDecideFn()(state, schema, { model, instructions, signal: hook?.signal });
-		return { value: decision.value, probability: decision.probability };
+		const decision = await resolveDecideFn()(state, schema, { model, instructions, signal: hook?.signal, persist });
+		return { value: decision.value, probability: decision.probability, id: decision.id };
 	};
 }
 
@@ -65,19 +77,35 @@ export function buildDecideBefore(
 	deciders: Record<string, Decider>
 ): WriteHook | undefined {
 	if (!decideAttributes || decideAttributes.length === 0) return undefined;
-	if (!writeHookApplies(record, context, options)) return undefined;
+	const applies = writeHookApplies(record, context, options);
+	if (record && typeof record === 'object' && options?.isNotification !== true && context?.alreadyLogged !== true)
+		for (const attr of decideAttributes) {
+			const { decision, source } = attr.decide;
+			if (!decision || !(decision in record)) continue;
+			const state = applies ? sourceState(record, source) : 'absent';
+			// The id is provenance a later outcome report trusts, so only a write that derives or clears it may carry it.
+			if (state !== 'value' && state !== 'null') {
+				const error = new ClientError(
+					`"${decision}" is written by @decide on "${attr.name}"; a write may carry it only with a value for "${source}"`,
+					400
+				);
+				return () => Promise.reject(error);
+			}
+		}
+	if (!applies) return undefined;
 	let present = false;
 	for (const attr of decideAttributes) if (sourceState(record, attr.decide?.source) !== 'absent') present = true;
 	if (!present) return undefined;
 	return (signal) =>
 		runWriteJobs(
 			decideAttributes.map((attr) => async (jobSignal) => {
-				const { source, confidence, schema } = attr.decide;
+				const { source, confidence, decision, schema } = attr.decide;
 				const state = sourceState(record, source);
 				if (state === 'absent' || state === 'op') return;
 				const clear = () => {
 					record[attr.name] = null;
 					if (confidence) record[confidence] = null;
+					if (decision) record[decision] = null;
 				};
 				if (state === 'null') return clear();
 				const decider = deciders[attr.name];
@@ -106,6 +134,7 @@ export function buildDecideBefore(
 				} else {
 					record[attr.name] = result.value;
 				}
+				if (decision) record[decision] = typeof result.id === 'string' && result.id !== '' ? result.id : null;
 			}),
 			signal
 		);

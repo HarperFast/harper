@@ -11,6 +11,17 @@ export interface Models {
 	embed(input: string | string[], opts?: EmbedOpts): Promise<Float32Array[]>;
 	generate(input: GenerateInput, opts?: GenerateOpts): Promise<GenerateResult>;
 	generateStream(input: GenerateInput, opts?: GenerateOpts): AsyncIterable<GenerateChunk>;
+	/** Choose from a closed, schema-defined set and return the distribution over it, without recording it (#2852). */
+	decide<T = unknown>(
+		state: DecideInput,
+		schema: DecisionSchema,
+		opts: UnrecordedDecideOpts
+	): Promise<UnrecordedDecision<T>>;
+	decide<T = unknown>(
+		state: DecideInput,
+		schema: DecisionSchema,
+		opts: PersistChoiceDecideOpts
+	): Promise<Decision<T> | UnrecordedDecision<T>>;
 	/** Choose from a closed, schema-defined set and return the distribution over it. See #2779. */
 	decide<T = unknown>(state: DecideInput, schema: DecisionSchema, opts?: DecideOpts): Promise<Decision<T>>;
 	/** The durable record of a decision with its recorded outcome, or undefined. See #2840. */
@@ -157,7 +168,15 @@ export type DecideOpts = {
 	/** Task framing beyond the schema's own descriptions. */
 	instructions?: string;
 	signal?: AbortSignal;
+	/** Record the decision durably (the default). `false` belongs to `UnrecordedDecideOpts`, so an unrecorded call never reaches an overload that promises an `id`. */
+	persist?: true;
 };
+
+/** Options for a decision nobody will record an outcome for: nothing is committed and the result carries no `id` (#2852). */
+export type UnrecordedDecideOpts = Omit<DecideOpts, 'persist'> & { persist: false };
+
+/** Options whose `persist` is only known at run time. */
+export type PersistChoiceDecideOpts = Omit<DecideOpts, 'persist'> & { persist: boolean };
 
 export interface DecisionOutcome {
 	value: unknown;
@@ -202,6 +221,9 @@ export interface Decision<T = unknown> {
 	calibrated: boolean;
 	usage?: TokenUsage;
 }
+
+/** A decision made with `persist: false`: the same result without a durable record or `id`. */
+export type UnrecordedDecision<T = unknown> = Omit<Decision<T>, 'id'>;
 
 /** One field's marginal in an object-schema `Decision`. */
 export interface FieldDecision {

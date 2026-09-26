@@ -79,6 +79,7 @@ import {
 	sweepDroppedTableBlobs,
 	storeNameFor,
 	storeNamesFor,
+	isReadOnlyMode,
 } from './databases.ts';
 import { notifyReplicatedApplyFailure } from './replicatedApplyFailure.ts';
 import {
@@ -4617,7 +4618,7 @@ export function makeTable(options) {
 			// txn `before` slot runs after commit). They see the payload before table validation, and a
 			// tracked-instance mutation that sets the source via accessors after update() is not seen.
 			const modelHooksBefore =
-				TableResource.embedAttributes.length || TableResource.decideAttributes.length
+				(TableResource.embedAttributes.length || TableResource.decideAttributes.length) && !isReadOnlyMode()
 					? combineWriteHooks(
 							buildEmbedBefore(
 								recordUpdate,
@@ -8138,7 +8139,8 @@ export function makeTable(options) {
 			replacingVersion: existingVersion,
 			// Once dropTable() has started, no new source-fill write may begin; still resolve the
 			// caller's read with fresh source data, just don't cache it into a table that's going away.
-			noCacheStore: droppingTable,
+			// No write can commit on a read-only node, so a fill there is served but never staged.
+			noCacheStore: droppingTable || isReadOnlyMode(),
 			source: null,
 			transaction: undefined,
 			expiresAt: undefined,

@@ -266,6 +266,8 @@ describe('@decide write path (real table)', () => {
 			assert.equal(failures, 1);
 			assert.equal(Cached.primaryStore.get('fail1'), undefined, 'the failed fill is not cached');
 			assert.deepEqual(unhandled, []);
+			await Cached.put('w1', { body: 'refund please' }).catch(() => {});
+			assert.equal(decideFn.calls.length, 0, 'no model call for a write on a read-only node');
 		} finally {
 			process.off('unhandledRejection', onUnhandled);
 		}
@@ -295,5 +297,63 @@ describe('@decide schema reload', () => {
 		assert.notEqual(after.userDeciders.route, firstDecider, 'the default decider is rebuilt from the new descriptor');
 		assert.equal(route.indexingPID, undefined, 'an instructions change must not schedule an index rebuild');
 		assert.equal(after.indices?.route?.isIndexing ?? false, false);
+	});
+});
+
+describe('@decide decision id and read-only nodes (#2852, #2850)', () => {
+	const { __setReadOnlyModeForTest } = require('#src/resources/databases');
+	let decideFn;
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+	beforeEach(() => {
+		decideFn = fakeDecide();
+		__setDecideFnForTest(decideFn);
+	});
+	afterEach(() => __setReadOnlyModeForTest(undefined));
+	after(() => __setDecideFnForTest(undefined));
+
+	const attributes = (decision) => [
+		{ name: 'id', isPrimaryKey: true },
+		{ name: 'body', type: 'String' },
+		{ name: 'tag', type: 'String' },
+		{ name: 'route', type: 'String', decide: { source: 'body', model: 'default', decision, schema: { enum: ROUTES } } },
+		...(decision ? [{ name: decision, type: 'String' }] : []),
+	];
+
+	it('a linked directive stores the id and asks for a recorded decision; an unlinked one asks for none', async () => {
+		const Linked = table({ table: 'DecideLinked', database: 'test', attributes: attributes('routeDecision') });
+		Linked.updatedAttributes();
+		await Linked.put('l1', { body: 'refund please' });
+		assert.equal((await Linked.get('l1')).routeDecision, 'row');
+		const Unlinked = table({ table: 'DecideUnlinked', database: 'test', attributes: attributes() });
+		Unlinked.updatedAttributes();
+		await Unlinked.put('u1', { body: 'refund please' });
+		assert.deepEqual(
+			decideFn.calls.map((call) => call.opts.persist),
+			[true, false]
+		);
+		await assert.rejects(Linked.patch('l1', { routeDecision: 'forged' }), (err) => err.statusCode === 400);
+		assert.equal((await Linked.get('l1')).routeDecision, 'row');
+	});
+
+	it('on a read-only node no hook calls a model and a cache fill is served without being stored', async () => {
+		const Cached = table({ table: 'DecideReadOnlyCache', database: 'test', attributes: attributes('routeDecision') });
+		Cached.updatedAttributes();
+		__setReadOnlyModeForTest(true);
+		Cached.sourcedFrom({ get: async (id) => ({ id, body: `bug report ${id}` }), available: () => true });
+		const unhandled = [];
+		const onUnhandled = (reason) => unhandled.push(reason);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			for (const id of ['r1', 'r1', 'r2']) assert.equal((await Cached.get(id)).body, `bug report ${id}`);
+			await delay(100);
+			assert.equal(decideFn.calls.length, 0, 'no model call for a fill that cannot be stored');
+			assert.equal(Cached.primaryStore.get('r1'), undefined);
+			assert.deepEqual(unhandled, []);
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
+		}
 	});
 });

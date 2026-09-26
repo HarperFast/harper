@@ -39,6 +39,9 @@ import type {
 	ChoiceScores,
 	DecideInput,
 	DecideOpts,
+	PersistChoiceDecideOpts,
+	UnrecordedDecideOpts,
+	UnrecordedDecision,
 	Decision,
 	DecisionOutput,
 	DecisionRecord,
@@ -311,22 +314,40 @@ export class Models implements ModelsContract {
 	 * state rejects before routing, with no analytics row: nothing was called. The record is committed
 	 * before the decision is returned: a read-only node rejects before routing, and a commit failure
 	 * rejects without another candidate, so a storage fault never bills a second model call.
+	 * `persist: false` commits nothing and returns no `id`, so it needs no writable node.
 	 */
-	async decide<T = unknown>(state: DecideInput, schema: DecisionSchema, opts: DecideOpts = {}): Promise<Decision<T>> {
+	decide<T = unknown>(
+		state: DecideInput,
+		schema: DecisionSchema,
+		opts: UnrecordedDecideOpts
+	): Promise<UnrecordedDecision<T>>;
+	decide<T = unknown>(
+		state: DecideInput,
+		schema: DecisionSchema,
+		opts: PersistChoiceDecideOpts
+	): Promise<Decision<T> | UnrecordedDecision<T>>;
+	decide<T = unknown>(state: DecideInput, schema: DecisionSchema, opts?: DecideOpts): Promise<Decision<T>>;
+	async decide<T = unknown>(
+		state: DecideInput,
+		schema: DecisionSchema,
+		opts: DecideOpts | UnrecordedDecideOpts | PersistChoiceDecideOpts = {}
+	): Promise<Decision<T> | UnrecordedDecision<T>> {
 		validateDecisionSchema(schema);
 		stateToText(state);
-		this.#decisionStore.assertWritable('Decisions');
+		if (opts.persist !== undefined && typeof opts.persist !== 'boolean')
+			throw new DecisionInputError('persist must be a boolean');
+		const persist = opts.persist !== false;
+		if (persist) this.#decisionStore.assertWritable('Decisions');
 		// the call and its record share one snapshot of the schema and options; nothing the caller mutates afterwards reaches either
 		const call = snapshotSchema(schema);
 		if (opts.instructions !== undefined && typeof opts.instructions !== 'string')
 			throw new DecisionInputError('instructions must be a string');
 		const instructions = opts.instructions || undefined;
-		const callOpts: DecideOpts = { ...opts, instructions, requires: opts.requires ? [...opts.requires] : undefined };
-		const identity: CallIdentity = {
-			hash: hashSchema(call),
-			scoring: scoringSchema(call),
-			configHash: getModelsConfigHash(),
-		};
+		const { persist: _persist, ...rest } = opts;
+		const callOpts: DecideOpts = { ...rest, instructions, requires: opts.requires ? [...opts.requires] : undefined };
+		const identity: CallIdentity | undefined = persist
+			? { hash: hashSchema(call), scoring: scoringSchema(call), configHash: getModelsConfigHash() }
+			: undefined;
 		const { accounting, signal } = resolveCallContext(callOpts.signal);
 		const startedAt = performance.now();
 		const resolved = resolveCandidates('decision', callOpts.model, buildRequires('decide', callOpts.requires, false));
@@ -364,6 +385,7 @@ export class Models implements ModelsContract {
 				continue;
 			}
 			const callId = this.#record(backend, 'decide', callOpts.model, accounting, undefined, result, attemptStart);
+			if (!identity) return result.usage ? { ...decision, usage: result.usage } : decision;
 			const id = await this.#persistDecision(
 				callId,
 				backend,

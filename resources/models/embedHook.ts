@@ -153,7 +153,7 @@ type DerivedAttribute = {
 	isPrimaryKey?: boolean;
 	computed?: unknown;
 	embed?: { source: string };
-	decide?: { source: string; confidence?: string; schema?: unknown };
+	decide?: { source: string; confidence?: string; decision?: string; schema?: unknown };
 };
 
 const INT32_MIN = -2147483648;
@@ -191,8 +191,8 @@ export function assertDerivedFieldOwnership(attributes: DerivedAttribute[]): voi
 	};
 	const directives = (
 		attribute: DerivedAttribute
-	): Array<[string, { source: string; confidence?: string; schema?: unknown }]> => {
-		const out: Array<[string, { source: string; confidence?: string; schema?: unknown }]> = [];
+	): Array<[string, { source: string; confidence?: string; decision?: string; schema?: unknown }]> => {
+		const out: Array<[string, { source: string; confidence?: string; decision?: string; schema?: unknown }]> = [];
 		if (attribute.embed) out.push(['@embed', attribute.embed]);
 		if (attribute.decide) out.push(['@decide', attribute.decide]);
 		return out;
@@ -201,10 +201,10 @@ export function assertDerivedFieldOwnership(attributes: DerivedAttribute[]): voi
 		if (!attribute) continue;
 		for (const [directive, config] of directives(attribute)) {
 			const writer = `${directive} on "${attribute.name}"`;
-			for (const field of [attribute.name, config.source, config.confidence])
+			for (const field of [attribute.name, config.source, config.confidence, config.decision])
 				if (field && Object.hasOwn(Object.prototype, field))
 					throw new ClientError(
-						`${writer}: "${field}" is an Object.prototype key and cannot be a derived, source or confidence field`,
+						`${writer}: "${field}" is an Object.prototype key and cannot be a derived, source, confidence or decision field`,
 						400
 					);
 			if (!declared.has(config.source))
@@ -251,6 +251,27 @@ export function assertDerivedFieldOwnership(attributes: DerivedAttribute[]): voi
 						400
 					);
 				claim(config.confidence, writer);
+			}
+			if (config.decision) {
+				const decisionField = declared.get(config.decision);
+				if (!decisionField)
+					throw new ClientError(`${writer} references unknown decision field "${config.decision}"`, 400);
+				if (decisionField.type !== undefined && decisionField.type !== 'String')
+					throw new ClientError(
+						`${writer} requires a String decision attribute; "${config.decision}" is ${decisionField.type === 'array' ? '[...]' : decisionField.type}`,
+						400
+					);
+				if (decisionField.nullable === false)
+					throw new ClientError(
+						`${writer}: decision attribute "${config.decision}" cannot be declared non-null: a null source clears it`,
+						400
+					);
+				if (decisionField.isPrimaryKey || decisionField.computed)
+					throw new ClientError(
+						`${writer}: decision attribute "${config.decision}" cannot be @primaryKey or @computed`,
+						400
+					);
+				claim(config.decision, writer);
 			}
 		}
 	}

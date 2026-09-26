@@ -228,6 +228,50 @@ describe('models.decide persists its decision and models.recordOutcome scores it
 		);
 	});
 
+	it('persist: false commits nothing, returns no id, needs no writable node, and never reaches the backend (#2852)', async () => {
+		let puts = 0;
+		const readOnly = new DecisionStore({
+			isReadOnly: () => true,
+			getTables: () => ({
+				decisions: {
+					put() {
+						puts++;
+					},
+					get() {},
+				},
+				outcomes: { get() {}, put() {} },
+			}),
+		});
+		const m = new Models(writer, () => {}, readOnly);
+		const seen = [];
+		setDecision(
+			'default',
+			defineBackend({
+				name: 'spy',
+				decide: async (_state, _schema, opts) => {
+					seen.push(opts);
+					return { status: 'completed', output: { distribution: oneHot('bug') } };
+				},
+			})
+		);
+		const decision = await m.decide('x', QUEUE, { persist: false });
+		assert.equal(decision.value, 'bug');
+		assert.equal('id' in decision, false);
+		assert.equal(puts, 0);
+		assert.equal(writer.records.length, 1, 'the call is still logged');
+		assert.equal('persist' in seen[0], false, 'the option stays in the facade');
+		for (const bad of ['no', 0, null])
+			await assert.rejects(
+				m.decide('x', QUEUE, { persist: bad }),
+				(err) => err.statusCode === 400 && /persist/.test(err.message)
+			);
+		assert.equal(seen.length, 1, 'a malformed option never routes');
+		await assert.rejects(
+			m.decide('x', QUEUE),
+			(err) => err instanceof DecisionPersistenceError && err.statusCode === 503
+		);
+	});
+
 	it('rejects a missing or non-string id with a 400', async () => {
 		for (const bad of ['', 5, undefined, null]) {
 			await assert.rejects(models.getDecision(bad), (err) => err.statusCode === 400);
