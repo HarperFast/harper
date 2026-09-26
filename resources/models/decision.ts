@@ -315,27 +315,37 @@ function extractSampleValues(schema: DecisionSchema, sample: Record<string, unkn
 	return checkSampleValue(schema, sample.value, "'value'");
 }
 
-const MAX_BRACE_CANDIDATES = 32;
+const MAX_OBJECT_SPANS = 64;
 
 /**
- * Every `{`…`}` span that parses to a JSON object, outermost first. A backend that ignores
- * `responseFormat` (Anthropic, Bedrock) answers from the prompt alone and may wrap the object in
- * code fences or prose with braces of its own; the schema check on each candidate is what tells
- * the answer from the rest, so no span is preferred over another.
+ * Every balanced `{`…`}` span that parses to a JSON object, innermost first. A backend that
+ * ignores `responseFormat` (Anthropic, Bedrock) answers from the prompt alone and may wrap the
+ * object in code fences or prose with braces of its own; the schema check on each candidate is
+ * what tells the answer from the rest, so no span is preferred over another. Braces inside JSON
+ * strings are text, and a reply with more than `MAX_OBJECT_SPANS` balanced spans fails rather
+ * than being searched partially.
  */
 function* jsonObjectSpans(text: string): Generator<Record<string, unknown>> {
 	const opens: number[] = [];
-	const closes: number[] = [];
-	for (let i = text.indexOf('{'); i >= 0 && opens.length < MAX_BRACE_CANDIDATES; i = text.indexOf('{', i + 1))
-		opens.push(i);
-	for (let i = text.lastIndexOf('}'); i > 0 && closes.length < MAX_BRACE_CANDIDATES; i = text.lastIndexOf('}', i - 1))
-		closes.push(i);
-	for (const start of opens) {
-		for (const end of closes) {
-			if (end <= start) break;
+	let inString = false;
+	let escaped = false;
+	let spans = 0;
+	for (let i = 0; i < text.length; i++) {
+		const ch = text[i];
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (ch === '\\') escaped = true;
+			else if (ch === '"') inString = false;
+			continue;
+		}
+		if (ch === '"') inString = true;
+		else if (ch === '{') opens.push(i);
+		else if (ch === '}' && opens.length > 0) {
+			const start = opens.pop()!;
+			if (++spans > MAX_OBJECT_SPANS) throw new Error('the sample has too many objects');
 			let parsed: unknown;
 			try {
-				parsed = JSON.parse(text.slice(start, end + 1));
+				parsed = JSON.parse(text.slice(start, i + 1));
 			} catch {
 				continue;
 			}

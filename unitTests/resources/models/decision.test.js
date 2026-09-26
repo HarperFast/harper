@@ -426,3 +426,20 @@ describe('parseDecisionSample with more than one code fence', () => {
 		);
 	});
 });
+
+describe('parseDecisionSample on long or brace-heavy replies', () => {
+	it('is not cut short by many stray braces, treats braces inside strings as text, and fails loudly on absurd object counts', () => {
+		const strays = '{ '.repeat(40);
+		assert.throws(
+			() => parseDecisionSample(QUEUE, `Example: {"value":"other"} ${strays} Final: {"value":"bug"}`),
+			/more than one answer/
+		);
+		assert.strictEqual(parseDecisionSample(QUEUE, `{"value":"bug"}${' }'.repeat(40)}`), 'bug');
+		assert.throws(
+			() => parseDecisionSample(QUEUE, `{"value":"other"} then {"value":"bug"}${' }'.repeat(40)}`),
+			/more than one answer/
+		);
+		assert.strictEqual(parseDecisionSample(QUEUE, 'A "{" in quotes, then {"value":"bug","note":"a {b} c"}'), 'bug');
+		assert.throws(() => parseDecisionSample(QUEUE, '{}'.repeat(70)), /too many objects/);
+	});
+});
