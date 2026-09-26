@@ -250,7 +250,6 @@ const READINESS_STATES: DerivedIndexReadinessState[] = [
 	'needs-rebuild',
 	'unavailable',
 ];
-// These sentinels live outside READINESS_STATES; readReadiness maps them back to public states.
 const READINESS_BACKEND_FAILED = READINESS_STATES.length;
 const READINESS_RETRYING = READINESS_BACKEND_FAILED + 1;
 const READINESS_REASONS: DerivedIndexReadinessReason[] = [

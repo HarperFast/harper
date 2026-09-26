@@ -2511,7 +2511,6 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 	}
 	const { databaseNames, dbTables, rootStores } = collectDatabaseGraph(databaseName);
 
-	// All root markers become durable before the first destructive step.
 	const dropLocks: DatabaseDropLock[] = [];
 	let releaseDerivedIndexActivation: (() => void) | undefined;
 	let destructiveWorkStarted = false;
