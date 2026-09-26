@@ -85,7 +85,9 @@ describe('@decide write path (real table)', () => {
 		assert.equal(b1.routeConfidence, 1);
 		assert.equal(b1.urgent, false);
 		assert.equal(decideFn.calls.length, 4, 'one call per attribute per write');
-		assert.deepEqual(decideFn.calls[0].opts, { model: 'default', instructions: undefined });
+		assert.equal(decideFn.calls[0].opts.model, 'default');
+		assert.equal(decideFn.calls[0].opts.instructions, undefined);
+		assert.ok(decideFn.calls[0].opts.signal instanceof AbortSignal, 'the write hook signal reaches the model call');
 	});
 
 	it('a review queue is a range condition on the indexed confidence attribute', async () => {

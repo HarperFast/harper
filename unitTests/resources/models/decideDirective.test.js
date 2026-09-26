@@ -224,7 +224,7 @@ describe('@decide directive parsing', () => {
 				body: String
 				route: String @decide(source: "toString", values: ["a", "b"])
 			}`,
-			/unknown source field "toString"/
+			/"toString" is an Object.prototype key/
 		);
 	});
 
@@ -270,6 +270,26 @@ describe('@decide directive parsing', () => {
 				route: String @decide(source: "body", values: ["a", "b"], confidence: "body")
 			}`,
 			/must be different fields/
+		);
+	});
+
+	it('rejects an Object.prototype key as the decided, source or confidence field', async () => {
+		await rejects(
+			`type DecideProtoAttr @table {
+				id: ID @primaryKey
+				body: String
+				valueOf: String @decide(source: "body", values: ["a", "b"])
+			}`,
+			/"valueOf" is an Object.prototype key/
+		);
+		await rejects(
+			`type DecideProtoConf @table {
+				id: ID @primaryKey
+				body: String
+				route: String @decide(source: "body", values: ["a", "b"], confidence: "hasOwnProperty")
+				hasOwnProperty: Float
+			}`,
+			/"hasOwnProperty" is an Object.prototype key/
 		);
 	});
 

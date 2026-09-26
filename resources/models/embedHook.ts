@@ -2,9 +2,10 @@
  * `@embed` directive write-time hook. `createDefaultEmbedder` builds the embedder
  * a table registers for an `@embed` attribute; `buildEmbedBefore` produces the
  * pre-commit callback that runs registered embedders and writes their vectors onto
- * the record before it commits. The trigger rules, source handling, error sanitizing
- * and hook composition are shared with the `@decide` hook (`decideHook.ts`).
+ * the record before it commits. The trigger rules, source handling, error sanitizing,
+ * cancellation and hook composition are shared with the `@decide` hook (`decideHook.ts`).
  */
+import { ClientError } from '../../utility/errors/hdbError.ts';
 
 // Lazily resolved to avoid a require cycle on the unit-test load path; only needed on failure.
 function getLogger(): { error?: (...args: any[]) => void } {
@@ -26,12 +27,17 @@ export type EmbedAttribute = {
 	embed: EmbedConfig;
 };
 
-export type Embedder = (record: any) => Promise<number[] | Float32Array | null | undefined>;
+/** The signal aborts when a sibling hook of the same write fails; a hook that honors it lets the write fail promptly. */
+export type WriteHookContext = { signal: AbortSignal };
 
-// Matches the public `Models.embed` signature; a named type so tests can inject a fake.
+export type Embedder = (record: any, hook?: WriteHookContext) => Promise<number[] | Float32Array | null | undefined>;
+
+/** A pre-commit callback of one write; `signal` is the write's, aborted when another hook of the write fails. */
+export type WriteHook = (signal?: AbortSignal) => Promise<void>;
+
 type EmbedFn = (
 	input: string | string[],
-	opts: { model?: string; inputType?: 'document' | 'query' }
+	opts: { model?: string; inputType?: 'document' | 'query'; signal?: AbortSignal }
 ) => Promise<Float32Array[]>;
 
 // Lazy-imported so this module can be unit-tested without loading the transaction
@@ -77,19 +83,50 @@ export function sourceState(record: any, sourceKey: string | undefined): SourceS
 	return 'value';
 }
 
-/** Settle every job before reporting the first failure, so no job keeps mutating the record after the write is rejected. */
-export async function settleAll(jobs: Promise<void>[]): Promise<void> {
-	for (const result of await Promise.allSettled(jobs)) if (result.status === 'rejected') throw result.reason;
+export function anySourcePresent(record: any, sources: Array<string | undefined>): boolean {
+	for (const source of sources) if (sourceState(record, source) !== 'absent') return true;
+	return false;
 }
 
-/** The pre-commit callbacks of the write hooks as one; they write disjoint attributes, so they run concurrently. */
-export function combineWriteHooks(
-	...hooks: Array<(() => Promise<void>) | undefined>
-): (() => Promise<void>) | undefined {
-	const present = hooks.filter((hook): hook is () => Promise<void> => hook !== undefined);
-	if (present.length === 0) return undefined;
-	if (present.length === 1) return present[0];
-	return () => settleAll(present.map((hook) => hook()));
+/**
+ * Run the jobs of one write. The first failure aborts the others, and every job settles before
+ * that failure is reported: a rejected write neither waits on a sibling that honors the signal
+ * nor keeps being mutated by one that has not finished. A job that ignores the signal is
+ * awaited regardless, so the model calls behind the built-in hooks forward it.
+ */
+export async function runWriteJobs(
+	jobs: Array<(signal: AbortSignal) => Promise<void>>,
+	signal?: AbortSignal
+): Promise<void> {
+	const controller = new AbortController();
+	const onAbort = () => controller.abort(signal?.reason);
+	if (signal?.aborted) onAbort();
+	else signal?.addEventListener('abort', onAbort, { once: true });
+	let failed = false;
+	let failure: unknown;
+	try {
+		await Promise.all(
+			jobs.map((job) =>
+				job(controller.signal).catch((err) => {
+					if (!failed) {
+						failed = true;
+						failure = err;
+					}
+					controller.abort(err);
+				})
+			)
+		);
+	} finally {
+		signal?.removeEventListener('abort', onAbort);
+	}
+	if (failed) throw failure;
+}
+
+/** The `@embed` and `@decide` callbacks of one write as one; fixed arity, so a write with neither allocates nothing. */
+export function combineWriteHooks(a: WriteHook | undefined, b: WriteHook | undefined): WriteHook | undefined {
+	if (!a) return b;
+	if (!b) return a;
+	return (signal) => runWriteJobs([a, b], signal);
 }
 
 const SAFE_ERROR_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
@@ -113,14 +150,55 @@ export function sanitizedHookError(actor: string, product: string, attributeName
 	);
 }
 
+type DerivedAttribute = {
+	name: string;
+	embed?: { source: string };
+	decide?: { source: string; confidence?: string };
+};
+
+/**
+ * Every derived field (an `@embed` target, a `@decide` target or confidence) has exactly one
+ * writer, and no directive derives from another directive's output: the hooks run concurrently
+ * within one write, so the stored pair would otherwise depend on scheduling. Run by the schema
+ * loader and by the table on every attribute refresh, so a programmatic declaration is held
+ * to the same rule.
+ */
+export function assertDerivedFieldOwnership(attributes: DerivedAttribute[]): void {
+	const writers = new Map<string, string>();
+	const claim = (field: string, writer: string) => {
+		const prior = writers.get(field);
+		if (prior) throw new ClientError(`${writer} and ${prior} both write "${field}"`, 400);
+		writers.set(field, writer);
+	};
+	for (const attribute of attributes) {
+		if (attribute.embed) claim(attribute.name, `@embed on "${attribute.name}"`);
+		if (attribute.decide) {
+			claim(attribute.name, `@decide on "${attribute.name}"`);
+			if (attribute.decide.confidence) claim(attribute.decide.confidence, `@decide on "${attribute.name}"`);
+		}
+	}
+	for (const attribute of attributes) {
+		const directive = attribute.embed ? '@embed' : attribute.decide ? '@decide' : undefined;
+		if (!directive) continue;
+		const source = (attribute.embed ?? attribute.decide)!.source;
+		const sourceWriter = writers.get(source);
+		if (sourceWriter)
+			throw new ClientError(
+				`${directive} on "${attribute.name}" derives from "${source}", which ${sourceWriter} writes`,
+				400
+			);
+	}
+}
+
 export function createDefaultEmbedder(embedConfig: EmbedConfig): Embedder {
 	const { source, model } = embedConfig;
-	return async (record: any): Promise<number[] | null | undefined> => {
+	return async (record: any, hook?: WriteHookContext): Promise<number[] | null | undefined> => {
 		const sourceValue = record?.[source];
 		if (sourceValue == null) return null;
 		const vectors = await resolveEmbedFn()(String(sourceValue), {
 			model,
 			inputType: 'document',
+			signal: hook?.signal,
 		});
 		const v = vectors?.[0];
 		if (v == null) return undefined;
@@ -144,14 +222,19 @@ export function buildEmbedBefore(
 	options: any,
 	embedAttributes: EmbedAttribute[] | undefined,
 	userEmbedders: Record<string, Embedder>
-): (() => Promise<void>) | undefined {
+): WriteHook | undefined {
 	if (!embedAttributes || embedAttributes.length === 0) return undefined;
 	if (!writeHookApplies(record, context, options)) return undefined;
-	if (!embedAttributes.some((attr) => sourceState(record, attr.embed?.source) !== 'absent')) return undefined;
-	// Parallel: each embedder mutates a distinct attribute, so there's no ordering hazard.
-	return () =>
-		settleAll(
-			embedAttributes.map(async (attr) => {
+	if (
+		!anySourcePresent(
+			record,
+			embedAttributes.map((attr) => attr.embed?.source)
+		)
+	)
+		return undefined;
+	return (signal) =>
+		runWriteJobs(
+			embedAttributes.map((attr) => async (jobSignal) => {
 				const state = sourceState(record, attr.embed?.source);
 				if (state === 'absent' || state === 'op') return;
 				if (state === 'null') {
@@ -162,12 +245,13 @@ export function buildEmbedBefore(
 				if (!embedder) return;
 				let vector;
 				try {
-					vector = await embedder(record);
+					vector = await embedder(record, { signal: jobSignal });
 				} catch (err) {
 					throw sanitizedHookError('Embedder', 'embedding', attr.name, err);
 				}
 				record[attr.name] = normalizeVector(vector);
-			})
+			}),
+			signal
 		);
 }
 

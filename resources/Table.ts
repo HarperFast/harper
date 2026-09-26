@@ -140,6 +140,7 @@ import {
 	type LockControlEntry,
 } from './recordLockCoordinator.ts';
 import {
+	assertDerivedFieldOwnership,
 	buildEmbedBefore,
 	combineWriteHooks,
 	createDefaultEmbedder,
@@ -1147,7 +1148,6 @@ export function makeTable(options) {
 		static userEmbedders: { [name: string]: Embedder } = {};
 		static userSetEmbedders: Set<string> = new Set();
 		static embedAttributes: EmbedAttribute[] = (attributes as any[]).filter((a) => a?.embed);
-		// `@decide` hook registry, the same shape as the `@embed` one.
 		static userDeciders: { [name: string]: Decider } = {};
 		static userSetDeciders: Set<string> = new Set();
 		static decideAttributes: DecideAttribute[] = (attributes as any[]).filter((a) => a?.decide);
@@ -4614,14 +4614,11 @@ export function makeTable(options) {
 			};
 			this.#savingOperation = write;
 			// The `@embed` and `@decide` hooks must run before `addWrite` so the derived values are
-			// on the record when `commit` runs. (The txn `before` slot runs after commit, which
-			// suits blob writes but not embedding, where the vector must be present at commit.)
-			// Known limitation of this write-time placement (a validate-time alternative was
-			// tried and reverted as a Harper-foreign pattern): the hooks see this write's
-			// payload, before table validation — so a write that later fails validation still
-			// calls the backend, and a tracked-instance mutation (update(id,{}); row.source=…;
-			// save()) that sets the source via accessors after update() won't re-derive. A
-			// resource-layer re-run is the proper fix; tracked as a follow-up.
+			// on the record when `commit` runs (the txn `before` slot runs after commit). Known
+			// limitation of this placement: the hooks see this write's payload before table
+			// validation, so a write that later fails validation still calls the backend, and a
+			// tracked-instance mutation that sets the source via accessors after update() won't
+			// re-derive. A resource-layer re-run is the proper fix; tracked as a follow-up.
 			const modelHooksBefore = combineWriteHooks(
 				buildEmbedBefore(recordUpdate, context, options, TableResource.embedAttributes, TableResource.userEmbedders),
 				buildDecideBefore(recordUpdate, context, options, TableResource.decideAttributes, TableResource.userDeciders)
@@ -6909,6 +6906,9 @@ export function makeTable(options) {
 			// class-construction snapshot would otherwise go stale.
 			this.embedAttributes = (this.attributes as any[]).filter((a) => a?.embed);
 			this.decideAttributes = (this.attributes as any[]).filter((a) => a?.decide);
+			// A programmatic declaration (`table({ attributes })`) never passed the schema loader.
+			if (this.embedAttributes.length > 0 || this.decideAttributes.length > 0)
+				assertDerivedFieldOwnership(this.attributes as any[]);
 			expiresAtProperty = this.attributes.find((attribute) => attribute.expiresAt);
 			// Drop registry entries for attributes that are no longer `@embed` / `@decide`, so a dropped
 			// directive doesn't leave a stale hook or block a default refresh on re-add.
@@ -6954,10 +6954,10 @@ export function makeTable(options) {
 				const computed = attribute.computed;
 				// Register the default embedder unless an author override is set. Sits outside
 				// the resolver chain below so `@embed` fields still flow through auto-HNSW indexing.
-				if (attribute.embed && !TableResource.userSetEmbedders.has(attribute.name)) {
+				if (attribute.embed && !this.userSetEmbedders.has(attribute.name)) {
 					this.userEmbedders[attribute.name] = createDefaultEmbedder(attribute.embed);
 				}
-				if (attribute.decide && !TableResource.userSetDeciders.has(attribute.name)) {
+				if (attribute.decide && !this.userSetDeciders.has(attribute.name)) {
 					this.userDeciders[attribute.name] = createDefaultDecider(attribute.decide);
 				}
 				if (relationship) {
@@ -7194,8 +7194,9 @@ export function makeTable(options) {
 		/**
 		 * Override the default decider for a `@decide` attribute. Return `{ value, probability }`
 		 * to store at the attribute and its confidence attribute, or `null` to clear both. The
-		 * value must be one the directive allows. Like an embedder, the decider receives the write
-		 * payload, not the post-merge record.
+		 * value must be one the directive allows, and the probability is required when the
+		 * directive names a confidence attribute. Like an embedder, the decider receives the write
+		 * payload, not the post-merge record, and a `signal` that aborts when a sibling hook fails.
 		 */
 		static setDecideAttribute(attribute_name: string, decider: Decider): void {
 			const attribute = findAttribute(attributes, attribute_name);
