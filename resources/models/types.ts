@@ -201,7 +201,7 @@ export type ScoreChoicesOpts = {
 	signal?: AbortSignal;
 };
 
-/** What `scoreChoices` returns: one finite log-likelihood per choice, aligned with the choices. Unnormalized; the caller normalizes. */
+/** Unnormalized; the caller normalizes. */
 export interface ChoiceScores {
 	logLikelihoods: number[];
 }

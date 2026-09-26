@@ -197,7 +197,6 @@ export function createGenerativeDecisionBackend(
 				try {
 					return { status: 'completed', output: await scoreAll(state, schema, opts.instructions, signal) };
 				} catch (err) {
-					// Any leaf already scored is discarded: a decision is wholly scored or wholly voted.
 					if (scoring !== 'auto' || !isScoringUnsupported(err)) throw err;
 				}
 			}
@@ -293,7 +292,6 @@ function softmax(values: readonly unknown[], logLikelihoods: unknown, logicalNam
 	return values.map((value, i) => ({ value, probability: weights[i] / total }));
 }
 
-/** The prompt for one decision: the whole schema when voting, one leaf (`field`, or the leaf schema itself) when scoring. */
 function buildInput(
 	state: DecideInput,
 	schema: DecisionSchema,

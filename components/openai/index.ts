@@ -128,10 +128,11 @@ export class OpenAIBackend implements ModelBackend {
 	// (o-series, gpt-5 family) reject `max_tokens` in favour of `max_completion_tokens`;
 	// OpenAI-compatible shims (vLLM, Ollama-compat, older gateways) only know `max_tokens`.
 	readonly #isNativeOpenAI: boolean;
-	// Models this instance has seen refuse `logprobs`, by a 400 (OpenAI's reasoning models do) or
-	// by a completion carrying none (a compatible endpoint that ignores the parameter). Scoring
-	// stays off for them until a reload builds a new instance, and `capabilities()` says so for
-	// the configured model, so a decision against it votes without an attempt.
+	// Models this instance has seen refuse `logprobs`: a 400 naming the parameter (OpenAI's
+	// reasoning models), or an answer with no log-probability field at all (a compatible endpoint
+	// that ignores the parameter). Scoring stays off for them until a reload builds a new
+	// instance, and `capabilities()` says so for the configured model, so a decision against it
+	// votes without an attempt. An empty completion is this call's problem, not the model's.
 	readonly #logprobsRejected = new Set<string>();
 
 	constructor(config: OpenAIBackendConfig = {}, fetchImpl: typeof fetch = fetch) {
@@ -266,8 +267,10 @@ export class OpenAIBackend implements ModelBackend {
 	 * listed under single-letter labels and the model is asked for the letter alone, so every
 	 * choice is one token and the `top_logprobs` list can cover the whole set. What this model or
 	 * endpoint cannot do is declined with `ChoiceScoringUnsupportedError`, not failed: more than
-	 * 20 choices, a 400 that refuses `logprobs`, a response with no content token, no alternatives,
-	 * or no label among them. A malformed alternative is a failure like any other bad response.
+	 * 20 choices, a 400 that refuses `logprobs`, a response with no log-probabilities, no content
+	 * token or no alternatives, no label among them, or too much mass outside the list to place
+	 * every label below the observed ones. A malformed alternative is a failure like any other
+	 * bad response.
 	 */
 	async scoreChoices(
 		input: GenerateInput,
@@ -304,17 +307,18 @@ export class OpenAIBackend implements ModelBackend {
 			OpenAIBackendError,
 			MAX_SCORE_RESPONSE_BODY_BYTES
 		);
+		const choice = data.choices?.[0];
+		if (!choice) throw new OpenAIBackendError('OpenAI /chat/completions response missing choices[0]');
 		const usage: TokenUsage = {};
 		assignFiniteTokenCount(usage, 'promptTokens', data.usage?.prompt_tokens);
 		assignFiniteTokenCount(usage, 'completionTokens', data.usage?.completion_tokens);
-		const logLikelihoods = scoreLabels(
-			data.choices?.[0]?.logprobs?.content?.[0],
-			choices.length,
-			(reason, structural) => {
-				if (structural) this.#logprobsRejected.add(model);
-				return new ChoiceScoringUnsupportedError(`OpenAI model '${model}' ${reason}`, usage);
-			}
-		);
+		// Only an answer that carries no log-probabilities shows the endpoint ignores the parameter;
+		// an empty or filtered completion says nothing about the model.
+		const answered = typeof choice.message?.content === 'string' && choice.message.content.length > 0;
+		const logLikelihoods = scoreLabels(choice.logprobs, choices.length, (reason, structural) => {
+			if (structural && answered) this.#logprobsRejected.add(model);
+			return new ChoiceScoringUnsupportedError(`OpenAI model '${model}' ${reason}`, usage);
+		});
 		return { status: 'completed', output: { logLikelihoods }, usage };
 	}
 
@@ -405,39 +409,60 @@ function rejectsLogprobs(status: number, error: OpenAIErrorEnvelope): boolean {
 	);
 }
 
-/** One line per choice under its label; a choice's own line breaks are collapsed so it cannot read as a further option. */
+/**
+ * One line per choice under its label. A value that cannot sit on one line as itself (a line
+ * break or other control character, leading or trailing space, a quote or backslash, or nothing
+ * at all) is JSON-quoted, so no value can pose as a further option and values that differ only in
+ * whitespace stay distinct; a plain value never starts with a quote, so the two forms cannot
+ * collide.
+ */
 function labeledChoices(choices: readonly string[]): string {
 	const lines = ['Choose exactly one option and reply with its letter only.'];
-	choices.forEach((choice, i) => lines.push(`${CHOICE_LABELS[i]}. ${choice.replace(/\s+/g, ' ').trim()}`));
+	choices.forEach((choice, i) => lines.push(`${CHOICE_LABELS[i]}. ${plainOrQuoted(choice)}`));
 	return lines.join('\n');
 }
 
-// The least an unlisted token can be scored at when the listed alternatives already carry all the
-// mass: finite, so the vector passes the facade, and far enough below any listed entry to give
-// the unobserved labels nothing that matters.
-const MIN_UNLISTED_LOG_PROBABILITY = Math.log(1e-12);
+// Anything that cannot sit on one line as itself. Built from code points so the source carries
+// no raw line terminator, which would end a regex literal.
+const LINE_TERMINATORS = String.fromCharCode(0x2028, 0x2029);
+const NEEDS_QUOTING = new RegExp(`^$|^\\s|\\s$|["\\\\\\x00-\\x1f\\x7f${LINE_TERMINATORS}]`);
+const LINE_TERMINATOR = new RegExp(`[${LINE_TERMINATORS}]`, 'g');
+
+function plainOrQuoted(choice: string): string {
+	if (!NEEDS_QUOTING.test(choice)) return choice;
+	// JSON.stringify leaves the two Unicode line terminators unescaped; they must not break the line.
+	return JSON.stringify(choice).replace(LINE_TERMINATOR, (c) => `\\u${c.charCodeAt(0).toString(16)}`);
+}
+
+// How far below the smallest listed alternative an unlisted label is placed when the list leaves
+// no mass over: finite, so the vector normalizes, and never above anything listed.
+const UNLISTED_MARGIN = Math.log(1e6);
 
 /**
  * One log-likelihood per label from the first content token's alternatives. Spellings of the same
- * letter (`A`, ` A`, `a.`) combine by log-sum-exp. A label the provider did not list stands at the
- * most any one unlisted token could have had: no more than the smallest listed probability (the
- * list is the top of the distribution) and no more than the mass the list leaves over. That is an
- * approximation rather than a measurement, and not a bound on the label if several of its
- * spellings went unlisted. No label at all means the model was not answering with a letter, and the
- * call is declined rather than reported as a uniform guess. A malformed entry is a bad response,
- * not a decline. Messages never quote tokens, which are upstream text.
+ * letter (`A`, ` A`, `a.`) combine by log-sum-exp, so a label's score is the mass of its listed
+ * spellings; spellings outside the list are unknown, bounded together by the mass the list leaves
+ * over. A label with no listed spelling is placed only when that leftover is smaller than every
+ * observed label's mass, so every observed label truly outranks it whatever its unlisted
+ * spellings carried; otherwise the call is declined rather than guessed. Unlisted labels then tie
+ * at a floor no higher than the smallest listed alternative or the leftover, finite even when the
+ * list leaves nothing over. No label at all means the model was not answering with a letter, and
+ * the call is declined. A malformed entry is a bad response, not a decline. Messages never quote
+ * tokens, which are upstream text.
  *
- * `unsupported(reason, structural)`: `structural` marks a response that carries no
- * log-probabilities at all, which the caller may remember for the model.
+ * `unsupported(reason, structural)`: `structural` marks a response with no log-probability field
+ * or no alternatives list at all, which the caller may remember for the model.
  */
 function scoreLabels(
-	first: OpenAITokenLogprob | undefined,
+	logprobs: OpenAIChatLogprobs | null | undefined,
 	count: number,
 	unsupported: (reason: string, structural: boolean) => Error
 ): number[] {
-	if (!first) throw unsupported('returned no scored content token', true);
-	if (!Array.isArray(first.top_logprobs) || first.top_logprobs.length === 0)
-		throw unsupported('returned no alternatives for the scored token', true);
+	if (logprobs == null || logprobs.content === undefined) throw unsupported('returned no log-probabilities', true);
+	const first = Array.isArray(logprobs.content) ? logprobs.content[0] : undefined;
+	if (!first) throw unsupported('returned no scored content token', false);
+	if (!Array.isArray(first.top_logprobs)) throw unsupported('returned no alternatives for the scored token', true);
+	if (first.top_logprobs.length === 0) throw unsupported('returned an empty alternatives list', false);
 	const seen = new Map<string, number>();
 	for (const alternative of [first, ...first.top_logprobs]) {
 		const token = alternative?.token;
@@ -457,10 +482,14 @@ function scoreLabels(
 		const current = scores[index];
 		scores[index] = current === undefined ? logprob : logAddExp(current, logprob);
 	}
-	if (scores.every((score) => score === undefined))
-		throw unsupported('did not answer with one of the choice labels', false);
-	const leftover = listedMass < 1 ? Math.log(1 - listedMass) : -Infinity;
-	const floor = Math.max(Math.min(smallestListed, leftover), MIN_UNLISTED_LOG_PROBABILITY);
+	const observed = scores.filter((score): score is number => score !== undefined);
+	if (observed.length === 0) throw unsupported('did not answer with one of the choice labels', false);
+	if (observed.length === count) return observed;
+	const leftover = Math.max(0, 1 - listedMass);
+	if (leftover >= Math.exp(Math.min(...observed)))
+		throw unsupported('left too much probability outside its listed alternatives to place every choice', false);
+	const cap = leftover > 0 ? Math.min(smallestListed, Math.log(leftover)) : -Infinity;
+	const floor = Number.isFinite(cap) ? cap : smallestListed - UNLISTED_MARGIN;
 	return scores.map((score) => score ?? floor);
 }
 
@@ -774,9 +803,13 @@ interface OpenAIChatResponse {
 	choices?: Array<{
 		message?: { role: string; content?: string | null; tool_calls?: OpenAIToolCall[] };
 		finish_reason?: string | null;
-		logprobs?: { content?: OpenAITokenLogprob[] | null } | null;
+		logprobs?: OpenAIChatLogprobs | null;
 	}>;
 	usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+}
+
+interface OpenAIChatLogprobs {
+	content?: OpenAITokenLogprob[] | null;
 }
 
 /** One scored token position; fields are `unknown` because a compatible endpoint's shape is not trusted. */
