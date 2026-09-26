@@ -13,13 +13,17 @@ const {
 const { bootstrapModels, resetModelsProjection } = require('#src/resources/models/bootstrap');
 const {
 	clearRegistry,
+	defineBackend,
 	resolveDecision,
 	resolveGenerative,
+	setDecision,
+	setGenerative,
 	ModelBackendNotFoundError,
 } = require('#src/resources/models/backendRegistry');
 const { clearRouting, getRouter } = require('#src/resources/models/routing');
-const { models } = require('#src/resources/models/Models');
+const { models, Models } = require('#src/resources/models/Models');
 const { ChoiceScoringUnsupportedError } = require('#src/resources/models/backendHelpers');
+const { OpenAIBackend } = require('#src/components/openai/index');
 
 const QUEUE = { enum: ['billing', 'refund', 'bug', 'other'], description: 'Which queue?' };
 const accounting = {};
@@ -463,6 +467,162 @@ describe('generative decision adapter — likelihood scoring (#2838)', () => {
 		await assert.rejects(
 			backend.decide('x', QUEUE, { accounting }),
 			(err) => err.name === 'TimeoutError' || err.name === 'AbortError'
+		);
+	});
+});
+
+describe('generative decision adapter — auto over an OpenAI model that rejects logprobs (through the facade)', () => {
+	const json = (body, status = 200) =>
+		new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+	const refused = () =>
+		json(
+			{
+				error: {
+					message: "'logprobs' is not supported with this model.",
+					param: 'logprobs',
+					code: 'unsupported_parameter',
+				},
+			},
+			400
+		);
+	const completion = (content) =>
+		json({
+			choices: [{ message: { role: 'assistant', content }, finish_reason: 'stop' }],
+			usage: { prompt_tokens: 5, completion_tokens: 2 },
+		});
+
+	beforeEach(() => {
+		clearRegistry();
+		clearRouting();
+	});
+
+	afterEach(() => {
+		clearRegistry();
+		clearRouting();
+	});
+
+	it('pays one declined attempt, then votes on every later decision without a scoring attempt or row', async () => {
+		const bodies = [];
+		const fetch = async (_url, init) => {
+			const body = JSON.parse(init.body);
+			bodies.push(body);
+			return body.logprobs ? refused() : completion('{"value":"bug"}');
+		};
+		const writer = { records: [], write: (record) => writer.records.push(record) };
+		const facade = new Models(writer, () => {});
+		setGenerative('default', new OpenAIBackend({ apiKey: 'sk-test', model: 'o-reasoning' }, fetch));
+		setDecision(
+			'default',
+			createGenerativeDecisionBackend(
+				{ samples: 1 },
+				{
+					generate: (input, opts) => facade.generate(input, opts),
+					score: (i, c, opts) => facade.scoreChoices(i, c, opts),
+				}
+			)
+		);
+		assert.strictEqual((await facade.decide('x', QUEUE)).value, 'bug');
+		assert.deepStrictEqual(
+			writer.records.map((row) => [row.method, row.success, row.error_code]),
+			[
+				['scoreChoices', false, 'scoring_unsupported'],
+				['generate', true, undefined],
+				['decide', true, undefined],
+			]
+		);
+		writer.records.length = 0;
+		bodies.length = 0;
+		assert.strictEqual((await facade.decide('x', QUEUE)).value, 'bug');
+		assert.deepStrictEqual(
+			writer.records.map((row) => row.method),
+			['generate', 'decide']
+		);
+		assert.ok(bodies.every((body) => body.logprobs === undefined));
+	});
+});
+
+describe('generative decision adapter — a declined call’s tokens are billed once (through the facade)', () => {
+	const schema = {
+		type: 'object',
+		properties: { p: { type: 'boolean' }, q: { type: 'boolean' }, r: { type: 'boolean' } },
+	};
+	let writer;
+	let metrics;
+	let facade;
+
+	/** Declines the first call with usage; every other call waits until its signal aborts. */
+	function decliningScorer() {
+		let calls = 0;
+		return defineBackend({
+			name: 'declines',
+			generate: async () => ({
+				status: 'completed',
+				output: { content: '{"p":true,"q":false,"r":true}', finishReason: 'stop' },
+			}),
+			scoreChoices: (_input, _choices, opts) =>
+				new Promise((_resolve, reject) => {
+					if (calls++ === 0)
+						return reject(new ChoiceScoringUnsupportedError('declined', { promptTokens: 40, completionTokens: 1 }));
+					opts.signal.addEventListener('abort', () => reject(opts.signal.reason), { once: true });
+				}),
+		});
+	}
+
+	beforeEach(() => {
+		clearRegistry();
+		clearRouting();
+		writer = { records: [], write: (record) => writer.records.push(record) };
+		metrics = [];
+		facade = new Models(writer, (value, metric, path) => metrics.push({ value, metric, path }));
+		setGenerative('default', decliningScorer());
+	});
+
+	afterEach(() => {
+		clearRegistry();
+		clearRouting();
+	});
+
+	const adapter = (config) =>
+		createGenerativeDecisionBackend(config, {
+			generate: (input, opts) => facade.generate(input, opts),
+			score: (input, choices, opts) => facade.scoreChoices(input, choices, opts),
+		});
+
+	it('auto: siblings cut short by the decline are recorded as aborted without its usage, then the vote runs', async () => {
+		setDecision('default', adapter({ samples: 1, concurrency: 3 }));
+		const d = await facade.decide('x', schema);
+		assert.strictEqual(d.fields.p.value, true);
+		const scoring = writer.records.filter((row) => row.method === 'scoreChoices');
+		assert.deepStrictEqual(scoring.map((row) => [row.error_code, row.prompt_tokens]).sort(), [
+			['aborted', undefined],
+			['aborted', undefined],
+			['scoring_unsupported', 40],
+		]);
+		assert.deepStrictEqual(
+			writer.records
+				.filter((row) => row.method !== 'scoreChoices')
+				.map((row) => [row.method, row.success, row.prompt_tokens]),
+			[
+				['generate', true, undefined],
+				['decide', true, undefined],
+			]
+		);
+		assert.deepStrictEqual(
+			metrics.filter((m) => m.metric.endsWith('-tokens')),
+			[{ value: 41, metric: 'model-scoreChoices-tokens', path: 'declines' }]
+		);
+	});
+
+	it('score: the decision fails and the decide failure row carries none of the decline’s usage', async () => {
+		setDecision('default', adapter({ scoring: 'score', concurrency: 1 }));
+		await assert.rejects(facade.decide('x', schema), ChoiceScoringUnsupportedError);
+		const decide = writer.records.find((row) => row.method === 'decide');
+		assert.strictEqual(decide.success, false);
+		assert.strictEqual(decide.error_code, 'scoring_unsupported');
+		assert.strictEqual(decide.prompt_tokens, undefined);
+		assert.deepStrictEqual(
+			metrics.filter((m) => m.metric.endsWith('-tokens')),
+			[{ value: 41, metric: 'model-scoreChoices-tokens', path: 'declines' }]
 		);
 	});
 });

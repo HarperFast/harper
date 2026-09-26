@@ -1,7 +1,5 @@
 'use strict';
 
-// #2838: the facade's internal `scoreChoices` — routing on the capability, per-attempt rows,
-// unsupported calls recorded with the usage they consumed, fallback groups, contract failures.
 const assert = require('node:assert');
 require('#src/resources/databases');
 const { setGenerative, clearRegistry, defineBackend } = require('#src/resources/models/backendRegistry');
@@ -160,19 +158,58 @@ describe('models.scoreChoices (internal, #2838)', () => {
 		assert.deepStrictEqual(metricSpy.calls, [{ value: 3, metric: 'model-scoreChoices-tokens', path: 'odd' }]);
 	});
 
-	it('does not read usage off an ordinary backend error', async () => {
+	it('does not read usage off an ordinary backend error, only off a decline', async () => {
 		setGenerative('down', scorer('down', [Object.assign(new Error('provider down'), { usage: { promptTokens: 9 } })]));
 		await assert.rejects(models.scoreChoices('t', CHOICES, { model: 'down' }), /provider down/);
 		const [row] = writer.records;
 		assert.strictEqual(row.error_code, 'backend_error');
-		assert.strictEqual(row.prompt_tokens, 9, 'a backend error that reports tokens is still accounted');
+		assert.strictEqual(row.prompt_tokens, undefined);
+		assert.deepStrictEqual(metricSpy.calls, []);
 	});
 
-	it('tries the fallback group when the primary declines, and surfaces the primary error when every candidate fails', async () => {
+	it('records a malformed score vector as one failed attempt, before any success row, and tries the next candidate', async () => {
+		for (const output of [
+			undefined,
+			{ logLikelihoods: [0, 1] },
+			{ logLikelihoods: [0, NaN, 1] },
+			{ logLikelihoods: '0,1,2' },
+		]) {
+			clearRegistry();
+			clearRouting();
+			writer.records.length = 0;
+			metricSpy.calls.length = 0;
+			setGenerative('bad', scorer('bad', [{ status: 'completed', output }]));
+			setGenerative('good', scorer('good', [{ status: 'completed', output: { logLikelihoods: [0, 1, 2] } }]));
+			setFallbackGroup('generative', 'bad', ['good']);
+			const r = await models.scoreChoices('t', CHOICES, { model: 'bad' });
+			assert.deepStrictEqual(r.logLikelihoods, [0, 1, 2]);
+			assert.deepStrictEqual(
+				writer.records.map((row) => [row.backend, row.success, row.error_code]),
+				[
+					['bad', false, 'backend_error'],
+					['good', true, undefined],
+				],
+				JSON.stringify(output)
+			);
+			assert.deepStrictEqual(metricSpy.calls, [{ value: 1, metric: 'model-scoreChoices', path: 'good' }]);
+		}
+		clearRegistry();
+		clearRouting();
+		setGenerative('bad', scorer('bad', [{ status: 'completed', output: { logLikelihoods: [0, 1] } }]));
+		await assert.rejects(
+			models.scoreChoices('t', CHOICES, { model: 'bad' }),
+			/did not return one finite log-likelihood per choice \(3\)/
+		);
+	});
+
+	it('tries the fallback group when the primary declines, and surfaces the primary decline only when every candidate declined', async () => {
 		setGenerative('p', scorer('p', [new ChoiceScoringUnsupportedError('p declined')]));
 		setGenerative(
 			'q',
-			scorer('q', [{ status: 'completed', output: { logLikelihoods: [0, 1, 2] } }, new Error('q down')])
+			scorer('q', [
+				{ status: 'completed', output: { logLikelihoods: [0, 1, 2] } },
+				new ChoiceScoringUnsupportedError('q declined'),
+			])
 		);
 		setFallbackGroup('generative', 'p', ['q']);
 		const r = await models.scoreChoices('t', CHOICES, { model: 'p' });
@@ -185,6 +222,20 @@ describe('models.scoreChoices (internal, #2838)', () => {
 			]
 		);
 		await assert.rejects(models.scoreChoices('t', CHOICES, { model: 'p' }), /p declined/);
+	});
+
+	it('surfaces a fallback failure over a primary decline, so a decline never hides a broken candidate', async () => {
+		setGenerative('p', scorer('p', [new ChoiceScoringUnsupportedError('p declined')]));
+		setGenerative('q', scorer('q', [Object.assign(new Error('q rate limited'), { upstreamStatus: 429 })]));
+		setFallbackGroup('generative', 'p', ['q']);
+		await assert.rejects(models.scoreChoices('t', CHOICES, { model: 'p' }), /q rate limited/);
+		// The other way round the primary failure already leads.
+		clearRegistry();
+		clearRouting();
+		setGenerative('p', scorer('p', [new Error('p down')]));
+		setGenerative('q', scorer('q', [new ChoiceScoringUnsupportedError('q declined')]));
+		setFallbackGroup('generative', 'p', ['q']);
+		await assert.rejects(models.scoreChoices('t', CHOICES, { model: 'p' }), /p down/);
 	});
 
 	it('only routes to candidates that score: a fallback without the hook is skipped', async () => {

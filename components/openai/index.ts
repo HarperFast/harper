@@ -128,9 +128,10 @@ export class OpenAIBackend implements ModelBackend {
 	// (o-series, gpt-5 family) reject `max_tokens` in favour of `max_completion_tokens`;
 	// OpenAI-compatible shims (vLLM, Ollama-compat, older gateways) only know `max_tokens`.
 	readonly #isNativeOpenAI: boolean;
-	// Models this instance has seen reject `logprobs` with a 400 (OpenAI's reasoning models do).
-	// Scoring stays off for them until a reload builds a new instance, so a decision against
-	// such a model does not pay a refused request before every vote.
+	// Models this instance has seen refuse `logprobs`, by a 400 (OpenAI's reasoning models do) or
+	// by a completion carrying none (a compatible endpoint that ignores the parameter). Scoring
+	// stays off for them until a reload builds a new instance, and `capabilities()` says so for
+	// the configured model, so a decision against it votes without an attempt.
 	readonly #logprobsRejected = new Set<string>();
 
 	constructor(config: OpenAIBackendConfig = {}, fetchImpl: typeof fetch = fetch) {
@@ -148,7 +149,8 @@ export class OpenAIBackend implements ModelBackend {
 	}
 
 	capabilities(): ModelCapabilities {
-		return { embed: true, generate: true, stream: true, tools: true, adapters: false, scoreChoices: true };
+		const scoreChoices = this.#defaultModel === undefined || !this.#logprobsRejected.has(this.#defaultModel);
+		return { embed: true, generate: true, stream: true, tools: true, adapters: false, scoreChoices };
 	}
 
 	async embed(input: string | string[], opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>> {
@@ -264,8 +266,8 @@ export class OpenAIBackend implements ModelBackend {
 	 * listed under single-letter labels and the model is asked for the letter alone, so every
 	 * choice is one token and the `top_logprobs` list can cover the whole set. What this model or
 	 * endpoint cannot do is declined with `ChoiceScoringUnsupportedError`, not failed: more than
-	 * 20 choices, a 400 that names `logprobs`, a response with no content token, no alternatives,
-	 * or no label among them.
+	 * 20 choices, a 400 that refuses `logprobs`, a response with no content token, no alternatives,
+	 * or no label among them. A malformed alternative is a failure like any other bad response.
 	 */
 	async scoreChoices(
 		input: GenerateInput,
@@ -282,16 +284,13 @@ export class OpenAIBackend implements ModelBackend {
 			throw new ChoiceScoringUnsupportedError(
 				`OpenAI model '${model}' rejects log-probabilities; scoring stays off for it until the backend is reloaded`
 			);
-		const messages = normalizeMessages(input);
-		messages.push({ role: 'user', content: labeledChoices(choices) });
 		const body: Record<string, unknown> = {
 			model,
-			messages,
+			messages: [...normalizeMessages(input), { role: 'user', content: labeledChoices(choices) }],
 			stream: false,
 			logprobs: true,
 			top_logprobs: MAX_SCORED_CHOICES,
 		};
-		// One content token carries the letter; the field split mirrors buildChatRequest.
 		if (this.#isNativeOpenAI) body.max_completion_tokens = 1;
 		else body.max_tokens = 1;
 		const res = await this.#post('/chat/completions', body, opts.signal, (status, error) => {
@@ -311,7 +310,10 @@ export class OpenAIBackend implements ModelBackend {
 		const logLikelihoods = scoreLabels(
 			data.choices?.[0]?.logprobs?.content?.[0],
 			choices.length,
-			(reason) => new ChoiceScoringUnsupportedError(`OpenAI model '${model}' ${reason}`, usage)
+			(reason, structural) => {
+				if (structural) this.#logprobsRejected.add(model);
+				return new ChoiceScoringUnsupportedError(`OpenAI model '${model}' ${reason}`, usage);
+			}
 		);
 		return { status: 'completed', output: { logLikelihoods }, usage };
 	}
@@ -385,57 +387,80 @@ function errorSuffix(error: OpenAIErrorEnvelope): string {
 }
 
 /**
- * Whether an error response says this model or endpoint does not take log-probabilities, as
- * opposed to failing for an unrelated reason (bad key, rate limit, server fault, malformed
- * request). OpenAI names the parameter (`param: 'logprobs'`); compatible shims tend to mention
- * it only in the message.
+ * Whether a 400 says this model or endpoint does not take log-probabilities at all, as opposed to
+ * rejecting this request for another reason. OpenAI names the parameter (`param: 'logprobs'`);
+ * a compatible shim tends to say so only in the message, which must then both name the parameter
+ * and say it is unsupported, so a request-specific complaint that merely mentions it does not
+ * switch scoring off.
  */
 function rejectsLogprobs(status: number, error: OpenAIErrorEnvelope): boolean {
 	if (status !== 400) return false;
 	if (error.param === 'logprobs' || error.param === 'top_logprobs') return true;
-	return /logprobs/i.test(error.message ?? '');
+	const message = error.message ?? '';
+	return (
+		/\b(?:top_)?logprobs\b/i.test(message) &&
+		/\b(not supported|unsupported|not available|unavailable|disabled|not allowed|does not support|doesn't support)\b/i.test(
+			message
+		)
+	);
 }
 
+/** One line per choice under its label; a choice's own line breaks are collapsed so it cannot read as a further option. */
 function labeledChoices(choices: readonly string[]): string {
 	const lines = ['Choose exactly one option and reply with its letter only.'];
-	choices.forEach((choice, i) => lines.push(`${CHOICE_LABELS[i]}. ${choice}`));
+	choices.forEach((choice, i) => lines.push(`${CHOICE_LABELS[i]}. ${choice.replace(/\s+/g, ' ').trim()}`));
 	return lines.join('\n');
 }
 
+// The least an unlisted token can be scored at when the listed alternatives already carry all the
+// mass: finite, so the vector passes the facade, and far enough below any listed entry to give
+// the unobserved labels nothing that matters.
+const MIN_UNLISTED_LOG_PROBABILITY = Math.log(1e-12);
+
 /**
  * One log-likelihood per label from the first content token's alternatives. Spellings of the same
- * letter (`A`, ` A`, `a.`) combine by log-sum-exp. A label the provider did not list is bounded
- * above by the smallest log-probability it did report, which stands in as its score: a censored
- * estimate, not a measurement. No label at all means the model was not answering with a letter,
- * and the call is declined rather than reported as a uniform guess. Messages never quote tokens,
- * which are upstream text.
+ * letter (`A`, ` A`, `a.`) combine by log-sum-exp. A label the provider did not list stands at the
+ * most any one unlisted token could have had: no more than the smallest listed probability (the
+ * list is the top of the distribution) and no more than the mass the list leaves over. That is an
+ * approximation rather than a measurement, and not a bound on the label if several of its
+ * spellings went unlisted. No label at all means the model was not answering with a letter, and the
+ * call is declined rather than reported as a uniform guess. A malformed entry is a bad response,
+ * not a decline. Messages never quote tokens, which are upstream text.
+ *
+ * `unsupported(reason, structural)`: `structural` marks a response that carries no
+ * log-probabilities at all, which the caller may remember for the model.
  */
 function scoreLabels(
 	first: OpenAITokenLogprob | undefined,
 	count: number,
-	unsupported: (reason: string) => Error
+	unsupported: (reason: string, structural: boolean) => Error
 ): number[] {
-	if (!first) throw unsupported('returned no scored content token');
+	if (!first) throw unsupported('returned no scored content token', true);
 	if (!Array.isArray(first.top_logprobs) || first.top_logprobs.length === 0)
-		throw unsupported('returned no alternatives for the scored token');
+		throw unsupported('returned no alternatives for the scored token', true);
 	const seen = new Map<string, number>();
 	for (const alternative of [first, ...first.top_logprobs]) {
 		const token = alternative?.token;
 		const logprob = alternative?.logprob;
 		if (typeof token !== 'string' || typeof logprob !== 'number' || !Number.isFinite(logprob))
-			throw unsupported('returned a malformed log-probability entry');
+			throw new OpenAIBackendError('OpenAI /chat/completions returned a malformed log-probability entry');
 		if (!seen.has(token)) seen.set(token, logprob);
 	}
 	const scores: Array<number | undefined> = new Array(count).fill(undefined);
-	let floor = Infinity;
+	let smallestListed = Infinity;
+	let listedMass = 0;
 	for (const [token, logprob] of seen) {
-		floor = Math.min(floor, logprob);
+		smallestListed = Math.min(smallestListed, logprob);
+		listedMass += Math.exp(logprob);
 		const index = labelIndex(token);
 		if (index === undefined || index >= count) continue;
 		const current = scores[index];
 		scores[index] = current === undefined ? logprob : logAddExp(current, logprob);
 	}
-	if (scores.every((score) => score === undefined)) throw unsupported('did not answer with one of the choice labels');
+	if (scores.every((score) => score === undefined))
+		throw unsupported('did not answer with one of the choice labels', false);
+	const leftover = listedMass < 1 ? Math.log(1 - listedMass) : -Infinity;
+	const floor = Math.max(Math.min(smallestListed, leftover), MIN_UNLISTED_LOG_PROBABILITY);
 	return scores.map((score) => score ?? floor);
 }
 

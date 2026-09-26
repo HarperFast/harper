@@ -340,8 +340,14 @@ export class Models implements ModelsContract {
 			);
 			throw resolved.error;
 		}
+		// Surface the first FAILURE when every candidate fails. A decline (`ChoiceScoringUnsupportedError`)
+		// is weaker news than a failure: the adapter reads a surfaced decline as permission to vote,
+		// which would hide a broken fallback behind an unsupported primary. Only when every candidate
+		// declined is the primary's decline what the caller gets.
 		let firstError: unknown = undefined;
 		let hasError = false;
+		let firstFailure: unknown = undefined;
+		let hasFailure = false;
 		for (const backend of resolved.candidates) {
 			signal?.throwIfAborted();
 			const attemptStart = performance.now();
@@ -352,20 +358,42 @@ export class Models implements ModelsContract {
 					throw new ServerError(`Backend '${backend.name}' advertises 'scoreChoices' but does not implement it`);
 				const result = await backend.scoreChoices(input, choices, toBackendOpts(opts, signal, accounting));
 				if (result.status !== 'completed') throw new ModelPendingNotSupportedError(backend.name);
+				const logLikelihoods = result.output?.logLikelihoods;
+				if (
+					!Array.isArray(logLikelihoods) ||
+					logLikelihoods.length !== choices.length ||
+					!logLikelihoods.every((x) => typeof x === 'number' && Number.isFinite(x))
+				)
+					throw new ServerError(
+						`Backend '${backend.name}' did not return one finite log-likelihood per choice (${choices.length})`
+					);
 				this.#record(backend, 'scoreChoices', opts.model, accounting, undefined, result, attemptStart);
-				return result.usage
-					? { logLikelihoods: result.output.logLikelihoods, usage: result.usage }
-					: { logLikelihoods: result.output.logLikelihoods };
+				return result.usage ? { logLikelihoods, usage: result.usage } : { logLikelihoods };
 			} catch (err) {
-				this.#recordFailure(backend, 'scoreChoices', opts.model, accounting, undefined, attemptStart, err);
+				// Only this attempt's own decline bills its tokens: the error may travel on as an abort
+				// reason or through the decision adapter, and those rows must not count it again.
+				this.#recordFailure(
+					backend,
+					'scoreChoices',
+					opts.model,
+					accounting,
+					undefined,
+					attemptStart,
+					err,
+					usageFromError(err)
+				);
 				if (!hasError) {
 					firstError = err;
 					hasError = true;
 				}
+				if (!hasFailure && !isChoiceScoringUnsupported(err)) {
+					firstFailure = err;
+					hasFailure = true;
+				}
 				if (signal?.aborted) throw err;
 			}
 		}
-		throw firstError;
+		throw hasFailure ? firstFailure : firstError;
 	}
 
 	#record(
@@ -405,13 +433,10 @@ export class Models implements ModelsContract {
 		accounting: AccountingContext,
 		opts: GenerateOpts | undefined,
 		startedAt: number,
-		errOrCode: unknown
+		errOrCode: unknown,
+		usage?: TokenUsage
 	): void {
 		const error_code = typeof errOrCode === 'string' ? errOrCode : classifyError(errOrCode);
-		// A failed attempt can still have consumed tokens (a scoring completion that came back
-		// without log-probabilities is billed): they land on the failure row and in the token
-		// metric, while the call-count metric stays a count of successes.
-		const usage = backend ? usageFromError(errOrCode) : undefined;
 		this.#analyticsWriter.write({
 			...buildRecord(backend, method, model, accounting, opts, usage, startedAt, false),
 			error_code,
@@ -420,9 +445,19 @@ export class Models implements ModelsContract {
 	}
 }
 
-/** Tokens a failed attempt consumed, when the error reports them (`ChoiceScoringUnsupportedError.usage`); finite counts only. */
+function isChoiceScoringUnsupported(err: unknown): boolean {
+	return (err as { name?: string } | null)?.name === 'ChoiceScoringUnsupportedError';
+}
+
+/**
+ * Tokens a declined scoring call consumed (`ChoiceScoringUnsupportedError.usage`), finite counts
+ * only: a completion that came back without log-probabilities was billed, so they land on that
+ * attempt's failure row and in the token metric while the call-count metric stays a count of
+ * successes. No other error's `usage` is read, and no other method's failure row carries usage.
+ */
 function usageFromError(err: unknown): TokenUsage | undefined {
-	const reported = (err as { usage?: unknown } | null)?.usage;
+	if (!isChoiceScoringUnsupported(err)) return undefined;
+	const reported = (err as { usage?: unknown }).usage;
 	if (!reported || typeof reported !== 'object') return undefined;
 	const usage: TokenUsage = {};
 	for (const key of ['promptTokens', 'completionTokens', 'embeddingTokens'] as const)
