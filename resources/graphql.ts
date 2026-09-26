@@ -127,14 +127,6 @@ function parseDecideDirective(directive: DirectiveNode, property: any): DecideCo
 	const fields = new Set([property.name, args.source, args.confidence].filter(Boolean));
 	if (fields.size !== 2 + (args.confidence ? 1 : 0))
 		throw new ClientError(`${target}: the attribute, "source" and "confidence" must be different fields`, 400);
-	// The hook tests source presence with `in`, so a payload without an `Object.prototype`-named
-	// field would still read as carrying it.
-	for (const name of fields)
-		if (Object.hasOwn(Object.prototype, name))
-			throw new ClientError(
-				`${target}: "${name}" is an Object.prototype key and cannot be a decided, source or confidence field`,
-				400
-			);
 	const config: DecideConfig = { source: args.source, model: args.model ?? 'default', schema };
 	if (args.confidence) config.confidence = args.confidence;
 	if (args.instructions) config.instructions = args.instructions;
@@ -444,6 +436,7 @@ async function processGraphQLSchema(
 					}
 					if (property.decide) property.decide = parseDecideDirective(property.decide, property);
 				}
+				assertDerivedFieldOwnership(attributes as any[]);
 				// A source must reference a declared field; a typo would silently leave the derived
 				// attribute unpopulated (the source key never appears in write payloads).
 				for (const prop of attributes as any[]) {
@@ -479,7 +472,6 @@ async function processGraphQLSchema(
 							);
 					}
 				}
-				assertDerivedFieldOwnership(attributes as any[]);
 				if (typeDef.fullTextIndexes.length > 0 && !typeDef.table)
 					throw new ClientError('@fullText is only supported on a @table type', 400);
 				typeDef.fullTextIndexes = compileFullTextDefinitions(typeDef.fullTextIndexes, attributes);

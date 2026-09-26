@@ -93,6 +93,61 @@ describe('@decide registry (setDecideAttribute + schema reload)', () => {
 				}),
 			/derives from "route", which @decide on "route" writes/
 		);
+		assert.throws(
+			() =>
+				table({
+					table: 'DecideRegProto',
+					database: 'test',
+					attributes: [
+						{ name: 'id', isPrimaryKey: true },
+						{ name: 'toString', type: 'String' },
+						{
+							name: 'vector',
+							type: 'Array',
+							embed: { source: 'toString', model: 'default' },
+							indexed: { type: 'HNSW' },
+						},
+					],
+				}),
+			/"toString" is an Object.prototype key/
+		);
+	});
+
+	it('a rejected redeclaration reaches neither the catalog nor the live registries', () => {
+		const declare = (urgentConfidence) =>
+			table({
+				table: 'DecideRegRedeclare',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'body', type: 'String' },
+					{
+						name: 'route',
+						type: 'String',
+						decide: { source: 'body', model: 'default', confidence: 'routeConfidence', schema: { enum: ['a', 'b'] } },
+					},
+					{ name: 'routeConfidence', type: 'Float' },
+					{
+						name: 'urgent',
+						type: 'Boolean',
+						decide: { source: 'body', model: 'default', confidence: urgentConfidence, schema: { type: 'boolean' } },
+					},
+					{ name: 'urgentConfidence', type: 'Float' },
+				],
+			});
+		const Live = declare('urgentConfidence');
+		const urgentDecider = Live.userDeciders.urgent;
+		assert.throws(() => declare('routeConfidence'), /both write "routeConfidence"/);
+		const urgent = Live.attributes.find((a) => a.name === 'urgent');
+		assert.equal(urgent.decide.confidence, 'urgentConfidence', 'the live descriptor is unchanged');
+		assert.deepEqual(
+			Live.decideAttributes.map((a) => a.decide.confidence),
+			['routeConfidence', 'urgentConfidence'],
+			'the live hook list is unchanged'
+		);
+		assert.equal(Live.userDeciders.urgent, urgentDecider, 'the live deciders are unchanged');
+		const Reloaded = declare('urgentConfidence');
+		assert.equal(Reloaded.attributes.find((a) => a.name === 'urgent').decide.confidence, 'urgentConfidence');
 	});
 
 	it('refuses an override for an attribute without @decide, or that does not exist', () => {

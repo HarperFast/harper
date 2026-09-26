@@ -1,11 +1,6 @@
-/**
- * `@decide` directive write-time hook, the sibling of `embedHook.ts`: `buildDecideBefore`
- * produces the pre-commit callback that writes the chosen value, and its probability when the
- * directive names a confidence attribute, onto the record before it commits.
- */
+/** `@decide` directive write-time hook, the sibling of `embedHook.ts`. */
 import { isAllowedValue } from './decision.ts';
 import {
-	anySourcePresent,
 	runWriteJobs,
 	sanitizedHookError,
 	sourceState,
@@ -78,13 +73,9 @@ export function buildDecideBefore(
 ): WriteHook | undefined {
 	if (!decideAttributes || decideAttributes.length === 0) return undefined;
 	if (!writeHookApplies(record, context, options)) return undefined;
-	if (
-		!anySourcePresent(
-			record,
-			decideAttributes.map((attr) => attr.decide?.source)
-		)
-	)
-		return undefined;
+	let present = false;
+	for (const attr of decideAttributes) if (sourceState(record, attr.decide?.source) !== 'absent') present = true;
+	if (!present) return undefined;
 	return (signal) =>
 		runWriteJobs(
 			decideAttributes.map((attr) => async (jobSignal) => {
@@ -103,6 +94,8 @@ export function buildDecideBefore(
 				try {
 					result = await decider(record, { signal: jobSignal });
 				} catch (err) {
+					// A sibling's failure aborted this one; that failure is the one reported and logged.
+					if (jobSignal.aborted) throw err;
 					throw sanitizedHookError('Decider', 'decision', attr.name, err);
 				}
 				if (result == null) return clear();

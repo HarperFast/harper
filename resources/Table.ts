@@ -6695,11 +6695,10 @@ export function makeTable(options) {
 		static updatedAttributes() {
 			// Refresh on every call: schema reload mutates `attributes` in place, so the
 			// class-construction snapshot would otherwise go stale.
+			// Before anything is assigned, so a rejected declaration leaves the live registries as they were.
+			assertDerivedFieldOwnership(this.attributes as any[]);
 			this.embedAttributes = (this.attributes as any[]).filter((a) => a?.embed);
 			this.decideAttributes = (this.attributes as any[]).filter((a) => a?.decide);
-			// A programmatic declaration (`table({ attributes })`) never passed the schema loader.
-			if (this.embedAttributes.length > 0 || this.decideAttributes.length > 0)
-				assertDerivedFieldOwnership(this.attributes as any[]);
 			expiresAtProperty = this.attributes.find((attribute) => attribute.expiresAt);
 			// Drop registry entries for attributes that are no longer `@embed` / `@decide`, so a dropped
 			// directive doesn't leave a stale hook or block a default refresh on re-add.
