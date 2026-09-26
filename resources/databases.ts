@@ -488,6 +488,7 @@ export function openRocksDatabase(path: string, options: RocksDatabaseOptions & 
 const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
 const rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
 type IncompleteDatabaseClose = {
+	databaseNames: Set<string>;
 	rootPaths: string[];
 	retry: () => Promise<void>;
 	task?: Promise<void>;
@@ -2017,7 +2018,6 @@ export function openBranchDatabase(
 						for (const table of Object.values(tables)) refreshDerivedIndexes(table);
 					} else if (!closed) {
 						// Native handle teardown started, so this wrapper graph cannot safely return to service.
-						// Move its fences off the process-wide active counter and onto the abandoned root itself.
 						permanentlySuspendDatabaseCommits([rootStore]);
 						permanentlySuspendDerivedIndexActivation(rootStore);
 						commitSuspension.release();
@@ -2410,14 +2410,28 @@ function inferDropBlobDatabaseName(databaseName: string, rootPath: string): stri
 
 const incompleteDatabaseDropStores = new Map<string, RootDatabaseKind>();
 
-function rememberIncompleteDatabaseClose(rootPaths: Iterable<string>, retry: () => Promise<void>): void {
+function rememberIncompleteDatabaseClose(
+	databaseNames: Iterable<string>,
+	rootPaths: Iterable<string>,
+	retry: () => Promise<void>
+): void {
+	const names = new Set(databaseNames);
 	const normalizedPaths = [...new Set([...rootPaths].map((rootPath) => resolve(rootPath)))];
-	const incompleteClose: IncompleteDatabaseClose = { rootPaths: normalizedPaths, retry };
+	const incompleteClose: IncompleteDatabaseClose = { databaseNames: names, rootPaths: normalizedPaths, retry };
 	for (const rootPath of normalizedPaths) incompleteDatabaseCloses.set(rootPath, incompleteClose);
 	logger.warn(
-		`Database handles remain partially closed on this worker; the affected roots stay unavailable until drop_database is retried or the worker restarts`,
+		`Database '${[...names].join("', '")}' handles remain partially closed on this worker; the affected roots stay unavailable until drop_database is retried or the worker restarts`,
 		normalizedPaths
 	);
+}
+
+function incompleteDatabaseClosePaths(databaseName: string): string[] {
+	const rootPaths = new Set<string>();
+	for (const incompleteClose of new Set(incompleteDatabaseCloses.values())) {
+		if (!incompleteClose.databaseNames.has(databaseName)) continue;
+		for (const rootPath of incompleteClose.rootPaths) rootPaths.add(rootPath);
+	}
+	return [...rootPaths];
 }
 
 async function retryIncompleteDatabaseClose(rootPath: string): Promise<void> {
@@ -2464,6 +2478,7 @@ async function resumeIncompleteDatabaseDrop(databaseName: string, rootPaths: Ite
 	let destructiveWorkStarted = false;
 	try {
 		const paths = new Set(rootPaths);
+		for (const rootPath of paths) await retryIncompleteDatabaseClose(rootPath);
 		if (
 			registryStatus().some(
 				(entry) => paths.has(entry.path) && entry.refCount > 0 && !incompleteDatabaseDropStores.has(entry.path)
@@ -2516,6 +2531,15 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 				blobDatabaseNamesByRootPath.get(rootPath) ?? inferDropBlobDatabaseName(databaseName, rootPath)
 			);
 		}
+		const openedRootPaths = new Set([...rootStores].map((rootStore) => rootStore.path));
+		const detachedRootPaths = dropLocks.map((lock) => lock.dbPath).filter((rootPath) => !openedRootPaths.has(rootPath));
+		const detachedRootPathSet = new Set(detachedRootPaths);
+		const detachedRootHasForeignHandle = () =>
+			registryStatus().some(
+				(entry) =>
+					detachedRootPathSet.has(entry.path) && entry.refCount > 0 && !incompleteDatabaseDropStores.has(entry.path)
+			);
+		if (detachedRootHasForeignHandle()) throw new DatabaseClosingError(databaseName);
 		releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, true, rootStores);
 		destructiveWorkStarted = true;
 		for (const rootStore of rootStores) {
@@ -2565,10 +2589,7 @@ export async function dropDatabase(databaseName, requestedRootPaths: Iterable<st
 				}
 			}
 		}
-		const openedRootPaths = new Set([...rootStores].map((rootStore) => rootStore.path));
-		const detachedRootPaths = dropLocks.map((lock) => lock.dbPath).filter((rootPath) => !openedRootPaths.has(rootPath));
-		if (registryStatus().some((entry) => detachedRootPaths.includes(entry.path) && entry.refCount > 0))
-			throw new DatabaseClosingError(databaseName);
+		if (detachedRootHasForeignHandle()) throw new DatabaseClosingError(databaseName);
 		for (const rootPath of detachedRootPaths) await rm(rootPath, { recursive: true, force: true });
 
 		for (const blobDatabaseName of new Set(dropLocks.map((lock) => lock.blobDatabaseName)))
@@ -2670,14 +2691,16 @@ function incompleteDatabaseDropPaths(databaseName: string): string[] {
 }
 
 export function databaseDropRecoveryPending(databaseName: string): boolean {
-	return incompleteDatabaseDropPaths(databaseName).length > 0;
+	return incompleteDatabaseDropPaths(databaseName).length > 0 || incompleteDatabaseClosePaths(databaseName).length > 0;
 }
 
 export function databaseDropPreparationTargets(databaseName: string): {
 	rootPaths: string[];
 } {
 	getDatabases();
-	const incompleteRootPaths = incompleteDatabaseDropPaths(databaseName);
+	const incompleteRootPaths = [
+		...new Set([...incompleteDatabaseDropPaths(databaseName), ...incompleteDatabaseClosePaths(databaseName)]),
+	];
 	const recoveryRootPaths = databaseDropRecoveryGraphPaths(databaseName, incompleteRootPaths);
 	if (!databases[databaseName]) {
 		if (recoveryRootPaths.length > 0) return { rootPaths: recoveryRootPaths };
@@ -2831,13 +2854,14 @@ export async function closeDatabase(
 		handleCloseStarted = true;
 		const closeFailures = await closeDatabaseStores(databaseName, dbTables, rootStores, requireClosed);
 		if (requireClosed && closeFailures.length > 0) {
-			// A partially closed graph must be rebuilt rather than returned to service.
+			// The remembered close lets a later drop retry finish releasing the graph.
 			for (const rootStore of rootStores) {
 				lmdbDatabaseEnvs.delete(rootStore.path);
 				rocksdbDatabaseEnvs.delete(rootStore.path);
 			}
 			for (const name of databaseNames) unregisterDatabase(name);
 			rememberIncompleteDatabaseClose(
+				databaseNames,
 				[...rootStores].map((rootStore) => rootStore.path),
 				async () => {
 					const retryFailures = await closeDatabaseStores(databaseName, dbTables, rootStores, true);

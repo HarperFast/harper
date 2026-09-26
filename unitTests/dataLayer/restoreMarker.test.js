@@ -342,6 +342,21 @@ describe('restoreMarker', function () {
 	});
 
 	describe('database drop markers', function () {
+		it('rejects control characters that would corrupt the line-delimited marker', function () {
+			assert.throws(
+				() => beginDatabaseDrop(join(tempDir, 'bad\nroot'), 'database'),
+				(error) => error.statusCode === 409
+			);
+			assert.throws(
+				() => beginDatabaseDrop(dbPath, 'bad\ndatabase'),
+				(error) => error.statusCode === 409
+			);
+			assert.throws(
+				() => beginDatabaseDrop(dbPath, 'database', 'bad\nblob'),
+				(error) => error.statusCode === 409
+			);
+		});
+
 		it('blocks each physical root until the whole drop completes', function () {
 			const a = join(tempDir, 'alpha');
 			const b = join(tempDir, 'beta');

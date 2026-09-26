@@ -336,9 +336,18 @@ export type DatabaseDropLock = RestoreLock & {
 	blobDatabaseName: string;
 };
 
+function validDatabaseDropMarkerField(value: string | undefined): value is string {
+	if (!value) return false;
+	for (const character of value) {
+		const code = character.charCodeAt(0);
+		if (code <= 0x1f || code === 0x7f) return false;
+	}
+	return true;
+}
+
 function validBlobDatabaseName(databaseName: string | undefined): databaseName is string {
 	return (
-		!!databaseName &&
+		validDatabaseDropMarkerField(databaseName) &&
 		databaseName.length <= 250 &&
 		databaseName !== '.' &&
 		databaseName !== '..' &&
@@ -367,7 +376,7 @@ function readDatabaseDropMarker(dbPath: string): { databaseName: string; blobDat
 		);
 		if (
 			rootName !== basename(dbPath) ||
-			!databaseName ||
+			!validDatabaseDropMarkerField(databaseName) ||
 			!validBlobDatabaseName(blobDatabaseName) ||
 			digest !== databaseDropMarkerDigest(rootName, databaseName, blobDatabaseName)
 		)
@@ -383,6 +392,12 @@ export function beginDatabaseDrop(
 	databaseName: string,
 	blobDatabaseName = databaseName
 ): DatabaseDropLock {
+	const rootName = basename(dbPath);
+	if (!validDatabaseDropMarkerField(rootName) || !validDatabaseDropMarkerField(databaseName)) {
+		const error: any = new Error(`Database drop marker identity for '${databaseName}' is invalid`);
+		error.statusCode = 409;
+		throw error;
+	}
 	if (!validBlobDatabaseName(blobDatabaseName)) {
 		const error: any = new Error(`Database drop blob identity for '${databaseName}' is invalid`);
 		error.statusCode = 409;
@@ -409,7 +424,6 @@ export function beginDatabaseDrop(
 			blobDatabaseName = marker.blobDatabaseName;
 			fsyncDir(restoreMetaDir(dbPath));
 		} else {
-			const rootName = basename(dbPath);
 			publishMarker(
 				dbPath,
 				markerPath,

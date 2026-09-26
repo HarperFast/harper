@@ -16,6 +16,7 @@ const {
 	databaseDropPreparationTargets,
 	closeDatabase,
 	completeDatabaseDropPreparation,
+	dropDatabase,
 	getDatabases,
 	prepareDatabaseDrop,
 	resetDatabases,
@@ -362,6 +363,28 @@ describe('shared root-store database identity', function () {
 		assert.deepStrictEqual(scanBlockedDatabaseDrops(storageRoot), []);
 		for (const rootPath of rootPaths) assert.strictEqual(existsSync(rootPath), false);
 		for (const blobPath of blobPaths) assert.strictEqual(existsSync(blobPath), false);
+	});
+
+	it('refuses a detached root with a foreign handle before destroying loaded roots', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const storageRoot = join(testRoot, 'alias-drop-foreign-handle');
+		await createPhysicalStore(storageRoot, 'physicalalias', 'TableA');
+		loadAliases(storageRoot, { configured: ['configuredalias'] });
+		loadedAliases = ['physicalalias', 'configuredalias'];
+		const loadedRootPath = getDatabases().physicalalias.TableA.primaryStore.rootStore.path;
+		const detachedRootPath = join(storageRoot, 'detached');
+		const foreignRoot = RocksDatabase.open(detachedRootPath);
+		try {
+			await assert.rejects(
+				dropDatabase('configuredalias', [detachedRootPath]),
+				(error) => error.code === 'DATABASE_CLOSING'
+			);
+			assert.strictEqual(existsSync(loadedRootPath), true);
+			assert.deepStrictEqual(scanBlockedDatabaseDrops(storageRoot), []);
+		} finally {
+			await foreignRoot.close();
+			await foreignRoot.destroy();
+		}
 	});
 
 	it('completes a drop whose marker publication was interrupted before deletion', async function () {

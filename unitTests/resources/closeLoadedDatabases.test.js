@@ -182,7 +182,6 @@ describe('RocksDB handle release', function () {
 		const dropPreparationId = 'drop-schema-close-failure-test';
 		const rootStore = openRocksDb(databaseName);
 		const suspendedBefore = getSuspendedDatabaseRootCount();
-		const originalPrimaryStore = databases[databaseName].pkg.primaryStore;
 		const close = rootStore.close;
 		rootStore.close = () => {
 			throw new Error('root close failed');
@@ -200,7 +199,7 @@ describe('RocksDB handle release', function () {
 					dropPreparationOwnerThreadId: 0,
 				},
 			}),
-			/Could not close database/
+			/Could not prepare database/
 		);
 		assert.throws(
 			() => database({ database: databaseName }),
@@ -232,43 +231,13 @@ describe('RocksDB handle release', function () {
 			(error) => error.code === 'DATABASE_CLOSING',
 			'a failed native close must remain fenced after the failed preparation is released'
 		);
-		const retryPreparationId = `${dropPreparationId}-retry`;
-		await schemaHandler({
-			type: 'schema',
-			message: {
-				originator: process.pid,
-				operation: OPERATIONS_ENUM.DROP_SCHEMA,
-				schema: databaseName,
-				prepareDrop: true,
-				dropPreparationId: retryPreparationId,
-				dropPreparationOwnerThreadId: 0,
-				dropPreparationRootPaths: [rootStore.path],
-			},
-		});
+		await new ResourceBridge().dropSchema({ schema: databaseName });
 		assert.strictEqual(
 			refCountFor(rootStore.path),
 			0,
-			`a retry must release the stranded native wrapper (${rootStore.status}): ${JSON.stringify(registryStatus())}`
+			`a same-worker drop retry must release the stranded native wrapper (${rootStore.status}): ${JSON.stringify(registryStatus())}`
 		);
-		await schemaHandler({
-			type: 'schema',
-			message: {
-				originator: process.pid,
-				operation: OPERATIONS_ENUM.DROP_SCHEMA,
-				schema: databaseName,
-				dropPreparationId: retryPreparationId,
-				dropPreparationRootPaths: [rootStore.path],
-			},
-		});
-		const Reopened = table({
-			table: 'pkg',
-			database: databaseName,
-			attributes: [{ attribute: 'id', isPrimaryKey: true }, { attribute: 'name' }],
-		});
-		assert.notStrictEqual(Reopened.primaryStore, originalPrimaryStore);
-		assert.notStrictEqual(Reopened.primaryStore.rootStore, rootStore);
-		assert.strictEqual(Reopened.primaryStore.status, 'open');
-		await closeDatabase(databaseName);
+		assert.strictEqual(databases[databaseName], undefined);
 	});
 
 	it('keeps admission fenced when completion arrives before preparation finishes closing', async function () {

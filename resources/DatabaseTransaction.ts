@@ -188,8 +188,7 @@ export function trackOutstandingCommit(
 
 export function databaseCommitsSuspended(rootStore: object | undefined): boolean {
 	if (rootStore == null) return false;
-	// Closed and abandoned wrappers carry the same root-local fence, keeping the healthy path to one
-	// property read before the process-wide active-fence counter.
+	// Closed and abandoned wrappers carry the same root-local fence.
 	if ((rootStore as any)[permanentlySuspended]) return true;
 	return suspendedDatabaseRootCount > 0 && (suspendedDatabaseCommits.get(rootStore) ?? 0) > 0;
 }
