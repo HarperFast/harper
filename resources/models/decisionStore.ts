@@ -115,8 +115,10 @@ export function getDecisionTables(readOnly = isReadOnlyMode()): DecisionTables {
 			: table({
 					table: name,
 					database: 'system',
-					// auditing is the replication feed, and both tables must replicate so an outcome can be
-					// recorded through any node; must match systemSchema.json
+					// Declared positively, as the scheduler does: a scoped `replication.databases` must not
+					// exclude these, or an outcome recorded on one node never reaches the others.
+					replicate: true,
+					// auditing is the replication feed; must match systemSchema.json
 					audit: true,
 					attributes,
 				});

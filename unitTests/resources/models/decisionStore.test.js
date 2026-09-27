@@ -63,6 +63,7 @@ describe('DecisionStore against the system database', () => {
 		const { decisions, outcomes } = getDecisionTables();
 		for (const tbl of [decisions, outcomes]) {
 			assert.strictEqual(tbl.loadAsInstance, false);
+			assert.strictEqual(tbl.replicate, true, 'declared to replicate even when replication.databases is scoped');
 			const ttl = tbl.attributes.find((attribute) => attribute.name === 'expiresAt');
 			assert.ok(ttl, 'expiresAt attribute declared');
 			assert.strictEqual(ttl.expiresAt, true);
