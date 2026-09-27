@@ -433,7 +433,7 @@ export class DerivedIndexRuntime {
 			const after = readReadiness(views);
 			if (after.state !== 'ready')
 				throw new ServerError(
-					`The native HNSW index is ${after.state === 'unavailable' ? 'unavailable' : 'rebuilding'}`,
+					`The derived index is ${after.state === 'unavailable' ? 'unavailable' : 'rebuilding'}`,
 					503
 				);
 			const now = derivedIndexTime(this.#logStore.rootStore);

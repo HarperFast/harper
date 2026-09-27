@@ -246,7 +246,7 @@ export class FullTextQueryIndex {
 			let moreMayExist = false;
 			while (accepted.length < target && offset < maxSearchWindow) {
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
-				const limit = Math.min(Math.max(RAW_PAGE_SIZE, target - accepted.length), maxSearchWindow - offset);
+				const limit = Math.min(RAW_PAGE_SIZE, maxSearchWindow - offset);
 				const result = await reader.search({
 					query,
 					offset,
@@ -275,6 +275,7 @@ export class FullTextQueryIndex {
 				}
 				offset += result.hits.length;
 				if (!moreMayExist) break;
+				if (accepted.length < target) await new Promise((resolve) => setImmediate(resolve));
 			}
 			if (!bounded && moreMayExist)
 				throw new ClientError(`Full-text query exceeds the ${maxSearchWindow}-result search window; add a limit`, 400);

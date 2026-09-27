@@ -219,6 +219,8 @@ function combineFullTextConditions(conditions: any[], operator: string | undefin
 			remaining.push(condition);
 			continue;
 		}
+		if (operator === 'or' && compiled.remaining?.length)
+			throw new ClientError('A full-text OR group cannot mix full-text and record conditions', 400);
 		if (indexName && indexName !== compiled.indexName)
 			throw new ClientError('One query cannot combine conditions from different full-text indexes', 400);
 		indexName = compiled.indexName;
@@ -236,6 +238,7 @@ function combineFullTextConditions(conditions: any[], operator: string | undefin
 			waitForIndexMilliseconds,
 			compiled.waitForIndexMilliseconds
 		);
+		if (compiled.remaining) remaining.push(...compiled.remaining);
 	}
 	if (!indexName) return conditions;
 	if (operator === 'or' && remaining.length > 0)
@@ -285,19 +288,22 @@ function compileFullTextExpression(
 			includeHighlights: boolean;
 			maxIndexLagMilliseconds?: number;
 			waitForIndexMilliseconds?: number;
+			remaining?: any[];
 	  }
 	| undefined {
 	if (condition.conditions) {
 		const children = condition.conditions.map((child) => compileFullTextExpression(child, table));
 		const fullTextChildren = children.filter(Boolean) as Array<NonNullable<(typeof children)[number]>>;
 		if (fullTextChildren.length === 0) return;
-		if (fullTextChildren.length !== children.length)
-			throw new ClientError('Nested full-text groups cannot mix full-text and record conditions', 400);
+		const groupOperator = condition.operator === 'or' ? 'or' : condition.operator === 'and' ? 'and' : undefined;
+		if (!groupOperator) throw new ClientError('Full-text groups require an and or or operator', 400);
+		const remaining = condition.conditions.filter((_child, index) => !children[index]);
+		for (const child of fullTextChildren) if (child.remaining) remaining.push(...child.remaining);
+		if (groupOperator === 'or' && remaining.length > 0)
+			throw new ClientError('A full-text OR group cannot mix full-text and record conditions', 400);
 		const indexName = fullTextChildren[0].indexName;
 		if (fullTextChildren.some((child) => child.indexName !== indexName))
 			throw new ClientError('One query cannot combine conditions from different full-text indexes', 400);
-		const groupOperator = condition.operator === 'or' ? 'or' : condition.operator === 'and' ? 'and' : undefined;
-		if (!groupOperator) throw new ClientError('Full-text groups require an and or or operator', 400);
 		return {
 			indexName,
 			expression: { operator: groupOperator, clauses: fullTextChildren.map((child) => child.expression) },
@@ -312,6 +318,7 @@ function compileFullTextExpression(
 				(value, child) => mergeFullTextOption('waitForIndexMilliseconds', value, child.waitForIndexMilliseconds),
 				undefined as number | undefined
 			),
+			...(remaining.length > 0 ? { remaining } : null),
 		};
 	}
 	const indexName = condition[0] ?? condition.attribute;

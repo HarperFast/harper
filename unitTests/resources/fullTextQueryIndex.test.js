@@ -421,6 +421,63 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	it('pages unbounded searches instead of reading the native window in one turn', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'query-paging';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 300 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 300 - index,
+		}));
+		const requests = [];
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: { getEntry: (key) => ({ version: 1, value: { title: key } }) },
+				_readTxnForContext: () => undefined,
+			},
+			definition: definition(),
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath: '/unused',
+			storeName: 'unused',
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+				},
+				async openNativeFullTextReader() {
+					return {
+						async search(request) {
+							requests.push(request);
+							return {
+								total: hits.length,
+								totalRelation: 'exact',
+								hits: hits.slice(request.offset, request.offset + request.limit),
+							};
+						},
+						async reload() {},
+						async close() {},
+					};
+				},
+			},
+		});
+		attachCurrentCoverage(index);
+		const results = await index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {});
+		assert.strictEqual(results.length, 300);
+		assert.deepStrictEqual(
+			requests.map(({ offset, limit, exactTotal }) => ({ offset, limit, exactTotal })),
+			[
+				{ offset: 0, limit: 256, exactTotal: true },
+				{ offset: 256, limit: 256, exactTotal: undefined },
+			]
+		);
+		await index.close();
+	});
+
 	it('fails instead of returning an incomplete bounded page after filtering exhausts the native window', async () => {
 		const auditStore = sharedStore();
 		publishDerivedIndexReadiness(auditStore, 'filtered-window', 'ready');

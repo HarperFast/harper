@@ -364,8 +364,13 @@ describe('@fullText derived-index activation', () => {
 		const matched = await collect(
 			Product.search({
 				conditions: [
-					{ attribute: 'id', comparator: 'matches', value: 'shoe' },
-					{ attribute: 'price', comparator: 'greater_than', value: 100 },
+					{
+						operator: 'and',
+						conditions: [
+							{ attribute: 'id', comparator: 'matches', value: 'shoe' },
+							{ attribute: 'price', comparator: 'greater_than', value: 100 },
+						],
+					},
 				],
 				limit: 1,
 			})
@@ -373,6 +378,23 @@ describe('@fullText derived-index activation', () => {
 		assert.deepStrictEqual(
 			matched.map(({ id }) => id),
 			['premium']
+		);
+		await assert.rejects(
+			async () =>
+				collect(
+					Product.search({
+						conditions: [
+							{
+								operator: 'or',
+								conditions: [
+									{ attribute: 'id', comparator: 'matches', value: 'shoe' },
+									{ attribute: 'price', comparator: 'greater_than', value: 100 },
+								],
+							},
+						],
+					})
+				),
+			/full-text OR group cannot mix full-text and record conditions/
 		);
 	});
 
@@ -492,20 +514,22 @@ describe('@fullText derived-index activation', () => {
 			)
 		);
 		assert.strictEqual(allowed.length, 1);
-		await assert.rejects(
-			Promise.resolve().then(() =>
-				collect(
-					Product.search(
-						{
-							conditions: [{ attribute: 'search', comparator: 'matches', value: 'trail', fields: ['tags'] }],
-							limit: 1,
-						},
-						{ user }
+		for (const field of ['tags', 'unknown']) {
+			await assert.rejects(
+				Promise.resolve().then(() =>
+					collect(
+						Product.search(
+							{
+								conditions: [{ attribute: 'search', comparator: 'matches', value: 'trail', fields: [field] }],
+								limit: 1,
+							},
+							{ user }
+						)
 					)
-				)
-			),
-			(error) => error.name === 'AccessViolation' || error.statusCode === 403
-		);
+				),
+				(error) => error.name === 'AccessViolation' || error.statusCode === 403
+			);
+		}
 	});
 
 	it('rejects full-text comparators on ordinary and primary indexes', async () => {
@@ -1387,6 +1411,20 @@ describe('@fullText derived-index activation', () => {
 					sort: { attribute: 'title' },
 				}),
 			/Full-text results can only use descending \$score order/
+		);
+		assert.throws(
+			() =>
+				Product.search({
+					conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }],
+					sort: { attribute: '$score' },
+				}),
+			/Full-text results can only use descending \$score order/
+		);
+		assert.doesNotThrow(() =>
+			Product.search({
+				conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }],
+				sort: { attribute: '$score', descending: true },
+			})
 		);
 	});
 

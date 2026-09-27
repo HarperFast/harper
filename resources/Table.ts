@@ -5032,14 +5032,14 @@ export function makeTable(options) {
 						if (fields !== undefined) {
 							if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => typeof field !== 'string'))
 								throw new ClientError(`Full-text index '${attribute_name}' requires a non-empty fields list`, 400);
+							assertFullTextReadAccess(context, target, fullTextDefinition, fields);
 							const sourceNames = new Set(fullTextDefinition.fields.map(({ name }) => name));
 							if (new Set(fields).size !== fields.length || fields.some((field) => !sourceNames.has(field)))
 								throw new ClientError(
 									`Full-text index '${attribute_name}' contains an unknown or duplicate field`,
 									400
 								);
-						}
-						assertFullTextReadAccess(context, target, fullTextDefinition, fields);
+						} else assertFullTextReadAccess(context, target, fullTextDefinition);
 						condition.includeHighlights =
 							condition.includeHighlights === true || selectRequestsProperty(target.select, '$highlights');
 						includeFullTextHighlights ||= condition.includeHighlights;
@@ -5125,7 +5125,7 @@ export function makeTable(options) {
 				TableResource.fullTextIndexes.length > 0 &&
 				conditionsContainFullText(conditions, TableResource.fullTextIndexes)
 			) {
-				if (sort && (sort.attribute !== '$score' || sort.next || sort.descending === false))
+				if (sort && (sort.attribute !== '$score' || sort.next || sort.descending !== true))
 					throw new ClientError('Full-text results can only use descending $score order', 400);
 				sort = undefined;
 			}
