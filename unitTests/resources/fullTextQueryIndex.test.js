@@ -24,6 +24,11 @@ function nativeId(tableId, key) {
 	return `${tableId}.${toBufferKey(key).toString('base64url')}`;
 }
 
+function setReadinessEpoch(store, readinessId, ownerEpoch) {
+	const buffer = store.buffers.get(`derived-index:${readinessId}:readiness`);
+	Atomics.store(new BigInt64Array(buffer, 6 * Int32Array.BYTES_PER_ELEMENT, 1), 0, ownerEpoch);
+}
+
 function definition() {
 	return {
 		name: 'catalogSearch',
@@ -159,6 +164,7 @@ describe('FullTextQueryIndex', () => {
 			]
 		);
 		assert.deepStrictEqual(searches[0].query, { text: 'running shoe', mode: 'all' });
+		assert.strictEqual(searches[0].limit, 32);
 		assert.strictEqual(traces.length, 2);
 		assert(traces.every(({ records }) => records.length === 1));
 		assert.deepStrictEqual(first[0].$highlights.title[0].spans, [{ start: 0, end: 3 }]);
@@ -484,7 +490,7 @@ describe('FullTextQueryIndex', () => {
 		const index = new FullTextQueryIndex({
 			Table: {
 				tableId: 1,
-				primaryStore: { getEntry: () => undefined },
+				primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
 				_readTxnForContext: () => undefined,
 			},
 			definition: definition(),
@@ -519,8 +525,59 @@ describe('FullTextQueryIndex', () => {
 		});
 		attachCurrentCoverage(index);
 		await assert.rejects(
-			index.search({ attribute: 'filtered-window', comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
+			index.search(
+				{ attribute: 'filtered-window', comparator: 'matches', value: 'shoe' },
+				{},
+				{ minResults: 1, filter: () => false }
+			),
 			/filters exhausted the 2-result search window/
+		);
+		await index.close();
+	});
+
+	it('reports stale native versions as retryable index lag', async () => {
+		const auditStore = sharedStore();
+		publishDerivedIndexReadiness(auditStore, 'stale-window', 'ready');
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: { getEntry: () => ({ version: 2, value: { title: 'shoe' } }) },
+				_readTxnForContext: () => undefined,
+			},
+			definition: definition(),
+			auditStore,
+			readinessId: 'stale-window',
+			indexId: 'stale-window',
+			storePath: '/unused',
+			storeName: 'unused',
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return { limits: { maxSearchWindow: 2, maxTraceRecords: 10 } };
+				},
+				async openNativeFullTextReader() {
+					return {
+						async search() {
+							return {
+								total: 3,
+								totalRelation: 'lower-bound',
+								hits: [
+									{ id: nativeId(1, 'one'), version: '1', score: 2 },
+									{ id: nativeId(1, 'two'), version: '1', score: 1 },
+								],
+							};
+						},
+						async reload() {},
+						async close() {},
+					};
+				},
+			},
+		});
+		attachCurrentCoverage(index);
+		await assert.rejects(
+			index.search({ attribute: 'stale-window', comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
+			(error) => error.name === 'DerivedIndexLagError' && error.statusCode === 503 && error.retryable === true
 		);
 		await index.close();
 	});
@@ -664,14 +721,16 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('keeps an in-flight reader alive while publishing a replacement reader', async () => {
+	it('reloads a reader for a new publication without interrupting an in-flight search', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'query-reader-lease';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
 		const firstSearch = Promise.withResolvers();
 		const firstStarted = Promise.withResolvers();
-		const closes = [0, 0];
+		let closes = 0;
 		let opens = 0;
+		let reloads = 0;
+		let searches = 0;
 		const index = new FullTextQueryIndex({
 			Table: {
 				tableId: 1,
@@ -694,7 +753,7 @@ describe('FullTextQueryIndex', () => {
 					const readerIndex = opens++;
 					return {
 						async search() {
-							if (readerIndex === 0) {
+							if (readerIndex === 0 && searches++ === 0) {
 								firstStarted.resolve();
 								await firstSearch.promise;
 							}
@@ -704,10 +763,11 @@ describe('FullTextQueryIndex', () => {
 								hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
 							};
 						},
-						async reload() {},
+						async reload() {
+							reloads++;
+						},
 						async close() {
-							closes[readerIndex]++;
-							if (readerIndex === 0 && closes[readerIndex] === 1) throw new Error('close failed');
+							closes++;
 						},
 					};
 				},
@@ -720,15 +780,14 @@ describe('FullTextQueryIndex', () => {
 		publication.publish();
 		const second = await index.search(query, {}, { minResults: 1 });
 		assert.strictEqual(second.length, 1);
-		assert.strictEqual(opens, 2);
-		assert.strictEqual(closes[0], 0);
+		assert.strictEqual(opens, 1);
+		assert.strictEqual(reloads, 1);
+		assert.strictEqual(closes, 0);
 		firstSearch.resolve();
 		const firstResult = await first;
 		assert.strictEqual(firstResult.length, 1);
-		assert.strictEqual(closes[0], 1);
 		await index.close();
-		assert.strictEqual(closes[0], 2);
-		assert.strictEqual(closes[1], 1);
+		assert.strictEqual(closes, 1);
 	});
 
 	it('does not let a native reader close failure reject lifecycle shutdown', async () => {
@@ -1017,6 +1076,67 @@ describe('FullTextQueryIndex', () => {
 			oldIndex.search({ attribute: oldReadinessId, comparator: 'matches', value: 'shoe' }, {}),
 			(error) => error.name === 'IndexRebuildingError'
 		);
+		assert.strictEqual(
+			(await newIndex.search({ attribute: newReadinessId, comparator: 'matches', value: 'shoe' }, {})).length,
+			1
+		);
+		await oldIndex.close();
+		await newIndex.close();
+	});
+
+	it('lets a successor generation recover from a predecessor pause', async () => {
+		const auditStore = sharedStore();
+		const oldReadinessId = 'query-predecessor-pause';
+		const newReadinessId = 'query-successor-resume';
+		publishDerivedIndexReadiness(auditStore, oldReadinessId, 'ready');
+		publishDerivedIndexReadiness(auditStore, newReadinessId, 'ready');
+		setReadinessEpoch(auditStore, oldReadinessId, 1n);
+		setReadinessEpoch(auditStore, newReadinessId, 2n);
+		const storePath = '/unused';
+		const storeName = 'query-predecessor-successor';
+		const path = nativeFullTextIndexPath(storePath, storeName);
+		const createIndex = (readinessId) => {
+			const index = new FullTextQueryIndex({
+				Table: {
+					tableId: 1,
+					primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
+					_readTxnForContext: () => undefined,
+				},
+				definition: definition(),
+				auditStore,
+				readinessId,
+				indexId: readinessId,
+				storePath,
+				storeName,
+				sourceGeneration: readinessId,
+				limits: {},
+				binding: {
+					async runtimeInfo() {
+						return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+					},
+					async openNativeFullTextReader() {
+						return {
+							async search() {
+								return {
+									total: 1,
+									totalRelation: 'exact',
+									hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+								};
+							},
+							async reload() {},
+							async close() {},
+						};
+					},
+				},
+			});
+			attachCurrentCoverage(index);
+			return index;
+		};
+		const oldIndex = createIndex(oldReadinessId);
+		const newIndex = createIndex(newReadinessId);
+
+		await pauseNativeFullTextQueryReaders(path, oldReadinessId, 1n);
+		resumeNativeFullTextQueryReaders(path, oldReadinessId, 1n);
 		assert.strictEqual(
 			(await newIndex.search({ attribute: newReadinessId, comparator: 'matches', value: 'shoe' }, {})).length,
 			1

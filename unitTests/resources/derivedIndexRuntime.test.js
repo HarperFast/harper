@@ -148,6 +148,23 @@ const registration = (backend) => ({
 });
 
 describe('DerivedIndexRuntime', () => {
+	it('publishes rebuilding readiness before invoking a destructive backend reset', async () => {
+		const store = new FakeLogStore(new Map());
+		const backend = new FakeBackend('reset-readiness', undefined);
+		let readinessDuringReset;
+		backend.reset = async () => {
+			readinessDuringReset = readDerivedIndexReadiness(store, backend.id);
+		};
+		const runtime = runtimeFor(store, new Map(), { scanRecords: () => [] }).runtime;
+		runtime.register(registration(backend));
+		await waitFor(() => runtime.requestRebuild(backend.id));
+
+		await waitFor(() => readinessDuringReset !== undefined);
+		assert.strictEqual(readinessDuringReset.state, 'rebuilding');
+		assert(readinessDuringReset.ownerEpoch > 0n);
+		await runtime.stop();
+	});
+
 	it('publishes backend-only revisions for peer refresh', async () => {
 		const store = new FakeLogStore(new Map([[10, []]]));
 		const runtime = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 }).runtime;

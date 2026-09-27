@@ -1350,6 +1350,26 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(source.resetCalls, 1);
 	});
 
+	it('lets a newer owner wait for and retry a reset that outlived its timeout', async () => {
+		let finishReset;
+		const source = lifecycle();
+		source.resetWait = new Promise((resolve) => (finishReset = resolve));
+		const { backend, setEpoch } = makeBackend(source, {
+			closeTimeoutMilliseconds: 10,
+			shutdownTimeoutMilliseconds: 20,
+		});
+
+		await assert.rejects(backend.reset(1n), /native reset did not settle/);
+		setEpoch(2n);
+		const successorReset = backend.reset(2n);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(source.resetCalls, 1);
+		finishReset();
+		await successorReset;
+		assert.strictEqual(source.resetCalls, 2);
+		await backend.shutdown(2n);
+	});
+
 	it('refreshes its durable cursor after an ownership cycle without delivery', async () => {
 		const source = lifecycle({ state: 'missing' });
 		const { backend, setEpoch } = makeBackend(source);

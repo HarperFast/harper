@@ -449,9 +449,15 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#assertAttached();
 		if (this.#resetOperation) {
 			this.#assertSharedEpoch(ownerEpoch);
-			if (this.#resetEpoch !== ownerEpoch)
-				throw new FullTextDerivedIndexError('Full-text reset belongs to another owner epoch');
-			return this.#boundedReset(this.#resetOperation);
+			if (this.#resetEpoch === ownerEpoch) return this.#boundedReset(this.#resetOperation);
+			const priorReset = this.#resetOperation;
+			try {
+				await this.#boundedReset(priorReset);
+			} catch (error) {
+				if (this.#resetOperation === priorReset) throw error;
+			}
+			this.#assertSharedEpoch(ownerEpoch);
+			return this.reset(ownerEpoch);
 		}
 		if (
 			this.#engine ||

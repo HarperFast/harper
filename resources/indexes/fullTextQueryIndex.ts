@@ -27,6 +27,8 @@ import {
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
 const RAW_PAGE_SIZE = 256;
+const MIN_RAW_PAGE_SIZE = 32;
+const RAW_PAGE_OVERFETCH_FACTOR = 2;
 const HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS = 5_000;
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 const logger = loggerWithTag('fulltext-query-index');
@@ -210,11 +212,12 @@ export class FullTextQueryIndex {
 	}
 
 	resume(readinessId: string, ownerEpoch: bigint): void {
+		const ownReadiness = readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId);
 		if (
 			!this.#closed &&
-			readinessId === this.#options.readinessId &&
 			this.#pausedFor?.readinessId === readinessId &&
-			this.#pausedFor.ownerEpoch <= ownerEpoch
+			this.#pausedFor.ownerEpoch <= ownerEpoch &&
+			(readinessId === this.#options.readinessId || ownReadiness.ownerEpoch > this.#pausedFor.ownerEpoch)
 		)
 			this.#pausedFor = undefined;
 	}
@@ -252,9 +255,13 @@ export class FullTextQueryIndex {
 			}> = [];
 			let offset = 0;
 			let moreMayExist = false;
+			let staleVersionHits = 0;
 			while (accepted.length < target && offset < maxSearchWindow) {
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
-				const limit = Math.min(RAW_PAGE_SIZE, maxSearchWindow - offset);
+				const desiredPageSize = bounded
+					? Math.max(MIN_RAW_PAGE_SIZE, (target - accepted.length) * RAW_PAGE_OVERFETCH_FACTOR)
+					: RAW_PAGE_SIZE;
+				const limit = Math.min(RAW_PAGE_SIZE, desiredPageSize, maxSearchWindow - offset);
 				const result = await reader.search({
 					query,
 					offset,
@@ -276,7 +283,10 @@ export class FullTextQueryIndex {
 					});
 					if (typeof hit.version !== 'string')
 						throw new ServerError('Full-text index returned a hit without a source version', 500);
-					if (!entry?.value || hit.version !== String(entry.version)) continue;
+					if (!entry?.value || hit.version !== String(entry.version)) {
+						staleVersionHits++;
+						continue;
+					}
 					if (options.filter && !options.filter(key)) continue;
 					accepted.push({ key, $score: hit.score, nativeId: hit.id, record: entry.value, recordEntry: entry });
 					if (accepted.length >= target) break;
@@ -287,6 +297,10 @@ export class FullTextQueryIndex {
 			}
 			if (!bounded && moreMayExist)
 				throw new ClientError(`Full-text query exceeds the ${maxSearchWindow}-result search window; add a limit`, 400);
+			if (bounded && accepted.length < target && moreMayExist && staleVersionHits > 0)
+				throw new DerivedIndexLagError(
+					`Full-text index '${this.#definition.name}' changed while searching; retry this query`
+				);
 			if (bounded && accepted.length < target && moreMayExist)
 				throw new ClientError(
 					`Full-text filters exhausted the ${maxSearchWindow}-result search window; narrow the query or reduce offset`,
@@ -394,10 +408,18 @@ export class FullTextQueryIndex {
 
 	#readerFor(ownerEpoch: bigint, dataRevision: bigint): Promise<ReaderSlot> {
 		if (this.#closed) return Promise.reject(new ServerError('Full-text index is closed', 503));
-		if (this.#pausedFor?.readinessId === this.#options.readinessId && this.#pausedFor.ownerEpoch <= ownerEpoch) {
+		if (
+			this.#pausedFor &&
+			(this.#pausedFor.ownerEpoch < ownerEpoch ||
+				(this.#pausedFor.readinessId === this.#options.readinessId && this.#pausedFor.ownerEpoch <= ownerEpoch))
+		) {
 			this.#pausedFor = undefined;
 			const pausedPath = pausedQueryPaths.get(this.#nativeOptions.path);
-			if (pausedPath?.readinessId === this.#options.readinessId && pausedPath.ownerEpoch <= ownerEpoch)
+			if (
+				pausedPath &&
+				(pausedPath.ownerEpoch < ownerEpoch ||
+					(pausedPath.readinessId === this.#options.readinessId && pausedPath.ownerEpoch <= ownerEpoch))
+			)
 				pausedQueryPaths.delete(this.#nativeOptions.path);
 		}
 		if (this.#pausedFor)
@@ -407,7 +429,7 @@ export class FullTextQueryIndex {
 			current &&
 			!current.retired &&
 			current.ownerEpoch === ownerEpoch &&
-			current.dataRevision === dataRevision &&
+			current.dataRevision >= dataRevision &&
 			current.configurationRevision === this.#configurationRevision
 		)
 			return Promise.resolve(current);
@@ -419,14 +441,12 @@ export class FullTextQueryIndex {
 				let reader: NativeFullTextReader;
 				if (
 					existing &&
-					existing.active === 0 &&
 					existing.ownerEpoch === ownerEpoch &&
 					existing.configurationRevision === configurationRevision
 				) {
 					await existing.reader.reload();
-					reader = existing.reader;
-					existing.retired = true;
-					this.#retiredReaderSlots.delete(existing);
+					existing.dataRevision = dataRevision;
+					return existing;
 				} else {
 					const binding = await this.#getBinding();
 					reader = await binding.openNativeFullTextReader(this.#nativeOptions);

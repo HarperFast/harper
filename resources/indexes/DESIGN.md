@@ -381,7 +381,10 @@ Missing, cursorless, incompatible, or malformed native state has no usable curso
 the runtime's ordinary local rebuild from records.
 Reset first asks the wrapper to retire the live generation atomically, then reclaims only wrapper-
 validated retired paths. The reset operation is tracked and bounded; shutdown attaches to the same
-operation and keeps the runner lock if it cannot prove settlement. Retired-path reclamation is
+operation and keeps the runner lock if it cannot prove settlement. If that operation outlives its
+owner's bound, a successor waits for the same operation to settle and then issues its own epoch's
+reset; it does not spend the remaining rebuild attempts on immediate owner-epoch mismatches.
+Retired-path reclamation is
 best-effort, serialized per lifecycle, and never extends that reset handoff. The native directory is node-local derived state: restarts reuse it and
 replay after its payload; replicas independently derive it from their own applied transaction log;
 backup and restore need only authoritative records and schema. A new or unusable directory serves no
@@ -396,7 +399,8 @@ the catalog first would turn a crash in that interval into an untraceable native
 
 Tantivy files are not an opaque encrypted cache. They contain the document-id term dictionary,
 analyzed term dictionaries, postings, frequencies and optionally positions; `surfaceTerms: true`
-also stores the original projected strings needed for surface-term features. Operators must protect
+adds an unstemmed companion term field for surface-term features, but does not store the original
+source values. Operators must protect
 the full-text directory with the same filesystem controls as Harper data. Removing source records
 does not erase old segment bytes immediately; normal Tantivy merge/reclamation governs physical
 removal, and destroying an index uses the wrapper's retirement protocol.
@@ -411,18 +415,25 @@ index.
 
 Each declared full-text index has a read-only native handle beside its derived-index writer. Readers
 are keyed by native path, readiness id and owner epoch. A process-wide publication revision tells
-peer workers when the current handle can reload and when an epoch or query-configuration change
-requires a replacement handle. A retired handle accepts no new leases but remains open until its
-active searches finish. Cleanup errors are retried during the next pause or close and never replace
-an otherwise successful query response.
+peer workers when the current handle must reload. The wrapper swaps an immutable searcher during
+reload, so active searches keep their captured snapshot while later searches use the new one; normal
+publication does not reopen or remap the index. An epoch or query-configuration change requires a
+replacement handle. A retired handle accepts no new leases but remains open until its active searches
+finish. Cleanup errors are retried during the next pause or close and never replace an otherwise
+successful query response.
 
 Reset is destructive, so the elected writer first pauses readers in every worker and waits for their
 active leases to drain. Harper does not force-close a handle that native code may still be using; a
 stuck native request therefore delays reset rather than risking use-after-close. Resume carries the
 owner epoch, preventing an old reset from reopening readers after a newer owner has paused them.
+The runtime publishes `rebuilding` before invoking reset, so a worker created after the pause
+broadcast cannot admit a new reader. A worker that misses resume clears its pause only after shared
+readiness reaches the same or a newer owner epoch. These orderings are part of the reset protocol.
 The pause covers every reader on the physical path, including a superseded generation. A reader
-paused for another readiness generation stays fenced: an old generation is closed, while a structural
-successor completes its own reset and readiness cycle before it can serve queries. If the native
+paused by a newer owner of another readiness generation stays fenced, while a successor whose own
+readiness has advanced beyond a predecessor's pause may recover. This closes both handoff directions:
+an old generation cannot reopen after a successor resets the path, and a late predecessor reset cannot
+leave the successor permanently paused. If the native
 reader violates its contract by rejecting close, Harper logs the failure and proceeds with reset
 rather than wedging the path indefinitely; the reset therefore assumes that rejected handle is dead.
 
@@ -432,9 +443,18 @@ media types and source-field membership are storage identity and require a new g
 wrapper validates that identity on inspection and open, so an older analyzer generation fails closed
 and rebuilds instead of serving mixed tokenization semantics.
 
+Highlighting is declaration-controlled and off unless configured. Snippet fragments contain source
+plaintext, so Harper authorizes every highlighted source field before search; selecting
+`$highlights` is also selecting that configured plaintext egress.
+
 Search hits carry the source record version. Harper loads the authoritative record through its read
 transaction and omits a hit when that version no longer matches; it never attaches an old score or
-highlight to new content. During bounded lag this can temporarily omit a recently changed record.
+highlight to new content. Bounded searches over-fetch at least 32 and at most 256 native hits per
+page, growing through the native result window only when version checks or structured filters reject
+candidates. Exhausting that window because native versions are stale is retryable index lag; filter-
+only exhaustion remains a client error asking for a narrower query. During bounded lag a smaller
+result can still temporarily omit a recently changed record when the native result set ends before
+the search window is exhausted.
 REST exposes the index coverage header, and callers that require current coverage use
 `maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`.
 
