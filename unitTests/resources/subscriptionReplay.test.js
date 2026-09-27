@@ -4,6 +4,7 @@ const { setTimeout: delay } = require('timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor.js');
 const { table } = require('#src/resources/databases');
+const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -169,6 +170,141 @@ describe('Subscription replay', () => {
 			assert.equal(new Set(pairs).size, pairs.length, 'duplicate (id,version) emitted');
 			// concurrent writes during replay should still come out in chronological order
 			assertChronological(events, 'startTime branch with concurrent writes out of order');
+		});
+
+		// subscription.startTime is the cursor a durable session persists and resumes from with
+		// exclusiveStart, so after replay stops early it must not cover a record that was not
+		// delivered. These subscribe as a durable QoS>0 MQTT session does (includeSuperseded).
+		describe('cursor after replay stops early', () => {
+			let tableSequence = 0;
+			function freshTable() {
+				return table({
+					table: `SubReplayStoppedCursor${++tableSequence}`,
+					database: 'test',
+					attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+					audit: true,
+				});
+			}
+			// A `function` listener runs inside the replay loop's send with the subscription as `this`.
+			async function replayUntil(T, startTime, stopAfter) {
+				const delivered = [];
+				const subscription = await T.subscribe({
+					startTime,
+					isCollection: true,
+					includeSuperseded: true,
+					listener(event) {
+						delivered.push(event);
+						stopAfter(event, this);
+					},
+				});
+				await waitFor(() => subscription.closed);
+				return { cursor: subscription.startTime, delivered };
+			}
+			async function resume(T, cursor, expectedIds) {
+				const subscription = await T.subscribe({ startTime: cursor, isCollection: true, includeSuperseded: true });
+				const ids = [];
+				subscription.on('data', (event) => ids.push(event.id));
+				await waitFor(() => expectedIds.every((id) => ids.includes(id)), 5000).catch(() => {});
+				await delay(50); // lets an unexpected extra delivery land before the caller compares
+				subscription.end();
+				return ids;
+			}
+			const idsFrom = (first, last) => Array.from({ length: last - first + 1 }, (_, i) => first + i);
+
+			it('stops on the last delivered record when a send fails, so a resume delivers the failed one', async () => {
+				const T = freshTable();
+				const startTime = Date.now() - 1;
+				for (let i = 0; i < 5; i++) await T.put(i, { name: 'v' + i });
+				const { cursor, delivered } = await replayUntil(T, startTime, (event, subscription) => {
+					if (event.id === 1) subscription.end();
+				});
+				assert.deepStrictEqual(
+					delivered.map((event) => event.id),
+					[0, 1]
+				);
+				assert.equal(cursor, delivered[1].localTime);
+				assert.deepStrictEqual(await resume(T, cursor, [2, 3, 4]), [2, 3, 4]);
+			});
+
+			it('stays before a transaction whose records were only partly delivered', async () => {
+				const T = freshTable();
+				const startTime = Date.now() - 1;
+				await T.put(0, { name: 'before' });
+				await transaction({}, async (context) => {
+					for (let i = 1; i <= 3; i++) await T.put(i, { name: 'txn' + i }, context);
+				});
+				await T.put(4, { name: 'after' });
+				const { cursor, delivered } = await replayUntil(T, startTime, (event, subscription) => {
+					if (event.id === 1) subscription.end();
+				});
+				assert.deepStrictEqual(
+					delivered.map((event) => event.id),
+					[0, 1]
+				);
+				// RocksDB gives every record of a transaction the same txnLogKey, so a resume re-delivers the
+				// transaction's already-sent record 1; LMDB keys each record separately.
+				const expected = isLMDB ? [2, 3, 4] : [1, 2, 3, 4];
+				assert.deepStrictEqual(await resume(T, cursor, expected), expected);
+			});
+
+			it('moves past a record the filter rejects when replay completes', async () => {
+				const T = freshTable();
+				const startTime = Date.now() - 1;
+				for (let i = 0; i < 3; i++) await T.put(i, { name: 'v' + i });
+				const lastKey = [...T.auditStore.getRange({ start: startTime })]
+					.filter((record) => record.tableId === T.tableId)
+					.at(-1).txnLogKey;
+				const subscription = await T.subscribe({
+					startTime,
+					isCollection: true,
+					includeSuperseded: true,
+					eventFilter: (event) => event.id !== 2,
+				});
+				const events = await collect(subscription, 50, { minEvents: 2 });
+				subscription.end();
+				assert.deepStrictEqual(
+					events.map((event) => event.id),
+					[0, 1]
+				);
+				assert.equal(subscription.startTime, lastKey);
+			});
+
+			it('stays before a transaction when the subscription closes at a replay yield inside it', async () => {
+				const T = freshTable();
+				const startTime = Date.now() - 1;
+				const size = 150; // more than REPLAY_YIELD_INTERVAL (100), so the loop yields inside the transaction
+				await transaction({}, async (context) => {
+					for (let i = 0; i < size; i++) await T.put(i, { name: 'bulk' + i }, context);
+				});
+				await T.put(size, { name: 'after' });
+				const { cursor, delivered } = await replayUntil(T, startTime, (event, subscription) => {
+					if (event.id === 0) queueMicrotask(() => subscription.end());
+				});
+				assert.ok(delivered.length > 0 && delivered.length < size, `delivered ${delivered.length} before the yield`);
+				const expected = idsFrom(delivered.length, size);
+				const resumed = await resume(T, cursor, expected);
+				const missing = expected.filter((id) => !resumed.includes(id));
+				assert.deepStrictEqual(missing, [], 'records after the yield were skipped by the resume');
+			});
+
+			it('stays before a transaction when the subscription closes while replay waits for the queue to drain', async () => {
+				const T = freshTable();
+				const startTime = Date.now() - 1;
+				const size = 150;
+				await transaction({}, async (context) => {
+					for (let i = 0; i < size; i++) await T.put(i, { name: 'bulk' + i }, context);
+				});
+				await T.put(size, { name: 'after' });
+				// with no consumer the queue fills until replay passes EVENT_HIGH_WATER_MARK (100) and waits to drain
+				const subscription = await T.subscribe({ startTime, isCollection: true, includeSuperseded: true });
+				await waitFor(() => subscription.queue?.length > 100);
+				const lastSent = subscription.queue.at(-1).id;
+				subscription.end();
+				const expected = idsFrom(lastSent, size);
+				const resumed = await resume(T, subscription.startTime, expected);
+				const missing = expected.filter((id) => !resumed.includes(id));
+				assert.deepStrictEqual(missing, [], 'records from the last sent one on were skipped by the resume');
+			});
 		});
 	});
 
