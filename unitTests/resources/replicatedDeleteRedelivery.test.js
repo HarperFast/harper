@@ -37,8 +37,8 @@ describe('Re-delivered replicated deletes (harper-pro#826)', () => {
 	function applyFrame(logKey, writes, TableClass = Nodes) {
 		const context = { source: {}, sourceApply: true, timestamp: logKey };
 		return transaction(context, async () => {
-			for (const { type, id, record, version = logKey, nodeId = 1, table: WriteTable = TableClass } of writes) {
-				const resource = await WriteTable.getResource(id, context);
+			for (const { type, id, record, version = logKey, nodeId = 1 } of writes) {
+				const resource = await TableClass.getResource(id, context);
 				if (type === 'delete') resource._writeDelete(id, { nodeId, version });
 				else if (type === 'invalidate') resource._writeInvalidate(id, undefined, { nodeId, version });
 				else resource._writeUpdate(id, record, true, { isNotification: true, nodeId, version });
@@ -122,22 +122,6 @@ describe('Re-delivered replicated deletes (harper-pro#826)', () => {
 		assert.equal(entriesFor(Nodes, id, 'delete').length, 1);
 		assert.equal(Nodes.primaryStore.getEntry(id).value, null);
 		assert.deepEqual(await indexedIds('first-seen'), []);
-	});
-
-	// RocksDB checks each delete as it is added; LMDB checks them all at commit, after the whole frame is
-	// added, so only LMDB catches a table whose index skips writes another table's check already scanned.
-	it('does not re-log the delete in either table when a two-table frame is re-delivered', async function () {
-		const indexedId = 'two-table-indexed';
-		const unindexedId = 'two-table-unindexed';
-		await applyFrame(originClock(), [put(indexedId, 'two-table'), put(unindexedId, 'two-table', { table: Unindexed })]);
-		const deleteKey = originClock();
-		const frame = [del(indexedId), del(unindexedId, { table: Unindexed })];
-		await applyFrame(deleteKey, frame);
-		for (let i = 0; i < 3; i++) await applyFrame(deleteKey, frame);
-		assert.deepEqual(
-			[entriesFor(Nodes, indexedId, 'delete').length, entriesFor(Unindexed, unindexedId, 'delete').length],
-			[1, 1]
-		);
 	});
 
 	it('still applies a distinct delete that reuses the tombstone version under a new log key', async function () {
@@ -230,6 +214,69 @@ describe('Re-delivered replicated deletes (harper-pro#826)', () => {
 				message: 'the frames should apply',
 			});
 			assert.equal(entriesFor(Dispatched, id, 'delete').length, 1);
+		} finally {
+			release();
+		}
+	});
+
+	// LMDB runs every write's check at commit, so the first table's check scans the second table's delete
+	// before that table's own check runs; RocksDB checks each delete as it is added. The ids differ because
+	// an index keyed only by id would answer for both tables.
+	it('does not re-log the delete in either table when a two-table frame is re-delivered', async function () {
+		let release;
+		const held = new Promise((resolve) => (release = resolve));
+		const putKey = originClock();
+		const deleteKey = originClock();
+		const markerKey = originClock();
+		const frame = (timestamp, writes) => ({ type: 'transaction', timestamp, writes });
+		const inUnindexed = { table: 'RedeliveredDeletesUnindexed' };
+		const deleteWrites = [
+			{ type: 'delete', id: 'paired', nodeId: 1, version: deleteKey },
+			{ type: 'delete', id: 'paired-unindexed', ...inUnindexed, nodeId: 1, version: deleteKey },
+		];
+		const Paired = table({
+			table: 'RedeliveredDeletesPaired',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			audit: true,
+		});
+		Paired.sourcedFrom(
+			{
+				subscribeOnThisThread: () => true,
+				async *subscribe() {
+					yield frame(putKey, [
+						{ type: 'put', id: 'paired', value: { id: 'paired' }, nodeId: 1, version: putKey },
+						{
+							type: 'put',
+							id: 'paired-unindexed',
+							...inUnindexed,
+							value: { id: 'paired-unindexed' },
+							nodeId: 1,
+							version: putKey,
+						},
+					]);
+					for (let i = 0; i < 4; i++)
+						yield frame(
+							deleteKey,
+							deleteWrites.map((write) => ({ ...write }))
+						);
+					yield frame(markerKey, [
+						{ type: 'put', id: 'marker', value: { id: 'marker' }, nodeId: 1, version: markerKey },
+					]);
+					await held;
+				},
+			},
+			{ intermediateSource: true }
+		);
+		try {
+			await waitFor(() => Paired.primaryStore.getEntry('marker')?.value, {
+				timeout: 5000,
+				message: 'the frames should apply',
+			});
+			assert.deepEqual(
+				[entriesFor(Paired, 'paired', 'delete').length, entriesFor(Unindexed, 'paired-unindexed', 'delete').length],
+				[1, 1]
+			);
 		} finally {
 			release();
 		}

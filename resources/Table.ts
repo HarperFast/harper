@@ -4777,8 +4777,8 @@ export function makeTable(options) {
 
 	/**
 	 * Whether every write to this table's `key` in the transaction is a delete from origin `deleteNodeId`.
-	 * Every table in the transaction shares one index of its writes, keyed by store, which is extended as
-	 * writes are added, so a transaction's checks cost O(writes).
+	 * `transaction.writes` holds every table's writes, so its one index is keyed by store; the index is
+	 * extended as writes are added, so a transaction's checks cost O(writes).
 	 */
 	function onlyDeletesFrom(transaction: any, key: Id, deleteNodeId: number | null): boolean {
 		const writes = transaction.writes;
