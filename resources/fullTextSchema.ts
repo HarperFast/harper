@@ -145,7 +145,7 @@ export function compileValidFullTextDefinitions(
 	const definitions: FullTextDefinition[] = [];
 	for (const value of values) {
 		try {
-			const definition = compileFullTextDefinition(value, attributes);
+			const definition = compileFullTextDefinition(migratePersistedFullTextDefinition(value), attributes);
 			if (names.has(definition.name))
 				throw schemaError(`@fullText index "${definition.name}" is declared more than once`);
 			names.add(definition.name);
@@ -156,6 +156,13 @@ export function compileValidFullTextDefinitions(
 		}
 	}
 	return sortFullTextDefinitions(definitions);
+}
+
+function migratePersistedFullTextDefinition(value: unknown): unknown {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+	const definition = value as Record<string, unknown>;
+	if (definition.analyzer !== 'english@1') return value;
+	return { ...definition, analyzer: 'english@2' };
 }
 
 export function sortFullTextDefinitions<T extends { name: string }>(definitions: T[]): T[] {

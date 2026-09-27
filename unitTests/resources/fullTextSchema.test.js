@@ -3,7 +3,7 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
-const { compileFullTextDefinitions } = require('#src/resources/fullTextSchema');
+const { compileFullTextDefinitions, compileValidFullTextDefinitions } = require('#src/resources/fullTextSchema');
 const { getDatabases, resetDatabases, table } = require('#src/resources/databases');
 const environment = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
@@ -104,6 +104,21 @@ describe('@fullText declaration compiler', () => {
 				/must be stored record data/
 			);
 		}
+	});
+
+	it('migrates persisted english@1 declarations while rejecting it in new declarations', () => {
+		const persisted = {
+			name: 'search',
+			fields: [{ name: 'title' }],
+			analyzer: 'english@1',
+		};
+		const invalid = [];
+		const [compiled] = compileValidFullTextDefinitions([persisted], productAttributes(), (value, error) =>
+			invalid.push({ value, error })
+		);
+		assert.strictEqual(compiled.analyzer, 'english@2');
+		assert.deepStrictEqual(invalid, []);
+		assert.throws(() => compileFullTextDefinitions([persisted], productAttributes()), /english@2/);
 	});
 });
 

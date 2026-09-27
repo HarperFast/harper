@@ -22,6 +22,7 @@ const {
 } = require('#src/resources/derivedIndexes');
 const { FullTextNativeTestBinding } = require('./fullTextNativeTestBinding');
 const { describeTable } = require('#src/dataLayer/schemaDescribe');
+const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const rocksOnly = isLMDB ? it.skip : it;
@@ -304,6 +305,13 @@ describe('@fullText derived-index activation', () => {
 			matched.map(({ id }) => id),
 			['exact']
 		);
+		const counted = await Product.search({
+			conditions: [{ attribute: 'title', comparator: 'matches', value: 'running' }],
+			limit: 1,
+			count: 'exact',
+		});
+		assert.strictEqual(counted.recordCount, null);
+		assert.strictEqual(counted.recordCountExact, false);
 		const excluded = await collect(
 			Product.search({
 				operator: 'and',
@@ -323,6 +331,91 @@ describe('@fullText derived-index activation', () => {
 			/requires at least one non-negated condition/
 		);
 		assert.strictEqual(binding.readerOpens.length, 1);
+	});
+
+	rocksOnly('routes a full-text index that shares the primary-key name through Tantivy', async () => {
+		Product = table({
+			database: `fulltext-primary-name-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [
+				{
+					...definition(),
+					name: 'id',
+					fields: [{ name: 'title', weight: 1 }],
+				},
+			],
+		});
+		await Product.put('shoe', { title: 'Trail shoe' });
+		await Product.put('jacket', { title: 'Rain jacket' });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'id').state === 'ready', 30_000);
+		const matched = await collect(
+			Product.search({ conditions: [{ attribute: 'id', comparator: 'matches', value: 'shoe' }] })
+		);
+		assert.deepStrictEqual(
+			matched.map(({ id }) => id),
+			['shoe']
+		);
+	});
+
+	rocksOnly('preserves full-text condition options through search_by_conditions', async () => {
+		const database = `fulltext-operations-${Date.now()}`;
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'tags', type: 'array', elements: { type: 'String' } },
+			],
+			fullTextIndexes: [definition()],
+		});
+		let captured;
+		const originalSearch = Product.search;
+		Product.search = (query, context) => {
+			captured = { query, context };
+			return [];
+		};
+		try {
+			await ResourceBridge.prototype.searchByConditions.call(
+				{},
+				{
+					database,
+					schema: database,
+					table: 'Product',
+					get_attributes: ['*'],
+					conditions: [
+						{
+							search_attribute: 'search',
+							search_type: 'matches_phrase',
+							search_value: 'trail shoe',
+							fields: ['title'],
+							includeHighlights: true,
+							maxIndexLagMilliseconds: 50,
+							waitForIndexMilliseconds: 100,
+						},
+					],
+				}
+			);
+		} finally {
+			Product.search = originalSearch;
+		}
+		assert.deepStrictEqual(captured.query.conditions, [
+			{
+				attribute: 'search',
+				comparator: 'matches_phrase',
+				value: 'trail shoe',
+				fields: ['title'],
+				includeHighlights: true,
+				maxIndexLagMilliseconds: 50,
+				waitForIndexMilliseconds: 100,
+			},
+		]);
 	});
 
 	it('rejects full-text comparators on ordinary and primary indexes', async () => {

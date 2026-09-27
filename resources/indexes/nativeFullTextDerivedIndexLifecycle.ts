@@ -25,6 +25,8 @@ export type NativeFullTextDerivedIndexLifecycleOptions = NativeFullTextIndexConf
 	indexId: string;
 	sourceGeneration: string;
 	binding?: NativeFullTextModule | (() => Promise<NativeFullTextModule>);
+	beforeReset?: () => Promise<void>;
+	afterReset?: () => void;
 };
 
 export type NativeFullTextDerivedIndexBackendOptions = Omit<FullTextDerivedIndexBackendOptions, 'lifecycle'> &
@@ -95,11 +97,13 @@ export class NativeFullTextDerivedIndexLifecycle {
 	}
 
 	async reset(): Promise<void> {
+		await this.#options.beforeReset?.();
 		const result = await this.#requireBinding().resetNativeFullTextIndex({
 			path: this.#path,
 			indexId: this.#options.indexId,
 		});
 		this.#queueReclaimRetired(result.state === 'reset' ? result.retiredPath : undefined);
+		this.#options.afterReset?.();
 	}
 
 	#queueReclaimRetired(retiredPath?: string): void {

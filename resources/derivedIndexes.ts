@@ -469,6 +469,8 @@ export function attachDerivedIndexes(
 				surfaceTerms: storage.surfaceTerms,
 				synonyms: storage.synonyms,
 				limits: { ...FULL_TEXT_LIMITS },
+				beforeReset: () => fullTextQueryIndexes.get(definition.name)?.pause() ?? Promise.resolve(),
+				afterReset: () => fullTextQueryIndexes.get(definition.name)?.resume(),
 				...(fullTextTest
 					? {
 							binding: fullTextTest.binding,
@@ -487,6 +489,13 @@ export function attachDerivedIndexes(
 					maxLagMilliseconds: DEFAULT_MAX_LAG_MILLISECONDS,
 					...fullTextTest?.runnerOptions,
 				},
+			});
+			fullTextQueryIndexes.get(definition.name)?.attachDerivedHost({
+				readiness: () => registered.runtime.getReadiness(id),
+				coverage: (maxLagMilliseconds) =>
+					readDerivedIndexCoverage(auditStore, readinessId, () => backend.getDurableCursor(), maxLagMilliseconds),
+				requestRebuild: () => registered.runtime.requestRebuild(id),
+				waitForCoverage: (since, timeout, signal) => registered.runtime.waitForCoverage(id, since, timeout, signal),
 			});
 		})().catch((error) => {
 			if (!isCurrent()) return;

@@ -167,6 +167,21 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			['product-1']
 		);
 		await reader.close();
+		const reweightedReader = await binding.openNativeFullTextReader({
+			fields: [{ name: 'title', weight: 7 }],
+			analyzer: 'english@2',
+			positions: true,
+			surfaceTerms: false,
+			limits,
+			path: lifecycle.path,
+			indexId: 'products-title',
+			generation: createHash('sha256').update('table-generation-1').digest('hex'),
+		});
+		assert.deepStrictEqual(
+			(await reweightedReader.search({ text: 'running', limit: 10 })).hits.map(({ id }) => id),
+			['product-1']
+		);
+		await reweightedReader.close();
 
 		assert.deepStrictEqual(lifecycle.inspect(), {
 			state: 'checkpointed',
@@ -250,6 +265,25 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			{ path: lifecycle.path, retiredPath: undefined },
 			{ path: lifecycle.path, retiredPath: 'wrapper-owned' },
 		]);
+	});
+
+	it('quiesces query readers before reset and resumes them after success', async () => {
+		const binding = new FakeNativeModule();
+		const events = [];
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(
+			options(storePath, binding, {
+				beforeReset: async () => events.push('paused'),
+				afterReset: () => events.push('resumed'),
+			})
+		);
+		binding.resetNativeFullTextIndex = async (resetOptions) => {
+			events.push('reset');
+			binding.resets.push(resetOptions);
+			return { state: 'missing' };
+		};
+		await lifecycle.initialize();
+		await lifecycle.reset();
+		assert.deepStrictEqual(events, ['paused', 'reset', 'resumed']);
 	});
 
 	it('does not block reset on best-effort retired storage reclamation', async () => {

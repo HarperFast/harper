@@ -29,6 +29,7 @@ const DEFAULT_CLOSE_TIMEOUT_MILLISECONDS = 35_000;
 const DEFAULT_MAX_APPLY_SLICE_RECORDS = 256;
 const DEFAULT_BLOB_READ_TIMEOUT_MILLISECONDS = 5_000;
 const DEFAULT_BLOB_READ_ATTEMPTS = 3;
+const DEFAULT_BLOB_READ_FAILURE_BUDGET_MILLISECONDS = 30_000;
 const APPLY_SLICE_MILLISECONDS = 5;
 const MAX_FULL_TEXT_VALUE_BYTES = 1 << 20;
 const TERMINAL_OPEN_ERROR_CODES = new Set([
@@ -86,6 +87,7 @@ export type FullTextDerivedIndexBackendOptions = {
 	shutdownTimeoutMilliseconds?: number;
 	blobReadTimeoutMilliseconds?: number;
 	blobReadAttempts?: number;
+	blobReadFailureBudgetMilliseconds?: number;
 };
 
 type ApplyCommand = {
@@ -102,6 +104,7 @@ type BarrierCommand = {
 	epoch: bigint;
 	horizon: number;
 	cursor?: DerivedIndexCursor;
+	coverageOnly?: true;
 };
 
 type Command = ApplyCommand | BarrierCommand;
@@ -140,7 +143,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#shutdownTimeoutMilliseconds: number;
 	#blobReadTimeoutMilliseconds: number;
 	#blobReadAttempts: number;
-	#blobReadFailures = new Map<string, { version: string; attempts: number }>();
+	#blobReadFailureBudgetMilliseconds: number;
+	#blobReadFailures = new Map<string, { version: string; attempts: number; firstFailureAt: number }>();
 	#host?: DerivedIndexBackendHost;
 	#wake?: (change?: DerivedIndexBackendStateChange) => void;
 	#engine?: FullTextDerivedIndexEngine;
@@ -241,6 +245,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			options.blobReadAttempts ?? DEFAULT_BLOB_READ_ATTEMPTS,
 			'blobReadAttempts'
 		);
+		this.#blobReadFailureBudgetMilliseconds = positiveInteger(
+			options.blobReadFailureBudgetMilliseconds ?? DEFAULT_BLOB_READ_FAILURE_BUDGET_MILLISECONDS,
+			'blobReadFailureBudgetMilliseconds'
+		);
 		this.#openRetryDelayMilliseconds = Math.max(1, this.#openRetryMilliseconds);
 		this.#writerRetryDelayMilliseconds = Math.min(
 			this.#maxOpenRetryMilliseconds,
@@ -337,6 +345,34 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	flush(_reason: DerivedIndexFlushReason = 'threshold'): void {
 		if (this.#activeEpoch === undefined || this.#failed || this.#shutdown) return;
 		this.#queueBarrier(this.#activeEpoch);
+	}
+
+	publishCoverage(positions: DerivedIndexPositions, ownerEpoch: bigint): void {
+		this.#assertSharedEpoch(ownerEpoch);
+		if (!this.#durableCursor) throw new FullTextDerivedIndexError('Cannot publish coverage without a durable cursor');
+		if (sameDerivedIndexPositions(this.#durableCursor.coverage, positions)) return;
+		let pending: BarrierCommand | undefined;
+		for (let index = this.#commands.length - 1; index >= 0; index--) {
+			if (this.#commands[index].type === 'barrier') {
+				pending = this.#commands[index] as BarrierCommand;
+				break;
+			}
+		}
+		const horizon = this.#lastAcceptedSequence;
+		const cursor = {
+			...cloneCursor(this.#lastAcceptedCursor ?? this.#durableCursor)!,
+			coverage: clonePositions(positions),
+		};
+		if (pending?.epoch === ownerEpoch && pending.horizon === horizon) pending.cursor = cursor;
+		else
+			this.#commands.push({
+				type: 'barrier',
+				epoch: ownerEpoch,
+				horizon,
+				cursor,
+				coverageOnly: true,
+			});
+		this.#scheduleDrain();
 	}
 
 	shutdown(ownerEpoch: bigint): Promise<void> {
@@ -578,7 +614,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 						deadline,
 						this.#blobReadFailures,
 						this.#blobReadAttempts,
-						this.#blobReadTimeoutMilliseconds
+						this.#blobReadTimeoutMilliseconds,
+						this.#blobReadFailureBudgetMilliseconds
 					)
 				: {
 						...toFullTextMutationSliceSync(
@@ -639,7 +676,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	}
 
 	async #publish(command: BarrierCommand): Promise<boolean> {
-		if (command.horizon <= this.#lastPublishedSequence) return true;
+		if (!command.coverageOnly && command.horizon <= this.#lastPublishedSequence) return true;
 		this.#assertCommandEpoch(command.epoch);
 		if (this.#lastAppliedSequence < command.horizon)
 			throw new FullTextDerivedIndexError('Full-text publication barrier passed unapplied work');
@@ -657,7 +694,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			return false;
 		}
 		this.#assertCommandEpoch(command.epoch);
-		this.#lastPublishedSequence = command.horizon;
+		this.#lastPublishedSequence = Math.max(this.#lastPublishedSequence, command.horizon);
 		this.#hasStagedMutations = false;
 		const rejected = this.#stagedUnindexableRecords;
 		this.#unindexableRecords += rejected;
@@ -941,9 +978,10 @@ async function toFullTextMutationSlice(
 	start: number,
 	maxRecords: number,
 	deadline: number,
-	readFailures: Map<string, { version: string; attempts: number }>,
+	readFailures: Map<string, { version: string; attempts: number; firstFailureAt: number }>,
 	maxReadAttempts: number,
-	readTimeoutMilliseconds: number
+	readTimeoutMilliseconds: number,
+	readFailureBudgetMilliseconds: number
 ): Promise<{ batch: FullTextMutationBatch; end: number; rejected: number }> {
 	const upserts: FullTextMutationBatch['upserts'] = [];
 	const deletes: string[] = [];
@@ -962,14 +1000,20 @@ async function toFullTextMutationSlice(
 		const id = tablePrefix + toBufferKey(record.recordId).toString('base64url');
 		const recordState = record.state.kind === 'record' ? record.state : undefined;
 		const version = recordState ? String(recordState.version) : undefined;
+		const readStartedAt = performance.now();
 		const resolved = recordState
 			? await resolvedFullTextFields(recordState.projection, readTimeoutMilliseconds)
 			: undefined;
 		if (resolved?.error) {
 			const previous = readFailures.get(id);
 			const attempts = previous?.version === version ? previous.attempts + 1 : 1;
-			if (attempts < maxReadAttempts) {
-				readFailures.set(id, { version: version!, attempts });
+			const firstFailureAt = previous?.version === version ? previous.firstFailureAt : readStartedAt;
+			const retry =
+				resolved.error instanceof FullTextBlobReadTimeout
+					? performance.now() - firstFailureAt < readFailureBudgetMilliseconds
+					: attempts < maxReadAttempts;
+			if (retry) {
+				readFailures.set(id, { version: version!, attempts, firstFailureAt });
 				throw resolved.error;
 			}
 		}
@@ -1135,6 +1179,7 @@ async function resolvedFullTextFields(
 ): Promise<{ fields?: Record<string, string | string[]>; rejected: boolean; error?: unknown }> {
 	let fields = fullTextFields(projection);
 	if (!projection || typeof projection !== 'object' || Array.isArray(projection)) return { fields, rejected: false };
+	const deadline = performance.now() + readTimeoutMilliseconds;
 	for (const name in projection) {
 		if (!Object.hasOwn(projection, name)) continue;
 		const value = (projection as Record<string, unknown>)[name];
@@ -1142,11 +1187,9 @@ async function resolvedFullTextFields(
 		if (value.size > MAX_FULL_TEXT_VALUE_BYTES) return { rejected: true };
 		let bytes: ArrayBuffer;
 		try {
-			bytes = await withTimeout(
-				value.arrayBuffer(),
-				readTimeoutMilliseconds,
-				() => new Error('Full-text Blob read timed out')
-			);
+			const remaining = deadline - performance.now();
+			if (remaining <= 0) throw new FullTextBlobReadTimeout();
+			bytes = await withTimeout(value.arrayBuffer(), remaining, () => new FullTextBlobReadTimeout());
 		} catch (error) {
 			return { rejected: false, error };
 		}
@@ -1161,6 +1204,12 @@ async function resolvedFullTextFields(
 		(fields ??= Object.create(null))[name] = text;
 	}
 	return { fields, rejected: false };
+}
+
+class FullTextBlobReadTimeout extends Error {
+	constructor() {
+		super('Full-text Blob read timed out');
+	}
 }
 
 function sliceContainsBlob(records: DerivedIndexBatch['records'], start: number, maxRecords: number): boolean {

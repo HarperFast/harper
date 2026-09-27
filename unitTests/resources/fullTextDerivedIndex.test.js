@@ -98,6 +98,7 @@ function makeBackend(lifecycleValue, options = {}) {
 		maxCursorPayloadBytes: options.maxCursorPayloadBytes,
 		blobReadTimeoutMilliseconds: options.blobReadTimeoutMilliseconds,
 		blobReadAttempts: options.blobReadAttempts,
+		blobReadFailureBudgetMilliseconds: options.blobReadFailureBudgetMilliseconds,
 	});
 	backend.attach({
 		isOwnerEpoch: (candidate) => candidate === epoch,
@@ -189,6 +190,20 @@ describe('FullTextDerivedIndexBackend', () => {
 		backend.flush();
 		await waitFor(() => engine.publications.length === 1);
 		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(engine.publications[0]).coverage }, covered.coverage);
+		await backend.shutdown(1n);
+	});
+
+	it('publishes query coverage in the native cursor', async () => {
+		const engine = new FakeEngine();
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
+		backend.deliver(batch(1n, [], cursor(10)));
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		const coverage = { local: { sequence: 3, offset: 4 } };
+		backend.publishCoverage(coverage, 1n);
+		await waitFor(() => engine.publications.length === 2);
+		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(engine.publications[1]).coverage }, coverage);
+		assert.deepStrictEqual({ ...backend.getDurableCursor().coverage }, coverage);
 		await backend.shutdown(1n);
 	});
 
@@ -689,6 +704,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), {
 			blobReadTimeoutMilliseconds: 10,
 			blobReadAttempts: 1,
+			blobReadFailureBudgetMilliseconds: 1,
 		});
 		class StalledBlob extends Blob {
 			arrayBuffer() {
@@ -705,6 +721,48 @@ describe('FullTextDerivedIndexBackend', () => {
 		backend.flush();
 		await waitFor(() => engine.publications.length === 1);
 		assert.strictEqual(engine.applied[0].deletes.length, 1);
+		await backend.shutdown(1n);
+	});
+
+	it('keeps retrying timed-out Blob reads within the version time budget', async () => {
+		const engines = [new FakeEngine(), new FakeEngine(), new FakeEngine(), new FakeEngine()];
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [...engines]), {
+			blobReadTimeoutMilliseconds: 5,
+			blobReadAttempts: 3,
+			blobReadFailureBudgetMilliseconds: 100,
+		});
+		let reads = 0;
+		class EventuallyReadableBlob extends Blob {
+			arrayBuffer() {
+				reads++;
+				if (reads <= 3) return new Promise(() => {});
+				return super.arrayBuffer();
+			}
+		}
+		const value = batch(
+			1n,
+			[
+				mutation('eventual', {
+					kind: 'record',
+					version: 1,
+					projection: { body: new EventuallyReadableBlob(['plain text']) },
+				}),
+			],
+			cursor(20)
+		);
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		for (let attempt = 1; attempt <= 3; attempt++) {
+			assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
+			backend.flush();
+			await waitFor(() => changes.filter((change) => change === 'accepted-work-lost').length === attempt);
+			await waitFor(() => changes.filter((change) => change === 'changed').length === attempt);
+		}
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
+		backend.flush();
+		await waitFor(() => engines[3].publications.length === 1);
+		assert.strictEqual(engines[3].applied[0].upserts[0].fields.body, 'plain text');
+		assert.strictEqual(backend.getUnindexableRecords(), 0);
 		await backend.shutdown(1n);
 	});
 

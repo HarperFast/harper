@@ -200,9 +200,7 @@ function buildRecordGuards(recordAccess): ((record: any) => boolean)[] | undefin
 
 function conditionIndex(table: any, attributeName: any, preferFullText = false): any {
 	if (typeof attributeName !== 'string') return;
-	return preferFullText
-		? table.fullTextQueryIndexes?.[attributeName]
-		: (table.indices?.[attributeName] ?? table.fullTextQueryIndexes?.[attributeName]);
+	return preferFullText ? table.fullTextQueryIndexes?.[attributeName] : table.indices?.[attributeName];
 }
 
 function combineFullTextConditions(conditions: any[], operator: string | undefined, table: any): any[] {
@@ -213,6 +211,8 @@ function combineFullTextConditions(conditions: any[], operator: string | undefin
 	const leaves: FullTextCondition['fullTextLeaves'] = [];
 	const remaining: any[] = [];
 	let includeHighlights = false;
+	let maxIndexLagMilliseconds: number | undefined;
+	let waitForIndexMilliseconds: number | undefined;
 	for (const condition of conditions) {
 		const compiled = compileFullTextExpression(condition, table);
 		if (!compiled) {
@@ -226,6 +226,16 @@ function combineFullTextConditions(conditions: any[], operator: string | undefin
 		leaves.push(...compiled.leaves);
 		positive ||= compiled.positive;
 		includeHighlights ||= compiled.includeHighlights;
+		maxIndexLagMilliseconds = mergeFullTextOption(
+			'maxIndexLagMilliseconds',
+			maxIndexLagMilliseconds,
+			compiled.maxIndexLagMilliseconds
+		);
+		waitForIndexMilliseconds = mergeFullTextOption(
+			'waitForIndexMilliseconds',
+			waitForIndexMilliseconds,
+			compiled.waitForIndexMilliseconds
+		);
 	}
 	if (!indexName) return conditions;
 	if (operator === 'or' && remaining.length > 0)
@@ -240,6 +250,8 @@ function combineFullTextConditions(conditions: any[], operator: string | undefin
 		fullTextQuery: expression,
 		fullTextLeaves: leaves,
 		includeHighlights,
+		...(maxIndexLagMilliseconds === undefined ? null : { maxIndexLagMilliseconds }),
+		...(waitForIndexMilliseconds === undefined ? null : { waitForIndexMilliseconds }),
 	};
 	return operator === 'or' ? [combined] : [combined, ...remaining];
 }
@@ -254,6 +266,8 @@ function compileFullTextExpression(
 			leaves: NonNullable<FullTextCondition['fullTextLeaves']>;
 			positive: boolean;
 			includeHighlights: boolean;
+			maxIndexLagMilliseconds?: number;
+			waitForIndexMilliseconds?: number;
 	  }
 	| undefined {
 	if (condition.conditions) {
@@ -273,6 +287,14 @@ function compileFullTextExpression(
 			leaves: fullTextChildren.flatMap((child) => child.leaves),
 			positive: fullTextChildren.some((child) => child.positive),
 			includeHighlights: fullTextChildren.some((child) => child.includeHighlights),
+			maxIndexLagMilliseconds: fullTextChildren.reduce(
+				(value, child) => mergeFullTextOption('maxIndexLagMilliseconds', value, child.maxIndexLagMilliseconds),
+				undefined as number | undefined
+			),
+			waitForIndexMilliseconds: fullTextChildren.reduce(
+				(value, child) => mergeFullTextOption('waitForIndexMilliseconds', value, child.waitForIndexMilliseconds),
+				undefined as number | undefined
+			),
 		};
 	}
 	const indexName = condition[0] ?? condition.attribute;
@@ -292,7 +314,16 @@ function compileFullTextExpression(
 		leaves: condition.negated ? [] : [leaf],
 		positive: !condition.negated,
 		includeHighlights: condition.includeHighlights === true,
+		maxIndexLagMilliseconds: condition.maxIndexLagMilliseconds,
+		waitForIndexMilliseconds: condition.waitForIndexMilliseconds,
 	};
+}
+
+function mergeFullTextOption(name: string, current: number | undefined, next: number | undefined): number | undefined {
+	if (next === undefined) return current;
+	if (current !== undefined && current !== next)
+		throw new ClientError(`Combined full-text conditions must use the same ${name}`, 400);
+	return next;
 }
 
 /** True when a condition's index is a custom index that participates in predicate-aware traversal (HNSW). */
@@ -482,7 +513,7 @@ export function searchByIndex(
 		if (!Table.fullTextQueryIndexes?.[attribute_name]?.customIndex)
 			throw new IndexRebuildingError(`Full-text index '${attribute_name}' is not ready`);
 	}
-	const isPrimaryKey = attribute_name === Table.primaryKey || attribute_name == null;
+	const isPrimaryKey = !fullTextMode && (attribute_name === Table.primaryKey || attribute_name == null);
 	const index = isPrimaryKey ? Table.primaryStore : conditionIndex(Table, attribute_name, Boolean(fullTextMode));
 	let start;
 	let end, inclusiveEnd, exclusiveStart, stringPrefix;

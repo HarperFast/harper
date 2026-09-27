@@ -32,6 +32,19 @@ function definition() {
 	};
 }
 
+function attachCurrentCoverage(index) {
+	index.attachDerivedHost({
+		readiness: () => ({ state: 'ready' }),
+		coverage: (maxLagMilliseconds) => ({
+			state: 'current',
+			maxLagMilliseconds,
+			lagUpperBoundMilliseconds: 0,
+		}),
+		requestRebuild: () => true,
+		waitForCoverage: async () => {},
+	});
+}
+
 describe('FullTextQueryIndex', () => {
 	it('filters stale hits, reloads on publication, and batches highlighting at native limits', async () => {
 		const auditStore = sharedStore();
@@ -119,6 +132,7 @@ describe('FullTextQueryIndex', () => {
 			},
 			binding,
 		});
+		attachCurrentCoverage(index);
 		const condition = {
 			attribute: 'catalogSearch',
 			comparator: 'matches_all',
@@ -178,6 +192,7 @@ describe('FullTextQueryIndex', () => {
 				},
 			},
 		});
+		attachCurrentCoverage(index);
 		await assert.rejects(
 			index.search({ attribute: 'not-ready', comparator: 'matches', value: 'shoe' }, {}),
 			(error) => error.name === 'IndexRebuildingError'
@@ -217,6 +232,7 @@ describe('FullTextQueryIndex', () => {
 				},
 			},
 		});
+		attachCurrentCoverage(index);
 		const query = { attribute: 'query-errors', comparator: 'matches_prefix', value: 's' };
 		await assert.rejects(
 			index.search(query, {}),
@@ -279,6 +295,7 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding,
 		});
+		attachCurrentCoverage(index);
 		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
 		await index.search(query, {}, { minResults: 1 });
 		index.updateDefinition({ ...definition(), fields: [{ name: 'title', weight: 7, highlight: true }] });
@@ -339,12 +356,233 @@ describe('FullTextQueryIndex', () => {
 				},
 			},
 		});
+		attachCurrentCoverage(index);
 		const query = { attribute: 'query-window', comparator: 'matches', value: 'shoe' };
 		assert.deepStrictEqual(await index.search(query, {}, { minResults: 0 }), []);
 		assert.strictEqual(searches, 0);
 		await assert.rejects(index.search(query, {}, { minResults: 3 }), /reduce offset or limit/);
 		assert.strictEqual(searches, 0);
 		await assert.rejects(index.search(query, {}), /exceeds the 2-result search window/);
+		await index.close();
+	});
+
+	it('keeps an in-flight reader alive while publishing a replacement reader', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'query-reader-lease';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const firstSearch = Promise.withResolvers();
+		const firstStarted = Promise.withResolvers();
+		const closes = [0, 0];
+		let opens = 0;
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
+				_readTxnForContext: () => undefined,
+			},
+			definition: definition(),
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath: '/unused',
+			storeName: 'unused',
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+				},
+				async openNativeFullTextReader() {
+					const readerIndex = opens++;
+					return {
+						async search() {
+							if (readerIndex === 0) {
+								firstStarted.resolve();
+								await firstSearch.promise;
+							}
+							return {
+								total: 1,
+								totalRelation: 'exact',
+								hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+							};
+						},
+						async reload() {},
+						async close() {
+							closes[readerIndex]++;
+						},
+					};
+				},
+			},
+		});
+		attachCurrentCoverage(index);
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
+		const first = index.search(query, {}, { minResults: 1 });
+		await firstStarted.promise;
+		const publication = auditStore.buffers.get(`derived-index:${readinessId}:publication`);
+		Atomics.add(new BigInt64Array(publication), 0, 1n);
+		const second = await index.search(query, {}, { minResults: 1 });
+		assert.strictEqual(second.length, 1);
+		assert.strictEqual(opens, 2);
+		assert.strictEqual(closes[0], 0);
+		firstSearch.resolve();
+		await first;
+		assert.strictEqual(closes[0], 1);
+		await index.close();
+		assert.strictEqual(closes[1], 1);
+	});
+
+	it('reads and returns highlights only for fields selected by the query', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'query-highlight-fields';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let bodyReads = 0;
+		class CountedBlob extends Blob {
+			async arrayBuffer() {
+				bodyReads++;
+				return super.arrayBuffer();
+			}
+		}
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: {
+					getEntry: () => ({ version: 1, value: { title: 'trail shoe', body: new CountedBlob(['shoe body']) } }),
+				},
+				_readTxnForContext: () => undefined,
+			},
+			definition: {
+				...definition(),
+				fields: [
+					{ name: 'title', weight: 1, highlight: true },
+					{ name: 'body', weight: 1, highlight: true, mediaType: 'text/plain' },
+				],
+			},
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath: '/unused',
+			storeName: 'unused',
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+				},
+				async openNativeFullTextReader() {
+					return {
+						async search() {
+							return {
+								total: 1,
+								totalRelation: 'exact',
+								hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+							};
+						},
+						async traceMatches(_request, records) {
+							assert.deepStrictEqual(Object.keys(records[0].fields), ['title']);
+							assert.strictEqual(records[0].fields.title, 'trail shoe');
+							return {
+								records: [
+									{
+										id: records[0].id,
+										values: [
+											{ field: 'title', valueIndex: 0, spans: [{ start: 6, end: 10 }] },
+											{ field: 'body', valueIndex: 0, spans: [{ start: 0, end: 4 }] },
+										],
+									},
+								],
+							};
+						},
+						async reload() {},
+						async close() {},
+					};
+				},
+			},
+		});
+		attachCurrentCoverage(index);
+		const [result] = await index.search(
+			{
+				attribute: readinessId,
+				comparator: 'matches',
+				value: 'shoe',
+				fields: ['title'],
+				fullTextLeaves: [{ text: 'shoe', mode: 'any', fields: ['title'] }],
+				includeHighlights: true,
+			},
+			{},
+			{ minResults: 1 }
+		);
+		assert.strictEqual(bodyReads, 0);
+		assert.deepStrictEqual(Object.keys(result.$highlights), ['title']);
+		await index.close();
+	});
+
+	it('reports bounded coverage and waits for current coverage when requested', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'query-coverage';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let waited = 0;
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: {
+					rootStore: { getMonotonicTimestamp: () => performance.now() },
+					getEntry: () => ({ version: 1, value: { title: 'shoe' } }),
+				},
+				_readTxnForContext: () => undefined,
+			},
+			definition: definition(),
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath: '/unused',
+			storeName: 'unused',
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+				},
+				async openNativeFullTextReader() {
+					return {
+						async search() {
+							return {
+								total: 1,
+								totalRelation: 'exact',
+								hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+							};
+						},
+						async reload() {},
+						async close() {},
+					};
+				},
+			},
+		});
+		index.attachDerivedHost({
+			readiness: () => ({ state: 'ready' }),
+			coverage: (maxLagMilliseconds) => ({
+				state: 'bounded',
+				maxLagMilliseconds,
+				lagUpperBoundMilliseconds: 1,
+			}),
+			requestRebuild: () => true,
+			waitForCoverage: async () => {
+				waited++;
+			},
+		});
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe', maxIndexLagMilliseconds: 25 };
+		const pending = index.search(query, {}, { minResults: 1 });
+		assert.deepStrictEqual(pending.indexCoverage, {
+			state: 'bounded',
+			maxLagMilliseconds: 25,
+			lagUpperBoundMilliseconds: 1,
+		});
+		await pending;
+		await index.search(
+			{ ...query, waitForIndexMilliseconds: 10 },
+			{ indexSearchStart: Promise.resolve() },
+			{ minResults: 1 }
+		);
+		assert.strictEqual(waited, 1);
 		await index.close();
 	});
 });

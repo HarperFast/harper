@@ -5336,7 +5336,10 @@ export function makeTable(options) {
 							if (!c) return false;
 							if (c.conditions) return touchesCustomIndex(c.conditions);
 							const attr = Array.isArray(c.attribute) ? c.attribute[0] : (c.attribute ?? c[0]);
-							return typeof attr === 'string' && Boolean(indices[attr]?.customIndex);
+							if (typeof attr !== 'string') return false;
+							return fullTextComparatorMode(c.comparator ?? c[1])
+								? Boolean(TableResource.fullTextQueryIndexes?.[attr]?.customIndex)
+								: Boolean(indices[attr]?.customIndex);
 						});
 					const approximateResultSet = typeof target.vectorFilter === 'function' || touchesCustomIndex(conditions);
 					return (async () => {

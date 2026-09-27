@@ -5,6 +5,7 @@ import * as hdbUtils from '../utility/common_utils.ts';
 import { hdbSchemaTable, checkValidTable, hdbTable, hdbDatabase } from './common_validators.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { getDatabases } from '../resources/databases.ts';
+import { COMPARATORS } from '../resources/ResourceInterface.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
 
@@ -40,19 +41,12 @@ const searchByConditionsSchema = Joi.object({
 				Joi.object({
 					attribute: Joi.alternatives(hdbSchemaTable, Joi.array().min(1)),
 					comparator: Joi.string()
-						.valid(
-							'equals',
-							'contains',
-							'starts_with',
-							'ends_with',
-							'greater_than',
-							'greater_than_equal',
-							'less_than',
-							'less_than_equal',
-							'between',
-							'not_equal'
-						)
+						.valid(...COMPARATORS)
 						.optional(),
+					fields: Joi.array().min(1).items(hdbSchemaTable).optional(),
+					includeHighlights: Joi.bool().optional(),
+					maxIndexLagMilliseconds: Joi.number().min(0).optional(),
+					waitForIndexMilliseconds: Joi.number().min(0).max(30_000).optional(),
 					value: Joi.when('comparator', {
 						switch: [
 							{ is: 'equals', then: Joi.any() },
@@ -114,6 +108,7 @@ export default function (searchObject: any, type: any) {
 
 		let tableSchema = getDatabases()[searchObject.schema][searchObject.table];
 		let allTableAttributes = tableSchema.attributes;
+		const fullTextNames = new Set((tableSchema.fullTextIndexes ?? []).map(({ name }) => name));
 
 		//this clones the get_attributes array
 		let checkAttributes = searchObject.get_attributes ? [...searchObject.get_attributes] : [];
@@ -127,7 +122,9 @@ export default function (searchObject: any, type: any) {
 			//this is used to validate condition attributes exist in the schema
 			for (const condition of searchObject.conditions) {
 				if (condition.conditions) addConditions(condition);
-				else checkAttributes.push(condition.attribute);
+				else if (!COMPARATORS.includes(condition.comparator) || !condition.comparator.includes('matches'))
+					checkAttributes.push(condition.attribute);
+				else if (!fullTextNames.has(condition.attribute)) checkAttributes.push(condition.attribute);
 			}
 		};
 		if (type === 'conditions') {

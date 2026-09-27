@@ -85,6 +85,12 @@ export class ResourceBridge extends BridgeMethods {
 					attribute: c.attribute ?? c.search_attribute,
 					comparator: c.comparator ?? c.search_type,
 					value: c.value !== undefined ? c.value : c.search_value, // null is valid value
+					...(c.fields === undefined ? null : { fields: c.fields }),
+					...(c.includeHighlights === undefined ? null : { includeHighlights: c.includeHighlights }),
+					...(c.maxIndexLagMilliseconds === undefined ? null : { maxIndexLagMilliseconds: c.maxIndexLagMilliseconds }),
+					...(c.waitForIndexMilliseconds === undefined
+						? null
+						: { waitForIndexMilliseconds: c.waitForIndexMilliseconds }),
 				};
 			}
 		}
