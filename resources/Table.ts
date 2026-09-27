@@ -5893,7 +5893,10 @@ export function makeTable(options) {
 						// messages during this loop because the snapshot:false cursor will pick them up itself.
 						pendingRealTimeQueue = null;
 						dropDuringReplay = true;
-
+						// subscription.startTime is the resume cursor (exclusive) and RocksDB gives every record of a
+						// transaction the same txnLogKey, so it only moves to a key once all of that key's records are
+						// handled; an early return leaves it before a partly delivered transaction.
+						let handledTxnLogKey: number | undefined;
 						try {
 							for (const auditRecord of auditStore.getRange({
 								start: startTime,
@@ -5907,17 +5910,22 @@ export function makeTable(options) {
 								}
 								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								if (isLockControlType(auditRecord.type)) continue;
+								if (handledTxnLogKey !== undefined && auditRecord.txnLogKey !== handledTxnLogKey) {
+									subscription!.startTime = handledTxnLogKey;
+								}
 								const id = auditRecord.recordId;
-								subscription!.startTime = auditRecord.txnLogKey;
 								if (thisId == null || isDescendantId(thisId, id)) {
 									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
-									if (!event) continue;
-									if (!send(event)) return;
-									if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
-										if ((await subscription.waitForDrain()) === false) return;
+									if (event) {
+										if (!send(event)) return;
+										if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+											if ((await subscription.waitForDrain()) === false) return;
+										}
 									}
 								}
+								handledTxnLogKey = auditRecord.txnLogKey;
 							}
+							if (handledTxnLogKey !== undefined) subscription!.startTime = handledTxnLogKey;
 						} finally {
 							// replay is done, we can start sending real-time messages again
 							dropDuringReplay = false;
