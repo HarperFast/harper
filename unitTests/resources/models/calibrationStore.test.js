@@ -138,6 +138,20 @@ describe('calibration store and facade (#2841)', function () {
 		assert.ok(tbl.attributes.find((a) => a.name === 'expiresAt').expiresAt);
 	});
 
+	it('is provisioned the same way on a fresh install and by the 5.3.0 upgrade', () => {
+		const systemSchema = require('../../../json/systemSchema.json');
+		const stub = systemSchema.hdb_model_calibrations;
+		assert.strictEqual(stub.hash_attribute, 'id');
+		assert.strictEqual(stub.audit, true, 'auditing is the replication feed');
+		const [directive] = require('#src/upgrade/directives/5-3-0').default;
+		assert.ok(
+			directive.async_functions.some((fn) => fn.name === 'createHdbModelCalibrationsIfMissing'),
+			'the upgrade creates the table on an existing install'
+		);
+		const decisions = getDecisionTables().decisions;
+		assert.ok(decisions.attributes.find((a) => a.name === 'population')?.indexed, 'decisions are read by population');
+	});
+
 	it('fits from recorded outcomes and calibrates later decisions without changing their value', async () => {
 		await recordCases(models, 0, 300);
 		const run = await models.calibrate();
