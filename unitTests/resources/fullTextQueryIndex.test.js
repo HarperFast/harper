@@ -1383,6 +1383,85 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(closes, 2);
 	});
 
+	it('keeps an aligned reader after a transient replacement-open failure', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'query-reader-replacement-open-failure';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const firstSearchStarted = Promise.withResolvers();
+		const finishFirstSearch = Promise.withResolvers();
+		const replacementOpenStarted = Promise.withResolvers();
+		const finishReplacementOpen = Promise.withResolvers();
+		let opens = 0;
+		let closes = 0;
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
+				_readTxnForContext: () => undefined,
+			},
+			definition: definition(),
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath: '/unused',
+			storeName: readinessId,
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: { maxSearchWindow: 10, maxSearchBudgetMilliseconds: 1_000, maxTraceRecords: 10 },
+					};
+				},
+				async openNativeFullTextReader() {
+					opens++;
+					if (opens === 2) {
+						replacementOpenStarted.resolve();
+						await finishReplacementOpen.promise;
+						throw new Error('transient replacement open failure');
+					}
+					const first = opens === 1;
+					return {
+						async search() {
+							if (first) {
+								firstSearchStarted.resolve();
+								await finishFirstSearch.promise;
+							}
+							return {
+								total: 1,
+								totalRelation: 'exact',
+								hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+							};
+						},
+						committedPayload: publicationPayload(opens),
+						async reload() {},
+						async close() {
+							closes++;
+						},
+					};
+				},
+			},
+		});
+		const publication = attachCurrentCoverage(index, auditStore, readinessId);
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
+		const firstSearch = index.search(query, {}, { minResults: 1 });
+		await firstSearchStarted.promise;
+		publication.publish();
+		const replacementSearch = index.search(query, {}, { minResults: 1 });
+		await replacementOpenStarted.promise;
+		finishFirstSearch.resolve();
+		assert.strictEqual((await firstSearch).length, 1);
+		finishReplacementOpen.resolve();
+		await assert.rejects(replacementSearch, /Full-text search.*failed/);
+		assert.strictEqual(closes, 0);
+		assert.strictEqual((await index.search(query, {}, { minResults: 1 })).length, 1);
+		assert(opens === 2 || opens === 3);
+		if (opens === 3) await waitFor(() => closes === 1);
+		await index.close();
+		assert.strictEqual(closes, opens - 1);
+	});
+
 	it('bounds close while a native search keeps a reader lease', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'query-reader-close-timeout';
@@ -1669,8 +1748,8 @@ describe('FullTextQueryIndex', () => {
 				}
 			})([value]);
 		const entries = new Map([
-			['one', { version: 1, value: { body: makeBlob('shoe') } }],
-			['two', { version: 1, value: { body: makeBlob('boot') } }],
+			['one', { version: 1, value: { title: makeBlob('shoe'), body: makeBlob('boot') } }],
+			['two', { version: 1, value: { title: makeBlob('shoe'), body: makeBlob('boot') } }],
 		]);
 		const traceBatchSizes = [];
 		const index = new FullTextQueryIndex({
@@ -1681,7 +1760,10 @@ describe('FullTextQueryIndex', () => {
 			},
 			definition: {
 				...definition(),
-				fields: [{ name: 'body', weight: 1, highlight: true, mediaType: 'text/plain' }],
+				fields: [
+					{ name: 'title', weight: 1, highlight: true, mediaType: 'text/plain' },
+					{ name: 'body', weight: 1, highlight: true, mediaType: 'text/plain' },
+				],
 			},
 			auditStore,
 			readinessId,
@@ -1722,12 +1804,21 @@ describe('FullTextQueryIndex', () => {
 		});
 		attachCurrentCoverage(index, auditStore, readinessId);
 		await index.search(
-			{ attribute: readinessId, comparator: 'matches', value: 'shoe', includeHighlights: true },
+			{
+				attribute: readinessId,
+				comparator: 'matches',
+				value: 'shoe',
+				fullTextLeaves: [
+					{ text: 'shoe', mode: 'any', fields: ['title'] },
+					{ text: 'boot', mode: 'any', fields: ['body'] },
+				],
+				includeHighlights: true,
+			},
 			{},
 			{ minResults: 2 }
 		);
 		assert.strictEqual(maxActiveReads, 1);
-		assert.deepStrictEqual(traceBatchSizes, [1, 1]);
+		assert.deepStrictEqual(traceBatchSizes, [1, 1, 1, 1]);
 		await index.close();
 	});
 

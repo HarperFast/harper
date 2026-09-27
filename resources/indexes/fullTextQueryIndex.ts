@@ -376,32 +376,25 @@ export class FullTextQueryIndex {
 			...leaf,
 			fields: leaf.fields?.filter((field) => highlightFields.has(field)) ?? [...highlightFields],
 		}));
-		const sourceFieldNames = new Set(leaves.flatMap(({ fields }) => fields));
-		if (sourceFieldNames.size === 0) return;
 		const byId = new Map(entries.map((entry) => [entry.nativeId, entry]));
-		for (const sourceEntries of traceEntryBatches(
-			entries,
-			this.#definition,
-			sourceFieldNames,
-			this.#maxTraceRecords!,
-			this.#maxTraceSourceBytes!
-		)) {
-			const records = await Promise.all(
-				sourceEntries.map(async ({ nativeId, record }) => ({
-					id: nativeId,
-					fields: await sourceFields(record, this.#definition, sourceFieldNames, deadline),
-				}))
-			);
-			for (const leaf of leaves) {
-				const fields = leaf.fields;
-				if (fields.length === 0) continue;
-				const leafFields = new Set(fields);
-				const leafRecords = records.map(({ id, fields: source }) => {
-					const selected: Record<string, string | string[]> = Object.create(null);
-					for (const field of fields) if (source[field] !== undefined) selected[field] = source[field];
-					return { id, fields: selected };
-				});
-				for (const traceRecords of traceSourceBatches(leafRecords, this.#maxTraceSourceBytes!)) {
+		for (const leaf of leaves) {
+			const fields = leaf.fields;
+			if (fields.length === 0) continue;
+			const leafFields = new Set(fields);
+			for (const sourceEntries of traceEntryBatches(
+				entries,
+				this.#definition,
+				leafFields,
+				this.#maxTraceRecords!,
+				this.#maxTraceSourceBytes!
+			)) {
+				const records = await Promise.all(
+					sourceEntries.map(async ({ nativeId, record }) => ({
+						id: nativeId,
+						fields: await sourceFields(record, this.#definition, leafFields, deadline),
+					}))
+				);
+				for (const traceRecords of traceSourceBatches(records, this.#maxTraceSourceBytes!)) {
 					const traced = await reader.traceMatches({ text: leaf.text, mode: leaf.mode, fields }, traceRecords, {
 						remainingBudgetMilliseconds: remainingSearchBudget(deadline),
 						snippets: true,
@@ -488,10 +481,9 @@ export class FullTextQueryIndex {
 		const configurationRevision = this.#configurationRevision;
 		this.#readerOperation = (async () => {
 			const existing = this.#readerSlot;
-			const canReload =
-				existing?.active === 0 &&
-				existing.ownerEpoch === ownerEpoch &&
-				existing.configurationRevision === configurationRevision;
+			const existingMatchesIdentity =
+				existing?.ownerEpoch === ownerEpoch && existing.configurationRevision === configurationRevision;
+			const canReload = existing?.active === 0 && existingMatchesIdentity;
 			try {
 				let reader: NativeFullTextReader;
 				let publication: FullTextPublication;
@@ -529,7 +521,7 @@ export class FullTextQueryIndex {
 					this.#retireReaderSlot(existing);
 				} else if (canReload && ++existing.reloadFailures >= MAX_RELOAD_FAILURES_BEFORE_REOPEN) {
 					this.#retireReaderSlot(existing);
-				} else if (!canReload && existing && existing.active === 0) {
+				} else if (!canReload && existing && existing.active === 0 && !existingMatchesIdentity) {
 					this.#readerSlot = undefined;
 					this.#retireReaderSlot(existing);
 				}
