@@ -1295,6 +1295,24 @@ describe('Test operation_authorization', function () {
 			});
 		});
 
+		it('does not treat a full-text index name as a stored attribute', function () {
+			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
+			let req_json = clone(TEST_CONDITIONS_JSON);
+			req_json.conditions = [
+				{
+					conditions: [
+						{ search_attribute: 'catalogSearch', search_type: 'matches_phrase', search_value: 'trail shoe' },
+						{ attribute: 'age', comparator: 'gt', value: 2 },
+					],
+				},
+			];
+			let result = getRecordAttributes(req_json);
+			assert.deepStrictEqual(
+				[...result],
+				['age', ...req_json.get_attributes.filter((attribute) => attribute !== 'age')]
+			);
+		});
+
 		it('Nominal case, valid JSON for search_by_conditions w/ deprecated property names', function () {
 			let expected_attrs = ['id', 'age', 'name', 'adorable', 'location', 'owner_name'];
 			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');

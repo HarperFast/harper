@@ -676,9 +676,11 @@ describe('FullTextQueryIndex', () => {
 		const readinessId = 'query-highlight-fields';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
 		let bodyReads = 0;
+		let bodyReadFails = false;
 		class CountedBlob extends Blob {
 			async arrayBuffer() {
 				bodyReads++;
+				if (bodyReadFails) throw new Error('blob store unavailable');
 				return super.arrayBuffer();
 			}
 		}
@@ -754,6 +756,23 @@ describe('FullTextQueryIndex', () => {
 		);
 		assert.strictEqual(bodyReads, 0);
 		assert.deepStrictEqual(Object.keys(result.$highlights), ['title']);
+		bodyReadFails = true;
+		await assert.rejects(
+			index.search(
+				{
+					attribute: readinessId,
+					comparator: 'matches',
+					value: 'shoe',
+					fields: ['body'],
+					fullTextLeaves: [{ text: 'shoe', mode: 'any', fields: ['body'] }],
+					includeHighlights: true,
+				},
+				{},
+				{ minResults: 1 }
+			),
+			/Full-text search on 'catalogSearch' failed/
+		);
+		assert.strictEqual(bodyReads, 1);
 		await index.close();
 	});
 

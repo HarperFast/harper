@@ -1135,13 +1135,24 @@ function getRecordAttributes(json, operationName?) {
 			return affectedAttributes;
 		}
 		if (json.operation === terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS) {
-			json.conditions.forEach((condition) => {
-				let attribute = condition.attribute;
-				if (condition.search_attribute !== undefined) {
-					attribute = condition.search_attribute;
+			const addConditionAttributes = (conditions) => {
+				for (const condition of conditions) {
+					if (condition.conditions) {
+						addConditionAttributes(condition.conditions);
+						continue;
+					}
+					// A full-text condition names a derived index, not a stored attribute. Table.search
+					// validates the declaration and authorizes the index's selected source fields.
+					const comparator = condition.comparator ?? condition.search_type;
+					if (typeof comparator === 'string' && comparator.includes('matches')) continue;
+					let attribute = condition.attribute;
+					if (condition.search_attribute !== undefined) {
+						attribute = condition.search_attribute;
+					}
+					affectedAttributes.add(attribute);
 				}
-				affectedAttributes.add(attribute);
-			});
+			};
+			addConditionAttributes(json.conditions);
 		}
 
 		if (json && (json.attribute || json.search_attribute)) {

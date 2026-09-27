@@ -322,18 +322,12 @@ export class FullTextQueryIndex {
 		if (sourceFieldNames.size === 0) return;
 		const byId = new Map(entries.map((entry) => [entry.nativeId, entry]));
 		for (let start = 0; start < entries.length; start += this.#maxTraceRecords!) {
-			const records = (
-				await Promise.all(
-					entries.slice(start, start + this.#maxTraceRecords!).map(async ({ nativeId, record }) => {
-						try {
-							return { id: nativeId, fields: await sourceFields(record, this.#definition, sourceFieldNames) };
-						} catch {
-							return undefined;
-						}
-					})
-				)
-			).filter(Boolean) as Array<{ id: string; fields: Record<string, string | string[]> }>;
-			if (records.length === 0) continue;
+			const records = await Promise.all(
+				entries.slice(start, start + this.#maxTraceRecords!).map(async ({ nativeId, record }) => ({
+					id: nativeId,
+					fields: await sourceFields(record, this.#definition, sourceFieldNames),
+				}))
+			);
 			for (const leaf of leaves) {
 				const fields = leaf.fields;
 				if (fields.length === 0) continue;
@@ -583,10 +577,8 @@ async function sourceFields(
 		else if (Array.isArray(value)) fields[source.name] = value.filter((entry) => typeof entry === 'string');
 		else if (source.mediaType === 'text/plain' && value instanceof Blob) {
 			const remaining = deadline - performance.now();
-			if (remaining <= 0) continue;
-			try {
-				fields[source.name] = UTF8_DECODER.decode(await withTimeout(value.arrayBuffer(), remaining));
-			} catch {}
+			if (remaining <= 0) throw new ServerError('Full-text highlight source read timed out', 500);
+			fields[source.name] = UTF8_DECODER.decode(await withTimeout(value.arrayBuffer(), remaining));
 		}
 	}
 	return fields;

@@ -619,6 +619,26 @@ function cloneConditions(conditions: any[]): any[] {
 		return copy;
 	});
 }
+
+function selectRequestsProperty(select: any, propertyName: string): boolean {
+	if (!select) return false;
+	const selected = Array.isArray(select) ? select : [select];
+	return selected.some((property) => (typeof property === 'string' ? property : property?.name) === propertyName);
+}
+
+function conditionsContainFullText(entries: any[], definitions: readonly FullTextDefinition[]): boolean {
+	for (const entry of entries) {
+		if (entry.conditions) {
+			if (conditionsContainFullText(entry.conditions, definitions)) return true;
+		} else if (
+			fullTextComparatorMode(entry.comparator) &&
+			typeof (entry[0] ?? entry.attribute) === 'string' &&
+			definitions.some(({ name }) => name === (entry[0] ?? entry.attribute))
+		)
+			return true;
+	}
+	return false;
+}
 // Ambient, path-scoped cycle guard for the enumerable-struct `toJSON` serialization path. A record on
 // a cyclically-enumerable table can (transitively) reference itself, which would recurse forever through
 // JSON.stringify. The struct getters resolve related records by id — and without a shared cache each
@@ -4959,35 +4979,6 @@ export function makeTable(options) {
 			let includeFullTextHighlights = false;
 			const filtered = {};
 
-			function assertFullTextReadAccess(definition: FullTextDefinition, requestedFields?: string[]) {
-				if (!(context as any)?.user) return;
-				const permission = getTablePermissions((context as any).user, target);
-				if (permission?.isSuperUser || !permission?.attribute_permissions?.length) return;
-				const readable = attributesAsObject(permission.attribute_permissions, 'read');
-				const searched = requestedFields ?? definition.fields.map(({ name }) => name);
-				if (searched.some((name) => !readable[name])) throw new AccessViolation((context as any).user);
-			}
-
-			function selectRequestsProperty(select: any, propertyName: string): boolean {
-				if (!select) return false;
-				const selected = Array.isArray(select) ? select : [select];
-				return selected.some((property) => (typeof property === 'string' ? property : property?.name) === propertyName);
-			}
-
-			function conditionsContainFullText(entries: any[]): boolean {
-				for (const entry of entries) {
-					if (entry.conditions) {
-						if (conditionsContainFullText(entry.conditions)) return true;
-					} else if (
-						fullTextComparatorMode(entry.comparator) &&
-						typeof (entry[0] ?? entry.attribute) === 'string' &&
-						TableResource.fullTextIndexes.some(({ name }) => name === (entry[0] ?? entry.attribute))
-					)
-						return true;
-				}
-				return false;
-			}
-
 			function prepareConditions(conditions: any[], operator: string) {
 				// some validation:
 				switch (operator) {
@@ -5048,7 +5039,7 @@ export function makeTable(options) {
 									400
 								);
 						}
-						assertFullTextReadAccess(fullTextDefinition, fields);
+						assertFullTextReadAccess(context, target, fullTextDefinition, fields);
 						condition.includeHighlights =
 							condition.includeHighlights === true || selectRequestsProperty(target.select, '$highlights');
 						includeFullTextHighlights ||= condition.includeHighlights;
@@ -5130,7 +5121,10 @@ export function makeTable(options) {
 			const operator = target.operator;
 			if (conditions.length > 0 || operator) conditions = prepareConditions(conditions, operator);
 			let sort = typeof target.sort === 'object' && target.sort;
-			if (fullTextIndexes.length > 0 && conditionsContainFullText(conditions)) {
+			if (
+				TableResource.fullTextIndexes.length > 0 &&
+				conditionsContainFullText(conditions, TableResource.fullTextIndexes)
+			) {
 				if (sort && (sort.attribute !== '$score' || sort.next || sort.descending === false))
 					throw new ClientError('Full-text results can only use descending $score order', 400);
 				sort = undefined;
@@ -7896,6 +7890,19 @@ export function makeTable(options) {
 		} else if (databaseName === 'data' && (table = permission[tableName]) && !table.tables) {
 			return table;
 		}
+	}
+	function assertFullTextReadAccess(
+		context: Context | undefined,
+		target: RequestTarget,
+		definition: FullTextDefinition,
+		requestedFields?: string[]
+	) {
+		if (!(context as any)?.user) return;
+		const permission = getTablePermissions((context as any).user, target);
+		if (permission?.isSuperUser || !permission?.attribute_permissions?.length) return;
+		const readable = attributesAsObject(permission.attribute_permissions, 'read');
+		const searched = requestedFields ?? definition.fields.map(({ name }) => name);
+		if (searched.some((name) => !readable[name])) throw new AccessViolation((context as any).user);
 	}
 
 	function setLoadedFromSource(target: RequestTarget | undefined, loadedFromSource: boolean) {

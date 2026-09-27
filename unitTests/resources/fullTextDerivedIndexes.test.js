@@ -450,6 +450,64 @@ describe('@fullText derived-index activation', () => {
 		]);
 	});
 
+	rocksOnly('authorizes full-text queries against their selected source fields', async () => {
+		const database = `fulltext-permissions-${Date.now()}`;
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'tags', type: 'array', elements: { type: 'String' } },
+			],
+			fullTextIndexes: [definition()],
+		});
+		await Product.put('shoe-1', { title: 'Trail shoe', tags: ['trail'] });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+		const user = {
+			role: {
+				permission: {
+					[database]: {
+						tables: {
+							Product: {
+								read: true,
+								attribute_permissions: [
+									{ attribute_name: 'title', read: true },
+									{ attribute_name: 'tags', read: false },
+								],
+							},
+						},
+					},
+				},
+			},
+		};
+		const allowed = await collect(
+			Product.search(
+				{
+					conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe', fields: ['title'] }],
+					limit: 1,
+				},
+				{ user }
+			)
+		);
+		assert.strictEqual(allowed.length, 1);
+		await assert.rejects(
+			Promise.resolve().then(() =>
+				collect(
+					Product.search(
+						{
+							conditions: [{ attribute: 'search', comparator: 'matches', value: 'trail', fields: ['tags'] }],
+							limit: 1,
+						},
+						{ user }
+					)
+				)
+			),
+			(error) => error.name === 'AccessViolation' || error.statusCode === 403
+		);
+	});
+
 	it('rejects full-text comparators on ordinary and primary indexes', async () => {
 		Product = table({
 			database: `fulltext-query-fail-closed-${Date.now()}`,
@@ -1309,6 +1367,27 @@ describe('@fullText derived-index activation', () => {
 		const state = binding.states.get(`${opened.path}\0${opened.indexId}\0${opened.generation}`);
 		assert.strictEqual(state.documents.size, 0);
 		assert(binding.resets.length > 0);
+	});
+
+	rocksOnly('enforces score ordering after adding full text to an existing table class', async () => {
+		const database = `fulltext-redeclare-order-${Date.now()}`;
+		const attributes = [
+			{ name: 'id', type: 'ID', isPrimaryKey: true },
+			{ name: 'title', type: 'String' },
+			{ name: 'tags', type: 'array', elements: { type: 'String' } },
+		];
+		Product = table({ database, table: 'Product', audit: true, attributes });
+		Product = table({ database, table: 'Product', audit: true, attributes, fullTextIndexes: [definition()] });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+
+		assert.throws(
+			() =>
+				Product.search({
+					conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }],
+					sort: { attribute: 'title' },
+				}),
+			/Full-text results can only use descending \$score order/
+		);
 	});
 
 	rocksOnly('waits for removal retirement before reopening the same native path', async () => {
