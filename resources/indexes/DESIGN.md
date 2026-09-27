@@ -420,6 +420,11 @@ Reset is destructive, so the elected writer first pauses readers in every worker
 active leases to drain. Harper does not force-close a handle that native code may still be using; a
 stuck native request therefore delays reset rather than risking use-after-close. Resume carries the
 owner epoch, preventing an old reset from reopening readers after a newer owner has paused them.
+The pause covers every reader on the physical path, including a superseded generation. A reader
+paused for another readiness generation stays fenced: an old generation is closed, while a structural
+successor completes its own reset and readiness cycle before it can serve queries. If the native
+reader violates its contract by rejecting close, Harper logs the failure and proceeds with reset
+rather than wedging the path indefinitely; the reset therefore assumes that rejected handle is dead.
 
 Weights and highlighting are query configuration. Changing either refreshes readers without rotating
 the persisted generation. Analyzer behavior, stop words, positions, surface terms, synonyms, source
@@ -437,7 +442,8 @@ A declared Blob source is part of one index document. An oversized, invalid UTF-
 permanently unusable Blob makes that whole document unindexable rather than publishing a partial
 document with different match semantics. A transient Blob read failure rolls back the accepted
 native batch and replays it within the bounded retry budget. This preserves cursor and publication
-atomicity at the cost of delaying unrelated records in that batch.
+atomicity at the cost of delaying unrelated records in that batch. If the retry budget is exhausted,
+Harper logs the record id and removes the record from the index until its next mutation or rebuild.
 
 ### Bounded delivery
 
