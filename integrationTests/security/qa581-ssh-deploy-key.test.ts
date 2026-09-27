@@ -90,9 +90,18 @@ interface ObservedMaterialization {
 	dirMode: number;
 }
 
-/** Snapshot the first transient ssh dir in `dir` that holds a key file while `inFlight` is pending. */
-async function observeDuringFlight(inFlight: Promise<unknown>, dir: string): Promise<ObservedMaterialization | null> {
+/**
+ * Snapshot the first transient ssh dir in `dir` while `inFlight` is pending, once every key file
+ * holds `expectedContent`; failing that, the last snapshot whose keys had any content. writeFile
+ * creates the 0600 file before its content lands, so a bare existence check reads a partial key.
+ */
+async function observeDuringFlight(
+	inFlight: Promise<unknown>,
+	dir: string,
+	expectedContent: string
+): Promise<ObservedMaterialization | null> {
 	let polling = true;
+	let lastWithContent: ObservedMaterialization | null = null;
 	const stopPolling = () => {
 		polling = false;
 	};
@@ -110,14 +119,17 @@ async function observeDuringFlight(inFlight: Promise<unknown>, dir: string): Pro
 					const [content, fileStat] = await Promise.all([readFile(filePath, 'utf8'), stat(filePath)]);
 					keyFiles.push({ name, content, mode: fileStat.mode & 0o777 });
 				}
-				if (keyFiles.length > 0) return { tempDir, keyFiles, dirMode: dirStat.mode & 0o777 };
+				if (keyFiles.length > 0 && keyFiles.every((key) => key.content.length > 0)) {
+					lastWithContent = { tempDir, keyFiles, dirMode: dirStat.mode & 0o777 };
+					if (keyFiles.every((key) => key.content === expectedContent)) return lastWithContent;
+				}
 			} catch {
 				// cleanup removed it between readdir and stat; keep polling for a snapshot with content
 			}
 		}
 		await sleep(10);
 	}
-	return null;
+	return lastWithContent;
 }
 
 /** The base64 characters of `bytes`' encoding that encode only bytes [from, to). */
@@ -302,7 +314,7 @@ suite(
 
 			const project = 'qa581-legacy';
 			const inFlight = deploy(project, bareRepoPath);
-			const observed = await observeDuringFlight(inFlight, harperTmpDir);
+			const observed = await observeDuringFlight(inFlight, harperTmpDir, deployPrivateKeyContent);
 			const response = await inFlight;
 			const body = await response.json();
 
@@ -331,7 +343,7 @@ suite(
 
 			const project = 'qa581-sealed';
 			const inFlight = deploy(project, bareRepoPath);
-			const observed = await observeDuringFlight(inFlight, harperTmpDir);
+			const observed = await observeDuringFlight(inFlight, harperTmpDir, deployPrivateKeyContent);
 			const response = await inFlight;
 			const body = await response.json();
 
@@ -360,7 +372,7 @@ suite(
 			await writeDurableSshDir('sealed.key', sealed);
 
 			const inFlight = deploy('qa581-error-path', join(sshWorkDir, 'does-not-exist.git'));
-			const observed = await observeDuringFlight(inFlight, harperTmpDir);
+			const observed = await observeDuringFlight(inFlight, harperTmpDir, deployPrivateKeyContent);
 			const response = await inFlight;
 			const body = await response.json();
 
