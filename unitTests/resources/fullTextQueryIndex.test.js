@@ -731,7 +731,7 @@ describe('FullTextQueryIndex', () => {
 				async runtimeInfo() {
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+						limits: { maxSearchWindow: 10_000, maxAutocompleteResults: 100, maxTraceRecords: 10 },
 					};
 				},
 				async openNativeFullTextReader() {
@@ -1007,6 +1007,77 @@ describe('FullTextQueryIndex', () => {
 				{ offset: 256, limit: 256, exactTotal: undefined },
 			]
 		);
+		await index.close();
+	});
+
+	it('uses the native autocomplete window for prefix expressions', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'autocomplete-window';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 150 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 150 - index,
+		}));
+		const requests = [];
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: { getEntry: (key) => ({ version: 1, value: { title: key } }) },
+				_readTxnForContext: () => undefined,
+			},
+			definition: definition(),
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath: '/unused',
+			storeName: 'unused',
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: { maxSearchWindow: 10_000, maxAutocompleteResults: 100, maxTraceRecords: 10 },
+					};
+				},
+				async openNativeFullTextReader() {
+					return {
+						async search(request) {
+							requests.push(request);
+							return {
+								total: hits.length,
+								totalRelation: 'exact',
+								hits: hits.slice(0, request.limit),
+							};
+						},
+						committedPayload: publicationPayload(),
+						async reload() {},
+						async close() {},
+					};
+				},
+			},
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const query = {
+			attribute: readinessId,
+			comparator: 'matches',
+			value: 'trail',
+			fullTextQuery: {
+				operator: 'or',
+				clauses: [
+					{ text: 'trail', mode: 'prefix' },
+					{ text: 'shoe', mode: 'any' },
+				],
+			},
+		};
+		assert.strictEqual((await index.search(query, {})).length, 100);
+		assert.deepStrictEqual(
+			requests.map(({ offset, limit, exactTotal }) => ({ offset, limit, exactTotal })),
+			[{ offset: 0, limit: 100, exactTotal: true }]
+		);
+		await assert.rejects(index.search(query, {}, { minResults: 101 }), /100-result autocomplete search window/);
+		assert.strictEqual(requests.length, 1);
 		await index.close();
 	});
 

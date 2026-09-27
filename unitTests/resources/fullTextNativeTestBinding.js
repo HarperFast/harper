@@ -36,6 +36,7 @@ class FullTextNativeTestBinding {
 			limits: {
 				maxCommitPayloadBytes: 64 * 1024,
 				maxSearchWindow: 10_000,
+				maxAutocompleteResults: 100,
 				maxSearchBudgetMilliseconds: 30_000,
 				maxTraceRecords: 128,
 				maxTraceSourceBytes: 1024 * 1024,

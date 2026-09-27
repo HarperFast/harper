@@ -182,6 +182,25 @@ describe('Query Tier-1 additions', () => {
 			assert.equal(q.conditions[0].value, 'shoe');
 			assert.equal(q.conditions[0].negated, true);
 		});
+		it('parses every full-text comparator and negated form', () => {
+			for (const comparator of [
+				'matches',
+				'matches_all',
+				'matches_phrase',
+				'matches_prefix',
+				'matches_fuzzy',
+				'matches_fuzzy_prefix',
+			]) {
+				const positive = parseQuery(`catalogSearch=${comparator}=trail%20shoe`);
+				assert.equal(positive.conditions[0].comparator, comparator);
+				assert.equal(positive.conditions[0].value, 'trail shoe');
+				assert.equal(positive.conditions[0].negated, undefined);
+				const negative = parseQuery(`catalogSearch=not_${comparator}=trail%20shoe`);
+				assert.equal(negative.conditions[0].comparator, comparator);
+				assert.equal(negative.conditions[0].value, 'trail shoe');
+				assert.equal(negative.conditions[0].negated, true);
+			}
+		});
 		it('parses between with list value', () => {
 			const q = parseQuery('age=between=(18,65)');
 			assert.equal(q.conditions[0].comparator, 'between');

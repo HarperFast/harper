@@ -33,13 +33,13 @@ describe('@fullText declaration compiler', () => {
 	it('canonicalizes defaults, ordering, source weights, synonyms, and highlighting', () => {
 		const compiled = compileFullTextDefinitions(
 			[
-				{ name: 'z', fields: [{ name: 'tags', highlight: false }] },
+				{ name: 'z', fields: [{ name: 'tags', highlight: false }], surfaceTerms: false },
 				{
 					name: 'a',
 					fields: [{ name: 'title', weight: 3, highlight: true }],
 					stopWords: false,
 					positions: false,
-					surfaceTerms: false,
+					surfaceTerms: true,
 					synonyms: [{ source: 'shoe', replacements: ['sneaker'] }],
 					highlighting: { maxFragments: 2, fragmentLength: 120 },
 				},
@@ -53,7 +53,7 @@ describe('@fullText declaration compiler', () => {
 				analyzer: 'english@2',
 				stopWords: false,
 				positions: false,
-				surfaceTerms: false,
+				surfaceTerms: true,
 				synonyms: [{ source: 'shoe', replacements: ['sneaker'] }],
 				highlighting: { maxFragments: 2, fragmentLength: 120 },
 			},
@@ -63,7 +63,7 @@ describe('@fullText declaration compiler', () => {
 				analyzer: 'english@2',
 				stopWords: true,
 				positions: true,
-				surfaceTerms: true,
+				surfaceTerms: false,
 				synonyms: [],
 			},
 		]);
@@ -97,6 +97,16 @@ describe('@fullText declaration compiler', () => {
 			'highlighting configuration without a highlighted source',
 			{ name: 'search', fields: [{ name: 'title' }], highlighting: {} },
 			/requires at least one source field/,
+		],
+		[
+			'highlighting without surface terms',
+			{
+				name: 'search',
+				fields: [{ name: 'title', highlight: true }],
+				surfaceTerms: false,
+				highlighting: {},
+			},
+			/requires surfaceTerms: true/,
 		],
 	]) {
 		it(`rejects ${label}`, () => {
@@ -192,7 +202,7 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 					name: "catalog"
 					fields: [{ name: "title", highlight: true }, { name: "tags", highlight: false }]
 					positions: false
-					surfaceTerms: false
+					surfaceTerms: true
 					highlighting: { maxFragments: 2, fragmentLength: 120 }
 				) {
 				id: ID @primaryKey

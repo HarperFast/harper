@@ -262,6 +262,8 @@ export function compileFullTextDefinition(
 	const highlightedFields = fields.filter(({ highlight }) => highlight === true);
 	if (highlighting && highlightedFields.length === 0)
 		throw schemaError(`@fullText index "${indexName}" requires at least one source field with highlight: true`);
+	if (highlighting && !surfaceTerms)
+		throw schemaError(`@fullText index "${indexName}" highlighting requires surfaceTerms: true`);
 
 	return {
 		name: indexName,

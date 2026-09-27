@@ -108,6 +108,7 @@ export class FullTextQueryIndex {
 	#readerOperation?: Promise<ReaderSlot>;
 	#retiredReaderSlots = new Set<ReaderSlot>();
 	#maxSearchWindow?: number;
+	#maxAutocompleteResults?: number;
 	#maxSearchBudgetMilliseconds?: number;
 	#maxTraceRecords?: number;
 	#maxTraceSourceBytes?: number;
@@ -269,11 +270,13 @@ export class FullTextQueryIndex {
 			const deadline = performance.now() + this.#maxSearchBudgetMilliseconds!;
 			const maxSearchWindow = this.#maxSearchWindow!;
 			const query = condition.fullTextQuery ?? leafExpression(condition);
+			const autocomplete = expressionUsesAutocomplete(query);
+			const searchWindow = autocomplete ? this.#maxAutocompleteResults! : maxSearchWindow;
 			const bounded = options.minResults !== undefined;
-			const target = bounded ? Math.max(1, options.minResults!) : maxSearchWindow;
-			if (target > maxSearchWindow)
+			const target = bounded ? Math.max(1, options.minResults!) : searchWindow;
+			if (target > searchWindow)
 				throw new ClientError(
-					`Full-text query exceeds the ${maxSearchWindow}-result search window; reduce offset or limit`,
+					`Full-text query exceeds the ${searchWindow}-result ${autocomplete ? 'autocomplete ' : ''}search window; reduce offset or limit`,
 					400
 				);
 			const accepted: Array<{
@@ -288,12 +291,12 @@ export class FullTextQueryIndex {
 			let moreMayExist = false;
 			let staleVersionHits = 0;
 			const transaction = context && this.#options.Table._readTxnForContext(context);
-			while (accepted.length < target && offset < maxSearchWindow) {
+			while (accepted.length < target && offset < searchWindow) {
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
 				const desiredPageSize = bounded
 					? Math.max(MIN_RAW_PAGE_SIZE, (target - accepted.length) * RAW_PAGE_OVERFETCH_FACTOR)
 					: RAW_PAGE_SIZE;
-				const limit = Math.min(RAW_PAGE_SIZE, desiredPageSize, maxSearchWindow - offset);
+				const limit = autocomplete ? searchWindow : Math.min(RAW_PAGE_SIZE, desiredPageSize, searchWindow - offset);
 				const result = await reader.search(
 					{
 						query,
@@ -303,11 +306,8 @@ export class FullTextQueryIndex {
 					},
 					{ remainingBudgetMilliseconds: remainingSearchBudget(deadline) }
 				);
-				if (!bounded && result.totalRelation === 'exact' && result.total > maxSearchWindow)
-					throw new ClientError(
-						`Full-text query exceeds the ${maxSearchWindow}-result search window; add a limit`,
-						400
-					);
+				if (!bounded && !autocomplete && result.totalRelation === 'exact' && result.total > searchWindow)
+					throw new ClientError(`Full-text query exceeds the ${searchWindow}-result search window; add a limit`, 400);
 				moreMayExist =
 					result.totalRelation === 'exact' ? offset + result.hits.length < result.total : result.hits.length === limit;
 				if (result.hits.length === 0) break;
@@ -326,18 +326,19 @@ export class FullTextQueryIndex {
 					if (accepted.length >= target) break;
 				}
 				offset += result.hits.length;
+				if (autocomplete) break;
 				if (!moreMayExist) break;
 				if (accepted.length < target) await new Promise((resolve) => setImmediate(resolve));
 			}
-			if (!bounded && moreMayExist)
-				throw new ClientError(`Full-text query exceeds the ${maxSearchWindow}-result search window; add a limit`, 400);
+			if (!bounded && moreMayExist && !autocomplete)
+				throw new ClientError(`Full-text query exceeds the ${searchWindow}-result search window; add a limit`, 400);
 			if (bounded && accepted.length < target && moreMayExist && staleVersionHits > 0)
 				throw new DerivedIndexLagError(
 					`Full-text index '${this.#definition.name}' changed while searching; retry this query`
 				);
 			if (bounded && accepted.length < target && moreMayExist)
 				throw new ClientError(
-					`Full-text filters exhausted the ${maxSearchWindow}-result search window; narrow the query or reduce offset`,
+					`Full-text filters exhausted the ${searchWindow}-result search window; narrow the query or reduce offset`,
 					400
 				);
 			if (condition.includeHighlights && accepted.length > 0)
@@ -661,6 +662,7 @@ export class FullTextQueryIndex {
 			this.#nativeOptions.limits.searchThreads
 		);
 		this.#maxSearchWindow = info.limits.maxSearchWindow;
+		this.#maxAutocompleteResults = info.limits.maxAutocompleteResults;
 		this.#maxSearchBudgetMilliseconds = info.limits.maxSearchBudgetMilliseconds ?? 30_000;
 		this.#maxTraceRecords = info.limits.maxTraceRecords;
 		this.#maxTraceSourceBytes = info.limits.maxTraceSourceBytes ?? Number.MAX_SAFE_INTEGER;
@@ -737,6 +739,12 @@ function assertFreshnessOptions(maxIndexLagMilliseconds: number, waitForIndexMil
 function leafExpression(condition: FullTextCondition): NativeFullTextSearchExpression {
 	const leaf = leafDescriptor(condition);
 	return { text: leaf.text, mode: leaf.mode, ...(leaf.fields ? { fields: leaf.fields } : null) };
+}
+
+function expressionUsesAutocomplete(expression: NativeFullTextSearchExpression): boolean {
+	if ('text' in expression) return expression.mode === 'prefix' || expression.mode === 'fuzzy-prefix';
+	if (expression.operator === 'not') return expressionUsesAutocomplete(expression.clause);
+	return expression.clauses.some(expressionUsesAutocomplete);
 }
 
 function leafDescriptor(condition: FullTextCondition): {
