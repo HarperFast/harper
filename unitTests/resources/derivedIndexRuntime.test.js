@@ -26,6 +26,7 @@ class FakeLogStore {
 		this.rootStore = new EventEmitter();
 		this.rootStore.listLogs = () => logNames.slice();
 		this.rootStore.useLog = (name) => ({ name, getStats: () => ({ oldestSequenceNumber: 1 }) });
+		this.rootStore.getMonotonicTimestamp = () => performance.now();
 	}
 
 	getRange(options) {
@@ -37,6 +38,8 @@ class FakeLogStore {
 		iterable.exactStartFailures = new Map();
 		return iterable;
 	}
+
+	ensureLogExists() {}
 
 	tryLock(key, onUnlocked) {
 		if (!this.locks.has(key)) {
