@@ -432,8 +432,8 @@ readers after a newer owner has paused them. Epochs from different readiness gen
 compared because each generation owns an independent counter.
 The runtime publishes `rebuilding` before invoking reset, so a worker created after the pause
 broadcast cannot admit a new reader. A worker that misses resume clears a token only after that
-token's own shared readiness reaches ready at the same or a newer owner epoch. These orderings are
-part of the reset protocol. The pause covers every reader on the physical path, including a
+token's own shared readiness settles as ready or unavailable at the same or a newer owner epoch.
+These orderings are part of the reset protocol. The pause covers every reader on the physical path, including a
 superseded generation. Concurrent resets retain independent tokens, and the path remains fenced
 until every active token is cleared by its matching resume or completed readiness. A stale resume
 cannot clear a newer token. This closes both handoff directions without assuming an ordering between

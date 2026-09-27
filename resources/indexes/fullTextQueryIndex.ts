@@ -410,7 +410,10 @@ export class FullTextQueryIndex {
 					? pausedEpoch <= ownerEpoch
 					: (() => {
 							const readiness = readDerivedIndexReadiness(this.#options.auditStore, readinessId);
-							return readiness.state === 'ready' && readiness.ownerEpoch >= pausedEpoch;
+							return (
+								(readiness.state === 'ready' || readiness.state === 'unavailable') &&
+								readiness.ownerEpoch >= pausedEpoch
+							);
 						})();
 			if (completed) {
 				this.#pauses.delete(readinessId);
