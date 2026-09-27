@@ -152,6 +152,7 @@ export function executeConditions(
 			context,
 			minResults:
 				request.limit === 0 ? 0 : request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
+			resultOffset: request.offset || 0,
 		});
 	}
 	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount) {
@@ -200,11 +201,12 @@ function buildRecordGuards(recordAccess): ((record: any) => boolean)[] | undefin
 function conditionIndex(table: any, attributeName: any, preferFullText = false): any {
 	if (typeof attributeName !== 'string') return;
 	return preferFullText
-		? (table.fullTextQueryIndexes?.[attributeName] ?? table.indices?.[attributeName])
+		? table.fullTextQueryIndexes?.[attributeName]
 		: (table.indices?.[attributeName] ?? table.fullTextQueryIndexes?.[attributeName]);
 }
 
 function combineFullTextConditions(conditions: any[], operator: string | undefined, table: any): any[] {
+	if (table.hasFullTextQueryIndexes === false) return conditions;
 	let indexName: string | undefined;
 	let positive = false;
 	const expressions: any[] = [];
@@ -392,13 +394,15 @@ export function searchByIndex(
 		// approximate index returns a fixed-size candidate list, so without this a query asking for more
 		// rows than that list holds silently gets a short result set. Only custom indexes read it.
 		minResults?: number;
+		// Rows before this offset are needed for correct paging but do not need highlight metadata.
+		resultOffset?: number;
 	} = {}
 ): AsyncIterable<Id | { key: Id; value: any }> {
 	// A stale positional caller passes `allowFullScan` here. Type checking only covers .ts callers, so
 	// fail loud rather than silently reading every option as undefined.
 	if (typeof options !== 'object' || options === null)
 		throw new TypeError('searchByIndex: the 5th argument is an options object (#2165), not a positional value');
-	const { allowFullScan, filtered, context, minResults } = options;
+	const { allowFullScan, filtered, context, minResults, resultOffset } = options;
 	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
 	const comparator = searchCondition.comparator;
@@ -471,10 +475,15 @@ export function searchByIndex(
 			needFullScan = true;
 		}
 	}
+	const fullTextMode = fullTextComparatorMode(comparator);
+	if (fullTextMode) {
+		if (typeof attribute_name !== 'string' || !Table.fullTextIndexes?.some(({ name }) => name === attribute_name))
+			throw new ClientError('Full-text comparator requires a declared @fullText index', 400);
+		if (!Table.fullTextQueryIndexes?.[attribute_name]?.customIndex)
+			throw new IndexRebuildingError(`Full-text index '${attribute_name}' is not ready`);
+	}
 	const isPrimaryKey = attribute_name === Table.primaryKey || attribute_name == null;
-	const index = isPrimaryKey
-		? Table.primaryStore
-		: conditionIndex(Table, attribute_name, Boolean(fullTextComparatorMode(comparator)));
+	const index = isPrimaryKey ? Table.primaryStore : conditionIndex(Table, attribute_name, Boolean(fullTextMode));
 	let start;
 	let end, inclusiveEnd, exclusiveStart, stringPrefix;
 	if (value instanceof Date) value = value.getTime();
@@ -692,6 +701,7 @@ export function searchByIndex(
 							}
 						: recordFilter,
 				minResults,
+				resultOffset,
 			});
 			const coverage = (searched as any).indexCoverage;
 			if (!waiting && coverage && context?.responseHeaders) {

@@ -56,6 +56,7 @@ import { addSubscription } from './transactionBroadcast.ts';
 import { databaseDropPrepared } from './databaseDropPreparation.ts';
 import {
 	DerivedIndexLagError,
+	IndexRebuildingError,
 	DatabaseClosingError,
 	DatabaseDrainTimeoutError,
 	handleHDBError,
@@ -1093,6 +1094,7 @@ export function makeTable(options) {
 		static audit = audit;
 		static fullTextIndexes: FullTextDefinition[] = fullTextIndexes;
 		static fullTextQueryIndexes: { [name: string]: { customIndex: unknown } } = Object.create(null);
+		static hasFullTextQueryIndexes = false;
 		static fullTextIndexGenerations: FullTextIndexGenerations = fullTextIndexGenerations;
 		static fullTextIndexRetirements: string[] = fullTextIndexRetirements;
 		static hasCurrentFullTextIndexRetirements(names: readonly string[]): boolean | Promise<boolean> {
@@ -5019,7 +5021,11 @@ export function makeTable(options) {
 						fullTextMode && typeof attribute_name === 'string'
 							? TableResource.fullTextIndexes.find((definition) => definition.name === attribute_name)
 							: undefined;
+					if (fullTextMode && !fullTextDefinition)
+						throw new ClientError('Full-text comparator requires a declared @fullText index', 400);
 					if (fullTextDefinition) {
+						if (!TableResource.fullTextQueryIndexes[attribute_name]?.customIndex)
+							throw new IndexRebuildingError(`Full-text index '${attribute_name}' is not ready`);
 						const value = condition[1] ?? condition.value;
 						if (typeof value !== 'string' || value.length === 0)
 							throw new ClientError(

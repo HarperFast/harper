@@ -250,7 +250,7 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 						'all',
 						'fuzzy',
 						...(definition.positions ? ['phrase'] : []),
-						...(definition.surfaceTerms ? ['prefix', 'fuzzy-prefix', 'autocomplete'] : []),
+						...(definition.surfaceTerms ? ['prefix', 'fuzzy-prefix'] : []),
 					],
 					readiness: {
 						state: readiness.state,

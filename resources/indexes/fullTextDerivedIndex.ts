@@ -27,6 +27,8 @@ const DEFAULT_OPEN_RETRY_MILLISECONDS = 10;
 const DEFAULT_MAX_OPEN_RETRY_MILLISECONDS = 5_000;
 const DEFAULT_CLOSE_TIMEOUT_MILLISECONDS = 35_000;
 const DEFAULT_MAX_APPLY_SLICE_RECORDS = 256;
+const DEFAULT_BLOB_READ_TIMEOUT_MILLISECONDS = 5_000;
+const DEFAULT_BLOB_READ_ATTEMPTS = 3;
 const APPLY_SLICE_MILLISECONDS = 5;
 const MAX_FULL_TEXT_VALUE_BYTES = 1 << 20;
 const TERMINAL_OPEN_ERROR_CODES = new Set([
@@ -82,6 +84,8 @@ export type FullTextDerivedIndexBackendOptions = {
 	maxOpenRetryMilliseconds?: number;
 	closeTimeoutMilliseconds?: number;
 	shutdownTimeoutMilliseconds?: number;
+	blobReadTimeoutMilliseconds?: number;
+	blobReadAttempts?: number;
 };
 
 type ApplyCommand = {
@@ -134,6 +138,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#maxOpenRetryMilliseconds: number;
 	#closeTimeoutMilliseconds: number;
 	#shutdownTimeoutMilliseconds: number;
+	#blobReadTimeoutMilliseconds: number;
+	#blobReadAttempts: number;
+	#blobReadFailures = new Map<string, { version: string; attempts: number }>();
 	#host?: DerivedIndexBackendHost;
 	#wake?: (change?: DerivedIndexBackendStateChange) => void;
 	#engine?: FullTextDerivedIndexEngine;
@@ -226,6 +233,14 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		);
 		if (this.#shutdownTimeoutMilliseconds < this.#closeTimeoutMilliseconds * 2)
 			throw new RangeError('shutdownTimeoutMilliseconds must be at least twice closeTimeoutMilliseconds');
+		this.#blobReadTimeoutMilliseconds = positiveInteger(
+			options.blobReadTimeoutMilliseconds ?? DEFAULT_BLOB_READ_TIMEOUT_MILLISECONDS,
+			'blobReadTimeoutMilliseconds'
+		);
+		this.#blobReadAttempts = positiveInteger(
+			options.blobReadAttempts ?? DEFAULT_BLOB_READ_ATTEMPTS,
+			'blobReadAttempts'
+		);
 		this.#openRetryDelayMilliseconds = Math.max(1, this.#openRetryMilliseconds);
 		this.#writerRetryDelayMilliseconds = Math.min(
 			this.#maxOpenRetryMilliseconds,
@@ -554,12 +569,26 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		}
 		let slice: Awaited<ReturnType<typeof toFullTextMutationSlice>>;
 		try {
-			slice = await toFullTextMutationSlice(
-				command.batch.records,
-				command.position,
-				this.#maxApplySliceRecords,
-				performance.now() + APPLY_SLICE_MILLISECONDS
-			);
+			const deadline = performance.now() + APPLY_SLICE_MILLISECONDS;
+			slice = sliceContainsBlob(command.batch.records, command.position, this.#maxApplySliceRecords)
+				? await toFullTextMutationSlice(
+						command.batch.records,
+						command.position,
+						this.#maxApplySliceRecords,
+						deadline,
+						this.#blobReadFailures,
+						this.#blobReadAttempts,
+						this.#blobReadTimeoutMilliseconds
+					)
+				: {
+						...toFullTextMutationSliceSync(
+							command.batch.records,
+							command.position,
+							this.#maxApplySliceRecords,
+							deadline
+						),
+						rejected: 0,
+					};
 		} catch (error) {
 			await this.#loseAcceptedWork(command.epoch, error, { retry: true });
 			return false;
@@ -846,6 +875,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#lossPendingEpoch = undefined;
 		this.#invalidEstimateWarned = false;
 		this.#failedDeliveryObserved = false;
+		this.#blobReadFailures.clear();
 	}
 
 	#markFailed(error: unknown): boolean {
@@ -910,7 +940,10 @@ async function toFullTextMutationSlice(
 	records: DerivedIndexBatch['records'],
 	start: number,
 	maxRecords: number,
-	deadline: number
+	deadline: number,
+	readFailures: Map<string, { version: string; attempts: number }>,
+	maxReadAttempts: number,
+	readTimeoutMilliseconds: number
 ): Promise<{ batch: FullTextMutationBatch; end: number; rejected: number }> {
 	const upserts: FullTextMutationBatch['upserts'] = [];
 	const deletes: string[] = [];
@@ -928,12 +961,24 @@ async function toFullTextMutationSlice(
 		}
 		const id = tablePrefix + toBufferKey(record.recordId).toString('base64url');
 		const recordState = record.state.kind === 'record' ? record.state : undefined;
-		const resolved = recordState ? await resolvedFullTextFields(recordState.projection) : undefined;
-		if (resolved?.rejected) rejected++;
-		if (resolved?.fields && !resolved.rejected)
+		const version = recordState ? String(recordState.version) : undefined;
+		const resolved = recordState
+			? await resolvedFullTextFields(recordState.projection, readTimeoutMilliseconds)
+			: undefined;
+		if (resolved?.error) {
+			const previous = readFailures.get(id);
+			const attempts = previous?.version === version ? previous.attempts + 1 : 1;
+			if (attempts < maxReadAttempts) {
+				readFailures.set(id, { version: version!, attempts });
+				throw resolved.error;
+			}
+		}
+		readFailures.delete(id);
+		if (resolved?.rejected || resolved?.error) rejected++;
+		if (resolved?.fields && !resolved.rejected && !resolved.error)
 			upserts.push({ id, version: String(recordState!.version), fields: resolved.fields });
 		else deletes.push(id);
-		if ((index - start + 1) % 16 === 0 && performance.now() >= deadline) {
+		if (performance.now() >= deadline) {
 			index++;
 			break;
 		}
@@ -1085,8 +1130,9 @@ function fullTextFields(projection: unknown): Record<string, string | string[]> 
 }
 
 async function resolvedFullTextFields(
-	projection: unknown
-): Promise<{ fields?: Record<string, string | string[]>; rejected: boolean }> {
+	projection: unknown,
+	readTimeoutMilliseconds: number
+): Promise<{ fields?: Record<string, string | string[]>; rejected: boolean; error?: unknown }> {
 	let fields = fullTextFields(projection);
 	if (!projection || typeof projection !== 'object' || Array.isArray(projection)) return { fields, rejected: false };
 	for (const name in projection) {
@@ -1094,7 +1140,16 @@ async function resolvedFullTextFields(
 		const value = (projection as Record<string, unknown>)[name];
 		if (!(value instanceof Blob)) continue;
 		if (value.size > MAX_FULL_TEXT_VALUE_BYTES) return { rejected: true };
-		const bytes = await value.arrayBuffer();
+		let bytes: ArrayBuffer;
+		try {
+			bytes = await withTimeout(
+				value.arrayBuffer(),
+				readTimeoutMilliseconds,
+				() => new Error('Full-text Blob read timed out')
+			);
+		} catch (error) {
+			return { rejected: false, error };
+		}
 		let text: string;
 		try {
 			text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
@@ -1106,6 +1161,19 @@ async function resolvedFullTextFields(
 		(fields ??= Object.create(null))[name] = text;
 	}
 	return { fields, rejected: false };
+}
+
+function sliceContainsBlob(records: DerivedIndexBatch['records'], start: number, maxRecords: number): boolean {
+	const limit = Math.min(start + maxRecords, records.length);
+	for (let index = start; index < limit; index++) {
+		const state = records[index].state;
+		if (state.kind !== 'record' || !state.projection || typeof state.projection !== 'object') continue;
+		const projection = state.projection as Record<string, unknown>;
+		for (const name in projection) {
+			if (Object.hasOwn(projection, name) && projection[name] instanceof Blob) return true;
+		}
+	}
+	return false;
 }
 
 function isTerminalOpenError(error: unknown): boolean {

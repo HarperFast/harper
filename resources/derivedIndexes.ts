@@ -410,6 +410,7 @@ export function attachDerivedIndexes(
 			});
 			fullTextQueryIndexes.set(definition.name, queryIndex);
 			Table.fullTextQueryIndexes[definition.name] = { customIndex: queryIndex };
+			Table.hasFullTextQueryIndexes = true;
 		}
 
 		const { settlePredecessor, predecessorSettled } = beginBackendHandoff(registered, id);
@@ -514,7 +515,10 @@ export function attachDerivedIndexes(
 				? [...(registered.tableBackends.get(Table.tableId) ?? [])].map((backend) => backend.settle())
 				: releases.map((release) => release());
 			for (const queryIndex of fullTextQueryIndexes.values()) settlements.push(queryIndex.close());
-			for (const name of fullTextQueryIndexes.keys()) delete Table.fullTextQueryIndexes[name];
+			for (const [name, queryIndex] of fullTextQueryIndexes) {
+				if (Table.fullTextQueryIndexes[name]?.customIndex === queryIndex) delete Table.fullTextQueryIndexes[name];
+			}
+			Table.hasFullTextQueryIndexes = Object.keys(Table.fullTextQueryIndexes).length > 0;
 			const retained = new Set(
 				((Table.fullTextIndexes ?? []) as FullTextDefinition[]).map((definition) => definition.name)
 			);
@@ -580,10 +584,14 @@ export function attachDerivedIndexes(
 		matchesCurrent() {
 			if (closing || fullTextRetirementRecoveryFailed || !matchesCurrentHnsw()) return false;
 			const currentDefinitions = (Table.fullTextIndexes ?? []) as FullTextDefinition[];
-			return (
-				fullTextActivationSnapshot(Table, currentDefinitions) === fullTextSnapshot &&
-				JSON.stringify(Table.fullTextIndexRetirements ?? []) === fullTextRetirementSnapshot
-			);
+			if (
+				fullTextActivationSnapshot(Table, currentDefinitions) !== fullTextSnapshot ||
+				JSON.stringify(Table.fullTextIndexRetirements ?? []) !== fullTextRetirementSnapshot
+			)
+				return false;
+			for (const definition of currentDefinitions)
+				fullTextQueryIndexes.get(definition.name)?.updateDefinition(definition);
+			return true;
 		},
 		retryUnavailableFullText() {
 			if (closing) return;
@@ -841,7 +849,8 @@ function fullTextProjection(definition: FullTextDefinition) {
 				continue;
 			}
 			if (mediaType === 'text/plain' && value instanceof Blob) {
-				if (value.type.split(';', 1)[0].trim().toLowerCase() !== mediaType)
+				const actualMediaType = value.type.split(';', 1)[0].trim().toLowerCase();
+				if (actualMediaType && actualMediaType !== mediaType)
 					throw new ClientError(`Full-text Blob source '${name}' must contain ${mediaType} data`, 400);
 				projection[name] = value;
 				continue;

@@ -223,6 +223,7 @@ input FullTextSource {
 	name: String!
 	weight: Float! = 1.0
 	highlight: Boolean
+	mediaType: String
 }
 
 """
@@ -247,7 +248,7 @@ Create a native full-text derived index over the listed source attributes.
 directive @fullText(
 	name: String!
 	fields: [FullTextSource!]!
-	analyzer: String! = "english@1"
+	analyzer: String! = "english@2"
 	stopWords: Boolean! = true
 	positions: Boolean! = true
 	surfaceTerms: Boolean! = true

@@ -1,5 +1,6 @@
 require('../testUtils');
 const assert = require('node:assert');
+const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
@@ -150,6 +151,22 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			['product-1']
 		);
 		await index.close({ mode: 'require-clean' });
+		const reader = await binding.openNativeFullTextReader({
+			fields: [{ name: 'title', weight: 2 }],
+			analyzer: 'english@2',
+			positions: true,
+			surfaceTerms: false,
+			limits,
+			path: lifecycle.path,
+			indexId: 'products-title',
+			generation: createHash('sha256').update('table-generation-1').digest('hex'),
+		});
+		const readerResult = await reader.search({ text: 'running', limit: 10 });
+		assert.deepStrictEqual(
+			readerResult.hits.map(({ id }) => id),
+			['product-1']
+		);
+		await reader.close();
 
 		assert.deepStrictEqual(lifecycle.inspect(), {
 			state: 'checkpointed',

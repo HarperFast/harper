@@ -278,7 +278,6 @@ describe('@fullText derived-index activation', () => {
 			'phrase',
 			'prefix',
 			'fuzzy-prefix',
-			'autocomplete',
 		]);
 		assert.strictEqual(description.full_text_indexes[0].readiness.state, 'ready');
 		assert.strictEqual(typeof description.full_text_indexes[0].readiness.owner_epoch, 'string');
@@ -324,6 +323,24 @@ describe('@fullText derived-index activation', () => {
 			/requires at least one non-negated condition/
 		);
 		assert.strictEqual(binding.readerOpens.length, 1);
+	});
+
+	it('rejects full-text comparators on ordinary and primary indexes', async () => {
+		Product = table({
+			database: `fulltext-query-fail-closed-${Date.now()}`,
+			table: 'Product',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String', indexed: true },
+			],
+		});
+		await Product.put('shoe-1', { title: 'Trail shoe' });
+		for (const attribute of ['id', 'title']) {
+			await assert.rejects(
+				async () => collect(Product.search({ conditions: [{ attribute, comparator: 'matches', value: 'shoe' }] })),
+				/requires a declared @fullText index/
+			);
+		}
 	});
 
 	rocksOnly('keeps quarantined full-text metadata inert during clear and drop', async () => {
@@ -791,6 +808,8 @@ describe('@fullText derived-index activation', () => {
 		const synonymRuntime = Product.derivedIndexRuntime;
 		const synonymOpenCount = binding.opens.length;
 		const synonymResetCount = binding.resets.length;
+		await collect(Product.search({ conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }] }));
+		const synonymReaderOpenCount = binding.readerOpens.length;
 
 		Product = table({
 			database,
@@ -805,6 +824,9 @@ describe('@fullText derived-index activation', () => {
 		assert.strictEqual(Product.derivedIndexRuntime, synonymRuntime);
 		assert.strictEqual(binding.opens.length, synonymOpenCount);
 		assert.strictEqual(binding.resets.length, synonymResetCount);
+		await collect(Product.search({ conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }] }));
+		assert.strictEqual(binding.readerOpens.length, synonymReaderOpenCount + 1);
+		assert.strictEqual(binding.readerOpens.at(-1).fields[0].weight, 2);
 	});
 
 	rocksOnly('keeps the prior declaration when a storage-generation update fails before publication', async () => {

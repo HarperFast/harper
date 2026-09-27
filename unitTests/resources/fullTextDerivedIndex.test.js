@@ -96,6 +96,8 @@ function makeBackend(lifecycleValue, options = {}) {
 		closeTimeoutMilliseconds: options.closeTimeoutMilliseconds,
 		shutdownTimeoutMilliseconds: options.shutdownTimeoutMilliseconds,
 		maxCursorPayloadBytes: options.maxCursorPayloadBytes,
+		blobReadTimeoutMilliseconds: options.blobReadTimeoutMilliseconds,
+		blobReadAttempts: options.blobReadAttempts,
 	});
 	backend.attach({
 		isOwnerEpoch: (candidate) => candidate === epoch,
@@ -648,6 +650,61 @@ describe('FullTextDerivedIndexBackend', () => {
 		backend.flush();
 		await waitFor(() => second.publications.length === 1);
 		assert.strictEqual(second.applied[0].upserts[0].fields.body, 'plain text');
+		await backend.shutdown(1n);
+	});
+
+	it('removes a Blob record after the bounded read retry budget is exhausted', async () => {
+		const engines = [new FakeEngine(), new FakeEngine(), new FakeEngine()];
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [...engines]));
+		class UnreadableBlob extends Blob {
+			async arrayBuffer() {
+				throw new Error('permanent blob read failure');
+			}
+		}
+		const value = batch(
+			1n,
+			[mutation('unreadable', { kind: 'record', version: 1, projection: { body: new UnreadableBlob(['text']) } })],
+			cursor(20)
+		);
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+
+		for (let attempt = 1; attempt < 3; attempt++) {
+			assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
+			backend.flush();
+			await waitFor(() => changes.filter((change) => change === 'accepted-work-lost').length === attempt);
+			await waitFor(() => changes.filter((change) => change === 'changed').length === attempt);
+		}
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
+		backend.flush();
+		await waitFor(() => engines[2].publications.length === 1);
+		assert.strictEqual(engines[2].applied[0].upserts.length, 0);
+		assert.strictEqual(engines[2].applied[0].deletes.length, 1);
+		assert.strictEqual(backend.getUnindexableRecords(), 1);
+		await backend.shutdown(1n);
+	});
+
+	it('bounds a Blob read that never settles', async () => {
+		const engine = new FakeEngine();
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), {
+			blobReadTimeoutMilliseconds: 10,
+			blobReadAttempts: 1,
+		});
+		class StalledBlob extends Blob {
+			arrayBuffer() {
+				return new Promise(() => {});
+			}
+		}
+		backend.deliver(
+			batch(
+				1n,
+				[mutation('stalled', { kind: 'record', version: 1, projection: { body: new StalledBlob(['text']) } })],
+				cursor(20)
+			)
+		);
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		assert.strictEqual(engine.applied[0].deletes.length, 1);
 		await backend.shutdown(1n);
 	});
 

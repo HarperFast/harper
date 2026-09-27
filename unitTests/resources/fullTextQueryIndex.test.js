@@ -140,6 +140,13 @@ describe('FullTextQueryIndex', () => {
 		assert(traces.every(({ records }) => records.length === 1));
 		assert.deepStrictEqual(first[0].$highlights.title[0].spans, [{ start: 0, end: 3 }]);
 
+		traces.length = 0;
+		const paged = await index.search(condition, {}, { minResults: 2, resultOffset: 1 });
+		assert.strictEqual(traces.length, 1);
+		assert.strictEqual(traces[0].records[0].id, nativeId(tableId, 'two'));
+		assert.strictEqual(paged[0].$highlights, undefined);
+		assert(paged[1].$highlights);
+
 		await index.search(condition, {}, { minResults: 1 });
 		assert.strictEqual(reloads, 0);
 		const publication = auditStore.buffers.get(`derived-index:${readinessId}:publication`);
@@ -222,6 +229,73 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	it('reopens after a reload failure and applies query-only definition changes', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'query-reconfigure';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const entry = { version: 1, value: { title: 'running shoe' } };
+		const opens = [];
+		let closes = 0;
+		let failReload = false;
+		const binding = {
+			async runtimeInfo() {
+				return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+			},
+			async openNativeFullTextReader(options) {
+				opens.push(structuredClone(options));
+				return {
+					async search() {
+						return {
+							total: 1,
+							totalRelation: 'exact',
+							hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+						};
+					},
+					async reload() {
+						if (failReload) {
+							failReload = false;
+							throw Object.assign(new Error('reload failed'), { code: 'E_RELOAD_FAILED' });
+						}
+					},
+					async close() {
+						closes++;
+					},
+				};
+			},
+		};
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: { getEntry: () => entry },
+				_readTxnForContext: () => undefined,
+			},
+			definition: definition(),
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath: '/unused',
+			storeName: 'unused',
+			sourceGeneration: 'generation',
+			limits: {},
+			binding,
+		});
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
+		await index.search(query, {}, { minResults: 1 });
+		index.updateDefinition({ ...definition(), fields: [{ name: 'title', weight: 7, highlight: true }] });
+		await index.search(query, {}, { minResults: 1 });
+		assert.strictEqual(opens.length, 2);
+		assert.strictEqual(opens[1].fields[0].weight, 7);
+
+		const publication = auditStore.buffers.get(`derived-index:${readinessId}:publication`);
+		Atomics.add(new BigInt64Array(publication), 0, 1n);
+		failReload = true;
+		await assert.rejects(index.search(query, {}, { minResults: 1 }), (error) => error.name === 'IndexRebuildingError');
+		await index.search(query, {}, { minResults: 1 });
+		assert.strictEqual(opens.length, 3);
+		assert.strictEqual(closes, 2);
+		await index.close();
+	});
+
 	it('requires callers to page searches larger than the native result window', async () => {
 		const auditStore = sharedStore();
 		publishDerivedIndexReadiness(auditStore, 'query-window', 'ready');
@@ -267,6 +341,8 @@ describe('FullTextQueryIndex', () => {
 		});
 		const query = { attribute: 'query-window', comparator: 'matches', value: 'shoe' };
 		assert.deepStrictEqual(await index.search(query, {}, { minResults: 0 }), []);
+		assert.strictEqual(searches, 0);
+		await assert.rejects(index.search(query, {}, { minResults: 3 }), /reduce offset or limit/);
 		assert.strictEqual(searches, 0);
 		await assert.rejects(index.search(query, {}), /exceeds the 2-result search window/);
 		await index.close();

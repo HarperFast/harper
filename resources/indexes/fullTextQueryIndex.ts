@@ -19,6 +19,7 @@ import {
 import { nativeFullTextIndexPath } from './nativeFullTextDerivedIndexLifecycle.ts';
 
 const RAW_PAGE_SIZE = 256;
+const HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS = 5_000;
 
 export type FullTextCondition = {
 	attribute?: string;
@@ -51,6 +52,10 @@ export class FullTextQueryIndex {
 		indexId: string;
 		generation: string;
 	};
+	#definition: FullTextDefinition;
+	#definitionSnapshot: string;
+	#configurationRevision = 0;
+	#readerConfigurationRevision = -1;
 	#binding?: NativeFullTextModule;
 	#reader?: NativeFullTextReader;
 	#readerOperation?: Promise<NativeFullTextReader>;
@@ -61,6 +66,8 @@ export class FullTextQueryIndex {
 
 	constructor(options: FullTextQueryIndexOptions) {
 		this.#options = options;
+		this.#definition = options.definition;
+		this.#definitionSnapshot = queryDefinitionSnapshot(options.definition);
 		this.#nativeOptions = {
 			path: nativeFullTextIndexPath(options.storePath, options.storeName),
 			indexId: options.indexId,
@@ -78,6 +85,15 @@ export class FullTextQueryIndex {
 		};
 	}
 
+	updateDefinition(definition: FullTextDefinition): void {
+		const snapshot = queryDefinitionSnapshot(definition);
+		if (snapshot === this.#definitionSnapshot) return;
+		this.#definition = definition;
+		this.#definitionSnapshot = snapshot;
+		this.#nativeOptions.fields = definition.fields.map(({ name, weight }) => ({ name, weight }));
+		this.#configurationRevision++;
+	}
+
 	estimateCount(): number {
 		const store = this.#options.Table.primaryStore;
 		const records =
@@ -88,11 +104,11 @@ export class FullTextQueryIndex {
 	search(
 		condition: FullTextCondition,
 		context: any,
-		options: { filter?: (id: unknown) => boolean; minResults?: number } = {}
+		options: { filter?: (id: unknown) => boolean; minResults?: number; resultOffset?: number } = {}
 	): Promise<Array<{ key: unknown; $score: number; $highlights?: Record<string, unknown>; loadedEntry: any }>> {
 		const operation = this.#search(condition, context, options).catch((error) => {
 			if (error === context?.signal?.reason) throw error;
-			throw publicSearchError(error, this.#options.definition.name);
+			throw publicSearchError(error, this.#definition.name);
 		});
 		operation.catch(() => {});
 		return operation;
@@ -109,10 +125,10 @@ export class FullTextQueryIndex {
 	async #search(
 		condition: FullTextCondition,
 		context: any,
-		options: { filter?: (id: unknown) => boolean; minResults?: number }
+		options: { filter?: (id: unknown) => boolean; minResults?: number; resultOffset?: number }
 	): Promise<Array<{ key: unknown; $score: number; $highlights?: Record<string, unknown>; loadedEntry: any }>> {
 		const readiness = readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId);
-		assertReady(readiness, this.#options.definition.name);
+		assertReady(readiness, this.#definition.name);
 		const revision = readDerivedIndexPublicationRevision(this.#options.auditStore, this.#options.readinessId);
 		const reader = await this.#readerFor(`${revision.ownerEpoch}:${revision.revision}`);
 		const maxSearchWindow = this.#maxSearchWindow!;
@@ -120,6 +136,11 @@ export class FullTextQueryIndex {
 		if (options.minResults === 0) return [];
 		const bounded = options.minResults !== undefined;
 		const target = bounded ? Math.max(1, options.minResults!) : maxSearchWindow;
+		if (target > maxSearchWindow)
+			throw new ClientError(
+				`Full-text query exceeds the ${maxSearchWindow}-result search window; reduce offset or limit`,
+				400
+			);
 		const accepted: Array<{
 			key: unknown;
 			$score: number;
@@ -152,7 +173,8 @@ export class FullTextQueryIndex {
 		}
 		if (!bounded && moreMayExist)
 			throw new ClientError(`Full-text query exceeds the ${maxSearchWindow}-result search window; add a limit`, 400);
-		if (condition.includeHighlights && accepted.length > 0) await this.#addHighlights(reader, condition, accepted);
+		if (condition.includeHighlights && accepted.length > 0)
+			await this.#addHighlights(reader, condition, accepted.slice(options.resultOffset ?? 0));
 		return accepted.map((entry) => ({
 			key: entry.key,
 			$score: entry.$score,
@@ -173,32 +195,34 @@ export class FullTextQueryIndex {
 			recordEntry: any;
 		}>
 	): Promise<void> {
-		const highlighting = this.#options.definition.highlighting;
+		const highlighting = this.#definition.highlighting;
 		if (!highlighting) return;
 		const highlightFields = new Set(
-			this.#options.definition.fields.filter((field) => field.highlight === true).map((field) => field.name)
+			this.#definition.fields.filter((field) => field.highlight === true).map((field) => field.name)
 		);
 		if (highlightFields.size === 0) return;
-		const records = await Promise.all(
-			entries.map(async ({ nativeId, record }) => ({
-				id: nativeId,
-				fields: await sourceFields(record, this.#options.definition, highlightFields),
-			}))
-		);
 		const byId = new Map(entries.map((entry) => [entry.nativeId, entry]));
-		for (const leaf of condition.fullTextLeaves ?? [leafDescriptor(condition)]) {
-			const fields = leaf.fields?.filter((field) => highlightFields.has(field)) ?? [...highlightFields];
-			if (fields.length === 0) continue;
-			for (let start = 0; start < records.length; start += this.#maxTraceRecords!) {
-				const traced = await reader.traceMatches(
-					{ text: leaf.text, mode: leaf.mode, fields },
-					records.slice(start, start + this.#maxTraceRecords!),
-					{
-						snippets: true,
-						fragmentLength: highlighting.fragmentLength,
-						maxFragmentsPerValue: highlighting.maxFragments,
-					}
-				);
+		for (let start = 0; start < entries.length; start += this.#maxTraceRecords!) {
+			const records = (
+				await Promise.all(
+					entries.slice(start, start + this.#maxTraceRecords!).map(async ({ nativeId, record }) => {
+						try {
+							return { id: nativeId, fields: await sourceFields(record, this.#definition, highlightFields) };
+						} catch {
+							return undefined;
+						}
+					})
+				)
+			).filter(Boolean) as Array<{ id: string; fields: Record<string, string | string[]> }>;
+			if (records.length === 0) continue;
+			for (const leaf of condition.fullTextLeaves ?? [leafDescriptor(condition)]) {
+				const fields = leaf.fields?.filter((field) => highlightFields.has(field)) ?? [...highlightFields];
+				if (fields.length === 0) continue;
+				const traced = await reader.traceMatches({ text: leaf.text, mode: leaf.mode, fields }, records, {
+					snippets: true,
+					fragmentLength: highlighting.fragmentLength,
+					maxFragmentsPerValue: highlighting.maxFragments,
+				});
 				for (const record of traced.records) {
 					const entry = byId.get(record.id);
 					if (!entry) continue;
@@ -219,25 +243,43 @@ export class FullTextQueryIndex {
 
 	#readerFor(revision: string): Promise<NativeFullTextReader> {
 		if (this.#closed) return Promise.reject(new ServerError('Full-text index is closed', 503));
-		if (this.#reader && this.#revision === revision) return Promise.resolve(this.#reader);
+		if (
+			this.#reader &&
+			this.#revision === revision &&
+			this.#readerConfigurationRevision === this.#configurationRevision
+		)
+			return Promise.resolve(this.#reader);
 		if (this.#readerOperation) return this.#readerOperation.then(() => this.#readerFor(revision));
+		const configurationRevision = this.#configurationRevision;
 		this.#readerOperation = (async () => {
+			const existing = this.#reader;
 			try {
-				if (!this.#reader) {
+				if (!existing || this.#readerConfigurationRevision !== configurationRevision) {
+					this.#reader = undefined;
+					if (existing) await existing.close();
 					const binding = await this.#getBinding();
 					this.#reader = await binding.openNativeFullTextReader(this.#nativeOptions);
 				} else {
-					await this.#reader.reload();
+					await existing.reload();
 				}
 				this.#revision = revision;
+				this.#readerConfigurationRevision = configurationRevision;
 				return this.#reader;
 			} catch (error) {
-				throw publicSearchError(error, this.#options.definition.name);
+				if (this.#reader === existing) {
+					this.#reader = undefined;
+					this.#revision = undefined;
+					this.#readerConfigurationRevision = -1;
+					try {
+						await existing?.close();
+					} catch {}
+				}
+				throw publicSearchError(error, this.#definition.name);
 			} finally {
 				this.#readerOperation = undefined;
 			}
 		})();
-		return this.#readerOperation;
+		return this.#readerOperation.then(() => this.#readerFor(revision));
 	}
 
 	async #getBinding(): Promise<NativeFullTextModule> {
@@ -300,7 +342,9 @@ async function sourceFields(
 		if (typeof value === 'string') fields[source.name] = value;
 		else if (Array.isArray(value)) fields[source.name] = value.filter((entry) => typeof entry === 'string');
 		else if (source.mediaType === 'text/plain' && value instanceof Blob)
-			fields[source.name] = new TextDecoder('utf-8', { fatal: true }).decode(await value.arrayBuffer());
+			fields[source.name] = new TextDecoder('utf-8', { fatal: true }).decode(
+				await withTimeout(value.arrayBuffer(), HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS)
+			);
 	}
 	return fields;
 }
@@ -342,4 +386,22 @@ function publicSearchError(error: unknown, name: string): Error {
 
 function digestGeneration(value: string): string {
 	return createHash('sha256').update(value).digest('hex');
+}
+
+function queryDefinitionSnapshot(definition: FullTextDefinition): string {
+	return JSON.stringify({
+		fields: definition.fields.map(({ name, weight, highlight }) => ({ name, weight, highlight })),
+		highlighting: definition.highlighting,
+	});
+}
+
+function withTimeout<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
+	let timer: NodeJS.Timeout;
+	return Promise.race([
+		promise,
+		new Promise<never>((_resolve, reject) => {
+			timer = setTimeout(() => reject(new Error('Full-text highlight source read timed out')), milliseconds);
+			timer.unref?.();
+		}),
+	]).finally(() => clearTimeout(timer));
 }
