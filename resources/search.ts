@@ -200,6 +200,7 @@ function buildRecordGuards(recordAccess): ((record: any) => boolean)[] | undefin
 }
 
 function conditionIndex(table: any, attributeName: any, preferFullText = false): any {
+	if (Array.isArray(attributeName) && attributeName.length === 1) attributeName = attributeName[0];
 	if (typeof attributeName !== 'string') return;
 	return preferFullText ? table.fullTextQueryIndexes?.[attributeName] : table.indices?.[attributeName];
 }
@@ -741,10 +742,10 @@ export function searchByIndex(
 			const searched = index.customIndex.search(searchCondition, searchContext, {
 				filter:
 					waiting && recordFilter
-						? (id) => {
+						? (id, entry) => {
 								if (signal.aborted) return false;
 								checkActive?.();
-								return recordFilter(id);
+								return recordFilter(id, entry);
 							}
 						: recordFilter,
 				minResults,

@@ -201,6 +201,7 @@ describe('FullTextQueryIndex', () => {
 			['two', { version: 3, value: { title: 'blue running shoe' } }],
 		]);
 		const searches = [];
+		const searchOptions = [];
 		const traces = [];
 		let traceComplete = true;
 		let reloads = 0;
@@ -211,8 +212,9 @@ describe('FullTextQueryIndex', () => {
 			async reload() {
 				reloads++;
 			},
-			async search(request) {
+			async search(request, options) {
 				searches.push(request);
+				searchOptions.push(options);
 				return {
 					total: 3,
 					totalRelation: 'exact',
@@ -223,8 +225,8 @@ describe('FullTextQueryIndex', () => {
 					],
 				};
 			},
-			async traceMatches(request, records) {
-				traces.push({ request, records });
+			async traceMatches(request, records, options) {
+				traces.push({ request, records, options });
 				return {
 					complete: traceComplete,
 					records: records.map(({ id }) => ({
@@ -304,8 +306,11 @@ describe('FullTextQueryIndex', () => {
 		);
 		assert.deepStrictEqual(searches[0].query, { text: 'running shoe', mode: 'all' });
 		assert.strictEqual(searches[0].limit, 32);
+		assert(searchOptions[0].remainingBudgetMilliseconds > 0);
+		assert(searchOptions[0].remainingBudgetMilliseconds <= 30_000);
 		assert.strictEqual(traces.length, 2);
 		assert(traces.every(({ records }) => records.length === 1));
+		assert(traces.every(({ options }) => options.remainingBudgetMilliseconds > 0));
 		assert.deepStrictEqual(first[0].$highlights.title[0].spans, [{ start: 0, end: 3 }]);
 		traceComplete = false;
 		await assert.rejects(index.search(condition, {}, { minResults: 1 }), /incomplete highlights/);
@@ -535,7 +540,7 @@ describe('FullTextQueryIndex', () => {
 		}
 	});
 
-	it('retries a rebuild request that throws without consuming the repair latch', async () => {
+	it('retries rebuild requests that throw or decline without consuming the repair latch', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'throwing-rebuild-request';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -564,6 +569,7 @@ describe('FullTextQueryIndex', () => {
 			readiness: () => ({ state: 'ready' }),
 			requestRebuild() {
 				if (++rebuilds === 1) throw new Error('notification unavailable');
+				if (rebuilds === 2) return false;
 				return true;
 			},
 			waitForCoverage: async () => {},
@@ -571,7 +577,8 @@ describe('FullTextQueryIndex', () => {
 		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
 		await assert.rejects(index.search(query, {}), (error) => error.name === 'IndexRebuildingError');
 		await assert.rejects(index.search(query, {}), (error) => error.name === 'IndexRebuildingError');
-		assert.strictEqual(rebuilds, 2);
+		await assert.rejects(index.search(query, {}), (error) => error.name === 'IndexRebuildingError');
+		assert.strictEqual(rebuilds, 3);
 		await index.close();
 	});
 
@@ -989,6 +996,63 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	it('applies one execution budget across every native result page', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'query-budget';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let searches = 0;
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: { getEntry: (key) => ({ version: 1, value: { title: key } }) },
+				_readTxnForContext: () => undefined,
+			},
+			definition: definition(),
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath: '/unused',
+			storeName: 'unused',
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: { maxSearchWindow: 10_000, maxSearchBudgetMilliseconds: 20, maxTraceRecords: 10 },
+					};
+				},
+				async openNativeFullTextReader() {
+					return {
+						async search(request) {
+							searches++;
+							await new Promise((resolve) => setTimeout(resolve, 25));
+							return {
+								total: 300,
+								totalRelation: 'exact',
+								hits: Array.from({ length: request.limit }, (_value, offset) => ({
+									id: nativeId(1, `record-${request.offset + offset}`),
+									version: '1',
+									score: 300 - request.offset - offset,
+								})),
+							};
+						},
+						committedPayload: publicationPayload(),
+						async reload() {},
+						async close() {},
+					};
+				},
+			},
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}),
+			(error) => error.statusCode === 503 && /execution budget/.test(error.message)
+		);
+		assert.strictEqual(searches, 1);
+		await index.close();
+	});
+
 	it('fails instead of returning an incomplete bounded page after filtering exhausts the native window', async () => {
 		const auditStore = sharedStore();
 		publishDerivedIndexReadiness(auditStore, 'filtered-window', 'ready');
@@ -1231,7 +1295,7 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('reloads a reader for a new publication without interrupting an in-flight search', async () => {
+	it('replaces a reader for a new publication without changing an in-flight search snapshot', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'query-reader-lease';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -1294,14 +1358,15 @@ describe('FullTextQueryIndex', () => {
 		publication.publish();
 		const second = await index.search(query, {}, { minResults: 1 });
 		assert.strictEqual(second.length, 1);
-		assert.strictEqual(opens, 1);
-		assert.strictEqual(reloads, 1);
+		assert.strictEqual(opens, 2);
+		assert.strictEqual(reloads, 0);
 		assert.strictEqual(closes, 0);
 		firstSearch.resolve();
 		const firstResult = await first;
 		assert.strictEqual(firstResult.length, 1);
+		await waitFor(() => closes === 1);
 		await index.close();
-		assert.strictEqual(closes, 1);
+		assert.strictEqual(closes, 2);
 	});
 
 	it('does not let a native reader close failure reject lifecycle shutdown', async () => {

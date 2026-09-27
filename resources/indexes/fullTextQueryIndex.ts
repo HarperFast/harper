@@ -107,6 +107,7 @@ export class FullTextQueryIndex {
 	#readerOperation?: Promise<ReaderSlot>;
 	#retiredReaderSlots = new Set<ReaderSlot>();
 	#maxSearchWindow?: number;
+	#maxSearchBudgetMilliseconds?: number;
 	#maxTraceRecords?: number;
 	#maxTraceSourceBytes?: number;
 	#closed = false;
@@ -251,6 +252,7 @@ export class FullTextQueryIndex {
 		const lease = await this.#acquireReader(readiness.ownerEpoch, publicationGeneration);
 		const reader = lease.reader;
 		try {
+			const deadline = performance.now() + this.#maxSearchBudgetMilliseconds!;
 			const maxSearchWindow = this.#maxSearchWindow!;
 			const query = condition.fullTextQuery ?? leafExpression(condition);
 			const bounded = options.minResults !== undefined;
@@ -278,12 +280,15 @@ export class FullTextQueryIndex {
 					? Math.max(MIN_RAW_PAGE_SIZE, (target - accepted.length) * RAW_PAGE_OVERFETCH_FACTOR)
 					: RAW_PAGE_SIZE;
 				const limit = Math.min(RAW_PAGE_SIZE, desiredPageSize, maxSearchWindow - offset);
-				const result = await reader.search({
-					query,
-					offset,
-					limit,
-					...(!bounded && offset === 0 ? { exactTotal: true } : null),
-				});
+				const result = await reader.search(
+					{
+						query,
+						offset,
+						limit,
+						...(!bounded && offset === 0 ? { exactTotal: true } : null),
+					},
+					{ remainingBudgetMilliseconds: remainingSearchBudget(deadline) }
+				);
 				if (!bounded && result.totalRelation === 'exact' && result.total > maxSearchWindow)
 					throw new ClientError(
 						`Full-text query exceeds the ${maxSearchWindow}-result search window; add a limit`,
@@ -321,7 +326,7 @@ export class FullTextQueryIndex {
 					400
 				);
 			if (condition.includeHighlights && accepted.length > 0)
-				await this.#addHighlights(reader, condition, accepted.slice(options.resultOffset ?? 0));
+				await this.#addHighlights(reader, condition, accepted.slice(options.resultOffset ?? 0), deadline);
 			return accepted.map((entry) => ({
 				key: entry.key,
 				$score: entry.$score,
@@ -343,7 +348,8 @@ export class FullTextQueryIndex {
 			nativeId: string;
 			record: Record<string, unknown>;
 			recordEntry: any;
-		}>
+		}>,
+		deadline: number
 	): Promise<void> {
 		const highlighting = this.#definition.highlighting;
 		if (!highlighting) return;
@@ -362,7 +368,7 @@ export class FullTextQueryIndex {
 			const records = await Promise.all(
 				entries.slice(start, start + this.#maxTraceRecords!).map(async ({ nativeId, record }) => ({
 					id: nativeId,
-					fields: await sourceFields(record, this.#definition, sourceFieldNames),
+					fields: await sourceFields(record, this.#definition, sourceFieldNames, deadline),
 				}))
 			);
 			for (const leaf of leaves) {
@@ -376,6 +382,7 @@ export class FullTextQueryIndex {
 				});
 				for (const traceRecords of traceSourceBatches(leafRecords, this.#maxTraceSourceBytes!)) {
 					const traced = await reader.traceMatches({ text: leaf.text, mode: leaf.mode, fields }, traceRecords, {
+						remainingBudgetMilliseconds: remainingSearchBudget(deadline),
 						snippets: true,
 						fragmentLength: highlighting.fragmentLength,
 						maxFragmentsPerValue: highlighting.maxFragments,
@@ -453,7 +460,10 @@ export class FullTextQueryIndex {
 		const configurationRevision = this.#configurationRevision;
 		this.#readerOperation = (async () => {
 			const existing = this.#readerSlot;
-			const canReload = existing?.ownerEpoch === ownerEpoch && existing.configurationRevision === configurationRevision;
+			const canReload =
+				existing?.active === 0 &&
+				existing.ownerEpoch === ownerEpoch &&
+				existing.configurationRevision === configurationRevision;
 			try {
 				let reader: NativeFullTextReader;
 				let publication: FullTextPublication;
@@ -550,8 +560,7 @@ export class FullTextQueryIndex {
 		const host = this.#derivedHost;
 		if (!host || this.#publicationRebuildRequested) return;
 		try {
-			host.requestRebuild();
-			this.#publicationRebuildRequested = true;
+			if (host.requestRebuild()) this.#publicationRebuildRequested = true;
 		} catch (error) {
 			try {
 				logger.warn?.(`Could not request a rebuild for full-text index '${this.#definition.name}'`, error);
@@ -614,6 +623,7 @@ export class FullTextQueryIndex {
 			this.#nativeOptions.limits.searchThreads
 		);
 		this.#maxSearchWindow = info.limits.maxSearchWindow;
+		this.#maxSearchBudgetMilliseconds = info.limits.maxSearchBudgetMilliseconds ?? 30_000;
 		this.#maxTraceRecords = info.limits.maxTraceRecords;
 		this.#maxTraceSourceBytes = info.limits.maxTraceSourceBytes ?? Number.MAX_SAFE_INTEGER;
 		return (this.#binding = binding);
@@ -705,10 +715,11 @@ function leafDescriptor(condition: FullTextCondition): {
 async function sourceFields(
 	record: Record<string, unknown>,
 	definition: FullTextDefinition,
-	selected: ReadonlySet<string>
+	selected: ReadonlySet<string>,
+	queryDeadline: number
 ): Promise<Record<string, string | string[]>> {
 	const fields: Record<string, string | string[]> = Object.create(null);
-	const deadline = performance.now() + HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS;
+	const deadline = Math.min(queryDeadline, performance.now() + HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS);
 	for (const source of definition.fields) {
 		if (!selected.has(source.name)) continue;
 		const value = record[source.name];
@@ -785,14 +796,7 @@ function publicSearchError(error: unknown, name: string): Error {
 		return new DerivedIndexLagError(
 			`Full-text index '${name}' could not refresh its search snapshot; retry this query`
 		);
-	if (
-		code === 'E_INDEX_NOT_READY' ||
-		code === 'E_INDEX_CORRUPT' ||
-		code === 'E_IDENTITY_MISMATCH' ||
-		code === 'E_INCOMPLETE_CREATE' ||
-		code === 'E_SCHEMA_MISMATCH' ||
-		code === 'E_INDEX_FORMAT_INCOMPATIBLE'
-	)
+	if (typeof code === 'string' && REBUILD_REQUIRED_CODES.has(code))
 		return new IndexRebuildingError(`Full-text index '${name}' is not ready`);
 	if (code === 'E_QUEUE_FULL' || code === 'E_TIMEOUT' || code === 'E_RESOURCE_LIMIT')
 		return new ServerError(`Full-text index '${name}' is busy`, 503);
@@ -805,14 +809,22 @@ function publicSearchError(error: unknown, name: string): Error {
 
 function nativeErrorNeedsRebuild(error: unknown): boolean {
 	const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-	return (
-		code === 'E_INDEX_NOT_READY' ||
-		code === 'E_INDEX_CORRUPT' ||
-		code === 'E_IDENTITY_MISMATCH' ||
-		code === 'E_INCOMPLETE_CREATE' ||
-		code === 'E_SCHEMA_MISMATCH' ||
-		code === 'E_INDEX_FORMAT_INCOMPATIBLE'
-	);
+	return typeof code === 'string' && REBUILD_REQUIRED_CODES.has(code);
+}
+
+const REBUILD_REQUIRED_CODES = new Set([
+	'E_INDEX_NOT_READY',
+	'E_INDEX_CORRUPT',
+	'E_IDENTITY_MISMATCH',
+	'E_INCOMPLETE_CREATE',
+	'E_SCHEMA_MISMATCH',
+	'E_INDEX_FORMAT_INCOMPATIBLE',
+]);
+
+function remainingSearchBudget(deadline: number): number {
+	const remaining = Math.floor(deadline - performance.now());
+	if (remaining <= 0) throw new ServerError('Full-text search exceeded its execution budget', 503);
+	return remaining;
 }
 
 function digestGeneration(value: string): string {

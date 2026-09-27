@@ -70,6 +70,7 @@ class FakeNativeModule {
 			limits: {
 				maxCommitPayloadBytes: this.maxCommitPayloadBytes,
 				maxSearchWindow: 10_000,
+				maxSearchBudgetMilliseconds: 30_000,
 				maxTraceRecords: 128,
 				maxTraceSourceBytes: 1024 * 1024,
 			},
@@ -475,6 +476,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			limits: {
 				maxCommitPayloadBytes: 64 * 1024,
 				maxSearchWindow: 10_000,
+				maxSearchBudgetMilliseconds: 30_000,
 				maxTraceRecords: 128,
 				maxTraceSourceBytes: 1024 * 1024,
 			},
@@ -495,6 +497,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			limits: {
 				maxCommitPayloadBytes: 64 * 1024,
 				maxSearchWindow: 10_000,
+				maxSearchBudgetMilliseconds: 30_000,
 				maxTraceRecords: 128,
 				maxTraceSourceBytes: 1024 * 1024,
 			},
@@ -517,6 +520,18 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		binding.runtimeInfo = async () => {
 			const info = await runtimeInfo();
 			delete info.limits.maxTraceSourceBytes;
+			return info;
+		};
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
+	});
+
+	it('requires the native search execution budget', async () => {
+		const binding = new FakeNativeModule();
+		const runtimeInfo = binding.runtimeInfo.bind(binding);
+		binding.runtimeInfo = async () => {
+			const info = await runtimeInfo();
+			delete info.limits.maxSearchBudgetMilliseconds;
 			return info;
 		};
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));

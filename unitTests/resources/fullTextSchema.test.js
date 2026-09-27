@@ -151,6 +151,33 @@ describe('@fullText declaration compiler', () => {
 		assert.strictEqual(generations.search, 'new-generation');
 		assert.deepStrictEqual(migratePersistedFullTextValues([persisted]), [{ ...persisted, analyzer: 'english@2' }]);
 	});
+
+	it('removes inert highlighting from persisted declarations while rejecting it in new declarations', () => {
+		const persisted = {
+			name: 'search',
+			fields: [{ name: 'title' }],
+			highlighting: { maxFragments: 2, fragmentLength: 120 },
+		};
+		const [compiled] = compileValidFullTextDefinitions([persisted], productAttributes(), () => {
+			assert.fail('persisted inert highlighting should migrate');
+		});
+		assert.strictEqual(compiled.highlighting, undefined);
+		assert.throws(() => compileFullTextDefinitions([persisted], productAttributes()), /highlight: true/);
+		assert.deepStrictEqual(migratePersistedFullTextValues([persisted]), [
+			{ name: 'search', fields: [{ name: 'title' }] },
+		]);
+		const [current] = compileFullTextDefinitions(
+			[{ name: 'search', fields: [{ name: 'title' }] }],
+			productAttributes()
+		);
+		const generations = reconcileFullTextIndexGenerations(
+			[compiled],
+			{ search: 'old-generation' },
+			[current],
+			() => 'new-generation'
+		);
+		assert.strictEqual(generations.search, 'new-generation');
+	});
 });
 
 rocksDescribe('@fullText RocksDB schema lifecycle', () => {

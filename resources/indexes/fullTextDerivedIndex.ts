@@ -94,7 +94,6 @@ export type FullTextDerivedIndexBackendOptions = {
 
 export type FullTextPublication = {
 	cursor?: DerivedIndexCursor;
-	dataRevision: bigint;
 };
 
 type ApplyCommand = {
@@ -158,7 +157,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#wake?: (change?: DerivedIndexBackendStateChange) => void;
 	#engine?: FullTextDerivedIndexEngine;
 	#durableCursor?: DerivedIndexCursor;
-	#dataRevision = 0n;
 	#cursorInspectedForAcquisition = false;
 	#activeEpoch?: bigint;
 	#commands: Command[] = [];
@@ -278,7 +276,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		if (!this.#cursorInspectedForAcquisition) {
 			const publication = this.#inspectPublication();
 			this.#durableCursor = publication.cursor;
-			this.#dataRevision = publication.dataRevision;
 			this.#cursorInspectedForAcquisition = true;
 		}
 		return this.#durableCursor;
@@ -295,13 +292,13 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		if (inspection.state !== 'checkpointed') {
 			if (inspection.state === 'incompatible')
 				logWarning(`Full-text derived index '${this.id}' is incompatible (${inspection.code}); rebuilding`);
-			return { dataRevision: 0n };
+			return {};
 		}
 		try {
 			return decodeFullTextPublication(inspection.committedPayload);
 		} catch {
 			logWarning(`Full-text derived index '${this.id}' has an invalid committed cursor; rebuilding`);
-			return { dataRevision: 0n };
+			return {};
 		}
 	}
 
@@ -464,7 +461,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#failed = false;
 		this.#shutdownFailure = undefined;
 		this.#durableCursor = undefined;
-		this.#dataRevision = 0n;
 		// An unknown reset outcome must never rediscover and trust the pre-reset checkpoint.
 		this.#cursorInspectedForAcquisition = true;
 		const operation = this.#performReset(ownerEpoch);
@@ -594,7 +590,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#lossPendingEpoch = epoch;
 			await this.#closeUninstalledEngine(engine);
 			this.#durableCursor = actual.cursor;
-			this.#dataRevision = actual.dataRevision;
 			this.#cursorInspectedForAcquisition = true;
 			this.#resetWriterRetryBackoff();
 			this.#discardCommands();
@@ -602,7 +597,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#notify('accepted-work-lost');
 			return false;
 		}
-		this.#dataRevision = actual.dataRevision;
 		this.#engine = engine;
 		return true;
 	}
@@ -705,11 +699,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			throw new FullTextDerivedIndexError('Full-text publication barrier passed unapplied work');
 		const cursor = withDurableCoverage(command.cursor ?? this.#durableCursor, this.#durableCursor);
 		try {
-			const dataRevision =
-				command.coverageOnly || !this.#hasStagedMutations ? this.#dataRevision : this.#dataRevision + 1n;
-			const payload = encodeFullTextCursorPayload(cursor, this.#maxCursorPayloadBytes, dataRevision);
+			const payload = encodeFullTextCursorPayload(cursor, this.#maxCursorPayloadBytes);
 			await this.#engine!.publish(payload);
-			this.#dataRevision = dataRevision;
 		} catch (error) {
 			const terminal = error instanceof FullTextDerivedIndexConfigurationError;
 			if (terminal) {
@@ -1045,8 +1036,9 @@ async function toFullTextMutationSlice(
 				throw resolved.error;
 			}
 			logger.warn?.(
-				`Full-text Blob read retry budget was exhausted for record '${id}'; removing the record from the index until its next mutation or rebuild`
+				`Full-text Blob read retry budget was exhausted for record '${id}'; delaying publication until the source is readable`
 			);
+			throw resolved.error;
 		}
 		readFailures.delete(id);
 		if (resolved?.rejected || resolved?.error) rejected++;
@@ -1139,15 +1131,11 @@ function nativeErrorCode(error: unknown): string | undefined {
 
 export function encodeFullTextCursorPayload(
 	cursor: DerivedIndexCursor | undefined,
-	maxBytes = HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES,
-	dataRevision = 0n
+	maxBytes = HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES
 ): string {
-	if (dataRevision < 0n)
-		throw new FullTextDerivedIndexConfigurationError('Full-text data revision must be nonnegative');
 	const normalized = cursor && normalizedCursor(cursor);
 	const payload = JSON.stringify({
 		format: 1,
-		...(dataRevision === 0n ? null : { dataRevision: dataRevision.toString() }),
 		cursor: normalized
 			? {
 					format: 1,
@@ -1176,7 +1164,7 @@ export function decodeFullTextPublication(
 	payload: string | null | undefined,
 	maxBytes = HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES
 ): FullTextPublication {
-	if (payload == null) return { dataRevision: 0n };
+	if (payload == null) return {};
 	if (typeof payload !== 'string' || Buffer.byteLength(payload) > maxBytes)
 		throw new FullTextDerivedIndexError('Full-text cursor payload is invalid or too large');
 	let decoded: unknown;
@@ -1192,9 +1180,7 @@ export function decodeFullTextPublication(
 		Object.keys(decoded).some((name) => name !== 'format' && name !== 'cursor' && name !== 'dataRevision')
 	)
 		throw new FullTextDerivedIndexError('Full-text cursor payload has an unsupported format');
-	const dataRevision =
-		decoded.dataRevision === undefined ? 0n : parseDataRevision(decoded.dataRevision, 'Full-text cursor payload');
-	if (decoded.cursor === null) return { dataRevision };
+	if (decoded.cursor === null) return {};
 	if (
 		!plainObject(decoded.cursor) ||
 		decoded.cursor.format !== 1 ||
@@ -1202,7 +1188,7 @@ export function decodeFullTextPublication(
 		Object.keys(decoded.cursor).some((name) => name !== 'format' && name !== 'logs' && name !== 'coverage')
 	)
 		throw new FullTextDerivedIndexError('Full-text cursor payload contains an invalid cursor');
-	return { cursor: normalizedCursor(decoded.cursor as DerivedIndexCursor), dataRevision };
+	return { cursor: normalizedCursor(decoded.cursor as DerivedIndexCursor) };
 }
 
 function fullTextFields(projection: unknown): Record<string, string | string[]> | undefined {
@@ -1254,12 +1240,6 @@ class FullTextBlobReadTimeout extends Error {
 	constructor() {
 		super('Full-text Blob read timed out');
 	}
-}
-
-function parseDataRevision(value: unknown, label: string): bigint {
-	if (typeof value !== 'string' || !/^(?:0|[1-9]\d*)$/.test(value))
-		throw new FullTextDerivedIndexError(`${label} contains an invalid data revision`);
-	return BigInt(value);
 }
 
 function isTerminalOpenError(error: unknown): boolean {

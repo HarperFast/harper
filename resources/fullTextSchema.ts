@@ -147,8 +147,9 @@ export function compileValidFullTextDefinitions(
 	const definitions: FullTextDefinition[] = [];
 	for (const value of values) {
 		try {
-			const migrated = isPersistedEnglishV1(value);
-			const definition = compileFullTextDefinition(migratePersistedFullTextDefinition(value), attributes);
+			const persisted = migratePersistedFullTextDefinition(value);
+			const migrated = persisted !== value;
+			const definition = compileFullTextDefinition(persisted, attributes);
 			if (migrated) Object.defineProperty(definition, migratedPersistedStorage, { value: true });
 			if (names.has(definition.name))
 				throw schemaError(`@fullText index "${definition.name}" is declared more than once`);
@@ -166,9 +167,9 @@ export function migratePersistedFullTextValues(values: unknown): unknown {
 	if (!Array.isArray(values)) return values;
 	let migrated = false;
 	const normalized = values.map((value) => {
-		if (!isPersistedEnglishV1(value)) return value;
-		migrated = true;
-		return { ...(value as Record<string, unknown>), analyzer: DEFAULT_ANALYZER };
+		const normalized = migratePersistedFullTextDefinition(value);
+		if (normalized !== value) migrated = true;
+		return normalized;
 	});
 	return migrated ? normalized : values;
 }
@@ -180,8 +181,21 @@ function isPersistedEnglishV1(value: unknown): boolean {
 }
 
 export function migratePersistedFullTextDefinition(value: unknown): unknown {
-	if (!isPersistedEnglishV1(value)) return value;
-	return { ...(value as Record<string, unknown>), analyzer: DEFAULT_ANALYZER };
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+	const definition = value as Record<string, unknown>;
+	let migrated: Record<string, unknown> | undefined;
+	if (isPersistedEnglishV1(value)) migrated = { ...definition, analyzer: DEFAULT_ANALYZER };
+	if (
+		definition.highlighting != null &&
+		Array.isArray(definition.fields) &&
+		!definition.fields.some(
+			(field) => field && typeof field === 'object' && !Array.isArray(field) && (field as any).highlight === true
+		)
+	) {
+		migrated ??= { ...definition };
+		delete migrated.highlighting;
+	}
+	return migrated ?? value;
 }
 
 export function sortFullTextDefinitions<T extends { name: string }>(definitions: T[]): T[] {

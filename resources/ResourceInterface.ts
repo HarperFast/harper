@@ -221,7 +221,7 @@ interface TypedDirectCondition<Record extends object, Property extends keyof Rec
 	 * companion conditions and caller `vectorFilter`/`rowFilter` predicates, pushed into a filterable
 	 * custom index (HNSW) so filtering happens during traversal. Not part of the public query surface.
 	 */
-	recordFilter?: (primaryKey: Id) => boolean;
+	recordFilter?: (primaryKey: Id, entry?: unknown) => boolean;
 }
 
 interface ConditionGroup<Record extends object = any> {

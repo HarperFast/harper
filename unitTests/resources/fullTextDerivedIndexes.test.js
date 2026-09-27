@@ -307,6 +307,35 @@ describe('@fullText derived-index activation', () => {
 			matched.map(({ id }) => id),
 			['exact']
 		);
+		const originalGetEntry = Product.primaryStore.getEntry;
+		let primaryReads = 0;
+		Product.primaryStore.getEntry = function (...args) {
+			primaryReads++;
+			return originalGetEntry.apply(this, args);
+		};
+		try {
+			const filtered = await collect(
+				Product.search({
+					operator: 'and',
+					conditions: [
+						{
+							attribute: 'title',
+							comparator: 'matches',
+							value: 'running',
+							waitForIndexMilliseconds: 1_000,
+						},
+						{ attribute: 'title', comparator: 'equals', value: 'running shoe' },
+					],
+				})
+			);
+			assert.deepStrictEqual(
+				filtered.map(({ id }) => id),
+				['exact']
+			);
+			assert.strictEqual(primaryReads, 2);
+		} finally {
+			Product.primaryStore.getEntry = originalGetEntry;
+		}
 		const [highlighted] = await collect(
 			Product.search({
 				conditions: [{ attribute: 'title', comparator: 'matches', value: 'shoe', includeHighlights: true }],
@@ -533,22 +562,34 @@ describe('@fullText derived-index activation', () => {
 		assert.strictEqual(highlighted.length, 1);
 		assert.strictEqual(typeof highlighted[0].$score, 'number');
 		assert.deepStrictEqual(highlighted[0].$highlights.title[0].spans, [{ start: 6, end: 10 }]);
-		for (const field of ['tags', 'unknown']) {
-			await assert.rejects(
-				Promise.resolve().then(() =>
-					collect(
-						Product.search(
-							{
-								conditions: [{ attribute: 'search', comparator: 'matches', value: 'trail', fields: [field] }],
-								limit: 1,
-							},
-							{ user }
-						)
+		await assert.rejects(
+			Promise.resolve().then(() =>
+				collect(
+					Product.search(
+						{
+							conditions: [{ attribute: 'search', comparator: 'matches', value: 'trail', fields: ['tags'] }],
+							limit: 1,
+						},
+						{ user }
 					)
-				),
-				(error) => error.name === 'AccessViolation' || error.statusCode === 403
-			);
-		}
+				)
+			),
+			(error) => error.name === 'AccessViolation' || error.statusCode === 403
+		);
+		await assert.rejects(
+			Promise.resolve().then(() =>
+				collect(
+					Product.search(
+						{
+							conditions: [{ attribute: 'search', comparator: 'matches', value: 'trail', fields: ['unknown'] }],
+							limit: 1,
+						},
+						{ user }
+					)
+				)
+			),
+			(error) => error.statusCode === 400
+		);
 		const explicitPermission = user.role.permission;
 		const explicitAllowed = await collect(
 			Product.search({
@@ -1498,8 +1539,6 @@ describe('@fullText derived-index activation', () => {
 
 		Product = table({ database, table: 'Product', audit: true, attributes: attributes(), fullTextIndexes: [] });
 		await waitFor(() => binding.resets.length > 0, 30_000);
-		// A reader open already scheduled before retirement may finish here. Once reset starts,
-		// re-declaration must not open another reader until the destructive reset completes.
 		const opensAtRetirement = binding.opens.length;
 		const retirementInProgress = fullTextRetirementInProgress(Product.primaryStore.rootStore, Product.tableName);
 		Product = table({
@@ -1510,7 +1549,11 @@ describe('@fullText derived-index activation', () => {
 			fullTextIndexes: [definition()],
 		});
 		await new Promise((resolve) => setImmediate(resolve));
-		assert.strictEqual(binding.opens.length, opensAtRetirement);
+		assert.strictEqual(
+			binding.opens.length,
+			opensAtRetirement,
+			're-declaration must not open a reader while destructive reset is active'
+		);
 		releaseReset();
 		await waitFor(() => binding.reclaims.length > 0, 30_000);
 

@@ -43,6 +43,8 @@ const fullTextLogger = loggerWithTag('fulltext-derived-index');
 const derivedIndexLogger = loggerWithTag('derived-index');
 const DEFAULT_MAX_LAG_MILLISECONDS = 30_000;
 const DEFAULT_FULL_TEXT_RETIREMENT_RETRY_MILLISECONDS = 70_000;
+const FULL_TEXT_READER_COORDINATION_TIMEOUT_MILLISECONDS = 35_000;
+const FULL_TEXT_RESET_TIMEOUT_MILLISECONDS = 105_000;
 const FULL_TEXT_WRITER_LIMITS = Object.freeze({
 	indexingThreads: 2,
 	searchThreads: 1,
@@ -493,7 +495,7 @@ export function attachDerivedIndexes(
 								ownerEpoch: ownerEpoch.toString(),
 							},
 						},
-						35_000,
+						FULL_TEXT_READER_COORDINATION_TIMEOUT_MILLISECONDS,
 						true
 					);
 				},
@@ -509,10 +511,11 @@ export function attachDerivedIndexes(
 								ownerEpoch: ownerEpoch.toString(),
 							},
 						},
-						35_000,
+						FULL_TEXT_READER_COORDINATION_TIMEOUT_MILLISECONDS,
 						true
 					);
 				},
+				shutdownTimeoutMilliseconds: FULL_TEXT_RESET_TIMEOUT_MILLISECONDS,
 				...(fullTextTest
 					? {
 							binding: fullTextTest.binding,

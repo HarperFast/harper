@@ -442,16 +442,21 @@ metadata-only reload cadence so unrelated write traffic cannot become a hidden q
 Missing or malformed payloads fail closed and request one rebuild. A strict, non-waiting query on a
 cold worker can return retryable lag while it opens the reader; retrying, or using
 `waitForIndexMilliseconds`, allows the aligned reader to finish opening without synchronous filesystem
-inspection. An epoch or query-configuration change requires a replacement handle. A retired handle
-accepts no new leases but remains open until its active searches finish. Rejected closes remain tracked
-and are retried during the next pause or close; a fulfilled native cleanup warning is logged. Neither
-replaces an otherwise successful query response.
+inspection. An epoch or query-configuration change requires a replacement handle. A publication reload
+uses the existing handle only while it has no active lease; otherwise Harper opens a replacement and
+retires the old handle after its search finishes. One logical query therefore uses one native snapshot
+across all result pages and highlight tracing. The wrapper's reported query budget bounds that whole
+query, including page fetches, source Blob reads and tracing, rather than restarting for each native
+call. A retired handle accepts no new leases but remains open until its active searches finish.
+Rejected closes remain tracked and are retried during the next pause or close; a fulfilled native
+cleanup warning is logged. Neither replaces an otherwise successful query response.
 One failed reload leaves the last aligned snapshot installed and returns retryable lag. Three
 consecutive reload failures retire that handle so the next query reopens from native storage.
 
 Reset is destructive, so the elected writer first pauses readers in every worker and waits for their
 active leases to drain. Harper does not force-close a handle that native code may still be using; a
-stuck native request therefore delays reset rather than risking use-after-close. Resume carries the
+stuck native request therefore delays reset rather than risking use-after-close. The reset handoff
+allows two reader-coordination bounds plus the native reset bound. Resume carries the
 exact readiness-id and owner-epoch token that paused the path, preventing an old reset from reopening
 readers after a newer owner has paused them. Epochs from different readiness generations are never
 compared because each generation owns an independent counter.
@@ -495,9 +500,10 @@ Harper count after authorization, structured filtering and source-version checks
 A declared Blob source is part of one index document. An oversized, invalid UTF-8 or otherwise
 permanently unusable Blob makes that whole document unindexable rather than publishing a partial
 document with different match semantics. A transient Blob read failure rolls back the accepted
-native batch and replays it within the bounded retry budget. This preserves cursor and publication
-atomicity at the cost of delaying unrelated records in that batch. If the retry budget is exhausted,
-Harper logs the record id and removes the record from the index until its next mutation or rebuild.
+native batch and replays it. Retries use bounded native-read attempts and backoff, but never turn a
+temporarily unreadable authoritative record into an index deletion. Publication remains behind that
+record until its source is readable, preserving cursor and publication atomicity at the cost of
+delaying unrelated records in the batch.
 
 ### Bounded delivery
 

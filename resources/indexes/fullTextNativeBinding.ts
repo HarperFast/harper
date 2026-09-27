@@ -95,6 +95,7 @@ export type NativeFullTextRuntimeInfo = {
 	limits: {
 		maxCommitPayloadBytes: number;
 		maxSearchWindow: number;
+		maxSearchBudgetMilliseconds: number;
 		maxTraceRecords: number;
 		maxTraceSourceBytes: number;
 	};
@@ -216,6 +217,8 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		info.limits.maxCommitPayloadBytes <= 0 ||
 		!Number.isSafeInteger(info.limits.maxSearchWindow) ||
 		info.limits.maxSearchWindow <= 0 ||
+		!Number.isSafeInteger(info.limits.maxSearchBudgetMilliseconds) ||
+		info.limits.maxSearchBudgetMilliseconds <= 0 ||
 		!Number.isSafeInteger(info.limits.maxTraceRecords) ||
 		info.limits.maxTraceRecords <= 0 ||
 		!Number.isSafeInteger(info.limits.maxTraceSourceBytes) ||

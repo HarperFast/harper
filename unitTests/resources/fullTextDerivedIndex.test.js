@@ -164,12 +164,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(payload, '{"format":1,"cursor":{"format":1,"logs":{"a":10,"prototype":15,"z":20}}}');
 		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(payload).logs }, { a: 10, prototype: 15, z: 20 });
 		assert.strictEqual(decodeFullTextCursorPayload(encodeFullTextCursorPayload(undefined)), undefined);
-		const revisionPayload = encodeFullTextCursorPayload(cursor(10), HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES, 12n);
-		assert.strictEqual(decodeFullTextPublication(revisionPayload).dataRevision, 12n);
-		assert.throws(
-			() => decodeFullTextPublication('{"format":1,"dataRevision":"01","cursor":null}'),
-			/invalid data revision/
-		);
+		assert.deepStrictEqual(decodeFullTextPublication('{"format":1,"dataRevision":"01","cursor":null}'), {});
 		assert.throws(() => decodeFullTextCursorPayload('{"format":1,"cursor":{"format":1,"logs":{"local":0}}}'));
 		assert.throws(() => decodeFullTextCursorPayload('x'.repeat(32), 16));
 		const specialCursor = cursorForLogs([
@@ -199,7 +194,6 @@ describe('FullTextDerivedIndexBackend', () => {
 		backend.flush();
 		await waitFor(() => engine.publications.length === 1);
 		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(engine.publications[0]).coverage }, covered.coverage);
-		assert.strictEqual(decodeFullTextPublication(engine.publications[0]).dataRevision, 0n);
 		await backend.shutdown(1n);
 	});
 
@@ -213,7 +207,6 @@ describe('FullTextDerivedIndexBackend', () => {
 		backend.publishCoverage(coverage, 1n);
 		await waitFor(() => engine.publications.length === 2);
 		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(engine.publications[1]).coverage }, coverage);
-		assert.strictEqual(decodeFullTextPublication(engine.publications[1]).dataRevision, 0n);
 		assert.deepStrictEqual({ ...backend.getDurableCursor().coverage }, coverage);
 		assert.strictEqual(publicationChanges(), 1);
 		await backend.shutdown(1n);
@@ -523,7 +516,6 @@ describe('FullTextDerivedIndexBackend', () => {
 		backend.flush();
 		await waitFor(() => engine.publications.length === 1);
 		assert.strictEqual(engine.applied.length, 1);
-		assert.strictEqual(decodeFullTextPublication(engine.publications[0]).dataRevision, 1n);
 		assert.deepStrictEqual(engine.applyOptions, [{ assumeDistinctIds: true, rejectedUpsert: 'delete' }]);
 		assert.deepStrictEqual([engine.applied[0].upserts.length, engine.applied[0].deletes.length], [1, 1]);
 		await backend.shutdown(1n);
@@ -681,12 +673,14 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
-	it('removes a Blob record after the bounded read retry budget is exhausted', async () => {
-		const engines = [new FakeEngine(), new FakeEngine(), new FakeEngine()];
+	it('keeps accepted Blob work pending after the retry budget until the source is readable', async () => {
+		const engines = [new FakeEngine(), new FakeEngine(), new FakeEngine(), new FakeEngine()];
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [...engines]));
+		let readable = false;
 		class UnreadableBlob extends Blob {
 			async arrayBuffer() {
-				throw new Error('permanent blob read failure');
+				if (!readable) throw new Error('temporary blob read failure');
+				return super.arrayBuffer();
 			}
 		}
 		const value = batch(
@@ -697,18 +691,20 @@ describe('FullTextDerivedIndexBackend', () => {
 		const changes = [];
 		backend.onStateChange((change) => changes.push(change));
 
-		for (let attempt = 1; attempt < 3; attempt++) {
+		for (let attempt = 1; attempt <= 3; attempt++) {
 			assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
 			backend.flush();
 			await waitFor(() => changes.filter((change) => change === 'accepted-work-lost').length === attempt);
 			await waitFor(() => changes.filter((change) => change === 'changed').length === attempt);
+			assert.strictEqual(engines[attempt - 1].publications.length, 0);
 		}
+		readable = true;
 		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
 		backend.flush();
-		await waitFor(() => engines[2].publications.length === 1);
-		assert.strictEqual(engines[2].applied[0].upserts.length, 0);
-		assert.strictEqual(engines[2].applied[0].deletes.length, 1);
-		assert.strictEqual(backend.getUnindexableRecords(), 1);
+		await waitFor(() => engines[3].publications.length === 1);
+		assert.strictEqual(engines[3].applied[0].upserts[0].fields.body, 'text');
+		assert.strictEqual(engines[3].applied[0].deletes.length, 0);
+		assert.strictEqual(backend.getUnindexableRecords(), 0);
 		await backend.shutdown(1n);
 	});
 
@@ -724,6 +720,8 @@ describe('FullTextDerivedIndexBackend', () => {
 				return new Promise(() => {});
 			}
 		}
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
 		backend.deliver(
 			batch(
 				1n,
@@ -732,8 +730,9 @@ describe('FullTextDerivedIndexBackend', () => {
 			)
 		);
 		backend.flush();
-		await waitFor(() => engine.publications.length === 1);
-		assert.strictEqual(engine.applied[0].deletes.length, 1);
+		await waitFor(() => changes.includes('accepted-work-lost'));
+		assert.strictEqual(engine.publications.length, 0);
+		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }]);
 		await backend.shutdown(1n);
 	});
 
