@@ -134,12 +134,12 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		if (!supportedTarget) this.skip();
 
 		const binding = await loadFullTextNativeBinding();
-		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding, { surfaceTerms: true }));
 		await lifecycle.initialize();
 		const index = await lifecycle.open();
 		await index.applyMutationBatch(
 			{
-				upserts: [{ id: 'product-1', version: '7', fields: { title: 'Red running shoes' } }],
+				upserts: [{ id: 'product-1', version: '7', fields: { title: 'Café running shoes' } }],
 				deletes: [],
 			},
 			{ assumeDistinctIds: true, rejectedUpsert: 'delete' }
@@ -155,7 +155,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			fields: [{ name: 'title', weight: 2 }],
 			analyzer: 'english@2',
 			positions: true,
-			surfaceTerms: false,
+			surfaceTerms: true,
 			limits,
 			path: lifecycle.path,
 			indexId: 'products-title',
@@ -166,12 +166,25 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			readerResult.hits.map(({ id, version }) => ({ id, version })),
 			[{ id: 'product-1', version: '7' }]
 		);
+		const traced = await reader.traceMatches(
+			{ text: 'cafe', mode: 'any' },
+			[{ id: 'product-1', fields: { title: 'Café running shoes' } }],
+			{ snippets: true, fragmentLength: 40, maxFragmentsPerValue: 1 }
+		);
+		assert.strictEqual(traced.complete, true);
+		assert.deepStrictEqual(traced.records[0].values[0].spans, [{ start: 0, end: 4 }]);
+		assert.strictEqual('Café running shoes'.slice(0, 4), 'Café');
+		const [searchDuringReload] = await Promise.all([reader.search({ text: 'running', limit: 10 }), reader.reload()]);
+		assert.deepStrictEqual(
+			searchDuringReload.hits.map(({ id }) => id),
+			['product-1']
+		);
 		await reader.close();
 		const reweightedReader = await binding.openNativeFullTextReader({
 			fields: [{ name: 'title', weight: 7 }],
 			analyzer: 'english@2',
 			positions: true,
-			surfaceTerms: false,
+			surfaceTerms: true,
 			limits,
 			path: lifecycle.path,
 			indexId: 'products-title',
@@ -189,7 +202,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		});
 
 		const nextGeneration = new NativeFullTextDerivedIndexLifecycle(
-			options(storePath, binding, { sourceGeneration: 'table-generation-2' })
+			options(storePath, binding, { sourceGeneration: 'table-generation-2', surfaceTerms: true })
 		);
 		await nextGeneration.initialize();
 		assert.deepStrictEqual(nextGeneration.inspect(), { state: 'incompatible', code: 'E_IDENTITY_MISMATCH' });

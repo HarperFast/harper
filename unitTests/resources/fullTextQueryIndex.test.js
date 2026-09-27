@@ -24,11 +24,6 @@ function nativeId(tableId, key) {
 	return `${tableId}.${toBufferKey(key).toString('base64url')}`;
 }
 
-function setReadinessEpoch(store, readinessId, ownerEpoch) {
-	const buffer = store.buffers.get(`derived-index:${readinessId}:readiness`);
-	Atomics.store(new BigInt64Array(buffer, 6 * Int32Array.BYTES_PER_ELEMENT, 1), 0, ownerEpoch);
-}
-
 function definition() {
 	return {
 		name: 'catalogSearch',
@@ -304,7 +299,7 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('reopens after a reload failure and applies query-only definition changes', async () => {
+	it('retries a transient reload failure on the existing reader', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'query-reconfigure';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -364,11 +359,12 @@ describe('FullTextQueryIndex', () => {
 
 		publication.publish();
 		failReload = true;
-		await assert.rejects(index.search(query, {}, { minResults: 1 }), (error) => error.name === 'IndexRebuildingError');
+		await assert.rejects(index.search(query, {}, { minResults: 1 }), (error) => error.name === 'DerivedIndexLagError');
 		await index.search(query, {}, { minResults: 1 });
-		assert.strictEqual(opens.length, 3);
-		assert.strictEqual(closes, 2);
+		assert.strictEqual(opens.length, 2);
+		assert.strictEqual(closes, 1);
 		await index.close();
+		assert.strictEqual(closes, 2);
 	});
 
 	it('requires callers to page searches larger than the native result window', async () => {
@@ -626,6 +622,8 @@ describe('FullTextQueryIndex', () => {
 			(error) => error.name === 'IndexRebuildingError'
 		);
 		assert.strictEqual(rebuilds, 1);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(closeAttempts, 1);
 		await index.close();
 		assert.strictEqual(closeAttempts, 2);
 	});
@@ -1072,9 +1070,9 @@ describe('FullTextQueryIndex', () => {
 		await pause;
 		assert.strictEqual(oldCloses, 1);
 		resumeNativeFullTextQueryReaders(path, newReadinessId, 1n);
-		await assert.rejects(
-			oldIndex.search({ attribute: oldReadinessId, comparator: 'matches', value: 'shoe' }, {}),
-			(error) => error.name === 'IndexRebuildingError'
+		assert.strictEqual(
+			(await oldIndex.search({ attribute: oldReadinessId, comparator: 'matches', value: 'shoe' }, {})).length,
+			1
 		);
 		assert.strictEqual(
 			(await newIndex.search({ attribute: newReadinessId, comparator: 'matches', value: 'shoe' }, {})).length,
@@ -1084,14 +1082,12 @@ describe('FullTextQueryIndex', () => {
 		await newIndex.close();
 	});
 
-	it('lets a successor generation recover from a predecessor pause', async () => {
+	it('resumes every reader paused by the same reset token', async () => {
 		const auditStore = sharedStore();
 		const oldReadinessId = 'query-predecessor-pause';
 		const newReadinessId = 'query-successor-resume';
 		publishDerivedIndexReadiness(auditStore, oldReadinessId, 'ready');
 		publishDerivedIndexReadiness(auditStore, newReadinessId, 'ready');
-		setReadinessEpoch(auditStore, oldReadinessId, 1n);
-		setReadinessEpoch(auditStore, newReadinessId, 2n);
 		const storePath = '/unused';
 		const storeName = 'query-predecessor-successor';
 		const path = nativeFullTextIndexPath(storePath, storeName);

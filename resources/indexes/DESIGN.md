@@ -425,15 +425,16 @@ successful query response.
 Reset is destructive, so the elected writer first pauses readers in every worker and waits for their
 active leases to drain. Harper does not force-close a handle that native code may still be using; a
 stuck native request therefore delays reset rather than risking use-after-close. Resume carries the
-owner epoch, preventing an old reset from reopening readers after a newer owner has paused them.
+exact readiness-id and owner-epoch token that paused the path, preventing an old reset from reopening
+readers after a newer owner has paused them. Epochs from different readiness generations are never
+compared because each generation owns an independent counter.
 The runtime publishes `rebuilding` before invoking reset, so a worker created after the pause
 broadcast cannot admit a new reader. A worker that misses resume clears its pause only after shared
 readiness reaches the same or a newer owner epoch. These orderings are part of the reset protocol.
-The pause covers every reader on the physical path, including a superseded generation. A reader
-paused by a newer owner of another readiness generation stays fenced, while a successor whose own
-readiness has advanced beyond a predecessor's pause may recover. This closes both handoff directions:
-an old generation cannot reopen after a successor resets the path, and a late predecessor reset cannot
-leave the successor permanently paused. If the native
+The pause covers every reader on the physical path, including a superseded generation. Only the
+matching resume token clears that pause across those readers; a stale resume cannot clear a newer
+pause. This closes both handoff directions without assuming an ordering between generation-local
+epochs. If the native
 reader violates its contract by rejecting close, Harper logs the failure and proceeds with reset
 rather than wedging the path indefinitely; the reset therefore assumes that rejected handle is dead.
 
@@ -457,6 +458,9 @@ result can still temporarily omit a recently changed record when the native resu
 the search window is exhausted.
 REST exposes the index coverage header, and callers that require current coverage use
 `maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`.
+Full-text score descending is the only supported ordering in this release. Count requests return
+`recordCount: null` and `recordCountExact: false`; the native candidate total cannot become an exact
+Harper count after authorization, structured filtering and source-version checks.
 
 A declared Blob source is part of one index document. An oversized, invalid UTF-8 or otherwise
 permanently unusable Blob makes that whole document unindexable rather than publishing a partial

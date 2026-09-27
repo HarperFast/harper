@@ -177,11 +177,11 @@ export class FullTextQueryIndex {
 			coverage = this.#queryCoverage(maxIndexLagMilliseconds);
 			return this.#search(condition, context, options);
 		};
-		const operation = execute().catch(async (error) => {
+		const operation = execute().catch((error) => {
 			if (error === context?.signal?.reason) throw error;
 			if (nativeErrorNeedsRebuild(error)) {
-				await this.#retireAllReaders().catch(() => undefined);
 				this.#derivedHost?.requestRebuild();
+				void this.#retireAllReaders().catch(() => undefined);
 			}
 			throw publicSearchError(error, this.#definition.name);
 		});
@@ -212,13 +212,7 @@ export class FullTextQueryIndex {
 	}
 
 	resume(readinessId: string, ownerEpoch: bigint): void {
-		const ownReadiness = readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId);
-		if (
-			!this.#closed &&
-			this.#pausedFor?.readinessId === readinessId &&
-			this.#pausedFor.ownerEpoch <= ownerEpoch &&
-			(readinessId === this.#options.readinessId || ownReadiness.ownerEpoch > this.#pausedFor.ownerEpoch)
-		)
+		if (!this.#closed && this.#pausedFor?.readinessId === readinessId && this.#pausedFor.ownerEpoch === ownerEpoch)
 			this.#pausedFor = undefined;
 	}
 
@@ -410,16 +404,12 @@ export class FullTextQueryIndex {
 		if (this.#closed) return Promise.reject(new ServerError('Full-text index is closed', 503));
 		if (
 			this.#pausedFor &&
-			(this.#pausedFor.ownerEpoch < ownerEpoch ||
-				(this.#pausedFor.readinessId === this.#options.readinessId && this.#pausedFor.ownerEpoch <= ownerEpoch))
+			this.#pausedFor.readinessId === this.#options.readinessId &&
+			this.#pausedFor.ownerEpoch <= ownerEpoch
 		) {
 			this.#pausedFor = undefined;
 			const pausedPath = pausedQueryPaths.get(this.#nativeOptions.path);
-			if (
-				pausedPath &&
-				(pausedPath.ownerEpoch < ownerEpoch ||
-					(pausedPath.readinessId === this.#options.readinessId && pausedPath.ownerEpoch <= ownerEpoch))
-			)
+			if (pausedPath && pausedPath.readinessId === this.#options.readinessId && pausedPath.ownerEpoch <= ownerEpoch)
 				pausedQueryPaths.delete(this.#nativeOptions.path);
 		}
 		if (this.#pausedFor)
@@ -437,13 +427,10 @@ export class FullTextQueryIndex {
 		const configurationRevision = this.#configurationRevision;
 		this.#readerOperation = (async () => {
 			const existing = this.#readerSlot;
+			const canReload = existing?.ownerEpoch === ownerEpoch && existing.configurationRevision === configurationRevision;
 			try {
 				let reader: NativeFullTextReader;
-				if (
-					existing &&
-					existing.ownerEpoch === ownerEpoch &&
-					existing.configurationRevision === configurationRevision
-				) {
+				if (canReload) {
 					await existing.reader.reload();
 					existing.dataRevision = dataRevision;
 					return existing;
@@ -456,7 +443,7 @@ export class FullTextQueryIndex {
 				this.#readerSlot = slot;
 				return slot;
 			} catch (error) {
-				if (existing && existing.active === 0) {
+				if (!canReload && existing && existing.active === 0) {
 					this.#readerSlot = undefined;
 					this.#retireReaderSlot(existing);
 				}
@@ -549,7 +536,7 @@ export async function pauseNativeFullTextQueryReaders(
 
 export function resumeNativeFullTextQueryReaders(path: string, readinessId: string, ownerEpoch: bigint): void {
 	const current = pausedQueryPaths.get(path);
-	if (current?.readinessId === readinessId && current.ownerEpoch <= ownerEpoch) pausedQueryPaths.delete(path);
+	if (current?.readinessId === readinessId && current.ownerEpoch === ownerEpoch) pausedQueryPaths.delete(path);
 	for (const index of queryIndexesByPath.get(path) ?? []) index.resume(readinessId, ownerEpoch);
 }
 
@@ -644,12 +631,15 @@ function assertReady(readiness: DerivedIndexReadiness, name: string): void {
 
 function publicSearchError(error: unknown, name: string): Error {
 	const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+	if (code === 'E_RELOAD_FAILED')
+		return new DerivedIndexLagError(
+			`Full-text index '${name}' could not refresh its search snapshot; retry this query`
+		);
 	if (
 		code === 'E_INDEX_NOT_READY' ||
 		code === 'E_INDEX_CORRUPT' ||
 		code === 'E_IDENTITY_MISMATCH' ||
 		code === 'E_INCOMPLETE_CREATE' ||
-		code === 'E_RELOAD_FAILED' ||
 		code === 'E_SCHEMA_MISMATCH' ||
 		code === 'E_INDEX_FORMAT_INCOMPATIBLE'
 	)
@@ -670,7 +660,6 @@ function nativeErrorNeedsRebuild(error: unknown): boolean {
 		code === 'E_INDEX_CORRUPT' ||
 		code === 'E_IDENTITY_MISMATCH' ||
 		code === 'E_INCOMPLETE_CREATE' ||
-		code === 'E_RELOAD_FAILED' ||
 		code === 'E_SCHEMA_MISMATCH' ||
 		code === 'E_INDEX_FORMAT_INCOMPATIBLE'
 	);
