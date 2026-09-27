@@ -3,8 +3,11 @@ import { fromBufferKey } from 'ordered-binary';
 import { ClientError, DerivedIndexLagError, IndexRebuildingError, ServerError } from '../../utility/errors/hdbError.ts';
 import {
 	derivedIndexTime,
+	readDerivedIndexCoverage,
 	readDerivedIndexReadiness,
+	subscribeDerivedIndexPublications,
 	type DerivedIndexCoverage,
+	type DerivedIndexPublicationSubscription,
 	type DerivedIndexReadiness,
 } from '../derivedIndexRuntime.ts';
 import type { FullTextDefinition } from '../fullTextSchema.ts';
@@ -19,6 +22,7 @@ import {
 	type NativeFullTextSearchMode,
 } from './fullTextNativeBinding.ts';
 import { nativeFullTextIndexPath } from './nativeFullTextDerivedIndexLifecycle.ts';
+import { decodeFullTextPublication, type FullTextPublication } from './fullTextDerivedIndex.ts';
 export { FULL_TEXT_QUERY_PAUSE_OPERATION, FULL_TEXT_QUERY_RESUME_OPERATION } from './fullTextQueryProtocol.ts';
 import {
 	DEFAULT_MAX_INDEX_LAG_MILLISECONDS,
@@ -50,7 +54,8 @@ export type FullTextCondition = {
 type ReaderSlot = {
 	reader: NativeFullTextReader;
 	ownerEpoch: bigint;
-	dataRevision: bigint;
+	publicationGeneration: bigint;
+	publication: FullTextPublication;
 	configurationRevision: number;
 	active: number;
 	retired: boolean;
@@ -59,9 +64,9 @@ type ReaderSlot = {
 	reloadFailures: number;
 };
 
-type FullTextQueryHost = DerivedNativeIndexHost & {
-	publicationRevision: () => bigint;
-};
+type FullTextQueryHost = Pick<DerivedNativeIndexHost, 'readiness' | 'waitForCoverage' | 'requestRebuild'>;
+
+class FullTextReaderPublicationError extends Error {}
 
 const queryIndexesByPath = new Map<string, Set<FullTextQueryIndex>>();
 type QueryPauses = Map<string, bigint>;
@@ -101,6 +106,8 @@ export class FullTextQueryIndex {
 	#closed = false;
 	#pauses: QueryPauses = new Map();
 	#derivedHost?: FullTextQueryHost;
+	#publicationSubscription: DerivedIndexPublicationSubscription;
+	#publicationRebuildRequested = false;
 
 	constructor(options: FullTextQueryIndexOptions) {
 		this.#options = options;
@@ -126,6 +133,9 @@ export class FullTextQueryIndex {
 		indexes.add(this);
 		const pauses = pausedQueryPaths.get(this.#nativeOptions.path);
 		if (pauses) this.#pauses = new Map(pauses);
+		this.#publicationSubscription = subscribeDerivedIndexPublications(options.auditStore, options.readinessId, () =>
+			this.#refreshReader(false)
+		);
 	}
 
 	updateDefinition(definition: FullTextDefinition): void {
@@ -172,7 +182,7 @@ export class FullTextQueryIndex {
 				context?.signal?.throwIfAborted();
 				if (options.minResults === 0) return [];
 				const started = derivedIndexTime(this.#options.Table.primaryStore.rootStore);
-				if (host.coverage(0)?.state !== 'current')
+				if (this.#readCoverage(0).state !== 'current')
 					await host.waitForCoverage(started, waitForIndexMilliseconds, context?.signal);
 				context?.signal?.throwIfAborted();
 				return this.#search(condition, context, options);
@@ -199,6 +209,7 @@ export class FullTextQueryIndex {
 
 	async close(): Promise<void> {
 		this.#closed = true;
+		this.#publicationSubscription.close();
 		try {
 			await this.#retireAllReaders();
 		} finally {
@@ -226,11 +237,10 @@ export class FullTextQueryIndex {
 	): Promise<Array<{ key: unknown; $score: number; $highlights?: Record<string, unknown>; loadedEntry: any }>> {
 		const readiness = readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId);
 		assertReady(readiness, this.#definition.name);
-		const dataRevision = this.#derivedHost?.publicationRevision();
-		if (dataRevision === undefined)
-			throw new IndexRebuildingError(`Full-text index '${this.#definition.name}' is not ready`);
+		if (!this.#derivedHost) throw new IndexRebuildingError(`Full-text index '${this.#definition.name}' is not ready`);
 		if (options.minResults === 0) return [];
-		const lease = await this.#acquireReader(readiness.ownerEpoch, dataRevision);
+		const publicationGeneration = this.#publicationSubscription.revision();
+		const lease = await this.#acquireReader(readiness.ownerEpoch, publicationGeneration);
 		const reader = lease.reader;
 		try {
 			const maxSearchWindow = this.#maxSearchWindow!;
@@ -378,10 +388,10 @@ export class FullTextQueryIndex {
 
 	async #acquireReader(
 		ownerEpoch: bigint,
-		dataRevision: bigint
+		publicationGeneration: bigint
 	): Promise<{ reader: NativeFullTextReader; release: () => Promise<void> }> {
-		const slot = await this.#readerFor(ownerEpoch, dataRevision);
-		if (slot.retired) return this.#acquireReader(ownerEpoch, dataRevision);
+		const slot = await this.#readerFor(ownerEpoch, publicationGeneration);
+		if (slot.retired) return this.#acquireReader(ownerEpoch, publicationGeneration);
 		slot.active++;
 		let released = false;
 		return {
@@ -403,7 +413,7 @@ export class FullTextQueryIndex {
 		};
 	}
 
-	#readerFor(ownerEpoch: bigint, dataRevision: bigint): Promise<ReaderSlot> {
+	#readerFor(ownerEpoch: bigint, publicationGeneration: bigint): Promise<ReaderSlot> {
 		if (this.#closed) return Promise.reject(new ServerError('Full-text index is closed', 503));
 		for (const [readinessId, pausedEpoch] of this.#pauses) {
 			const readiness = readDerivedIndexReadiness(this.#options.auditStore, readinessId);
@@ -420,31 +430,41 @@ export class FullTextQueryIndex {
 			current &&
 			!current.retired &&
 			current.ownerEpoch === ownerEpoch &&
-			current.dataRevision >= dataRevision &&
+			current.publicationGeneration >= publicationGeneration &&
 			current.configurationRevision === this.#configurationRevision
 		)
 			return Promise.resolve(current);
-		if (this.#readerOperation) return this.#readerOperation.then(() => this.#readerFor(ownerEpoch, dataRevision));
+		if (this.#readerOperation)
+			return this.#readerOperation.then(() => this.#readerFor(ownerEpoch, publicationGeneration));
 		const configurationRevision = this.#configurationRevision;
 		this.#readerOperation = (async () => {
 			const existing = this.#readerSlot;
 			const canReload = existing?.ownerEpoch === ownerEpoch && existing.configurationRevision === configurationRevision;
 			try {
 				let reader: NativeFullTextReader;
+				let publication: FullTextPublication;
 				if (canReload) {
 					await existing.reader.reload();
+					existing.publication = this.#decodeReaderPublication(existing.reader);
 					existing.reloadFailures = 0;
-					existing.dataRevision = dataRevision;
+					existing.publicationGeneration = publicationGeneration;
 					return existing;
 				} else {
 					const binding = await this.#getBinding();
 					reader = await binding.openNativeFullTextReader(this.#nativeOptions);
+					try {
+						publication = this.#decodeReaderPublication(reader);
+					} catch (error) {
+						await reader.close().catch((closeError) => this.#warnReaderClose(closeError));
+						throw error;
+					}
 					if (existing) this.#retireReaderSlot(existing);
 				}
 				const slot = {
 					reader,
 					ownerEpoch,
-					dataRevision,
+					publicationGeneration,
+					publication,
 					configurationRevision,
 					active: 0,
 					retired: false,
@@ -453,7 +473,9 @@ export class FullTextQueryIndex {
 				this.#readerSlot = slot;
 				return slot;
 			} catch (error) {
-				if (canReload && ++existing.reloadFailures >= MAX_RELOAD_FAILURES_BEFORE_REOPEN) {
+				if (canReload && error instanceof FullTextReaderPublicationError) {
+					this.#retireReaderSlot(existing);
+				} else if (canReload && ++existing.reloadFailures >= MAX_RELOAD_FAILURES_BEFORE_REOPEN) {
 					this.#retireReaderSlot(existing);
 				} else if (!canReload && existing && existing.active === 0) {
 					this.#readerSlot = undefined;
@@ -464,7 +486,34 @@ export class FullTextQueryIndex {
 				this.#readerOperation = undefined;
 			}
 		})();
-		return this.#readerOperation.then(() => this.#readerFor(ownerEpoch, dataRevision));
+		return this.#readerOperation.then(() => this.#readerFor(ownerEpoch, publicationGeneration));
+	}
+
+	#decodeReaderPublication(reader: NativeFullTextReader): FullTextPublication {
+		try {
+			if (reader.committedPayload === undefined) throw new Error('missing publication');
+			const publication = decodeFullTextPublication(reader.committedPayload);
+			this.#publicationRebuildRequested = false;
+			return publication;
+		} catch (cause) {
+			if (!this.#publicationRebuildRequested) {
+				this.#publicationRebuildRequested = true;
+				this.#derivedHost?.requestRebuild();
+			}
+			throw new FullTextReaderPublicationError(
+				`Full-text index '${this.#definition.name}' has no valid search checkpoint`,
+				{ cause }
+			);
+		}
+	}
+
+	#refreshReader(openCold: boolean): void {
+		if (this.#closed || (!openCold && !this.#readerSlot && !this.#readerOperation)) return;
+		const readiness = readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId);
+		if (readiness.state !== 'ready') return;
+		void this.#readerFor(readiness.ownerEpoch, this.#publicationSubscription.revision()).catch((error) => {
+			if (nativeErrorNeedsRebuild(error)) this.#derivedHost?.requestRebuild();
+		});
 	}
 
 	#retireReaderSlot(slot: ReaderSlot): void {
@@ -526,8 +575,9 @@ export class FullTextQueryIndex {
 	}
 
 	#queryCoverage(maxLagMilliseconds: number): DerivedIndexCoverage {
-		const coverage = this.#derivedHost?.coverage(maxLagMilliseconds);
+		const coverage = this.#readCoverage(maxLagMilliseconds);
 		if (!coverage || coverage.state === 'unknown') {
+			this.#refreshReader(true);
 			const age = coverage?.lagUpperBoundMilliseconds;
 			throw new DerivedIndexLagError(
 				`Cannot certify full-text index coverage within ${maxLagMilliseconds} ms` +
@@ -536,6 +586,15 @@ export class FullTextQueryIndex {
 			);
 		}
 		return coverage;
+	}
+
+	#readCoverage(maxLagMilliseconds: number): DerivedIndexCoverage {
+		return readDerivedIndexCoverage(
+			this.#options.auditStore,
+			this.#options.readinessId,
+			() => this.#readerSlot?.publication.cursor,
+			maxLagMilliseconds
+		);
 	}
 }
 
@@ -653,6 +712,8 @@ function assertReady(readiness: DerivedIndexReadiness, name: string): void {
 }
 
 function publicSearchError(error: unknown, name: string): Error {
+	if (error instanceof FullTextReaderPublicationError)
+		return new IndexRebuildingError(`Full-text index '${name}' is not ready`);
 	const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
 	if (code === 'E_RELOAD_FAILED')
 		return new DerivedIndexLagError(

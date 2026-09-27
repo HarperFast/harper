@@ -120,7 +120,7 @@ export interface DerivedIndexBackendHost {
 	/** True while `epoch` is the most recently minted owner epoch for this backend. */
 	isOwnerEpoch(epoch: bigint): boolean;
 	getReadiness(): DerivedIndexReadiness;
-	/** Publish a durable backend-only revision that peer workers must re-inspect. */
+	/** Publish a durable backend-only revision that peer workers must observe. */
 	publicationChanged(): void;
 }
 
@@ -712,7 +712,7 @@ class DerivedIndexRunner {
 			registration.backend.attach({
 				isOwnerEpoch: (epoch) => Atomics.load(this.#sharedViews.epoch, 0) === epoch,
 				getReadiness: () => this.getReadiness(),
-				publicationChanged: () => Atomics.add(this.#publicationRevision, 0, 1n),
+				publicationChanged: () => this.#publicationChanged(),
 			});
 			this.#unsubscribeBackend = registration.backend.onStateChange((change = 'changed') =>
 				this.#backendStateChanged(change)
@@ -1647,7 +1647,7 @@ class DerivedIndexRunner {
 			}
 		}
 		this.#boundaryPending = false;
-		if (offeredIndex > 0) Atomics.add(this.#publicationRevision, 0, 1n);
+		if (offeredIndex > 0) this.#publicationChanged();
 		for (let i = offeredIndex; i >= 0; i--) {
 			const coverage = this.#offeredCursors[i].coverage;
 			if (coverage) {
@@ -1661,6 +1661,15 @@ class DerivedIndexRunner {
 		}
 		if (offeredIndex > 0 || sameCursor(cursor, this.#offered)) this.#lastCaughtUpAt = this.#options.now();
 		return true;
+	}
+
+	#publicationChanged(): void {
+		Atomics.add(this.#publicationRevision, 0, 1n);
+		try {
+			this.#publicationBuffer.notify?.();
+		} catch (error) {
+			logger.warn?.(`Derived index '${this.id}' could not notify peers of its publication`, error);
+		}
 	}
 
 	#publishCoverage(capture: CoverageCapture) {
@@ -2201,10 +2210,15 @@ function wakeBuffer(
 	}) as SharedReadinessBuffer;
 }
 
-function publicationBuffer(logStore: RocksTransactionLogStore, backendId: string): SharedReadinessBuffer {
+function publicationBuffer(
+	logStore: RocksTransactionLogStore,
+	backendId: string,
+	callback?: () => void
+): SharedReadinessBuffer {
 	return logStore.getUserSharedBuffer(
 		`derived-index:${backendId}:publication`,
-		new ArrayBuffer(8)
+		new ArrayBuffer(8),
+		callback ? { callback } : undefined
 	) as SharedReadinessBuffer;
 }
 
@@ -2267,6 +2281,24 @@ export function readDerivedIndexPublicationRevision(
 	return {
 		ownerEpoch: Atomics.load(readiness.epoch, 0),
 		revision: Atomics.load(revision, 0),
+	};
+}
+
+export type DerivedIndexPublicationSubscription = {
+	revision(): bigint;
+	close(): void;
+};
+
+export function subscribeDerivedIndexPublications(
+	logStore: RocksTransactionLogStore,
+	backendId: string,
+	callback: () => void
+): DerivedIndexPublicationSubscription {
+	const buffer = publicationBuffer(logStore, backendId, callback);
+	const revision = new BigInt64Array(buffer, 0, 1);
+	return {
+		revision: () => Atomics.load(revision, 0),
+		close: () => buffer.cancel?.(),
 	};
 }
 

@@ -10,6 +10,7 @@ const {
 	readDerivedIndexPublicationRevision,
 	readDerivedIndexReadiness,
 	retryDerivedIndexUnavailable,
+	subscribeDerivedIndexPublications,
 } = require('#src/resources/derivedIndexRuntime');
 const {
 	FullTextDerivedIndexBackend,
@@ -73,6 +74,7 @@ class FakeLogStore {
 		const { callback } = options ?? {};
 		if (callback) memory.callbacks.add(callback);
 		wrapper.notify = () => {
+			if (this.throwPublicationNotify && String(key).endsWith(':publication')) throw new Error('notify failed');
 			for (const listener of memory.callbacks) setImmediate(listener);
 		};
 		wrapper.cancel = () => {
@@ -170,9 +172,19 @@ describe('DerivedIndexRuntime', () => {
 		const runtime = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 }).runtime;
 		const backend = new FakeBackend('backend-publication', cursor(10));
 		runtime.register(registration(backend));
+		let notifications = 0;
+		const subscription = subscribeDerivedIndexPublications(store, backend.id, () => notifications++);
 		assert.strictEqual(readDerivedIndexPublicationRevision(store, backend.id).revision, 0n);
 		backend.host.publicationChanged();
 		assert.strictEqual(readDerivedIndexPublicationRevision(store, backend.id).revision, 1n);
+		await waitFor(() => notifications === 1);
+		subscription.close();
+		backend.host.publicationChanged();
+		await new Promise(setImmediate);
+		assert.strictEqual(notifications, 1);
+		store.throwPublicationNotify = true;
+		assert.doesNotThrow(() => backend.host.publicationChanged());
+		assert.strictEqual(readDerivedIndexPublicationRevision(store, backend.id).revision, 3n);
 		await runtime.stop();
 	});
 

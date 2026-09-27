@@ -381,6 +381,8 @@ Inspection is synchronous and writer-free. The first durable-cursor read in each
 refreshes native state, while later reads in the same acquisition use the cache; every shutdown path
 invalidates it, including an owner that received no batch. A refresh failure never falls back to a
 cached checkpoint because the runtime can publish `ready` before lazy writer-open reconciliation.
+Query readers never use inspection: their committed payload belongs to the native snapshot they
+actually search, while inspection is an ownership-acquisition and recovery primitive.
 The synchronous backend contract has no retryable acquisition result, so an inspection exception
 deliberately fails closed: the runtime condemns the generation and rebuilds from authoritative
 records rather than trusting an unverified cursor. A transient filesystem error can therefore cost
@@ -422,13 +424,18 @@ index.
 ### Full-text query plane
 
 Each declared full-text index has a read-only native handle beside its derived-index writer. Readers
-are keyed by native path, readiness id and owner epoch. A process-wide publication revision tells
-peer workers when the current handle must reload. The wrapper swaps an immutable searcher during
-reload, so active searches keep their captured snapshot while later searches use the new one; normal
-publication does not reopen or remap the index. An epoch or query-configuration change requires a
-replacement handle. A retired handle accepts no new leases but remains open until its active searches
-finish. Cleanup errors are retried during the next pause or close and never replace an otherwise
-successful query response.
+are keyed by native path, readiness id and owner epoch. A process-wide atomic publication generation
+invalidates stale handles and notifies peer workers. A warm reader reloads in the background after a
+notification, while every query still samples the generation and reloads on mismatch; notification
+delivery is an optimization, not a correctness dependency. Workers that never query an index open no
+reader. The wrapper refreshes the reader's committed payload with the searcher, and Harper keeps that
+decoded checkpoint on the reader slot so coverage always describes the snapshot being searched.
+Missing or malformed payloads fail closed and request one rebuild. A strict, non-waiting query on a
+cold worker can return retryable lag while it opens the reader; retrying, or using
+`waitForIndexMilliseconds`, allows the aligned reader to finish opening without synchronous filesystem
+inspection. An epoch or query-configuration change requires a replacement handle. A retired handle
+accepts no new leases but remains open until its active searches finish. Cleanup errors are retried
+during the next pause or close and never replace an otherwise successful query response.
 One failed reload leaves the last aligned snapshot installed and returns retryable lag. Three
 consecutive reload failures retire that handle so the next query reopens from native storage.
 

@@ -15,7 +15,6 @@ import {
 	publishDerivedIndexReadiness,
 	publishDerivedIndexUnavailableIfUnknown,
 	readDerivedIndexCoverage,
-	readDerivedIndexPublicationRevision,
 	readDerivedIndexReadiness,
 	retryDerivedIndexUnavailable,
 } from './derivedIndexRuntime.ts';
@@ -533,28 +532,9 @@ export function attachDerivedIndexes(
 					...fullTextTest?.runnerOptions,
 				},
 			});
-			let observedPublicationRevision = -1n;
-			const publicationRevision = () => {
-				const shared = readDerivedIndexPublicationRevision(auditStore, readinessId).revision;
-				if (shared !== observedPublicationRevision) {
-					backend.refreshDurablePublication();
-					observedPublicationRevision = shared;
-				}
-				return backend.getPublicationRevision();
-			};
 			fullTextQueryIndexes.get(definition.name)?.attachDerivedHost({
 				readiness: () => registered.runtime.getReadiness(id),
-				coverage: (maxLagMilliseconds) => {
-					publicationRevision();
-					return readDerivedIndexCoverage(
-						auditStore,
-						readinessId,
-						() => backend.getDurableCursor(),
-						maxLagMilliseconds
-					);
-				},
 				requestRebuild: () => registered.runtime.requestRebuild(id),
-				publicationRevision,
 				waitForCoverage: (since, timeout, signal) => registered.runtime.waitForCoverage(id, since, timeout, signal),
 			});
 		})().catch((error) => {

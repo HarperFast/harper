@@ -163,6 +163,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			indexId: 'products-title',
 			generation: createHash('sha256').update('table-generation-1').digest('hex'),
 		});
+		assert.strictEqual(reader.committedPayload, 'registry-checkpoint');
 		const readerResult = await reader.search({ text: 'running', limit: 10 });
 		assert.deepStrictEqual(
 			readerResult.hits.map(({ id, version }) => ({ id, version })),
@@ -181,6 +182,11 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			searchDuringReload.hits.map(({ id }) => id),
 			['product-1']
 		);
+		const updater = await lifecycle.open();
+		await updater.publish('registry-checkpoint-2');
+		await updater.close({ mode: 'require-clean' });
+		await reader.reload();
+		assert.strictEqual(reader.committedPayload, 'registry-checkpoint-2');
 		await reader.close();
 		const reweightedReader = await binding.openNativeFullTextReader({
 			fields: [{ name: 'title', weight: 7 }],
@@ -200,7 +206,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 
 		assert.deepStrictEqual(lifecycle.inspect(), {
 			state: 'checkpointed',
-			committedPayload: 'registry-checkpoint',
+			committedPayload: 'registry-checkpoint-2',
 		});
 
 		const nextGeneration = new NativeFullTextDerivedIndexLifecycle(
