@@ -978,33 +978,50 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		// when response headers arrive (streamResponse: true), which happens before the full
 		// upload completes — calling endUpload() here would snap the bar prematurely.
 
+		const { statusCode } = response;
+		const failedStatus = statusCode < 200 || (statusCode >= 300 && statusCode !== 304);
+		const eventStream = useSse && response.headers['content-type']?.startsWith('text/event-stream');
 		let responseData;
-		if (useSse && response.headers['content-type']?.startsWith('text/event-stream')) {
+		if (eventStream && !failedStatus) {
 			// Consume SSE: render phase events live, capture the final result from the `done`
 			// event (or the error message from the `error` event). The HTTP status stays 200
 			// until end-of-stream; failures are signaled in-band.
 			let finalResult;
 			let sseError;
+			let terminated = false;
+			// Older servers write a result as unnamed frames, with no `done` event.
+			let lastUnnamedData: string | undefined;
 			for await (const message of parseSSE(response)) {
 				renderer?.renderEvent(message);
 				if (message.event === 'done') {
+					terminated = true;
 					try {
 						finalResult = JSON.parse(message.data)?.result;
 					} catch {
 						finalResult = message.data;
 					}
 				} else if (message.event === 'error') {
+					terminated = true;
 					try {
 						sseError = JSON.parse(message.data);
 					} catch {
 						sseError = { message: message.data };
 					}
+				} else if (message.event === 'message') {
+					lastUnnamedData = message.data;
 				}
 			}
 			if (sseError) {
 				const errMsg = sseError.message ?? (typeof sseError === 'object' ? JSON.stringify(sseError) : sseError);
 				console.error(`error: ${errMsg}`);
 				process.exit(1);
+			}
+			if (finalResult === undefined && !terminated && lastUnnamedData !== undefined) {
+				try {
+					finalResult = JSON.parse(lastUnnamedData);
+				} catch {
+					finalResult = { message: lastUnnamedData };
+				}
 			}
 			responseData = finalResult ?? { message: 'Deploy completed (no result payload).' };
 		} else {
@@ -1017,6 +1034,12 @@ async function cliOperations(req: any, skipResponseLog = false) {
 				bodyText = Buffer.concat(chunks).toString('utf8');
 			} else {
 				bodyText = response.body;
+			}
+			// A request refused before its stream started can still arrive labeled as an event stream,
+			// with the error written as an unnamed frame (older servers). Unwrap it; a body with no
+			// frames at all (a proxy's error page) stays as it came.
+			if (eventStream) {
+				for await (const message of parseSSE(Readable.from([bodyText]))) bodyText = message.data;
 			}
 			try {
 				responseData = JSON.parse(bodyText);
@@ -1035,8 +1058,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			responseLog = YAML.stringify(responseData).trim();
 		}
 
-		const { statusCode } = response;
-		if (statusCode < 200 || (statusCode >= 300 && statusCode !== 304)) {
+		if (failedStatus) {
 			const errorPrefix = responseLog.startsWith('error:') ? '' : 'error: ';
 			console.error(`${errorPrefix}${responseLog}`);
 			process.exit(1);

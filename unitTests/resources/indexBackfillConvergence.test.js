@@ -869,7 +869,7 @@ describe('index backfill convergence (#2536)', () => {
 			}
 			assert.strictEqual(total, N, 'every row should be indexed after the resumed backfill');
 		} finally {
-			closeDatabase(DATABASE);
+			await closeDatabase(DATABASE);
 			env.setProperty(terms.CONFIG_PARAMS.DATABASES, databasesConfig);
 		}
 	});
@@ -922,7 +922,7 @@ describe('index backfill convergence (#2536)', () => {
 			}
 			assert.strictEqual(total, N, 'every index entry must survive a kill right after completion');
 		} finally {
-			closeDatabase(DATABASE);
+			await closeDatabase(DATABASE);
 			env.setProperty(terms.CONFIG_PARAMS.DATABASES, databasesConfig);
 		}
 	});
