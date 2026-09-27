@@ -5,9 +5,36 @@ import * as hdbUtils from '../utility/common_utils.ts';
 import { hdbSchemaTable, checkValidTable, hdbTable, hdbDatabase } from './common_validators.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { getDatabases } from '../resources/databases.ts';
-import { COMPARATORS } from '../resources/ResourceInterface.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
+const FULL_TEXT_COMPARATORS = [
+	'matches',
+	'matches_all',
+	'matches_phrase',
+	'matches_prefix',
+	'matches_fuzzy',
+	'matches_fuzzy_prefix',
+	'not_matches',
+	'not_matches_all',
+	'not_matches_phrase',
+	'not_matches_prefix',
+	'not_matches_fuzzy',
+	'not_matches_fuzzy_prefix',
+] as const;
+const FULL_TEXT_COMPARATOR_SET = new Set<string>(FULL_TEXT_COMPARATORS);
+const SEARCH_BY_CONDITIONS_COMPARATORS = [
+	'equals',
+	'contains',
+	'starts_with',
+	'ends_with',
+	'greater_than',
+	'greater_than_equal',
+	'less_than',
+	'less_than_equal',
+	'between',
+	'not_equal',
+	...FULL_TEXT_COMPARATORS,
+] as const;
 
 const searchByValueSchema = Joi.object({
 	database: hdbDatabase,
@@ -41,7 +68,7 @@ const searchByConditionsSchema = Joi.object({
 				Joi.object({
 					attribute: Joi.alternatives(hdbSchemaTable, Joi.array().min(1)),
 					comparator: Joi.string()
-						.valid(...COMPARATORS)
+						.valid(...SEARCH_BY_CONDITIONS_COMPARATORS)
 						.optional(),
 					fields: Joi.array().min(1).items(hdbSchemaTable).optional(),
 					includeHighlights: Joi.bool().optional(),
@@ -50,7 +77,6 @@ const searchByConditionsSchema = Joi.object({
 					value: Joi.when('comparator', {
 						switch: [
 							{ is: 'equals', then: Joi.any() },
-							{ is: 'in', then: Joi.array().min(1).items(Joi.any()) },
 							{
 								is: 'between',
 								then: Joi.array()
@@ -123,8 +149,7 @@ export default function (searchObject: any, type: any) {
 			//this is used to validate condition attributes exist in the schema
 			for (const condition of searchObject.conditions) {
 				if (condition.conditions) addConditions(condition);
-				else if (!COMPARATORS.includes(condition.comparator) || !condition.comparator.includes('matches'))
-					checkAttributes.push(condition.attribute);
+				else if (!FULL_TEXT_COMPARATOR_SET.has(condition.comparator)) checkAttributes.push(condition.attribute);
 				else if (!fullTextNames.has(condition.attribute)) checkAttributes.push(condition.attribute);
 			}
 		};

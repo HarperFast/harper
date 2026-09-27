@@ -549,6 +549,27 @@ describe('@fullText derived-index activation', () => {
 				(error) => error.name === 'AccessViolation' || error.statusCode === 403
 			);
 		}
+		const explicitPermission = user.role.permission;
+		const explicitAllowed = await collect(
+			Product.search({
+				conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe', fields: ['title'] }],
+				checkPermission: explicitPermission,
+				limit: 1,
+			})
+		);
+		assert.strictEqual(explicitAllowed.length, 1);
+		await assert.rejects(
+			Promise.resolve().then(() =>
+				collect(
+					Product.search({
+						conditions: [{ attribute: 'search', comparator: 'matches', value: 'trail', fields: ['tags'] }],
+						checkPermission: explicitPermission,
+						limit: 1,
+					})
+				)
+			),
+			(error) => error.name === 'AccessViolation' || error.statusCode === 401
+		);
 	});
 
 	it('rejects full-text comparators on ordinary and primary indexes', async () => {
@@ -1470,7 +1491,6 @@ describe('@fullText derived-index activation', () => {
 			fullTextIndexes: [definition()],
 		});
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
-		const opensBeforeRemoval = binding.opens.length;
 		let releaseReset;
 		binding.resetWait = new Promise((resolve) => {
 			releaseReset = resolve;
@@ -1478,6 +1498,8 @@ describe('@fullText derived-index activation', () => {
 
 		Product = table({ database, table: 'Product', audit: true, attributes: attributes(), fullTextIndexes: [] });
 		await waitFor(() => binding.resets.length > 0, 30_000);
+		// A reader open already scheduled before retirement may finish here. Once reset starts,
+		// re-declaration must not open another reader until the destructive reset completes.
 		const opensAtRetirement = binding.opens.length;
 		const retirementInProgress = fullTextRetirementInProgress(Product.primaryStore.rootStore, Product.tableName);
 		Product = table({
@@ -1488,7 +1510,6 @@ describe('@fullText derived-index activation', () => {
 			fullTextIndexes: [definition()],
 		});
 		await new Promise((resolve) => setImmediate(resolve));
-		assert(binding.opens.length >= opensBeforeRemoval);
 		assert.strictEqual(binding.opens.length, opensAtRetirement);
 		releaseReset();
 		await waitFor(() => binding.reclaims.length > 0, 30_000);

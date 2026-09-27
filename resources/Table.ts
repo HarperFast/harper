@@ -543,6 +543,7 @@ const MAX_OUT_OF_ORDER_AUDIT_DEPTH = 1000;
 const MAX_PREVIOUS_COUNT_SCAN = 10_000;
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
+const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
 function propagateSearchAuthorization(iterable: any, authorization: Promise<any>, source?: any) {
@@ -2667,6 +2668,7 @@ export function makeTable(options) {
 		 */
 		allowRead(user: User, target: RequestTarget, context: Context): boolean {
 			const tablePermission = getTablePermissions(user, target);
+			if (target?.checkPermission && tablePermission) (target as any)[FULL_TEXT_READ_PERMISSION] = tablePermission;
 			if (tablePermission?.read) {
 				if (tablePermission.isSuperUser) return true;
 				const attribute_permissions = tablePermission.attribute_permissions;
@@ -7905,12 +7907,14 @@ export function makeTable(options) {
 		definition: FullTextDefinition,
 		requestedFields?: string[]
 	) {
-		if (!(context as any)?.user) return;
-		const permission = getTablePermissions((context as any).user, target);
+		const user = (context as any)?.user;
+		const permission = (target as any)[FULL_TEXT_READ_PERMISSION] ?? getTablePermissions(user, target);
+		// Calls without a principal or explicit permission are trusted internal calls, matching allowRead.
+		if (!permission && !user) return;
 		if (permission?.isSuperUser || !permission?.attribute_permissions?.length) return;
 		const readable = attributesAsObject(permission.attribute_permissions, 'read');
 		const searched = requestedFields ?? definition.fields.map(({ name }) => name);
-		if (searched.some((name) => !readable[name])) throw new AccessViolation((context as any).user);
+		if (searched.some((name) => !readable[name])) throw new AccessViolation(user);
 	}
 
 	function setLoadedFromSource(target: RequestTarget | undefined, loadedFromSource: boolean) {

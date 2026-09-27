@@ -6,6 +6,10 @@ const hdbTerms = require('../../utility/hdbTerms.ts');
 const cleanLmdbMap =
 	require('../../utility/lmdb/cleanLMDBMap.ts').default || require('../../utility/lmdb/cleanLMDBMap.ts');
 const { validateEvent } = require('../threads/itc.js');
+const {
+	FULL_TEXT_QUERY_PAUSE_OPERATION,
+	FULL_TEXT_QUERY_RESUME_OPERATION,
+} = require('../../resources/indexes/fullTextQueryProtocol.ts');
 const { isMainThread, threadId, workerData } = require('node:worker_threads');
 const {
 	databases,
@@ -47,8 +51,8 @@ async function schemaHandler(event) {
 		return;
 	}
 	if (
-		event.message?.operation === 'pause-full-text-query-readers' ||
-		event.message?.operation === 'resume-full-text-query-readers'
+		event.message?.operation === FULL_TEXT_QUERY_PAUSE_OPERATION ||
+		event.message?.operation === FULL_TEXT_QUERY_RESUME_OPERATION
 	) {
 		if (typeof event.message.path !== 'string' || event.message.path.length === 0)
 			throw new Error('Full-text query reader coordination requires an index path');
@@ -58,7 +62,7 @@ async function schemaHandler(event) {
 			throw new Error('Full-text query reader coordination requires an owner epoch');
 		const fullTextQueries = require('../../resources/indexes/fullTextQueryIndex.ts');
 		const ownerEpoch = BigInt(event.message.ownerEpoch);
-		if (event.message.operation === 'pause-full-text-query-readers')
+		if (event.message.operation === FULL_TEXT_QUERY_PAUSE_OPERATION)
 			await fullTextQueries.pauseNativeFullTextQueryReaders(event.message.path, event.message.readinessId, ownerEpoch);
 		else fullTextQueries.resumeNativeFullTextQueryReaders(event.message.path, event.message.readinessId, ownerEpoch);
 		return;

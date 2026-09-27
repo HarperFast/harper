@@ -18,15 +18,18 @@ import {
 	type NativeFullTextSearchMode,
 } from './fullTextNativeBinding.ts';
 import { nativeFullTextIndexPath } from './nativeFullTextDerivedIndexLifecycle.ts';
+export { FULL_TEXT_QUERY_PAUSE_OPERATION, FULL_TEXT_QUERY_RESUME_OPERATION } from './fullTextQueryProtocol.ts';
 import {
 	DEFAULT_MAX_INDEX_LAG_MILLISECONDS,
 	MAX_WAIT_FOR_INDEX_MILLISECONDS,
 	type DerivedNativeIndexHost,
 } from './hnswDerivedIndex.ts';
+import { loggerWithTag } from '../../utility/logging/logger.ts';
 
 const RAW_PAGE_SIZE = 256;
 const HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS = 5_000;
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
+const logger = loggerWithTag('fulltext-query-index');
 
 export type FullTextCondition = {
 	attribute?: string;
@@ -55,8 +58,6 @@ type FullTextQueryHost = DerivedNativeIndexHost & {
 	publicationRevision: () => bigint;
 };
 
-export const FULL_TEXT_QUERY_PAUSE_OPERATION = 'pause-full-text-query-readers';
-export const FULL_TEXT_QUERY_RESUME_OPERATION = 'resume-full-text-query-readers';
 const queryIndexesByPath = new Map<string, Set<FullTextQueryIndex>>();
 type QueryPause = { readinessId: string; ownerEpoch: bigint };
 const pausedQueryPaths = new Map<string, QueryPause>();
@@ -193,10 +194,13 @@ export class FullTextQueryIndex {
 
 	async close(): Promise<void> {
 		this.#closed = true;
-		await this.#retireAllReaders();
-		const indexes = queryIndexesByPath.get(this.#nativeOptions.path);
-		indexes?.delete(this);
-		if (indexes?.size === 0) queryIndexesByPath.delete(this.#nativeOptions.path);
+		try {
+			await this.#retireAllReaders();
+		} finally {
+			const indexes = queryIndexesByPath.get(this.#nativeOptions.path);
+			indexes?.delete(this);
+			if (indexes?.size === 0) queryIndexesByPath.delete(this.#nativeOptions.path);
+		}
 	}
 
 	async pause(readinessId: string, ownerEpoch: bigint): Promise<void> {
@@ -375,7 +379,7 @@ export class FullTextQueryIndex {
 					for (const resolve of slot.idleWaiters?.splice(0) ?? []) resolve();
 					if (slot.retired) {
 						try {
-							void this.#closeReaderSlot(slot).catch(() => {});
+							void this.#closeReaderSlot(slot).catch((error) => this.#warnReaderClose(error));
 						} catch {}
 					}
 				}
@@ -445,14 +449,16 @@ export class FullTextQueryIndex {
 		slot.retired = true;
 		this.#retiredReaderSlots.add(slot);
 		if (this.#readerSlot === slot) this.#readerSlot = undefined;
-		if (slot.active === 0) this.#closeReaderSlot(slot).catch(() => {});
+		if (slot.active === 0) this.#closeReaderSlot(slot).catch((error) => this.#warnReaderClose(error));
 	}
 
 	#closeReaderSlot(slot: ReaderSlot): Promise<void> {
 		if (!slot.closeOperation) {
-			const operation = slot.reader.close().then(() => {
-				this.#retiredReaderSlots.delete(slot);
-			});
+			const operation = Promise.resolve()
+				.then(() => slot.reader.close())
+				.then(() => {
+					this.#retiredReaderSlots.delete(slot);
+				});
 			slot.closeOperation = operation;
 			void operation.catch(() => {
 				if (slot.closeOperation === operation) slot.closeOperation = undefined;
@@ -469,7 +475,13 @@ export class FullTextQueryIndex {
 
 	async #closeWhenIdle(slot: ReaderSlot): Promise<void> {
 		if (slot.active > 0) await new Promise<void>((resolve) => (slot.idleWaiters ??= []).push(resolve));
-		await this.#closeReaderSlot(slot);
+		await this.#closeReaderSlot(slot).catch((error) => this.#warnReaderClose(error));
+	}
+
+	#warnReaderClose(error: unknown): void {
+		try {
+			logger.warn?.('Could not close a retired full-text reader; the reader remains retired', error);
+		} catch {}
 	}
 
 	async #getBinding(): Promise<NativeFullTextModule> {

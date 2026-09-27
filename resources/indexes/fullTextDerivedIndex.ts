@@ -1050,6 +1050,7 @@ async function toFullTextMutationSlice(
 					: attempts < maxReadAttempts;
 			if (retry) {
 				readFailures.set(id, { version: version!, attempts, firstFailureAt });
+				logger.warn?.(`Full-text Blob read failed for record '${id}'; retrying accepted work (attempt ${attempts})`);
 				throw resolved.error;
 			}
 		}

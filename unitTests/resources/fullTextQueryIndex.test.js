@@ -731,6 +731,57 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(closes[1], 1);
 	});
 
+	it('does not let a native reader close failure reject lifecycle shutdown', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'query-reader-close-failure';
+		const storePath = '/unused';
+		const storeName = 'query-reader-close-failure';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let closes = 0;
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
+				_readTxnForContext: () => undefined,
+			},
+			definition: definition(),
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath,
+			storeName,
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+				},
+				async openNativeFullTextReader() {
+					return {
+						async search() {
+							return {
+								total: 1,
+								totalRelation: 'exact',
+								hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+							};
+						},
+						async reload() {},
+						async close() {
+							closes++;
+							throw new Error('close failed');
+						},
+					};
+				},
+			},
+		});
+		attachCurrentCoverage(index);
+		await index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {});
+		await index.close();
+		assert.strictEqual(closes, 1);
+		await pauseNativeFullTextQueryReaders(nativeFullTextIndexPath(storePath, storeName), readinessId, 1n);
+		assert.strictEqual(closes, 1);
+	});
+
 	it('reads and returns highlights only for fields selected by the query', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'query-highlight-fields';
