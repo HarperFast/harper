@@ -475,15 +475,15 @@ export class FullTextQueryIndex {
 	async #getBinding(): Promise<NativeFullTextModule> {
 		if (this.#binding) return this.#binding;
 		const configured = this.#options.binding;
-		this.#binding = configured
+		const binding = configured
 			? typeof configured === 'function'
 				? await configured()
 				: configured
 			: await loadFullTextNativeBinding();
-		const info = await this.#binding.runtimeInfo();
+		const info = await binding.runtimeInfo();
 		this.#maxSearchWindow = info.limits.maxSearchWindow;
 		this.#maxTraceRecords = info.limits.maxTraceRecords;
-		return this.#binding;
+		return (this.#binding = binding);
 	}
 
 	#queryCoverage(maxLagMilliseconds: number): DerivedIndexCoverage {
@@ -613,6 +613,8 @@ function publicSearchError(error: unknown, name: string): Error {
 	if (
 		code === 'E_INDEX_NOT_READY' ||
 		code === 'E_INDEX_CORRUPT' ||
+		code === 'E_IDENTITY_MISMATCH' ||
+		code === 'E_INCOMPLETE_CREATE' ||
 		code === 'E_RELOAD_FAILED' ||
 		code === 'E_SCHEMA_MISMATCH' ||
 		code === 'E_INDEX_FORMAT_INCOMPATIBLE'
@@ -632,6 +634,8 @@ function nativeErrorNeedsRebuild(error: unknown): boolean {
 	return (
 		code === 'E_INDEX_NOT_READY' ||
 		code === 'E_INDEX_CORRUPT' ||
+		code === 'E_IDENTITY_MISMATCH' ||
+		code === 'E_INCOMPLETE_CREATE' ||
 		code === 'E_RELOAD_FAILED' ||
 		code === 'E_SCHEMA_MISMATCH' ||
 		code === 'E_INDEX_FORMAT_INCOMPATIBLE'

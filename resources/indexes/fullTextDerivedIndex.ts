@@ -729,6 +729,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			return false;
 		}
 		this.#assertCommandEpoch(command.epoch);
+		if (command.coverageOnly) this.#host!.publicationChanged();
 		this.#lastPublishedSequence = Math.max(this.#lastPublishedSequence, command.horizon);
 		this.#hasStagedMutations = false;
 		const rejected = this.#stagedUnindexableRecords;

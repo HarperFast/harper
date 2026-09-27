@@ -211,6 +211,48 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(opens, 0);
 	});
 
+	it('retries native capability discovery after a transient failure', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'binding-retry';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let probes = 0;
+		let opens = 0;
+		const index = new FullTextQueryIndex({
+			Table: { tableId: 1, primaryStore: {}, _readTxnForContext: () => undefined },
+			definition: definition(),
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath: '/unused',
+			storeName: 'unused',
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					if (++probes === 1) throw new Error('temporary capability probe failure');
+					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+				},
+				async openNativeFullTextReader() {
+					opens++;
+					return {
+						async search() {
+							return { total: 0, totalRelation: 'exact', hits: [] };
+						},
+						async reload() {},
+						async close() {},
+					};
+				},
+			},
+		});
+		attachCurrentCoverage(index);
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
+		await assert.rejects(index.search(query, {}), /Full-text search on 'catalogSearch' failed/);
+		assert.deepStrictEqual(await index.search(query, {}), []);
+		assert.strictEqual(probes, 2);
+		assert.strictEqual(opens, 1);
+		await index.close();
+	});
+
 	it('maps native query failures without exposing native details', async () => {
 		const auditStore = sharedStore();
 		publishDerivedIndexReadiness(auditStore, 'query-errors', 'ready');
@@ -472,6 +514,53 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(rebuilds, 1);
 		await index.close();
 		assert.strictEqual(closeAttempts, 2);
+	});
+
+	it('requests a rebuild for native identity and incomplete-create failures', async () => {
+		for (const code of ['E_IDENTITY_MISMATCH', 'E_INCOMPLETE_CREATE']) {
+			const auditStore = sharedStore();
+			const readinessId = `query-rebuild-${code}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			let rebuilds = 0;
+			const index = new FullTextQueryIndex({
+				Table: { tableId: 1, primaryStore: {}, _readTxnForContext: () => undefined },
+				definition: definition(),
+				auditStore,
+				readinessId,
+				indexId: readinessId,
+				storePath: '/unused',
+				storeName: 'unused',
+				sourceGeneration: 'generation',
+				limits: {},
+				binding: {
+					async runtimeInfo() {
+						return { limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+					},
+					async openNativeFullTextReader() {
+						return {
+							async search() {
+								throw Object.assign(new Error('native storage cannot open'), { code });
+							},
+							async reload() {},
+							async close() {},
+						};
+					},
+				},
+			});
+			index.attachDerivedHost({
+				readiness: () => ({ state: 'ready' }),
+				coverage: () => ({ state: 'current', maxLagMilliseconds: 0, lagUpperBoundMilliseconds: 0 }),
+				requestRebuild: () => (rebuilds++, true),
+				publicationRevision: () => 0n,
+				waitForCoverage: async () => {},
+			});
+			await assert.rejects(
+				index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}),
+				(error) => error.name === 'IndexRebuildingError'
+			);
+			assert.strictEqual(rebuilds, 1);
+			await index.close();
+		}
 	});
 
 	it('rejects a native hit without its source version', async () => {

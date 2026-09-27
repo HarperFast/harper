@@ -120,6 +120,8 @@ export interface DerivedIndexBackendHost {
 	/** True while `epoch` is the most recently minted owner epoch for this backend. */
 	isOwnerEpoch(epoch: bigint): boolean;
 	getReadiness(): DerivedIndexReadiness;
+	/** Publish a durable backend-only revision that peer workers must re-inspect. */
+	publicationChanged(): void;
 }
 
 /**
@@ -345,8 +347,7 @@ export class DerivedIndexRuntime {
 				this.#runners.delete(registration.backend.id);
 				const waiting = this.#coverageWaits.get(registration.backend.id);
 				if (waiting) {
-					for (const waiter of waiting.waiters)
-						waiter.finish(new ServerError('The native HNSW index is unavailable', 503));
+					for (const waiter of waiting.waiters) waiter.finish(new ServerError('The derived index is unavailable', 503));
 				}
 				this.#stopListeningIfIdle();
 			}
@@ -387,7 +388,7 @@ export class DerivedIndexRuntime {
 
 	waitForCoverage(backendId: string, since: bigint, timeout: number, signal?: AbortSignal): Promise<void> {
 		if (this.#stopped || !this.#runners.has(backendId))
-			return Promise.reject(new ServerError('The native HNSW index is unavailable', 503));
+			return Promise.reject(new ServerError('The derived index is unavailable', 503));
 		let group = this.#coverageWaits.get(backendId);
 		const first = !group;
 		if (!group) this.#coverageWaits.set(backendId, (group = { waiters: new Set() }));
@@ -440,7 +441,7 @@ export class DerivedIndexRuntime {
 			for (const waiter of group.waiters) {
 				if (before.state === 'ready' && before.ownerEpoch === after.ownerEpoch && time >= waiter.since) waiter.finish();
 				else if (now >= waiter.deadline)
-					waiter.finish(new DerivedIndexLagError('Timed out waiting for native HNSW index coverage; retry this query'));
+					waiter.finish(new DerivedIndexLagError('Timed out waiting for derived index coverage; retry this query'));
 				else delay = Math.min(delay, Math.max(1, Number(waiter.deadline - now) / 1e6));
 			}
 			if (group.waiters.size) group.timer = setTimeout(() => this.#pollCoverage(backendId, group), delay);
@@ -482,7 +483,7 @@ export class DerivedIndexRuntime {
 		if (this.#stopping) return this.#stopping;
 		this.#stopped = true;
 		for (const group of this.#coverageWaits.values()) {
-			for (const waiter of group.waiters) waiter.finish(new ServerError('The native HNSW index is unavailable', 503));
+			for (const waiter of group.waiters) waiter.finish(new ServerError('The derived index is unavailable', 503));
 		}
 		for (const runner of this.#runners.values()) this.#track(runner, runner.stop());
 		this.#runners.clear();
@@ -711,6 +712,7 @@ class DerivedIndexRunner {
 			registration.backend.attach({
 				isOwnerEpoch: (epoch) => Atomics.load(this.#sharedViews.epoch, 0) === epoch,
 				getReadiness: () => this.getReadiness(),
+				publicationChanged: () => Atomics.add(this.#publicationRevision, 0, 1n),
 			});
 			this.#unsubscribeBackend = registration.backend.onStateChange((change = 'changed') =>
 				this.#backendStateChanged(change)

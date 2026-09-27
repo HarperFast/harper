@@ -493,7 +493,8 @@ export function attachDerivedIndexes(
 								ownerEpoch: ownerEpoch.toString(),
 							},
 						},
-						35_000
+						35_000,
+						true
 					);
 				},
 				afterReset: async (ownerEpoch) => {
@@ -508,7 +509,8 @@ export function attachDerivedIndexes(
 								ownerEpoch: ownerEpoch.toString(),
 							},
 						},
-						35_000
+						35_000,
+						true
 					);
 				},
 				...(fullTextTest

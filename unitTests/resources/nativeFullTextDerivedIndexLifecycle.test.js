@@ -139,7 +139,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		const index = await lifecycle.open();
 		await index.applyMutationBatch(
 			{
-				upserts: [{ id: 'product-1', fields: { title: 'Red running shoes' } }],
+				upserts: [{ id: 'product-1', version: '7', fields: { title: 'Red running shoes' } }],
 				deletes: [],
 			},
 			{ assumeDistinctIds: true, rejectedUpsert: 'delete' }
@@ -163,8 +163,8 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		});
 		const readerResult = await reader.search({ text: 'running', limit: 10 });
 		assert.deepStrictEqual(
-			readerResult.hits.map(({ id }) => id),
-			['product-1']
+			readerResult.hits.map(({ id, version }) => ({ id, version })),
+			[{ id: 'product-1', version: '7' }]
 		);
 		await reader.close();
 		const reweightedReader = await binding.openNativeFullTextReader({
@@ -498,6 +498,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		backend.attach({
 			isOwnerEpoch: (epoch) => epoch === 1n,
 			getReadiness: () => ({ state: 'ready', ownerEpoch: 1n, rebuildAttempts: 0 }),
+			publicationChanged() {},
 		});
 		const batch = { ownerEpoch: 1n, transactions: [], records: [], bytes: 800 };
 		assert.strictEqual(backend.deliver(batch), DERIVED_INDEX_ACCEPTED);

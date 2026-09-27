@@ -85,6 +85,7 @@ function lifecycle(inspection = { state: 'missing' }, opens = []) {
 
 function makeBackend(lifecycleValue, options = {}) {
 	let epoch = 1n;
+	let publicationChanges = 0;
 	const backend = new FullTextDerivedIndexBackend({
 		id: 'products-title',
 		lifecycle: lifecycleValue,
@@ -104,8 +105,9 @@ function makeBackend(lifecycleValue, options = {}) {
 	backend.attach({
 		isOwnerEpoch: (candidate) => candidate === epoch,
 		getReadiness: () => ({ state: 'ready', ownerEpoch: epoch, rebuildAttempts: 0 }),
+		publicationChanged: () => publicationChanges++,
 	});
-	return { backend, setEpoch: (value) => (epoch = value) };
+	return { backend, setEpoch: (value) => (epoch = value), publicationChanges: () => publicationChanges };
 }
 
 function mutation(recordId, state, tableId = 1) {
@@ -203,7 +205,7 @@ describe('FullTextDerivedIndexBackend', () => {
 
 	it('publishes query coverage in the native cursor', async () => {
 		const engine = new FakeEngine();
-		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
+		const { backend, publicationChanges } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
 		backend.deliver(batch(1n, [], cursor(10)));
 		backend.flush();
 		await waitFor(() => engine.publications.length === 1);
@@ -213,6 +215,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(engine.publications[1]).coverage }, coverage);
 		assert.strictEqual(decodeFullTextPublication(engine.publications[1]).dataRevision, 0n);
 		assert.deepStrictEqual({ ...backend.getDurableCursor().coverage }, coverage);
+		assert.strictEqual(publicationChanges(), 1);
 		await backend.shutdown(1n);
 	});
 

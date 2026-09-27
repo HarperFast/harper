@@ -7,6 +7,7 @@ const {
 	DerivedIndexRuntime,
 	publishDerivedIndexReadiness,
 	publishDerivedIndexUnavailableIfUnknown,
+	readDerivedIndexPublicationRevision,
 	readDerivedIndexReadiness,
 	retryDerivedIndexUnavailable,
 } = require('#src/resources/derivedIndexRuntime');
@@ -89,7 +90,9 @@ class FakeBackend {
 		this.deliverImpl = deliver;
 	}
 
-	attach() {}
+	attach(host) {
+		this.host = host;
+	}
 
 	flush() {}
 
@@ -145,6 +148,17 @@ const registration = (backend) => ({
 });
 
 describe('DerivedIndexRuntime', () => {
+	it('publishes backend-only revisions for peer refresh', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const runtime = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 }).runtime;
+		const backend = new FakeBackend('backend-publication', cursor(10));
+		runtime.register(registration(backend));
+		assert.strictEqual(readDerivedIndexPublicationRevision(store, backend.id).revision, 0n);
+		backend.host.publicationChanged();
+		assert.strictEqual(readDerivedIndexPublicationRevision(store, backend.id).revision, 1n);
+		await runtime.stop();
+	});
+
 	it('does not let a local setup failure replace peer-owned readiness', () => {
 		const store = new FakeLogStore(new Map());
 		publishDerivedIndexReadiness(store, 'peer-owned', 'ready');
