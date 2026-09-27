@@ -1,7 +1,8 @@
 'use strict';
 
 // 5.3.0 — introduces system.hdb_oidc_trust and system.hdb_oidc_token_use for OIDC trusted
-// publishing (#2171).
+// publishing (#2171), and system.hdb_model_decisions and system.hdb_model_outcomes for durable
+// decisions and their recorded outcomes (#2840).
 //
 // Fresh installs get the table from json/systemSchema.json; this covers existing installs. The
 // version must match the release that ships the dependent operations — see 5-1-0.ts for what
@@ -16,6 +17,8 @@ import hdbLogger from '../../utility/logging/harper_logger.ts';
 
 const OIDC_TRUST_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME;
 const OIDC_TOKEN_USE_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TOKEN_USE_TABLE_NAME;
+const MODEL_DECISIONS_TABLE = terms.SYSTEM_TABLE_NAMES.MODEL_DECISIONS_TABLE_NAME;
+const MODEL_OUTCOMES_TABLE = terms.SYSTEM_TABLE_NAMES.MODEL_OUTCOMES_TABLE_NAME;
 
 /**
  * The replay table gets the same bootstrap as the trust table, for a reason specific to it: replay
@@ -122,11 +125,53 @@ async function patchIsHashAttribute(tableName: string) {
 	);
 }
 
+/** `audit: true` must match systemSchema.json: both decision tables replicate. */
+async function createSystemTableIfMissing(tableName: string, purpose: string) {
+	if (databases.system?.[tableName]) {
+		hdbLogger.info(`system.${tableName} already exists; skipping create.`);
+		await patchIsHashAttribute(tableName);
+		return;
+	}
+
+	hdbLogger.info(`Creating system.${tableName} table for ${purpose}.`);
+
+	const CreateTableObject =
+		require('../../dataLayer/CreateTableObject').default || require('../../dataLayer/CreateTableObject');
+	const schema = (systemSchema as any)[tableName];
+	if (!schema) {
+		throw new Error(`systemSchema.${tableName} is missing; cannot run 5.3.0 directive.`);
+	}
+
+	initPaths.initSystemSchemaPaths(terms.SYSTEM_SCHEMA_NAME, tableName);
+	const createTable = new (CreateTableObject as any)(terms.SYSTEM_SCHEMA_NAME, tableName, schema.hash_attribute);
+	createTable.attributes = schema.attributes;
+	const primaryKeyAttribute = createTable.attributes.find(({ attribute }) => attribute === schema.hash_attribute);
+	if (primaryKeyAttribute) primaryKeyAttribute.isPrimaryKey = true;
+	createTable.audit = true;
+
+	await bridge.createTable(tableName, createTable);
+	await patchIsHashAttribute(tableName);
+}
+
+async function createHdbModelDecisionsIfMissing() {
+	await createSystemTableIfMissing(MODEL_DECISIONS_TABLE, 'durable model decisions');
+}
+
+async function createHdbModelOutcomesIfMissing() {
+	await createSystemTableIfMissing(MODEL_OUTCOMES_TABLE, 'recorded decision outcomes');
+}
+
 const directive530 = {
 	version: '5.3.0',
-	description: 'create system.hdb_oidc_trust and system.hdb_oidc_token_use tables for OIDC trusted publishing',
+	description:
+		'create system.hdb_oidc_trust and system.hdb_oidc_token_use tables for OIDC trusted publishing, and system.hdb_model_decisions and system.hdb_model_outcomes for durable decisions',
 	sync_functions: [] as Array<() => unknown>,
-	async_functions: [createHdbOidcTrustIfMissing, createHdbOidcTokenUseIfMissing] as Array<() => Promise<unknown>>,
+	async_functions: [
+		createHdbOidcTrustIfMissing,
+		createHdbOidcTokenUseIfMissing,
+		createHdbModelDecisionsIfMissing,
+		createHdbModelOutcomesIfMissing,
+	] as Array<() => Promise<unknown>>,
 };
 
 export default [directive530];

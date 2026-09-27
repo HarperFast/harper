@@ -195,6 +195,8 @@ const generativeDecisionEntrySchema = Joi.object({
 	concurrency: number.integer().min(1).max(25).optional(),
 	temperature: number.min(0).optional(),
 	requestTimeoutMs: number.min(1).optional(),
+	scoring: string.valid('auto', 'vote', 'score').optional(),
+	requireStructuredOutput: Joi.boolean().optional(),
 	fallback: Joi.array().items(string).optional(),
 }).unknown(false);
 const unknownBackendEntrySchema = Joi.object({

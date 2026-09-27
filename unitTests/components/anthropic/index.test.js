@@ -59,6 +59,7 @@ describe('AnthropicBackend', () => {
 				stream: true,
 				tools: true,
 				adapters: false,
+				structuredOutput: false,
 			});
 		});
 

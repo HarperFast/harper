@@ -11,6 +11,7 @@ module.exports = function register({ logicalName, kind, config }) {
 		logicalName,
 		defineBackend({
 			name: `module:json-${logicalName}`,
+			structuredOutput: config.structuredOutput !== false,
 			generate: async (_input, opts) => {
 				const schema = opts.responseFormat?.schema;
 				if (

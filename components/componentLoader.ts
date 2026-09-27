@@ -49,6 +49,7 @@ import * as auth from '../security/auth.ts';
 import * as mqtt from '../server/mqtt.ts';
 import { getConfigFilePath, getConfigObj, getConfigPath } from '../config/configUtils.ts';
 import { bootstrapModels, startModelsConfigHotReload } from '../resources/models/bootstrap.ts';
+import { declareDecisionTablesAtBoot } from '../resources/models/decisionStore.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
 import { Scope } from './Scope.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
@@ -885,6 +886,7 @@ export async function loadComponent(
 		if (isRoot) {
 			await bootstrapModels(config);
 			startModelsConfigHotReload();
+			declareDecisionTablesAtBoot();
 		}
 
 		// The `env:` block declares the component's environment expectations (string literal →
