@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790493614185,
+  "lastUpdate": 1790500355428,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -20043,6 +20043,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 1933,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "26f347a0d6fae1197de3d936916b3370ed243f48",
+          "message": "Add `models.decide`, a third model primitive for typed decisions with probabilities (#2836)\n\n* Add models.decide, a third model primitive for typed decisions with probabilities\n\n`decide` joins `embed` and `generate`: the caller supplies state and a small\nclosed schema (enum, boolean, bounded integer, or one level of named leaves)\nand gets the chosen value with a complete probability distribution over the\nallowed values.\n\n- Types: DecideInput, DecisionSchema, DecideOpts, Decision, DecisionOutput;\n  ModelKind gains 'decision'; capabilities gain optional decide/calibrated so\n  existing backends stay source-compatible.\n- Registry and routing: a third registry kind; registerBackend('decision')\n  requires decide(); defineBackend derives decide and takes calibrated.\n- Facade: Models.decide validates the schema and state before routing (400,\n  no analytics row), routes by kind with the same fallback loop as embed, and\n  checks every backend output against the schema (complete distribution that\n  sums to one, argmax value) before returning it; a violation falls through\n  like any backend error.\n- Analytics: method 'decide' and model-decide metrics; the writer's write()\n  now returns the row id so Decision.id can reference it.\n- Config: models.decision entries. The built-in `generative` adapter samples\n  N structured-output generate calls under a bounded worker pool, votes, and\n  reports the frequencies with calibrated: false; samples settle before a\n  failure is thrown. Provider backends are refused under decision and the\n  adapter under the other kinds, at validation and at boot.\n- TestBackend.decide is deterministic, so the facade path is testable end to\n  end; a fixture module drives the adapter through bootstrap.\n\nPart of #2779. Not in this change: the @decide directive, outcome recording\nand calibration, and log-probability scoring.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* Harden the decision contract after pre-push review\n\n- Integer bounds must be safe integers, and the range is materialized by\n  count, so a schema can no longer make the range loop run forever.\n- Contract and sample errors name the entry that failed and never quote the\n  backend's or model's value, which could otherwise reach an error response.\n- A call that requires 'calibrated' rejects a result the backend reports as\n  uncalibrated for that call, instead of returning calibrated: false.\n- A tied value the backend chose leads the distribution, so value is always\n  the first entry.\n- Enum values must be of one type: strict structured-output modes need a\n  `type` on every property, which a mixed enum cannot carry.\n- Membership checks no longer materialize integer ranges.\n- The bootstrap fixture refuses a non-strict response schema, a module\n  decision backend is booted from models.decision, and the model-decide\n  counter is asserted for a backend that reports no usage.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* Tolerate wrapped samples, narrow the enum type, and state the tie rule\n\n- A provider that ignores responseFormat (Anthropic, Bedrock) may wrap the\n  JSON object in a code fence or prose; the outermost {...} span is now\n  parsed as well, and only a sample with no JSON object fails the decision.\n- DecisionLeaf.enum is one primitive type, matching what the validator\n  accepts and what a strict structured-output schema can carry.\n- The Decision docs, the backend contract and the design note say that a\n  tied value the backend chose leads the distribution.\n- Remaining narrating comments and issue tags trimmed.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* Find the answer object among other braces in a prompt-only sample\n\nA provider that ignores responseFormat can surround the object with prose\nthat has braces of its own, or add a trailing aside. The parser now prefers\na fenced block and tries every brace pair in it, outermost first, and\nrejects a sample with no text instead of failing on indexOf.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* Check every candidate object in a prompt-only sample against the schema\n\nThe first parseable object could be a schema-valid example placed before\nthe real answer, which then cast the vote. Every brace span is now checked\nagainst the schema; a sample whose in-schema objects disagree is rejected,\na fence that holds no object falls back to the whole text, and the closing-\nbrace scan stops at index 0 instead of re-adding it.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* Scan the whole prompt-only sample instead of preferring the first fence\n\nPreferring the first fenced block hid a second fence (an example, then\nthe answer) and skipped a valid answer written after a fence that held a\nnon-schema object. Every candidate is schema-checked, so the fence\npreference added nothing; the scan now covers the whole text.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* Find sample objects with a balanced, string-aware scan instead of brace windows\n\nKeeping only the first 32 opening and last 32 closing braces could drop a\ncandidate silently, so an example could be counted or a valid answer lost\nbehind stray braces. The scan now walks the reply once, pairs each closing\nbrace with its opening brace, treats braces inside JSON strings as text,\nand fails the sample loudly past 64 balanced spans.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* Track JSON strings from each object's own opening brace\n\nA stray straight quote in the prose before an object flipped the scanner's\nstring state and hid the object. Each opening brace now starts its own\nbalanced walk, so prose quotes cannot mask an answer while braces inside\nthe object's own strings stay text.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* Count balanced spans, not raw braces, and bound the sample scan explicitly\n\nThe object cap counted every opening brace, so braces inside a value's\nstring or in prose ahead of the answer could fail a valid sample. Only\nspans that balance count now, and the scan carries a work budget of 256\ncharacter steps per character of reply, failing loudly past either limit.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* Never try a brace inside a parsed object's string as a sample object start\n\nEvery opening brace in a reply was a candidate start, so brace pairs inside\nthe answer's own string values counted toward the object cap and a valid\nanswer holding 64 such pairs was rejected. The scan now records the string\nranges of each object that parses and skips starts inside them; nested\nobjects are still tried, and the cap and work budget stay.\n\nCloses #2845.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* Record sample string ranges once and skip them with a forward cursor\n\nThe string-range skip added for #2845 ran a full scan of every recorded\nrange at each candidate brace, outside the scan budget, and re-recorded\na nested object's strings each time it parsed on its own. Ranges are now\nrecorded once, from the outermost object that parses, so they stay in\ntext order and one cursor moves forward over them.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-26T15:45:12Z",
+          "url": "https://github.com/HarperFast/harper/commit/26f347a0d6fae1197de3d936916b3370ed243f48"
+        },
+        "date": 1790500352544,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 16823,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 14343,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 13329,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 20240000,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 6415,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 2904,
             "unit": "ops"
           }
         ]
