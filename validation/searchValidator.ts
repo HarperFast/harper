@@ -5,22 +5,9 @@ import * as hdbUtils from '../utility/common_utils.ts';
 import { hdbSchemaTable, checkValidTable, hdbTable, hdbDatabase } from './common_validators.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 import { getDatabases } from '../resources/databases.ts';
+import { FULL_TEXT_COMPARATORS } from '../resources/indexes/fullTextQueryProtocol.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
-const FULL_TEXT_COMPARATORS = [
-	'matches',
-	'matches_all',
-	'matches_phrase',
-	'matches_prefix',
-	'matches_fuzzy',
-	'matches_fuzzy_prefix',
-	'not_matches',
-	'not_matches_all',
-	'not_matches_phrase',
-	'not_matches_prefix',
-	'not_matches_fuzzy',
-	'not_matches_fuzzy_prefix',
-] as const;
 const FULL_TEXT_COMPARATOR_SET = new Set<string>(FULL_TEXT_COMPARATORS);
 const SEARCH_BY_CONDITIONS_COMPARATORS = [
 	'equals',

@@ -5,6 +5,7 @@ import { IterableEventQueue } from './IterableEventQueue.ts';
 import type { Entry, RecordObject } from './RecordEncoder.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import type { RecordLockOptions } from './recordLock.ts';
+import { FULL_TEXT_COMPARATORS } from './indexes/fullTextQueryProtocol.ts';
 
 export interface ResourceInterface<Record extends object = any>
 	extends Partial<RecordObject>, Pick<UpdatableRecord<Record>, 'addTo' | 'subtractFrom'> {
@@ -185,20 +186,9 @@ export const COMPARATORS = [
 	'in',
 	'less_than',
 	'less_than_equal',
-	'matches',
-	'matches_all',
-	'matches_phrase',
-	'matches_prefix',
-	'matches_fuzzy',
-	'matches_fuzzy_prefix',
+	...FULL_TEXT_COMPARATORS,
 	'ne',
 	'not_equal',
-	'not_matches',
-	'not_matches_all',
-	'not_matches_phrase',
-	'not_matches_prefix',
-	'not_matches_fuzzy',
-	'not_matches_fuzzy_prefix',
 	'starts_with',
 ] as const;
 

@@ -1053,6 +1053,9 @@ async function toFullTextMutationSlice(
 				logger.warn?.(`Full-text Blob read failed for record '${id}'; retrying accepted work (attempt ${attempts})`);
 				throw resolved.error;
 			}
+			logger.warn?.(
+				`Full-text Blob read retry budget was exhausted for record '${id}'; removing the record from the index until its next mutation or rebuild`
+			);
 		}
 		readFailures.delete(id);
 		if (resolved?.rejected || resolved?.error) rejected++;

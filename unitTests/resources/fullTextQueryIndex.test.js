@@ -942,6 +942,89 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	it('drains superseded readers on the same path before pausing a successor generation', async () => {
+		const auditStore = sharedStore();
+		const oldReadinessId = 'query-pause-old-generation';
+		const newReadinessId = 'query-pause-new-generation';
+		publishDerivedIndexReadiness(auditStore, oldReadinessId, 'ready');
+		publishDerivedIndexReadiness(auditStore, newReadinessId, 'ready');
+		const storePath = '/unused';
+		const storeName = 'query-pause-generations';
+		const path = nativeFullTextIndexPath(storePath, storeName);
+		const searchStarted = Promise.withResolvers();
+		const finishSearch = Promise.withResolvers();
+		let oldCloses = 0;
+		const createIndex = (readinessId, oldGeneration) => {
+			const index = new FullTextQueryIndex({
+				Table: {
+					tableId: 1,
+					primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
+					_readTxnForContext: () => undefined,
+				},
+				definition: definition(),
+				auditStore,
+				readinessId,
+				indexId: readinessId,
+				storePath,
+				storeName,
+				sourceGeneration: readinessId,
+				limits: {},
+				binding: {
+					async runtimeInfo() {
+						return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+					},
+					async openNativeFullTextReader() {
+						return {
+							async search() {
+								if (oldGeneration) {
+									searchStarted.resolve();
+									await finishSearch.promise;
+								}
+								return {
+									total: 1,
+									totalRelation: 'exact',
+									hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+								};
+							},
+							async reload() {},
+							async close() {
+								if (oldGeneration) oldCloses++;
+							},
+						};
+					},
+				},
+			});
+			attachCurrentCoverage(index);
+			return index;
+		};
+		const oldIndex = createIndex(oldReadinessId, true);
+		const newIndex = createIndex(newReadinessId, false);
+		const oldSearch = oldIndex.search({ attribute: oldReadinessId, comparator: 'matches', value: 'shoe' }, {});
+		await searchStarted.promise;
+		let paused = false;
+		const pause = pauseNativeFullTextQueryReaders(path, newReadinessId, 1n).then(() => {
+			paused = true;
+		});
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(paused, false);
+		assert.strictEqual(oldCloses, 0);
+		finishSearch.resolve();
+		await oldSearch;
+		await pause;
+		assert.strictEqual(oldCloses, 1);
+		resumeNativeFullTextQueryReaders(path, newReadinessId, 1n);
+		await assert.rejects(
+			oldIndex.search({ attribute: oldReadinessId, comparator: 'matches', value: 'shoe' }, {}),
+			(error) => error.name === 'IndexRebuildingError'
+		);
+		assert.strictEqual(
+			(await newIndex.search({ attribute: newReadinessId, comparator: 'matches', value: 'shoe' }, {})).length,
+			1
+		);
+		await oldIndex.close();
+		await newIndex.close();
+	});
+
 	it('reports bounded coverage and waits for current coverage when requested', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'query-coverage';

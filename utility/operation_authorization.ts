@@ -41,6 +41,7 @@ import * as transactionLog from '../utility/logging/transactionLog.ts';
 import * as npmUtilities from './npmUtilities.ts';
 import * as analytics from '../resources/analytics/read.ts';
 import * as status from '../server/status/index.ts';
+import { FULL_TEXT_COMPARATORS } from '../resources/indexes/fullTextQueryProtocol.ts';
 import PermissionResponseObject from '../security/data_objects/PermissionResponseObject.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 
@@ -92,20 +93,7 @@ const BULK_OPS = {
 };
 /** The same set, precomputed: `isBulkLoadOperation` runs on every operations authorization. */
 const BULK_OP_NAMES = new Set(Object.values(BULK_OPS));
-const FULL_TEXT_COMPARATORS = new Set([
-	'matches',
-	'matches_all',
-	'matches_phrase',
-	'matches_prefix',
-	'matches_fuzzy',
-	'matches_fuzzy_prefix',
-	'not_matches',
-	'not_matches_all',
-	'not_matches_phrase',
-	'not_matches_prefix',
-	'not_matches_fuzzy',
-	'not_matches_fuzzy_prefix',
-]);
+const FULL_TEXT_COMPARATOR_SET = new Set<string>(FULL_TEXT_COMPARATORS);
 
 const STRUCTURE_USER_OPS = [
 	schema.createTable.name,
@@ -1158,7 +1146,7 @@ function getRecordAttributes(json, operationName?) {
 					// A full-text condition names a derived index, not a stored attribute. Table.search
 					// validates the declaration and authorizes the index's selected source fields.
 					const comparator = condition.comparator ?? condition.search_type;
-					if (FULL_TEXT_COMPARATORS.has(comparator)) continue;
+					if (FULL_TEXT_COMPARATOR_SET.has(comparator)) continue;
 					let attribute = condition.attribute;
 					if (condition.search_attribute !== undefined) {
 						attribute = condition.search_attribute;

@@ -120,7 +120,7 @@ export class FullTextQueryIndex {
 		if (!indexes) queryIndexesByPath.set(this.#nativeOptions.path, (indexes = new Set()));
 		indexes.add(this);
 		const pause = pausedQueryPaths.get(this.#nativeOptions.path);
-		if (pause?.readinessId === options.readinessId) this.#pausedFor = pause;
+		if (pause) this.#pausedFor = pause;
 	}
 
 	updateDefinition(definition: FullTextDefinition): void {
@@ -204,14 +204,18 @@ export class FullTextQueryIndex {
 	}
 
 	async pause(readinessId: string, ownerEpoch: bigint): Promise<void> {
-		if (readinessId !== this.#options.readinessId) return;
-		if (this.#pausedFor && this.#pausedFor.ownerEpoch > ownerEpoch) return;
+		if (this.#pausedFor?.readinessId === readinessId && this.#pausedFor.ownerEpoch > ownerEpoch) return;
 		this.#pausedFor = { readinessId, ownerEpoch };
 		await this.#retireAllReaders();
 	}
 
 	resume(readinessId: string, ownerEpoch: bigint): void {
-		if (!this.#closed && this.#pausedFor?.readinessId === readinessId && this.#pausedFor.ownerEpoch <= ownerEpoch)
+		if (
+			!this.#closed &&
+			readinessId === this.#options.readinessId &&
+			this.#pausedFor?.readinessId === readinessId &&
+			this.#pausedFor.ownerEpoch <= ownerEpoch
+		)
 			this.#pausedFor = undefined;
 	}
 
@@ -390,7 +394,7 @@ export class FullTextQueryIndex {
 
 	#readerFor(ownerEpoch: bigint, dataRevision: bigint): Promise<ReaderSlot> {
 		if (this.#closed) return Promise.reject(new ServerError('Full-text index is closed', 503));
-		if (this.#pausedFor && this.#pausedFor.ownerEpoch <= ownerEpoch) {
+		if (this.#pausedFor?.readinessId === this.#options.readinessId && this.#pausedFor.ownerEpoch <= ownerEpoch) {
 			this.#pausedFor = undefined;
 			const pausedPath = pausedQueryPaths.get(this.#nativeOptions.path);
 			if (pausedPath?.readinessId === this.#options.readinessId && pausedPath.ownerEpoch <= ownerEpoch)
