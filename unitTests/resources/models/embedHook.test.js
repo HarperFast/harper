@@ -262,3 +262,61 @@ describe('embedHook', () => {
 		});
 	});
 });
+
+describe('embed error surface (#1594)', () => {
+	const { ServerError } = require('#src/utility/errors/hdbError');
+	const attrs = [{ name: 'embedding', embed: { source: 'content', model: 'default' } }];
+
+	// Mirrors the shape of the real backend error classes (OpenAIBackendError etc.):
+	// a ServerError subclass carrying `upstreamStatus`, whose message is the backend's
+	// deliberately sanitized, length-capped text.
+	class FakeBackendHttpError extends ServerError {
+		constructor(message, upstreamStatus) {
+			super(message);
+			this.name = 'OpenAIBackendError';
+			this.upstreamStatus = upstreamStatus;
+		}
+	}
+
+	it('surfaces the backend sanitized message, model, and status for ServerError + upstreamStatus', async () => {
+		const record = { content: 'hello' };
+		const backendError = new FakeBackendHttpError(
+			'OpenAI /embeddings returned HTTP 404: models/default is not found',
+			404
+		);
+		const before = buildEmbedBefore(record, {}, {}, attrs, {
+			embedding: async () => {
+				throw backendError;
+			},
+		});
+		assert.ok(before);
+		await assert.rejects(before(), (err) => {
+			assert.ok(/models\/default is not found/.test(err.message), 'backend sanitized message should be surfaced');
+			assert.ok(/model "default"/.test(err.message), 'configured model name should be included');
+			assert.ok(/backend HTTP 404/.test(err.message), 'upstream status should be included');
+			assert.ok(/OpenAIBackendError/.test(err.message), 'error class name should be included');
+			return true;
+		});
+	});
+
+	it('keeps a plain error with a spoofed upstreamStatus behind the sanitized message', async () => {
+		const record = { content: 'hello' };
+		const spoofed = new Error('https://internal-embed.svc:9000 404 key=sk-abc123 not found');
+		spoofed.name = 'OpenAIBackendError';
+		spoofed.upstreamStatus = 404;
+		const before = buildEmbedBefore(record, {}, {}, attrs, {
+			embedding: async () => {
+				throw spoofed;
+			},
+		});
+		assert.ok(before);
+		await assert.rejects(before(), (err) => {
+			assert.ok(!/sk-abc123/.test(err.message), 'API key tail leaked');
+			assert.ok(!/internal-embed\.svc/.test(err.message), 'internal hostname leaked');
+			assert.ok(/model "default"/.test(err.message), 'configured model name should be included');
+			assert.ok(/backend HTTP 404/.test(err.message), 'upstream status should still be included');
+			assert.ok(/server log/i.test(err.message), 'should point at the server log for details');
+			return true;
+		});
+	});
+});
