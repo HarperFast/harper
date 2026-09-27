@@ -6,6 +6,7 @@ const { loadGQLSchema } = require('#src/resources/graphql');
 const {
 	compileFullTextDefinitions,
 	compileValidFullTextDefinitions,
+	migratePersistedFullTextValues,
 	reconcileFullTextIndexGenerations,
 } = require('#src/resources/fullTextSchema');
 const { getDatabases, resetDatabases, table } = require('#src/resources/databases');
@@ -144,6 +145,7 @@ describe('@fullText declaration compiler', () => {
 			() => 'new-generation'
 		);
 		assert.strictEqual(generations.search, 'new-generation');
+		assert.deepStrictEqual(migratePersistedFullTextValues([persisted]), [{ ...persisted, analyzer: 'english@2' }]);
 	});
 });
 
@@ -206,6 +208,47 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 		if (Table.dbisDB.committed) await Table.dbisDB.committed;
 		assert.deepStrictEqual(Table.fullTextIndexes, []);
 		assert.strictEqual(primaryDescriptor(Table).fullTextIndexes, undefined);
+	});
+
+	it('persists the english analyzer migration and rotates its native generation once', async () => {
+		let Table = table({
+			table: 'FullTextAnalyzerMigration',
+			database: 'test',
+			audit: true,
+			attributes: productAttributes(),
+			fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+		});
+		if (Table.dbisDB.committed) await Table.dbisDB.committed;
+		const descriptor = primaryDescriptor(Table);
+		Table.dbisDB.put(`${Table.tableName}/${Table.primaryKey}`, {
+			...descriptor,
+			fullTextIndexes: descriptor.fullTextIndexes.map((definition) => ({
+				...definition,
+				analyzer: 'english@1',
+			})),
+			fullTextIndexGenerations: { search: 'english-v1-generation' },
+		});
+
+		Table = table({
+			table: Table.tableName,
+			database: Table.databaseName,
+			audit: true,
+			attributes: productAttributes(),
+		});
+		if (Table.dbisDB.committed) await Table.dbisDB.committed;
+		const migrated = primaryDescriptor(Table);
+		assert.strictEqual(migrated.fullTextIndexes[0].analyzer, 'english@2');
+		assert.notStrictEqual(migrated.fullTextIndexGenerations.search, 'english-v1-generation');
+		const generation = migrated.fullTextIndexGenerations.search;
+
+		Table = table({
+			table: Table.tableName,
+			database: Table.databaseName,
+			audit: true,
+			attributes: productAttributes(),
+		});
+		if (Table.dbisDB.committed) await Table.dbisDB.committed;
+		assert.strictEqual(primaryDescriptor(Table).fullTextIndexGenerations.search, generation);
 	});
 
 	it('requires audit and rejects source removal or retyping unless the declaration changes with it', async () => {

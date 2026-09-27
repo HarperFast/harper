@@ -95,6 +95,7 @@ import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
 import {
 	compileFullTextDefinitions,
+	migratePersistedFullTextValues,
 	persistedFullTextIndexNames,
 	reconcileFullTextIndexGenerations,
 	type FullTextDefinition,
@@ -3693,7 +3694,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					fullTextPersistencePending = merged.changed;
 					activeFullTextIndexes = rootStore instanceof RocksDatabase && finalAudit ? merged.definitions : [];
 				} else if (origin === 'cluster') {
-					fullTextValuesForPersistence = persistedFullTextValues;
+					fullTextValuesForPersistence = migratePersistedFullTextValues(persistedFullTextValues);
+					fullTextPersistencePending = !definitionsEqual(fullTextValuesForPersistence, persistedFullTextValues);
 					activeFullTextIndexes =
 						rootStore instanceof RocksDatabase && finalAudit
 							? readPersistedFullTextDefinitions(persistedFullTextValues, validationAttributes, fullTextWarning)
@@ -3776,7 +3778,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							`Table '${databaseName}.${tableName}' must keep audit logging enabled while @fullText is declared`,
 							400
 						);
-					fullTextValuesForPersistence = persistedFullTextValues;
+					fullTextValuesForPersistence = migratePersistedFullTextValues(persistedFullTextValues);
+					fullTextPersistencePending = !definitionsEqual(fullTextValuesForPersistence, persistedFullTextValues);
 					activeFullTextIndexes = rootStore instanceof RocksDatabase && finalAudit ? retained : [];
 				}
 			}

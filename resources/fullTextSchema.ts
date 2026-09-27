@@ -162,6 +162,17 @@ export function compileValidFullTextDefinitions(
 	return sortFullTextDefinitions(definitions);
 }
 
+export function migratePersistedFullTextValues(values: unknown): unknown {
+	if (!Array.isArray(values)) return values;
+	let migrated = false;
+	const normalized = values.map((value) => {
+		if (!isPersistedEnglishV1(value)) return value;
+		migrated = true;
+		return { ...(value as Record<string, unknown>), analyzer: DEFAULT_ANALYZER };
+	});
+	return migrated ? normalized : values;
+}
+
 function isPersistedEnglishV1(value: unknown): boolean {
 	return Boolean(
 		value && typeof value === 'object' && !Array.isArray(value) && (value as any).analyzer === 'english@1'
@@ -169,10 +180,8 @@ function isPersistedEnglishV1(value: unknown): boolean {
 }
 
 function migratePersistedFullTextDefinition(value: unknown): unknown {
-	if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-	const definition = value as Record<string, unknown>;
-	if (definition.analyzer !== 'english@1') return value;
-	return { ...definition, analyzer: 'english@2' };
+	if (!isPersistedEnglishV1(value)) return value;
+	return { ...(value as Record<string, unknown>), analyzer: DEFAULT_ANALYZER };
 }
 
 export function sortFullTextDefinitions<T extends { name: string }>(definitions: T[]): T[] {
