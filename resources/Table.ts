@@ -2682,7 +2682,12 @@ export function makeTable(options) {
 						(target as any).select = selectArray
 							.map((property: any) => {
 								const propertyName = property.name || property;
-								if (!attrsForType || attrsForType[propertyName]) {
+								if (
+									!attrsForType ||
+									attrsForType[propertyName] ||
+									propertyName === '$score' ||
+									propertyName === '$highlights'
+								) {
 									const relatedTable = propertyResolvers[propertyName]?.definition?.tableClass;
 									if (relatedTable) {
 										// if there is a related table, we need to ensure the user has permission to read from that table and that attributes are properly restricted
@@ -5008,7 +5013,8 @@ export function makeTable(options) {
 						}
 					}
 					const attribute_name = condition[0] ?? condition.attribute;
-					const fullTextMode = fullTextComparatorMode(condition.comparator);
+					const fullTextMode =
+						TableResource.fullTextIndexes.length > 0 ? fullTextComparatorMode(condition.comparator) : undefined;
 					const fullTextDefinition =
 						fullTextMode && typeof attribute_name === 'string'
 							? TableResource.fullTextIndexes.find((definition) => definition.name === attribute_name)
@@ -5125,6 +5131,8 @@ export function makeTable(options) {
 				TableResource.fullTextIndexes.length > 0 &&
 				conditionsContainFullText(conditions, TableResource.fullTextIndexes)
 			) {
+				if ((target as any).reverse)
+					throw new ClientError('Full-text results can only use descending $score order', 400);
 				if (sort && (sort.attribute !== '$score' || sort.next || sort.descending !== true))
 					throw new ClientError('Full-text results can only use descending $score order', 400);
 				sort = undefined;

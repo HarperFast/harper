@@ -367,14 +367,19 @@ export class FullTextQueryIndex {
 		let released = false;
 		return {
 			reader: slot.reader,
-			release: async () => {
-				if (released) return;
+			release: () => {
+				if (released) return Promise.resolve();
 				released = true;
 				slot.active--;
 				if (slot.active === 0) {
 					for (const resolve of slot.idleWaiters?.splice(0) ?? []) resolve();
-					if (slot.retired) await this.#closeReaderSlot(slot);
+					if (slot.retired) {
+						try {
+							void this.#closeReaderSlot(slot).catch(() => {});
+						} catch {}
+					}
 				}
+				return Promise.resolve();
 			},
 		};
 	}

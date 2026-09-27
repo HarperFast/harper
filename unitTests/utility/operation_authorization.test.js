@@ -1313,6 +1313,16 @@ describe('Test operation_authorization', function () {
 			);
 		});
 
+		it('does not treat an unknown comparator containing matches as full text', function () {
+			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
+			let req_json = clone(TEST_CONDITIONS_JSON);
+			req_json.conditions = [
+				{ search_attribute: 'catalogSearch', search_type: 'xmatchesx', search_value: 'trail shoe' },
+			];
+			let result = getRecordAttributes(req_json);
+			assert(result.has('catalogSearch'));
+		});
+
 		it('Nominal case, valid JSON for search_by_conditions w/ deprecated property names', function () {
 			let expected_attrs = ['id', 'age', 'name', 'adorable', 'location', 'owner_name'];
 			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');

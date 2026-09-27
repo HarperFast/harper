@@ -448,6 +448,7 @@ describe('@fullText derived-index activation', () => {
 					database,
 					schema: database,
 					table: 'Product',
+					user: { username: 'spoofed-principal' },
 					get_attributes: ['*'],
 					conditions: [{ attribute: 'title', comparator: 'in', value: ['Trail shoe'] }],
 				}
@@ -470,10 +471,14 @@ describe('@fullText derived-index activation', () => {
 		assert.deepStrictEqual(captured.query.conditions, [
 			{ attribute: 'title', comparator: 'in', value: ['Trail shoe'] },
 		]);
+		assert.strictEqual(captured.context.user, undefined);
 	});
 
 	rocksOnly('authorizes full-text queries against their selected source fields', async () => {
 		const database = `fulltext-permissions-${Date.now()}`;
+		const fullTextDefinition = definition();
+		fullTextDefinition.fields[0].highlight = true;
+		fullTextDefinition.highlighting = { maxFragments: 2, fragmentLength: 120 };
 		Product = table({
 			database,
 			table: 'Product',
@@ -483,7 +488,7 @@ describe('@fullText derived-index activation', () => {
 				{ name: 'title', type: 'String' },
 				{ name: 'tags', type: 'array', elements: { type: 'String' } },
 			],
-			fullTextIndexes: [definition()],
+			fullTextIndexes: [fullTextDefinition],
 		});
 		await Product.put('shoe-1', { title: 'Trail shoe', tags: ['trail'] });
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
@@ -514,6 +519,20 @@ describe('@fullText derived-index activation', () => {
 			)
 		);
 		assert.strictEqual(allowed.length, 1);
+		const highlighted = await collect(
+			Product.search(
+				{
+					conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe', fields: ['title'] }],
+					select: ['title', '$score', '$highlights'],
+					checkPermission: true,
+					limit: 1,
+				},
+				{ user }
+			)
+		);
+		assert.strictEqual(highlighted.length, 1);
+		assert.strictEqual(typeof highlighted[0].$score, 'number');
+		assert.deepStrictEqual(highlighted[0].$highlights.title[0].spans, [{ start: 6, end: 10 }]);
 		for (const field of ['tags', 'unknown']) {
 			await assert.rejects(
 				Promise.resolve().then(() =>
@@ -1420,6 +1439,14 @@ describe('@fullText derived-index activation', () => {
 				}),
 			/Full-text results can only use descending \$score order/
 		);
+		assert.throws(
+			() =>
+				Product.search({
+					conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }],
+					reverse: true,
+				}),
+			/Full-text results can only use descending \$score order/
+		);
 		assert.doesNotThrow(() =>
 			Product.search({
 				conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }],
@@ -1451,6 +1478,7 @@ describe('@fullText derived-index activation', () => {
 
 		Product = table({ database, table: 'Product', audit: true, attributes: attributes(), fullTextIndexes: [] });
 		await waitFor(() => binding.resets.length > 0, 30_000);
+		const opensAtRetirement = binding.opens.length;
 		const retirementInProgress = fullTextRetirementInProgress(Product.primaryStore.rootStore, Product.tableName);
 		Product = table({
 			database,
@@ -1460,7 +1488,8 @@ describe('@fullText derived-index activation', () => {
 			fullTextIndexes: [definition()],
 		});
 		await new Promise((resolve) => setImmediate(resolve));
-		assert.strictEqual(binding.opens.length, opensBeforeRemoval);
+		assert(binding.opens.length >= opensBeforeRemoval);
+		assert.strictEqual(binding.opens.length, opensAtRetirement);
 		releaseReset();
 		await waitFor(() => binding.reclaims.length > 0, 30_000);
 

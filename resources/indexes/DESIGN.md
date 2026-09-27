@@ -407,6 +407,38 @@ construct this backend, Harper must exact-pin the Fulltext package, document the
 missing or incompatible binding is an activation error; Harper must not silently omit the declared
 index.
 
+### Full-text query plane
+
+Each declared full-text index has a read-only native handle beside its derived-index writer. Readers
+are keyed by native path, readiness id and owner epoch. A process-wide publication revision tells
+peer workers when the current handle can reload and when an epoch or query-configuration change
+requires a replacement handle. A retired handle accepts no new leases but remains open until its
+active searches finish. Cleanup errors are retried during the next pause or close and never replace
+an otherwise successful query response.
+
+Reset is destructive, so the elected writer first pauses readers in every worker and waits for their
+active leases to drain. Harper does not force-close a handle that native code may still be using; a
+stuck native request therefore delays reset rather than risking use-after-close. Resume carries the
+owner epoch, preventing an old reset from reopening readers after a newer owner has paused them.
+
+Weights and highlighting are query configuration. Changing either refreshes readers without rotating
+the persisted generation. Analyzer behavior, stop words, positions, surface terms, synonyms, source
+media types and source-field membership are storage identity and require a new generation. The
+wrapper validates that identity on inspection and open, so an older analyzer generation fails closed
+and rebuilds instead of serving mixed tokenization semantics.
+
+Search hits carry the source record version. Harper loads the authoritative record through its read
+transaction and omits a hit when that version no longer matches; it never attaches an old score or
+highlight to new content. During bounded lag this can temporarily omit a recently changed record.
+REST exposes the index coverage header, and callers that require current coverage use
+`maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`.
+
+A declared Blob source is part of one index document. An oversized, invalid UTF-8 or otherwise
+permanently unusable Blob makes that whole document unindexable rather than publishing a partial
+document with different match semantics. A transient Blob read failure rolls back the accepted
+native batch and replays it within the bounded retry budget. This preserves cursor and publication
+atomicity at the cost of delaying unrelated records in that batch.
+
 ### Bounded delivery
 
 A drain turn **collects** identities from the iterator — `(tableId, recordId, logVersion)` per

@@ -707,6 +707,7 @@ describe('FullTextQueryIndex', () => {
 						async reload() {},
 						async close() {
 							closes[readerIndex]++;
+							if (readerIndex === 0 && closes[readerIndex] === 1) throw new Error('close failed');
 						},
 					};
 				},
@@ -722,9 +723,11 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(opens, 2);
 		assert.strictEqual(closes[0], 0);
 		firstSearch.resolve();
-		await first;
+		const firstResult = await first;
+		assert.strictEqual(firstResult.length, 1);
 		assert.strictEqual(closes[0], 1);
 		await index.close();
+		assert.strictEqual(closes[0], 2);
 		assert.strictEqual(closes[1], 1);
 	});
 
