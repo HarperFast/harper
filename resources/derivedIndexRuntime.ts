@@ -133,6 +133,8 @@ export interface DerivedIndexBackendHost {
  */
 export interface DerivedIndexBackend {
 	readonly id: string;
+	/** Allocate and publish cross-worker query revisions for backends with external reader state. */
+	readonly publishesQueryRevisions?: boolean;
 	/** Receives the epoch fence and readiness reader before any delivery. */
 	attach(host: DerivedIndexBackendHost): void;
 	getDurableCursor(): DerivedIndexCursor | undefined;
@@ -650,9 +652,9 @@ class DerivedIndexRunner {
 	#ownerEpoch?: bigint;
 	#readinessBuffer: SharedReadinessBuffer;
 	#wakeBuffer: SharedReadinessBuffer;
-	#publicationBuffer: SharedReadinessBuffer;
+	#publicationBuffer?: SharedReadinessBuffer;
 	#sharedViews: SharedViews;
-	#publicationRevision: BigInt64Array;
+	#publicationRevision?: BigInt64Array;
 	#resetting?: Promise<void>;
 	status: DerivedIndexRunnerStatus = { state: 'idle' };
 
@@ -705,9 +707,11 @@ class DerivedIndexRunner {
 			this.readinessId === this.id ? notified : undefined
 		);
 		this.#wakeBuffer = this.readinessId === this.id ? this.#readinessBuffer : wakeBuffer(logStore, this.id, notified);
-		this.#publicationBuffer = publicationBuffer(logStore, this.readinessId);
 		this.#sharedViews = sharedViewsOf(this.#readinessBuffer);
-		this.#publicationRevision = new BigInt64Array(this.#publicationBuffer, 0, 1);
+		if (registration.backend.publishesQueryRevisions) {
+			this.#publicationBuffer = publicationBuffer(logStore, this.readinessId);
+			this.#publicationRevision = new BigInt64Array(this.#publicationBuffer, 0, 1);
+		}
 		try {
 			registration.backend.attach({
 				isOwnerEpoch: (epoch) => Atomics.load(this.#sharedViews.epoch, 0) === epoch,
@@ -720,7 +724,7 @@ class DerivedIndexRunner {
 		} catch (error) {
 			this.#readinessBuffer.cancel?.();
 			if (this.#wakeBuffer !== this.#readinessBuffer) this.#wakeBuffer.cancel?.();
-			this.#publicationBuffer.cancel?.();
+			this.#publicationBuffer?.cancel?.();
 			throw error;
 		}
 		this.#unregisterTables = registerDerivedIndexTables(
@@ -782,7 +786,7 @@ class DerivedIndexRunner {
 			this.#unsubscribeBackend?.();
 			this.#readinessBuffer.cancel?.();
 			if (this.#wakeBuffer !== this.#readinessBuffer) this.#wakeBuffer.cancel?.();
-			this.#publicationBuffer.cancel?.();
+			this.#publicationBuffer?.cancel?.();
 		} catch (error) {
 			logger.warn?.(`Derived index '${this.id}' cleanup hook threw`, error);
 		}
@@ -1647,6 +1651,7 @@ class DerivedIndexRunner {
 			}
 		}
 		this.#boundaryPending = false;
+		// A waiter that observes the covering clock must also observe this durable publication revision.
 		if (offeredIndex > 0) this.#publicationChanged();
 		for (let i = offeredIndex; i >= 0; i--) {
 			const coverage = this.#offeredCursors[i].coverage;
@@ -1664,6 +1669,7 @@ class DerivedIndexRunner {
 	}
 
 	#publicationChanged(): void {
+		if (!this.#publicationRevision || !this.#publicationBuffer) return;
 		Atomics.add(this.#publicationRevision, 0, 1n);
 		try {
 			this.#publicationBuffer.notify?.();

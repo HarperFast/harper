@@ -14,11 +14,15 @@ const { nativeFullTextIndexPath } = require('#src/resources/indexes/nativeFullTe
 function sharedStore() {
 	const buffers = new Map();
 	const callbacks = new Map();
+	let committedPosition;
 	const rootStore = {
 		getMonotonicTimestamp: () => 100,
 		listLogs: () => ['local'],
 		useLog: () => ({
-			getStats: () => ({ lastCommittedPosition: undefined, nextLogPosition: { sequence: 0, offset: 0 } }),
+			getStats: () => ({
+				lastCommittedPosition: committedPosition,
+				nextLogPosition: committedPosition ?? { sequence: 0, offset: 0 },
+			}),
 		}),
 	};
 	return {
@@ -40,10 +44,17 @@ function sharedStore() {
 			const buffer = buffers.get(`derived-index:${readinessId}:readiness`);
 			new BigInt64Array(buffer, buffer.byteLength - 8, 1)[0] = nanoseconds;
 		},
+		setCommittedPosition(position) {
+			committedPosition = position;
+		},
+		listenerCount(readinessId) {
+			return callbacks.get(`derived-index:${readinessId}:publication`)?.size ?? 0;
+		},
 		publish(readinessId, notify = true) {
 			const name = `derived-index:${readinessId}:publication`;
-			Atomics.add(new BigInt64Array(buffers.get(name), 0, 1), 0, 1n);
+			const revision = Atomics.add(new BigInt64Array(buffers.get(name), 0, 1), 0, 1n) + 1n;
 			if (notify) for (const callback of callbacks.get(name) ?? []) setImmediate(callback);
+			return revision;
 		},
 	};
 }
@@ -79,7 +90,107 @@ function attachCurrentCoverage(index, auditStore, readinessId) {
 	return { publish: (notify) => auditStore.publish(readinessId, notify) };
 }
 
+function simpleQueryIndex({ auditStore, readinessId, payload, hits, onReload, onGetEntry }) {
+	let committedPayload = payload;
+	let reloads = 0;
+	const index = new FullTextQueryIndex({
+		Table: {
+			tableId: 1,
+			primaryStore: {
+				rootStore: auditStore.rootStore,
+				getEntry: (key) => {
+					onGetEntry?.(key);
+					return { version: 1, value: { title: 'shoe' } };
+				},
+			},
+			_readTxnForContext: () => undefined,
+		},
+		definition: definition(),
+		auditStore,
+		readinessId,
+		indexId: readinessId,
+		storePath: '/unused',
+		storeName: 'unused',
+		sourceGeneration: 'generation',
+		limits: {},
+		binding: {
+			async runtimeInfo() {
+				return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+			},
+			async openNativeFullTextReader() {
+				return {
+					get committedPayload() {
+						return committedPayload;
+					},
+					async search() {
+						const current = hits();
+						return { total: current.length, totalRelation: 'exact', hits: current };
+					},
+					async reload() {
+						reloads++;
+						onReload?.();
+					},
+					async close() {},
+				};
+			},
+		},
+	});
+	return {
+		index,
+		reloads: () => reloads,
+		setPayload: (value) => (committedPayload = value),
+	};
+}
+
 describe('FullTextQueryIndex', () => {
+	it('subscribes to publications only after the first query and cancels on close', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'lazy-publication-subscription';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		assert.strictEqual(auditStore.listenerCount(readinessId), 0);
+		await index.search({ comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 });
+		assert.strictEqual(auditStore.listenerCount(readinessId), 1);
+		await index.close();
+		assert.strictEqual(auditStore.listenerCount(readinessId), 0);
+	});
+
+	it('shares the loaded source entry with pushed-down record filters', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'single-source-load';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let reads = 0;
+		let filteredEntry;
+		const index = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+			onGetEntry: () => reads++,
+		}).index;
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await index.search(
+			{ comparator: 'matches', value: 'shoe' },
+			{},
+			{
+				minResults: 1,
+				filter(_key, entry) {
+					filteredEntry = entry;
+					return true;
+				},
+			}
+		);
+		assert.strictEqual(reads, 1);
+		assert.strictEqual(filteredEntry.value.title, 'shoe');
+		await index.close();
+	});
+
 	it('filters stale hits, reloads on publication, and batches highlighting at native limits', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'fulltext:products:catalogSearch';
@@ -138,7 +249,7 @@ describe('FullTextQueryIndex', () => {
 			async runtimeInfo() {
 				return {
 					queryClassIsolationMinimumSearchThreads: 3,
-					limits: { maxSearchWindow: 10_000, maxTraceRecords: 1 },
+					limits: { maxSearchWindow: 10_000, maxTraceRecords: 10, maxTraceSourceBytes: 20 },
 				};
 			},
 			async openNativeFullTextReader(options) {
@@ -246,7 +357,7 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+					return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
 				},
 				async openNativeFullTextReader() {
 					return {
@@ -285,6 +396,106 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	it('reloads the covering data publication before a waiting search', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'waiting-publication-generation';
+		const firstPosition = { sequence: 1, offset: 10 };
+		const secondPosition = { sequence: 1, offset: 20 };
+		auditStore.setCommittedPosition(firstPosition);
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let visible = false;
+		const fixture = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: encodeFullTextCursorPayload({
+				format: 1,
+				logs: { local: 1 },
+				coverage: { local: firstPosition },
+			}),
+			hits: () => (visible ? [{ id: nativeId(1, 'one'), version: '1', score: 1 }] : []),
+			onReload: () => (visible = true),
+		});
+		const { index } = fixture;
+		auditStore.setCoverage(readinessId, 99_000_000n);
+		index.attachDerivedHost({
+			readiness: () => ({ state: 'ready' }),
+			requestRebuild: () => true,
+			waitForCoverage: async () => {
+				fixture.setPayload(
+					encodeFullTextCursorPayload({
+						format: 1,
+						logs: { local: 2 },
+						coverage: { local: secondPosition },
+					})
+				);
+				auditStore.publish(readinessId, false);
+			},
+		});
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
+		assert.strictEqual((await index.search(query, {}, { minResults: 1 })).length, 0);
+
+		auditStore.setCommittedPosition(secondPosition);
+		const results = await index.search({ ...query, waitForIndexMilliseconds: 1000 }, {}, { minResults: 1 });
+		assert.strictEqual(fixture.reloads(), 1);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			['one']
+		);
+		await index.close();
+	});
+
+	it('keeps coverage-only publication off the data-freshness path', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'coverage-only-publication';
+		const firstPosition = { sequence: 1, offset: 10 };
+		const secondPosition = { sequence: 1, offset: 20 };
+		auditStore.setCommittedPosition(firstPosition);
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const fixture = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: encodeFullTextCursorPayload({
+				format: 1,
+				logs: { local: 1 },
+				coverage: { local: firstPosition },
+			}),
+			hits: () => [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+		});
+		const { index } = fixture;
+		auditStore.setCoverage(readinessId, 99_000_000n);
+		index.attachDerivedHost({
+			readiness: () => ({ state: 'ready' }),
+			requestRebuild: () => true,
+			waitForCoverage: async () => {},
+		});
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
+		await index.search(query, {}, { minResults: 1 });
+		assert.strictEqual((await index.search({ ...query, maxIndexLagMilliseconds: 0 }, {}, { minResults: 1 })).length, 1);
+
+		auditStore.setCommittedPosition(secondPosition);
+		assert.strictEqual(
+			(await index.search({ ...query, waitForIndexMilliseconds: 1000 }, {}, { minResults: 1 })).length,
+			1
+		);
+		await assert.rejects(
+			index.search({ ...query, maxIndexLagMilliseconds: 0 }, {}, { minResults: 1 }),
+			(error) => error.code === 'DERIVED_INDEX_LAGGING'
+		);
+		assert.strictEqual(fixture.reloads(), 0);
+
+		fixture.setPayload(
+			encodeFullTextCursorPayload({
+				format: 1,
+				logs: { local: 1 },
+				coverage: { local: secondPosition },
+			})
+		);
+		auditStore.publish(readinessId);
+		await waitFor(() => fixture.reloads() === 1);
+		assert.strictEqual((await index.search({ ...query, maxIndexLagMilliseconds: 0 }, {}, { minResults: 1 })).length, 1);
+		await index.close();
+	});
+
 	it('fails closed and requests one rebuild for an invalid reader checkpoint', async () => {
 		for (const payload of [undefined, 'not-json']) {
 			const auditStore = sharedStore();
@@ -303,7 +514,7 @@ describe('FullTextQueryIndex', () => {
 				limits: {},
 				binding: {
 					async runtimeInfo() {
-						return { limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+						return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
 					},
 					async openNativeFullTextReader() {
 						return { committedPayload: payload, async search() {}, async reload() {}, async close() {} };
@@ -322,6 +533,83 @@ describe('FullTextQueryIndex', () => {
 			assert.strictEqual(rebuilds, 1);
 			await index.close();
 		}
+	});
+
+	it('retries a rebuild request that throws without consuming the repair latch', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'throwing-rebuild-request';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let rebuilds = 0;
+		const index = new FullTextQueryIndex({
+			Table: { tableId: 1, primaryStore: {}, _readTxnForContext: () => undefined },
+			definition: definition(),
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath: '/unused',
+			storeName: 'unused',
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+				},
+				async openNativeFullTextReader() {
+					return { committedPayload: undefined, async search() {}, async reload() {}, async close() {} };
+				},
+			},
+		});
+		auditStore.setCoverage(readinessId, 99_000_000n);
+		index.attachDerivedHost({
+			readiness: () => ({ state: 'ready' }),
+			requestRebuild() {
+				if (++rebuilds === 1) throw new Error('notification unavailable');
+				return true;
+			},
+			waitForCoverage: async () => {},
+		});
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
+		await assert.rejects(index.search(query, {}), (error) => error.name === 'IndexRebuildingError');
+		await assert.rejects(index.search(query, {}), (error) => error.name === 'IndexRebuildingError');
+		assert.strictEqual(rebuilds, 2);
+		await index.close();
+	});
+
+	it('does not consume the rebuild request before a derived host is attached', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'late-rebuild-host';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const index = new FullTextQueryIndex({
+			Table: { tableId: 1, primaryStore: {}, _readTxnForContext: () => undefined },
+			definition: definition(),
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath: '/unused',
+			storeName: 'unused',
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+				},
+				async openNativeFullTextReader() {
+					return { committedPayload: undefined, async search() {}, async reload() {}, async close() {} };
+				},
+			},
+		});
+		auditStore.setCoverage(readinessId, 99_000_000n);
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
+		await assert.rejects(index.search(query, {}), (error) => error.name === 'IndexRebuildingError');
+		let rebuilds = 0;
+		index.attachDerivedHost({
+			readiness: () => ({ state: 'ready' }),
+			requestRebuild: () => (rebuilds++, true),
+			waitForCoverage: async () => {},
+		});
+		await assert.rejects(index.search(query, {}), (error) => error.name === 'IndexRebuildingError');
+		assert.strictEqual(rebuilds, 1);
+		await index.close();
 	});
 
 	it('does not open native storage before shared readiness is ready', async () => {
@@ -374,7 +662,10 @@ describe('FullTextQueryIndex', () => {
 			binding: {
 				async runtimeInfo() {
 					if (++probes === 1) throw new Error('temporary capability probe failure');
-					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+					};
 				},
 				async openNativeFullTextReader() {
 					opens++;
@@ -417,7 +708,10 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+					};
 				},
 				async openNativeFullTextReader() {
 					return {
@@ -454,7 +748,7 @@ describe('FullTextQueryIndex', () => {
 		let failReload = false;
 		const binding = {
 			async runtimeInfo() {
-				return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+				return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
 			},
 			async openNativeFullTextReader(options) {
 				opens.push(structuredClone(options));
@@ -535,7 +829,10 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+					};
 				},
 				async openNativeFullTextReader() {
 					opens++;
@@ -597,7 +894,7 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { limits: { maxSearchWindow: 2, maxTraceRecords: 10 } };
+					return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 2, maxTraceRecords: 10 } };
 				},
 				async openNativeFullTextReader() {
 					return {
@@ -657,7 +954,10 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+					};
 				},
 				async openNativeFullTextReader() {
 					return {
@@ -708,7 +1008,7 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { limits: { maxSearchWindow: 2, maxTraceRecords: 10 } };
+					return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 2, maxTraceRecords: 10 } };
 				},
 				async openNativeFullTextReader() {
 					return {
@@ -760,7 +1060,7 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { limits: { maxSearchWindow: 2, maxTraceRecords: 10 } };
+					return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 2, maxTraceRecords: 10 } };
 				},
 				async openNativeFullTextReader() {
 					return {
@@ -806,7 +1106,7 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+					return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
 				},
 				async openNativeFullTextReader() {
 					return {
@@ -857,7 +1157,7 @@ describe('FullTextQueryIndex', () => {
 				limits: {},
 				binding: {
 					async runtimeInfo() {
-						return { limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+						return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
 					},
 					async openNativeFullTextReader() {
 						return {
@@ -905,7 +1205,7 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+					return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
 				},
 				async openNativeFullTextReader() {
 					return {
@@ -957,7 +1257,10 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+					};
 				},
 				async openNativeFullTextReader() {
 					const readerIndex = opens++;
@@ -1024,7 +1327,10 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+					};
 				},
 				async openNativeFullTextReader() {
 					return {
@@ -1059,6 +1365,7 @@ describe('FullTextQueryIndex', () => {
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
 		let bodyReads = 0;
 		let bodyReadFails = false;
+		const tracedFieldSets = [];
 		class CountedBlob extends Blob {
 			async arrayBuffer() {
 				bodyReads++;
@@ -1090,7 +1397,10 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+					};
 				},
 				async openNativeFullTextReader() {
 					return {
@@ -1101,9 +1411,9 @@ describe('FullTextQueryIndex', () => {
 								hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
 							};
 						},
-						async traceMatches(_request, records) {
-							assert.deepStrictEqual(Object.keys(records[0].fields), ['title']);
-							assert.strictEqual(records[0].fields.title, 'trail shoe');
+						async traceMatches(request, records) {
+							tracedFieldSets.push(Object.keys(records[0].fields));
+							assert.deepStrictEqual(Object.keys(records[0].fields), request.fields);
 							return {
 								complete: true,
 								records: [
@@ -1139,6 +1449,23 @@ describe('FullTextQueryIndex', () => {
 		);
 		assert.strictEqual(bodyReads, 0);
 		assert.deepStrictEqual(Object.keys(result.$highlights), ['title']);
+		await index.search(
+			{
+				attribute: readinessId,
+				comparator: 'matches',
+				value: 'shoe',
+				fullTextLeaves: [
+					{ text: 'trail', mode: 'any', fields: ['title'] },
+					{ text: 'shoe', mode: 'any', fields: ['body'] },
+				],
+				includeHighlights: true,
+			},
+			{},
+			{ minResults: 1 }
+		);
+		assert.deepStrictEqual(tracedFieldSets, [['title'], ['title'], ['body']]);
+		assert.strictEqual(bodyReads, 1);
+		bodyReads = 0;
 		bodyReadFails = true;
 		await assert.rejects(
 			index.search(
@@ -1153,7 +1480,12 @@ describe('FullTextQueryIndex', () => {
 				{},
 				{ minResults: 1 }
 			),
-			/Full-text search on 'catalogSearch' failed/
+			(error) => {
+				assert.strictEqual(error.name, 'DerivedIndexLagError');
+				assert.strictEqual(error.statusCode, 503);
+				assert.strictEqual(error.retryable, true);
+				return true;
+			}
 		);
 		assert.strictEqual(bodyReads, 1);
 		await index.close();
@@ -1183,7 +1515,10 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+					};
 				},
 				async openNativeFullTextReader() {
 					opens++;
@@ -1241,7 +1576,10 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+					};
 				},
 				async openNativeFullTextReader() {
 					if (firstOpen) {
@@ -1307,7 +1645,10 @@ describe('FullTextQueryIndex', () => {
 				limits: {},
 				binding: {
 					async runtimeInfo() {
-						return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+						return {
+							queryClassIsolationMinimumSearchThreads: 1,
+							limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+						};
 					},
 					async openNativeFullTextReader() {
 						return {
@@ -1400,7 +1741,10 @@ describe('FullTextQueryIndex', () => {
 				limits: {},
 				binding: {
 					async runtimeInfo() {
-						return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+						return {
+							queryClassIsolationMinimumSearchThreads: 1,
+							limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+						};
 					},
 					async openNativeFullTextReader() {
 						return {
@@ -1473,7 +1817,10 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+					};
 				},
 				async openNativeFullTextReader() {
 					return {
@@ -1525,7 +1872,10 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+					};
 				},
 				async openNativeFullTextReader() {
 					return {

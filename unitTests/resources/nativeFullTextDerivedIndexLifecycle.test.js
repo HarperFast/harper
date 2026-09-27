@@ -67,7 +67,12 @@ class FakeNativeModule {
 			mutationBatchApiVersion: 4,
 			queryApiVersion: 2,
 			storageBackends: ['native'],
-			limits: { maxCommitPayloadBytes: this.maxCommitPayloadBytes, maxSearchWindow: 10_000, maxTraceRecords: 128 },
+			limits: {
+				maxCommitPayloadBytes: this.maxCommitPayloadBytes,
+				maxSearchWindow: 10_000,
+				maxTraceRecords: 128,
+				maxTraceSourceBytes: 1024 * 1024,
+			},
 		};
 	}
 
@@ -467,7 +472,12 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			mutationBatchApiVersion: 4,
 			queryApiVersion: 2,
 			storageBackends: ['native'],
-			limits: { maxCommitPayloadBytes: 64 * 1024, maxSearchWindow: 10_000, maxTraceRecords: 128 },
+			limits: {
+				maxCommitPayloadBytes: 64 * 1024,
+				maxSearchWindow: 10_000,
+				maxTraceRecords: 128,
+				maxTraceSourceBytes: 1024 * 1024,
+			},
 		});
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
@@ -482,7 +492,12 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			storageBackends: ['native'],
-			limits: { maxCommitPayloadBytes: 64 * 1024, maxSearchWindow: 10_000, maxTraceRecords: 128 },
+			limits: {
+				maxCommitPayloadBytes: 64 * 1024,
+				maxSearchWindow: 10_000,
+				maxTraceRecords: 128,
+				maxTraceSourceBytes: 1024 * 1024,
+			},
 		});
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
@@ -492,6 +507,18 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		const binding = new FakeNativeModule();
 		const runtimeInfo = binding.runtimeInfo.bind(binding);
 		binding.runtimeInfo = async () => ({ ...(await runtimeInfo()), mutationBatchApiVersion: 5 });
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
+	});
+
+	it('requires the native trace source-byte limit', async () => {
+		const binding = new FakeNativeModule();
+		const runtimeInfo = binding.runtimeInfo.bind(binding);
+		binding.runtimeInfo = async () => {
+			const info = await runtimeInfo();
+			delete info.limits.maxTraceSourceBytes;
+			return info;
+		};
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
 	});

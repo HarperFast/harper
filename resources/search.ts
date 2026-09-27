@@ -10,7 +10,8 @@ import { writeKeyId, getReadTransactionGuard } from './DatabaseTransaction.ts';
 import { recordAction } from './analytics/write';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
-import { fullTextComparatorMode, type FullTextCondition } from './indexes/fullTextQueryIndex.ts';
+import type { FullTextCondition } from './indexes/fullTextQueryIndex.ts';
+import { FULL_TEXT_POSITIVE_COMPARATORS, fullTextComparatorMode } from './indexes/fullTextQueryProtocol.ts';
 
 export { fullTextComparatorMode };
 
@@ -295,8 +296,7 @@ function compileFullTextExpression(
 		const children = condition.conditions.map((child) => compileFullTextExpression(child, table));
 		const fullTextChildren = children.filter(Boolean) as Array<NonNullable<(typeof children)[number]>>;
 		if (fullTextChildren.length === 0) return;
-		const groupOperator = condition.operator === 'or' ? 'or' : condition.operator === 'and' ? 'and' : undefined;
-		if (!groupOperator) throw new ClientError('Full-text groups require an and or or operator', 400);
+		const groupOperator = condition.operator === 'or' ? 'or' : 'and';
 		const remaining = condition.conditions.filter((_child, index) => !children[index]);
 		for (const child of fullTextChildren) if (child.remaining) remaining.push(...child.remaining);
 		if (groupOperator === 'or' && remaining.length > 0)
@@ -365,14 +365,14 @@ function isFilterablePushdown(condition, table): boolean {
  * `primaryStore.getEntry` and frozen before the predicates see it. Verdicts are memoized per query since
  * the graph can reach a node from multiple neighbors. A missing/deleted record fails the predicate.
  */
-function composeRecordFilter(recordFilters, table, context): (primaryKey: Id) => boolean {
+function composeRecordFilter(recordFilters, table, context): (primaryKey: Id, suppliedEntry?: any) => boolean {
 	const memo = new Map<Id, boolean>();
 	const transaction = context && table._readTxnForContext ? table._readTxnForContext(context) : undefined;
-	return (primaryKey: Id) => {
+	return (primaryKey: Id, suppliedEntry?: any) => {
 		const cached = memo.get(primaryKey);
 		if (cached !== undefined) return cached;
 		let verdict = false;
-		const entry = table.primaryStore.getEntry(primaryKey, { transaction });
+		const entry = suppliedEntry ?? table.primaryStore.getEntry(primaryKey, { transaction });
 		const record = entry?.value;
 		if (record != null) {
 			freezeRecord(record);
@@ -546,6 +546,8 @@ export function searchByIndex(
 		// the bounded index iteration would only visit *included* rows.
 		start = true;
 		needFullScan = true;
+	} else if (fullTextMode) {
+		start = true;
 	} else
 		switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
 			case 'lt':
@@ -620,14 +622,6 @@ export function searchByIndex(
 				// we have to revert to full table scan here
 				start = true;
 				needFullScan = true;
-				break;
-			case 'matches':
-			case 'matches_all':
-			case 'matches_phrase':
-			case 'matches_prefix':
-			case 'matches_fuzzy':
-			case 'matches_fuzzy_prefix':
-				start = true;
 				break;
 			default:
 				throw new ClientError(`Unknown query comparator "${comparator}"`);
@@ -1104,12 +1098,7 @@ const NEGATABLE_BASE_COMPARATORS = new Set([
 	'ends_with',
 	'contains',
 	'equals',
-	'matches',
-	'matches_all',
-	'matches_phrase',
-	'matches_prefix',
-	'matches_fuzzy',
-	'matches_fuzzy_prefix',
+	...FULL_TEXT_POSITIVE_COMPARATORS,
 ]);
 
 /**

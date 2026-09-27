@@ -401,7 +401,12 @@ class FakeNativeFullTextModule {
 			mutationBatchApiVersion: 4,
 			queryApiVersion: 2,
 			storageBackends: ['native'],
-			limits: { maxCommitPayloadBytes: 64 * 1024, maxSearchWindow: 10_000, maxTraceRecords: 128 },
+			limits: {
+				maxCommitPayloadBytes: 64 * 1024,
+				maxSearchWindow: 10_000,
+				maxTraceRecords: 128,
+				maxTraceSourceBytes: 1024 * 1024,
+			},
 		};
 	}
 

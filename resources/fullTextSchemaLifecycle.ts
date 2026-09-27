@@ -3,6 +3,7 @@ import {
 	compileFullTextDefinition,
 	compileFullTextDefinitions,
 	compileValidFullTextDefinitions,
+	migratePersistedFullTextDefinition,
 	sortFullTextDefinitions,
 	type FullTextDefinition,
 	type FullTextSchemaAttribute,
@@ -67,7 +68,7 @@ export function mergePeerFullTextDefinitions(
 	for (const value of incomingValues) {
 		let incoming: FullTextDefinition;
 		try {
-			incoming = compileFullTextDefinition(value, attributes);
+			incoming = compileFullTextDefinition(migratePersistedFullTextDefinition(value), attributes);
 		} catch (error) {
 			if (!(error instanceof ClientError)) throw error;
 			warn(`Ignoring invalid peer @fullText declaration: ${error.message}`);

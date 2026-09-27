@@ -138,6 +138,7 @@ class FullTextDerivedIndexConfigurationError extends FullTextDerivedIndexError {
 
 export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	readonly id: string;
+	readonly publishesQueryRevisions = true;
 	#lifecycle: FullTextDerivedIndexLifecycle;
 	#maxQueuedBatches: number;
 	#maxQueuedBytes: number;
@@ -281,22 +282,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#cursorInspectedForAcquisition = true;
 		}
 		return this.#durableCursor;
-	}
-
-	getPublicationRevision(): bigint {
-		this.#assertAttached();
-		this.getDurableCursor();
-		return this.#dataRevision;
-	}
-
-	refreshDurablePublication(): void {
-		this.#assertAttached();
-		if (this.#activeEpoch === undefined && !this.#engine) {
-			const publication = this.#inspectPublication();
-			this.#durableCursor = publication.cursor;
-			this.#dataRevision = publication.dataRevision;
-			this.#cursorInspectedForAcquisition = true;
-		}
 	}
 
 	#inspectPublication(): FullTextPublication {

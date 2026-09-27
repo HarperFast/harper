@@ -179,7 +179,7 @@ function isPersistedEnglishV1(value: unknown): boolean {
 	);
 }
 
-function migratePersistedFullTextDefinition(value: unknown): unknown {
+export function migratePersistedFullTextDefinition(value: unknown): unknown {
 	if (!isPersistedEnglishV1(value)) return value;
 	return { ...(value as Record<string, unknown>), analyzer: DEFAULT_ANALYZER };
 }
@@ -246,8 +246,6 @@ export function compileFullTextDefinition(
 	const synonyms = compileSynonyms(definition.synonyms, indexName);
 	const highlighting = compileHighlighting(definition.highlighting, indexName);
 	const highlightedFields = fields.filter(({ highlight }) => highlight === true);
-	if (highlightedFields.length > 0 && !highlighting)
-		throw schemaError(`@fullText index "${indexName}" requires "highlighting" when a source field enables highlights`);
 	if (highlighting && highlightedFields.length === 0)
 		throw schemaError(`@fullText index "${indexName}" requires at least one source field with highlight: true`);
 

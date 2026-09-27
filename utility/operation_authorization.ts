@@ -1171,6 +1171,11 @@ function getRecordAttributes(json, operationName?) {
 			}
 
 			for (const attr of json.get_attributes) {
+				if (
+					json.operation === terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS &&
+					(attr === '$score' || attr === '$highlights')
+				)
+					continue;
 				affectedAttributes.add(attr);
 			}
 		} else {

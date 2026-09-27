@@ -1313,6 +1313,16 @@ describe('Test operation_authorization', function () {
 			);
 		});
 
+		it('does not treat full-text result metadata as stored attributes', function () {
+			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
+			let req_json = clone(TEST_CONDITIONS_JSON);
+			req_json.get_attributes = ['id', '$score', '$highlights'];
+			let result = getRecordAttributes(req_json);
+			assert(result.has('id'));
+			assert.strictEqual(result.has('$score'), false);
+			assert.strictEqual(result.has('$highlights'), false);
+		});
+
 		it('does not treat an unknown comparator containing matches as full text', function () {
 			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
 			let req_json = clone(TEST_CONDITIONS_JSON);

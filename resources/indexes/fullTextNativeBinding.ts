@@ -96,6 +96,7 @@ export type NativeFullTextRuntimeInfo = {
 		maxCommitPayloadBytes: number;
 		maxSearchWindow: number;
 		maxTraceRecords: number;
+		maxTraceSourceBytes: number;
 	};
 };
 
@@ -216,7 +217,9 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		!Number.isSafeInteger(info.limits.maxSearchWindow) ||
 		info.limits.maxSearchWindow <= 0 ||
 		!Number.isSafeInteger(info.limits.maxTraceRecords) ||
-		info.limits.maxTraceRecords <= 0
+		info.limits.maxTraceRecords <= 0 ||
+		!Number.isSafeInteger(info.limits.maxTraceSourceBytes) ||
+		info.limits.maxTraceSourceBytes <= 0
 	)
 		throw new TypeError('@harperfast/fulltext/native reported incompatible runtime capabilities');
 	validatedRuntimeInfo.set(binding, info);
@@ -230,12 +233,11 @@ export function getValidatedFullTextRuntimeInfo(binding: NativeFullTextModule): 
 }
 
 export function nativeFullTextSearchThreads(
-	info: { queryClassIsolationMinimumSearchThreads?: unknown },
+	info: Pick<NativeFullTextRuntimeInfo, 'queryClassIsolationMinimumSearchThreads'>,
 	configured: number
 ): number {
 	const minimum = info.queryClassIsolationMinimumSearchThreads;
-	if (minimum === undefined) return configured;
-	if (typeof minimum !== 'number' || !Number.isSafeInteger(minimum) || minimum <= 0)
+	if (!Number.isSafeInteger(minimum) || minimum <= 0)
 		throw new TypeError('@harperfast/fulltext/native reported an invalid query-class isolation threshold');
 	return Math.max(configured, minimum);
 }

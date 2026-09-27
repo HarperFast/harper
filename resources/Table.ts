@@ -2668,8 +2668,7 @@ export function makeTable(options) {
 		 */
 		allowRead(user: User, target: RequestTarget, context: Context): boolean {
 			const tablePermission = getTablePermissions(user, target);
-			// Resource.search consumes checkPermission before instance search. Preserve its resolved
-			// permission only when a full-text condition may need source-field authorization later.
+			// Resource.search consumes checkPermission before full-text source-field authorization runs.
 			if (TableResource.fullTextIndexes.length > 0 && target?.checkPermission && tablePermission)
 				(target as any)[FULL_TEXT_READ_PERMISSION] = tablePermission;
 			if (tablePermission?.read) {

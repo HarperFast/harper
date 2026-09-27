@@ -94,11 +94,6 @@ describe('@fullText declaration compiler', () => {
 			/positive integer/,
 		],
 		[
-			'highlighted source without highlighting configuration',
-			{ name: 'search', fields: [{ name: 'title', highlight: true }] },
-			/requires "highlighting"/,
-		],
-		[
 			'highlighting configuration without a highlighted source',
 			{ name: 'search', fields: [{ name: 'title' }], highlighting: {} },
 			/requires at least one source field/,
@@ -108,6 +103,15 @@ describe('@fullText declaration compiler', () => {
 			assert.throws(() => compileFullTextDefinitions([definition], productAttributes()), pattern);
 		});
 	}
+
+	it('keeps highlighted fields disabled when highlighting configuration is omitted', () => {
+		const [definition] = compileFullTextDefinitions(
+			[{ name: 'search', fields: [{ name: 'title', highlight: true }] }],
+			productAttributes()
+		);
+		assert.strictEqual(definition.fields[0].highlight, true);
+		assert.strictEqual(definition.highlighting, undefined);
+	});
 
 	it('rejects computed and relationship sources', () => {
 		for (const source of [
@@ -640,7 +644,7 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 			attributes: [{ name: 'description', type: 'String' }],
 			fullTextIndexes: [
 				{ name: 'search', fields: [{ name: 'title', weight: 9 }] },
-				{ name: 'description', fields: [{ name: 'description' }] },
+				{ name: 'description', fields: [{ name: 'description' }], analyzer: 'english@1' },
 			],
 			origin: 'cluster',
 		});
@@ -650,6 +654,8 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 			['description', 'search']
 		);
 		assert.strictEqual(Merged.fullTextIndexes.find(({ name }) => name === 'search').fields[0].weight, 2);
+		assert.strictEqual(Merged.fullTextIndexes.find(({ name }) => name === 'description').analyzer, 'english@2');
+		assert.strictEqual(primaryDescriptor(Merged).fullTextIndexes[0].analyzer, 'english@2');
 		assert.strictEqual(primaryDescriptor(Merged).fullTextIndexes.length, 2);
 
 		table({

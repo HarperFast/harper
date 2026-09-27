@@ -247,7 +247,7 @@ jobs:
         run: npm run build
 
       - name: Verify the published native binding loads
-        run: node --input-type=module --eval "const binding = await import('@harperfast/fulltext/native'); if (typeof binding.openNativeFullTextIndex !== 'function') throw new Error('@harperfast/fulltext loaded without a native index opener');"
+        run: node --input-type=module --eval "const binding = await import('@harperfast/fulltext/native'); if (typeof binding.openNativeFullTextIndex !== 'function' || typeof binding.openNativeFullTextReader !== 'function') throw new Error('@harperfast/fulltext loaded without native writer and reader openers');"
 
       - name: Native full-text lifecycle test
         run: npx mocha unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js

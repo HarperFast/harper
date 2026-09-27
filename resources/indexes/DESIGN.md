@@ -428,14 +428,24 @@ are keyed by native path, readiness id and owner epoch. A process-wide atomic pu
 invalidates stale handles and notifies peer workers. A warm reader reloads in the background after a
 notification, while every query still samples the generation and reloads on mismatch; notification
 delivery is an optimization, not a correctness dependency. Workers that never query an index open no
-reader. The wrapper refreshes the reader's committed payload with the searcher, and Harper keeps that
-decoded checkpoint on the reader slot so coverage always describes the snapshot being searched.
+reader or publication subscription. The shared derived-index runtime allocates this publication state
+only for backends with external reader snapshots; HNSW does not pay for it. A waiting query samples the
+generation after its coverage wait, so the data-publication bump that precedes the covering watermark
+is included in reader acquisition. The wrapper refreshes the reader's committed payload with the
+searcher, and Harper keeps that decoded checkpoint on the reader slot so coverage always describes the
+snapshot being searched.
+Coverage-only publications do not change the document set: the runtime permits them only after every
+accepted index mutation through that capture is durable. The shared live watermark may therefore wake a
+waiting query before Tantivy commits the newer restart checkpoint; the existing reader is data-current,
+and the later publication notification reloads its checkpoint. Catalog-scale qualification measures this
+metadata-only reload cadence so unrelated write traffic cannot become a hidden query-plane cost.
 Missing or malformed payloads fail closed and request one rebuild. A strict, non-waiting query on a
 cold worker can return retryable lag while it opens the reader; retrying, or using
 `waitForIndexMilliseconds`, allows the aligned reader to finish opening without synchronous filesystem
 inspection. An epoch or query-configuration change requires a replacement handle. A retired handle
-accepts no new leases but remains open until its active searches finish. Cleanup errors are retried
-during the next pause or close and never replace an otherwise successful query response.
+accepts no new leases but remains open until its active searches finish. Rejected closes remain tracked
+and are retried during the next pause or close; a fulfilled native cleanup warning is logged. Neither
+replaces an otherwise successful query response.
 One failed reload leaves the last aligned snapshot installed and returns retryable lag. Three
 consecutive reload failures retire that handle so the next query reopens from native storage.
 
@@ -464,7 +474,9 @@ and rebuilds instead of serving mixed tokenization semantics.
 
 Highlighting is declaration-controlled and off unless configured. Snippet fragments contain source
 plaintext, so Harper authorizes every highlighted source field before search; selecting
-`$highlights` is also selecting that configured plaintext egress.
+`$highlights` is also selecting that configured plaintext egress. Harper bounds each native trace call
+by both record count and encoded source bytes and sends only the fields used by that query leaf. A
+single record larger than the native trace limit is rejected before crossing the binding.
 
 Search hits carry the source record version. Harper loads the authoritative record through its read
 transaction and omits a hit when that version no longer matches; it never attaches an old score or
@@ -650,6 +662,9 @@ health transitions. An owner refreshes idle coverage at its flush cadence withou
 release deadline. A query within the certified age bound reads only shared memory and the monotonic
 clock; strict or older queries compare the persisted vector with current physical positions. This also
 certifies an unchanged index after owner release or process restart, when no usable time proof remains.
+An old owner can race with a non-ready transition and restore an earlier coverage time, but consumers
+gate the time on stable ready readiness; after rebuild, the rebuilt anchor still covers that earlier true
+prefix.
 Concurrent waiters on one worker/index share a single 25 ms poll timer, removed when all resolve,
 time out, or abort. A first waiter nudges its local runner without changing writer-lag accounting or
 retrying a deferred batch; an active peer owner already refreshes at flush cadence. No cross-worker

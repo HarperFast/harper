@@ -23,7 +23,12 @@ import {
 } from './fullTextNativeBinding.ts';
 import { nativeFullTextIndexPath } from './nativeFullTextDerivedIndexLifecycle.ts';
 import { decodeFullTextPublication, type FullTextPublication } from './fullTextDerivedIndex.ts';
-export { FULL_TEXT_QUERY_PAUSE_OPERATION, FULL_TEXT_QUERY_RESUME_OPERATION } from './fullTextQueryProtocol.ts';
+import { fullTextComparatorMode } from './fullTextQueryProtocol.ts';
+export {
+	FULL_TEXT_QUERY_PAUSE_OPERATION,
+	FULL_TEXT_QUERY_RESUME_OPERATION,
+	fullTextComparatorMode,
+} from './fullTextQueryProtocol.ts';
 import {
 	DEFAULT_MAX_INDEX_LAG_MILLISECONDS,
 	MAX_WAIT_FOR_INDEX_MILLISECONDS,
@@ -103,11 +108,13 @@ export class FullTextQueryIndex {
 	#retiredReaderSlots = new Set<ReaderSlot>();
 	#maxSearchWindow?: number;
 	#maxTraceRecords?: number;
+	#maxTraceSourceBytes?: number;
 	#closed = false;
 	#pauses: QueryPauses = new Map();
 	#derivedHost?: FullTextQueryHost;
-	#publicationSubscription: DerivedIndexPublicationSubscription;
+	#publicationSubscription?: DerivedIndexPublicationSubscription;
 	#publicationRebuildRequested = false;
+	#refreshFailureWarned = false;
 
 	constructor(options: FullTextQueryIndexOptions) {
 		this.#options = options;
@@ -133,9 +140,6 @@ export class FullTextQueryIndex {
 		indexes.add(this);
 		const pauses = pausedQueryPaths.get(this.#nativeOptions.path);
 		if (pauses) this.#pauses = new Map(pauses);
-		this.#publicationSubscription = subscribeDerivedIndexPublications(options.auditStore, options.readinessId, () =>
-			this.#refreshReader(false)
-		);
 	}
 
 	updateDefinition(definition: FullTextDefinition): void {
@@ -157,7 +161,7 @@ export class FullTextQueryIndex {
 	search(
 		condition: FullTextCondition,
 		context: any,
-		options: { filter?: (id: unknown) => boolean; minResults?: number; resultOffset?: number } = {}
+		options: { filter?: (id: unknown, entry?: any) => boolean; minResults?: number; resultOffset?: number } = {}
 	): Promise<Array<{ key: unknown; $score: number; $highlights?: Record<string, unknown>; loadedEntry: any }>> {
 		const maxIndexLagMilliseconds = condition.maxIndexLagMilliseconds ?? DEFAULT_MAX_INDEX_LAG_MILLISECONDS;
 		const waitForIndexMilliseconds = condition.waitForIndexMilliseconds ?? 0;
@@ -193,7 +197,7 @@ export class FullTextQueryIndex {
 		const operation = execute().catch((error) => {
 			if (error === context?.signal?.reason) throw error;
 			if (nativeErrorNeedsRebuild(error)) {
-				this.#derivedHost?.requestRebuild();
+				this.#requestRebuild();
 				void this.#retireAllReaders().catch(() => undefined);
 			}
 			throw publicSearchError(error, this.#definition.name);
@@ -209,7 +213,7 @@ export class FullTextQueryIndex {
 
 	async close(): Promise<void> {
 		this.#closed = true;
-		this.#publicationSubscription.close();
+		this.#publicationSubscription?.close();
 		try {
 			await this.#retireAllReaders();
 		} finally {
@@ -222,6 +226,10 @@ export class FullTextQueryIndex {
 	async pause(readinessId: string, ownerEpoch: bigint): Promise<void> {
 		const current = this.#pauses.get(readinessId);
 		if (current !== undefined && current > ownerEpoch) return;
+		if (current !== ownerEpoch)
+			logger.info?.(
+				`Pausing full-text readers for '${this.#definition.name}' while '${readinessId}' resets at owner epoch ${ownerEpoch}`
+			);
 		this.#pauses.set(readinessId, ownerEpoch);
 		await this.#retireAllReaders();
 	}
@@ -233,13 +241,13 @@ export class FullTextQueryIndex {
 	async #search(
 		condition: FullTextCondition,
 		context: any,
-		options: { filter?: (id: unknown) => boolean; minResults?: number; resultOffset?: number }
+		options: { filter?: (id: unknown, entry?: any) => boolean; minResults?: number; resultOffset?: number }
 	): Promise<Array<{ key: unknown; $score: number; $highlights?: Record<string, unknown>; loadedEntry: any }>> {
 		const readiness = readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId);
 		assertReady(readiness, this.#definition.name);
 		if (!this.#derivedHost) throw new IndexRebuildingError(`Full-text index '${this.#definition.name}' is not ready`);
 		if (options.minResults === 0) return [];
-		const publicationGeneration = this.#publicationSubscription.revision();
+		const publicationGeneration = this.#publicationRevision();
 		const lease = await this.#acquireReader(readiness.ownerEpoch, publicationGeneration);
 		const reader = lease.reader;
 		try {
@@ -263,6 +271,7 @@ export class FullTextQueryIndex {
 			let offset = 0;
 			let moreMayExist = false;
 			let staleVersionHits = 0;
+			const transaction = context && this.#options.Table._readTxnForContext(context);
 			while (accepted.length < target && offset < maxSearchWindow) {
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
 				const desiredPageSize = bounded
@@ -285,16 +294,14 @@ export class FullTextQueryIndex {
 				if (result.hits.length === 0) break;
 				for (const hit of result.hits) {
 					const key = decodeNativeId(hit.id, this.#options.Table.tableId);
-					const entry = this.#options.Table.primaryStore.getEntry(key, {
-						transaction: context && this.#options.Table._readTxnForContext(context),
-					});
+					const entry = this.#options.Table.primaryStore.getEntry(key, { transaction });
 					if (typeof hit.version !== 'string')
 						throw new ServerError('Full-text index returned a hit without a source version', 500);
 					if (!entry?.value || hit.version !== String(entry.version)) {
 						staleVersionHits++;
 						continue;
 					}
-					if (options.filter && !options.filter(key)) continue;
+					if (options.filter && !options.filter(key, entry)) continue;
 					accepted.push({ key, $score: hit.score, nativeId: hit.id, record: entry.value, recordEntry: entry });
 					if (accepted.length >= target) break;
 				}
@@ -362,24 +369,31 @@ export class FullTextQueryIndex {
 				const fields = leaf.fields;
 				if (fields.length === 0) continue;
 				const leafFields = new Set(fields);
-				const traced = await reader.traceMatches({ text: leaf.text, mode: leaf.mode, fields }, records, {
-					snippets: true,
-					fragmentLength: highlighting.fragmentLength,
-					maxFragmentsPerValue: highlighting.maxFragments,
+				const leafRecords = records.map(({ id, fields: source }) => {
+					const selected: Record<string, string | string[]> = Object.create(null);
+					for (const field of fields) if (source[field] !== undefined) selected[field] = source[field];
+					return { id, fields: selected };
 				});
-				if (!traced.complete) throw new ServerError('Full-text index returned incomplete highlights', 500);
-				for (const record of traced.records) {
-					const entry = byId.get(record.id);
-					if (!entry) continue;
-					const highlights = (entry.$highlights ??= Object.create(null));
-					for (const value of record.values) {
-						if (!leafFields.has(value.field)) continue;
-						const values = (highlights[value.field] ??= []) as unknown[];
-						values.push({
-							valueIndex: value.valueIndex,
-							spans: value.spans,
-							...(value.fragments ? { fragments: value.fragments } : null),
-						});
+				for (const traceRecords of traceSourceBatches(leafRecords, this.#maxTraceSourceBytes!)) {
+					const traced = await reader.traceMatches({ text: leaf.text, mode: leaf.mode, fields }, traceRecords, {
+						snippets: true,
+						fragmentLength: highlighting.fragmentLength,
+						maxFragmentsPerValue: highlighting.maxFragments,
+					});
+					if (!traced.complete) throw new ServerError('Full-text index returned incomplete highlights', 500);
+					for (const record of traced.records) {
+						const entry = byId.get(record.id);
+						if (!entry) continue;
+						const highlights = (entry.$highlights ??= Object.create(null));
+						for (const value of record.values) {
+							if (!leafFields.has(value.field)) continue;
+							const values = (highlights[value.field] ??= []) as unknown[];
+							values.push({
+								valueIndex: value.valueIndex,
+								spans: value.spans,
+								...(value.fragments ? { fragments: value.fragments } : null),
+							});
+						}
 					}
 				}
 			}
@@ -496,10 +510,7 @@ export class FullTextQueryIndex {
 			this.#publicationRebuildRequested = false;
 			return publication;
 		} catch (cause) {
-			if (!this.#publicationRebuildRequested) {
-				this.#publicationRebuildRequested = true;
-				this.#derivedHost?.requestRebuild();
-			}
+			this.#requestRebuild();
 			throw new FullTextReaderPublicationError(
 				`Full-text index '${this.#definition.name}' has no valid search checkpoint`,
 				{ cause }
@@ -508,12 +519,44 @@ export class FullTextQueryIndex {
 	}
 
 	#refreshReader(openCold: boolean): void {
-		if (this.#closed || (!openCold && !this.#readerSlot && !this.#readerOperation)) return;
-		const readiness = readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId);
-		if (readiness.state !== 'ready') return;
-		void this.#readerFor(readiness.ownerEpoch, this.#publicationSubscription.revision()).catch((error) => {
-			if (nativeErrorNeedsRebuild(error)) this.#derivedHost?.requestRebuild();
-		});
+		try {
+			if (this.#closed || (!openCold && !this.#readerSlot && !this.#readerOperation)) return;
+			const readiness = readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId);
+			if (readiness.state !== 'ready') return;
+			void this.#readerFor(readiness.ownerEpoch, this.#publicationRevision()).catch((error) => {
+				if (nativeErrorNeedsRebuild(error)) this.#requestRebuild();
+			});
+			this.#refreshFailureWarned = false;
+		} catch (error) {
+			if (this.#refreshFailureWarned) return;
+			this.#refreshFailureWarned = true;
+			try {
+				logger.warn?.('Could not refresh a full-text reader after native publication', error);
+			} catch {}
+		}
+	}
+
+	#publicationRevision(): bigint {
+		if (!this.#publicationSubscription)
+			this.#publicationSubscription = subscribeDerivedIndexPublications(
+				this.#options.auditStore,
+				this.#options.readinessId,
+				() => this.#refreshReader(false)
+			);
+		return this.#publicationSubscription.revision();
+	}
+
+	#requestRebuild(): void {
+		const host = this.#derivedHost;
+		if (!host || this.#publicationRebuildRequested) return;
+		try {
+			host.requestRebuild();
+			this.#publicationRebuildRequested = true;
+		} catch (error) {
+			try {
+				logger.warn?.(`Could not request a rebuild for full-text index '${this.#definition.name}'`, error);
+			} catch {}
+		}
 	}
 
 	#retireReaderSlot(slot: ReaderSlot): void {
@@ -528,8 +571,9 @@ export class FullTextQueryIndex {
 		if (!slot.closeOperation) {
 			const operation = Promise.resolve()
 				.then(() => slot.reader.close())
-				.then(() => {
+				.then((result) => {
 					this.#retiredReaderSlots.delete(slot);
+					if (result?.cleanupError) this.#warnReaderClose(result.cleanupError);
 				});
 			slot.closeOperation = operation;
 			void operation.catch(() => {
@@ -571,6 +615,7 @@ export class FullTextQueryIndex {
 		);
 		this.#maxSearchWindow = info.limits.maxSearchWindow;
 		this.#maxTraceRecords = info.limits.maxTraceRecords;
+		this.#maxTraceSourceBytes = info.limits.maxTraceSourceBytes ?? Number.MAX_SAFE_INTEGER;
 		return (this.#binding = binding);
 	}
 
@@ -641,23 +686,6 @@ function assertFreshnessOptions(maxIndexLagMilliseconds: number, waitForIndexMil
 		);
 }
 
-export function fullTextComparatorMode(comparator: string | undefined): NativeFullTextSearchMode | undefined {
-	switch (comparator) {
-		case 'matches':
-			return 'any';
-		case 'matches_all':
-			return 'all';
-		case 'matches_phrase':
-			return 'phrase';
-		case 'matches_prefix':
-			return 'prefix';
-		case 'matches_fuzzy':
-			return 'fuzzy';
-		case 'matches_fuzzy_prefix':
-			return 'fuzzy-prefix';
-	}
-}
-
 function leafExpression(condition: FullTextCondition): NativeFullTextSearchExpression {
 	const leaf = leafDescriptor(condition);
 	return { text: leaf.text, mode: leaf.mode, ...(leaf.fields ? { fields: leaf.fields } : null) };
@@ -688,11 +716,49 @@ async function sourceFields(
 		else if (Array.isArray(value)) fields[source.name] = value.filter((entry) => typeof entry === 'string');
 		else if (source.mediaType === 'text/plain' && value instanceof Blob) {
 			const remaining = deadline - performance.now();
-			if (remaining <= 0) throw new ServerError('Full-text highlight source read timed out', 500);
-			fields[source.name] = UTF8_DECODER.decode(await withTimeout(value.arrayBuffer(), remaining));
+			if (remaining <= 0) throw new DerivedIndexLagError('Full-text highlight source read timed out; retry the query');
+			let bytes: ArrayBuffer;
+			try {
+				bytes = await withTimeout(value.arrayBuffer(), remaining);
+			} catch {
+				throw new DerivedIndexLagError('Full-text highlight source is temporarily unavailable; retry the query');
+			}
+			fields[source.name] = UTF8_DECODER.decode(bytes);
 		}
 	}
 	return fields;
+}
+
+function traceSourceBytes(fields: Record<string, string | string[]>): number {
+	let bytes = 0;
+	for (const value of Object.values(fields)) {
+		if (typeof value === 'string') bytes += Buffer.byteLength(value);
+		else for (const item of value) bytes += Buffer.byteLength(item);
+	}
+	return bytes;
+}
+
+function traceSourceBatches<T extends { fields: Record<string, string | string[]> }>(
+	records: T[],
+	maxBytes: number
+): T[][] {
+	const batches: T[][] = [];
+	let batch: T[] = [];
+	let batchBytes = 0;
+	for (const record of records) {
+		const bytes = traceSourceBytes(record.fields);
+		if (bytes > maxBytes)
+			throw new ClientError(`Full-text highlight source exceeds the ${maxBytes}-byte native trace limit`, 400);
+		if (batch.length > 0 && batchBytes + bytes > maxBytes) {
+			batches.push(batch);
+			batch = [];
+			batchBytes = 0;
+		}
+		batch.push(record);
+		batchBytes += bytes;
+	}
+	if (batch.length > 0) batches.push(batch);
+	return batches;
 }
 
 function decodeNativeId(id: string, tableId: number): unknown {

@@ -366,7 +366,6 @@ describe('@fullText derived-index activation', () => {
 			Product.search({
 				conditions: [
 					{
-						operator: 'and',
 						conditions: [
 							{ attribute: 'id', comparator: 'matches', value: 'shoe' },
 							{ attribute: 'price', comparator: 'greater_than', value: 100 },

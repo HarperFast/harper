@@ -285,23 +285,6 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(source.openCalls, 0);
 	});
 
-	it('refreshes a peer publication revision from native storage', () => {
-		const source = lifecycle({
-			state: 'checkpointed',
-			committedPayload: encodeFullTextCursorPayload(cursor(10), HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES, 1n),
-		});
-		const { backend } = makeBackend(source);
-		backend.refreshDurablePublication();
-		assert.strictEqual(backend.getPublicationRevision(), 1n);
-		source.inspection = {
-			state: 'checkpointed',
-			committedPayload: encodeFullTextCursorPayload(cursor(20), HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES, 2n),
-		};
-		backend.refreshDurablePublication();
-		assert.strictEqual(backend.getPublicationRevision(), 2n);
-		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(20).logs);
-	});
-
 	it('returns no cursor for missing, incompatible, or malformed native state', () => {
 		for (const inspection of [
 			{ state: 'missing' },
