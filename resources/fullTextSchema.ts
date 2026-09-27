@@ -226,6 +226,11 @@ export function compileFullTextDefinition(
 	const surfaceTerms = booleanOption(definition, 'surfaceTerms', true, indexName);
 	const synonyms = compileSynonyms(definition.synonyms, indexName);
 	const highlighting = compileHighlighting(definition.highlighting, indexName);
+	const highlightedFields = fields.filter(({ highlight }) => highlight === true);
+	if (highlightedFields.length > 0 && !highlighting)
+		throw schemaError(`@fullText index "${indexName}" requires "highlighting" when a source field enables highlights`);
+	if (highlighting && highlightedFields.length === 0)
+		throw schemaError(`@fullText index "${indexName}" requires at least one source field with highlight: true`);
 
 	return {
 		name: indexName,

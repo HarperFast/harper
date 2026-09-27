@@ -50,6 +50,7 @@ const searchByConditionsSchema = Joi.object({
 					value: Joi.when('comparator', {
 						switch: [
 							{ is: 'equals', then: Joi.any() },
+							{ is: 'in', then: Joi.array().min(1).items(Joi.any()) },
 							{
 								is: 'between',
 								then: Joi.array()

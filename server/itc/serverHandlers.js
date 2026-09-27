@@ -46,6 +46,18 @@ async function schemaHandler(event) {
 		hdbLogger.error(validate);
 		return;
 	}
+	if (
+		event.message?.operation === 'pause-full-text-query-readers' ||
+		event.message?.operation === 'resume-full-text-query-readers'
+	) {
+		if (typeof event.message.path !== 'string' || event.message.path.length === 0)
+			throw new Error('Full-text query reader coordination requires an index path');
+		const fullTextQueries = require('../../resources/indexes/fullTextQueryIndex.ts');
+		if (event.message.operation === 'pause-full-text-query-readers')
+			await fullTextQueries.pauseNativeFullTextQueryReaders(event.message.path);
+		else fullTextQueries.resumeNativeFullTextQueryReaders(event.message.path);
+		return;
+	}
 
 	hdbLogger.trace(`ITC schemaHandler received schema event:`, event);
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA && event.message.schema) {

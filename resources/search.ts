@@ -204,7 +204,7 @@ function conditionIndex(table: any, attributeName: any, preferFullText = false):
 }
 
 function combineFullTextConditions(conditions: any[], operator: string | undefined, table: any): any[] {
-	if (table.hasFullTextQueryIndexes === false) return conditions;
+	if (table.hasFullTextQueryIndexes === false || !containsFullTextCondition(conditions, table)) return conditions;
 	let indexName: string | undefined;
 	let positive = false;
 	const expressions: any[] = [];
@@ -256,6 +256,23 @@ function combineFullTextConditions(conditions: any[], operator: string | undefin
 	return operator === 'or' ? [combined] : [combined, ...remaining];
 }
 
+function containsFullTextCondition(conditions: any[], table: any): boolean {
+	for (const condition of conditions) {
+		if (condition.conditions) {
+			if (containsFullTextCondition(condition.conditions, table)) return true;
+			continue;
+		}
+		const indexName = condition[0] ?? condition.attribute;
+		if (
+			typeof indexName === 'string' &&
+			table.fullTextQueryIndexes?.[indexName] &&
+			fullTextComparatorMode(condition.comparator)
+		)
+			return true;
+	}
+	return false;
+}
+
 function compileFullTextExpression(
 	condition: any,
 	table: any
@@ -300,9 +317,6 @@ function compileFullTextExpression(
 	const indexName = condition[0] ?? condition.attribute;
 	if (typeof indexName !== 'string' || !table.fullTextQueryIndexes?.[indexName]) return;
 	const mode = fullTextComparatorMode(condition.comparator);
-	// An ordinary attribute and a full-text index may share a name. Only the
-	// full-text comparators select the derived index; equality and range
-	// conditions must continue through the normal attribute path.
 	if (!mode) return;
 	if (typeof (condition[1] ?? condition.value) !== 'string')
 		throw new ClientError(`Full-text index '${indexName}' requires a full-text comparator and string value`, 400);

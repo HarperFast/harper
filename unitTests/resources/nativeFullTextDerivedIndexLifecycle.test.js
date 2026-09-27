@@ -286,6 +286,30 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		assert.deepStrictEqual(events, ['paused', 'reset', 'resumed']);
 	});
 
+	it('resumes query readers when reset preparation or native reset fails', async () => {
+		for (const failure of ['prepare', 'reset']) {
+			const binding = new FakeNativeModule();
+			const events = [];
+			const lifecycle = new NativeFullTextDerivedIndexLifecycle(
+				options(storePath, binding, {
+					beforeReset: async () => {
+						events.push('paused');
+						if (failure === 'prepare') throw new Error('pause failed');
+					},
+					afterReset: async () => events.push('resumed'),
+				})
+			);
+			if (failure === 'reset')
+				binding.resetNativeFullTextIndex = async () => {
+					events.push('reset');
+					throw new Error('reset failed');
+				};
+			await lifecycle.initialize();
+			await assert.rejects(lifecycle.reset(), /failed/);
+			assert.deepStrictEqual(events, failure === 'prepare' ? ['paused', 'resumed'] : ['paused', 'reset', 'resumed']);
+		}
+	});
+
 	it('does not block reset on best-effort retired storage reclamation', async () => {
 		let finishReclaim;
 		const binding = new FakeNativeModule();

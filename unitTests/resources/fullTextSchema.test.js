@@ -88,6 +88,16 @@ describe('@fullText declaration compiler', () => {
 			{ name: 'search', fields: [{ name: 'title' }], highlighting: { maxFragments: 0 } },
 			/positive integer/,
 		],
+		[
+			'highlighted source without highlighting configuration',
+			{ name: 'search', fields: [{ name: 'title', highlight: true }] },
+			/requires "highlighting"/,
+		],
+		[
+			'highlighting configuration without a highlighted source',
+			{ name: 'search', fields: [{ name: 'title' }], highlighting: {} },
+			/requires at least one source field/,
+		],
 	]) {
 		it(`rejects ${label}`, () => {
 			assert.throws(() => compileFullTextDefinitions([definition], productAttributes()), pattern);
@@ -132,7 +142,7 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 				@fullText(name: "title", fields: [{ name: "title", weight: 3 }])
 				@fullText(
 					name: "catalog"
-					fields: [{ name: "title" }, { name: "tags", highlight: false }]
+					fields: [{ name: "title", highlight: true }, { name: "tags", highlight: false }]
 					positions: false
 					surfaceTerms: false
 					highlighting: { maxFragments: 2, fragmentLength: 120 }

@@ -56,6 +56,7 @@ export type SearchByConditionsRequest = Query &
 		database?: string;
 		table: string;
 		get_attributes: Select;
+		hdb_user?: Context['user'];
 		reverse?: boolean;
 		operator?: Operator;
 	};
@@ -113,6 +114,7 @@ export class ResourceBridge extends BridgeMethods {
 				allowFullScan: true, // operations API can do full scans by default, but REST is more cautious about what it allows
 			} as any,
 			{
+				user: searchObject.hdb_user ?? searchObject.user,
 				onlyIfCached: searchObject.onlyIfCached,
 				noCacheStore: searchObject.noCacheStore,
 				noCache: searchObject.noCache,

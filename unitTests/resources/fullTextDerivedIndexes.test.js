@@ -257,12 +257,13 @@ describe('@fullText derived-index activation', () => {
 			fullTextIndexes: [
 				{
 					name: 'title',
-					fields: [{ name: 'title', weight: 1 }],
+					fields: [{ name: 'title', weight: 1, highlight: true }],
 					analyzer: 'english@2',
 					stopWords: true,
 					positions: true,
 					surfaceTerms: true,
 					synonyms: [],
+					highlighting: { maxFragments: 2, fragmentLength: 120 },
 				},
 			],
 		});
@@ -305,6 +306,12 @@ describe('@fullText derived-index activation', () => {
 			matched.map(({ id }) => id),
 			['exact']
 		);
+		const [highlighted] = await collect(
+			Product.search({
+				conditions: [{ attribute: 'title', comparator: 'matches', value: 'shoe', includeHighlights: true }],
+			})
+		);
+		assert.deepStrictEqual(highlighted.$highlights.title[0].spans, [{ start: 8, end: 12 }]);
 		const counted = await Product.search({
 			conditions: [{ attribute: 'title', comparator: 'matches', value: 'running' }],
 			limit: 1,
@@ -376,18 +383,21 @@ describe('@fullText derived-index activation', () => {
 			fullTextIndexes: [definition()],
 		});
 		let captured;
+		let fullTextCaptured;
 		const originalSearch = Product.search;
 		Product.search = (query, context) => {
 			captured = { query, context };
 			return [];
 		};
 		try {
+			const hdb_user = { username: 'catalog-reader' };
 			await ResourceBridge.prototype.searchByConditions.call(
 				{},
 				{
 					database,
 					schema: database,
 					table: 'Product',
+					hdb_user,
 					get_attributes: ['*'],
 					conditions: [
 						{
@@ -402,10 +412,21 @@ describe('@fullText derived-index activation', () => {
 					],
 				}
 			);
+			fullTextCaptured = captured;
+			await ResourceBridge.prototype.searchByConditions.call(
+				{},
+				{
+					database,
+					schema: database,
+					table: 'Product',
+					get_attributes: ['*'],
+					conditions: [{ attribute: 'title', comparator: 'in', value: ['Trail shoe'] }],
+				}
+			);
 		} finally {
 			Product.search = originalSearch;
 		}
-		assert.deepStrictEqual(captured.query.conditions, [
+		assert.deepStrictEqual(fullTextCaptured.query.conditions, [
 			{
 				attribute: 'search',
 				comparator: 'matches_phrase',
@@ -415,6 +436,10 @@ describe('@fullText derived-index activation', () => {
 				maxIndexLagMilliseconds: 50,
 				waitForIndexMilliseconds: 100,
 			},
+		]);
+		assert.strictEqual(fullTextCaptured.context.user.username, 'catalog-reader');
+		assert.deepStrictEqual(captured.query.conditions, [
+			{ attribute: 'title', comparator: 'in', value: ['Trail shoe'] },
 		]);
 	});
 

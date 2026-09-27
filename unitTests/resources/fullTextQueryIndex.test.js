@@ -33,6 +33,7 @@ function definition() {
 }
 
 function attachCurrentCoverage(index) {
+	let publicationRevision = 0n;
 	index.attachDerivedHost({
 		readiness: () => ({ state: 'ready' }),
 		coverage: (maxLagMilliseconds) => ({
@@ -41,8 +42,10 @@ function attachCurrentCoverage(index) {
 			lagUpperBoundMilliseconds: 0,
 		}),
 		requestRebuild: () => true,
+		publicationRevision: () => publicationRevision,
 		waitForCoverage: async () => {},
 	});
+	return { publish: () => publicationRevision++ };
 }
 
 describe('FullTextQueryIndex', () => {
@@ -132,7 +135,7 @@ describe('FullTextQueryIndex', () => {
 			},
 			binding,
 		});
-		attachCurrentCoverage(index);
+		const publication = attachCurrentCoverage(index);
 		const condition = {
 			attribute: 'catalogSearch',
 			comparator: 'matches_all',
@@ -163,8 +166,7 @@ describe('FullTextQueryIndex', () => {
 
 		await index.search(condition, {}, { minResults: 1 });
 		assert.strictEqual(reloads, 0);
-		const publication = auditStore.buffers.get(`derived-index:${readinessId}:publication`);
-		Atomics.add(new BigInt64Array(publication), 0, 1n);
+		publication.publish();
 		await index.search(condition, {}, { minResults: 1 });
 		assert.strictEqual(reloads, 1);
 		assert.strictEqual(index.estimateCount(), 5);
@@ -295,7 +297,7 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding,
 		});
-		attachCurrentCoverage(index);
+		const publication = attachCurrentCoverage(index);
 		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
 		await index.search(query, {}, { minResults: 1 });
 		index.updateDefinition({ ...definition(), fields: [{ name: 'title', weight: 7, highlight: true }] });
@@ -303,8 +305,7 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(opens.length, 2);
 		assert.strictEqual(opens[1].fields[0].weight, 7);
 
-		const publication = auditStore.buffers.get(`derived-index:${readinessId}:publication`);
-		Atomics.add(new BigInt64Array(publication), 0, 1n);
+		publication.publish();
 		failReload = true;
 		await assert.rejects(index.search(query, {}, { minResults: 1 }), (error) => error.name === 'IndexRebuildingError');
 		await index.search(query, {}, { minResults: 1 });
@@ -317,6 +318,7 @@ describe('FullTextQueryIndex', () => {
 		const auditStore = sharedStore();
 		publishDerivedIndexReadiness(auditStore, 'query-window', 'ready');
 		let searches = 0;
+		let lastRequest;
 		const index = new FullTextQueryIndex({
 			Table: {
 				tableId: 1,
@@ -339,8 +341,9 @@ describe('FullTextQueryIndex', () => {
 				},
 				async openNativeFullTextReader() {
 					return {
-						async search() {
+						async search(request) {
 							searches++;
+							lastRequest = request;
 							return {
 								total: 3,
 								totalRelation: 'exact',
@@ -363,6 +366,146 @@ describe('FullTextQueryIndex', () => {
 		await assert.rejects(index.search(query, {}, { minResults: 3 }), /reduce offset or limit/);
 		assert.strictEqual(searches, 0);
 		await assert.rejects(index.search(query, {}), /exceeds the 2-result search window/);
+		assert.strictEqual(lastRequest.exactTotal, true);
+		await index.close();
+	});
+
+	it('fails instead of returning an incomplete bounded page after filtering exhausts the native window', async () => {
+		const auditStore = sharedStore();
+		publishDerivedIndexReadiness(auditStore, 'filtered-window', 'ready');
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: { getEntry: () => undefined },
+				_readTxnForContext: () => undefined,
+			},
+			definition: definition(),
+			auditStore,
+			readinessId: 'filtered-window',
+			indexId: 'filtered-window',
+			storePath: '/unused',
+			storeName: 'unused',
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return { limits: { maxSearchWindow: 2, maxTraceRecords: 10 } };
+				},
+				async openNativeFullTextReader() {
+					return {
+						async search() {
+							return {
+								total: 2,
+								totalRelation: 'lower-bound',
+								hits: [
+									{ id: nativeId(1, 'one'), version: '1', score: 2 },
+									{ id: nativeId(1, 'two'), version: '1', score: 1 },
+								],
+							};
+						},
+						async reload() {},
+						async close() {},
+					};
+				},
+			},
+		});
+		attachCurrentCoverage(index);
+		await assert.rejects(
+			index.search({ attribute: 'filtered-window', comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
+			/filters exhausted the 2-result search window/
+		);
+		await index.close();
+	});
+
+	it('requests a rebuild for native corruption and retries a rejected reader close', async () => {
+		const auditStore = sharedStore();
+		publishDerivedIndexReadiness(auditStore, 'query-rebuild', 'ready');
+		let rebuilds = 0;
+		let closeAttempts = 0;
+		const index = new FullTextQueryIndex({
+			Table: { tableId: 1, primaryStore: {}, _readTxnForContext: () => undefined },
+			definition: definition(),
+			auditStore,
+			readinessId: 'query-rebuild',
+			indexId: 'query-rebuild',
+			storePath: '/unused',
+			storeName: 'unused',
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return { limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+				},
+				async openNativeFullTextReader() {
+					return {
+						async search() {
+							throw Object.assign(new Error('corrupt'), { code: 'E_INDEX_CORRUPT' });
+						},
+						async reload() {},
+						async close() {
+							if (closeAttempts++ === 0) throw new Error('close failed');
+						},
+					};
+				},
+			},
+		});
+		index.attachDerivedHost({
+			readiness: () => ({ state: 'ready' }),
+			coverage: () => ({ state: 'current', maxLagMilliseconds: 0, lagUpperBoundMilliseconds: 0 }),
+			requestRebuild: () => (rebuilds++, true),
+			publicationRevision: () => 0n,
+			waitForCoverage: async () => {},
+		});
+		await assert.rejects(
+			index.search({ attribute: 'query-rebuild', comparator: 'matches', value: 'shoe' }, {}),
+			(error) => error.name === 'IndexRebuildingError'
+		);
+		assert.strictEqual(rebuilds, 1);
+		await index.close();
+		assert.strictEqual(closeAttempts, 2);
+	});
+
+	it('rejects a native hit without its source version', async () => {
+		const auditStore = sharedStore();
+		publishDerivedIndexReadiness(auditStore, 'missing-hit-version', 'ready');
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
+				_readTxnForContext: () => undefined,
+			},
+			definition: definition(),
+			auditStore,
+			readinessId: 'missing-hit-version',
+			indexId: 'missing-hit-version',
+			storePath: '/unused',
+			storeName: 'unused',
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return { limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+				},
+				async openNativeFullTextReader() {
+					return {
+						async search() {
+							return {
+								total: 1,
+								totalRelation: 'exact',
+								hits: [{ id: nativeId(1, 'one'), score: 1 }],
+							};
+						},
+						async reload() {},
+						async close() {},
+					};
+				},
+			},
+		});
+		attachCurrentCoverage(index);
+		await assert.rejects(
+			index.search({ attribute: 'missing-hit-version', comparator: 'matches', value: 'shoe' }, {}),
+			/without a source version/
+		);
 		await index.close();
 	});
 
@@ -414,12 +557,11 @@ describe('FullTextQueryIndex', () => {
 				},
 			},
 		});
-		attachCurrentCoverage(index);
+		const publication = attachCurrentCoverage(index);
 		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
 		const first = index.search(query, {}, { minResults: 1 });
 		await firstStarted.promise;
-		const publication = auditStore.buffers.get(`derived-index:${readinessId}:publication`);
-		Atomics.add(new BigInt64Array(publication), 0, 1n);
+		publication.publish();
 		const second = await index.search(query, {}, { minResults: 1 });
 		assert.strictEqual(second.length, 1);
 		assert.strictEqual(opens, 2);
@@ -565,6 +707,7 @@ describe('FullTextQueryIndex', () => {
 				lagUpperBoundMilliseconds: 1,
 			}),
 			requestRebuild: () => true,
+			publicationRevision: () => 0n,
 			waitForCoverage: async () => {
 				waited++;
 			},

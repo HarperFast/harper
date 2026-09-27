@@ -105,8 +105,26 @@ class FullTextNativeTestBinding {
 					hits: hits.slice(offset, offset + limit),
 				};
 			},
-			async traceMatches() {
-				return { complete: true, records: [] };
+			async traceMatches(request, records) {
+				const terms = String(request.text).toLowerCase().split(/\s+/).filter(Boolean);
+				return {
+					complete: true,
+					records: records.map((record) => ({
+						id: record.id,
+						values: (request.fields ?? Object.keys(record.fields)).flatMap((field) => {
+							const source = Array.isArray(record.fields[field]) ? record.fields[field] : [record.fields[field]];
+							return source.flatMap((value, valueIndex) => {
+								if (typeof value !== 'string') return [];
+								const lower = value.toLowerCase();
+								const spans = terms.flatMap((term) => {
+									const start = lower.indexOf(term);
+									return start < 0 ? [] : [{ start, end: start + term.length }];
+								});
+								return spans.length === 0 ? [] : [{ field, valueIndex, spans }];
+							});
+						}),
+					})),
+				};
 			},
 			async close() {
 				return {};

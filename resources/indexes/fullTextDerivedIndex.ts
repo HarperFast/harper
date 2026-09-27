@@ -88,6 +88,12 @@ export type FullTextDerivedIndexBackendOptions = {
 	blobReadTimeoutMilliseconds?: number;
 	blobReadAttempts?: number;
 	blobReadFailureBudgetMilliseconds?: number;
+	hasBlobSources?: boolean;
+};
+
+export type FullTextPublication = {
+	cursor?: DerivedIndexCursor;
+	dataRevision: bigint;
 };
 
 type ApplyCommand = {
@@ -144,11 +150,13 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#blobReadTimeoutMilliseconds: number;
 	#blobReadAttempts: number;
 	#blobReadFailureBudgetMilliseconds: number;
+	#hasBlobSources: boolean;
 	#blobReadFailures = new Map<string, { version: string; attempts: number; firstFailureAt: number }>();
 	#host?: DerivedIndexBackendHost;
 	#wake?: (change?: DerivedIndexBackendStateChange) => void;
 	#engine?: FullTextDerivedIndexEngine;
 	#durableCursor?: DerivedIndexCursor;
+	#dataRevision = 0n;
 	#cursorInspectedForAcquisition = false;
 	#activeEpoch?: bigint;
 	#commands: Command[] = [];
@@ -249,6 +257,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			options.blobReadFailureBudgetMilliseconds ?? DEFAULT_BLOB_READ_FAILURE_BUDGET_MILLISECONDS,
 			'blobReadFailureBudgetMilliseconds'
 		);
+		this.#hasBlobSources = options.hasBlobSources !== false;
 		this.#openRetryDelayMilliseconds = Math.max(1, this.#openRetryMilliseconds);
 		this.#writerRetryDelayMilliseconds = Math.min(
 			this.#maxOpenRetryMilliseconds,
@@ -265,13 +274,31 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	getDurableCursor(): DerivedIndexCursor | undefined {
 		this.#assertAttached();
 		if (!this.#cursorInspectedForAcquisition) {
-			this.#durableCursor = this.#inspectDurableCursor();
+			const publication = this.#inspectPublication();
+			this.#durableCursor = publication.cursor;
+			this.#dataRevision = publication.dataRevision;
 			this.#cursorInspectedForAcquisition = true;
 		}
 		return this.#durableCursor;
 	}
 
-	#inspectDurableCursor(): DerivedIndexCursor | undefined {
+	getPublicationRevision(): bigint {
+		this.#assertAttached();
+		this.getDurableCursor();
+		return this.#dataRevision;
+	}
+
+	refreshDurablePublication(): void {
+		this.#assertAttached();
+		if (this.#activeEpoch === undefined && !this.#engine) {
+			const publication = this.#inspectPublication();
+			this.#durableCursor = publication.cursor;
+			this.#dataRevision = publication.dataRevision;
+			this.#cursorInspectedForAcquisition = true;
+		}
+	}
+
+	#inspectPublication(): FullTextPublication {
 		let inspection: FullTextDerivedIndexInspection;
 		try {
 			inspection = this.#lifecycle.inspect();
@@ -282,12 +309,13 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		if (inspection.state !== 'checkpointed') {
 			if (inspection.state === 'incompatible')
 				logWarning(`Full-text derived index '${this.id}' is incompatible (${inspection.code}); rebuilding`);
-			return;
+			return { dataRevision: 0n };
 		}
 		try {
-			return decodeFullTextCursorPayload(inspection.committedPayload);
+			return decodeFullTextPublication(inspection.committedPayload);
 		} catch {
 			logWarning(`Full-text derived index '${this.id}' has an invalid committed cursor; rebuilding`);
+			return { dataRevision: 0n };
 		}
 	}
 
@@ -444,6 +472,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#failed = false;
 		this.#shutdownFailure = undefined;
 		this.#durableCursor = undefined;
+		this.#dataRevision = 0n;
 		// An unknown reset outcome must never rediscover and trust the pre-reset checkpoint.
 		this.#cursorInspectedForAcquisition = true;
 		const operation = this.#performReset(ownerEpoch);
@@ -561,18 +590,19 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		if (epoch === undefined) throw new FullTextDerivedIndexError('Full-text owner epoch is unavailable');
 		const engine = await this.#open(epoch);
 		if (!engine) return false;
-		let actual: DerivedIndexCursor | undefined;
+		let actual: FullTextPublication;
 		try {
 			this.#assertCommandEpoch(epoch);
-			actual = decodeFullTextCursorPayload(engine.committedPayload);
+			actual = decodeFullTextPublication(engine.committedPayload);
 		} catch (error) {
 			await this.#closeUninstalledEngine(engine);
 			throw error;
 		}
-		if (!sameCursor(actual, this.#durableCursor)) {
+		if (!sameCursor(actual.cursor, this.#durableCursor)) {
 			this.#lossPendingEpoch = epoch;
 			await this.#closeUninstalledEngine(engine);
-			this.#durableCursor = actual;
+			this.#durableCursor = actual.cursor;
+			this.#dataRevision = actual.dataRevision;
 			this.#cursorInspectedForAcquisition = true;
 			this.#resetWriterRetryBackoff();
 			this.#discardCommands();
@@ -580,6 +610,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#notify('accepted-work-lost');
 			return false;
 		}
+		this.#dataRevision = actual.dataRevision;
 		this.#engine = engine;
 		return true;
 	}
@@ -606,7 +637,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		let slice: Awaited<ReturnType<typeof toFullTextMutationSlice>>;
 		try {
 			const deadline = performance.now() + APPLY_SLICE_MILLISECONDS;
-			slice = sliceContainsBlob(command.batch.records, command.position, this.#maxApplySliceRecords)
+			slice = this.#hasBlobSources
 				? await toFullTextMutationSlice(
 						command.batch.records,
 						command.position,
@@ -682,8 +713,11 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			throw new FullTextDerivedIndexError('Full-text publication barrier passed unapplied work');
 		const cursor = withDurableCoverage(command.cursor ?? this.#durableCursor, this.#durableCursor);
 		try {
-			const payload = encodeFullTextCursorPayload(cursor, this.#maxCursorPayloadBytes);
+			const dataRevision =
+				command.coverageOnly || !this.#hasStagedMutations ? this.#dataRevision : this.#dataRevision + 1n;
+			const payload = encodeFullTextCursorPayload(cursor, this.#maxCursorPayloadBytes, dataRevision);
 			await this.#engine!.publish(payload);
+			this.#dataRevision = dataRevision;
 		} catch (error) {
 			const terminal = error instanceof FullTextDerivedIndexConfigurationError;
 			if (terminal) {
@@ -1108,11 +1142,15 @@ function nativeErrorCode(error: unknown): string | undefined {
 
 export function encodeFullTextCursorPayload(
 	cursor: DerivedIndexCursor | undefined,
-	maxBytes = HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES
+	maxBytes = HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES,
+	dataRevision = 0n
 ): string {
+	if (dataRevision < 0n)
+		throw new FullTextDerivedIndexConfigurationError('Full-text data revision must be nonnegative');
 	const normalized = cursor && normalizedCursor(cursor);
 	const payload = JSON.stringify({
 		format: 1,
+		...(dataRevision === 0n ? null : { dataRevision: dataRevision.toString() }),
 		cursor: normalized
 			? {
 					format: 1,
@@ -1134,7 +1172,14 @@ export function decodeFullTextCursorPayload(
 	payload: string | null | undefined,
 	maxBytes = HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES
 ): DerivedIndexCursor | undefined {
-	if (payload == null) return;
+	return decodeFullTextPublication(payload, maxBytes).cursor;
+}
+
+export function decodeFullTextPublication(
+	payload: string | null | undefined,
+	maxBytes = HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES
+): FullTextPublication {
+	if (payload == null) return { dataRevision: 0n };
 	if (typeof payload !== 'string' || Buffer.byteLength(payload) > maxBytes)
 		throw new FullTextDerivedIndexError('Full-text cursor payload is invalid or too large');
 	let decoded: unknown;
@@ -1147,10 +1192,12 @@ export function decodeFullTextCursorPayload(
 		!plainObject(decoded) ||
 		decoded.format !== 1 ||
 		!Object.hasOwn(decoded, 'cursor') ||
-		Object.keys(decoded).some((name) => name !== 'format' && name !== 'cursor')
+		Object.keys(decoded).some((name) => name !== 'format' && name !== 'cursor' && name !== 'dataRevision')
 	)
 		throw new FullTextDerivedIndexError('Full-text cursor payload has an unsupported format');
-	if (decoded.cursor === null) return;
+	const dataRevision =
+		decoded.dataRevision === undefined ? 0n : parseDataRevision(decoded.dataRevision, 'Full-text cursor payload');
+	if (decoded.cursor === null) return { dataRevision };
 	if (
 		!plainObject(decoded.cursor) ||
 		decoded.cursor.format !== 1 ||
@@ -1158,7 +1205,7 @@ export function decodeFullTextCursorPayload(
 		Object.keys(decoded.cursor).some((name) => name !== 'format' && name !== 'logs' && name !== 'coverage')
 	)
 		throw new FullTextDerivedIndexError('Full-text cursor payload contains an invalid cursor');
-	return normalizedCursor(decoded.cursor as DerivedIndexCursor);
+	return { cursor: normalizedCursor(decoded.cursor as DerivedIndexCursor), dataRevision };
 }
 
 function fullTextFields(projection: unknown): Record<string, string | string[]> | undefined {
@@ -1212,17 +1259,10 @@ class FullTextBlobReadTimeout extends Error {
 	}
 }
 
-function sliceContainsBlob(records: DerivedIndexBatch['records'], start: number, maxRecords: number): boolean {
-	const limit = Math.min(start + maxRecords, records.length);
-	for (let index = start; index < limit; index++) {
-		const state = records[index].state;
-		if (state.kind !== 'record' || !state.projection || typeof state.projection !== 'object') continue;
-		const projection = state.projection as Record<string, unknown>;
-		for (const name in projection) {
-			if (Object.hasOwn(projection, name) && projection[name] instanceof Blob) return true;
-		}
-	}
-	return false;
+function parseDataRevision(value: unknown, label: string): bigint {
+	if (typeof value !== 'string' || !/^(?:0|[1-9]\d*)$/.test(value))
+		throw new FullTextDerivedIndexError(`${label} contains an invalid data revision`);
+	return BigInt(value);
 }
 
 function isTerminalOpenError(error: unknown): boolean {

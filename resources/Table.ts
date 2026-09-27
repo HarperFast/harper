@@ -4956,6 +4956,7 @@ export function makeTable(options) {
 			conditions = cloneConditions(conditions);
 			let orderAlignedCondition;
 			let syntheticOrderCondition;
+			let includeFullTextHighlights = false;
 			const filtered = {};
 
 			function assertFullTextReadAccess(definition: FullTextDefinition, requestedFields?: string[]) {
@@ -5048,7 +5049,9 @@ export function makeTable(options) {
 								);
 						}
 						assertFullTextReadAccess(fullTextDefinition, fields);
-						condition.includeHighlights = selectRequestsProperty(target.select, '$highlights');
+						condition.includeHighlights =
+							condition.includeHighlights === true || selectRequestsProperty(target.select, '$highlights');
+						includeFullTextHighlights ||= condition.includeHighlights;
 						continue;
 					}
 					let attribute = attribute_name == null ? primaryKeyAttribute : findAttribute(attributes, attribute_name);
@@ -5206,7 +5209,13 @@ export function makeTable(options) {
 					postOrdering = sort;
 				}
 			}
-			const select = target.select;
+			const select = includeFullTextHighlights
+				? target.select === undefined
+					? ['*', '$highlights']
+					: selectRequestsProperty(target.select, '$highlights')
+						? target.select
+						: [...(Array.isArray(target.select) ? target.select : [target.select]), '$highlights']
+				: target.select;
 			// Whether the caller supplied real filter conditions — read from the raw request, NOT the
 			// planner-augmented `conditions` (which by now may carry a synthetic `sort` pseudo-condition and
 			// injected full-scan condition). Used to pick the count-estimate source below.
@@ -5337,7 +5346,7 @@ export function makeTable(options) {
 							if (c.conditions) return touchesCustomIndex(c.conditions);
 							const attr = Array.isArray(c.attribute) ? c.attribute[0] : (c.attribute ?? c[0]);
 							if (typeof attr !== 'string') return false;
-							return fullTextComparatorMode(c.comparator ?? c[1])
+							return fullTextComparatorMode(c.comparator)
 								? Boolean(TableResource.fullTextQueryIndexes?.[attr]?.customIndex)
 								: Boolean(indices[attr]?.customIndex);
 						});
@@ -7053,6 +7062,7 @@ export function makeTable(options) {
 					return customIndex.propertyResolver(vector, context, entry, distanceSort);
 				},
 			};
+			propertyResolvers.$highlights.directReturn = true;
 			for (const attribute of this.attributes) {
 				if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
 				attribute.resolve = null; // reset this

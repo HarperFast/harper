@@ -9,6 +9,7 @@ const {
 	FullTextDerivedIndexBackend,
 	HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES,
 	decodeFullTextCursorPayload,
+	decodeFullTextPublication,
 	encodeFullTextCursorPayload,
 	toFullTextMutationBatch,
 } = require('#src/resources/indexes/fullTextDerivedIndex');
@@ -161,6 +162,12 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(payload, '{"format":1,"cursor":{"format":1,"logs":{"a":10,"prototype":15,"z":20}}}');
 		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(payload).logs }, { a: 10, prototype: 15, z: 20 });
 		assert.strictEqual(decodeFullTextCursorPayload(encodeFullTextCursorPayload(undefined)), undefined);
+		const revisionPayload = encodeFullTextCursorPayload(cursor(10), HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES, 12n);
+		assert.strictEqual(decodeFullTextPublication(revisionPayload).dataRevision, 12n);
+		assert.throws(
+			() => decodeFullTextPublication('{"format":1,"dataRevision":"01","cursor":null}'),
+			/invalid data revision/
+		);
 		assert.throws(() => decodeFullTextCursorPayload('{"format":1,"cursor":{"format":1,"logs":{"local":0}}}'));
 		assert.throws(() => decodeFullTextCursorPayload('x'.repeat(32), 16));
 		const specialCursor = cursorForLogs([
@@ -190,6 +197,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		backend.flush();
 		await waitFor(() => engine.publications.length === 1);
 		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(engine.publications[0]).coverage }, covered.coverage);
+		assert.strictEqual(decodeFullTextPublication(engine.publications[0]).dataRevision, 0n);
 		await backend.shutdown(1n);
 	});
 
@@ -203,6 +211,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		backend.publishCoverage(coverage, 1n);
 		await waitFor(() => engine.publications.length === 2);
 		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(engine.publications[1]).coverage }, coverage);
+		assert.strictEqual(decodeFullTextPublication(engine.publications[1]).dataRevision, 0n);
 		assert.deepStrictEqual({ ...backend.getDurableCursor().coverage }, coverage);
 		await backend.shutdown(1n);
 	});
@@ -271,6 +280,23 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert(Object.isFrozen(durable.logs));
 		assert.strictEqual(source.inspectCalls, 1);
 		assert.strictEqual(source.openCalls, 0);
+	});
+
+	it('refreshes a peer publication revision from native storage', () => {
+		const source = lifecycle({
+			state: 'checkpointed',
+			committedPayload: encodeFullTextCursorPayload(cursor(10), HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES, 1n),
+		});
+		const { backend } = makeBackend(source);
+		backend.refreshDurablePublication();
+		assert.strictEqual(backend.getPublicationRevision(), 1n);
+		source.inspection = {
+			state: 'checkpointed',
+			committedPayload: encodeFullTextCursorPayload(cursor(20), HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES, 2n),
+		};
+		backend.refreshDurablePublication();
+		assert.strictEqual(backend.getPublicationRevision(), 2n);
+		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(20).logs);
 	});
 
 	it('returns no cursor for missing, incompatible, or malformed native state', () => {
@@ -511,6 +537,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		backend.flush();
 		await waitFor(() => engine.publications.length === 1);
 		assert.strictEqual(engine.applied.length, 1);
+		assert.strictEqual(decodeFullTextPublication(engine.publications[0]).dataRevision, 1n);
 		assert.deepStrictEqual(engine.applyOptions, [{ assumeDistinctIds: true, rejectedUpsert: 'delete' }]);
 		assert.deepStrictEqual([engine.applied[0].upserts.length, engine.applied[0].deletes.length], [1, 1]);
 		await backend.shutdown(1n);

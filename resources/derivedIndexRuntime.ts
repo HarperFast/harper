@@ -1645,6 +1645,7 @@ class DerivedIndexRunner {
 			}
 		}
 		this.#boundaryPending = false;
+		if (offeredIndex > 0) Atomics.add(this.#publicationRevision, 0, 1n);
 		for (let i = offeredIndex; i >= 0; i--) {
 			const coverage = this.#offeredCursors[i].coverage;
 			if (coverage) {
@@ -1653,7 +1654,6 @@ class DerivedIndexRunner {
 			}
 		}
 		if (offeredIndex > 0) {
-			Atomics.add(this.#publicationRevision, 0, 1n);
 			this.#offeredCursors.splice(0, offeredIndex);
 			if (!this.#rebuilding && this.status.state !== 'needs-rebuild') this.#settleReady();
 		}

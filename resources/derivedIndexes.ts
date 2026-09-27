@@ -1,5 +1,7 @@
 import { ClientError } from '../utility/errors/hdbError.ts';
+import { ITC_EVENT_TYPES } from '../utility/hdbTerms.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
+import { sendItcEvent, sendItcEventStrict } from '../server/threads/itc.js';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import type { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import {
@@ -13,6 +15,7 @@ import {
 	publishDerivedIndexReadiness,
 	publishDerivedIndexUnavailableIfUnknown,
 	readDerivedIndexCoverage,
+	readDerivedIndexPublicationRevision,
 	readDerivedIndexReadiness,
 	retryDerivedIndexUnavailable,
 } from './derivedIndexRuntime.ts';
@@ -23,10 +26,17 @@ import {
 } from './indexes/hnswDerivedIndex.ts';
 import {
 	createNativeFullTextDerivedIndexBackend,
+	nativeFullTextIndexPath,
 	retireNativeFullTextDerivedIndexStorage,
 } from './indexes/nativeFullTextDerivedIndexLifecycle.ts';
 import type { NativeFullTextModule } from './indexes/fullTextNativeBinding.ts';
-import { FullTextQueryIndex } from './indexes/fullTextQueryIndex.ts';
+import {
+	FULL_TEXT_QUERY_PAUSE_OPERATION,
+	FULL_TEXT_QUERY_RESUME_OPERATION,
+	FullTextQueryIndex,
+	pauseNativeFullTextQueryReaders,
+	resumeNativeFullTextQueryReaders,
+} from './indexes/fullTextQueryIndex.ts';
 import { fullTextStorageDefinition, type FullTextDefinition } from './fullTextSchema.ts';
 
 const logger = loggerWithTag('HNSW');
@@ -450,6 +460,7 @@ export function attachDerivedIndexes(
 			if (retryUnavailableReadiness) retryDerivedIndexUnavailable(auditStore, readinessId);
 			const storage = fullTextStorageDefinition(definition);
 			const storeName = `${Table.tableName}/${definition.name}`;
+			const nativePath = nativeFullTextIndexPath(Table.primaryStore.rootStore.path, storeName);
 			const warningKey = `${Table.primaryStore.rootStore.path}:${storeName}`;
 			if (!warnedAuditIndexes.has(warningKey)) {
 				warnedAuditIndexes.add(warningKey);
@@ -469,8 +480,24 @@ export function attachDerivedIndexes(
 				surfaceTerms: storage.surfaceTerms,
 				synonyms: storage.synonyms,
 				limits: { ...FULL_TEXT_LIMITS },
-				beforeReset: () => fullTextQueryIndexes.get(definition.name)?.pause() ?? Promise.resolve(),
-				afterReset: () => fullTextQueryIndexes.get(definition.name)?.resume(),
+				hasBlobSources: definition.fields.some(({ mediaType }) => mediaType === 'text/plain'),
+				beforeReset: async () => {
+					await pauseNativeFullTextQueryReaders(nativePath);
+					await sendItcEventStrict(
+						{
+							type: ITC_EVENT_TYPES.SCHEMA,
+							message: { operation: FULL_TEXT_QUERY_PAUSE_OPERATION, path: nativePath },
+						},
+						35_000
+					);
+				},
+				afterReset: async () => {
+					resumeNativeFullTextQueryReaders(nativePath);
+					await sendItcEvent({
+						type: ITC_EVENT_TYPES.SCHEMA,
+						message: { operation: FULL_TEXT_QUERY_RESUME_OPERATION, path: nativePath },
+					});
+				},
 				...(fullTextTest
 					? {
 							binding: fullTextTest.binding,
@@ -490,11 +517,28 @@ export function attachDerivedIndexes(
 					...fullTextTest?.runnerOptions,
 				},
 			});
+			let observedPublicationRevision = -1n;
+			const publicationRevision = () => {
+				const shared = readDerivedIndexPublicationRevision(auditStore, readinessId).revision;
+				if (shared !== observedPublicationRevision) {
+					backend.refreshDurablePublication();
+					observedPublicationRevision = shared;
+				}
+				return backend.getPublicationRevision();
+			};
 			fullTextQueryIndexes.get(definition.name)?.attachDerivedHost({
 				readiness: () => registered.runtime.getReadiness(id),
-				coverage: (maxLagMilliseconds) =>
-					readDerivedIndexCoverage(auditStore, readinessId, () => backend.getDurableCursor(), maxLagMilliseconds),
+				coverage: (maxLagMilliseconds) => {
+					publicationRevision();
+					return readDerivedIndexCoverage(
+						auditStore,
+						readinessId,
+						() => backend.getDurableCursor(),
+						maxLagMilliseconds
+					);
+				},
 				requestRebuild: () => registered.runtime.requestRebuild(id),
+				publicationRevision,
 				waitForCoverage: (since, timeout, signal) => registered.runtime.waitForCoverage(id, since, timeout, signal),
 			});
 		})().catch((error) => {

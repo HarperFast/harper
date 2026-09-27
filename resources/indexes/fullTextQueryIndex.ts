@@ -3,7 +3,6 @@ import { fromBufferKey } from 'ordered-binary';
 import { ClientError, DerivedIndexLagError, IndexRebuildingError, ServerError } from '../../utility/errors/hdbError.ts';
 import {
 	derivedIndexTime,
-	readDerivedIndexPublicationRevision,
 	readDerivedIndexReadiness,
 	type DerivedIndexCoverage,
 	type DerivedIndexReadiness,
@@ -42,13 +41,23 @@ export type FullTextCondition = {
 
 type ReaderSlot = {
 	reader: NativeFullTextReader;
-	revision: string;
+	ownerEpoch: bigint;
+	dataRevision: bigint;
 	configurationRevision: number;
 	active: number;
 	retired: boolean;
 	closeOperation?: Promise<void>;
 	idleWaiters?: Array<() => void>;
 };
+
+type FullTextQueryHost = DerivedNativeIndexHost & {
+	publicationRevision: () => bigint;
+};
+
+export const FULL_TEXT_QUERY_PAUSE_OPERATION = 'pause-full-text-query-readers';
+export const FULL_TEXT_QUERY_RESUME_OPERATION = 'resume-full-text-query-readers';
+const queryIndexesByPath = new Map<string, Set<FullTextQueryIndex>>();
+const pausedQueryPaths = new Set<string>();
 
 export type FullTextQueryIndexOptions = {
 	Table: any;
@@ -83,7 +92,7 @@ export class FullTextQueryIndex {
 	#maxTraceRecords?: number;
 	#closed = false;
 	#paused = false;
-	#derivedHost?: DerivedNativeIndexHost;
+	#derivedHost?: FullTextQueryHost;
 
 	constructor(options: FullTextQueryIndexOptions) {
 		this.#options = options;
@@ -104,6 +113,10 @@ export class FullTextQueryIndex {
 			})),
 			limits: { ...options.limits },
 		};
+		let indexes = queryIndexesByPath.get(this.#nativeOptions.path);
+		if (!indexes) queryIndexesByPath.set(this.#nativeOptions.path, (indexes = new Set()));
+		indexes.add(this);
+		this.#paused = pausedQueryPaths.has(this.#nativeOptions.path);
 	}
 
 	updateDefinition(definition: FullTextDefinition): void {
@@ -158,8 +171,12 @@ export class FullTextQueryIndex {
 			coverage = this.#queryCoverage(maxIndexLagMilliseconds);
 			return this.#search(condition, context, options);
 		};
-		const operation = execute().catch((error) => {
+		const operation = execute().catch(async (error) => {
 			if (error === context?.signal?.reason) throw error;
+			if (nativeErrorNeedsRebuild(error)) {
+				await this.#retireAllReaders().catch(() => undefined);
+				this.#derivedHost?.requestRebuild();
+			}
 			throw publicSearchError(error, this.#definition.name);
 		});
 		if (!waiting && coverage) Object.defineProperty(operation, 'indexCoverage', { value: coverage });
@@ -167,12 +184,15 @@ export class FullTextQueryIndex {
 		return operation;
 	}
 
-	attachDerivedHost(host: DerivedNativeIndexHost): void {
+	attachDerivedHost(host: FullTextQueryHost): void {
 		this.#derivedHost = host;
 	}
 
 	async close(): Promise<void> {
 		this.#closed = true;
+		const indexes = queryIndexesByPath.get(this.#nativeOptions.path);
+		indexes?.delete(this);
+		if (indexes?.size === 0) queryIndexesByPath.delete(this.#nativeOptions.path);
 		await this.#retireAllReaders();
 	}
 
@@ -192,9 +212,11 @@ export class FullTextQueryIndex {
 	): Promise<Array<{ key: unknown; $score: number; $highlights?: Record<string, unknown>; loadedEntry: any }>> {
 		const readiness = readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId);
 		assertReady(readiness, this.#definition.name);
-		const revision = readDerivedIndexPublicationRevision(this.#options.auditStore, this.#options.readinessId);
+		const dataRevision = this.#derivedHost?.publicationRevision();
+		if (dataRevision === undefined)
+			throw new IndexRebuildingError(`Full-text index '${this.#definition.name}' is not ready`);
 		if (options.minResults === 0) return [];
-		const lease = await this.#acquireReader(`${revision.ownerEpoch}:${revision.revision}`);
+		const lease = await this.#acquireReader(readiness.ownerEpoch, dataRevision);
 		const reader = lease.reader;
 		try {
 			const maxSearchWindow = this.#maxSearchWindow!;
@@ -219,7 +241,12 @@ export class FullTextQueryIndex {
 			while (accepted.length < target && offset < maxSearchWindow) {
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
 				const limit = Math.min(Math.max(RAW_PAGE_SIZE, target - accepted.length), maxSearchWindow - offset);
-				const result = await reader.search({ query, offset, limit });
+				const result = await reader.search({
+					query,
+					offset,
+					limit,
+					...(!bounded && offset === 0 ? { exactTotal: true } : null),
+				});
 				if (!bounded && result.totalRelation === 'exact' && result.total > maxSearchWindow)
 					throw new ClientError(
 						`Full-text query exceeds the ${maxSearchWindow}-result search window; add a limit`,
@@ -233,6 +260,8 @@ export class FullTextQueryIndex {
 					const entry = this.#options.Table.primaryStore.getEntry(key, {
 						transaction: context && this.#options.Table._readTxnForContext(context),
 					});
+					if (typeof hit.version !== 'string')
+						throw new ServerError('Full-text index returned a hit without a source version', 500);
 					if (!entry?.value || hit.version !== String(entry.version)) continue;
 					if (options.filter && !options.filter(key)) continue;
 					accepted.push({ key, $score: hit.score, nativeId: hit.id, record: entry.value, recordEntry: entry });
@@ -243,6 +272,11 @@ export class FullTextQueryIndex {
 			}
 			if (!bounded && moreMayExist)
 				throw new ClientError(`Full-text query exceeds the ${maxSearchWindow}-result search window; add a limit`, 400);
+			if (bounded && accepted.length < target && moreMayExist)
+				throw new ClientError(
+					`Full-text filters exhausted the ${maxSearchWindow}-result search window; narrow the query or reduce offset`,
+					400
+				);
 			if (condition.includeHighlights && accepted.length > 0)
 				await this.#addHighlights(reader, condition, accepted.slice(options.resultOffset ?? 0));
 			return accepted.map((entry) => ({
@@ -321,9 +355,12 @@ export class FullTextQueryIndex {
 		}
 	}
 
-	async #acquireReader(revision: string): Promise<{ reader: NativeFullTextReader; release: () => Promise<void> }> {
-		const slot = await this.#readerFor(revision);
-		if (slot.retired) return this.#acquireReader(revision);
+	async #acquireReader(
+		ownerEpoch: bigint,
+		dataRevision: bigint
+	): Promise<{ reader: NativeFullTextReader; release: () => Promise<void> }> {
+		const slot = await this.#readerFor(ownerEpoch, dataRevision);
+		if (slot.retired) return this.#acquireReader(ownerEpoch, dataRevision);
 		slot.active++;
 		let released = false;
 		return {
@@ -340,7 +377,7 @@ export class FullTextQueryIndex {
 		};
 	}
 
-	#readerFor(revision: string): Promise<ReaderSlot> {
+	#readerFor(ownerEpoch: bigint, dataRevision: bigint): Promise<ReaderSlot> {
 		if (this.#closed) return Promise.reject(new ServerError('Full-text index is closed', 503));
 		if (this.#paused)
 			return Promise.reject(new IndexRebuildingError(`Full-text index '${this.#definition.name}' is not ready`));
@@ -348,17 +385,23 @@ export class FullTextQueryIndex {
 		if (
 			current &&
 			!current.retired &&
-			current.revision === revision &&
+			current.ownerEpoch === ownerEpoch &&
+			current.dataRevision === dataRevision &&
 			current.configurationRevision === this.#configurationRevision
 		)
 			return Promise.resolve(current);
-		if (this.#readerOperation) return this.#readerOperation.then(() => this.#readerFor(revision));
+		if (this.#readerOperation) return this.#readerOperation.then(() => this.#readerFor(ownerEpoch, dataRevision));
 		const configurationRevision = this.#configurationRevision;
 		this.#readerOperation = (async () => {
 			const existing = this.#readerSlot;
 			try {
 				let reader: NativeFullTextReader;
-				if (existing && existing.active === 0 && existing.configurationRevision === configurationRevision) {
+				if (
+					existing &&
+					existing.active === 0 &&
+					existing.ownerEpoch === ownerEpoch &&
+					existing.configurationRevision === configurationRevision
+				) {
 					await existing.reader.reload();
 					reader = existing.reader;
 					existing.retired = true;
@@ -368,7 +411,7 @@ export class FullTextQueryIndex {
 					reader = await binding.openNativeFullTextReader(this.#nativeOptions);
 					if (existing) this.#retireReaderSlot(existing);
 				}
-				const slot = { reader, revision, configurationRevision, active: 0, retired: false };
+				const slot = { reader, ownerEpoch, dataRevision, configurationRevision, active: 0, retired: false };
 				this.#readerSlot = slot;
 				return slot;
 			} catch (error) {
@@ -376,12 +419,12 @@ export class FullTextQueryIndex {
 					this.#readerSlot = undefined;
 					this.#retireReaderSlot(existing);
 				}
-				throw publicSearchError(error, this.#definition.name);
+				throw error;
 			} finally {
 				this.#readerOperation = undefined;
 			}
 		})();
-		return this.#readerOperation.then(() => this.#readerFor(revision));
+		return this.#readerOperation.then(() => this.#readerFor(ownerEpoch, dataRevision));
 	}
 
 	#retireReaderSlot(slot: ReaderSlot): void {
@@ -394,8 +437,12 @@ export class FullTextQueryIndex {
 
 	#closeReaderSlot(slot: ReaderSlot): Promise<void> {
 		if (!slot.closeOperation) {
-			slot.closeOperation = slot.reader.close().then(() => {
+			const operation = slot.reader.close().then(() => {
 				this.#retiredReaderSlots.delete(slot);
+			});
+			slot.closeOperation = operation;
+			void operation.catch(() => {
+				if (slot.closeOperation === operation) slot.closeOperation = undefined;
 			});
 		}
 		return slot.closeOperation;
@@ -438,6 +485,16 @@ export class FullTextQueryIndex {
 		}
 		return coverage;
 	}
+}
+
+export async function pauseNativeFullTextQueryReaders(path: string): Promise<void> {
+	pausedQueryPaths.add(path);
+	await Promise.all([...(queryIndexesByPath.get(path) ?? [])].map((index) => index.pause()));
+}
+
+export function resumeNativeFullTextQueryReaders(path: string): void {
+	pausedQueryPaths.delete(path);
+	for (const index of queryIndexesByPath.get(path) ?? []) index.resume();
 }
 
 function assertFreshnessOptions(maxIndexLagMilliseconds: number, waitForIndexMilliseconds: number): void {
@@ -549,6 +606,17 @@ function publicSearchError(error: unknown, name: string): Error {
 	if (code === 'E_RESULT_TOO_LARGE') return new ClientError(`Full-text query on '${name}' is too large`, 413);
 	if (error instanceof ClientError || error instanceof ServerError) return error;
 	return new ServerError(`Full-text search on '${name}' failed`, 500);
+}
+
+function nativeErrorNeedsRebuild(error: unknown): boolean {
+	const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+	return (
+		code === 'E_INDEX_NOT_READY' ||
+		code === 'E_INDEX_CORRUPT' ||
+		code === 'E_RELOAD_FAILED' ||
+		code === 'E_SCHEMA_MISMATCH' ||
+		code === 'E_INDEX_FORMAT_INCOMPATIBLE'
+	);
 }
 
 function digestGeneration(value: string): string {

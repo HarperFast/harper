@@ -26,7 +26,7 @@ export type NativeFullTextDerivedIndexLifecycleOptions = NativeFullTextIndexConf
 	sourceGeneration: string;
 	binding?: NativeFullTextModule | (() => Promise<NativeFullTextModule>);
 	beforeReset?: () => Promise<void>;
-	afterReset?: () => void;
+	afterReset?: () => void | Promise<void>;
 };
 
 export type NativeFullTextDerivedIndexBackendOptions = Omit<FullTextDerivedIndexBackendOptions, 'lifecycle'> &
@@ -97,13 +97,24 @@ export class NativeFullTextDerivedIndexLifecycle {
 	}
 
 	async reset(): Promise<void> {
-		await this.#options.beforeReset?.();
-		const result = await this.#requireBinding().resetNativeFullTextIndex({
-			path: this.#path,
-			indexId: this.#options.indexId,
-		});
-		this.#queueReclaimRetired(result.state === 'reset' ? result.retiredPath : undefined);
-		this.#options.afterReset?.();
+		let resetError: unknown;
+		try {
+			await this.#options.beforeReset?.();
+			const result = await this.#requireBinding().resetNativeFullTextIndex({
+				path: this.#path,
+				indexId: this.#options.indexId,
+			});
+			this.#queueReclaimRetired(result.state === 'reset' ? result.retiredPath : undefined);
+		} catch (error) {
+			resetError = error;
+		}
+		try {
+			await this.#options.afterReset?.();
+		} catch (resumeError) {
+			if (resetError) throw new AggregateError([resetError, resumeError], 'Full-text reset and reader resume failed');
+			throw resumeError;
+		}
+		if (resetError) throw resetError;
 	}
 
 	#queueReclaimRetired(retiredPath?: string): void {
