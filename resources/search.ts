@@ -344,10 +344,11 @@ function mergeFullTextOption(name: string, current: number | undefined, next: nu
 function isFilterablePushdown(condition, table): boolean {
 	const attributeName = condition?.attribute ?? condition?.[0];
 	if (attributeName == null || table == null) return false;
+	const fullTextMode = Boolean(fullTextComparatorMode(condition?.comparator));
 	const index =
-		attributeName === table.primaryKey
+		attributeName === table.primaryKey && !fullTextMode
 			? table.primaryStore
-			: conditionIndex(table, attributeName, Boolean(fullTextComparatorMode(condition?.comparator)));
+			: conditionIndex(table, attributeName, fullTextMode);
 	return Boolean(index?.customIndex?.filteredSearch);
 }
 

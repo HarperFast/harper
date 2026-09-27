@@ -1,7 +1,7 @@
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { ITC_EVENT_TYPES } from '../utility/hdbTerms.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
-import { sendItcEvent, sendItcEventStrict } from '../server/threads/itc.js';
+import { sendItcEventStrict } from '../server/threads/itc.js';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import type { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import {
@@ -481,22 +481,35 @@ export function attachDerivedIndexes(
 				synonyms: storage.synonyms,
 				limits: { ...FULL_TEXT_LIMITS },
 				hasBlobSources: definition.fields.some(({ mediaType }) => mediaType === 'text/plain'),
-				beforeReset: async () => {
-					await pauseNativeFullTextQueryReaders(nativePath);
+				beforeReset: async (ownerEpoch) => {
+					await pauseNativeFullTextQueryReaders(nativePath, readinessId, ownerEpoch);
 					await sendItcEventStrict(
 						{
 							type: ITC_EVENT_TYPES.SCHEMA,
-							message: { operation: FULL_TEXT_QUERY_PAUSE_OPERATION, path: nativePath },
+							message: {
+								operation: FULL_TEXT_QUERY_PAUSE_OPERATION,
+								path: nativePath,
+								readinessId,
+								ownerEpoch: ownerEpoch.toString(),
+							},
 						},
 						35_000
 					);
 				},
-				afterReset: async () => {
-					resumeNativeFullTextQueryReaders(nativePath);
-					await sendItcEvent({
-						type: ITC_EVENT_TYPES.SCHEMA,
-						message: { operation: FULL_TEXT_QUERY_RESUME_OPERATION, path: nativePath },
-					});
+				afterReset: async (ownerEpoch) => {
+					resumeNativeFullTextQueryReaders(nativePath, readinessId, ownerEpoch);
+					await sendItcEventStrict(
+						{
+							type: ITC_EVENT_TYPES.SCHEMA,
+							message: {
+								operation: FULL_TEXT_QUERY_RESUME_OPERATION,
+								path: nativePath,
+								readinessId,
+								ownerEpoch: ownerEpoch.toString(),
+							},
+						},
+						35_000
+					);
 				},
 				...(fullTextTest
 					? {

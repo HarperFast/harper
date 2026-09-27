@@ -3,7 +3,11 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
-const { compileFullTextDefinitions, compileValidFullTextDefinitions } = require('#src/resources/fullTextSchema');
+const {
+	compileFullTextDefinitions,
+	compileValidFullTextDefinitions,
+	reconcileFullTextIndexGenerations,
+} = require('#src/resources/fullTextSchema');
 const { getDatabases, resetDatabases, table } = require('#src/resources/databases');
 const environment = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
@@ -129,6 +133,17 @@ describe('@fullText declaration compiler', () => {
 		assert.strictEqual(compiled.analyzer, 'english@2');
 		assert.deepStrictEqual(invalid, []);
 		assert.throws(() => compileFullTextDefinitions([persisted], productAttributes()), /english@2/);
+		const [current] = compileFullTextDefinitions(
+			[{ name: 'search', fields: [{ name: 'title' }], analyzer: 'english@2' }],
+			productAttributes()
+		);
+		const generations = reconcileFullTextIndexGenerations(
+			[compiled],
+			{ search: 'old-generation' },
+			[current],
+			() => 'new-generation'
+		);
+		assert.strictEqual(generations.search, 'new-generation');
 	});
 });
 

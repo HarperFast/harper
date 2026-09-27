@@ -52,10 +52,15 @@ async function schemaHandler(event) {
 	) {
 		if (typeof event.message.path !== 'string' || event.message.path.length === 0)
 			throw new Error('Full-text query reader coordination requires an index path');
+		if (typeof event.message.readinessId !== 'string' || event.message.readinessId.length === 0)
+			throw new Error('Full-text query reader coordination requires a readiness id');
+		if (typeof event.message.ownerEpoch !== 'string' || !/^(?:0|[1-9]\d*)$/.test(event.message.ownerEpoch))
+			throw new Error('Full-text query reader coordination requires an owner epoch');
 		const fullTextQueries = require('../../resources/indexes/fullTextQueryIndex.ts');
+		const ownerEpoch = BigInt(event.message.ownerEpoch);
 		if (event.message.operation === 'pause-full-text-query-readers')
-			await fullTextQueries.pauseNativeFullTextQueryReaders(event.message.path);
-		else fullTextQueries.resumeNativeFullTextQueryReaders(event.message.path);
+			await fullTextQueries.pauseNativeFullTextQueryReaders(event.message.path, event.message.readinessId, ownerEpoch);
+		else fullTextQueries.resumeNativeFullTextQueryReaders(event.message.path, event.message.readinessId, ownerEpoch);
 		return;
 	}
 

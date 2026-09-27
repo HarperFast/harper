@@ -65,7 +65,7 @@ export type FullTextDerivedIndexInspection =
 export interface FullTextDerivedIndexLifecycle {
 	inspect(): FullTextDerivedIndexInspection;
 	open(): Promise<FullTextDerivedIndexEngine>;
-	reset(): Promise<void>;
+	reset(ownerEpoch: bigint): Promise<void>;
 }
 
 export type FullTextMutationBatch = {
@@ -487,7 +487,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 
 	async #performReset(ownerEpoch: bigint): Promise<void> {
 		try {
-			await this.#lifecycle.reset();
+			await this.#lifecycle.reset(ownerEpoch);
 		} catch (error) {
 			logNativeError('Full-text native reset failed', error);
 			throw new FullTextDerivedIndexError('Full-text native reset failed');

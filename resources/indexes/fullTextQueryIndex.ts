@@ -57,7 +57,8 @@ type FullTextQueryHost = DerivedNativeIndexHost & {
 export const FULL_TEXT_QUERY_PAUSE_OPERATION = 'pause-full-text-query-readers';
 export const FULL_TEXT_QUERY_RESUME_OPERATION = 'resume-full-text-query-readers';
 const queryIndexesByPath = new Map<string, Set<FullTextQueryIndex>>();
-const pausedQueryPaths = new Set<string>();
+type QueryPause = { readinessId: string; ownerEpoch: bigint };
+const pausedQueryPaths = new Map<string, QueryPause>();
 
 export type FullTextQueryIndexOptions = {
 	Table: any;
@@ -91,7 +92,7 @@ export class FullTextQueryIndex {
 	#maxSearchWindow?: number;
 	#maxTraceRecords?: number;
 	#closed = false;
-	#paused = false;
+	#pausedFor?: QueryPause;
 	#derivedHost?: FullTextQueryHost;
 
 	constructor(options: FullTextQueryIndexOptions) {
@@ -116,7 +117,8 @@ export class FullTextQueryIndex {
 		let indexes = queryIndexesByPath.get(this.#nativeOptions.path);
 		if (!indexes) queryIndexesByPath.set(this.#nativeOptions.path, (indexes = new Set()));
 		indexes.add(this);
-		this.#paused = pausedQueryPaths.has(this.#nativeOptions.path);
+		const pause = pausedQueryPaths.get(this.#nativeOptions.path);
+		if (pause?.readinessId === options.readinessId) this.#pausedFor = pause;
 	}
 
 	updateDefinition(definition: FullTextDefinition): void {
@@ -196,13 +198,16 @@ export class FullTextQueryIndex {
 		if (indexes?.size === 0) queryIndexesByPath.delete(this.#nativeOptions.path);
 	}
 
-	async pause(): Promise<void> {
-		this.#paused = true;
+	async pause(readinessId: string, ownerEpoch: bigint): Promise<void> {
+		if (readinessId !== this.#options.readinessId) return;
+		if (this.#pausedFor && this.#pausedFor.ownerEpoch > ownerEpoch) return;
+		this.#pausedFor = { readinessId, ownerEpoch };
 		await this.#retireAllReaders();
 	}
 
-	resume(): void {
-		if (!this.#closed) this.#paused = false;
+	resume(readinessId: string, ownerEpoch: bigint): void {
+		if (!this.#closed && this.#pausedFor?.readinessId === readinessId && this.#pausedFor.ownerEpoch <= ownerEpoch)
+			this.#pausedFor = undefined;
 	}
 
 	async #search(
@@ -337,6 +342,7 @@ export class FullTextQueryIndex {
 					fragmentLength: highlighting.fragmentLength,
 					maxFragmentsPerValue: highlighting.maxFragments,
 				});
+				if (!traced.complete) throw new ServerError('Full-text index returned incomplete highlights', 500);
 				for (const record of traced.records) {
 					const entry = byId.get(record.id);
 					if (!entry) continue;
@@ -379,7 +385,13 @@ export class FullTextQueryIndex {
 
 	#readerFor(ownerEpoch: bigint, dataRevision: bigint): Promise<ReaderSlot> {
 		if (this.#closed) return Promise.reject(new ServerError('Full-text index is closed', 503));
-		if (this.#paused)
+		if (this.#pausedFor && this.#pausedFor.ownerEpoch <= ownerEpoch) {
+			this.#pausedFor = undefined;
+			const pausedPath = pausedQueryPaths.get(this.#nativeOptions.path);
+			if (pausedPath?.readinessId === this.#options.readinessId && pausedPath.ownerEpoch <= ownerEpoch)
+				pausedQueryPaths.delete(this.#nativeOptions.path);
+		}
+		if (this.#pausedFor)
 			return Promise.reject(new IndexRebuildingError(`Full-text index '${this.#definition.name}' is not ready`));
 		const current = this.#readerSlot;
 		if (
@@ -487,14 +499,21 @@ export class FullTextQueryIndex {
 	}
 }
 
-export async function pauseNativeFullTextQueryReaders(path: string): Promise<void> {
-	pausedQueryPaths.add(path);
-	await Promise.all([...(queryIndexesByPath.get(path) ?? [])].map((index) => index.pause()));
+export async function pauseNativeFullTextQueryReaders(
+	path: string,
+	readinessId: string,
+	ownerEpoch: bigint
+): Promise<void> {
+	const current = pausedQueryPaths.get(path);
+	if (!current || current.readinessId !== readinessId || current.ownerEpoch <= ownerEpoch)
+		pausedQueryPaths.set(path, { readinessId, ownerEpoch });
+	await Promise.all([...(queryIndexesByPath.get(path) ?? [])].map((index) => index.pause(readinessId, ownerEpoch)));
 }
 
-export function resumeNativeFullTextQueryReaders(path: string): void {
-	pausedQueryPaths.delete(path);
-	for (const index of queryIndexesByPath.get(path) ?? []) index.resume();
+export function resumeNativeFullTextQueryReaders(path: string, readinessId: string, ownerEpoch: bigint): void {
+	const current = pausedQueryPaths.get(path);
+	if (current?.readinessId === readinessId && current.ownerEpoch <= ownerEpoch) pausedQueryPaths.delete(path);
+	for (const index of queryIndexesByPath.get(path) ?? []) index.resume(readinessId, ownerEpoch);
 }
 
 function assertFreshnessOptions(maxIndexLagMilliseconds: number, waitForIndexMilliseconds: number): void {

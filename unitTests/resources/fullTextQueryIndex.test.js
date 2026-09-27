@@ -2,7 +2,12 @@ require('../testUtils');
 const assert = require('node:assert');
 const { toBufferKey } = require('ordered-binary');
 const { publishDerivedIndexReadiness } = require('#src/resources/derivedIndexRuntime');
-const { FullTextQueryIndex } = require('#src/resources/indexes/fullTextQueryIndex');
+const {
+	FullTextQueryIndex,
+	pauseNativeFullTextQueryReaders,
+	resumeNativeFullTextQueryReaders,
+} = require('#src/resources/indexes/fullTextQueryIndex');
+const { nativeFullTextIndexPath } = require('#src/resources/indexes/nativeFullTextDerivedIndexLifecycle');
 
 function sharedStore() {
 	const buffers = new Map();
@@ -60,6 +65,7 @@ describe('FullTextQueryIndex', () => {
 		]);
 		const searches = [];
 		const traces = [];
+		let traceComplete = true;
 		let reloads = 0;
 		let closes = 0;
 		const reader = {
@@ -81,7 +87,7 @@ describe('FullTextQueryIndex', () => {
 			async traceMatches(request, records) {
 				traces.push({ request, records });
 				return {
-					complete: true,
+					complete: traceComplete,
 					records: records.map(({ id }) => ({
 						id,
 						values: [
@@ -156,6 +162,9 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(traces.length, 2);
 		assert(traces.every(({ records }) => records.length === 1));
 		assert.deepStrictEqual(first[0].$highlights.title[0].spans, [{ start: 0, end: 3 }]);
+		traceComplete = false;
+		await assert.rejects(index.search(condition, {}, { minResults: 1 }), /incomplete highlights/);
+		traceComplete = true;
 
 		traces.length = 0;
 		const paged = await index.search(condition, {}, { minResults: 2, resultOffset: 1 });
@@ -623,6 +632,7 @@ describe('FullTextQueryIndex', () => {
 							assert.deepStrictEqual(Object.keys(records[0].fields), ['title']);
 							assert.strictEqual(records[0].fields.title, 'trail shoe');
 							return {
+								complete: true,
 								records: [
 									{
 										id: records[0].id,
@@ -655,6 +665,61 @@ describe('FullTextQueryIndex', () => {
 		);
 		assert.strictEqual(bodyReads, 0);
 		assert.deepStrictEqual(Object.keys(result.$highlights), ['title']);
+		await index.close();
+	});
+
+	it('orders reader pause and resume epochs and recovers a completed pause', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'query-pause-epochs';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const storePath = '/unused';
+		const storeName = 'query-pause-epochs';
+		const path = nativeFullTextIndexPath(storePath, storeName);
+		let opens = 0;
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
+				_readTxnForContext: () => undefined,
+			},
+			definition: definition(),
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath,
+			storeName,
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+				},
+				async openNativeFullTextReader() {
+					opens++;
+					return {
+						async search() {
+							return {
+								total: 1,
+								totalRelation: 'exact',
+								hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+							};
+						},
+						async reload() {},
+						async close() {},
+					};
+				},
+			},
+		});
+		attachCurrentCoverage(index);
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
+		await pauseNativeFullTextQueryReaders(path, readinessId, 0n);
+		await index.search(query, {}, { minResults: 1 });
+		assert.strictEqual(opens, 1);
+		await pauseNativeFullTextQueryReaders(path, readinessId, 1n);
+		resumeNativeFullTextQueryReaders(path, readinessId, 0n);
+		await assert.rejects(index.search(query, {}, { minResults: 1 }), (error) => error.name === 'IndexRebuildingError');
+		resumeNativeFullTextQueryReaders(path, readinessId, 1n);
+		await index.search(query, {}, { minResults: 1 });
 		await index.close();
 	});
 

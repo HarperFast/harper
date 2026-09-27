@@ -348,6 +348,7 @@ describe('@fullText derived-index activation', () => {
 			attributes: [
 				{ name: 'id', type: 'ID', isPrimaryKey: true },
 				{ name: 'title', type: 'String' },
+				{ name: 'price', type: 'Int' },
 			],
 			fullTextIndexes: [
 				{
@@ -357,15 +358,21 @@ describe('@fullText derived-index activation', () => {
 				},
 			],
 		});
-		await Product.put('shoe', { title: 'Trail shoe' });
-		await Product.put('jacket', { title: 'Rain jacket' });
+		await Product.put('cheap', { title: 'Trail shoe', price: 50 });
+		await Product.put('premium', { title: 'Hiking shoe', price: 150 });
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'id').state === 'ready', 30_000);
 		const matched = await collect(
-			Product.search({ conditions: [{ attribute: 'id', comparator: 'matches', value: 'shoe' }] })
+			Product.search({
+				conditions: [
+					{ attribute: 'id', comparator: 'matches', value: 'shoe' },
+					{ attribute: 'price', comparator: 'greater_than', value: 100 },
+				],
+				limit: 1,
+			})
 		);
 		assert.deepStrictEqual(
 			matched.map(({ id }) => id),
-			['shoe']
+			['premium']
 		);
 	});
 

@@ -25,8 +25,8 @@ export type NativeFullTextDerivedIndexLifecycleOptions = NativeFullTextIndexConf
 	indexId: string;
 	sourceGeneration: string;
 	binding?: NativeFullTextModule | (() => Promise<NativeFullTextModule>);
-	beforeReset?: () => Promise<void>;
-	afterReset?: () => void | Promise<void>;
+	beforeReset?: (ownerEpoch: bigint) => Promise<void>;
+	afterReset?: (ownerEpoch: bigint) => void | Promise<void>;
 };
 
 export type NativeFullTextDerivedIndexBackendOptions = Omit<FullTextDerivedIndexBackendOptions, 'lifecycle'> &
@@ -96,10 +96,10 @@ export class NativeFullTextDerivedIndexLifecycle {
 		});
 	}
 
-	async reset(): Promise<void> {
+	async reset(ownerEpoch: bigint): Promise<void> {
 		let resetError: unknown;
 		try {
-			await this.#options.beforeReset?.();
+			await this.#options.beforeReset?.(ownerEpoch);
 			const result = await this.#requireBinding().resetNativeFullTextIndex({
 				path: this.#path,
 				indexId: this.#options.indexId,
@@ -109,7 +109,7 @@ export class NativeFullTextDerivedIndexLifecycle {
 			resetError = error;
 		}
 		try {
-			await this.#options.afterReset?.();
+			await this.#options.afterReset?.(ownerEpoch);
 		} catch (resumeError) {
 			if (resetError) throw new AggregateError([resetError, resumeError], 'Full-text reset and reader resume failed');
 			throw resumeError;

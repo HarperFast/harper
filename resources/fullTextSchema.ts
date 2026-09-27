@@ -17,6 +17,7 @@ const HIGHLIGHTING_ARGUMENTS = new Set(['maxFragments', 'fragmentLength']);
 const DEFAULT_ANALYZER = 'english@2';
 const DEFAULT_MAX_FRAGMENTS = 3;
 const DEFAULT_FRAGMENT_LENGTH = 160;
+const migratedPersistedStorage = Symbol('migrated-persisted-full-text-storage');
 
 export type FullTextSource = {
 	name: string;
@@ -101,6 +102,7 @@ export function reconcileFullTextIndexGenerations(
 		const generation = durable[definition.name];
 		const storageUnchanged =
 			previous &&
+			!(previous as FullTextDefinition & { [migratedPersistedStorage]?: true })[migratedPersistedStorage] &&
 			JSON.stringify(fullTextStorageDefinition(previous)) === JSON.stringify(fullTextStorageDefinition(definition));
 		generations[definition.name] =
 			storageUnchanged && typeof generation === 'string' && generation.length > 0 ? generation : createGeneration();
@@ -145,7 +147,9 @@ export function compileValidFullTextDefinitions(
 	const definitions: FullTextDefinition[] = [];
 	for (const value of values) {
 		try {
+			const migrated = isPersistedEnglishV1(value);
 			const definition = compileFullTextDefinition(migratePersistedFullTextDefinition(value), attributes);
+			if (migrated) Object.defineProperty(definition, migratedPersistedStorage, { value: true });
 			if (names.has(definition.name))
 				throw schemaError(`@fullText index "${definition.name}" is declared more than once`);
 			names.add(definition.name);
@@ -156,6 +160,12 @@ export function compileValidFullTextDefinitions(
 		}
 	}
 	return sortFullTextDefinitions(definitions);
+}
+
+function isPersistedEnglishV1(value: unknown): boolean {
+	return Boolean(
+		value && typeof value === 'object' && !Array.isArray(value) && (value as any).analyzer === 'english@1'
+	);
 }
 
 function migratePersistedFullTextDefinition(value: unknown): unknown {

@@ -5130,7 +5130,7 @@ export function makeTable(options) {
 			const operator = target.operator;
 			if (conditions.length > 0 || operator) conditions = prepareConditions(conditions, operator);
 			let sort = typeof target.sort === 'object' && target.sort;
-			if (conditionsContainFullText(conditions)) {
+			if (fullTextIndexes.length > 0 && conditionsContainFullText(conditions)) {
 				if (sort && (sort.attribute !== '$score' || sort.next || sort.descending === false))
 					throw new ClientError('Full-text results can only use descending $score order', 400);
 				sort = undefined;
