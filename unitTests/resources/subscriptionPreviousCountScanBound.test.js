@@ -3,6 +3,7 @@ const assert = require('assert');
 const { setTimeout: delay } = require('timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
+const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { logger } = require('#src/utility/logging/logger');
 require('#src/server/serverHelpers/serverUtilities');
@@ -52,8 +53,13 @@ describe('Subscription previousCount backfill scan bound', () => {
 		// matching this file's other magic numbers being test-local constants.
 		const MAX_PREVIOUS_COUNT_SCAN = 10_000;
 		const N = MAX_PREVIOUS_COUNT_SCAN + 250; // comfortably past the cap
-		for (let i = 0; i < N; i++) {
-			await ScanBoundTable.put(i, { name: 'v' + i });
+		// The cap counts audit records, not transactions, so batching keeps N in-scope entries without
+		// N separate commits, whose cost scales with the runner's disk latency.
+		const BATCH = 500;
+		for (let i = 0; i < N; i += BATCH) {
+			await transaction(async () => {
+				for (let j = i; j < Math.min(i + BATCH, N); j++) await ScanBoundTable.put(j, { name: 'v' + j });
+			});
 		}
 
 		const start = Date.now();
