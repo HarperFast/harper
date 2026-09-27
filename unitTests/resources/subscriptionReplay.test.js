@@ -172,8 +172,8 @@ describe('Subscription replay', () => {
 			assertChronological(events, 'startTime branch with concurrent writes out of order');
 		});
 
-		// harper#2856: subscription.startTime is the cursor a durable session persists and resumes from
-		// with exclusiveStart, so after replay stops early it must not cover a record that was not
+		// subscription.startTime is the cursor a durable session persists and resumes from with
+		// exclusiveStart, so after replay stops early it must not cover a record that was not
 		// delivered. These subscribe as a durable QoS>0 MQTT session does (includeSuperseded).
 		describe('cursor after replay stops early', () => {
 			let tableSequence = 0;
@@ -200,12 +200,16 @@ describe('Subscription replay', () => {
 				await waitFor(() => subscription.closed);
 				return { cursor: subscription.startTime, delivered };
 			}
-			async function resume(T, cursor, minEvents) {
+			async function resume(T, cursor, expectedIds) {
 				const subscription = await T.subscribe({ startTime: cursor, isCollection: true, includeSuperseded: true });
-				const events = await collect(subscription, 50, { minEvents });
+				const ids = [];
+				subscription.on('data', (event) => ids.push(event.id));
+				await waitFor(() => expectedIds.every((id) => ids.includes(id)), 5000).catch(() => {});
+				await delay(50); // lets an unexpected extra delivery land before the caller compares
 				subscription.end();
-				return events.map((event) => event.id);
+				return ids;
 			}
+			const idsFrom = (first, last) => Array.from({ length: last - first + 1 }, (_, i) => first + i);
 
 			it('stops on the last delivered record when a send fails, so a resume delivers the failed one', async () => {
 				const T = freshTable();
@@ -219,7 +223,7 @@ describe('Subscription replay', () => {
 					[0, 1]
 				);
 				assert.equal(cursor, delivered[1].localTime);
-				assert.deepStrictEqual(await resume(T, cursor, 3), [2, 3, 4]);
+				assert.deepStrictEqual(await resume(T, cursor, [2, 3, 4]), [2, 3, 4]);
 			});
 
 			it('stays before a transaction whose records were only partly delivered', async () => {
@@ -239,7 +243,8 @@ describe('Subscription replay', () => {
 				);
 				// RocksDB gives every record of a transaction the same txnLogKey, so a resume re-delivers the
 				// transaction's already-sent record 1; LMDB keys each record separately.
-				assert.deepStrictEqual(await resume(T, cursor, 3), isLMDB ? [2, 3, 4] : [1, 2, 3, 4]);
+				const expected = isLMDB ? [2, 3, 4] : [1, 2, 3, 4];
+				assert.deepStrictEqual(await resume(T, cursor, expected), expected);
 			});
 
 			it('moves past a record the filter rejects when replay completes', async () => {
@@ -276,10 +281,29 @@ describe('Subscription replay', () => {
 					if (event.id === 0) queueMicrotask(() => subscription.end());
 				});
 				assert.ok(delivered.length > 0 && delivered.length < size, `delivered ${delivered.length} before the yield`);
-				const resumed = await resume(T, cursor, size + 1 - delivered.length);
-				const missing = [];
-				for (let i = delivered.length; i <= size; i++) if (!resumed.includes(i)) missing.push(i);
+				const expected = idsFrom(delivered.length, size);
+				const resumed = await resume(T, cursor, expected);
+				const missing = expected.filter((id) => !resumed.includes(id));
 				assert.deepStrictEqual(missing, [], 'records after the yield were skipped by the resume');
+			});
+
+			it('stays before a transaction when the subscription closes while replay waits for the queue to drain', async () => {
+				const T = freshTable();
+				const startTime = Date.now() - 1;
+				const size = 150;
+				await transaction({}, async (context) => {
+					for (let i = 0; i < size; i++) await T.put(i, { name: 'bulk' + i }, context);
+				});
+				await T.put(size, { name: 'after' });
+				// with no consumer the queue fills until replay passes EVENT_HIGH_WATER_MARK (100) and waits to drain
+				const subscription = await T.subscribe({ startTime, isCollection: true, includeSuperseded: true });
+				await waitFor(() => subscription.queue?.length > 100);
+				const lastSent = subscription.queue.at(-1).id;
+				subscription.end();
+				const expected = idsFrom(lastSent, size);
+				const resumed = await resume(T, subscription.startTime, expected);
+				const missing = expected.filter((id) => !resumed.includes(id));
+				assert.deepStrictEqual(missing, [], 'records from the last sent one on were skipped by the resume');
 			});
 		});
 	});
