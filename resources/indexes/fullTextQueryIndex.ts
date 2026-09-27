@@ -26,6 +26,7 @@ import {
 
 const RAW_PAGE_SIZE = 256;
 const HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS = 5_000;
+const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 
 export type FullTextCondition = {
 	attribute?: string;
@@ -522,7 +523,7 @@ function assertFreshnessOptions(maxIndexLagMilliseconds: number, waitForIndexMil
 		!Number.isFinite(maxIndexLagMilliseconds) ||
 		maxIndexLagMilliseconds < 0
 	)
-		throw new ClientError('maxIndexLagMilliseconds must be a finite nonnegative number');
+		throw new ClientError('maxIndexLagMilliseconds must be a finite nonnegative number', 400);
 	if (
 		typeof waitForIndexMilliseconds !== 'number' ||
 		!Number.isFinite(waitForIndexMilliseconds) ||
@@ -530,7 +531,8 @@ function assertFreshnessOptions(maxIndexLagMilliseconds: number, waitForIndexMil
 		waitForIndexMilliseconds > MAX_WAIT_FOR_INDEX_MILLISECONDS
 	)
 		throw new ClientError(
-			`waitForIndexMilliseconds must be a finite number between 0 and ${MAX_WAIT_FOR_INDEX_MILLISECONDS}`
+			`waitForIndexMilliseconds must be a finite number between 0 and ${MAX_WAIT_FOR_INDEX_MILLISECONDS}`,
+			400
 		);
 }
 
@@ -573,19 +575,17 @@ async function sourceFields(
 	selected: ReadonlySet<string>
 ): Promise<Record<string, string | string[]>> {
 	const fields: Record<string, string | string[]> = Object.create(null);
-	const deadline = Date.now() + HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS;
+	const deadline = performance.now() + HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS;
 	for (const source of definition.fields) {
 		if (!selected.has(source.name)) continue;
 		const value = record[source.name];
 		if (typeof value === 'string') fields[source.name] = value;
 		else if (Array.isArray(value)) fields[source.name] = value.filter((entry) => typeof entry === 'string');
 		else if (source.mediaType === 'text/plain' && value instanceof Blob) {
-			const remaining = deadline - Date.now();
+			const remaining = deadline - performance.now();
 			if (remaining <= 0) continue;
 			try {
-				fields[source.name] = new TextDecoder('utf-8', { fatal: true }).decode(
-					await withTimeout(value.arrayBuffer(), remaining)
-				);
+				fields[source.name] = UTF8_DECODER.decode(await withTimeout(value.arrayBuffer(), remaining));
 			} catch {}
 		}
 	}

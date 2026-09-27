@@ -18,6 +18,7 @@ import { toBufferKey } from 'ordered-binary';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
 const logger = loggerWithTag('fulltext-derived-index');
+const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 
 const DEFAULT_MAX_QUEUED_BATCHES = 16;
 export const HARPER_FULLTEXT_DEFAULT_MAX_QUEUED_BYTES = 64 * 1024 * 1024;
@@ -1242,7 +1243,7 @@ async function resolvedFullTextFields(
 		}
 		let text: string;
 		try {
-			text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+			text = UTF8_DECODER.decode(bytes);
 		} catch (error) {
 			if (error instanceof TypeError) return { rejected: true };
 			throw error;
