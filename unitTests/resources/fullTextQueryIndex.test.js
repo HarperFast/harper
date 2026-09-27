@@ -1082,7 +1082,7 @@ describe('FullTextQueryIndex', () => {
 		await newIndex.close();
 	});
 
-	it('resumes every reader paused by the same reset token', async () => {
+	it('requires the exact generation-scoped reset token to resume a shared path', async () => {
 		const auditStore = sharedStore();
 		const oldReadinessId = 'query-predecessor-pause';
 		const newReadinessId = 'query-successor-resume';
@@ -1132,7 +1132,21 @@ describe('FullTextQueryIndex', () => {
 		const newIndex = createIndex(newReadinessId);
 
 		await pauseNativeFullTextQueryReaders(path, oldReadinessId, 1n);
+		await pauseNativeFullTextQueryReaders(path, newReadinessId, 1n);
 		resumeNativeFullTextQueryReaders(path, oldReadinessId, 1n);
+		await assert.rejects(
+			oldIndex.search({ attribute: oldReadinessId, comparator: 'matches', value: 'shoe' }, {}),
+			(error) => error.name === 'IndexRebuildingError'
+		);
+		await assert.rejects(
+			newIndex.search({ attribute: newReadinessId, comparator: 'matches', value: 'shoe' }, {}),
+			(error) => error.name === 'IndexRebuildingError'
+		);
+		resumeNativeFullTextQueryReaders(path, newReadinessId, 1n);
+		assert.strictEqual(
+			(await oldIndex.search({ attribute: oldReadinessId, comparator: 'matches', value: 'shoe' }, {})).length,
+			1
+		);
 		assert.strictEqual(
 			(await newIndex.search({ attribute: newReadinessId, comparator: 'matches', value: 'shoe' }, {})).length,
 			1
