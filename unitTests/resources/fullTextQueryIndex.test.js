@@ -1734,10 +1734,12 @@ describe('FullTextQueryIndex', () => {
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
 		let activeReads = 0;
 		let maxActiveReads = 0;
+		let totalReads = 0;
 		const makeBlob = (value) =>
 			new (class extends Blob {
 				async arrayBuffer() {
 					activeReads++;
+					totalReads++;
 					maxActiveReads = Math.max(maxActiveReads, activeReads);
 					await new Promise((resolve) => setTimeout(resolve, 10));
 					try {
@@ -1810,6 +1812,7 @@ describe('FullTextQueryIndex', () => {
 				value: 'shoe',
 				fullTextLeaves: [
 					{ text: 'shoe', mode: 'any', fields: ['title'] },
+					{ text: 'trail', mode: 'any', fields: ['title'] },
 					{ text: 'boot', mode: 'any', fields: ['body'] },
 				],
 				includeHighlights: true,
@@ -1818,7 +1821,8 @@ describe('FullTextQueryIndex', () => {
 			{ minResults: 2 }
 		);
 		assert.strictEqual(maxActiveReads, 1);
-		assert.deepStrictEqual(traceBatchSizes, [1, 1, 1, 1]);
+		assert.strictEqual(totalReads, 4);
+		assert.deepStrictEqual(traceBatchSizes, [1, 1, 1, 1, 1, 1]);
 		await index.close();
 	});
 

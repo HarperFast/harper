@@ -377,9 +377,15 @@ export class FullTextQueryIndex {
 			fields: leaf.fields?.filter((field) => highlightFields.has(field)) ?? [...highlightFields],
 		}));
 		const byId = new Map(entries.map((entry) => [entry.nativeId, entry]));
+		const leafGroups = new Map<string, { fields: string[]; leaves: typeof leaves }>();
 		for (const leaf of leaves) {
-			const fields = leaf.fields;
-			if (fields.length === 0) continue;
+			if (leaf.fields.length === 0) continue;
+			const key = JSON.stringify([...leaf.fields].sort());
+			let group = leafGroups.get(key);
+			if (!group) leafGroups.set(key, (group = { fields: leaf.fields, leaves: [] }));
+			group.leaves.push(leaf);
+		}
+		for (const { fields, leaves: fieldLeaves } of leafGroups.values()) {
 			const leafFields = new Set(fields);
 			for (const sourceEntries of traceEntryBatches(
 				entries,
@@ -394,26 +400,28 @@ export class FullTextQueryIndex {
 						fields: await sourceFields(record, this.#definition, leafFields, deadline),
 					}))
 				);
-				for (const traceRecords of traceSourceBatches(records, this.#maxTraceSourceBytes!)) {
-					const traced = await reader.traceMatches({ text: leaf.text, mode: leaf.mode, fields }, traceRecords, {
-						remainingBudgetMilliseconds: remainingSearchBudget(deadline),
-						snippets: true,
-						fragmentLength: highlighting.fragmentLength,
-						maxFragmentsPerValue: highlighting.maxFragments,
-					});
-					if (!traced.complete) throw new ServerError('Full-text index returned incomplete highlights', 500);
-					for (const record of traced.records) {
-						const entry = byId.get(record.id);
-						if (!entry) continue;
-						const highlights = (entry.$highlights ??= Object.create(null));
-						for (const value of record.values) {
-							if (!leafFields.has(value.field)) continue;
-							const values = (highlights[value.field] ??= []) as unknown[];
-							values.push({
-								valueIndex: value.valueIndex,
-								spans: value.spans,
-								...(value.fragments ? { fragments: value.fragments } : null),
-							});
+				for (const leaf of fieldLeaves) {
+					for (const traceRecords of traceSourceBatches(records, this.#maxTraceSourceBytes!)) {
+						const traced = await reader.traceMatches({ text: leaf.text, mode: leaf.mode, fields }, traceRecords, {
+							remainingBudgetMilliseconds: remainingSearchBudget(deadline),
+							snippets: true,
+							fragmentLength: highlighting.fragmentLength,
+							maxFragmentsPerValue: highlighting.maxFragments,
+						});
+						if (!traced.complete) throw new ServerError('Full-text index returned incomplete highlights', 500);
+						for (const record of traced.records) {
+							const entry = byId.get(record.id);
+							if (!entry) continue;
+							const highlights = (entry.$highlights ??= Object.create(null));
+							for (const value of record.values) {
+								if (!leafFields.has(value.field)) continue;
+								const values = (highlights[value.field] ??= []) as unknown[];
+								values.push({
+									valueIndex: value.valueIndex,
+									spans: value.spans,
+									...(value.fragments ? { fragments: value.fragments } : null),
+								});
+							}
 						}
 					}
 				}
