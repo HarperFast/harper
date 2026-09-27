@@ -147,10 +147,10 @@ export function compileValidFullTextDefinitions(
 	const definitions: FullTextDefinition[] = [];
 	for (const value of values) {
 		try {
+			const storageMigrated = isPersistedEnglishV1(value);
 			const persisted = migratePersistedFullTextDefinition(value);
-			const migrated = persisted !== value;
 			const definition = compileFullTextDefinition(persisted, attributes);
-			if (migrated) Object.defineProperty(definition, migratedPersistedStorage, { value: true });
+			if (storageMigrated) Object.defineProperty(definition, migratedPersistedStorage, { value: true });
 			if (names.has(definition.name))
 				throw schemaError(`@fullText index "${definition.name}" is declared more than once`);
 			names.add(definition.name);

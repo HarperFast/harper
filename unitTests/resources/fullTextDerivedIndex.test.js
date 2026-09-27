@@ -99,8 +99,6 @@ function makeBackend(lifecycleValue, options = {}) {
 		shutdownTimeoutMilliseconds: options.shutdownTimeoutMilliseconds,
 		maxCursorPayloadBytes: options.maxCursorPayloadBytes,
 		blobReadTimeoutMilliseconds: options.blobReadTimeoutMilliseconds,
-		blobReadAttempts: options.blobReadAttempts,
-		blobReadFailureBudgetMilliseconds: options.blobReadFailureBudgetMilliseconds,
 	});
 	backend.attach({
 		isOwnerEpoch: (candidate) => candidate === epoch,
@@ -673,7 +671,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
-	it('keeps accepted Blob work pending after the retry budget until the source is readable', async () => {
+	it('keeps accepted Blob work pending across retries until the source is readable', async () => {
 		const engines = [new FakeEngine(), new FakeEngine(), new FakeEngine(), new FakeEngine()];
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [...engines]));
 		let readable = false;
@@ -712,8 +710,6 @@ describe('FullTextDerivedIndexBackend', () => {
 		const engine = new FakeEngine();
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), {
 			blobReadTimeoutMilliseconds: 10,
-			blobReadAttempts: 1,
-			blobReadFailureBudgetMilliseconds: 1,
 		});
 		class StalledBlob extends Blob {
 			arrayBuffer() {
@@ -740,8 +736,6 @@ describe('FullTextDerivedIndexBackend', () => {
 		const engines = [new FakeEngine(), new FakeEngine(), new FakeEngine(), new FakeEngine()];
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [...engines]), {
 			blobReadTimeoutMilliseconds: 5,
-			blobReadAttempts: 3,
-			blobReadFailureBudgetMilliseconds: 100,
 		});
 		let reads = 0;
 		class EventuallyReadableBlob extends Blob {

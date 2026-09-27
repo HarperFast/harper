@@ -29,8 +29,6 @@ const DEFAULT_MAX_OPEN_RETRY_MILLISECONDS = 5_000;
 const DEFAULT_CLOSE_TIMEOUT_MILLISECONDS = 35_000;
 const DEFAULT_MAX_APPLY_SLICE_RECORDS = 256;
 const DEFAULT_BLOB_READ_TIMEOUT_MILLISECONDS = 5_000;
-const DEFAULT_BLOB_READ_ATTEMPTS = 3;
-const DEFAULT_BLOB_READ_FAILURE_BUDGET_MILLISECONDS = 30_000;
 const APPLY_SLICE_MILLISECONDS = 5;
 const MAX_FULL_TEXT_VALUE_BYTES = 1 << 20;
 const TERMINAL_OPEN_ERROR_CODES = new Set([
@@ -87,8 +85,6 @@ export type FullTextDerivedIndexBackendOptions = {
 	closeTimeoutMilliseconds?: number;
 	shutdownTimeoutMilliseconds?: number;
 	blobReadTimeoutMilliseconds?: number;
-	blobReadAttempts?: number;
-	blobReadFailureBudgetMilliseconds?: number;
 	hasBlobSources?: boolean;
 };
 
@@ -149,10 +145,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#closeTimeoutMilliseconds: number;
 	#shutdownTimeoutMilliseconds: number;
 	#blobReadTimeoutMilliseconds: number;
-	#blobReadAttempts: number;
-	#blobReadFailureBudgetMilliseconds: number;
 	#hasBlobSources: boolean;
-	#blobReadFailures = new Map<string, { version: string; attempts: number; firstFailureAt: number }>();
 	#host?: DerivedIndexBackendHost;
 	#wake?: (change?: DerivedIndexBackendStateChange) => void;
 	#engine?: FullTextDerivedIndexEngine;
@@ -248,14 +241,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#blobReadTimeoutMilliseconds = positiveInteger(
 			options.blobReadTimeoutMilliseconds ?? DEFAULT_BLOB_READ_TIMEOUT_MILLISECONDS,
 			'blobReadTimeoutMilliseconds'
-		);
-		this.#blobReadAttempts = positiveInteger(
-			options.blobReadAttempts ?? DEFAULT_BLOB_READ_ATTEMPTS,
-			'blobReadAttempts'
-		);
-		this.#blobReadFailureBudgetMilliseconds = positiveInteger(
-			options.blobReadFailureBudgetMilliseconds ?? DEFAULT_BLOB_READ_FAILURE_BUDGET_MILLISECONDS,
-			'blobReadFailureBudgetMilliseconds'
 		);
 		this.#hasBlobSources = options.hasBlobSources !== false;
 		this.#openRetryDelayMilliseconds = Math.max(1, this.#openRetryMilliseconds);
@@ -629,10 +614,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 						command.position,
 						this.#maxApplySliceRecords,
 						deadline,
-						this.#blobReadFailures,
-						this.#blobReadAttempts,
-						this.#blobReadTimeoutMilliseconds,
-						this.#blobReadFailureBudgetMilliseconds
+						this.#blobReadTimeoutMilliseconds
 					)
 				: {
 						...toFullTextMutationSliceSync(
@@ -930,7 +912,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#lossPendingEpoch = undefined;
 		this.#invalidEstimateWarned = false;
 		this.#failedDeliveryObserved = false;
-		this.#blobReadFailures.clear();
 	}
 
 	#markFailed(error: unknown): boolean {
@@ -996,10 +977,7 @@ async function toFullTextMutationSlice(
 	start: number,
 	maxRecords: number,
 	deadline: number,
-	readFailures: Map<string, { version: string; attempts: number; firstFailureAt: number }>,
-	maxReadAttempts: number,
-	readTimeoutMilliseconds: number,
-	readFailureBudgetMilliseconds: number
+	readTimeoutMilliseconds: number
 ): Promise<{ batch: FullTextMutationBatch; end: number; rejected: number }> {
 	const upserts: FullTextMutationBatch['upserts'] = [];
 	const deletes: string[] = [];
@@ -1017,30 +995,10 @@ async function toFullTextMutationSlice(
 		}
 		const id = tablePrefix + toBufferKey(record.recordId).toString('base64url');
 		const recordState = record.state.kind === 'record' ? record.state : undefined;
-		const version = recordState ? String(recordState.version) : undefined;
-		const readStartedAt = performance.now();
 		const resolved = recordState
 			? await resolvedFullTextFields(recordState.projection, readTimeoutMilliseconds)
 			: undefined;
-		if (resolved?.error) {
-			const previous = readFailures.get(id);
-			const attempts = previous?.version === version ? previous.attempts + 1 : 1;
-			const firstFailureAt = previous?.version === version ? previous.firstFailureAt : readStartedAt;
-			const retry =
-				resolved.error instanceof FullTextBlobReadTimeout
-					? performance.now() - firstFailureAt < readFailureBudgetMilliseconds
-					: attempts < maxReadAttempts;
-			if (retry) {
-				readFailures.set(id, { version: version!, attempts, firstFailureAt });
-				logger.warn?.(`Full-text Blob read failed for record '${id}'; retrying accepted work (attempt ${attempts})`);
-				throw resolved.error;
-			}
-			logger.warn?.(
-				`Full-text Blob read retry budget was exhausted for record '${id}'; delaying publication until the source is readable`
-			);
-			throw resolved.error;
-		}
-		readFailures.delete(id);
+		if (resolved?.error) throw resolved.error;
 		if (resolved?.rejected || resolved?.error) rejected++;
 		if (resolved?.fields && !resolved.rejected && !resolved.error)
 			upserts.push({ id, version: String(recordState!.version), fields: resolved.fields });

@@ -176,7 +176,7 @@ describe('@fullText declaration compiler', () => {
 			[current],
 			() => 'new-generation'
 		);
-		assert.strictEqual(generations.search, 'new-generation');
+		assert.strictEqual(generations.search, 'old-generation');
 	});
 });
 

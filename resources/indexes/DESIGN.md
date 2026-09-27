@@ -500,10 +500,11 @@ Harper count after authorization, structured filtering and source-version checks
 A declared Blob source is part of one index document. An oversized, invalid UTF-8 or otherwise
 permanently unusable Blob makes that whole document unindexable rather than publishing a partial
 document with different match semantics. A transient Blob read failure rolls back the accepted
-native batch and replays it. Retries use bounded native-read attempts and backoff, but never turn a
-temporarily unreadable authoritative record into an index deletion. Publication remains behind that
-record until its source is readable, preserving cursor and publication atomicity at the cost of
-delaying unrelated records in the batch.
+native batch and replays it. Each source read is time-bounded and replay uses the writer's bounded
+backoff, but an unreadable authoritative record never becomes an index deletion. Publication remains
+behind that record until its source is readable, preserving cursor and publication atomicity at the
+cost of delaying unrelated records in the batch. The normal derived-index lag policy makes prolonged
+failure visible and eventually applies write backpressure rather than silently diverging replicas.
 
 ### Bounded delivery
 
