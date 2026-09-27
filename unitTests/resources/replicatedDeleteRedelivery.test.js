@@ -37,8 +37,8 @@ describe('Re-delivered replicated deletes (harper-pro#826)', () => {
 	function applyFrame(logKey, writes, TableClass = Nodes) {
 		const context = { source: {}, sourceApply: true, timestamp: logKey };
 		return transaction(context, async () => {
-			for (const { type, id, record, version = logKey, nodeId = 1 } of writes) {
-				const resource = await TableClass.getResource(id, context);
+			for (const { type, id, record, version = logKey, nodeId = 1, table: WriteTable = TableClass } of writes) {
+				const resource = await WriteTable.getResource(id, context);
 				if (type === 'delete') resource._writeDelete(id, { nodeId, version });
 				else if (type === 'invalidate') resource._writeInvalidate(id, undefined, { nodeId, version });
 				else resource._writeUpdate(id, record, true, { isNotification: true, nodeId, version });
@@ -122,6 +122,22 @@ describe('Re-delivered replicated deletes (harper-pro#826)', () => {
 		assert.equal(entriesFor(Nodes, id, 'delete').length, 1);
 		assert.equal(Nodes.primaryStore.getEntry(id).value, null);
 		assert.deepEqual(await indexedIds('first-seen'), []);
+	});
+
+	// RocksDB checks each delete as it is added; LMDB checks them all at commit, after the whole frame is
+	// added, so only LMDB catches a table whose index skips writes another table's check already scanned.
+	it('does not re-log the delete in either table when a two-table frame is re-delivered', async function () {
+		const indexedId = 'two-table-indexed';
+		const unindexedId = 'two-table-unindexed';
+		await applyFrame(originClock(), [put(indexedId, 'two-table'), put(unindexedId, 'two-table', { table: Unindexed })]);
+		const deleteKey = originClock();
+		const frame = [del(indexedId), del(unindexedId, { table: Unindexed })];
+		await applyFrame(deleteKey, frame);
+		for (let i = 0; i < 3; i++) await applyFrame(deleteKey, frame);
+		assert.deepEqual(
+			[entriesFor(Nodes, indexedId, 'delete').length, entriesFor(Unindexed, unindexedId, 'delete').length],
+			[1, 1]
+		);
 	});
 
 	it('still applies a distinct delete that reuses the tombstone version under a new log key', async function () {

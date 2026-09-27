@@ -4776,21 +4776,24 @@ export function makeTable(options) {
 	}
 
 	/**
-	 * Whether every write to `key` in the transaction is a delete from origin `deleteNodeId`. The index of
-	 * the transaction's writes is extended as writes are added, so a transaction's checks cost O(writes).
+	 * Whether every write to this table's `key` in the transaction is a delete from origin `deleteNodeId`.
+	 * Every table in the transaction shares one index of its writes, keyed by store, which is extended as
+	 * writes are added, so a transaction's checks cost O(writes).
 	 */
 	function onlyDeletesFrom(transaction: any, key: Id, deleteNodeId: number | null): boolean {
 		const writes = transaction.writes;
-		let index = transaction.deleteOriginsByKey;
-		if (index?.writes !== writes) transaction.deleteOriginsByKey = index = { writes, scanned: 0, origins: new Map() };
+		let index = transaction.deleteOriginsByStore;
+		if (index?.writes !== writes) transaction.deleteOriginsByStore = index = { writes, scanned: 0, stores: new Map() };
 		for (; index.scanned < writes.length; index.scanned++) {
 			const other = writes[index.scanned];
-			if (!other || other.store !== primaryStore) continue;
+			if (!other) continue;
+			let origins = index.stores.get(other.store);
+			if (!origins) index.stores.set(other.store, (origins = new Map()));
 			const origin = other.deleteNodeId === undefined ? MIXED_WRITES : other.deleteNodeId;
-			const prior = index.origins.get(other.key);
-			index.origins.set(other.key, prior === undefined || prior === origin ? origin : MIXED_WRITES);
+			const prior = origins.get(other.key);
+			origins.set(other.key, prior === undefined || prior === origin ? origin : MIXED_WRITES);
 		}
-		return index.origins.get(key) === deleteNodeId;
+		return index.stores.get(primaryStore)?.get(key) === deleteNodeId;
 	}
 
 	function precedesExistingVersion(txnTime: number, existingEntry: Partial<Entry>, nodeId?: number): number {
