@@ -222,7 +222,13 @@ A source attribute included in a full-text index.
 input FullTextSource {
 	name: String!
 	weight: Float! = 1.0
+	"""
+	Enable highlighting for this source. At least one source must opt in when @fullText.highlighting is set.
+	"""
 	highlight: Boolean
+	"""
+	Required for Blob sources. Only "text/plain" is supported.
+	"""
 	mediaType: String
 }
 
@@ -235,7 +241,8 @@ input FullTextSynonymRule {
 }
 
 """
-Opt-in highlighting limits. Omitting highlighting from @fullText disables it.
+Opt-in highlighting limits. Omitting highlighting from @fullText disables it. At least one source
+must set highlight: true when these limits are present.
 """
 input FullTextHighlighting {
 	maxFragments: Int! = 3

@@ -986,6 +986,7 @@ async function toFullTextMutationSlice(
 	let index = start;
 	let previousTableId: number | undefined;
 	let tablePrefix = '';
+	let yieldDeadline = deadline;
 	for (; index < limit; index++) {
 		const record = records[index];
 		if (record.recordId == null || typeof record.recordId === 'symbol') continue;
@@ -995,15 +996,17 @@ async function toFullTextMutationSlice(
 		}
 		const id = tablePrefix + toBufferKey(record.recordId).toString('base64url');
 		const recordState = record.state.kind === 'record' ? record.state : undefined;
+		const readStartedAt = performance.now();
 		const resolved = recordState
 			? await resolvedFullTextFields(recordState.projection, readTimeoutMilliseconds)
 			: undefined;
+		yieldDeadline += performance.now() - readStartedAt;
 		if (resolved?.error) throw resolved.error;
 		if (resolved?.rejected || resolved?.error) rejected++;
 		if (resolved?.fields && !resolved.rejected && !resolved.error)
 			upserts.push({ id, version: String(recordState!.version), fields: resolved.fields });
 		else deletes.push(id);
-		if (performance.now() >= deadline) {
+		if (performance.now() >= yieldDeadline) {
 			index++;
 			break;
 		}

@@ -331,7 +331,9 @@ passes only the schema-selected string and array fields to the wrapper. Harper d
 contents; the wrapper owns value validation, Tantivy schema, exact frame partitioning, its exclusive writer, segment publication, and file
 lifecycle. Harper keeps accepted runtime batches in a 64 MiB bounded queue and submits at most 256
 records or 5 ms of conversion work per turn, so the runtime's 4096-record chunk cannot become one
-long event-loop task. A rebuild chunk without a source-size estimate consumes the adapter's entire
+long event-loop task. Awaited Blob reads yield the event loop and therefore do not consume that
+conversion budget; otherwise ordinary storage latency would fragment a rebuild into one native
+commit per record. A rebuild chunk without a source-size estimate consumes the adapter's entire
 queue-byte allowance, ensuring that only one unknown-size chunk is retained at a time. Wrapper
 rejections remove the previous document and count it as unindexable; they do not leave stale search
 content. A projector returning null or no string-valued fields deletes the prior document rather
@@ -452,6 +454,9 @@ Rejected closes remain tracked and are retried during the next pause or close; a
 cleanup warning is logged. Neither replaces an otherwise successful query response.
 One failed reload leaves the last aligned snapshot installed and returns retryable lag. Three
 consecutive reload failures retire that handle so the next query reopens from native storage.
+Table close, drop and schema replacement never force-close an active native handle. They stop waiting
+after the wrapper's query budget plus a small settlement grace and report a retryable teardown failure;
+the retired handle still closes when the query eventually releases its lease.
 
 Reset is destructive, so the elected writer first pauses readers in every worker and waits for their
 active leases to drain. Harper does not force-close a handle that native code may still be using; a

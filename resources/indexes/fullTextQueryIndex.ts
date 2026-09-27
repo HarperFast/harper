@@ -41,6 +41,7 @@ const MIN_RAW_PAGE_SIZE = 32;
 const RAW_PAGE_OVERFETCH_FACTOR = 2;
 const MAX_RELOAD_FAILURES_BEFORE_REOPEN = 3;
 const HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS = 5_000;
+const READER_DRAIN_GRACE_MILLISECONDS = 1_000;
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 const logger = loggerWithTag('fulltext-query-index');
 
@@ -162,7 +163,12 @@ export class FullTextQueryIndex {
 	search(
 		condition: FullTextCondition,
 		context: any,
-		options: { filter?: (id: unknown, entry?: any) => boolean; minResults?: number; resultOffset?: number } = {}
+		options: {
+			filter?: (id: unknown, entry?: any) => boolean;
+			minResults?: number;
+			resultOffset?: number;
+			assertTransactionActive?: () => void;
+		} = {}
 	): Promise<Array<{ key: unknown; $score: number; $highlights?: Record<string, unknown>; loadedEntry: any }>> {
 		const maxIndexLagMilliseconds = condition.maxIndexLagMilliseconds ?? DEFAULT_MAX_INDEX_LAG_MILLISECONDS;
 		const waitForIndexMilliseconds = condition.waitForIndexMilliseconds ?? 0;
@@ -216,7 +222,11 @@ export class FullTextQueryIndex {
 		this.#closed = true;
 		this.#publicationSubscription?.close();
 		try {
-			await this.#retireAllReaders();
+			await withTimeout(
+				this.#retireAllReaders(),
+				(this.#maxSearchBudgetMilliseconds ?? 30_000) + READER_DRAIN_GRACE_MILLISECONDS,
+				() => new ServerError('Full-text reader drain did not settle before timeout', 503)
+			);
 		} finally {
 			const indexes = queryIndexesByPath.get(this.#nativeOptions.path);
 			indexes?.delete(this);
@@ -242,7 +252,12 @@ export class FullTextQueryIndex {
 	async #search(
 		condition: FullTextCondition,
 		context: any,
-		options: { filter?: (id: unknown, entry?: any) => boolean; minResults?: number; resultOffset?: number }
+		options: {
+			filter?: (id: unknown, entry?: any) => boolean;
+			minResults?: number;
+			resultOffset?: number;
+			assertTransactionActive?: () => void;
+		}
 	): Promise<Array<{ key: unknown; $score: number; $highlights?: Record<string, unknown>; loadedEntry: any }>> {
 		const readiness = readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId);
 		assertReady(readiness, this.#definition.name);
@@ -299,6 +314,7 @@ export class FullTextQueryIndex {
 				if (result.hits.length === 0) break;
 				for (const hit of result.hits) {
 					const key = decodeNativeId(hit.id, this.#options.Table.tableId);
+					options.assertTransactionActive?.();
 					const entry = this.#options.Table.primaryStore.getEntry(key, { transaction });
 					if (typeof hit.version !== 'string')
 						throw new ServerError('Full-text index returned a hit without a source version', 500);
@@ -838,12 +854,16 @@ function queryDefinitionSnapshot(definition: FullTextDefinition): string {
 	});
 }
 
-function withTimeout<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
+function withTimeout<T>(
+	promise: Promise<T>,
+	milliseconds: number,
+	timeoutError: () => Error = () => new Error('Full-text highlight source read timed out')
+): Promise<T> {
 	let timer: NodeJS.Timeout;
 	return Promise.race([
 		promise,
 		new Promise<never>((_resolve, reject) => {
-			timer = setTimeout(() => reject(new Error('Full-text highlight source read timed out')), milliseconds);
+			timer = setTimeout(() => reject(timeoutError()), milliseconds);
 			timer.unref?.();
 		}),
 	]).finally(() => clearTimeout(timer));

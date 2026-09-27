@@ -604,6 +604,31 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(2n);
 	});
 
+	it('does not charge awaited Blob reads against the synchronous apply slice', async () => {
+		const engine = new FakeEngine();
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
+		class DelayedBlob extends Blob {
+			async arrayBuffer() {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				return super.arrayBuffer();
+			}
+		}
+		backend.deliver(
+			batch(
+				1n,
+				['a', 'b', 'c'].map((id) =>
+					mutation(id, { kind: 'record', version: 1, projection: { body: new DelayedBlob([id]) } })
+				),
+				cursor(20)
+			)
+		);
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		assert.strictEqual(engine.applied.length, 1);
+		assert.strictEqual(engine.applied[0].upserts.length, 3);
+		await backend.shutdown(1n);
+	});
+
 	it('indexes valid text blobs and removes records with permanently invalid blob text', async () => {
 		const engine = new FakeEngine();
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));

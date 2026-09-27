@@ -29,5 +29,7 @@ export const FULL_TEXT_COMPARATORS = [
 ] as const;
 
 export function fullTextComparatorMode(comparator: string | undefined): NativeFullTextSearchMode | undefined {
-	return FULL_TEXT_MODES[comparator as PositiveFullTextComparator];
+	return comparator !== undefined && Object.hasOwn(FULL_TEXT_MODES, comparator)
+		? FULL_TEXT_MODES[comparator as PositiveFullTextComparator]
+		: undefined;
 }

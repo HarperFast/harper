@@ -5,6 +5,7 @@ const { waitFor } = require('../waitFor');
 const { publishDerivedIndexReadiness } = require('#src/resources/derivedIndexRuntime');
 const {
 	FullTextQueryIndex,
+	fullTextComparatorMode,
 	pauseNativeFullTextQueryReaders,
 	resumeNativeFullTextQueryReaders,
 } = require('#src/resources/indexes/fullTextQueryIndex');
@@ -143,6 +144,11 @@ function simpleQueryIndex({ auditStore, readinessId, payload, hits, onReload, on
 }
 
 describe('FullTextQueryIndex', () => {
+	it('does not treat prototype property names as full-text comparators', () => {
+		for (const comparator of ['constructor', 'toString', '__proto__'])
+			assert.strictEqual(fullTextComparatorMode(comparator), undefined);
+	});
+
 	it('subscribes to publications only after the first query and cancels on close', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'lazy-publication-subscription';
@@ -167,12 +173,16 @@ describe('FullTextQueryIndex', () => {
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
 		let reads = 0;
 		let filteredEntry;
+		let transactionChecks = 0;
 		const index = simpleQueryIndex({
 			auditStore,
 			readinessId,
 			payload: publicationPayload(),
 			hits: () => [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
-			onGetEntry: () => reads++,
+			onGetEntry: () => {
+				reads++;
+				assert.strictEqual(transactionChecks, 1);
+			},
 		}).index;
 		attachCurrentCoverage(index, auditStore, readinessId);
 		await index.search(
@@ -180,6 +190,9 @@ describe('FullTextQueryIndex', () => {
 			{},
 			{
 				minResults: 1,
+				assertTransactionActive() {
+					transactionChecks++;
+				},
 				filter(_key, entry) {
 					filteredEntry = entry;
 					return true;
@@ -187,6 +200,7 @@ describe('FullTextQueryIndex', () => {
 			}
 		);
 		assert.strictEqual(reads, 1);
+		assert.strictEqual(transactionChecks, 1);
 		assert.strictEqual(filteredEntry.value.title, 'shoe');
 		await index.close();
 	});
@@ -1367,6 +1381,73 @@ describe('FullTextQueryIndex', () => {
 		await waitFor(() => closes === 1);
 		await index.close();
 		assert.strictEqual(closes, 2);
+	});
+
+	it('bounds close while a native search keeps a reader lease', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'query-reader-close-timeout';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const searchStarted = Promise.withResolvers();
+		const finishSearch = Promise.withResolvers();
+		let closes = 0;
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
+				_readTxnForContext: () => undefined,
+			},
+			definition: definition(),
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath: '/unused',
+			storeName: 'unused',
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: { maxSearchWindow: 10, maxSearchBudgetMilliseconds: 100, maxTraceRecords: 10 },
+					};
+				},
+				async openNativeFullTextReader() {
+					return {
+						async search() {
+							searchStarted.resolve();
+							await finishSearch.promise;
+							return {
+								total: 1,
+								totalRelation: 'exact',
+								hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+							};
+						},
+						committedPayload: publicationPayload(),
+						async reload() {},
+						async close() {
+							closes++;
+						},
+					};
+				},
+			},
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const search = index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
+			{},
+			{ minResults: 1 }
+		);
+		await searchStarted.promise;
+		let closeError;
+		const close = index.close().catch((error) => (closeError = error));
+		await new Promise((resolve) => setTimeout(resolve, 1_500));
+		assert.match(closeError?.message, /reader drain did not settle/);
+		assert.strictEqual(closeError.statusCode, 503);
+		await close;
+		finishSearch.resolve();
+		assert.strictEqual((await search).length, 1);
+		await waitFor(() => closes === 1);
+		await index.close();
 	});
 
 	it('does not let a native reader close failure reject lifecycle shutdown', async () => {

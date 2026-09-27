@@ -750,6 +750,7 @@ export function searchByIndex(
 						: recordFilter,
 				minResults,
 				resultOffset,
+				assertTransactionActive: checkActive,
 			});
 			const coverage = (searched as any).indexCoverage;
 			if (!waiting && coverage && context?.responseHeaders) {
