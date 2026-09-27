@@ -87,6 +87,7 @@ export type NativeFullTextRuntimeInfo = {
 	packageVersion: string;
 	tantivyVersion: string;
 	nativeAbiVersion: number;
+	queryClassIsolationMinimumSearchThreads: number;
 	lifecycleApiVersion: number;
 	mutationBatchApiVersion: number;
 	queryApiVersion: number;
@@ -202,6 +203,8 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		typeof info.packageVersion !== 'string' ||
 		typeof info.tantivyVersion !== 'string' ||
 		!Number.isSafeInteger(info.nativeAbiVersion) ||
+		!Number.isSafeInteger(info.queryClassIsolationMinimumSearchThreads) ||
+		info.queryClassIsolationMinimumSearchThreads <= 0 ||
 		info.lifecycleApiVersion !== FULLTEXT_LIFECYCLE_API_VERSION ||
 		info.mutationBatchApiVersion !== FULLTEXT_MUTATION_BATCH_API_VERSION ||
 		info.queryApiVersion !== FULLTEXT_QUERY_API_VERSION ||
@@ -224,4 +227,15 @@ export function getValidatedFullTextRuntimeInfo(binding: NativeFullTextModule): 
 	const info = validatedRuntimeInfo.get(binding);
 	if (!info) throw new Error('Full-text native binding has not been validated');
 	return info;
+}
+
+export function nativeFullTextSearchThreads(
+	info: { queryClassIsolationMinimumSearchThreads?: unknown },
+	configured: number
+): number {
+	const minimum = info.queryClassIsolationMinimumSearchThreads;
+	if (minimum === undefined) return configured;
+	if (typeof minimum !== 'number' || !Number.isSafeInteger(minimum) || minimum <= 0)
+		throw new TypeError('@harperfast/fulltext/native reported an invalid query-class isolation threshold');
+	return Math.max(configured, minimum);
 }

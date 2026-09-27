@@ -45,9 +45,9 @@ const derivedIndexLogger = loggerWithTag('derived-index');
 const DEFAULT_MAX_LAG_MILLISECONDS = 30_000;
 const DEFAULT_FULL_TEXT_RETIREMENT_RETRY_MILLISECONDS = 70_000;
 const FULL_TEXT_LIMITS = Object.freeze({
-	indexingThreads: 1,
-	searchThreads: 1,
-	writerMemoryBytes: 32 * 1024 * 1024,
+	indexingThreads: 2,
+	searchThreads: 2,
+	writerMemoryBytes: 64 * 1024 * 1024,
 	maxQueuedCommands: 16,
 	maxQueuedBytes: 64 * 1024 * 1024,
 	maxBatchBytes: 8 * 1024 * 1024,

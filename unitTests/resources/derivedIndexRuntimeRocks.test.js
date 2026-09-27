@@ -396,6 +396,7 @@ class FakeNativeFullTextModule {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
 			nativeAbiVersion: 5,
+			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			mutationBatchApiVersion: 4,
 			queryApiVersion: 2,

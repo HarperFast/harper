@@ -236,8 +236,9 @@ describe('@fullText derived-index activation', () => {
 		assert(opened);
 		assert(path.isAbsolute(opened.path));
 		assert(opened.path.startsWith(Product.primaryStore.rootStore.path + path.sep));
-		assert.strictEqual(opened.limits.indexingThreads, 1);
-		assert.strictEqual(opened.limits.searchThreads, 1);
+		assert.strictEqual(opened.limits.indexingThreads, 2);
+		assert.strictEqual(opened.limits.searchThreads, 2);
+		assert.strictEqual(opened.limits.writerMemoryBytes, 64 * 1024 * 1024);
 		const state = binding.states.get(`${opened.path}\0${opened.indexId}\0${opened.generation}`);
 		await waitFor(() => state.documents.size === 1 && state.payload, 30_000);
 		const document = [...state.documents.values()][0];

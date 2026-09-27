@@ -11,6 +11,7 @@ import type { FullTextDefinition } from '../fullTextSchema.ts';
 import type { RocksTransactionLogStore } from '../RocksTransactionLogStore.ts';
 import {
 	loadFullTextNativeBinding,
+	nativeFullTextSearchThreads,
 	type NativeFullTextIndexConfiguration,
 	type NativeFullTextModule,
 	type NativeFullTextReader,
@@ -520,6 +521,10 @@ export class FullTextQueryIndex {
 				: configured
 			: await loadFullTextNativeBinding();
 		const info = await binding.runtimeInfo();
+		this.#nativeOptions.limits.searchThreads = nativeFullTextSearchThreads(
+			info,
+			this.#nativeOptions.limits.searchThreads
+		);
 		this.#maxSearchWindow = info.limits.maxSearchWindow;
 		this.#maxTraceRecords = info.limits.maxTraceRecords;
 		return (this.#binding = binding);

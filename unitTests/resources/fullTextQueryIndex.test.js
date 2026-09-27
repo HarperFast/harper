@@ -68,6 +68,7 @@ describe('FullTextQueryIndex', () => {
 		let traceComplete = true;
 		let reloads = 0;
 		let closes = 0;
+		let readerOptions;
 		const reader = {
 			async reload() {
 				reloads++;
@@ -108,9 +109,13 @@ describe('FullTextQueryIndex', () => {
 		};
 		const binding = {
 			async runtimeInfo() {
-				return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 1 } };
+				return {
+					queryClassIsolationMinimumSearchThreads: 3,
+					limits: { maxSearchWindow: 10_000, maxTraceRecords: 1 },
+				};
 			},
-			async openNativeFullTextReader() {
+			async openNativeFullTextReader(options) {
+				readerOptions = options;
 				return reader;
 			},
 		};
@@ -151,6 +156,7 @@ describe('FullTextQueryIndex', () => {
 			includeHighlights: true,
 		};
 		const first = await index.search(condition, {}, { minResults: 2 });
+		assert.strictEqual(readerOptions.limits.searchThreads, 3);
 		assert.deepStrictEqual(
 			first.map(({ key, $score }) => ({ key, $score })),
 			[

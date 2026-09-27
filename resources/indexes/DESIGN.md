@@ -337,6 +337,10 @@ rejections remove the previous document and count it as unindexable; they do not
 content. A projector returning null or no string-valued fields deletes the prior document rather
 than indexing an empty replacement.
 
+The elected runner opens one writer per index with two Tantivy indexing threads and 32 MiB of writer
+arena per thread. Query readers can open on every Harper worker, so each uses only the wrapper's
+minimum search pool for ordinary-versus-expensive query isolation rather than scaling with host CPU.
+
 Every runtime flush is a native publication barrier. Full-text activation chooses and benchmarks the
 runtime flush thresholds; the adapter does not reinterpret a flush because the runtime uses durable
 cursor progress to bound replay work and transaction-log retention.

@@ -14,9 +14,9 @@ const { DERIVED_INDEX_ACCEPTED, DERIVED_INDEX_DEFERRED } = require('#src/resourc
 const { waitFor } = require('../waitFor');
 
 const limits = {
-	indexingThreads: 1,
-	searchThreads: 1,
-	writerMemoryBytes: 32 * 1024 * 1024,
+	indexingThreads: 2,
+	searchThreads: 2,
+	writerMemoryBytes: 64 * 1024 * 1024,
 	maxQueuedCommands: 16,
 	maxQueuedBytes: 64 * 1024 * 1024,
 	maxBatchBytes: 8 * 1024 * 1024,
@@ -61,6 +61,7 @@ class FakeNativeModule {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
 			nativeAbiVersion: 5,
+			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			mutationBatchApiVersion: 4,
 			queryApiVersion: 2,
