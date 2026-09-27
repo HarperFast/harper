@@ -9,6 +9,7 @@ class FullTextNativeTestBinding {
 		this.resets = [];
 		this.reclaims = [];
 		this.reclaimWait = undefined;
+		this.readerOpens = [];
 		this.resetWait = undefined;
 		this.closeAttempts = 0;
 		this.closeError = undefined;
@@ -28,9 +29,10 @@ class FullTextNativeTestBinding {
 			tantivyVersion: 'test',
 			nativeAbiVersion: 5,
 			lifecycleApiVersion: 1,
-			mutationBatchApiVersion: 3,
+			mutationBatchApiVersion: 4,
+			queryApiVersion: 2,
 			storageBackends: ['native'],
-			limits: { maxCommitPayloadBytes: 64 * 1024 },
+			limits: { maxCommitPayloadBytes: 64 * 1024, maxSearchWindow: 10_000, maxTraceRecords: 128 },
 		};
 	}
 
@@ -73,6 +75,45 @@ class FullTextNativeTestBinding {
 		};
 	}
 
+	async openNativeFullTextReader(options) {
+		this.readerOpens.push(options);
+		const binding = this;
+		let state = this.states.get(key(options));
+		if (!state) throw Object.assign(new Error('test index is not ready'), { code: 'E_INDEX_NOT_READY' });
+		return {
+			committedPayload: state.payload,
+			async reload() {
+				state = binding.states.get(key(options));
+				if (!state) throw Object.assign(new Error('test index is not ready'), { code: 'E_INDEX_NOT_READY' });
+				this.committedPayload = state.payload;
+			},
+			async search(request) {
+				const query = request.query ?? { text: request.text, mode: request.mode, fields: request.fields };
+				const candidates = request.candidateIds && new Set(request.candidateIds);
+				const hits = [];
+				for (const document of state.documents.values()) {
+					if (candidates && !candidates.has(document.id)) continue;
+					const score = scoreExpression(query, document.fields);
+					if (score > 0) hits.push({ id: document.id, version: document.version, score });
+				}
+				hits.sort((left, right) => right.score - left.score || left.id.localeCompare(right.id));
+				const offset = request.offset ?? 0;
+				const limit = request.limit ?? 20;
+				return {
+					total: hits.length,
+					totalRelation: 'exact',
+					hits: hits.slice(offset, offset + limit),
+				};
+			},
+			async traceMatches() {
+				return { complete: true, records: [] };
+			},
+			async close() {
+				return {};
+			},
+		};
+	}
+
 	async resetNativeFullTextIndex(options) {
 		this.resets.push(options);
 		await this.resetWait;
@@ -101,6 +142,29 @@ class FullTextNativeTestBinding {
 
 function key(options) {
 	return `${options.path}\0${options.indexId}\0${options.generation}`;
+}
+
+function scoreExpression(expression, fields) {
+	if (expression.operator === 'and') {
+		const scores = expression.clauses.map((clause) => scoreExpression(clause, fields));
+		return scores.every(Boolean) ? scores.reduce((total, score) => total + score, 0) : 0;
+	}
+	if (expression.operator === 'or')
+		return expression.clauses.reduce((total, clause) => total + scoreExpression(clause, fields), 0);
+	if (expression.operator === 'not') return scoreExpression(expression.clause, fields) ? 0 : 1;
+	const selected = expression.fields ?? Object.keys(fields);
+	const haystack = selected
+		.flatMap((name) => (Array.isArray(fields[name]) ? fields[name] : [fields[name]]))
+		.filter((value) => typeof value === 'string')
+		.join(' ')
+		.toLowerCase();
+	const terms = String(expression.text ?? '')
+		.toLowerCase()
+		.split(/\s+/)
+		.filter(Boolean);
+	if (expression.mode === 'phrase') return haystack.includes(terms.join(' ')) ? terms.length : 0;
+	const matches = terms.filter((term) => haystack.includes(term)).length;
+	return expression.mode === 'all' ? (matches === terms.length ? matches : 0) : matches;
 }
 
 module.exports = { FullTextNativeTestBinding };

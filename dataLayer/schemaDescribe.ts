@@ -181,11 +181,13 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 	}
 
 	let attributes = [];
+	let permittedAttributes: Set<string> | undefined;
 	if (tableAttrPerms) {
 		let permittedAttr = {};
 		tableAttrPerms.forEach((a) => {
 			if (a.describe) permittedAttr[a.attribute_name] = true;
 		});
+		permittedAttributes = new Set(Object.keys(permittedAttr));
 
 		tableObj.attributes.forEach((a) => {
 			if (permittedAttr[a.name]) pushAtt(a);
@@ -220,6 +222,46 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 		tableResult.sources = (tableObj as any).sources
 			.map((source: any) => source.name)
 			.filter((source: any) => source && source !== 'Replicator');
+	if (tableObj.fullTextIndexes?.length > 0) {
+		const { fullTextDerivedIndexReadiness } = await import('../resources/derivedIndexes.ts');
+		tableResult.full_text_indexes = tableObj.fullTextIndexes
+			.map((definition: any) => {
+				const fields = definition.fields.filter(
+					(field: any) => !permittedAttributes || permittedAttributes.has(field.name)
+				);
+				if (fields.length === 0) return;
+				const readiness = fullTextDerivedIndexReadiness(tableObj, definition.name);
+				return {
+					name: definition.name,
+					fields: fields.map(({ name, weight, mediaType, highlight }: any) => ({
+						name,
+						weight,
+						...(mediaType ? { media_type: mediaType } : null),
+						...(highlight ? { highlight: true } : null),
+					})),
+					analyzer: definition.analyzer,
+					stop_words: definition.stopWords,
+					positions: definition.positions,
+					surface_terms: definition.surfaceTerms,
+					synonyms: definition.synonyms,
+					highlighting: definition.highlighting ?? false,
+					query_modes: [
+						'any',
+						'all',
+						'fuzzy',
+						...(definition.positions ? ['phrase'] : []),
+						...(definition.surfaceTerms ? ['prefix', 'fuzzy-prefix', 'autocomplete'] : []),
+					],
+					readiness: {
+						state: readiness.state,
+						...(readiness.reason ? { reason: readiness.reason } : null),
+						owner_epoch: readiness.ownerEpoch.toString(),
+						rebuild_attempts: readiness.rebuildAttempts,
+					},
+				};
+			})
+			.filter(Boolean);
+	}
 
 	try {
 		// `getRecordCount` scans the table's primary store, which dominates describe latency on large

@@ -21,6 +21,7 @@ const {
 	suspendDerivedIndexActivation,
 } = require('#src/resources/derivedIndexes');
 const { FullTextNativeTestBinding } = require('./fullTextNativeTestBinding');
+const { describeTable } = require('#src/dataLayer/schemaDescribe');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const rocksOnly = isLMDB ? it.skip : it;
@@ -33,7 +34,7 @@ function definition(weight = 1) {
 			{ name: 'title', weight },
 			{ name: 'tags', weight: 1 },
 		],
-		analyzer: 'english@1',
+		analyzer: 'english@2',
 		stopWords: true,
 		positions: true,
 		surfaceTerms: true,
@@ -47,6 +48,12 @@ function latestOpen(binding, Table) {
 	);
 	assert(opened);
 	return opened;
+}
+
+async function collect(iterable) {
+	const values = [];
+	for await (const value of iterable) values.push(value);
+	return values;
 }
 
 describe('@fullText derived-index activation', () => {
@@ -235,6 +242,88 @@ describe('@fullText derived-index activation', () => {
 		const document = [...state.documents.values()][0];
 		assert.deepStrictEqual({ ...document.fields }, { title: 'Trail shoe', tags: ['trail', 'waterproof'] });
 		await assert.rejects(Product.clear(), /whole-table invalidation is crash-safe/);
+	});
+
+	rocksOnly('keeps ordinary attribute equality separate from a same-name full-text index', async () => {
+		Product = table({
+			database: `fulltext-query-routing-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String', indexed: true },
+			],
+			fullTextIndexes: [
+				{
+					name: 'title',
+					fields: [{ name: 'title', weight: 1 }],
+					analyzer: 'english@2',
+					stopWords: true,
+					positions: true,
+					surfaceTerms: true,
+					synonyms: [],
+				},
+			],
+		});
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'title').state === 'ready', 30_000);
+		const description = await describeTable({
+			database: Product.databaseName,
+			table: Product.tableName,
+			skip_record_count: true,
+		});
+		assert.deepStrictEqual(description.full_text_indexes[0].query_modes, [
+			'any',
+			'all',
+			'fuzzy',
+			'phrase',
+			'prefix',
+			'fuzzy-prefix',
+			'autocomplete',
+		]);
+		assert.strictEqual(description.full_text_indexes[0].readiness.state, 'ready');
+		assert.strictEqual(typeof description.full_text_indexes[0].readiness.owner_epoch, 'string');
+		await Product.put('exact', { title: 'running shoe' });
+		await Product.put('other', { title: 'running jacket' });
+		await waitFor(
+			() => [...binding.states.values()].some((state) => state.documents?.size === 2 && state.payload),
+			30_000
+		);
+
+		const exact = await collect(
+			Product.search({ conditions: [{ attribute: 'title', comparator: 'equals', value: 'running shoe' }] })
+		);
+		assert.deepStrictEqual(
+			exact.map(({ id }) => id),
+			['exact']
+		);
+		assert.strictEqual(binding.readerOpens.length, 0);
+
+		const matched = await collect(
+			Product.search({ conditions: [{ attribute: 'title', comparator: 'matches', value: 'shoe' }] })
+		);
+		assert.deepStrictEqual(
+			matched.map(({ id }) => id),
+			['exact']
+		);
+		const excluded = await collect(
+			Product.search({
+				operator: 'and',
+				conditions: [
+					{ attribute: 'title', comparator: 'matches', value: 'running' },
+					{ attribute: 'title', comparator: 'not_matches', value: 'jacket' },
+				],
+			})
+		);
+		assert.deepStrictEqual(
+			excluded.map(({ id }) => id),
+			['exact']
+		);
+		await assert.rejects(
+			async () =>
+				collect(Product.search({ conditions: [{ attribute: 'title', comparator: 'not_matches', value: 'jacket' }] })),
+			/requires at least one non-negated condition/
+		);
+		assert.strictEqual(binding.readerOpens.length, 1);
 	});
 
 	rocksOnly('keeps quarantined full-text metadata inert during clear and drop', async () => {
@@ -664,7 +753,7 @@ describe('@fullText derived-index activation', () => {
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
 	});
 
-	rocksOnly('preserves query-only generations and rebuilds storage changes', async () => {
+	rocksOnly('preserves query-only generations and rebuilds structural changes', async () => {
 		const database = `fulltext-generation-${Date.now()}`;
 		const attributes = () => [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
@@ -683,7 +772,6 @@ describe('@fullText derived-index activation', () => {
 		const initialGeneration = Product.fullTextIndexGenerations.search;
 		const initialNativeGeneration = latestOpen(binding, Product).generation;
 		const initialRuntime = Product.derivedIndexRuntime;
-		const initialOpenCount = binding.opens.length;
 		const initialResetCount = binding.resets.length;
 
 		Product = table({
@@ -694,24 +782,29 @@ describe('@fullText derived-index activation', () => {
 			fullTextIndexes: [{ ...definition(), synonyms: [{ source: 'shoe', replacements: ['sneaker'] }] }],
 		});
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
-		assert.strictEqual(Product.fullTextIndexGenerations.search, initialGeneration);
-		assert.strictEqual(latestOpen(binding, Product).generation, initialNativeGeneration);
-		assert.strictEqual(Product.derivedIndexRuntime, initialRuntime);
-		assert.strictEqual(binding.opens.length, initialOpenCount);
-		assert.strictEqual(binding.resets.length, initialResetCount);
+		assert.notStrictEqual(Product.fullTextIndexGenerations.search, initialGeneration);
+		assert.notStrictEqual(latestOpen(binding, Product).generation, initialNativeGeneration);
+		assert.notStrictEqual(Product.derivedIndexRuntime, initialRuntime);
+		assert(binding.resets.length > initialResetCount);
+		const synonymGeneration = Product.fullTextIndexGenerations.search;
+		const synonymNativeGeneration = latestOpen(binding, Product).generation;
+		const synonymRuntime = Product.derivedIndexRuntime;
+		const synonymOpenCount = binding.opens.length;
+		const synonymResetCount = binding.resets.length;
 
 		Product = table({
 			database,
 			table: 'Product',
 			audit: true,
 			attributes: attributes(),
-			fullTextIndexes: [definition(2)],
+			fullTextIndexes: [{ ...definition(2), synonyms: [{ source: 'shoe', replacements: ['sneaker'] }] }],
 		});
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
-		assert.notStrictEqual(Product.fullTextIndexGenerations.search, initialGeneration);
-		assert.notStrictEqual(latestOpen(binding, Product).generation, initialNativeGeneration);
-		assert.notStrictEqual(Product.derivedIndexRuntime, initialRuntime);
-		assert(binding.resets.length > 0);
+		assert.strictEqual(Product.fullTextIndexGenerations.search, synonymGeneration);
+		assert.strictEqual(latestOpen(binding, Product).generation, synonymNativeGeneration);
+		assert.strictEqual(Product.derivedIndexRuntime, synonymRuntime);
+		assert.strictEqual(binding.opens.length, synonymOpenCount);
+		assert.strictEqual(binding.resets.length, synonymResetCount);
 	});
 
 	rocksOnly('keeps the prior declaration when a storage-generation update fails before publication', async () => {

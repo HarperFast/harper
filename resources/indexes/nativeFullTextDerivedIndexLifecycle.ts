@@ -136,6 +136,10 @@ export class NativeFullTextDerivedIndexLifecycle {
 			stopWords: this.#options.stopWords,
 			positions: this.#options.positions,
 			surfaceTerms: this.#options.surfaceTerms,
+			synonyms: this.#options.synonyms?.map(({ source, replacements }) => ({
+				source,
+				replacements: [...replacements],
+			})),
 		};
 	}
 
@@ -219,7 +223,7 @@ export async function createNativeFullTextDerivedIndexBackend(
 	return backend;
 }
 
-function nativeFullTextIndexPath(storePath: string, storeName: string): string {
+export function nativeFullTextIndexPath(storePath: string, storeName: string): string {
 	return join(resolve(storePath), `${digest(storeName)}.fulltext`);
 }
 

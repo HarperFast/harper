@@ -26,6 +26,7 @@ import {
 	retireNativeFullTextDerivedIndexStorage,
 } from './indexes/nativeFullTextDerivedIndexLifecycle.ts';
 import type { NativeFullTextModule } from './indexes/fullTextNativeBinding.ts';
+import { FullTextQueryIndex } from './indexes/fullTextQueryIndex.ts';
 import { fullTextStorageDefinition, type FullTextDefinition } from './fullTextSchema.ts';
 
 const logger = loggerWithTag('HNSW');
@@ -291,6 +292,7 @@ export function attachDerivedIndexes(
 	const hnswRetryBackendIds: string[] = [];
 	const registeredBackends = new Map<string, RegisteredBackend>();
 	const fullTextSetups = new Map<string, Promise<void>>();
+	const fullTextQueryIndexes = new Map<string, FullTextQueryIndex>();
 	let closing = false;
 	let registrationReleased = false;
 	let closeOperation: Promise<void> | undefined;
@@ -393,6 +395,22 @@ export function attachDerivedIndexes(
 			);
 			return;
 		}
+		if (!fullTextQueryIndexes.has(definition.name)) {
+			const queryIndex = new FullTextQueryIndex({
+				Table,
+				definition,
+				auditStore,
+				readinessId,
+				indexId: id,
+				storePath: Table.primaryStore.rootStore.path,
+				storeName: `${Table.tableName}/${definition.name}`,
+				sourceGeneration: `${Table.tableId}:${generation}`,
+				limits: { ...FULL_TEXT_LIMITS },
+				...(fullTextTest ? { binding: fullTextTest.binding } : null),
+			});
+			fullTextQueryIndexes.set(definition.name, queryIndex);
+			Table.fullTextQueryIndexes[definition.name] = { customIndex: queryIndex };
+		}
 
 		const { settlePredecessor, predecessorSettled } = beginBackendHandoff(registered, id);
 		const quiescePredecessor = async () => {
@@ -443,11 +461,12 @@ export function attachDerivedIndexes(
 				storePath: Table.primaryStore.rootStore.path,
 				storeName,
 				sourceGeneration: `${Table.tableId}:${generation}`,
-				fields: storage.fields,
+				fields: definition.fields.map(({ name, weight }) => ({ name, weight })),
 				analyzer: storage.analyzer,
 				stopWords: storage.stopWords,
 				positions: storage.positions,
 				surfaceTerms: storage.surfaceTerms,
+				synonyms: storage.synonyms,
 				limits: { ...FULL_TEXT_LIMITS },
 				...(fullTextTest
 					? {
@@ -494,6 +513,8 @@ export function attachDerivedIndexes(
 			const settlements = dropping
 				? [...(registered.tableBackends.get(Table.tableId) ?? [])].map((backend) => backend.settle())
 				: releases.map((release) => release());
+			for (const queryIndex of fullTextQueryIndexes.values()) settlements.push(queryIndex.close());
+			for (const name of fullTextQueryIndexes.keys()) delete Table.fullTextQueryIndexes[name];
 			const retained = new Set(
 				((Table.fullTextIndexes ?? []) as FullTextDefinition[]).map((definition) => definition.name)
 			);
@@ -802,8 +823,8 @@ export function assertFullTextActivationSupported(
 
 function fullTextProjection(definition: FullTextDefinition) {
 	return (record: Record<string, unknown>) => {
-		const projection: Record<string, string | string[]> = Object.create(null);
-		for (const { name } of definition.fields) {
+		const projection: Record<string, string | string[] | Blob> = Object.create(null);
+		for (const { name, mediaType } of definition.fields) {
 			const value = record[name];
 			if (typeof value === 'string') {
 				projection[name] = value;
@@ -817,6 +838,12 @@ function fullTextProjection(definition: FullTextDefinition) {
 						throw new ClientError(`Full-text source '${name}' contains a non-text array value`, 400);
 				}
 				projection[name] = copied;
+				continue;
+			}
+			if (mediaType === 'text/plain' && value instanceof Blob) {
+				if (value.type.split(';', 1)[0].trim().toLowerCase() !== mediaType)
+					throw new ClientError(`Full-text Blob source '${name}' must contain ${mediaType} data`, 400);
+				projection[name] = value;
 				continue;
 			}
 			if (value != null) throw new ClientError(`Full-text source '${name}' contains a non-text value`, 400);

@@ -10,11 +10,11 @@ const FULL_TEXT_ARGUMENTS = new Set([
 	'synonyms',
 	'highlighting',
 ]);
-const SOURCE_ARGUMENTS = new Set(['name', 'weight', 'highlight']);
+const SOURCE_ARGUMENTS = new Set(['name', 'weight', 'highlight', 'mediaType']);
 const SYNONYM_ARGUMENTS = new Set(['source', 'replacements']);
 const HIGHLIGHTING_ARGUMENTS = new Set(['maxFragments', 'fragmentLength']);
 
-const DEFAULT_ANALYZER = 'english@1';
+const DEFAULT_ANALYZER = 'english@2';
 const DEFAULT_MAX_FRAGMENTS = 3;
 const DEFAULT_FRAGMENT_LENGTH = 160;
 
@@ -22,6 +22,7 @@ export type FullTextSource = {
 	name: string;
 	weight: number;
 	highlight?: boolean;
+	mediaType?: 'text/plain';
 };
 
 export type FullTextSynonymRule = {
@@ -37,7 +38,7 @@ export type FullTextHighlighting = {
 export type FullTextDefinition = {
 	name: string;
 	fields: FullTextSource[];
-	analyzer: 'english@1';
+	analyzer: 'english@2';
 	stopWords: boolean;
 	positions: boolean;
 	surfaceTerms: boolean;
@@ -47,9 +48,9 @@ export type FullTextDefinition = {
 
 export type FullTextStorageDefinition = Pick<
 	FullTextDefinition,
-	'analyzer' | 'stopWords' | 'positions' | 'surfaceTerms'
+	'analyzer' | 'stopWords' | 'positions' | 'surfaceTerms' | 'synonyms'
 > & {
-	fields: Array<Pick<FullTextSource, 'name' | 'weight'>>;
+	fields: Array<Pick<FullTextSource, 'name' | 'mediaType'>>;
 };
 
 export type FullTextIndexGenerations = Record<string, string>;
@@ -68,11 +69,18 @@ export function persistedFullTextIndexNames(values: unknown): string[] {
 
 export function fullTextStorageDefinition(definition: FullTextDefinition): FullTextStorageDefinition {
 	return {
-		fields: definition.fields.map(({ name, weight }) => ({ name, weight })),
+		fields: definition.fields.map(({ name, mediaType }) => ({
+			name,
+			...(mediaType ? { mediaType } : null),
+		})),
 		analyzer: definition.analyzer,
 		stopWords: definition.stopWords,
 		positions: definition.positions,
 		surfaceTerms: definition.surfaceTerms,
+		synonyms: (definition.synonyms ?? []).map(({ source, replacements }) => ({
+			source,
+			replacements: [...replacements],
+		})),
 	};
 }
 
@@ -163,7 +171,6 @@ export function compileFullTextDefinition(
 	if (typeof definition.name !== 'string' || definition.name.length === 0)
 		throw schemaError('@fullText requires a non-empty string "name"');
 	const indexName = definition.name;
-
 	if (!Array.isArray(definition.fields) || definition.fields.length === 0)
 		throw schemaError(`@fullText index "${indexName}" requires a non-empty "fields" list`);
 	const attributesByName = new Map(attributes.map((attribute) => [attribute.name, attribute]));
@@ -184,8 +191,12 @@ export function compileFullTextDefinition(
 			);
 		if (!isSupportedSource(attribute))
 			throw schemaError(
-				`@fullText source field "${source.name}" must be String or [String]; got "${displayType(attribute)}"`
+				`@fullText source field "${source.name}" must be String, [String], or a declared text/plain Blob; got "${displayType(attribute)}"`
 			);
+		if (attribute.type === 'Blob' && source.mediaType !== 'text/plain')
+			throw schemaError(`@fullText Blob source field "${source.name}" requires mediaType: "text/plain"`);
+		if (attribute.type !== 'Blob' && source.mediaType !== undefined)
+			throw schemaError(`@fullText source field "${source.name}" only accepts mediaType for Blob attributes`);
 		const weight = source.weight === undefined ? 1 : source.weight;
 		if (typeof weight !== 'number' || !Number.isFinite(weight) || weight <= 0)
 			throw schemaError(`@fullText source field "${source.name}" requires a finite weight greater than zero`);
@@ -196,6 +207,7 @@ export function compileFullTextDefinition(
 			name: source.name,
 			weight,
 			...(typeof source.highlight === 'boolean' ? { highlight: source.highlight } : {}),
+			...(source.mediaType === 'text/plain' ? { mediaType: 'text/plain' as const } : {}),
 		};
 	});
 
@@ -274,7 +286,11 @@ function booleanOption(
 }
 
 function isSupportedSource(attribute: FullTextSchemaAttribute): boolean {
-	return attribute.type === 'String' || (attribute.type === 'array' && attribute.elements?.type === 'String');
+	return (
+		attribute.type === 'String' ||
+		attribute.type === 'Blob' ||
+		(attribute.type === 'array' && attribute.elements?.type === 'String')
+	);
 }
 
 function displayType(attribute: FullTextSchemaAttribute): string {

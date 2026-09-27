@@ -91,6 +91,7 @@ import {
 	COERCIBLE_OPERATORS,
 	executeConditions,
 	resolveComparator,
+	fullTextComparatorMode,
 } from './search.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
@@ -1091,6 +1092,7 @@ export function makeTable(options) {
 			| undefined;
 		static audit = audit;
 		static fullTextIndexes: FullTextDefinition[] = fullTextIndexes;
+		static fullTextQueryIndexes: { [name: string]: { customIndex: unknown } } = Object.create(null);
 		static fullTextIndexGenerations: FullTextIndexGenerations = fullTextIndexGenerations;
 		static fullTextIndexRetirements: string[] = fullTextIndexRetirements;
 		static hasCurrentFullTextIndexRetirements(names: readonly string[]): boolean | Promise<boolean> {
@@ -4954,6 +4956,35 @@ export function makeTable(options) {
 			let syntheticOrderCondition;
 			const filtered = {};
 
+			function assertFullTextReadAccess(definition: FullTextDefinition, requestedFields?: string[]) {
+				if (!(context as any)?.user) return;
+				const permission = getTablePermissions((context as any).user, target);
+				if (permission?.isSuperUser || !permission?.attribute_permissions?.length) return;
+				const readable = attributesAsObject(permission.attribute_permissions, 'read');
+				const searched = requestedFields ?? definition.fields.map(({ name }) => name);
+				if (searched.some((name) => !readable[name])) throw new AccessViolation((context as any).user);
+			}
+
+			function selectRequestsProperty(select: any, propertyName: string): boolean {
+				if (!select) return false;
+				const selected = Array.isArray(select) ? select : [select];
+				return selected.some((property) => (typeof property === 'string' ? property : property?.name) === propertyName);
+			}
+
+			function conditionsContainFullText(entries: any[]): boolean {
+				for (const entry of entries) {
+					if (entry.conditions) {
+						if (conditionsContainFullText(entry.conditions)) return true;
+					} else if (
+						fullTextComparatorMode(entry.comparator) &&
+						typeof (entry[0] ?? entry.attribute) === 'string' &&
+						TableResource.fullTextIndexes.some(({ name }) => name === (entry[0] ?? entry.attribute))
+					)
+						return true;
+				}
+				return false;
+			}
+
 			function prepareConditions(conditions: any[], operator: string) {
 				// some validation:
 				switch (operator) {
@@ -4983,6 +5014,37 @@ export function makeTable(options) {
 						}
 					}
 					const attribute_name = condition[0] ?? condition.attribute;
+					const fullTextMode = fullTextComparatorMode(condition.comparator);
+					const fullTextDefinition =
+						fullTextMode && typeof attribute_name === 'string'
+							? TableResource.fullTextIndexes.find((definition) => definition.name === attribute_name)
+							: undefined;
+					if (fullTextDefinition) {
+						const value = condition[1] ?? condition.value;
+						if (typeof value !== 'string' || value.length === 0)
+							throw new ClientError(
+								`Full-text index '${attribute_name}' requires a full-text comparator and non-empty string value`,
+								400
+							);
+						if (fullTextMode === 'phrase' && !fullTextDefinition.positions)
+							throw new ClientError(`Full-text index '${attribute_name}' does not store phrase positions`, 400);
+						if ((fullTextMode === 'prefix' || fullTextMode === 'fuzzy-prefix') && !fullTextDefinition.surfaceTerms)
+							throw new ClientError(`Full-text index '${attribute_name}' does not store surface terms`, 400);
+						const fields = condition.fields;
+						if (fields !== undefined) {
+							if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => typeof field !== 'string'))
+								throw new ClientError(`Full-text index '${attribute_name}' requires a non-empty fields list`, 400);
+							const sourceNames = new Set(fullTextDefinition.fields.map(({ name }) => name));
+							if (new Set(fields).size !== fields.length || fields.some((field) => !sourceNames.has(field)))
+								throw new ClientError(
+									`Full-text index '${attribute_name}' contains an unknown or duplicate field`,
+									400
+								);
+						}
+						assertFullTextReadAccess(fullTextDefinition, fields);
+						condition.includeHighlights = selectRequestsProperty(target.select, '$highlights');
+						continue;
+					}
 					let attribute = attribute_name == null ? primaryKeyAttribute : findAttribute(attributes, attribute_name);
 					if (!attribute && Array.isArray(attribute_name) && attribute_name.length > 1) {
 						// Plain JSON nested path: the leaf may not be declared in the
@@ -5058,7 +5120,12 @@ export function makeTable(options) {
 			}
 			const operator = target.operator;
 			if (conditions.length > 0 || operator) conditions = prepareConditions(conditions, operator);
-			const sort = typeof target.sort === 'object' && target.sort;
+			let sort = typeof target.sort === 'object' && target.sort;
+			if (conditionsContainFullText(conditions)) {
+				if (sort && (sort.attribute !== '$score' || sort.next || sort.descending === false))
+					throw new ClientError('Full-text results can only use descending $score order', 400);
+				sort = undefined;
+			}
 			for (let order = sort; order; order = order.next) {
 				if (typeof order.attribute !== 'string') continue;
 				const customIndex = indices[order.attribute]?.customIndex;
@@ -6955,6 +7022,8 @@ export function makeTable(options) {
 				$updatedTime: (object, context, entry) => entry.version,
 				$expiresAt: (object, context, entry) => entry.expiresAt,
 				$record: (object, context, entry) => (entry ? { value: object } : object),
+				$score: (object, context, entry) => entry?.$score,
+				$highlights: (object, context, entry) => entry?.$highlights,
 				$distance: (object, context, entry, returnEntry, sort) => {
 					if (!entry) return;
 					if (entry.distance !== undefined) return entry.distance;

@@ -185,8 +185,20 @@ export const COMPARATORS = [
 	'in',
 	'less_than',
 	'less_than_equal',
+	'matches',
+	'matches_all',
+	'matches_phrase',
+	'matches_prefix',
+	'matches_fuzzy',
+	'matches_fuzzy_prefix',
 	'ne',
 	'not_equal',
+	'not_matches',
+	'not_matches_all',
+	'not_matches_phrase',
+	'not_matches_prefix',
+	'not_matches_fuzzy',
+	'not_matches_fuzzy_prefix',
 	'starts_with',
 ] as const;
 
@@ -201,6 +213,8 @@ interface TypedDirectCondition<Record extends object, Property extends keyof Rec
 	search_type?: Comparator;
 	value?: Record[Property] | Record[Property][];
 	search_value?: Record[Property] | Record[Property][];
+	/** Optional source-field restriction for a named full-text index. */
+	fields?: string[];
 	/** Native HNSW coverage tolerance in milliseconds; defaults to 3000, with 0 requiring current coverage. */
 	maxIndexLagMilliseconds?: number;
 	/** Wait for coverage of prior committed writes, up to 30,000 ms; 0 (default) does not wait. */

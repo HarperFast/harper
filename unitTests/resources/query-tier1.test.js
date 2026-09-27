@@ -128,6 +128,7 @@ describe('Query Tier-1 additions', () => {
 			assert.deepEqual(resolveComparator('not_between'), { comparator: 'between', negated: true });
 			assert.deepEqual(resolveComparator('not_contains'), { comparator: 'contains', negated: true });
 			assert.deepEqual(resolveComparator('not_ends_with'), { comparator: 'ends_with', negated: true });
+			assert.deepEqual(resolveComparator('not_matches_phrase'), { comparator: 'matches_phrase', negated: true });
 		});
 		it('returns input unchanged for unknown comparators', () => {
 			assert.deepEqual(resolveComparator('unknown'), { comparator: 'unknown', negated: false });
@@ -173,6 +174,12 @@ describe('Query Tier-1 additions', () => {
 			const q = parseQuery('name=not_starts_with=Joh');
 			assert.equal(q.conditions[0].comparator, 'starts_with');
 			assert.equal(q.conditions[0].value, 'Joh');
+			assert.equal(q.conditions[0].negated, true);
+		});
+		it('parses not_matches as a negated full-text condition', () => {
+			const q = parseQuery('catalogSearch=not_matches=shoe');
+			assert.equal(q.conditions[0].comparator, 'matches');
+			assert.equal(q.conditions[0].value, 'shoe');
 			assert.equal(q.conditions[0].negated, true);
 		});
 		it('parses between with list value', () => {

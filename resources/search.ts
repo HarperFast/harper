@@ -10,6 +10,9 @@ import { writeKeyId, getReadTransactionGuard } from './DatabaseTransaction.ts';
 import { recordAction } from './analytics/write';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
+import { fullTextComparatorMode, type FullTextCondition } from './indexes/fullTextQueryIndex.ts';
+
+export { fullTextComparatorMode };
 
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;
@@ -72,6 +75,7 @@ export function executeConditions(
 	filtered,
 	recordAccess?
 ) {
+	conditions = combineFullTextConditions(conditions, operator, table);
 	const firstSearch = conditions[0];
 	// Record-level guards (caller-supplied vectorFilter + rowFilter) apply to every record
 	// the query returns, independent of which condition leads (#1241). `recordAccess` is supplied only on
@@ -193,11 +197,110 @@ function buildRecordGuards(recordAccess): ((record: any) => boolean)[] | undefin
 	return guards.length > 0 ? guards : undefined;
 }
 
+function conditionIndex(table: any, attributeName: any, preferFullText = false): any {
+	if (typeof attributeName !== 'string') return;
+	return preferFullText
+		? (table.fullTextQueryIndexes?.[attributeName] ?? table.indices?.[attributeName])
+		: (table.indices?.[attributeName] ?? table.fullTextQueryIndexes?.[attributeName]);
+}
+
+function combineFullTextConditions(conditions: any[], operator: string | undefined, table: any): any[] {
+	let indexName: string | undefined;
+	let positive = false;
+	const expressions: any[] = [];
+	const leaves: FullTextCondition['fullTextLeaves'] = [];
+	const remaining: any[] = [];
+	let includeHighlights = false;
+	for (const condition of conditions) {
+		const compiled = compileFullTextExpression(condition, table);
+		if (!compiled) {
+			remaining.push(condition);
+			continue;
+		}
+		if (indexName && indexName !== compiled.indexName)
+			throw new ClientError('One query cannot combine conditions from different full-text indexes', 400);
+		indexName = compiled.indexName;
+		expressions.push(compiled.expression);
+		leaves.push(...compiled.leaves);
+		positive ||= compiled.positive;
+		includeHighlights ||= compiled.includeHighlights;
+	}
+	if (!indexName) return conditions;
+	if (operator === 'or' && remaining.length > 0)
+		throw new ClientError('A full-text OR group can only contain conditions on the same full-text index', 400);
+	if (!positive) throw new ClientError('A full-text query requires at least one non-negated condition', 400);
+	const expression =
+		expressions.length === 1 ? expressions[0] : { operator: operator === 'or' ? 'or' : 'and', clauses: expressions };
+	const combined = {
+		attribute: indexName,
+		comparator: 'matches',
+		value: '',
+		fullTextQuery: expression,
+		fullTextLeaves: leaves,
+		includeHighlights,
+	};
+	return operator === 'or' ? [combined] : [combined, ...remaining];
+}
+
+function compileFullTextExpression(
+	condition: any,
+	table: any
+):
+	| {
+			indexName: string;
+			expression: any;
+			leaves: NonNullable<FullTextCondition['fullTextLeaves']>;
+			positive: boolean;
+			includeHighlights: boolean;
+	  }
+	| undefined {
+	if (condition.conditions) {
+		const children = condition.conditions.map((child) => compileFullTextExpression(child, table));
+		const fullTextChildren = children.filter(Boolean) as Array<NonNullable<(typeof children)[number]>>;
+		if (fullTextChildren.length === 0) return;
+		if (fullTextChildren.length !== children.length)
+			throw new ClientError('Nested full-text groups cannot mix full-text and record conditions', 400);
+		const indexName = fullTextChildren[0].indexName;
+		if (fullTextChildren.some((child) => child.indexName !== indexName))
+			throw new ClientError('One query cannot combine conditions from different full-text indexes', 400);
+		const groupOperator = condition.operator === 'or' ? 'or' : condition.operator === 'and' ? 'and' : undefined;
+		if (!groupOperator) throw new ClientError('Full-text groups require an and or or operator', 400);
+		return {
+			indexName,
+			expression: { operator: groupOperator, clauses: fullTextChildren.map((child) => child.expression) },
+			leaves: fullTextChildren.flatMap((child) => child.leaves),
+			positive: fullTextChildren.some((child) => child.positive),
+			includeHighlights: fullTextChildren.some((child) => child.includeHighlights),
+		};
+	}
+	const indexName = condition[0] ?? condition.attribute;
+	if (typeof indexName !== 'string' || !table.fullTextQueryIndexes?.[indexName]) return;
+	const mode = fullTextComparatorMode(condition.comparator);
+	// An ordinary attribute and a full-text index may share a name. Only the
+	// full-text comparators select the derived index; equality and range
+	// conditions must continue through the normal attribute path.
+	if (!mode) return;
+	if (typeof (condition[1] ?? condition.value) !== 'string')
+		throw new ClientError(`Full-text index '${indexName}' requires a full-text comparator and string value`, 400);
+	const text = condition[1] ?? condition.value;
+	const leaf = { text, mode, ...(condition.fields ? { fields: condition.fields } : null) };
+	return {
+		indexName,
+		expression: condition.negated ? { operator: 'not', clause: leaf } : leaf,
+		leaves: condition.negated ? [] : [leaf],
+		positive: !condition.negated,
+		includeHighlights: condition.includeHighlights === true,
+	};
+}
+
 /** True when a condition's index is a custom index that participates in predicate-aware traversal (HNSW). */
 function isFilterablePushdown(condition, table): boolean {
 	const attributeName = condition?.attribute ?? condition?.[0];
 	if (attributeName == null || table == null) return false;
-	const index = attributeName === table.primaryKey ? table.primaryStore : table.indices?.[attributeName];
+	const index =
+		attributeName === table.primaryKey
+			? table.primaryStore
+			: conditionIndex(table, attributeName, Boolean(fullTextComparatorMode(condition?.comparator)));
 	return Boolean(index?.customIndex?.filteredSearch);
 }
 
@@ -369,7 +472,9 @@ export function searchByIndex(
 		}
 	}
 	const isPrimaryKey = attribute_name === Table.primaryKey || attribute_name == null;
-	const index = isPrimaryKey ? Table.primaryStore : Table.indices[attribute_name];
+	const index = isPrimaryKey
+		? Table.primaryStore
+		: conditionIndex(Table, attribute_name, Boolean(fullTextComparatorMode(comparator)));
 	let start;
 	let end, inclusiveEnd, exclusiveStart, stringPrefix;
 	if (value instanceof Date) value = value.getTime();
@@ -453,6 +558,14 @@ export function searchByIndex(
 				// we have to revert to full table scan here
 				start = true;
 				needFullScan = true;
+				break;
+			case 'matches':
+			case 'matches_all':
+			case 'matches_phrase':
+			case 'matches_prefix':
+			case 'matches_fuzzy':
+			case 'matches_fuzzy_prefix':
+				start = true;
 				break;
 			default:
 				throw new ClientError(`Unknown query comparator "${comparator}"`);
@@ -595,11 +708,13 @@ export function searchByIndex(
 					.map((entry) => {
 						// if the custom index returns an entry with metadata, merge it with the loaded entry
 						if (typeof entry === 'object' && entry) {
-							const { key, ...otherProps } = entry;
+							const { key, loadedEntry: suppliedEntry, ...otherProps } = entry;
 							if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
-							const loadedEntry = Table.primaryStore.getEntry(key, {
-								transaction: waiting ? transaction : context && Table._readTxnForContext(context),
-							});
+							const loadedEntry =
+								suppliedEntry ??
+								Table.primaryStore.getEntry(key, {
+									transaction: waiting ? transaction : context && Table._readTxnForContext(context),
+								});
 							if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
 							freezeRecord(loadedEntry?.value);
 							recordRead(loadedEntry);
@@ -919,7 +1034,20 @@ const LIST_VALUE_COMPARATORS = new Set(['in', 'between']);
 
 // Base comparators that accept the `not_` prefix to produce a negated form.
 // `not_equal` is an existing alias for `ne` and keeps its existing semantics.
-const NEGATABLE_BASE_COMPARATORS = new Set(['in', 'between', 'starts_with', 'ends_with', 'contains', 'equals']);
+const NEGATABLE_BASE_COMPARATORS = new Set([
+	'in',
+	'between',
+	'starts_with',
+	'ends_with',
+	'contains',
+	'equals',
+	'matches',
+	'matches_all',
+	'matches_phrase',
+	'matches_prefix',
+	'matches_fuzzy',
+	'matches_fuzzy_prefix',
+]);
 
 /**
  * Resolve a comparator name to a (possibly stripped) base comparator and a
@@ -1342,7 +1470,7 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 
 /** The index a condition can be driven by; searchByIndex refuses a rebuilding one, so it reads as absent. */
 function usableIndex(table, attributeName): any {
-	const index = attributeName == null ? undefined : table.indices[attributeName];
+	const index = attributeName == null ? undefined : conditionIndex(table, attributeName);
 	return index?.isIndexing ? undefined : index;
 }
 
@@ -1352,7 +1480,9 @@ function usableIndex(table, attributeName): any {
  */
 function drivesRebuildingIndex(table, attributeName, relationshipOffset = 0): boolean {
 	if (!Array.isArray(attributeName))
-		return attributeName != null && attributeName !== table.primaryKey && !!table.indices[attributeName]?.isIndexing;
+		return (
+			attributeName != null && attributeName !== table.primaryKey && !!conditionIndex(table, attributeName)?.isIndexing
+		);
 	if (relationshipOffset >= attributeName.length - 1)
 		return drivesRebuildingIndex(table, attributeName[relationshipOffset]);
 	const attribute = findAttribute(table.attributes, attributeName[relationshipOffset]);
@@ -1430,6 +1560,12 @@ export function estimateCondition(table) {
 					const index = usableIndex(table, attribute_name);
 					condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
 				}
+			} else if (fullTextComparatorMode(searchType)) {
+				const attributeName = condition[0] ?? condition.attribute;
+				const index = conditionIndex(table, attributeName, true);
+				condition.estimated_count = index?.customIndex?.estimateCount
+					? index.customIndex.estimateCount(condition.value)
+					: Infinity;
 			} else if (searchType === 'contains' || searchType === 'ends_with' || searchType === 'ne') {
 				const attribute_name = condition[0] ?? condition.attribute;
 				const index = usableIndex(table, attribute_name);

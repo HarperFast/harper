@@ -28,7 +28,7 @@ function options(storePath, binding, overrides = {}) {
 		indexId: 'products-title',
 		sourceGeneration: 'table-generation-1',
 		fields: [{ name: 'title', weight: 2 }],
-		analyzer: 'english@1',
+		analyzer: 'english@2',
 		positions: true,
 		surfaceTerms: false,
 		limits,
@@ -61,9 +61,10 @@ class FakeNativeModule {
 			tantivyVersion: 'test',
 			nativeAbiVersion: 5,
 			lifecycleApiVersion: 1,
-			mutationBatchApiVersion: 3,
+			mutationBatchApiVersion: 4,
+			queryApiVersion: 2,
 			storageBackends: ['native'],
-			limits: { maxCommitPayloadBytes: this.maxCommitPayloadBytes },
+			limits: { maxCommitPayloadBytes: this.maxCommitPayloadBytes, maxSearchWindow: 10_000, maxTraceRecords: 128 },
 		};
 	}
 
@@ -96,6 +97,10 @@ class FakeNativeModule {
 				return {};
 			},
 		};
+	}
+
+	async openNativeFullTextReader() {
+		throw Object.assign(new Error('test reader is not configured'), { code: 'E_INDEX_NOT_READY' });
 	}
 
 	async resetNativeFullTextIndex(resetOptions) {
@@ -210,7 +215,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		await lifecycle.open();
 		assert.strictEqual(binding.runtimeInfoCalls, 1);
 		assert.deepStrictEqual(binding.opens[0].fields, [{ name: 'title', weight: 2 }]);
-		assert.strictEqual(binding.opens[0].analyzer, 'english@1');
+		assert.strictEqual(binding.opens[0].analyzer, 'english@2');
 		assert.strictEqual(binding.opens[0].positions, true);
 		assert.strictEqual(binding.opens[0].surfaceTerms, false);
 		assert.deepStrictEqual(binding.opens[0].limits, limits);
@@ -362,9 +367,10 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			tantivyVersion: 'test',
 			nativeAbiVersion: 5,
 			lifecycleApiVersion: 2,
-			mutationBatchApiVersion: 3,
+			mutationBatchApiVersion: 4,
+			queryApiVersion: 2,
 			storageBackends: ['native'],
-			limits: { maxCommitPayloadBytes: 64 * 1024 },
+			limits: { maxCommitPayloadBytes: 64 * 1024, maxSearchWindow: 10_000, maxTraceRecords: 128 },
 		});
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
@@ -378,7 +384,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			nativeAbiVersion: 5,
 			lifecycleApiVersion: 1,
 			storageBackends: ['native'],
-			limits: { maxCommitPayloadBytes: 64 * 1024 },
+			limits: { maxCommitPayloadBytes: 64 * 1024, maxSearchWindow: 10_000, maxTraceRecords: 128 },
 		});
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
@@ -387,7 +393,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 	it('rejects an unknown mutation-batch API version', async () => {
 		const binding = new FakeNativeModule();
 		const runtimeInfo = binding.runtimeInfo.bind(binding);
-		binding.runtimeInfo = async () => ({ ...(await runtimeInfo()), mutationBatchApiVersion: 4 });
+		binding.runtimeInfo = async () => ({ ...(await runtimeInfo()), mutationBatchApiVersion: 5 });
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
 	});

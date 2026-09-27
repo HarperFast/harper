@@ -584,6 +584,77 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(2n);
 	});
 
+	it('indexes valid text blobs and removes records with permanently invalid blob text', async () => {
+		const engine = new FakeEngine();
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
+		backend.deliver(
+			batch(
+				1n,
+				[
+					mutation('valid', {
+						kind: 'record',
+						version: 1,
+						projection: { body: new Blob(['plain text']) },
+					}),
+					mutation('too-large', {
+						kind: 'record',
+						version: 1,
+						projection: { body: new Blob(['x'.repeat((1 << 20) + 1)]) },
+					}),
+					mutation('invalid-utf8', {
+						kind: 'record',
+						version: 1,
+						projection: { body: new Blob([Uint8Array.of(0xff)]) },
+					}),
+				],
+				cursor(20)
+			)
+		);
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		assert.strictEqual(engine.applied.length, 1);
+		assert.strictEqual(engine.applied[0].upserts.length, 1);
+		assert.strictEqual(engine.applied[0].upserts[0].fields.body, 'plain text');
+		assert.strictEqual(engine.applied[0].deletes.length, 2);
+		assert.strictEqual(backend.getUnindexableRecords(), 2);
+		await backend.shutdown(1n);
+	});
+
+	it('rolls back and retries when a text blob cannot be read', async () => {
+		const first = new FakeEngine();
+		const second = new FakeEngine();
+		const source = lifecycle({ state: 'missing' }, [first, second]);
+		const { backend } = makeBackend(source);
+		let reads = 0;
+		class TransientBlob extends Blob {
+			async arrayBuffer() {
+				if (reads++ === 0) throw new Error('temporary blob read failure');
+				return super.arrayBuffer();
+			}
+		}
+		const body = new TransientBlob(['plain text']);
+		const value = batch(
+			1n,
+			[mutation('retry', { kind: 'record', version: 1, projection: { body } })],
+			cursor(20)
+		);
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+
+		backend.deliver(value);
+		backend.flush();
+		await waitFor(() => changes.includes('accepted-work-lost'));
+		assert.deepStrictEqual(first.closes, [{ mode: 'rollback' }]);
+		assert.strictEqual(first.publications.length, 0);
+
+		await waitFor(() => changes.includes('changed'));
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
+		backend.flush();
+		await waitFor(() => second.publications.length === 1);
+		assert.strictEqual(second.applied[0].upserts[0].fields.body, 'plain text');
+		await backend.shutdown(1n);
+	});
+
 	it('accepts a valid wrapper result with a custom prototype', async () => {
 		const engine = new FakeEngine();
 		engine.applyResult = (value) =>

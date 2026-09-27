@@ -28,6 +28,7 @@ const DEFAULT_MAX_OPEN_RETRY_MILLISECONDS = 5_000;
 const DEFAULT_CLOSE_TIMEOUT_MILLISECONDS = 35_000;
 const DEFAULT_MAX_APPLY_SLICE_RECORDS = 256;
 const APPLY_SLICE_MILLISECONDS = 5;
+const MAX_FULL_TEXT_VALUE_BYTES = 1 << 20;
 const TERMINAL_OPEN_ERROR_CODES = new Set([
 	'E_IDENTITY_MISMATCH',
 	'E_INCOMPLETE_CREATE',
@@ -65,7 +66,7 @@ export interface FullTextDerivedIndexLifecycle {
 }
 
 export type FullTextMutationBatch = {
-	upserts: Array<{ id: string; fields: Record<string, string | string[]> }>;
+	upserts: Array<{ id: string; version?: string; fields: Record<string, string | string[]> }>;
 	deletes: string[];
 };
 
@@ -551,13 +552,20 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#lastAppliedSequence = command.sequence;
 			return true;
 		}
-		const slice = toFullTextMutationSlice(
-			command.batch.records,
-			command.position,
-			this.#maxApplySliceRecords,
-			performance.now() + APPLY_SLICE_MILLISECONDS
-		);
-		const { batch: logical, end } = slice;
+		let slice: Awaited<ReturnType<typeof toFullTextMutationSlice>>;
+		try {
+			slice = await toFullTextMutationSlice(
+				command.batch.records,
+				command.position,
+				this.#maxApplySliceRecords,
+				performance.now() + APPLY_SLICE_MILLISECONDS
+			);
+		} catch (error) {
+			await this.#loseAcceptedWork(command.epoch, error, { retry: true });
+			return false;
+		}
+		const { batch: logical, end, rejected: projectionRejected } = slice;
+		this.#stagedUnindexableRecords += projectionRejected;
 		const mutationCount = logical.upserts.length + logical.deletes.length;
 		if (mutationCount > 0) {
 			this.#hasStagedMutations = true;
@@ -627,7 +635,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#stagedUnindexableRecords = 0;
 		if (rejected > 0)
 			logWarning(
-				`Full-text derived index '${this.id}' removed ${rejected} records rejected by native record or frame limits`
+				`Full-text derived index '${this.id}' removed ${rejected} records with invalid projections or native record limits`
 			);
 		this.#durableCursor = cloneCursor(cursor);
 		this.#cursorInspectedForAcquisition = true;
@@ -895,10 +903,45 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 }
 
 export function toFullTextMutationBatch(batch: DerivedIndexBatch): FullTextMutationBatch {
-	return toFullTextMutationSlice(batch.records, 0, batch.records.length, Number.POSITIVE_INFINITY).batch;
+	return toFullTextMutationSliceSync(batch.records, 0, batch.records.length, Number.POSITIVE_INFINITY).batch;
 }
 
-function toFullTextMutationSlice(
+async function toFullTextMutationSlice(
+	records: DerivedIndexBatch['records'],
+	start: number,
+	maxRecords: number,
+	deadline: number
+): Promise<{ batch: FullTextMutationBatch; end: number; rejected: number }> {
+	const upserts: FullTextMutationBatch['upserts'] = [];
+	const deletes: string[] = [];
+	let rejected = 0;
+	const limit = Math.min(start + maxRecords, records.length);
+	let index = start;
+	let previousTableId: number | undefined;
+	let tablePrefix = '';
+	for (; index < limit; index++) {
+		const record = records[index];
+		if (record.recordId == null || typeof record.recordId === 'symbol') continue;
+		if (record.tableId !== previousTableId) {
+			previousTableId = record.tableId;
+			tablePrefix = `${record.tableId}.`;
+		}
+		const id = tablePrefix + toBufferKey(record.recordId).toString('base64url');
+		const recordState = record.state.kind === 'record' ? record.state : undefined;
+		const resolved = recordState ? await resolvedFullTextFields(recordState.projection) : undefined;
+		if (resolved?.rejected) rejected++;
+		if (resolved?.fields && !resolved.rejected)
+			upserts.push({ id, version: String(recordState!.version), fields: resolved.fields });
+		else deletes.push(id);
+		if ((index - start + 1) % 16 === 0 && performance.now() >= deadline) {
+			index++;
+			break;
+		}
+	}
+	return { batch: { upserts, deletes }, end: index, rejected };
+}
+
+function toFullTextMutationSliceSync(
 	records: DerivedIndexBatch['records'],
 	start: number,
 	maxRecords: number,
@@ -918,8 +961,9 @@ function toFullTextMutationSlice(
 			tablePrefix = `${record.tableId}.`;
 		}
 		const id = tablePrefix + toBufferKey(record.recordId).toString('base64url');
-		const fields = record.state.kind === 'record' ? fullTextFields(record.state.projection) : undefined;
-		if (fields) upserts.push({ id, fields });
+		const recordState = record.state.kind === 'record' ? record.state : undefined;
+		const fields = recordState ? fullTextFields(recordState.projection) : undefined;
+		if (fields) upserts.push({ id, version: String(recordState!.version), fields });
 		else deletes.push(id);
 		if ((index - start + 1) % 16 === 0 && performance.now() >= deadline) {
 			index++;
@@ -1038,6 +1082,30 @@ function fullTextFields(projection: unknown): Record<string, string | string[]> 
 		else if (Array.isArray(value)) (fields ??= Object.create(null))[name] = value as string[];
 	}
 	return fields;
+}
+
+async function resolvedFullTextFields(
+	projection: unknown
+): Promise<{ fields?: Record<string, string | string[]>; rejected: boolean }> {
+	let fields = fullTextFields(projection);
+	if (!projection || typeof projection !== 'object' || Array.isArray(projection)) return { fields, rejected: false };
+	for (const name in projection) {
+		if (!Object.hasOwn(projection, name)) continue;
+		const value = (projection as Record<string, unknown>)[name];
+		if (!(value instanceof Blob)) continue;
+		if (value.size > MAX_FULL_TEXT_VALUE_BYTES) return { rejected: true };
+		const bytes = await value.arrayBuffer();
+		let text: string;
+		try {
+			text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+		} catch (error) {
+			if (error instanceof TypeError) return { rejected: true };
+			throw error;
+		}
+		if (Buffer.byteLength(text) > MAX_FULL_TEXT_VALUE_BYTES) return { rejected: true };
+		(fields ??= Object.create(null))[name] = text;
+	}
+	return { fields, rejected: false };
 }
 
 function isTerminalOpenError(error: unknown): boolean {

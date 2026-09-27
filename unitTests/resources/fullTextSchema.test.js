@@ -45,7 +45,7 @@ describe('@fullText declaration compiler', () => {
 			{
 				name: 'a',
 				fields: [{ name: 'title', weight: 3, highlight: true }],
-				analyzer: 'english@1',
+				analyzer: 'english@2',
 				stopWords: false,
 				positions: false,
 				surfaceTerms: false,
@@ -55,7 +55,7 @@ describe('@fullText declaration compiler', () => {
 			{
 				name: 'z',
 				fields: [{ name: 'tags', weight: 1, highlight: false }],
-				analyzer: 'english@1',
+				analyzer: 'english@2',
 				stopWords: true,
 				positions: true,
 				surfaceTerms: true,
@@ -66,9 +66,9 @@ describe('@fullText declaration compiler', () => {
 
 	for (const [label, definition, pattern] of [
 		['unknown source', { name: 'search', fields: [{ name: 'missing' }] }, /unknown source field/],
-		['unsupported type', { name: 'search', fields: [{ name: 'id' }] }, /must be String or \[String\]/],
+		['unsupported type', { name: 'search', fields: [{ name: 'id' }] }, /must be String, \[String\]/],
 		['non-positive weight', { name: 'search', fields: [{ name: 'title', weight: 0 }] }, /greater than zero/],
-		['unversioned analyzer', { name: 'search', fields: [{ name: 'title' }], analyzer: 'english' }, /english@1/],
+		['unversioned analyzer', { name: 'search', fields: [{ name: 'title' }], analyzer: 'english' }, /english@2/],
 		[
 			'duplicate source',
 			{ name: 'search', fields: [{ name: 'title' }, { name: 'title' }] },
@@ -207,7 +207,7 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 						attribute.name === 'title' ? { ...attribute, type: 'Int' } : attribute
 					),
 				}),
-			/must be String or \[String\]/
+			/must be String, \[String\]/
 		);
 
 		const Redeclared = table({
