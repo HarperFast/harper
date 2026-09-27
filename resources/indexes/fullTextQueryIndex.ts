@@ -406,13 +406,8 @@ export class FullTextQueryIndex {
 	#readerFor(ownerEpoch: bigint, dataRevision: bigint): Promise<ReaderSlot> {
 		if (this.#closed) return Promise.reject(new ServerError('Full-text index is closed', 503));
 		for (const [readinessId, pausedEpoch] of this.#pauses) {
-			const completed =
-				readinessId === this.#options.readinessId
-					? pausedEpoch <= ownerEpoch
-					: (() => {
-							const readiness = readDerivedIndexReadiness(this.#options.auditStore, readinessId);
-							return readiness.state === 'ready' && readiness.ownerEpoch >= pausedEpoch;
-						})();
+			const readiness = readDerivedIndexReadiness(this.#options.auditStore, readinessId);
+			const completed = readiness.state === 'ready' && readiness.ownerEpoch >= pausedEpoch;
 			if (completed) {
 				this.#pauses.delete(readinessId);
 				clearPathPause(this.#nativeOptions.path, readinessId, pausedEpoch);

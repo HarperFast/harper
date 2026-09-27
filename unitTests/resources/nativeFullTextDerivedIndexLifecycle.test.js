@@ -21,6 +21,7 @@ const limits = {
 	maxQueuedBytes: 64 * 1024 * 1024,
 	maxBatchBytes: 8 * 1024 * 1024,
 };
+const readerLimits = { ...limits, searchThreads: 2 };
 
 function options(storePath, binding, overrides = {}) {
 	return {
@@ -157,7 +158,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			analyzer: 'english@2',
 			positions: true,
 			surfaceTerms: true,
-			limits,
+			limits: readerLimits,
 			path: lifecycle.path,
 			indexId: 'products-title',
 			generation: createHash('sha256').update('table-generation-1').digest('hex'),
@@ -186,7 +187,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			analyzer: 'english@2',
 			positions: true,
 			surfaceTerms: true,
-			limits,
+			limits: readerLimits,
 			path: lifecycle.path,
 			indexId: 'products-title',
 			generation: createHash('sha256').update('table-generation-1').digest('hex'),

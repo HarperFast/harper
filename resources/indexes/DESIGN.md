@@ -342,7 +342,8 @@ the 64 MiB total writer budget to Tantivy's multi-threaded writer, which divides
 arena per indexing thread. Harper does not search through that writer handle, so it keeps the one
 search worker required by the wrapper. Query readers can open on every Harper worker, so each uses
 only the wrapper's minimum search pool for ordinary-versus-expensive query isolation rather than
-scaling with host CPU.
+scaling with host CPU. Read-only handles reserve search threads and queue bytes, but the wrapper
+does not reserve their validation-only indexing-thread or writer-memory values.
 
 Every runtime flush is a native publication barrier. Full-text activation chooses and benchmarks the
 runtime flush thresholds; the adapter does not reinterpret a flush because the runtime uses durable

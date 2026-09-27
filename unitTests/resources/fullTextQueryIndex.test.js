@@ -1065,6 +1065,68 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	it('does not clear a new same-generation pause with a stale owner epoch', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'query-pause-stale-owner';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const storePath = '/unused';
+		const storeName = 'query-pause-stale-owner';
+		const path = nativeFullTextIndexPath(storePath, storeName);
+		const openStarted = Promise.withResolvers();
+		const finishOpen = Promise.withResolvers();
+		let firstOpen = true;
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
+				_readTxnForContext: () => undefined,
+			},
+			definition: definition(),
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath,
+			storeName,
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+				},
+				async openNativeFullTextReader() {
+					if (firstOpen) {
+						firstOpen = false;
+						openStarted.resolve();
+						await finishOpen.promise;
+					}
+					return {
+						async search() {
+							return {
+								total: 1,
+								totalRelation: 'exact',
+								hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+							};
+						},
+						async reload() {},
+						async close() {},
+					};
+				},
+			},
+		});
+		attachCurrentCoverage(index);
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
+		const search = index.search(query, {}, { minResults: 1 });
+		await openStarted.promise;
+		publishDerivedIndexReadiness(auditStore, readinessId, 'rebuilding');
+		const pause = pauseNativeFullTextQueryReaders(path, readinessId, 0n);
+		finishOpen.resolve();
+		await assert.rejects(search, (error) => error.name === 'IndexRebuildingError');
+		await pause;
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		assert.strictEqual((await index.search(query, {}, { minResults: 1 })).length, 1);
+		await index.close();
+	});
+
 	it('drains superseded readers on the same path before pausing a successor generation', async () => {
 		const auditStore = sharedStore();
 		const oldReadinessId = 'query-pause-old-generation';
