@@ -362,6 +362,25 @@ Write semantics:
 
 Multiple `@embed` attributes on one type are computed concurrently.
 
+### `@fullText`
+
+<VersionBadge version="v5.3.0" />
+
+Creates a BM25-ranked full-text derived index from one or more stored text fields. The directive is declared on the table type and can be repeated for multiple independent indexes.
+
+```graphql
+type Product
+	@table(database: "catalog", audit: true)
+	@fullText(name: "catalogSearch", fields: [{ name: "name", weight: 3 }, { name: "description" }, { name: "tags" }]) {
+	id: ID @primaryKey
+	name: String
+	description: String
+	tags: [String]
+}
+```
+
+Full-text indexes require RocksDB and an audited table. They are local derived state rebuilt from committed table data rather than authoritative record storage. See [Full-Text Search Configuration](../full-text-search/configuration.md) for fields, phrase and prefix storage, synonyms, highlighting, and rebuild behavior.
+
 ### `@createdTime`
 
 Automatically assigns a creation timestamp (Unix epoch milliseconds) to the attribute when a record is created.

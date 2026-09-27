@@ -64,6 +64,20 @@ GET /Product/?name==Keyboard*
 GET /Product/?category=software&price=gt=100&price=lt=200
 ```
 
+### Full-Text Operators
+
+<VersionBadge version="v5.3.0" />
+
+For a declared `@fullText` index, use its name as the query attribute and one of the full-text comparators:
+
+```http
+GET /Product/?catalogSearch=matches=waterproof%20trail
+GET /Product/?catalogSearch=matches_phrase=trail%20running
+GET /Product/?catalogSearch=matches_prefix=waterproof%20tra&limit(10)
+```
+
+REST supports `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, and `matches_fuzzy_prefix`, plus a `not_` form of each. See [Querying Full-Text Indexes](../full-text-search/querying.md) for ranking, highlights, query combinations, and freshness controls.
+
 For date fields, colons must be URL-encoded as `%3A`:
 
 ```http

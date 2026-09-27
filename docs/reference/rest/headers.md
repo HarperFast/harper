@@ -22,6 +22,8 @@ These headers are included in all Harper REST API responses:
 
 Collection responses to a [count request](./querying.md#pagination-and-total-count) additionally include `Content-Range`, `Range-Unit`, and `Preference-Applied` (<VersionBadge version="v5.3.0" />).
 
+A non-waiting request that uses a native derived index can include `Harper-Index-Coverage`. For full-text search, it reports the index state, the admitted lag upper bound, and the requested tolerance. See [Full-text freshness controls](../full-text-search/querying.md#freshness-controls).
+
 ## Cache-Control
 
 <VersionBadge version="v5.2.0" />

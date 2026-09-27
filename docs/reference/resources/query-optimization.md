@@ -11,6 +11,14 @@ title: Query Optimization
 
 Harper has powerful query functionality with excellent performance characteristics. Like any database, different queries can vary significantly in performance. Understanding how querying works helps you write queries that perform well as your dataset grows.
 
+## Full-text search
+
+<VersionBadge version="v5.3.0" />
+
+A condition using a declared `@fullText` index is executed by the native full-text engine and ranked with BM25. Compatible `and` filters are evaluated while accepting candidates so a selective structured filter can still fill the requested result page. Harper then loads the current source records and removes stale or deleted candidates.
+
+Keep result pages bounded. Prefix and fuzzy-prefix searches have a 100-record native window and are intended for autocomplete-style record lookup. Use source-field weights to tune ranking, and enable positions, surface terms, and highlighting only when their query features are needed. See [Full-Text Search](../full-text-search/overview.md).
+
 ## Query Execution
 
 At a fundamental level, querying involves defining conditions to find matching data and then executing those conditions against the database. Harper supports indexed fields, and these indexes are used to speed up query execution.

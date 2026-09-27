@@ -284,6 +284,8 @@ Returns records matching one or more conditions. Supports `operator` (`and`/`or`
 }
 ```
 
+Conditions can also query a declared full-text index with the `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, and `matches_fuzzy_prefix` comparators. The Operations API preserves advanced condition options such as source `fields`, `includeHighlights`, `maxIndexLagMilliseconds`, and `waitForIndexMilliseconds`. See [Querying Full-Text Indexes](../full-text-search/querying.md#operations-api).
+
 ---
 
 ## Bulk Operations

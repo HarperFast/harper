@@ -972,13 +972,13 @@ The `Query` object is accepted by `search()` and the static `get()` method.
 
 Array of condition objects to filter records. Each condition:
 
-| Property     | Description                                                                                                                                              |
-| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `attribute`  | Property name, or an array for chained/joined properties (e.g. `['brand', 'name']`)                                                                      |
-| `value`      | The value to match                                                                                                                                       |
-| `comparator` | `equals` (default), `greater_than`, `greater_than_equal`, `less_than`, `less_than_equal`, `starts_with`, `contains`, `ends_with`, `between`, `not_equal` |
-| `conditions` | Nested conditions array                                                                                                                                  |
-| `operator`   | `and` (default) or `or` for the nested `conditions`                                                                                                      |
+| Property     | Description                                                                                                                                                                                                                        |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `attribute`  | Property name, or an array for chained/joined properties (e.g. `['brand', 'name']`)                                                                                                                                                |
+| `value`      | The value to match                                                                                                                                                                                                                 |
+| `comparator` | `equals` (default), `greater_than`, `greater_than_equal`, `less_than`, `less_than_equal`, `starts_with`, `contains`, `ends_with`, `between`, `not_equal`, or a [full-text comparator](../full-text-search/querying.md#match-modes) |
+| `conditions` | Nested conditions array                                                                                                                                                                                                            |
+| `operator`   | `and` (default) or `or` for the nested `conditions`                                                                                                                                                                                |
 
 Example with nested conditions:
 
@@ -1030,6 +1030,8 @@ Special properties:
 - `$id` — Returns the primary key regardless of its name
 - `$updatedtime` — Returns the last-updated timestamp
 - `$distance` — When the query ranks or filters by a vector index, returns the computed distance from the target vector. See [Vector Indexing](../database/schema.md#vector-indexing).
+- `$score` — When a query uses a full-text index, returns its BM25 relevance score.
+- `$highlights` — Enables and returns full-text fragments and matching spans when the index has highlighting configured. See [Highlights](../full-text-search/querying.md#highlights).
 
 #### Selecting related records
 
