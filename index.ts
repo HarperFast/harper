@@ -112,6 +112,7 @@ export type {
 	OutcomeAction,
 } from './resources/models/types.ts';
 export type {
+	CalibrationBudgets,
 	CalibrationConfig,
 	CalibrationReport,
 	CalibrationRunResult,

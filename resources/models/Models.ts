@@ -12,7 +12,7 @@ import {
 import {
 	type AppliedCalibration,
 	applyFits,
-	type CalibrationConfig,
+	type CalibrationBudgets,
 	type CalibrationRunResult,
 	type CalibrationSummary,
 	isCalibrationEnabled,
@@ -535,11 +535,12 @@ export class Models implements ModelsContract {
 	}
 
 	/**
-	 * Fit calibrations from recorded outcomes now, as the periodic job does, with the configured settings
-	 * and any `overrides`. Resolves with the run's result; a data fault is reported there, never thrown.
+	 * Fit calibrations from recorded outcomes now, as the periodic job does, over every tenant's decisions:
+	 * a maintenance operation for trusted code. `budgets` may narrow this run; the fit policy always comes
+	 * from configuration. Resolves with the run's result; a data fault is reported there, never thrown.
 	 */
-	calibrate(overrides?: CalibrationConfig): Promise<CalibrationRunResult> {
-		return runCalibration(overrides);
+	calibrate(budgets?: CalibrationBudgets): Promise<CalibrationRunResult> {
+		return runCalibration(budgets);
 	}
 
 	/** The newest calibration of each field of each population the caller's tenant owns. */
@@ -773,7 +774,7 @@ function toBackendOpts<TOpts extends { model?: string; signal?: AbortSignal }>(
 ): BackendOpts<TOpts> {
 	const backendOpts = { ...opts, signal, accounting };
 	delete backendOpts.model;
-	delete (backendOpts as Record<symbol, unknown>)[SERVED_SOURCE];
+	if (SERVED_SOURCE in backendOpts) delete (backendOpts as Record<symbol, unknown>)[SERVED_SOURCE];
 	return backendOpts;
 }
 

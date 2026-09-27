@@ -175,6 +175,66 @@ describe('calibration store and facade (#2841)', function () {
 		assert.strictEqual(unrecorded.id, undefined);
 	});
 
+	it('calibrates every field of an object schema, or none', async () => {
+		const OBJECT = { type: 'object', properties: { first: { enum: VALUES }, second: { enum: VALUES } } };
+		setDecision(
+			'default',
+			defineBackend({
+				name: 'fields',
+				decide: async (state) => ({
+					status: 'completed',
+					output: {
+						fields: {
+							first: { distribution: distributionFor(state) },
+							second: { distribution: distributionFor(state) },
+						},
+						signature: SIGNATURE,
+					},
+				}),
+			})
+		);
+		for (let i = 0; i < 300; i++) {
+			const d = await models.decide(`case-${i}`, OBJECT, { persist: true });
+			await models.recordOutcome(d.id, {
+				fields: {
+					first: { truth: { kind: 'value', value: truthOf(i) } },
+					second: { truth: { kind: 'value', value: truthOf(i) } },
+				},
+			});
+		}
+		const run = await models.calibrate();
+		assert.strictEqual(run.written, 2);
+		assert.strictEqual(run.eligible, 2);
+		await models.decide('case-1000', OBJECT);
+		await waitFor(() => outstandingCalibrationReads() === 0, 'the fit lookups');
+		const d = await models.decide('case-1000', OBJECT, { persist: true });
+		assert.strictEqual(d.calibrated, true);
+		for (const name of ['first', 'second']) {
+			assert.strictEqual(d.fields[name].value, topOf(1000));
+			assert.ok(d.fields[name].probability < 0.9, `${name} softened`);
+		}
+		const row = await models.getDecision(d.id);
+		assert.strictEqual(row.calibration.length, 2);
+		assert.deepStrictEqual(Object.keys(row.rawFields).sort(), ['first', 'second']);
+	});
+
+	it('takes only budgets from a run: the fit policy is always the configured one', async () => {
+		await recordCases(models, 0, 300);
+		await runCalibration({ minTrain: 50, minHeldOut: 20, eceMargin: 0.5 });
+		assert.strictEqual((await warmDecide(models, 'case-1100')).calibrated, true);
+	});
+
+	it('keeps other populations cached through a run that refits one', async () => {
+		await recordCases(models, 0, 300);
+		await models.calibrate();
+		assert.strictEqual((await warmDecide(models, 'case-1200')).calibrated, true);
+		await recordCases(models, 0, 40, { instructions: 'another population' });
+		const run = await models.calibrate();
+		assert.strictEqual(run.written, 1, 'only the new population is written');
+		const d = await models.decide('case-1201', SCHEMA);
+		assert.strictEqual(d.calibrated, true, 'the first population stays cached and applies without a reload');
+	});
+
 	it('writes nothing new when a run finds the same inputs and policy', async () => {
 		await recordCases(models, 0, 300);
 		await models.calibrate();

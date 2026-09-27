@@ -67,6 +67,20 @@ export interface CalibrationConfig {
 
 type Settings = Required<CalibrationConfig>;
 
+/** What a single run may override: its budgets. The fit policy always comes from configuration. */
+export type CalibrationBudgets = Pick<
+	CalibrationConfig,
+	'maxDecisions' | 'maxPopulations' | 'maxExamplesPerKey' | 'maxBytes' | 'maxRunMs'
+>;
+
+const BUDGET_KEYS = ['maxDecisions', 'maxPopulations', 'maxExamplesPerKey', 'maxBytes', 'maxRunMs'] as const;
+
+function budgetsOnly(budgets: CalibrationBudgets): CalibrationBudgets {
+	const out: CalibrationBudgets = {};
+	for (const key of BUDGET_KEYS) if (budgets[key] !== undefined) out[key] = budgets[key];
+	return out;
+}
+
 const DEFAULTS: Settings = {
 	interval: DAY_MS,
 	maxDecisions: 100_000,
@@ -288,8 +302,6 @@ function definedOnly(block: CalibrationConfig): CalibrationConfig {
 	return Object.fromEntries(Object.entries(block).filter(([, value]) => value !== undefined)) as CalibrationConfig;
 }
 
-// Lookup: the decide path reads the cache only and never waits on storage.
-
 interface CacheEntry {
 	fit: CalibrationRow | null;
 	loadedAt: number;
@@ -494,8 +506,6 @@ function calibrateMarginal(
 	return { value: marginal.value, probability: distribution[0].probability, distribution };
 }
 
-// Fitting.
-
 export interface RunDeps {
 	now?: () => number;
 }
@@ -503,9 +513,9 @@ export interface RunDeps {
 let running: Promise<CalibrationRunResult> | undefined;
 
 /** One run at a time per process; a call while one runs waits for it and then starts its own. */
-export function runCalibration(overrides: CalibrationConfig = {}, deps: RunDeps = {}): Promise<CalibrationRunResult> {
+export function runCalibration(budgets: CalibrationBudgets = {}, deps: RunDeps = {}): Promise<CalibrationRunResult> {
 	const previous = running ?? Promise.resolve(undefined);
-	const next = previous.catch(() => undefined).then(() => runOnce(overrides, deps));
+	const next = previous.catch(() => undefined).then(() => runOnce(budgets, deps));
 	running = next.finally(() => {
 		if (running === next) running = undefined;
 	}) as Promise<CalibrationRunResult>;
@@ -518,9 +528,9 @@ interface Discovered {
 	bytes: number;
 }
 
-async function runOnce(overrides: CalibrationConfig, deps: RunDeps): Promise<CalibrationRunResult> {
+async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<CalibrationRunResult> {
 	const now = deps.now ?? Date.now;
-	const config: Settings = { ...DEFAULTS, ...settings, ...definedOnly(overrides) };
+	const config: Settings = { ...DEFAULTS, ...settings, ...budgetsOnly(budgets) };
 	const policy = policyOf(config);
 	const digestOfPolicy = policyDigest(policy);
 	const started = now();
@@ -542,6 +552,7 @@ async function runOnce(overrides: CalibrationConfig, deps: RunDeps): Promise<Cal
 	if (!decisions || !outcomes || !store) return finish();
 
 	const populations = new Map<string, Discovered>();
+	const writtenKeys: string[] = [];
 	let bytes = 0;
 	try {
 		for await (const head of heads(store)) {
@@ -577,7 +588,7 @@ async function runOnce(overrides: CalibrationConfig, deps: RunDeps): Promise<Cal
 		}
 		result.processed++;
 	}
-	resetCalibrationCache();
+	for (const key of writtenKeys) cache.delete(key);
 	return finish();
 
 	async function discover(): Promise<void> {
@@ -683,38 +694,42 @@ async function runOnce(overrides: CalibrationConfig, deps: RunDeps): Promise<Cal
 				return out;
 			});
 			rows.sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-			let count = 0;
-			for (const row of rows) {
-				if (++count % YIELD_EVERY === 0) {
+			for (let start = 0; start < rows.length; start += YIELD_EVERY) {
+				if (start > 0) {
 					await new Promise((resolve) => setImmediate(resolve));
 					if (now() >= deadline) return 'deadline';
 				}
-				if (row.expiresAt > newestExpiry) newestExpiry = row.expiresAt;
-				const facts = await transaction(freshContext(), () =>
-					Promise.all(perKey.map((key) => outcomes.get(truthKey(row.id, key.field))))
+				const chunk = rows.slice(start, start + YIELD_EVERY);
+				const chunkFacts = await transaction(freshContext(), () =>
+					Promise.all(chunk.flatMap((row) => perKey.map((key) => outcomes.get(truthKey(row.id, key.field)))))
 				);
-				for (let i = 0; i < perKey.length; i++) {
-					const key = perKey[i];
-					const distribution =
-						key.field === undefined
-							? (row.rawDistribution ?? row.distribution)
-							: (row.rawFields ?? row.fields)?.[key.field]?.distribution;
-					const probabilities = toVector(distribution as DecisionOutcome[] | undefined, key.values);
-					const fact = facts[i] as { state?: OutcomeTruth; at?: number } | undefined;
-					key.digester.add([row.id, probabilities ?? null, fact?.state ?? null, fact?.at ?? null]);
-					key.evidenceAt = Math.max(key.evidenceAt, row.at, fact?.at ?? 0);
-					if (!probabilities || !fact?.state || fact.state.kind === 'unknown') continue;
-					let truth: number;
-					if (fact.state.kind === 'noMatch') truth = NO_MATCH_TRUTH;
-					else {
-						const expected = canonicalJson((fact.state as { value: unknown }).value);
-						truth = key.values.findIndex((value) => canonicalJson(value) === expected);
-						if (truth < 0) continue;
+				for (let r = 0; r < chunk.length; r++) {
+					const row = chunk[r];
+					if (row.expiresAt > newestExpiry) newestExpiry = row.expiresAt;
+					const facts = chunkFacts.slice(r * perKey.length, (r + 1) * perKey.length);
+					for (let i = 0; i < perKey.length; i++) {
+						const key = perKey[i];
+						const distribution =
+							key.field === undefined
+								? (row.rawDistribution ?? row.distribution)
+								: (row.rawFields ?? row.fields)?.[key.field]?.distribution;
+						const probabilities = toVector(distribution as DecisionOutcome[] | undefined, key.values);
+						const fact = facts[i] as { state?: OutcomeTruth; at?: number } | undefined;
+						key.digester.add([row.id, probabilities ?? null, fact?.state ?? null, fact?.at ?? null]);
+						key.evidenceAt = Math.max(key.evidenceAt, row.at, fact?.at ?? 0);
+						if (!probabilities || !fact?.state || fact.state.kind === 'unknown') continue;
+						let truth: number;
+						if (fact.state.kind === 'noMatch') truth = NO_MATCH_TRUTH;
+						else {
+							const expected = canonicalJson((fact.state as { value: unknown }).value);
+							truth = key.values.findIndex((value) => canonicalJson(value) === expected);
+							if (truth < 0) continue;
+						}
+						used += EXAMPLE_OVERHEAD_BYTES + probabilities.length * 8;
+						if (used > config.maxBytes) return 'budget';
+						key.examples.push({ probabilities, truth, at: row.at });
+						key.cutoff = row.at;
 					}
-					used += EXAMPLE_OVERHEAD_BYTES + probabilities.length * 8;
-					if (used > config.maxBytes) return 'budget';
-					key.examples.push({ probabilities, truth, at: row.at });
-					key.cutoff = row.at;
 				}
 			}
 		} catch (err) {
@@ -831,6 +846,7 @@ async function runOnce(overrides: CalibrationConfig, deps: RunDeps): Promise<Cal
 			logFault('calibration could not fit a population', err);
 			return 'failed';
 		}
+		for (const row of written) writtenKeys.push(row.key);
 		result.written += written.length;
 		result.eligible += written.filter((row) => row.eligible).length;
 		return 'done';
