@@ -61,7 +61,7 @@ describe('models.decide persists its decision and models.recordOutcome scores it
 
 	it('returns a cluster-unique id whose record links the analytics row and stores the scoring schema, its hash and the config hash', async () => {
 		setModelsConfigHash({ decision: { default: { backend: 'generative' } } });
-		const d = await models.decide('x', QUEUE);
+		const d = await models.decide('x', QUEUE, { persist: true });
 		assert.match(d.id, /^[0-9a-f]{8}-[0-9a-f-]{27}$/);
 		const record = await models.getDecision(d.id);
 		assert.strictEqual(record.callId, 1000);
@@ -79,7 +79,7 @@ describe('models.decide persists its decision and models.recordOutcome scores it
 	});
 
 	it('records an outcome through the facade and 404s an unknown id', async () => {
-		const d = await models.decide('x', QUEUE);
+		const d = await models.decide('x', QUEUE, { persist: true });
 		const record = await models.recordOutcome(d.id, {
 			truth: { kind: 'value', value: 'other' },
 			action: { kind: 'value', value: d.value },
@@ -97,18 +97,18 @@ describe('models.decide persists its decision and models.recordOutcome scores it
 
 	it('stores the schema as it was at the call, hashes per-call instructions, and reads storage faults as its own error', async () => {
 		const mutable = { enum: ['billing', 'refund'] };
-		const first = await models.decide('x', mutable);
+		const first = await models.decide('x', mutable, { persist: true });
 		mutable.enum.push('bug');
-		const second = await models.decide('x', mutable, { instructions: 'Prefer bug when unsure.' });
+		const second = await models.decide('x', mutable, { persist: true, instructions: 'Prefer bug when unsure.' });
 		assert.deepStrictEqual((await models.getDecision(first.id)).schema, { enum: ['billing', 'refund'] });
 		const record = await models.getDecision(second.id);
 		assert.deepStrictEqual(record.schema, { enum: ['billing', 'refund', 'bug'] });
 		assert.match(record.instructionsHash, /^[0-9a-f]{64}$/);
 		assert.strictEqual((await models.getDecision(first.id)).instructionsHash, undefined);
-		const blank = await models.decide('x', mutable, { instructions: '' });
+		const blank = await models.decide('x', mutable, { persist: true, instructions: '' });
 		assert.strictEqual((await models.getDecision(blank.id)).instructionsHash, undefined, 'empty instructions are none');
 		await assert.rejects(
-			models.decide('x', mutable, { instructions: 5 }),
+			models.decide('x', mutable, { persist: true, instructions: 5 }),
 			(err) => err.statusCode === 400 && /instructions must be a string/.test(err.message)
 		);
 		assert.strictEqual(writer.records.length, 3, 'a non-string instructions option rejects before any call');
@@ -132,7 +132,7 @@ describe('models.decide persists its decision and models.recordOutcome scores it
 				},
 			})
 		);
-		const raced = await models.decide('x', racing, { model: 'racer' });
+		const raced = await models.decide('x', racing, { persist: true, model: 'racer' });
 		assert.deepStrictEqual((await models.getDecision(raced.id)).schema, { enum: ['a', 'b'] });
 		const faulty = new Models(
 			writer,
@@ -159,7 +159,7 @@ describe('models.decide persists its decision and models.recordOutcome scores it
 
 	it('mints a distinct id per decision', async () => {
 		const ids = new Set();
-		for (let i = 0; i < 25; i++) ids.add((await models.decide('x', QUEUE)).id);
+		for (let i = 0; i < 25; i++) ids.add((await models.decide('x', QUEUE, { persist: true })).id);
 		assert.strictEqual(ids.size, 25);
 	});
 
@@ -167,7 +167,7 @@ describe('models.decide persists its decision and models.recordOutcome scores it
 		let id;
 		await assert.rejects(
 			transaction(async () => {
-				id = (await models.decide('x', QUEUE)).id;
+				id = (await models.decide('x', QUEUE, { persist: true })).id;
 				throw new Error('application abort');
 			}),
 			/application abort/
@@ -202,7 +202,7 @@ describe('models.decide persists its decision and models.recordOutcome scores it
 		);
 		setFallbackGroup('decision', 'primary', ['backup']);
 		await assert.rejects(
-			m.decide('x', QUEUE, { model: 'primary' }),
+			m.decide('x', QUEUE, { persist: true, model: 'primary' }),
 			(err) =>
 				err instanceof DecisionPersistenceError &&
 				err.statusCode === 500 &&
@@ -218,7 +218,7 @@ describe('models.decide persists its decision and models.recordOutcome scores it
 	it('rejects on a read-only node before routing, with no analytics row, and rejects outcome reports the same way', async () => {
 		const m = new Models(writer, () => {}, new DecisionStore({ isReadOnly: () => true }));
 		await assert.rejects(
-			m.decide('x', QUEUE),
+			m.decide('x', QUEUE, { persist: true }),
 			(err) => err instanceof DecisionPersistenceError && err.statusCode === 503 && /read-only/.test(err.message)
 		);
 		assert.strictEqual(writer.records.length, 0);
@@ -228,7 +228,7 @@ describe('models.decide persists its decision and models.recordOutcome scores it
 		);
 	});
 
-	it('persist: false commits nothing, returns no id, needs no writable node, and never reaches the backend (#2852)', async () => {
+	it('the default and persist: false commit nothing, return no id, need no writable node, and never reach the backend', async () => {
 		let puts = 0;
 		const readOnly = new DecisionStore({
 			isReadOnly: () => true,
@@ -257,17 +257,19 @@ describe('models.decide persists its decision and models.recordOutcome scores it
 		const decision = await m.decide('x', QUEUE, { persist: false });
 		assert.equal(decision.value, 'bug');
 		assert.equal('id' in decision, false);
+		const plain = await m.decide('x', QUEUE);
+		assert.equal('id' in plain, false, 'the default records nothing either, so it works on a read-only node');
 		assert.equal(puts, 0);
-		assert.equal(writer.records.length, 1, 'the call is still logged');
+		assert.equal(writer.records.length, 2, 'both calls are still logged');
 		assert.equal('persist' in seen[0], false, 'the option stays in the facade');
 		for (const bad of ['no', 0, null])
 			await assert.rejects(
 				m.decide('x', QUEUE, { persist: bad }),
 				(err) => err.statusCode === 400 && /persist/.test(err.message)
 			);
-		assert.equal(seen.length, 1, 'a malformed option never routes');
+		assert.equal(seen.length, 2, 'a malformed option never routes');
 		await assert.rejects(
-			m.decide('x', QUEUE),
+			m.decide('x', QUEUE, { persist: true }),
 			(err) => err instanceof DecisionPersistenceError && err.statusCode === 503
 		);
 	});

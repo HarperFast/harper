@@ -15,15 +15,10 @@ export interface Models {
 	decide<T = unknown>(
 		state: DecideInput,
 		schema: DecisionSchema,
-		opts: UnrecordedDecideOpts
-	): Promise<UnrecordedDecision<T>>;
+		opts: RecordedDecideOpts
+	): Promise<RecordedDecision<T>>;
 	decide<T = unknown>(state: DecideInput, schema: DecisionSchema, opts?: DecideOpts): Promise<Decision<T>>;
-	decide<T = unknown>(
-		state: DecideInput,
-		schema: DecisionSchema,
-		opts: PersistChoiceDecideOpts
-	): Promise<Decision<T> | UnrecordedDecision<T>>;
-	/** The durable record of a decision with its recorded outcome, or undefined. See #2840. */
+	/** The durable record of a decision made with `persist: true`, with its recorded outcome, or undefined. See #2840. */
 	getDecision<T = unknown>(id: string): Promise<DecisionRecord<T> | undefined>;
 	/** Record what actually happened for a decision: its truth, the action taken, or both. See #2840. */
 	recordOutcome<T = unknown>(id: string, outcome: OutcomeReport): Promise<DecisionRecord<T>>;
@@ -182,13 +177,16 @@ export type DecideOpts = {
 	/** Task framing beyond the schema's own descriptions. */
 	instructions?: string;
 	signal?: AbortSignal;
-	/** Only `true`: `false` is `UnrecordedDecideOpts`, so no options object that skips the record reaches the overload that promises an `id`. */
-	persist?: true;
+	/**
+	 * `true` commits a durable record of the decision to `hdb_model_decisions` before returning, so its
+	 * outcome can be recorded later; the result then carries its `id`. Default `false`: nothing is stored
+	 * beyond the per-call analytics row, as with `embed` and `generate`.
+	 */
+	persist?: boolean;
 };
 
-export type UnrecordedDecideOpts = Omit<DecideOpts, 'persist'> & { persist: false };
-
-export type PersistChoiceDecideOpts = Omit<DecideOpts, 'persist'> & { persist: boolean };
+/** Options that record the decision, so the result is a `RecordedDecision` with an `id`. */
+export type RecordedDecideOpts = DecideOpts & { persist: true };
 
 export interface DecisionOutcome {
 	value: unknown;
@@ -225,8 +223,8 @@ export interface DecisionOutput<T = unknown> {
  * have produced — and the marginals live in `fields`.
  */
 export interface Decision<T = unknown> {
-	/** Cluster-unique id of the decision's record in `hdb_model_decisions`, committed before the decision is returned; pass it to `recordOutcome` (#2840). */
-	id: string;
+	/** Present only when the call passed `persist: true`: the cluster-unique id of the decision's record in `hdb_model_decisions`, committed before the decision is returned; pass it to `recordOutcome` (#2840). */
+	id?: string;
 	value: T;
 	probability?: number;
 	distribution?: DecisionOutcome[];
@@ -238,7 +236,8 @@ export interface Decision<T = unknown> {
 	usage?: TokenUsage;
 }
 
-export type UnrecordedDecision<T = unknown> = Omit<Decision<T>, 'id'>;
+/** A decision made with `persist: true`: its `id` is always present. */
+export type RecordedDecision<T = unknown> = Decision<T> & { id: string };
 
 /** One field's marginal in an object-schema `Decision`. */
 export interface FieldDecision {

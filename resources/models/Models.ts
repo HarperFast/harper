@@ -41,9 +41,8 @@ import type {
 	ChoiceScores,
 	DecideInput,
 	DecideOpts,
-	PersistChoiceDecideOpts,
-	UnrecordedDecideOpts,
-	UnrecordedDecision,
+	RecordedDecideOpts,
+	RecordedDecision,
 	Decision,
 	DecisionOutput,
 	DecisionRecord,
@@ -313,32 +312,23 @@ export class Models implements ModelsContract {
 
 	/**
 	 * Choose from the closed set `schema` defines, with the distribution over it. A malformed schema or
-	 * state rejects before routing, with no analytics row: nothing was called. The record is committed
-	 * before the decision is returned: a read-only node rejects before routing, and a commit failure
-	 * rejects without another candidate, so a storage fault never bills a second model call.
-	 * `persist: false` commits nothing and returns no `id`, so it needs no writable node.
+	 * state rejects before routing, with no analytics row: nothing was called. With `persist: true` the
+	 * record is committed before the decision is returned: a read-only node rejects before routing, and a
+	 * commit failure rejects without another candidate, so a storage fault never bills a second model
+	 * call. Without it nothing is stored and no `id` is returned, so any node can decide.
 	 */
 	decide<T = unknown>(
 		state: DecideInput,
 		schema: DecisionSchema,
-		opts: UnrecordedDecideOpts
-	): Promise<UnrecordedDecision<T>>;
+		opts: RecordedDecideOpts
+	): Promise<RecordedDecision<T>>;
 	decide<T = unknown>(state: DecideInput, schema: DecisionSchema, opts?: DecideOpts): Promise<Decision<T>>;
-	decide<T = unknown>(
-		state: DecideInput,
-		schema: DecisionSchema,
-		opts: PersistChoiceDecideOpts
-	): Promise<Decision<T> | UnrecordedDecision<T>>;
-	async decide<T = unknown>(
-		state: DecideInput,
-		schema: DecisionSchema,
-		opts: DecideOpts | UnrecordedDecideOpts | PersistChoiceDecideOpts = {}
-	): Promise<Decision<T> | UnrecordedDecision<T>> {
+	async decide<T = unknown>(state: DecideInput, schema: DecisionSchema, opts: DecideOpts = {}): Promise<Decision<T>> {
 		validateDecisionSchema(schema);
 		stateToText(state);
 		if (opts.persist !== undefined && typeof opts.persist !== 'boolean')
 			throw new DecisionInputError('persist must be a boolean');
-		const persist = opts.persist !== false;
+		const persist = opts.persist === true;
 		if (persist) this.#decisionStore.assertWritable('Decisions');
 		// the call and its record share one snapshot of the schema and options; nothing the caller mutates afterwards reaches either
 		const call = snapshotSchema(schema);

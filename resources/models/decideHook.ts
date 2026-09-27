@@ -29,16 +29,12 @@ export type DecideAttribute = {
 /**
  * `null` clears the attribute, its confidence and its decision id; `probability` is required when the
  * directive names a confidence attribute. `id` must come from a `models.decide` call; an override for a
- * directive without a `decision` attribute that calls `models.decide` passes `persist: false`.
+ * directive with a `decision` attribute gets it from a `models.decide` call made with `persist: true`.
  */
 export type DeciderResult = { value: unknown; probability?: number; id?: string };
 export type Decider = (record: any, hook?: WriteHookContext) => Promise<DeciderResult | null | undefined>;
 
-type DecideFn = (
-	state: DecideInput,
-	schema: DecisionLeaf,
-	opts: Omit<DecideOpts, 'persist'> & { persist: boolean }
-) => Promise<Omit<Decision, 'id'> & { id?: string }>;
+type DecideFn = (state: DecideInput, schema: DecisionLeaf, opts: DecideOpts) => Promise<Decision>;
 
 // Lazy-imported so this module can be unit-tested without loading the transaction
 // stack `Models.ts` pulls in. Overridable via `__setDecideFnForTest`.

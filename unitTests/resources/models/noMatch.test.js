@@ -163,7 +163,7 @@ describe('models.decide with noMatch (#2846)', () => {
 				return [backend];
 			},
 		});
-		const d = await m.decide('x', QUEUE);
+		const d = await m.decide('x', QUEUE, { persist: true });
 		assert.deepStrictEqual(Object.keys(d).sort(), ['calibrated', 'distribution', 'id', 'probability', 'value']);
 		assert.deepStrictEqual(seen, [['decide']]);
 		const record = await m.getDecision(d.id);
@@ -175,7 +175,7 @@ describe('models.decide with noMatch (#2846)', () => {
 			'default',
 			decider('nm', { distribution: oneHot(QUEUE.enum, 'bug'), noMatch: 0.75 }, { noMatch: true })
 		);
-		const d = await m.decide('x', QUEUE_NM);
+		const d = await m.decide('x', QUEUE_NM, { persist: true });
 		assert.strictEqual(d.value, 'bug');
 		assert.strictEqual(d.probability, 1);
 		assert.strictEqual(d.noMatch, 0.75);
@@ -196,7 +196,7 @@ describe('models.decide with noMatch (#2846)', () => {
 			},
 		};
 		setDecision('default', decider('nm', output, { noMatch: true }));
-		const d = await m.decide('x', schema);
+		const d = await m.decide('x', schema, { persist: true });
 		assert.deepStrictEqual(d.value, { route: 'refund', noMatch: true });
 		assert.strictEqual(d.fields.route.noMatch, 0.2);
 		assert.strictEqual('noMatch' in d.fields.noMatch, false);
@@ -496,7 +496,7 @@ describe('noMatch end to end through bootstrap (#2846)', () => {
 				decision: { default: { backend: 'generative', samples: 4, scoring: 'vote' } },
 			},
 		});
-		const d = await models.decide('an unrelated question', QUEUE_NM);
+		const d = await models.decide('an unrelated question', QUEUE_NM, { persist: true });
 		assert.strictEqual(d.noMatch, 0.5);
 		const record = await models.getDecision(d.id);
 		assert.strictEqual(record.noMatch, 0.5);
@@ -510,7 +510,7 @@ describe('noMatch end to end through bootstrap (#2846)', () => {
 				decision: { default: { backend: 'generative' } },
 			},
 		});
-		const d = await models.decide('x', QUEUE_NM);
+		const d = await models.decide('x', QUEUE_NM, { persist: true });
 		close(d.noMatch, 0.5);
 		const calls = require(SCORING_FIXTURE).calls;
 		assert.deepStrictEqual(

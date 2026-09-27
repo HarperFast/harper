@@ -655,7 +655,7 @@ describe('models.decision config → generative adapter → facade (through boot
 			},
 		});
 		assert.strictEqual(resolveDecision('default').name, 'generative');
-		const d = await models.decide('crash on save', QUEUE);
+		const d = await models.decide('crash on save', QUEUE, { persist: true });
 		assert.strictEqual(d.value, 'bug');
 		assert.ok(Math.abs(d.probability - 2 / 3) < 1e-9);
 		assert.strictEqual(d.distribution.length, 4);
@@ -732,7 +732,7 @@ describe('models.decision config → likelihood scoring → facade (through boot
 				decision: { default: { backend: 'generative', samples: 3 } },
 			},
 		});
-		const d = await models.decide('crash on save', QUEUE);
+		const d = await models.decide('crash on save', QUEUE, { persist: true });
 		assert.strictEqual(d.value, 'bug');
 		close(d.probability, Math.exp(2) / (3 + Math.exp(2)));
 		assert.strictEqual(d.distribution.length, 4);

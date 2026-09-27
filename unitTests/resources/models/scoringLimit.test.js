@@ -241,7 +241,7 @@ describe('scoring limits (#2849)', () => {
 			setDecision('default', createGenerativeDecisionBackend({ samples: 2 }));
 			const writer = makeMockWriter();
 			const models = new Models(writer, () => {});
-			const decision = await models.decide('a ticket', schema);
+			const decision = await models.decide('a ticket', schema, { persist: true });
 			assert.strictEqual(scoring.length, 0);
 			assert.strictEqual(completions.length, 2);
 			assert.ok(

@@ -92,7 +92,7 @@ describe('models.decide', () => {
 	it('returns a complete, descending distribution with the argmax as value (TestBackend)', async () => {
 		const state = 'My card was charged twice';
 		const d = await models.decide(state, QUEUE);
-		assert.strictEqual(typeof d.id, 'string');
+		assert.strictEqual(d.id, undefined, 'a call records nothing unless it passes persist: true');
 		assert.ok(QUEUE.enum.includes(d.value));
 		assert.strictEqual(d.distribution.length, 4);
 		assert.strictEqual(d.distribution[0].value, d.value);
@@ -123,7 +123,7 @@ describe('models.decide', () => {
 	});
 
 	it('records an hdb_model_calls row with method=decide that the persisted decision links by callId, and emits metrics', async () => {
-		const d = await models.decide('x', QUEUE, { model: 'default' });
+		const d = await models.decide('x', QUEUE, { model: 'default', persist: true });
 		assert.strictEqual(writer.records.length, 1);
 		const r = writer.records[0];
 		assert.strictEqual(r.method, 'decide');
