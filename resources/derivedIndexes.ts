@@ -44,14 +44,15 @@ const fullTextLogger = loggerWithTag('fulltext-derived-index');
 const derivedIndexLogger = loggerWithTag('derived-index');
 const DEFAULT_MAX_LAG_MILLISECONDS = 30_000;
 const DEFAULT_FULL_TEXT_RETIREMENT_RETRY_MILLISECONDS = 70_000;
-const FULL_TEXT_LIMITS = Object.freeze({
+const FULL_TEXT_WRITER_LIMITS = Object.freeze({
 	indexingThreads: 2,
-	searchThreads: 2,
+	searchThreads: 1,
 	writerMemoryBytes: 64 * 1024 * 1024,
 	maxQueuedCommands: 16,
 	maxQueuedBytes: 64 * 1024 * 1024,
 	maxBatchBytes: 8 * 1024 * 1024,
 });
+const FULL_TEXT_READER_LIMITS = Object.freeze({ ...FULL_TEXT_WRITER_LIMITS, searchThreads: 2 });
 
 type RegisteredTable = { current: { Table: any }; owners: Set<{ Table: any }> };
 type RegisteredBackend = {
@@ -415,7 +416,7 @@ export function attachDerivedIndexes(
 				storePath: Table.primaryStore.rootStore.path,
 				storeName: `${Table.tableName}/${definition.name}`,
 				sourceGeneration: `${Table.tableId}:${generation}`,
-				limits: { ...FULL_TEXT_LIMITS },
+				limits: { ...FULL_TEXT_READER_LIMITS },
 				...(fullTextTest ? { binding: fullTextTest.binding } : null),
 			});
 			fullTextQueryIndexes.set(definition.name, queryIndex);
@@ -479,7 +480,7 @@ export function attachDerivedIndexes(
 				positions: storage.positions,
 				surfaceTerms: storage.surfaceTerms,
 				synonyms: storage.synonyms,
-				limits: { ...FULL_TEXT_LIMITS },
+				limits: { ...FULL_TEXT_WRITER_LIMITS },
 				hasBlobSources: definition.fields.some(({ mediaType }) => mediaType === 'text/plain'),
 				beforeReset: async (ownerEpoch) => {
 					await pauseNativeFullTextQueryReaders(nativePath, readinessId, ownerEpoch);

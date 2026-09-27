@@ -12,7 +12,6 @@ import {
 import {
 	getValidatedFullTextRuntimeInfo,
 	loadFullTextNativeBinding,
-	nativeFullTextSearchThreads,
 	type NativeFullTextIndexConfiguration,
 	type NativeFullTextModule,
 	validateFullTextNativeBinding,
@@ -68,7 +67,6 @@ export class NativeFullTextDerivedIndexLifecycle {
 	async initialize(options: { reclaimRetired?: boolean } = {}): Promise<void> {
 		const binding = await this.#getBinding();
 		const runtimeInfo = getValidatedFullTextRuntimeInfo(binding);
-		this.#options.limits.searchThreads = nativeFullTextSearchThreads(runtimeInfo, this.#options.limits.searchThreads);
 		binding.validateNativeFullTextIndexOptions({
 			...this.#nativeOptions(),
 			limits: this.#options.limits,

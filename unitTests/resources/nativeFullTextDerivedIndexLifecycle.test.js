@@ -15,7 +15,7 @@ const { waitFor } = require('../waitFor');
 
 const limits = {
 	indexingThreads: 2,
-	searchThreads: 2,
+	searchThreads: 1,
 	writerMemoryBytes: 64 * 1024 * 1024,
 	maxQueuedCommands: 16,
 	maxQueuedBytes: 64 * 1024 * 1024,
@@ -455,6 +455,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
 			nativeAbiVersion: 5,
+			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 2,
 			mutationBatchApiVersion: 4,
 			queryApiVersion: 2,
@@ -471,6 +472,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
 			nativeAbiVersion: 5,
+			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
 			storageBackends: ['native'],
 			limits: { maxCommitPayloadBytes: 64 * 1024, maxSearchWindow: 10_000, maxTraceRecords: 128 },
