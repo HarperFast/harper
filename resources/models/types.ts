@@ -7,6 +7,8 @@
  * Reference: planning artifact `tmp/harper-510-phase-1-detail.md` (canonical shapes).
  */
 
+import type { CalibrationConfig, CalibrationRunResult, CalibrationSummary } from './calibrationStore.ts';
+
 export interface Models {
 	embed(input: string | string[], opts?: EmbedOpts): Promise<Float32Array[]>;
 	generate(input: GenerateInput, opts?: GenerateOpts): Promise<GenerateResult>;
@@ -22,6 +24,10 @@ export interface Models {
 	getDecision<T = unknown>(id: string): Promise<DecisionRecord<T> | undefined>;
 	/** Record what actually happened for a decision: its truth, the action taken, or both. See #2840. */
 	recordOutcome<T = unknown>(id: string, outcome: OutcomeReport): Promise<DecisionRecord<T>>;
+	/** Fit calibrations from recorded outcomes now, as the periodic job does. See #2841. */
+	calibrate(overrides?: CalibrationConfig): Promise<CalibrationRunResult>;
+	/** The newest calibration of each field of each population the caller's tenant owns. See #2841. */
+	getCalibrations(filter?: { model?: string }): Promise<CalibrationSummary[]>;
 	/** Register a custom backend under a logical id, selectable via `opts.model`. See #1325. */
 	registerBackend(kind: ModelKind, id: string, backend: ModelBackend): void;
 	/** Build a `ModelBackend` from a spec; pair with `registerBackend`. See #1325. */

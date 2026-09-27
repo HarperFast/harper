@@ -3,9 +3,25 @@ import { contextStorage } from '../transaction.ts';
 import {
 	defineBackend,
 	getBackend,
+	getBackendSource,
 	ModelBackendNotFoundError,
 	registerBackend as registerBackendImpl,
+	SERVED_SOURCE,
+	type ServedSourceHook,
 } from './backendRegistry.ts';
+import {
+	type AppliedCalibration,
+	applyFits,
+	type CalibrationConfig,
+	type CalibrationRunResult,
+	type CalibrationSummary,
+	isCalibrationEnabled,
+	listCalibrations,
+	runCalibration,
+} from './calibrationStore.ts';
+import { populationKey } from './calibration.ts';
+import { safeErrorMessage } from '../scheduler/engine.ts';
+import harperLogger from '../../utility/logging/harper_logger.ts';
 import { getRouter, registerRouter as registerRouterImpl } from './routing.ts';
 import { getModelCallAnalyticsWriter, type ModelCallAnalyticsWriter, type ModelCallRecord } from './analyticsTable.ts';
 import { recordAction } from '../analytics/write.ts';
@@ -214,6 +230,7 @@ export class Models implements ModelsContract {
 		let firstError: unknown = undefined;
 		let hasError = false;
 		for (const backend of resolved.candidates) {
+			let completed: GenerateResult | undefined;
 			// Don't spend a backend call on an already-cancelled request — between
 			// candidates the caller may have aborted (and at entry it may already be).
 			signal?.throwIfAborted();
@@ -227,7 +244,7 @@ export class Models implements ModelsContract {
 				// Propagate usage onto the returned GenerateResult so callers (notably the
 				// `toolMode: 'auto'` loop's budget tracker) can read cumulative tokens without
 				// re-querying analytics. Pure pass-through — backend usage is the source of truth.
-				return result.usage ? { ...result.output, usage: result.usage } : result.output;
+				completed = result.usage ? { ...result.output, usage: result.usage } : result.output;
 			} catch (err) {
 				this.#recordFailure(backend, 'generate', opts.model, accounting, opts, attemptStart, err);
 				if (!hasError) {
@@ -235,6 +252,10 @@ export class Models implements ModelsContract {
 					hasError = true;
 				}
 				if (signal?.aborted) throw err; // caller cancelled — stop, surface the abort
+			}
+			if (completed) {
+				reportServed(opts, backend);
+				return completed;
 			}
 		}
 		throw firstError;
@@ -389,6 +410,17 @@ export class Models implements ModelsContract {
 				continue;
 			}
 			const callId = this.#record(backend, 'decide', callOpts.model, accounting, undefined, result, attemptStart);
+			const calibration = calibrate(
+				call,
+				decision,
+				backend,
+				callOpts.model,
+				instructions,
+				accounting,
+				result.output,
+				identity
+			);
+			if (calibration.applied) decision = calibration.applied.decision;
 			if (!identity) return result.usage ? { ...decision, usage: result.usage } : decision;
 			const id = await this.#persistDecision(
 				callId,
@@ -398,7 +430,8 @@ export class Models implements ModelsContract {
 				accounting,
 				result.output,
 				identity,
-				decision
+				decision,
+				calibration
 			);
 			return result.usage ? { id, ...decision, usage: result.usage } : { id, ...decision };
 		}
@@ -437,6 +470,7 @@ export class Models implements ModelsContract {
 		let firstFailure: unknown = undefined;
 		let hasFailure = false;
 		for (const backend of resolved.candidates) {
+			let completed: (ChoiceScores & { usage?: TokenUsage }) | undefined;
 			signal?.throwIfAborted();
 			const attemptStart = performance.now();
 			try {
@@ -462,7 +496,7 @@ export class Models implements ModelsContract {
 						`Backend '${backend.name}' did not return one finite log-likelihood per choice (${choices.length})`
 					);
 				this.#record(backend, 'scoreChoices', opts.model, accounting, undefined, result, attemptStart);
-				return result.usage ? { logLikelihoods, usage: result.usage } : { logLikelihoods };
+				completed = result.usage ? { logLikelihoods, usage: result.usage } : { logLikelihoods };
 			} catch (err) {
 				// Only this attempt's own decline bills its tokens: the error may travel on as an abort
 				// reason or through the decision adapter, and those rows must not count it again.
@@ -486,6 +520,10 @@ export class Models implements ModelsContract {
 				}
 				if (signal?.aborted) throw err;
 			}
+			if (completed) {
+				reportServed(opts, backend);
+				return completed;
+			}
 		}
 		throw hasFailure ? firstFailure : firstError;
 	}
@@ -494,6 +532,19 @@ export class Models implements ModelsContract {
 		checkDecisionId(id);
 		return (await this.#decisionStore.get(id, resolveCallContext().accounting.tenantId)) as
 			DecisionRecord<T> | undefined;
+	}
+
+	/**
+	 * Fit calibrations from recorded outcomes now, as the periodic job does, with the configured settings
+	 * and any `overrides`. Resolves with the run's result; a data fault is reported there, never thrown.
+	 */
+	calibrate(overrides?: CalibrationConfig): Promise<CalibrationRunResult> {
+		return runCalibration(overrides);
+	}
+
+	/** The newest calibration of each field of each population the caller's tenant owns. */
+	getCalibrations(filter?: { model?: string }): Promise<CalibrationSummary[]> {
+		return listCalibrations(resolveCallContext().accounting.tenantId, filter);
 	}
 
 	async recordOutcome<T = unknown>(id: string, outcome: OutcomeReport): Promise<DecisionRecord<T>> {
@@ -513,7 +564,8 @@ export class Models implements ModelsContract {
 		accounting: AccountingContext,
 		output: DecisionOutput<unknown>,
 		identity: CallIdentity,
-		decision: Omit<Decision<T>, 'id' | 'usage'>
+		decision: Omit<Decision<T>, 'id' | 'usage'>,
+		calibration: Calibration<T>
 	): Promise<string> {
 		const id = newDecisionId();
 		const at = Date.now();
@@ -538,6 +590,13 @@ export class Models implements ModelsContract {
 			calibrated: decision.calibrated,
 		};
 		if (decision.noMatch !== undefined) row.noMatch = decision.noMatch;
+		if (calibration.entry !== undefined) row.entry = calibration.entry;
+		if (calibration.population !== undefined) row.population = calibration.population;
+		if (calibration.applied) {
+			row.rawDistribution = calibration.applied.rawDistribution;
+			row.rawFields = calibration.applied.rawFields;
+			row.calibration = calibration.applied.snapshot;
+		}
 		try {
 			await this.#decisionStore.persist(row);
 		} catch (err) {
@@ -714,7 +773,73 @@ function toBackendOpts<TOpts extends { model?: string; signal?: AbortSignal }>(
 ): BackendOpts<TOpts> {
 	const backendOpts = { ...opts, signal, accounting };
 	delete backendOpts.model;
+	delete (backendOpts as Record<symbol, unknown>)[SERVED_SOURCE];
 	return backendOpts;
+}
+
+const calibrationLog = harperLogger.forComponent('models').conditional;
+let lastCalibrationFaultLog = 0;
+
+function logCalibrationFault(what: string, err: unknown): void {
+	const now = Date.now();
+	if (now - lastCalibrationFaultLog < 60_000) return;
+	lastCalibrationFaultLog = now;
+	calibrationLog.warn?.(`models: ${what}: ${safeErrorMessage(err)}`);
+}
+
+/** Reports a successful attempt's source to a decision adapter's collector; a fault there never reaches the caller. */
+function reportServed(opts: object, backend: ModelBackend): void {
+	const hook = (opts as Record<symbol, unknown>)[SERVED_SOURCE];
+	if (typeof hook !== 'function') return;
+	try {
+		(hook as ServedSourceHook)(getBackendSource(backend));
+	} catch (err) {
+		logCalibrationFault('a served-source hook failed', err);
+	}
+}
+
+interface Calibration<T> {
+	entry?: string;
+	population?: string;
+	applied?: AppliedCalibration<T>;
+}
+
+const NOT_CALIBRATING: Calibration<never> = {};
+
+/**
+ * The decision's calibration population and, when every field has a cached usable fit, its calibrated
+ * form. Only while calibration is enabled, only for a signed decision the backend did not already
+ * calibrate, and never waiting on storage; any fault leaves the decision raw.
+ */
+function calibrate<T>(
+	schema: DecisionSchema,
+	decision: Omit<Decision<T>, 'id' | 'usage'>,
+	backend: ModelBackend,
+	model: string | undefined,
+	instructions: string | undefined,
+	accounting: AccountingContext,
+	output: DecisionOutput<unknown>,
+	identity: CallIdentity | undefined
+): Calibration<T> {
+	if (!isCalibrationEnabled()) return NOT_CALIBRATING as Calibration<T>;
+	try {
+		const signature = typeof output.signature === 'string' && output.signature ? output.signature : undefined;
+		const entry = getBackendSource(backend) ?? `registered:${backend.name}`;
+		if (!signature) return { entry };
+		const population = populationKey({
+			tenant: accounting.tenantId,
+			model: model ?? 'default',
+			entry,
+			signature,
+			instructionsHash: instructions ? hashText(instructions) : undefined,
+			schemaHash: identity?.hash ?? hashSchema(schema),
+		});
+		if (decision.calibrated) return { entry, population };
+		return { entry, population, applied: applyFits(schema, decision, population) };
+	} catch (err) {
+		logCalibrationFault('calibration was not applied', err);
+		return NOT_CALIBRATING as Calibration<T>;
+	}
 }
 
 function resolveCandidates(kind: ModelKind, model: string | undefined, requires: Capability[]): Resolution {

@@ -11,7 +11,8 @@
  */
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import { composeSignal } from './backendHelpers.ts';
-import { setDecision } from './backendRegistry.ts';
+import { SERVED_SOURCE, type ServedSourceHook, setDecision } from './backendRegistry.ts';
+import { isCalibrationEnabled } from './calibrationStore.ts';
 import {
 	allowedValues,
 	isObjectSchema,
@@ -143,7 +144,8 @@ export function createGenerativeDecisionBackend(
 		state: DecideInput,
 		schema: DecisionSchema,
 		instructions: string | undefined,
-		signal: AbortSignal | undefined
+		signal: AbortSignal | undefined,
+		served: object
 	): Promise<DecisionOutput<unknown>> => {
 		const input = buildInput(
 			state,
@@ -161,6 +163,7 @@ export function createGenerativeDecisionBackend(
 					temperature,
 					signal: sampleSignal,
 					requires,
+					...served,
 				});
 				return parseSample(schema, result.content, logicalName);
 			}),
@@ -176,17 +179,18 @@ export function createGenerativeDecisionBackend(
 		field: string | undefined,
 		leaf: DecisionLeaf,
 		instructions: string | undefined,
-		signal: AbortSignal
+		signal: AbortSignal,
+		served: object
 	): Promise<LeafScore> => {
 		const values = allowedValues(leaf);
 		const choices = values.map((value) => String(value));
 		if (leaf.noMatch !== true) {
 			const input = buildInput(state, schema, instructions, SCORE_SYSTEM_PROMPT, field);
-			const scored = await score(input, choices, { model: logicalName, signal });
+			const scored = await score(input, choices, { model: logicalName, signal, ...served });
 			return { distribution: softmax(values, scored?.logLikelihoods, logicalName) };
 		}
 		const input = buildInput(state, schema, instructions, SCORE_NO_MATCH_SYSTEM_PROMPT, field);
-		const scored = await score(input, [...choices, noMatchChoice(choices)], { model: logicalName, signal });
+		const scored = await score(input, [...choices, noMatchChoice(choices)], { model: logicalName, signal, ...served });
 		const all = softmax([...values, NO_MATCH], scored?.logLikelihoods, logicalName);
 		// Normalized over the allowed values' own scores, not by dividing out the none share, which can underflow to zero.
 		const distribution = softmax(values, (scored!.logLikelihoods as number[]).slice(0, values.length), logicalName);
@@ -199,11 +203,12 @@ export function createGenerativeDecisionBackend(
 		state: DecideInput,
 		schema: DecisionSchema,
 		instructions: string | undefined,
-		signal: AbortSignal | undefined
+		signal: AbortSignal | undefined,
+		served: object
 	): Promise<DecisionOutput<unknown>> => {
 		if (!isObjectSchema(schema)) {
 			const [scored] = await runPool(
-				[(leafSignal: AbortSignal) => scoreLeaf(state, schema, undefined, schema, instructions, leafSignal)],
+				[(leafSignal: AbortSignal) => scoreLeaf(state, schema, undefined, schema, instructions, leafSignal, served)],
 				concurrency,
 				signal
 			);
@@ -214,7 +219,7 @@ export function createGenerativeDecisionBackend(
 			entries.map(
 				([name, leaf]) =>
 					(leafSignal: AbortSignal) =>
-						scoreLeaf(state, schema, name, leaf, instructions, leafSignal)
+						scoreLeaf(state, schema, name, leaf, instructions, leafSignal, served)
 			),
 			concurrency,
 			signal
@@ -224,6 +229,13 @@ export function createGenerativeDecisionBackend(
 
 	const signatureFor = (mode: ScoringMode) =>
 		`generative=${logicalName};mode=${mode};samples=${samples};temperature=${temperature ?? 'default'}`;
+
+	// With calibration enabled a decision is signed only when one identified source served every inner call.
+	const signed = (mode: ScoringMode, collector: SourceCollector | undefined): string | undefined => {
+		if (!collector) return signatureFor(mode);
+		if (collector.mixed || collector.source === null) return undefined;
+		return `${signatureFor(mode)};source=${collector.source}`;
+	};
 
 	const requires = config.requireStructuredOutput === false ? undefined : (STRUCTURED_OUTPUT as Capability[]);
 	return {
@@ -238,21 +250,48 @@ export function createGenerativeDecisionBackend(
 			const mode: ScoringMode =
 				scoring === 'auto' ? (canScore(logicalName, largestLeaf(schema)) ? 'score' : 'vote') : scoring;
 			if (mode === 'score') {
+				const collector = isCalibrationEnabled() ? sourceCollector() : undefined;
 				try {
-					return {
-						status: 'completed',
-						output: { ...(await scoreAll(state, schema, opts.instructions, signal)), signature: signatureFor('score') },
-					};
+					const output = await scoreAll(state, schema, opts.instructions, signal, servedOpts(collector));
+					return { status: 'completed', output: withSignature(output, signed('score', collector)) };
 				} catch (err) {
 					if (scoring !== 'auto' || !isScoringUnsupported(err)) throw err;
 				}
 			}
-			return {
-				status: 'completed',
-				output: { ...(await vote(state, schema, opts.instructions, signal)), signature: signatureFor('vote') },
-			};
+			const collector = isCalibrationEnabled() ? sourceCollector() : undefined;
+			const output = await vote(state, schema, opts.instructions, signal, servedOpts(collector));
+			return { status: 'completed', output: withSignature(output, signed('vote', collector)) };
 		},
 	};
+}
+
+const NOT_COLLECTING = Object.freeze({});
+
+interface SourceCollector {
+	source: string | null;
+	mixed: boolean;
+	hook: ServedSourceHook;
+}
+
+function sourceCollector(): SourceCollector {
+	const collector: SourceCollector = {
+		source: null,
+		mixed: false,
+		hook: (source) => {
+			if (source === undefined) collector.mixed = true;
+			else if (collector.source === null) collector.source = source;
+			else if (collector.source !== source) collector.mixed = true;
+		},
+	};
+	return collector;
+}
+
+function servedOpts(collector: SourceCollector | undefined): object {
+	return collector ? { [SERVED_SOURCE]: collector.hook } : NOT_COLLECTING;
+}
+
+function withSignature(output: DecisionOutput<unknown>, signature: string | undefined): DecisionOutput<unknown> {
+	return signature === undefined ? output : { ...output, signature };
 }
 
 // A candidate that advertises scoring without implementing it counts as able, so the facade reports

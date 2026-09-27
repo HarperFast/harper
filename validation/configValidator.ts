@@ -154,6 +154,8 @@ const commonEntryFields = {
 	requestTimeoutMs: number.min(1).optional(),
 	// Ordered fallback group — other logical names tried, in order, after this one (#1326).
 	fallback: Joi.array().items(string).optional(),
+	// Operator-set source identity for calibration: change it when the same settings reach a different deployment.
+	revision: string.optional(),
 };
 const ollamaEntrySchema = Joi.object({
 	backend: string.valid('ollama').required(),
@@ -198,6 +200,7 @@ const generativeDecisionEntrySchema = Joi.object({
 	scoring: string.valid('auto', 'vote', 'score').optional(),
 	requireStructuredOutput: Joi.boolean().optional(),
 	fallback: Joi.array().items(string).optional(),
+	revision: string.optional(),
 }).unknown(false);
 const unknownBackendEntrySchema = Joi.object({
 	backend: string.required(),
@@ -231,6 +234,24 @@ const modelsSchema = Joi.object({
 	embedding: Joi.object().pattern(Joi.string(), providerEntrySchema('embedding')).optional(),
 	generative: Joi.object().pattern(Joi.string(), providerEntrySchema('generative')).optional(),
 	decision: Joi.object().pattern(Joi.string(), decisionEntrySchema).optional(),
+	calibration: Joi.object({
+		interval: Joi.number().integer().min(3_600_000),
+		maxDecisions: Joi.number().integer().min(1),
+		maxPopulations: Joi.number().integer().min(1),
+		maxExamplesPerKey: Joi.number().integer().min(10),
+		maxBytes: Joi.number().integer().min(1_000_000),
+		maxLoads: Joi.number().integer().min(1),
+		maxRunMs: Joi.number().integer().min(1000),
+		minReport: Joi.number().integer().min(1),
+		minTrain: Joi.number().integer().min(10),
+		minHeldOut: Joi.number().integer().min(10),
+		heldOutShare: Joi.number().greater(0).less(1),
+		eceMargin: Joi.number().min(0).less(1),
+		maxAgeMs: Joi.number().integer().min(60_000),
+	})
+		.unknown(false)
+		.allow(null)
+		.optional(),
 });
 
 /**

@@ -1100,6 +1100,45 @@ describe('Test configValidator module', () => {
 				}
 			});
 
+			it('accepts a non-secret revision on every entry kind (#2841)', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: { default: { backend: 'openai', apiKey: 'k', model: 'm', revision: 'sha-1' } },
+					embedding: { default: { backend: 'ollama', model: 'e', revision: '2' } },
+					decision: { default: { backend: 'generative', revision: 'r' } },
+				};
+				assert.strictEqual(configValidator(config, true).error, undefined);
+				config.models.generative.default.revision = 3;
+				assert.notStrictEqual(configValidator(config, true).error, undefined, 'revision is a string');
+			});
+
+			it('accepts the calibration block and rejects an interval under an hour or an unknown setting (#2841)', () => {
+				const config = baseConfig();
+				config.models = {
+					calibration: {
+						interval: 3_600_000,
+						maxDecisions: 1000,
+						maxPopulations: 10,
+						maxExamplesPerKey: 500,
+						maxBytes: 8_000_000,
+						maxLoads: 4,
+						maxRunMs: 5000,
+						minReport: 10,
+						minTrain: 50,
+						minHeldOut: 50,
+						heldOutShare: 0.25,
+						eceMargin: 0.02,
+						maxAgeMs: 86_400_000,
+					},
+				};
+				assert.strictEqual(configValidator(config, true).error, undefined);
+				for (const bad of [{ interval: 60_000 }, { maxReads: 10 }, { heldOutShare: 1 }, { minReport: 0 }]) {
+					const broken = baseConfig();
+					broken.models = { calibration: bad };
+					assert.notStrictEqual(configValidator(broken, true).error, undefined, JSON.stringify(bad));
+				}
+			});
+
 			it('rejects a provider backend under decision, naming the kind', () => {
 				const config = baseConfig();
 				config.models = { decision: { default: { backend: 'openai', apiKey: 'k', model: 'gpt-4o' } } };

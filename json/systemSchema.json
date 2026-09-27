@@ -549,5 +549,16 @@
 				"attribute": "id"
 			}
 		]
+	},
+	"hdb_model_calibrations": {
+		"hash_attribute": "id",
+		"name": "hdb_model_calibrations",
+		"schema": "system",
+		"audit": true,
+		"attributes": [
+			{
+				"attribute": "id"
+			}
+		]
 	}
 }

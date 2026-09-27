@@ -51,6 +51,25 @@ interface CaptureSlot {
 	active: boolean;
 }
 
+const sources = new WeakMap<ModelBackend, string>();
+
+/**
+ * An internal option key: the decision adapter passes a hook under it on inner calls, and the facade
+ * reports each successful attempt's source through it. A symbol, so it is never part of the public options.
+ */
+export const SERVED_SOURCE = Symbol('models.servedSource');
+export type ServedSourceHook = (source: string | undefined) => void;
+
+/** Records what a configured backend is: a fingerprint of its entry, so calibration can tell score sources apart. */
+export function setBackendSource(backend: ModelBackend, fingerprint: string): void {
+	sources.set(backend, fingerprint);
+}
+
+/** Undefined for a backend registered from code, whose score source Harper cannot identify. */
+export function getBackendSource(backend: ModelBackend): string | undefined {
+	return sources.get(backend);
+}
+
 // Async-context scoped: a module-global slot would divert unrelated registrations and collide
 // concurrent constructions.
 const captureScope = new AsyncLocalStorage<CaptureSlot>();

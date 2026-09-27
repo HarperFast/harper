@@ -1,0 +1,391 @@
+'use strict';
+
+const assert = require('node:assert');
+const { setupTestDBPath } = require('../../testUtils');
+const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { contextStorage, transaction } = require('#src/resources/transaction');
+const { setDecision, clearRegistry, defineBackend } = require('#src/resources/models/backendRegistry');
+const { clearRouting } = require('#src/resources/models/routing');
+const { Models } = require('#src/resources/models/Models');
+const { getDecisionTables, resetDecisionTables } = require('#src/resources/models/decisionStore');
+const {
+	applyFits,
+	processingOrder,
+	configureCalibration,
+	getCalibrationsTable,
+	outstandingCalibrationReads,
+	resetCalibrationCache,
+	resetCalibrationsTable,
+	runCalibration,
+	setCalibrationReadForTests,
+} = require('#src/resources/models/calibrationStore');
+const { calibrationKey, populationKey } = require('#src/resources/models/calibration');
+
+const VALUES = ['a', 'b', 'c'];
+const SCHEMA = { enum: VALUES };
+const SIGNATURE = 'scorer=v1';
+const CONFIG = { minReport: 20, minTrain: 100, minHeldOut: 60, heldOutShare: 0.3, eceMargin: 0.01 };
+
+// Case i: the truth cycles through the values, and the scorer's top value is right 60% of the time at 0.9.
+function truthOf(i) {
+	return VALUES[i % 3];
+}
+function topOf(i) {
+	return i % 5 < 3 ? truthOf(i) : VALUES[(i + 1) % 3];
+}
+function distributionFor(state) {
+	const i = Number(/case-(\d+)/.exec(state)?.[1] ?? 0);
+	const top = topOf(i);
+	return VALUES.map((value) => ({ value, probability: value === top ? 0.9 : 0.05 })).sort(
+		(x, y) => y.probability - x.probability
+	);
+}
+
+function scorer(signature = SIGNATURE) {
+	return defineBackend({
+		name: 'scorer',
+		decide: async (state) => ({ status: 'completed', output: { distribution: distributionFor(state), signature } }),
+	});
+}
+
+function makeWriter() {
+	let nextId = 1;
+	return { write: () => nextId++ };
+}
+
+async function waitFor(condition, what, timeoutMs = 2000) {
+	const started = Date.now();
+	while (!(await condition())) {
+		if (Date.now() - started > timeoutMs) throw new Error(`timed out waiting for ${what}`);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+}
+
+async function clearTable(tbl) {
+	const ids = [];
+	await transaction({}, async () => {
+		for await (const row of tbl.search({
+			conditions: [{ attribute: 'expiresAt', comparator: 'greater_than', value: 0 }],
+		}))
+			ids.push(row.id);
+	});
+	for (const id of ids) await transaction({}, () => tbl.delete(id));
+}
+
+async function clearAll() {
+	const { decisions, outcomes } = getDecisionTables();
+	await clearTable(decisions);
+	await clearTable(outcomes);
+	await clearTable(getCalibrationsTable());
+	resetCalibrationCache();
+}
+
+/** Record `count` decisions starting at case `from`, each with its truth. */
+async function recordCases(models, from, count, opts = {}) {
+	const ids = [];
+	for (let i = from; i < from + count; i++) {
+		const d = await models.decide(`case-${i}`, SCHEMA, { persist: true, ...opts });
+		await models.recordOutcome(d.id, { truth: { kind: 'value', value: truthOf(i) } });
+		ids.push(d.id);
+	}
+	return ids;
+}
+
+/** Decide until the cache has loaded, and return the first decision made after it did. */
+async function warmDecide(models, state, opts = {}) {
+	await models.decide(state, SCHEMA, opts);
+	await waitFor(() => outstandingCalibrationReads() === 0, 'the fit lookup');
+	return models.decide(state, SCHEMA, opts);
+}
+
+describe('calibration store and facade (#2841)', function () {
+	this.timeout(30_000);
+	let models;
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		resetDecisionTables();
+		resetCalibrationsTable();
+	});
+
+	beforeEach(async () => {
+		clearRegistry();
+		clearRouting();
+		models = new Models(makeWriter(), () => {});
+		setDecision('default', scorer());
+		configureCalibration(CONFIG, false);
+		setCalibrationReadForTests(undefined);
+		await clearAll();
+	});
+
+	afterEach(() => {
+		configureCalibration(undefined, false);
+		setCalibrationReadForTests(undefined);
+		clearRegistry();
+		clearRouting();
+	});
+
+	after(() => {
+		resetCalibrationsTable();
+		resetDecisionTables();
+	});
+
+	it('declares the calibration table replicating, audited, with an indexed rank', () => {
+		const tbl = getCalibrationsTable();
+		assert.strictEqual(tbl.replicate, true);
+		assert.ok(tbl.attributes.find((a) => a.name === 'rank').indexed);
+		assert.ok(tbl.attributes.find((a) => a.name === 'expiresAt').expiresAt);
+	});
+
+	it('fits from recorded outcomes and calibrates later decisions without changing their value', async () => {
+		await recordCases(models, 0, 300);
+		const run = await models.calibrate();
+		assert.strictEqual(run.status, 'completed');
+		assert.strictEqual(run.written, 1);
+		assert.strictEqual(run.eligible, 1);
+
+		const recorded = await warmDecide(models, 'case-1000', { persist: true });
+		assert.strictEqual(recorded.calibrated, true);
+		assert.strictEqual(recorded.value, topOf(1000));
+		assert.ok(recorded.probability < 0.9 && recorded.probability > 0.4, `softened to ${recorded.probability}`);
+		const row = await models.getDecision(recorded.id);
+		assert.strictEqual(row.calibrated, true);
+		assert.deepStrictEqual(row.rawDistribution, distributionFor('case-1000'));
+		assert.strictEqual(row.calibration.length, 1);
+		assert.strictEqual(typeof row.calibration[0].fitId, 'string');
+		assert.strictEqual(row.probability, recorded.probability);
+
+		const unrecorded = await models.decide('case-1001', SCHEMA);
+		assert.strictEqual(unrecorded.calibrated, true, 'a fit applies whether or not the call is recorded');
+		assert.strictEqual(unrecorded.id, undefined);
+	});
+
+	it('writes nothing new when a run finds the same inputs and policy', async () => {
+		await recordCases(models, 0, 300);
+		await models.calibrate();
+		const again = await models.calibrate();
+		assert.strictEqual(again.written, 0);
+		assert.ok(again.skipped >= 1);
+	});
+
+	it('returns the first decision of a population raw and never waits on storage', async () => {
+		await recordCases(models, 0, 300);
+		await models.calibrate();
+		const cold = await models.decide('case-2000', SCHEMA);
+		assert.strictEqual(cold.calibrated, false);
+		const stalled = [];
+		setCalibrationReadForTests(() => new Promise((resolve) => stalled.push(resolve)));
+		resetCalibrationCache();
+		for (let i = 0; i < 40; i++) {
+			const d = await models.decide(`case-${i}`, SCHEMA, { instructions: `population ${i}` });
+			assert.strictEqual(d.calibrated, false);
+		}
+		assert.strictEqual(outstandingCalibrationReads(), 8, 'outstanding reads stay capped while storage hangs');
+		assert.strictEqual(stalled.length, 8, 'no read starts while at capacity');
+		for (const resolve of stalled) resolve(null);
+		await waitFor(() => outstandingCalibrationReads() === 0, 'stalled reads to drain once they settle');
+	});
+
+	it('keeps populations apart: instructions, tenant, and the decision entry each start over', async () => {
+		await recordCases(models, 0, 300);
+		await models.calibrate();
+		assert.strictEqual((await warmDecide(models, 'case-3000')).calibrated, true);
+		assert.strictEqual((await warmDecide(models, 'case-3000', { instructions: 'other' })).calibrated, false);
+		const tenant = await contextStorage.run({ user: { tenant: 't2' } }, () => warmDecide(models, 'case-3000'));
+		assert.strictEqual(tenant.calibrated, false);
+		setDecision('default', scorer('scorer=v2'));
+		assert.strictEqual((await warmDecide(models, 'case-3000')).calibrated, false, 'a new signature');
+	});
+
+	it('learns nothing from an unsigned decision', async () => {
+		setDecision(
+			'default',
+			defineBackend({
+				name: 'unsigned',
+				decide: async (state) => ({ status: 'completed', output: { distribution: distributionFor(state) } }),
+			})
+		);
+		await recordCases(models, 0, 200);
+		const run = await models.calibrate();
+		assert.strictEqual(run.discovered, 0);
+		assert.strictEqual(run.written, 0);
+	});
+
+	it('revokes a fit when corrections leave too few labels, and when they leave none', async () => {
+		const ids = await recordCases(models, 0, 300);
+		await models.calibrate();
+		assert.strictEqual((await warmDecide(models, 'case-4000')).calibrated, true);
+
+		for (const id of ids.slice(10)) await models.recordOutcome(id, { truth: { kind: 'unknown' } });
+		const fewer = await models.calibrate();
+		assert.strictEqual(fewer.written, 1, 'an ineligible version is written even below minReport');
+		resetCalibrationCache();
+		assert.strictEqual((await warmDecide(models, 'case-4001')).calibrated, false);
+
+		for (const id of ids.slice(0, 10)) await models.recordOutcome(id, { truth: { kind: 'noMatch' } });
+		const none = await models.calibrate();
+		assert.strictEqual(none.written, 1, 'a version with no labels at all');
+		resetCalibrationCache();
+		assert.strictEqual((await warmDecide(models, 'case-4002')).calibrated, false);
+	});
+
+	it('orders versions by the evidence they saw, whatever order they are written in', async () => {
+		await recordCases(models, 0, 300);
+		await models.calibrate();
+		const tbl = getCalibrationsTable();
+		const population = populationKey({
+			model: 'default',
+			entry: 'registered:scorer',
+			signature: SIGNATURE,
+			schemaHash: require('#src/resources/models/decision').hashSchema(SCHEMA),
+		});
+		const key = calibrationKey(population, undefined);
+		const current = await transaction({}, async () => {
+			for await (const row of tbl.search({
+				conditions: [{ attribute: 'rank', comparator: 'starts_with', value: `${key}|` }],
+			}))
+				return row;
+		});
+		assert.ok(current?.eligible, 'the fitted version');
+		const pad = (n) => String(n).padStart(16, '0');
+		const newer = {
+			...current,
+			id: 'newer',
+			eligible: false,
+			reason: 'no-improvement',
+			evidenceAt: current.evidenceAt + 1,
+		};
+		newer.rank = `${key}|${pad(newer.evidenceAt)}|${pad(current.fittedAt)}|newer`;
+		const older = { ...current, id: 'older', evidenceAt: current.evidenceAt - 1 };
+		older.rank = `${key}|${pad(older.evidenceAt)}|${pad(current.fittedAt + 10)}|older`;
+		await transaction({}, () => tbl.put(newer));
+		await transaction({}, () => tbl.put(older));
+		resetCalibrationCache();
+		assert.strictEqual((await warmDecide(models, 'case-5000')).calibrated, false, 'the newer evidence revokes');
+	});
+
+	it('applies nothing fitted under a different policy', async () => {
+		await recordCases(models, 0, 300);
+		await models.calibrate();
+		configureCalibration({ ...CONFIG, minTrain: 150 }, false);
+		assert.strictEqual((await warmDecide(models, 'case-6000')).calibrated, false);
+	});
+
+	it('returns a decision raw when the lookup fails, even with an error whose message throws', async () => {
+		await recordCases(models, 0, 300);
+		await models.calibrate();
+		const hostile = new Error('x');
+		Object.defineProperty(hostile, 'message', {
+			get() {
+				throw new Error('no message');
+			},
+		});
+		setCalibrationReadForTests(() => Promise.reject(hostile));
+		resetCalibrationCache();
+		const d = await warmDecide(models, 'case-7000');
+		assert.strictEqual(d.calibrated, false);
+	});
+
+	it('never fit-calibrates a schema with a no-match leaf', () => {
+		const decision = { value: 'a', probability: 0.9, distribution: distributionFor('case-0'), calibrated: false };
+		assert.strictEqual(applyFits({ enum: VALUES, noMatch: true }, decision, 'p'), undefined);
+		assert.strictEqual(
+			applyFits({ type: 'object', properties: { q: { enum: VALUES, noMatch: true } } }, decision, 'p'),
+			undefined
+		);
+	});
+
+	it("leaves requires: ['calibrated'] routing on the backend's own claim", async () => {
+		await recordCases(models, 0, 300);
+		await models.calibrate();
+		await warmDecide(models, 'case-8000');
+		await assert.rejects(models.decide('case-8001', SCHEMA, { requires: ['calibrated'] }), /calibrated/);
+	});
+
+	it('shows a population only to its own tenant, absent matching only absent', async () => {
+		await recordCases(models, 0, 300);
+		await models.calibrate();
+		const mine = await models.getCalibrations();
+		assert.strictEqual(mine.length, 1);
+		assert.strictEqual(mine[0].eligible, true);
+		assert.strictEqual(mine[0].applied, true);
+		assert.ok(mine[0].report.calibrated.ece < mine[0].report.raw.ece);
+		const other = await contextStorage.run({ user: { tenant: 't2' } }, () => models.getCalibrations());
+		assert.deepStrictEqual(other, []);
+		assert.deepStrictEqual(await models.getCalibrations({ model: 'triage' }), []);
+	});
+
+	it('reports raw reliability from 20 labels, before a fit can qualify', async () => {
+		await recordCases(models, 0, 40);
+		const run = await models.calibrate();
+		assert.strictEqual(run.written, 1);
+		const [summary] = await models.getCalibrations();
+		assert.strictEqual(summary.eligible, false);
+		assert.strictEqual(summary.reason, 'too-few-labels');
+		assert.strictEqual(summary.report.window, 'all');
+		assert.strictEqual(summary.report.labelled, 40);
+		assert.strictEqual(summary.report.calibrated, undefined);
+	});
+
+	it('stops at its budgets and says which one', async () => {
+		await recordCases(models, 0, 50);
+		await recordCases(models, 50, 50, { instructions: 'second population' });
+		const byPopulations = await runCalibration({ maxPopulations: 1 });
+		assert.strictEqual(byPopulations.stoppedBy, 'maxPopulations');
+		const byBytes = await runCalibration({ maxBytes: 5_000 });
+		assert.strictEqual(byBytes.stoppedBy, 'maxBytes');
+		assert.strictEqual(byBytes.written, 0, 'a population cut off by the budget writes nothing');
+		assert.ok(byBytes.pending >= 1);
+		const tiny = await runCalibration({ maxDecisions: 10 });
+		assert.strictEqual(tiny.stoppedBy, 'maxDecisions');
+		assert.strictEqual(tiny.scanned, 10);
+		assert.strictEqual(typeof tiny.reachedAt, 'number');
+	});
+
+	it('fits the least recently fitted population first, so a stopped run resumes where it left off', async () => {
+		const p = (population, lastFittedAt) => ({ head: { population }, lastFittedAt });
+		assert.deepStrictEqual(
+			processingOrder([p('b', 20), p('c'), p('a', 10), p('d', 20)]).map((x) => x.head.population),
+			['c', 'a', 'b', 'd']
+		);
+		await recordCases(models, 0, 40);
+		const first = await models.calibrate();
+		assert.strictEqual(first.processed, 1);
+		await recordCases(models, 100, 40, { instructions: 'second population' });
+		// A run stopped by its deadline right after discovery leaves both pending; neither is lost.
+		let clock = Date.now();
+		let reads = 0;
+		const stopped = await runCalibration({ maxRunMs: 1_000 }, { now: () => (reads++ < 1 ? clock : clock + 10_000) });
+		assert.strictEqual(stopped.stoppedBy, 'maxRunMs');
+		assert.strictEqual(stopped.processed, 0);
+		const resumed = await models.calibrate();
+		assert.strictEqual(resumed.processed, 2, 'the next run covers both, the never-fitted one first');
+	});
+
+	it('reports a discovery failure as a failed run and still processes known populations', async () => {
+		await recordCases(models, 0, 40);
+		await models.calibrate();
+		const { decisions } = getDecisionTables();
+		const search = decisions.search;
+		let first = true;
+		decisions.search = function (request) {
+			if (first && request?.conditions?.[0]?.attribute === 'expiresAt') {
+				first = false;
+				throw new Error('index unavailable at /private/path');
+			}
+			return search.call(this, request);
+		};
+		try {
+			await models.recordOutcome((await models.decide('case-9000', SCHEMA, { persist: true })).id, {
+				truth: { kind: 'value', value: truthOf(9000) },
+			});
+			const run = await models.calibrate();
+			assert.strictEqual(run.status, 'failed');
+			assert.match(run.error, /discovering populations/);
+			assert.strictEqual(run.processed, 1, 'the known population is still processed');
+		} finally {
+			decisions.search = search;
+		}
+	});
+});

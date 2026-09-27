@@ -45,6 +45,15 @@ export interface DecisionRow {
 	fields?: DecisionRecord['fields'];
 	noMatch?: number;
 	calibrated: boolean;
+	/** The backend's scores, kept when a fitted calibration replaced them, so a refit never reads its own output. */
+	rawDistribution?: DecisionRecord['distribution'];
+	rawFields?: DecisionRecord['fields'];
+	/** The fit applied to each field (`field` absent for a leaf schema), with its parameters as applied. */
+	calibration?: Array<{ field?: string; fitId: string; t: number; epsilon: number }>;
+	/** The decision entry's source fingerprint, or `registered:<name>` for a backend registered from code. */
+	entry?: string;
+	/** The calibration population, for a decision whose score source is identified. */
+	population?: string;
 }
 
 type Fact = 'truth' | 'action';
@@ -84,6 +93,11 @@ export const DECISION_ATTRIBUTES = [
 	{ name: 'fields' },
 	{ name: 'noMatch', type: 'number' },
 	{ name: 'calibrated', type: 'boolean' },
+	{ name: 'rawDistribution' },
+	{ name: 'rawFields' },
+	{ name: 'calibration' },
+	{ name: 'entry', type: 'string' },
+	{ name: 'population', type: 'string', indexed: true },
 ];
 
 export const OUTCOME_ATTRIBUTES = [
@@ -279,6 +293,10 @@ function visibleTo(row: DecisionRow, tenant: string | undefined): boolean {
 	return tenant == null || row.tenant == null || row.tenant === tenant;
 }
 
+export function truthKey(id: string, field?: string): string {
+	return factKey(id, 'truth', field);
+}
+
 function factKey(id: string, fact: Fact, field?: string): string {
 	return field == null ? `${id}/${fact}` : `${id}/${fact}/${field}`;
 }
@@ -392,6 +410,22 @@ export function setModelsConfigHash(installed: unknown): void {
 
 export function getModelsConfigHash(): string | undefined {
 	return modelsConfigHash;
+}
+
+/** A configured entry's identity without its credentials: the same fingerprint for the same visible configuration. */
+export function sourceFingerprint(kind: string, logicalName: string | undefined, config: unknown): string {
+	return createHash('sha256')
+		.update(
+			canonicalJson({ kind, logicalName: logicalName ?? null, config: withoutCredentials(withoutFallback(config)) })
+		)
+		.digest('hex');
+}
+
+/** Which backend serves after this one is routing, not what produces this one's scores. */
+function withoutFallback(config: unknown): unknown {
+	if (!config || typeof config !== 'object' || Array.isArray(config)) return config;
+	const { fallback: _fallback, ...rest } = config as Record<string, unknown>;
+	return rest;
 }
 
 const CREDENTIAL_KEY = /^(apiKey|accessKeyId|authorization|.*secret.*|.*password.*|.*credential.*|.*key|.*token)$/i;

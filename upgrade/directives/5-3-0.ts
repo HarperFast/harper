@@ -1,8 +1,9 @@
 'use strict';
 
 // 5.3.0 — introduces system.hdb_oidc_trust and system.hdb_oidc_token_use for OIDC trusted
-// publishing (#2171), and system.hdb_model_decisions and system.hdb_model_outcomes for durable
-// decisions and their recorded outcomes (#2840).
+// publishing (#2171), system.hdb_model_decisions and system.hdb_model_outcomes for durable
+// decisions and their recorded outcomes (#2840), and system.hdb_model_calibrations for fitted
+// calibrations of those decisions (#2841).
 //
 // Fresh installs get these tables from json/systemSchema.json; this covers existing installs, and the
 // replay table's full shape is also declared on every boot (security/authn/oidc/tokenUseTable.ts). The
@@ -20,6 +21,7 @@ import { declareTokenUseTable } from '../../security/authn/oidc/tokenUseTable.ts
 const OIDC_TRUST_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME;
 const OIDC_TOKEN_USE_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TOKEN_USE_TABLE_NAME;
 const MODEL_DECISIONS_TABLE = terms.SYSTEM_TABLE_NAMES.MODEL_DECISIONS_TABLE_NAME;
+const MODEL_CALIBRATIONS_TABLE = terms.SYSTEM_TABLE_NAMES.MODEL_CALIBRATIONS_TABLE_NAME;
 const MODEL_OUTCOMES_TABLE = terms.SYSTEM_TABLE_NAMES.MODEL_OUTCOMES_TABLE_NAME;
 
 /**
@@ -123,16 +125,21 @@ async function createHdbModelOutcomesIfMissing() {
 	await createSystemTableIfMissing(MODEL_OUTCOMES_TABLE, 'recorded decision outcomes');
 }
 
+async function createHdbModelCalibrationsIfMissing() {
+	await createSystemTableIfMissing(MODEL_CALIBRATIONS_TABLE, 'fitted decision calibrations');
+}
+
 const directive530 = {
 	version: '5.3.0',
 	description:
-		'create system.hdb_oidc_trust and system.hdb_oidc_token_use tables for OIDC trusted publishing, and system.hdb_model_decisions and system.hdb_model_outcomes for durable decisions',
+		'create system.hdb_oidc_trust and system.hdb_oidc_token_use tables for OIDC trusted publishing, and system.hdb_model_decisions, system.hdb_model_outcomes and system.hdb_model_calibrations for durable, calibrated decisions',
 	sync_functions: [] as Array<() => unknown>,
 	async_functions: [
 		createHdbOidcTrustIfMissing,
 		declareHdbOidcTokenUse,
 		createHdbModelDecisionsIfMissing,
 		createHdbModelOutcomesIfMissing,
+		createHdbModelCalibrationsIfMissing,
 	] as Array<() => Promise<unknown>>,
 };
 

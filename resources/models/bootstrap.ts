@@ -34,7 +34,8 @@ import { registerOllamaBackend, type OllamaBackendConfig } from '../../component
 import { registerOpenAIBackend, type OpenAIBackendConfig } from '../../components/openai/index.ts';
 import { registerAnthropicBackend, type AnthropicBackendConfig } from '../../components/anthropic/index.ts';
 import { registerBedrockBackend, type BedrockBackendConfig } from '../../components/bedrock/index.ts';
-import { setModelsConfigHash } from './decisionStore.ts';
+import { setModelsConfigHash, sourceFingerprint } from './decisionStore.ts';
+import { type CalibrationConfig, configureCalibration } from './calibrationStore.ts';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
@@ -45,6 +46,7 @@ import {
 	getBackend,
 	removeIfCurrent,
 	replaceIfCurrent,
+	setBackendSource,
 	type CapturedInstall,
 } from './backendRegistry.ts';
 import { getSharedRootConfigWatcher, RootConfigWatcher } from '../../config/RootConfigWatcher.ts';
@@ -86,6 +88,7 @@ interface ModelsConfig {
 	embedding?: Record<string, ModelEntry>;
 	generative?: Record<string, ModelEntry>;
 	decision?: Record<string, ModelEntry>;
+	calibration?: CalibrationConfig | null;
 }
 
 interface RootConfig {
@@ -288,6 +291,10 @@ function publishEntry(
 ): void {
 	const { kind, logicalName, entry, entryJson } = desiredEntry;
 	const key = slotKey(kind, logicalName);
+	const sourceConfig = desiredEntry.configJson ? JSON.parse(desiredEntry.configJson) : entry;
+	setBackendSource(backend, sourceFingerprint(kind, undefined, sourceConfig));
+	for (const extra of extras)
+		setBackendSource(extra.backend, sourceFingerprint(extra.kind, extra.logicalName, sourceConfig));
 	// Boot overwrites occupants (the documented contract); a reload replaces only what this
 	// projection installed — or a helper the projection installed under this name, which a config
 	// entry outranks — so genuine application overrides survive.
@@ -503,6 +510,7 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 		}
 	}
 	setModelsConfigHash(installedConfiguration());
+	configureCalibration(block?.calibration);
 }
 
 function installedConfiguration(): Record<string, unknown> | undefined {

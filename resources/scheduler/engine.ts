@@ -241,7 +241,37 @@ export function findMissedCronOccurrence(
  * repeatedly — a reload or redeploy replaces the component's whole job set.
  */
 export function registerComponentJobs(componentName: string, jobs: ScheduledJob[]): void {
-	unregisterComponentJobs(componentName);
+	if (isInternalName(componentName)) {
+		schedulerLogger.error?.(
+			`Component name '${componentName}' is reserved for Harper's own jobs; its jobs were not registered`
+		);
+		return;
+	}
+	installJobs(componentName, jobs);
+}
+
+/** Jobs Harper itself owns, under a reserved name no component can register or unregister. */
+export function registerInternalJobs(name: string, jobs: ScheduledJob[]): void {
+	installJobs(INTERNAL_PREFIX + name, jobs);
+}
+
+export function unregisterInternalJobs(name: string): void {
+	removeJobs(INTERNAL_PREFIX + name);
+}
+
+/** The name internal jobs carry as their `componentName`. */
+export function internalJobOwner(name: string): string {
+	return INTERNAL_PREFIX + name;
+}
+
+const INTERNAL_PREFIX = 'harper:';
+
+function isInternalName(componentName: string): boolean {
+	return componentName.startsWith(INTERNAL_PREFIX);
+}
+
+function installJobs(componentName: string, jobs: ScheduledJob[]): void {
+	removeJobs(componentName);
 	const jobMap = new Map<string, RegisteredJob>();
 	for (const job of jobs) {
 		jobMap.set(job.name, { ...job, running: false });
@@ -267,6 +297,10 @@ export function registerComponentJobs(componentName: string, jobs: ScheduledJob[
  * harmless and resolves on the next worker restart.
  */
 export function unregisterComponentJobs(componentName: string): void {
+	if (!isInternalName(componentName)) removeJobs(componentName);
+}
+
+function removeJobs(componentName: string): void {
 	const jobMap = jobsByComponent.get(componentName);
 	if (!jobMap) return;
 	for (const job of jobMap.values()) {
@@ -312,7 +346,7 @@ export function runFailoverCheckForTests(): Promise<void> {
 /** Reset all engine state and timers. Intended for tests. */
 export function stopSchedulerEngine(): void {
 	for (const componentName of [...jobsByComponent.keys()]) {
-		unregisterComponentJobs(componentName);
+		removeJobs(componentName);
 	}
 	if (heartbeatTimer) clearInterval(heartbeatTimer);
 	if (failoverWatcherTimer) clearInterval(failoverWatcherTimer);
