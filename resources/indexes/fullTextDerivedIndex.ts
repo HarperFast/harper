@@ -145,6 +145,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#closeTimeoutMilliseconds: number;
 	#shutdownTimeoutMilliseconds: number;
 	#blobReadTimeoutMilliseconds: number;
+	#maxBlobApplySliceMilliseconds: number;
 	#hasBlobSources: boolean;
 	#host?: DerivedIndexBackendHost;
 	#wake?: (change?: DerivedIndexBackendStateChange) => void;
@@ -241,6 +242,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#blobReadTimeoutMilliseconds = positiveInteger(
 			options.blobReadTimeoutMilliseconds ?? DEFAULT_BLOB_READ_TIMEOUT_MILLISECONDS,
 			'blobReadTimeoutMilliseconds'
+		);
+		this.#maxBlobApplySliceMilliseconds = Math.max(
+			APPLY_SLICE_MILLISECONDS,
+			Math.floor((this.#shutdownTimeoutMilliseconds - this.#closeTimeoutMilliseconds) / 2)
 		);
 		this.#hasBlobSources = options.hasBlobSources !== false;
 		this.#openRetryDelayMilliseconds = Math.max(1, this.#openRetryMilliseconds);
@@ -607,13 +612,15 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		}
 		let slice: Awaited<ReturnType<typeof toFullTextMutationSlice>>;
 		try {
-			const deadline = performance.now() + APPLY_SLICE_MILLISECONDS;
+			const startedAt = performance.now();
+			const deadline = startedAt + APPLY_SLICE_MILLISECONDS;
 			slice = this.#hasBlobSources
 				? await toFullTextMutationSlice(
 						command.batch.records,
 						command.position,
 						this.#maxApplySliceRecords,
 						deadline,
+						startedAt + this.#maxBlobApplySliceMilliseconds,
 						this.#blobReadTimeoutMilliseconds
 					)
 				: {
@@ -977,6 +984,7 @@ async function toFullTextMutationSlice(
 	start: number,
 	maxRecords: number,
 	deadline: number,
+	wallDeadline: number,
 	readTimeoutMilliseconds: number
 ): Promise<{ batch: FullTextMutationBatch; end: number; rejected: number }> {
 	const upserts: FullTextMutationBatch['upserts'] = [];
@@ -1006,7 +1014,8 @@ async function toFullTextMutationSlice(
 		if (resolved?.fields && !resolved.rejected && !resolved.error)
 			upserts.push({ id, version: String(recordState!.version), fields: resolved.fields });
 		else deletes.push(id);
-		if (performance.now() >= yieldDeadline) {
+		const now = performance.now();
+		if (now >= yieldDeadline || now >= wallDeadline) {
 			index++;
 			break;
 		}

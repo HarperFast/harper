@@ -221,17 +221,16 @@ export class FullTextQueryIndex {
 	async close(): Promise<void> {
 		this.#closed = true;
 		this.#publicationSubscription?.close();
-		try {
-			await withTimeout(
-				this.#retireAllReaders(),
-				(this.#maxSearchBudgetMilliseconds ?? 30_000) + READER_DRAIN_GRACE_MILLISECONDS,
-				() => new ServerError('Full-text reader drain did not settle before timeout', 503)
-			);
-		} finally {
-			const indexes = queryIndexesByPath.get(this.#nativeOptions.path);
-			indexes?.delete(this);
-			if (indexes?.size === 0) queryIndexesByPath.delete(this.#nativeOptions.path);
-		}
+		const retirement = this.#retireAllReaders();
+		void retirement.then(
+			() => this.#unregister(),
+			() => undefined
+		);
+		await withTimeout(
+			retirement,
+			(this.#maxSearchBudgetMilliseconds ?? 30_000) + READER_DRAIN_GRACE_MILLISECONDS,
+			() => new ServerError('Full-text reader drain did not settle before timeout', 503)
+		);
 	}
 
 	async pause(readinessId: string, ownerEpoch: bigint): Promise<void> {
@@ -460,8 +459,15 @@ export class FullTextQueryIndex {
 				clearPathPause(this.#nativeOptions.path, readinessId, pausedEpoch);
 			}
 		}
-		if (this.#pauses.size > 0)
-			return Promise.reject(new IndexRebuildingError(`Full-text index '${this.#definition.name}' is not ready`));
+		const blocked = this.#pauses.entries().next();
+		if (!blocked.done) {
+			const [readinessId, ownerEpoch] = blocked.value;
+			return Promise.reject(
+				new IndexRebuildingError(
+					`Full-text index '${this.#definition.name}' is waiting for reader fence '${readinessId}' at owner epoch ${ownerEpoch}`
+				)
+			);
+		}
 		const current = this.#readerSlot;
 		if (
 			current &&
@@ -612,6 +618,12 @@ export class FullTextQueryIndex {
 		await this.#readerOperation?.catch(() => undefined);
 		if (this.#readerSlot) this.#retireReaderSlot(this.#readerSlot);
 		await Promise.all([...this.#retiredReaderSlots].map((slot) => this.#closeWhenIdle(slot)));
+	}
+
+	#unregister(): void {
+		const indexes = queryIndexesByPath.get(this.#nativeOptions.path);
+		indexes?.delete(this);
+		if (indexes?.size === 0) queryIndexesByPath.delete(this.#nativeOptions.path);
 	}
 
 	async #closeWhenIdle(slot: ReaderSlot): Promise<void> {
@@ -807,6 +819,7 @@ function assertReady(readiness: DerivedIndexReadiness, name: string): void {
 function publicSearchError(error: unknown, name: string): Error {
 	if (error instanceof FullTextReaderPublicationError)
 		return new IndexRebuildingError(`Full-text index '${name}' is not ready`);
+	if (error instanceof ClientError || error instanceof ServerError) return error;
 	const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
 	if (code === 'E_RELOAD_FAILED')
 		return new DerivedIndexLagError(
@@ -819,7 +832,6 @@ function publicSearchError(error: unknown, name: string): Error {
 	if (code === 'E_INVALID_ARGUMENT' || code === 'E_PREFIX_TOO_BROAD')
 		return new ClientError(`Full-text query on '${name}' is invalid`, 400);
 	if (code === 'E_RESULT_TOO_LARGE') return new ClientError(`Full-text query on '${name}' is too large`, 413);
-	if (error instanceof ClientError || error instanceof ServerError) return error;
 	return new ServerError(`Full-text search on '${name}' failed`, 500);
 }
 

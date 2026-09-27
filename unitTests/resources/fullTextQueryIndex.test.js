@@ -1386,6 +1386,9 @@ describe('FullTextQueryIndex', () => {
 	it('bounds close while a native search keeps a reader lease', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'query-reader-close-timeout';
+		const storePath = '/unused';
+		const storeName = 'query-reader-close-timeout';
+		const nativePath = nativeFullTextIndexPath(storePath, storeName);
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
 		const searchStarted = Promise.withResolvers();
 		const finishSearch = Promise.withResolvers();
@@ -1400,8 +1403,8 @@ describe('FullTextQueryIndex', () => {
 			auditStore,
 			readinessId,
 			indexId: readinessId,
-			storePath: '/unused',
-			storeName: 'unused',
+			storePath,
+			storeName,
 			sourceGeneration: 'generation',
 			limits: {},
 			binding: {
@@ -1444,8 +1447,17 @@ describe('FullTextQueryIndex', () => {
 		assert.match(closeError?.message, /reader drain did not settle/);
 		assert.strictEqual(closeError.statusCode, 503);
 		await close;
+		let pauseSettled = false;
+		const pause = pauseNativeFullTextQueryReaders(nativePath, 'replacement-readiness', 2n).then(() => {
+			pauseSettled = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.strictEqual(pauseSettled, false);
 		finishSearch.resolve();
 		assert.strictEqual((await search).length, 1);
+		await pause;
+		assert.strictEqual(pauseSettled, true);
+		resumeNativeFullTextQueryReaders(nativePath, 'replacement-readiness', 2n);
 		await waitFor(() => closes === 1);
 		await index.close();
 	});
@@ -1987,7 +1999,13 @@ describe('FullTextQueryIndex', () => {
 		attachCurrentCoverage(index, auditStore, currentReadinessId);
 		const query = { attribute: currentReadinessId, comparator: 'matches', value: 'shoe' };
 		await pauseNativeFullTextQueryReaders(path, pausedReadinessId, 0n);
-		await assert.rejects(index.search(query, {}), (error) => error.name === 'IndexRebuildingError');
+		await assert.rejects(
+			index.search(query, {}),
+			(error) =>
+				error.name === 'IndexRebuildingError' &&
+				error.message.includes(pausedReadinessId) &&
+				error.message.includes('owner epoch 0')
+		);
 		publishDerivedIndexReadiness(auditStore, pausedReadinessId, 'ready');
 		assert.strictEqual((await index.search(query, {})).length, 1);
 		await index.close();

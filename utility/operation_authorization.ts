@@ -1143,7 +1143,6 @@ function getRecordAttributes(json, operationName?) {
 						addConditionAttributes(condition.conditions);
 						continue;
 					}
-					// A full-text condition names a derived index, not a stored attribute.
 					const comparator = condition.comparator ?? condition.search_type;
 					if (FULL_TEXT_COMPARATOR_SET.has(comparator)) continue;
 					let attribute = condition.attribute;
