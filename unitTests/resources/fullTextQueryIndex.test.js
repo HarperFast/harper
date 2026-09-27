@@ -1656,10 +1656,13 @@ describe('FullTextQueryIndex', () => {
 								records: [
 									{
 										id: records[0].id,
-										values: [
-											{ field: 'title', valueIndex: 0, spans: [{ start: 6, end: 10 }] },
-											{ field: 'body', valueIndex: 0, spans: [{ start: 0, end: 4 }] },
-										],
+										values:
+											request.text === 'shoe'
+												? [
+														{ field: 'title', valueIndex: 0, spans: [{ start: 6, end: 10 }] },
+														{ field: 'body', valueIndex: 0, spans: [{ start: 0, end: 4 }] },
+													]
+												: [],
 									},
 								],
 							};
@@ -1702,6 +1705,24 @@ describe('FullTextQueryIndex', () => {
 		);
 		assert.deepStrictEqual(tracedFieldSets, [['title'], ['title'], ['body']]);
 		assert.strictEqual(bodyReads, 1);
+		await index.search(
+			{
+				attribute: readinessId,
+				comparator: 'matches',
+				value: 'shoe',
+				fullTextLeaves: [
+					{ text: 'trail', mode: 'any', fields: ['body', 'title'] },
+					{ text: 'shoe', mode: 'any', fields: ['title', 'body'] },
+				],
+				includeHighlights: true,
+			},
+			{},
+			{ minResults: 1 }
+		);
+		assert.deepStrictEqual(tracedFieldSets.slice(-2), [
+			['title', 'body'],
+			['title', 'body'],
+		]);
 		bodyReads = 0;
 		bodyReadFails = true;
 		await assert.rejects(

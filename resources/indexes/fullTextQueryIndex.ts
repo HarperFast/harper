@@ -382,7 +382,11 @@ export class FullTextQueryIndex {
 			if (leaf.fields.length === 0) continue;
 			const key = JSON.stringify([...leaf.fields].sort());
 			let group = leafGroups.get(key);
-			if (!group) leafGroups.set(key, (group = { fields: leaf.fields, leaves: [] }));
+			if (!group) {
+				const selected = new Set(leaf.fields);
+				const fields = this.#definition.fields.map(({ name }) => name).filter((name) => selected.has(name));
+				leafGroups.set(key, (group = { fields, leaves: [] }));
+			}
 			group.leaves.push(leaf);
 		}
 		for (const { fields, leaves: fieldLeaves } of leafGroups.values()) {
