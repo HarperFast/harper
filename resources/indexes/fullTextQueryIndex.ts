@@ -379,9 +379,15 @@ export class FullTextQueryIndex {
 		const sourceFieldNames = new Set(leaves.flatMap(({ fields }) => fields));
 		if (sourceFieldNames.size === 0) return;
 		const byId = new Map(entries.map((entry) => [entry.nativeId, entry]));
-		for (let start = 0; start < entries.length; start += this.#maxTraceRecords!) {
+		for (const sourceEntries of traceEntryBatches(
+			entries,
+			this.#definition,
+			sourceFieldNames,
+			this.#maxTraceRecords!,
+			this.#maxTraceSourceBytes!
+		)) {
 			const records = await Promise.all(
-				entries.slice(start, start + this.#maxTraceRecords!).map(async ({ nativeId, record }) => ({
+				sourceEntries.map(async ({ nativeId, record }) => ({
 					id: nativeId,
 					fields: await sourceFields(record, this.#definition, sourceFieldNames, deadline),
 				}))
@@ -775,6 +781,49 @@ function traceSourceBytes(fields: Record<string, string | string[]>): number {
 		else for (const item of value) bytes += Buffer.byteLength(item);
 	}
 	return bytes;
+}
+
+function traceEntryBytes(
+	record: Record<string, unknown>,
+	definition: FullTextDefinition,
+	selected: ReadonlySet<string>
+): number {
+	let bytes = 0;
+	for (const source of definition.fields) {
+		if (!selected.has(source.name)) continue;
+		const value = record[source.name];
+		if (typeof value === 'string') bytes += Buffer.byteLength(value);
+		else if (Array.isArray(value)) {
+			for (const item of value) if (typeof item === 'string') bytes += Buffer.byteLength(item);
+		} else if (source.mediaType === 'text/plain' && value instanceof Blob) bytes += value.size;
+	}
+	return bytes;
+}
+
+function traceEntryBatches<T extends { record: Record<string, unknown> }>(
+	entries: T[],
+	definition: FullTextDefinition,
+	selected: ReadonlySet<string>,
+	maxRecords: number,
+	maxBytes: number
+): T[][] {
+	const batches: T[][] = [];
+	let batch: T[] = [];
+	let batchBytes = 0;
+	for (const entry of entries) {
+		const bytes = traceEntryBytes(entry.record, definition, selected);
+		if (bytes > maxBytes)
+			throw new ClientError(`Full-text highlight source exceeds the ${maxBytes}-byte native trace limit`, 400);
+		if (batch.length > 0 && (batch.length >= maxRecords || batchBytes + bytes > maxBytes)) {
+			batches.push(batch);
+			batch = [];
+			batchBytes = 0;
+		}
+		batch.push(entry);
+		batchBytes += bytes;
+	}
+	if (batch.length > 0) batches.push(batch);
+	return batches;
 }
 
 function traceSourceBatches<T extends { fields: Record<string, string | string[]> }>(

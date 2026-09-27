@@ -243,6 +243,15 @@ describe('@fullText derived-index activation', () => {
 		await waitFor(() => state.documents.size === 1 && state.payload, 30_000);
 		const document = [...state.documents.values()][0];
 		assert.deepStrictEqual({ ...document.fields }, { title: 'Trail shoe', tags: ['trail', 'waterproof'] });
+		await assert.rejects(
+			async () =>
+				collect(
+					Product.search({
+						conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe', includeHighlights: true }],
+					})
+				),
+			/does not enable highlighting/
+		);
 		await assert.rejects(Product.clear(), /whole-table invalidation is crash-safe/);
 	});
 
@@ -342,6 +351,27 @@ describe('@fullText derived-index activation', () => {
 			})
 		);
 		assert.deepStrictEqual(highlighted.$highlights.title[0].spans, [{ start: 8, end: 12 }]);
+		const positionalSelect = ['title'];
+		positionalSelect.asArray = true;
+		const [selectedAsArray] = await collect(
+			Product.search({
+				conditions: [{ attribute: 'title', comparator: 'matches', value: 'shoe', includeHighlights: true }],
+				select: positionalSelect,
+			})
+		);
+		assert.strictEqual(Array.isArray(selectedAsArray), true);
+		assert.strictEqual(selectedAsArray[0], 'running shoe');
+		assert.deepStrictEqual(selectedAsArray[1].title[0].spans, [{ start: 8, end: 12 }]);
+		const nullSelect = ['missing'];
+		nullSelect.forceNulls = true;
+		const [selectedWithNull] = await collect(
+			Product.search({
+				conditions: [{ attribute: 'title', comparator: 'matches', value: 'shoe', includeHighlights: true }],
+				select: nullSelect,
+			})
+		);
+		assert.strictEqual(selectedWithNull.missing, null);
+		assert.deepStrictEqual(selectedWithNull.$highlights.title[0].spans, [{ start: 8, end: 12 }]);
 		const counted = await Product.search({
 			conditions: [{ attribute: 'title', comparator: 'matches', value: 'running' }],
 			limit: 1,

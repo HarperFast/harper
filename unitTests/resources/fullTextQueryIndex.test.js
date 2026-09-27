@@ -1649,6 +1649,88 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	it('bounds highlight source materialization by native trace bytes', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'query-highlight-source-bytes';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let activeReads = 0;
+		let maxActiveReads = 0;
+		const makeBlob = (value) =>
+			new (class extends Blob {
+				async arrayBuffer() {
+					activeReads++;
+					maxActiveReads = Math.max(maxActiveReads, activeReads);
+					await new Promise((resolve) => setTimeout(resolve, 10));
+					try {
+						return await super.arrayBuffer();
+					} finally {
+						activeReads--;
+					}
+				}
+			})([value]);
+		const entries = new Map([
+			['one', { version: 1, value: { body: makeBlob('shoe') } }],
+			['two', { version: 1, value: { body: makeBlob('boot') } }],
+		]);
+		const traceBatchSizes = [];
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: { getEntry: (key) => entries.get(key) },
+				_readTxnForContext: () => undefined,
+			},
+			definition: {
+				...definition(),
+				fields: [{ name: 'body', weight: 1, highlight: true, mediaType: 'text/plain' }],
+			},
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath: '/unused',
+			storeName: readinessId,
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: { maxSearchWindow: 10, maxTraceRecords: 10, maxTraceSourceBytes: 4 },
+					};
+				},
+				async openNativeFullTextReader() {
+					return {
+						async search() {
+							return {
+								total: 2,
+								totalRelation: 'exact',
+								hits: [
+									{ id: nativeId(1, 'one'), version: '1', score: 2 },
+									{ id: nativeId(1, 'two'), version: '1', score: 1 },
+								],
+							};
+						},
+						async traceMatches(_request, records) {
+							traceBatchSizes.push(records.length);
+							return { complete: true, records: [] };
+						},
+						committedPayload: publicationPayload(),
+						async reload() {},
+						async close() {},
+					};
+				},
+			},
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'shoe', includeHighlights: true },
+			{},
+			{ minResults: 2 }
+		);
+		assert.strictEqual(maxActiveReads, 1);
+		assert.deepStrictEqual(traceBatchSizes, [1, 1]);
+		await index.close();
+	});
+
 	it('orders reader pause and resume epochs and recovers a completed pause', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'query-pause-epochs';

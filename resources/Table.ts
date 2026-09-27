@@ -627,6 +627,11 @@ function selectRequestsProperty(select: any, propertyName: string): boolean {
 	return selected.some((property) => (typeof property === 'string' ? property : property?.name) === propertyName);
 }
 
+function appendSelectProperty(select: any, propertyName: string): any[] {
+	if (!Array.isArray(select)) return [select, propertyName];
+	return Object.assign([...select, propertyName], select);
+}
+
 function conditionsContainFullText(entries: any[], definitions: readonly FullTextDefinition[]): boolean {
 	for (const entry of entries) {
 		if (entry.conditions) {
@@ -5052,6 +5057,8 @@ export function makeTable(options) {
 						} else assertFullTextReadAccess(context, target, fullTextDefinition);
 						condition.includeHighlights =
 							condition.includeHighlights === true || selectRequestsProperty(target.select, '$highlights');
+						if (condition.includeHighlights && !fullTextDefinition.highlighting)
+							throw new ClientError(`Full-text index '${attribute_name}' does not enable highlighting`, 400);
 						includeFullTextHighlights ||= condition.includeHighlights;
 						continue;
 					}
@@ -5220,7 +5227,7 @@ export function makeTable(options) {
 					? ['*', '$highlights']
 					: selectRequestsProperty(target.select, '$highlights')
 						? target.select
-						: [...(Array.isArray(target.select) ? target.select : [target.select]), '$highlights']
+						: appendSelectProperty(target.select, '$highlights')
 				: target.select;
 			// Whether the caller supplied real filter conditions — read from the raw request, NOT the
 			// planner-augmented `conditions` (which by now may carry a synthetic `sort` pseudo-condition and

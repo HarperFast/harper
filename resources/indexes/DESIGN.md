@@ -451,7 +451,9 @@ uses the existing handle only while it has no active lease; otherwise Harper ope
 retires the old handle after its search finishes. One logical query therefore uses one native snapshot
 across all result pages and highlight tracing. The wrapper's reported query budget bounds that whole
 query, including page fetches, source Blob reads and tracing, rather than restarting for each native
-call. A retired handle accepts no new leases but remains open until its active searches finish.
+call. Highlight source materialization is bounded by both the wrapper's trace-record count and source-byte
+limit before Blob reads start; requesting highlights from an index that did not enable them is rejected.
+A retired handle accepts no new leases but remains open until its active searches finish.
 Rejected closes remain tracked and are retried during the next pause or close; a fulfilled native
 cleanup warning is logged. Neither replaces an otherwise successful query response.
 One failed reload leaves the last aligned snapshot installed and returns retryable lag. Three
