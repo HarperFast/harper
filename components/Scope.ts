@@ -81,6 +81,8 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	// Set by the loader on deploy pre-flight validation loads (collectScopes):
 	// the scope exists to validate a component, not to run it. Plugins with
 	// process-global side effects should validate fully but skip activation.
+	// Such a scope never follows a deploy: it loads a finished candidate from inside
+	// its own deploy's lifecycle, so waiting or pausing for a deploy waits on itself.
 	isTransientValidation?: boolean;
 
 	/**
@@ -103,18 +105,20 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		applicationScope: ApplicationScope,
 		origin: string = appName,
 		isRootConfig?: boolean,
-		mount?: ScopeMount
+		mount?: ScopeMount,
+		isTransientValidation?: boolean
 	) {
 		super();
 
 		this.mount = mount;
+		this.isTransientValidation = isTransientValidation;
 		this.#appName = appName;
 		this.#pluginName = pluginName;
 		this.#origin = typeof origin === 'string' ? origin : appName;
 		this.#directory = directory;
 		this.#configFilePath = configFilePath;
 		this.#logger = loggerWithTag(this.#appName);
-		this.#deployInFlight = deployLifecycle.loadsAwaitDeploy(this.#appName);
+		this.#deployInFlight = !isTransientValidation && deployLifecycle.loadsAwaitDeploy(this.#appName);
 
 		this.databaseEvents = databaseEventsEmitter;
 		this.applicationScope = applicationScope;
@@ -170,8 +174,10 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.#deployEndHandler = (name) => {
 			if (name === this.#appName) this.#onDeployEnd(name);
 		};
-		deployLifecycle.on('deploy:start', this.#deployStartHandler);
-		deployLifecycle.on('deploy:end', this.#deployEndHandler);
+		if (!isTransientValidation) {
+			deployLifecycle.on('deploy:start', this.#deployStartHandler);
+			deployLifecycle.on('deploy:end', this.#deployEndHandler);
+		}
 	}
 
 	get logger(): Logger {
