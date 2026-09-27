@@ -190,10 +190,10 @@ export class FullTextQueryIndex {
 
 	async close(): Promise<void> {
 		this.#closed = true;
+		await this.#retireAllReaders();
 		const indexes = queryIndexesByPath.get(this.#nativeOptions.path);
 		indexes?.delete(this);
 		if (indexes?.size === 0) queryIndexesByPath.delete(this.#nativeOptions.path);
-		await this.#retireAllReaders();
 	}
 
 	async pause(): Promise<void> {
