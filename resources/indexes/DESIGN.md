@@ -421,6 +421,8 @@ publication does not reopen or remap the index. An epoch or query-configuration 
 replacement handle. A retired handle accepts no new leases but remains open until its active searches
 finish. Cleanup errors are retried during the next pause or close and never replace an otherwise
 successful query response.
+One failed reload leaves the last aligned snapshot installed and returns retryable lag. Three
+consecutive reload failures retire that handle so the next query reopens from native storage.
 
 Reset is destructive, so the elected writer first pauses readers in every worker and waits for their
 active leases to drain. Harper does not force-close a handle that native code may still be using; a
@@ -429,12 +431,13 @@ exact readiness-id and owner-epoch token that paused the path, preventing an old
 readers after a newer owner has paused them. Epochs from different readiness generations are never
 compared because each generation owns an independent counter.
 The runtime publishes `rebuilding` before invoking reset, so a worker created after the pause
-broadcast cannot admit a new reader. A worker that misses resume clears its pause only after shared
-readiness reaches the same or a newer owner epoch. These orderings are part of the reset protocol.
-The pause covers every reader on the physical path, including a superseded generation. Only the
-matching resume token clears that pause across those readers; a stale resume cannot clear a newer
-pause. This closes both handoff directions without assuming an ordering between generation-local
-epochs. If the native
+broadcast cannot admit a new reader. A worker that misses resume clears a token only after that
+token's own shared readiness reaches ready at the same or a newer owner epoch. These orderings are
+part of the reset protocol. The pause covers every reader on the physical path, including a
+superseded generation. Concurrent resets retain independent tokens, and the path remains fenced
+until every active token is cleared by its matching resume or completed readiness. A stale resume
+cannot clear a newer token. This closes both handoff directions without assuming an ordering between
+generation-local epochs. If the native
 reader violates its contract by rejecting close, Harper logs the failure and proceeds with reset
 rather than wedging the path indefinitely; the reset therefore assumes that rejected handle is dead.
 

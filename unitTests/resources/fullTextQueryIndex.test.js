@@ -367,6 +367,66 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(closes, 2);
 	});
 
+	it('reopens a reader after repeated reload failures', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'query-reload-reopen';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let opens = 0;
+		let closes = 0;
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: { getEntry: () => ({ version: 1, value: { title: 'running shoe' } }) },
+				_readTxnForContext: () => undefined,
+			},
+			definition: definition(),
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath: '/unused',
+			storeName: 'unused-reload-reopen',
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+				},
+				async openNativeFullTextReader() {
+					opens++;
+					return {
+						async search() {
+							return {
+								total: 1,
+								totalRelation: 'exact',
+								hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+							};
+						},
+						async reload() {
+							throw Object.assign(new Error('reload failed'), { code: 'E_RELOAD_FAILED' });
+						},
+						async close() {
+							closes++;
+						},
+					};
+				},
+			},
+		});
+		const publication = attachCurrentCoverage(index);
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
+		await index.search(query, {}, { minResults: 1 });
+		publication.publish();
+		for (let attempt = 0; attempt < 3; attempt++)
+			await assert.rejects(
+				index.search(query, {}, { minResults: 1 }),
+				(error) => error.name === 'DerivedIndexLagError'
+			);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(closes, 1);
+		await index.search(query, {}, { minResults: 1 });
+		assert.strictEqual(opens, 2);
+		await index.close();
+	});
+
 	it('requires callers to page searches larger than the native result window', async () => {
 		const auditStore = sharedStore();
 		publishDerivedIndexReadiness(auditStore, 'query-window', 'ready');
@@ -1078,6 +1138,18 @@ describe('FullTextQueryIndex', () => {
 			(await newIndex.search({ attribute: newReadinessId, comparator: 'matches', value: 'shoe' }, {})).length,
 			1
 		);
+		await pauseNativeFullTextQueryReaders(path, oldReadinessId, 2n);
+		await pauseNativeFullTextQueryReaders(path, newReadinessId, 2n);
+		resumeNativeFullTextQueryReaders(path, newReadinessId, 2n);
+		await assert.rejects(
+			newIndex.search({ attribute: newReadinessId, comparator: 'matches', value: 'shoe' }, {}),
+			(error) => error.name === 'IndexRebuildingError'
+		);
+		resumeNativeFullTextQueryReaders(path, oldReadinessId, 2n);
+		assert.strictEqual(
+			(await newIndex.search({ attribute: newReadinessId, comparator: 'matches', value: 'shoe' }, {})).length,
+			1
+		);
 		await oldIndex.close();
 		await newIndex.close();
 	});
@@ -1153,6 +1225,57 @@ describe('FullTextQueryIndex', () => {
 		);
 		await oldIndex.close();
 		await newIndex.close();
+	});
+
+	it('recovers a foreign pause after its readiness returns to ready', async () => {
+		const auditStore = sharedStore();
+		const pausedReadinessId = 'query-missed-resume-old';
+		const currentReadinessId = 'query-missed-resume-current';
+		publishDerivedIndexReadiness(auditStore, pausedReadinessId, 'rebuilding');
+		publishDerivedIndexReadiness(auditStore, currentReadinessId, 'ready');
+		const storePath = '/unused';
+		const storeName = 'query-missed-resume';
+		const path = nativeFullTextIndexPath(storePath, storeName);
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
+				_readTxnForContext: () => undefined,
+			},
+			definition: definition(),
+			auditStore,
+			readinessId: currentReadinessId,
+			indexId: currentReadinessId,
+			storePath,
+			storeName,
+			sourceGeneration: currentReadinessId,
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return { limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+				},
+				async openNativeFullTextReader() {
+					return {
+						async search() {
+							return {
+								total: 1,
+								totalRelation: 'exact',
+								hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+							};
+						},
+						async reload() {},
+						async close() {},
+					};
+				},
+			},
+		});
+		attachCurrentCoverage(index);
+		const query = { attribute: currentReadinessId, comparator: 'matches', value: 'shoe' };
+		await pauseNativeFullTextQueryReaders(path, pausedReadinessId, 0n);
+		await assert.rejects(index.search(query, {}), (error) => error.name === 'IndexRebuildingError');
+		publishDerivedIndexReadiness(auditStore, pausedReadinessId, 'ready');
+		assert.strictEqual((await index.search(query, {})).length, 1);
+		await index.close();
 	});
 
 	it('reports bounded coverage and waits for current coverage when requested', async () => {
