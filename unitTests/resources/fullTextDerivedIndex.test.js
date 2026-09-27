@@ -633,11 +633,7 @@ describe('FullTextDerivedIndexBackend', () => {
 			}
 		}
 		const body = new TransientBlob(['plain text']);
-		const value = batch(
-			1n,
-			[mutation('retry', { kind: 'record', version: 1, projection: { body } })],
-			cursor(20)
-		);
+		const value = batch(1n, [mutation('retry', { kind: 'record', version: 1, projection: { body } })], cursor(20));
 		const changes = [];
 		backend.onStateChange((change) => changes.push(change));
 

@@ -1746,13 +1746,18 @@ describe('@fullText derived-index activation', () => {
 			{ name: 'title', type: 'String' },
 			{ name: 'tags', type: 'array', elements: { type: 'String' } },
 		];
-		const declare = (weight) =>
+		const declare = (generation) =>
 			table({
 				database,
 				table: 'Product',
 				audit: true,
 				attributes: attributes(),
-				fullTextIndexes: [definition(weight)],
+				fullTextIndexes: [
+					{
+						...definition(),
+						synonyms: [{ source: 'shoe', replacements: [`sneaker-${generation}`] }],
+					},
+				],
 			});
 
 		Product = declare(1);

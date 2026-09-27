@@ -135,9 +135,7 @@ export class FullTextQueryIndex {
 			const limit = Math.min(Math.max(RAW_PAGE_SIZE, target - accepted.length), maxSearchWindow - offset);
 			const result = await reader.search({ query, offset, limit });
 			moreMayExist =
-				result.totalRelation === 'exact'
-					? offset + result.hits.length < result.total
-					: result.hits.length === limit;
+				result.totalRelation === 'exact' ? offset + result.hits.length < result.total : result.hits.length === limit;
 			if (result.hits.length === 0) break;
 			for (const hit of result.hits) {
 				const key = decodeNativeId(hit.id, this.#options.Table.tableId);
