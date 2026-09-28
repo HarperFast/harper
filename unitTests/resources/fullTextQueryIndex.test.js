@@ -2652,26 +2652,72 @@ describe('FullTextQueryIndex', () => {
 		await newIndex.close();
 	});
 
-	it('clears an abandoned pause after its last generation attachment retires', async () => {
+	it('orders a pause started during close before the last generation attachment unregisters', async () => {
 		const auditStore = sharedStore();
 		const oldReadinessId = 'query-abandoned-pause-old';
 		const currentReadinessId = 'query-abandoned-pause-current';
 		const storeName = 'query-abandoned-pause';
 		const path = nativeFullTextIndexPath('/unused', storeName);
-		const oldIndex = readyQueryIndex(auditStore, oldReadinessId, storeName);
+		const searchStarted = Promise.withResolvers();
+		const finishSearch = Promise.withResolvers();
+		publishDerivedIndexReadiness(auditStore, oldReadinessId, 'ready');
+		const oldIndex = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
+				_readTxnForContext: () => undefined,
+			},
+			definition: definition(),
+			auditStore,
+			readinessId: oldReadinessId,
+			indexId: oldReadinessId,
+			storePath: '/unused',
+			storeName,
+			sourceGeneration: oldReadinessId,
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
+					};
+				},
+				async openNativeFullTextReader() {
+					return {
+						async search() {
+							searchStarted.resolve();
+							await finishSearch.promise;
+							return {
+								total: 1,
+								totalRelation: 'exact',
+								hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+							};
+						},
+						committedPayload: publicationPayload(),
+						async reload() {},
+						async close() {},
+					};
+				},
+			},
+		});
+		attachCurrentCoverage(oldIndex, auditStore, oldReadinessId);
 		const currentIndex = readyQueryIndex(auditStore, currentReadinessId, storeName);
 		const query = { attribute: currentReadinessId, comparator: 'matches', value: 'shoe' };
 
-		await pauseNativeFullTextQueryReaders(path, oldReadinessId, 1n);
-		await assert.rejects(currentIndex.search(query, {}), (error) => error.name === 'IndexRebuildingError');
-		await oldIndex.close();
-		await waitFor(async () => {
-			try {
-				return (await currentIndex.search(query, {}, { minResults: 1 })).length === 1;
-			} catch {
-				return false;
-			}
+		const search = oldIndex.search({ attribute: oldReadinessId, comparator: 'matches', value: 'shoe' }, {});
+		await searchStarted.promise;
+		publishDerivedIndexReadiness(auditStore, oldReadinessId, 'rebuilding');
+		const close = oldIndex.close();
+		let pauseSettled = false;
+		const pause = pauseNativeFullTextQueryReaders(path, oldReadinessId, 1n).then(() => {
+			pauseSettled = true;
 		});
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(pauseSettled, false);
+		finishSearch.resolve();
+		await search;
+		await Promise.all([close, pause]);
+		assert.strictEqual((await currentIndex.search(query, {}, { minResults: 1 })).length, 1);
 		await currentIndex.close();
 	});
 
