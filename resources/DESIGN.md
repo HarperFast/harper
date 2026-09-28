@@ -34,6 +34,21 @@ The Resource layer is Harper's universal abstraction: all queryable/mutable thin
 
 ---
 
+## Full-text declarations and reader snapshots
+
+Status: code-traced against this branch, 2026-09-28. User-facing syntax and migration guidance: [Full-text search](FULL_TEXT.md).
+
+- Compile `name: FullText @fullText(...)` directly into `fullTextIndexes` plus durable `fullTextFields` declaration metadata. Never add it to `attributes` or record `properties`: it has no stored, computed, or selectable value. The parser rejects other directives on the declaration; source fields own permissions.
+- Keep `fullTextFields` out of the physical storage definition. Moving an unchanged legacy table-level declaration onto a field preserves its persisted generation. The declaration-name set enforces write/projection restrictions independently of query-reader readiness; legacy definitions without that metadata keep their existing collision behavior.
+- Hold one reader lease for the entire search, including every native result page and highlight trace. Reload only an idle reader. Publication during an active query opens a replacement for subsequent queries and retires the old reader after its lease drains. Offset paging across different native snapshots can duplicate or skip hits; deduplication cannot recover skipped hits.
+- Native fulltext owns commits and reader snapshots. Harper owns audit coverage, worker epochs, readiness, and publication notifications. A stable native snapshot does not imply a global record snapshot during concurrent writes; source versions are checked when hydrating hits.
+
+Sources: [schema parser](graphql.ts), [declaration compiler and generation identity](fullTextSchema.ts), [table read/write guards](Table.ts), [reader leases and paging](indexes/fullTextQueryIndex.ts), [publication-between-pages regression](../unitTests/resources/fullTextQueryIndex.test.js).
+
+Open items: cross-platform execution and deployed integration results are tracked with the change's verification evidence; this note makes no claim that those gates have passed.
+
+---
+
 ## `Resource.ts` — base class
 
 Static methods are protocol entry points (each wrapped in `transactional()`); instance methods are the per-resource behavior hooks subclasses override.
