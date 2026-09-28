@@ -193,6 +193,29 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(auditStore.listenerCount(readinessId), 0);
 	});
 
+	it('does not subscribe when a delayed first query resumes after close', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'closed-before-first-query';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const start = Promise.withResolvers();
+		const pending = index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'shoe', waitForIndexMilliseconds: 1000 },
+			{ indexSearchStart: start.promise },
+			{ minResults: 1 }
+		);
+		await index.close();
+		start.resolve();
+		await assert.rejects(pending, /closed/);
+		assert.strictEqual(auditStore.listenerCount(readinessId), 0);
+	});
+
 	it('shares the loaded source entry with pushed-down record filters', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'single-source-load';

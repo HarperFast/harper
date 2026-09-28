@@ -618,6 +618,7 @@ export class FullTextQueryIndex {
 	}
 
 	#publicationRevision(): bigint {
+		if (this.#closed) throw new ServerError('Full-text index is closed', 503);
 		if (!this.#publicationSubscription)
 			this.#publicationSubscription = subscribeDerivedIndexPublications(
 				this.#options.auditStore,
