@@ -104,7 +104,7 @@ It is best practice to define schemas for production tables. Dynamic schemas are
 
 ## Key Concepts
 
-For deeper coverage of each database feature, see the dedicated pages in this section:
+For deeper coverage of database features, see these related pages:
 
 - **[Schema](./schema.md)** — Defining table structure, types, indexes, relationships, and computed properties using GraphQL schema syntax
 - **[Full-Text Search](../full-text-search/overview.md)** — BM25-ranked search over stored text fields on audited RocksDB tables

@@ -65,9 +65,13 @@ Returns all table definitions within the specified database. Each table definiti
 
 Returns the definition of a specific table. A table with native full-text indexes includes `full_text_indexes`; each entry reports its source fields, analyzer options, enabled query modes, and `readiness` (`ready`, `rebuilding`, or `unavailable`). The readiness object also includes `owner_epoch`, `rebuild_attempts`, and an optional `reason`.
 
+Full-text response metadata: <VersionBadge version="v5.3.0" />
+
 ```json
-{ "operation": "describe_table", "table": "dog", "database": "dev" }
+{ "operation": "describe_table", "table": "Product", "database": "catalog" }
 ```
+
+The response also includes the table's ordinary schema and storage metadata. The relevant full-text fragment is:
 
 ```json
 {
@@ -299,7 +303,9 @@ Returns records matching one or more conditions. Supports `operator` (`and`/`or`
 }
 ```
 
-Conditions can also query a declared full-text index with the `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, and `matches_fuzzy_prefix` comparators and their `not_` forms. A negated full-text condition requires a non-negated condition on the same full-text index. The Operations API preserves advanced condition options such as source `fields`, `includeHighlights`, `maxIndexLagMilliseconds`, and `waitForIndexMilliseconds`. See [Querying Full-Text Indexes](../full-text-search/querying.md#operations-api).
+Full-text conditions: <VersionBadge version="v5.3.0" />
+
+Conditions can query a declared full-text index with the `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, and `matches_fuzzy_prefix` comparators and their `not_` forms. A negated full-text condition requires a non-negated condition on the same full-text index. The Operations API preserves advanced condition options such as source `fields`, `includeHighlights`, `maxIndexLagMilliseconds`, and `waitForIndexMilliseconds`. See [Querying Full-Text Indexes](../full-text-search/querying.md#operations-api).
 
 ---
 

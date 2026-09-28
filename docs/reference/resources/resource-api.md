@@ -980,6 +980,8 @@ Array of condition objects to filter records. Each condition:
 | `conditions` | Nested conditions array                                                                                                                                                                                                            |
 | `operator`   | `and` (default) or `or` for the nested `conditions`                                                                                                                                                                                |
 
+Full-text comparators and condition options: <VersionBadge version="v5.3.0" />
+
 Example with nested conditions:
 
 ```javascript
@@ -1030,6 +1032,11 @@ Special properties:
 - `$id` — Returns the primary key regardless of its name
 - `$updatedtime` — Returns the last-updated timestamp
 - `$distance` — When the query ranks or filters by a vector index, returns the computed distance from the target vector. See [Vector Indexing](../database/schema.md#vector-indexing).
+
+<VersionBadge version="v5.3.0" />
+
+Full-text queries add two special properties:
+
 - `$score` — When a query uses a full-text index, returns its BM25 relevance score.
 - `$highlights` — Enables and returns full-text fragments and matching spans when the index has highlighting configured. See [Highlights](../full-text-search/querying.md#highlights).
 

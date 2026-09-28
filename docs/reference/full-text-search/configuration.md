@@ -175,6 +175,8 @@ The table response includes entries shaped like this:
 }
 ```
 
-`readiness.state` is `ready`, `rebuilding`, or `unavailable`. `readiness.reason` is included when Harper has more detail. Full-text queries are served only after readiness is established.
+`readiness.state` is `ready`, `rebuilding`, or `unavailable`. A rebuilding query returns retryable `INDEX_REBUILDING`. `unavailable` means activation failed or the automatic rebuild budget was exhausted; inspect `readiness.reason` and the node logs, correct the underlying storage, native-module, schema, or audit-log problem, then reload or reapply the schema to retry activation. Full-text queries are served only when the state is `ready`.
+
+`query_modes` maps to comparators as follows: `any` → `matches`, `all` → `matches_all`, `fuzzy` → `matches_fuzzy`, `phrase` → `matches_phrase`, `prefix` → `matches_prefix`, and `fuzzy-prefix` → `matches_fuzzy_prefix`. `owner_epoch` is an opaque decimal string used to fence work between derived-index owners; clients should not parse or persist it. `rebuild_attempts` is the current automatic-attempt count.
 
 The Operations API uses snake_case for response metadata such as `stop_words`, `surface_terms`, and `owner_epoch`. The nested `highlighting` value mirrors the GraphQL option names `maxFragments` and `fragmentLength`.

@@ -173,7 +173,7 @@ const products = await Product.search({
 
 All full-text conditions combined into one query must use the same freshness values. Harper returns `400` when combined conditions specify different values.
 
-A non-waiting HTTP query returns `Harper-Index-Coverage` with the admitted state, lag upper bound, and requested tolerance. A waiting `Table.search()` establishes coverage as its iterator is consumed. A `search_by_conditions` request completes only after its wait and search finish. Waiting queries do not emit a coverage header before completion.
+A non-waiting HTTP query can return `Harper-Index-Coverage` with the admitted state, lag upper bound, and requested tolerance. A zero-size page performs no native search and carries no coverage proof. A waiting `Table.search()` establishes coverage as its iterator is consumed. A `search_by_conditions` request completes only after its wait and search finish. Waiting queries do not emit a coverage header before completion.
 
 ## Prefix result window
 

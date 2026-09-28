@@ -12,7 +12,7 @@ Use full-text search when users need relevance-ranked matching across product na
 
 ## Requirements
 
-- The table must use RocksDB and have `audit: true`. <EngineBadge engines="RocksDB" />
+- The table must use RocksDB and explicitly declare [`audit: true`](../database/transaction.md#enabling-the-transaction-log-per-table). <EngineBadge engines="RocksDB" /> A new or updated declaration without it fails with `400`, even when transaction logging is enabled globally.
 - Full-text source fields must be stored `String`, `[String]`, or `Blob` values. Blob sources must be declared as `text/plain`.
 - Creating or updating an LMDB table with `@fullText` fails with `400`. A persisted declaration encountered while opening LMDB is ignored with a warning. Migrate the table to RocksDB before activating the index.
 
@@ -44,6 +44,8 @@ This design has two consequences:
 
 On restart, Harper reuses compatible local index files and replays committed changes after the saved checkpoint. If those files are missing, incompatible, or corrupt, Harper rebuilds the index locally.
 
+A rebuild scans the current table and replays changes committed during the scan. An unreadable, corrupt, or insufficient audit-log prefix can make a rebuild fail. Harper retries with backoff; after the retry budget is exhausted, readiness becomes `unavailable`. Inspect `describe_table` and the node logs for the reason before retrying activation.
+
 Ordinary table reads and writes remain available during a rebuild. Full-text queries return `503` with `code: "INDEX_REBUILDING"` and `retryable: true` until the index is ready. A new replica follows the same process before serving full-text queries.
 
 Use `describe_table` to inspect each index's declaration and readiness. See [Inspecting an index](./configuration.md#inspecting-an-index).
@@ -53,6 +55,15 @@ Use `describe_table` to inspect each index's declaration and readiness. See [Ins
 The native index ranks matching documents with BM25. Harper then loads the authoritative table records for the matching IDs and discards stale or deleted candidates. Selecting `$score` includes the relevance score in each result.
 
 Full-text search can be combined with structured filters. Harper pushes compatible filters into candidate evaluation so selective filters do not silently under-fill a requested page.
+
+## Limits and troubleshooting
+
+- Phrase search requires `positions: true`; prefix and fuzzy-prefix require `surfaceTerms: true`.
+- Prefix expressions have a 100-record native result window. Use a bounded `limit`; requests beyond the window fail instead of truncating silently.
+- One query can use only one full-text index. An `or` group cannot mix full-text and ordinary record conditions.
+- `INDEX_REBUILDING` is transient and retryable. `unavailable` means automatic rebuild attempts were exhausted or activation failed; inspect readiness and logs rather than retrying every `503` indefinitely.
+
+See [Querying](./querying.md) for exact condition rules and [Configuration](./configuration.md#inspecting-an-index) for readiness details.
 
 ## Stored index data
 
