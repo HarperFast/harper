@@ -98,13 +98,15 @@ Three non-obvious mechanics keep that safe:
   verifies closure independently: `restoreBackup` polls rocksdb-js `registryStatus()` (process-global
   across worker threads) until the database path has no open instance, and aborts with a 409 —
   _cleaning up the marker, since nothing was destroyed_ — if handles remain.
-- **The close acknowledgement fences blob saves and deferred reclamation, not just database
-  handles.** A store
+- **The close acknowledgement fences blob saves, deferred reclamation and orphan cleanup, not just
+  database handles.** A store
   handle can close while a `saveBlob` file pipeline it started is still pending, because blob roots
   live outside RocksDB and streamed saves settle independently of the record write; a queued
   reclamation is worse still, being a timer that never consults the database at all. The restore
   signal therefore has explicit `close` and `reload` phases: every worker refuses new saves for that
-  database, stops draining reclamations for it, awaits the saves and unlinks already dispatched, then
+  database, stops draining reclamations for it, stops any `cleanup_orphan_blobs` walk in progress
+  (its "nothing references this path" verdict was reached against the generation being replaced),
+  awaits the saves and unlinks already dispatched -- including a save-failure cleanup's -- then
   closes the store and acknowledges. Restore signals are the one schema broadcast that includes job
   workers; ordinary gossip still excludes them to avoid re-entrant broadcast deadlocks.
 

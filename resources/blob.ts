@@ -1857,13 +1857,14 @@ function trackBlobSave(store: any, saving?: Promise<void>): void {
 }
 
 /**
- * Fence blob saves and deferred reclamation for a database so a restore can purge and rewrite its
- * roots safely, and wait out that work already in flight.
+ * Fence blob saves, deferred reclamation and orphan cleanup for a database so a restore can purge
+ * and rewrite its roots safely, and wait out that work already in flight.
  *
  * Closing the database is not a barrier on its own: a save is an asynchronous file pipeline that
- * outlives the handle it started from, and a reclamation is a timer that does not consult the
- * database at all. Both are stopped here -- new saves are refused, new unlinks are skipped, and the
- * dispatched ones are awaited -- so the walk that follows sees a root nothing is still changing.
+ * outlives the handle it started from, a reclamation is a timer that does not consult the database
+ * at all, and an orphan sweep is dispatched fire-and-forget. All of them are stopped here -- new
+ * saves are refused, new unlinks are skipped, a running sweep bails at its next file, and the
+ * dispatched unlinks are awaited -- so the walk that follows sees a root nothing is still changing.
  */
 export async function blockBlobSavesForRestore(databaseName: string, restoreToken: string): Promise<void> {
 	// Takes ownership whether or not another restore held it: the database never unfences in between.
