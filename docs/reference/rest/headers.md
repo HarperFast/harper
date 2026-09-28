@@ -22,7 +22,14 @@ These headers are included in all Harper REST API responses:
 
 Collection responses to a [count request](./querying.md#pagination-and-total-count) additionally include `Content-Range`, `Range-Unit`, and `Preference-Applied` (<VersionBadge version="v5.3.0" />).
 
-A non-waiting request that uses a native derived index can include `Harper-Index-Coverage`. For full-text search, a value such as `current; lag=0; tolerance=3000` reports the admitted state, lag upper bound, and requested tolerance in milliseconds. See [Full-text freshness controls](../full-text-search/querying.md#freshness-controls).
+<VersionBadge version="v5.3.0" />
+
+A non-waiting request that uses a native derived index can include `Harper-Index-Coverage`. Its value is one of:
+
+- `current; lag=0; tolerance=<requested-ms>` — the index covered current committed data at admission.
+- `bounded; lag=<upper-bound-ms>; tolerance=<requested-ms>` — the admitted lag upper bound was within the requested tolerance.
+
+Multiple native searches append one value each. The header certifies coverage when the search is admitted; it does not certify a later traversal. See [Full-text freshness controls](../full-text-search/querying.md#freshness-controls).
 
 ## Cache-Control
 

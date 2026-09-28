@@ -4,7 +4,7 @@ title: Querying
 
 # Querying Full-Text Indexes
 
-<VersionBadge version="v5.3.0" />
+<VersionBadge version="v5.3.0" /> <EngineBadge engines="RocksDB" />
 
 Use the full-text index name as a condition attribute in `Table.search()`.
 
@@ -59,7 +59,9 @@ const products = await Product.search({
 });
 ```
 
-Every requested field must belong to the index and be readable by the caller.
+Every requested field must belong to the index and be readable by the caller. Without `fields`, the caller must be allowed to read every source field in the index. Harper rejects an external REST or Operations API query with `403` if any searched source field is not readable. `$highlights` never bypasses this check.
+
+Direct calls through `tables` or `databases` run in a trusted server-side context and do not reapply the caller's role or attribute permissions. Custom resources must authorize protected searches before returning records or highlights.
 
 ## Score and ordering
 
@@ -171,7 +173,7 @@ const products = await Product.search({
 
 All full-text conditions combined into one query must use the same freshness values. Harper returns `400` when combined conditions specify different values.
 
-A non-waiting HTTP query returns `Harper-Index-Coverage` with the admitted state, lag upper bound, and requested tolerance. Waiting queries, available through `Table.search()` and `search_by_conditions`, establish coverage while the response stream is consumed and do not emit that header before completion.
+A non-waiting HTTP query returns `Harper-Index-Coverage` with the admitted state, lag upper bound, and requested tolerance. A waiting `Table.search()` establishes coverage as its iterator is consumed. A `search_by_conditions` request completes only after its wait and search finish. Waiting queries do not emit a coverage header before completion.
 
 ## Prefix result window
 
@@ -189,7 +191,15 @@ GET /Product/?catalogSearch=matches_phrase=trail%20running&select(id,name,$score
 GET /Product/?catalogSearch=matches_prefix=waterproof%20tra&limit(10)
 ```
 
-REST supports all positive and negated full-text comparators. It can express the query text, selected fields, and pagination. Use `Table.search()` or `search_by_conditions` when a condition needs `fields`, highlighting flags, or freshness controls.
+REST supports all positive and negated full-text comparators. It can express the query text, selected fields, and pagination.
+
+Repeat the index parameter to combine the required positive and negated conditions:
+
+```http
+GET /Product/?catalogSearch=matches=waterproof&catalogSearch=not_matches=leather&limit(20)
+```
+
+REST can return configured highlights by selecting `$highlights`. Use `Table.search()` or `search_by_conditions` for explicit `fields`, condition-level `includeHighlights`, or freshness controls.
 
 ## Operations API
 

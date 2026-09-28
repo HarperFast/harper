@@ -258,6 +258,25 @@ type InternalConfig @table @hidden {
 
 `@hidden` is also available as a [field directive](#hidden-field-directive) to suppress individual attributes.
 
+### `@fullText`
+
+<VersionBadge version="v5.3.0" /> <EngineBadge engines="RocksDB" />
+
+Creates a BM25-ranked full-text derived index from one or more stored text fields. The directive is declared on the table type and can be repeated for multiple independent indexes.
+
+```graphql
+type Product
+	@table(database: "catalog", audit: true)
+	@fullText(name: "catalogSearch", fields: [{ name: "name", weight: 3 }, { name: "description" }, { name: "tags" }]) {
+	id: ID @primaryKey
+	name: String
+	description: String
+	tags: [String]
+}
+```
+
+Full-text indexes require RocksDB and an audited table. They are local derived state rebuilt from committed table data rather than authoritative record storage. See [Full-Text Search Configuration](../full-text-search/configuration.md) for fields, phrase and prefix storage, synonyms, highlighting, and rebuild behavior.
+
 ## Documenting Types and Fields
 
 Harper picks up GraphQL's standard triple-quoted docstrings on type and field definitions. Docstrings flow through to:
@@ -291,25 +310,6 @@ type Product @table @export {
 Docstrings on `@hidden` fields are dropped from the descriptive surfaces alongside the field itself.
 
 > **Trust model.** Docstrings reach LLMs and public OpenAPI consumers verbatim. Treat them as code: don't put secrets, internal-only commentary, or speculative prose in them. Use `@hidden` to suppress fields that shouldn't surface publicly.
-
-### `@fullText`
-
-<VersionBadge version="v5.3.0" />
-
-Creates a BM25-ranked full-text derived index from one or more stored text fields. The directive is declared on the table type and can be repeated for multiple independent indexes.
-
-```graphql
-type Product
-	@table(database: "catalog", audit: true)
-	@fullText(name: "catalogSearch", fields: [{ name: "name", weight: 3 }, { name: "description" }, { name: "tags" }]) {
-	id: ID @primaryKey
-	name: String
-	description: String
-	tags: [String]
-}
-```
-
-Full-text indexes require RocksDB and an audited table. They are local derived state rebuilt from committed table data rather than authoritative record storage. See [Full-Text Search Configuration](../full-text-search/configuration.md) for fields, phrase and prefix storage, synonyms, highlighting, and rebuild behavior.
 
 ## Field Directives
 

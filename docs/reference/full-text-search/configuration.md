@@ -4,9 +4,9 @@ title: Configuration
 
 # Full-Text Search Configuration
 
-<VersionBadge version="v5.3.0" />
+<VersionBadge version="v5.3.0" /> <EngineBadge engines="RocksDB" />
 
-Declare a full-text index with `@fullText` on a table type. The directive is repeatable, so one table can have independent indexes for different search experiences.
+Declare a full-text index with `@fullText` on an audited RocksDB table type. The directive is repeatable, so one table can have independent indexes for different search experiences.
 
 ```graphql
 type Product
@@ -176,3 +176,5 @@ The table response includes entries shaped like this:
 ```
 
 `readiness.state` is `ready`, `rebuilding`, or `unavailable`. `readiness.reason` is included when Harper has more detail. Full-text queries are served only after readiness is established.
+
+The Operations API uses snake_case for response metadata such as `stop_words`, `surface_terms`, and `owner_epoch`. The nested `highlighting` value mirrors the GraphQL option names `maxFragments` and `fragmentLength`.
