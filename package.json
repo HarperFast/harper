@@ -174,7 +174,7 @@
 		"sinon-chai": "^4.0.1",
 		"supertest": "^7.1.4",
 		"tsx": "^4.20.6",
-		"typescript": "^5.8.2",
+		"typescript": "^7.0.0",
 		"typescript-eslint": "^8.45.0",
 		"undici": "^7.24.4",
 		"uWebSockets.js": "https://github.com/uNetworking/uWebSockets.js/archive/624987739d4da0acb628aaf2a10fc43e7ce27c5c.tar.gz",
