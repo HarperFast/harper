@@ -144,7 +144,7 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 			? '; coverage is prose-only — only the `Review-Coverage:` footer is counted for enforcement'
 			: ''
 		: grammarProblem
-			? `; the \`Review-Coverage:\` footer ${grammarProblem}, which the helper never writes (a hand edit, or a helper older than this check), so it counts 0 toward enforcement — re-materialize it with a current \`pr-body-review-need.mjs --write\``
+			? `; the \`Review-Coverage:\` footer ${grammarProblem}, which the helper never writes (a hand edit, or a helper older than this check), so it counts 0 toward enforcement — re-materialize it with a current \`pr-body-review-need.mjs --write\`; if a current helper wrote it, this check's grammar is behind the helper and needs the new value`
 			: !structured.generator
 				? '; the `Review-Coverage:` footer names no `authored=` family, so it cannot exclude the authoring model and is not counted'
 				: '';

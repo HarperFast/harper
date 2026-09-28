@@ -464,7 +464,7 @@ test('a last footer too broken to parse reports nothing rather than an earlier f
 });
 
 test('a masked suffix cannot change the reported families', () => {
-	const body = `${covered('codex')} <!-- ran=gemini -->`;
+	const body = `${covered('codex')} <!-- note; ran=gemini -->`;
 	const r = evaluateCiCoverage(pr({ body }), { mode: 'enforce' });
 	assert.deepStrictEqual(r.families, ['openai']);
 	assert.strictEqual(r.pass, false);
