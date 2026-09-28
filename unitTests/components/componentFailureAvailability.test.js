@@ -16,7 +16,6 @@ const assert = require('node:assert');
 const path = require('node:path');
 const { tmpdir } = require('node:os');
 const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
-const sinon = require('sinon');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
@@ -136,12 +135,17 @@ describe('availability status after component load failure', () => {
 // for a worker's error, proving a failure this thread never recorded still drains the node. A read of
 // only this thread's local registry would pass every case above but fail here.
 describe('availability derivation reads the all-threads aggregate', () => {
-	let aggregateStub;
-	const setAggregate = (entries) => aggregateStub.resolves(new Map(entries));
+	// A unit test has no real worker threads, so stand a fixed aggregate in for the cross-thread
+	// collection by assigning this static method and restoring it after, the pattern
+	// ComponentStatusRegistry.test.js already uses for it (no stubbing library, per the house style).
+	let originalAggregate;
+	const setAggregate = (entries) => {
+		ComponentStatusRegistry.getAggregatedFromAllThreads = async () => new Map(entries);
+	};
 
 	before(() => {
 		statusInternal.componentStatusRegistry.reset();
-		aggregateStub = sinon.stub(ComponentStatusRegistry, 'getAggregatedFromAllThreads');
+		originalAggregate = ComponentStatusRegistry.getAggregatedFromAllThreads;
 	});
 
 	afterEach(async () => {
@@ -149,7 +153,7 @@ describe('availability derivation reads the all-threads aggregate', () => {
 	});
 
 	after(() => {
-		aggregateStub.restore();
+		ComponentStatusRegistry.getAggregatedFromAllThreads = originalAggregate;
 	});
 
 	it('drains when another thread reports a component error this thread never saw', async () => {
