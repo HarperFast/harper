@@ -791,7 +791,6 @@ function logCalibrationFault(what: string, err: unknown): void {
 	calibrationLog.warn?.(`models: ${what}: ${safeErrorMessage(err)}`);
 }
 
-/** Reports a successful attempt's source to a decision adapter's collector; a fault there never reaches the caller. */
 function reportServed(opts: object, backend: ModelBackend): void {
 	const hook = (opts as Record<symbol, unknown>)[SERVED_SOURCE];
 	if (typeof hook !== 'function') return;
@@ -810,11 +809,6 @@ interface Calibration<T> {
 
 const NOT_CALIBRATING: Calibration<never> = {};
 
-/**
- * The decision's calibration population and, when every field has a cached usable fit, its calibrated
- * form. Only while calibration is enabled, only for a signed decision the backend did not already
- * calibrate, and never waiting on storage; any fault leaves the decision raw.
- */
 function calibrate<T>(
 	schema: DecisionSchema,
 	decision: Omit<Decision<T>, 'id' | 'usage'>,

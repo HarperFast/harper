@@ -49,6 +49,8 @@ const POPULATION_OVERHEAD_BYTES = 1_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RANK_WIDTH = 16;
 const CURSOR_ID = 'discovery/cursor';
+const LIST_LIMIT = 1_000;
+const LIST_BATCH = 16;
 
 export interface CalibrationConfig {
 	interval?: number;
@@ -305,7 +307,6 @@ export function configureCalibration(
 	startSchedulerEngine();
 }
 
-/** The scheduled run: a failed run fails the job, so the scheduler's state shows it. */
 export async function calibrationJob(): Promise<void> {
 	const run = await runCalibration();
 	if (run.status === 'failed') throw new Error(`calibration run failed: ${run.error}`);
@@ -356,6 +357,14 @@ function logFault(what: string, err: unknown): void {
 	if (now - lastFaultLog < FAULT_LOG_INTERVAL_MS) return;
 	lastFaultLog = now;
 	log.warn?.(`models: ${what}: ${safeErrorMessage(err)}`);
+}
+
+function schemaBytes(schema: unknown): number {
+	try {
+		return (canonicalJson(schema ?? null) ?? '').length;
+	} catch {
+		return 0;
+	}
 }
 
 function ownerOf(tenant: string | undefined): string {
@@ -618,7 +627,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 		});
 		for (const head of known) {
 			if (populations.has(head.population)) continue;
-			const size = POPULATION_OVERHEAD_BYTES + canonicalJson(head.schema).length;
+			const size = POPULATION_OVERHEAD_BYTES + schemaBytes(head.schema);
 			if (bytes + size > config.maxBytes) {
 				result.stoppedBy ??= 'maxBytes';
 				break;
@@ -660,12 +669,8 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 	invalidate(writtenKeys);
 	return finish();
 
-	/**
-	 * Half the decision budget looks for new populations among the newest decisions; the rest continues from
-	 * where the previous run stopped, so an older, quiet population is reached within a bounded number of runs.
-	 */
 	async function discover(): Promise<void> {
-		const newest = await scan(undefined, [], Math.ceil(config.maxDecisions / 2));
+		const newest = await scan(undefined, [], Math.floor(config.maxDecisions / 2));
 		if (newest.fault || newest.stopped) return;
 		if (newest.end) return saveCursor(undefined, []);
 		let cursor: { before?: unknown; boundary?: unknown } | undefined;
@@ -676,7 +681,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 		}
 		const saved = typeof cursor?.before === 'number' ? cursor.before : undefined;
 		const savedSeen = Array.isArray(cursor?.boundary) ? (cursor.boundary as string[]) : [];
-		const resume = saved !== undefined && newest.before !== undefined && saved <= newest.before;
+		const resume = saved !== undefined && (newest.before === undefined || saved <= newest.before);
 		const from = resume ? saved : newest.before;
 		const seen = !resume
 			? newest.boundary
@@ -744,7 +749,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 					result.stoppedBy ??= 'maxPopulations';
 					return { before, boundary: [...seenAtBoundary], end: false, stopped: true };
 				}
-				const size = POPULATION_OVERHEAD_BYTES + canonicalJson(row.schema).length;
+				const size = POPULATION_OVERHEAD_BYTES + schemaBytes(row.schema);
 				if (bytes + size > config.maxBytes) {
 					result.stoppedBy ??= 'maxBytes';
 					return { before, boundary: [...seenAtBoundary], end: false, stopped: true };
@@ -771,7 +776,6 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 		}
 	}
 
-	/** Reads, fits and writes one population; nothing is written for it unless it completes. */
 	async function processPopulation(
 		found: Discovered,
 		baseBytes: number
@@ -821,7 +825,10 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 					conditions: [
 						{ attribute: 'populationRank', comparator: 'starts_with', value: `${head.population}|`, descending: true },
 					],
-					limit: config.maxExamplesPerKey,
+					limit: Math.min(
+						config.maxExamplesPerKey,
+						Math.max(1, Math.floor((config.maxBytes - baseBytes) / EXAMPLE_OVERHEAD_BYTES))
+					),
 				})) {
 					out.push(row);
 				}
@@ -1016,7 +1023,6 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 	}
 }
 
-/** Never-fitted populations first, then the least recently fitted, so a run stopped by a budget resumes with what it skipped. */
 export function processingOrder<P extends { head: { population: string }; lastFittedAt?: number }>(
 	populations: P[]
 ): P[] {
@@ -1025,10 +1031,6 @@ export function processingOrder<P extends { head: { population: string }; lastFi
 	);
 }
 
-/**
- * The newest version of every field of every population whose tenant equals the caller's, from the trusted
- * call context: absent matches only absent.
- */
 export async function listCalibrations(
 	tenant: string | undefined,
 	filter: { model?: string } = {}
@@ -1044,17 +1046,27 @@ export async function listCalibrations(
 				{ attribute: 'owner', value: ownerOf(tenant) },
 				{ attribute: 'kind', value: 'population' },
 			],
+			limit: LIST_LIMIT,
 		}))
 			rows.push(row);
 		return rows;
 	});
+	const keys: string[] = [];
 	for (const head of owned) {
 		if ((head.tenant ?? null) !== (tenant ?? null)) continue;
 		if (filter.model !== undefined && head.model !== filter.model) continue;
-		const fields: Array<string | undefined> = isObjectSchema(head.schema)
-			? Object.keys(head.schema.properties)
-			: [undefined];
-		const newest = await Promise.all(fields.map((field) => readNewest(calibrationKey(head.population, field))));
+		try {
+			const fields: Array<string | undefined> = isObjectSchema(head.schema)
+				? Object.keys(head.schema.properties)
+				: [undefined];
+			for (const field of fields) keys.push(calibrationKey(head.population, field));
+		} catch {}
+	}
+	const newest: Array<CalibrationRow | null> = [];
+	for (let i = 0; i < keys.length; i += LIST_BATCH) {
+		newest.push(...(await Promise.all(keys.slice(i, i + LIST_BATCH).map((key) => readNewest(key)))));
+	}
+	{
 		for (const row of newest) {
 			if (!row) continue;
 			out.push({

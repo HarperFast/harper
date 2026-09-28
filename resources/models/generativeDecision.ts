@@ -230,7 +230,6 @@ export function createGenerativeDecisionBackend(
 	const signatureFor = (mode: ScoringMode) =>
 		`generative=${logicalName};mode=${mode};samples=${samples};temperature=${temperature ?? 'default'}`;
 
-	// With calibration enabled a decision is signed only when one identified source served every inner call.
 	const signed = (mode: ScoringMode, collector: SourceCollector | undefined): string | undefined => {
 		if (!collector) return signatureFor(mode);
 		if (collector.mixed || collector.source === null) return undefined;

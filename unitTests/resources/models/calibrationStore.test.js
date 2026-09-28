@@ -526,6 +526,38 @@ describe('calibration store and facade (#2841)', function () {
 		assert.ok(reached, 'the older population was reached two decisions at a time');
 	});
 
+	it('makes progress one decision at a time', async () => {
+		await recordCases(models, 0, 20, { instructions: 'older population' });
+		await recordCases(models, 100, 5);
+		let reached = false;
+		for (let i = 0; i < 40 && !reached; i++) {
+			await runCalibration({ maxDecisions: 1 });
+			reached = (await models.getCalibrations()).some((summary) => summary.instructionsHash);
+		}
+		assert.ok(reached);
+	});
+
+	it('survives a population row with no schema, in runs and in listing', async () => {
+		await recordCases(models, 0, 30);
+		await models.calibrate();
+		const tbl = getCalibrationsTable();
+		await transaction({}, () =>
+			tbl.put({
+				id: 'population/empty',
+				kind: 'population',
+				population: 'empty',
+				owner: 'none',
+				lastFittedAt: 0,
+				expiresAt: Date.now() + 86_400_000,
+			})
+		);
+		const run = await models.calibrate();
+		assert.ok(run.processed >= 1, 'the other populations are still processed');
+		assert.strictEqual(run.failed, 1);
+		const listed = await models.getCalibrations();
+		assert.strictEqual(listed.length, 1, 'listing skips the malformed row');
+	});
+
 	it('fails the scheduled job when its run fails', async () => {
 		await recordCases(models, 0, 30);
 		const { outcomes } = getDecisionTables();
