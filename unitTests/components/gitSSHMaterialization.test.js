@@ -55,11 +55,10 @@ function decryptorFor({ privateKey, kid }) {
 
 const tempSSHDirs = (dir) => fs.readdirSync(dir).filter((entry) => entry.startsWith('harper-ssh-'));
 
-// `syncBuiltinESMExports()` is required for the stub to reach `Application.ts`'s `import {
-// tmpdir } from 'node:os'` under --conditions=typestrip (an ESM link-time binding); see the same
-// pattern at unitTests/resources/blobCompression.test.js:313-316. Called from within a describe's
-// own beforeEach/afterEach (rather than registering its own hooks) so callers control ordering
-// relative to their other per-test setup.
+// syncBuiltinESMExports() is required for the stub to reach Application.ts's ESM `import {
+// tmpdir }` under --conditions=typestrip (see unitTests/resources/blobCompression.test.js for
+// the same pattern). Callers must mkdtemp anything meant to live under the stub (e.g. rootDir
+// below) only after calling this, so restore()'s single recursive rm covers it.
 function scopeTmpdir() {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitssh-suite-'));
 	const original = os.tmpdir;
@@ -118,8 +117,6 @@ describe('materializeGitSSH', () => {
 		logger.error = originalError;
 		logger.warn = originalWarn;
 		secretDecryptor.clearSecretDecryptor();
-		// rootDir was mkdtemp'd under the stubbed os.tmpdir(), so restore()'s recursive removal
-		// of scopedTmpdir.dir takes it too.
 		scopedTmpdir.restore();
 	});
 
@@ -378,8 +375,6 @@ describe('nonInteractiveSpawn transient ssh lifetime', () => {
 	});
 
 	afterEach(() => {
-		// rootDir was mkdtemp'd under the stubbed os.tmpdir(), so restore()'s recursive removal
-		// of scopedTmpdir.dir takes it too.
 		scopedTmpdir.restore();
 	});
 
