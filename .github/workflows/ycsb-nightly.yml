@@ -78,7 +78,7 @@ jobs:
       # dispatches from a branch don't pollute the trend history. Thresholds are
       # generous to absorb shared-runner variance — tune once a stable runner is in use.
       - name: Track throughput trend
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           name: YCSB Throughput (single-node)
           tool: customBiggerIsBetter
@@ -96,7 +96,7 @@ jobs:
           git branch -D gh-pages 2>/dev/null || true
 
       - name: Track latency (p99) trend
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           name: YCSB Latency p99 (single-node)
           tool: customSmallerIsBetter

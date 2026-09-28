@@ -135,7 +135,7 @@
 	},
 	"devDependencies": {
 		"@aws-sdk/client-s3": "^3.1012.0",
-		"@aws-sdk/lib-storage": "3.1123.0",
+		"@aws-sdk/lib-storage": "3.1136.0",
 		"@harperfast/code-guidelines": "^0.1.2",
 		"@harperfast/integration-testing": "^1.0.0",
 		"@modelcontextprotocol/sdk": "^1.29.0",
@@ -157,7 +157,7 @@
 		"chai-as-promised": "^8.0.2",
 		"chai-integer": "^0.1.0",
 		"compression": "^1.8.1",
-		"compression-1.7": "npm:compression@1.7.4",
+		"compression-1.7": "npm:compression@1.8.2",
 		"eventsource": "^5.0.0",
 		"globals": "^17.0.0",
 		"intercept-stdout": "0.1.2",
@@ -223,7 +223,7 @@
 		"gunzip-maybe": "1.4.2",
 		"human-readable-ids": "1.0.4",
 		"is-number": "7.0.0",
-		"joi": "17.13.6",
+		"joi": "17.13.8",
 		"json-bigint-fixes": "1.1.0",
 		"jsonata": "1.8.9",
 		"jsonwebtoken": "9.0.3",
@@ -232,7 +232,7 @@
 		"mathjs": "11.12.0",
 		"micromatch": "^4.0.8",
 		"minimist": "1.2.8",
-		"moment": "2.30.1",
+		"moment": "2.31.0",
 		"mqtt-packet": "~9.0.1",
 		"msgpackr": "2.1.0",
 		"needle": "3.5.0",
@@ -246,7 +246,7 @@
 		"passport-http": "0.3.0",
 		"passport-local": "1.0.0",
 		"pino": "8.21.0",
-		"pkijs": "3.4.0",
+		"pkijs": "3.4.1",
 		"properties-reader": "2.3.0",
 		"recursive-iterator": "3.3.0",
 		"semver": "7.8.5",
@@ -263,7 +263,7 @@
 		"validate.js": "0.13.1",
 		"weak-lru-cache": "^1.2.2",
 		"ws": "8.21.3",
-		"yaml": "2.9.0"
+		"yaml": "2.9.1"
 	},
 	"overrides": {
 		"alasql": {
