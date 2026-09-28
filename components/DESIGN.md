@@ -85,7 +85,8 @@ origin's behavior, and it replaces a cluster split between versions. A node on a
 validates in its frozen workers and keeps refusing a candidate whose dependency extends an intrinsic at load,
 so such a deploy converges only once every node is upgraded; retry it then. The `load` progress phase no
 longer fires on a worker either; the operations API, on the main thread, never emitted it. Validating there
-again needs a load in a fresh realm, which is #2315 step 2's shelved isolated validator.
+again needs a load in a fresh realm: #2315 step 2 plans it as a canary rollout, whose first replacement
+worker boots the candidate before it takes traffic.
 
 ### Staging a build now and activating it later
 
