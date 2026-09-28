@@ -887,10 +887,12 @@ Additional parameters:
 - `credentials` — credentials for installing a component from a private npm registry or private git repository (see below)
 - `deployment_timeout` <VersionBadge version="v5.1.4" /> — how long, in milliseconds, a peer waits to receive the replicated deployment payload before failing (default: `120000`)
 - `ignore_replication_errors` <VersionBadge version="v5.1.4" /> — set to `true` to treat a peer that fails to receive the deploy as non-fatal instead of failing the whole operation. By default a failed peer causes `deploy_component` to return a non-2xx status; the component is still deployed (and, if requested, restarted) on the origin node.
-- `activate` <VersionBadge version="v5.3.0" /> — set to `false` to build and verify the component without making it live. See [Staging a build and activating it later](#staging-a-build-and-activating-it-later).
+- `activate` <VersionBadge version="v5.3.0" /> — set to `false` to build and install the component without making it live. See [Staging a build and activating it later](#staging-a-build-and-activating-it-later).
 - `deployment_id` <VersionBadge version="v5.3.0" /> — make a previously staged build live. Takes no build inputs of its own.
 
 `urlPath` and `host` both require `package` and are rejected on a payload-only deploy. To mount a payload-deployed component, add `host`/`urlPath` to its entry in the root `harper-config.yaml` instead.
+
+Under the default [`applications.lockdown`](../components/module-loading.md#intrinsic-lockdown), a deploy is not test-loaded before it goes live. A release that installs but throws when it loads is deployed, and it reports the failure in the `componentStatus` of [`get_status`](#set_status--get_status--clear_status) once workers load it. The rest of the instance keeps serving.
 
 #### How a deploy updates the root config
 
