@@ -1,8 +1,3 @@
-/**
- * Published fulltext 0.3.0 through deployed field declarations, Table.search and REST:
- * query modes, authorization, pagination, mutations, restart, and index lifecycle.
- * https://github.com/HarperFast/harper/pull/2855
- */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { readFile, writeFile, readdir } from 'node:fs/promises';
@@ -129,6 +124,15 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 					category: index % 2 ? 'odd' : 'even',
 					owner: READER.username,
 				})),
+			],
+		});
+		await operation({
+			operation: 'insert',
+			schema: 'data',
+			table: 'ProductOrder',
+			records: [
+				{ id: 'order-one', productId: 'one' },
+				{ id: 'order-private', productId: 'private' },
 			],
 		});
 		await waitForReady('Product');
@@ -300,6 +304,18 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 								})
 							),
 						},
+						ProductOrder: {
+							read: true,
+							insert: false,
+							update: false,
+							delete: false,
+							attribute_permissions: ['id', 'productId'].map((attribute_name) => ({
+								attribute_name,
+								read: true,
+								insert: false,
+								update: false,
+							})),
+						},
 					},
 				},
 			},
@@ -366,6 +382,29 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		assert.ok(allowed.every(({ $score, $highlights }) => typeof $score === 'number' && $highlights.title));
 		assert.deepStrictEqual(await search(query('nebula', { fields: ['title'] }, { select: ['id'] }), READER_AUTH), []);
 		assert.deepStrictEqual(ids(await search(query('nebula'))), ['private']);
+		const ordinaryRelationship = await request('/ProductOrder/', {
+			method: 'QUERY',
+			headers: { Authorization: READER_AUTH },
+			body: JSON.stringify({
+				conditions: [
+					{ attribute: ['product', 'title'], comparator: 'equals', value: 'Waterproof Trail Running Shoes' },
+				],
+				select: ['id'],
+			}),
+		});
+		assert.deepStrictEqual(ordinaryRelationship, [{ id: 'order-one' }]);
+		await request(
+			'/ProductOrder/',
+			{
+				method: 'QUERY',
+				headers: { Authorization: READER_AUTH },
+				body: JSON.stringify({
+					conditions: [{ attribute: ['product', 'catalogSearch'], comparator: 'matches', value: 'classified' }],
+					select: ['id'],
+				}),
+			},
+			400
+		);
 	});
 
 	test('rejects writes, projection, sorting, and scalar comparisons against a full-text field', async () => {

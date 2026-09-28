@@ -1004,11 +1004,10 @@ async function toFullTextMutationSlice(
 		}
 		const id = tablePrefix + toBufferKey(record.recordId).toString('base64url');
 		const recordState = record.state.kind === 'record' ? record.state : undefined;
-		const readStartedAt = performance.now();
 		const resolved = recordState
 			? await resolvedFullTextFields(recordState.projection, readTimeoutMilliseconds)
 			: undefined;
-		yieldDeadline += performance.now() - readStartedAt;
+		yieldDeadline += resolved?.waitMilliseconds ?? 0;
 		if (resolved?.error) throw resolved.error;
 		if (resolved?.rejected) rejected++;
 		if (resolved?.fields && !resolved.rejected)
@@ -1176,34 +1175,47 @@ function fullTextFields(projection: unknown): Record<string, string | string[]> 
 async function resolvedFullTextFields(
 	projection: unknown,
 	readTimeoutMilliseconds: number
-): Promise<{ fields?: Record<string, string | string[]>; rejected: boolean; error?: unknown }> {
+): Promise<{
+	fields?: Record<string, string | string[]>;
+	rejected: boolean;
+	error?: unknown;
+	waitMilliseconds: number;
+}> {
+	let waitMilliseconds = 0;
 	let fields = fullTextFields(projection);
-	if (!projection || typeof projection !== 'object' || Array.isArray(projection)) return { fields, rejected: false };
+	if (!projection || typeof projection !== 'object' || Array.isArray(projection))
+		return { fields, rejected: false, waitMilliseconds };
 	const deadline = performance.now() + readTimeoutMilliseconds;
 	for (const name in projection) {
 		if (!Object.hasOwn(projection, name)) continue;
 		const value = (projection as Record<string, unknown>)[name];
 		if (!(value instanceof Blob)) continue;
-		if (value.size > MAX_FULL_TEXT_VALUE_BYTES) return { rejected: true };
+		if (value.size > MAX_FULL_TEXT_VALUE_BYTES) return { rejected: true, waitMilliseconds };
 		let bytes: ArrayBuffer;
 		try {
 			const remaining = deadline - performance.now();
 			if (remaining <= 0) throw new FullTextBlobReadTimeout();
-			bytes = await withTimeout(value.arrayBuffer(), remaining, () => new FullTextBlobReadTimeout());
+			const reading = withTimeout(value.arrayBuffer(), remaining, () => new FullTextBlobReadTimeout());
+			const waitStartedAt = performance.now();
+			try {
+				bytes = await reading;
+			} finally {
+				waitMilliseconds += performance.now() - waitStartedAt;
+			}
 		} catch (error) {
-			return { rejected: false, error };
+			return { rejected: false, error, waitMilliseconds };
 		}
 		let text: string;
 		try {
 			text = UTF8_DECODER.decode(bytes);
 		} catch (error) {
-			if (error instanceof TypeError) return { rejected: true };
+			if (error instanceof TypeError) return { rejected: true, waitMilliseconds };
 			throw error;
 		}
-		if (Buffer.byteLength(text) > MAX_FULL_TEXT_VALUE_BYTES) return { rejected: true };
+		if (Buffer.byteLength(text) > MAX_FULL_TEXT_VALUE_BYTES) return { rejected: true, waitMilliseconds };
 		(fields ??= Object.create(null))[name] = text;
 	}
-	return { fields, rejected: false };
+	return { fields, rejected: false, waitMilliseconds };
 }
 
 class FullTextBlobReadTimeout extends Error {

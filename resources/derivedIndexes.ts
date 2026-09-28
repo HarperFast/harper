@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import { settleBeforeDeadline } from '../utility/when.ts';
 import { ITC_EVENT_TYPES } from '../utility/hdbTerms.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
 import { sendItcEventStrict } from '../server/threads/itc.js';
@@ -483,38 +485,8 @@ export function attachDerivedIndexes(
 				synonyms: storage.synonyms,
 				limits: { ...FULL_TEXT_WRITER_LIMITS },
 				hasBlobSources: definition.fields.some(({ mediaType }) => mediaType === 'text/plain'),
-				beforeReset: async (ownerEpoch) => {
-					await pauseNativeFullTextQueryReaders(nativePath, readinessId, ownerEpoch);
-					await sendItcEventStrict(
-						{
-							type: ITC_EVENT_TYPES.SCHEMA,
-							message: {
-								operation: FULL_TEXT_QUERY_PAUSE_OPERATION,
-								path: nativePath,
-								readinessId,
-								ownerEpoch: ownerEpoch.toString(),
-							},
-						},
-						FULL_TEXT_READER_COORDINATION_TIMEOUT_MILLISECONDS,
-						true
-					);
-				},
-				afterReset: async (ownerEpoch) => {
-					resumeNativeFullTextQueryReaders(nativePath, readinessId, ownerEpoch);
-					await sendItcEventStrict(
-						{
-							type: ITC_EVENT_TYPES.SCHEMA,
-							message: {
-								operation: FULL_TEXT_QUERY_RESUME_OPERATION,
-								path: nativePath,
-								readinessId,
-								ownerEpoch: ownerEpoch.toString(),
-							},
-						},
-						FULL_TEXT_READER_COORDINATION_TIMEOUT_MILLISECONDS,
-						true
-					);
-				},
+				beforeReset: (ownerEpoch) => coordinateFullTextQueryReaders(nativePath, readinessId, ownerEpoch, true),
+				afterReset: (ownerEpoch) => coordinateFullTextQueryReaders(nativePath, readinessId, ownerEpoch, false),
 				shutdownTimeoutMilliseconds: FULL_TEXT_RESET_TIMEOUT_MILLISECONDS,
 				...(fullTextTest
 					? {
@@ -710,6 +682,33 @@ export function attachDerivedIndexes(
 	}
 }
 
+async function coordinateFullTextQueryReaders(
+	path: string,
+	readinessId: string,
+	ownerEpoch: bigint,
+	pause: boolean,
+	timeout = FULL_TEXT_READER_COORDINATION_TIMEOUT_MILLISECONDS
+): Promise<void> {
+	if (pause) {
+		const draining = pauseNativeFullTextQueryReaders(path, readinessId, ownerEpoch);
+		await settleBeforeDeadline([draining], Date.now() + timeout, () => new Error('Full-text reader drain timed out'));
+		await draining;
+	} else resumeNativeFullTextQueryReaders(path, readinessId, ownerEpoch);
+	await sendItcEventStrict(
+		{
+			type: ITC_EVENT_TYPES.SCHEMA,
+			message: {
+				operation: pause ? FULL_TEXT_QUERY_PAUSE_OPERATION : FULL_TEXT_QUERY_RESUME_OPERATION,
+				path,
+				readinessId,
+				ownerEpoch: ownerEpoch.toString(),
+			},
+		},
+		timeout,
+		true
+	);
+}
+
 /** Retire durable native indexes even when their in-memory attachment could not be restored. */
 export async function retireFullTextIndexes(
 	Table: any,
@@ -721,18 +720,43 @@ export async function retireFullTextIndexes(
 		fullTextTest?.shutdownTimeoutMilliseconds ?? DEFAULT_FULL_TEXT_RETIREMENT_RETRY_MILLISECONDS;
 	const deadline = Date.now() + retryMilliseconds;
 	let retired = true;
+	const rootStore = Table.primaryStore.rootStore;
 	for (const definition of definitions) {
 		if (!shouldContinue()) return false;
+		const indexId = fullTextDerivedIndexId(Table, definition.name);
+		const storeName = `${Table.tableName}/${definition.name}`;
+		const nativePath = nativeFullTextIndexPath(rootStore.path, storeName);
+		const lockKey = `derived-index:${indexId}:runner`;
+		const readinessId = `${indexId}:retirement:${randomUUID()}`;
 		let retryDelayMilliseconds = 10;
 		let retrying = false;
 		for (;;) {
 			try {
-				await retireNativeFullTextDerivedIndexStorage({
-					storePath: Table.primaryStore.rootStore.path,
-					storeName: `${Table.tableName}/${definition.name}`,
-					indexId: fullTextDerivedIndexId(Table, definition.name),
-					...(fullTextTest ? { binding: fullTextTest.binding } : {}),
-				});
+				if (!rootStore.tryLock(lockKey))
+					throw Object.assign(new Error('Full-text runner still owns the index'), { code: 'E_LOCK_BUSY' });
+				try {
+					// Keep orphan-pause recovery and every writer fenced until peer readers have drained.
+					try {
+						await coordinateFullTextQueryReaders(
+							nativePath,
+							readinessId,
+							0n,
+							true,
+							Math.max(1, Math.min(FULL_TEXT_READER_COORDINATION_TIMEOUT_MILLISECONDS, deadline - Date.now()))
+						);
+						if (!shouldContinue()) return false;
+						await retireNativeFullTextDerivedIndexStorage({
+							storePath: rootStore.path,
+							storeName,
+							indexId,
+							...(fullTextTest ? { binding: fullTextTest.binding } : {}),
+						});
+					} finally {
+						await coordinateFullTextQueryReaders(nativePath, readinessId, 0n, false);
+					}
+				} finally {
+					rootStore.unlock(lockKey);
+				}
 				break;
 			} catch (error) {
 				if (!shouldContinue()) return false;

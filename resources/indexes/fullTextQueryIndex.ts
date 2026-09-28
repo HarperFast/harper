@@ -559,6 +559,7 @@ export class FullTextQueryIndex {
 			const existing = this.#readerSlot;
 			const existingMatchesIdentity =
 				existing?.ownerEpoch === ownerEpoch && existing.configurationRevision === configurationRevision;
+			// Keep the idle check and reader operation installation synchronous so no lease can begin before reload.
 			const canReload = existing?.active === 0 && existingMatchesIdentity;
 			try {
 				let reader: NativeFullTextReader;

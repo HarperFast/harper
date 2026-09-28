@@ -24,3 +24,9 @@ type LifecycleProduct @table(audit: true) @export {
 	description: String
 	catalogSearch: FullText @fullText(fields: [{ name: "title", weight: 3 }])
 }
+
+type ProductOrder @table @export {
+	id: ID @primaryKey
+	productId: ID @indexed
+	product: Product @relationship(from: "productId")
+}

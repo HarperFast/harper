@@ -67,6 +67,8 @@ GET /Product/?catalogSearch=matches=trail%20shoes&select(id,title,$score,$highli
 
 Use `fields: ['title']` on a structured condition to search a subset of an index's sources. Combine ordinary record filters with full-text conditions using `and`. Full-text Boolean groups must use one index; an `or` group cannot mix full-text and ordinary record conditions. Negated full-text conditions require at least one positive full-text condition.
 
+Full-text predicates must name an index directly on the queried table; relationship and nested-path full-text predicates are unsupported.
+
 Indexes follow committed record changes asynchronously. `waitForIndexMilliseconds` bounds how long the query waits for index coverage; `maxIndexLagMilliseconds` controls acceptable lag. A query can fail while its index is unavailable, rebuilding, or behind the requested coverage. Waiting for coverage does not promise a global snapshot across concurrent record changes.
 
 ## Fields, permissions, and results

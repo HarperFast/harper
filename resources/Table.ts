@@ -5052,7 +5052,9 @@ export function makeTable(options) {
 					}
 					const attribute_name = condition[0] ?? condition.attribute;
 					const fullTextMode =
-						TableResource.fullTextIndexes.length > 0 ? fullTextComparatorMode(condition.comparator) : undefined;
+						TableResource.fullTextIndexes.length > 0 || Array.isArray(attribute_name)
+							? fullTextComparatorMode(condition.comparator)
+							: undefined;
 					if (!fullTextMode && fullTextFieldNames) assertRecordField(attribute_name);
 					const fullTextDefinition =
 						fullTextMode && typeof attribute_name === 'string'
@@ -7953,6 +7955,7 @@ export function makeTable(options) {
 	}
 
 	function assertFullTextSelection(select: unknown): void {
+		if (!fullTextFieldNames && !hasRelationships) return;
 		if (typeof select === 'string') assertRecordField(select);
 		else if (Array.isArray(select)) {
 			for (const property of select) {

@@ -10,6 +10,8 @@ class FullTextNativeTestBinding {
 		this.reclaims = [];
 		this.reclaimWait = undefined;
 		this.readerOpens = [];
+		this.readerSearches = [];
+		this.readerSearchWait = undefined;
 		this.resetWait = undefined;
 		this.closeAttempts = 0;
 		this.closeError = undefined;
@@ -96,6 +98,8 @@ class FullTextNativeTestBinding {
 				this.committedPayload = state.payload;
 			},
 			async search(request) {
+				binding.readerSearches.push(request);
+				await binding.readerSearchWait;
 				const query = request.query ?? { text: request.text, mode: request.mode, fields: request.fields };
 				const candidates = request.candidateIds && new Set(request.candidateIds);
 				const hits = [];

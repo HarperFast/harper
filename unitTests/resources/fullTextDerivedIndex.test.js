@@ -629,6 +629,39 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('charges synchronous Blob field resolution against the apply slice', async () => {
+		const engine = new FakeEngine();
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
+		const body = new Blob(['plain text']);
+		backend.deliver(
+			batch(
+				1n,
+				['a', 'b', 'c'].map((id) =>
+					mutation(id, {
+						kind: 'record',
+						version: 1,
+						projection: {
+							get body() {
+								// Model synchronous conversion work longer than the 5ms apply slice.
+								const deadline = performance.now() + 8;
+								while (performance.now() < deadline) {}
+								return body;
+							},
+						},
+					})
+				),
+				cursor(20)
+			)
+		);
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		assert.deepStrictEqual(
+			engine.applied.map((applied) => applied.upserts.length),
+			[1, 1, 1]
+		);
+		await backend.shutdown(1n);
+	});
+
 	it('bounds Blob apply slices by wall time', async () => {
 		const engine = new FakeEngine();
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), {

@@ -460,6 +460,9 @@ export function searchByIndex(
 	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
 	const comparator = searchCondition.comparator;
+	const fullTextMode = fullTextComparatorMode(comparator);
+	if (fullTextMode && typeof attribute_name !== 'string')
+		throw new ClientError('Full-text comparator requires an index directly on the queried table', 400);
 	if (value === undefined && (comparator as any) !== 'sort') {
 		throw new ClientError(`Search condition for ${attribute_name} must have a value`);
 	}
@@ -529,7 +532,6 @@ export function searchByIndex(
 			needFullScan = true;
 		}
 	}
-	const fullTextMode = fullTextComparatorMode(comparator);
 	if (fullTextMode) {
 		if (typeof attribute_name !== 'string' || !Table.fullTextIndexes?.some(({ name }) => name === attribute_name))
 			throw new ClientError('Full-text comparator requires a declared @fullText index', 400);
