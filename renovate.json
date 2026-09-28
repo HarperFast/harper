@@ -30,8 +30,8 @@
 			"groupName": "all non-major dependencies",
 			"groupSlug": "all-minor-patch",
 			"matchUpdateTypes": ["minor", "patch"],
-			"excludePackageNames": ["alasql"],
-			"matchCurrentVersion": "!/^0/"
+			"matchCurrentVersion": "!/^0/",
+			"matchPackageNames": ["!alasql"]
 		}
 	]
 }
