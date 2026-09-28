@@ -14,6 +14,7 @@ const tokenAuthModule = require('#src/security/tokenAuthentication');
 const processManagementModule = require('#src/utility/processManagement/processManagement');
 const configUtilsModule = require('#src/config/configUtils');
 const terms = require('#src/utility/hdbTerms');
+const { HOME_ENV_KEYS } = require('../bootPropsFixture');
 
 const ENV_KEYS = [
 	'HARPER_CLI_TARGET',
@@ -37,8 +38,7 @@ const completedSession = {
 	],
 };
 
-// A readline stand-in answering each question() from a script; once the script runs out it closes,
-// the way Ctrl-D does, with the last question still pending.
+// Running out of answers closes it the way Ctrl-D does, with the last question still pending.
 function scriptedReadline(answers) {
 	const rl = new EventEmitter();
 	rl.questions = [];
@@ -70,7 +70,9 @@ describe('agentCli (harper agent)', function () {
 	let nextReadline;
 
 	before(() => {
-		originals.home = process.env.HOME;
+		originals.homeEnv = Object.fromEntries(HOME_ENV_KEYS.map((key) => [key, process.env[key]]));
+		originals.log = console.log;
+		originals.error = console.error;
 		originals.httpRequest = commonUtilsModule.httpRequest;
 		originals.isJWTExpired = tokenAuthModule.isJWTExpired;
 		originals.getHdbPid = processManagementModule.getHdbPid;
@@ -78,11 +80,14 @@ describe('agentCli (harper agent)', function () {
 		originals.getConfigPath = configUtilsModule.getConfigPath;
 		originals.createInterface = readline.createInterface;
 		originals.stdin = Object.getOwnPropertyDescriptor(process, 'stdin');
-		process.env.HOME = testDir;
+		for (const key of HOME_ENV_KEYS) process.env[key] = testDir;
 	});
 
 	after(() => {
-		process.env.HOME = originals.home;
+		for (const [key, value] of Object.entries(originals.homeEnv)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
 		commonUtilsModule.httpRequest = originals.httpRequest;
 		tokenAuthModule.isJWTExpired = originals.isJWTExpired;
 		processManagementModule.getHdbPid = originals.getHdbPid;
@@ -106,6 +111,9 @@ describe('agentCli (harper agent)', function () {
 			throw new Error('unexpected local-instance lookup');
 		};
 		configUtilsModule.initConfig = () => {};
+		configUtilsModule.getConfigPath = () => {
+			throw new Error('unexpected config lookup');
+		};
 		createdInterfaces = [];
 		nextReadline = null;
 		readline.createInterface = (options) => {
@@ -118,6 +126,9 @@ describe('agentCli (harper agent)', function () {
 	});
 
 	afterEach(() => {
+		// run() restores these itself unless a hung runAgentCli was abandoned by the test timeout.
+		console.log = originals.log;
+		console.error = originals.error;
 		for (const key of ENV_KEYS) {
 			if (savedEnv[key] === undefined) delete process.env[key];
 			else process.env[key] = savedEnv[key];
@@ -132,7 +143,6 @@ describe('agentCli (harper agent)', function () {
 		return stdin;
 	}
 
-	// `sessionFor(n)` answers the n-th get_agent_session (1-based); every other operation succeeds.
 	function serve(sessionFor, { promptResponse = () => [200, { session_id: 'session-1' }] } = {}) {
 		requests = [];
 		let polls = 0;
@@ -154,15 +164,14 @@ describe('agentCli (harper agent)', function () {
 	async function run(...argv) {
 		const out = [];
 		const err = [];
-		const { log, error } = console;
 		console.log = (...args) => out.push(args.join(' '));
 		console.error = (...args) => err.push(args.join(' '));
 		try {
 			const code = await runAgentCli(argv);
 			return { code, out: out.join('\n'), err: err.join('\n') };
 		} finally {
-			console.log = log;
-			console.error = error;
+			console.log = originals.log;
+			console.error = originals.error;
 		}
 	}
 
