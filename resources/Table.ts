@@ -5060,6 +5060,8 @@ export function makeTable(options) {
 						fullTextMode && typeof attribute_name === 'string'
 							? TableResource.fullTextIndexes.find((definition) => definition.name === attribute_name)
 							: undefined;
+					if (fullTextMode && Array.isArray(attribute_name))
+						throw new ClientError('Full-text predicates must directly name an index on the queried table', 400);
 					if (fullTextMode && !fullTextDefinition) throwUnknownFullTextIndex(context, target);
 					if (fullTextDefinition) {
 						const fields = condition.fields;
