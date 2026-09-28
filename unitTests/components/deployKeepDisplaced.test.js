@@ -1,16 +1,12 @@
 'use strict';
 
-// #2315 step 5: a deployment id keeps naming its release after the swap. Each build records the id that made it in
-// the tree itself, a described deploy's directory survives the swap as that id's record, the tree an activation
-// displaces goes back into its own record — dormant again under its original id — and activating the id that is
-// already live answers without a swap.
-
 const assert = require('node:assert');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { existsSync } = require('node:fs');
 const os = require('node:os');
 const zlib = require('node:zlib');
+const { createHash } = require('node:crypto');
 const tar = require('tar-fs');
 
 const testUtils = require('../testUtils.js');
@@ -90,6 +86,11 @@ async function activate(root, id) {
 
 function deploymentDir(root, id) {
 	return path.join(root, DEPLOY_STAGING_DIR, id);
+}
+
+function claimDirFor(root, component) {
+	const digest = createHash('sha256').update(component).digest('hex').slice(0, 16);
+	return path.join(root, DEPLOY_STAGING_DIR, `.claiming-${'0'.repeat(8)}-0000-0000-0000-${'0'.repeat(12)}-${digest}`);
 }
 
 async function readLive(root) {
@@ -202,7 +203,7 @@ describe('keeping the release an activation displaces', () => {
 			const root = await newRoot('record-drop');
 			await deploy(root, 'd1', 'V1\n');
 			await deploy(root, 'd2', 'V2\n');
-			await fs.mkdir(path.join(root, DEPLOY_STAGING_DIR, `.claiming-${'0'.repeat(36)}-web`));
+			await fs.mkdir(claimDirFor(root, 'web'));
 
 			await dropComponentDirectory(path.join(root, 'web'), 'web');
 
@@ -340,7 +341,7 @@ describe('keeping the release an activation displaces', () => {
 	});
 
 	describe('recovery', () => {
-		/** A deploy of d2 over d1 that died after its commit rename, before it put d1's tree back. */
+		/** d2 committed over d1, then died before putting d1's tree back. */
 		async function crashAfterCommit(root) {
 			await deploy(root, 'd1', 'V1\n');
 			await stage(root, 'd2', 'V2\n');
@@ -370,8 +371,8 @@ describe('keeping the release an activation displaces', () => {
 		});
 
 		it('leaves the record of a release whose tree is still aside, even with no journal left to put it back', async function () {
-			// The scan-order half of the case above, made deterministic: nothing will settle here, so only the
-			// record's own classification stands between it and deletion.
+			// Deterministic, unlike the case above: with no journal nothing settles, so only the record's own
+			// classification keeps it.
 			this.timeout(30000);
 			const root = await newRoot('record-aside');
 			await crashAfterCommit(root);
@@ -413,8 +414,8 @@ describe('keeping the release an activation displaces', () => {
 		});
 
 		it('never evicts the artifact a request is activating while its preamble settles another deploy', async function () {
-			// Settlement keeps the release a crashed deploy displaced. Pruning there, with only that release pinned,
-			// deleted the artifact the request had pinned and was about to activate.
+			// Settlement keeps the release a crashed deploy displaced; a prune there, blind to the request's pin, would
+			// delete the artifact the request is activating.
 			this.timeout(40000);
 			const root = await newRoot('pin');
 			setMaxCount(1);
@@ -426,11 +427,28 @@ describe('keeping the release an activation displaces', () => {
 			assert.strictEqual(await readLive(root), 'WANTED\n');
 			await fs.rm(root, { recursive: true, force: true });
 		});
+
+		it('keeps the release a settlement just put back, even when a stage outranks it', async function () {
+			// A kept release's completion time is refreshed best-effort; a stage dated after the refresh stands in for a
+			// refresh that failed.
+			this.timeout(40000);
+			const root = await newRoot('kept-pinned');
+			setMaxCount(1);
+			await stage(root, 's1', 'STAGED\n');
+			await crashAfterCommit(root);
+			const later = new Date(Date.now() + 3600_000);
+			await fs.utimes(path.join(deploymentDir(root, 's1'), '.complete'), later, later);
+
+			const retry = await activate(root, 'd2');
+
+			assert.strictEqual(retry.alreadyActive, true);
+			assert.deepStrictEqual(await entriesOf(deploymentDir(root, 'd1')), DORMANT, 'the release just put back');
+			await fs.rm(root, { recursive: true, force: true });
+		});
 	});
 
 	describe('claims', () => {
-		const claimOf = (root, component) =>
-			path.join(root, DEPLOY_STAGING_DIR, `.claiming-${'0'.repeat(8)}-0000-0000-0000-${'0'.repeat(12)}-${component}`);
+		const claimOf = claimDirFor;
 
 		it('removes a claim the component left unfinished at its next deploy, and leaves another component’s', async function () {
 			this.timeout(20000);
@@ -456,6 +474,19 @@ describe('keeping the release an activation displaces', () => {
 			assert.strictEqual((await unsettleableComponentsFromDisk(root)).size, 0);
 
 			assert.strictEqual(existsSync(path.join(claimOf(root, 'web'), '.component')), true);
+			await fs.rm(root, { recursive: true, force: true });
+		});
+
+		it('claims an id for a component whose name leaves no room to spell it in the claim', async function () {
+			this.timeout(20000);
+			const root = await newRoot('claims-long-name');
+			const name = 'w'.repeat(220);
+			const app = new Application({ name, payload: await makeTarball(release('LONG\n')) });
+			app.dirPath = path.join(root, name);
+
+			await prepareApplication(app, { mode: 'stage', artifactId: 's1' });
+
+			assert.strictEqual(await fs.readFile(path.join(deploymentDir(root, 's1'), '.component'), 'utf8'), name);
 			await fs.rm(root, { recursive: true, force: true });
 		});
 	});

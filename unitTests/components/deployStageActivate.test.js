@@ -331,8 +331,7 @@ describe('claiming a deployment id', () => {
 		this.timeout(20000);
 		const root = await newRoot('claim-unattributable');
 		await writeLive(root, 'web', 'LIVE v1\n');
-		// No claim is visible like this any more — every claim appears at its id already named — so this is an
-		// older build's, or something else's. What it holds is unknown, so it is refused rather than removed.
+		// Claims appear at their id already named, so this is not one in flight; what it holds is unknown.
 		const dir = deploymentDir(root, 'a1');
 		await fs.mkdir(dir, { recursive: true });
 		await fs.writeFile(path.join(dir, 'payload.tgz'), 'BEING BUILT\n');
@@ -349,8 +348,7 @@ describe('claiming a deployment id', () => {
 		this.timeout(20000);
 		const root = await newRoot('claim-empty');
 		await writeLive(root, 'web', 'LIVE v1\n');
-		// An older build created the id's directory and then its sidecar; a death between the two burned the id
-		// for good. A claim now appears at its id already named, so an empty one can only be that wreckage.
+		// Claims appear at their id already named, so an empty directory is a claim that died before naming itself.
 		const dir = deploymentDir(root, 'a1');
 		await fs.mkdir(dir, { recursive: true });
 
@@ -393,9 +391,7 @@ describe('claiming a deployment id', () => {
 	});
 
 	it('takes back a claim it could not name, which never reached its id', async () => {
-		// A full disk or an EIO on the temp write or its sync. The claim is still being built aside, so nothing names
-		// the id and nothing is burned; the write is injected because no filesystem can be made to fail on exactly
-		// this write and nothing else.
+		// Injected: no filesystem can be made to fail on exactly this write and nothing else.
 		const root = await newRoot('claim-unnameable');
 		const claim = path.join(root, DEPLOY_STAGING_DIR, `.claiming-${'0'.repeat(36)}-web`);
 		await fs.mkdir(claim, { recursive: true });
@@ -982,8 +978,7 @@ describe('an activation that fails after it commits', () => {
 	});
 
 	it('answers a retry of the same deployment id once the entry is published, instead of 404 for a consumed artifact', async function () {
-		// #2315 step 3's route to the unconvergeable retry: the publish throws past the commit, before replication, so
-		// no peer ever sees the activation — and the retry that would reach them found the artifact consumed.
+		// The publish throws past the commit and before replication, so only a retry of the same id reaches the peers.
 		this.timeout(30000);
 		if (process.platform === 'win32' || !(await readOnlyDirectoryDeniesWrites())) return this.skip();
 		const root = await newRoot('post-commit-retry');

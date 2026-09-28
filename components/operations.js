@@ -889,12 +889,10 @@ async function deployComponent(req) {
 				await validateComponentLoads(candidateDirPath, emit);
 			},
 		});
-		if (application.alreadyActive) {
-			// Nothing was verified or swapped, so the phase `validateCandidate` ends never ended; and no descriptor was
-			// admitted, so the isolation in force is what decides which workers a restart replaces.
-			emit('phase', { phase: 'prepare', status: 'done' });
-			wasIsolated = nowIsolated = isIsolatedApplication(req.project);
-		}
+		// Nothing ran `validateCandidate`, which ends this phase. Isolation stays unset on purpose: which workers loaded
+		// the previous release is unknowable here — the preamble may just have published an isolation change — so a
+		// restart has to replace them all.
+		if (application.alreadyActive) emit('phase', { phase: 'prepare', status: 'done' });
 		// The build is certified on disk from here on, so every later failure — a peer result, or a rejection
 		// thrown by the replication layer itself — still leaves an artifact this id can activate.
 		if (mode === 'stage') stagedOnOrigin = true;

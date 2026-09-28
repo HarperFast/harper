@@ -111,14 +111,15 @@ did not need it:
   uncertified partial of its _own_ component — in a fresh claim, never inside the partial tree. Ownership is
   published as part of the claim, not at certification, because `buildCandidateApplication` can spend minutes
   resolving and packing before any tree exists to infer an owner from. The claim is built at
-  `.deploy-staging/.claiming-<uuid>-<component>`, named there, and renamed onto the id, so the directory only
+  `.deploy-staging/.claiming-<uuid>-<digest>`, named there, and renamed onto the id, so the directory only
   ever appears at its id already attributed. It used to be an exclusive `mkdir` followed by the sidecar write,
   and a death between the two left an unattributed directory — indistinguishable from a claim in flight, so
   refused forever. Now no live claim is ever visible unattributed: an EMPTY directory at an id is that
   wreckage from an older build and is taken over (`rmdir`, which removes nothing else); a non-empty
   unattributed one is still refused. A claim that died before its rename names no id, is skipped by every scan
   of the staging root (all of them skip dot-prefixed entries), and is removed under the component's lock by its
-  next deploy, or by `drop_component`; the component in its name is what makes that attributable without a read.
+  next deploy, or by `drop_component`; a digest of the component in its name, rather than the name itself, makes
+  that attributable without a read and cannot push a long name past a filename limit.
   On Windows a rename onto any existing directory fails with the `EPERM` a transient holder raises, so the
   destination is classified before renaming rather than after a spent retry budget. The id this request names
   is also pinned through the preparation preamble, so retention cannot evict the artifact the request is about
@@ -396,7 +397,7 @@ deploymentId }` — at the top of every candidate it extracts, after the install
 - **The id's record outlives the swap.** A build whose caller declared what it publishes (`describeArtifact` — every
   `deploy_component`) writes `.artifact.json` before `.complete`, as a stage does, and a committed activation
   keeps `.deploy-staging/<id>` minus its tree and journal: `.component`, `.complete`, `.artifact.json`. That
-  record is where the release goes back to. A boot install, `add_component` and a link build declare nothing and
+  record is where the release goes back to, so its directory entry is flushed before the swap, as a stage's is. A boot install, `add_component` and a link build declare nothing and
   keep none, as before. Keeping the descriptor here rather than snapshotting the entry at displacement is
   deliberate: for a boot install the entry in force is the new build's, so after an out-of-band edit the displaced
   tree would be described with the wrong package. Re-activating an id publishes what that deployment declared,
@@ -412,12 +413,16 @@ deploymentId }` — at the top of every candidate it extracts, after the install
   record, or `maxCount: 0`, when the record goes too) — swept as before; or _failed_ (a read error other than
   ENOENT, or a failed rename) — left retired in the aside with its record for the legacy pass to retry at the next
   preparation, since on Windows the rename and the delete both fail while something holds a handle in the tree.
-  A failure after the rename (syncing its parents) propagates, as the aside syncs do: the activation keeps its
-  journal, and recovery fails the component closed with its journal, the retire's own contract. The kept tree's
+  A failure after the rename (syncing its parents) propagates, as the aside syncs do. At the activation it keeps
+  the journal, so recovery repeats the aside barrier before letting it go — not the kept tree's own entry, whose
+  loss costs only that kept copy. In recovery it fails the component closed with its journal, the retire's own
+  contract. The kept tree's
   `.complete` mtime is refreshed (retried briefly) so retention orders it by when it stopped being live; left at
   its build time, stages nobody activated would outrank it. **Only the activation's own site prunes** after a
   keep, pinning the kept id: settlement runs inside a request's preamble, whose pin it cannot see, and a prune
-  there evicted the very artifact that request was activating. A kept release is not re-certified: it is kept as
+  there evicted the very artifact that request was activating. The pass a settlement runs inside counts what it
+  kept and pins it beside its own pin, so a refresh that failed cannot let that pass evict the release it just put
+  back. A kept release is not re-certified: it is kept as
   it was when displaced, including what it wrote into its own directory while live, and activation re-runs the
   link rule and the load validation. An absolute link `repairRelocatedDependencyLinks` wrote after its own swap (a
   Windows `file:`/workspace junction) names the live path, so such a release's re-activation is refused 409.

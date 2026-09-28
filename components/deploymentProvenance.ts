@@ -1,10 +1,9 @@
 import { basename } from 'node:path';
 
 /**
- * The deployment id of the build that made a component tree, recorded at the top of the tree itself. It rides the
- * rename that makes the tree live, so it is never stale: anything else that replaces the directory replaces it too.
- * The name is reserved in a component's top-level directory, and only an id is recorded — the tree is the
- * component's own to write, so nothing that is published on activation may come from here.
+ * Rides the rename that makes a tree live, so it is never stale: anything else that replaces the directory replaces
+ * it too. Reserved at a component's top level. Only an id: the tree is the component's own to write, so nothing
+ * published on activation may come from here.
  */
 export const DEPLOYMENT_PROVENANCE_FILE = '.harper-deployment.json';
 
@@ -14,7 +13,6 @@ export function formatDeploymentProvenance(component: string, deploymentId: stri
 	return JSON.stringify({ v: DEPLOYMENT_PROVENANCE_VERSION, component, deploymentId });
 }
 
-/** The deployment id a marker records for `component`, or `undefined` when it records no usable one. */
 export function parseDeploymentProvenance(raw: string, component: string): string | undefined {
 	let parsed: any;
 	try {
