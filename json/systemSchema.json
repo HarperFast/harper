@@ -90,6 +90,12 @@
 				"attribute": "request"
 			},
 			{
+				"attribute": "owner_instance"
+			},
+			{
+				"attribute": "owner_pid"
+			},
+			{
 				"attribute": "__createdtime__"
 			},
 			{
