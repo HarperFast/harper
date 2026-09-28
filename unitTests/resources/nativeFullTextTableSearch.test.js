@@ -175,8 +175,12 @@ describe('published native full-text Table.search integration', () => {
 		);
 		assert.deepStrictEqual(ids(orResults), ['one', 'three']);
 
-		const restQuery = parseQuery('catalogSearch=matches_phrase=trail%20running');
-		assert.deepStrictEqual(ids(await collect(Product.search(restQuery))), ['one']);
+		const restQuery = parseQuery('catalogSearch=matches_phrase=trail%20running&select(id,title,$score,$highlights)');
+		const [restResult] = await collect(Product.search(restQuery));
+		assert.strictEqual(restResult.id, 'one');
+		assert.strictEqual(restResult.title, 'Waterproof Trail Running Shoes');
+		assert.strictEqual(typeof restResult.$score, 'number');
+		assert.deepStrictEqual(restResult.$highlights.title[0].spans, [{ start: 11, end: 24 }]);
 	});
 
 	it('keeps multiple full-text indexes independent and rejects combining them in one query', async () => {
