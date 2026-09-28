@@ -310,10 +310,20 @@ async function killWindowsProcesses(members: WindowsProcessRecord[], rootPid: nu
 	for (const args of taskkillInvocation(members, rootPid) ?? []) await runTaskkill(args);
 }
 
-function rememberDescendants(identity: WindowsProcessTreeIdentity, members: WindowsProcessRecord[], scannedAt: number) {
+function rememberDescendants(
+	identity: WindowsProcessTreeIdentity,
+	members: WindowsProcessRecord[],
+	scannedAt: number,
+	root: WindowsProcessRecord | undefined
+) {
 	const descendants = (identity.descendants ??= new Map());
 	for (const member of members) {
-		if (member.pid === identity.rootPid || member.created === null) continue;
+		// Skip only the verified root row itself (its lifetime is tracked separately via
+		// rootCreatedAt/rootExitedAt) — not every member sharing its PID number. Once the root has
+		// exited, a live descendant that Windows hands that freed PID is a distinct incarnation,
+		// identified by its own (pid, created) pair, and must be remembered like any other descendant
+		// so a later scan can still find it and its own children.
+		if (member === root || member.created === null) continue;
 		if (descendants.get(member.pid)?.created !== member.created)
 			descendants.set(member.pid, { created: member.created });
 	}
@@ -376,7 +386,7 @@ export async function confirmWindowsProcessTreeGone(
 				// snapshot may predate the stamp, and a bound that is late keeps waiting, which is the safe
 				// direction. The same goes for every other member.
 				if (!root && identity.rootExitedAt === undefined) identity.rootExitedAt = scannedAt;
-				rememberDescendants(identity, members, scannedAt);
+				rememberDescendants(identity, members, scannedAt, root);
 			}
 		}
 		if (!rootIdentityUnknown && members?.length === 0) return;

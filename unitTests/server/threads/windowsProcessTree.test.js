@@ -377,6 +377,28 @@ describe('confirmWindowsProcessTreeGone', () => {
 		assert.ok(identity.descendants.get(4200).exitedAt !== undefined);
 	});
 
+	it('keeps waiting on a child spawned by a descendant that reused the freed root PID', async () => {
+		// child 4100 outlives the root; Windows then hands the root's freed PID (4000) to a new child
+		// of 4100. That recycled-PID descendant itself exits before the next scan, but not before
+		// spawning 4200 — which is only reachable through the recycled descendant's own remembered
+		// frontier, not through 4100's (4200's parent is the recycled PID, not 4100).
+		const child = row(4100, ROOT, SPAWNED_AT + 200);
+		const recycled = row(ROOT, 4100, EXITED_AT + 50);
+		const grandchild = row(4200, ROOT, EXITED_AT + 100);
+		const identity = exitedIdentity();
+		const scans = [[child, recycled], [grandchild], []];
+		const kills = [];
+		await confirmWindowsProcessTreeGone(identity, {
+			scan: async () => scans.shift(),
+			kill: async (members) => kills.push(pids(members)),
+			pollMs: 1,
+		});
+		assert.deepEqual(kills, [[ROOT, 4100], [4200]]);
+		assert.equal(scans.length, 0);
+		assert.equal(identity.descendants.get(ROOT).created, EXITED_AT + 50);
+		assert.ok(identity.descendants.get(ROOT).exitedAt !== undefined);
+	});
+
 	it('treats an unreadable process table as unknown, not gone', async () => {
 		const scans = [null, null, []];
 		let kills = 0;
