@@ -49,7 +49,6 @@ const POPULATION_OVERHEAD_BYTES = 1_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RANK_WIDTH = 16;
 const CURSOR_ID = 'discovery/cursor';
-const LIST_LIMIT = 1_000;
 const LIST_BATCH = 16;
 
 export interface CalibrationConfig {
@@ -154,6 +153,7 @@ export interface CalibrationRunResult {
 	status: 'completed' | 'failed';
 	error?: string;
 	scanned: number;
+	read: number;
 	discovered: number;
 	processed: number;
 	pending: number;
@@ -564,6 +564,7 @@ function failedRun(err: unknown): CalibrationRunResult {
 		status: 'failed',
 		error,
 		scanned: 0,
+		read: 0,
 		discovered: 0,
 		processed: 0,
 		pending: 0,
@@ -578,6 +579,7 @@ function failedRun(err: unknown): CalibrationRunResult {
 interface Discovered {
 	head: Omit<PopulationHead, 'lastFittedAt' | 'expiresAt'>;
 	lastFittedAt?: number;
+	expiresAt?: number;
 	bytes: number;
 }
 
@@ -592,6 +594,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 	const result: CalibrationRunResult = {
 		status: 'completed',
 		scanned: 0,
+		read: 0,
 		discovered: 0,
 		processed: 0,
 		pending: 0,
@@ -615,6 +618,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 			for (const found of discovered) {
 				const head: PopulationHead | undefined = await store.get(found.head.id);
 				if (head?.lastFittedAt !== undefined) found.lastFittedAt = head.lastFittedAt;
+				else await store.put({ ...found.head, lastFittedAt: 0, expiresAt: found.expiresAt ?? now() + policy.maxAgeMs });
 			}
 			const out: PopulationHead[] = [];
 			for await (const row of store.search({
@@ -647,7 +651,13 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 		result.stoppedBy ??= 'maxPopulations';
 		result.pending = ordered.length - order.length;
 	}
+	let allowance = config.maxDecisions - result.scanned;
 	for (let i = 0; i < order.length; i++) {
+		if (allowance <= 0) {
+			result.stoppedBy ??= 'maxDecisions';
+			result.pending += order.length - i;
+			break;
+		}
 		if (now() >= deadline) {
 			result.stoppedBy ??= 'maxRunMs';
 			result.pending += order.length - i;
@@ -670,7 +680,8 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 	return finish();
 
 	async function discover(): Promise<void> {
-		const newest = await scan(undefined, [], Math.floor(config.maxDecisions / 2));
+		const decisionBudget = Math.max(1, Math.floor(config.maxDecisions / 2));
+		const newest = await scan(undefined, [], Math.floor(decisionBudget / 2), Math.floor(config.maxPopulations / 2));
 		if (newest.fault || newest.stopped) return;
 		if (newest.end) return saveCursor(undefined, []);
 		let cursor: { before?: unknown; boundary?: unknown } | undefined;
@@ -688,9 +699,10 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 			: saved === newest.before
 				? [...new Set([...savedSeen, ...newest.boundary])]
 				: savedSeen;
-		const rest = await scan(from, seen, config.maxDecisions - result.scanned);
+		const rest = await scan(from, seen, decisionBudget - result.scanned, config.maxPopulations - populations.size);
 		if (rest.fault) return;
-		if (result.scanned >= config.maxDecisions) result.stoppedBy ??= 'maxDecisions';
+		if (rest.capped) result.stoppedBy ??= rest.capped;
+		else if (!rest.end && !rest.stopped) result.stoppedBy ??= 'maxDecisions';
 		return rest.end ? saveCursor(undefined, []) : saveCursor(rest.before, rest.boundary);
 	}
 
@@ -707,10 +719,19 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 	async function scan(
 		start: number | undefined,
 		startSeen: string[],
-		budget: number
-	): Promise<{ before?: number; boundary: string[]; end: boolean; stopped: boolean; fault?: boolean }> {
+		budget: number,
+		populationBudget: number
+	): Promise<{
+		before?: number;
+		boundary: string[];
+		end: boolean;
+		stopped: boolean;
+		capped?: 'maxPopulations' | 'maxBytes';
+		fault?: boolean;
+	}> {
 		let before = start;
 		let taken = 0;
+		let added = 0;
 		const seenAtBoundary = new Set<string>(start === undefined ? [] : startSeen);
 		while (true) {
 			let page: DecisionRow[];
@@ -737,6 +758,15 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 					result.stoppedBy ??= 'maxRunMs';
 					return { before, boundary: [...seenAtBoundary], end: false, stopped: true };
 				}
+				const isNew = Boolean(row.population && row.signature) && !populations.has(row.population as string);
+				let size = 0;
+				if (isNew) {
+					if (added >= populationBudget)
+						return { before, boundary: [...seenAtBoundary], end: false, stopped: false, capped: 'maxPopulations' };
+					size = POPULATION_OVERHEAD_BYTES + schemaBytes(row.schema);
+					if (bytes + size > config.maxBytes)
+						return { before, boundary: [...seenAtBoundary], end: false, stopped: false, capped: 'maxBytes' };
+				}
 				taken++;
 				result.scanned++;
 				result.reachedAt = Math.min(result.reachedAt ?? row.at, row.at);
@@ -744,28 +774,21 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 				before = row.expiresAt;
 				seenAtBoundary.add(row.id);
 				if (result.scanned % YIELD_EVERY === 0) await new Promise((resolve) => setImmediate(resolve));
-				if (!row.population || !row.signature || populations.has(row.population)) continue;
-				if (populations.size >= config.maxPopulations) {
-					result.stoppedBy ??= 'maxPopulations';
-					return { before, boundary: [...seenAtBoundary], end: false, stopped: true };
-				}
-				const size = POPULATION_OVERHEAD_BYTES + schemaBytes(row.schema);
-				if (bytes + size > config.maxBytes) {
-					result.stoppedBy ??= 'maxBytes';
-					return { before, boundary: [...seenAtBoundary], end: false, stopped: true };
-				}
+				if (!isNew) continue;
+				added++;
 				bytes += size;
-				populations.set(row.population, {
+				populations.set(row.population as string, {
 					bytes: size,
+					expiresAt: row.expiresAt,
 					head: {
 						id: `population/${row.population}`,
 						kind: 'population',
-						population: row.population,
+						population: row.population as string,
 						owner: ownerOf(row.tenant),
 						tenant: row.tenant,
 						model: row.model,
 						entry: row.entry ?? `registered:${row.backend}`,
-						signature: row.signature,
+						signature: row.signature as string,
 						instructionsHash: row.instructionsHash,
 						schemaHash: row.schemaHash,
 						schema: row.schema,
@@ -827,6 +850,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 					],
 					limit: Math.min(
 						config.maxExamplesPerKey,
+						allowance,
 						Math.max(1, Math.floor((config.maxBytes - baseBytes) / EXAMPLE_OVERHEAD_BYTES))
 					),
 				})) {
@@ -834,6 +858,8 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 				}
 				return out;
 			});
+			allowance -= rows.length;
+			result.read += rows.length;
 			rows.sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 			for (let start = 0; start < rows.length; start += YIELD_EVERY) {
 				if (start > 0) {
@@ -1017,7 +1043,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 			recordAction(result.durationMs, 'model-calibrate', undefined, result.status);
 		} catch {}
 		log.info?.(
-			`models: calibration run ${result.status}: scanned ${result.scanned} decisions, ${result.discovered} populations, processed ${result.processed}, pending ${result.pending}, wrote ${result.written} (${result.eligible} eligible), skipped ${result.skipped}, failed ${result.failed}${result.stoppedBy ? `, stopped by ${result.stoppedBy}` : ''} in ${result.durationMs} ms`
+			`models: calibration run ${result.status}: scanned ${result.scanned} decisions, read ${result.read} for fitting, ${result.discovered} populations, processed ${result.processed}, pending ${result.pending}, wrote ${result.written} (${result.eligible} eligible), skipped ${result.skipped}, failed ${result.failed}${result.stoppedBy ? `, stopped by ${result.stoppedBy}` : ''} in ${result.durationMs} ms`
 		);
 		return result;
 	}
@@ -1045,8 +1071,8 @@ export async function listCalibrations(
 			conditions: [
 				{ attribute: 'owner', value: ownerOf(tenant) },
 				{ attribute: 'kind', value: 'population' },
+				...(filter.model === undefined ? [] : [{ attribute: 'model', value: filter.model }]),
 			],
-			limit: LIST_LIMIT,
 		}))
 			rows.push(row);
 		return rows;

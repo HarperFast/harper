@@ -92,6 +92,17 @@ async function recordCases(models, from, count, opts = {}) {
 	return ids;
 }
 
+/** Instructions hashes of the populations the store knows, discovered or fitted. */
+async function knownInstructions() {
+	const tbl = getCalibrationsTable();
+	const out = new Set();
+	await transaction({}, async () => {
+		for await (const row of tbl.search({ conditions: [{ attribute: 'kind', value: 'population' }] }))
+			out.add(row.instructionsHash ?? 'none');
+	});
+	return out;
+}
+
 /** Decide until the cache has loaded, and return the first decision made after it did. */
 async function warmDecide(models, state, opts = {}) {
 	await models.decide(state, SCHEMA, opts);
@@ -392,6 +403,11 @@ describe('calibration store and facade (#2841)', function () {
 		const other = await contextStorage.run({ user: { tenant: 't2' } }, () => models.getCalibrations());
 		assert.deepStrictEqual(other, []);
 		assert.deepStrictEqual(await models.getCalibrations({ model: 'triage' }), []);
+		assert.strictEqual(
+			(await models.getCalibrations({ model: 'default' })).length,
+			1,
+			'the model filter is applied in the query'
+		);
 	});
 
 	it('reports raw reliability from 20 labels, before a fit can qualify', async () => {
@@ -417,7 +433,8 @@ describe('calibration store and facade (#2841)', function () {
 		assert.ok(byBytes.pending >= 1);
 		const tiny = await runCalibration({ maxDecisions: 10 });
 		assert.strictEqual(tiny.stoppedBy, 'maxDecisions');
-		assert.strictEqual(tiny.scanned, 10);
+		assert.strictEqual(tiny.scanned, 5, 'discovery takes half the decision budget');
+		assert.ok(tiny.read <= 5, 'fitting reads the rest, never more');
 		assert.strictEqual(typeof tiny.reachedAt, 'number');
 	});
 
@@ -468,12 +485,8 @@ describe('calibration store and facade (#2841)', function () {
 	it('reaches an older population past the decision budget within a few runs', async () => {
 		await recordCases(models, 0, 25, { instructions: 'older population' });
 		await recordCases(models, 100, 50);
-		const seen = new Set();
-		for (let i = 0; i < 4; i++) {
-			await runCalibration({ maxDecisions: 40 });
-			for (const summary of await models.getCalibrations()) seen.add(summary.instructionsHash ?? 'none');
-		}
-		assert.strictEqual(seen.size, 2, 'both populations were reached');
+		for (let i = 0; i < 8 && (await knownInstructions()).size < 2; i++) await runCalibration({ maxDecisions: 40 });
+		assert.strictEqual((await knownInstructions()).size, 2, 'both populations were reached');
 	});
 
 	it('does not let a read started before an invalidation repopulate the cache', async () => {
@@ -517,24 +530,33 @@ describe('calibration store and facade (#2841)', function () {
 	it('makes progress through the table even with a budget of two decisions', async () => {
 		await recordCases(models, 0, 20, { instructions: 'older population' });
 		await recordCases(models, 100, 20);
-		let reached = false;
-		for (let i = 0; i < 30 && !reached; i++) {
+		for (let i = 0; i < 40 && (await knownInstructions()).size < 2; i++) {
 			const run = await runCalibration({ maxDecisions: 2 });
-			assert.strictEqual(run.scanned, 2);
-			reached = (await models.getCalibrations()).some((summary) => summary.instructionsHash);
+			assert.strictEqual(run.scanned, 1);
 		}
-		assert.ok(reached, 'the older population was reached two decisions at a time');
+		assert.strictEqual((await knownInstructions()).size, 2, 'the older population was reached');
+	});
+
+	it('fits every population under a population budget of one, across runs', async () => {
+		await recordCases(models, 0, 30, { instructions: 'older population' });
+		await recordCases(models, 100, 30);
+		for (let i = 0; i < 4 && (await models.getCalibrations()).length < 2; i++)
+			await runCalibration({ maxPopulations: 1 });
+		assert.strictEqual((await models.getCalibrations()).length, 2);
+	});
+
+	it('counts decisions read for fitting against the run budget', async () => {
+		await recordCases(models, 0, 30);
+		const run = await runCalibration({ maxDecisions: 20 });
+		assert.strictEqual(run.scanned, 10);
+		assert.strictEqual(run.read, 10, 'fitting reads only what discovery left');
 	});
 
 	it('makes progress one decision at a time', async () => {
 		await recordCases(models, 0, 20, { instructions: 'older population' });
 		await recordCases(models, 100, 5);
-		let reached = false;
-		for (let i = 0; i < 40 && !reached; i++) {
-			await runCalibration({ maxDecisions: 1 });
-			reached = (await models.getCalibrations()).some((summary) => summary.instructionsHash);
-		}
-		assert.ok(reached);
+		for (let i = 0; i < 40 && (await knownInstructions()).size < 2; i++) await runCalibration({ maxDecisions: 1 });
+		assert.strictEqual((await knownInstructions()).size, 2);
 	});
 
 	it('survives a population row with no schema, in runs and in listing', async () => {
@@ -622,9 +644,9 @@ describe('calibration store and facade (#2841)', function () {
 	it('lets a run lower its budgets but never raise them, and ignores invalid ones', async () => {
 		configureCalibration({ ...CONFIG, maxDecisions: 10 }, false);
 		await recordCases(models, 0, 30);
-		assert.strictEqual((await runCalibration({ maxDecisions: 1000 })).scanned, 10);
-		assert.strictEqual((await runCalibration({ maxDecisions: 4 })).scanned, 4);
-		assert.strictEqual((await runCalibration({ maxDecisions: '2', maxRunMs: 'x' })).scanned, 10);
+		assert.strictEqual((await runCalibration({ maxDecisions: 1000 })).scanned, 5);
+		assert.strictEqual((await runCalibration({ maxDecisions: 4 })).scanned, 2);
+		assert.strictEqual((await runCalibration({ maxDecisions: '2', maxRunMs: 'x' })).scanned, 5);
 	});
 
 	it('contains a malformed population row and moves it to the back', async () => {
