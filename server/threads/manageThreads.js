@@ -1149,6 +1149,7 @@ function broadcastWithAcknowledgement(
 			)
 				continue;
 			let ackHandler;
+			let postingToRecipient = false;
 			try {
 				let requestId = nextId++;
 				ackHandler = (response) => {
@@ -1194,10 +1195,16 @@ function broadcastWithAcknowledgement(
 						settleAcknowledgementsForClosedPort(port, port.jobCleanupComplete === true)
 					);
 				}
+				postingToRecipient = true;
 				port.postMessage(message);
 			} catch (error) {
 				harperLogger.error(`Unable to send message to worker`, error);
-				ackHandler?.({ error: { message: error.message ?? String(error) } });
+				ackHandler?.({
+					error: {
+						message: error.message ?? String(error),
+						...(postingToRecipient ? { code: 'E_ITC_RECIPIENT_EXITED', retryable: true } : null),
+					},
+				});
 			}
 		}
 		initializing = false;

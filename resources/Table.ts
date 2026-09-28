@@ -2578,7 +2578,7 @@ export function makeTable(options) {
 		 */
 		get(target?: any): any {
 			const constructor: any = this.constructor;
-			assertFullTextSelection(target?.select);
+			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target?.select);
 			if (fullTextFieldNames) {
 				assertRecordField(
 					target?.property ?? (typeof target === 'string' && constructor.loadAsInstance !== false ? target : undefined)
@@ -4873,7 +4873,7 @@ export function makeTable(options) {
 			const txn = txnForContext(context);
 			if (!target) throw new Error('No query provided');
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
-			assertFullTextSelection(target.select);
+			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target.select);
 			const getColumns = () => {
 				const select = target.select;
 				if (select) {
@@ -6651,7 +6651,7 @@ export function makeTable(options) {
 		}
 		// #section: validation
 		validate(record: any, patch?: boolean) {
-			assertFullTextWrite(record);
+			if (fullTextFieldNames) assertFullTextWrite(record);
 			// Accumulate structured per-field issues so the 400 carries `{ path, code,
 			// message }[]` matching the emitted OpenAPI, instead of a single joined string. The joined
 			// message is still built for the HTTP title, preserving back-compat for callers that read it.

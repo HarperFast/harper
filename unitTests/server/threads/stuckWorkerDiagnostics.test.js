@@ -197,6 +197,26 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		}
 	});
 
+	it('marks a synchronous recipient send failure as retryable', async function () {
+		const worker = await startFixtureWorker('acknowledge');
+		started.push(worker);
+		const originalPostMessage = worker.postMessage;
+		worker.postMessage = () => {
+			throw new Error('fixture send failure');
+		};
+		try {
+			await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000), (error) => {
+				assert(error instanceof AggregateError);
+				assert.match(error.errors[0].message, /fixture send failure/);
+				assert.strictEqual(error.code, 'E_ITC_RECIPIENT_EXITED');
+				assert.strictEqual(error.retryable, true);
+				return true;
+			});
+		} finally {
+			worker.postMessage = originalPostMessage;
+		}
+	});
+
 	it('preserves a shared worker conflict on a strict broadcast', async function () {
 		const worker = await startFixtureWorker('reject-conflict');
 		started.push(worker);

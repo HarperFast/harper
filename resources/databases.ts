@@ -3618,12 +3618,15 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				);
 			}
 			let persistedPrimary = persistedPrimaryDescriptor(Table.dbisDB);
-			let persistedFullTextValues = persistedPrimary.descriptor?.fullTextIndexes;
+			let persistedFullTextValues =
+				persistedPrimary.descriptor?.fullTextIndexes ??
+				(persistedPrimary.descriptor === undefined ? Table.fullTextIndexes : undefined);
 			if (origin === 'cluster') {
+				const hasPersistedPrimary = persistedPrimary.descriptor !== undefined;
 				const declaredFields = new Set(
 					readPersistedFullTextFields(
-						persistedPrimary.descriptor.fullTextFields,
-						persistedFullTextValues,
+						hasPersistedPrimary ? persistedPrimary.descriptor.fullTextFields : Table.fullTextFields,
+						hasPersistedPrimary ? persistedFullTextValues : Table.fullTextIndexes,
 						catalogAttributes(Table.dbisDB),
 						fullTextWarning
 					)

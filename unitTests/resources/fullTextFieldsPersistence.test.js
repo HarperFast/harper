@@ -237,4 +237,15 @@ rocksOnly('durable full-text declarations', () => {
 		assert(!Product.attributes.some(({ name }) => name === 'search'));
 		assert.strictEqual(Product.dbisDB.getSync('Product/search'), undefined);
 	});
+
+	it('uses the live declaration to guard peer collisions when the primary descriptor is absent', () => {
+		let Product = declare({ fullTextIndexes: [definition()] });
+		Product.dbisDB.removeSync('Product/');
+
+		Product = declare({ origin: 'cluster', attributes: [...attributes(), { name: 'search', type: 'String' }] });
+
+		assert.deepStrictEqual(Product.fullTextFields, ['search']);
+		assert(!Product.attributes.some(({ name }) => name === 'search'));
+		assert.strictEqual(Product.dbisDB.getSync('Product/search'), undefined);
+	});
 });
