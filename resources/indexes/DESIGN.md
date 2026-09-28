@@ -387,6 +387,13 @@ replay after its payload; replicas independently derive it from their own applie
 backup and restore need only authoritative records and schema. A new or unusable directory serves no
 full-text queries until rebuild and catch-up publish `ready`.
 
+A table drop keeps the tombstoned catalog descriptor, including its native index names, until
+retirement completes. The drop broadcast first unloads peer attachments and awaits their writer
+shutdown; only then may the wrapper retire native storage, followed by RocksDB column families and
+catalog rows. If native retirement cannot prove success, the table remains logically dropped and
+unloaded but its tombstone stays durable so restart or same-name creation retries cleanup. Removing
+the catalog first would turn a crash in that interval into an untraceable native-directory leak.
+
 Tantivy files are not an opaque encrypted cache. They contain the document-id term dictionary,
 analyzed term dictionaries, postings, frequencies and optionally positions; `surfaceTerms: true`
 also stores the original projected strings needed for surface-term features. Operators must protect

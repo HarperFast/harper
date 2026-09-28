@@ -216,6 +216,8 @@ export const SYSTEM_TABLE_NAMES = {
 	SECRET_TABLE_NAME: 'hdb_secret',
 	OIDC_TRUST_TABLE_NAME: 'hdb_oidc_trust',
 	OIDC_TOKEN_USE_TABLE_NAME: 'hdb_oidc_token_use',
+	MODEL_DECISIONS_TABLE_NAME: 'hdb_model_decisions',
+	MODEL_OUTCOMES_TABLE_NAME: 'hdb_model_outcomes',
 } as const;
 
 /** Hash attribute for the system info table */
@@ -954,6 +956,7 @@ export const ITC_EVENT_TYPES = {
 	GET_METRICS: 'get_metrics',
 	RESTART: 'restart',
 	START_JOB: 'start_job',
+	JOB_CLEANUP_COMPLETE: 'job_cleanup_complete',
 	COMPONENT_STATUS_REQUEST: 'component_status_request',
 	COMPONENT_STATUS_RESPONSE: 'component_status_response',
 	RESOURCE_OPENAPI_REQUEST: 'resource_openapi_request',

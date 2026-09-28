@@ -856,7 +856,8 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				nodeResponse.end('Service unavailable, exceeded request queue limit');
 				recordAction(true, 'service-unavailable', port);
 			},
-			env.get(serverPrefix + '_requestQueueLimit')
+			env.get(serverPrefix + '_requestQueueLimit'),
+			`HTTP request queue on port ${port}`
 		);
 		const server = (httpServers[port] = (
 			secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer
@@ -1127,7 +1128,8 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 				body: 'Service unavailable, exceeded request queue limit',
 			};
 		},
-		requestQueueLimit
+		requestQueueLimit,
+		`HTTP request queue on port ${port}`
 	);
 	return (request: any) => {
 		const method = request.method;

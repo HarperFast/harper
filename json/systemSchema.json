@@ -527,5 +527,27 @@
 				"attribute": "id"
 			}
 		]
+	},
+	"hdb_model_decisions": {
+		"hash_attribute": "id",
+		"name": "hdb_model_decisions",
+		"schema": "system",
+		"audit": true,
+		"attributes": [
+			{
+				"attribute": "id"
+			}
+		]
+	},
+	"hdb_model_outcomes": {
+		"hash_attribute": "id",
+		"name": "hdb_model_outcomes",
+		"schema": "system",
+		"audit": true,
+		"attributes": [
+			{
+				"attribute": "id"
+			}
+		]
 	}
 }

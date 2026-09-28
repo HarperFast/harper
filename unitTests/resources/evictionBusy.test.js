@@ -3,6 +3,7 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { registerDerivedIndexTables } = require('#src/resources/derivedIndexRegistry');
+const { suspendDatabaseCommits } = require('#src/resources/DatabaseTransaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 // Regression for #1287 (RocksDB leg). The cleanup scan's batcher retries ERR_BUSY, but the two
@@ -61,6 +62,54 @@ describe('evict() swallows a commit conflict instead of rejecting (#1287)', () =
 		} finally {
 			Transaction.prototype.commit = originalCommit;
 			unregister();
+		}
+	});
+
+	it('waits for a maintenance commit before disposing the table', async function () {
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const originalCommit = Transaction.prototype.commit;
+		await BusyTable.put('b2', { id: 'b2' });
+		const entry = BusyTable.primaryStore.getEntry('b2');
+		let releaseCommit;
+		let commitStarted;
+		const started = new Promise((resolve) => (commitStarted = resolve));
+		const blocked = new Promise((resolve) => (releaseCommit = resolve));
+		Transaction.prototype.commit = async function (...args) {
+			commitStarted();
+			await blocked;
+			return originalCommit.apply(this, args);
+		};
+
+		try {
+			const eviction = BusyTable.evict('b2', entry.value, entry.version);
+			await started;
+			let closed = false;
+			const close = BusyTable.closeMaintenance().then(() => (closed = true));
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.strictEqual(closed, false, 'maintenance close must wait for the in-flight eviction');
+			releaseCommit();
+			await Promise.all([eviction, close]);
+			assert.strictEqual(closed, true);
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+		}
+	});
+
+	it('resolves without an unhandled rejection when teardown denies the commit', async function () {
+		await BusyTable.put('b3', { id: 'b3' });
+		const entry = BusyTable.primaryStore.getEntry('b3');
+		const suspension = suspendDatabaseCommits([BusyTable.primaryStore.rootStore]);
+		const unhandled = [];
+		const onUnhandled = (error) => unhandled.push(error);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			await BusyTable.evict('b3', entry.value, entry.version);
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.deepStrictEqual(unhandled, []);
+			assert.ok(BusyTable.primaryStore.getEntry('b3'), 'denied eviction must leave the resident record intact');
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
+			suspension.release();
 		}
 	});
 });

@@ -346,6 +346,19 @@ starting `handleApplication`; if a deploy begins during the load, the plugin tim
 unpaused load time. This prevents a long install from looking like a hung plugin while its entry handlers
 are deliberately paused against the intermediate tree.
 
+A deploy's own validation load is exempt: its Scopes (`isTransientValidation`, set at construction from
+`collectScopes`) never read the deploy state, subscribe to `deploy:start`/`deploy:end`, pause their
+watchers, or suspend their plugin timeout. The load runs inside the deploy's lifecycle bracket, between
+build and swap, so any wait for a deploy to end can be a wait on itself. It was, for a component deployed
+as `harper`: the validation load passes no `appName`, so its Scopes take the loader's default name
+`harper`, matched the deploy in flight, and waited for its end while the deploy waited for them. A
+replicated deploy of that component hung on every peer, since only worker threads validate. The same
+cycle formed when a `harper` deploy started on a worker while another component's validation was running
+there, because that deploy's own validation queues behind the running one (`validationChain`). The
+candidate tree is complete before validation starts and nothing else writes to it, so there is nothing to
+wait for. `unitTests/components/componentLoader.test.js` ("deploy validation loads never wait on a
+deploy") holds both routes and the plain timeout.
+
 ### The component load lock is keyed by plugin type, so a plugin's promise is everyone's clock
 
 `sequentiallyHandleApplication` (`components/componentLoader.ts`) holds a cross-thread lock keyed by the
@@ -423,6 +436,31 @@ inputs retain their existing symlink behavior.
 
 - **Retry is only safe before any byte has reached the consumer.** Once a chunk is handed downstream, re-opening `Blob.stream()` from byte 0 would duplicate it (there's no cheap way to resume from an arbitrary offset across a fresh stream without also plumbing `Blob.slice()`, which was out of scope for this fix). So the helper retries only while the current attempt has yielded nothing yet; a stall after partial content fails immediately, same as before this existed.
 - **Backpressure and cancellation are two different problems, and both are easy to get wrong with a hand-rolled `ReadableStream`.** An early version wrapped the retry loop in `new ReadableStream({ async start(controller) { for await (...) controller.enqueue(chunk) } })` — this eagerly drains `streamFactory()` regardless of `controller.desiredSize`, defeating the whole point of not buffering a multi-GB payload in memory. Switching to an `async function*` consumed via `Readable.from()` restores real backpressure (the generator only resumes when the consumer wants more, matching how the un-wrapped `Blob.stream()` behaved pre-fix). But `Readable.from()`'s `return()`-on-destroy cancellation only takes effect at the generator's _next_ `yield` — while the loop is stuck retrying (no `yield` reached yet), destroying the `Readable` does nothing until the loop naturally exits, verified empirically (a generator that never yields kept retrying long after `.destroy()`). The fix: thread the constructed `Readable` back into the generator via a mutable cell (`readable` doesn't exist until after `Readable.from()` returns, so it can't be closed over directly) and check `.destroyed` explicitly at each loop iteration and after each backoff sleep.
+
+## An origin waits for a peer's deploy answer only as long as the peer may take
+
+The origin of a replicated `deploy_component` hands `server.replication.replicateOperation` a `timeoutMs`
+from `peerDeployAnswerTimeoutMs(req)` (`components/operations.js`). It is the sum of what the peer is
+allowed for that request: its payload wait (`deployment_timeout`, counted twice when credential references
+must also replicate in), two full preparation budgets (`componentPreparationBudgetMs`: every extraction
+command and both install commands at their allowances), a margin for validation and the swap, and the
+restart ceiling when the peer restarts before answering. It is clamped to the longest delay a timer holds.
+One budget is the peer's own preparation. The other is the preparation lock's wait: a peer already preparing
+the same component for another deploy holds this one at the lock for a budget before the lock re-checks the
+holder.
+
+It must never undercut a healthy peer. A shorter bound turns a slow success into a reported failure, and a
+two-command install (a custom package manager falling back to npm) is exactly such a success. So the
+default is hours, and its job is only that the origin eventually settles, rather than holding the
+operation, the deployment row and its own restart for as long as a wedged peer stays wedged. Two things are
+not budgeted. The lock keeps waiting while its holder is alive, so queueing behind a preparation that
+outlasts the lock's wait, or behind several, can run past the deadline. So can plugin `timeout`s a component
+configures beyond the validation margin, which live in the payload the origin does not parse. Covering the
+first would take a deadline that follows the peer's progress rather than a sum of its allowances. The
+deadline is not cancellation: a peer past it may still finish, so the failure the replicator records says
+the outcome there is unknown.
+It stays a `failed` peer result, because `getFailedPeers()` counts only that status, and a new one would
+read as success.
 
 ## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
 

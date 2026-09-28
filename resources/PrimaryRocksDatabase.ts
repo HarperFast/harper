@@ -1,4 +1,4 @@
-import { trackReadRange } from './DatabaseTransaction.ts';
+import { commitTrackedRocksTransaction, trackReadRange } from './DatabaseTransaction.ts';
 import { RocksDatabase, type RocksDatabaseOptions, constants, type Store, Transaction } from '@harperfast/rocksdb-js';
 
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
@@ -56,7 +56,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 				}
 				this.#cache?.delete(id);
 				super.removeSync(id, { transaction });
-				await transaction.commit();
+				await commitTrackedRocksTransaction(transaction, this);
 				return true;
 			} catch (error: any) {
 				try {

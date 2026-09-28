@@ -2641,25 +2641,30 @@ export function getBlobPathsForDatabaseName(databaseName: string): string[] {
 }
 export async function deleteRootBlobPathsForDB(store: RootDatabase): Promise<void> {
 	const paths = getRootBlobPathsForDB(store);
-	if (paths) {
-		await Promise.all(paths.map((path) => rimrafSteadily(path)));
-	}
+	if (paths) await deleteBlobPaths(paths);
+}
+
+export async function deleteBlobPaths(paths: Iterable<string>): Promise<void> {
+	const failures = (await Promise.all([...new Set(paths)].map((path) => rimrafSteadily(path)))).flat();
+	if (failures.length > 0) throw new AggregateError(failures, 'Could not delete blob storage');
 }
 
 /**
  * recursively delete a directory and all of its contents, but do it one at a time, so that we don't run out of memory and hog resources
  * @param path
  */
-async function rimrafSteadily(path: string) {
-	if (!existsSync(path)) return;
+async function rimrafSteadily(path: string): Promise<unknown[]> {
+	if (!existsSync(path)) return [];
+	const failures: unknown[] = [];
 	for (const entry of await readdir(path, { withFileTypes: true })) {
 		if (entry.isDirectory()) {
-			await rimrafSteadily(join(path, entry.name));
+			failures.push(...(await rimrafSteadily(join(path, entry.name))));
 		} else {
 			try {
 				await unlinkPromised(join(path, entry.name));
 			} catch (error) {
 				logger.warn?.('Error deleting file', error);
+				failures.push(error);
 			}
 		}
 	}
@@ -2667,7 +2672,9 @@ async function rimrafSteadily(path: string) {
 		await rmdir(path);
 	} catch (error) {
 		logger.warn?.('Error deleting directory', error);
+		failures.push(error);
 	}
+	return failures;
 }
 function getFilePath({ storageIndex, fileId, store }: StorageInfo): string {
 	const blobStoragePaths = getRootBlobPathsForDB(store);

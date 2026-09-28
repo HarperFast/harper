@@ -749,18 +749,7 @@ describe('audit staleness floor', () => {
 		raiseAuditFloor(durable.auditStore, raised);
 		assert.strictEqual(floorOf(durable), raised, 'precondition: the raise landed in-process');
 
-		// `closeDatabase` fires `close()` without awaiting it, and on LMDB that close is asynchronous (the
-		// drop path in databases.ts awaits the same call). Reopening the path while the env is still
-		// closing can throw or read pre-flush bytes, so capture the promise closeDatabase discards and
-		// await it. RocksDB's close is synchronous and returns undefined, which awaits as a no-op.
-		const root = durable.auditStore.rootStore;
-		let closing;
-		const realClose = root.close.bind(root);
-		root.close = (...args) => (closing = realClose(...args));
-		assert.ok(closeDatabase('auditFloor_Durable'), 'precondition: the database was open to be closed');
-		if (!durable.auditStore.reusableIterable)
-			assert.ok(closing && typeof closing.then === 'function', 'precondition: the LMDB env close was captured');
-		await closing;
+		assert.ok(await closeDatabase('auditFloor_Durable'), 'precondition: the database was open to be closed');
 		const reopened = tableInOwnDatabase('Durable');
 		assert.notStrictEqual(reopened.auditStore, durable.auditStore, 'precondition: a fresh store, not the cached one');
 		assert.strictEqual(

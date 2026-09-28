@@ -109,11 +109,21 @@ Three non-obvious mechanics keep that safe:
   exited job worker leaves no residual handle to be mistaken for a live holder.
 - **`dropDatabase` and `restore_backup` serialize on the same lock, not a check-then-act probe.**
   A drop's `destroy()` interleaving with a restore's purge-and-copy on the same directory would gut
-  a "successful" restore (or vice versa). `dropDatabase` therefore _acquires_ the restore lock
-  (`acquireRestoreLock`, marker-less) for each RocksDB root store and holds it across the whole drop,
-  releasing in a `finally`; a restore in progress makes the acquire fail with 409, and a leftover
-  incomplete-restore marker (lock free, detected via `restoreMarkerPresent`, which — unlike
-  `checkRestoreState` — is safe while this thread holds the lock) is refused rather than dropped over.
+  a "successful" restore (or vice versa). `dropDatabase` takes the restore lock for every RocksDB or
+  LMDB root and publishes a positional `.dropping` marker beside each root before deleting any of
+  them. A restore in progress makes the acquire fail with 409; `beginRestore` likewise refuses a
+  surviving drop marker. Each marker records the root store's blob identity and exact pinned blob
+  paths, so a retry removes what an already-marked handle owned even if `storage.blobPaths` changes.
+  An integrity digest makes damaged identity content fail closed instead of redirecting deletion.
+  Markers are removed only after every root and blob path has been removed.
+  Startup scans and cold opens reject the marked root and the rest of its logical database graph, so
+  a crash while publishing or canceling several markers cannot expose a partial database. Retrying
+  `drop_database` re-enumerates that graph and completes marker publication and deletion even when
+  the in-memory catalog is gone. A configured `databases.<name>.path` is the exclusive root of that
+  logical graph, not a container for independent databases: every physical database directly beneath
+  it is an alias-owned member, and dropping any alias drops the graph. A strict worker-close failure
+  similarly keeps that worker's physical roots fenced and remembered; a same-name drop retry
+  re-attempts those closes before marker publication or deletion.
   `database()`'s on-demand open still uses the read-only `throwIfBlockedByRestore` (a
   `create_table`/`create_schema` must not resurrect a half-purged directory as a fresh empty DB), but
   the destructive drop path now uses the exclusive lock so the race is closed, not merely narrowed.
