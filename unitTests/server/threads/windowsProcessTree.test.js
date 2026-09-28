@@ -45,6 +45,21 @@ describe('selectWindowsProcessTree', () => {
 		assert.deepEqual(pids(members), [4100, 4200]);
 	});
 
+	it("finds a live descendant that Windows hands the root's own freed PID", () => {
+		// The root exited; orphan 4100 is a remembered survivor. Windows then hands the root's freed
+		// PID (4000) to a brand-new child of that orphan. Reserving the root's PID unconditionally
+		// (rather than only once verified as ours) would make this legitimate child unreachable through
+		// the frontier walk, silently dropping it — and its whole subtree — from the tree.
+		const table = [row(4100, ROOT, SPAWNED_AT + 200), row(ROOT, 4100, EXITED_AT + 50)];
+		const members = selectWindowsProcessTree(table, {
+			rootPid: ROOT,
+			rootKnownAt: SPAWNED_AT,
+			rootExitedAt: EXITED_AT,
+			descendants: new Map([[4100, { created: SPAWNED_AT + 200 }]]),
+		});
+		assert.deepEqual(pids(members), [ROOT, 4100]);
+	});
+
 	it('ignores a process that recycled the exited root PID, and its children', () => {
 		const table = [
 			row(ROOT, 900, EXITED_AT + 30, 'WmiPrvSE.exe'),

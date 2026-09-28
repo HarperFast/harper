@@ -184,9 +184,15 @@ export function selectWindowsProcessTree(
 	now: number = Date.now()
 ): WindowsProcessRecord[] {
 	const members: WindowsProcessRecord[] = [];
-	const seen = new Set<number>([identity.rootPid]);
+	const seen = new Set<number>();
 	const root = findWindowsTreeRoot(table, identity);
-	if (root) members.push(root);
+	// Only reserve the root's PID once it is verified as ours — once the root has exited, a live
+	// descendant that Windows hands that freed PID is a legitimate child of some other frontier
+	// member, and must still be reachable through the frontier walk below.
+	if (root) {
+		seen.add(identity.rootPid);
+		members.push(root);
+	}
 	const rootCreatedAt = root?.created ?? identity.rootCreatedAt;
 	// A row now holding `pid` that could not possibly be the member we are bounding — created after
 	// the latest moment a genuine one could have been — proves the PID was already recycled by then,

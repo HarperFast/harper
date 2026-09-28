@@ -1780,10 +1780,17 @@ function removeProcessGroup(ownerThreadId, processGroupId, registrationGeneratio
 // Returns a promise that resolves once every process group tracked for `ownerThreadId` is
 // confirmed terminated. Callers that only need to fire the termination (e.g. the `exit` handler
 // below) can ignore the returned promise; isThreadRunning awaits it before declaring a dead
-// owner reclaimable. The kill signal for every group is sent synchronously, before any `await` —
-// this runs from a process `exit` handler too, where nothing queued after a suspension point is
-// guaranteed to run.
-function terminateProcessGroupsForThread(ownerThreadId) {
+// owner reclaimable. On POSIX the kill signal for every group is sent synchronously, before any
+// `await` — this runs from a process `exit` handler too, where nothing queued after a suspension
+// point is guaranteed to run, and a process-group SIGKILL is directed at the group id, not a PID
+// Windows could have already reissued. On Windows a synchronous `taskkill /pid` has no such
+// process-group semantics — a PID whose process already exited is indistinguishable from one that
+// never will be, so an unconditional pre-kill can hit whatever now holds a recycled PID (the exact
+// harper#2273 unrelated-process kill this module exists to prevent). `fromExitHandler` restricts
+// that blind pre-kill to the one caller that genuinely cannot await a scan first; every other
+// caller lets the identity-checked confirmation loop below issue the first kill, after its own
+// scan has verified who the PID currently belongs to.
+function terminateProcessGroupsForThread(ownerThreadId, { fromExitHandler = false } = {}) {
 	const processGroups = processGroupsByThread.get(ownerThreadId);
 	if (!processGroups) return pendingProcessGroupTerminations.get(ownerThreadId) ?? Promise.resolve();
 	processGroupsByThread.delete(ownerThreadId);
@@ -1799,6 +1806,7 @@ function terminateProcessGroupsForThread(ownerThreadId) {
 	for (const processGroupId of groupIds) {
 		try {
 			if (process.platform === 'win32') {
+				if (!fromExitHandler) continue;
 				const result = spawnSync('taskkill', ['/pid', String(processGroupId), '/T', '/F'], {
 					stdio: 'ignore',
 					windowsHide: true,
@@ -1902,7 +1910,8 @@ async function isThreadRunning(ownerThreadId, timeoutMs = THREAD_INFO_REQUEST_TI
 
 if (isMainThread) {
 	process.on('exit', () => {
-		for (const ownerThreadId of [...processGroupsByThread.keys()]) terminateProcessGroupsForThread(ownerThreadId);
+		for (const ownerThreadId of [...processGroupsByThread.keys()])
+			terminateProcessGroupsForThread(ownerThreadId, { fromExitHandler: true });
 	});
 }
 
