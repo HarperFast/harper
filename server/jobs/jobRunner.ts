@@ -153,14 +153,15 @@ async function launchJobThread(job_id: any) {
 	}
 }
 
-/** Only an unexpected exit strands the row; a deliberate stop is replaced or swept. */
 function startJobWorker(jobId: any) {
+	const settleOnUnownedExit = () =>
+		settleAbandonedJob(jobId).catch((error) => log.error(`Could not settle abandoned job ${jobId}:`, error));
 	return threadsStart.startWorker(join(__dirname, './jobProcess.js'), {
 		autoRestart: false,
 		name: hdbTerms.THREAD_TYPES.JOB,
 		env: { ...process.env, [hdbTerms.PROCESS_NAME_ENV_PROP]: `JOB-${jobId}` },
-		onUnexpectedExit: () =>
-			settleAbandonedJob(jobId).catch((error) => log.error(`Could not settle abandoned job ${jobId}:`, error)),
+		onUnexpectedExit: settleOnUnownedExit,
+		onPermanentStop: settleOnUnownedExit,
 	});
 }
 

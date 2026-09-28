@@ -291,6 +291,7 @@ function workersForApplication(application) {
  * resolve once it has exited. Marked as shut down first so its exit does not start a replacement.
  */
 function stopWorker(worker) {
+	worker.wasPermanentlyStopped = true;
 	worker.wasShutdown = true;
 	return new Promise((resolve) => {
 		const armTerminate = (delay) =>
@@ -608,7 +609,9 @@ function startWorker(path, options = {}) {
 		const unexpected = exitedUnexpectedly(worker);
 		// An option rather than a listener on the returned worker, so that `startCopy`'s replacement
 		// inherits it — see server/DESIGN.md.
-		if (unexpected) runExitHandler(options.onUnexpectedExit, worker, workerThreadId);
+		if (unexpected) runExitHandler(options.onUnexpectedExit, 'onUnexpectedExit', worker, workerThreadId);
+		else if (!processShuttingDown && worker.wasPermanentlyStopped)
+			runExitHandler(options.onPermanentStop, 'onPermanentStop', worker, workerThreadId);
 		if (unexpected && options.autoRestart !== false && options.shouldAutoRestart?.(worker) !== false) {
 			// if this wasn't an intentional shutdown, restart now (unless we have tried too many times)
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
@@ -815,6 +818,7 @@ async function restartWorkers(
 					continue;
 				}
 			}
+			if (!startReplacementThreads) worker.wasPermanentlyStopped = true;
 			harperLogger.trace('sending shutdown request to ', worker.threadId);
 			try {
 				worker.postMessage({
@@ -991,9 +995,9 @@ function exitedUnexpectedly(worker) {
  * A caller's exit handler must not be able to take the process down with it: inside an 'exit'
  * listener a synchronous throw is uncaught, and an async handler's rejection is unhandled.
  */
-function runExitHandler(handler, worker, threadId) {
+function runExitHandler(handler, handlerName, worker, threadId) {
 	if (!handler) return;
-	const failed = (error) => harperLogger.error('onUnexpectedExit handler failed for thread', threadId, error);
+	const failed = (error) => harperLogger.error(`${handlerName} handler failed for thread`, threadId, error);
 	try {
 		Promise.resolve(handler(worker)).catch(failed);
 	} catch (error) {

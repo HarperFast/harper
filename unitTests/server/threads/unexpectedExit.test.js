@@ -6,13 +6,11 @@ testUtils.preTestPrep();
 const assert = require('node:assert');
 const path = require('node:path');
 const { once } = require('node:events');
-const { startWorker, stopWorker, workers } = require('#js/server/threads/manageThreads');
+const { shutdownWorkersNow, startWorker, stopWorker, workers } = require('#js/server/threads/manageThreads');
 
 const FIXTURE = path.join(__dirname, 'unexpectedExit-fixture.cjs');
 
-// A deliberate stop already has an owner — a replacement, or the process teardown — so only a death
-// nothing accounted for reaches the hook.
-describe('startWorker onUnexpectedExit', function () {
+describe('startWorker exit handlers', function () {
 	this.timeout(60000);
 
 	it('fires when a worker dies on its own', async function () {
@@ -27,11 +25,20 @@ describe('startWorker onUnexpectedExit', function () {
 		}
 	});
 
-	it('does not fire for a deliberate stop', async function () {
-		const exits = [];
-		const worker = await startFixtureWorker(exits);
+	it('routes a deliberate stop to the permanent-stop handler', async function () {
+		const unexpectedExits = [];
+		const permanentStops = [];
+		const worker = await startFixtureWorker(unexpectedExits, undefined, (worker) => permanentStops.push(worker));
 		await stopWorker(worker);
-		assert.deepStrictEqual(exits, [], 'a stopped worker is already someone else’s responsibility');
+		assert.deepStrictEqual(unexpectedExits, []);
+		assert.deepStrictEqual(permanentStops, [worker]);
+	});
+
+	it('fires the permanent-stop handler for a targeted shutdown without a replacement', async function () {
+		const exits = [];
+		const worker = await startFixtureWorker([], undefined, (worker) => exits.push(worker));
+		await shutdownWorkersNow('unexpected-exit-fixture');
+		assert.deepStrictEqual(exits, [worker]);
 	});
 
 	// A handler that fails must not take the process down with the thread — a throw inside an 'exit'
@@ -83,12 +90,13 @@ describe('startWorker onUnexpectedExit', function () {
 	});
 });
 
-function startFixtureWorker(exits, onUnexpectedExit = (worker) => exits.push(worker)) {
+function startFixtureWorker(exits, onUnexpectedExit = (worker) => exits.push(worker), onPermanentStop) {
 	return new Promise((resolve, reject) => {
 		startWorker(FIXTURE, {
 			autoRestart: false,
 			name: 'unexpected-exit-fixture',
 			onUnexpectedExit,
+			onPermanentStop,
 			onStarted(worker) {
 				const onMessage = (message) => {
 					if (message?.type !== 'fixture-ready') return;
