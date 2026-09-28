@@ -286,8 +286,9 @@ suite('deploy_component on a worker thread under lockdown: freeze', (ctx: Contex
 		);
 		strictEqual(result.isMainThread, false);
 		strictEqual(result.ok, false, 'a candidate that cannot load at boot must not be activated');
+		// V8 and JavaScriptCore word the frozen-Reflect TypeError differently; both say "not extensible".
 		ok(
-			result.error?.includes('Cannot define property harperProbeEagerFreeze'),
+			result.error?.includes(`application '${project}'`) && result.error.includes('not extensible'),
 			`unexpected rejection: ${result.error}`
 		);
 	});
