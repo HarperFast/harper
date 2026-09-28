@@ -175,6 +175,26 @@ describe('published native full-text Table.search integration', () => {
 		);
 		assert.deepStrictEqual(ids(orResults), ['one', 'three']);
 
+		const guardedOr = () => ({
+			operator: 'or',
+			conditions: [
+				{ attribute: 'catalogSearch', comparator: 'matches', value: 'waterproof' },
+				{ attribute: 'catalogSearch', comparator: 'matches', value: 'headphones' },
+			],
+		});
+		const ranked = await collect(Product.search(guardedOr()));
+		assert.strictEqual(ranked.length, 3);
+		const deniedId = ranked[0].id;
+		const rowFilter = (record) => record.id !== deniedId;
+		assert.deepStrictEqual(
+			(await collect(Product.search({ ...guardedOr(), rowFilter, limit: 1 }))).map(({ id }) => id),
+			[ranked[1].id]
+		);
+		assert.deepStrictEqual(
+			(await collect(Product.search({ ...guardedOr(), rowFilter, offset: 1, limit: 1 }))).map(({ id }) => id),
+			[ranked[2].id]
+		);
+
 		const restQuery = parseQuery('catalogSearch=matches_phrase=trail%20running&select(id,title,$score,$highlights)');
 		const [restResult] = await collect(Product.search(restQuery));
 		assert.strictEqual(restResult.id, 'one');

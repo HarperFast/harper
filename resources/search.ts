@@ -78,6 +78,9 @@ export function executeConditions(
 ) {
 	conditions = combineFullTextConditions(conditions, operator, table);
 	const firstSearch = conditions[0];
+	// A same-index full-text OR is already one native expression. Route that single traversal through
+	// the AND path so row and vector guards are pushed down before the requested page is filled.
+	if (operator === 'or' && conditions.length === 1 && firstSearch.fullTextQuery) operator = 'and';
 	// Record-level guards (caller-supplied vectorFilter + rowFilter) apply to every record
 	// the query returns, independent of which condition leads (#1241). `recordAccess` is supplied only on
 	// the top-level executeConditions call (Table.search) and deliberately NOT threaded into the recursive

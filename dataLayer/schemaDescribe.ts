@@ -181,13 +181,15 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 	}
 
 	let attributes = [];
-	let permittedAttributes: Set<string> | undefined;
+	let readableAttributes: Set<string> | undefined;
 	if (tableAttrPerms) {
 		let permittedAttr = {};
+		let readableAttr = {};
 		tableAttrPerms.forEach((a) => {
 			if (a.describe) permittedAttr[a.attribute_name] = true;
+			if (a.read) readableAttr[a.attribute_name] = true;
 		});
-		permittedAttributes = new Set(Object.keys(permittedAttr));
+		readableAttributes = new Set(Object.keys(readableAttr));
 
 		tableObj.attributes.forEach((a) => {
 			if (permittedAttr[a.name]) pushAtt(a);
@@ -227,7 +229,7 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 		tableResult.full_text_indexes = tableObj.fullTextIndexes
 			.map((definition: any) => {
 				const fields = definition.fields.filter(
-					(field: any) => !permittedAttributes || permittedAttributes.has(field.name)
+					(field: any) => !readableAttributes || readableAttributes.has(field.name)
 				);
 				if (fields.length === 0) return;
 				const readiness = fullTextDerivedIndexReadiness(tableObj, definition.name);

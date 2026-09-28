@@ -115,6 +115,7 @@ export class FullTextQueryIndex {
 	#maxTraceSourceBytes?: number;
 	#closed = false;
 	#pauses: QueryPauses = new Map();
+	#foreignPausesObservedBeforeReady: QueryPauses = new Map();
 	#derivedHost?: FullTextQueryHost;
 	readonly #derivedHostReady = Promise.withResolvers<FullTextQueryHost>();
 	#publicationSubscription?: DerivedIndexPublicationSubscription;
@@ -144,7 +145,12 @@ export class FullTextQueryIndex {
 		if (!indexes) queryIndexesByPath.set(this.#nativeOptions.path, (indexes = new Set()));
 		indexes.add(this);
 		const pauses = pausedQueryPaths.get(this.#nativeOptions.path);
-		if (pauses) this.#pauses = new Map(pauses);
+		if (pauses) {
+			this.#pauses = new Map(pauses);
+			if (readDerivedIndexReadiness(options.auditStore, options.readinessId).state !== 'ready')
+				for (const [readinessId, ownerEpoch] of pauses)
+					if (readinessId !== options.readinessId) this.#foreignPausesObservedBeforeReady.set(readinessId, ownerEpoch);
+		}
 	}
 
 	updateDefinition(definition: FullTextDefinition): void {
@@ -218,7 +224,10 @@ export class FullTextQueryIndex {
 				this.#requestRebuild();
 				void this.#retireAllReaders().catch(() => undefined);
 			}
-			throw publicSearchError(error, this.#definition.name);
+			const publicError = publicSearchError(error, this.#definition.name);
+			if (publicError !== error && publicError instanceof ServerError && publicError.statusCode === 500)
+				logger.error?.(`Unexpected full-text search failure on '${this.#definition.name}'`, error);
+			throw publicError;
 		});
 		if (!waiting && coverage) Object.defineProperty(operation, 'indexCoverage', { value: coverage });
 		operation.catch(() => {});
@@ -277,16 +286,26 @@ export class FullTextQueryIndex {
 	async pause(readinessId: string, ownerEpoch: bigint): Promise<void> {
 		const current = this.#pauses.get(readinessId);
 		if (current !== undefined && current > ownerEpoch) return;
-		if (current !== ownerEpoch)
+		if (current !== ownerEpoch) {
 			logger.info?.(
 				`Pausing full-text readers for '${this.#definition.name}' while '${readinessId}' resets at owner epoch ${ownerEpoch}`
 			);
+			if (
+				readinessId !== this.#options.readinessId &&
+				readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId).state !== 'ready'
+			)
+				this.#foreignPausesObservedBeforeReady.set(readinessId, ownerEpoch);
+			else this.#foreignPausesObservedBeforeReady.delete(readinessId);
+		}
 		this.#pauses.set(readinessId, ownerEpoch);
 		await this.#retireAllReaders();
 	}
 
 	resume(readinessId: string, ownerEpoch: bigint): void {
-		if (!this.#closed && this.#pauses.get(readinessId) === ownerEpoch) this.#pauses.delete(readinessId);
+		if (!this.#closed && this.#pauses.get(readinessId) === ownerEpoch) {
+			this.#pauses.delete(readinessId);
+			this.#foreignPausesObservedBeforeReady.delete(readinessId);
+		}
 	}
 
 	async #search(
@@ -505,13 +524,17 @@ export class FullTextQueryIndex {
 
 	#readerFor(ownerEpoch: bigint, publicationGeneration: bigint, reserve = false): Promise<ReaderSlot> {
 		if (this.#closed) return Promise.reject(new ServerError('Full-text index is closed', 503));
+		const ownReadiness = readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId);
 		let hasForeignPause = false;
 		for (const [readinessId, pausedEpoch] of this.#pauses) {
 			const readiness = readDerivedIndexReadiness(this.#options.auditStore, readinessId);
 			const completed = readiness.state === 'ready' && readiness.ownerEpoch >= pausedEpoch;
-			if (completed) {
-				this.#pauses.delete(readinessId);
-				clearPathPause(this.#nativeOptions.path, readinessId, pausedEpoch);
+			const successorCompleted =
+				readinessId !== this.#options.readinessId &&
+				this.#foreignPausesObservedBeforeReady.get(readinessId) === pausedEpoch &&
+				ownReadiness.state === 'ready';
+			if (completed || successorCompleted) {
+				resumeNativeFullTextQueryReaders(this.#nativeOptions.path, readinessId, pausedEpoch);
 			} else if (readinessId !== this.#options.readinessId) hasForeignPause = true;
 		}
 		if (hasForeignPause) {
@@ -520,13 +543,10 @@ export class FullTextQueryIndex {
 			if (auditStore.tryLock(lockKey)) {
 				try {
 					// Every generation holds this lock through reset and shutdown, so acquisition proves reset quiescence.
-					if (readDerivedIndexReadiness(auditStore, readinessId).state === 'ready') {
-						for (const [pausedId, pausedEpoch] of this.#pauses) {
-							if (pausedId === readinessId) continue;
-							this.#pauses.delete(pausedId);
-							clearPathPause(this.#nativeOptions.path, pausedId, pausedEpoch);
-						}
-					}
+					if (readDerivedIndexReadiness(auditStore, readinessId).state === 'ready')
+						for (const [pausedId, pausedEpoch] of [...this.#pauses])
+							if (pausedId !== readinessId)
+								resumeNativeFullTextQueryReaders(this.#nativeOptions.path, pausedId, pausedEpoch);
 				} finally {
 					auditStore.unlock(lockKey);
 				}
@@ -559,7 +579,8 @@ export class FullTextQueryIndex {
 			const existing = this.#readerSlot;
 			const existingMatchesIdentity =
 				existing?.ownerEpoch === ownerEpoch && existing.configurationRevision === configurationRevision;
-			// Keep the idle check and reader operation installation synchronous so no lease can begin before reload.
+			// Publication sampling and entry into #readerFor stay synchronous, and this operation is installed before
+			// reload awaits, so no caller can lease the reader after observing the newer publication.
 			const canReload = existing?.active === 0 && existingMatchesIdentity;
 			try {
 				let reader: NativeFullTextReader;

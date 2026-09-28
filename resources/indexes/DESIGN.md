@@ -474,9 +474,11 @@ compared because each generation owns an independent counter.
 The runtime publishes `rebuilding` before invoking reset, so a worker created after the pause
 broadcast cannot admit a new reader. A worker that misses resume clears a token after that
 token's own shared readiness reaches ready at the same or a newer owner epoch. A predecessor generation
-that crashes during reset may never publish ready again. A ready successor can clear that foreign token
-only while holding the shared backend runner lock: every generation holds this lock through reset and
-shutdown, so acquisition proves no reset remains active. Recovery waits if a writer still owns the lock.
+that crashes during reset may never publish ready again. A successor that observed the foreign token
+before reaching ready can clear it when that same successor becomes ready: reaching ready requires the
+stable backend runner lock, so the predecessor's reset can no longer be active. A generation that was
+already ready when it observed the token must acquire the runner lock before clearing it. Recovery waits
+if a writer still owns that lock.
 The pause covers every reader on the physical path, including a superseded generation. Each active reset
 retains its own token; stale resumes cannot clear newer tokens. These rules do not compare generation-local
 epochs. A worker with no query index on the path retains no token because it has no reader to fence, and

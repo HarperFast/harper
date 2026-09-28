@@ -643,8 +643,8 @@ describe('@fullText derived-index activation', () => {
 							Product: {
 								read: true,
 								attribute_permissions: [
-									{ attribute_name: 'title', read: true },
-									{ attribute_name: 'tags', read: false },
+									{ attribute_name: 'title', read: true, describe: true },
+									{ attribute_name: 'tags', read: false, update: true, describe: true },
 								],
 							},
 						},
@@ -652,6 +652,16 @@ describe('@fullText derived-index activation', () => {
 				},
 			},
 		};
+		const restrictedDescription = await describeTable({
+			database,
+			table: 'Product',
+			hdb_user: user,
+			skip_record_count: true,
+		});
+		assert.deepStrictEqual(
+			restrictedDescription.full_text_indexes[0].fields.map(({ name }) => name),
+			['title']
+		);
 		const allowed = await collect(
 			Product.search(
 				{
@@ -715,6 +725,16 @@ describe('@fullText derived-index activation', () => {
 		const queryIndex = Product.fullTextQueryIndexes.search.customIndex;
 		Product.fullTextQueryIndexes.search.customIndex = undefined;
 		try {
+			await assert.rejects(
+				async () =>
+					collect(
+						Product.search({
+							conditions: [{ attribute: 'search', comparator: 'matches', value: 42 }],
+							limit: 1,
+						})
+					),
+				(error) => error.statusCode === 400
+			);
 			await assert.rejects(
 				Promise.resolve().then(() =>
 					collect(

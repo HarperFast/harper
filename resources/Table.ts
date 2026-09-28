@@ -5068,8 +5068,6 @@ export function makeTable(options) {
 								throw new ClientError(`Full-text index '${attribute_name}' requires a non-empty fields list`, 400);
 							assertFullTextReadAccess(context, target, fullTextDefinition, fields);
 						} else assertFullTextReadAccess(context, target, fullTextDefinition);
-						if (!TableResource.fullTextQueryIndexes[attribute_name]?.customIndex)
-							throw new IndexRebuildingError(`Full-text index '${attribute_name}' is not ready`);
 						const value = condition[1] ?? condition.value;
 						if (typeof value !== 'string' || value.length === 0)
 							throw new ClientError(
@@ -5092,6 +5090,8 @@ export function makeTable(options) {
 							condition.includeHighlights === true || selectRequestsProperty(target.select, '$highlights');
 						if (condition.includeHighlights && !fullTextDefinition.highlighting)
 							throw new ClientError(`Full-text index '${attribute_name}' does not enable highlighting`, 400);
+						if (!TableResource.fullTextQueryIndexes[attribute_name]?.customIndex)
+							throw new IndexRebuildingError(`Full-text index '${attribute_name}' is not ready`);
 						includeFullTextHighlights ||= condition.includeHighlights;
 						continue;
 					}
