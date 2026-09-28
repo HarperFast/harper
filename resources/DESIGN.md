@@ -176,30 +176,11 @@ Index waits use the ordinary transaction timeout; they do not renew it. The adap
 
 ## Audit retention floor
 
-`Table.subscribe`'s `startTime` replay just begins wherever the audit log now begins, so a consumer
-resuming below the retention horizon is silently handed a short replay. The floor is the primitive
-that makes that detectable (harper#2447). It is internal, with deliberately no public accessor, and **no
-resume path consumes it yet**: harper#2448 is to put the check inside `Table.subscribe` itself — the same shape as
-replication's `shouldForceBaseCopyForRetention`, and the only one where the floor cannot move between
-being read and being acted on. Until then the short replay above is unchanged.
+`Table.subscribe`'s `startTime` replay just begins wherever the audit log now begins, so a consumer resuming below the retention horizon is silently handed a short replay. The floor is the primitive that makes that detectable (harper#2447). It is internal, with deliberately no public accessor, and **no resume path consumes it yet**: harper#2448 is to put the check inside `Table.subscribe` itself — the same shape as replication's `shouldForceBaseCopyForRetention`, and the only one where the floor cannot move between being read and being acted on. Until then the short replay above is unchanged.
 
-**The one consumer today is not a resume**: `Table.commit`'s out-of-order reconciliation reads the
-floor before entering the audit walk (harper#2642). The walk terminates at the incoming write only by
-reaching an audit entry at or below its version, so below the floor it cannot — it runs the whole
-retained chain, one RocksDB end-of-log scan per step, to an outcome the floor already determines.
-Two things that consumer does differently from a cursor check, and both are deliberate: it compares
-the write's record version rather than a log key, because that is what the walk's own loop condition
-compares; and it treats the `Infinity` unknown floor as **walk anyway** rather than as "not safe",
-because here the conservative direction is to do the work, not to skip it. Below the floor a write
-contributes only its commutative operations — a plain field's survival depends on what newer writes
-did to that key, which is exactly what the pruned history no longer answers.
+**The one consumer today is not a resume**: `Table.commit`'s out-of-order reconciliation reads the floor before entering the audit walk (harper#2642). The walk terminates at the incoming write only by reaching an audit entry at or below its version, so below the floor it cannot — it runs the whole retained chain, one RocksDB end-of-log scan per step, to an outcome the floor already determines. Two things that consumer does differently from a cursor check, and both are deliberate: it compares the write's record version rather than a log key, because that is what the walk's own loop condition compares; and it treats the `Infinity` unknown floor as **walk anyway** rather than as "not safe", because here the conservative direction is to do the work, not to skip it. Below the floor a write contributes only its commutative operations — a plain field's survival depends on what newer writes did to that key, which is exactly what the pruned history no longer answers.
 
-**The invariant: every path that prunes audit history raises the floor BEFORE removing anything.**
-There are five, and the ordering is the whole guarantee — a floor written after the removal is lost
-if the process dies in between, and the surviving lower floor then certifies a cursor whose history
-is gone. Over-reporting (a floor covering more than the prune actually removed) costs a consumer one
-unnecessary resync; under-reporting loses its data with no signal. So `raiseAuditFloor` is called
-first and a throw from it is what stops the prune.
+**The invariant: every path that prunes audit history raises the floor BEFORE removing anything.** There are five, and the ordering is the whole guarantee — a floor written after the removal is lost if the process dies in between, and the surviving lower floor then certifies a cursor whose history is gone. Over-reporting (a floor covering more than the prune actually removed) costs a consumer one unnecessary resync; under-reporting loses its data with no signal. So `raiseAuditFloor` is called first and a throw from it is what stops the prune.
 
 | Prune path                                                                   | Engine                                                                      |
 | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
@@ -211,74 +192,20 @@ first and a throw from it is what stops the prune.
 
 Seven things that are easy to get wrong here:
 
-- **The floor cannot be derived from the surviving log.** For four of the five paths the oldest
-  surviving entry would do, because they prune a database-wide time prefix. `Table.deleteHistory`
-  does not: it removes one table's entries out of a database-scoped log, so a sibling's entry
-  survives _below_ the newest entry it removed. Measured, LMDB: highest removed `…147.797`, oldest
-  surviving `…143.309` — a log-derived floor would have certified a cursor at `…145`.
-- **The record's presence is the trust marker.** `Symbol.for('audit-floor')` is a different key from
-  `last-removed`, which is still live and still maintained by the LMDB retention loop (#2338 hardened
-  its write path and added tests for the retry-carry — do not remove it). They coexist because they
-  answer different questions: `last-removed` records where the LMDB loop got to, after the fact,
-  while the floor is written ahead of every one of the five prune paths and its commit is verified.
-  A value found under `last-removed` therefore cannot be told apart from one carrying those
-  guarantees, which is why the floor needs its own key rather than reusing it.
-- **A store with no floor record is a store whose retention history we cannot account for.** That
-  includes the empty audit store an LMDB→RocksDB migration leaves behind, since `bin/copyDb.ts`
-  deliberately does not migrate it, and the audit-DBI-less result of a table-scoped backup taken
-  without `include_audit` — so `openAuditStore` stamps `max(Date.now(), newest retained key)` as a
-  one-time resync epoch. There is no permissive-baseline case: creating the audit DBI proves the
-  DBI was absent, not that the database is new.
-- **That epoch is a guess, and it is recorded as one.** Its bound is surviving state, which cannot see
-  history a selective prune already removed: a legacy `deleteHistory` takes one table's entries out of
-  the shared log, so a table that held the newest entries can leave the newest _survivor_ older than
-  entries that are gone, and a clock rolled back between the two stamps a floor below them (#2458).
-  Refusing to stamp is worse — `AUDIT_FLOOR_UNKNOWN` is absorbing (`raiseAuditFloor` cannot lift it,
-  `establishAuditFloor` skips any existing record), so it would make every upgraded deployment fail
-  closed forever. So `establishAuditFloor` writes the epoch under `Symbol.for('audit-floor-bootstrap')`
-  first, then stamps the floor from what that record holds.
+- **The floor cannot be derived from the surviving log.** For four of the five paths the oldest surviving entry would do, because they prune a database-wide time prefix. `Table.deleteHistory` does not: it removes one table's entries out of a database-scoped log, so a sibling's entry survives _below_ the newest entry it removed. Measured, LMDB: highest removed `…147.797`, oldest surviving `…143.309` — a log-derived floor would have certified a cursor at `…145`.
+- **The record's presence is the trust marker.** `Symbol.for('audit-floor')` is a different key from `last-removed`, which is still live and still maintained by the LMDB retention loop (#2338 hardened its write path and added tests for the retry-carry — do not remove it). They coexist because they answer different questions: `last-removed` records where the LMDB loop got to, after the fact, while the floor is written ahead of every one of the five prune paths and its commit is verified. A value found under `last-removed` therefore cannot be told apart from one carrying those guarantees, which is why the floor needs its own key rather than reusing it.
+- **A store with no floor record is a store whose retention history we cannot account for.** That includes the empty audit store an LMDB→RocksDB migration leaves behind, since `bin/copyDb.ts` deliberately does not migrate it, and the audit-DBI-less result of a table-scoped backup taken without `include_audit` — so `openAuditStore` stamps `max(Date.now(), newest retained key)` as a one-time resync epoch. There is no permissive-baseline case: creating the audit DBI proves the DBI was absent, not that the database is new.
+- **That epoch is a guess, and it is recorded as one.** Its bound is surviving state, which cannot see history a selective prune already removed: a legacy `deleteHistory` takes one table's entries out of the shared log, so a table that held the newest entries can leave the newest _survivor_ older than entries that are gone, and a clock rolled back between the two stamps a floor below them (#2458). Refusing to stamp is worse — `AUDIT_FLOOR_UNKNOWN` is absorbing (`raiseAuditFloor` cannot lift it, `establishAuditFloor` skips any existing record), so it would make every upgraded deployment fail closed forever. So `establishAuditFloor` writes the epoch under `Symbol.for('audit-floor-bootstrap')` first, then stamps the floor from what that record holds.
 
-  **The record's presence is the signal; comparing it against the floor is not.** A store carrying one
-  has an unverified pre-tracking window for as long as the record exists, however far the floor has
-  since moved — a prune raising the floor above the epoch certifies only what that prune removed, and
-  says nothing about history removed before tracking began, which may sit _above_ the epoch, since that
-  is precisely what the guess could not see. Worked example: a v4-era `deleteHistory` removes tableA up
-  to t=1000 while sibling tableB's newest survivor is 900; a rolled-back clock stamps bootstrap=900 and
-  floor=900; a later retention pass raises the floor to 950. A repair keyed on `floor > bootstrap` would
-  read 950 > 900, call it earned, and leave a consumer at cursor 970 certified over tableA's missing
-  950–1000. So the mark is retired by a database generation (#2451), never by a floor that climbed past
-  it; what the recorded _value_ is for is telling that repair how far the guess reached.
+  **The record's presence is the signal; comparing it against the floor is not.** A store carrying one has an unverified pre-tracking window for as long as the record exists, however far the floor has since moved — a prune raising the floor above the epoch certifies only what that prune removed, and says nothing about history removed before tracking began, which may sit _above_ the epoch, since that is precisely what the guess could not see. Worked example: a v4-era `deleteHistory` removes tableA up to t=1000 while sibling tableB's newest survivor is 900; a rolled-back clock stamps bootstrap=900 and floor=900; a later retention pass raises the floor to 950. A repair keyed on `floor > bootstrap` would read 950 > 900, call it earned, and leave a consumer at cursor 970 certified over tableA's missing 950–1000. So the mark is retired by a database generation (#2451), never by a floor that climbed past it; what the recorded _value_ is for is telling that repair how far the guess reached.
 
-  Two properties it does depend on. **Ordering:** the record is written first, so a crash between the
-  two writes leaves a record with no floor, which the next open retries because the early return tests
-  the _floor_. **Undecodable bytes are overwritten** rather than kept — unlike the floor, where a
-  present record may be a deliberate `AUDIT_FLOOR_UNKNOWN` and rewriting it would lower a floor.
-  Keeping torn bytes pinned the store to unknown _forever_: the resolver skipped the write because a
-  record existed, the read back failed identically on every later open, and no retry could succeed.
+  Two properties it does depend on. **Ordering:** the record is written first, so a crash between the two writes leaves a record with no floor, which the next open retries because the early return tests the _floor_. **Undecodable bytes are overwritten** rather than kept — unlike the floor, where a present record may be a deliberate `AUDIT_FLOOR_UNKNOWN` and rewriting it would lower a floor. Keeping torn bytes pinned the store to unknown _forever_: the resolver skipped the write because a record existed, the read back failed identically on every later open, and no retry could succeed.
 
-- **`getHistory` is not in the floor's time domain.** The floor is an audit-log key, which is what
-  `subscribe`'s events carry as `localTime`; `getHistory` reports each entry's origin `version` under
-  that same name, and a backdated or replicated write makes the two differ. A cursor saved from
-  `getHistory` cannot be compared against the floor.
-- **On RocksDB the floor tracks the configured retention horizon, not retained reality.** Whole-log-file
-  purge granularity means the branch cannot know which entries a purge will drop, and the floor is
-  written first, so each pass advances it to `Date.now() - auditRetention/(1+priority²)` whether a
-  file was dropped or not. Entries below that horizon are often still on disk, and a cursor among
-  them is told to resync — conservative in the safe direction only. LMDB can see a single eligible
-  entry, so it raises off the first one it finds instead.
-- **A prune's clamped floor can sit past `Date.now() + 1`.** `boundedAuditPruneEnd` records `newest + 1`
-  when the newest log key is at or past the clock, and log keys are fractional `getNextMonotonicTime`
-  values, not `Date.now()`, so for the rest of that key's millisecond the floor exceeds the wall clock
-  by more than one. Bound it by the newest key, never the wall clock alone (`auditFloor.test.js`, the
-  far-future `deleteHistory` case — it failed twice on main that way).
-- **Untrustworthy metadata resolves to `Infinity`, not to a number.** A wrong-length record, or eight
-  bytes decoding to NaN/negative, must not become a floor: `cursor < NaN` is false, so a consumer
-  spelling the check that way would read corrupt metadata as safe.
-- **A restore is outside what the floor can see.** `restore_backup` reinstalls the backup's floor
-  along with everything else, so a cursor from after the backup point reads as safe against it. The
-  audit floor is one of three carriers of resumable state a restore rolls back (record versions and
-  per-node `Symbol.for('seq')` records are the others), so this wants a database-level generation
-  rather than a fix in this one field — harper#2451.
+- **`getHistory` is not in the floor's time domain.** The floor is an audit-log key, which is what `subscribe`'s events carry as `localTime`; `getHistory` reports each entry's origin `version` under that same name, and a backdated or replicated write makes the two differ. A cursor saved from `getHistory` cannot be compared against the floor.
+- **On RocksDB the floor tracks the configured retention horizon, not retained reality.** Whole-log-file purge granularity means the branch cannot know which entries a purge will drop, and the floor is written first, so each pass advances it to `Date.now() - auditRetention/(1+priority²)` whether a file was dropped or not. Entries below that horizon are often still on disk, and a cursor among them is told to resync — conservative in the safe direction only. LMDB can see a single eligible entry, so it raises off the first one it finds instead.
+- **A prune's clamped floor can sit past `Date.now() + 1`.** `boundedAuditPruneEnd` records `newest + 1` when the newest log key is at or past the clock, and log keys are fractional `getNextMonotonicTime` values, not `Date.now()`, so for the rest of that key's millisecond the floor exceeds the wall clock by more than one. Bound it by the newest key, never the wall clock alone (`auditFloor.test.js`, the far-future `deleteHistory` case — it failed twice on main that way).
+- **Untrustworthy metadata resolves to `Infinity`, not to a number.** A wrong-length record, or eight bytes decoding to NaN/negative, must not become a floor: `cursor < NaN` is false, so a consumer spelling the check that way would read corrupt metadata as safe.
+- **A restore is outside what the floor can see.** `restore_backup` reinstalls the backup's floor along with everything else, so a cursor from after the backup point reads as safe against it. The audit floor is one of three carriers of resumable state a restore rolls back (record versions and per-node `Symbol.for('seq')` records are the others), so this wants a database-level generation rather than a fix in this one field — harper#2451.
 
 ---
 
