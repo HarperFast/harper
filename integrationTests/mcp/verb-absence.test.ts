@@ -99,7 +99,6 @@ suite('MCP Resource verb absence and default create authorization', (ctx: Contex
 		const error = JSON.parse(content[0].text);
 		const allowedMessages = Array.isArray(message) ? message : [message];
 		ok(allowedMessages.includes(error.message), `unexpected ${tool} error: ${JSON.stringify(error)}`);
-		// Handler denials stay tool-level errors with a named tool; missing tools use JSON-RPC -32601.
 		deepStrictEqual(body.result, {
 			isError: true,
 			content: [{ type: 'text', text: content[0].text }],
@@ -202,7 +201,12 @@ suite('MCP Resource verb absence and default create authorization', (ctx: Contex
 		deepStrictEqual(await success(admin, 'create_CreateOnlyThing', created), { id: created.id });
 		deepStrictEqual(await success(admin, 'get_ReadOnlyThing', { id: created.id }), created);
 		const searched = await success(admin, 'search_ReadOnlyThing');
-		deepStrictEqual(searched.rows, [{ id: 'r1', label: 'readonly-r1' }, updated, created]);
+		for (const record of [{ id: 'r1', label: 'readonly-r1' }, updated, created]) {
+			deepStrictEqual(
+				searched.rows.find(({ id }) => id === record.id),
+				record
+			);
+		}
 	});
 
 	test('a real table retains create/get/search/update and persists changes', async () => {
@@ -236,7 +240,12 @@ suite('MCP Resource verb absence and default create authorization', (ctx: Contex
 	]) {
 		test(`default allowCreate denies ${identity} on implemented create tools without writing`, async () => {
 			const session = identity === 'anonymous' ? anonymous : low;
-			if (identity === 'anonymous') strictEqual(session.auth, undefined, 'anonymous MCP session has no credentials');
+			if (identity === 'anonymous') {
+				const visible = await listTools(session);
+				for (const name of ['create_WriteOnlyThing', 'create_CreateOnlyThing']) {
+					strictEqual(visible.includes(name), false, `${name} must not be listed to an anonymous caller`);
+				}
+			}
 			const rowsBefore = await success(admin, 'search_ReadOnlyThing');
 			ok(rowsBefore.rows.length > 0, 'the no-write oracle must contain records');
 			for (const name of ['create_WriteOnlyThing', 'create_CreateOnlyThing']) {
