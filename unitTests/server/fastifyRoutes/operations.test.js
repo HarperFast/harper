@@ -1,5 +1,6 @@
 'use strict';
 
+const assert = require('node:assert');
 const chai = require('chai');
 const sinon = require('sinon');
 const rewire = require('rewire');
@@ -182,6 +183,18 @@ describe('Test custom functions operations', () => {
 			expect(otherComponent.urlPath).to.equal('/other');
 			expect(otherComponent.host).to.equal('other.example.com');
 			expect(otherComponent.loadComponent).to.equal('if-installed');
+		});
+
+		it("Test getComponents leaves out a component's deployment provenance, like Harper's other bookkeeping", async () => {
+			const marker = path.join(CF_DIR_ROOT, 'my-cool-component', '.harper-deployment.json');
+			await fs.outputFile(marker, '{}');
+			try {
+				const result = await operations.getComponents();
+				const coolComponent = result.entries.find((e) => e.name === 'my-cool-component');
+				assert.deepStrictEqual(coolComponent.entries.map((e) => e.name).sort(), ['.hidden', 'resources.js', 'utils']);
+			} finally {
+				await fs.remove(marker);
+			}
 		});
 
 		it('Test getComponents includes status information when component status exists', async () => {

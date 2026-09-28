@@ -106,19 +106,24 @@ did not need it:
   activation cannot re-derive. An _optional_ record could not distinguish a payload build from a package
   build whose record was lost, so a missing, malformed or wrong-version one is refused rather than defaulted.
 - **Claiming an id is exclusive.** `buildCandidateApplication` used to tolerate an existing deployment
-  directory because a fresh UUID could not collide; a public id can be repeated by an operator or by a
-  redelivered replication, so a claim now rejects another component's directory and any directory carrying
-  `.complete`, and rebuilds only over an uncertified partial of its _own_ component. Ownership is published
-  as part of the claim — the `.component` sidecar is written right after the exclusive `mkdir`, not at
-  certification — because `buildCandidateApplication` can spend minutes resolving and packing before any
-  tree exists to infer an owner from. For that whole window the directory answered to nobody, and an empty
-  `readdir` is indistinguishable from an abandoned claim, so a second component could delete a build that
-  was still running. **Emptiness is not a verdict:** an unattributed directory is refused, never reclaimed,
-  which is the same reading recovery already gives it. The id this request names is also pinned
-  through the preparation preamble, so retention cannot evict the artifact the request is about to use —
-  which it otherwise would, immediately, at `deployment_stagingRetention_maxCount: 0`. The contract is
-  bounded: an id names one artifact _while that artifact exists_. Activation consumes it (the swap is a
-  rename) and retention can prune it, after which the id is free again.
+  directory because a fresh UUID could not collide; a public id can be repeated by an operator, so a claim
+  rejects another component's directory and any directory carrying `.complete`, and rebuilds only over an
+  uncertified partial of its _own_ component — in a fresh claim, never inside the partial tree. Ownership is
+  published as part of the claim, not at certification, because `buildCandidateApplication` can spend minutes
+  resolving and packing before any tree exists to infer an owner from. The claim is built at
+  `.deploy-staging/.claiming-<uuid>-<component>`, named there, and renamed onto the id, so the directory only
+  ever appears at its id already attributed. It used to be an exclusive `mkdir` followed by the sidecar write,
+  and a death between the two left an unattributed directory — indistinguishable from a claim in flight, so
+  refused forever. Now no live claim is ever visible unattributed: an EMPTY directory at an id is that
+  wreckage from an older build and is taken over (`rmdir`, which removes nothing else); a non-empty
+  unattributed one is still refused. A claim that died before its rename names no id, is skipped by every scan
+  of the staging root (all of them skip dot-prefixed entries), and is removed under the component's lock by its
+  next deploy, or by `drop_component`; the component in its name is what makes that attributable without a read.
+  On Windows a rename onto any existing directory fails with the `EPERM` a transient holder raises, so the
+  destination is classified before renaming rather than after a spent retry budget. The id this request names
+  is also pinned through the preparation preamble, so retention cannot evict the artifact the request is about
+  to use — which it otherwise would, immediately, at `deployment_stagingRetention_maxCount: 0`. What an id
+  names after its activation is the next section's subject.
 - **Staging owns its bytes.** A `file:<directory>` source is refused, and so is any symlink in the built
   tree resolving outside it (bar the `node_modules/harper`/`harperdb` links the loader owns and repairs).
   Certification fsyncs the tree but follows no links, and the post-swap relocation repair leaves external
@@ -221,8 +226,9 @@ never depends on it. Roll-forward requires the journal, the candidate and `.comp
 observable, which means a lost directory update degrades to a roll back rather than to a wrong decision.
 
 Retiring the rollback record only marks the displaced tree disposable; both the activation path and
-recovery then sweep it, or the components root would grow by a whole component version per deploy. The
-retire is **correctness, not hygiene** — that marker is what stops the legacy pass treating the record as
+recovery then put it back into its deployment's record, or sweep it when nothing can keep it (see "A deployment
+id keeps naming its release"), since otherwise the components root would grow by a whole component version per
+deploy. The retire is **correctness, not hygiene** — that marker is what stops the legacy pass treating the record as
 authoritative once the journal is gone — so a failure to retire propagates and the component fails closed
 with its journal intact. Only the sweep itself is best-effort, because it costs disk rather than a wrong
 decision. For the same reason, a swap whose rename cannot be confirmed on storage skips both the retire
@@ -278,9 +284,10 @@ publication-lock timeout is rethrown as a 503 `ServerError` rather than the prep
 class, which recovery reads as "a live deploy holds this component's lock" — a deferral, not a verdict.
 
 The throw also means `deploy_component` never reaches replication: the release is live on this node only, and
-the error says so. A fresh deploy converges; a retry of a `deployment_id` activation does not, because its
-preamble settles the kept journal and the artifact is gone — the unconvergeable-retry gap #2315 step 5 owns.
-So a condition that would fail every publish is refused BEFORE anything moves: `assertRootConfigEffectPublishable`
+the error says so. A fresh deploy converges. So does a retry of a `deployment_id` activation: its preamble settles
+the kept journal, publishing the entry, and then answers that the id is already live here, so the operation goes
+on to replicate. Peers of an immediate deploy hold no artifact, so its id answers 404 there. Even so, a condition
+that would fail every publish is refused BEFORE anything moves: `assertRootConfigEffectPublishable`
 runs ahead of the journal and refuses an effect that would have to change a document that does not parse, or
 whose directory this process cannot write. Only a static condition is caught; a publish can still fail.
 
@@ -347,9 +354,9 @@ and validated, activated by nobody. Recovery used to remove every owned journal-
 dormant builds and bounds them per component to `deployment_stagingRetention_maxCount` (default 5, 0 keeps
 none), newest by `.complete` mtime, ties broken by deployment id so concurrent passes pick the same victims.
 Everything else journal-less — a partial tree, a directory whose tree already moved live, a stale
-`.unsettled` — is still residue and still removed. Nothing here produces a dormant build yet beyond the crash
-window between `.complete` and the journal; #2315 step 6 (deploy from an existing aside) is the producer this
-bound exists for.
+`.unsettled` — is still residue and still removed. Two things produce them: a stage (`activate: false`), and every
+activation that displaces a release it can put back under its own id (next section). A deployment's record — its
+directory without a tree — is not a build and is not counted.
 
 Removal is decided **only under the owner's preparation lock**: activation writes `.complete` moments
 before its journal while holding that lock, so an unlocked read of "complete, no journal" is a candidate, not
@@ -369,6 +376,79 @@ name will. Only ENOENT is absence; any other read error keeps the entry and move
 hygiene: it never fails a component closed and never replaces a deploy's own error, so the bound is
 best-effort under filesystem failure and is not a storage quota — journaled, unsettled and unowned
 directories are preserved by design and can still fill a volume.
+
+### A deployment id keeps naming its release after the swap
+
+On a node, a deployment id names its release for as long as the node holds that release: while it is dormant,
+`deployment_id` activates it; while it is live, activating it answers that it already is, without a swap; when a
+later activation displaces it, it becomes dormant again under the same id, within
+`deployment_stagingRetention_maxCount`. A node holding neither answers 404 (#2315 step 5). Four pieces:
+
+- **Provenance rides the tree.** `buildCandidateApplication` writes `.harper-deployment.json` — `{ v, component,
+deploymentId }` — at the top of every candidate it extracts, after the install and before `.complete`, replacing
+  any marker the payload carried. It moves with the tree through the commit rename, so the live tree always names
+  the build that made it live, and anything else that replaces the directory replaces the marker too: it is
+  absent, never stale. A `file:` link gets none, since its target is not the deploy's to write, and a live link
+  has no provenance whatever its target holds. The tree is the component's own to write, which is why the marker
+  carries only an id: nothing published on activation comes from it. A component rewriting its own marker can
+  mislabel only its own releases. `package_component` and `get_components` leave the top-level marker out; a
+  deeper file of that name is the component's.
+- **The id's record outlives the swap.** A build whose caller declared what it publishes (`describeArtifact` — every
+  `deploy_component`) writes `.artifact.json` before `.complete`, as a stage does, and a committed activation
+  keeps `.deploy-staging/<id>` minus its tree and journal: `.component`, `.complete`, `.artifact.json`. That
+  record is where the release goes back to. A boot install, `add_component` and a link build declare nothing and
+  keep none, as before. Keeping the descriptor here rather than snapshotting the entry at displacement is
+  deliberate: for a boot install the entry in force is the new build's, so after an out-of-band edit the displaced
+  tree would be described with the wrong package. Re-activating an id publishes what that deployment declared,
+  which is the contract a staged artifact already had; `set_configuration` edits made while it was live are not
+  carried back, just as a package redeploy replaces the entry whole. One side effect, stated: an immediate deploy
+  that crashes before its first rename is now DESCRIBED, so recovery returns its candidate to dormant rather than
+  discarding it.
+- **The displaced tree goes back into its record.** `retainDisplacedRelease` runs where a committed activation
+  disposes of the tree it displaced — after the retire, in `activateCandidateApplication`'s post-commit block, in
+  `sweepAsideRecords` on a roll forward, and in the legacy pass for a retired tree still in the aside — and
+  renames it into `<record>/<component>` when its marker names this component's record. **Only an explicit
+  retention decision deletes a tree**, so its verdict is three-way: _kept_; _ineligible_ (no marker, no usable
+  record, or `maxCount: 0`, when the record goes too) — swept as before; or _failed_ (a read error other than
+  ENOENT, or a failed rename) — left retired in the aside with its record for the legacy pass to retry at the next
+  preparation, since on Windows the rename and the delete both fail while something holds a handle in the tree.
+  A failure after the rename (syncing its parents) propagates, as the aside syncs do: the activation keeps its
+  journal, and recovery fails the component closed with its journal, the retire's own contract. The kept tree's
+  `.complete` mtime is refreshed (retried briefly) so retention orders it by when it stopped being live; left at
+  its build time, stages nobody activated would outrank it. **Only the activation's own site prunes** after a
+  keep, pinning the kept id: settlement runs inside a request's preamble, whose pin it cannot see, and a prune
+  there evicted the very artifact that request was activating. A kept release is not re-certified: it is kept as
+  it was when displaced, including what it wrote into its own directory while live, and activation re-runs the
+  link rule and the load validation. An absolute link `repairRelocatedDependencyLinks` wrote after its own swap (a
+  Windows `file:`/workspace junction) names the live path, so such a release's re-activation is refused 409.
+- **Activating the live id answers without a swap.** After the preamble, `prepareApplication` in `activate` mode
+  compares the live marker with the id: equal means the release is already serving here — a retry whose earlier
+  attempt swapped on this node and failed later or elsewhere — so it sets `alreadyActive`, requests a restart
+  (nothing can tell whether the running generation ever loaded it, the reasoning a late startup preparation
+  follows), and returns; `deploy_component` emits the `prepare` phase end and replicates. Per node, with no
+  cross-node inference: a node that swapped answers success, one still holding the artifact activates it, one
+  with neither answers 404. Only `activate`: a deploy or stage claims an id the origin minted fresh, and harper-pro
+  never resends a replicated operation (`sendOperationToNode` is one socket per call), so a replicated deploy of
+  an id this node already holds — only a hand-crafted `_deploymentId` produces one — is refused by the claim. A
+  record whose release is neither live nor kept answers 404, where a missing tree used to answer 409.
+
+**A record is stale only when nothing refers to it.** "Not live" is not enough: a crash after the commit and
+before the re-home leaves the displaced release's record and its tree in `.deploy-aside`, and a boot scan can
+reach the record before the journal that will re-home into it — the record would be deleted and its only tree
+swept. So a record is residue only when neither the live marker nor the marker of any tree in the owner's aside,
+retired or not, names it. Boot recovery checks that unlocked and leaves a referenced record alone without the
+lock, as it does a dormant build (#2531: a per-directory lock on every pass makes healthy components lose the
+250 ms probe to sibling threads), then re-derives it under the owner's lock before removing a stale one.
+`drop_component` removes the dropped component's records and abandoned claims along with its dormant builds.
+
+Compatibility: a tree made live before this change has no marker, so the first deploy after the upgrade sweeps
+it. An older build reads a record as residue and removes it, and a kept release as an ordinary dormant build it
+can activate; the marker is an ignored file to it. The journal format is unchanged. A peer on an older build
+answers 404 to a consumed id, as before. `deployment_stagingRetention_maxCount` (default 5) now bounds kept
+releases with staged builds, and each is a whole installed tree, so at the default a component holds up to five
+extra copies of itself; `0` keeps no previous release, and the rest of this section still applies. Until #2315
+step 7, a package component reinstalls from its source on the first start after each package deploy; that
+reinstall keeps no record, but the certified tree it displaces is kept, which is the one worth keeping.
 
 ## Component preparation is serialized across worker threads
 
