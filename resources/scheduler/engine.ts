@@ -259,7 +259,6 @@ export function unregisterInternalJobs(name: string): void {
 	removeJobs(INTERNAL_PREFIX + name);
 }
 
-/** The name internal jobs carry as their `componentName`. */
 export function internalJobOwner(name: string): string {
 	return INTERNAL_PREFIX + name;
 }

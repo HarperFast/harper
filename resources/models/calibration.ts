@@ -99,7 +99,6 @@ export function policyDigest(policy: FitPolicy): string {
 	return digest(policy);
 }
 
-/** Incremental digest over a population's examples, fed in a deterministic order. */
 export function inputDigester(): { add(part: unknown): void; digest(): string } {
 	const hash = createHash('sha256');
 	return {
@@ -237,7 +236,6 @@ function selective(tops: Array<{ confidence: number; correct: boolean }>, total:
 	});
 }
 
-/** ECE, NLL and bins over allowed-value truths; selective risk both conditionally and operationally. */
 export function reliability(examples: Example[], transform: (p: number[]) => number[]): Reliability {
 	const sums = Array.from({ length: ECE_BINS }, () => ({ count: 0, confidence: 0, correct: 0 }));
 	const inSet: Array<{ confidence: number; correct: boolean }> = [];
@@ -285,7 +283,6 @@ export function splitByTime<E>(ordered: E[], heldOutShare: number): { train: E[]
 	};
 }
 
-/** Raw probabilities in schema order from a stored distribution, or undefined when a value is missing. */
 export function toVector(
 	distribution: DecisionOutcome[] | undefined,
 	values: readonly unknown[]

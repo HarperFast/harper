@@ -437,6 +437,79 @@ describe('calibration store and facade (#2841)', function () {
 		assert.strictEqual(resumed.processed, 2, 'the next run covers both, the never-fitted one first');
 	});
 
+	it('resolves an unexpected fault as a failed run, with no unhandled rejection', async () => {
+		const unhandled = [];
+		const onUnhandled = (reason) => unhandled.push(reason);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			const run = await runCalibration(
+				{},
+				{
+					now: () => {
+						throw new Error('clock failed at /private/path');
+					},
+				}
+			);
+			assert.strictEqual(run.status, 'failed');
+			assert.match(run.error, /unexpected fault/);
+			const next = await runCalibration();
+			assert.strictEqual(next.status, 'completed', 'the queue keeps running after a failed run');
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.deepStrictEqual(unhandled, []);
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
+		}
+	});
+
+	it('reaches an older population past the decision budget within a few runs', async () => {
+		await recordCases(models, 0, 25, { instructions: 'older population' });
+		await recordCases(models, 100, 50);
+		const seen = new Set();
+		for (let i = 0; i < 4; i++) {
+			await runCalibration({ maxDecisions: 40 });
+			for (const summary of await models.getCalibrations()) seen.add(summary.instructionsHash ?? 'none');
+		}
+		assert.strictEqual(seen.size, 2, 'both populations were reached');
+	});
+
+	it('does not let a read started before an invalidation repopulate the cache', async () => {
+		let reads = 0;
+		let release;
+		setCalibrationReadForTests(() => {
+			reads++;
+			return new Promise((resolve) => (release = resolve));
+		});
+		resetCalibrationCache();
+		await models.decide('case-1', SCHEMA);
+		assert.strictEqual(reads, 1);
+		resetCalibrationCache();
+		release(null);
+		await waitFor(() => outstandingCalibrationReads() === 0, 'the stale read to settle');
+		setCalibrationReadForTests(() => {
+			reads++;
+			return Promise.resolve(null);
+		});
+		await models.decide('case-2', SCHEMA);
+		assert.strictEqual(reads, 2, 'the stale result was discarded, so the next decision loads again');
+	});
+
+	it('reports a run as failed when any population could not be processed', async () => {
+		await recordCases(models, 0, 30);
+		const { outcomes } = getDecisionTables();
+		const get = outcomes.get;
+		outcomes.get = function () {
+			throw new Error('outcome read failed');
+		};
+		try {
+			const run = await models.calibrate();
+			assert.strictEqual(run.failed, 1);
+			assert.strictEqual(run.status, 'failed');
+			assert.match(run.error, /1 population/);
+		} finally {
+			outcomes.get = get;
+		}
+	});
+
 	it('reports a discovery failure as a failed run and still processes known populations', async () => {
 		await recordCases(models, 0, 40);
 		await models.calibrate();

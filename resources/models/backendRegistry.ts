@@ -60,7 +60,6 @@ const sources = new WeakMap<ModelBackend, string>();
 export const SERVED_SOURCE = Symbol('models.servedSource');
 export type ServedSourceHook = (source: string | undefined) => void;
 
-/** Records what a configured backend is: a fingerprint of its entry, so calibration can tell score sources apart. */
 export function setBackendSource(backend: ModelBackend, fingerprint: string): void {
 	sources.set(backend, fingerprint);
 }

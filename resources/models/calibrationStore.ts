@@ -48,6 +48,7 @@ const EXAMPLE_OVERHEAD_BYTES = 200;
 const POPULATION_OVERHEAD_BYTES = 1_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RANK_WIDTH = 16;
+const CURSOR_ID = 'discovery/cursor';
 
 export interface CalibrationConfig {
 	interval?: number;
@@ -108,7 +109,6 @@ export interface CalibrationReport {
 	calibrated?: Reliability;
 }
 
-/** One immutable fit version for one field of one population. */
 export interface CalibrationRow extends Population {
 	id: string;
 	kind: 'fit';
@@ -159,7 +159,6 @@ export interface CalibrationRunResult {
 	durationMs: number;
 }
 
-/** What `models.getCalibrations()` returns: the newest version for each field of each visible population. */
 export interface CalibrationSummary {
 	model: string;
 	field?: string;
@@ -197,7 +196,8 @@ export const CALIBRATION_ATTRIBUTES = [
 	{ name: 'cutoff', type: 'number' },
 	{ name: 'evidenceAt', type: 'number' },
 	{ name: 'fittedAt', type: 'number' },
-	{ name: 'lastFittedAt', type: 'number' },
+	{ name: 'lastFittedAt', type: 'number', indexed: true },
+	{ name: 'before', type: 'number' },
 	{ name: 'applyUntil', type: 'number' },
 	{ name: 'expiresAt', expiresAt: true, indexed: true },
 	{ name: 'eligible', type: 'boolean' },
@@ -308,13 +308,24 @@ interface CacheEntry {
 }
 
 const cache = new Map<string, CacheEntry>();
-const loading = new Set<string>();
+const loading = new Map<string, object>();
+let generation = 0;
 let outstandingReads = 0;
 let lastFaultLog = 0;
 
 export function resetCalibrationCache(): void {
+	generation++;
 	cache.clear();
 	loading.clear();
+}
+
+function invalidate(keys: string[]): void {
+	if (keys.length === 0) return;
+	generation++;
+	for (const key of keys) {
+		cache.delete(key);
+		loading.delete(key);
+	}
 }
 
 /** Reads still unsettled, including ones whose load already timed out. */
@@ -360,11 +371,13 @@ async function readNewest(key: string): Promise<CalibrationRow | null> {
 
 function scheduleLoad(key: string, read: (key: string) => Promise<CalibrationRow | null> = readNewest): void {
 	if (loading.has(key) || !settings || outstandingReads >= settings.maxLoads) return;
-	loading.add(key);
+	const token = {};
+	const startedAt = generation;
+	loading.set(key, token);
 	outstandingReads++;
-	let settled = false;
+	const owns = () => loading.get(key) === token && generation === startedAt;
 	const timer = setTimeout(() => {
-		if (settled) return;
+		if (!owns()) return;
 		remember(key, null);
 		loading.delete(key);
 	}, LOAD_TIMEOUT_MS);
@@ -377,18 +390,19 @@ function scheduleLoad(key: string, read: (key: string) => Promise<CalibrationRow
 	}
 	pending
 		.then(
-			(row) => remember(key, row),
+			(row) => {
+				if (owns()) remember(key, row);
+			},
 			(err) => {
 				logFault('calibration lookup failed', err);
-				remember(key, null);
+				if (owns()) remember(key, null);
 			}
 		)
 		.catch(() => {})
 		.finally(() => {
-			settled = true;
 			clearTimeout(timer);
 			outstandingReads--;
-			loading.delete(key);
+			if (loading.get(key) === token) loading.delete(key);
 		});
 }
 
@@ -510,16 +524,31 @@ export interface RunDeps {
 	now?: () => number;
 }
 
-let running: Promise<CalibrationRunResult> | undefined;
+let queue: Promise<unknown> = Promise.resolve();
 
-/** One run at a time per process; a call while one runs waits for it and then starts its own. */
+/** One run at a time per process. Resolves with the run's result, an unexpected fault included as a failed run. */
 export function runCalibration(budgets: CalibrationBudgets = {}, deps: RunDeps = {}): Promise<CalibrationRunResult> {
-	const previous = running ?? Promise.resolve(undefined);
-	const next = previous.catch(() => undefined).then(() => runOnce(budgets, deps));
-	running = next.finally(() => {
-		if (running === next) running = undefined;
-	}) as Promise<CalibrationRunResult>;
+	const next = queue.then(() => runOnce(budgets, deps)).catch((err) => failedRun(err));
+	queue = next;
 	return next;
+}
+
+function failedRun(err: unknown): CalibrationRunResult {
+	const error = `unexpected fault: ${safeErrorMessage(err)}`;
+	log.error?.(`models: calibration run failed ${error}`);
+	return {
+		status: 'failed',
+		error,
+		scanned: 0,
+		discovered: 0,
+		processed: 0,
+		pending: 0,
+		written: 0,
+		eligible: 0,
+		skipped: 0,
+		failed: 0,
+		durationMs: 0,
+	};
 }
 
 interface Discovered {
@@ -554,45 +583,105 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 	const populations = new Map<string, Discovered>();
 	const writtenKeys: string[] = [];
 	let bytes = 0;
+	await discover();
 	try {
-		for await (const head of heads(store)) {
-			if (populations.size >= config.maxPopulations) break;
-			const { lastFittedAt, expiresAt: _expiresAt, ...rest } = head;
+		const discovered = [...populations.values()];
+		const known = await transaction(freshContext(), async () => {
+			for (const found of discovered) {
+				const head: PopulationHead | undefined = await store.get(found.head.id);
+				if (head?.lastFittedAt !== undefined) found.lastFittedAt = head.lastFittedAt;
+			}
+			const out: PopulationHead[] = [];
+			for await (const row of store.search({
+				conditions: [{ attribute: 'kind', value: 'population' }],
+				sort: { attribute: 'lastFittedAt' },
+				limit: config.maxPopulations,
+			}))
+				out.push(row);
+			return out;
+		});
+		for (const head of known) {
+			if (populations.has(head.population)) continue;
 			const size = POPULATION_OVERHEAD_BYTES + canonicalJson(head.schema).length;
+			if (bytes + size > config.maxBytes) {
+				result.stoppedBy ??= 'maxBytes';
+				break;
+			}
 			bytes += size;
+			const { lastFittedAt, expiresAt: _expiresAt, ...rest } = head;
 			populations.set(head.population, { head: rest, lastFittedAt, bytes: size });
 		}
 	} catch (err) {
 		fail('reading known populations', err);
 	}
-	await discover();
 	result.discovered = populations.size;
 
-	const order = processingOrder([...populations.values()]);
+	const ordered = processingOrder([...populations.values()]);
+	const order = ordered.slice(0, config.maxPopulations);
+	if (ordered.length > order.length) {
+		result.stoppedBy ??= 'maxPopulations';
+		result.pending = ordered.length - order.length;
+	}
 	for (let i = 0; i < order.length; i++) {
 		if (now() >= deadline) {
 			result.stoppedBy ??= 'maxRunMs';
-			result.pending = order.length - i;
+			result.pending += order.length - i;
 			break;
 		}
 		const outcome = await processPopulation(order[i], bytes);
 		if (outcome === 'budget') {
 			result.stoppedBy ??= 'maxBytes';
-			result.pending = order.length - i;
+			result.pending += order.length - i;
 			break;
 		}
 		if (outcome === 'deadline') {
 			result.stoppedBy ??= 'maxRunMs';
-			result.pending = order.length - i;
+			result.pending += order.length - i;
 			break;
 		}
 		result.processed++;
 	}
-	for (const key of writtenKeys) cache.delete(key);
+	invalidate(writtenKeys);
 	return finish();
 
+	/**
+	 * Half the decision budget looks for new populations among the newest decisions; the rest continues from
+	 * where the previous run stopped, so an older, quiet population is reached within a bounded number of runs.
+	 */
 	async function discover(): Promise<void> {
-		let before: number | undefined;
+		const newest = await scan(undefined, Math.ceil(config.maxDecisions / 2));
+		if (newest.fault || newest.stopped) return;
+		if (newest.end) return saveCursor(undefined);
+		let cursor: number | undefined;
+		try {
+			cursor = (await transaction(freshContext(), () => store.get(CURSOR_ID)))?.before;
+		} catch (err) {
+			logFault('calibration could not read its discovery cursor', err);
+		}
+		const from =
+			typeof cursor === 'number' && newest.before !== undefined && cursor < newest.before ? cursor : newest.before;
+		const rest = await scan(from, config.maxDecisions - result.scanned);
+		if (rest.fault) return;
+		if (result.scanned >= config.maxDecisions) result.stoppedBy ??= 'maxDecisions';
+		return saveCursor(rest.end ? undefined : rest.before);
+	}
+
+	async function saveCursor(before: number | undefined): Promise<void> {
+		try {
+			await transaction(freshContext(), () =>
+				store.put({ id: CURSOR_ID, kind: 'cursor', before, expiresAt: now() + DECISION_RETENTION_MS })
+			);
+		} catch (err) {
+			logFault('calibration could not save its discovery cursor', err);
+		}
+	}
+
+	async function scan(
+		start: number | undefined,
+		budget: number
+	): Promise<{ before?: number; end: boolean; stopped: boolean; fault?: boolean }> {
+		let before = start;
+		let taken = 0;
 		const seenAtBoundary = new Set<string>();
 		while (true) {
 			let page: DecisionRow[];
@@ -610,20 +699,18 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 				});
 			} catch (err) {
 				fail('discovering populations', err);
-				return;
+				return { before, end: false, stopped: true, fault: true };
 			}
-			if (page.length === 0) return;
+			if (page.length === 0) return { before, end: true, stopped: false };
 			for (const row of page) {
-				if (result.scanned >= config.maxDecisions) {
-					result.stoppedBy ??= 'maxDecisions';
-					return;
-				}
+				if (taken >= budget) return { before, end: false, stopped: false };
 				if (now() >= deadline) {
 					result.stoppedBy ??= 'maxRunMs';
-					return;
+					return { before, end: false, stopped: true };
 				}
+				taken++;
 				result.scanned++;
-				result.reachedAt = row.at;
+				result.reachedAt = Math.min(result.reachedAt ?? row.at, row.at);
 				if (row.expiresAt !== before) seenAtBoundary.clear();
 				before = row.expiresAt;
 				seenAtBoundary.add(row.id);
@@ -631,12 +718,12 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 				if (!row.population || !row.signature || populations.has(row.population)) continue;
 				if (populations.size >= config.maxPopulations) {
 					result.stoppedBy ??= 'maxPopulations';
-					return;
+					return { before, end: false, stopped: true };
 				}
 				const size = POPULATION_OVERHEAD_BYTES + canonicalJson(row.schema).length;
 				if (bytes + size > config.maxBytes) {
 					result.stoppedBy ??= 'maxBytes';
-					return;
+					return { before, end: false, stopped: true };
 				}
 				bytes += size;
 				populations.set(row.population, {
@@ -655,7 +742,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 					},
 				});
 			}
-			if (page.length < SCAN_PAGE) return;
+			if (page.length < SCAN_PAGE) return { before, end: true, stopped: false };
 		}
 	}
 
@@ -859,6 +946,10 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 	}
 
 	function finish(): CalibrationRunResult {
+		if (result.failed > 0 && result.status === 'completed') {
+			result.status = 'failed';
+			result.error = `${result.failed} population(s) could not be processed`;
+		}
 		result.durationMs = now() - started;
 		try {
 			recordAction(result.durationMs, 'model-calibrate', undefined, result.status);
