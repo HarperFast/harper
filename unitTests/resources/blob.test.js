@@ -1696,6 +1696,26 @@ describe('Blob test', () => {
 		if (path && existsSync(path)) unlinkSync(path);
 	}
 
+	it('stops orphan cleanup while a restore fence is held and excludes skipped files from the count', async () => {
+		const store = BlobTest.primaryStore.rootStore;
+		const databaseName = store.databaseName;
+		const orphans = await Promise.all([createBlob(Buffer.alloc(20000, 'o')), createBlob(Buffer.alloc(20000, 'p'))]);
+		const paths = [];
+		try {
+			for (const orphan of orphans) {
+				await decodeFromDatabase(() => saveBlob(orphan).saving, store);
+				paths.push(decodeFromDatabase(() => getFilePathForBlob(orphan), store));
+			}
+
+			await blockBlobSavesForRestore(databaseName, 'restore-orphan-cleanup');
+			assert.strictEqual(await cleanupOrphans(getDatabases().test), 0);
+			assert(paths.every(existsSync), 'the fenced orphan sweep must leave every skipped file in place');
+		} finally {
+			resumeBlobSavesAfterRestore(databaseName, 'restore-orphan-cleanup');
+			for (const path of paths) if (existsSync(path)) unlinkSync(path);
+		}
+	});
+
 	it('blocks new blob saves during restore and drains saves that already started', async () => {
 		const store = BlobTest.primaryStore.rootStore;
 		const databaseName = store.databaseName;
