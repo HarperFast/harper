@@ -15,7 +15,7 @@
 const assert = require('node:assert');
 const path = require('node:path');
 const { tmpdir } = require('node:os');
-const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
+const { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } = require('node:fs');
 const sinon = require('sinon');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
@@ -128,48 +128,54 @@ describe('availability status after component load failure', () => {
 		);
 	});
 
-	it('a whole-application load failure (recorded under its directory) drains and heals', async () => {
+	it('a whole-application load failure (keyed by its resolved directory) drains and heals', async () => {
 		await seedInRotation();
 		// branchedDatabases in a non-root component's own config is a whole-application load failure
 		// (thrown before the plugin loop), exercising loadComponent's outer catch. It is keyed by the
-		// application's own directory, distinct from any nested load, so nothing clobbers it.
+		// load's resolved directory, unique per load, so nothing clobbers it.
 		const appDir = makeApp(PACKAGE_APP, 'branchedDatabases:\n  - data\n');
 		await loadComponent(appDir, resources, 'test-origin', { isRoot: false, appName: PACKAGE_APP });
+		const key = realpathSync(appDir);
 		assert.strictEqual(
-			statusInternal.componentStatusRegistry.getStatus(PACKAGE_APP)?.status,
+			statusInternal.componentStatusRegistry.getStatus(key)?.status,
 			'error',
-			'a whole-application failure must be recorded under the application directory'
+			'a whole-application failure must be recorded under the resolved directory key'
 		);
 		await waitFor(async () => (await availability())?.status === 'Unavailable', {
 			timeout: 5000,
 			message: 'a whole-application failure must drain the node',
 		});
-		statusForComponent(PACKAGE_APP).healthy('recovered');
+		statusForComponent(key).healthy('recovered');
 		assert.strictEqual((await availability())?.status, 'Available', 'clearing the application error heals the node');
 	});
 
-	it('a nested package failure is keyed by its enclosing application, not just its own directory', async () => {
+	it('two applications with the same-named directory do not share a status key', async () => {
 		await seedInRotation();
-		// A nested load's directory name (a package name) can be shared by two applications; the whole-
-		// application failure must be recorded under a key qualified by the enclosing application so one
-		// application's success cannot mask another's failure. Model the nested shape: a directory whose
-		// basename differs from the appName passed for it.
-		const dir = makeApp('shared-package', 'branchedDatabases:\n  - data\n');
-		await loadComponent(dir, resources, 'test-origin', { isRoot: false, appName: 'enclosing-app' });
+		// A resolved-directory key cannot collide even when two loads share a basename: the classic
+		// ambiguity is a top-level app named `a.b` versus a package `b` nested under `a`, which any
+		// dot-joined name key renders identical. Model it with two distinct directories that both
+		// basename to the same string, and assert each failure is recorded under its own key.
+		const dirA = makeApp('same-name', 'branchedDatabases:\n  - data\n');
+		const nested = path.join(tempRoot, 'enclosing', 'same-name');
+		mkdirSync(nested, { recursive: true });
+		writeFileSync(path.join(nested, 'config.yaml'), 'branchedDatabases:\n  - data\n');
+		await loadComponent(dirA, resources, 'test-origin', { isRoot: false, appName: 'app-a' });
+		await loadComponent(nested, resources, 'test-origin', { isRoot: false, appName: 'app-b' });
 		assert.strictEqual(
-			statusInternal.componentStatusRegistry.getStatus('enclosing-app.shared-package')?.status,
+			statusInternal.componentStatusRegistry.getStatus(realpathSync(dirA))?.status,
 			'error',
-			'a nested failure must be keyed by enclosing-app.<package>, not the bare package directory'
+			"the first application's failure is recorded under its own resolved directory"
 		);
 		assert.strictEqual(
-			statusInternal.componentStatusRegistry.getStatus('shared-package'),
-			undefined,
-			'the unqualified package name must not be used, so a second application nesting it cannot collide'
+			statusInternal.componentStatusRegistry.getStatus(realpathSync(nested))?.status,
+			'error',
+			"the second application's failure is recorded under its own resolved directory, not clobbered"
 		);
-		await waitFor(async () => (await availability())?.status === 'Unavailable', {
-			timeout: 5000,
-			message: 'a nested package failure must drain the node',
-		});
+		assert.notStrictEqual(
+			realpathSync(dirA),
+			realpathSync(nested),
+			'the two keys are distinct despite the shared basename'
+		);
 	});
 });
 

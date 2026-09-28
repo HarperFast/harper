@@ -134,8 +134,9 @@ export const lifecycle = {
 	},
 
 	/**
-	 * Forget a removed component's status (and its sub-components), so a stale error no longer counts
-	 * toward availability once the component is gone.
+	 * Forget a removed component's own status entry, so a stale error no longer counts toward
+	 * availability once the component is gone. Only the exact key is removed (see retire); sub-component
+	 * entries are left to the owning load's own lifecycle.
 	 */
 	retired(componentName: string): void {
 		componentStatusRegistry.retire(componentName);

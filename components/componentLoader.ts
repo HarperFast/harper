@@ -82,9 +82,10 @@ let loadedComponents = new Map<any, any>();
 const VALIDATION_OWNED = Symbol('validationOwnedModule');
 let watchesSetup;
 let resources;
-// The directory applications present on this thread's last load cycle. On the next cycle, any that
-// have disappeared (dropped) have their status retired, so a removed application's old error stops
-// draining the node once it is gone (#3184). Per thread, like the registry it retires from.
+// The resolved directories of the applications present on this thread's last load cycle (the same
+// resolved-path key their status is recorded under). On the next cycle, any that have disappeared
+// (dropped) have their status retired, so a removed application's old error stops draining the node
+// once it is gone (#3184). Per thread, like the registry it retires from.
 let previouslyPresentDirectoryApps = new Set<string>();
 const componentLoadTails = new Map<string, Promise<void>>();
 type ComponentReadyPromises = WeakMap<object, Promise<void>>;
@@ -330,9 +331,18 @@ export async function loadComponentDirectories(
 				})
 		);
 	};
-	// The directory applications present this cycle (whether or not this thread loads each), used to
-	// retire the status of any that were present last cycle and are now gone.
+	// The resolved directories of the applications present this cycle (whether or not this thread
+	// loads each), used to retire the status of any that were present last cycle and are now gone.
+	// Resolved the same way each load records its status key (realpathSync of the component directory).
 	const presentDirectoryApps = new Set<string>();
+	const rememberPresent = (dir: string) => {
+		try {
+			presentDirectoryApps.add(realpathSync(dir));
+		} catch {
+			// A dangling symlink cannot be loaded either (loadComponent realpaths the same directory),
+			// so it has no status key to retire against; leaving it out is correct.
+		}
+	};
 	let scannedDirectoryApps = false;
 	if (existsSync(CF_ROUTES_DIR)) {
 		scannedDirectoryApps = true;
@@ -343,7 +353,7 @@ export async function loadComponentDirectories(
 			// Harper's own staging dirs (e.g. deploy aside copies) from loading as components.
 			if (appEntry.name.startsWith('.')) continue;
 			const appName = appEntry.name;
-			presentDirectoryApps.add(appName);
+			rememberPresent(join(CF_ROUTES_DIR, appName));
 			const recoveryError = failedRecoveries.get(appName);
 			if (recoveryError) {
 				if (recoveryError instanceof ComponentPreparationLockTimeoutError) {
@@ -389,7 +399,7 @@ export async function loadComponentDirectories(
 	for (const appName of deferredRecoveries.keys()) deferComponentLoad(appName);
 	const hdbAppFolder = process.env.RUN_HDB_APP;
 	if (hdbAppFolder) {
-		presentDirectoryApps.add(basename(hdbAppFolder));
+		rememberPresent(hdbAppFolder);
 		if (getWorkerIndex() === 0) harperLogger.info?.('Loading application from ' + hdbAppFolder);
 		const mountResult = tryRootConfigMount(basename(hdbAppFolder));
 		if (mountResult.ok && placedOnThisThread(basename(hdbAppFolder))) {
@@ -855,8 +865,13 @@ export async function loadComponent(
 	// package load qualifies that with the enclosing application (the same shape componentStatusName
 	// uses), so two applications each nesting a same-named package do not share one key and mask each
 	// other's failure. Root has no single owning application.
-	const appDirName = isRoot ? undefined : basename(componentDirectory);
-	const appStatusKey = appDirName && appName && appName !== appDirName ? `${appName}.${appDirName}` : appDirName;
+	// Keyed by this load's own resolved directory, not a name. A name is ambiguous — application and
+	// package names may contain dots, so a top-level app `shop.backup` and a package `backup` nested
+	// under `shop` produce the same dotted string, and either one's success could then clear the
+	// other's error and wrongly report the node healthy. A resolved path is unique per load, so no two
+	// loads (nested, sibling, or cross-application) ever share a key. Root has no single owning
+	// application. Every failure/heal/retire site below uses this same key so a load self-heals.
+	const appStatusKey = isRoot ? undefined : resolvedFolder;
 	try {
 		let config;
 		let configPath = join(componentDirectory, 'harper-config.yaml'); // look for the specific harperdb-config.yaml first
@@ -947,7 +962,14 @@ export async function loadComponent(
 					error.message = `Could not load component '${componentStatusName}' due to: ${error.message}`;
 					errorReporter?.(error);
 					(getWorkerIndex() === 0 ? console : harperLogger).error(error);
-					componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
+					// Key the status by the load's own resolved directory (appStatusKey), the same key the
+					// outer catch and the success path use, so a later clean reload heals it; the message
+					// keeps the readable component name.
+					componentLifecycle.failed(
+						appStatusKey ?? componentStatusName,
+						error,
+						`Could not load component '${componentStatusName}'`
+					);
 					return undefined;
 				}
 			}
@@ -1309,8 +1331,11 @@ export async function loadComponent(
 		}
 		// The application's plugins loaded without a whole-application throw, so clear its top-level
 		// status. Done before the "did not load anything" heuristic below so that heuristic's own
-		// failure report stands. Per-plugin failures keep their own error entries.
-		if (appStatusKey) componentLifecycle.loaded(appStatusKey, `Application '${appStatusKey}' loaded`);
+		// failure report stands. Per-plugin failures keep their own error entries. Skip if this key is
+		// already error from this pass (defense in depth alongside the unique-per-load key), so a
+		// success write never masks a failure recorded under the same key.
+		if (appStatusKey && statusForComponent(appStatusKey).get()?.status !== STATUS.ERROR)
+			componentLifecycle.loaded(appStatusKey, `Application '${appStatusKey}' loaded`);
 		const componentFunctionalityValues = Object.values(componentFunctionality);
 		if (
 			componentFunctionalityValues.length > 0 &&
@@ -1320,7 +1345,8 @@ export async function loadComponent(
 			const errorMessage = `${componentDirectory} did not load any modules, resources, or files, is this a valid component?`;
 			errorReporter?.(new Error(errorMessage));
 			(getWorkerIndex() === 0 ? console : harperLogger).error(errorMessage);
-			componentLifecycle.failed(basename(componentDirectory), errorMessage);
+			// Same resolved-directory key as the other failure sites, so a later clean reload heals it.
+			componentLifecycle.failed(appStatusKey ?? basename(componentDirectory), errorMessage);
 		}
 
 		for (const [componentName, functionality] of Object.entries(componentFunctionality)) {
