@@ -1750,16 +1750,22 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('replaces a reader for a new publication without changing an in-flight search snapshot', async () => {
+	it('preserves every result when a new publication reorders hits between native pages', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'query-reader-lease';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
 		const firstSearch = Promise.withResolvers();
 		const firstStarted = Promise.withResolvers();
+		const originalHits = Array.from({ length: 300 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 300 - index,
+		}));
+		let publishedHits = originalHits;
 		let closes = 0;
 		let opens = 0;
 		let reloads = 0;
-		let searches = 0;
+		const pages = [];
 		const index = new FullTextQueryIndex({
 			Table: {
 				tableId: 1,
@@ -1783,21 +1789,24 @@ describe('FullTextQueryIndex', () => {
 				},
 				async openNativeFullTextReader() {
 					const readerIndex = opens++;
+					let readerHits = publishedHits;
 					return {
-						async search() {
-							if (readerIndex === 0 && searches++ === 0) {
+						async search(request) {
+							pages.push({ readerIndex, offset: request.offset });
+							if (readerIndex === 0 && request.offset > 0) {
 								firstStarted.resolve();
 								await firstSearch.promise;
 							}
 							return {
-								total: 1,
+								total: readerHits.length,
 								totalRelation: 'exact',
-								hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+								hits: readerHits.slice(request.offset, request.offset + request.limit),
 							};
 						},
 						committedPayload: publicationPayload(),
 						async reload() {
 							reloads++;
+							readerHits = publishedHits;
 						},
 						async close() {
 							closes++;
@@ -1808,19 +1817,36 @@ describe('FullTextQueryIndex', () => {
 		});
 		const publication = attachCurrentCoverage(index, auditStore, readinessId);
 		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
-		const first = index.search(query, {}, { minResults: 1 });
-		await firstStarted.promise;
-		publication.publish();
-		const second = await index.search(query, {}, { minResults: 1 });
-		assert.strictEqual(second.length, 1);
-		assert.strictEqual(opens, 2);
-		assert.strictEqual(reloads, 0);
-		assert.strictEqual(closes, 0);
-		firstSearch.resolve();
-		const firstResult = await first;
-		assert.strictEqual(firstResult.length, 1);
-		await waitFor(() => closes === 1);
-		await index.close();
+		const first = index.search(query, {});
+		try {
+			await firstStarted.promise;
+			publishedHits = [...originalHits.slice(200), ...originalHits.slice(0, 200)];
+			publication.publish();
+			const second = await index.search(query, {}, { minResults: 1 });
+			assert.deepStrictEqual(
+				second.map(({ key }) => key),
+				['record-200']
+			);
+			assert.strictEqual(closes, 0);
+			firstSearch.resolve();
+			const firstResult = await first;
+			assert.deepStrictEqual(
+				firstResult.map(({ key }) => key),
+				Array.from({ length: 300 }, (_value, index) => `record-${index}`)
+			);
+			assert.strictEqual(opens, 2);
+			assert.strictEqual(reloads, 0);
+			assert.deepStrictEqual(pages, [
+				{ readerIndex: 0, offset: 0 },
+				{ readerIndex: 0, offset: 256 },
+				{ readerIndex: 1, offset: 0 },
+			]);
+			await waitFor(() => closes === 1);
+		} finally {
+			firstSearch.resolve();
+			await first.catch(() => {});
+			await index.close();
+		}
 		assert.strictEqual(closes, 2);
 	});
 

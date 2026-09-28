@@ -143,6 +143,9 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		if (!supportedTarget) this.skip();
 
 		const binding = await loadFullTextNativeBinding();
+		const runtime = await binding.runtimeInfo();
+		assert.strictEqual(runtime.packageVersion, '0.3.0');
+		assert.strictEqual(runtime.queryClassIsolationMinimumSearchThreads, 2);
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding, { surfaceTerms: true }));
 		await lifecycle.initialize();
 		const index = await lifecycle.open();
