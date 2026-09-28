@@ -173,7 +173,7 @@ A non-waiting HTTP query returns `Harper-Index-Coverage` with the admitted state
 
 ## Prefix result window
 
-`matches_prefix` and `matches_fuzzy_prefix` are autocomplete-style record searches. Their current native result window is 100 records, and `offset + limit` cannot exceed that window. They return matching records, not a separate list of suggested terms.
+`matches_prefix` and `matches_fuzzy_prefix` are autocomplete-style record searches. Any expression containing one of these modes uses a 100-record native result window, and `offset + limit` cannot exceed that window. If an unbounded query has more than 100 matches, Harper returns `400` and requires a limit instead of silently truncating the result. These modes return matching records, not a separate list of suggested terms.
 
 Other match modes page through the native result window as needed.
 

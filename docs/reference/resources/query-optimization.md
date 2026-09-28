@@ -17,7 +17,7 @@ Harper has powerful query functionality with excellent performance characteristi
 
 A condition using a declared `@fullText` index is executed by the native full-text engine and ranked with BM25. Compatible `and` filters are evaluated while accepting candidates so a selective structured filter can still fill the requested result page. Harper then loads the current source records and removes stale or deleted candidates.
 
-Keep result pages bounded. Prefix and fuzzy-prefix searches have a 100-record native window and are intended for autocomplete-style record lookup. Use source-field weights to tune ranking, and enable positions, surface terms, and highlighting only when their query features are needed. See [Full-Text Search](../full-text-search/overview.md).
+Keep result pages bounded. Any expression containing prefix or fuzzy-prefix matching has a 100-record native window and is intended for autocomplete-style record lookup. An unbounded query that exceeds the window fails instead of returning a partial result. Use source-field weights to tune ranking, and enable positions, surface terms, and highlighting only when their query features are needed. See [Full-Text Search](../full-text-search/overview.md).
 
 ## Query Execution
 
