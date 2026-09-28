@@ -100,24 +100,32 @@ describe('derived index registration tracking', () => {
 		const releaseInitial = acquireFullTextRetirementFence(store, 'Product');
 		// Waiters poll with independent backoff, so either may take the released fence first.
 		const acquired = [];
+		const releases = [];
 		const waiters = [0, 1].map((waiter) =>
 			waitForFullTextRetirementLease(store, 'Product').then((release) => {
 				acquired.push(waiter);
+				releases.push(release);
 				return release;
 			})
 		);
 
 		releaseInitial();
-		const releaseWinner = await Promise.race(waiters);
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		assert.strictEqual(acquired.length, 1);
-		assert.strictEqual(acquireFullTextRetirementFence(store, 'Product'), undefined);
-		releaseWinner();
-		const releaseLoser = await waiters[1 - acquired[0]];
-		assert.strictEqual(acquired.length, 2);
-		releaseLoser();
-		const releaseAfter = acquireFullTextRetirementFence(store, 'Product');
-		assert.strictEqual(typeof releaseAfter, 'function');
-		releaseAfter();
+		try {
+			const releaseWinner = await Promise.race(waiters);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			assert.strictEqual(acquired.length, 1);
+			assert.strictEqual(acquireFullTextRetirementFence(store, 'Product'), undefined);
+			releaseWinner();
+			const releaseLoser = await waiters[1 - acquired[0]];
+			assert.strictEqual(acquired.length, 2);
+			releaseLoser();
+			const releaseAfter = acquireFullTextRetirementFence(store, 'Product');
+			assert.strictEqual(typeof releaseAfter, 'function');
+			releaseAfter();
+		} finally {
+			// A failed assertion must not leave the other waiter polling out its 70 s deadline.
+			for (const release of releases) release();
+			for (const release of await Promise.all(waiters)) release();
+		}
 	});
 });
