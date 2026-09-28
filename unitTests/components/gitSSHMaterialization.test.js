@@ -22,6 +22,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { syncBuiltinESMExports } = require('node:module');
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
@@ -52,27 +53,23 @@ function decryptorFor({ privateKey, kid }) {
 	return (value) => decryptEnvelope(value.slice(ENC_PREFIX.length), privateKey, kid);
 }
 
-// `harper-ssh-*` dirs land wherever `os.tmpdir()` resolves at the moment materializeGitSSH
-// mkdtemps; each suite below stubs it to a private dir (see `scopeTmpdir`) so this sweep/assert
-// never touches, or is clobbered by, a concurrently running process's own tmpdir.
 const tempSSHDirs = (dir) => fs.readdirSync(dir).filter((entry) => entry.startsWith('harper-ssh-'));
 
-// Node's `os.tmpdir()` re-resolves on every call (no caching), and a named ESM import of a
-// builtin CJS module is a live binding onto its exports object — so stubbing the property here
-// is what materializeGitSSH's own `tmpdir()` call sees, same as the `logger` stub below.
-// Called from within a describe's own beforeEach/afterEach (rather than registering its own
-// hooks) so callers control ordering relative to their other per-test setup.
+// `syncBuiltinESMExports()` is required for the stub to reach `Application.ts`'s `import {
+// tmpdir } from 'node:os'` under --conditions=typestrip (an ESM link-time binding); see the same
+// pattern at unitTests/resources/blobCompression.test.js:313-316. Called from within a describe's
+// own beforeEach/afterEach (rather than registering its own hooks) so callers control ordering
+// relative to their other per-test setup.
 function scopeTmpdir() {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitssh-suite-'));
 	const original = os.tmpdir;
 	os.tmpdir = () => dir;
+	syncBuiltinESMExports();
 	return {
 		dir,
 		restore() {
 			os.tmpdir = original;
-			for (const leftover of tempSSHDirs(dir)) {
-				fs.rmSync(path.join(dir, leftover), { recursive: true, force: true });
-			}
+			syncBuiltinESMExports();
 			fs.rmSync(dir, { recursive: true, force: true });
 		},
 	};
@@ -121,7 +118,8 @@ describe('materializeGitSSH', () => {
 		logger.error = originalError;
 		logger.warn = originalWarn;
 		secretDecryptor.clearSecretDecryptor();
-		fs.rmSync(rootDir, { recursive: true, force: true });
+		// rootDir was mkdtemp'd under the stubbed os.tmpdir(), so restore()'s recursive removal
+		// of scopedTmpdir.dir takes it too.
 		scopedTmpdir.restore();
 	});
 
@@ -145,6 +143,7 @@ describe('materializeGitSSH', () => {
 		const configPath = materialized.command.match(/ssh -F (\S+)/)[1];
 		const tempDir = path.dirname(configPath);
 		assert.ok(path.basename(tempDir).startsWith('harper-ssh-'));
+		assert.ok(tempDir.startsWith(scopedTmpdir.dir), `expected the scoped tmpdir stub to take effect: ${tempDir}`);
 
 		// the plaintext exists, but only here
 		const transientKey = path.join(tempDir, 'deploy.key');
@@ -379,7 +378,8 @@ describe('nonInteractiveSpawn transient ssh lifetime', () => {
 	});
 
 	afterEach(() => {
-		fs.rmSync(rootDir, { recursive: true, force: true });
+		// rootDir was mkdtemp'd under the stubbed os.tmpdir(), so restore()'s recursive removal
+		// of scopedTmpdir.dir takes it too.
 		scopedTmpdir.restore();
 	});
 
@@ -388,6 +388,8 @@ describe('nonInteractiveSpawn transient ssh lifetime', () => {
 
 		assert.strictEqual(code, 0);
 		assert.match(stdout, /^ssh -F \S*harper-ssh-\S+[/\\]config /, `unexpected GIT_SSH_COMMAND: ${stdout}`);
+		const tempDir = path.dirname(stdout.match(/ssh -F (\S+)/)[1]);
+		assert.ok(tempDir.startsWith(scopedTmpdir.dir), `expected the scoped tmpdir stub to take effect: ${tempDir}`);
 		assert.deepStrictEqual(tempSSHDirs(scopedTmpdir.dir), [], 'the transient ssh dir must not outlive the spawn');
 	});
 
