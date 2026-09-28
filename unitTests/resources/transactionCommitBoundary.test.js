@@ -410,6 +410,36 @@ describe('Transaction native-submit boundary', () => {
 		child.commitsInFlight = 0;
 	});
 
+	it('lets an LMDB child parked in pre-commit work land when a disconnect follows the head submission', async function () {
+		const head = new LMDBTransaction();
+		const child = new LMDBTransaction();
+		head.next = child;
+		child.root = head;
+		let releaseHeadCommit, releaseBefore;
+		const headGate = new Promise((resolve) => (releaseHeadCommit = resolve));
+		const headWrite = makeLMDBWrite(11, () => {});
+		headWrite.store.ifVersion = (_key, _version, callback) => {
+			callback();
+			return headGate.then(() => true);
+		};
+		let childCommits = 0;
+		const childWrite = makeLMDBWrite(12, () => childCommits++);
+		const childBefore = new Promise((resolve) => (releaseBefore = resolve));
+		childWrite.before = () => childBefore;
+		head.writes.push(headWrite);
+		child.writes.push(childWrite);
+
+		const committing = head.commit({ doneWriting: true });
+		assert.equal(head.commitSubmitted, true, 'premise: the head has submitted its native commit');
+		head.abortDueToDisconnect();
+		releaseHeadCommit();
+		await waitFor(() => child.committing, { message: 'the cascaded child should park in its pre-commit work' });
+		releaseBefore();
+
+		await committing;
+		assert.equal(childCommits, 1, 'the chained store must land with the head rather than split the commit');
+	});
+
 	it('gives a lingering LMDB write to a throwaway that owns the request cancellation', async function () {
 		const ac = new AbortController();
 		const lingering = new LMDBTransaction();
