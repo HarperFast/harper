@@ -95,6 +95,7 @@ import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
 import {
 	compileFullTextDefinitions,
+	compileFullTextFields,
 	migratePersistedFullTextValues,
 	persistedFullTextIndexNames,
 	reconcileFullTextIndexGenerations,
@@ -105,7 +106,9 @@ import { projectAttributesToProperties } from './jsonSchemaTypes.ts';
 import {
 	definitionsEqual,
 	mergePeerFullTextDefinitions,
+	mergePeerFullTextFields,
 	readPersistedFullTextDefinitions,
+	readPersistedFullTextFields,
 	retainFullTextDefinitions,
 	serializeFullTextState,
 } from './fullTextSchemaLifecycle.ts';
@@ -1444,6 +1447,12 @@ function initStores(
 				for (const warning of warnings) logger.warn(warning);
 			} else if (warnings.length === 0) warnedFullTextStates.delete(warningKey);
 		}
+		const fullTextFields = readPersistedFullTextFields(
+			primaryAttribute.fullTextFields,
+			primaryAttribute.fullTextIndexes,
+			attributes,
+			(message) => logger.warn(`${databaseName}.${tableName}: ${message}`)
+		);
 		const fullTextIndexGenerations = persistedFullTextIndexGenerations(
 			primaryAttribute.fullTextIndexGenerations,
 			fullTextIndexes
@@ -1452,6 +1461,7 @@ function initStores(
 		if (table && !recreateTable) {
 			if (primaryAttribute.audit === true && table.audit !== true) table.enableAuditing();
 			table.fullTextIndexes = fullTextIndexes;
+			table.fullTextFields = fullTextFields;
 			table.fullTextIndexGenerations = fullTextIndexGenerations;
 			table.fullTextIndexRetirements = fullTextIndexRetirements;
 			indices = table.indices;
@@ -1606,6 +1616,7 @@ function initStores(
 					indices,
 					attributes,
 					fullTextIndexes,
+					fullTextFields,
 					fullTextIndexGenerations,
 					fullTextIndexRetirements,
 					schemaDefined: primaryAttribute.schemaDefined,
@@ -2166,6 +2177,7 @@ interface TableDefinition {
 	/** Internal: this declaration came from the application owned by the current dedicated worker. */
 	isolatedApplicationOwner?: boolean;
 	fullTextIndexes?: FullTextDefinition[];
+	fullTextFields?: string[];
 }
 /**
  * Ensure that we have this database object (that holds a set of tables) set up
@@ -3354,6 +3366,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		cacheControl,
 		isolatedApplicationOwner,
 		fullTextIndexes,
+		fullTextFields,
 	} = tableDefinition;
 	const auditExplicitlyEnabled = audit === true;
 	const auditExplicitlyDisabled = audit === false;
@@ -3556,6 +3569,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	let published = false;
 	let fullTextValuesForPersistence: unknown;
 	let fullTextPersistencePending = false;
+	let fullTextFieldsForPersistence: string[] | undefined;
 	let activeFullTextIndexes: FullTextDefinition[] | undefined;
 	let fullTextIndexGenerationMap: FullTextIndexGenerations = Object.create(null);
 	let fullTextIndexRetirementNames: string[] | undefined;
@@ -3606,11 +3620,28 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			}
 			let persistedPrimary = persistedPrimaryDescriptor(Table.dbisDB);
 			let persistedFullTextValues = persistedPrimary.descriptor?.fullTextIndexes;
+			if (origin === 'cluster' && persistedPrimary.descriptor?.fullTextFields !== undefined) {
+				const declaredFields = new Set(
+					readPersistedFullTextFields(
+						persistedPrimary.descriptor.fullTextFields,
+						persistedFullTextValues,
+						catalogAttributes(Table.dbisDB),
+						fullTextWarning
+					)
+				);
+				attributes = attributes.filter((attribute) => {
+					if (!declaredFields.has(attribute.name)) return true;
+					fullTextWarning(`Ignoring peer attribute '${attribute.name}'; the local full-text field is authoritative`);
+					return false;
+				});
+			}
 			const incomingFullTextValues = fullTextIndexesExplicit ? fullTextIndexes : [];
 			let fullTextValidationAttributes: any[] | undefined;
 			if (
 				(persistedFullTextValues !== undefined && (rootStore instanceof RocksDatabase || fullTextIndexesExplicit)) ||
 				persistedPrimary.descriptor?.fullTextIndexRetirements !== undefined ||
+				persistedPrimary.descriptor?.fullTextFields !== undefined ||
+				(fullTextFields !== undefined && (!Array.isArray(fullTextFields) || fullTextFields.length > 0)) ||
 				Table.fullTextIndexes?.length > 0 ||
 				(fullTextIndexesExplicit && (!Array.isArray(incomingFullTextValues) || incomingFullTextValues.length > 0))
 			) {
@@ -3646,6 +3677,12 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 								? readPersistedFullTextDefinitions(restoredPrimary?.fullTextIndexes, restored, fullTextWarning)
 								: [];
 						Table.fullTextIndexes = restoredFullTextIndexes;
+						Table.fullTextFields = readPersistedFullTextFields(
+							restoredPrimary?.fullTextFields,
+							restoredPrimary?.fullTextIndexes,
+							restored,
+							fullTextWarning
+						);
 						Table.fullTextIndexGenerations = persistedFullTextIndexGenerations(
 							restoredPrimary?.fullTextIndexGenerations,
 							restoredFullTextIndexes
@@ -3673,6 +3710,30 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// Before the full-text branches can write an interim descriptor; the check on the merged list
 				// below stays authoritative.
 				assertDerivedFieldOwnership(validationAttributes as any[]);
+				const validateFullTextFields = (definitions: unknown) => {
+					const names = persistedFullTextIndexNames(definitions).map((name) => ({ name }));
+					if (origin === 'cluster')
+						return mergePeerFullTextFields(
+							persistedPrimary.descriptor?.fullTextFields,
+							fullTextFields,
+							persistedFullTextValues,
+							definitions,
+							validationAttributes,
+							fullTextWarning
+						);
+					const retained = readPersistedFullTextFields(
+						persistedPrimary.descriptor?.fullTextFields,
+						persistedFullTextValues,
+						durableAttributes,
+						fullTextWarning
+					);
+					const requestedNames = new Set(names.map(({ name }) => name));
+					return compileFullTextFields(
+						fullTextFields === undefined ? retained.filter((name) => requestedNames.has(name)) : fullTextFields,
+						names,
+						validationAttributes
+					);
+				};
 
 				const persistedAudit = persistedPrimary.descriptor?.audit;
 				const durableAudit = persistedAudit === true;
@@ -3702,6 +3763,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							: [];
 				} else if (fullTextIndexesExplicit) {
 					const compiled = compileFullTextDefinitions(incomingFullTextValues, validationAttributes);
+					fullTextFieldsForPersistence = validateFullTextFields(compiled);
 					if (compiled.length > 0 && !(rootStore instanceof RocksDatabase))
 						throw new ClientError(
 							`Table '${databaseName}.${tableName}' cannot use @fullText with the LMDB storage engine`,
@@ -3748,6 +3810,12 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 								delete interimPrimary.fullTextIndexes;
 								delete interimPrimary.fullTextIndexGenerations;
 							}
+							interimPrimary.fullTextFields = readPersistedFullTextFields(
+								persistedPrimary.descriptor?.fullTextFields,
+								persistedFullTextValues,
+								durableAttributes,
+								fullTextWarning
+							).filter((name) => requestedNames.has(name));
 							const retirements = new Set(
 								persistedFullTextIndexNames(persistedPrimary.descriptor?.fullTextIndexRetirements)
 							);
@@ -3782,6 +3850,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					fullTextPersistencePending = !definitionsEqual(fullTextValuesForPersistence, persistedFullTextValues);
 					activeFullTextIndexes = rootStore instanceof RocksDatabase && finalAudit ? retained : [];
 				}
+				fullTextFieldsForPersistence ??= validateFullTextFields(fullTextValuesForPersistence);
 			}
 			if (activeFullTextIndexes !== undefined) {
 				const durableGenerationDefinitions = readPersistedFullTextDefinitions(
@@ -3892,12 +3961,29 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					activeFullTextIndexes = compiled;
 				}
 			}
+			fullTextFieldsForPersistence =
+				origin === 'cluster'
+					? mergePeerFullTextFields(
+							undefined,
+							fullTextFields,
+							[],
+							fullTextValuesForPersistence,
+							attributes,
+							fullTextWarning
+						)
+					: compileFullTextFields(
+							fullTextFields === undefined ? [] : fullTextFields,
+							persistedFullTextIndexNames(fullTextValuesForPersistence).map((name) => ({ name })),
+							attributes
+						);
 			const auditStore = rootStore.auditStore;
 			primaryKeyAttribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
 			primaryKey = primaryKeyAttribute.name;
 			primaryKeyAttribute.isPrimaryKey = true;
 			primaryKeyAttribute.is_hash_attribute = true; // backward-compat: harperdb@4.x reads this field to open the DBI with correct flags
 			primaryKeyAttribute.schemaDefined = schemaDefined;
+			if (fullTextFieldsForPersistence.length > 0) primaryKeyAttribute.fullTextFields = fullTextFieldsForPersistence;
+			else delete primaryKeyAttribute.fullTextFields;
 			// Old readers treat every attribute row as live schema, so relationships stay on the ignored primary descriptor.
 			if (relationshipDefinitions) primaryKeyAttribute.relationships = relationshipDefinitions;
 			if (Array.isArray(fullTextValuesForPersistence) && fullTextValuesForPersistence.length > 0) {
@@ -4046,6 +4132,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				indices: {},
 				attributes,
 				fullTextIndexes: activeFullTextIndexes ?? [],
+				fullTextFields: fullTextFieldsForPersistence,
 				fullTextIndexGenerations: fullTextIndexGenerationMap,
 				fullTextIndexRetirements: fullTextIndexRetirementNames ?? [],
 				schemaDefined,
@@ -4466,6 +4553,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		if (
 			!deferredPrimaryRow &&
 			(fullTextPersistencePending ||
+				fullTextFieldsForPersistence !== undefined ||
 				(rootStore instanceof RocksDatabase &&
 					activeFullTextIndexes !== undefined &&
 					Array.isArray(fullTextValuesForPersistence)))
@@ -4473,10 +4561,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			const { key, descriptor } = persistedPrimaryDescriptor(attributesDbi);
 			if (descriptor && !tableIsDropping(descriptor, key)) {
 				const updatedPrimary = { ...descriptor };
+				if (fullTextFieldsForPersistence !== undefined) updatedPrimary.fullTextFields = fullTextFieldsForPersistence;
 				if (Array.isArray(fullTextValuesForPersistence) && fullTextValuesForPersistence.length > 0) {
 					updatedPrimary.fullTextIndexes = fullTextValuesForPersistence;
 					updatedPrimary.fullTextIndexGenerations = fullTextIndexGenerationMap;
-				} else {
+				} else if (Array.isArray(fullTextValuesForPersistence)) {
 					delete updatedPrimary.fullTextIndexes;
 					delete updatedPrimary.fullTextIndexGenerations;
 				}
@@ -4491,6 +4580,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				else delete updatedPrimary.fullTextIndexRetirements;
 				if (
 					!definitionsEqual(descriptor.fullTextIndexes, updatedPrimary.fullTextIndexes) ||
+					!definitionsEqual(descriptor.fullTextFields, updatedPrimary.fullTextFields) ||
 					JSON.stringify(descriptor.fullTextIndexGenerations ?? {}) !==
 						JSON.stringify(updatedPrimary.fullTextIndexGenerations ?? {}) ||
 					JSON.stringify(descriptor.fullTextIndexRetirements ?? []) !==
@@ -4563,6 +4653,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	} finally {
 		releaseLock();
 	}
+	if (fullTextFieldsForPersistence !== undefined) Table.fullTextFields = fullTextFieldsForPersistence;
 	if (activeFullTextIndexes !== undefined) {
 		Table.fullTextIndexes = activeFullTextIndexes;
 		Table.fullTextIndexGenerations = fullTextIndexGenerationMap;

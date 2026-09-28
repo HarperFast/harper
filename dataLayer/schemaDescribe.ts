@@ -233,6 +233,7 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 				const readiness = fullTextDerivedIndexReadiness(tableObj, definition.name);
 				return {
 					name: definition.name,
+					...(tableObj.fullTextFields?.includes(definition.name) ? { field: true } : null),
 					fields: fields.map(({ name, weight, mediaType, highlight }: any) => ({
 						name,
 						weight,

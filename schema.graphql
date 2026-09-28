@@ -250,10 +250,19 @@ input FullTextHighlighting {
 }
 
 """
-Create a native full-text derived index over the listed source attributes.
+A query-only field naming a full-text index. It has no stored or selectable record value.
+"""
+scalar FullText
+
+"""
+Create a native full-text derived index over the listed source attributes. Declare it on a
+FullText field; the field name identifies the index. The object form is deprecated.
 """
 directive @fullText(
-	name: String!
+	"""
+	Required only for the deprecated object form; omit on FullText fields.
+	"""
+	name: String
 	fields: [FullTextSource!]!
 	analyzer: String! = "english@2"
 	stopWords: Boolean! = true
@@ -261,7 +270,7 @@ directive @fullText(
 	surfaceTerms: Boolean! = true
 	synonyms: [FullTextSynonymRule!]! = []
 	highlighting: FullTextHighlighting
-) repeatable on OBJECT
+) repeatable on FIELD_DEFINITION | OBJECT
 
 """
 Define a derived field whose value is computed from other fields.

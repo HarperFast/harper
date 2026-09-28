@@ -119,6 +119,26 @@ export type FullTextSchemaAttribute = {
 	relationship?: unknown;
 };
 
+export function compileFullTextFields(
+	values: unknown,
+	definitions: readonly Pick<FullTextDefinition, 'name'>[],
+	attributes: readonly FullTextSchemaAttribute[]
+): string[] {
+	if (!Array.isArray(values)) throw schemaError('fullTextFields must be a list of index names');
+	const indexes = new Set(definitions.map(({ name }) => name));
+	const stored = new Set(attributes.map(({ name }) => name));
+	const names = new Set<string>();
+	for (const name of values) {
+		if (typeof name !== 'string' || name.length === 0)
+			throw schemaError('fullTextFields must contain non-empty index names');
+		if (names.has(name)) throw schemaError(`Full-text field "${name}" is declared more than once`);
+		if (!indexes.has(name)) throw schemaError(`Full-text field "${name}" requires a declared @fullText index`);
+		if (stored.has(name)) throw schemaError(`Full-text field "${name}" conflicts with a stored attribute`);
+		names.add(name);
+	}
+	return [...names].sort();
+}
+
 export function compileFullTextDefinitions(
 	values: readonly unknown[],
 	attributes: readonly FullTextSchemaAttribute[]

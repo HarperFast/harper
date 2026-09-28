@@ -2,8 +2,10 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import {
 	compileFullTextDefinition,
 	compileFullTextDefinitions,
+	compileFullTextFields,
 	compileValidFullTextDefinitions,
 	migratePersistedFullTextDefinition,
+	persistedFullTextIndexNames,
 	sortFullTextDefinitions,
 	type FullTextDefinition,
 	type FullTextSchemaAttribute,
@@ -21,6 +23,49 @@ export function serializeFullTextState(value: unknown): string {
 
 export function definitionsEqual(left: unknown, right: unknown): boolean {
 	return serializeFullTextState(left ?? []) === serializeFullTextState(right ?? []);
+}
+
+export function readPersistedFullTextFields(
+	values: unknown,
+	definitions: unknown,
+	attributes: readonly FullTextSchemaAttribute[],
+	warn: FullTextWarning
+): string[] {
+	if (values === undefined) return [];
+	const names = persistedFullTextIndexNames(definitions).map((name) => ({ name }));
+	try {
+		return compileFullTextFields(values, names, attributes);
+	} catch (error) {
+		if (!(error instanceof ClientError)) throw error;
+		warn(`Ignoring invalid persisted full-text fields: ${error.message}`);
+		return [];
+	}
+}
+
+export function mergePeerFullTextFields(
+	persistedValues: unknown,
+	incomingValues: unknown,
+	persistedDefinitions: unknown,
+	finalDefinitions: unknown,
+	attributes: readonly FullTextSchemaAttribute[],
+	warn: FullTextWarning
+): string[] {
+	const retained = readPersistedFullTextFields(persistedValues, persistedDefinitions, attributes, warn);
+	if (incomingValues === undefined) return retained;
+	let incoming: string[];
+	try {
+		incoming = compileFullTextFields(
+			incomingValues,
+			persistedFullTextIndexNames(finalDefinitions).map((name) => ({ name })),
+			attributes
+		);
+	} catch (error) {
+		if (!(error instanceof ClientError)) throw error;
+		warn(`Ignoring invalid peer full-text fields: ${error.message}`);
+		return retained;
+	}
+	const existingNames = new Set(persistedFullTextIndexNames(persistedDefinitions));
+	return [...new Set([...retained, ...incoming.filter((name) => !existingNames.has(name))])].sort();
 }
 
 export function readPersistedFullTextDefinitions(
