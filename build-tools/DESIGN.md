@@ -51,6 +51,29 @@ install` (unlike a registry install of harper as _someone else's_ dependency) re
   react-native residual two bullets up: that subtree is still re-resolved fresh on every build, so a
   bug specific to it (not that anyone should want one there) actually would clear on a rebuild.
 
+## The image's shrinkwrap check must prove it could fail (`build-tools/check-shrinkwrap-pins.mjs`)
+
+`docker-smoke.yml` runs this against the built image. Matching pins prove nothing where an unpinned
+install would resolve the same versions, so the check also resolves the same `package.json` fresh
+(lock-only, no shrinkwrap) and fails unless at least one checked edge differs there. That
+requirement is why the check walks the whole packed tree, not a few named packages:
+
+- **Direct dependencies cannot carry the proof.** Renovate's weekly non-major group moves every
+  ranged direct dependency to its newest release that is at least 7 days old. The former
+  hand-picked canaries went vacuous three times. On 2026-09-28, 27 of 28 ranged direct dependencies
+  were at the newest version their range allowed. Transitive pins lag because renovate's
+  `lockFileMaintenance` is off. If it is turned on, expect this check to fail right after each
+  full refresh, until some pinned package publishes again.
+- **Edges, not locations.** Each packed dependency edge is resolved node_modules-style in the packed
+  map and in the installed tree. npm re-hoisting a pinned package to another path is not drift.
+- **The exemption comes only from `alasql → react-native-fs`**, the optional edge
+  `prune-shrinkwrap-react-native.mjs` severs. The image re-adds that subtree (previous note), and it
+  lifts shared pins such as the `@babel/*` packages `@endo/static-module-record` uses. Edges into
+  that subtree are not pin-checked, and a lifted shared pin prints a `::warning::`. Any other edge
+  the install resolved without a packed pin fails the check: seeding the exemption from "anything
+  unpinned" would exempt exactly the regression the check exists to catch. The exempt set becomes
+  empty once alasql drops the optional edge.
+
 ## The published image runs `tini -g` as PID 1, not Harper (`Dockerfile`)
 
 Harper used to be PID 1 in the published image. It is now started under `tini -g`, and that is
