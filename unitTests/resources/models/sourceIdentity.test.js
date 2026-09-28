@@ -133,6 +133,8 @@ describe('score-source identity for calibration (#2841)', () => {
 				base
 			);
 			assert.notStrictEqual(sourceFingerprint('generative', undefined, { backend: 'openai', model: 'n' }), base);
+			const custom = (routingKey) => sourceFingerprint('generative', undefined, { backend: 'custom', routingKey });
+			assert.notStrictEqual(custom('a'), custom('b'), 'a setting that only ends in key still identifies the source');
 		});
 
 		it('keeps an entry fingerprint when an unrelated entry is added', async () => {

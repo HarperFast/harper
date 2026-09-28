@@ -418,12 +418,33 @@ export function getModelsConfigHash(): string | undefined {
 export function sourceFingerprint(kind: string, logicalName: string | undefined, config: unknown): string {
 	return createHash('sha256')
 		.update(
-			canonicalJson({ kind, logicalName: logicalName ?? null, config: withoutCredentials(withoutFallback(config)) })
+			canonicalJson({
+				kind,
+				logicalName: logicalName ?? null,
+				config: withoutNamedCredentials(withoutFallback(config)),
+			})
 		)
 		.digest('hex');
 }
 
 /** Which backend serves after this one is routing, not what produces this one's scores. */
+/**
+ * Only fields known to hold credentials. A setting that merely ends in `key` or `token` can change what a source
+ * scores, so it stays in the fingerprint; rotating an unrecognized secret therefore starts calibration over.
+ */
+const NAMED_CREDENTIAL =
+	/^(apiKey|apiSecret|accessKeyId|secretAccessKey|sessionToken|authorization|password|token|bearerToken|credentials?)$/i;
+
+function withoutNamedCredentials(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(withoutNamedCredentials);
+	if (!value || typeof value !== 'object') return value;
+	const kept: Record<string, unknown> = {};
+	for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+		if (!NAMED_CREDENTIAL.test(key)) kept[key] = withoutNamedCredentials(entry);
+	}
+	return kept;
+}
+
 function withoutFallback(config: unknown): unknown {
 	if (!config || typeof config !== 'object' || Array.isArray(config)) return config;
 	const { fallback: _fallback, ...rest } = config as Record<string, unknown>;
