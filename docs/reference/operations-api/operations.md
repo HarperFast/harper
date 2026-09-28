@@ -892,7 +892,9 @@ Additional parameters:
 
 `urlPath` and `host` both require `package` and are rejected on a payload-only deploy. To mount a payload-deployed component, add `host`/`urlPath` to its entry in the root `harper-config.yaml` instead.
 
+:::warning
 Under the default [`applications.lockdown`](../components/module-loading.md#intrinsic-lockdown), a deploy is not test-loaded before it goes live. A release that installs but throws when it loads is deployed, and it reports the failure in the `componentStatus` of [`get_status`](#set_status--get_status--clear_status) once workers load it. The rest of the instance keeps serving.
+:::
 
 #### How a deploy updates the root config
 
