@@ -889,9 +889,7 @@ async function deployComponent(req) {
 				await validateComponentLoads(candidateDirPath, emit);
 			},
 		});
-		// Nothing ran `validateCandidate`, which ends this phase. Isolation stays unset on purpose: which workers loaded
-		// the previous release is unknowable here — the preamble may just have published an isolation change — so a
-		// restart has to replace them all.
+		// Nothing ran `validateCandidate`, which ends this phase.
 		if (application.alreadyActive) emit('phase', { phase: 'prepare', status: 'done' });
 		// The build is certified on disk from here on, so every later failure — a peer result, or a rejection
 		// thrown by the replication layer itself — still leaves an artifact this id can activate.
@@ -943,8 +941,10 @@ async function deployComponent(req) {
 		}
 		// A still-isolated application restarts only its own dedicated worker. Everything else restarts the
 		// pool: a shared application, and either direction of an isolation flip, where the reconcile in
-		// restartWorkers starts or stops the moving application's own worker.
-		const restartScope = wasIsolated && nowIsolated ? application.name : undefined;
+		// restartWorkers starts or stops the moving application's own worker. An already-live retry restarts every
+		// worker: which ones loaded the previous release is unknowable, since its preamble may just have published
+		// an isolation change.
+		const restartScope = application.alreadyActive ? '*' : wasIsolated && nowIsolated ? application.name : undefined;
 		if (mode === 'stage') {
 			// No restart and no restart-required flag: nothing about the running component changed. The
 			// marker is what tells the origin which peers understood the request — see the confirmation
@@ -972,7 +972,8 @@ async function deployComponent(req) {
 				operation: 'restart_service',
 				service: 'http',
 				scope: manageThreads.encodeRestartScope(restartScope),
-				scopeFallback: restartScope === undefined ? undefined : manageThreads.encodeRestartScope(undefined),
+				scopeFallback:
+					restartScope === undefined || restartScope === '*' ? undefined : manageThreads.encodeRestartScope(undefined),
 				replicated: true,
 			});
 			emit('phase', { phase: 'restart', status: 'done' });

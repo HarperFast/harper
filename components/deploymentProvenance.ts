@@ -1,10 +1,6 @@
 import { basename } from 'node:path';
 
-/**
- * Rides the rename that makes a tree live, so it is never stale: anything else that replaces the directory replaces
- * it too. Reserved at a component's top level. Only an id: the tree is the component's own to write, so nothing
- * published on activation may come from here.
- */
+/** Rides the rename that makes a tree live, so it is never stale. Only an id: the tree is the component's to write. */
 export const DEPLOYMENT_PROVENANCE_FILE = '.harper-deployment.json';
 
 const DEPLOYMENT_PROVENANCE_VERSION = 1;

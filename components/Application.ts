@@ -1146,11 +1146,11 @@ async function dormantBuildAt(deploymentDirPath: string, owner: string): Promise
  * cannot hold or miss a slot. Never throws: a failure must neither fail a component closed nor replace a
  * deploy's own error.
  *
- * `pinnedDeploymentId` is never evicted. A delayed activation runs this preamble under the same lock it is
- * about to activate under, so without the pin retention would delete the artifact the request named —
- * immediately, when the knob is `0`. The pin is applied after the kept set is chosen, so a pinned build in
- * the eviction tail leaves `maxCount + 1` on disk for the life of the request; the next preamble that does
- * not pin it brings the count back down.
+ * A `pinned` id is never evicted. A delayed activation runs this preamble under the same lock it is about to
+ * activate under, so without the pin retention would delete the artifact the request named — immediately, when the
+ * knob is `0` — and a settlement's pins keep the releases it just put back. Pins are applied after the kept set is
+ * chosen, so each pinned build in the eviction tail leaves one more than `maxCount` on disk until a pass that does
+ * not pin it.
  */
 export async function pruneDormantBuilds(
 	componentName: string,
@@ -1623,10 +1623,7 @@ async function keepsDeploymentRecord(deploymentDirPath: string): Promise<boolean
 	return presentOrAbsent(join(deploymentDirPath, CANDIDATE_ARTIFACT_FILE)).then(Boolean, () => true);
 }
 
-/**
- * Retention orders by `.complete`'s mtime, so a kept release takes the time it stopped being live; at its build time,
- * stages nobody activated would outrank it.
- */
+/** Retention orders by `.complete`'s mtime, and a kept release has to outrank stages nobody activated. */
 async function refreshCompletedAt(deploymentDirPath: string, componentName: string, deploymentId: string) {
 	for (let attempt = 1; ; attempt++) {
 		const now = new Date();
@@ -1649,9 +1646,8 @@ async function refreshCompletedAt(deploymentDirPath: string, componentName: stri
 type DisplacedReleaseRetention = { verdict: 'kept'; deploymentId: string } | { verdict: 'ineligible' | 'failed' };
 
 /**
- * Only an explicit retention decision may delete a displaced tree: `ineligible` means nothing can keep it, and
- * `failed` leaves it in place for the next preparation to retry. A failure after the rename propagates, as the aside
- * syncs around it do. The caller holds the component's preparation lock and has retired the aside record.
+ * Only an explicit retention decision deletes a displaced tree: `failed` leaves it for the next preparation to retry.
+ * A failure after the rename propagates, as the aside syncs around it do.
  */
 async function retainDisplacedRelease(
 	componentsRootDirPath: string,
@@ -1886,9 +1882,8 @@ async function ensureSecureStagingDirectory(stagingDir: string): Promise<void> {
 }
 
 /**
- * EXCLUSIVE: an operator can repeat a public id, and tolerating an existing directory would let a replayed stage
- * rewrite certified bytes. Built aside and renamed onto the id, so the directory never appears unattributed. The
- * caller holds the component's preparation lock, which is what makes the verdicts on an existing directory sound.
+ * Exclusive, because an operator can repeat a public id; built aside and renamed onto it, so it never appears
+ * unattributed. The caller's preparation lock is what makes the verdicts on an existing directory sound.
  */
 async function claimDeploymentDirectory(deploymentDirPath: string, componentName: string): Promise<void> {
 	const claimDirPath = join(
@@ -2251,19 +2246,20 @@ async function settleStagingForComponent(
 	}
 }
 
-/**
- * The pass a settlement ran inside counts what it kept, and pins it: the scan may have read those directories before
- * they held a tree, and after a failed mtime refresh that pass would otherwise evict the release it just put back.
- */
+/** Counted and pinned, or the pass a settlement ran inside can miss what it kept, or evict it after a failed refresh. */
 async function catalogueKeptReleases(
 	stagingRoot: string,
 	componentName: string,
 	kept: string[],
 	into: DormantBuild[]
 ): Promise<void> {
+	const present = new Set(into.map((build) => build.deploymentDirPath));
 	for (const deploymentId of kept) {
 		const build = await dormantBuildAt(join(stagingRoot, deploymentId), componentName).catch(() => undefined);
-		if (build && !into.some((existing) => existing.deploymentDirPath === build.deploymentDirPath)) into.push(build);
+		if (build && !present.has(build.deploymentDirPath)) {
+			present.add(build.deploymentDirPath);
+			into.push(build);
+		}
 	}
 }
 

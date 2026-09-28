@@ -397,8 +397,9 @@ deploymentId }` — at the top of every candidate it extracts, after the install
 - **The id's record outlives the swap.** A build whose caller declared what it publishes (`describeArtifact` — every
   `deploy_component`) writes `.artifact.json` before `.complete`, as a stage does, and a committed activation
   keeps `.deploy-staging/<id>` minus its tree and journal: `.component`, `.complete`, `.artifact.json`. That
-  record is where the release goes back to, so its directory entry is flushed before the swap, as a stage's is. A boot install, `add_component` and a link build declare nothing and
-  keep none, as before. Keeping the descriptor here rather than snapshotting the entry at displacement is
+  record is where the release goes back to, so its directory entry is flushed before the swap, as a stage's is. A
+  boot install, `add_component` and a link build declare nothing and keep none, as before. Keeping the descriptor
+  here rather than snapshotting the entry at displacement is
   deliberate: for a boot install the entry in force is the new build's, so after an out-of-band edit the displaced
   tree would be described with the wrong package. Re-activating an id publishes what that deployment declared,
   which is the contract a staged artifact already had; `set_configuration` edits made while it was live are not
@@ -430,12 +431,14 @@ deploymentId }` — at the top of every candidate it extracts, after the install
   compares the live marker with the id: equal means the release is already serving here — a retry whose earlier
   attempt swapped on this node and failed later or elsewhere — so it sets `alreadyActive`, requests a restart
   (nothing can tell whether the running generation ever loaded it, the reasoning a late startup preparation
-  follows), and returns; `deploy_component` emits the `prepare` phase end and replicates. Per node, with no
-  cross-node inference: a node that swapped answers success, one still holding the artifact activates it, one
-  with neither answers 404. Only `activate`: a deploy or stage claims an id the origin minted fresh, and harper-pro
-  never resends a replicated operation (`sendOperationToNode` is one socket per call), so a replicated deploy of
-  an id this node already holds — only a hand-crafted `_deploymentId` produces one — is refused by the claim. A
-  record whose release is neither live nor kept answers 404, where a missing tree used to answer 409.
+  follows), and returns; `deploy_component` emits the `prepare` phase end itself, since nothing ran
+  `validateCandidate`, and replicates. A restart it performs replaces every worker, dedicated ones included: which
+  ones loaded the previous release is unknowable, since the preamble may just have published an isolation change.
+  Per node, with no cross-node inference: a node that swapped answers success, one still holding the artifact
+  activates it, one with neither answers 404. Only `activate`: a deploy or stage claims an id the origin minted
+  fresh, and harper-pro never resends a replicated operation (`sendOperationToNode` is one socket per call), so a
+  replicated deploy of an id this node already holds — only a hand-crafted `_deploymentId` produces one — is refused
+  by the claim. A record whose release is neither live nor kept answers 404, where a missing tree used to answer 409.
 
 **A record is stale only when nothing refers to it.** "Not live" is not enough: a crash after the commit and
 before the re-home leaves the displaced release's record and its tree in `.deploy-aside`, and a boot scan can
