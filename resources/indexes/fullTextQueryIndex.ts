@@ -187,6 +187,7 @@ export class FullTextQueryIndex {
 				await context?.indexSearchStart;
 				context?.signal?.throwIfAborted();
 				const waitDeadline = performance.now() + waitForIndexMilliseconds;
+				const started = derivedIndexTime(this.#options.Table.primaryStore.rootStore);
 				let host = this.#derivedHost;
 				if (!host) {
 					const remaining = waitDeadline - performance.now();
@@ -202,12 +203,8 @@ export class FullTextQueryIndex {
 					);
 				context?.signal?.throwIfAborted();
 				if (options.minResults === 0) return [];
-				const started = derivedIndexTime(this.#options.Table.primaryStore.rootStore);
 				if (this.#readCoverage(0).state !== 'current') {
-					const remaining = waitDeadline - performance.now();
-					if (remaining <= 0)
-						throw new DerivedIndexLagError('Timed out waiting for derived index coverage; retry this query');
-					await host.waitForCoverage(started, remaining, context?.signal);
+					await host.waitForCoverage(started, Math.max(0, waitDeadline - performance.now()), context?.signal);
 				}
 				context?.signal?.throwIfAborted();
 				return this.#search(condition, context, options);
@@ -358,6 +355,7 @@ export class FullTextQueryIndex {
 						staleVersionHits++;
 						continue;
 					}
+					if (entry.expiresAt !== undefined && entry.expiresAt < Date.now()) continue;
 					if (options.filter && !options.filter(key, entry)) continue;
 					accepted.push({ key, $score: hit.score, nativeId: hit.id, record: entry.value, recordEntry: entry });
 					if (accepted.length >= target) break;

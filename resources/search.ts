@@ -733,10 +733,12 @@ export function searchByIndex(
 					? AbortSignal.any([context.signal, controller.signal])
 					: controller.signal
 				: undefined;
+			const indexSearchStart = waiting ? start.promise.then(() => checkActive?.()) : undefined;
+			indexSearchStart?.catch(() => {});
 			const searchContext = waiting
 				? Object.create(context, {
 						signal: { value: signal },
-						indexSearchStart: { value: start.promise.then(() => checkActive?.()) },
+						indexSearchStart: { value: indexSearchStart },
 					})
 				: context;
 			const searched = index.customIndex.search(searchCondition, searchContext, {

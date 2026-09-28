@@ -17,8 +17,9 @@ function sharedStore() {
 	const buffers = new Map();
 	const callbacks = new Map();
 	let committedPosition;
+	let monotonicTime = 100;
 	const rootStore = {
-		getMonotonicTimestamp: () => 100,
+		getMonotonicTimestamp: () => monotonicTime,
 		listLogs: () => ['local'],
 		useLog: () => ({
 			getStats: () => ({
@@ -48,6 +49,9 @@ function sharedStore() {
 		},
 		setCommittedPosition(position) {
 			committedPosition = position;
+		},
+		setTime(time) {
+			monotonicTime = time;
 		},
 		listenerCount(readinessId) {
 			return callbacks.get(`derived-index:${readinessId}:publication`)?.size ?? 0;
@@ -110,7 +114,7 @@ function attachCurrentCoverage(index, auditStore, readinessId) {
 	return { publish: (notify) => auditStore.publish(readinessId, notify) };
 }
 
-function simpleQueryIndex({ auditStore, readinessId, payload, hits, onReload, onGetEntry }) {
+function simpleQueryIndex({ auditStore, readinessId, payload, hits, onReload, onGetEntry, entryForKey }) {
 	let committedPayload = payload;
 	let reloads = 0;
 	const index = new FullTextQueryIndex({
@@ -120,7 +124,7 @@ function simpleQueryIndex({ auditStore, readinessId, payload, hits, onReload, on
 				rootStore: auditStore.rootStore,
 				getEntry: (key) => {
 					onGetEntry?.(key);
-					return { version: 1, value: { title: 'shoe' } };
+					return entryForKey?.(key) ?? { version: 1, value: { title: 'shoe' } };
 				},
 			},
 			_readTxnForContext: () => undefined,
@@ -559,22 +563,57 @@ describe('FullTextQueryIndex', () => {
 			hits: () => [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
 		});
 		let coverageTimeout;
+		let coverageStarted;
 		const pending = index.search(
 			{ attribute: readinessId, comparator: 'matches', value: 'shoe', waitForIndexMilliseconds: 1000 },
 			{ indexSearchStart: Promise.resolve() },
 			{ minResults: 1 }
 		);
 		await new Promise((resolve) => setTimeout(resolve, 20));
+		auditStore.setTime(200);
 		index.attachDerivedHost({
 			readiness: () => ({ state: 'ready' }),
 			requestRebuild: () => true,
-			waitForCoverage: async (_started, timeout) => {
+			waitForCoverage: async (started, timeout) => {
+				coverageStarted = started;
 				coverageTimeout = timeout;
 			},
 		});
 		await pending;
+		assert.strictEqual(coverageStarted, 100_000_000n);
 		assert(coverageTimeout > 0);
 		assert(coverageTimeout < 1000);
+		await index.close();
+	});
+
+	it('does not count expired native hits toward a bounded result page', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'expired-native-hit';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [
+				{ id: nativeId(1, 'expired'), version: '1', score: 2 },
+				{ id: nativeId(1, 'live'), version: '1', score: 1 },
+			],
+			entryForKey: (key) => ({
+				version: 1,
+				value: { title: key },
+				...(key === 'expired' ? { expiresAt: Date.now() - 1 } : null),
+			}),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
+			{},
+			{ minResults: 1 }
+		);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			['live']
+		);
 		await index.close();
 	});
 
