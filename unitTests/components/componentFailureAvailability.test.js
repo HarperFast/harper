@@ -147,6 +147,30 @@ describe('availability status after component load failure', () => {
 		statusForComponent(PACKAGE_APP).healthy('recovered');
 		assert.strictEqual((await availability())?.status, 'Available', 'clearing the application error heals the node');
 	});
+
+	it('a nested package failure is keyed by its enclosing application, not just its own directory', async () => {
+		await seedInRotation();
+		// A nested load's directory name (a package name) can be shared by two applications; the whole-
+		// application failure must be recorded under a key qualified by the enclosing application so one
+		// application's success cannot mask another's failure. Model the nested shape: a directory whose
+		// basename differs from the appName passed for it.
+		const dir = makeApp('shared-package', 'branchedDatabases:\n  - data\n');
+		await loadComponent(dir, resources, 'test-origin', { isRoot: false, appName: 'enclosing-app' });
+		assert.strictEqual(
+			statusInternal.componentStatusRegistry.getStatus('enclosing-app.shared-package')?.status,
+			'error',
+			'a nested failure must be keyed by enclosing-app.<package>, not the bare package directory'
+		);
+		assert.strictEqual(
+			statusInternal.componentStatusRegistry.getStatus('shared-package'),
+			undefined,
+			'the unqualified package name must not be used, so a second application nesting it cannot collide'
+		);
+		await waitFor(async () => (await availability())?.status === 'Unavailable', {
+			timeout: 5000,
+			message: 'a nested package failure must drain the node',
+		});
+	});
 });
 
 // get_status runs on the operations thread, which never runs handleApplication, so a worker's load
