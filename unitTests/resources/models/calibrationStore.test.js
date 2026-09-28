@@ -551,9 +551,20 @@ describe('calibration store and facade (#2841)', function () {
 		assert.strictEqual(run.scanned, 10);
 		assert.strictEqual(run.read, 10, 'fitting reads only what discovery left');
 		const short = await runCalibration({ maxDecisions: 20 });
-		assert.strictEqual(short.read, 0, 'a population whose sample does not fit what is left is deferred, not truncated');
+		assert.strictEqual(
+			short.written,
+			0,
+			'a population cut short by the budget is deferred, not fitted from a truncated read'
+		);
 		assert.strictEqual(short.stoppedBy, 'maxDecisions');
 		assert.ok(short.pending >= 1);
+	});
+
+	it('fits a small population under a budget far below the sample ceiling', async () => {
+		await recordCases(models, 0, 25);
+		const run = await runCalibration({ maxDecisions: 60 });
+		assert.strictEqual(run.read, 25, 'the whole population fits what is left');
+		assert.strictEqual(run.written, 1);
 	});
 
 	it('never revokes a fit from a sample truncated by the decision budget', async () => {
