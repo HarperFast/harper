@@ -1231,7 +1231,7 @@ Adding an existing key:
 
 <VersionBadge type="changed" version="v5.3.0" />
 
-Nothing reads a stored key again until ssh loads it for a git deploy, where a key it can't use fails as a generic authentication error. So `add_ssh_key` and `update_ssh_key` check a supplied key first, and refuse one ssh couldn't load with a `400` that names the problem.
+A key ssh can't use would otherwise go unnoticed until ssh loads it for a git deploy, where it fails as a generic authentication error. So `add_ssh_key` and `update_ssh_key` check a supplied key first, and refuse one ssh couldn't use with a `400` that names the problem.
 
 `key` must be an unencrypted **Ed25519**, **ECDSA** (P-256, P-384 or P-521) or **RSA** (at least 1024 bits) private key, in one of the formats ssh reads:
 
@@ -1248,9 +1248,9 @@ These are refused:
 - any other algorithm or curve ssh doesn't support, or an SSH certificate in place of a plain key
 - a key that is cut off, has lines missing or repeated, or is otherwise damaged — including one whose private half doesn't match its public half, which ssh may load but can never authenticate with
 
-Harper stores the key the way ssh needs it: each line trimmed, blank lines dropped, and a final newline added. An indented or CRLF paste therefore works. A value already sealed as `enc:v1:` (for example one copied from another node's `get_ssh_key`) is stored as-is, since it can't be read without decrypting it.
+Harper stores the key the way ssh needs it: each line trimmed, blank lines dropped, and a final newline added. An indented or CRLF paste therefore works. A value already sealed as `enc:v1:` for this cluster (for example one copied from another node's `get_ssh_key` in the same cluster) is stored as-is, since checking it would mean decrypting it. It must still be a well-formed envelope, and a node with secret custody refuses one sealed for another cluster's key.
 
-`host` and `hostname` are written into the ssh config that every key on the node shares, so a value that would break it is refused: any whitespace or control character, such as a space, tab or line break (`Host my key` matches two aliases, and `HostName my key` stops ssh for every key), a quote, an `=`, or a leading `#`. A leading `-` or any backslash is refused too, since no real host has either, and so is a pattern (`*`, `?`, `!`) in `host`, whose block would also apply to other keys' aliases. Surrounding whitespace is trimmed.
+`host` and `hostname` are written into the ssh config that every key on the node shares, so a value that would break it is refused: any whitespace or control character, such as a space, tab or line break (`Host my key` matches two aliases, and `HostName my key` stops ssh for every key), a quote, an `=`, or a leading `#`. A leading `-` or any backslash is refused too, since no real host has either, and so is a pattern (`*`, `?`, `!`) in `host`, whose block would also apply to other keys' aliases. In `hostname`, a `%` must be `%h` (replaced by the alias) or `%%` (a literal `%`), the only expansions ssh makes there, so an IPv6 zone needs the doubled form: `fe80::1%%en0`. Surrounding whitespace is trimmed.
 
 #### Server-side key generation (`generate`)
 
