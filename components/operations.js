@@ -941,9 +941,8 @@ async function deployComponent(req) {
 		}
 		// A still-isolated application restarts only its own dedicated worker. Everything else restarts the
 		// pool: a shared application, and either direction of an isolation flip, where the reconcile in
-		// restartWorkers starts or stops the moving application's own worker. An already-live retry restarts every
-		// worker: which ones loaded the previous release is unknowable, since its preamble may just have published
-		// an isolation change.
+		// restartWorkers starts or stops the moving application's own worker. An already-live retry cannot know
+		// which workers loaded the previous release, so it restarts them all.
 		const restartScope = application.alreadyActive ? '*' : wasIsolated && nowIsolated ? application.name : undefined;
 		if (mode === 'stage') {
 			// No restart and no restart-required flag: nothing about the running component changed. The

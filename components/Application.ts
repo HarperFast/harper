@@ -1903,13 +1903,14 @@ async function claimDeploymentDirectory(deploymentDirPath: string, componentName
 		}
 		await publishClaimOwnership(claimDirPath, componentName);
 		for (let attempt = 1; ; attempt++) {
-			// Classified before renaming: Windows refuses a rename onto any existing directory with the EPERM a
-			// transient holder raises, so renaming first would spend the whole retry budget on a certain conflict.
+			// Checked first: Windows refuses a rename onto an existing directory with a transient holder's EPERM.
 			if (!(await presentOrAbsent(deploymentDirPath))) {
 				try {
 					await renameThroughTransientHolder(claimDirPath, deploymentDirPath);
 					return;
 				} catch (error) {
+					// Only this component's lock can remove the claim, so a vanished source means the rename landed.
+					if (!(await presentOrAbsent(claimDirPath))) return;
 					if (!(await presentOrAbsent(deploymentDirPath))) throw error;
 				}
 			}
