@@ -691,13 +691,17 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 			whenResolved(sequentiallyHandleApplication(scope, plugin));
 		};
 		const store = Status.primaryStore;
-		const lockAcquired = store.tryLock(scope.pluginName, callback);
+		// Keyed per (application, plugin), not the plugin name alone: applications load concurrently,
+		// and a plugin-wide lock lets one application's hung handleApplication starve every other
+		// application's load of that plugin into the timeout below (#3184).
+		const lockId = `${scope.appName}.${scope.pluginName}`;
+		const lockAcquired = store.tryLock(lockId, callback);
 
 		if (!lockAcquired) {
 			return new Promise((resolve, reject) => {
 				whenResolved = resolve;
 				timer = setTimeout(() => {
-					reject(new Error(`Timeout waiting for lock on ${scope.pluginName}`));
+					reject(new Error(`Timeout waiting for lock on ${scope.pluginName} on behalf of ${scope.appName}`));
 				}, timeout + 5_000); // extra time for lock acquisition
 			});
 		}
@@ -713,7 +717,7 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 				timeout
 			);
 		} finally {
-			Status.primaryStore.unlock(scope.pluginName);
+			Status.primaryStore.unlock(lockId);
 		}
 	});
 }
