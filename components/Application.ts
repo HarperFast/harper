@@ -5241,7 +5241,13 @@ function spawnWithEnv(
 		const treeIdentity: WindowsProcessTreeIdentity = {
 			rootPid: trackedProcessId ?? 0,
 			rootKnownAt,
-			rootStartedWithinMs: rootKnownAt - spawnStartedAt,
+			// A backward wall-clock step between the two Date.now() calls above (e.g. an NTP
+			// correction) would otherwise make this negative — the same case the registry path
+			// already guards (manageThreads.js's addProcessGroup discards spawnStartedAt entirely
+			// when it reads later than spawnedAt). Falling back to the same allowance here keeps both
+			// paths consistent instead of silently narrowing the window that admits the root's own
+			// earliest children.
+			rootStartedWithinMs: spawnStartedAt <= rootKnownAt ? rootKnownAt - spawnStartedAt : undefined,
 		};
 		const processGroupRegistration = trackedProcessId
 			? registerProcessGroup(trackedProcessId, rootKnownAt, spawnStartedAt)
