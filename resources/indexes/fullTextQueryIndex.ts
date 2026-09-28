@@ -184,6 +184,7 @@ export class FullTextQueryIndex {
 				this.#definition.name
 			);
 			if (waiting) {
+				const waitDeadline = performance.now() + waitForIndexMilliseconds;
 				context?.signal?.throwIfAborted();
 				const host = this.#derivedHost ?? (await this.#waitForDerivedHost(waitForIndexMilliseconds, context?.signal));
 				const state = host?.readiness().state;
@@ -196,8 +197,12 @@ export class FullTextQueryIndex {
 				context?.signal?.throwIfAborted();
 				if (options.minResults === 0) return [];
 				const started = derivedIndexTime(this.#options.Table.primaryStore.rootStore);
-				if (this.#readCoverage(0).state !== 'current')
-					await host.waitForCoverage(started, waitForIndexMilliseconds, context?.signal);
+				if (this.#readCoverage(0).state !== 'current') {
+					const remaining = waitDeadline - performance.now();
+					if (remaining <= 0)
+						throw new DerivedIndexLagError('Timed out waiting for derived index coverage; retry this query');
+					await host.waitForCoverage(started, remaining, context?.signal);
+				}
 				context?.signal?.throwIfAborted();
 				return this.#search(condition, context, options);
 			}
