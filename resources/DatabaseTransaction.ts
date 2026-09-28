@@ -1397,8 +1397,7 @@ export class DatabaseTransaction implements Transaction {
 		if (!transaction && !options) {
 			if (this.timedOut || this.postSubmitPoisoned) throw transactionOpenTooLongError();
 			if (this.disconnected) throw requestAbortedError();
-			// A deferred save is admitted here rather than in addWrite(), and on a self-committing link
-			// nothing else would stop it.
+			// A deferred save is staged by addWrite() but admitted again when it is finally saved.
 			this.admitRequestWrite();
 		}
 		if (!transaction && this.open !== TRANSACTION_STATE.OPEN) {
@@ -2596,7 +2595,7 @@ export class DatabaseTransaction implements Transaction {
 	abortDueToTimeout(): void {
 		this.abortAndPoison('timedOut');
 	}
-	/** resources/transaction.ts calls this when the request's client disconnects mid-handler (harper#2001). */
+	/** A request this chain writes for was cancelled (admitRequestWrite, harper#2001). */
 	abortDueToDisconnect(): void {
 		this.abortAndPoison('disconnected');
 	}

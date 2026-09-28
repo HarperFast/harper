@@ -1174,12 +1174,10 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 	});
 });
 
-// harper#2001: a client that disconnects mid-handler must not leave its request-scoped transaction's
-// staged writes / native write intents held until the handler's own promise happens to settle (which,
-// for a client that is never coming back, may be effectively never) or the long-transaction monitor's
-// next cycle catches it. `resources/transaction.ts` listens for `context.signal`'s 'abort' event (the
-// same signal a Request/UwsRequest populates on client disconnect) and, while the callback is still
-// running, aborts the transaction immediately instead.
+// harper#2001: a client that disconnects mid-handler must not leave its request's staged writes /
+// native write intents held until the handler happens to settle or the long-transaction monitor's next
+// cycle. A write-bearing chain subscribes to `context.signal` at its first admitted write and aborts on
+// its 'abort' event; once the signal has aborted, no further write for the request is admitted.
 describe('Disconnect abort', () => {
 	let DisconnectResource, DisconnectBlobResource, DisconnectOtherDbResource;
 	before(async function () {

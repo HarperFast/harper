@@ -9,6 +9,7 @@ const {
 } = require('#src/resources/DatabaseTransaction');
 const { LMDBTransaction, setTxnExpiration: setLMDBTxnExpiration } = require('#src/resources/LMDBTransaction');
 const { waitFor } = require('../waitFor');
+const { getEventListeners } = require('node:events');
 
 function makeLMDBWrite(id, commit) {
 	const store = {
@@ -407,6 +408,25 @@ describe('Transaction native-submit boundary', () => {
 		assert.equal(child.open, TRANSACTION_STATE.OPEN, 'the submitted child still owns its native outcome');
 
 		child.commitsInFlight = 0;
+	});
+
+	it('gives a lingering LMDB write to a throwaway that owns the request cancellation', async function () {
+		const ac = new AbortController();
+		const lingering = new LMDBTransaction();
+		lingering.requestSignal = ac.signal;
+		lingering.open = TRANSACTION_STATE.LINGERING;
+		let commits = 0;
+		await lingering.addWrite(makeLMDBWrite(9, () => commits++));
+		assert.equal(commits, 1);
+		assert.equal(
+			getEventListeners(ac.signal, 'abort').length,
+			0,
+			'neither the settled chain nor the settled throwaway may keep a subscription'
+		);
+
+		ac.abort();
+		assert.throws(() => lingering.addWrite(makeLMDBWrite(10, () => commits++)), /client disconnected/);
+		assert.equal(commits, 1, 'the throwaway refuses a write on the cancelled request');
 	});
 
 	it('keeps a closed root deferred while only a detached link owns the native outcome', function () {

@@ -114,14 +114,12 @@ export class LMDBTransaction extends DatabaseTransaction {
 	addWrite(operation: TransactionWrite): any {
 		if (this.timedOut || this.postSubmitPoisoned) throw transactionOpenTooLongError();
 		if (this.disconnected) throw requestAbortedError();
-		this.admitRequestWrite();
-		if (this.open === TRANSACTION_STATE.CLOSED) {
-			throw new Error('Can not use a transaction that is no longer open');
-		}
-
 		if (this.open === TRANSACTION_STATE.LINGERING) {
 			// if the transaction is lingering, it is already committed, so we need to commit the write immediately
 			const immediateTxn = new ImmediateTransaction(this.db);
+			// The throwaway owns this write, so it owns the request's cancellation too: this settled chain
+			// would neither refuse on its behalf nor ever release a subscription taken for it.
+			immediateTxn.requestSignal = (this.root ?? this).requestSignal;
 			immediateTxn.addWrite(operation);
 			const result = immediateTxn.commit({}) as any;
 			// Nothing may be sent back to this throwaway: the write is already committed, and its
@@ -133,6 +131,10 @@ export class LMDBTransaction extends DatabaseTransaction {
 				operation.result = result;
 			}
 			return result;
+		}
+		this.admitRequestWrite();
+		if (this.open === TRANSACTION_STATE.CLOSED) {
+			throw new Error('Can not use a transaction that is no longer open');
 		}
 
 		this.linkWrite(operation);
@@ -472,6 +474,7 @@ export class ImmediateTransaction extends LMDBTransaction {
 		this.db = db;
 	}
 	save(..._args: any[]): any {
+		this.admitRequestWrite(); // a deferred save reaches here without passing through addWrite()
 		return this.commit();
 	}
 	// @ts-expect-error accessor overriding property
