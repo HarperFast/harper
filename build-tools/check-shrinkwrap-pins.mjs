@@ -56,19 +56,29 @@ function verifyEdges() {
 	const reportedDrift = new Set();
 	for (const edge of edges) {
 		const { packedTarget, installedTarget } = edge;
-		if (exempt.has(edge.parentInstalled)) continue;
+		// A lifted parent's packed edges describe a version that is not the one installed.
+		if (
+			exempt.has(edge.parentInstalled) &&
+			installedManifest(edge.parentInstalled).version !== packedPackages[edge.parentPacked].version
+		) {
+			waived++;
+			continue;
+		}
 		if (!packedTarget) {
-			if (installedTarget && !isResidualRoot(edge)) {
-				console.error(
-					`::error::${describe(edge)} resolved to ${installedManifest(installedTarget).version} but the packed shrinkwrap has no pin for it -- the shrinkwrap is missing an entry the install needed`
-				);
-				violations++;
+			if (!installedTarget) continue;
+			if (isResidualRoot(edge) || (edge.optional && exempt.has(installedTarget))) {
+				waived++;
+				continue;
 			}
+			console.error(
+				`::error::${describe(edge)} resolved to ${installedManifest(installedTarget).version} but the packed shrinkwrap has no pin for it -- the shrinkwrap is missing an entry the install needed`
+			);
+			violations++;
 			continue;
 		}
 		const pinned = packedPackages[packedTarget].version;
 		if (!installedTarget) {
-			if (edge.optional || packedPackages[packedTarget].optional) continue;
+			if (edge.optional) continue;
 			console.error(`::error::${describe(edge)} (pinned ${pinned}) is not installed`);
 			violations++;
 			continue;
@@ -95,7 +105,7 @@ function verifyEdges() {
 		if (edge.freshTarget && freshPackages[edge.freshTarget].version !== pinned) discriminating++;
 	}
 	console.log(
-		`shrinkwrap pins: ${checked} dependency edges match, ${violations} do not; ${discriminating} matching edges resolve differently without the shrinkwrap; ${waived} edges into the react-native-fs residual (${exempt.size} installed packages) are not pin-checked`
+		`shrinkwrap pins: ${checked} dependency edges match, ${violations} do not; ${discriminating} matching edges resolve differently without the shrinkwrap; ${waived} edges in or into the react-native-fs residual (${exempt.size} installed packages) are not pin-checked`
 	);
 	if (violations > 0) {
 		failed = true;
@@ -112,7 +122,6 @@ function verifyEdges() {
 	}
 }
 
-// The residual's own entry point: the edge the shrinkwrap deliberately leaves unresolved.
 function isResidualRoot(edge) {
 	return !edge.packedTarget && edge.installedTarget && edge.optional && edge.name === RESIDUAL_OPTIONAL_EDGE;
 }
@@ -158,6 +167,7 @@ function walkPackedTree() {
 		const declaring = packedLocation === '' ? manifest : packedPackages[packedLocation];
 		for (const [name, optional] of dependencyEdges(declaring)) {
 			const edge = {
+				parentPacked: packedLocation,
 				parentInstalled: installedLocation,
 				name,
 				optional,
@@ -194,7 +204,6 @@ function installedClosure(roots) {
 	return reached;
 }
 
-// name -> whether every declaration of the edge is optional.
 function dependencyEdges(entry) {
 	const edges = new Map();
 	for (const name of Object.keys(entry.dependencies ?? {})) edges.set(name, false);
@@ -219,7 +228,15 @@ function resolveLocation(from, name, exists) {
 function installedManifest(location) {
 	if (!installedManifests.has(location)) {
 		const path = `${pkgRoot}/${location}/package.json`;
-		installedManifests.set(location, existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null);
+		let installed = null;
+		if (existsSync(path)) {
+			try {
+				installed = JSON.parse(readFileSync(path, 'utf8'));
+			} catch (e) {
+				throw new Error(`${path} is not a readable package manifest: ${e.message}`, { cause: e });
+			}
+		}
+		installedManifests.set(location, installed);
 	}
 	return installedManifests.get(location);
 }

@@ -58,7 +58,33 @@ describe('shrinkwrap pin check', function () {
 			result.stdout,
 			/::warning::@endo\/static-module-record -> @babel\/parser is pinned at 1\.0\.0 but installed at 1\.2\.0/
 		);
-		assert.match(result.stdout, /edges into the react-native-fs residual \(3 installed packages\) are not pin-checked/);
+		assert.match(
+			result.stdout,
+			/edges in or into the react-native-fs residual \(6 installed packages\) are not pin-checked/
+		);
+	});
+
+	it('still enforces the required children of a residual-shared pin the residual did not lift', async function () {
+		const tree = withResidual(baseTree());
+		delete tree.installed['node_modules/ms'];
+		const result = await runTree(tree);
+		assert.strictEqual(result.status, 1);
+		assert.match(result.stderr, /debug -> ms \(pinned 1\.0\.0\) is not installed/);
+	});
+
+	it('fails when a required child of an installed optional dependency is missing', async function () {
+		const tree = baseTree();
+		tree.manifest.optionalDependencies = { bufferutil: '1.0.0' };
+		tree.packed['node_modules/bufferutil'] = {
+			version: '1.0.0',
+			optional: true,
+			dependencies: { 'node-gyp-build': '^1.0.0' },
+		};
+		tree.packed['node_modules/node-gyp-build'] = { version: '1.0.0', optional: true };
+		tree.installed['node_modules/bufferutil'] = { version: '1.0.0', dependencies: { 'node-gyp-build': '^1.0.0' } };
+		const result = await runTree(tree);
+		assert.strictEqual(result.status, 1);
+		assert.match(result.stderr, /bufferutil -> node-gyp-build \(pinned 1\.0\.0\) is not installed/);
 	});
 
 	it('still fails on drift outside the residual subtree', async function () {
@@ -315,8 +341,6 @@ describe('shrinkwrap pin check', function () {
 	});
 });
 
-// A packed tree, the matching installed tree, and a fresh (shrinkwrap-less) resolution in
-// which only the transitive avvio pin lags.
 function baseTree() {
 	const packed = {
 		'node_modules/@harperfast/rocksdb-js': { version: '1.0.0', dependencies: rocksdbDependencyRanges },
@@ -340,20 +364,33 @@ function baseTree() {
 	};
 }
 
-// alasql's pruned optional edge re-adds react-native-fs, whose subtree lifts the @babel/parser
-// that @endo/static-module-record shares.
+// The lifted @babel/parser no longer needs the @babel/types its pin declared; debug is shared
+// with the residual but not lifted; react is an optional peer only the residual installs.
 function withResidual(tree) {
 	const residualPacked = {
 		'node_modules/alasql': { version: '1.0.0', optionalDependencies: { 'react-native-fs': '^2.20.0' } },
-		'node_modules/@endo/static-module-record': { version: '1.0.0', dependencies: { '@babel/parser': '^1.0.0' } },
-		'node_modules/@babel/parser': { version: '1.0.0' },
+		'node_modules/@endo/static-module-record': {
+			version: '1.0.0',
+			dependencies: { '@babel/parser': '^1.0.0', 'debug': '^1.0.0' },
+			peerDependencies: { react: '*' },
+			peerDependenciesMeta: { react: { optional: true } },
+		},
+		'node_modules/@babel/parser': { version: '1.0.0', dependencies: { '@babel/types': '^1.0.0' } },
+		'node_modules/@babel/types': { version: '1.0.0' },
+		'node_modules/debug': { version: '1.0.0', dependencies: { ms: '^1.0.0' } },
+		'node_modules/ms': { version: '1.0.0' },
 	};
 	const residualInstalled = {
 		...structuredClone(residualPacked),
 		'node_modules/@babel/parser': { version: '1.2.0' },
 		'node_modules/react-native-fs': { version: '2.20.0', peerDependencies: { 'react-native': '*' } },
-		'node_modules/react-native': { version: '0.80.0', dependencies: { '@babel/parser': '^1.2.0' } },
+		'node_modules/react-native': {
+			version: '0.80.0',
+			dependencies: { '@babel/parser': '^1.2.0', 'debug': '^1.0.0', 'react': '*' },
+		},
+		'node_modules/react': { version: '19.0.0' },
 	};
+	delete residualInstalled['node_modules/@babel/types'];
 	Object.assign(tree.manifest.dependencies, { 'alasql': '1.0.0', '@endo/static-module-record': '1.0.0' });
 	Object.assign(tree.packed, residualPacked);
 	Object.assign(tree.installed, residualInstalled);

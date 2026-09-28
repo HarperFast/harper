@@ -66,13 +66,14 @@ requirement is why the check walks the whole packed tree, not a few named packag
   full refresh, until some pinned package publishes again.
 - **Edges, not locations.** Each packed dependency edge is resolved node_modules-style in the packed
   map and in the installed tree. npm re-hoisting a pinned package to another path is not drift.
-- **The exemption comes only from `alasql → react-native-fs`**, the optional edge
-  `prune-shrinkwrap-react-native.mjs` severs. The image re-adds that subtree (previous note), and it
-  lifts shared pins such as the `@babel/*` packages `@endo/static-module-record` uses. Edges into
-  that subtree are not pin-checked, and a lifted shared pin prints a `::warning::`. Any other edge
-  the install resolved without a packed pin fails the check: seeding the exemption from "anything
-  unpinned" would exempt exactly the regression the check exists to catch. The exempt set becomes
-  empty once alasql drops the optional edge.
+- **The exemption comes only from optional edges to `react-native-fs`**, the edge
+  `prune-shrinkwrap-react-native.mjs` severs from any dependent (today only alasql declares one).
+  The image re-adds that subtree (previous note), and it lifts shared pins such as the `@babel/*`
+  packages `@endo/static-module-record` uses. Edges into that subtree, and the packed edges of a
+  pinned package it lifted, are not pin-checked; a lifted shared pin prints a `::warning::`. A
+  required edge the install resolved without a packed pin fails the check wherever it points:
+  seeding the exemption from "anything unpinned" would exempt exactly the regression the check
+  exists to catch. The exempt set becomes empty once alasql drops the optional edge.
 
 ## The published image runs `tini -g` as PID 1, not Harper (`Dockerfile`)
 
