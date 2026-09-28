@@ -108,6 +108,20 @@ describe('selectWindowsProcessTree', () => {
 		);
 	});
 
+	it('does not accept a replacement created inside the skew window once the root creation time is pinned', () => {
+		// The original root (created at SPAWNED_AT) has already exited and a new process was handed
+		// the same PID 20ms later — inside CLOCK_SKEW_MS of rootKnownAt, so the loose upper-bound check
+		// alone would accept it. Once a prior scan pinned the exact creation time, only that exact value
+		// is ours.
+		const replacement = [row(ROOT, 1, SPAWNED_AT + 20, 'impostor.exe')];
+		assert.deepEqual(
+			selectWindowsProcessTree(replacement, { rootPid: ROOT, rootKnownAt: SPAWNED_AT, rootCreatedAt: SPAWNED_AT }),
+			[]
+		);
+		// without the pin, the same row is indistinguishable from clock skew on our own root
+		assert.deepEqual(pids(selectWindowsProcessTree(replacement, { rootPid: ROOT, rootKnownAt: SPAWNED_AT })), [ROOT]);
+	});
+
 	it('does not treat a root without a creation time as the process we spawned', () => {
 		const members = selectWindowsProcessTree([row(ROOT, 1, null, 'cmd.exe')], {
 			rootPid: ROOT,

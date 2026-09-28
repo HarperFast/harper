@@ -160,7 +160,14 @@ export function findWindowsTreeRoot(
 ): WindowsProcessRecord | undefined {
 	if (identity.rootExitedAt !== undefined) return undefined;
 	const root = table.find((process) => process.pid === identity.rootPid);
-	if (root && root.created !== null && root.created <= identity.rootKnownAt + CLOCK_SKEW_MS) return root;
+	if (!root || root.created === null) return undefined;
+	// Once a scan has pinned the root's exact creation time, a later row at the same PID is ours only
+	// if it matches exactly — same as a remembered descendant (line ~223). Without that pin, a
+	// replacement created within the clock-skew window of `rootKnownAt` would otherwise pass the loose
+	// upper-bound check below, which only rules out a replacement created too late to be ours, not one
+	// created too early (the original having already exited and been recycled inside that window).
+	if (identity.rootCreatedAt !== undefined) return root.created === identity.rootCreatedAt ? root : undefined;
+	if (root.created <= identity.rootKnownAt + CLOCK_SKEW_MS) return root;
 	return undefined;
 }
 
