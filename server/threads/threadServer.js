@@ -8,6 +8,9 @@ let componentsLoadedResolve;
 exports.whenComponentsLoaded = new Promise((resolve) => {
 	componentsLoadedResolve = resolve;
 });
+let bootLoadStarted = false;
+/** Whether this thread runs the boot-time component load that settles `whenComponentsLoaded`. */
+exports.bootLoadsComponents = () => bootLoadStarted;
 
 const harperLogger = require('../../utility/logging/harper_logger.ts');
 const env = require('../../utility/environment/environmentManager.ts');
@@ -174,6 +177,7 @@ function closeServers() {
 }
 
 function startServers() {
+	bootLoadStarted = true;
 	// A worker that has not yet posted child_started owns no ref'd handle: addPort()
 	// (manageThreads) unrefs parentPort, component watchers are persistent:false, and the
 	// reporting timers are unref'd. An await inside loadRootComponents whose completion

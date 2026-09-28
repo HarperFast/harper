@@ -32,7 +32,7 @@ import {
 	realpathSync,
 } from 'node:fs';
 import { EventEmitter } from 'node:events';
-import { whenComponentsLoaded } from '../server/threads/threadServer.js';
+import { whenComponentsLoaded, bootLoadsComponents } from '../server/threads/threadServer.js';
 import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
 
 type Lockdown = 'none' | 'freeze' | 'ses' | 'freeze-after-load';
@@ -86,6 +86,15 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 	// export (reached under the native loader, or by natively-loaded dependencies that import the
 	// real `harper` package) resolves to this scope's component while its modules evaluate.
 	return runWithComponentBinding(scope?.name, () => importScoped(moduleUrl, scope));
+}
+
+/**
+ * Whether a load in this thread can meet frozen intrinsics that a freshly started worker's boot load meets
+ * unfrozen. `freeze-after-load` freezes them, irreversibly, once the thread's boot load finishes, so any later
+ * or racing load differs from a boot load. `freeze` and `ses` freeze before the boot load.
+ */
+export function laterLoadsMeetFrozenIntrinsics(): boolean {
+	return APPLICATIONS_LOCKDOWN === 'freeze-after-load' && bootLoadsComponents();
 }
 
 async function importScoped(moduleUrl: string, scope?: ApplicationScope) {
