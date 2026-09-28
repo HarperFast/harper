@@ -6,6 +6,10 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor.js');
 require('#src/server/serverHelpers/serverUtilities');
 
+// `startTime: 1` replays walk the database's whole audit log, and 'test' carries every earlier
+// suite's writes in a full run (~0.8s per collection subscription, 20s for the suite on CI).
+const DATABASE = 'supersededbase';
+
 describe('Subscription superseded versions', () => {
 	let T;
 	let sequence = 0;
@@ -16,7 +20,7 @@ describe('Subscription superseded versions', () => {
 	});
 	beforeEach(() => {
 		T = table({
-			database: 'test',
+			database: DATABASE,
 			table: `Superseded${++sequence}`,
 			audit: true,
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
@@ -53,7 +57,7 @@ describe('Subscription superseded versions', () => {
 		it(`filters superseded relocations for ${JSON.stringify(scope)}`, async () => {
 			if (scope.previousCount && scope.id === undefined) {
 				const Other = table({
-					database: 'test',
+					database: DATABASE,
 					table: 'RelocationReplayNoise',
 					audit: true,
 					attributes: [{ name: 'id', isPrimaryKey: true }],
