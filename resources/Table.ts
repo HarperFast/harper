@@ -7970,11 +7970,14 @@ export function makeTable(options) {
 		}
 	}
 
-	function assertFullTextWrite(record: any): void {
+	function assertFullTextWrite(record: any, sourceFill = false): void {
 		if (!fullTextFieldNames || !record || typeof record !== 'object') return;
 		for (const name in record) {
-			if (fullTextFieldNames.has(name))
+			if (fullTextFieldNames.has(name)) {
+				if (sourceFill)
+					throw new ServerError(`Source for ${tableName} returned query-only full-text field "${name}"`, 502);
 				throw new ClientError(`Full-text field "${name}" is query-only and cannot be written`, 400);
+			}
 		}
 	}
 
@@ -8360,6 +8363,7 @@ export function makeTable(options) {
 			const commitPromise = transaction(sourceContext, async (_txn) => {
 				const start = performance.now();
 				let updatedRecord, assignCreatedTime, sourceVersion;
+				let reusedCachedRecord = false;
 				let hasChanges, invalidated;
 				try {
 					updatedRecord = await throttledCallToSource(source, id, sourceContext, existingEntry);
@@ -8403,6 +8407,7 @@ export function makeTable(options) {
 							if (status === 304) {
 								// revalidation of our current cached record
 								updatedRecord = existingRecord;
+								reusedCachedRecord = true;
 								sourceVersion = existingVersion;
 							} else if (!CACHEABLE_STATUS_CODES.has(status)) {
 								// non-cacheable status - propagate to client without caching
@@ -8471,6 +8476,8 @@ export function makeTable(options) {
 							}
 						}
 						updatedRecord = storedFieldsOnly(primaryStore.encoder, updatedRecord);
+						// A 304 reuses an already-stored record; preserving it avoids turning this guard into a history scan.
+						if (!reusedCachedRecord) assertFullTextWrite(updatedRecord, true);
 						if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
 					}
 					assignCreatedTime = createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null;

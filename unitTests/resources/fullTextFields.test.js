@@ -7,6 +7,7 @@ const { compileFullTextDefinitions } = require('#src/resources/fullTextSchema');
 const { getDatabases } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { deriveCreateSchema, deriveSearchSchema } = require('#src/components/mcp/tools/schemas/derive');
+const { waitFor } = require('../waitFor.js');
 
 describe('full-text field names', () => {
 	it('rejects index names that conflict with current stored attributes', () => {
@@ -130,6 +131,56 @@ rocksDescribe('FullText field declarations', () => {
 		const record = await Product.get('one');
 		assert.strictEqual(record.extra, 'allowed');
 		assert(!Object.hasOwn(record, 'searchText'));
+	});
+
+	it('rejects query-only names returned by a read-through source before caching them', async () => {
+		await loadGQLSchema(`
+			type SourcedSearchProduct @table(database: "fulltext_fields", audit: true) {
+				id: ID @primaryKey
+				title: String
+				catalogSearch: FullText @fullText(fields: [{ name: "title" }])
+			}
+		`);
+		const Product = getDatabases().fulltext_fields.SourcedSearchProduct;
+		assert.deepStrictEqual(Product.fullTextFields, ['catalogSearch']);
+		let sourceRecord;
+		Product.sourcedFrom({
+			get(id) {
+				if (typeof sourceRecord === 'function') return sourceRecord(id);
+				return sourceRecord;
+			},
+		});
+		for (const [id, makeRecord] of [
+			['direct', (id) => ({ id, title: 'trail shoes', catalogSearch: 'injected' })],
+			['inherited', (id) => Object.assign(Object.create({ catalogSearch: 'injected' }), { id, title: 'trail shoes' })],
+			[
+				'to-json',
+				(id) => ({
+					toJSON() {
+						return { id, title: 'trail shoes', catalogSearch: 'injected' };
+					},
+				}),
+			],
+		]) {
+			sourceRecord = makeRecord;
+			await assert.rejects(
+				Product.get(id),
+				(error) =>
+					error.statusCode === 502 && error.message.includes('Source') && error.message.includes('catalogSearch')
+			);
+			await waitFor(() => !Product.primaryStore.hasLock(id));
+			assert.strictEqual(Product.primaryStore.getEntry(id), undefined);
+			assert(
+				![...Product.auditStore.getRange({ start: 1 })].some((record) => record.recordId === id),
+				'a rejected source fill must not create an audit entry'
+			);
+		}
+		assert(!Product.attributes.some(({ name }) => name === 'catalogSearch'));
+
+		sourceRecord = (id) => ({ id, title: 'clean trail shoes' });
+		assert.strictEqual((await Product.get('direct')).title, 'clean trail shoes');
+		await waitFor(() => !Product.primaryStore.hasLock('direct'));
+		assert.strictEqual(Product.primaryStore.getSync('direct').title, 'clean trail shoes');
 	});
 
 	it('ignores virtual-name permissions in generated projections and preserved update fields', async () => {
