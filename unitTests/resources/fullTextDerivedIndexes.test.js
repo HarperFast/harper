@@ -609,6 +609,14 @@ describe('@fullText derived-index activation', () => {
 				query(Order, [{ attribute: ['product', 'catalogSearch'], comparator: 'equals', value: 'classified' }]),
 			(error) => error.statusCode === 400 && /query-only/.test(error.message)
 		);
+		await assert.rejects(
+			async () =>
+				query(Order, [
+					{ attribute: 'id', comparator: 'equals', value: 'o1' },
+					{ attribute: ['product', 'catalogSearch'], comparator: 'equals', value: 'classified' },
+				]),
+			(error) => error.statusCode === 400 && /query-only/.test(error.message)
+		);
 		assert.throws(
 			() =>
 				searchByIndex(

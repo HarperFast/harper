@@ -3733,7 +3733,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					);
 				};
 
-				const persistedAudit = persistedPrimary.descriptor?.audit;
+				const persistedAudit =
+					persistedPrimary.descriptor?.audit ?? (persistedPrimary.descriptor === undefined ? Table.audit : undefined);
 				const durableAudit = persistedAudit === true;
 				const finalAudit =
 					origin === 'cluster'

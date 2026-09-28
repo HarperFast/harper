@@ -244,8 +244,15 @@ rocksOnly('durable full-text declarations', () => {
 
 		Product = declare({ origin: 'cluster', attributes: [...attributes(), { name: 'search', type: 'String' }] });
 
+		assert.strictEqual(Product.audit, true);
+		assert.deepStrictEqual(names(Product), ['search']);
 		assert.deepStrictEqual(Product.fullTextFields, ['search']);
 		assert(!Product.attributes.some(({ name }) => name === 'search'));
 		assert.strictEqual(Product.dbisDB.getSync('Product/search'), undefined);
+
+		Product = declare({ origin: 'cluster', attributes: attributes() });
+		assert.strictEqual(Product.audit, true);
+		assert.deepStrictEqual(names(Product), ['search']);
+		assert.deepStrictEqual(Product.fullTextFields, ['search']);
 	});
 });

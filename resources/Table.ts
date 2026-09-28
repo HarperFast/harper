@@ -1134,7 +1134,7 @@ export function makeTable(options) {
 			for (let order = sort; order; order = order.next) assertRecordField(order.attribute);
 		}
 		static assertFullTextRecordField(name: unknown): void {
-			assertRecordField(name);
+			assertFullTextRecordField(name);
 		}
 		static fullTextQueryIndexes: { [name: string]: { customIndex: unknown } } = Object.create(null);
 		static hasFullTextQueryIndexes = false;
@@ -5060,7 +5060,7 @@ export function makeTable(options) {
 						(typeof attribute_name === 'string' && fullTextFieldNames?.has(attribute_name))
 							? fullTextComparatorMode(condition.comparator)
 							: undefined;
-					if (!fullTextMode && fullTextFieldNames) assertRecordField(attribute_name);
+					if (!fullTextMode && (fullTextFieldNames || hasRelationships)) assertFullTextRecordField(attribute_name);
 					const fullTextDefinition =
 						fullTextMode && typeof attribute_name === 'string'
 							? TableResource.fullTextIndexes.find((definition) => definition.name === attribute_name)
@@ -7959,6 +7959,16 @@ export function makeTable(options) {
 				`Full-text field "${field}" is query-only; use a full-text comparator and select $score or $highlights`,
 				400
 			);
+	}
+
+	function assertFullTextRecordField(name: unknown): void {
+		if (!Array.isArray(name)) return assertRecordField(name);
+		const [first, ...remaining] = name;
+		assertRecordField(first);
+		if (remaining.length === 0) return;
+		propertyResolvers[first]?.definition?.tableClass?.assertFullTextRecordField?.(
+			remaining.length === 1 ? remaining[0] : remaining
+		);
 	}
 
 	function assertFullTextSelection(select: unknown): void {
