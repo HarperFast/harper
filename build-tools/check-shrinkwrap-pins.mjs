@@ -1,43 +1,25 @@
 #!/usr/bin/env node
-// Compares installed dependency versions in an extracted harper package against the
-// shrinkwrap pins frozen at pack time (npm-shrinkwrap.packed.json). Used by
-// docker-smoke.yml to prove the image's install actually honored the shrinkwrap rather
-// than re-resolving fresh -- comparing against the live npm-shrinkwrap.json would be
-// vacuous, since npm rewrites that file in place to match whatever it installs.
-//
-// Canary-based rather than whole-tree: a whole-tree comparison was tried and reverted.
-// It's permanently red today because the still-open react-native-fs gap
-// (dependencies.md, "Docker image") makes npm re-resolve that subtree fresh on every
-// build -- and that isn't confined to dead react-native code. @endo/static-module-record
-// is a real production dependency (used by the SES sandbox, security/jsLoader.ts) that
-// also needs @babel/parser, @babel/traverse and @babel/types, so a whole-tree comparison
-// correctly flags those as mismatched too: this is live drift risk in a security-relevant
-// parser, not harmless collateral, and it's a second concrete reason (beyond rocksdb-js)
-// the react-native gap needs closing, not just a reason this particular check is noisy.
-// Revisit the whole-tree comparison once that gap is closed.
-//
-// A canary only proves anything while its own pin lags what a broken install would
-// actually resolve, so this also verifies each canary is still capable of catching a
-// regression -- see verifyCanariesDiscriminate below -- rather than silently becoming a
-// no-op once a lock bump happens to catch up. That's checked against the max version
-// satisfying the dependency's declared range in package.json, not the registry's bare
-// "latest" dist-tag: if the range excludes a newer major, a broken install could never
-// reach it either, so comparing to absolute latest would flag a canary as fine when it
-// has actually gone vacuous within the range that matters.
-// Exact manifest specs remain in the installed-version check, but cannot discriminate a
-// shrinkwrap install from a fresh resolution, so the discrimination check skips them.
+// Verifies that an installed harper package honored the shrinkwrap frozen at pack time
+// (npm-shrinkwrap.packed.json; npm rewrites the live npm-shrinkwrap.json to match whatever it
+// installs). docker-smoke.yml runs it against the built image. Why it walks the whole tree,
+// resolves fresh, and exempts only the react-native-fs residual: build-tools/DESIGN.md, "The
+// image's shrinkwrap check must prove it could fail".
 //
 // Usage: node check-shrinkwrap-pins.mjs <package-root>
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
-const CHECKED_DEPS = ['@harperfast/rocksdb-js', 'fastify', 'systeminformation'];
+// The edge build-tools/prune-shrinkwrap-react-native.mjs severs.
+const RESIDUAL_OPTIONAL_EDGE = 'react-native-fs';
 const ROCKSDB_SINGLE_INSTANCE_DEPS = ['@harperfast/extended-iterable', 'msgpackr'];
-const REGISTRY_QUERY_ATTEMPTS = 3;
+const FRESH_RESOLVE_ATTEMPTS = 3;
+const FRESH_RESOLVE_TIMEOUT_MS = 180_000;
 const retryWait = new Int32Array(new SharedArrayBuffer(4));
+const installedManifests = new Map();
 
 const pkgRoot = process.argv[2];
 if (!pkgRoot) {
@@ -46,134 +28,226 @@ if (!pkgRoot) {
 }
 
 const packed = JSON.parse(readFileSync(`${pkgRoot}/npm-shrinkwrap.packed.json`, 'utf8'));
-if (packed.lockfileVersion !== 3) {
+if (packed.lockfileVersion !== 3 || !packed.packages) {
 	console.error(
-		`::error::npm-shrinkwrap.packed.json has lockfileVersion ${packed.lockfileVersion}, expected 3 -- this script assumes the v3 "packages" map layout and would silently check nothing (or throw confusingly) against a different format`
+		`::error::npm-shrinkwrap.packed.json has lockfileVersion ${packed.lockfileVersion}, expected 3 with a "packages" map -- this script assumes the v3 layout and would silently check nothing (or throw confusingly) against a different format`
 	);
 	process.exit(1);
 }
+const packedPackages = packed.packages;
 const manifest = JSON.parse(readFileSync(`${pkgRoot}/package.json`, 'utf8'));
 const requireFromRoot = createRequire(realpathSync(resolve(pkgRoot, 'package.json')));
 
 let failed = false;
-const pins = {};
-for (const dep of CHECKED_DEPS) {
-	const pinned = packed.packages?.[`node_modules/${dep}`]?.version;
-	if (!pinned) {
-		console.error(
-			`::error::${dep} not found in the packed shrinkwrap -- the check itself needs updating, not just the image`
-		);
-		failed = true;
-		continue;
-	}
-	const range = manifest.dependencies?.[dep];
-	if (!range) {
-		console.error(
-			`::error::${dep} not found in package.json's dependencies -- the check itself needs updating, not just the image`
-		);
-		failed = true;
-		continue;
-	}
-	pins[dep] = { pinned, range };
 
-	let installed;
-	try {
-		installed = JSON.parse(readFileSync(`${pkgRoot}/node_modules/${dep}/package.json`, 'utf8')).version;
-	} catch (e) {
-		console.error(`::error::${dep} is not installed: ${e.message}`);
-		failed = true;
-		continue;
-	}
-
-	if (installed !== pinned) {
-		console.error(
-			`::error::${dep} resolved to ${installed} but the packed shrinkwrap pins ${pinned} -- the image is not honoring npm-shrinkwrap.json (see #1960)`
-		);
-		failed = true;
-		continue;
-	}
-
-	const status = isExactVersion(range) ? 'shrinkwrap pin matches (exact manifest spec)' : 'shrinkwrap honored';
-	console.log(`${status}: ${dep}@${installed} matches the packed pin`);
-}
-
+const freshPackages = resolveFresh();
+const edges = walkPackedTree();
+const exempt = installedClosure(edges.filter(isResidualRoot).map((edge) => edge.installedTarget));
+verifyEdges();
 verifyRocksDbDependencyAlignment();
-
-// A canary only proves the check works while its pin lags the registry -- if a lock bump
-// ever lands every ranged canary on registry-latest, the pin-match loop above would pass on a
-// reverted, broken Dockerfile just as easily as on this one. Fail loudly rather than let
-// that happen silently.
-verifyCanariesDiscriminate(pins);
 
 process.exit(failed ? 1 : 0);
 
-function verifyCanariesDiscriminate(pins) {
-	const rangedPins = Object.fromEntries(Object.entries(pins).filter(([, { range }]) => !isExactVersion(range)));
-	if (Object.keys(pins).length === 0) return;
-	if (Object.keys(rangedPins).length === 0) {
+function verifyEdges() {
+	let checked = 0;
+	let discriminating = 0;
+	let waived = 0;
+	let violations = 0;
+	const reportedDrift = new Set();
+	for (const edge of edges) {
+		const { packedTarget, installedTarget } = edge;
+		// A lifted parent's packed edges describe a version that is not the one installed.
+		if (
+			exempt.has(edge.parentInstalled) &&
+			installedManifest(edge.parentInstalled).version !== packedPackages[edge.parentPacked].version
+		) {
+			waived++;
+			continue;
+		}
+		if (!packedTarget) {
+			if (!installedTarget) continue;
+			if (isResidualRoot(edge) || (edge.optional && exempt.has(installedTarget))) {
+				waived++;
+				continue;
+			}
+			console.error(
+				`::error::${describe(edge)} resolved to ${installedManifest(installedTarget).version} but the packed shrinkwrap has no pin for it -- the shrinkwrap is missing an entry the install needed`
+			);
+			violations++;
+			continue;
+		}
+		const pinned = packedPackages[packedTarget].version;
+		if (!installedTarget) {
+			if (edge.optional) continue;
+			console.error(`::error::${describe(edge)} (pinned ${pinned}) is not installed`);
+			violations++;
+			continue;
+		}
+		const installed = installedManifest(installedTarget).version;
+		if (exempt.has(installedTarget)) {
+			waived++;
+			if (installed !== pinned && !reportedDrift.has(installedTarget)) {
+				reportedDrift.add(installedTarget);
+				console.log(
+					`::warning::${describe(edge)} is pinned at ${pinned} but installed at ${installed}, lifted by the unpinned react-native-fs subtree the image's npm install re-adds -- this pin is not enforced until that gap closes (dependencies.md, "Docker image")`
+				);
+			}
+			continue;
+		}
+		if (installed !== pinned) {
+			console.error(
+				`::error::${describe(edge)} resolved to ${installed} but the packed shrinkwrap pins ${pinned} -- the image is not honoring npm-shrinkwrap.json (see #1960)`
+			);
+			violations++;
+			continue;
+		}
+		checked++;
+		if (edge.freshTarget && freshPackages[edge.freshTarget].version !== pinned) discriminating++;
+	}
+	console.log(
+		`shrinkwrap pins: ${checked} dependency edges match, ${violations} do not; ${discriminating} matching edges resolve differently without the shrinkwrap; ${waived} edges in or into the react-native-fs residual (${exempt.size} installed packages) are not pin-checked`
+	);
+	if (violations > 0) {
+		failed = true;
+	} else if (!freshPackages) {
 		console.error(
-			'::error::every checked canary has an exact declared version -- exact dependencies cannot distinguish a shrinkwrap install from a fresh resolution. Add a canary with a ranged manifest spec.'
+			`::error title=Retry shrinkwrap check::Could not resolve package.json without the shrinkwrap after ${FRESH_RESOLVE_ATTEMPTS} attempts, so there is no proof this check can tell a pinned install from an unpinned one. Retry this job; if the error persists, check npm/registry/runner configuration.`
 		);
 		failed = true;
-		return;
+	} else if (discriminating === 0) {
+		console.error(
+			'::error::no checked dependency edge resolves to a different version without the shrinkwrap -- this check would pass even on a reverted, unpinned install. Expected only right after a full lockfile refresh; it clears once any pinned dependency publishes a newer in-range version.'
+		);
+		failed = true;
 	}
+}
 
-	// What a broken/reverted install would actually resolve to: the max version satisfying
-	// the declared range, not the registry's bare "latest" dist-tag (which could be a newer
-	// major the range excludes, and a broken install could never reach that either).
-	const rangeLatest = {};
-	const failedQueries = [];
-	for (const [dep, { range }] of Object.entries(rangedPins)) {
-		for (let attempt = 1; attempt <= REGISTRY_QUERY_ATTEMPTS; attempt++) {
-			try {
-				// `npm view <dep>@<range> version --json` returns every matching version, not
-				// just the max, and the order isn't a documented contract (it can track
-				// publish/insertion order rather than semver order, e.g. a backported patch
-				// published after a newer minor) -- compare them ourselves rather than trust
-				// the last array entry.
-				const out = execFileSync('npm', ['view', `${dep}@${range}`, 'version', '--json'], { encoding: 'utf8' });
-				const versions = JSON.parse(out);
-				if (Array.isArray(versions) && versions.length === 0) {
-					reportMissingRange(dep, range);
-					return;
-				}
-				if (
-					(Array.isArray(versions) && versions.some((version) => !isExactVersion(version))) ||
-					(!Array.isArray(versions) && !isExactVersion(versions))
-				) {
-					throw new Error('npm returned an invalid version payload');
-				}
-				rangeLatest[dep] = Array.isArray(versions)
-					? versions.reduce((max, v) => (compareVersions(v, max) > 0 ? v : max))
-					: versions;
-				break;
-			} catch (e) {
-				if (isNpmNotFoundError(e)) {
-					reportMissingRange(dep, range);
-					return;
-				}
-				console.log(
-					`::warning::registry query attempt ${attempt}/${REGISTRY_QUERY_ATTEMPTS} failed for ${dep}@${range} (${e.message})`
-				);
-				if (attempt === REGISTRY_QUERY_ATTEMPTS) failedQueries.push(`${dep}@${range}`);
-				else Atomics.wait(retryWait, 0, 0, 1000 * attempt);
+function isResidualRoot(edge) {
+	return !edge.packedTarget && edge.installedTarget && edge.optional && edge.name === RESIDUAL_OPTIONAL_EDGE;
+}
+
+// What the same install would produce without the shrinkwrap, i.e. what a regression back to
+// a fresh resolution would put in the image.
+function resolveFresh() {
+	for (let attempt = 1; attempt <= FRESH_RESOLVE_ATTEMPTS; attempt++) {
+		const dir = mkdtempSync(join(tmpdir(), 'harper-fresh-resolve-'));
+		try {
+			writeFileSync(join(dir, 'package.json'), readFileSync(`${pkgRoot}/package.json`));
+			execFileSync('npm', ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'], {
+				cwd: dir,
+				stdio: ['ignore', 'pipe', 'pipe'],
+				timeout: FRESH_RESOLVE_TIMEOUT_MS,
+			});
+			const lock = JSON.parse(readFileSync(join(dir, 'package-lock.json'), 'utf8'));
+			if (lock.lockfileVersion !== 3 || !lock.packages?.['']) {
+				throw new Error(`npm wrote lockfileVersion ${lock.lockfileVersion} without a v3 root entry`);
+			}
+			return lock.packages;
+		} catch (e) {
+			const detail = e.stderr?.toString().trim().split('\n').slice(-3).join(' | ') || e.message;
+			console.log(`::warning::fresh resolve attempt ${attempt}/${FRESH_RESOLVE_ATTEMPTS} failed (${detail})`);
+			if (attempt < FRESH_RESOLVE_ATTEMPTS) Atomics.wait(retryWait, 0, 0, 1000 * attempt);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}
+	return null;
+}
+
+function walkPackedTree() {
+	const walked = [];
+	const visited = new Set();
+	const queue = [{ packedLocation: '', installedLocation: '', freshLocation: freshPackages ? '' : null }];
+	while (queue.length > 0) {
+		const { packedLocation, installedLocation, freshLocation } = queue.pop();
+		const key = `${packedLocation}\0${installedLocation}`;
+		if (visited.has(key)) continue;
+		visited.add(key);
+		// The root's edges come from the package.json npm actually installed from.
+		const declaring = packedLocation === '' ? manifest : packedPackages[packedLocation];
+		for (const [name, optional] of dependencyEdges(declaring)) {
+			const edge = {
+				parentPacked: packedLocation,
+				parentInstalled: installedLocation,
+				name,
+				optional,
+				packedTarget: resolveLocation(packedLocation, name, (location) => location in packedPackages),
+				installedTarget: resolveLocation(installedLocation, name, isInstalled),
+				freshTarget:
+					freshLocation === null ? null : resolveLocation(freshLocation, name, (location) => location in freshPackages),
+			};
+			walked.push(edge);
+			if (edge.packedTarget && edge.installedTarget) {
+				queue.push({
+					packedLocation: edge.packedTarget,
+					installedLocation: edge.installedTarget,
+					freshLocation: edge.freshTarget,
+				});
 			}
 		}
 	}
-	const checkable = Object.keys(rangeLatest);
-	const stillDiscriminates = checkable.some((dep) => rangeLatest[dep] !== pins[dep].pinned);
-	if (stillDiscriminates) return;
-	if (failedQueries.length > 0) {
-		console.error(
-			`::error title=Retry dependency canary check::Could not verify that the shrinkwrap canaries still discriminate after ${REGISTRY_QUERY_ATTEMPTS} registry query attempts for ${failedQueries.join(', ')}. Retry this job; if the error persists, check npm/registry/runner configuration and confirm the listed package ranges match published versions.`
-		);
-		failed = true;
-		return;
+	return walked;
+}
+
+function installedClosure(roots) {
+	const reached = new Set();
+	const stack = [...roots];
+	while (stack.length > 0) {
+		const location = stack.pop();
+		if (reached.has(location)) continue;
+		reached.add(location);
+		for (const [name] of dependencyEdges(installedManifest(location))) {
+			const target = resolveLocation(location, name, isInstalled);
+			if (target) stack.push(target);
+		}
 	}
-	console.error(
-		`::error::every checked canary (${checkable.join(', ')}) is now pinned at the latest version its declared range allows -- this check would pass even on a reverted, unpinned install. Pick a new canary whose shrinkwrap pin lags what its range allows.`
-	);
-	failed = true;
+	return reached;
+}
+
+function dependencyEdges(entry) {
+	const edges = new Map();
+	for (const name of Object.keys(entry.dependencies ?? {})) edges.set(name, false);
+	for (const name of Object.keys(entry.optionalDependencies ?? {})) if (!edges.has(name)) edges.set(name, true);
+	for (const name of Object.keys(entry.peerDependencies ?? {})) {
+		const optionalPeer = entry.peerDependenciesMeta?.[name]?.optional === true;
+		edges.set(name, (edges.get(name) ?? true) && optionalPeer);
+	}
+	return edges;
+}
+
+function resolveLocation(from, name, exists) {
+	const segments = from === '' ? [] : from.split('/node_modules/');
+	for (let depth = segments.length; depth >= 0; depth--) {
+		const prefix = segments.slice(0, depth).join('/node_modules/');
+		const candidate = `${prefix ? `${prefix}/` : ''}node_modules/${name}`;
+		if (exists(candidate)) return candidate;
+	}
+	return null;
+}
+
+function installedManifest(location) {
+	if (!installedManifests.has(location)) {
+		const path = `${pkgRoot}/${location}/package.json`;
+		let installed = null;
+		if (existsSync(path)) {
+			try {
+				installed = JSON.parse(readFileSync(path, 'utf8'));
+			} catch (e) {
+				throw new Error(`${path} is not a readable package manifest: ${e.message}`, { cause: e });
+			}
+		}
+		installedManifests.set(location, installed);
+	}
+	return installedManifests.get(location);
+}
+
+function isInstalled(location) {
+	return installedManifest(location) !== null;
+}
+
+function describe(edge) {
+	const parent = edge.parentInstalled;
+	return `${parent === '' ? 'harper' : parent.slice(parent.lastIndexOf('node_modules/') + 'node_modules/'.length)} -> ${edge.name}`;
 }
 
 function verifyRocksDbDependencyAlignment() {
@@ -267,29 +341,4 @@ function isExactVersion(range) {
 		typeof range === 'string' &&
 		/^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(range)
 	);
-}
-
-function isNpmNotFoundError(error) {
-	try {
-		return JSON.parse(error.stdout).error?.code === 'E404';
-	} catch {
-		return false;
-	}
-}
-
-function reportMissingRange(dep, range) {
-	console.error(
-		`::error::${dep}@${range} matches no published version in the configured registry -- correct the declared range in package.json or confirm the configured registry carries this package`
-	);
-	failed = true;
-}
-
-function compareVersions(a, b) {
-	const partsA = a.split(/[-+]/)[0].split('.').map(Number);
-	const partsB = b.split(/[-+]/)[0].split('.').map(Number);
-	for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
-		const diff = (partsA[i] ?? 0) - (partsB[i] ?? 0);
-		if (diff !== 0) return diff;
-	}
-	return 0;
 }
