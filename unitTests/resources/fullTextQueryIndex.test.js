@@ -201,6 +201,7 @@ function readyQueryIndex(auditStore, readinessId, storeName) {
 	const fixture = simpleQueryIndex({
 		auditStore,
 		readinessId,
+		indexId: storeName,
 		payload: publicationPayload(),
 		hits: () => [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
 		storeName,
@@ -2950,9 +2951,18 @@ describe('FullTextQueryIndex', () => {
 			return index;
 		};
 		const indexes = [];
+		let predecessor;
 		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
 		try {
 			assert(auditStore.tryLock(lockKey));
+			predecessor = simpleQueryIndex({
+				auditStore,
+				readinessId: oldReadinessId,
+				indexId,
+				storeName,
+				payload: publicationPayload(),
+				hits: () => [],
+			}).index;
 			await pauseNativeFullTextQueryReaders(path, oldReadinessId, 10n);
 			const index = createIndex();
 			indexes.push(index);
@@ -2974,6 +2984,7 @@ describe('FullTextQueryIndex', () => {
 			auditStore.unlock(lockKey);
 			resumeNativeFullTextQueryReaders(path, oldReadinessId, 10n);
 			resumeNativeFullTextQueryReaders(path, readinessId, 2n);
+			await predecessor?.close();
 			await Promise.all(indexes.map((index) => index.close()));
 		}
 	});

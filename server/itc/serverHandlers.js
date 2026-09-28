@@ -60,10 +60,20 @@ async function schemaHandler(event) {
 			throw new Error('Full-text query reader coordination requires a readiness id');
 		if (typeof event.message.ownerEpoch !== 'string' || !/^(?:0|[1-9]\d*)$/.test(event.message.ownerEpoch))
 			throw new Error('Full-text query reader coordination requires an owner epoch');
+		if (
+			event.message.allowUnregisteredReadiness !== undefined &&
+			typeof event.message.allowUnregisteredReadiness !== 'boolean'
+		)
+			throw new Error('Full-text query reader coordination requires a boolean unregistered-readiness flag');
 		const fullTextQueries = require('../../resources/indexes/fullTextQueryIndex.ts');
 		const ownerEpoch = BigInt(event.message.ownerEpoch);
 		if (event.message.operation === FULL_TEXT_QUERY_PAUSE_OPERATION)
-			await fullTextQueries.pauseNativeFullTextQueryReaders(event.message.path, event.message.readinessId, ownerEpoch);
+			await fullTextQueries.pauseNativeFullTextQueryReaders(
+				event.message.path,
+				event.message.readinessId,
+				ownerEpoch,
+				event.message.allowUnregisteredReadiness === true
+			);
 		else fullTextQueries.resumeNativeFullTextQueryReaders(event.message.path, event.message.readinessId, ownerEpoch);
 		return;
 	}

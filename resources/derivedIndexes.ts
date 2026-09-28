@@ -687,10 +687,11 @@ async function coordinateFullTextQueryReaders(
 	readinessId: string,
 	ownerEpoch: bigint,
 	pause: boolean,
-	timeout = FULL_TEXT_READER_COORDINATION_TIMEOUT_MILLISECONDS
+	timeout = FULL_TEXT_READER_COORDINATION_TIMEOUT_MILLISECONDS,
+	allowUnregisteredReadiness = false
 ): Promise<void> {
 	if (pause) {
-		const draining = pauseNativeFullTextQueryReaders(path, readinessId, ownerEpoch);
+		const draining = pauseNativeFullTextQueryReaders(path, readinessId, ownerEpoch, allowUnregisteredReadiness);
 		await settleBeforeDeadline([draining], Date.now() + timeout, () => new Error('Full-text reader drain timed out'));
 		await draining;
 	} else resumeNativeFullTextQueryReaders(path, readinessId, ownerEpoch);
@@ -702,6 +703,7 @@ async function coordinateFullTextQueryReaders(
 				path,
 				readinessId,
 				ownerEpoch: ownerEpoch.toString(),
+				allowUnregisteredReadiness,
 			},
 		},
 		timeout,
@@ -742,7 +744,8 @@ export async function retireFullTextIndexes(
 							readinessId,
 							0n,
 							true,
-							Math.max(1, Math.min(FULL_TEXT_READER_COORDINATION_TIMEOUT_MILLISECONDS, deadline - Date.now()))
+							Math.max(1, Math.min(FULL_TEXT_READER_COORDINATION_TIMEOUT_MILLISECONDS, deadline - Date.now())),
+							true
 						);
 						if (!shouldContinue()) return false;
 						await retireNativeFullTextDerivedIndexStorage({
