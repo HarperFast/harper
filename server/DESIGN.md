@@ -54,7 +54,7 @@ A request entering `http.ts` does **not** go through Fastify. The two `handleApp
 | `serverHelpers/JSONStream.ts`              | Streaming JSON output for large responses.                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `nodeName.ts`                              | Resolves this node's name (config → hostname).                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `static.ts`                                | Static file serving for component-bundled assets.                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `throttle.ts`                              | Per-IP / per-user request throttling.                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `throttle.ts`                              | Event-loop backpressure: runs a caller's calls one per `setImmediate` cycle and hands a call to the caller's limit handler (HTTP request queues, cache-source resolution) once queue depth × average cycle time passes the limit.                                                                                                                                                                                                                      |
 | `storageReclamation.ts`                    | Disk-pressure signals to downstream consumers; `getStorageSpaceStats()` is the shared quota-aware (falls back to `statfs`) source of available/free/size storage numbers — used by `Table.getStorageStats()` (#1976). NOT used for blob storage path weighting (`resources/blob.ts`): quota-status.json is a single instance-wide figure, so it can't distinguish between multiple `STORAGE_BLOBPATHS` disks — that still needs raw per-path `statfs`. |
 | `serverRegistry.ts`                        | Trivial registry export.                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `status/`                                  | Server status reporting (cluster status, per-port info).                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -219,6 +219,8 @@ The `error` value is the stable programmatic discriminator; `message` is diagnos
 
 Clean stream completion does not prove completeness; clients must inspect SSE for the `harper-error` event and NDJSON for the `$harperStreamError` control record.
 
+The operations API keeps the same line for a request refused before its progress stream starts (authentication, the role allowlist, validation): the Fastify `preSerialization` hook in `contentTypes.ts` answers an error-status reply that would negotiate `text/event-stream` as JSON, unless the route itself set `text/event-stream`. A stream payload never reaches that hook, which is how the progress stream (`progressEmitter.ts`) keeps its in-band `event: error` at status 200. The hook is shared with the legacy custom-functions server (`fastifyRoutes.ts`), whose untyped errors follow the same rule. `harper deploy` unwraps the unnamed frame older servers still send in that case.
+
 ### Deferred credential rejection (#2418)
 
 `authentication` runs before route matching, so when it meets an `Authorization` header it cannot
@@ -243,10 +245,10 @@ So a rejection is recorded rather than answered:
 **Rejection provenance is asserted, never inferred.** `security/credentialRejection.ts` holds a
 module-private `Symbol` tag; only the code that actually concludes "this credential is unacceptable"
 sets it, and `isCredentialRejection()` reads nothing else. Status ranges cannot carry that meaning:
-`findAndValidateUser()` lazily loads the user cache, whose system-table searches raise a
-default-status-400 `ClientError` when `system.hdb_role`/`system.hdb_user` is unavailable, so a 4xx
-test would classify a storage outage as an unknown credential and hand it to application
-authorization. The tag is set at exactly these points:
+user resolution touches system-table searches (`listUsers()`) that raise a default-status-400
+`ClientError` when `system.hdb_role`/`system.hdb_user` is unavailable, so a 4xx test would classify a
+storage outage as an unknown credential and hand it to application authorization. The tag is set at
+exactly these points:
 
 | Tagged rejection                                                   | Where                                      |
 | ------------------------------------------------------------------ | ------------------------------------------ |
@@ -423,7 +425,7 @@ differs, and the reason is easy to get backwards. `verifyPermsAST`'s super_user 
 genuinely runs. A carrier would therefore put Harper's own query through `hasPermissions` on
 `system.hdb_job`, which passes only because `appendSystemTablesToRole` grants `system.*.read` to a
 hydrated super_user — a super_user principal without an appended `permission.system` (an
-impersonation payload, or any path that skips user-cache hydration) would start getting 403s on an
+impersonation payload, or any user not resolved through `security/user.ts`) would start getting 403s on an
 operation it is entitled to. The bypass also states the actual intent: the statement is Harper's, not
 the caller's. Wrap the individual statement, not the function — a later caller-dependent statement
 must not inherit it.
@@ -636,3 +638,23 @@ the bare message until harper#2703, so the same error carried an error code on t
 
 REST settles a credential rejection _before_ its route lookup, so a rejected client gets the unauthorized
 close rather than `1011 No resource was found` — which would otherwise disclose whether the resource exists.
+
+## `serverErrorHandler` skips what `handlePostRequest` already logged (`server/serverHelpers/serverHandlers.js`)
+
+`handlePostRequest` logs every error it throws, at error level or the error's own higher `fatal`/`notify`, and records it against its request; `serverErrorHandler`, which Fastify calls next with the same request, skips that error. Keep the log in `handlePostRequest` rather than moving it to the handler: `serverErrorHandler` logs an error with no `logLevel` of its own at info, below the default `warn`, so most operation errors would disappear from a default log; and a custom-function route that catches `hdbCore.request()`'s rejection never reaches the handler at all. The record is keyed by request, not by error, so an error object that surfaces again in another request is still logged there.
+
+So a failure raised before the operation runs — a refusal from `chooseOperation`, a rejected request body — gets one Error line (a refusal also writes `chooseOperation`'s own `403 from operation …` and `User '…' is not permitted to …` lines; the Error line is the one that says why). An error the operation throws while it runs does not: `callOperationFunctionAsAwait` (`utility/OperationFunctionCaller.ts`) logs it, after an `Error calling operation: <handler>` line, and rethrows, and `handlePostRequest` logs it again. Its log is the only one for the callers that do not log — `server.operation()` from a component, the MCP operations tool, the SSE branch of `handlePostRequest` — so giving execution errors a single owner means deciding it for each of those, not dropping one log.
+
+## A request-queue shed is a 503 the server never logged (`server/throttle.ts`)
+
+`throttle()` sheds a queued call once `queuedCalls.length × averageEventCycleTime` exceeds the limit (20s
+by default). `server/http.ts` answers it directly with `Service unavailable, exceeded request queue limit`
+and records only an analytics action; nothing is thrown, so the HTTP error path that logs every thrown
+status (`info` for a 503, `warn` for a 500) never runs, and the `DatabaseTransaction` write-queue and
+conflict 503s log at `error` (once per stuck commit, rate-limited) as well as `info` when thrown. A 503
+with that exact body is therefore the throttle, which now writes a rate-limited `warn` per throttle instance naming
+the queue; `resources/Table.ts`'s cache-resolution throttle throws its own 503 under the same warn. The
+gate is per instance on purpose: a shared one let a cache-fill shed silence the HTTP shed that followed.
+Reproduce with a large concurrent non-GET burst on one CPU-starved worker
+(`integrationTests/resources/sourcedfrom-eav-cache-coherence.test.ts` P1 under Bun pinned to a contended
+core).

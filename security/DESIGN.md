@@ -2,7 +2,7 @@
 
 Authentication tokens, OIDC exchange and TLS material.
 
-**Read this when:** touching `tokenAuthentication.ts`, `impersonation.ts`, `authn/oidc/` or `keys.ts`.
+**Read this when:** touching `tokenAuthentication.ts`, `impersonation.ts`, `authn/oidc/`, `keys.ts` or `certificateVerification/`.
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -10,7 +10,7 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ## OIDC trusted publishing (`security/authn/oidc/`)
 
-`exchange_oidc_token` lets a workload authenticate with no stored Harper credential (#2171): it presents an identity token minted by its runtime, and gets back a one-hour operation token for the user a stored trust policy names. It is in `NO_AUTH_OPERATIONS` because it _is_ the authentication, the same way `create_authentication_tokens` is against a password — the same three wiring points apply (`serverHandlers.js` `NO_AUTH_OPERATIONS`, the `verifyPerms` bypass in `serverUtilities.ts`, and a `permission(false, [])` registration).
+`exchange_oidc_token` lets a workload authenticate with no stored Harper credential (#2171): it presents an identity token minted by its runtime, and gets back a one-hour operation token for the user a stored trust policy names. It is in `NO_AUTH_OPERATIONS` because it _is_ the authentication, the same way `create_authentication_tokens` is against a password — the same three wiring points apply (`serverHandlers.js` `NO_AUTH_OPERATIONS`, the `verifyPerms` bypass in `serverUtilities.ts`, and a `permission(false, [], OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN)` registration).
 
 **The core is issuer-agnostic; everything issuer-specific lives in `providers/`.** That split is the point of the layout, not an accident of it — a new workload-identity issuer should be a profile, not a change to verification, matching, or storage.
 
@@ -33,7 +33,7 @@ Four constraints that look like choices but are not:
 
    Naming `sql` in a scope grants the SQL interface, not unrestricted DML through it: a write statement additionally requires its matching data operation (`insert`/`update`/`delete`) in scope. That is what keeps `read_only` — which expands to include `sql` — from admitting a DELETE, given that `verifyPermsAST` returns early for a super_user before any table check runs.
 
-`hdb_oidc_token_use` (created lazily via `table()`, not the system schema) records spent tokens keyed on a SHA-256 of the token itself, with `expiresAt` past the token's own expiry. Hashed rather than stored, so the table never holds a credential; keyed on the token's **signed input** (`header.payload`) rather than `jti` because not every issuer emits one (Azure uses `uti`). Not on the whole token string: the signature segment is covered by nothing, and base64url decoding ignores the surplus low bits of its final character, so 16 distinct spellings of an RS256 signature decode to the same bytes, all verify, and all hash differently — one leaked token would buy 16 exchanges. ES\* malleability (`s → n−s`) is a second such vector. The signed input is exactly what the issuer asserted, so every variant collapses to one fingerprint. The get-then-put is not atomic and does not claim to be: a concurrent replay is not a privilege escalation, since whoever holds the token could obtain one operation token anyway.
+`hdb_oidc_token_use` (declared on every node at every start by `tokenUseTable.ts`, so a node that never exchanges still removes the rows replicated to it — see dataLayer/DESIGN.md, "System table bootstrap") records spent tokens keyed on a SHA-256 of the token itself, each expiring (record metadata, replicated with the row) past the token's own expiry. Hashed rather than stored, so the table never holds a credential; keyed on the token's **signed input** (`header.payload`) rather than `jti` because not every issuer emits one (Azure uses `uti`). Not on the whole token string: the signature segment is covered by nothing, and base64url decoding ignores the surplus low bits of its final character, so 16 distinct spellings of an RS256 signature decode to the same bytes, all verify, and all hash differently — one leaked token would buy 16 exchanges. ES\* malleability (`s → n−s`) is a second such vector. The signed input is exactly what the issuer asserted, so every variant collapses to one fingerprint. The get-then-put is not atomic and does not claim to be: a concurrent replay is not a privilege escalation, since whoever holds the token could obtain one operation token anyway.
 
 ## Scoped tokens and synthetic-role identity (`security/tokenAuthentication.ts`, `security/impersonation.ts`)
 
@@ -66,6 +66,20 @@ which never reaches `verifyPerms` and calls `verifyOperationsAllowlist` directly
 on translated table CRUD permissions only. A scoped token intended to be read-only on app
 endpoints must carry restrictive table permissions; `operations: ['read_only']` alone does not
 constrain REST writes if table perms allow them.
+
+Which name the allowlist is checked against: `verifyPerms` is handed the handler, not the invoked
+operation, so gate 1 checks the registered entry's `api_name`, and never the handler's own name —
+only a name with no registration at all (`sql`) is checked as given. The `permission` constructor
+requires that argument: an API name, or `null` when no allowlist may grant the operation. Leaving it
+out is a compile error, which closes the old failure where an omitted name made gate 1 fall back to
+the handler name — refusing every role that listed the operation, unless the handler name happened
+to equal the API name, when it silently granted it instead.
+Aliases share a handler, so listing the canonical name grants both spellings and the alias spelling
+grants neither. `get_backup`, `read_transaction_log` and `catchup` are registered with `null`: gate 2
+would grant `get_backup` ahead of its READ check on a whole-database copy, `read_transaction_log`
+lacks `read_audit_log`'s `system.hdb_secret` guard, and the legacy `catchup` applies writes to any
+table with no table permission check. A test in `unitTests/utility/operation_authorization.test.js`
+holds every dispatched operation to this.
 
 The invariant to preserve when touching any synthetic (inline/impersonated/scoped) role:
 `permissionsTranslator.getRolePermissions` memoizes translated permissions **by role name** (keyed
@@ -136,6 +150,26 @@ the latch back on a synchronous throw or a rejected callback promise (equality-g
 rejection cannot unlatch a newer reload) — the latch means "last successfully applied", so the
 periodic poll can heal a lost `hdb_certificate` write instead of deduplicating it forever.
 
+## Client-certificate revocation checking keeps three tables (`security/certificateVerification/`)
+
+`verificationTables.ts` declares them, and every writable start and the verification path apply the same
+declarations (dataLayer/DESIGN.md, "System table bootstrap"). A row's expiry is record metadata; a table's
+`expiration` is only the fallback for a row written without one.
+
+- A verdict (`hdb_certificate_cache`) expires `cacheTtl` after its check because `CertificateVerificationSource`
+  sets `context.expiresAt`: a caching table decides staleness by the stored expiry, and a source fill stores
+  `sourceContext.expiresAt`, never a field the source returns. `createCacheKey` hashes a key version, so a
+  verdict cached before verdicts carried an expiry, which has none and would read as fresh forever, is never
+  read again.
+- A revocation (`hdb_revoked_certificates`) lives until `crl_next_update + gracePeriod`, the window
+  `performCRLCheck` honors while it decides by `crl_next_update`. Expiring it at `nextUpdate` made that branch
+  unreachable and reported a revoked certificate on an overdue CRL as good.
+- A CRL's revocations replace the previous set all or nothing, in a transaction of their own rather than the
+  verdict fill's `performCRLCheck` runs in, so other checks see a complete set once it commits. The check that
+  downloaded the CRL decides from the CRL itself: by the time it could read the table, another worker may have
+  replaced the set with a different generation of that CRL. A check answered by a cached CRL reads the table
+  outside the verdict fill's transaction, whose LMDB snapshot misses rows committed after it.
+
 ## A component-facing export needs BOTH `index.ts` and `getHarperExports` (`security/jsLoader.ts`, `index.ts`)
 
 Adding `export { x } from './…'` to `index.ts` publishes `x` on the `harper` **package** but does not
@@ -173,3 +207,13 @@ Two consequences that are easy to miss:
   `settleDeferredCredentialRejection` _before_ they read `request.user`, so once a credential is deferred,
   resolving a principal from a different credential is a contradiction. Hence a rejected certificate
   identity stops resolution outright instead of falling through to Basic, the session, or the local bypass.
+
+## User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)
+
+There is no per-thread copy of `hdb_user`/`hdb_role`: every lookup point-reads the user by name and its role by id through the primary store's record cache, so no writer (an operation, a replicated commit) has to announce a change for lookups to see it. Three rules keep that true:
+
+- **One committed state.** RocksDB point reads share no snapshot, so `readUserEntries` re-checks the user's version after reading its role and retries if it moved; otherwise one transaction that moves a user to role B and grants role A super_user could be read as the user on A with A's new grant.
+- **Derived data is keyed by entry version, not object identity.** With `storage.caching: false` every read returns a new object. The per-role memo of `appendSystemTablesToRole` + expanded operations, and `isCurrentUser`, compare versions; a `VERSION_REUSED` entry is compared by value instead, since its version no longer identifies one value. `auth.ts` runs `isCurrentUser` on every `authorizationCache` hit, so a cached principal is re-verified once its user or role record changes; a component's `server.getUser` principal is checked against the versions read for its name before it was resolved (`trackUserRecords`).
+- **Notifications are only for holders of a user.** `onUserChange` feeds live-subscription revocation and MCP list-changed from per-thread `hdb_user`/`hdb_role` subscriptions. It never subscribes to an unaudited table, because `subscribe()` would enable and persist auditing on it; on such a node those consumers fall back to their own backstops.
+
+LMDB lookups use the thread's shared read txn, which lmdb-js renews at most once per event-loop turn, so a commit on another thread is seen from the next turn. Resetting it per lookup would give each in-flight transaction its own reader slot. Enforced by `unitTests/security/userRecordLookups.test.js` and `unitTests/resources/replicatedUserWrites.test.js`.

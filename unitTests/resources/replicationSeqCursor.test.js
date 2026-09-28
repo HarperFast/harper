@@ -3,6 +3,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
+const { suspendDatabaseCommits } = require('#src/resources/DatabaseTransaction');
 require('#src/server/serverHelpers/serverUtilities');
 
 // The replication apply loop records a per-peer resume cursor when it finishes applying a
@@ -147,6 +148,48 @@ describe('replication sequence-cursor write (harper-pro#603)', () => {
 				message: 'the next cursor still records',
 			});
 		} finally {
+			spy.restore();
+			release();
+		}
+	});
+
+	it('continues replication after teardown denies a cursor commit', async function () {
+		let release;
+		const held = new Promise((resolve) => (release = resolve));
+		const now = Date.now();
+		const ReplicatedTable = makeReplicatedTable(
+			'SeqCursorSuspendedTable',
+			[
+				{ type: 'put', id: 1, value: { id: 1, name: 'first' }, timestamp: now },
+				{ type: 'end_txn', localTime: now, timestamp: now, remoteNodeIds: [43] },
+				{ type: 'put', id: 2, value: { id: 2, name: 'second' }, timestamp: now + 1 },
+				{ type: 'end_txn', localTime: now + 1, timestamp: now + 1, remoteNodeIds: [43] },
+			],
+			held
+		);
+		let suspension;
+		let denyNext = true;
+		const spy = spyOnCursorWrites(ReplicatedTable, (transaction) => {
+			if (!denyNext) return;
+			denyNext = false;
+			suspension = suspendDatabaseCommits([ReplicatedTable.primaryStore.rootStore]);
+			const abort = transaction.abort.bind(transaction);
+			transaction.abort = () => {
+				try {
+					return abort();
+				} finally {
+					suspension.release();
+				}
+			};
+		});
+		try {
+			await waitFor(() => readCursor(ReplicatedTable, 43)?.seqId === now + 1, {
+				timeout: 5000,
+				message: 'replication resumed after the cursor commit was denied',
+			});
+			assert.equal(spy.staged.length, 2, 'the apply loop should advance to the next transaction');
+		} finally {
+			suspension?.release();
 			spy.restore();
 			release();
 		}

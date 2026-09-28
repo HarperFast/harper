@@ -3,7 +3,7 @@
 const assert = require('node:assert');
 const path = require('node:path');
 const fs = require('node:fs/promises');
-const { existsSync } = require('node:fs');
+const { existsSync, readFileSync, writeFileSync } = require('node:fs');
 const os = require('node:os');
 const { Readable } = require('node:stream');
 const { setTimeout: sleep } = require('node:timers/promises');
@@ -26,6 +26,8 @@ const {
 	Application,
 } = require('#src/components/Application');
 const { withComponentPreparationLock } = require('#src/components/componentPreparationLock');
+const { getConfigFilePath } = require('#src/config/configUtils');
+const { preserveRootConfig, rootConfigEntry, setRootConfigEntry } = require('../rootConfigFixture.js');
 
 const IN_PROGRESS = '.in-progress-';
 
@@ -257,7 +259,7 @@ describe('interrupted activation recovery', () => {
 		const failures = await recoverInterruptedActivations(root);
 
 		assert.strictEqual(failures.size, 1);
-		assert.match(failures.get('web').message, /version 99, expected 1/);
+		assert.match(failures.get('web').message, /version 99, expected 1 or 2/);
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
@@ -341,6 +343,213 @@ describe('interrupted activation recovery', () => {
 
 		assert.deepStrictEqual([...failures.keys()], ['broken'], 'only the affected component is reported');
 		assert.strictEqual(await readLive(root, 'healthy'), 'CANDIDATE\n', 'the healthy sibling still settles');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+});
+
+describe('the root-config effect of an interrupted activation', () => {
+	// Every roll forward applies the journal's effect: a crash past the first rename would otherwise bring the
+	// certified build up under the previous release's config, isolation included.
+	preserveRootConfig();
+
+	const journalV2 = (component, id, rootConfig) => JSON.stringify({ v: 2, component, candidateId: id, rootConfig });
+	const describeArtifact = (deploymentDir, component, rootConfig, isolated = false) =>
+		fs.writeFile(
+			path.join(deploymentDir, '.artifact.json'),
+			JSON.stringify({ v: 1, component, rootConfig, installationIsOpaque: false, isolated })
+		);
+
+	it('publishes the journaled entry when it rolls forward a crash between the two renames', async () => {
+		const root = await newRoot('effect-b1');
+		setRootConfigEntry('web', { package: 'npm:web@1' });
+		await stageState(root, 'web', 'd1', {
+			aside: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: journalV2('web', 'd1', { kind: 'set', entry: { package: 'npm:web@2', isolated: true } }),
+		});
+
+		assert.strictEqual((await recoverInterruptedActivations(root)).size, 0);
+
+		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n');
+		assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@2', isolated: true });
+		assert.strictEqual(existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1')), false, 'settled');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('publishes it when only the tail after the commit was lost', async () => {
+		const root = await newRoot('effect-tail');
+		setRootConfigEntry('web', { package: 'npm:web@1' });
+		await stageState(root, 'web', 'd1', {
+			live: 'CANDIDATE\n',
+			aside: 'LIVE\n',
+			complete: true,
+			journal: journalV2('web', 'd1', { kind: 'set', entry: { package: 'npm:web@2' } }),
+		});
+
+		assert.strictEqual((await recoverInterruptedActivations(root)).size, 0);
+
+		assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@2' });
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('removes the registry provenance a payload activation journaled, keeping the rest of the entry', async () => {
+		const root = await newRoot('effect-unset');
+		setRootConfigEntry('web', { package: 'npm:web@1', isolated: true });
+		await stageState(root, 'web', 'd1', {
+			aside: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: journalV2('web', 'd1', { kind: 'unset-package' }),
+		});
+
+		await recoverInterruptedActivations(root);
+
+		assert.deepStrictEqual(rootConfigEntry('web'), { isolated: true });
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('leaves config alone when it rolls back an activation that never committed', async () => {
+		const root = await newRoot('effect-rollback');
+		setRootConfigEntry('web', { package: 'npm:web@1' });
+		await stageState(root, 'web', 'd1', {
+			aside: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: false,
+			journal: journalV2('web', 'd1', { kind: 'set', entry: { package: 'npm:web@2' } }),
+		});
+
+		await recoverInterruptedActivations(root);
+
+		assert.strictEqual(await readLive(root, 'web'), 'LIVE\n');
+		assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@1' });
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('leaves config alone when it returns a staged artifact to dormant', async () => {
+		const root = await newRoot('effect-dormant');
+		setRootConfigEntry('web', { package: 'npm:web@1' });
+		const { deploymentDir } = await stageState(root, 'web', 'd1', {
+			live: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: journalV2('web', 'd1', { kind: 'set', entry: { package: 'npm:web@2' } }),
+		});
+		await describeArtifact(deploymentDir, 'web', { package: 'npm:web@2' });
+
+		await recoverInterruptedActivations(root);
+
+		assert.ok(existsSync(path.join(deploymentDir, '.complete')), 'dormant again');
+		assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@1' });
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	describe('a journal written before the effect was journaled', () => {
+		// A version-1 activation of a STAGED artifact published its entry between the two renames, so a crash in
+		// that window is exactly the one whose entry its descriptor still records. Treating every version-1
+		// journal as owning nothing would carry the isolation loss this step closes across the upgrade.
+		it("replays a staged package artifact's recorded entry, isolation included", async () => {
+			const root = await newRoot('v1-staged-package');
+			setRootConfigEntry('web', { package: 'npm:web@1' });
+			const { deploymentDir } = await stageState(root, 'web', 'd1', {
+				aside: 'LIVE\n',
+				candidate: 'CANDIDATE\n',
+				complete: true,
+				journal: true,
+			});
+			await describeArtifact(deploymentDir, 'web', { package: 'npm:web@2', isolated: true }, true);
+
+			assert.strictEqual((await recoverInterruptedActivations(root)).size, 0);
+
+			assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@2', isolated: true });
+			await fs.rm(root, { recursive: true, force: true });
+		});
+
+		it("removes a staged payload artifact's stale registry provenance", async () => {
+			const root = await newRoot('v1-staged-payload');
+			setRootConfigEntry('web', { package: 'npm:web@1', isolated: true });
+			const { deploymentDir } = await stageState(root, 'web', 'd1', {
+				aside: 'LIVE\n',
+				candidate: 'CANDIDATE\n',
+				complete: true,
+				journal: true,
+			});
+			await describeArtifact(deploymentDir, 'web', null);
+
+			await recoverInterruptedActivations(root);
+
+			assert.deepStrictEqual(rootConfigEntry('web'), { isolated: true });
+			await fs.rm(root, { recursive: true, force: true });
+		});
+
+		it('publishes nothing for an immediate deploy, which published before it built', async () => {
+			const root = await newRoot('v1-immediate');
+			setRootConfigEntry('web', { package: 'npm:web@2' });
+			await stageState(root, 'web', 'd1', { aside: 'LIVE\n', candidate: 'CANDIDATE\n', complete: true, journal: true });
+
+			assert.strictEqual((await recoverInterruptedActivations(root)).size, 0);
+
+			assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n');
+			assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@2' });
+			await fs.rm(root, { recursive: true, force: true });
+		});
+	});
+
+	for (const [title, rootConfig, signature] of [
+		['names no effect', undefined, /root-config effect/],
+		['names an effect nothing applies', { kind: 'bogus' }, /root-config effect/],
+		['would remove the whole entry', { kind: 'remove' }, /root-config effect/],
+		[
+			'records an entry that is not an application config',
+			{ kind: 'set', entry: { package: 42 } },
+			/cannot be published/,
+		],
+	]) {
+		it(`fails closed, touching nothing, on a journal that ${title}`, async () => {
+			const root = await newRoot('effect-malformed');
+			setRootConfigEntry('web', { package: 'npm:web@1' });
+			const { deploymentDir } = await stageState(root, 'web', 'd1', {
+				aside: 'LIVE\n',
+				candidate: 'CANDIDATE\n',
+				complete: true,
+				journal: journalV2('web', 'd1', rootConfig),
+			});
+
+			const failures = await recoverInterruptedActivations(root);
+
+			assert.match(failures.get('web')?.message ?? '', signature);
+			assert.ok(existsSync(path.join(deploymentDir, 'web')), 'the candidate was not moved');
+			assert.strictEqual(existsSync(path.join(root, 'web')), false, 'and nothing was made live');
+			assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@1' });
+			await fs.rm(root, { recursive: true, force: true });
+		});
+	}
+
+	it('keeps the journal and fails the component closed when the entry cannot be published, then settles once it can', async () => {
+		const root = await newRoot('effect-unpublishable');
+		const { deploymentDir } = await stageState(root, 'web', 'd1', {
+			aside: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: journalV2('web', 'd1', { kind: 'set', entry: { package: 'npm:web@2', isolated: true } }),
+		});
+		const intact = readFileSync(getConfigFilePath(), 'utf8');
+		writeFileSync(getConfigFilePath(), intact + '\nunparseable: [unterminated\n');
+
+		const failures = await recoverInterruptedActivations(root);
+
+		assert.match(failures.get('web')?.message ?? '', /does not parse/);
+		assert.ok(existsSync(path.join(deploymentDir, '.activation.json')), 'the journal still owes the effect');
+		assert.ok(
+			existsSync(path.join(deploymentDir, '.unsettled')),
+			'and workers fail it closed rather than run it under the wrong isolation'
+		);
+
+		writeFileSync(getConfigFilePath(), intact);
+		assert.strictEqual((await recoverInterruptedActivations(root)).size, 0);
+
+		assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@2', isolated: true });
+		assert.strictEqual(existsSync(deploymentDir), false, 'settled, verdict and all');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 });
@@ -614,6 +823,28 @@ describe('activation transaction', () => {
 
 		await assert.rejects(() => activateCandidateApplication(app, 'missing'), /no candidate build/);
 		assert.strictEqual(await readLive(root, 'web'), 'LIVE\n');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('refuses, before it writes anything, a root-config effect recovery could not replay', async () => {
+		// The journal is written once and read by whichever settlement finds it, so an entry recovery would refuse
+		// to read must be refused here — or the component is failed closed on every start with no way to settle.
+		const root = await newRoot('unjournalable');
+		const live = path.join(root, 'web');
+		await writeTree(live, 'LIVE\n');
+		await writeCertifiedCandidate(live, 'd1', 'CANDIDATE\n');
+		const app = new Application({ name: 'web' });
+		app.dirPath = live;
+
+		for (const [rootConfig, signature] of [
+			[{ kind: 'set', entry: { package: 42 } }, /package/],
+			[{ kind: 'remove' }, /never removes its root-config entry/],
+		]) {
+			await assert.rejects(() => activateCandidateApplication(app, 'd1', { rootConfig }), signature);
+		}
+
+		assert.strictEqual(await readLive(root, 'web'), 'LIVE\n');
+		assert.strictEqual(existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1', '.activation.json')), false);
 		await fs.rm(root, { recursive: true, force: true });
 	});
 

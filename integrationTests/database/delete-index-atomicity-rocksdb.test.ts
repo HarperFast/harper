@@ -223,12 +223,22 @@ suite(
 				'the oracle must only ever open a checkpoint at the path the fixture derives for this sequence'
 			);
 		}
-		function openDbi(name: string): RocksDatabase {
+		function openDbi(catalogKey: string): RocksDatabase {
 			// Reading the live directory instead would reintroduce the compaction race the checkpoint
 			// exists to remove, so an unrefreshed oracle is a test bug, not a fallback.
 			if (!snapshotPath) throw new Error('oracle read before refreshOracle(): there is no checkpoint to read');
-			if (!dbiCache.has(name)) dbiCache.set(name, RocksDatabase.open(snapshotPath, { name, readOnly: true }));
-			return dbiCache.get(name)!;
+			if (!dbiCache.has(catalogKey)) {
+				const root = RocksDatabase.open(snapshotPath, { readOnly: true });
+				let name: string | undefined;
+				try {
+					name = root.columns.find((column) => column === catalogKey || column.startsWith(`${catalogKey}@`));
+				} finally {
+					root.close();
+				}
+				if (!name) throw new Error(`the checkpoint has no column family for ${catalogKey}`);
+				dbiCache.set(catalogKey, RocksDatabase.open(snapshotPath, { name, readOnly: true }));
+			}
+			return dbiCache.get(catalogKey)!;
 		}
 		/**
 		 * Whether a live record exists under this primary key, via a direct point lookup that no
@@ -418,7 +428,7 @@ suite(
 					// The line names the table and the route it was started from, so the match is evidence
 					// about THIS request rather than about any transaction that outran the 1 s limit.
 					const aborted = new RegExp(
-						`Transaction was open too long and has been aborted[^\\n]*from table: ${table}/ path: /SlowMixedHold/`
+						`Transaction was open too long and has been aborted[^\\n]*from table: ${table}/(?:@[0-9a-f-]+)? path: /SlowMixedHold/`
 					);
 					const logDeadline = Date.now() + 15_000;
 					while (!sawLogSince(mark, aborted) && Date.now() < logDeadline) await sleep(250);

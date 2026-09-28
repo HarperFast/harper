@@ -545,8 +545,8 @@ describe('schema relationship catalog round-trip', () => {
 		await host.dbisDB.committed;
 	});
 
-	after(() => {
-		closeDatabase(DB);
+	after(async () => {
+		await closeDatabase(DB);
 	});
 
 	it('persists normalized relationship definitions on the primary catalog descriptor', () => {
@@ -958,7 +958,7 @@ describe('schema-migration fragility: stale store reused after LMDB to RocksDB e
 		// the database on the other engine without closing the first handle, so more than one live
 		// descriptor points at these files by design. Hence no removal here either — see the note
 		// at the top of the file.
-		closeDatabase(DB);
+		await closeDatabase(DB);
 	});
 
 	it('starts from a stale LMDB-backed table while the data on disk is RocksDB', () => {

@@ -216,6 +216,8 @@ export const SYSTEM_TABLE_NAMES = {
 	SECRET_TABLE_NAME: 'hdb_secret',
 	OIDC_TRUST_TABLE_NAME: 'hdb_oidc_trust',
 	OIDC_TOKEN_USE_TABLE_NAME: 'hdb_oidc_token_use',
+	MODEL_DECISIONS_TABLE_NAME: 'hdb_model_decisions',
+	MODEL_OUTCOMES_TABLE_NAME: 'hdb_model_outcomes',
 } as const;
 
 /** Hash attribute for the system info table */
@@ -597,6 +599,7 @@ export const CONFIG_PARAMS = {
 	OPERATIONSAPI_COMPONENTFILE_MAXSIZE: 'operationsApi_componentFile_maxSize',
 	DEPLOYMENT_PAYLOADRETENTION_MAXSIZE: 'deployment_payloadRetention_maxSize',
 	DEPLOYMENT_STAGINGRETENTION_MAXCOUNT: 'deployment_stagingRetention_maxCount',
+	DEPLOYMENT_STARTUPINSTALLTIMEOUT: 'deployment_startupInstallTimeout',
 	OPERATIONSAPI_TLS: 'operationsApi_tls',
 	OPERATIONSAPI_TLS_CERTIFICATE: 'operationsApi_tls_certificate',
 	OPERATIONSAPI_TLS_PRIVATEKEY: 'operationsApi_tls_privateKey',
@@ -676,6 +679,8 @@ export const CONFIG_PARAMS = {
 	// receive path's frame queue is unbounded and a receiver slower than its peer grows it at the full
 	// inbound line rate until the worker is OOM-killed (harper#2226, harper-pro#659).
 	REPLICATION_RECEIVEQUEUEHIGHWATERMARK: 'replication_receiveQueueHighWaterMark',
+	// Times a replicated frame whose transaction failed is replayed before the receiver moves past it (harper#1162).
+	REPLICATION_FAILEDFRAMEREPLAYS: 'replication_failedFrameReplays',
 	REPLICATION_PINGINTERVAL: 'replication_pingInterval',
 	REPLICATION_PINGTIMEOUT: 'replication_pingTimeout',
 	REPLICATION_COPYTIMEOUT: 'replication_copyTimeout',
@@ -947,11 +952,11 @@ export const ITC_EVENT_TYPES = {
 	CHILD_STARTUP_PHASE: 'child_startup_phase',
 	CHILD_STOPPED: 'child_stopped',
 	SCHEMA: 'schema',
-	USER: 'user',
 	METRICS: 'metrics',
 	GET_METRICS: 'get_metrics',
 	RESTART: 'restart',
 	START_JOB: 'start_job',
+	JOB_CLEANUP_COMPLETE: 'job_cleanup_complete',
 	COMPONENT_STATUS_REQUEST: 'component_status_request',
 	COMPONENT_STATUS_RESPONSE: 'component_status_response',
 	RESOURCE_OPENAPI_REQUEST: 'resource_openapi_request',

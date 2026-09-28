@@ -45,6 +45,7 @@ import {
 	matchCustomResource,
 } from './customResourceRegistry.ts';
 import type { McpProfile } from './transport.ts';
+import { canRoleInvokeOperation } from './operationVisibility.ts';
 
 // Harper's resource graph (Resources, generateJsonApi, Server) initializes
 // eagerly when imported at module-load. Unit tests that don't boot Harper
@@ -70,7 +71,7 @@ export interface AuthedUser {
 		role?: string;
 		permission?: {
 			super_user?: boolean;
-			structure_user?: boolean;
+			structure_user?: boolean | string[];
 			operations?: string[];
 			[database: string]:
 				| boolean
@@ -898,26 +899,6 @@ function userTablePermissions(user: AuthedUser, db: string, table: string): Tabl
 		describe: tablePerm.describe === true,
 		attribute_permissions: tablePerm.attribute_permissions,
 	};
-}
-
-const SCHEMA_STRUCTURE_OPERATIONS = new Set([
-	'create_schema',
-	'create_database',
-	'drop_schema',
-	'drop_database',
-	'create_table',
-	'drop_table',
-	'create_attribute',
-	'drop_attribute',
-]);
-
-function canRoleInvokeOperation(user: AuthedUser, operation: string): boolean {
-	if (isSuperUser(user)) return true;
-	const perm = user?.role?.permission;
-	if (!perm) return false;
-	if (perm.structure_user && SCHEMA_STRUCTURE_OPERATIONS.has(operation)) return true;
-	if (Array.isArray(perm.operations) && perm.operations.includes(operation)) return true;
-	return false;
 }
 
 function filterAttributesByPermissions(attributes: any[], attributePermissions: unknown): any[] {

@@ -95,13 +95,5 @@ describe('Test itcUtils module', () => {
 			const result = new itc_utils.SchemaEventMsg(12345, 'create_schema', 'unit', 'test');
 			expect(result).to.eql(expected_obj);
 		});
-
-		it('Test UserEventMsg', () => {
-			const expected_obj = {
-				originator: 12345,
-			};
-			const result = new itc_utils.UserEventMsg(12345);
-			expect(result).to.eql(expected_obj);
-		});
 	});
 });

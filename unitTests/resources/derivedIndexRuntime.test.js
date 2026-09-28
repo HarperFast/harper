@@ -5,6 +5,10 @@ const {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
 	DerivedIndexRuntime,
+	publishDerivedIndexReadiness,
+	publishDerivedIndexUnavailableIfUnknown,
+	readDerivedIndexReadiness,
+	retryDerivedIndexUnavailable,
 } = require('#src/resources/derivedIndexRuntime');
 const {
 	FullTextDerivedIndexBackend,
@@ -138,6 +142,174 @@ const registration = (backend) => ({
 });
 
 describe('DerivedIndexRuntime', () => {
+	it('does not let a local setup failure replace peer-owned readiness', () => {
+		const store = new FakeLogStore(new Map());
+		publishDerivedIndexReadiness(store, 'peer-owned', 'ready');
+
+		assert.strictEqual(publishDerivedIndexUnavailableIfUnknown(store, 'peer-owned'), false);
+		assert.deepStrictEqual(readDerivedIndexReadiness(store, 'peer-owned'), {
+			state: 'ready',
+			ownerEpoch: 0n,
+			rebuildAttempts: 0,
+		});
+		publishDerivedIndexReadiness(store, 'failed-peer', 'unavailable', 'runner-failed');
+		assert.strictEqual(publishDerivedIndexUnavailableIfUnknown(store, 'failed-peer'), false);
+		assert.strictEqual(readDerivedIndexReadiness(store, 'failed-peer').reason, 'runner-failed');
+		assert.strictEqual(publishDerivedIndexUnavailableIfUnknown(store, 'missing-owner'), true);
+		assert.strictEqual(readDerivedIndexReadiness(store, 'missing-owner').state, 'unavailable');
+		assert.strictEqual(readDerivedIndexReadiness(store, 'missing-owner').reason, 'backend-failed');
+	});
+
+	it('retries unavailable readiness only while that state is still current', () => {
+		const store = new FakeLogStore(new Map());
+		assert.strictEqual(typeof retryDerivedIndexUnavailable, 'function');
+
+		publishDerivedIndexReadiness(store, 'retry-runner', 'unavailable', 'runner-failed');
+		assert.strictEqual(retryDerivedIndexUnavailable(store, 'retry-runner'), true);
+		assert.deepStrictEqual(readDerivedIndexReadiness(store, 'retry-runner'), {
+			state: 'unknown',
+			ownerEpoch: 0n,
+			rebuildAttempts: 0,
+		});
+
+		assert.strictEqual(publishDerivedIndexUnavailableIfUnknown(store, 'retry-setup'), true);
+		assert.strictEqual(retryDerivedIndexUnavailable(store, 'retry-setup'), true);
+		assert.deepStrictEqual(readDerivedIndexReadiness(store, 'retry-setup'), {
+			state: 'unknown',
+			ownerEpoch: 0n,
+			rebuildAttempts: 0,
+		});
+		assert.strictEqual(publishDerivedIndexUnavailableIfUnknown(store, 'retry-setup'), true);
+		assert.deepStrictEqual(readDerivedIndexReadiness(store, 'retry-setup'), {
+			state: 'unavailable',
+			reason: 'backend-failed',
+			ownerEpoch: 0n,
+			rebuildAttempts: 0,
+		});
+
+		publishDerivedIndexReadiness(store, 'peer-ready', 'ready');
+		assert.strictEqual(retryDerivedIndexUnavailable(store, 'peer-ready'), false);
+		assert.deepStrictEqual(readDerivedIndexReadiness(store, 'peer-ready'), {
+			state: 'ready',
+			ownerEpoch: 0n,
+			rebuildAttempts: 0,
+		});
+	});
+
+	it('publishes a failed setup retry after a prior runner owned the readiness id', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const runtime = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 }).runtime;
+		runtime.register({
+			...registration(new FakeBackend('retry-after-owner', cursor(10))),
+			readinessId: 'retry-after-owner',
+		});
+		await waitFor(() => readDerivedIndexReadiness(store, 'retry-after-owner').state === 'ready');
+		await runtime.stop();
+
+		publishDerivedIndexReadiness(store, 'retry-after-owner', 'unavailable', 'runner-failed');
+		assert.strictEqual(retryDerivedIndexUnavailable(store, 'retry-after-owner'), true);
+		assert.strictEqual(publishDerivedIndexUnavailableIfUnknown(store, 'retry-after-owner'), true);
+		assert.deepStrictEqual(readDerivedIndexReadiness(store, 'retry-after-owner'), {
+			state: 'unavailable',
+			reason: 'backend-failed',
+			ownerEpoch: 1n,
+			rebuildAttempts: 0,
+		});
+	});
+
+	it('keeps runner ownership stable while isolating readiness by generation', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const firstBackend = new FakeBackend('catalog-search', cursor(10));
+		const first = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 }).runtime;
+		first.register({ ...registration(firstBackend), readinessId: 'catalog-search:generation-1' });
+
+		await waitFor(() => first.getReadiness('catalog-search').state === 'ready');
+		assert.strictEqual(readDerivedIndexReadiness(store, 'catalog-search:generation-1').state, 'ready');
+		await first.stop();
+
+		const secondBackend = new FakeBackend('catalog-search', cursor(10));
+		const second = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 }).runtime;
+		second.register({
+			...registration(secondBackend),
+			readinessId: 'catalog-search:generation-2',
+			isCurrent: () => false,
+		});
+		for (let i = 0; i < 4; i++) await new Promise(setImmediate);
+
+		assert.strictEqual(second.getReadiness('catalog-search').state, 'unknown');
+		assert.strictEqual(readDerivedIndexReadiness(store, 'catalog-search:generation-2').state, 'unknown');
+		assert.deepStrictEqual([...store.locks], []);
+		await second.stop();
+	});
+
+	it('releases the stable runner lock when its table generation becomes stale', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		const backend = new FakeBackend('generation-fence', cursor(10), () => DERIVED_INDEX_DEFERRED);
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			idleGraceMilliseconds: 1000,
+		});
+		let current = true;
+		runtime.register({ ...registration(backend), readinessId: 'generation-fence:one', isCurrent: () => current });
+
+		await waitFor(() => backend.deliveries.length === 1 && store.locks.has('derived-index:generation-fence:runner'));
+		current = false;
+		backend.stateChange();
+
+		await waitFor(() => store.locks.size === 0);
+		assert.strictEqual(backend.deliveries.length, 1);
+		await runtime.stop();
+	});
+
+	it('wakes a successor generation as soon as the stable runner lock is released', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const first = runtimeFor(store, new Map(), {
+			idleGraceMilliseconds: 1000,
+			lockRetryMilliseconds: 5000,
+		}).runtime;
+		first.register({
+			...registration(new FakeBackend('generation-handoff', cursor(10))),
+			readinessId: 'generation-handoff:one',
+		});
+		await waitFor(() => readDerivedIndexReadiness(store, 'generation-handoff:one').state === 'ready');
+
+		const second = runtimeFor(store, new Map(), {
+			idleGraceMilliseconds: 1000,
+			lockRetryMilliseconds: 5000,
+		}).runtime;
+		second.register({
+			...registration(new FakeBackend('generation-handoff', cursor(10))),
+			readinessId: 'generation-handoff:two',
+		});
+		for (let i = 0; i < 4; i++) await new Promise(setImmediate);
+		assert.strictEqual(readDerivedIndexReadiness(store, 'generation-handoff:two').state, 'unknown');
+
+		await first.stop();
+		await waitFor(() => readDerivedIndexReadiness(store, 'generation-handoff:two').state === 'ready', 500);
+		await second.stop();
+	});
+
+	it('retries a registration release after backend shutdown fails', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const backend = new FakeBackend('release-retry', cursor(10));
+		let failShutdown = true;
+		let shutdowns = 0;
+		backend.shutdown = async () => {
+			shutdowns++;
+			if (failShutdown) throw new Error('writer still active');
+		};
+		const runtime = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 }).runtime;
+		const release = runtime.register(registration(backend));
+		await waitFor(() => runtime.getReadiness('release-retry').state === 'ready');
+
+		await assert.rejects(release(), /writer still active/);
+		failShutdown = false;
+		await release();
+
+		assert.strictEqual(shutdowns, 2);
+		assert.deepStrictEqual([...store.locks], []);
+		await runtime.stop();
+	});
+
 	it('lets a successor full-text backend acquire from the checkpoint published by the prior owner', async () => {
 		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
 		const shared = { payload: encodeFullTextCursorPayload(cursor(10)) };

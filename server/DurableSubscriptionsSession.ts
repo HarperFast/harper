@@ -305,6 +305,7 @@ class SubscriptionsSession {
 			onlyChildren,
 			startTime,
 			omitCurrent,
+			includeSuperseded: this instanceof DurableSubscriptionsSession && subscriptionRequest.qos > 0 ? true : undefined,
 			checkPermission: this.user?.role?.permission ?? {},
 		});
 		const resourcePath = entry.path;

@@ -230,7 +230,16 @@ function startServers() {
 							})
 							.then(() => closeServers())
 							.then(() => whenScopesClosed())
-							.then(() => require('../../resources/databases.ts').closeBranchDatabases())
+							.then(async () => {
+								const { branchDatabasesHaveWork, closeBranchDatabases } = require('../../resources/databases.ts');
+								if (!branchDatabasesHaveWork()) return closeBranchDatabases();
+								extendShutdownDeadline(Date.now() + getShutdownDrainCeilingMs());
+								try {
+									await closeBranchDatabases();
+								} finally {
+									restoreShutdownDeadline();
+								}
+							})
 							.then(() => {
 								realExit(0);
 							});

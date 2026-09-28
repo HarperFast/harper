@@ -1,9 +1,21 @@
 import { type Logger } from '../utility/logging/logger.ts';
-import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.ts';
-import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import {
+	getConfigObj,
+	getConfigValue,
+	getConfigPath,
+	isUnsupportedSyncError as isUnsupportedSync,
+} from '../config/configUtils.ts';
+import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
+import {
+	applyRootConfigEffect,
+	assertRootConfigEffectPublishable,
+	isRootConfigEffect,
+	rootConfigEffectFromDeclaration,
+	type RootConfigEffect,
+} from './rootConfigPublication.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
-import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
+import { broadcastDeployStart, broadcastDeployEnd, deployLifecycle } from './deployLifecycle.ts';
 import { ComponentPreparationLockTimeoutError, withComponentPreparationLock } from './componentPreparationLock.ts';
 import {
 	isThreadRunning,
@@ -579,6 +591,8 @@ const IN_PROGRESS_ASIDE_PREFIX = '.in-progress-';
 const RETIRED_ASIDE_PREFIX = '.retired-';
 const PRIOR_ABSENT_RECORD_SUFFIX = '-prior-absent';
 const DEFAULT_COMMAND_TIMEOUT_MS = 60 * 60 * 1000;
+const DEFAULT_STARTUP_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+const STARTUP_INSTALL_PROGRESS_INTERVAL_MS = 60 * 1000;
 const COMPONENT_PREPARATION_WAIT_MARGIN_MS = 30000;
 const COMPONENT_RECOVERY_WAIT_TIMEOUT_MS = 30000;
 const COMPONENT_RECOVERY_TRY_TIMEOUT_MS = 250;
@@ -596,6 +610,19 @@ const RECOVERY_LOCK_WAIT = {
 const COMPONENT_RECOVERY_LOCK_PURPOSE = 'component-recovery';
 const MAX_GIT_EXTRACTION_COMMANDS = 4;
 const MAX_INSTALL_COMMANDS = 2;
+
+/**
+ * The longest one preparation may legitimately run: the longest extraction path runs clone, tag listing,
+ * checkout, and npm pack, and a custom package manager configured to warn can then fall back to npm, yielding
+ * two install commands. What a preparation lock waits on, and what an origin allows a peer's replicated deploy.
+ */
+export function componentPreparationBudgetMs(installTimeoutMs: number = DEFAULT_COMMAND_TIMEOUT_MS): number {
+	return (
+		MAX_GIT_EXTRACTION_COMMANDS * DEFAULT_COMMAND_TIMEOUT_MS +
+		MAX_INSTALL_COMMANDS * installTimeoutMs +
+		COMPONENT_PREPARATION_WAIT_MARGIN_MS
+	);
+}
 const PRODUCTION_DEPENDENCY_FIELDS = ['dependencies', 'optionalDependencies', 'peerDependencies'] as const;
 const INSTALL_LIFECYCLE_SCRIPTS = new Set([
 	'preinstall',
@@ -1050,7 +1077,10 @@ const UNSETTLED_MARKER = '.unsettled';
 // Written before `.complete`, so the marker vouches for it. An OPTIONAL record would not do: it could not
 // distinguish a payload build, which owns no root config, from a package build whose record was lost.
 const CANDIDATE_ARTIFACT_FILE = '.artifact.json';
-const ACTIVATION_JOURNAL_VERSION = 1;
+// v2 carries the root-config effect. A v1 journal was written by a build that published config outside
+// its journal; `readActivationJournal` derives its effect from the artifact descriptor where one exists.
+const ACTIVATION_JOURNAL_VERSION = 2;
+const LEGACY_ACTIVATION_JOURNAL_VERSION = 1;
 const ARTIFACT_DESCRIPTOR_VERSION = 1;
 const DEFAULT_STAGING_RETENTION_MAX_COUNT = 5;
 
@@ -1298,6 +1328,7 @@ type ActivationJournal = {
 	v: number;
 	component: string;
 	candidateId: string;
+	rootConfig: RootConfigEffect;
 };
 
 function candidateCompleteMarkerPath(componentDirPath: string, deploymentId: string): string {
@@ -1523,9 +1554,9 @@ async function readActivationJournal(journalPath: string): Promise<ActivationJou
 	} catch (error) {
 		throw new Error(`Activation journal ${journalPath} could not be parsed: ${errorMessage(error)}`);
 	}
-	if (parsed?.v !== ACTIVATION_JOURNAL_VERSION) {
+	if (parsed?.v !== ACTIVATION_JOURNAL_VERSION && parsed?.v !== LEGACY_ACTIVATION_JOURNAL_VERSION) {
 		throw new Error(
-			`Activation journal ${journalPath} has version ${JSON.stringify(parsed?.v)}, expected ${ACTIVATION_JOURNAL_VERSION}`
+			`Activation journal ${journalPath} has version ${JSON.stringify(parsed?.v)}, expected ${LEGACY_ACTIVATION_JOURNAL_VERSION} or ${ACTIVATION_JOURNAL_VERSION}`
 		);
 	}
 	if (!isJoinableComponentName(parsed.component) || typeof parsed.candidateId !== 'string') {
@@ -1538,7 +1569,31 @@ async function readActivationJournal(journalPath: string): Promise<ActivationJou
 			`Activation journal ${journalPath} names candidate '${parsed.candidateId}', which is not its own deployment`
 		);
 	}
-	return parsed as ActivationJournal;
+	let rootConfig: RootConfigEffect;
+	if (parsed.v === LEGACY_ACTIVATION_JOURNAL_VERSION) {
+		// A v1 activation published config outside its journal: a staged artifact published its descriptor's
+		// entry between the first rename and the commit, so a crash in that window is exactly the one whose
+		// effect the descriptor still records; an immediate deploy published before it built, so there is
+		// nothing left to do for it.
+		const descriptor = await readArtifactDescriptor(dirname(journalPath), parsed.component);
+		rootConfig = descriptor ? rootConfigEffectFromDeclaration(descriptor.rootConfig) : { kind: 'keep' };
+	} else {
+		if (!isRootConfigEffect(parsed.rootConfig) || parsed.rootConfig.kind === 'remove') {
+			throw new Error(`Activation journal ${journalPath} does not record its root-config effect`);
+		}
+		rootConfig = parsed.rootConfig;
+	}
+	if (rootConfig.kind === 'set') {
+		try {
+			assertApplicationConfig(parsed.component, rootConfig.entry as any);
+		} catch (error) {
+			throw new Error(
+				`Activation journal ${journalPath} records a root-config entry that cannot be published: ${errorMessage(error)}`,
+				{ cause: error }
+			);
+		}
+	}
+	return { v: parsed.v, component: parsed.component, candidateId: parsed.candidateId, rootConfig };
 }
 
 /**
@@ -2511,6 +2566,9 @@ async function settleInterruptedActivation(
 		// re-point.
 		await repairRelocatedDependencyLinks(liveDirPath, candidateDirPath);
 		await syncRenameParents(candidateDirPath, liveDirPath);
+		// The committed release's config, before anything below can let the journal go: the journal is the only
+		// record of it. A failure propagates and keeps the journal, the same contract the retire has.
+		await applyRootConfigEffect(journal.component, journal.rootConfig);
 		// Retiring PROPAGATES from here: the retired marker is what stops the legacy pass restoring the tree
 		// this roll-forward just displaced. Failing the component closed and retrying at the next start is
 		// the cheaper mistake — the journal survives, so the verdict is re-derivable. Only the disk sweep
@@ -2648,15 +2706,6 @@ async function settleInterruptedActivation(
  * fsync the candidate's contents before `.complete` vouches for them — otherwise the control files can
  * outlive the tree after a power loss and recovery rolls forward onto a truncated one.
  */
-// Codes that mean "this platform or filesystem will not fsync this handle", as opposed to "the write did
-// not reach storage". Windows raises EPERM fsyncing perfectly healthy files, and network/overlay mounts
-// return EINVAL or ENOTSUP — none of which say anything about durability, and all of which would otherwise
-// fail every deploy on those platforms.
-const UNSUPPORTED_SYNC_CODES = new Set(['EPERM', 'EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'EBADF', 'EISDIR']);
-
-function isUnsupportedSync(error: unknown): boolean {
-	return UNSUPPORTED_SYNC_CODES.has((error as NodeJS.ErrnoException)?.code ?? '');
-}
 
 // How many file syncs run at once while flushing a candidate. Serial open/sync/close over a large
 // dependency tree adds seconds to every activation, all of it under the component preparation lock; a small
@@ -2779,24 +2828,30 @@ async function syncArtifactAncestors(deploymentDirPath: string): Promise<void> {
 }
 
 /**
- * Make a built and validated candidate live, as one compensating transaction over two effects: the live tree
- * moves aside, then the candidate takes its place. Root config is NOT one of them — for an immediate deploy
- * it is still published before the build, unchanged, and making it transactional is tracked separately
- * (#2315). A delayed activation hands its artifact's recorded entry in as `afterJournal`, which publishes it
- * from inside the window a crash rolls forward from — see that call site.
+ * Make a built and validated candidate live, as one transaction over three effects: the live tree moves
+ * aside, the candidate takes its place, and the component's root-config entry follows `options.rootConfig`.
+ * The first two compensate; the third happens only after the commit, so nothing before the commit touches
+ * config and a failed activation has no config to undo.
  *
  * The candidate must ALREADY be certified: `markCandidateComplete` is the caller's, so a delayed activation
  * does not re-walk and re-fsync a whole dependency tree it certified when it was built. The activation
- * journal is still written and fsynced BEFORE the first rename, so a crash anywhere below is recoverable —
- * see `settleInterruptedActivation` for the state matrix. The second rename is the COMMIT POINT: nothing
- * after it may compensate, because the live path holds the candidate and renaming the aside back over it
- * cannot succeed.
+ * journal — with the config effect in it — is still written and fsynced BEFORE the first rename, so a crash
+ * anywhere below is recoverable, config included: see `settleInterruptedActivation` for the state matrix. The
+ * second rename is the COMMIT POINT: nothing after it may compensate, because the live path holds the
+ * candidate and renaming the aside back over it cannot succeed.
  */
 export async function activateCandidateApplication(
 	application: Application,
 	deploymentId: string,
-	options: { afterJournal?: () => Promise<(() => Promise<void>) | void> } = {}
+	options: { rootConfig?: RootConfigEffect } = {}
 ): Promise<void> {
+	const rootConfig = options.rootConfig ?? { kind: 'keep' };
+	// Before anything is on disk: a journal recovery would refuse to read is one it could never settle.
+	if (rootConfig.kind === 'set') assertApplicationConfig(application.name, rootConfig.entry as any);
+	else if (rootConfig.kind === 'remove') {
+		throw new Error(`Cannot activate ${application.name}: an activation never removes its root-config entry`);
+	}
+	await assertRootConfigEffectPublishable(application.name, rootConfig);
 	const liveDirPath = application.dirPath;
 	const candidateDirPath = candidateApplicationPath(liveDirPath, deploymentId);
 	const deploymentDirPath = candidateDeploymentDirPath(liveDirPath, deploymentId);
@@ -2877,7 +2932,6 @@ export async function activateCandidateApplication(
 	 * rename may enter this catch — see B2.
 	 */
 	let pendingEffect = 'record the activation';
-	let undoAfterJournal: (() => Promise<void>) | void;
 	try {
 		try {
 			await writeControlFileDurably(
@@ -2886,6 +2940,7 @@ export async function activateCandidateApplication(
 					v: ACTIVATION_JOURNAL_VERSION,
 					component: application.name,
 					candidateId: deploymentId,
+					rootConfig,
 				})
 			);
 		} catch (error) {
@@ -2924,23 +2979,6 @@ export async function activateCandidateApplication(
 		pendingEffect = 'record the displaced component directory';
 		await syncRenameParents(liveDirPath, asidePath ?? priorAbsentRecordPath!);
 
-		// Config is published HERE — after B1, before the commit — because this is the only point where the
-		// on-disk state recovery would find rolls FORWARD to the certified artifact: live is displaced, the
-		// candidate is complete, and the rollback record exists. Publishing before B1 (with or without the
-		// journal) leaves live present and the candidate present with no rollback record, which settlement
-		// reads as an activation that never started: it deletes the deployment directory, and the next boot
-		// re-resolves the published package identifier from the registry instead — the substitution this step
-		// exists to prevent.
-		//
-		// A crash in the remaining window — after the roll-forward state exists but before this publish — is
-		// the inverse hazard: `rollForward()` renames the candidate live and publishes nothing, so the
-		// certified artifact serves under the PREVIOUS release's config. That includes its ISOLATION intent,
-		// which is a containment boundary and not just a version string: a component staged to run isolated
-		// comes back non-isolated after an ordinary crash, with nothing in the operation reporting it.
-		// Closing it needs config to be an effect of the journal itself, which is #2315 step 3.
-		pendingEffect = 'publish the root configuration';
-		undoAfterJournal = await options.afterJournal?.();
-
 		// B2 — the candidate becomes live. THE RENAME IS THE COMMIT POINT: nothing after it may compensate,
 		// because the live path now holds the candidate and renaming the aside back over it cannot succeed. A
 		// compensating step there fails its own rollback and reports a failure for a deploy that is live. It is
@@ -2963,41 +3001,13 @@ export async function activateCandidateApplication(
 			},
 		});
 	} catch (error) {
-		// Whether the journal can still carry this activation forward, decided BEFORE compensation removes the
-		// evidence it is read from. Only a first-ever deploy qualifies: `restoreLive` leaves the live path
-		// absent, and recovery reads absent-plus-complete-candidate as a roll forward. A component that
-		// already had a tree gets that tree back and loses its rollback record with it, so the next settle
-		// reads live-plus-candidate-with-no-record and returns the artifact to dormant whatever the journal
-		// says — keeping it there defers the same verdict to the next start and strands config until then.
-		const recoveryCanRollForward = priorAbsentRecordPath !== undefined;
 		await compensate(error, pendingEffect, restoreLive, application);
-		let configRestored = true;
-		if (undoAfterJournal) {
-			configRestored = await undoAfterJournal().then(
-				() => true,
-				(undoError) => {
-					application.logger.warn(
-						`Restored ${application.name} after a failed activation but could not restore its root config, ` +
-							`which still names deployment ${deploymentId}` +
-							(recoveryCanRollForward
-								? '; keeping its activation journal so recovery can roll the certified build forward instead:'
-								: '. The certified build stays dormant and the previous release stays live, so the two ' +
-									'disagree until an operator republishes the component or activates it again:'),
-						undoError
-					);
-					return false;
-				}
-			);
-		}
-		// Kept only where it changes the outcome. Config is stranded either way for a component that already
-		// had a tree — the durable-config window #2315 step 3 closes — and a journal that recovery will only
-		// settle back to dormant buys nothing for holding it.
-		if (configRestored || !recoveryCanRollForward) await returnToDormant();
+		await returnToDormant();
 		throw error;
 	}
 
 	// Past the point of no return: each failure below leaves a state recovery settles forward, so they are
-	// logged, not thrown.
+	// logged, not thrown — all but the config effect, see there.
 	let swapDurable = true;
 	try {
 		await syncRenameParents(candidateDirPath, liveDirPath);
@@ -3010,6 +3020,22 @@ export async function activateCandidateApplication(
 	}
 	// The tree moved, so any dependency link that named its build path is now dangling.
 	await repairRelocatedDependencyLinks(liveDirPath, candidateDirPath);
+	// Before the rollback record is retired: the journal is the only record of this effect, and it goes once that
+	// record is settled. Thrown, unlike the failures below, because reporting success would restart workers under
+	// the previous entry — isolation included.
+	try {
+		await applyRootConfigEffect(application.name, rootConfig);
+	} catch (error) {
+		const failure = new Error(
+			`Deployed ${application.name} on this node, but could not publish its root configuration. The release is ` +
+				`live here and was not sent to any other node; its entry is published when recovery next settles this ` +
+				`activation — at the next start, or the next deploy of ${application.name}: ${errorMessage(error)}`,
+			{ cause: error }
+		);
+		(failure as any)[ACTIVATION_COMMITTED] = true;
+		if ((error as any)?.statusCode) (failure as any).statusCode = (error as any).statusCode;
+		throw failure;
+	}
 	const settledRecord = asidePath ?? priorAbsentRecordPath!;
 	let retired = false;
 	// Skipped entirely when the swap is not known to be on storage, so the journal below survives.
@@ -3048,6 +3074,15 @@ export async function activateCandidateApplication(
  * rolls that state forward — so they must survive, and the caller keys on this to skip discarding them.
  */
 const COMPENSATION_INCOMPLETE = Symbol('compensationIncomplete');
+/**
+ * Marks a failure past the commit rename: the release is live and its journal holds an effect not yet
+ * applied. The deployment records are how recovery finishes it, so the caller must not discard them either.
+ */
+const ACTIVATION_COMMITTED = Symbol('activationCommitted');
+
+function activationCommitted(error: unknown): boolean {
+	return Boolean((error as any)?.[ACTIVATION_COMMITTED]);
+}
 
 function compensationIncomplete(error: unknown): boolean {
 	return Boolean((error as any)?.[COMPENSATION_INCOMPLETE]);
@@ -3440,29 +3475,96 @@ export async function dropComponentDirectory(
 	componentName = basename(componentDirPath),
 	componentLogger: Logger = logger
 ): Promise<void> {
+	await (await retireComponentDirectory(componentDirPath, componentName, componentLogger)).discard();
+}
+
+export interface RetiredComponentDirectory {
+	restore(): Promise<void>;
+	/** Delete the tree and the component's dormant builds, reporting failures to the log rather than throwing. */
+	discard(): Promise<void>;
+}
+
+/**
+ * Move a component's tree out of its live path with a single rename, reversibly: what `drop_component` does before it
+ * removes the component's root config entry, so that a failed removal can put the tree back instead of leaving a live
+ * component whose entry is gone.
+ */
+export async function retireComponentDirectory(
+	componentDirPath: string,
+	componentName = basename(componentDirPath),
+	componentLogger: Logger = logger
+): Promise<RetiredComponentDirectory> {
 	await retireComponentExtractionStaging(componentDirPath, componentName, componentLogger);
 	const asideStagingDir = extractionStagingDirectory(componentDirPath);
 	await ensureExtractionStagingDirectory(asideStagingDir);
 	const droppedPath = join(asideStagingDir, `.dropped-${process.pid}-${Date.now()}-${randomUUID()}`);
+	// Durable before the caller removes the entry, which it writes durably: otherwise power loss can keep the removal
+	// and lose the rename, putting the tree back live with no entry.
+	const syncBothParents = async () => {
+		await syncDirectory(dirname(componentDirPath));
+		await syncDirectory(asideStagingDir);
+	};
+	let retired = true;
 	try {
 		await rename(componentDirPath, droppedPath);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+		retired = false;
 	}
-	await cleanupExtractionPaths(
-		{ name: componentName, dirPath: componentDirPath, logger: componentLogger },
-		asideStagingDir,
-		new Set([droppedPath])
-	);
-	// A dropped component has no next deploy to bound its dormant builds.
-	try {
-		await pruneDormantBuilds(componentName, await dormantBuildsOf(dirname(componentDirPath), componentName), 0);
-	} catch (error) {
-		componentLogger.warn(
-			`Dropped ${componentName} but could not reclaim its dormant staged builds:`,
-			errorForLog(error)
-		);
+	if (retired) {
+		try {
+			await syncBothParents();
+		} catch (error) {
+			try {
+				await rename(droppedPath, componentDirPath);
+			} catch (restoreError) {
+				componentLogger.error(
+					`Could not put ${componentName} back from ${droppedPath} after its move aside failed to flush:`,
+					errorForLog(restoreError)
+				);
+				throw error;
+			}
+			await syncBothParents().catch((syncError) =>
+				componentLogger.warn(`Put ${componentName} back, but could not flush that either:`, errorForLog(syncError))
+			);
+			throw error;
+		}
 	}
+	return {
+		async restore() {
+			if (!retired) return;
+			try {
+				await rename(droppedPath, componentDirPath);
+			} catch (error) {
+				throw new Error(`Could not put ${componentName} back from ${droppedPath}: ${errorMessage(error)}`, {
+					cause: error,
+				});
+			}
+			try {
+				await syncBothParents();
+			} catch (error) {
+				throw new Error(`Put ${componentName} back, but could not flush its directories: ${errorMessage(error)}`, {
+					cause: error,
+				});
+			}
+		},
+		async discard() {
+			await cleanupExtractionPaths(
+				{ name: componentName, dirPath: componentDirPath, logger: componentLogger },
+				asideStagingDir,
+				new Set([droppedPath])
+			);
+			// A dropped component has no next deploy to bound its dormant builds.
+			try {
+				await pruneDormantBuilds(componentName, await dormantBuildsOf(dirname(componentDirPath), componentName), 0);
+			} catch (error) {
+				componentLogger.warn(
+					`Dropped ${componentName} but could not reclaim its dormant staged builds:`,
+					errorForLog(error)
+				);
+			}
+		},
+	};
 }
 
 async function cleanupExtractionPaths(
@@ -4237,6 +4339,7 @@ export function shouldPackLocalDirectory(packageIdentifier: string | undefined, 
  * @returns A promise that resolves when all preparation steps complete.
  */
 export type PrepareApplicationOptions = {
+	onDeployStart?: (deploymentId: string) => void;
 	beforePrepare?: () => Promise<void>;
 	/**
 	 * Runs against the built candidate while the live version is still serving, and BEFORE the swap. A
@@ -4259,24 +4362,20 @@ export type PrepareApplicationOptions = {
 	 */
 	mode?: 'deploy' | 'stage' | 'activate';
 	/**
-	 * `stage` only: the build's declared intent, recorded with the artifact for whoever activates it.
-	 * A callback rather than a value because `beforePrepare` is what determines it, and that runs after
-	 * these options have been constructed.
+	 * `deploy` and `stage`: the build's declared intent — the root-config entry it owns, or `null` for a
+	 * payload build, which owns none. `deploy` publishes it once the swap commits; `stage` records it with the
+	 * artifact for whoever activates it. Omitted, the preparation leaves root config alone, which is what a
+	 * caller installing FROM root config needs. A callback rather than a value because `beforePrepare` is
+	 * what determines it, and that runs after these options have been constructed.
 	 */
 	describeArtifact?: () => { rootConfig: Record<string, unknown> | null; isolated: boolean };
-	/**
-	 * `activate` only: publish the artifact's recorded root-config entry, immediately before the swap. May
-	 * return an undo, run if the activation then fails before it commits — otherwise a failed activation
-	 * leaves config naming a release that is not live, which the next boot install would resolve and build
-	 * from scratch over a component whose certified artifact is sitting beside it.
-	 */
-	publishRootConfig?: (entry: Record<string, unknown>) => Promise<(() => Promise<void>) | void>;
 	/** `activate` only: admit the artifact's isolation intent under the preparation lock, before the swap. */
 	admitIsolation?: (descriptor: ArtifactDescriptor) => Promise<void>;
 };
 
 export async function prepareApplication(application: Application, options: PrepareApplicationOptions = {}) {
 	const lifecycleToken = await broadcastDeployStart(application.name);
+	options.onDeployStart?.(lifecycleToken);
 	const mode = options.mode ?? 'deploy';
 	const artifactId = options.artifactId ?? lifecycleToken;
 	try {
@@ -4364,7 +4463,10 @@ export async function prepareApplication(application: Application, options: Prep
 							return;
 						}
 						await markCandidateComplete(application.dirPath, artifactId, application.name);
-						await activateCandidateApplication(application, artifactId);
+						const declared = options.describeArtifact?.();
+						await activateCandidateApplication(application, artifactId, {
+							rootConfig: declared ? rootConfigEffectFromDeclaration(declared.rootConfig) : { kind: 'keep' },
+						});
 					} catch (error) {
 						// The builder's own cleanup only covers a failed BUILD. A rejected validation, or an
 						// activation that was cleanly compensated, would otherwise leave a whole installed
@@ -4374,7 +4476,10 @@ export async function prepareApplication(application: Application, options: Prep
 						// path may be absent, and the candidate plus its `.complete` marker and journal are exactly
 						// what recovery needs to roll the validated deploy forward at the next start. Discarding
 						// them there trades a bounded disk cost for a component with no version at all.
-						if (!compensationIncomplete(error)) await discardCandidate(application, artifactId);
+						// Nor past the commit, where the journal still holds the config effect recovery has to finish.
+						if (!compensationIncomplete(error) && !activationCommitted(error)) {
+							await discardCandidate(application, artifactId);
+						}
 						throw error;
 					}
 				} finally {
@@ -4382,13 +4487,8 @@ export async function prepareApplication(application: Application, options: Prep
 				}
 			},
 			{
-				// The longest extraction path runs clone, tag listing, checkout, and npm pack. A custom
-				// package manager configured to warn can then fall back to npm, yielding two install
-				// commands. Bound orphaned same-process worker locks without rejecting behind a valid holder.
-				timeoutMs:
-					MAX_GIT_EXTRACTION_COMMANDS * DEFAULT_COMMAND_TIMEOUT_MS +
-					MAX_INSTALL_COMMANDS * commandTimeoutMs +
-					COMPONENT_PREPARATION_WAIT_MARGIN_MS,
+				// Bound orphaned same-process worker locks without rejecting behind a valid holder.
+				timeoutMs: componentPreparationBudgetMs(commandTimeoutMs),
 				onWait: (owner) =>
 					application.logger.info(
 						`Waiting for in-progress preparation of ${application.name}` +
@@ -4475,10 +4575,127 @@ async function activateStagedArtifact(
 		);
 	}
 	await activateCandidateApplication(application, artifactId, {
-		// Returns its own undo, which the swap runs inside its pre-commit boundary — see there for why it
-		// cannot be run out here.
-		afterJournal: descriptor.rootConfig ? () => options.publishRootConfig!(descriptor.rootConfig!) : undefined,
+		rootConfig: rootConfigEffectFromDeclaration(descriptor.rootConfig),
 	});
+}
+
+export function getStartupInstallTimeoutMs(): number {
+	const configured = getConfigValue(CONFIG_PARAMS.DEPLOYMENT_STARTUPINSTALLTIMEOUT);
+	if (configured === undefined || configured === null) return DEFAULT_STARTUP_INSTALL_TIMEOUT_MS;
+	if (typeof configured === 'string' && configured.trim() === '') return DEFAULT_STARTUP_INSTALL_TIMEOUT_MS;
+	const parsed = typeof configured === 'number' || typeof configured === 'string' ? Number(configured) : Number.NaN;
+	if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+	logger.warn?.(
+		`Ignoring invalid ${CONFIG_PARAMS.DEPLOYMENT_STARTUPINSTALLTIMEOUT} value ${JSON.stringify(configured)}; ` +
+			`using ${DEFAULT_STARTUP_INSTALL_TIMEOUT_MS}ms`
+	);
+	return DEFAULT_STARTUP_INSTALL_TIMEOUT_MS;
+}
+
+export type StartupPreparation = {
+	name: string;
+	configKey: string;
+	dirPath: string;
+	promise: Promise<void>;
+	deploymentId?: string;
+	/** Some installApplications() call stopped waiting for this, so a generation already running predates its swap. */
+	leftBehind: boolean;
+};
+
+// Process-wide, because a preparation startup stopped waiting for outlives the call that started it: the
+// next installApplications() (every worker restart runs one) must wait on it, not start a second one that
+// would queue on the first one's component lock and rebuild the component again when it finally gets it.
+// Keyed by configuration too, so a config that flips back while an older preparation is still running
+// rejoins that preparation.
+const startupPreparations = new Map<string, StartupPreparation>();
+
+export function trackStartupPreparation(
+	name: string,
+	configKey: string,
+	dirPath: string,
+	start: (onDeployStart: (deploymentId: string) => void) => Promise<void>,
+	onLateSuccess: (preparation: StartupPreparation) => void | Promise<void> = reportLateStartupPreparation
+): StartupPreparation {
+	const key = JSON.stringify([name, configKey]);
+	const existing = startupPreparations.get(key);
+	if (existing) return existing;
+	const preparation = { name, configKey, dirPath, leftBehind: false } as StartupPreparation;
+	preparation.promise = start((deploymentId) => {
+		preparation.deploymentId = deploymentId;
+		if (preparation.leftBehind) deployLifecycle.releaseLoads(name, deploymentId);
+	});
+	startupPreparations.set(key, preparation);
+	const settle = (succeeded: boolean) => {
+		startupPreparations.delete(key);
+		if (!succeeded || !preparation.leftBehind) return;
+		Promise.resolve()
+			.then(() => onLateSuccess(preparation))
+			.catch((error) => logger.error?.(`Could not report the late preparation of ${name}:`, errorForLog(error)));
+	};
+	preparation.promise.then(
+		() => settle(true),
+		() => settle(false)
+	);
+	return preparation;
+}
+
+async function reportLateStartupPreparation(preparation: StartupPreparation): Promise<void> {
+	const { requestRestart } = await import('./requestRestart.ts');
+	requestRestart();
+	logger.warn?.(
+		`Component ${preparation.name} finished preparing after startup stopped waiting for it; restart Harper to load it`
+	);
+}
+
+/**
+ * Wait for the given preparations until they all settle or `timeoutMs` elapses, warning periodically about
+ * what startup is still waiting for. Returns the ones this call stopped waiting for, which keep running (and
+ * holding their component locks) — the caller stops waiting, it does not cancel. Infinity waits indefinitely.
+ * One an earlier call already stopped waiting for is not waited for again: the node already runs without it.
+ */
+export async function waitForStartupPreparations(
+	preparations: Iterable<StartupPreparation>,
+	timeoutMs: number,
+	progressIntervalMs: number = STARTUP_INSTALL_PROGRESS_INTERVAL_MS
+): Promise<StartupPreparation[]> {
+	const pending = new Set<StartupPreparation>();
+	for (const preparation of preparations) {
+		if (!preparation.leftBehind) pending.add(preparation);
+	}
+	if (pending.size === 0) return [];
+	const startedAt = performance.now();
+	const allSettled = Promise.all(
+		[...pending].map((preparation) =>
+			preparation.promise.then(
+				() => pending.delete(preparation),
+				() => pending.delete(preparation)
+			)
+		)
+	);
+	let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<void>((resolve) => {
+		if (Number.isFinite(timeoutMs))
+			deadlineTimer = setTimeout(resolve, Math.min(Math.max(timeoutMs, 0), MAX_SET_TIMEOUT_MS));
+	});
+	const progressTimer = setInterval(() => {
+		logger.warn?.(
+			`Startup is still waiting for component preparation after ${Math.round((performance.now() - startedAt) / 1000)}s: ` +
+				[...pending].map((preparation) => preparation.name).join(', ')
+		);
+	}, progressIntervalMs);
+	progressTimer.unref();
+	try {
+		await Promise.race([allSettled, deadline]);
+	} finally {
+		clearTimeout(deadlineTimer);
+		clearInterval(progressTimer);
+	}
+	for (const preparation of pending) {
+		preparation.leftBehind = true;
+		// Startup loads the installed tree instead of waiting for this deploy, so no Scope may wait for it either.
+		if (preparation.deploymentId) deployLifecycle.releaseLoads(preparation.name, preparation.deploymentId);
+	}
+	return [...pending];
 }
 
 /**
@@ -4486,9 +4703,30 @@ async function activateStagedArtifact(
  *
  * This method should only be called from the main thread otherwise certain
  * operations may conflict with each other (such as writing to the same directory).
+ *
+ * Waits at most `deployment_startupInstallTimeout` for the preparations it needs: startup opens no
+ * listener until this returns, so one component that never finishes would otherwise keep the whole node
+ * down. A preparation still running then is left to finish in the background (see
+ * `trackStartupPreparation`), and startup loads whatever is installed at that point.
  */
 export async function installApplications() {
-	const applicationInstallationPromises: Promise<void>[] = [];
+	const timeoutMs = getStartupInstallTimeoutMs();
+	const config = getConfigObj();
+
+	const componentsRootDirPath = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+	if (!componentsRootDirPath) throw new Error('componentsRoot is not configured');
+
+	// Ensure component directory exists
+	await mkdir(componentsRootDirPath, { recursive: true });
+
+	const harperApplicationLockPath = join(getConfigValue(CONFIG_PARAMS.ROOTPATH), 'harper-application-lock.json');
+	// Creates the file on a first boot even when nothing needs preparing. Not awaited: every lock-file and
+	// credential read runs inside a preparation, where the deadline bounds it.
+	updateApplicationLock(harperApplicationLockPath, () => {}).catch((error) =>
+		logger.error?.(`Could not write ${harperApplicationLockPath}:`, errorForLog(error))
+	);
+
+	const preparations = new Set<StartupPreparation>();
 
 	// first install any built-in components specified from env vars
 	for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
@@ -4501,27 +4739,16 @@ export async function installApplications() {
 			packageIdentifier,
 		});
 
-		applicationInstallationPromises.push(prepareApplication(application));
-	}
-
-	const config = getConfigObj();
-
-	const componentsRootDirPath = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
-	if (!componentsRootDirPath) throw new Error('componentsRoot is not configured');
-
-	// Ensure component directory exists
-	await mkdir(componentsRootDirPath, { recursive: true });
-
-	const harperApplicationLockPath = join(getConfigValue(CONFIG_PARAMS.ROOTPATH), 'harper-application-lock.json');
-
-	let harperApplicationLock: { applications: Record<string, ApplicationConfig> } = { applications: {} };
-	try {
-		harperApplicationLock = JSON.parse(await readFile(harperApplicationLockPath, 'utf8'));
-	} catch (error) {
-		// Ignore file not found error; will create new lock file after installations
-		if (error.code !== 'ENOENT') {
-			throw error;
-		}
+		preparations.add(
+			trackStartupPreparation(name, packageIdentifier, application.dirPath, async (onDeployStart) => {
+				try {
+					await prepareApplication(application, { onDeployStart });
+				} catch (error) {
+					logger.error?.(`Failed to prepare built-in component ${name}:`, errorForLog(error));
+					throw error;
+				}
+			})
+		);
 	}
 
 	for (const [name, applicationConfig] of Object.entries(config)) {
@@ -4535,86 +4762,129 @@ export async function installApplications() {
 			// Then do proper error-based validation with TypeScript `asserts` to provide type safety
 			// This will throw if the config is invalid
 			assertApplicationConfig(name, applicationConfig);
-
-			// Resolve any credential references from the store so a cold install (fresh node, wiped
-			// components dir, new peer that never installed) can authenticate without the token being
-			// re-supplied. Best-effort: if custody isn't available yet or a referenced secret is
-			// missing, log and install without it (a truly private package then fails in npm with its
-			// own error) rather than blocking boot.
-			let credentials: ResolvedCredential[] | undefined;
-			if (applicationConfig.credentials?.length) {
-				try {
-					const { resolveCredentials } = await import('./secretOperations.ts');
-					credentials = await resolveCredentials(applicationConfig.credentials, name);
-				} catch (error) {
-					logger.warn?.(
-						`Could not resolve credentials for application ${name} at install time: ${(error as Error).message}`
-					);
-				}
-			}
-
-			const application = new Application({
-				name,
-				packageIdentifier: applicationConfig.package,
-				install: applicationConfig.install,
-				credentials,
-			});
-
-			// Lock check: only install if not already installed with matching configuration
-			if (
-				existsSync(application.dirPath) &&
-				harperApplicationLock.applications[name] &&
-				JSON.stringify(harperApplicationLock.applications[name]) === JSON.stringify(applicationConfig)
-			) {
-				logger.info?.(`Application ${name} is already installed with matching configuration; skipping installation`);
-				continue;
-			}
-			// Once preparation is required, the old entry is no longer evidence of a complete
-			// installation. In particular, a failed reinstall may leave a partial directory behind;
-			// retaining the prior entry would make the next boot skip that partial component.
-			applicationInstallationPromises.push(
-				recordApplicationPreparation(
-					harperApplicationLock,
-					name,
-					applicationConfig,
-					() => prepareApplication(application),
-					(lock) => persistApplicationLock(harperApplicationLockPath, lock)
-				)
-			);
 		} catch (error) {
 			logger.error?.(`Skipping installation of application ${name} due to invalid configuration: ${error.message}`);
+			continue;
 		}
+		const dirPath = join(componentsRootDirPath, name);
+		preparations.add(
+			trackStartupPreparation(name, JSON.stringify(applicationConfig), dirPath, (onDeployStart) =>
+				installConfiguredApplication(name, applicationConfig, dirPath, harperApplicationLockPath, onDeployStart)
+			)
+		);
 	}
 
-	const applicationInstallationStatuses = await Promise.allSettled(applicationInstallationPromises);
-	logger.debug?.(applicationInstallationStatuses);
-	logger.info?.('All root applications loaded');
-
-	// Finally, write the lock file. Every component that went through recordApplicationPreparation
-	// already persisted its own transition durably; this covers components that were skipped
-	// (matching-config, already installed) and never mutated the in-memory object at all.
-	await persistApplicationLock(harperApplicationLockPath, harperApplicationLock);
+	const leftBehind = await waitForStartupPreparations(preparations, timeoutMs === 0 ? Infinity : timeoutMs);
+	for (const { name, dirPath } of leftBehind) {
+		logger.error?.(
+			`Startup is no longer waiting for ${name}: its preparation is still running after ` +
+				`${CONFIG_PARAMS.DEPLOYMENT_STARTUPINSTALLTIMEOUT} (${timeoutMs}ms). It continues in the background; ` +
+				(existsSync(dirPath)
+					? 'until it finishes, the version already installed stays in place'
+					: 'until it finishes, the component is not installed')
+		);
+	}
+	if (![...preparations].some((preparation) => preparation.leftBehind)) logger.info?.('All root applications loaded');
 }
 
-// Concurrent components each persist the same shared lock file. Serialize per path so two
-// writers never race the same temp filename, and so a write always reflects the latest merged
-// in-memory state rather than a stale snapshot silently clobbering a sibling's just-written change.
-const applicationLockWriteQueues = new Map<string, Promise<void>>();
-
-async function persistApplicationLock(
+async function installConfiguredApplication(
+	name: string,
+	applicationConfig: ApplicationConfig,
+	dirPath: string,
 	harperApplicationLockPath: string,
-	harperApplicationLock: { applications: Record<string, ApplicationConfig> }
+	onDeployStart: (deploymentId: string) => void
 ): Promise<void> {
-	const previous = applicationLockWriteQueues.get(harperApplicationLockPath) ?? Promise.resolve();
-	const next = previous
-		.catch(() => {})
-		.then(async () => {
-			const tempPath = `${harperApplicationLockPath}.${process.pid}.${randomUUID()}.tmp`;
-			await writeFile(tempPath, JSON.stringify(harperApplicationLock, null, 2), 'utf8');
-			await rename(tempPath, harperApplicationLockPath);
+	try {
+		// Lock check: only install if not already installed with matching configuration
+		const installedConfig = (await readApplicationLock(harperApplicationLockPath)).applications[name];
+		if (
+			existsSync(dirPath) &&
+			installedConfig &&
+			JSON.stringify(installedConfig) === JSON.stringify(applicationConfig)
+		) {
+			logger.info?.(`Application ${name} is already installed with matching configuration; skipping installation`);
+			return;
+		}
+
+		// Resolve any credential references from the store so a cold install (fresh node, wiped
+		// components dir, new peer that never installed) can authenticate without the token being
+		// re-supplied. Best-effort: if custody isn't available yet or a referenced secret is
+		// missing, log and install without it (a truly private package then fails in npm with its
+		// own error) rather than blocking boot.
+		let credentials: ResolvedCredential[] | undefined;
+		if (applicationConfig.credentials?.length) {
+			try {
+				const { resolveCredentials } = await import('./secretOperations.ts');
+				credentials = await resolveCredentials(applicationConfig.credentials, name);
+			} catch (error) {
+				logger.warn?.(
+					`Could not resolve credentials for application ${name} at install time: ${(error as Error).message}`
+				);
+			}
+		}
+
+		const application = new Application({
+			name,
+			packageIdentifier: applicationConfig.package,
+			install: applicationConfig.install,
+			credentials,
 		});
-	applicationLockWriteQueues.set(harperApplicationLockPath, next);
-	await next;
+		// Once preparation is required, the old entry is no longer evidence of a complete
+		// installation. In particular, a failed reinstall may leave a partial directory behind;
+		// retaining the prior entry would make the next boot skip that partial component.
+		await recordApplicationPreparation(
+			name,
+			applicationConfig,
+			(clearEntry) => prepareApplication(application, { beforePrepare: clearEntry, onDeployStart }),
+			(mutate) => updateApplicationLock(harperApplicationLockPath, mutate)
+		);
+	} catch (error) {
+		logger.error?.(`Failed to prepare application ${name}:`, errorForLog(error));
+		throw error;
+	}
+}
+
+type ApplicationLockFile = { applications: Record<string, ApplicationConfig> };
+type ApplicationLockMutation = (applications: ApplicationLockFile['applications']) => void;
+
+// Every read and read-modify-write of one lock file runs in this per-path order. A preparation can finish
+// after a later installApplications() call has read the file, so each transition is applied to what is on
+// disk at its turn rather than to a snapshot some caller took earlier.
+const applicationLockQueues = new Map<string, Promise<unknown>>();
+
+function enqueueApplicationLockTask<T>(harperApplicationLockPath: string, task: () => Promise<T>): Promise<T> {
+	const previous = applicationLockQueues.get(harperApplicationLockPath) ?? Promise.resolve();
+	const next = previous.catch(() => {}).then(task);
+	applicationLockQueues.set(harperApplicationLockPath, next);
+	return next;
+}
+
+async function readApplicationLockFile(harperApplicationLockPath: string): Promise<ApplicationLockFile> {
+	try {
+		return JSON.parse(await readFile(harperApplicationLockPath, 'utf8'));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { applications: {} };
+		throw error;
+	}
+}
+
+function readApplicationLock(harperApplicationLockPath: string): Promise<ApplicationLockFile> {
+	return enqueueApplicationLockTask(harperApplicationLockPath, () =>
+		readApplicationLockFile(harperApplicationLockPath)
+	);
+}
+
+export function updateApplicationLock(
+	harperApplicationLockPath: string,
+	mutate: ApplicationLockMutation
+): Promise<void> {
+	return enqueueApplicationLockTask(harperApplicationLockPath, async () => {
+		const lock = await readApplicationLockFile(harperApplicationLockPath);
+		mutate(lock.applications);
+		const tempPath = `${harperApplicationLockPath}.${process.pid}.${randomUUID()}.tmp`;
+		await writeFile(tempPath, JSON.stringify(lock, null, 2), 'utf8');
+		await rename(tempPath, harperApplicationLockPath);
+	});
 }
 
 /**
@@ -4622,28 +4892,26 @@ async function persistApplicationLock(
  * explicit production seam so the failure transition can be tested without replacing module
  * bindings: a stale success is removed before preparation starts and restored only on success.
  *
- * `persist` is durably awaited on both transitions — not just applied in memory — so a crash
- * mid-preparation can never leave the on-disk lock file still claiming success for a directory a
- * subsequent reinstall left partially written (which would make `installApplications`'s
- * already-installed check at the top of this loop skip the required reinstall forever).
+ * Each transition is durably awaited — not just applied in memory — so a crash mid-preparation can
+ * never leave the on-disk lock file still claiming success for a directory a subsequent reinstall
+ * left partially written (which would make `installApplications`'s already-installed check skip
+ * the required reinstall forever). `prepare` runs `clearEntry` under the component's preparation lock,
+ * so the removal cannot land before the success write of an earlier preparation still holding it.
  */
 export async function recordApplicationPreparation(
-	harperApplicationLock: { applications: Record<string, ApplicationConfig> },
 	name: string,
 	applicationConfig: ApplicationConfig,
-	prepare: () => Promise<void>,
-	persist: (lock: { applications: Record<string, ApplicationConfig> }) => Promise<void> = async () => {}
+	prepare: (clearEntry: () => Promise<void>) => Promise<void>,
+	updateLock: (mutate: ApplicationLockMutation) => Promise<void>
 ): Promise<void> {
-	delete harperApplicationLock.applications[name];
-	await persist(harperApplicationLock);
-	try {
-		await prepare();
-		harperApplicationLock.applications[name] = applicationConfig;
-		await persist(harperApplicationLock);
-	} catch (error) {
-		logger.error?.(`Failed to prepare application ${name}:`, errorForLog(error));
-		throw error;
-	}
+	await prepare(() =>
+		updateLock((applications) => {
+			delete applications[name];
+		})
+	);
+	await updateLock((applications) => {
+		applications[name] = applicationConfig;
+	});
 }
 
 /**

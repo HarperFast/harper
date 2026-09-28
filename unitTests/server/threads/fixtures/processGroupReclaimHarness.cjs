@@ -25,7 +25,7 @@ function processGroupIsAlive(processGroupId) {
 	return !isZombie(processGroupId);
 }
 
-const worker = startWorker(require.resolve('./processGroupOwnerWorker.js'), {
+const worker = startWorker(require.resolve('./processGroupOwnerWorker.cjs'), {
 	name: 'process-group-reclaim-test',
 	autoRestart: false,
 	workerIndex: 0,

@@ -616,12 +616,19 @@ describe('audit staleness floor', () => {
 			await wiped.put('w-1', { name: 'one' });
 			await spared.put('s-1', { name: 'one' });
 
+			const newest = Math.max(...auditEntries(wiped.auditStore).map((entry) => entry.logKey));
 			const absurd = Date.now() * 1000; // a ms value read as µs — about the year 55000
 			await wiped.deleteHistory(absurd);
 
 			const floor = floorOf(wiped);
 			assert.ok(floor < absurd, `the floor must be clamped below the requested bound, got ${floor}`);
-			assert.ok(floor <= Date.now() + 1, `and must not be left sitting in the future, got ${floor}`);
+			// log keys are fractional monotonic-clock values, so the `newest + 1` clamp can sit past the integer
+			// `Date.now() + 1` for the rest of the newest key's millisecond
+			const bound = Math.max(newest + 1, Date.now());
+			assert.ok(
+				floor <= bound,
+				`and must not be left sitting in the future, got ${floor} (bound ${bound}, newest key ${newest})`
+			);
 			// The property the verbatim floor destroyed: a write after the prune is still resumable. The
 			// sibling was never pruned, so this must hold for it regardless of what `wiped` asked for.
 			// the clamp sits at `newest + 1` when the newest key's fractional millisecond is at or past the
@@ -742,18 +749,7 @@ describe('audit staleness floor', () => {
 		raiseAuditFloor(durable.auditStore, raised);
 		assert.strictEqual(floorOf(durable), raised, 'precondition: the raise landed in-process');
 
-		// `closeDatabase` fires `close()` without awaiting it, and on LMDB that close is asynchronous (the
-		// drop path in databases.ts awaits the same call). Reopening the path while the env is still
-		// closing can throw or read pre-flush bytes, so capture the promise closeDatabase discards and
-		// await it. RocksDB's close is synchronous and returns undefined, which awaits as a no-op.
-		const root = durable.auditStore.rootStore;
-		let closing;
-		const realClose = root.close.bind(root);
-		root.close = (...args) => (closing = realClose(...args));
-		assert.ok(closeDatabase('auditFloor_Durable'), 'precondition: the database was open to be closed');
-		if (!durable.auditStore.reusableIterable)
-			assert.ok(closing && typeof closing.then === 'function', 'precondition: the LMDB env close was captured');
-		await closing;
+		assert.ok(await closeDatabase('auditFloor_Durable'), 'precondition: the database was open to be closed');
 		const reopened = tableInOwnDatabase('Durable');
 		assert.notStrictEqual(reopened.auditStore, durable.auditStore, 'precondition: a fresh store, not the cached one');
 		assert.strictEqual(
