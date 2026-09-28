@@ -3053,15 +3053,15 @@ function startMonitoringTxns() {
 					// poisoned path abort(true) already discarded them. Only the snapshot's lifetime is left.
 					// Close the owning iterators first so the handle comes back through doneReadTxn() — a
 					// transaction poisoned outside transaction() has no callback settlement to do it.
-					if (txn.closeOwnedReadIterators() > 0 && !txn.transaction) return;
+					const closedIterators = txn.closeOwnedReadIterators();
 					harperLogger.warn?.(
 						`Read iterators held a ${
 							txn.timedOut || txn.disconnected ? 'poisoned' : 'committed'
-						} transaction's snapshot past the open-transaction limit; releasing it, from table: ${
-							(txn.db as any)?.name + (url ? ' path: ' + url : '')
-						}`
+						} transaction's snapshot past the open-transaction limit; ${
+							txn.transaction ? 'releasing it' : `closed ${closedIterators} abandoned iterator(s)`
+						}, from table: ${(txn.db as any)?.name + (url ? ' path: ' + url : '')}`
 					);
-					txn.releaseReadTxn();
+					if (txn.transaction) txn.releaseReadTxn();
 				} else if (shouldSpareCommitPhase(txn, checkedCommitPhaseChains)) {
 					// Parked in commit()'s pre-commit await — a `before`/`beforeIntermediate` hook, in practice a
 					// blob's durable file write, which for a multi-tens-of-MB payload legitimately outruns the

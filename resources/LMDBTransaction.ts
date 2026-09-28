@@ -520,15 +520,14 @@ function startMonitoringTxns() {
 					// re-arm the timer — pinning an LMDB read snapshot, which blocks free-page reuse and
 					// grows the data file, for the life of the process. Close the owning iterators first so
 					// the reference comes back through doneReadTxn(), and force the release if it does not.
-					txn.closeOwnedReadIterators();
-					if (txn.readTxn) {
+					const closedIterators = txn.closeOwnedReadIterators();
+					if (closedIterators > 0 || txn.readTxn)
 						harperLogger.warn?.(
-							`Read iterators held a closed transaction's snapshot past the open-transaction limit; releasing it, from table: ${
-								(txn.db as any)?.name + (url ? ' path: ' + url : '')
-							}`
+							`Read iterators held a closed transaction's snapshot past the open-transaction limit; ${
+								txn.readTxn ? 'releasing it' : `closed ${closedIterators} abandoned iterator(s)`
+							}, from table: ${(txn.db as any)?.name + (url ? ' path: ' + url : '')}`
 						);
-						txn.releaseReadTxn();
-					}
+					if (txn.readTxn) txn.releaseReadTxn();
 					trackedTxns.delete(txn);
 					continue;
 				}
