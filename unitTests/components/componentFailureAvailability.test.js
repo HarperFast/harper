@@ -13,12 +13,14 @@ const assert = require('node:assert');
 const path = require('node:path');
 const { tmpdir } = require('node:os');
 const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
+const sinon = require('sinon');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
 const { loadComponent, TRUSTED_RESOURCE_PLUGINS } = require('#src/components/componentLoader');
 const { resetResources } = require('#src/resources/Resources');
 const { internal: statusInternal, statusForComponent } = require('#src/components/status/index');
+const { ComponentStatusRegistry } = statusInternal;
 const status = require('#src/server/status/index');
 const { waitFor } = require('../waitFor.js');
 
@@ -37,7 +39,7 @@ describe('availability status after component load failure', () => {
 
 	before(() => {
 		// Earlier suites in a combined run may leave component errors behind; this suite owns the
-		// registry while it runs so the recovery test's Available assertion is deterministic.
+		// registry while it runs so the recovery assertions are deterministic.
 		statusInternal.componentStatusRegistry.reset();
 		tempRoot = mkdtempSync(path.join(tmpdir(), 'harper-availability-honesty-'));
 		resources = resetResources();
@@ -116,5 +118,55 @@ describe('availability status after component load failure', () => {
 			'Available',
 			'with no failed components the operator record is served as written'
 		);
+	});
+});
+
+// get_status runs on the operations thread, which loads components with isWorker=false and so
+// never runs (or fails) handleApplication; the failure that matters happens on the HTTP workers.
+// So the derivation must read the all-threads aggregate, not this thread's registry. These cases
+// stub the cross-thread aggregate directly, proving a failure this thread never recorded still
+// drains the node. A derivation that read only the local registry would pass every case above but
+// fail here.
+describe('availability derivation reads the all-threads component aggregate', () => {
+	let aggregateStub;
+
+	const setAggregate = (entries) => aggregateStub.resolves(new Map(entries));
+
+	before(() => {
+		statusInternal.componentStatusRegistry.reset();
+		aggregateStub = sinon.stub(ComponentStatusRegistry, 'getAggregatedFromAllThreads');
+	});
+
+	after(async () => {
+		aggregateStub.restore();
+		await status.clear({ id: 'availability' });
+	});
+
+	it('drains when another thread reports a component error this thread never saw', async () => {
+		await status.set({ id: 'availability', status: 'Available' });
+		// Present only in the aggregate (a worker's registry), absent from this thread's registry.
+		setAggregate([
+			['app.jsResource', { componentName: 'app.jsResource', status: 'error', lastChecked: { workers: {} } }],
+		]);
+		const result = await status.get({ id: 'availability' });
+		assert.strictEqual(result?.status, 'Unavailable', 'a worker-only component error must drain the node');
+		assert.match(String(result?.message ?? ''), /app\.jsResource/, 'the message should name the failed component');
+	});
+
+	it('stays Available when every thread reports the component healthy', async () => {
+		await status.set({ id: 'availability', status: 'Available' });
+		setAggregate([
+			['app.jsResource', { componentName: 'app.jsResource', status: 'healthy', lastChecked: { workers: {} } }],
+		]);
+		assert.strictEqual((await status.get({ id: 'availability' }))?.status, 'Available');
+	});
+
+	it('keeps an operator drain even when every component is healthy', async () => {
+		await status.set({ id: 'availability', status: 'Unavailable' });
+		setAggregate([
+			['app.jsResource', { componentName: 'app.jsResource', status: 'healthy', lastChecked: { workers: {} } }],
+		]);
+		const result = await status.get({ id: 'availability' });
+		assert.strictEqual(result?.status, 'Unavailable', 'an operator set_status Unavailable must win');
 	});
 });

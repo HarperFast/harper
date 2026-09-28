@@ -824,6 +824,10 @@ export async function loadComponent(
 	applicationScope.runtimeRoot ??= resolvedFolder;
 	applicationScope.allowedPath ??= realpathSync(componentDirectory);
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
+	// The application's own top-level status key, given a full lifecycle below so a whole-application
+	// failure (the outer catch) drains availability yet a later successful reload heals it (#3184).
+	// Declared out here so the catch can see it. Root has no single owning application.
+	const appStatusKey = isRoot ? undefined : (appName ?? basename(componentDirectory));
 	try {
 		let config;
 		let configPath = join(componentDirectory, 'harper-config.yaml'); // look for the specific harperdb-config.yaml first
@@ -935,6 +939,9 @@ export async function loadComponent(
 
 		const parentCompName: string = compName;
 		const componentFunctionality = {};
+		// Mark the application itself loading before its plugins, so a reload of a previously failed
+		// application clears that error the moment it starts rather than after it finishes (#3184).
+		if (appStatusKey) componentLifecycle.loading(appStatusKey);
 		// iterate through the app handlers so they can each do their own loading process
 		for (const componentName in config) {
 			if (componentName === 'env') continue; // handled above — not a plugin
@@ -1266,6 +1273,10 @@ export async function loadComponent(
 			loadedPaths.set(resolvedFolder, extensionModule);
 			return extensionModule;
 		}
+		// The application's plugins loaded without a whole-application throw, so clear its top-level
+		// status. Done before the "did not load anything" heuristic below so that heuristic's own
+		// failure report stands. Per-plugin failures keep their own error entries.
+		if (appStatusKey) componentLifecycle.loaded(appStatusKey, `Application '${appStatusKey}' loaded`);
 		const componentFunctionalityValues = Object.values(componentFunctionality);
 		if (
 			componentFunctionalityValues.length > 0 &&
@@ -1291,10 +1302,6 @@ export async function loadComponent(
 		resources.set('', new ErrorResource(error));
 		// A whole-application failure serves errors over the entire URL space; it must reach the
 		// status registry like per-component failures do, so availability reflects it (#3184).
-		componentLifecycle.failed(
-			appName ?? basename(componentDirectory),
-			error,
-			`Could not load application '${appName ?? basename(componentDirectory)}'`
-		);
+		if (appStatusKey) componentLifecycle.failed(appStatusKey, error, `Could not load application '${appStatusKey}'`);
 	}
 }

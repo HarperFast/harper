@@ -174,27 +174,31 @@ async function getAllStatus(includeMiddleware = false): Promise<AllStatusSummary
  * Available keeps the node in rotation, Unavailable drains it. The stored record is
  * operator-owned (set_status), but a node whose components failed to load is serving errors
  * over their URL space, so the read combines the two: an operator's Unavailable always
- * wins, and an Available (or absent) record is served as Unavailable while any component on
- * this thread is in error (#3184). Derived at read time rather than written on failure so
- * nothing goes stale: a component that loads cleanly again heals the registry and the node
- * rejoins rotation on its own, and an automatic write can never clobber an operator drain.
+ * wins, and an Available (or absent) record is served as Unavailable while any component is
+ * in error (#3184). Derived at read time rather than written on failure so nothing goes
+ * stale: a component that loads cleanly again heals the registry and the node rejoins
+ * rotation on its own, and an automatic write can never clobber an operator drain.
  * Deploy-validation failures land in the validation sink, never the live registry, so a
- * candidate's failure cannot drain the node. Scope is this thread's registry: the
- * operations thread loads every non-isolated component itself and records isolated
- * applications' worker failures (socketRouter), so load failures visible only on another
- * HTTP worker are not reflected here.
+ * candidate's failure cannot drain the node.
+ *
+ * Component health is read from the all-threads aggregate, not this thread's registry:
+ * get_status runs on the operations thread, which loads components with isWorker=false and
+ * so never runs handleApplication. The failure that matters (a wedged jsResource load,
+ * #3184) happens on the HTTP workers, and only the cross-thread aggregate sees it. The
+ * aggregate resolves a component to error when any thread reports it in error.
  */
 async function getAvailabilityStatus(): Promise<StatusRecord<'availability'> | undefined> {
 	const record = (await getStatusTable().get('availability')) as StatusRecord<'availability'> | undefined;
 	if (record?.status === 'Unavailable') return record;
-	const failed = statusInternal.componentStatusRegistry.getComponentsByStatus(
-		statusInternal.COMPONENT_STATUS_LEVELS.ERROR
+	const aggregated = await statusInternal.query.allThreads();
+	const failed = Array.from(aggregated.values()).filter(
+		(component) => component.status === statusInternal.COMPONENT_STATUS_LEVELS.ERROR
 	);
 	if (failed.length === 0) return record;
 	return {
 		id: 'availability',
 		status: 'Unavailable',
-		message: `Component failure: ${failed.map(({ name }) => name).join(', ')}`,
+		message: `Component failure: ${failed.map((component) => component.componentName).join(', ')}`,
 	};
 }
 
