@@ -30,6 +30,8 @@ Results are ordered by BM25 relevance. The index declaration, not the source fie
 
 Every comparator also has a negated form: `not_matches`, `not_matches_all`, `not_matches_phrase`, `not_matches_prefix`, `not_matches_fuzzy`, and `not_matches_fuzzy_prefix`.
 
+An empty string is invalid and returns `400`. Whitespace-only text or text reduced to no terms by the analyzer, such as a query containing only enabled stop words, returns an exact empty result.
+
 A query containing a negated full-text condition must also contain a non-negated full-text condition on the same index. A structured record condition alone does not satisfy this requirement. The positive full-text condition bounds the candidate set; the negated condition filters it.
 
 ```javascript
@@ -174,6 +176,8 @@ const products = await Product.search({
 All full-text conditions combined into one query must use the same freshness values. Harper returns `400` when combined conditions specify different values.
 
 A non-waiting HTTP query can return `Harper-Index-Coverage` with the admitted state, lag upper bound, and requested tolerance. A zero-size page performs no native search and carries no coverage proof. A waiting `Table.search()` establishes coverage as its iterator is consumed. A `search_by_conditions` request completes only after its wait and search finish. Waiting queries do not emit a coverage header before completion.
+
+If acceptable coverage is not reached before `waitForIndexMilliseconds` expires, Harper returns `503` with `code: "DERIVED_INDEX_LAGGING"` and `retryable: true`. For `Table.search()`, the error is raised while the async iterator is consumed. An HTTP response may already be streaming, so clients should also handle a terminal stream error rather than relying only on the initial status.
 
 ## Prefix result window
 

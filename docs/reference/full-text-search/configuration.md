@@ -140,6 +140,8 @@ Harper validates the Blob's media type when applying it to the index.
 
 Changes that affect indexed storage create a new local index generation and rebuild from source data. These include source names and media types, analyzer settings, stop-word handling, positions, surface terms, and synonyms.
 
+While a generation rebuilds, ordinary table reads and writes remain available, but full-text queries on that node return retryable `503` responses until the index is ready.
+
 Changing source weights or highlighting settings changes query behavior without rebuilding indexed term storage. Removing an index retires its local files after the schema change is confirmed.
 
 ## Inspecting an index

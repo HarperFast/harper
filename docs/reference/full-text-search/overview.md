@@ -44,7 +44,7 @@ This design has two consequences:
 
 On restart, Harper reuses compatible local index files and replays committed changes after the saved checkpoint. If those files are missing, incompatible, or corrupt, Harper rebuilds the index locally.
 
-A rebuild scans the current table and replays changes committed during the scan. An unreadable, corrupt, or insufficient audit-log prefix can make a rebuild fail. Harper retries with backoff; after the retry budget is exhausted, readiness becomes `unavailable`. Inspect `describe_table` and the node logs for the reason before retrying activation.
+A rebuild scans the current table and replays changes committed during the scan. An unreadable or corrupt transaction log can make a rebuild fail. The same applies when [transaction-log cleanup](../database/transaction.md#delete_transaction_logs_before) or automatic retention removes history required to bridge the scan to current writes. Harper retries with backoff; after the retry budget is exhausted, readiness becomes `unavailable`. Inspect `describe_table` and the node logs for the reason before retrying activation.
 
 Ordinary table reads and writes remain available during a rebuild. Full-text queries return `503` with `code: "INDEX_REBUILDING"` and `retryable: true` until the index is ready. A new replica follows the same process before serving full-text queries.
 
