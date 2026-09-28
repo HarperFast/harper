@@ -77,11 +77,11 @@ async function loadRootComponents(isWorkerThread = false) {
 
 	// Settle jobs whose owning process is gone, before anything can start a new one. Required on the
 	// main thread only, and deliberately not fatal: an unreconciled job row is misleading, but failing
-	// to reconcile it is no reason to refuse to boot. Loading the module here also mints the owner id
-	// before any worker is spawned, so every worker inherits it.
+	// to reconcile it is no reason to refuse to boot. This function re-runs on every root component
+	// reload; the sweep itself is what holds the once-per-process guard.
 	if (isMainThread) {
 		try {
-			await require('./jobs/jobOwnership.ts').reconcileInterruptedJobs();
+			await require('./jobs/jobOwnership.ts').reconcileInterruptedJobsOnce();
 		} catch (error) {
 			console.error(errorForLog(error));
 		}

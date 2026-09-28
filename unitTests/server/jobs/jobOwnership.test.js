@@ -11,8 +11,10 @@ const {
 	JOB_OWNER_ATTRIBUTES,
 	JOB_OWNER_INSTANCE_ID,
 	reconcileInterruptedJobs,
+	reconcileInterruptedJobsOnce,
 	stampJobOwner,
 } = require('#src/server/jobs/jobOwnership');
+const manageThreads = require('#src/server/threads/manageThreads');
 const jobs = require('#src/server/jobs/jobs');
 
 function jobTable() {
@@ -66,9 +68,14 @@ describe('jobOwnership', function () {
 			assert.strictEqual(job.owner_pid, process.pid);
 		});
 
-		it('mints an instance id that is not the pid, so a reused pid cannot look alive', function () {
+		it('identifies the process by the thread fabric incarnation, not the pid', function () {
 			assert.strictEqual(typeof JOB_OWNER_INSTANCE_ID, 'string');
 			assert.notStrictEqual(JOB_OWNER_INSTANCE_ID, String(process.pid));
+			assert.strictEqual(
+				JOB_OWNER_INSTANCE_ID,
+				manageThreads.processIncarnation,
+				'job ownership and the thread fabric must share one definition of process identity'
+			);
 		});
 	});
 
@@ -168,6 +175,24 @@ describe('jobOwnership', function () {
 			for (const attribute of JOB_OWNER_ATTRIBUTES) {
 				assert.ok(!(attribute in job), `${attribute} must not be returned to clients`);
 			}
+		});
+	});
+
+	describe('reconcileInterruptedJobsOnce', function () {
+		// Runs last on purpose: it spends the process-lifetime guard, so any later call is a no-op.
+		it('sweeps once per process, however many times a reload calls it', async function () {
+			const first = await seedJob({ owner_instance: randomUUID() });
+			seeded.push(first);
+
+			assert.strictEqual(await reconcileInterruptedJobsOnce(), 1);
+			assert.strictEqual(await statusOf(first), JOB_STATUS_ENUM.ERROR);
+
+			// Stands in for a root component reload after a new job has been created.
+			const second = await seedJob({ owner_instance: randomUUID() });
+			seeded.push(second);
+
+			assert.strictEqual(await reconcileInterruptedJobsOnce(), 1, 'the cached first result, not a second sweep');
+			assert.strictEqual(await statusOf(second), JOB_STATUS_ENUM.IN_PROGRESS, 'a reload must not re-walk job history');
 		});
 	});
 });
