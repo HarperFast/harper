@@ -18,7 +18,6 @@ async function probe(lockdown) {
 		.replace(/^ {2}path: null$/m, `  path: ${JSON.stringify(storagePath)}`)
 		.replace(/^ {2}lockdown: freeze-after-load$/m, `  lockdown: ${lockdown}`);
 	writeFileSync(join(storagePath, 'harper-config.yaml'), config);
-	// noServerStart keeps threadServer from starting the boot load on require, so the fixture decides when it starts.
 	const worker = new Worker(FIXTURE, {
 		workerData: { addPorts: [], addThreadIds: [], noServerStart: true, storagePath },
 	});

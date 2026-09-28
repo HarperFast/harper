@@ -81,9 +81,11 @@ fresh worker's load of the candidate meets. That narrower mismatch predates this
 
 Under the default, no node load-validates a deploy. A candidate that throws at load goes live on every node
 alike, and each restarted worker fails that component closed and serves the rest. That was always the
-origin's behavior, and it replaces a cluster split between versions. The `load` progress phase no longer
-fires on a worker either; the operations API, on the main thread, never emitted it. Validating there again
-needs a load in a fresh realm, which is #2315 step 2's shelved isolated validator.
+origin's behavior, and it replaces a cluster split between versions. A node on an earlier 5.3 build still
+validates in its frozen workers and keeps refusing a candidate whose dependency extends an intrinsic at load,
+so such a deploy converges only once every node is upgraded; retry it then. The `load` progress phase no
+longer fires on a worker either; the operations API, on the main thread, never emitted it. Validating there
+again needs a load in a fresh realm, which is #2315 step 2's shelved isolated validator.
 
 ### Staging a build now and activating it later
 

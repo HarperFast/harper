@@ -1,12 +1,6 @@
 /**
- * harper#2881: a `deploy_component` executed on a worker thread — which is where a replicated peer
- * runs it — used to load-validate the staged candidate inside that worker. Under the default
- * `applications.lockdown: freeze-after-load` the worker's intrinsics are frozen by then, so a
- * dependency that extends one at load time (reflect-metadata defines `Reflect.decorate`) threw, and
- * a candidate that loads fine in every freshly started worker was rejected on every attempt.
- *
- * The deployer component below calls `server.operation()` from a worker, which is the same path a
- * replicated peer takes, so a single node reproduces it.
+ * `deploy_component` executed on a worker thread, the way a replicated peer executes it, under each lockdown
+ * mode. The deployer component calls `server.operation()` from a worker, so a single node reaches that path.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
@@ -201,15 +195,13 @@ suite('deploy_component on a worker thread under freeze-after-load (harper#2881)
 		strictEqual(result.isMainThread, false, 'the deploy must execute on a worker thread to exercise the peer path');
 		ok(result.ok, `deploy from a worker failed: ${result.error}`);
 
-		// The replacement worker loads the candidate before its intrinsics are frozen, as every node does at boot.
 		await restartWorkersFromMainThread(ctx);
 		await waitForResource(ctx, resourceName(project), (body) => body.version === 1 && body.decorated === 'decorated');
 	});
 
 	test('the same dependency redeploys from a worker that loaded the live copy at boot', async () => {
 		const project = 'reflect-redeploy';
-		// Deployed through the operations API (main thread) and restarted, so the worker evaluates the
-		// dependency before its intrinsics are frozen — as every node does when it boots.
+		// Through the operations API, so the restarted worker loads it at boot, before its intrinsics freeze.
 		await operation(ctx, {
 			operation: 'deploy_component',
 			project,
@@ -234,7 +226,6 @@ suite('deploy_component on a worker thread under freeze-after-load (harper#2881)
 		strictEqual(result.isMainThread, false);
 		ok(result.ok, `the deploy was rejected: ${result.error}`);
 
-		// The restarted worker fails that component closed and keeps serving the rest.
 		await restartWorkersFromMainThread(ctx);
 		const deadline = Date.now() + 30_000;
 		let status: string | undefined;

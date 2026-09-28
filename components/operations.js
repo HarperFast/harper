@@ -453,9 +453,7 @@ async function packageComponent(req) {
  * A no-op on the main thread, and the operations API deploys there — so operator deploys are unvalidated
  * (#2315 step 2). What this guarantees is ORDER: where validation runs, a rejected candidate never goes live.
  *
- * Also a no-op on a worker that `applications.lockdown: freeze-after-load` (the default) freezes after its boot
- * load, which is where a replicated peer runs the deploy: a load there cannot reproduce a restarted worker's
- * (#2881).
+ * Also a no-op on a worker that `freeze-after-load` froze after its boot load; see components/DESIGN.md.
  */
 // `componentLoader.setErrorReporter` is ONE process-global callback, so two components validating
 // concurrently on the same worker cross-attribute their failures: B installs its reporter while A is

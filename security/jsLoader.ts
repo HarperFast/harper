@@ -89,9 +89,8 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 }
 
 /**
- * Whether a load in this thread can meet frozen intrinsics that a freshly started worker's boot load meets
- * unfrozen. `freeze-after-load` freezes them, irreversibly, once the thread's boot load finishes, so any later
- * or racing load differs from a boot load. `freeze` and `ses` freeze before the boot load.
+ * True where `freeze-after-load` freezes this thread's intrinsics once its boot load finishes, so no later
+ * load here matches a boot load.
  */
 export function laterLoadsMeetFrozenIntrinsics(): boolean {
 	return APPLICATIONS_LOCKDOWN === 'freeze-after-load' && bootLoadsComponents();

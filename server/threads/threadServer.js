@@ -9,7 +9,6 @@ exports.whenComponentsLoaded = new Promise((resolve) => {
 	componentsLoadedResolve = resolve;
 });
 let bootLoadStarted = false;
-/** Whether this thread runs the boot-time component load that settles `whenComponentsLoaded`. */
 exports.bootLoadsComponents = () => bootLoadStarted;
 
 const harperLogger = require('../../utility/logging/harper_logger.ts');
