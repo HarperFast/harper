@@ -22,6 +22,19 @@ const rocksDescribe = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.sk
 rocksDescribe('FullText field declarations', () => {
 	before(() => setupTestDBPath());
 
+	it('preserves the last type for duplicate ordinary fields', async () => {
+		await loadGQLSchema(`
+			type DuplicateOrdinaryFields @table(database: "fulltext_fields") {
+				id: ID @primaryKey
+				value: String
+				value: Int
+			}
+		`);
+		const Table = getDatabases().fulltext_fields.DuplicateOrdinaryFields;
+		assert.strictEqual(Table.properties.value.type, 'integer');
+		assert(Table.attributes.filter(({ name }) => name === 'value').every(({ type }) => type === 'Int'));
+	});
+
 	it('compiles forward source references without creating a record property', async () => {
 		await loadGQLSchema(`
 			type VirtualSearchProduct @table(database: "fulltext_fields", audit: true) {
@@ -60,7 +73,12 @@ rocksDescribe('FullText field declarations', () => {
 		['search: FullText @fullText(fields: [{ name: "title" }]) @allow(role: "admin")', /cannot use @allow/],
 		['search: FullText @computed @fullText(fields: [{ name: "title" }])', /cannot use @computed/],
 		['search: FullText @fullText(fields: [{ name: "search" }])', /unknown source field/],
-		['search: FullText @fullText(fields: [{ name: "title" }]) search: String', /declared more than once/],
+		['search: FullText @fullText(fields: [{ name: "title" }]) search: String', /conflicts with a stored attribute/],
+		['search: String search: FullText @fullText(fields: [{ name: "title" }])', /conflicts with a stored attribute/],
+		[
+			'search: FullText @fullText(fields: [{ name: "title" }]) search: FullText @fullText(fields: [{ name: "title" }])',
+			/declared more than once/,
+		],
 		['search: FullText @fullText(fields: [{ name: "title" }]) @fullText(fields: [{ name: "title" }])', /exactly one/],
 		['search: FullText @fullText(fields: [{ name: "title" }])', /only supported on a @table type/, ''],
 		[

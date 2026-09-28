@@ -62,6 +62,31 @@ rocksOnly('durable full-text declarations', () => {
 		assert.strictEqual((await Product.get('one')).search, 'ordinary dynamic value');
 	});
 
+	it('rejects incomplete field metadata before publishing a table', () => {
+		for (const fullTextFields of [[], ['search']]) {
+			assert.throws(
+				() => declare({ fullTextIndexes: [definition(), definition('other')], fullTextFields }),
+				/include every declared @fullText index/
+			);
+			assert.strictEqual(databases[database]?.Product, undefined);
+		}
+	});
+
+	it('rejects incomplete field metadata without changing an existing declaration', async () => {
+		const fullTextIndexes = [definition(), definition('other')];
+		const Product = declare({ fullTextIndexes });
+		const original = descriptor(Product);
+		for (const fullTextFields of [[], ['search']]) {
+			for (const options of [{ fullTextFields }, { fullTextIndexes, fullTextFields }]) {
+				assert.throws(() => declare(options), /include every declared @fullText index/);
+				assert.deepStrictEqual(descriptor(Product), original);
+				assert.deepStrictEqual(names(Product), ['other', 'search']);
+				assert.deepStrictEqual(Product.fullTextFields, ['other', 'search']);
+			}
+		}
+		await assert.rejects(async () => Product.put('one', { title: 'shoes', other: 'not writable' }), /query-only/);
+	});
+
 	it('updates reserved names when an index is removed', async () => {
 		let Product = declare({ fullTextIndexes: [definition(), definition('other')] });
 		Product = declare({ fullTextIndexes: [definition('other')] });
@@ -152,6 +177,19 @@ rocksOnly('durable full-text declarations', () => {
 		Product = declare({ origin: 'cluster', fullTextIndexes: [definition(), definition('peerSearch')] });
 		assert.deepStrictEqual(names(Product), ['peerSearch', 'search']);
 	});
+
+	for (const fullTextFields of [[], ['peerSearch'], null]) {
+		it(`guards a new peer index with field metadata ${JSON.stringify(fullTextFields)}`, async () => {
+			let Product = declare({ fullTextIndexes: [definition()] });
+			const generation = Product.fullTextIndexGenerations.search;
+			Product = declare({ origin: 'cluster', fullTextIndexes: [definition('peerSearch')], fullTextFields });
+			assert.deepStrictEqual(names(Product), ['peerSearch', 'search']);
+			assert.deepStrictEqual(descriptor(Product).fullTextFields, ['peerSearch', 'search']);
+			assert.strictEqual(Product.fullTextIndexGenerations.search, generation);
+			for (const name of ['peerSearch', 'search'])
+				await assert.rejects(async () => Product.put(name, { title: 'shoes', [name]: 'not writable' }), /query-only/);
+		});
+	}
 
 	it('ignores peer stored attributes that conflict with a local declaration', () => {
 		let Product = declare({ fullTextIndexes: [definition()] });

@@ -201,6 +201,41 @@ describe('Query Tier-1 additions', () => {
 				assert.equal(negative.conditions[0].negated, true);
 			}
 		});
+		it('preserves literal full-text strings for every comparator and negated form', () => {
+			for (const comparator of [
+				'matches',
+				'matches_all',
+				'matches_phrase',
+				'matches_prefix',
+				'matches_fuzzy',
+				'matches_fuzzy_prefix',
+			]) {
+				for (const negated of [false, true]) {
+					for (const value of ['null', 'number:1', 'boolean:true', 'date:2026-09-28', 'string:shoe', 'brand:shoe']) {
+						for (const encoded of [value, encodeURIComponent(value)]) {
+							const query = `catalogSearch=${negated ? 'not_' : ''}${comparator}=${encoded}`;
+							const [condition] = parseQuery(query).conditions;
+							assert.strictEqual(condition.value, value, query);
+							assert.strictEqual(condition.comparator, comparator, query);
+							assert.strictEqual(condition.negated, negated || undefined, query);
+						}
+					}
+				}
+			}
+		});
+		it('retains typed decoding for ordinary FIQL comparisons', () => {
+			for (const [encoded, expected] of [
+				['null', null],
+				['number:1', 1],
+				['boolean:true', true],
+				['date:2026-09-28', new Date('2026-09-28')],
+				['string:trail%20shoe', 'trail shoe'],
+			]) {
+				const [condition] = parseQuery(`value=eq=${encoded}`).conditions;
+				assert.deepStrictEqual(condition.value, expected, encoded);
+			}
+			assert.throws(() => parseQuery('value=eq=brand:shoe'), /Unknown type brand/);
+		});
 		it('parses between with list value', () => {
 			const q = parseQuery('age=between=(18,65)');
 			assert.equal(q.conditions[0].comparator, 'between');

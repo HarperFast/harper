@@ -192,6 +192,24 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		assert.ok(ranked[0].$score > ranked[1].$score);
 	});
 
+	test('preserves literal search text in REST full-text comparators', async () => {
+		const values = ['null', 'number:1', 'boolean:true', 'date:2026-09-28', 'string:null', 'status:ready'];
+		await request(
+			'/Product/literal-text',
+			{ method: 'PUT', body: JSON.stringify({ title: values.join(' '), owner: READER.username }) },
+			204
+		);
+		await waitForIds(query('null'), ['literal-text']);
+		for (const value of values) {
+			const structured = await search(query(value, { comparator: 'matches_phrase' }));
+			assert.deepStrictEqual(ids(structured), ['literal-text'], value);
+			for (const text of [value, encodeURIComponent(value)]) {
+				const rest = await request(`/Product/?catalogSearch=matches_phrase=${text}&select(id,title)`);
+				assert.deepStrictEqual(ids(rest), ids(structured), `REST ${text}`);
+			}
+		}
+	});
+
 	test('returns opt-in highlights and score metadata consistently through both public paths', async () => {
 		const target = query(
 			'trail running',

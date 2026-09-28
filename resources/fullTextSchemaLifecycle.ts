@@ -50,21 +50,20 @@ export function mergePeerFullTextFields(
 	warn: FullTextWarning
 ): string[] {
 	const retained = readPersistedFullTextFields(persistedValues, persistedDefinitions, attributes, warn);
-	if (incomingValues === undefined) incomingValues = persistedFullTextIndexNames(finalDefinitions);
-	let incoming: string[];
+	const finalNames = persistedFullTextIndexNames(finalDefinitions);
+	if (incomingValues === undefined) incomingValues = finalNames;
 	try {
-		incoming = compileFullTextFields(
+		compileFullTextFields(
 			incomingValues,
-			persistedFullTextIndexNames(finalDefinitions).map((name) => ({ name })),
+			finalNames.map((name) => ({ name })),
 			attributes
 		);
 	} catch (error) {
 		if (!(error instanceof ClientError)) throw error;
 		warn(`Ignoring invalid peer full-text fields: ${error.message}`);
-		return retained;
 	}
 	const existingNames = new Set(persistedFullTextIndexNames(persistedDefinitions));
-	return [...new Set([...retained, ...incoming.filter((name) => !existingNames.has(name))])].sort();
+	return [...new Set([...retained, ...finalNames.filter((name) => !existingNames.has(name))])].sort();
 }
 
 export function readPersistedFullTextDefinitions(

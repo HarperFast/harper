@@ -3725,7 +3725,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					return compileFullTextFields(
 						fullTextFields === undefined ? [...requestedNames] : fullTextFields,
 						names,
-						validationAttributes
+						validationAttributes,
+						true
 					);
 				};
 
@@ -3966,7 +3967,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					: compileFullTextFields(
 							fullTextFields === undefined ? persistedFullTextIndexNames(fullTextValuesForPersistence) : fullTextFields,
 							persistedFullTextIndexNames(fullTextValuesForPersistence).map((name) => ({ name })),
-							attributes
+							attributes,
+							true
 						);
 			const auditStore = rootStore.auditStore;
 			primaryKeyAttribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};

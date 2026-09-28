@@ -1752,7 +1752,9 @@ function parseBlock(query, expectedEnd) {
 					// caught at execution time with a clearer error.
 					if (FIQL_OPERATOR_NAME.test(value)) comparator = value;
 					else recordError(`invalid FIQL operator ${value}`);
-					valueDecoder = typedDecoding; // use typed/auto-cast decoding for FIQL operators
+					valueDecoder = fullTextComparatorMode(resolveComparator(comparator).comparator)
+						? decodeURIComponent
+						: typedDecoding;
 				} else {
 					// standard equal comparison
 					valueDecoder = decodeURIComponent; // use strict decoding

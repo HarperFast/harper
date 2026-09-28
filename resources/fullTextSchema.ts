@@ -120,7 +120,8 @@ export type FullTextSchemaAttribute = {
 export function compileFullTextFields(
 	values: unknown,
 	definitions: readonly Pick<FullTextDefinition, 'name'>[],
-	attributes: readonly FullTextSchemaAttribute[]
+	attributes: readonly FullTextSchemaAttribute[],
+	requireAll = false
 ): string[] {
 	if (!Array.isArray(values)) throw schemaError('fullTextFields must be a list of index names');
 	const indexes = new Set(definitions.map(({ name }) => name));
@@ -134,6 +135,8 @@ export function compileFullTextFields(
 		if (stored.has(name)) throw schemaError(`Full-text field "${name}" conflicts with a stored attribute`);
 		names.add(name);
 	}
+	if (requireAll && names.size !== indexes.size)
+		throw schemaError('fullTextFields must include every declared @fullText index');
 	return [...names].sort();
 }
 

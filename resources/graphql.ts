@@ -318,11 +318,8 @@ async function processGraphQLSchema(
 					return property;
 				}
 				const attributesObject = {};
-				const fieldNames = new Set<string>();
 				for (const field of definition.fields) {
 					const name = field.name.value;
-					if (fieldNames.has(name)) throw new ClientError(`Field "${name}" is declared more than once`, 400);
-					fieldNames.add(name);
 					const fullTextDirectives = field.directives.filter(({ name }) => name.value === 'fullText');
 					if (fullTextDirectives.length > 0) {
 						if (fullTextDirectives.length !== 1)
