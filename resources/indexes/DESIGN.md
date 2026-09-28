@@ -443,7 +443,7 @@ accepted index mutation through that capture is durable. The shared live waterma
 waiting query before Tantivy commits the newer restart checkpoint; the existing reader is data-current,
 and the later publication notification reloads its checkpoint. Catalog-scale qualification measures this
 metadata-only reload cadence so unrelated write traffic cannot become a hidden query-plane cost.
-Missing or malformed payloads fail closed and request one rebuild. A strict, non-waiting query on a
+Missing, cursorless or malformed payloads fail closed and request one rebuild. A strict, non-waiting query on a
 cold worker can return retryable lag while it opens the reader; retrying, or using
 `waitForIndexMilliseconds`, allows the aligned reader to finish opening without synchronous filesystem
 inspection. An epoch or query-configuration change requires a replacement handle. A publication reload
@@ -477,7 +477,11 @@ token's own shared readiness reaches ready at the same or a newer owner epoch. T
 part of the reset protocol. The pause covers every reader on the physical path, including a
 superseded generation. Concurrent resets retain independent tokens, and the path remains fenced
 until every active token is cleared by its matching resume or completed readiness. A stale resume
-cannot clear a newer token. This closes both handoff directions without assuming an ordering between
+cannot clear a newer token. A worker with no query index on the path retains no token because it has
+no reader to fence, and any later attachment remains gated by its generation's shared readiness.
+After the last local attachment for a superseded readiness id drains and unregisters, Harper clears
+that id's exact-epoch token from surviving readers on the path; a duplicate attachment for the same
+readiness id keeps the fence. This closes both handoff directions without assuming an ordering between
 generation-local epochs. If the native
 reader violates its contract by rejecting close, Harper logs the failure and proceeds with reset
 rather than wedging the path indefinitely; the reset therefore assumes that rejected handle is dead.

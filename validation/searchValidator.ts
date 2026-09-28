@@ -122,7 +122,6 @@ export default function (searchObject: any, type: any) {
 
 		let tableSchema = getDatabases()[searchObject.schema][searchObject.table];
 		let allTableAttributes = tableSchema.attributes;
-		const fullTextNames = new Set((tableSchema.fullTextIndexes ?? []).map(({ name }) => name));
 
 		//this clones the get_attributes array
 		let checkAttributes = searchObject.get_attributes ? [...searchObject.get_attributes] : [];
@@ -136,8 +135,8 @@ export default function (searchObject: any, type: any) {
 			//this is used to validate condition attributes exist in the schema
 			for (const condition of searchObject.conditions) {
 				if (condition.conditions) addConditions(condition);
+				// Table.search resolves full-text names together with source-field authorization.
 				else if (!FULL_TEXT_COMPARATOR_SET.has(condition.comparator)) checkAttributes.push(condition.attribute);
-				else if (!fullTextNames.has(condition.attribute)) checkAttributes.push(condition.attribute);
 			}
 		};
 		if (type === 'conditions') {

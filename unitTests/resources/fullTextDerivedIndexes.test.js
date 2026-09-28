@@ -23,6 +23,7 @@ const {
 const { FullTextNativeTestBinding } = require('./fullTextNativeTestBinding');
 const { describeTable } = require('#src/dataLayer/schemaDescribe');
 const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
+const searchValidator = require('#src/validation/searchValidator').default;
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const rocksOnly = isLMDB ? it.skip : it;
@@ -509,7 +510,7 @@ describe('@fullText derived-index activation', () => {
 					table: 'Product',
 					user: { username: 'spoofed-principal' },
 					get_attributes: ['*'],
-					conditions: [{ attribute: 'title', comparator: 'in', value: ['Trail shoe'] }],
+					conditions: [{ attribute: 'title', comparator: 'equals', value: 'Trail shoe' }],
 				}
 			);
 		} finally {
@@ -528,7 +529,7 @@ describe('@fullText derived-index activation', () => {
 		]);
 		assert.strictEqual(fullTextCaptured.context.user.username, 'catalog-reader');
 		assert.deepStrictEqual(captured.query.conditions, [
-			{ attribute: 'title', comparator: 'in', value: ['Trail shoe'] },
+			{ attribute: 'title', comparator: 'equals', value: 'Trail shoe' },
 		]);
 		assert.strictEqual(captured.context.user, undefined);
 	});
@@ -600,6 +601,28 @@ describe('@fullText derived-index activation', () => {
 							conditions: [{ attribute: 'search', comparator: 'matches', value: 'trail', fields: ['tags'] }],
 							limit: 1,
 						},
+						{ user }
+					)
+				)
+			),
+			(error) => error.name === 'AccessViolation' || error.statusCode === 403
+		);
+		assert.strictEqual(
+			searchValidator(
+				{
+					schema: database,
+					table: 'Product',
+					conditions: [{ attribute: 'hidden-search', comparator: 'matches', value: 'shoe' }],
+				},
+				'conditions'
+			),
+			undefined
+		);
+		await assert.rejects(
+			Promise.resolve().then(() =>
+				collect(
+					Product.search(
+						{ conditions: [{ attribute: 'hidden-search', comparator: 'matches', value: 'shoe' }], limit: 1 },
 						{ user }
 					)
 				)

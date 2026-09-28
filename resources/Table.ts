@@ -5028,8 +5028,7 @@ export function makeTable(options) {
 						fullTextMode && typeof attribute_name === 'string'
 							? TableResource.fullTextIndexes.find((definition) => definition.name === attribute_name)
 							: undefined;
-					if (fullTextMode && !fullTextDefinition)
-						throw new ClientError('Full-text comparator requires a declared @fullText index', 400);
+					if (fullTextMode && !fullTextDefinition) throwUnknownFullTextIndex(context, target);
 					if (fullTextDefinition) {
 						const fields = condition.fields;
 						if (fields !== undefined) {
@@ -7926,6 +7925,12 @@ export function makeTable(options) {
 		const readable = attributesAsObject(permission.attribute_permissions, 'read');
 		const searched = requestedFields ?? definition.fields.map(({ name }) => name);
 		if (searched.some((name) => !readable[name])) throw new AccessViolation(user);
+	}
+	function throwUnknownFullTextIndex(context: Context | undefined, target: RequestTarget): never {
+		const user = (context as any)?.user;
+		const permission = (target as any)[FULL_TEXT_READ_PERMISSION] ?? getTablePermissions(user, target);
+		if (permission?.attribute_permissions?.length) throw new AccessViolation(user);
+		throw new ClientError('Full-text comparator requires a declared @fullText index', 400);
 	}
 
 	function setLoadedFromSource(target: RequestTarget | undefined, loadedFromSource: boolean) {

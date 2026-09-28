@@ -259,7 +259,7 @@ export class FullTextQueryIndex {
 		const retirement = this.#retireAllReaders();
 		void retirement.then(
 			() => this.#unregister(),
-			() => undefined
+			() => this.#unregister()
 		);
 		await withTimeout(
 			retirement,
@@ -588,6 +588,7 @@ export class FullTextQueryIndex {
 		try {
 			if (reader.committedPayload === undefined) throw new Error('missing publication');
 			const publication = decodeFullTextPublication(reader.committedPayload);
+			if (!publication.cursor) throw new Error('missing durable cursor');
 			this.#publicationRebuildRequested = false;
 			return publication;
 		} catch (cause) {
@@ -671,9 +672,21 @@ export class FullTextQueryIndex {
 	}
 
 	#unregister(): void {
-		const indexes = queryIndexesByPath.get(this.#nativeOptions.path);
+		const path = this.#nativeOptions.path;
+		const indexes = queryIndexesByPath.get(path);
 		indexes?.delete(this);
-		if (indexes?.size === 0) queryIndexesByPath.delete(this.#nativeOptions.path);
+		if (!indexes || indexes.size === 0) {
+			queryIndexesByPath.delete(path);
+			pausedQueryPaths.delete(path);
+			return;
+		}
+		for (const index of indexes) {
+			if (index.#options.readinessId === this.#options.readinessId) return;
+		}
+		const ownerEpoch = pausedQueryPaths.get(path)?.get(this.#options.readinessId);
+		if (ownerEpoch === undefined) return;
+		clearPathPause(path, this.#options.readinessId, ownerEpoch);
+		for (const index of indexes) index.resume(this.#options.readinessId, ownerEpoch);
 	}
 
 	async #closeWhenIdle(slot: ReaderSlot): Promise<void> {
@@ -737,11 +750,13 @@ export async function pauseNativeFullTextQueryReaders(
 	readinessId: string,
 	ownerEpoch: bigint
 ): Promise<void> {
+	const indexes = queryIndexesByPath.get(path);
+	if (!indexes || indexes.size === 0) return;
 	let pauses = pausedQueryPaths.get(path);
 	if (!pauses) pausedQueryPaths.set(path, (pauses = new Map()));
 	const current = pauses.get(readinessId);
 	if (current === undefined || current <= ownerEpoch) pauses.set(readinessId, ownerEpoch);
-	await Promise.all([...(queryIndexesByPath.get(path) ?? [])].map((index) => index.pause(readinessId, ownerEpoch)));
+	await Promise.all([...indexes].map((index) => index.pause(readinessId, ownerEpoch)));
 }
 
 export function resumeNativeFullTextQueryReaders(path: string, readinessId: string, ownerEpoch: bigint): void {

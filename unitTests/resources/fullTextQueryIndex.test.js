@@ -114,7 +114,18 @@ function attachCurrentCoverage(index, auditStore, readinessId) {
 	return { publish: (notify) => auditStore.publish(readinessId, notify) };
 }
 
-function simpleQueryIndex({ auditStore, readinessId, payload, hits, onReload, onGetEntry, entryForKey }) {
+function simpleQueryIndex({
+	auditStore,
+	readinessId,
+	payload,
+	hits,
+	onReload,
+	onClose,
+	onGetEntry,
+	entryForKey,
+	storeName = 'unused',
+	sourceGeneration = 'generation',
+}) {
 	let committedPayload = payload;
 	let reloads = 0;
 	const index = new FullTextQueryIndex({
@@ -134,8 +145,8 @@ function simpleQueryIndex({ auditStore, readinessId, payload, hits, onReload, on
 		readinessId,
 		indexId: readinessId,
 		storePath: '/unused',
-		storeName: 'unused',
-		sourceGeneration: 'generation',
+		storeName,
+		sourceGeneration,
 		limits: {},
 		binding: {
 			async runtimeInfo() {
@@ -157,7 +168,9 @@ function simpleQueryIndex({ auditStore, readinessId, payload, hits, onReload, on
 						reloads++;
 						onReload?.();
 					},
-					async close() {},
+					async close() {
+						onClose?.();
+					},
 				};
 			},
 		},
@@ -167,6 +180,20 @@ function simpleQueryIndex({ auditStore, readinessId, payload, hits, onReload, on
 		reloads: () => reloads,
 		setPayload: (value) => (committedPayload = value),
 	};
+}
+
+function readyQueryIndex(auditStore, readinessId, storeName) {
+	publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+	const fixture = simpleQueryIndex({
+		auditStore,
+		readinessId,
+		payload: publicationPayload(),
+		hits: () => [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+		storeName,
+		sourceGeneration: readinessId,
+	});
+	attachCurrentCoverage(fixture.index, auditStore, readinessId);
+	return fixture.index;
 }
 
 describe('FullTextQueryIndex', () => {
@@ -751,11 +778,12 @@ describe('FullTextQueryIndex', () => {
 	});
 
 	it('fails closed and requests one rebuild for an invalid reader checkpoint', async () => {
-		for (const payload of [undefined, 'not-json']) {
+		for (const payload of [undefined, 'not-json', encodeFullTextCursorPayload(undefined)]) {
 			const auditStore = sharedStore();
 			const readinessId = `invalid-reader-checkpoint-${String(payload)}`;
 			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
 			let rebuilds = 0;
+			let closes = 0;
 			const index = new FullTextQueryIndex({
 				Table: { tableId: 1, primaryStore: {}, _readTxnForContext: () => undefined },
 				definition: definition(),
@@ -774,7 +802,14 @@ describe('FullTextQueryIndex', () => {
 						};
 					},
 					async openNativeFullTextReader() {
-						return { committedPayload: payload, async search() {}, async reload() {}, async close() {} };
+						return {
+							committedPayload: payload,
+							async search() {},
+							async reload() {},
+							async close() {
+								closes++;
+							},
+						};
 					},
 				},
 			});
@@ -788,8 +823,42 @@ describe('FullTextQueryIndex', () => {
 			await assert.rejects(index.search(query, {}), (error) => error.name === 'IndexRebuildingError');
 			await assert.rejects(index.search(query, {}), (error) => error.name === 'IndexRebuildingError');
 			assert.strictEqual(rebuilds, 1);
+			assert.strictEqual(closes, 2);
 			await index.close();
 		}
+	});
+
+	it('retires a warm reader that reloads without a durable cursor', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'cursorless-reader-reload';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let closes = 0;
+		let rebuilds = 0;
+		const fixture = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+			onClose: () => closes++,
+			storeName: readinessId,
+		});
+		auditStore.setCoverage(readinessId, 99_000_000n);
+		fixture.index.attachDerivedHost({
+			readiness: () => ({ state: 'ready' }),
+			requestRebuild: () => (rebuilds++, true),
+			waitForCoverage: async () => {},
+		});
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
+		assert.strictEqual((await fixture.index.search(query, {}, { minResults: 1 })).length, 1);
+		fixture.setPayload(encodeFullTextCursorPayload(undefined));
+		auditStore.publish(readinessId);
+		await waitFor(() => rebuilds === 1 && closes === 1);
+		await assert.rejects(
+			fixture.index.search(query, {}, { minResults: 1 }),
+			(error) => error.name === 'IndexRebuildingError'
+		);
+		assert.strictEqual(rebuilds, 1);
+		await fixture.index.close();
 	});
 
 	it('retries rebuild requests that throw or decline without consuming the repair latch', async () => {
@@ -2579,6 +2648,67 @@ describe('FullTextQueryIndex', () => {
 		);
 		await oldIndex.close();
 		await newIndex.close();
+	});
+
+	it('clears an abandoned pause after its last generation attachment retires', async () => {
+		const auditStore = sharedStore();
+		const oldReadinessId = 'query-abandoned-pause-old';
+		const currentReadinessId = 'query-abandoned-pause-current';
+		const storeName = 'query-abandoned-pause';
+		const path = nativeFullTextIndexPath('/unused', storeName);
+		const oldIndex = readyQueryIndex(auditStore, oldReadinessId, storeName);
+		const currentIndex = readyQueryIndex(auditStore, currentReadinessId, storeName);
+		const query = { attribute: currentReadinessId, comparator: 'matches', value: 'shoe' };
+
+		await pauseNativeFullTextQueryReaders(path, oldReadinessId, 1n);
+		await assert.rejects(currentIndex.search(query, {}), (error) => error.name === 'IndexRebuildingError');
+		await oldIndex.close();
+		await waitFor(async () => {
+			try {
+				return (await currentIndex.search(query, {}, { minResults: 1 })).length === 1;
+			} catch {
+				return false;
+			}
+		});
+		await currentIndex.close();
+	});
+
+	it('keeps a pause until every same-generation attachment retires', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'query-shared-generation-pause';
+		const storeName = 'query-shared-generation-pause';
+		const path = nativeFullTextIndexPath('/unused', storeName);
+		const first = readyQueryIndex(auditStore, readinessId, storeName);
+		const second = readyQueryIndex(auditStore, readinessId, storeName);
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
+
+		await pauseNativeFullTextQueryReaders(path, readinessId, 1n);
+		await first.close();
+		await assert.rejects(second.search(query, {}), (error) => error.name === 'IndexRebuildingError');
+		resumeNativeFullTextQueryReaders(path, readinessId, 1n);
+		assert.strictEqual((await second.search(query, {}, { minResults: 1 })).length, 1);
+		await second.close();
+	});
+
+	it('does not retain a pause on a path with no local query index', async () => {
+		const auditStore = sharedStore();
+		const staleReadinessId = 'query-empty-path-pause-old';
+		const currentReadinessId = 'query-empty-path-pause-current';
+		const storeName = 'query-empty-path-pause';
+		const path = nativeFullTextIndexPath('/unused', storeName);
+		await pauseNativeFullTextQueryReaders(path, staleReadinessId, 1n);
+		const index = readyQueryIndex(auditStore, currentReadinessId, storeName);
+		assert.strictEqual(
+			(
+				await index.search(
+					{ attribute: currentReadinessId, comparator: 'matches', value: 'shoe' },
+					{},
+					{ minResults: 1 }
+				)
+			).length,
+			1
+		);
+		await index.close();
 	});
 
 	it('recovers a foreign pause after its readiness returns to ready', async () => {
