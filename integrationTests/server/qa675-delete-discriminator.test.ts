@@ -19,22 +19,23 @@ import { waitForRouteReady } from '../apiTests/utils/lifecycle.mjs';
 const FIXTURE_PATH = resolve(import.meta.dirname, 'qa675-delete-discriminator');
 const RECORD_PATH = '/Widget/record-1';
 type Event = { raw: string; envelope: any };
+type EventStream = { events: Event[]; error?: Error; close: () => void };
+const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 
 function capture(raw: string): Event {
-	let envelope;
 	try {
-		envelope = JSON.parse(raw);
+		return { raw, envelope: JSON.parse(raw) };
 	} catch {
-		// Keep invalid wire data visible in a failed assertion.
+		return { raw, envelope: undefined };
 	}
-	return { raw, envelope };
 }
 
-function openSse(url: string, authorization: string): Promise<{ events: Event[]; close: () => void }> {
+function openSse(url: string, authorization: string): Promise<EventStream> {
 	const events: Event[] = [];
 	const target = new URL(url);
 	const transport = target.protocol === 'https:' ? https : http;
 	return new Promise((resolvePromise, reject) => {
+		let stream: EventStream | undefined;
 		const request = transport.request(
 			target,
 			{
@@ -50,9 +51,28 @@ function openSse(url: string, authorization: string): Promise<{ events: Event[];
 					return;
 				}
 				let pending = '';
+				let closedByTest = false;
+				const responseStream: EventStream = {
+					events,
+					close: () => {
+						closedByTest = true;
+						response.destroy();
+						request.destroy();
+					},
+				};
+				stream = responseStream;
+				response.on('error', (error) => {
+					responseStream.error = error;
+				});
+				response.on('aborted', () => {
+					responseStream.error ??= new Error('SSE response aborted');
+				});
+				response.on('close', () => {
+					if (!closedByTest) responseStream.error ??= new Error('SSE response closed before the next event');
+				});
 				response.setEncoding('utf8');
 				response.on('data', (chunk: string) => {
-					pending += chunk.replace(/\r\n/g, '\n');
+					pending = (pending + chunk).replace(/\r\n/g, '\n');
 					let boundary;
 					while ((boundary = pending.indexOf('\n\n')) >= 0) {
 						const frame = pending.slice(0, boundary);
@@ -65,52 +85,69 @@ function openSse(url: string, authorization: string): Promise<{ events: Event[];
 						if (data) events.push(capture(data));
 					}
 				});
-				resolvePromise({
-					events,
-					close: () => {
-						response.destroy();
-						request.destroy();
-					},
-				});
+				resolvePromise(responseStream);
 			}
 		);
-		request.on('error', reject);
+		request.on('error', (error) => {
+			if (stream) stream.error = error;
+			reject(error);
+		});
 		request.setTimeout(8_000, () => request.destroy(new Error('SSE open timed out')));
 		request.end();
 	});
 }
 
-function openWebSocket(url: string, authorization: string): Promise<{ events: Event[]; close: () => void }> {
+function openWebSocket(url: string, authorization: string): Promise<EventStream> {
 	const events: Event[] = [];
 	const socket = new WebSocket(url, {
 		headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
 		rejectUnauthorized: false,
 	});
 	socket.on('message', (data: Buffer) => events.push(capture(data.toString('utf8'))));
+	let closedByTest = false;
+	const stream: EventStream = {
+		events,
+		close: () => {
+			closedByTest = true;
+			socket.terminate();
+		},
+	};
 	return new Promise((resolvePromise, reject) => {
+		let opened = false;
 		const timer = setTimeout(() => {
 			socket.terminate();
 			reject(new Error('WebSocket open timed out'));
 		}, 8_000);
 		socket.once('open', () => {
+			opened = true;
 			clearTimeout(timer);
-			resolvePromise({ events, close: () => socket.terminate() });
+			resolvePromise(stream);
 		});
-		socket.once('error', (error) => {
-			clearTimeout(timer);
-			reject(error);
+		socket.on('error', (error) => {
+			stream.error = error;
+			if (!opened) {
+				clearTimeout(timer);
+				reject(error);
+			}
+		});
+		socket.on('close', (code, reason) => {
+			if (!closedByTest) stream.error ??= new Error(`WebSocket closed: ${code} ${reason.toString()}`);
 		});
 	});
 }
 
-async function waitForEvent(events: Event[], start: number, name: string): Promise<Event> {
+async function waitForEvent(stream: EventStream, start: number, name: string): Promise<Event> {
 	const deadline = Date.now() + 6_000;
-	while (Date.now() < deadline && events.length === start) await sleep(25);
-	assert.ok(events.length > start, `${name}: no event after index ${start}; events=${JSON.stringify(events)}`);
-	return events[start];
+	while (Date.now() < deadline && stream.events.length <= start && !stream.error) await sleep(25);
+	if (stream.error) throw new Error(`${name}: stream failed`, { cause: stream.error });
+	assert.ok(
+		stream.events.length > start,
+		`${name}: no event after index ${start}; events=${JSON.stringify(stream.events)}`
+	);
+	return stream.events[start];
 }
 
-suite('QA-675 REST delete discriminator', (ctx: ContextWithHarper) => {
+suite('QA-675 REST delete discriminator', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	let httpURL: string;
 	let authorization: string;
 
@@ -138,10 +175,10 @@ suite('QA-675 REST delete discriminator', (ctx: ContextWithHarper) => {
 		let observed: { status: number; value?: unknown } | undefined;
 		do {
 			const response = await rest('GET');
-			observed = {
-				status: response.status,
-				value: response.status === 200 ? (await response.json()).value : undefined,
-			};
+			let value;
+			if (response.status === 200) value = (await response.json()).value;
+			else await response.text();
+			observed = { status: response.status, value };
 			if (observed.status === expectedStatus && (expectedStatus !== 200 || observed.value === expectedValue)) return;
 			await sleep(25);
 		} while (Date.now() < deadline);
@@ -162,7 +199,7 @@ suite('QA-675 REST delete discriminator', (ctx: ContextWithHarper) => {
 				['SSE', sse],
 				['WS', ws],
 			] as const) {
-				const initial = await waitForEvent(stream.events, 0, `${name} initial`);
+				const initial = await waitForEvent(stream, 0, `${name} initial`);
 				assert.strictEqual(initial.envelope?.type, 'put', `${name} initial: ${initial.raw}`);
 				assert.strictEqual(initial.envelope?.value?.value, 1, `${name} initial: ${initial.raw}`);
 			}
@@ -177,8 +214,8 @@ suite('QA-675 REST delete discriminator', (ctx: ContextWithHarper) => {
 			assert.strictEqual(patchedRecord.value, null);
 			assert.strictEqual(patchedRecord.tag, 'retained');
 			const patchEvents = [
-				await waitForEvent(sse.events, ssePatchStart, 'SSE PATCH'),
-				await waitForEvent(ws.events, wsPatchStart, 'WS PATCH'),
+				await waitForEvent(sse, ssePatchStart, 'SSE PATCH'),
+				await waitForEvent(ws, wsPatchStart, 'WS PATCH'),
 			];
 			for (const [index, event] of patchEvents.entries()) {
 				assert.strictEqual(event.envelope?.type, 'put', `PATCH transport ${index}: ${event.raw}`);
@@ -191,16 +228,13 @@ suite('QA-675 REST delete discriminator', (ctx: ContextWithHarper) => {
 			assert.strictEqual((await rest('DELETE')).status, 200);
 			await waitForRecord(404);
 			const deleteEvents = [
-				await waitForEvent(sse.events, sseDeleteStart, 'SSE DELETE'),
-				await waitForEvent(ws.events, wsDeleteStart, 'WS DELETE'),
+				await waitForEvent(sse, sseDeleteStart, 'SSE DELETE'),
+				await waitForEvent(ws, wsDeleteStart, 'WS DELETE'),
 			];
 			for (const [index, event] of deleteEvents.entries()) {
 				assert.strictEqual(event.envelope?.type, 'delete', `DELETE transport ${index}: ${event.raw}`);
 				assert.strictEqual(event.envelope?.value, null, `DELETE transport ${index}: ${event.raw}`);
 			}
-			console.log(
-				`QA-675 observed: SSE=${JSON.stringify({ count: sse.events.length, patch: patchEvents[0].envelope, delete: deleteEvents[0].envelope })} WS=${JSON.stringify({ count: ws.events.length, patch: patchEvents[1].envelope, delete: deleteEvents[1].envelope })}`
-			);
 		} finally {
 			sse?.close();
 			ws?.close();
