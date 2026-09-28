@@ -16,6 +16,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [`Resource.ts` — base class](resources/DESIGN.md#resourcets--base-class) — Static entry points versus instance methods, and the `transactional()` wrapper.
 - [`Table.ts` — section map](resources/DESIGN.md#tablets--section-map) — Section markers for the 4.7K-line `makeTable()` factory.
 - ["Where is X" cheat sheet](resources/DESIGN.md#where-is-x-cheat-sheet) — Symbol lookup for the read/write path, audit, subscriptions and schema.
+- [Full-text declarations and reader snapshots](resources/DESIGN.md#full-text-declarations-and-reader-snapshots) — Declaration names stay separate from stored attributes; a query retains one native reader across every page.
 - [Audit retention floor](resources/DESIGN.md#audit-retention-floor) — A saved audit cursor below the floor must resync; the floor is internal, and `Table.commit` skips the out-of-order walk below it.
 - [Path routing & parameterised routes](resources/DESIGN.md#path-routing--parameterised-routes) — How resource paths and route parameters resolve.
 - [Persisted relationship catalog](resources/DESIGN.md#persisted-relationship-catalog) — Where relationship definitions are stored and rebuilt.
