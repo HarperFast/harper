@@ -45,6 +45,61 @@ export type FullTextDefinition = {
 	highlighting?: FullTextHighlighting;
 };
 
+export type FullTextStorageDefinition = Pick<
+	FullTextDefinition,
+	'analyzer' | 'stopWords' | 'positions' | 'surfaceTerms'
+> & {
+	fields: Array<Pick<FullTextSource, 'name' | 'weight'>>;
+};
+
+export type FullTextIndexGenerations = Record<string, string>;
+
+/** Names are enough to locate native storage even when source attributes are missing or stale. */
+export function persistedFullTextIndexNames(values: unknown): string[] {
+	if (!Array.isArray(values)) return [];
+	const names = new Set<string>();
+	for (const value of values) {
+		if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+		const name = (value as { name?: unknown }).name;
+		if (typeof name === 'string' && name.length > 0) names.add(name);
+	}
+	return [...names].sort();
+}
+
+export function fullTextStorageDefinition(definition: FullTextDefinition): FullTextStorageDefinition {
+	return {
+		fields: definition.fields.map(({ name, weight }) => ({ name, weight })),
+		analyzer: definition.analyzer,
+		stopWords: definition.stopWords,
+		positions: definition.positions,
+		surfaceTerms: definition.surfaceTerms,
+	};
+}
+
+export function reconcileFullTextIndexGenerations(
+	previousDefinitions: readonly FullTextDefinition[],
+	previousGenerations: unknown,
+	nextDefinitions: readonly FullTextDefinition[],
+	createGeneration: () => string
+): FullTextIndexGenerations {
+	const previousByName = new Map(previousDefinitions.map((definition) => [definition.name, definition]));
+	const durable =
+		previousGenerations && typeof previousGenerations === 'object' && !Array.isArray(previousGenerations)
+			? (previousGenerations as Record<string, unknown>)
+			: Object.create(null);
+	const generations: FullTextIndexGenerations = Object.create(null);
+	for (const definition of nextDefinitions) {
+		const previous = previousByName.get(definition.name);
+		const generation = durable[definition.name];
+		const storageUnchanged =
+			previous &&
+			JSON.stringify(fullTextStorageDefinition(previous)) === JSON.stringify(fullTextStorageDefinition(definition));
+		generations[definition.name] =
+			storageUnchanged && typeof generation === 'string' && generation.length > 0 ? generation : createGeneration();
+	}
+	return generations;
+}
+
 export type FullTextSchemaAttribute = {
 	name: string;
 	type?: string;

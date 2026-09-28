@@ -2,14 +2,33 @@
 
 require('../testUtils');
 const assert = require('node:assert');
-const { mkdirSync } = require('node:fs');
+const { existsSync, mkdirSync } = require('node:fs');
 const { join } = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 const { dropSchema } = require('#src/dataLayer/schema');
-const { registryStatus } = require('@harperfast/rocksdb-js');
-const { table, closeDatabase, getDatabases, resetDatabases } = require('#src/resources/databases');
+const { registryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
+const {
+	abandonDatabaseDrop,
+	abandonRestore,
+	beginDatabaseDrop,
+	beginRestore,
+	completeRestore,
+	scanBlockedDatabaseDrops,
+} = require('#src/dataLayer/restoreMarker');
+const {
+	databases,
+	table,
+	database,
+	databaseDropPreparationTargets,
+	closeDatabase,
+	completeDatabaseDropPreparation,
+	dropDatabase,
+	getDatabases,
+	prepareDatabaseDrop,
+	resetDatabases,
+} = require('#src/resources/databases');
 const { databasePaths, getRootBlobPathsForDB } = require('#src/resources/blob');
 const {
 	onMessageByType,
@@ -22,8 +41,8 @@ const WORKER_FIXTURE = join(__dirname, 'databaseAliasIdentity-thread.js');
 const MESSAGE_TYPE = 'database-alias-identity-test';
 const CONTROL_TYPE = 'database-alias-identity-control';
 
-function closeAliases(aliases) {
-	for (const alias of aliases) closeDatabase(alias);
+async function closeAliases(aliases) {
+	for (const alias of aliases) await closeDatabase(alias);
 }
 
 async function createPhysicalStore(storageRoot, databaseName, tableName, attributes = []) {
@@ -37,7 +56,7 @@ async function createPhysicalStore(storageRoot, databaseName, tableName, attribu
 		attributes: [{ name: 'id', isPrimaryKey: true }, ...attributes],
 	});
 	await Table.dbisDB.committed;
-	closeDatabase(databaseName);
+	await closeDatabase(databaseName);
 }
 
 function loadAliases(storageRoot, aliases) {
@@ -146,8 +165,9 @@ describe('shared root-store database identity', function () {
 			await fixture?.close();
 		} finally {
 			fixture = undefined;
-			closeAliases(loadedAliases);
+			await closeAliases(loadedAliases);
 			loadedAliases = [];
+			env.setProperty(terms.CONFIG_PARAMS.STORAGE_BLOBPATHS, undefined);
 			setupTestDBPath();
 		}
 	});
@@ -195,13 +215,13 @@ describe('shared root-store database identity', function () {
 			Object.defineProperty(store.db, 'close', { value: () => nativeCloses.push(store.name), configurable: true });
 		}
 
-		assert.strictEqual(closeDatabase('physicalalias'), true);
+		assert.strictEqual(await closeDatabase('physicalalias'), true);
 		assert.deepStrictEqual(nativeCloses, []);
 		assert.notStrictEqual(rootStore.status, 'open');
 		const remaining = getDatabases();
 		assert.strictEqual(remaining.physicalalias, undefined);
 		assert.strictEqual(remaining.configuredalias, undefined);
-		assert.strictEqual(closeDatabase('configuredalias'), false);
+		assert.strictEqual(await closeDatabase('configuredalias'), false);
 		assert.deepStrictEqual(nativeCloses, []);
 
 		const reopened = loadAliases(storageRoot, { configured: ['configuredalias'] });
@@ -210,7 +230,7 @@ describe('shared root-store database identity', function () {
 		assert.strictEqual((await reopened.configuredalias[tableName].get('written-through-physical')).name, 'shared');
 	});
 
-	it('releases every RocksDB handle on a shared store once each alias closes', async function () {
+	it('releases every RocksDB handle and unregisters every alias when one alias closes', async function () {
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
 		const storageRoot = join(testRoot, 'alias-close-rocks');
 		const tableName = 'AliasCloseRocks';
@@ -222,9 +242,215 @@ describe('shared root-store database identity', function () {
 		const handlesOn = () => registryStatus().find((db) => db.path === path)?.refCount ?? 0;
 		assert(handlesOn() > 0);
 
-		closeAliases(loadedAliases);
+		assert.strictEqual(await closeDatabase('physicalalias'), true);
 		loadedAliases = [];
 		assert.strictEqual(handlesOn(), 0);
+		const remaining = getDatabases();
+		assert.strictEqual(remaining.physicalalias, undefined);
+		assert.strictEqual(remaining.configuredalias, undefined);
+		assert.strictEqual(await closeDatabase('configuredalias'), false);
+	});
+
+	it('fences every alias between destructive preparation and completion', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const storageRoot = join(testRoot, 'alias-drop-fence');
+		const tableName = 'AliasDropFence';
+		const preparationId = 'alias-drop-fence-test';
+		await createPhysicalStore(storageRoot, 'physicalalias', tableName);
+		loadAliases(storageRoot, { configured: ['configuredalias'] });
+		loadedAliases = ['physicalalias', 'configuredalias'];
+		const { rootPaths } = databaseDropPreparationTargets('physicalalias');
+		const databaseNames = ['physicalalias', 'configuredalias'];
+
+		try {
+			await prepareDatabaseDrop('physicalalias', preparationId, 0, rootPaths);
+			for (const name of databaseNames) {
+				assert.throws(
+					() => database({ database: name }),
+					(error) => error.code === 'DATABASE_CLOSING'
+				);
+			}
+		} finally {
+			await completeDatabaseDropPreparation('physicalalias', preparationId, rootPaths);
+		}
+		assert.ok(database({ database: 'configuredalias' }));
+	});
+
+	it('closes a loaded sibling when the requested alias is absent from the local catalog', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const storageRoot = join(testRoot, 'alias-drop-sibling-only');
+		const tableName = 'AliasDropSiblingOnly';
+		const preparationId = 'alias-drop-sibling-only-test';
+		await createPhysicalStore(storageRoot, 'physicalalias', tableName);
+		const loaded = loadAliases(storageRoot, { configured: ['configuredalias'] });
+		loadedAliases = ['physicalalias', 'configuredalias'];
+		const { rootPaths } = databaseDropPreparationTargets('physicalalias');
+		const databaseNames = ['physicalalias', 'configuredalias'];
+		const path = loaded.configuredalias[tableName].primaryStore.rootStore.path;
+		for (const index of Object.values(loaded.physicalalias[tableName].indices)) await index.close();
+		await loaded.physicalalias[tableName].primaryStore.close();
+		delete loaded.physicalalias;
+
+		try {
+			await prepareDatabaseDrop('physicalalias', preparationId, 0, rootPaths);
+			assert.strictEqual(registryStatus().find((entry) => entry.path === path)?.refCount ?? 0, 0);
+			for (const name of databaseNames) {
+				assert.throws(
+					() => database({ database: name }),
+					(error) => error.code === 'DATABASE_CLOSING'
+				);
+			}
+		} finally {
+			await completeDatabaseDropPreparation('physicalalias', preparationId, rootPaths);
+		}
+		assert.ok(database({ database: 'configuredalias' }));
+	});
+
+	it('rejects an alias configured after drop preparation begins', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const storageRoot = join(testRoot, 'alias-drop-late-config');
+		const tableName = 'AliasDropLateConfig';
+		const preparationId = 'alias-drop-late-config-test';
+		await createPhysicalStore(storageRoot, 'physicalalias', tableName);
+		loadAliases(storageRoot, { configured: ['configuredalias'] });
+		loadedAliases = ['physicalalias', 'configuredalias', 'latealias'];
+		const { rootPaths } = databaseDropPreparationTargets('physicalalias');
+
+		try {
+			await prepareDatabaseDrop('physicalalias', preparationId, 0, rootPaths);
+			env.setProperty(terms.CONFIG_PARAMS.DATABASES, { latealias: { path: storageRoot } });
+			resetDatabases();
+			assert.throws(
+				() => database({ database: 'latealias' }),
+				(error) => error.code === 'DATABASE_CLOSING'
+			);
+		} finally {
+			await completeDatabaseDropPreparation('physicalalias', preparationId, rootPaths);
+		}
+		assert.ok(database({ database: 'latealias' }));
+	});
+
+	it('does not cold-open a configured alias while a physical child has an incomplete restore', async function () {
+		const storageRoot = join(testRoot, 'alias-incomplete-restore');
+		const physicalRoot = join(storageRoot, 'physicalalias');
+		await createPhysicalStore(storageRoot, 'physicalalias', 'RestoreBlocked');
+		abandonRestore(beginRestore(physicalRoot));
+		try {
+			env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, storageRoot);
+			env.setProperty(terms.CONFIG_PARAMS.DATABASES, { configuredalias: { path: storageRoot } });
+			resetDatabases();
+			assert.throws(
+				() => database({ database: 'configuredalias' }),
+				(error) => error.statusCode === 409 && /incomplete restore/.test(error.message)
+			);
+			assert.strictEqual(existsSync(join(storageRoot, 'configuredalias')), false);
+		} finally {
+			completeRestore(beginRestore(physicalRoot));
+		}
+	});
+
+	it('keeps every root blocked after a partial multi-root drop and completes on retry', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const storageRoot = join(testRoot, 'alias-drop-recovery');
+		await createPhysicalStore(storageRoot, 'physicala', 'TableA');
+		await createPhysicalStore(storageRoot, 'physicalb', 'TableB');
+		loadAliases(storageRoot, { configured: ['configuredalias'] });
+		loadedAliases = ['physicala', 'physicalb', 'configuredalias'];
+		const rootStores = [
+			getDatabases().physicala.TableA.primaryStore.rootStore,
+			getDatabases().physicalb.TableB.primaryStore.rootStore,
+		];
+		const rootPaths = rootStores.map((rootStore) => rootStore.path);
+		const blobPaths = [...new Set(rootStores.flatMap((rootStore) => getRootBlobPathsForDB(rootStore)))];
+		for (const blobPath of blobPaths) mkdirSync(blobPath, { recursive: true });
+		const originalDestroy = RocksDatabase.prototype.destroy;
+		let destroyCount = 0;
+		RocksDatabase.prototype.destroy = function () {
+			if (destroyCount++ === 1) throw new Error('simulated second-root destroy failure');
+			return originalDestroy.call(this);
+		};
+		try {
+			await assert.rejects(
+				dropSchema({ operation: terms.OPERATIONS_ENUM.DROP_SCHEMA, schema: 'configuredalias' }),
+				/simulated second-root destroy failure/
+			);
+		} finally {
+			RocksDatabase.prototype.destroy = originalDestroy;
+		}
+		await prepareDatabaseDrop('configuredalias', 'alias-drop-recovery-peer', 1, rootPaths);
+		await completeDatabaseDropPreparation('configuredalias', 'alias-drop-recovery-peer', rootPaths);
+
+		const unrelatedBlobRoot = join(testRoot, 'new-blob-root');
+		env.setProperty(terms.CONFIG_PARAMS.STORAGE_BLOBPATHS, [unrelatedBlobRoot]);
+		const unrelatedBlobPaths = ['physicala', 'physicalb'].map((name) => join(unrelatedBlobRoot, name));
+		for (const blobPath of unrelatedBlobPaths) mkdirSync(blobPath, { recursive: true });
+		resetDatabases();
+		assert.strictEqual(databases.configuredalias, undefined);
+		assert.strictEqual(databases.physicala, undefined);
+		assert.strictEqual(databases.physicalb, undefined);
+		assert.strictEqual(scanBlockedDatabaseDrops(storageRoot).length, 2);
+
+		await dropSchema({ operation: terms.OPERATIONS_ENUM.DROP_SCHEMA, schema: 'configuredalias' });
+		loadedAliases = [];
+		assert.deepStrictEqual(scanBlockedDatabaseDrops(storageRoot), []);
+		for (const rootPath of rootPaths) assert.strictEqual(existsSync(rootPath), false);
+		for (const blobPath of blobPaths) assert.strictEqual(existsSync(blobPath), false);
+		for (const blobPath of unrelatedBlobPaths) assert.strictEqual(existsSync(blobPath), true);
+	});
+
+	it('refuses a detached root with a foreign handle before destroying loaded roots', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const storageRoot = join(testRoot, 'alias-drop-foreign-handle');
+		await createPhysicalStore(storageRoot, 'physicalalias', 'TableA');
+		loadAliases(storageRoot, { configured: ['configuredalias'] });
+		loadedAliases = ['physicalalias', 'configuredalias'];
+		const loadedRootPath = getDatabases().physicalalias.TableA.primaryStore.rootStore.path;
+		const detachedRootPath = join(storageRoot, 'detached');
+		const foreignRoot = RocksDatabase.open(detachedRootPath);
+		try {
+			await assert.rejects(
+				dropDatabase('configuredalias', [detachedRootPath]),
+				(error) => error.code === 'DATABASE_CLOSING'
+			);
+			assert.strictEqual(existsSync(loadedRootPath), true);
+			assert.deepStrictEqual(scanBlockedDatabaseDrops(storageRoot), []);
+		} finally {
+			await foreignRoot.close();
+			await foreignRoot.destroy();
+		}
+	});
+
+	it('completes a drop whose marker publication was interrupted before deletion', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const storageRoot = join(testRoot, 'alias-drop-marker-recovery');
+		await createPhysicalStore(storageRoot, 'physicala', 'TableA');
+		await createPhysicalStore(storageRoot, 'physicalb', 'TableB');
+		loadAliases(storageRoot, { configured: ['configuredalias'] });
+		loadedAliases = ['physicala', 'physicalb', 'configuredalias'];
+		const rootStores = [
+			getDatabases().physicala.TableA.primaryStore.rootStore,
+			getDatabases().physicalb.TableB.primaryStore.rootStore,
+		];
+		const rootPaths = rootStores.map((rootStore) => rootStore.path);
+		const blobPaths = [...new Set(rootStores.flatMap((rootStore) => getRootBlobPathsForDB(rootStore)))];
+		for (const blobPath of blobPaths) mkdirSync(blobPath, { recursive: true });
+		await closeAliases(loadedAliases);
+		abandonDatabaseDrop(
+			beginDatabaseDrop(rootPaths[0], 'configuredalias', 'physicala', getRootBlobPathsForDB(rootStores[0]))
+		);
+		resetDatabases();
+		assert.strictEqual(databases.physicala, undefined);
+		assert.strictEqual(databases.physicalb, undefined);
+		assert.throws(
+			() => database({ database: 'physicalb' }),
+			(error) => error.code === 'DATABASE_CLOSING'
+		);
+
+		await dropSchema({ operation: terms.OPERATIONS_ENUM.DROP_SCHEMA, schema: 'configuredalias' });
+		loadedAliases = [];
+		assert.deepStrictEqual(scanBlockedDatabaseDrops(storageRoot), []);
+		for (const rootPath of rootPaths) assert.strictEqual(existsSync(rootPath), false);
+		for (const blobPath of blobPaths) assert.strictEqual(existsSync(blobPath), false);
 	});
 
 	it('prunes both aliases on the originating thread and another worker after the shared store is dropped', async function () {
@@ -234,6 +460,7 @@ describe('shared root-store database identity', function () {
 		await createPhysicalStore(storageRoot, 'physicalalias', tableName);
 		loadAliases(storageRoot, { configured: ['configuredalias'] });
 		loadedAliases = ['physicalalias', 'configuredalias'];
+		const path = getDatabases().physicalalias[tableName].primaryStore.rootStore.path;
 		fixture = startFixtureWorker(loadedAliases);
 		assert.deepStrictEqual((await fixture.expect('booted')).aliases, {
 			physicalalias: true,
@@ -241,6 +468,7 @@ describe('shared root-store database identity', function () {
 		});
 
 		await dropSchema({ operation: terms.OPERATIONS_ENUM.DROP_SCHEMA, schema: 'physicalalias' });
+		assert.strictEqual(registryStatus().find((database) => database.path === path)?.refCount ?? 0, 0);
 		const localDatabases = getDatabases();
 		assert.strictEqual(localDatabases.physicalalias, undefined);
 		assert.strictEqual(localDatabases.configuredalias, undefined);

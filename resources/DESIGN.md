@@ -704,7 +704,7 @@ The additive-only rule above repairs the _consumer_ of a partial peer snapshot; 
 
 ## Subscription version selection (`Table.ts`)
 
-`Table.subscribe` resolves audit events through `eventFromAudit` for both replay and live delivery: unless `includeSuperseded` (defaulting to `rawEvents`) is enabled, record mutations must match the current primary version; an absent primary entry cannot establish a current version and is skipped. Publishing advances that primary version too: a put followed by a publish replays the message but not the put under the default rule. Messages and control events are independent. Version filtering precedes historical reconstruction and `previousCount` acceptance, while audit cursors advance over rejected entries. Single-record replay retains its bounded history walk because it also contains independent published messages; only an accepted replay event suppresses the current snapshot, and `eventFilter` also applies to that fallback. Default replay reads the current primary entry for each mutation. Opting into superseded full records retains audit-history reconstruction costs and retention limits, including patch reconstruction on durable MQTT live delivery.
+`Table.subscribe` resolves audit events through `eventFromAudit` for both replay and live delivery: unless `includeSuperseded` (defaulting to `rawEvents`) is enabled, record mutations must match the current primary version; an absent primary entry cannot establish a current version and is skipped. Publishing advances that primary version too: a put followed by a publish replays the message but not the put under the default rule. Messages and control events are independent. Version filtering precedes historical reconstruction and `previousCount` acceptance, while audit cursors advance over rejected entries. Single-record replay retains its bounded history walk because it also contains independent published messages; only an accepted replay event suppresses the current snapshot, and `eventFilter` also applies to that fallback. Default replay reads the current primary entry for each mutation. Opting into superseded full records retains audit-history reconstruction costs and retention limits, including patch reconstruction on durable MQTT live delivery. Collection `startTime` replay leaves `subscription.startTime` — the exclusive resume cursor `DurableSubscriptionsSession.saveSubscriptions` persists — never past a key with an unhandled in-table record: RocksDB gives every record of a transaction one `txnLogKey`, so the cursor moves to a key only on reaching the next key or finishing, and an early return (failed send, close at a yield or drain) leaves it up to one transaction back, which the resume re-sends (`subscriptionReplay.test.js`, "cursor after replay stops early"). The cursor counts events handed to the subscription queue, not consumed ones; `close()` discards the queue.
 
 ## Audit-store `'committed'` notification batching (`transactionBroadcast.ts`)
 
@@ -808,11 +808,11 @@ number into its write instruction synchronously and the native writer consumes i
 (`node_modules/lmdb/write.js`), so a pass suspended inside `await removeAuditEntry()` still has a
 delete pending against the primary and audit DBIs, and LMDB forbids closing a DBI an existing
 transaction has modified. `dropDatabase()` and the legacy arm of `Table.dropTable()` await it.
-`closeDatabase()` and branch `close()` are synchronous and cannot; what covers them is that every
-environment touch remaining in a resumed pass — cursor advance, cursor release, marker write, re-arm —
-re-checks `rootStore.status`, plus the fact that their production callers reach them only for RocksDB
-stores, whose pass is one synchronous `purgeLogs()` call with nothing suspended mid-removal.
-`resetDatabases()` closes LMDB roots with no retirement call at all, so that re-check is a routine
+`closeDatabase()` and branch `close()` close commit admission, then drain tracked Rocks transactions,
+table maintenance, audit cleanup, and derived-index work before closing stores. Every environment
+touch remaining in a resumed cleanup pass — cursor advance, cursor release, marker write, re-arm —
+also re-checks `rootStore.status`. `resetDatabases()` closes LMDB roots with no retirement call at all,
+so that re-check is a routine
 path rather than a defensive one.
 
 The last-removed marker is retained until it commits. A rejected write is logged and carried to the

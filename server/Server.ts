@@ -48,7 +48,8 @@ export interface Server {
 				replicated: boolean;
 				[key: string]: any;
 			},
-			options?: { onPeerResult?: (result: any) => void }
+			// `timeoutMs`: how long to wait for each peer's answer, in milliseconds; omitted waits for as long as the peer takes.
+			options?: { onPeerResult?: (result: any) => void; timeoutMs?: number }
 		): Promise<{ message: string; replicated?: unknown[] }>;
 		monitorNodeCAs(listener: () => void): void;
 		sendOperationToNode(node: string, operation: any, options: any): Promise<any>;
