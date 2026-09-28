@@ -681,7 +681,7 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('reports an expired bounded native window as retryable index lag', async () => {
+	it('reports an expired bounded native window as exhausted filters', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'expired-native-window';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -695,7 +695,7 @@ describe('FullTextQueryIndex', () => {
 		attachCurrentCoverage(index, auditStore, readinessId);
 		await assert.rejects(
 			index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
-			(error) => error.code === 'DERIVED_INDEX_LAGGING'
+			(error) => error.statusCode === 400 && /filters exhausted the 10-result search window/.test(error.message)
 		);
 		await index.close();
 	});
@@ -2615,6 +2615,36 @@ describe('FullTextQueryIndex', () => {
 		);
 		await oldIndex.close();
 		await newIndex.close();
+		auditStore.unlock(lockKey);
+	});
+
+	it('pauses a predecessor reader for a successor not attached locally', async () => {
+		const auditStore = sharedStore();
+		const predecessorReadinessId = 'query-lagging-worker-predecessor';
+		const successorReadinessId = 'query-lagging-worker-successor';
+		const storeName = 'query-lagging-worker-generation-skew';
+		const path = nativeFullTextIndexPath('/unused', storeName);
+		const lockKey = `derived-index:${storeName}:runner`;
+		const predecessor = readyQueryIndex(auditStore, predecessorReadinessId, storeName);
+		assert(auditStore.tryLock(lockKey));
+
+		await pauseNativeFullTextQueryReaders(path, successorReadinessId, 1n);
+		await assert.rejects(
+			predecessor.search({ attribute: predecessorReadinessId, comparator: 'matches', value: 'shoe' }, {}),
+			(error) => error.name === 'IndexRebuildingError'
+		);
+		resumeNativeFullTextQueryReaders(path, successorReadinessId, 1n);
+		assert.strictEqual(
+			(
+				await predecessor.search(
+					{ attribute: predecessorReadinessId, comparator: 'matches', value: 'shoe' },
+					{},
+					{ minResults: 1 }
+				)
+			).length,
+			1
+		);
+		await predecessor.close();
 		auditStore.unlock(lockKey);
 	});
 

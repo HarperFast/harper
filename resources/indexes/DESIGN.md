@@ -480,15 +480,18 @@ stable backend runner lock, so the predecessor's reset can no longer be active. 
 already ready when it observed the token must acquire the runner lock before clearing it. Recovery waits
 if a writer still owns that lock.
 The pause covers every reader on the physical path, including a superseded generation. Each active reset
-retains its own token; stale resumes cannot clear newer tokens. These rules do not compare generation-local
-epochs. A worker with no query index on the path retains no token because it has no reader to fence, and
-any later attachment remains gated by its generation's shared readiness. After the last local attachment
-for a superseded readiness id drains and unregisters, Harper clears that id's exact-epoch token from
-surviving readers on the path. A delayed pause is accepted only while an attachment for that readiness id
-remains registered, so a retired generation cannot reinstall its fence on a successor. Closing attachments
-remain registered until their readers drain, and a duplicate attachment for the same readiness id keeps
-the fence. This closes both handoff directions without assuming an ordering between generation-local
-epochs. If the native reader violates its contract by rejecting close, Harper logs the failure and proceeds with reset
+retains its own token; stale resumes cannot clear newer tokens. A worker with no query index on the path
+retains no token because it has no reader to fence, and any later attachment remains gated by its
+generation's shared readiness.
+After the last local attachment for a superseded readiness id drains and unregisters, Harper clears
+that id's exact-epoch token from surviving readers on the path and remembers that the id retired. A
+delayed pause for that retired id cannot reinstall its fence on a successor. A readiness id never seen
+on this worker is still accepted, so a successor reset fences a predecessor reader on a worker whose
+schema refresh is late. Closing attachments remain registered until their readers drain, and a duplicate
+attachment for the same readiness id keeps the fence. This closes both handoff directions without
+assuming an ordering between generation-local epochs. Retirement uses an explicit synthetic token that
+still pauses every reader because it is not tied to a generation attachment. If the native
+reader violates its contract by rejecting close, Harper logs the failure and proceeds with reset
 rather than wedging the path indefinitely; the reset therefore assumes that rejected handle is dead.
 
 Weights and highlighting are query configuration. Changing either refreshes readers without rotating

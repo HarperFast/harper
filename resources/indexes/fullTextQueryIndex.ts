@@ -78,6 +78,8 @@ class FullTextReaderPublicationError extends Error {}
 const queryIndexesByPath = new Map<string, Set<FullTextQueryIndex>>();
 type QueryPauses = Map<string, bigint>;
 const pausedQueryPaths = new Map<string, QueryPauses>();
+const retiredReadinessIdsByPath = new Map<string, Set<string>>();
+const MAX_RETIRED_READINESS_IDS_PER_PATH = 64;
 
 export type FullTextQueryIndexOptions = {
 	Table: any;
@@ -144,6 +146,9 @@ export class FullTextQueryIndex {
 		let indexes = queryIndexesByPath.get(this.#nativeOptions.path);
 		if (!indexes) queryIndexesByPath.set(this.#nativeOptions.path, (indexes = new Set()));
 		indexes.add(this);
+		const retiredReadinessIds = retiredReadinessIdsByPath.get(this.#nativeOptions.path);
+		if (retiredReadinessIds?.delete(options.readinessId) && retiredReadinessIds.size === 0)
+			retiredReadinessIdsByPath.delete(this.#nativeOptions.path);
 		const pauses = pausedQueryPaths.get(this.#nativeOptions.path);
 		if (pauses) {
 			this.#pauses = new Map(pauses);
@@ -279,10 +284,6 @@ export class FullTextQueryIndex {
 		);
 	}
 
-	hasReadinessId(readinessId: string): boolean {
-		return this.#options.readinessId === readinessId;
-	}
-
 	async pause(readinessId: string, ownerEpoch: bigint): Promise<void> {
 		const current = this.#pauses.get(readinessId);
 		if (current !== undefined && current > ownerEpoch) return;
@@ -381,7 +382,6 @@ export class FullTextQueryIndex {
 						continue;
 					}
 					if (entry.expiresAt !== undefined && entry.expiresAt < Date.now()) {
-						staleVersionHits++;
 						continue;
 					}
 					if (options.filter && !options.filter(key, entry)) continue;
@@ -722,14 +722,17 @@ export class FullTextQueryIndex {
 		const path = this.#nativeOptions.path;
 		const indexes = queryIndexesByPath.get(path);
 		indexes?.delete(this);
+		const sameReadinessRemains = [...(indexes ?? [])].some(
+			(index) => index.#options.readinessId === this.#options.readinessId
+		);
+		if (!sameReadinessRemains) rememberRetiredReadinessId(path, this.#options.readinessId);
 		if (!indexes || indexes.size === 0) {
 			queryIndexesByPath.delete(path);
 			pausedQueryPaths.delete(path);
+			retiredReadinessIdsByPath.delete(path);
 			return;
 		}
-		for (const index of indexes) {
-			if (index.#options.readinessId === this.#options.readinessId) return;
-		}
+		if (sameReadinessRemains) return;
 		const ownerEpoch = pausedQueryPaths.get(path)?.get(this.#options.readinessId);
 		if (ownerEpoch === undefined) return;
 		clearPathPause(path, this.#options.readinessId, ownerEpoch);
@@ -795,11 +798,12 @@ export class FullTextQueryIndex {
 export async function pauseNativeFullTextQueryReaders(
 	path: string,
 	readinessId: string,
-	ownerEpoch: bigint
+	ownerEpoch: bigint,
+	allowUnregisteredReadiness = false
 ): Promise<void> {
 	const indexes = queryIndexesByPath.get(path);
 	if (!indexes || indexes.size === 0) return;
-	if (![...indexes].some((index) => index.hasReadinessId(readinessId))) return;
+	if (!allowUnregisteredReadiness && retiredReadinessIdsByPath.get(path)?.has(readinessId)) return;
 	let pauses = pausedQueryPaths.get(path);
 	if (!pauses) pausedQueryPaths.set(path, (pauses = new Map()));
 	const current = pauses.get(readinessId);
@@ -817,6 +821,14 @@ function clearPathPause(path: string, readinessId: string, ownerEpoch: bigint): 
 	if (pauses?.get(readinessId) !== ownerEpoch) return;
 	pauses.delete(readinessId);
 	if (pauses.size === 0) pausedQueryPaths.delete(path);
+}
+
+function rememberRetiredReadinessId(path: string, readinessId: string): void {
+	let readinessIds = retiredReadinessIdsByPath.get(path);
+	if (!readinessIds) retiredReadinessIdsByPath.set(path, (readinessIds = new Set()));
+	readinessIds.delete(readinessId);
+	readinessIds.add(readinessId);
+	if (readinessIds.size > MAX_RETIRED_READINESS_IDS_PER_PATH) readinessIds.delete(readinessIds.values().next().value!);
 }
 
 function assertFreshnessOptions(maxIndexLagMilliseconds: number, waitForIndexMilliseconds: number): void {

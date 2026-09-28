@@ -76,6 +76,7 @@ Indexes follow committed record changes asynchronously. `waitForIndexMillisecond
 `FullText` is declaration-only: `catalogSearch` has no stored or selectable record value. Records written under this schema and record input/output schemas omit it. Selecting it, sorting on it, comparing it as an ordinary scalar, or writing it returns an error. New-write protection also applies to unsealed tables and persists while the index is unavailable. Use `$score` and `$highlights` for search results.
 
 A read-through source must also omit the declaration-only name. A source response that includes it fails with a 502 response and is not returned, cached, indexed, or audited.
+On HTTP-sourced caching tables, avoid index names that collide with response wrapper fields: `data`, `headers`, `body`, and `status`.
 
 Use the nullable `FullText` type exactly. Lists, non-null forms, and additional directives such as `@computed`, `@indexed`, or `@allow` are rejected. `FullText` without `@fullText` is also invalid.
 
