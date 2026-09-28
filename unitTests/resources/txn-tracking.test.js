@@ -815,15 +815,16 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		const restores = [];
 		try {
 			const committing = transaction(context, async (txn) => {
-				txn.timeoutBudget = 200;
+				txn.timeoutBudget = 500;
 				await BlobResource.put({ id: 2071 }, context);
 				await SecondaryBlobResource.put({ id: 2071, value: 'secondary' }, context);
 				await ThirdResource.put({ id: 2071, value: 'third' }, context);
 				links = databaseTxns(context);
 				assert.equal(links.length, 3);
 				for (const link of links) trackedTxns.add(link);
-				// Each hop takes most of one window; the whole cascade takes more than two.
-				for (const link of links) restores.push(stallNativeCommit(link, 150));
+				// Any two hops outlast one window, so only a re-arm at every hop keeps the last link alive; each
+				// hop still leaves ~200ms of its own window for the real native commit on a slow-disk runner.
+				for (const link of links) restores.push(stallNativeCommit(link, 300));
 			});
 			await committing;
 		} finally {

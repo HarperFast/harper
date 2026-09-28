@@ -4,8 +4,6 @@ The Resource layer is Harper's universal abstraction: all queryable/mutable thin
 
 **Read this when:** you're touching the read/write path, authorization, subscriptions, or table CRUD semantics.
 
-See also: `../DESIGN.md` for cross-cutting non-obvious internals (RecordObject prototype, `getFromSource` timing, blob orphan cleanup).
-
 > **Navigation convention.** This guide references code by **symbol name** (e.g. `_writeUpdate`) and by **section marker** (e.g. `// #section: write-path-internals`). Jump in your editor via go-to-symbol, or `grep` for the section marker. Line numbers drift; symbols and section markers don't.
 
 ---
@@ -61,23 +59,23 @@ Static methods are protocol entry points (each wrapped in `transactional()`); in
 
 One giant `makeTable()` factory that returns a `TableResource extends Resource` class. The file is divided into the sections below; each is anchored by a `// #section: <name>` marker — grep for the marker (or use VS Code's go-to-symbol within the section) to land directly.
 
-| Section marker                   | Contents                                                                                                                                                                                                                                                                                                                                                                                                         |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `#section: setup-and-factory`    | `makeTable(options)` entry, attribute parsing & primary-key detection, replication wiring, `class Updatable` (RecordObject prototype: `getUpdatedTime`, `getExpiresAt`, `addTo`, `subtractFrom`). Ends where `class TableResource` opens.                                                                                                                                                                        |
-| `#section: static-config`        | Static configuration properties: `name`, `primaryStore`, `auditStore`, `primaryKey`, `indices`, `audit`, `databasePath`, `attributes`, `replicate`, `sealed`, `splitSegments`, `getResidencyById`, `dbisDB`, `schemaDefined`, `expirationMS`.                                                                                                                                                                    |
-| `#section: resource-registry`    | `sourcedFrom()` (cache/source hierarchy — the largest static), `isCaching`, `shouldRevalidateEvents`, `getResource()`, `_updateResource`, `ensureLoaded()`.                                                                                                                                                                                                                                                      |
-| `#section: lifecycle-admin`      | `getNewId()` (UUID / autoincrement / prefix / time-based strategies), `setTTLExpiration`, residency (`getResidencyRecord`, `setResidency`, `setResidencyById`, `getResidency`), `enableAuditing`, `coerceId`, `dropTable`.                                                                                                                                                                                       |
-| `#section: read-path`            | `get()` overloads & impl.                                                                                                                                                                                                                                                                                                                                                                                        |
-| `#section: authz-hooks`          | `allowRead`, `allowUpdate`, `allowCreate`, `allowDelete`.                                                                                                                                                                                                                                                                                                                                                        |
-| `#section: write-path-public`    | `update()`, `save()`, `addTo()`, `subtractFrom()`, `getMetadata`, `getRecord`, `getChanges`, `_setChanges`, `setRecord`, `invalidate()`, `operation()`, `put()`, `create()`, `patch()`.                                                                                                                                                                                                                          |
-| `#section: write-path-internals` | **`_writeUpdate()` — the central write routine** (versioning, conflict resolution, audit, residency, replication metadata, blob orphan tracking). The `write.skipped` flag mentioned in `../DESIGN.md` is set in this method's early-return paths. Also `_writeInvalidate`, `_writeRelocate`, `_recordRelocate`, `evict()`, `lock()`/`unlock()` (record locks — see `../DESIGN.md`), `delete()`, `_writeDelete`. |
-| `isPlainOptions`                 | _(after the class)_ argument-position helper for `lock()` (distinguishes `lock(options)` from `lock(target, options)`)                                                                                                                                                                                                                                                                                           |
-| `#section: search-query`         | `search()` (the query engine — index selection, filter evaluation), `transformToOrderedSelect` (select-clause ordering), `transformEntryForSelect` (record → response shape).                                                                                                                                                                                                                                    |
-| `#section: pub-sub`              | `subscribe()` (subscription request handling, replay, cursor management), `subscribeOnThisThread`, `doesExist()`, `publish()`, `_writePublish()`.                                                                                                                                                                                                                                                                |
-| `#section: validation`           | `validate(record, patch?)` — schema enforcement, computed attributes, attribute coercion.                                                                                                                                                                                                                                                                                                                        |
-| `#section: stats-admin`          | `getUpdatedTime`, `addAttributes`, `removeAttributes`, `getSize`, `getAuditSize`, `getStorageStats`, `getRecordCount`, `updatedAttributes` (schema diff machinery).                                                                                                                                                                                                                                              |
-| `#section: computed-history`     | `setComputedAttribute`, `deleteHistory`, `getHistory` (generator), `getHistoryOfRecord`, `clear`, `cleanup`, `_readTxnForContext`.                                                                                                                                                                                                                                                                               |
-| _(after the class)_              | `getFromSource()` — cache miss → source load (see `../DESIGN.md` for the resolve-before-commit timing trap); local helpers (`coerceType`, `isDescendantId`, etc.).                                                                                                                                                                                                                                               |
+| Section marker                   | Contents                                                                                                                                                                                                                                                                                                                                                                                                              |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `#section: setup-and-factory`    | `makeTable(options)` entry, attribute parsing & primary-key detection, replication wiring, `class Updatable` (RecordObject prototype: `getUpdatedTime`, `getExpiresAt`, `addTo`, `subtractFrom`). Ends where `class TableResource` opens.                                                                                                                                                                             |
+| `#section: static-config`        | Static configuration properties: `name`, `primaryStore`, `auditStore`, `primaryKey`, `indices`, `audit`, `databasePath`, `attributes`, `replicate`, `sealed`, `splitSegments`, `getResidencyById`, `dbisDB`, `schemaDefined`, `expirationMS`.                                                                                                                                                                         |
+| `#section: resource-registry`    | `sourcedFrom()` (cache/source hierarchy — the largest static), `isCaching`, `shouldRevalidateEvents`, `getResource()`, `_updateResource`, `ensureLoaded()`.                                                                                                                                                                                                                                                           |
+| `#section: lifecycle-admin`      | `getNewId()` (UUID / autoincrement / prefix / time-based strategies), `setTTLExpiration`, residency (`getResidencyRecord`, `setResidency`, `setResidencyById`, `getResidency`), `enableAuditing`, `coerceId`, `dropTable`.                                                                                                                                                                                            |
+| `#section: read-path`            | `get()` overloads & impl.                                                                                                                                                                                                                                                                                                                                                                                             |
+| `#section: authz-hooks`          | `allowRead`, `allowUpdate`, `allowCreate`, `allowDelete`.                                                                                                                                                                                                                                                                                                                                                             |
+| `#section: write-path-public`    | `update()`, `save()`, `addTo()`, `subtractFrom()`, `getMetadata`, `getRecord`, `getChanges`, `_setChanges`, `setRecord`, `invalidate()`, `operation()`, `put()`, `create()`, `patch()`.                                                                                                                                                                                                                               |
+| `#section: write-path-internals` | **`_writeUpdate()` — the central write routine** (versioning, conflict resolution, audit, residency, replication metadata, blob orphan tracking). The `write.skipped` flag ("Blob orphan cleanup" below) is set in this method's early-return paths. Also `_writeInvalidate`, `_writeRelocate`, `_recordRelocate`, `evict()`, `lock()`/`unlock()` (record locks — see `record-locks.md`), `delete()`, `_writeDelete`. |
+| `isPlainOptions`                 | _(after the class)_ argument-position helper for `lock()` (distinguishes `lock(options)` from `lock(target, options)`)                                                                                                                                                                                                                                                                                                |
+| `#section: search-query`         | `search()` (the query engine — index selection, filter evaluation), `transformToOrderedSelect` (select-clause ordering), `transformEntryForSelect` (record → response shape).                                                                                                                                                                                                                                         |
+| `#section: pub-sub`              | `subscribe()` (subscription request handling, replay, cursor management), `subscribeOnThisThread`, `doesExist()`, `publish()`, `_writePublish()`.                                                                                                                                                                                                                                                                     |
+| `#section: validation`           | `validate(record, patch?)` — schema enforcement, computed attributes, attribute coercion.                                                                                                                                                                                                                                                                                                                             |
+| `#section: stats-admin`          | `getUpdatedTime`, `addAttributes`, `removeAttributes`, `getSize`, `getAuditSize`, `getStorageStats`, `getRecordCount`, `updatedAttributes` (schema diff machinery).                                                                                                                                                                                                                                                   |
+| `#section: computed-history`     | `setComputedAttribute`, `deleteHistory`, `getHistory` (generator), `getHistoryOfRecord`, `clear`, `cleanup`, `_readTxnForContext`.                                                                                                                                                                                                                                                                                    |
+| _(after the class)_              | `getFromSource()` — cache miss → source load (see "getFromSource() timing" below for the resolve-before-commit trap); local helpers (`coerceType`, `isDescendantId`, etc.).                                                                                                                                                                                                                                           |
 
 ---
 
@@ -94,7 +92,7 @@ One giant `makeTable()` factory that returns a `TableResource extends Resource` 
 | Where is record-level TTL evaluated?                                           | `Table.ts → setTTLExpiration` (`#section: lifecycle-admin`); `Updatable.getExpiresAt` (`#section: setup-and-factory`). Stored expiry metadata is resolved in the `_writeUpdate` commit closure: `options.expiresAt ?? context.expiresAt ?? (record @expiresAt field, if finite &amp; ≥ 0) ?? table default`. This metadata drives read-hiding + the cleanup sweep. The `@expiresAt` attribute is authoritative for **direct** put/patch only; cache/source fills persist via `recordUpdater` and derive expiry from `sourceContext.expiresAt` (source freshness / table default), not the field.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Why does `search()` hide a row that's past its TTL but not yet swept?          | `Table.ts → transformEntryForSelect` unconditionally treats `entry.expiresAt < Date.now()` as gone (lazy eviction on read) — correct for a SELECT, but a mutation locating rows to overwrite needs the opposite: pass `target.includeExpired = true` (read by the SQL engine's `runUpdate`/`runDelete` via `SqlEngineContext.includeExpiredRows`) to treat such a row as a live match, matching the leniency a direct by-id `put`/`patch` already has (they skip this check entirely, since `Resource.patch`'s static options don't request `ensureLoaded`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | How are residencies enforced (replication)?                                    | `Table.ts → #section: lifecycle-admin` (residency block: `getResidencyRecord`, `setResidency`, `setResidencyById`, `getResidency`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| How is the RecordObject prototype applied?                                     | `RecordEncoder.ts` (see `../DESIGN.md`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| How is the RecordObject prototype applied?                                     | `RecordEncoder.ts` (see "RecordObject prototype and entryMap" below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Where is the per-request transaction stored?                                   | `transaction.ts` + `contextStorage` (AsyncLocalStorage)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | What is in `context.transaction` when no scope owns one?                       | Whatever the last table call left there. A completed scope leaves `RELEASED_TRANSACTION` (`DatabaseTransaction.ts`), which reads latest and no-ops on commit. The next table call finds no transaction and `Table.ts → txnForContext` installs an `ImmediateTransaction` in the slot. It reports `open === OPEN`, but `transaction()` and `Resource`'s dispatcher gate on `isJoinableScope` — OPEN _and_ staging its writes for a later commit — so they never join it and start their own scope instead (#2292); `txnForContext` keeps returning it for reads and for writes that reach no wrapper, and those commit per write. It is also the only transaction that opens its native handle inside its own `commit()` (its `getReadTxn` never opens one), which is why `commit()` re-reads `this.transaction` after its save loop (#2288).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | How do I find a transaction that is holding write intents and is never reaped? | Three log surfaces, joined by the native transaction id (`longLivedTransactions.ts`, #2471). `runLongLivedTransactionSweep()` runs on the **main thread only** — rocksdb-js's registry is process-global, so one sweep sees every worker's handles — and names any handle open past `storage.longTransactionReportThreshold` (default `5m`, `0` disables all three), including handles no `DatabaseTransaction` owns. Changing the threshold clears the accrued backoff, so a handle already under observation is re-measured against the new value. `reportIfLongLived()` in each worker's monitor reports every link holding its own handle under that link's own id, adding `startedFrom`, the table, and the state keeping it alive (`source-apply`, `replay`, `commit-phase`, `active` when written in the current or preceding monitor tick), which is what the reap branches below it deliberately do not do. Attribution lines are capped at 10 per monitor tick; a summary names deferred holders, whose due backoff remains intact for a later tick. Attribution suppression is keyed on database path, native id, and handle-open time, so a reattached descriptor id cannot inherit its predecessor's backoff. The two stuck-commit logs (`checkOverloaded()` and `abandonCommitAfterDeadline()`) append holder candidates from **every** database, the commit's own first and then by age — the verification table is one process-global slot array, so a holder in another database parks this commit at the same rate — never filtered by age, because a coordinated retry can park on a transaction younger than itself. |
@@ -176,11 +174,30 @@ Index waits use the ordinary transaction timeout; they do not renew it. The adap
 
 ## Audit retention floor
 
-`Table.subscribe`'s `startTime` replay just begins wherever the audit log now begins, so a consumer resuming below the retention horizon is silently handed a short replay. The floor is the primitive that makes that detectable (harper#2447). It is internal, with deliberately no public accessor, and **no resume path consumes it yet**: harper#2448 is to put the check inside `Table.subscribe` itself — the same shape as replication's `shouldForceBaseCopyForRetention`, and the only one where the floor cannot move between being read and being acted on. Until then the short replay above is unchanged.
+`Table.subscribe`'s `startTime` replay just begins wherever the audit log now begins, so a consumer
+resuming below the retention horizon is silently handed a short replay. The floor is the primitive
+that makes that detectable (harper#2447). It is internal, with deliberately no public accessor, and **no
+resume path consumes it yet**: harper#2448 is to put the check inside `Table.subscribe` itself — the same shape as
+replication's `shouldForceBaseCopyForRetention`, and the only one where the floor cannot move between
+being read and being acted on. Until then the short replay above is unchanged.
 
-**The one consumer today is not a resume**: `Table.commit`'s out-of-order reconciliation reads the floor before entering the audit walk (harper#2642). The walk terminates at the incoming write only by reaching an audit entry at or below its version, so below the floor it cannot — it runs the whole retained chain, one RocksDB end-of-log scan per step, to an outcome the floor already determines. Two things that consumer does differently from a cursor check, and both are deliberate: it compares the write's record version rather than a log key, because that is what the walk's own loop condition compares; and it treats the `Infinity` unknown floor as **walk anyway** rather than as "not safe", because here the conservative direction is to do the work, not to skip it. Below the floor a write contributes only its commutative operations — a plain field's survival depends on what newer writes did to that key, which is exactly what the pruned history no longer answers.
+**The one consumer today is not a resume**: `Table.commit`'s out-of-order reconciliation reads the
+floor before entering the audit walk (harper#2642). The walk terminates at the incoming write only by
+reaching an audit entry at or below its version, so below the floor it cannot — it runs the whole
+retained chain, one RocksDB end-of-log scan per step, to an outcome the floor already determines.
+Two things that consumer does differently from a cursor check, and both are deliberate: it compares
+the write's record version rather than a log key, because that is what the walk's own loop condition
+compares; and it treats the `Infinity` unknown floor as **walk anyway** rather than as "not safe",
+because here the conservative direction is to do the work, not to skip it. Below the floor a write
+contributes only its commutative operations — a plain field's survival depends on what newer writes
+did to that key, which is exactly what the pruned history no longer answers.
 
-**The invariant: every path that prunes audit history raises the floor BEFORE removing anything.** There are five, and the ordering is the whole guarantee — a floor written after the removal is lost if the process dies in between, and the surviving lower floor then certifies a cursor whose history is gone. Over-reporting (a floor covering more than the prune actually removed) costs a consumer one unnecessary resync; under-reporting loses its data with no signal. So `raiseAuditFloor` is called first and a throw from it is what stops the prune.
+**The invariant: every path that prunes audit history raises the floor BEFORE removing anything.**
+There are five, and the ordering is the whole guarantee — a floor written after the removal is lost
+if the process dies in between, and the surviving lower floor then certifies a cursor whose history
+is gone. Over-reporting (a floor covering more than the prune actually removed) costs a consumer one
+unnecessary resync; under-reporting loses its data with no signal. So `raiseAuditFloor` is called
+first and a throw from it is what stops the prune.
 
 | Prune path                                                                   | Engine                                                                      |
 | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
@@ -190,22 +207,75 @@ Index waits use the ordinary transaction timeout; they do not renew it. The adap
 | `Table.deleteHistory`                                                        | LMDB (`RocksTransactionLogStore.remove()` is a no-op, so it must NOT raise) |
 | `delete_transaction_logs_before` whole-database branch (`ResourceBridge.ts`) | RocksDB                                                                     |
 
-Seven things that are easy to get wrong here:
+Things that are easy to get wrong here:
 
-- **The floor cannot be derived from the surviving log.** For four of the five paths the oldest surviving entry would do, because they prune a database-wide time prefix. `Table.deleteHistory` does not: it removes one table's entries out of a database-scoped log, so a sibling's entry survives _below_ the newest entry it removed. Measured, LMDB: highest removed `…147.797`, oldest surviving `…143.309` — a log-derived floor would have certified a cursor at `…145`.
-- **The record's presence is the trust marker.** `Symbol.for('audit-floor')` is a different key from `last-removed`, which is still live and still maintained by the LMDB retention loop (#2338 hardened its write path and added tests for the retry-carry — do not remove it). They coexist because they answer different questions: `last-removed` records where the LMDB loop got to, after the fact, while the floor is written ahead of every one of the five prune paths and its commit is verified. A value found under `last-removed` therefore cannot be told apart from one carrying those guarantees, which is why the floor needs its own key rather than reusing it.
-- **A store with no floor record is a store whose retention history we cannot account for.** That includes the empty audit store an LMDB→RocksDB migration leaves behind, since `bin/copyDb.ts` deliberately does not migrate it, and the audit-DBI-less result of a table-scoped backup taken without `include_audit` — so `openAuditStore` stamps `max(Date.now(), newest retained key)` as a one-time resync epoch. There is no permissive-baseline case: creating the audit DBI proves the DBI was absent, not that the database is new.
-- **That epoch is a guess, and it is recorded as one.** Its bound is surviving state, which cannot see history a selective prune already removed: a legacy `deleteHistory` takes one table's entries out of the shared log, so a table that held the newest entries can leave the newest _survivor_ older than entries that are gone, and a clock rolled back between the two stamps a floor below them (#2458). Refusing to stamp is worse — `AUDIT_FLOOR_UNKNOWN` is absorbing (`raiseAuditFloor` cannot lift it, `establishAuditFloor` skips any existing record), so it would make every upgraded deployment fail closed forever. So `establishAuditFloor` writes the epoch under `Symbol.for('audit-floor-bootstrap')` first, then stamps the floor from what that record holds.
+- **The floor cannot be derived from the surviving log.** For four of the five paths the oldest
+  surviving entry would do, because they prune a database-wide time prefix. `Table.deleteHistory`
+  removes one table's entries from a database-scoped log, so a sibling's entry survives _below_ the
+  newest entry it removed, and a floor taken from that survivor certifies cursors over removed history.
+- **The record's presence is the trust marker.** `Symbol.for('audit-floor')` is a different key from
+  `last-removed`, which is still live and still maintained by the LMDB retention loop (#2338 hardened
+  its write path and added tests for the retry-carry — do not remove it). They coexist because they
+  answer different questions: `last-removed` records where the LMDB loop got to, after the fact,
+  while the floor is written ahead of every one of the five prune paths and its commit is verified.
+  A value found under `last-removed` therefore cannot be told apart from one carrying those
+  guarantees, which is why the floor needs its own key rather than reusing it.
+- **A store with no floor record is a store whose retention history we cannot account for.** That
+  includes the empty audit store an LMDB→RocksDB migration leaves behind, since `bin/copyDb.ts`
+  deliberately does not migrate it, and the audit-DBI-less result of a table-scoped backup taken
+  without `include_audit` — so `openAuditStore` stamps `max(Date.now(), newest retained key)` as a
+  one-time resync epoch. There is no permissive-baseline case: creating the audit DBI proves the
+  DBI was absent, not that the database is new.
+- **That epoch is a guess, and it is recorded as one.** Its bound is surviving state, which cannot see
+  history a selective prune already removed: a legacy `deleteHistory` takes one table's entries out of
+  the shared log, so a table that held the newest entries can leave the newest _survivor_ older than
+  entries that are gone, and a clock rolled back between the two stamps a floor below them (#2458).
+  Refusing to stamp is worse — `AUDIT_FLOOR_UNKNOWN` is absorbing (`raiseAuditFloor` cannot lift it,
+  `establishAuditFloor` skips any existing record), so it would make every upgraded deployment fail
+  closed forever. So `establishAuditFloor` writes the epoch under `Symbol.for('audit-floor-bootstrap')`
+  first, then stamps the floor from what that record holds.
 
-  **The record's presence is the signal; comparing it against the floor is not.** A store carrying one has an unverified pre-tracking window for as long as the record exists, however far the floor has since moved — a prune raising the floor above the epoch certifies only what that prune removed, and says nothing about history removed before tracking began, which may sit _above_ the epoch, since that is precisely what the guess could not see. Worked example: a v4-era `deleteHistory` removes tableA up to t=1000 while sibling tableB's newest survivor is 900; a rolled-back clock stamps bootstrap=900 and floor=900; a later retention pass raises the floor to 950. A repair keyed on `floor > bootstrap` would read 950 > 900, call it earned, and leave a consumer at cursor 970 certified over tableA's missing 950–1000. So the mark is retired by a database generation (#2451), never by a floor that climbed past it; what the recorded _value_ is for is telling that repair how far the guess reached.
+  **The record's presence is the signal; comparing it against the floor is not.** A store carrying one
+  has an unverified pre-tracking window for as long as the record exists, however far the floor has
+  since moved — a prune raising the floor above the epoch certifies only what that prune removed, and
+  says nothing about history removed before tracking began, which may sit _above_ the epoch, since that
+  is precisely what the guess could not see. Worked example: a v4-era `deleteHistory` removes tableA up
+  to t=1000 while sibling tableB's newest survivor is 900; a rolled-back clock stamps bootstrap=900 and
+  floor=900; a later retention pass raises the floor to 950. A repair keyed on `floor > bootstrap` would
+  read 950 > 900, call it earned, and leave a consumer at cursor 970 certified over tableA's missing
+  950–1000. So the mark is retired by a database generation (#2451), never by a floor that climbed past
+  it; what the recorded _value_ is for is telling that repair how far the guess reached.
 
-  Two properties it does depend on. **Ordering:** the record is written first, so a crash between the two writes leaves a record with no floor, which the next open retries because the early return tests the _floor_. **Undecodable bytes are overwritten** rather than kept — unlike the floor, where a present record may be a deliberate `AUDIT_FLOOR_UNKNOWN` and rewriting it would lower a floor. Keeping torn bytes pinned the store to unknown _forever_: the resolver skipped the write because a record existed, the read back failed identically on every later open, and no retry could succeed.
+  Two properties it does depend on. **Ordering:** the record is written first, so a crash between the
+  two writes leaves a record with no floor, which the next open retries because the early return tests
+  the _floor_. **Undecodable bytes are overwritten** rather than kept — unlike the floor, where a
+  present record may be a deliberate `AUDIT_FLOOR_UNKNOWN` and rewriting it would lower a floor.
+  Keeping torn bytes pinned the store to unknown _forever_: the resolver skipped the write because a
+  record existed, the read back failed identically on every later open, and no retry could succeed.
 
-- **`getHistory` is not in the floor's time domain.** The floor is an audit-log key, which is what `subscribe`'s events carry as `localTime`; `getHistory` reports each entry's origin `version` under that same name, and a backdated or replicated write makes the two differ. A cursor saved from `getHistory` cannot be compared against the floor.
-- **On RocksDB the floor tracks the configured retention horizon, not retained reality.** Whole-log-file purge granularity means the branch cannot know which entries a purge will drop, and the floor is written first, so each pass advances it to `Date.now() - auditRetention/(1+priority²)` whether a file was dropped or not. Entries below that horizon are often still on disk, and a cursor among them is told to resync — conservative in the safe direction only. LMDB can see a single eligible entry, so it raises off the first one it finds instead.
-- **A prune's clamped floor can sit past `Date.now() + 1`.** `boundedAuditPruneEnd` records `newest + 1` when the newest log key is at or past the clock, and log keys are fractional `getNextMonotonicTime` values, not `Date.now()`, so for the rest of that key's millisecond the floor exceeds the wall clock by more than one. Bound it by the newest key, never the wall clock alone (`auditFloor.test.js`, the far-future `deleteHistory` case — it failed twice on main that way).
-- **Untrustworthy metadata resolves to `Infinity`, not to a number.** A wrong-length record, or eight bytes decoding to NaN/negative, must not become a floor: `cursor < NaN` is false, so a consumer spelling the check that way would read corrupt metadata as safe.
-- **A restore is outside what the floor can see.** `restore_backup` reinstalls the backup's floor along with everything else, so a cursor from after the backup point reads as safe against it. The audit floor is one of three carriers of resumable state a restore rolls back (record versions and per-node `Symbol.for('seq')` records are the others), so this wants a database-level generation rather than a fix in this one field — harper#2451.
+- **`getHistory` is not in the floor's time domain.** The floor is an audit-log key, which is what
+  `subscribe`'s events carry as `localTime`; `getHistory` reports each entry's origin `version` under
+  that same name, and a backdated or replicated write makes the two differ. A cursor saved from
+  `getHistory` cannot be compared against the floor.
+- **On RocksDB the floor tracks the configured retention horizon, not retained reality.** Whole-log-file
+  purge granularity means the branch cannot know which entries a purge will drop, and the floor is
+  written first, so each pass advances it to `Date.now() - auditRetention/(1+priority²)` whether a
+  file was dropped or not. Entries below that horizon are often still on disk, and a cursor among
+  them is told to resync — conservative in the safe direction only. LMDB can see a single eligible
+  entry, so it raises off the first one it finds instead.
+- **A prune's clamped floor can sit past `Date.now() + 1`.** `boundedAuditPruneEnd` records `newest + 1`
+  when the newest log key is at or past the clock, and log keys are fractional `getNextMonotonicTime`
+  values, not `Date.now()`, so for the rest of that key's millisecond the floor exceeds the wall clock
+  by more than one. Bound it by the newest key, never the wall clock alone (`auditFloor.test.js`, the
+  far-future `deleteHistory` case — it failed twice on main that way).
+- **Untrustworthy metadata resolves to `Infinity`, not to a number.** A wrong-length record, or eight
+  bytes decoding to NaN/negative, must not become a floor: `cursor < NaN` is false, so a consumer
+  spelling the check that way would read corrupt metadata as safe.
+- **A restore is outside what the floor can see.** `restore_backup` reinstalls the backup's floor
+  along with everything else, so a cursor from after the backup point reads as safe against it. The
+  audit floor is one of three carriers of resumable state a restore rolls back (record versions and
+  per-node `Symbol.for('seq')` records are the others), so this wants a database-level generation
+  rather than a fix in this one field — harper#2451.
 
 ---
 
@@ -295,7 +365,7 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
   - **The override makes the access-control decision.** No `allow*` predicate runs for it. An override that is not meant to be public must check authorization itself.
 - **FK-side relationship accessors (`relationship.from`) are a synchronous contract** (v4 parity). The resolvers built in `Table.updatedAttributes` must read through `getSync`/`getEntry` (which block on a RocksDB block-cache miss, like v4's LMDB page faults) — never `get()`, whose `async: true` path returns a Promise on a cache miss and would leak an intermittent value-or-Promise to `record.<relation>` in user code. Pinned by the "relationship property access is synchronous" test in `../unitTests/resources/query.test.js`, which stubs `store.get` to throw.
   - **Known gap, not covered by that test:** the `.to` side (one-to-many/many-to-many, resolved via `relatedTable.search(...).asArray`) is synchronous for a local read, but `asArray` can still hand back a Promise when the search lands on a **caching** table whose row needs source revalidation — `transformEntryForSelect` returns `loadingFromSource.then(transform)` for an expired/invalidated entry. Same bug class this PR closes on the FK side; not yet fixed here.
-- When adding a new early-return path inside a commit handler in `_writeUpdate`, follow the blob-cleanup protocol documented in `../DESIGN.md` ("Blob orphan cleanup").
+- When adding a new early-return path inside a commit handler in `_writeUpdate`, follow the blob-cleanup protocol in "Blob orphan cleanup" below.
 - If you add a new top-level section to `Table.ts`, drop a `// #section: <name>` marker at its start and add a row to the section map above.
 - Tests for this layer live in `../unitTests/resources/`.
 
@@ -491,28 +561,15 @@ Without this, every re-delivery appended another entry under the origin's log ke
 
 ## A second sequential save() on the same ImmediateTransaction context must chain on `operation.innerCommit`
 
-Two `update()`+`save()` cycles on the _same resource instance_, outside an explicit `transaction()`,
-reuse the same `ImmediateTransaction` object even after its first cycle has closed it (`this.open =
-CLOSED`). The second `save()` re-enters `ImmediateTransaction.save()` with `isCommitting` false, so it
-calls `this.commit()` again; that `commit()`'s own sweep loop calls `this.save(newWrite, ...)` — a
-**polymorphic re-dispatch to `ImmediateTransaction.save()`**, now with `isCommitting` true, which takes
-the `super.save(operation, transaction, true)` branch with no handle to forward (a CLOSED context has
-none) and so creates its own
-brand-new `RocksTransaction` and immediately commits it, stashing the real commit promise on
-`operation.innerCommit`. But the outer `commit()`'s sweep loop discards the return value of
-`this.save(operation, ...)` for every write it processes — that's fine when the write commits inline,
-but this reused-context write's real work happens in a _third_, more deeply nested `commit()` call
-(triggered by `immediateCommit` inside the nested `save()`), whose promise never propagates back through
-any of the enclosing calls. `Table.save()`'s ordinary `#savingOperation` path used to just return
-`#saveOperation(operation)`'s result directly — which can resolve before that nested native commit
-actually settles, so a caller's `await resource.save()` can return before the write is durable (a real,
-if narrow, race: `LockTest.get()` immediately after can read the pre-write value). The lock-writable hold
-branch already avoided this by explicitly returning `operation.innerCommit` after its own recursive
-`save()`; the ordinary path now does the same — `when(this.#saveOperation(operation), () =>
-operation.innerCommit)`. `operation.innerCommit` is `undefined` when a write commits inline (no
-immediateCommit), so this is safe for the common case. Found via record-lock scoped-lock staging
-(harper#483), which is what first made this reused-closed-context pattern reachable for an ordinary
-resource, but the gap is general to `Table.save()`, not lock-specific.
+Two `update()`+`save()` cycles on one resource instance outside `transaction()` reuse one
+`ImmediateTransaction` after its first cycle has closed it. The second write then commits through a
+nested `commit()` on a fresh native transaction (the `immediateCommit` branch of
+`DatabaseTransaction.save()`), whose promise the outer commit's sweep loop discards; that branch
+stashes it on `operation.innerCommit`, which is `undefined` for a write that commits inline. Both
+`Table.save()` branches — the ordinary `#savingOperation` path and the lock-writable hold path — wait
+on it, or `await resource.save()` returns before the write is durable and an immediate read sees the
+old value. The gap is general to `Table.save()`, not lock-specific. Exercised by `recordLock.test.js`
+"scoped lock outside transaction() persists across sequential saves until unlock()".
 
 ## A commit retry re-saves into the transaction it is retrying; `ImmediateTransaction.save()` must forward it
 
@@ -649,20 +706,27 @@ The cross-thread subscription path (default `crossThreads`) drives every `Table.
 ## Audit-entry removal loops must track every `removeAuditEntry()`/`removeEntry()` promise
 
 `scheduleAuditCleanup` (`auditStore.ts`) and `Table.deleteHistory` (`Table.ts`, the LMDB path behind
-`delete_transaction_logs_before`) both iterate a range of audit records and remove each one. Both were
-originally written as `completion = removeAuditEntry(auditStore, auditRecord)` inside the loop, awaiting
-only the final iteration's promise afterward. Any rejection from a non-last iteration was silently
-discarded — the promise reference was overwritten before it could be awaited or caught — and surfaced
-later as an unhandled rejection instead, with no logging to explain it. Any loop that removes
-audit/primary-store entries in a batch must attach a rejection handler to every removal immediately
-and drain all tracked promises before returning — never stash a per-iteration promise in an outer
-variable to await only the last one. `Table.deleteHistory` allows up to 1,000 LMDB removals in flight
+`delete_transaction_logs_before`) both iterate a range of audit records and remove each one. Any loop
+that removes audit/primary-store entries in a batch must attach a rejection handler to every removal
+immediately and drain all tracked promises before returning — never stash a per-iteration promise in
+an outer variable to await only the last one: an overwritten promise's rejection is never awaited or
+caught, and surfaces later as an unhandled rejection with no log to explain it. `Table.deleteHistory`
+allows up to 1,000 LMDB removals in flight
 (ten for RocksDB) so storage writes batch without growing an unbounded pending
 set. Live removals are tracked in a `Set`, and each one removes itself and wakes at most one parked
 producer when it settles, so any completion releases the loop. In these removal loops, do not repeatedly
 race the live set: each race attaches another reaction to every long-pending removal. Both phases drain
 their tracked removals before settling, including when iteration throws. `scheduleAuditCleanup` remains
-sequential because it is an automatic background loop.
+sequential because it is an automatic background loop, and it ends a pass at its first failed removal
+rather than continuing past it: its `deleted` count (the backoff input) and the `last-removed` marker it
+writes then cover a contiguous removed prefix — nothing above that marker was removed by the pass — and
+the next pass retries the failed entry first. Past a failure there is no key the marker can truthfully
+record, and counting failures as progress re-armed an all-failing pass at 10 ms. The guarantee is
+pass-local: the marker is written after its removals, `deleteHistory` never writes it, and a marker an
+older build persisted past a failed entry is not repaired; completeness is the audit floor's question.
+Stopping costs liveness only for an entry that fails on every pass, which is why `removeAuditEntry` must
+fail only when `auditStore.remove()` does (below). Regression: `auditLog.test.js` "ends a pass at a failed
+removal".
 
 Individual removal failures are logged and excluded from the returned count, but a purge that attempted
 at least one removal and completed none rejects with the first error after both phases have drained.
@@ -680,9 +744,11 @@ followed by an unconditional remove: a record recreated between those operations
 `removeAuditEntry` has a second, nested version of the same hazard: for a `'delete'`-type audit record it
 also invokes a per-table delete callback (`addDeleteRemovalCallback`) that removes the corresponding
 primary-store tombstone. That callback's promise must be returned and joined with the audit-store
-removal (currently via `Promise.all`, with the callback's own rejection caught and logged separately so
-a failed tombstone cleanup doesn't get misreported as a failed audit-entry removal) — otherwise the
-tombstone removal is fire-and-forget and the same detached-rejection hazard reappears one level down.
+removal (currently via `Promise.all`, with the callback's own rejection — and a throwing tombstone
+lookup, such as lmdb-js `getEntry(undefined)` for an undecodable recordId — caught and logged through
+`warnContained`, so neither a failed tombstone cleanup nor a throwing log sink gets misreported as a failed
+audit-entry removal) — otherwise the tombstone removal is fire-and-forget and the same detached-rejection
+hazard reappears one level down.
 A tombstone whose cleanup fails this way is not swept automatically — `scheduleAuditCleanup`'s automatic
 pass never retries it, since the audit entry that would have triggered a retry is already gone. It sits
 in the primary store until an operator runs `delete_transaction_logs_before` with `cleanup_deleted_records: true`.
@@ -710,11 +776,9 @@ of the exported `scheduleAuditCleanup`, because a store-wide segment purge loopi
 duplicated work. If a future change passes `skipThreadCheck: true` at the registration site, that
 backstop — not the registration — becomes the thing keeping the loop single.
 
-Both re-arm guards are **Rocks-only**, deliberately: the LMDB arm keeps `origin/main`'s unconditional
-re-arm, so it neither yields to an already-pending pass (a pressure-armed 100ms pass can be cancelled
-and replaced by the idle backoff) nor restricts itself to one worker. Those are pre-existing LMDB
-behaviours, not invariants this section establishes — don't read the paragraphs above as
-engine-independent.
+Both re-arm guards are **Rocks-only**. The LMDB arm re-arms unconditionally, so it neither yields to
+an already-pending pass (a pressure-armed 100ms pass can be cancelled and replaced by the idle
+backoff) nor restricts itself to one worker — pre-existing LMDB behavior, not an invariant.
 
 Two things a purge does **not** need to coordinate, both load-bearing for the continuous cadence.
 Unlinking a segment a consumer has mapped is safe **on POSIX**: the inode outlives the unlink, and the
@@ -755,13 +819,7 @@ were already removed.
 
 When a blob attribute is created from a Node `Readable` (e.g. `createBlob(stream)` then `row.payload_blob = blob; await table.put(row)`), the put does **not** wait for the underlying stream to fully drain into the file before resolving. Internally `saveBlob` kicks off a `writeBlobWithStream` pipeline whose `storageInfo.saving` promise is tracked separately. The put resolves once encoding has captured the blob reference; the bytes finish writing concurrently.
 
-Consequence for callers that wrap the source in a hashing `Transform`: calling `hash.digest('hex')` after `await table.put()` is unsafe — more `chunk.update()` calls can still fire as the stream drains, producing `Error [ERR_CRYPTO_HASH_FINALIZED]: Digest already called`. Options:
-
-- Buffer first, then hash + put (what `components/deploymentRecorder.ts` does for Slice A — small payloads only).
-- Hash via Transform while extraction reads the stream, and only finalize the hash on the Transform's `'end'` event before any second put with the final hash.
-- Await `storageInfo.saving` directly if you have a handle to the FileBackedBlob (the cleanest path for streaming).
-
-Future agents touching `components/deploymentRecorder.ts` for Slice B's streaming variant should pick one of the latter two patterns.
+Consequence for callers that wrap the source in a hashing `Transform`: calling `hash.digest('hex')` after `await table.put()` is unsafe — more `chunk.update()` calls can still fire as the stream drains, producing `Error [ERR_CRYPTO_HASH_FINALIZED]: Digest already called`. Finalize the hash only after the source has ended and the blob's `storageInfo.saving` has settled, as `components/deploymentRecorder.ts`'s streaming ingest does (`await Promise.all([putDone, tapDone, saving])` before `digest`). Its in-memory sources, and its capped fallback for a missing deployment table, buffer and hash before the put instead.
 
 ## Table drops, the `dropping` tombstone, and ghost tables
 
@@ -778,29 +836,24 @@ silently re-opened with create-if-missing on the next start, which resurrects "d
 
 ## The exclusive `update-attributes` lock is a bounded synchronous wait, and drop-then-recreate needs the column-family eviction fix (`Table.ts`)
 
-Two related traps: the create/schema-update path's exclusive `update-attributes` lock is a
-synchronous bounded wait (`acquireUpdateAttributesLock` in `Table.ts`: brief hot spin, then
-`Atomics.wait` backoff, retryable `ServerError` after the 10s `UPDATE_ATTRIBUTES_LOCK_TIMEOUT` — harper#2251; it used to be
-an unbounded `while (!tryLock()) {}` spin that pinned a worker core forever if the holder never
-released). Release is structural — `table()` releases in a single `finally` and `dropTable` uses
-`withUpdateAttributesLock` — so a throw inside the locked window cannot leak the lock (regression
-suite: `unitTests/resources/updateAttributesLock.test.js`). Because the acquire can now throw,
-`table()` takes the RocksDB lock _before_ it mutates the live `Table` (attributes, class metadata,
-index handles): losing the race then leaves this worker's in-memory schema exactly as it found it,
-and moving any mutation above that acquire reintroduces schema drift the catalog never saw. LMDB
-keeps the lazy acquire — its `exclusiveLock()` is an environment-wide write transaction that cannot
-time out, so taking it eagerly would stall every write to the database on an unchanged reload. A
-successful acquire that waited past `UPDATE_ATTRIBUTES_LOCK_SLOW_WAIT` (1s) warns once, since
-contention is otherwise invisible until it becomes a timeout. The locked
-sections MUST stay synchronous: the wait blocks the event loop, so an awaited operation inside
-one would stall a concurrent acquirer to its deadline. And dropping then recreating a
-same-named table within one process requires @harperfast/rocksdb-js >= the column-family
-eviction fix (2.1.0 / rocksdb-js#647): older bindings keep the dropped column family's
-by-name registry entry alive whenever other worker threads hold handles, so the recreate
-silently reuses a dangling handle and every write fails with "Invalid column family specified
-in write batch", poisoning the whole database env until restart. The regression suite for all
-of this is `unitTests/resources/dropTableGhost.test.js` (it fails by design on pre-fix
-bindings).
+The create/schema-update path's exclusive `update-attributes` lock is a synchronous bounded wait
+(`acquireUpdateAttributesLock` in `Table.ts`: brief hot spin, then `Atomics.wait` backoff, retryable
+`ServerError` after the 10s `UPDATE_ATTRIBUTES_LOCK_TIMEOUT`, harper#2251). Release is structural —
+`table()` releases in a single `finally` and `dropTable` uses `withUpdateAttributesLock` — so a throw
+inside the locked window cannot leak the lock (`unitTests/resources/updateAttributesLock.test.js`).
+Because the acquire can throw, `table()` takes the RocksDB lock _before_ it mutates the live `Table`
+(attributes, class metadata, index handles): losing the race then leaves this worker's in-memory
+schema exactly as it found it, and moving any mutation above that acquire reintroduces schema drift
+the catalog never saw. LMDB keeps the lazy acquire — its `exclusiveLock()` is an environment-wide
+write transaction that cannot time out, so taking it eagerly would stall every write to the database
+on an unchanged reload. A successful acquire that waited past `UPDATE_ATTRIBUTES_LOCK_SLOW_WAIT` (1s)
+warns once, since contention is otherwise invisible until it becomes a timeout. The locked sections
+MUST stay synchronous: the wait blocks the event loop, so an awaited operation inside one would stall
+a concurrent acquirer to its deadline. Dropping then recreating a same-named table within one process
+depends on rocksdb-js's column-family eviction fix (≥ 2.1.0, rocksdb-js#647; `package.json` pins a
+later release): without it the recreate reuses a dangling handle and every write fails with "Invalid
+column family specified in write batch". Regression suite: `unitTests/resources/dropTableGhost.test.js`,
+which fails by design on pre-fix bindings.
 
 ## RocksDB transaction log purges are database-wide only (`ResourceBridge.deleteTransactionLogsBefore`)
 

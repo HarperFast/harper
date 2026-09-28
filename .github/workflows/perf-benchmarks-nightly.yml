@@ -107,7 +107,7 @@ jobs:
       # incomparable against the nightly baseline. Alert comments stay off because that POST
       # would fail the step after the trend was already recorded.
       - name: Track throughput trend
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           name: Storage Benchmarks Throughput (ST-1/ST-2/ST-5)
           tool: customBiggerIsBetter
@@ -124,7 +124,7 @@ jobs:
           git branch -D gh-pages 2>/dev/null || true
 
       - name: Track latency/size trend
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
         with:
           name: Storage Benchmarks Latency/Size (ST-1/ST-2/ST-5)
           tool: customSmallerIsBetter

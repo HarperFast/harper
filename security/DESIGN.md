@@ -2,7 +2,7 @@
 
 Authentication tokens, OIDC exchange and TLS material.
 
-**Read this when:** touching `tokenAuthentication.ts`, `impersonation.ts`, `authn/oidc/` or `keys.ts`.
+**Read this when:** touching `tokenAuthentication.ts`, `impersonation.ts`, `authn/oidc/`, `keys.ts` or `certificateVerification/`.
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -33,7 +33,7 @@ Four constraints that look like choices but are not:
 
    Naming `sql` in a scope grants the SQL interface, not unrestricted DML through it: a write statement additionally requires its matching data operation (`insert`/`update`/`delete`) in scope. That is what keeps `read_only` — which expands to include `sql` — from admitting a DELETE, given that `verifyPermsAST` returns early for a super_user before any table check runs.
 
-`hdb_oidc_token_use` (created lazily via `table()`, not the system schema) records spent tokens keyed on a SHA-256 of the token itself, with `expiresAt` past the token's own expiry. Hashed rather than stored, so the table never holds a credential; keyed on the token's **signed input** (`header.payload`) rather than `jti` because not every issuer emits one (Azure uses `uti`). Not on the whole token string: the signature segment is covered by nothing, and base64url decoding ignores the surplus low bits of its final character, so 16 distinct spellings of an RS256 signature decode to the same bytes, all verify, and all hash differently — one leaked token would buy 16 exchanges. ES\* malleability (`s → n−s`) is a second such vector. The signed input is exactly what the issuer asserted, so every variant collapses to one fingerprint. The get-then-put is not atomic and does not claim to be: a concurrent replay is not a privilege escalation, since whoever holds the token could obtain one operation token anyway.
+`hdb_oidc_token_use` (declared on every node at every start by `tokenUseTable.ts`, so a node that never exchanges still removes the rows replicated to it — see dataLayer/DESIGN.md, "System table bootstrap") records spent tokens keyed on a SHA-256 of the token itself, each expiring (record metadata, replicated with the row) past the token's own expiry. Hashed rather than stored, so the table never holds a credential; keyed on the token's **signed input** (`header.payload`) rather than `jti` because not every issuer emits one (Azure uses `uti`). Not on the whole token string: the signature segment is covered by nothing, and base64url decoding ignores the surplus low bits of its final character, so 16 distinct spellings of an RS256 signature decode to the same bytes, all verify, and all hash differently — one leaked token would buy 16 exchanges. ES\* malleability (`s → n−s`) is a second such vector. The signed input is exactly what the issuer asserted, so every variant collapses to one fingerprint. The get-then-put is not atomic and does not claim to be: a concurrent replay is not a privilege escalation, since whoever holds the token could obtain one operation token anyway.
 
 ## Scoped tokens and synthetic-role identity (`security/tokenAuthentication.ts`, `security/impersonation.ts`)
 
@@ -149,6 +149,26 @@ debounce. `loadAndWatch` latches its mtime before the callback for chokidar/poll
 the latch back on a synchronous throw or a rejected callback promise (equality-guarded so a stale
 rejection cannot unlatch a newer reload) — the latch means "last successfully applied", so the
 periodic poll can heal a lost `hdb_certificate` write instead of deduplicating it forever.
+
+## Client-certificate revocation checking keeps three tables (`security/certificateVerification/`)
+
+`verificationTables.ts` declares them, and every writable start and the verification path apply the same
+declarations (dataLayer/DESIGN.md, "System table bootstrap"). A row's expiry is record metadata; a table's
+`expiration` is only the fallback for a row written without one.
+
+- A verdict (`hdb_certificate_cache`) expires `cacheTtl` after its check because `CertificateVerificationSource`
+  sets `context.expiresAt`: a caching table decides staleness by the stored expiry, and a source fill stores
+  `sourceContext.expiresAt`, never a field the source returns. `createCacheKey` hashes a key version, so a
+  verdict cached before verdicts carried an expiry, which has none and would read as fresh forever, is never
+  read again.
+- A revocation (`hdb_revoked_certificates`) lives until `crl_next_update + gracePeriod`, the window
+  `performCRLCheck` honors while it decides by `crl_next_update`. Expiring it at `nextUpdate` made that branch
+  unreachable and reported a revoked certificate on an overdue CRL as good.
+- A CRL's revocations replace the previous set all or nothing, in a transaction of their own rather than the
+  verdict fill's `performCRLCheck` runs in, so other checks see a complete set once it commits. The check that
+  downloaded the CRL decides from the CRL itself: by the time it could read the table, another worker may have
+  replaced the set with a different generation of that CRL. A check answered by a cached CRL reads the table
+  outside the verdict fill's transaction, whose LMDB snapshot misses rows committed after it.
 
 ## A component-facing export needs BOTH `index.ts` and `getHarperExports` (`security/jsLoader.ts`, `index.ts`)
 

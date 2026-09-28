@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import * as pkijs from 'pkijs';
 import * as asn1js from 'asn1js';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
-import { table } from '../../resources/databases.ts';
+import { declareCertificateCacheTable } from './verificationTables.ts';
 import type { PeerCertificate, CertificateChainEntry } from './types.ts';
 
 const logger = loggerWithTag('cert-verification-utils');
@@ -297,6 +297,10 @@ export function pemToBuffer(pem: string): ArrayBuffer {
 	return buffer;
 }
 
+// A verdict cached before verdicts carried their own expiry has none and would read as fresh forever, so the
+// keys it was stored under are never read again.
+const VERDICT_KEY_VERSION = 2;
+
 /**
  * Create a cache key for certificate verification
  * @param certPem - Certificate in PEM format
@@ -316,6 +320,7 @@ export function createCacheKey(
 		issuerPem,
 		method,
 		...additionalData,
+		keyVersion: VERDICT_KEY_VERSION,
 	};
 	const cacheKeyHash = createHash('sha256').update(JSON.stringify(cacheData)).digest('hex');
 	return `${method}:${cacheKeyHash}`;
@@ -410,38 +415,9 @@ export function extractIssuerKeyId(certPem: string): string {
  * Get shared certificate verification cache table
  * @returns Harper table instance for certificate verification cache
  */
-// Cache the certificate cache table instance to avoid recreating it
-let certificateCacheTable: ReturnType<typeof table> | null = null;
+let certificateCacheTable: ReturnType<typeof declareCertificateCacheTable> | null = null;
 
 export function getCertificateCacheTable() {
-	if (!certificateCacheTable) {
-		certificateCacheTable = table({
-			table: 'hdb_certificate_cache',
-			database: 'system',
-			attributes: [
-				{
-					name: 'certificate_id',
-					isPrimaryKey: true,
-				},
-				{
-					name: 'status', // 'good', 'revoked', 'unknown'
-				},
-				{
-					name: 'reason',
-				},
-				{
-					name: 'checked_at',
-				},
-				{
-					name: 'expiresAt',
-					expiresAt: true,
-					indexed: true,
-				},
-				{
-					name: 'method', // 'ocsp' or 'crl'
-				},
-			],
-		});
-	}
+	certificateCacheTable ??= declareCertificateCacheTable();
 	return certificateCacheTable;
 }

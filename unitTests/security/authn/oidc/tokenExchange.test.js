@@ -33,13 +33,16 @@ let signingJwk;
 
 function installMockTable(name, primaryKey) {
 	const rows = new Map();
+	const expiries = new Map();
 	const mock = {
 		rows,
+		expiries,
 		async get(id) {
 			return rows.get(id);
 		},
-		async put(row) {
+		async put(row, context) {
 			rows.set(row[primaryKey], row);
+			if (context?.expiresAt !== undefined) expiries.set(row[primaryKey], context.expiresAt);
 		},
 		async delete(id) {
 			return rows.delete(id);
@@ -57,10 +60,8 @@ function installMockTable(name, primaryKey) {
 }
 
 /**
- * The replay table is reached through an unconditional `table()` call, not a lookup — it has to be,
- * because the systemSchema bootstrap declares only the primary key and `table()` is what layers the
- * expiresAt TTL on top. So intercept the factory rather than seeding `databases.system`, which that
- * call would otherwise sail straight past.
+ * The replay table is reached through its `table()` declaration (tokenUseTable.ts), not a lookup, so
+ * intercept the factory rather than seeding `databases.system`, which that call would sail straight past.
  */
 function installMockTableFactory(name, mock) {
 	const databasesModule = require('#src/resources/databases');
@@ -347,10 +348,11 @@ describe('exchangeOidcToken', () => {
 		const token = identityToken();
 		await exchangeOidcToken({ operation: 'exchange_oidc_token', token });
 
-		const [record] = [...useTable.mock.rows.values()];
+		const [[fingerprint, record]] = [...useTable.mock.rows.entries()];
 		assert.strictEqual(record.policy_id, 'my-app-prod');
-		const tokenExpiryMs = decodeJWT(token).exp * 1000;
-		assert.ok(record.expiresAt > tokenExpiryMs, 'record must outlive the token it guards');
+		assert.ok(!('expiresAt' in record), 'the expiry is record metadata, not a field');
+		// the token's expiry plus the padding that outlasts the verifier's clock tolerance
+		assert.strictEqual(useTable.mock.expiries.get(fingerprint), decodeJWT(token).exp * 1000 + 120_000);
 	});
 
 	it('rejects a token minted for a different audience', async () => {
