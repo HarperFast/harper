@@ -4,7 +4,9 @@ const testUtils = require('../../testUtils.js');
 testUtils.preTestPrep();
 
 const assert = require('node:assert');
+const { execFileSync } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
+const { join } = require('node:path');
 const { JOB_STATUS_ENUM, SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
 const { getDatabases } = require('#src/resources/databases');
 const {
@@ -68,6 +70,16 @@ describe('jobOwnership', function () {
 			assert.strictEqual(job.owner_pid, process.pid);
 		});
 
+		it('a separate Harper process mints a different id, which is what makes a restart detectable', function () {
+			const fixture = join(__dirname, 'fixtures', 'reportIncarnation.cjs');
+			const first = execFileSync(process.execPath, [fixture], { encoding: 'utf8' }).trim();
+			const second = execFileSync(process.execPath, [fixture], { encoding: 'utf8' }).trim();
+
+			assert.ok(first, 'a Harper process must mint an owner id');
+			assert.notStrictEqual(first, second, 'two processes must not share an owner id');
+			assert.notStrictEqual(first, JOB_OWNER_INSTANCE_ID, 'a child process must not share this one');
+		});
+
 		it('identifies the process by the thread fabric incarnation, not the pid', function () {
 			assert.strictEqual(typeof JOB_OWNER_INSTANCE_ID, 'string');
 			assert.notStrictEqual(JOB_OWNER_INSTANCE_ID, String(process.pid));
@@ -90,6 +102,7 @@ describe('jobOwnership', function () {
 			assert.strictEqual(job.status, JOB_STATUS_ENUM.ERROR);
 			assert.match(job.message, /interrupted/i);
 			assert.match(job.message, /999999/);
+			assert.match(job.message, /outcome is unknown/i, 'the job may have applied some of its effects');
 			assert.ok(job.end_datetime, 'a settled job must carry an end time');
 		});
 

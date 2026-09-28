@@ -7,10 +7,9 @@ import * as manageThreads from '../threads/manageThreads.js';
 import { updateJob } from './jobs.ts';
 
 /**
- * Ownership is the thread fabric's process incarnation rather than a pid, because pids are reused and a
- * reused pid would make a dead job look alive. It is minted once on the main thread and carried to every
- * worker in `workerData`, so all threads of one Harper process agree on it while any restart produces a
- * new one. The pid rides along for diagnostics only.
+ * The thread fabric's process incarnation, not a pid: pids are reused, and a reused pid would make a
+ * dead job look alive. Every thread of one Harper process carries the same value, and any restart
+ * produces a new one. `undefined` on a thread started without one.
  */
 export const JOB_OWNER_INSTANCE_ID: string | undefined = manageThreads.processIncarnation;
 
@@ -28,33 +27,29 @@ export function stampJobOwner(job: any): void {
 let reconciliation: Promise<number> | undefined;
 
 /**
- * Run the sweep at most once for the lifetime of this process.
- *
- * `loadRootComponents` re-runs on every root component reload, and the sweep walks retained job history
- * once per unfinished status. A row this process owns is never settled, and no other process can add a
- * row that this one owns, so every pass after the first is cost with no possible finding.
- *
- * A failed sweep stays failed: the per-row failures are already handled inside, so a rejection here means
- * something systemic that a reload will not have fixed.
+ * Reconcile at most once per process. `loadRootComponents` re-runs on every root component reload, and
+ * no process can add a row that this one owns, so every pass after a successful one could only find
+ * nothing. A failed pass clears the memo, because the recovery this exists for must not be lost to one
+ * transient error.
  */
 export function reconcileInterruptedJobsOnce(): Promise<number> {
-	return (reconciliation ??= reconcileInterruptedJobs());
+	return (reconciliation ??= reconcileInterruptedJobs().catch((error) => {
+		reconciliation = undefined;
+		throw error;
+	}));
 }
 
 /**
  * Settle every job row left unfinished by a process that is no longer running, and report how many were
- * settled.
+ * settled. Callers need not await it: the rows are chosen before the first write, so a job created while
+ * it runs is this process's and out of scope by construction.
  *
- * Safe to call more than once: a row this process owns is skipped, and a row it does not own is moved to
- * a terminal status, so a second pass finds nothing. Boot is the only place it needs to run, because a
- * row owned by a live process is by definition still someone's responsibility.
- *
- * Interrupted rows are reported as ERROR rather than a new status: every consumer of `get_job` already
- * handles ERROR, and the distinction lives in the message.
+ * Settled rows are reported as ERROR rather than a new status, because every consumer of `get_job`
+ * already handles ERROR.
  */
 export async function reconcileInterruptedJobs(): Promise<number> {
-	// A thread with no incarnation of its own cannot tell a dead owner from a live one, so it settles
-	// nothing rather than declaring a running job dead. The main thread always mints one.
+	// A thread with no incarnation cannot tell a dead owner from a live one, so it settles nothing rather
+	// than declaring a running job dead. The main thread always has one.
 	if (JOB_OWNER_INSTANCE_ID == null) return 0;
 
 	const jobTable = (getDatabases() as any).system?.[hdbTerms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME];
@@ -72,10 +67,12 @@ export async function reconcileInterruptedJobs(): Promise<number> {
 	for (const { id, owner_pid } of interrupted) {
 		const owner = owner_pid == null ? 'an earlier Harper process' : `Harper process ${owner_pid}`;
 		try {
+			// Deliberately not "rerun it": the job may have applied some of its effects before it died, and
+			// nothing here can tell how far it got.
 			await updateJob({
 				id,
 				status: hdbTerms.JOB_STATUS_ENUM.ERROR,
-				message: `Job was interrupted: ${owner} exited before it finished. Rerun the operation.`,
+				message: `Job was interrupted: ${owner} exited before it finished. Its outcome is unknown — check for partial effects before running the operation again.`,
 			});
 			settled++;
 		} catch (error) {
