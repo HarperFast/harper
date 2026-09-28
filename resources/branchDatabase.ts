@@ -504,7 +504,7 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 					// The branch is closed first — it holds the path and store identity a retry needs — and
 					// a close failure must not leave the claim wedged in CREATING for the whole deadline.
 					try {
-						branch?.close();
+						await branch?.close();
 					} catch (closeError) {
 						logger.warn(`Error closing branch at ${branchPath} after a failed open`, closeError);
 					}
@@ -575,7 +575,7 @@ export async function closeBranchAt(branchPath: string): Promise<void> {
 	const pending = branchesByPath.get(branchPath);
 	branchesByPath.delete(branchPath);
 	const opened = await pending?.catch(() => null);
-	opened?.branch.close();
+	await opened?.branch.close();
 }
 
 /**
@@ -737,7 +737,7 @@ async function removeBranchAt(branchPath: string): Promise<void> {
 	const pending = branchesByPath.get(branchPath);
 	branchesByPath.delete(branchPath);
 	const opened = (await pending?.catch(() => null)) ?? null;
-	opened?.branch.close();
+	await opened?.branch.close();
 	await destroyBranchStorage(branchPath, opened);
 }
 

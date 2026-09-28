@@ -94,8 +94,8 @@ describe('token-scoped operation narrowing', () => {
 // chooseOperation. A gate in only one of them lets a token scoped to e.g. get_status run arbitrary
 // SQL against whatever its role can reach — which would falsify the whole "can only subtract" claim.
 // The scope is written in API-operation names (`deploy_component`), which is what the caller sends as
-// `operation`. verifyPerms must gate on that, not on the handler function name — deployComponent has
-// no api_name mapping, so gating on the handler denied the feature's own headline operation.
+// `operation`. verifyPerms must gate on that, not on the handler function name — aliases share a
+// handler, and its api_name names only one of them.
 describe('token scope gates on the API operation, not the handler name', () => {
 	function requestFor(operation, tokenOperations) {
 		const hdb_user = { username: 'ci-deploy', role: { role: 'r', permission: { super_user: true } } };
@@ -104,7 +104,6 @@ describe('token scope gates on the API operation, not the handler name', () => {
 	}
 
 	it('allows deploy_component when the scope names it', () => {
-		// deployComponent (the handler) has no api_name; the scope names the API op `deploy_component`.
 		const result = opAuth.verifyPerms(requestFor('deploy_component', ['deploy_component']), 'deployComponent');
 		assert.ok(isAllowed(result), 'a token scoped to deploy_component must be able to deploy_component');
 	});
@@ -139,6 +138,32 @@ describe('token scope gates on the API operation, not the handler name', () => {
 			apiOperation: 'export_local',
 		});
 		assert.ok(isAllowed(allowed), 'an export_local-scoped token may run the export');
+	});
+});
+
+// A trust policy pointed at a least-privilege CI user: the role grants one SU-only operation through its
+// allowlist, which gate 2 returns early for, so the scope has to have been applied before that.
+describe('token scope over a role that is granted deploy_component', () => {
+	function deployAs(tokenOperations) {
+		const permission = { super_user: false, operations: ['deploy_component'] };
+		const hdb_user = { username: 'ci-deploy', role: { role: 'ci_deploy', permission }, tokenOperations };
+		return opAuth.verifyPerms({ operation: 'deploy_component', hdb_user }, 'deployComponent');
+	}
+
+	it('deploys when the scope names deploy_component', () => {
+		assert.ok(isAllowed(deployAs(['deploy_component'])));
+	});
+
+	it('deploys when the policy carries no scope', () => {
+		assert.ok(isAllowed(deployAs(null)));
+	});
+
+	it('does not deploy when the scope names something else', () => {
+		assert.ok(!isAllowed(deployAs(['get_status'])));
+	});
+
+	it('does not deploy when the scope is empty', () => {
+		assert.ok(!isAllowed(deployAs([])));
 	});
 });
 

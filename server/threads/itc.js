@@ -4,34 +4,53 @@ const hdbUtils = require('../../utility/common_utils.ts');
 const hdbTerms = require('../../utility/hdbTerms.ts');
 const { ITC_ERRORS } = require('../../utility/errors/commonErrors.ts');
 const { threadId } = require('worker_threads');
-const { onMessageFromWorkers, broadcastWithAcknowledgement } = require('./manageThreads.js');
+const {
+	onMessageFromWorkers,
+	broadcastWithAcknowledgement,
+	broadcastWithStrictAcknowledgement,
+} = require('./manageThreads.js');
 
 module.exports = {
 	sendItcEvent,
+	sendItcEventStrict,
 	validateEvent,
 	SchemaEventMsg,
-	UserEventMsg,
 };
 let serverItcHandlers;
 const RESTORE_CLOSE_ACK_TIMEOUT_MS = 30000;
 onMessageFromWorkers(async (event, sender) => {
 	serverItcHandlers = serverItcHandlers || require('../itc/serverHandlers.js');
-	validateEvent(event);
-	if (serverItcHandlers[event.type]) {
-		await serverItcHandlers[event.type](event);
+	let error;
+	try {
+		validateEvent(event);
+		if (serverItcHandlers[event.type]) {
+			await serverItcHandlers[event.type](event);
+		}
+	} catch (caught) {
+		const hdbLogger = require('../../utility/logging/harper_logger.ts');
+		hdbLogger.error('ITC event handler failed', caught);
+		error = {
+			name: caught?.name,
+			message: caught?.message ?? String(caught),
+			code: caught?.code,
+			statusCode: caught?.statusCode,
+			retryable: caught?.retryable,
+		};
 	}
 	if (event.requestId && sender)
 		sender.postMessage({
 			type: 'ack',
 			id: event.requestId,
+			error,
 		});
 });
 
 /**
  * Emits an ITC event to the ITC server.
  * @param event
+ * @param {boolean|'active'} includeJobWorkers
  */
-function sendItcEvent(event) {
+function sendItcEvent(event, includeJobWorkers = false) {
 	// Always stamp originator so handlers can send direct responses back.
 	// The main thread's threadId is 0 (worker_threads convention); parentPort.threadId
 	// is set to 0 in workers, so sendToThread(0, ...) routes back to main.
@@ -41,9 +60,21 @@ function sendItcEvent(event) {
 		event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP &&
 		event.message.restorePhase === 'close'
 	) {
-		return broadcastWithAcknowledgement(event, RESTORE_CLOSE_ACK_TIMEOUT_MS, true);
+		// Strict, bounded, and job workers included. Strict and bounded because the restore must not
+		// proceed past a worker that never acknowledged the close, nor wait on a wedged one forever --
+		// unbounded would strand the restore holding its marker, before verifyDatabaseClosed's own
+		// deadline could report a clean 409. Job workers are opted in because every blob-writing thread
+		// must join the close barrier; their message handlers stay live while a job's own async work is
+		// suspended, so the usual re-entrancy objection to gossiping at them does not apply here.
+		return broadcastWithStrictAcknowledgement(event, RESTORE_CLOSE_ACK_TIMEOUT_MS, true);
 	}
-	return broadcastWithAcknowledgement(event);
+	return broadcastWithAcknowledgement(event, undefined, false, includeJobWorkers);
+}
+
+/** @param {boolean|'active'} includeJobWorkers */
+function sendItcEventStrict(event, timeout, includeJobWorkers = false) {
+	if (event.message) event.message.originator = threadId;
+	return broadcastWithStrictAcknowledgement(event, timeout, includeJobWorkers);
 }
 
 /**
@@ -98,13 +129,4 @@ function SchemaEventMsg(
 	this.table = table;
 	this.attribute = attribute;
 	if (branchPath) this.branchPath = branchPath;
-}
-
-/**
- * Constructor function for the message of user ITC events
- * @param originator
- * @constructor
- */
-function UserEventMsg(originator) {
-	this.originator = originator;
 }

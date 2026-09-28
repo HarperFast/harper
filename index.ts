@@ -97,6 +97,19 @@ export type {
 	ToolTraceEntry,
 	ConversationAppender,
 	ConversationTurn,
+	DecideInput,
+	DecideOpts,
+	RecordedDecideOpts,
+	Decision,
+	RecordedDecision,
+	DecisionSchema,
+	DecisionLeaf,
+	FieldDecision,
+	DecisionOutcome,
+	DecisionRecord,
+	OutcomeReport,
+	OutcomeTruth,
+	OutcomeAction,
 } from './resources/models/types.ts';
 export type { FilesOption, FilesOptionObject } from './components/deriveGlobOptions.ts';
 export type { FileAndURLPathConfig } from './components/Component.ts';

@@ -9,6 +9,7 @@ const {
 	createAuditEntry,
 	transactionKeyEncoder,
 	removeAuditEntry,
+	getLastRemoved,
 	AUDIT_STORE_OPTIONS,
 } = require('#src/resources/auditStore');
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
@@ -26,6 +27,7 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { waitFor } = require('../waitFor');
 const { transaction } = require('#src/resources/transaction');
+const { AUDIT_STORE_NAME } = require('#src/utility/lmdb/terms');
 const harperLogger = require('#src/utility/logging/harper_logger');
 require('#src/server/serverHelpers/serverUtilities');
 describe('Audit log', () => {
@@ -797,6 +799,58 @@ describe('Audit log', () => {
 			);
 		});
 	}
+	// A corrupt recordId decodes to undefined, and the lookup then throws: from lmdb-js getEntry(undefined),
+	// or — when the log sink throws — from the recordId getter's own decode warning. Either is the
+	// tombstone's failure, so it must not fail the audit entry's removal: the automatic cleanup pass ends
+	// at a failed removal, and an entry that fails every time would stop it for good.
+	for (const loggingThrows of [true, false]) {
+		it(`removeAuditEntry still removes a delete entry whose tombstone lookup throws (failure logging ${
+			loggingThrows ? 'throws' : 'succeeds'
+		})`, async () => {
+			const directory = mkdtempSync(join(tmpdir(), 'harper-audit-corrupt-recordid-'));
+			const rootStore = open({ path: join(directory, 'primary.mdb') });
+			const originalWarn = harperLogger.warn;
+			try {
+				const buffer = Buffer.from(
+					createAuditEntry({ version: 100, tableId: 7, recordId: 'aaaaaaaaaa', nodeId: 0, type: 'delete' })
+				);
+				// recordId bytes that decode as a non-integer BigInt, so the getter reports the entry corrupt
+				Buffer.from('13195fb7a854cde125e9', 'hex').copy(buffer, buffer.indexOf('aaaaaaaaaa'));
+				const deleteAuditRecord = readAuditEntry(buffer);
+				assert.equal(deleteAuditRecord.type, 'delete', 'test setup: the header must still decode');
+				assert.equal(deleteAuditRecord.recordId, undefined, 'test setup: the recordId must decode as corrupt');
+				deleteAuditRecord.key = 'audit-key';
+				// installed after setup: the recordId getter logs its decode failure through the same sink
+				const warnings = [];
+				harperLogger.warn = (...args) => {
+					warnings.push(args);
+					if (loggingThrows) throw new Error('simulated logging failure');
+				};
+				const auditRemoveCalls = [];
+				let tombstoneRemovals = 0;
+				const auditStore = {
+					tableStores: { 7: rootStore.openDB('primary', {}) },
+					deleteCallbacks: { 7: () => tombstoneRemovals++ },
+					remove(key) {
+						auditRemoveCalls.push(key);
+						return Promise.resolve();
+					},
+				};
+
+				await removeAuditEntry(auditStore, deleteAuditRecord);
+				assert.deepEqual(auditRemoveCalls, ['audit-key']);
+				assert.equal(tombstoneRemovals, 0, 'no tombstone can match an undecodable recordId');
+				assert.ok(
+					warnings.some(([message]) => message === 'Error removing deleted record while removing its audit entry'),
+					'the failed tombstone lookup must be logged as a tombstone failure'
+				);
+			} finally {
+				harperLogger.warn = originalWarn;
+				await rootStore.close();
+				rmSync(directory, { recursive: true, force: true });
+			}
+		});
+	}
 	// harper#2412: a delete's audit entry authorizes removing the record's tombstone, so it has to name
 	// the very write that left it. The record version cannot: it is legitimately non-unique, and a
 	// version match on a different write would destroy live state.
@@ -1414,6 +1468,47 @@ describe('Audit log', () => {
 		assert.strictEqual(store.nodeLogs[0], fakeLog, 'nodeLogs[0] must be the local log');
 	});
 
+	it('a numeric log id with no log misses without creating one', async function () {
+		if (!AuditedTable.auditStore.reusableIterable) return this.skip(); // numeric log ids are RocksDB-only
+		const auditStore = AuditedTable.auditStore;
+		const id = 'numeric-log-miss';
+		await AuditedTable.put(id, { name: 'numeric-log-miss' });
+		const { localTime } = AuditedTable.primaryStore.getEntry(id);
+		assert.equal(auditStore.get(localTime, AuditedTable.tableId, id, 0)?.recordId, id);
+
+		const peerId = 'numeric-log-peer';
+		const peerNodeId = auditStore.ensureLogExists('numeric-log-peer');
+		const peerTime = Date.now() - 1000;
+		const context = { source: {}, sourceApply: true, timestamp: peerTime };
+		await transaction(context, async () => {
+			const resource = await AuditedTable.getResource(peerId, context);
+			return resource._writeUpdate(peerId, { name: 'numeric-log-peer' }, true, {
+				isNotification: true,
+				nodeId: peerNodeId,
+				version: peerTime,
+			});
+		});
+		assert.equal(auditStore.get(peerTime, AuditedTable.tableId, peerId, peerNodeId)?.recordId, peerId);
+		assert.equal(
+			auditStore.get(peerTime, AuditedTable.tableId, peerId, undefined)?.recordId,
+			peerId,
+			'an absent node id must still search every log'
+		);
+
+		const unknownNodeId = auditStore.loadLogs().length + 1000;
+		assert.equal(auditStore.get(localTime, AuditedTable.tableId, id, unknownNodeId), undefined);
+		const range = auditStore.getRange({ start: 1, log: unknownNodeId });
+		assert.deepEqual(Array.from(range), []);
+		assert.equal(range.failedLogs.size, 0);
+		assert.equal(range.exactStartFailures.size, 0);
+		assert.ok(
+			!auditStore.rootStore.listLogs().includes(String(unknownNodeId)),
+			`reading by node id ${unknownNodeId} must not create a transaction log named after it`
+		);
+		Array.from(auditStore.getRange({ start: 1, log: 'numeric-log-by-name' }));
+		assert.ok(auditStore.rootStore.listLogs().includes('numeric-log-by-name'), 'a log name keeps get-or-create');
+	});
+
 	it('local audited write stores nodeId 0 in the primary record', async function () {
 		const key = 9001;
 		await AuditedTable.put(key, { name: 'nodeId-test' });
@@ -1627,6 +1722,78 @@ describe('Audit cleanup retirement', () => {
 			}
 		});
 	}
+
+	// A pass that removed past a failed entry has no key to record: at or before the failure the marker
+	// understates what the pass removed, after it the marker claims an entry that is still there. So the
+	// pass ends at the failure, and the next one retries from there.
+	it('ends a pass at a failed removal and records neither the marker nor progress past it', async function () {
+		setAuditRetention(60_000, 10_000);
+		const rootStore = openScratchStore();
+		const originalWarn = harperLogger.warn;
+		const { auditStore, markerValues } = armGatedPass(rootStore);
+		try {
+			const remaining = [1001, 1002, 1003];
+			const failingKeys = new Set([1002]);
+			// a range over what is actually left, so a later pass meets the failed entry again
+			auditStore.getRange = () => {
+				const keys = remaining.slice();
+				let index = 0;
+				return {
+					[Symbol.iterator]: () => ({
+						next: () =>
+							index < keys.length
+								? { done: false, value: { key: keys[index++], type: 'put' } }
+								: { done: true, value: undefined },
+						return: () => ({ done: true, value: undefined }),
+					}),
+				};
+			};
+			auditStore.remove = (key) => {
+				if (failingKeys.has(key)) return Promise.reject(new Error('simulated audit entry removal failure'));
+				remaining.splice(remaining.indexOf(key), 1);
+				return Promise.resolve();
+			};
+			const warnings = [];
+			harperLogger.warn = (...args) => warnings.push(args);
+			// armed at 1ms, then given a baseline the pass's backoff visibly doubles or halves
+			const runPass = () => {
+				const pass = auditStore.scheduleAuditCleanup(1);
+				auditStore.auditCleanupDelay = 1000;
+				return pass;
+			};
+
+			await runPass();
+			assert.deepEqual(remaining, [1002, 1003], 'the pass must not remove past the failed entry');
+			assert.deepEqual(markerValues, [1001], 'the marker must stop at the last entry before the failed one');
+			assert.equal(getLastRemoved(auditStore), 1001);
+			assert.equal(warnings[0]?.[1]?.message, 'simulated audit entry removal failure');
+
+			await runPass();
+			assert.deepEqual(remaining, [1002, 1003], 'the retried entry still fails, so nothing after it moves');
+			assert.deepEqual(markerValues, [1001], 'a pass whose only removal failed removed nothing to record');
+			assert.equal(auditStore.auditCleanupDelay, 2000, 'a failed removal is not progress: the pass must back off');
+
+			failingKeys.clear();
+			await runPass();
+			assert.deepEqual(remaining, [], 'the next pass retries the failed entry and continues past it');
+			assert.deepEqual(markerValues, [1001, 1003]);
+
+			await auditStore.stopAuditCleanup();
+			await rootStore.close();
+			const reopened = open({ path: rootStore.path });
+			try {
+				const reopenedAuditStore = reopened.openDB(AUDIT_STORE_NAME, { ...AUDIT_STORE_OPTIONS, create: false });
+				assert.equal(getLastRemoved(reopenedAuditStore), 1003, 'the recorded marker must be the persisted one');
+			} finally {
+				await reopened.close();
+			}
+		} finally {
+			harperLogger.warn = originalWarn;
+			auditStore.stopAuditCleanup();
+			removeStorageReclamation(rootStore.path);
+			if (rootStore.status !== 'closed') await rootStore.close();
+		}
+	});
 
 	// The initializing marker write has no downstream owner: openAuditStore() is synchronous and returns
 	// the store, so a rejection here escapes unless it is contained at the call site — and the

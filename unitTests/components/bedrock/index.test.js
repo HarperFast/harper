@@ -74,6 +74,7 @@ describe('BedrockBackend', () => {
 				stream: true,
 				tools: true,
 				adapters: false,
+				structuredOutput: false,
 			});
 		});
 

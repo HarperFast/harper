@@ -251,6 +251,8 @@ export interface SubscriptionRequest extends RequestTarget {
 	includeDescendants?: boolean;
 	supportsTransactions?: boolean;
 	rawEvents?: boolean;
+	/** Include superseded record versions in replay and live delivery. Defaults to rawEvents, otherwise false. */
+	includeSuperseded?: boolean;
 	listener?: Listener;
 	/**
 	 * Application-supplied predicate for subscription events, including tombstones and messages that

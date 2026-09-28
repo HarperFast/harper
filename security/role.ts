@@ -4,7 +4,6 @@ import * as insert from '../dataLayer/insert.ts';
 import * as search from '../dataLayer/search.ts';
 import * as delete_ from '../dataLayer/delete.ts';
 import * as validation from '../validation/role_validation.ts';
-import * as signalling from '../utility/signalling.ts';
 import * as util from 'util';
 import * as terms from '../utility/hdbTerms.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
@@ -17,8 +16,6 @@ import SearchByHashObject from '../dataLayer/SearchByHashObject.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 import { assertActiveSuperUserRemains } from './user.ts';
-
-import { UserEventMsg } from '../server/threads/itc.js';
 
 function scrubRoleDetails(role) {
 	try {
@@ -88,11 +85,6 @@ export async function addRole(role: any) {
 
 	await insert.insert(insertObject);
 
-	// Await cross-worker propagation so the new role is in effect on every worker before
-	// returning success (matches alterRole and the user ops). Otherwise a request routed to a
-	// lagging worker can observe the old auth state — see #1497.
-	await signalling.signalUserChange(new UserEventMsg(process.pid));
-
 	role = scrubRoleDetails(role);
 	return role;
 }
@@ -129,7 +121,6 @@ export async function alterRole(role: any) {
 		throw handleHDBError(new Error(), 'Invalid role id', HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
-	await signalling.signalUserChange(new UserEventMsg(process.pid));
 	return role;
 }
 
@@ -196,9 +187,6 @@ export async function dropRole(role: any) {
 
 	await pDeleteDelete(deleteObject);
 
-	// Await cross-worker propagation so the drop is in effect on every worker before returning
-	// success — otherwise a lagging worker keeps honoring the dropped role briefly (#1497).
-	await signalling.signalUserChange(new UserEventMsg(process.pid));
 	return `${roleName[0].role} successfully deleted`;
 }
 

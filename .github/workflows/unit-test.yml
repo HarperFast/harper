@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
     # on a required check. Every step below is capped in its own right and this sits above their
-    # sum (50 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
+    # sum (52 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
     timeout-minutes: 55
     strategy:
       fail-fast: false
@@ -54,7 +54,7 @@ jobs:
 
       - name: Build
         timeout-minutes: 3
-        run: npm run build || true # we currently have type errors so just ignore that
+        run: npm run build
 
       - name: Type contract tests
         if: matrix.node-version == 22
@@ -94,10 +94,13 @@ jobs:
       # from the Actions step API: a cap-killed sample is right-censored and reads far too low.
       # Derived 2026-09-18 over the 30 `Unit Test` pushes since 2026-09-14, and only `resources`
       # was re-budgeted — capped at 7m off a ~4m30-5m25 estimate nobody re-measured, it reached
-      # 6m58 completed, went red on main, and needed ~7m40 at its worst. `main` (3m19) and `lmdb`
-      # (3m17) sit at ~1.2x their own worst, not 1.5x. `lmdb` has been killed at 4m twice on main,
-      # but from its LMDB-`resources` phase running ~2x its usual time rather than from drift, so
-      # that one wants a diagnosis and not a bigger number.
+      # 6m58 completed, went red on main, and needed ~7m40 at its worst. `main` (3m19) sits at ~1.2x
+      # its own worst, not 1.5x. `lmdb` was re-derived 2026-09-28 over the pushes since 2026-09-26:
+      # slowest completed 3m38, ~3m20 once `subscriptionSuperseded` stopped replaying the shared
+      # `test` database's whole audit log; 1.5x is 5m, and the legs killed at 4m ran longer than any
+      # that completed, so 6m. Its LMDB-`resources` phase stretches on a slow runner in tests that
+      # commit one write at a time or replay a shared database's audit log from `startTime: 1`; look
+      # for another of those before raising it again.
       #
       # `resources` is two steps so that budget stays spendable as the suite grows, and so a
       # wedged run is reported in 8 minutes rather than 12 (harper#2660). They partition the
@@ -129,7 +132,7 @@ jobs:
 
       - name: 'Unit tests: lmdb'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
-        timeout-minutes: 4
+        timeout-minutes: 6
         run: npm run test:unit:lmdb
 
   # Windows had no unit-level coverage at all before this job: every job above pins
@@ -168,7 +171,6 @@ jobs:
 
       - name: Build
         run: npm run build
-        continue-on-error: true # we currently have type errors so just ignore that
 
       # Bounded below the job so a hung group fails the step rather than cancelling
       # the job, which keeps the gate's own group table in the log. The gate caps each
@@ -199,8 +201,6 @@ jobs:
       - name: Install dependencies
         run: npm install --ignore-scripts
 
-      # strict here, unlike the other jobs: the plane suite runs against dist/, so a tolerated
-      # build failure would grade a stale dist and still report green
       - name: Build
         run: npm run build
 

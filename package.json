@@ -1,7 +1,7 @@
 {
 	"name": "harper",
 	"description": "Harper is an open-source Node.js performance platform that unifies database, cache, application, and messaging layers into one in-memory process.",
-	"version": "5.3.0-beta.2",
+	"version": "5.3.0-beta.3",
 	"license": "Apache-2.0",
 	"homepage": "https://harper.fast",
 	"bugs": {
@@ -134,6 +134,8 @@
 		}
 	},
 	"devDependencies": {
+		"@aws-sdk/client-s3": "^3.1012.0",
+		"@aws-sdk/lib-storage": "3.1136.0",
 		"@harperfast/code-guidelines": "^0.1.2",
 		"@harperfast/integration-testing": "^1.0.0",
 		"@modelcontextprotocol/sdk": "^1.29.0",
@@ -150,12 +152,12 @@
 		"@types/tar-fs": "^2.0.4",
 		"@types/tar-stream": "^3.1.4",
 		"@typescript-eslint/parser": "^8.48.1",
-		"axios": "1.19.0",
+		"axios": "1.20.0",
 		"chai": "^6.2.0",
 		"chai-as-promised": "^8.0.2",
 		"chai-integer": "^0.1.0",
 		"compression": "^1.8.1",
-		"compression-1.7": "npm:compression@1.7.4",
+		"compression-1.7": "npm:compression@1.8.2",
 		"eventsource": "^5.0.0",
 		"globals": "^17.0.0",
 		"intercept-stdout": "0.1.2",
@@ -179,8 +181,6 @@
 		"why-is-node-still-running": "^1.0.0"
 	},
 	"dependencies": {
-		"@aws-sdk/client-s3": "^3.1012.0",
-		"@aws-sdk/lib-storage": "3.1116.0",
 		"@endo/static-module-record": "^1.1.2",
 		"@fastify/autoload": "^6.3.1",
 		"@fastify/compress": "^8.3.1",
@@ -189,6 +189,10 @@
 		"@harperfast/extended-iterable": "1.0.3",
 		"@harperfast/rocksdb-js": "2.10.0",
 		"@harperfast/skills": "^1.10.8",
+		"@inquirer/confirm": "^6.3.2",
+		"@inquirer/input": "^5.1.6",
+		"@inquirer/password": "^5.2.2",
+		"@inquirer/select": "^5.2.5",
 		"@turf/area": "6.5.0",
 		"@turf/boolean-contains": "6.5.0",
 		"@turf/boolean-disjoint": "6.5.0",
@@ -203,7 +207,7 @@
 		"argon2": "0.45.1",
 		"asn1js": "3.0.10",
 		"busboy": "^1.6.0",
-		"cbor-x": "1.6.5",
+		"cbor-x": "1.6.6",
 		"chalk": "4.1.2",
 		"chokidar": "^4.0.3",
 		"cli-progress": "3.12.0",
@@ -218,9 +222,8 @@
 		"graphql-http": "^1.22.4",
 		"gunzip-maybe": "1.4.2",
 		"human-readable-ids": "1.0.4",
-		"inquirer": "8.2.7",
 		"is-number": "7.0.0",
-		"joi": "17.13.6",
+		"joi": "17.13.8",
 		"json-bigint-fixes": "1.1.0",
 		"jsonata": "1.8.9",
 		"jsonwebtoken": "9.0.3",
@@ -229,22 +232,21 @@
 		"mathjs": "11.12.0",
 		"micromatch": "^4.0.8",
 		"minimist": "1.2.8",
-		"moment": "2.30.1",
+		"moment": "2.31.0",
 		"mqtt-packet": "~9.0.1",
-		"msgpackr": "2.0.6",
+		"msgpackr": "2.1.0",
 		"needle": "3.5.0",
 		"node-forge": "^1.3.1",
 		"node-stream-zip": "1.16.0",
 		"normalize-path": "^3.0.0",
 		"ora": "8.2.0",
-		"ordered-binary": "1.6.1",
-		"papaparse": "5.6.0",
+		"ordered-binary": "1.6.2",
+		"papaparse": "5.7.0",
 		"passport": "0.7.0",
 		"passport-http": "0.3.0",
 		"passport-local": "1.0.0",
 		"pino": "8.21.0",
-		"pkijs": "3.4.0",
-		"prompt": "1.3.0",
+		"pkijs": "3.4.1",
 		"properties-reader": "2.3.0",
 		"recursive-iterator": "3.3.0",
 		"semver": "7.8.5",
@@ -255,13 +257,13 @@
 		"structon": "1.1.0",
 		"systeminformation": "^5.31.4",
 		"tar-fs": "^3.1.2",
-		"tar-stream": "^3.1.8",
+		"tar-stream": "3.2.0",
 		"ulidx": "0.5.0",
 		"uuid": "11.1.1",
 		"validate.js": "0.13.1",
 		"weak-lru-cache": "^1.2.2",
 		"ws": "8.21.3",
-		"yaml": "2.9.0"
+		"yaml": "2.9.1"
 	},
 	"overrides": {
 		"alasql": {
@@ -269,6 +271,7 @@
 		}
 	},
 	"optionalDependencies": {
+		"@harperfast/fulltext": "0.1.2",
 		"@harperfast/hnsw": "0.4.0",
 		"bufferutil": "4.1.0",
 		"segfault-handler": "1.3.0",
@@ -276,10 +279,18 @@
 	},
 	"peerDependencies": {
 		"@aws-sdk/client-bedrock-runtime": "^3.0.0",
+		"@aws-sdk/client-s3": "^3.0.0",
+		"@aws-sdk/lib-storage": "^3.0.0",
 		"uWebSockets.js": "20.68.0"
 	},
 	"peerDependenciesMeta": {
 		"@aws-sdk/client-bedrock-runtime": {
+			"optional": true
+		},
+		"@aws-sdk/client-s3": {
+			"optional": true
+		},
+		"@aws-sdk/lib-storage": {
 			"optional": true
 		},
 		"uWebSockets.js": {

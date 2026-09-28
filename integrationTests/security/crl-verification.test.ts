@@ -430,3 +430,72 @@ suite('CRL Certificate Verification - Fail-Closed with Timeout', (ctx: ContextWi
 		});
 	});
 });
+
+function mtlsStatus(hostname: string, client: { cert: string; key: string }, ca: string): Promise<number> {
+	return new Promise<number>((resolve, reject) => {
+		const req = https.request(
+			`https://${hostname}:${HTTPS_PORT}/`,
+			{
+				cert: readFileSync(client.cert),
+				key: readFileSync(client.key),
+				ca: readFileSync(ca),
+				rejectUnauthorized: false,
+			},
+			(res) => {
+				res.resume();
+				res.on('end', () => resolve(res.statusCode!));
+			}
+		);
+		req.on('error', (err: any) => reject(new Error(`Request failed: ${err.code || err.message}`)));
+		req.end();
+	});
+}
+
+suite('CRL Certificate Verification - CRL past its nextUpdate, inside the grace period', (ctx: ContextWithHarper) => {
+	let crlServer: CrlServerContext | null = null;
+	let certsPath: string;
+	if (testsBun) return; // no Bun testing for now
+
+	before(async () => {
+		certsPath = await mkdtemp(join(tmpdir(), 'harper-crl-overdue-'));
+		// an hour overdue, well inside the default 24 hour grace period
+		const nextUpdate = new Date(Date.now() - 3_600_000);
+		crlServer = await setupCrlServerWithCerts(certsPath, '127.0.0.1', 5, {
+			thisUpdate: new Date(nextUpdate.getTime() - 86_400_000),
+			nextUpdate,
+		});
+		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
+			config: {
+				http: {
+					mtls: {
+						user: 'admin',
+						certificateVerification: {
+							failureMode: 'fail-closed',
+							crl: { enabled: true, timeout: 30000 },
+							ocsp: { enabled: false },
+						},
+					},
+				},
+				tls: {
+					certificateAuthority: crlServer.certs.ca,
+				},
+			},
+		});
+	});
+
+	after(async () => {
+		if (crlServer) await stopCrlServer(crlServer);
+		await teardownHarper(ctx);
+		await rm(certsPath, { recursive: true, force: true, maxRetries: 3 });
+	});
+
+	test('should accept valid certificate', async () => {
+		const status = await mtlsStatus(ctx.harper.hostname, crlServer!.certs.valid, crlServer!.certs.ca);
+		ok(status !== 401, `Expected non-401 for a valid cert on a CRL inside its grace period. Got: ${status}`);
+	});
+
+	test('should reject revoked certificate', async () => {
+		const status = await mtlsStatus(ctx.harper.hostname, crlServer!.certs.revoked, crlServer!.certs.ca);
+		ok(status === 401, `Expected 401 for a revoked cert on a CRL inside its grace period, got: ${status}`);
+	});
+});

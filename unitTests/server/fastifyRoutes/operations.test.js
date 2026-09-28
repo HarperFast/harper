@@ -518,9 +518,6 @@ describe('Test custom functions operations', () => {
 				},
 			});
 
-			// Mock addConfig to prevent actual file writes
-			const addConfigStub = sandbox.stub(configUtils, 'addConfig').resolves();
-
 			// Mock prepareApplication to prevent actual installation
 			const prepareApplicationStub = sandbox.stub().callsFake((_application, options) => options.beforePrepare());
 			operations.__set__('prepareApplication', prepareApplicationStub);
@@ -531,10 +528,10 @@ describe('Test custom functions operations', () => {
 				package: '@org/new-package',
 			});
 
-			// Verify addConfig was called
-			expect(addConfigStub.calledOnce).to.be.true;
-			expect(addConfigStub.firstCall.args[0]).to.equal('existing-component');
-			expect(addConfigStub.firstCall.args[1].package).to.equal('@org/new-package');
+			expect(prepareApplicationStub.firstCall.args[0].name).to.equal('existing-component');
+			expect(prepareApplicationStub.firstCall.args[1].describeArtifact().rootConfig.package).to.equal(
+				'@org/new-package'
+			);
 
 			// Verify prepareApplication was called
 			expect(prepareApplicationStub.calledOnce).to.be.true;
@@ -543,9 +540,6 @@ describe('Test custom functions operations', () => {
 		it('Test deployComponent allows deploying new component without force flag', async () => {
 			// Mock config to return no existing component
 			sandbox.stub(configUtils, 'getConfigObj').returns({});
-
-			// Mock addConfig to prevent actual file writes
-			const addConfigStub = sandbox.stub(configUtils, 'addConfig').resolves();
 
 			// Mock prepareApplication to prevent actual installation
 			const prepareApplicationStub = sandbox.stub().callsFake((_application, options) => options.beforePrepare());
@@ -557,8 +551,10 @@ describe('Test custom functions operations', () => {
 				package: '@org/new-package',
 			});
 
-			expect(addConfigStub.calledOnce).to.be.true;
-			expect(addConfigStub.firstCall.args[0]).to.equal('new-component');
+			expect(prepareApplicationStub.firstCall.args[0].name).to.equal('new-component');
+			expect(prepareApplicationStub.firstCall.args[1].describeArtifact().rootConfig.package).to.equal(
+				'@org/new-package'
+			);
 			expect(prepareApplicationStub.calledOnce).to.be.true;
 		});
 
@@ -587,9 +583,6 @@ describe('Test custom functions operations', () => {
 			// Mock config to return no existing component
 			sandbox.stub(configUtils, 'getConfigObj').returns({});
 
-			// Mock addConfig to prevent actual file writes
-			const addConfigStub = sandbox.stub(configUtils, 'addConfig').resolves();
-
 			// Mock prepareApplication to prevent actual installation
 			const prepareApplicationStub = sandbox.stub().callsFake((_application, options) => options.beforePrepare());
 			operations.__set__('prepareApplication', prepareApplicationStub);
@@ -601,9 +594,10 @@ describe('Test custom functions operations', () => {
 				force: true,
 			});
 
-			expect(addConfigStub.calledOnce).to.be.true;
-			expect(addConfigStub.firstCall.args[0]).to.equal('graphql');
-			expect(addConfigStub.firstCall.args[1].package).to.equal('@org/override-package');
+			expect(prepareApplicationStub.firstCall.args[0].name).to.equal('graphql');
+			expect(prepareApplicationStub.firstCall.args[1].describeArtifact().rootConfig.package).to.equal(
+				'@org/override-package'
+			);
 			expect(prepareApplicationStub.calledOnce).to.be.true;
 		});
 

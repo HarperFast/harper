@@ -13,7 +13,7 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 `getVersionUpdateInfo()` (`dataLayer/hdbInfoController.ts`) compares the store's `data_version_num` (latest `system.hdb_info` record) against the binary's `packageJson.version` on every start. Data newer than binary by a **major** version → hard refusal. Newer by a **minor** version → `forceDowngradePrompt()` asks for confirmation; answering yes records the data version back down to the binary's version and boots (upgrade directives are deliberately additive/downgrade-compatible — see the struct-mode section above and `patchHdbSecretIsHashAttribute` in `upgrade/directives/5-2-0.ts`).
 
 - The prompt's answer can be supplied non-interactively via `CONFIRM_DOWNGRADE` — env var or `--CONFIRM_DOWNGRADE` CLI arg; argv wins (`assignCMDENVVariables`). With no override and no TTY on stdin, the prompt throws instead of blocking on stdin forever (#2046 — services/CI hung with nothing in the log; the mismatch is also logged to hdb.log now).
-- Upgrades never prompt (see the rationale comment in `bin/upgrade.js`); only the downgrade direction confirms. `upgradeCertsPrompt()` on the 4.x upgrade path still has the block-on-stdin hazard.
+- Upgrades never prompt (see the rationale comment in `bin/upgrade.js`); only the downgrade direction confirms. `upgradeCertsPrompt()` (4.x upgrade path; currently has no in-core caller) has the same no-TTY guard as `forceDowngradePrompt()` — a `GENERATE_CERTS` override is honored first, and with no TTY and no override it throws instead of blocking.
 - Test-suite gotcha: a suite that supplies the override via `process.argv` affects every later test file in the same mocha process — save and restore `process.argv` in `before`/`after` (see `unitTests/dataLayer/hdbInfoController.test.js`).
 
 ## Opening a source LMDB DBI for migration must thread through `compression`
@@ -39,6 +39,20 @@ Adding a new system table (e.g. `hdb_deployment` in #641 Slice A) requires three
 System tables replicate by default. To opt out, add the name to `NON_REPLICATING_SYSTEM_TABLES` in `resources/databases.ts`. The check happens after table init and sets `table.replicate = false` per-node.
 
 If the table needs `audit: true`, set it both in the schema (for fresh installs) **and** on the `CreateTableObject` instance in the directive (for upgrades) — otherwise the two paths diverge.
+
+**A replicated system table whose owner declares more than a name list** — a table-level `expiration`, an index — needs that declaration on every node, every boot. `hdb_oidc_token_use` is the case: `security/authn/oidc/tokenUseTable.ts` holds its one definition, and `bin/run.ts initialize()` applies it after the upgrade step and before worker threads start (skipped in read-only mode; a failure is logged and retried on the next start), as do the 5.3.0 directive and the exchange path. Each replay row carries its own expiry as record metadata, which replication applies on the receiving node; the table's stored `expiration` is what arms the cleanup scan that removes those rows once a node loads the table. Metadata rather than an `@expiresAt` attribute, because the attribute needs an index and a sweep of its own on every node, while reads and the cleanup scan already honor the metadata. `systemSchema.json` keeps only its primary key; the declaration completes the table on the first boot after install. Every other route to a copy leaves it partial, which is why the declaration cannot live only on the exchange path or in the directive:
+
+- A node that has not upgraded yet gets any system table it lacks from a peer's replication handshake (`DB_SCHEMA`), created from a snapshot that carries each attribute's name, type and primary-key bit — never `indexed`, `expiresAt` or the table's `expiration` — and schema-defined like the peer's copy. From then on the handshake keeps that local definition and logs `Schema for '<db>.<table>' is defined locally, but attribute '<name>: <type>' from '<node>' does not match local attribute which does not exist` for every attribute a peer has and it lacks, so no peer repairs it; the directive that runs when that node upgrades finds the table already there.
+- A node that never exercises the owner's code path (a passive cluster member for the OIDC exchange) never declares the rest, and the rows replicated to it are never removed.
+- An install already on a pre-release of the directive's version never runs the directive again (the `compareVersions` caveat above): from `5.3.0-beta.2`, `getVersionsForUpgrade` selects nothing for `5.3.0`, `5.3.0-beta.3` or `5.3.1`.
+
+A local `table()` declaration is authoritative, so repeating it repairs any of those shapes in place, keeping every row and its expiry, and is a no-op once the shape matches (measured 2026-09-25: under 1 ms; repairing a copy holding 100,000 replay rows, under 10 ms on either engine, since no row is rewritten and no index is built). Limits that come from the storage layer rather than this table:
+
+- A thread that only loads the table scans daily (the load path keeps the default interval; only a declaring thread uses a quarter of the `expiration`), so a spent row can stay on disk up to a day past its expiry. Reads skip it meanwhile.
+- Under `threads: 0` the main thread loads and declares the table before `startHTTPThreads` makes it worker 0. `scheduleCleanup` records an interval only once its thread has a worker index, so the first expiring write or declaration after that arms the scan; a single-threaded node that writes nothing after a restart does not scan until it does.
+- An attribute a declaration drops keeps its index store on disk: `table()` looks that store up by table name rather than attribute name, so it never drops it. A node that served exchanges on 5.3.0-beta.2 keeps its old `expiresAt` index; after a restart nothing opens it.
+
+The certificate verification tables (`hdb_certificate_cache`, `hdb_crl_cache`, `hdb_revoked_certificates`) follow the same pattern through `security/certificateVerification/verificationTables.ts`, applied in `initialize()` right after the OIDC table and by the verification path's getters. `ensureCertificateVerificationTables` also waits for the revoked table's index backfill and reads its outcome back from the catalog, since a failed backfill still settles. What their rows hold is in security/DESIGN.md.
 
 ## RocksDB backup/restore: the restore lock + marker protocol (`dataLayer/restoreMarker.ts`, `dataLayer/rocksdbBackup.ts`)
 
@@ -120,11 +134,21 @@ Three non-obvious mechanics keep that safe:
   exited job worker leaves no residual handle to be mistaken for a live holder.
 - **`dropDatabase` and `restore_backup` serialize on the same lock, not a check-then-act probe.**
   A drop's `destroy()` interleaving with a restore's purge-and-copy on the same directory would gut
-  a "successful" restore (or vice versa). `dropDatabase` therefore _acquires_ the restore lock
-  (`acquireRestoreLock`, marker-less) for each RocksDB root store and holds it across the whole drop,
-  releasing in a `finally`; a restore in progress makes the acquire fail with 409, and a leftover
-  incomplete-restore marker (lock free, detected via `restoreMarkerPresent`, which — unlike
-  `checkRestoreState` — is safe while this thread holds the lock) is refused rather than dropped over.
+  a "successful" restore (or vice versa). `dropDatabase` takes the restore lock for every RocksDB or
+  LMDB root and publishes a positional `.dropping` marker beside each root before deleting any of
+  them. A restore in progress makes the acquire fail with 409; `beginRestore` likewise refuses a
+  surviving drop marker. Each marker records the root store's blob identity and exact pinned blob
+  paths, so a retry removes what an already-marked handle owned even if `storage.blobPaths` changes.
+  An integrity digest makes damaged identity content fail closed instead of redirecting deletion.
+  Markers are removed only after every root and blob path has been removed.
+  Startup scans and cold opens reject the marked root and the rest of its logical database graph, so
+  a crash while publishing or canceling several markers cannot expose a partial database. Retrying
+  `drop_database` re-enumerates that graph and completes marker publication and deletion even when
+  the in-memory catalog is gone. A configured `databases.<name>.path` is the exclusive root of that
+  logical graph, not a container for independent databases: every physical database directly beneath
+  it is an alias-owned member, and dropping any alias drops the graph. A strict worker-close failure
+  similarly keeps that worker's physical roots fenced and remembered; a same-name drop retry
+  re-attempts those closes before marker publication or deletion.
   `database()`'s on-demand open still uses the read-only `throwIfBlockedByRestore` (a
   `create_table`/`create_schema` must not resurrect a half-purged directory as a fresh empty DB), but
   the destructive drop path now uses the exclusive lock so the race is closed, not merely narrowed.

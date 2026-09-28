@@ -2,7 +2,7 @@
 
 const assert = require('node:assert');
 
-const { forceDowngradePrompt } = require('#src/upgrade/upgradePrompt');
+const { forceDowngradePrompt, upgradeCertsPrompt } = require('#src/upgrade/upgradePrompt');
 const { UpgradeObject } = require('#src/upgrade/UpgradeObjects');
 
 // Regression coverage for #2046: starting an older binary against data a newer minor version has
@@ -57,6 +57,57 @@ describe('forceDowngradePrompt — non-interactive starts', () => {
 		process.env.CONFIRM_DOWNGRADE = 'true';
 		await assert.rejects(forceDowngradePrompt(upgradeObj), (error) => {
 			assert.ok(error.message.includes("Unrecognized CONFIRM_DOWNGRADE value 'true'"));
+			return true;
+		});
+	});
+});
+
+// upgradeCertsPrompt is forceDowngradePrompt's sibling gate (same #2046 class of bug): without this
+// guard it would also block on stdin forever with no terminal attached.
+describe('upgradeCertsPrompt — non-interactive starts', () => {
+	let originalIsTTY;
+	let originalEnv;
+
+	beforeEach(() => {
+		originalIsTTY = process.stdin.isTTY;
+		originalEnv = process.env.GENERATE_CERTS;
+		process.stdin.isTTY = false;
+		delete process.env.GENERATE_CERTS;
+	});
+
+	afterEach(() => {
+		process.stdin.isTTY = originalIsTTY;
+		if (originalEnv === undefined) delete process.env.GENERATE_CERTS;
+		else process.env.GENERATE_CERTS = originalEnv;
+	});
+
+	it('throws instead of blocking when there is no TTY and no override', async () => {
+		await assert.rejects(upgradeCertsPrompt(), (error) => {
+			assert.ok(error instanceof Error);
+			assert.ok(error.message.includes('GENERATE_CERTS'));
+			return true;
+		});
+	});
+
+	it('proceeds without a TTY when GENERATE_CERTS=yes', async () => {
+		process.env.GENERATE_CERTS = 'yes';
+		assert.strictEqual(await upgradeCertsPrompt(), true);
+	});
+
+	it('accepts the override case-insensitively', async () => {
+		process.env.GENERATE_CERTS = 'YES';
+		assert.strictEqual(await upgradeCertsPrompt(), true);
+	});
+
+	it('declines without a TTY when GENERATE_CERTS=no', async () => {
+		process.env.GENERATE_CERTS = 'no';
+		assert.strictEqual(await upgradeCertsPrompt(), false);
+	});
+
+	it('throws on an unrecognized override value instead of falling through to the blocking prompt', async () => {
+		process.env.GENERATE_CERTS = 'true';
+		await assert.rejects(upgradeCertsPrompt(), (error) => {
+			assert.ok(error.message.includes("Unrecognized GENERATE_CERTS value 'true'"));
 			return true;
 		});
 	});

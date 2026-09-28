@@ -48,7 +48,7 @@
  * Harper SHA: c28e5f83f (discovery); re-verified green 5/5 on c11e0976c (main) at Stage-2 gating.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import http from 'node:http';
@@ -342,6 +342,53 @@ function runSuite(threadCount: 1 | 4) {
 			openStreams.clear();
 			await teardownHarper(ctx);
 		});
+
+		for (const { label, options, versions } of [
+			{ label: 'default', options: {}, versions: [3] },
+			{ label: 'includeSuperseded', options: { includeSuperseded: true }, versions: [1, 2, 3] },
+			{ label: 'rawEvents', options: { rawEvents: true }, versions: [1, 2, 3] },
+			{ label: 'rawEvents latest only', options: { rawEvents: true, includeSuperseded: false }, versions: [3] },
+		]) {
+			test(`startTime replay: ${label} preserves the requested versions and deletion`, async () => {
+				const id = `replay-${threadCount}-${label}`;
+				const deletedId = `${id}-deleted`;
+				const sentinelId = `${id}-sentinel`;
+				for (let seq = 1; seq <= 3; seq++) {
+					await restPut(id, { id, seq }).expect(204);
+				}
+				await restPut(deletedId, { id: deletedId, seq: 1 }).expect(204);
+				await request(restBase)
+					.delete(`/${TABLE}/${encodeURIComponent(deletedId)}`)
+					.set(client.headers)
+					.expect(200);
+				await restPut(sentinelId, { id: sentinelId, seq: 1 }).expect(204);
+
+				const response = await request(restBase)
+					.post('/ReplayProbe/')
+					.set(client.headers)
+					.send({ ids: [id, deletedId], sentinelId, ...options })
+					.timeout(15_000)
+					.expect(200);
+				const events = response.body as { id: string; type: string; value?: { seq: number }; version: number }[];
+				deepStrictEqual(
+					events.filter((event) => event.id === id).map((event) => [event.type, event.value?.seq]),
+					versions.map((seq) => ['put', seq])
+				);
+				deepStrictEqual(
+					events.filter((event) => event.id === deletedId).map((event) => [event.type, event.value?.seq]),
+					versions.length > 1
+						? [
+								['put', 1],
+								['delete', undefined],
+							]
+						: [['delete', undefined]]
+				);
+				ok(
+					events.every((event) => Number.isFinite(event.version)),
+					'replayed events retain their record versions'
+				);
+			});
+		}
 
 		/**
 		 * Drive `count` writes to `id` at the given rate, with subscribers already attached on all

@@ -70,7 +70,7 @@ Example:
 ```
 type Post @table(table: "posts", database: "blog") {
 id: ID @primaryKey
-title: String @indexed(type: "fulltext")
+title: String @indexed
 body: String
 createdAt: Date @createdTime
 updatedAt: Date @updatedTime
@@ -215,6 +215,45 @@ directive @indexed(
 	"""
 	efConstructionSearch: Int
 ) on FIELD_DEFINITION
+
+"""
+A source attribute included in a full-text index.
+"""
+input FullTextSource {
+	name: String!
+	weight: Float! = 1.0
+	highlight: Boolean
+}
+
+"""
+An index-time synonym expansion rule.
+"""
+input FullTextSynonymRule {
+	source: String!
+	replacements: [String!]!
+}
+
+"""
+Opt-in highlighting limits. Omitting highlighting from @fullText disables it.
+"""
+input FullTextHighlighting {
+	maxFragments: Int! = 3
+	fragmentLength: Int! = 160
+}
+
+"""
+Create a native full-text derived index over the listed source attributes.
+"""
+directive @fullText(
+	name: String!
+	fields: [FullTextSource!]!
+	analyzer: String! = "english@1"
+	stopWords: Boolean! = true
+	positions: Boolean! = true
+	surfaceTerms: Boolean! = true
+	synonyms: [FullTextSynonymRule!]! = []
+	highlighting: FullTextHighlighting
+) repeatable on OBJECT
 
 """
 Define a derived field whose value is computed from other fields.
