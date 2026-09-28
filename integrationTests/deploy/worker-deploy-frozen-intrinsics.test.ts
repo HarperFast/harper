@@ -48,24 +48,28 @@ async function buildDeployerPayload(): Promise<string> {
  */
 async function buildReflectExtendingPayload(project: string, property: string, version: number): Promise<string> {
 	const directory = await mkdtemp(join(tmpdir(), 'reflect-extending-'));
-	const packageRoot = await mkdtemp(join(tmpdir(), 'reflect-extender-package-'));
 	try {
-		await mkdir(join(packageRoot, 'package'));
-		await writeFile(
-			join(packageRoot, 'package', 'package.json'),
-			JSON.stringify({ name: 'reflect-extender', version: '1.0.0', main: 'index.js' }) + '\n'
-		);
-		await writeFile(
-			join(packageRoot, 'package', 'index.js'),
-			'// what reflect-metadata does at load: define its API directly on the global Reflect\n' +
-				`Object.defineProperty(Reflect, ${JSON.stringify(property)}, { configurable: true, writable: true, value: function decorate() { return 'decorated'; } });\n` +
-				`module.exports = { decorate: () => Reflect[${JSON.stringify(property)}]() };\n`
-		);
-		await mkdir(join(directory, 'vendor'));
-		await writeFile(
-			join(directory, 'vendor', 'reflect-extender-1.0.0.tgz'),
-			Buffer.from(await targz(packageRoot), 'base64')
-		);
+		const packageRoot = await mkdtemp(join(tmpdir(), 'reflect-extender-package-'));
+		try {
+			await mkdir(join(packageRoot, 'package'));
+			await writeFile(
+				join(packageRoot, 'package', 'package.json'),
+				JSON.stringify({ name: 'reflect-extender', version: '1.0.0', main: 'index.js' }) + '\n'
+			);
+			await writeFile(
+				join(packageRoot, 'package', 'index.js'),
+				'// what reflect-metadata does at load: define its API directly on the global Reflect\n' +
+					`Object.defineProperty(Reflect, ${JSON.stringify(property)}, { configurable: true, writable: true, value: function decorate() { return 'decorated'; } });\n` +
+					`module.exports = { decorate: () => Reflect[${JSON.stringify(property)}]() };\n`
+			);
+			await mkdir(join(directory, 'vendor'));
+			await writeFile(
+				join(directory, 'vendor', 'reflect-extender-1.0.0.tgz'),
+				Buffer.from(await targz(packageRoot), 'base64')
+			);
+		} finally {
+			await rm(packageRoot, { recursive: true, force: true });
+		}
 		await writeFile(
 			join(directory, 'package.json'),
 			JSON.stringify({
@@ -88,7 +92,6 @@ async function buildReflectExtendingPayload(project: string, property: string, v
 		return await targz(directory);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
-		await rm(packageRoot, { recursive: true, force: true });
 	}
 }
 
