@@ -7,15 +7,20 @@ const {
 	broadcastWithStrictAcknowledgement,
 	notifyJobCleanupComplete,
 	onMessageFromWorkers,
+	onThreadExit,
 } = require('#js/server/threads/manageThreads');
 const { databaseDropPreparationSnapshot } = require('#src/resources/databaseDropPreparation');
 let acknowledgementCount = 0;
+const exitedThreadIds = [];
+onThreadExit((threadId) => exitedThreadIds.push(threadId));
 
 parentPort.on('message', (message) => {
 	if (message.type === 'send-probe') {
 		broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, message.timeout).then(() =>
 			parentPort.postMessage({ type: 'probe-settled' })
 		);
+	} else if (message.type === 'report-thread-exits') {
+		parentPort.postMessage({ type: 'thread-exits', threadIds: exitedThreadIds });
 	} else if (message.type === 'send-strict-probe') {
 		broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, message.timeout, true).then(
 			() => parentPort.postMessage({ type: 'strict-probe-settled' }),

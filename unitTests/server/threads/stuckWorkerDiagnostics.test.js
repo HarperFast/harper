@@ -284,6 +284,31 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		assert.strictEqual(result.type, 'strict-probe-settled', result.error);
 	});
 
+	it('does not report the main thread as exited to a sibling of a worker that closes its parentPort', async function () {
+		const observer = await startFixtureWorker('acknowledge');
+		const jobWorker = await startFixtureWorker('exit-clean', 'job');
+		started.push(observer, jobWorker);
+		const jobThreadId = jobWorker.threadId;
+		const exited = new Promise((resolve) => jobWorker.once('exit', resolve));
+		await broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000, true);
+		await exited;
+		const reportThreadExits = () =>
+			new Promise((resolve) => {
+				const listener = (message) => {
+					if (message.type !== 'thread-exits') return;
+					observer.off('message', listener);
+					resolve(message.threadIds);
+				};
+				observer.on('message', listener);
+				observer.postMessage({ type: 'report-thread-exits' });
+			});
+		const threadIds = await waitFor(async () => {
+			const reported = await reportThreadExits();
+			return reported.includes(jobThreadId) && reported;
+		});
+		assert.deepStrictEqual(threadIds, [jobThreadId]);
+	});
+
 	it('includes job workers when destructive completion requests it', async function () {
 		const worker = await startFixtureWorker('report-acknowledge', 'job');
 		started.push(worker);
