@@ -14,16 +14,23 @@ const {
 describe('process group registration identity', () => {
 	it('does not let an old unregister erase a newer same-owner PID generation', async () => {
 		const ownerThreadId = 91001;
+		const spawnStartedAt = Date.now();
 		const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
 			detached: true,
 			stdio: 'ignore',
 		});
 		await once(child, 'spawn');
+		const spawnedAt = Date.now();
 		const childExit = once(child, 'exit');
 
 		try {
-			addProcessGroup(ownerThreadId, child.pid, 100, 90, 1);
-			addProcessGroup(ownerThreadId, child.pid, 500, 490, 2);
+			// Both registrations name the same real child, so both need its real creation-time
+			// bracket — a literal placeholder (e.g. a 1970 epoch value) is fine on POSIX, which never
+			// consults it, but on Windows confirmWindowsProcessTreeGone would reject the live child as
+			// created too late relative to that bracket and conclude the tree is already gone without
+			// ever killing it. Only the generation number needs to differ, to exercise the fencing.
+			addProcessGroup(ownerThreadId, child.pid, spawnedAt, spawnStartedAt, 1);
+			addProcessGroup(ownerThreadId, child.pid, spawnedAt, spawnStartedAt, 2);
 			removeProcessGroup(ownerThreadId, child.pid, 1);
 
 			await terminateProcessGroupsForThread(ownerThreadId);

@@ -1787,7 +1787,8 @@ function removeProcessGroup(ownerThreadId, processGroupId, registrationGeneratio
 // process-group semantics — a PID whose process already exited is indistinguishable from one that
 // never will be, so an unconditional pre-kill can hit whatever now holds a recycled PID (the exact
 // harper#2273 unrelated-process kill this module exists to prevent). `fromExitHandler` restricts
-// that blind pre-kill to the one caller that genuinely cannot await a scan first; every other
+// that blind pre-kill to the one caller that genuinely cannot await anything first (a synchronous
+// scan via spawnSync before killing is possible there too, just not done); every other
 // caller lets the identity-checked confirmation loop below issue the first kill, after its own
 // scan has verified who the PID currently belongs to — UNLESS the process itself is already
 // shutting down (`processShuttingDown`, set before a restart tears its workers down too): that
