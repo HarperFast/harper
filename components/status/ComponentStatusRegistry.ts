@@ -15,7 +15,6 @@ import {
 } from './types.ts';
 import { crossThreadCollector, StatusAggregator } from './crossThread.ts';
 import { ComponentStatusOperationError } from './errors.ts';
-import { setLocalComponentError } from '../componentHealth.ts';
 
 /**
  * Map of component names to their status information
@@ -66,7 +65,6 @@ export class ComponentStatusRegistry {
 	 */
 	public reset(): void {
 		this.statusMap = new Map();
-		this.publishComponentError();
 	}
 
 	/**
@@ -106,23 +104,6 @@ export class ComponentStatusRegistry {
 			return;
 		}
 		this.statusMap.set(componentName, new ComponentStatus(status, message, error));
-		this.publishComponentError();
-	}
-
-	/**
-	 * Republish this thread's "any component in error" state to the shared cross-thread signal the
-	 * availability read consults (#3184). Called on every live-map change so a failure drains and a
-	 * later recovery heals. Validation-sink writes never reach here, so a candidate load cannot drain
-	 * a live node.
-	 */
-	private publishComponentError(): void {
-		let hasError = false;
-		for (const status of this.statusMap.values())
-			if (status.status === COMPONENT_STATUS_LEVELS.ERROR) {
-				hasError = true;
-				break;
-			}
-		setLocalComponentError(hasError);
 	}
 
 	/**
@@ -200,6 +181,18 @@ export class ComponentStatusRegistry {
 	 */
 	public markFailed(componentName: string, error: Error | string, message?: string): void {
 		this.setStatus(componentName, COMPONENT_STATUS_LEVELS.ERROR, message, error);
+	}
+
+	/**
+	 * Forget an application's status and that of its sub-components (keyed `name.*`), for when the
+	 * application has been removed. A removed application is no longer serving, so its old error must
+	 * stop counting toward availability; leaving it would keep the node drained until a process
+	 * restart, and an operator set_status Available cannot override a component error (#3184).
+	 */
+	public retire(componentName: string): void {
+		this.statusMap.delete(componentName);
+		const prefix = `${componentName}.`;
+		for (const key of [...this.statusMap.keys()]) if (key.startsWith(prefix)) this.statusMap.delete(key);
 	}
 
 	/**

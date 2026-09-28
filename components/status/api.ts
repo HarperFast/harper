@@ -132,6 +132,14 @@ export const lifecycle = {
 	failed(componentName: string, error: Error | string, message?: string): void {
 		componentStatusRegistry.markFailed(componentName, error, message);
 	},
+
+	/**
+	 * Forget a removed component's status (and its sub-components), so a stale error no longer counts
+	 * toward availability once the component is gone.
+	 */
+	retired(componentName: string): void {
+		componentStatusRegistry.retire(componentName);
+	},
 };
 
 /**

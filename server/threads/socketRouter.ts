@@ -190,7 +190,17 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 			).unref()
 		),
 	])
-		.then(() => true)
+		.then(() => {
+			// Clear this watcher's own start failure once the worker is up, so a successful retry heals
+			// the node instead of staying drained until a process restart. This records only that the
+			// dedicated worker started, not that its components loaded: the worker publishes its real
+			// component-load outcome in its own registry, and the availability read is the all-threads
+			// aggregate, which reports a component in error when ANY thread does. So if the isolated
+			// app's handleApplication throws, the worker's own error entry keeps the node drained
+			// regardless of this mark (#3184).
+			componentLifecycle.loaded(application, `Dedicated worker for '${application}' started`);
+			return true;
+		})
 		.catch(async (error) => {
 			harperLogger.error(`Dedicated worker for isolated application '${application}' failed to start`, error);
 			componentLifecycle.failed(application, error, `Component '${application}' failed to load`);

@@ -57,7 +57,7 @@ import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts
 import * as httpComponent from '../server/http.ts';
 import * as mcpComponent from './mcp/index.ts';
 import { Status } from '../server/status/index.ts';
-import { lifecycle as componentLifecycle, statusForComponent } from './status/index.ts';
+import { lifecycle as componentLifecycle, statusForComponent, STATUS } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { materializeGlobalSecrets, processComponentEnv } from './componentSecrets.ts';
 import { PluginModule } from './PluginModule.ts';
@@ -82,6 +82,10 @@ let loadedComponents = new Map<any, any>();
 const VALIDATION_OWNED = Symbol('validationOwnedModule');
 let watchesSetup;
 let resources;
+// The directory applications present on this thread's last load cycle. On the next cycle, any that
+// have disappeared (dropped) have their status retired, so a removed application's old error stops
+// draining the node once it is gone (#3184). Per thread, like the registry it retires from.
+let previouslyPresentDirectoryApps = new Set<string>();
 const componentLoadTails = new Map<string, Promise<void>>();
 type ComponentReadyPromises = WeakMap<object, Promise<void>>;
 
@@ -326,7 +330,12 @@ export async function loadComponentDirectories(
 				})
 		);
 	};
+	// The directory applications present this cycle (whether or not this thread loads each), used to
+	// retire the status of any that were present last cycle and are now gone.
+	const presentDirectoryApps = new Set<string>();
+	let scannedDirectoryApps = false;
 	if (existsSync(CF_ROUTES_DIR)) {
+		scannedDirectoryApps = true;
 		const cfFolders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
 		for (const appEntry of cfFolders) {
 			if (!appEntry.isDirectory() && !appEntry.isSymbolicLink()) continue;
@@ -334,6 +343,7 @@ export async function loadComponentDirectories(
 			// Harper's own staging dirs (e.g. deploy aside copies) from loading as components.
 			if (appEntry.name.startsWith('.')) continue;
 			const appName = appEntry.name;
+			presentDirectoryApps.add(appName);
 			const recoveryError = failedRecoveries.get(appName);
 			if (recoveryError) {
 				if (recoveryError instanceof ComponentPreparationLockTimeoutError) {
@@ -379,6 +389,7 @@ export async function loadComponentDirectories(
 	for (const appName of deferredRecoveries.keys()) deferComponentLoad(appName);
 	const hdbAppFolder = process.env.RUN_HDB_APP;
 	if (hdbAppFolder) {
+		presentDirectoryApps.add(basename(hdbAppFolder));
 		if (getWorkerIndex() === 0) harperLogger.info?.('Loading application from ' + hdbAppFolder);
 		const mountResult = tryRootConfigMount(basename(hdbAppFolder));
 		if (mountResult.ok && placedOnThisThread(basename(hdbAppFolder))) {
@@ -400,6 +411,15 @@ export async function loadComponentDirectories(
 	}
 	return await Promise.all(cfsLoaded).then(() => {
 		watchesSetup = true;
+		// Retire the status of directory applications that were present last cycle and are gone now,
+		// so a dropped application's stale error no longer drains the node. Guarded on a real scan: if
+		// the components directory could not be read this cycle, keep the prior statuses rather than
+		// retire everything.
+		if (scannedDirectoryApps) {
+			for (const appName of previouslyPresentDirectoryApps)
+				if (!presentDirectoryApps.has(appName)) componentLifecycle.retired(appName);
+			previouslyPresentDirectoryApps = presentDirectoryApps;
+		}
 	});
 }
 
@@ -1041,9 +1061,13 @@ export async function loadComponent(
 				}
 
 				if (!extensionModule) {
-					// This is an application-only component (no extension module)
-					// Mark it as loaded since it exists in the config
-					componentLifecycle.loaded(componentStatusName, `Application component '${componentStatusName}' processed`);
+					// This is an application-only component (no extension module), or a package component
+					// whose own load already recorded its outcome under this same name. Don't mark it loaded
+					// if that load recorded a failure: a root-config package app's leaf load keys its outer
+					// failure under this component name, and overwriting it here would heal it away in the
+					// same pass, leaving the node reporting healthy while it serves errors (#3184).
+					if (statusForComponent(componentStatusName).get()?.status !== STATUS.ERROR)
+						componentLifecycle.loaded(componentStatusName, `Application component '${componentStatusName}' processed`);
 					continue;
 				}
 
