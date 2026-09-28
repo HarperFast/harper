@@ -1855,8 +1855,8 @@ function trackBlobSave(store: any, saving?: Promise<void>): void {
 }
 
 /**
- * Fence every blob-root mutation for a database so a restore can purge and rewrite it safely, and
- * wait out the work already in flight.
+ * Fence blob saves and deferred reclamation for a database so a restore can purge and rewrite its
+ * roots safely, and wait out that work already in flight.
  *
  * Closing the database is not a barrier on its own: a save is an asynchronous file pipeline that
  * outlives the handle it started from, and a reclamation is a timer that does not consult the
