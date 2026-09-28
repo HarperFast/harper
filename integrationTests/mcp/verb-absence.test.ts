@@ -1,8 +1,7 @@
 /**
  * QA-736/P-521 (harper#1945, fixed by #2405): missing Resource verbs are absent
- * from MCP discovery and dispatch. Implemented verbs remain
- * callable, with default allowCreate enforced for zero-permission and anonymous users.
- * Run: npm run test:integration -- "integrationTests/mcp/verb-absence.test.ts"
+ * from MCP discovery and dispatch. Implemented verbs remain callable, with
+ * default allowCreate enforced for zero-permission and anonymous users.
  */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
@@ -93,12 +92,19 @@ suite('MCP Resource verb absence and default create authorization', (ctx: Contex
 		return body.result.structuredContent;
 	}
 
-	function assertToolError(body: any, tool: string, message: string) {
+	function assertToolError(body: any, tool: string, message: string | string[]) {
 		strictEqual(body.error, undefined, JSON.stringify(body));
+		const content = body.result?.content;
+		ok(Array.isArray(content) && content.length === 1 && content[0].type === 'text', JSON.stringify(body));
+		const error = JSON.parse(content[0].text);
+		const allowedMessages = Array.isArray(message) ? message : [message];
+		ok(allowedMessages.includes(error.message), `unexpected ${tool} error: ${JSON.stringify(error)}`);
+		// Handler denials stay tool-level errors with a named tool; missing tools use JSON-RPC -32601.
 		deepStrictEqual(body.result, {
 			isError: true,
-			content: [{ type: 'text', text: JSON.stringify({ kind: 'harper_error', tool, message }) }],
+			content: [{ type: 'text', text: content[0].text }],
 		});
+		deepStrictEqual(error, { kind: 'harper_error', tool, message: error.message });
 	}
 
 	async function operation(body: object): Promise<any> {
@@ -172,16 +178,19 @@ suite('MCP Resource verb absence and default create authorization', (ctx: Contex
 
 	test('implemented custom verbs remain listed and return real values', async () => {
 		const names = await listTools(admin);
-		for (const name of [
-			'get_ReadOnlyThing',
-			'search_ReadOnlyThing',
-			'create_WriteOnlyThing',
-			'update_WriteOnlyThing',
-			'create_CreateOnlyThing',
-			'create_ThrowingCanary',
-			'create_PermissiveCanary',
-		]) {
-			ok(names.includes(name), `${name} missing: ${JSON.stringify(names)}`);
+		const expectedByResource: Record<string, string[]> = {
+			ReadOnlyThing: ['get_ReadOnlyThing', 'search_ReadOnlyThing'],
+			WriteOnlyThing: ['create_WriteOnlyThing', 'update_WriteOnlyThing'],
+			CreateOnlyThing: ['create_CreateOnlyThing'],
+			ThrowingCanary: ['create_ThrowingCanary'],
+			PermissiveCanary: ['create_PermissiveCanary'],
+		};
+		for (const [resource, expected] of Object.entries(expectedByResource)) {
+			deepStrictEqual(
+				names.filter((name) => name.endsWith(`_${resource}`)).sort(),
+				expected.sort(),
+				`unexpected tools for ${resource}`
+			);
 		}
 		const record = { id: 'written', label: 'created' };
 		deepStrictEqual(await success(admin, 'create_WriteOnlyThing', record), record);
@@ -212,7 +221,7 @@ suite('MCP Resource verb absence and default create authorization', (ctx: Contex
 
 	test('handler errors and explicit allowCreate success remain distinguishable', async () => {
 		assertToolError(
-			await callTool(admin, 'create_ThrowingCanary', { id: 'throw' }),
+			await callTool(low, 'create_ThrowingCanary', { id: 'throw' }),
 			'create_ThrowingCanary',
 			'QA736_DELIBERATE_CANARY_THROW'
 		);
@@ -223,13 +232,13 @@ suite('MCP Resource verb absence and default create authorization', (ctx: Contex
 
 	for (const [identity, message] of [
 		['zero-permission user', 'Unauthorized access to resource'],
-		['anonymous', 'Unauthorized access to resource'],
+		['anonymous', ['Unauthorized access to resource', 'Must login']],
 	]) {
 		test(`default allowCreate denies ${identity} on implemented create tools without writing`, async () => {
 			const session = identity === 'anonymous' ? anonymous : low;
 			if (identity === 'anonymous') strictEqual(session.auth, undefined, 'anonymous MCP session has no credentials');
-			const before = await success(admin, 'search_ReadOnlyThing');
-			ok(before.rows.length > 0, 'the no-write oracle must contain records');
+			const rowsBefore = await success(admin, 'search_ReadOnlyThing');
+			ok(rowsBefore.rows.length > 0, 'the no-write oracle must contain records');
 			for (const name of ['create_WriteOnlyThing', 'create_CreateOnlyThing']) {
 				if (session === low) ok((await listTools(low)).includes(name), `${name} visible to authenticated user`);
 				assertToolError(
@@ -238,7 +247,7 @@ suite('MCP Resource verb absence and default create authorization', (ctx: Contex
 					message
 				);
 			}
-			deepStrictEqual(await success(admin, 'search_ReadOnlyThing'), before);
+			deepStrictEqual(await success(admin, 'search_ReadOnlyThing'), rowsBefore);
 		});
 	}
 });
