@@ -3618,15 +3618,14 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				);
 			}
 			let persistedPrimary = persistedPrimaryDescriptor(Table.dbisDB);
-			let persistedFullTextValues =
-				persistedPrimary.descriptor?.fullTextIndexes ??
-				(persistedPrimary.descriptor === undefined ? Table.fullTextIndexes : undefined);
+			const persistedFullTextState = (name: string, liveValue: unknown) =>
+				persistedPrimary.descriptor === undefined ? liveValue : persistedPrimary.descriptor[name];
+			let persistedFullTextValues = persistedFullTextState('fullTextIndexes', Table.fullTextIndexes);
 			if (origin === 'cluster') {
-				const hasPersistedPrimary = persistedPrimary.descriptor !== undefined;
 				const declaredFields = new Set(
 					readPersistedFullTextFields(
-						hasPersistedPrimary ? persistedPrimary.descriptor.fullTextFields : Table.fullTextFields,
-						hasPersistedPrimary ? persistedFullTextValues : Table.fullTextIndexes,
+						persistedFullTextState('fullTextFields', Table.fullTextFields),
+						persistedFullTextValues,
 						catalogAttributes(Table.dbisDB),
 						fullTextWarning
 					)
@@ -3641,8 +3640,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			let fullTextValidationAttributes: any[] | undefined;
 			if (
 				(persistedFullTextValues !== undefined && (rootStore instanceof RocksDatabase || fullTextIndexesExplicit)) ||
-				persistedPrimary.descriptor?.fullTextIndexRetirements !== undefined ||
-				(persistedPrimary.descriptor?.fullTextFields !== undefined &&
+				persistedFullTextState('fullTextIndexRetirements', Table.fullTextIndexRetirements) !== undefined ||
+				(persistedFullTextState('fullTextFields', Table.fullTextFields) !== undefined &&
 					(rootStore instanceof RocksDatabase || fullTextIndexesExplicit || fullTextFields !== undefined)) ||
 				(fullTextFields !== undefined && (!Array.isArray(fullTextFields) || fullTextFields.length > 0)) ||
 				Table.fullTextIndexes?.length > 0 ||
@@ -3651,11 +3650,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				if (!(rootStore instanceof RocksDatabase)) {
 					exclusiveLock();
 					persistedPrimary = persistedPrimaryDescriptor(Table.dbisDB);
-					persistedFullTextValues = persistedPrimary.descriptor?.fullTextIndexes;
+					persistedFullTextValues = persistedFullTextState('fullTextIndexes', Table.fullTextIndexes);
 				}
 				const originalAttributes = Table.attributes.slice();
 				fullTextIndexRetirementNames = persistedFullTextIndexNames(
-					persistedPrimary.descriptor?.fullTextIndexRetirements
+					persistedFullTextState('fullTextIndexRetirements', Table.fullTextIndexRetirements)
 				);
 				const relationshipAttributes = originalAttributes.filter((attribute: any) => attribute.relationship);
 				const originalMetadata = {
@@ -3717,7 +3716,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					const names = persistedFullTextIndexNames(definitions).map((name) => ({ name }));
 					if (origin === 'cluster')
 						return mergePeerFullTextFields(
-							persistedPrimary.descriptor?.fullTextFields,
+							persistedFullTextState('fullTextFields', Table.fullTextFields),
 							fullTextFields,
 							persistedFullTextValues,
 							definitions,
@@ -3734,7 +3733,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				};
 
 				const persistedAudit =
-					persistedPrimary.descriptor?.audit ?? (persistedPrimary.descriptor === undefined ? Table.audit : undefined);
+					persistedPrimary.descriptor === undefined ? Table.audit : persistedPrimary.descriptor.audit;
 				const durableAudit = persistedAudit === true;
 				const finalAudit =
 					origin === 'cluster'
@@ -3772,7 +3771,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							`Table '${databaseName}.${tableName}' must enable audit logging before using @fullText because its transaction log is the derived-index recovery source`,
 							400
 						);
-					const pinAudit = compiled.length > 0 && persistedPrimary.descriptor?.audit !== true;
+					const pinAudit = compiled.length > 0 && persistedAudit !== true;
 					const requestedNames = new Set(compiled.map(({ name }) => name));
 					const durableDefinitions = readPersistedFullTextDefinitions(
 						persistedFullTextValues,
@@ -3801,7 +3800,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							if (interimDefinitions.length > 0) {
 								interimPrimary.fullTextIndexes = interimDefinitions;
 								interimPrimary.fullTextIndexGenerations = persistedFullTextIndexGenerations(
-									persistedPrimary.descriptor?.fullTextIndexGenerations,
+									persistedFullTextState('fullTextIndexGenerations', Table.fullTextIndexGenerations),
 									interimDefinitions
 								);
 							} else {
@@ -3809,7 +3808,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 								delete interimPrimary.fullTextIndexGenerations;
 							}
 							const interimFullTextFields = readPersistedFullTextFields(
-								persistedPrimary.descriptor?.fullTextFields,
+								persistedFullTextState('fullTextFields', Table.fullTextFields),
 								persistedFullTextValues,
 								durableAttributes,
 								fullTextWarning
@@ -3817,7 +3816,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							if (interimFullTextFields.length > 0) interimPrimary.fullTextFields = interimFullTextFields;
 							else delete interimPrimary.fullTextFields;
 							const retirements = new Set(
-								persistedFullTextIndexNames(persistedPrimary.descriptor?.fullTextIndexRetirements)
+								persistedFullTextIndexNames(
+									persistedFullTextState('fullTextIndexRetirements', Table.fullTextIndexRetirements)
+								)
 							);
 							for (const name of transitionRetirements) retirements.add(name);
 							for (const name of requestedNames) if (!transitionRetirements.has(name)) retirements.delete(name);
@@ -3864,7 +3865,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				);
 				fullTextIndexGenerationMap = reconcileFullTextIndexGenerations(
 					durableGenerationDefinitions,
-					persistedPrimary.descriptor?.fullTextIndexGenerations,
+					persistedFullTextState('fullTextIndexGenerations', Table.fullTextIndexGenerations),
 					finalGenerationDefinitions,
 					createFullTextIndexGeneration
 				);

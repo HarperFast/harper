@@ -240,6 +240,7 @@ rocksOnly('durable full-text declarations', () => {
 
 	it('uses the live declaration to guard peer collisions when the primary descriptor is absent', () => {
 		let Product = declare({ fullTextIndexes: [definition()] });
+		const generation = Product.fullTextIndexGenerations.search;
 		Product.dbisDB.removeSync('Product/');
 
 		Product = declare({ origin: 'cluster', attributes: [...attributes(), { name: 'search', type: 'String' }] });
@@ -247,6 +248,7 @@ rocksOnly('durable full-text declarations', () => {
 		assert.strictEqual(Product.audit, true);
 		assert.deepStrictEqual(names(Product), ['search']);
 		assert.deepStrictEqual(Product.fullTextFields, ['search']);
+		assert.strictEqual(Product.fullTextIndexGenerations.search, generation);
 		assert(!Product.attributes.some(({ name }) => name === 'search'));
 		assert.strictEqual(Product.dbisDB.getSync('Product/search'), undefined);
 
@@ -254,5 +256,6 @@ rocksOnly('durable full-text declarations', () => {
 		assert.strictEqual(Product.audit, true);
 		assert.deepStrictEqual(names(Product), ['search']);
 		assert.deepStrictEqual(Product.fullTextFields, ['search']);
+		assert.strictEqual(Product.fullTextIndexGenerations.search, generation);
 	});
 });
