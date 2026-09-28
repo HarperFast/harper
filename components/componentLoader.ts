@@ -693,8 +693,9 @@ function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
 		const store = Status.primaryStore;
 		// Keyed per (application, plugin), not the plugin name alone: applications load concurrently,
 		// and a plugin-wide lock lets one application's hung handleApplication starve every other
-		// application's load of that plugin into the timeout below (#3184).
-		const lockId = `${scope.appName}.${scope.pluginName}`;
+		// application's load of that plugin into the timeout below (#3184). NUL separator: appName
+		// can contain dots and slashes, so a printable separator could alias two distinct pairs.
+		const lockId = `${scope.appName}\0${scope.pluginName}`;
 		const lockAcquired = store.tryLock(lockId, callback);
 
 		if (!lockAcquired) {
