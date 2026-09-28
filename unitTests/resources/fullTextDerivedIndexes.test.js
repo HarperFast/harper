@@ -606,6 +606,43 @@ describe('@fullText derived-index activation', () => {
 			),
 			(error) => error.name === 'AccessViolation' || error.statusCode === 403
 		);
+		const queryIndex = Product.fullTextQueryIndexes.search.customIndex;
+		Product.fullTextQueryIndexes.search.customIndex = undefined;
+		try {
+			await assert.rejects(
+				Promise.resolve().then(() =>
+					collect(
+						Product.search(
+							{ conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }], limit: 1 },
+							{ user }
+						)
+					)
+				),
+				(error) => error.name === 'AccessViolation' || error.statusCode === 403
+			);
+		} finally {
+			Product.fullTextQueryIndexes.search.customIndex = queryIndex;
+		}
+		const compiledDefinition = Product.fullTextIndexes[0];
+		const positions = compiledDefinition.positions;
+		const surfaceTerms = compiledDefinition.surfaceTerms;
+		compiledDefinition.positions = false;
+		compiledDefinition.surfaceTerms = false;
+		try {
+			for (const comparator of ['matches_phrase', 'matches_prefix']) {
+				await assert.rejects(
+					Promise.resolve().then(() =>
+						collect(
+							Product.search({ conditions: [{ attribute: 'search', comparator, value: 'trail' }], limit: 1 }, { user })
+						)
+					),
+					(error) => error.name === 'AccessViolation' || error.statusCode === 403
+				);
+			}
+		} finally {
+			compiledDefinition.positions = positions;
+			compiledDefinition.surfaceTerms = surfaceTerms;
+		}
 		await assert.rejects(
 			Promise.resolve().then(() =>
 				collect(

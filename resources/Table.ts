@@ -5031,6 +5031,12 @@ export function makeTable(options) {
 					if (fullTextMode && !fullTextDefinition)
 						throw new ClientError('Full-text comparator requires a declared @fullText index', 400);
 					if (fullTextDefinition) {
+						const fields = condition.fields;
+						if (fields !== undefined) {
+							if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => typeof field !== 'string'))
+								throw new ClientError(`Full-text index '${attribute_name}' requires a non-empty fields list`, 400);
+							assertFullTextReadAccess(context, target, fullTextDefinition, fields);
+						} else assertFullTextReadAccess(context, target, fullTextDefinition);
 						if (!TableResource.fullTextQueryIndexes[attribute_name]?.customIndex)
 							throw new IndexRebuildingError(`Full-text index '${attribute_name}' is not ready`);
 						const value = condition[1] ?? condition.value;
@@ -5043,18 +5049,14 @@ export function makeTable(options) {
 							throw new ClientError(`Full-text index '${attribute_name}' does not store phrase positions`, 400);
 						if ((fullTextMode === 'prefix' || fullTextMode === 'fuzzy-prefix') && !fullTextDefinition.surfaceTerms)
 							throw new ClientError(`Full-text index '${attribute_name}' does not store surface terms`, 400);
-						const fields = condition.fields;
 						if (fields !== undefined) {
-							if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => typeof field !== 'string'))
-								throw new ClientError(`Full-text index '${attribute_name}' requires a non-empty fields list`, 400);
-							assertFullTextReadAccess(context, target, fullTextDefinition, fields);
 							const sourceNames = new Set(fullTextDefinition.fields.map(({ name }) => name));
 							if (new Set(fields).size !== fields.length || fields.some((field) => !sourceNames.has(field)))
 								throw new ClientError(
 									`Full-text index '${attribute_name}' contains an unknown or duplicate field`,
 									400
 								);
-						} else assertFullTextReadAccess(context, target, fullTextDefinition);
+						}
 						condition.includeHighlights =
 							condition.includeHighlights === true || selectRequestsProperty(target.select, '$highlights');
 						if (condition.includeHighlights && !fullTextDefinition.highlighting)
