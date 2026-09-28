@@ -1789,7 +1789,11 @@ function removeProcessGroup(ownerThreadId, processGroupId, registrationGeneratio
 // harper#2273 unrelated-process kill this module exists to prevent). `fromExitHandler` restricts
 // that blind pre-kill to the one caller that genuinely cannot await a scan first; every other
 // caller lets the identity-checked confirmation loop below issue the first kill, after its own
-// scan has verified who the PID currently belongs to.
+// scan has verified who the PID currently belongs to — UNLESS the process itself is already
+// shutting down (`processShuttingDown`, set before a restart tears its workers down too): that
+// path has no guarantee the async loop gets even one scan in before `process.exit()` runs, and by
+// then this function has already dropped the registration the exit handler would otherwise have
+// caught, so the blind kill has to fire here instead.
 function terminateProcessGroupsForThread(ownerThreadId, { fromExitHandler = false } = {}) {
 	const processGroups = processGroupsByThread.get(ownerThreadId);
 	if (!processGroups) return pendingProcessGroupTerminations.get(ownerThreadId) ?? Promise.resolve();
@@ -1806,7 +1810,7 @@ function terminateProcessGroupsForThread(ownerThreadId, { fromExitHandler = fals
 	for (const processGroupId of groupIds) {
 		try {
 			if (process.platform === 'win32') {
-				if (!fromExitHandler) continue;
+				if (!fromExitHandler && !processShuttingDown) continue;
 				const result = spawnSync('taskkill', ['/pid', String(processGroupId), '/T', '/F'], {
 					stdio: 'ignore',
 					windowsHide: true,
