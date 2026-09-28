@@ -494,7 +494,6 @@ describe('agentCli (harper agent)', function () {
 			assert.deepStrictEqual(approvals(), []);
 		});
 
-		// Exit code not asserted: this state means a stuck session, and what the CLI should return for it is undecided.
 		it('neither prompts nor trips the terminal guard when nothing is left to approve', async () => {
 			setStdin({ isTTY: false });
 			const allResolved = { ...awaitingApproval, pendingApprovals: [awaitingApproval.pendingApprovals[0]] };
