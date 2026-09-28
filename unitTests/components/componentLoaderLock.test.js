@@ -46,6 +46,10 @@ describe('componentLoader per-application plugin lock isolation', () => {
 	let hogLoad;
 	let hogLoadSettled = false;
 	const completedApps = [];
+	// Collected so cleanup can close each scope's OptionsWatcher before removing tempRoot:
+	// on Windows, deleting a still-watched directory surfaces chokidar's uncaught
+	// "EPERM: operation not permitted, watch" and fails the after hook.
+	const collectedScopes = new Set();
 
 	before(() => {
 		tempRoot = mkdtempSync(path.join(tmpdir(), 'harper-component-lock-isolation-'));
@@ -67,6 +71,7 @@ describe('componentLoader per-application plugin lock isolation', () => {
 		// releases the bystander's parked lock waiter.
 		if (typeof releaseHog === 'function') releaseHog();
 		if (hogLoad) await hogLoad.catch(() => {});
+		for (const scope of collectedScopes) await scope.close().catch(() => {});
 		delete TRUSTED_RESOURCE_PLUGINS[PLUGIN_NAME];
 		statusInternal.componentStatusRegistry.reset();
 		if (tempRoot) rmSync(tempRoot, { recursive: true, force: true });
@@ -83,7 +88,11 @@ describe('componentLoader per-application plugin lock isolation', () => {
 		const hogDir = makeApp(HOG_APP, HOG_TIMEOUT_MS);
 		const bystanderDir = makeApp(BYSTANDER_APP, BYSTANDER_TIMEOUT_MS);
 
-		hogLoad = loadComponent(hogDir, resources, 'test-origin', { isRoot: false, appName: HOG_APP });
+		hogLoad = loadComponent(hogDir, resources, 'test-origin', {
+			isRoot: false,
+			appName: HOG_APP,
+			collectScopes: collectedScopes,
+		});
 		hogLoad.then(
 			() => (hogLoadSettled = true),
 			() => (hogLoadSettled = true)
@@ -95,7 +104,11 @@ describe('componentLoader per-application plugin lock isolation', () => {
 		assert.strictEqual(hogLoadSettled, false, 'fixture guard: the hog load must be parked inside handleApplication');
 
 		const startedAt = Date.now();
-		await loadComponent(bystanderDir, resources, 'test-origin', { isRoot: false, appName: BYSTANDER_APP });
+		await loadComponent(bystanderDir, resources, 'test-origin', {
+			isRoot: false,
+			appName: BYSTANDER_APP,
+			collectScopes: collectedScopes,
+		});
 		const elapsedMs = Date.now() - startedAt;
 
 		// loadComponent contains per-component failures instead of rejecting, so the verdict lives in
