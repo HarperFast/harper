@@ -78,7 +78,7 @@ const TABLES = {
 const TABLE_NAMES = Object.keys(TABLES);
 
 function systemTable(tableName) {
-	return databases.system[tableName];
+	return databases.system?.[tableName];
 }
 
 function storedExpiresAt(tableName, id) {
@@ -467,7 +467,7 @@ function revocationId(authority, client) {
 describe('certificate verification tables', function () {
 	this.timeout(60000);
 
-	before(() => testUtils.ensureSystemTables());
+	before(() => testUtils.setupTestDBPath());
 
 	describe('every node declares the tables in one shape', () => {
 		after(async () => {
