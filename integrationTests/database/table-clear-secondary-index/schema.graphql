@@ -1,0 +1,18 @@
+# Regression anchor for harper#1906 — Table.clear() vs secondary-index consistency.
+#
+# IdxTable  — two @indexed attrs. tagB is absent/null on a third of rows: the F-175
+#             phantom-null-key corner (index.getRange({start:null}) must be checked, not a
+#             plain getRange(), or a null-keyed entry is silently skipped on LMDB).
+# TtlTable  — table-level TTL (expiration:3, scanInterval:1) so a clear() can be issued while
+#             the background eviction sweep is actively deleting rows -- the clear-vs-sweep
+#             race corner (F-149/F-175 family).
+type IdxTable @table @export {
+	id: ID @primaryKey
+	tagA: String @indexed
+	tagB: String @indexed
+}
+
+type TtlTable @table(expiration: 3, scanInterval: 1) @export {
+	id: ID @primaryKey
+	tagA: String @indexed
+}
