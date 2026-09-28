@@ -27,6 +27,11 @@
 			"enabled": false
 		},
 		{
+			"description": "Hold tar-stream on 3.2.0: 3.2.1 added a bundled index.d.ts that overrides @types/tar-stream and models Pack/Sink/Extract as streamx rather than Node streams, breaking `tsc --project tsconfig.build.json` in 10 places. Neither removing @types/tar-stream nor pinning that types package fixes it. Drop once our tar usage is ported to the streamx types.",
+			"matchPackageNames": ["tar-stream"],
+			"allowedVersions": "<3.2.1"
+		},
+		{
 			"groupName": "all non-major dependencies",
 			"groupSlug": "all-minor-patch",
 			"matchUpdateTypes": ["minor", "patch"],
