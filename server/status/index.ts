@@ -170,22 +170,16 @@ async function getAllStatus(includeMiddleware = false): Promise<AllStatusSummary
 }
 
 /**
- * The availability status is what the public status endpoint serves to routing (GTM):
- * Available keeps the node in rotation, Unavailable drains it. The stored record is
- * operator-owned (set_status), but a node whose components failed to load is serving errors
- * over their URL space, so the read combines the two: an operator's Unavailable always
- * wins, and an Available (or absent) record is served as Unavailable while any component is
- * in error (#3184). Derived at read time rather than written on failure so nothing goes
- * stale: a component that loads cleanly again heals the registry and the node rejoins
- * rotation on its own, and an automatic write can never clobber an operator drain.
- * Deploy-validation failures land in the validation sink, never the live registry, so a
- * candidate's failure cannot drain the node.
+ * The availability status routing (GTM) consults, combining the operator-owned record with
+ * live component health (#3184): an operator's Unavailable always wins, otherwise the node
+ * reads Unavailable while any component is in error. Derived at read time so a component that
+ * recovers heals on its own and no automatic write can clobber an operator drain; validation
+ * failures divert to the sink, never the live registry, so a candidate cannot drain the node.
  *
- * Component health is read from the all-threads aggregate, not this thread's registry:
- * get_status runs on the operations thread, which loads components with isWorker=false and
- * so never runs handleApplication. The failure that matters (a wedged jsResource load,
- * #3184) happens on the HTTP workers, and only the cross-thread aggregate sees it. The
- * aggregate resolves a component to error when any thread reports it in error.
+ * Health comes from the all-threads aggregate, not this thread's registry: get_status runs on
+ * the operations thread, which loads with isWorker=false and never runs handleApplication, so
+ * a wedged worker's load failure is only visible in the cross-thread aggregate. The aggregate
+ * reports a component in error when any thread does.
  */
 async function getAvailabilityStatus(): Promise<StatusRecord<'availability'> | undefined> {
 	const record = (await getStatusTable().get('availability')) as StatusRecord<'availability'> | undefined;
