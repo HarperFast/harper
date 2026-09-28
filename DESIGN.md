@@ -164,3 +164,4 @@ Index of the design notes for the harper core: one line per note, grouped by the
 
 - [The published shrinkwrap governs registry installs but not tarball installs (`build-tools/`)](build-tools/DESIGN.md#the-published-shrinkwrap-governs-registry-installs-but-not-tarball-installs-build-tools) — Registry installs honor the shrinkwrap through the packument flag; tarball installs re-resolve from `package.json`.
 - [The published image runs `tini -g` as PID 1, not Harper (`Dockerfile`)](build-tools/DESIGN.md#the-published-image-runs-tini--g-as-pid-1-not-harper-dockerfile) — `tini -g` is PID 1 so the restart watchdog can arm and `docker stop` reaches the whole process group.
+- [`build.sh` packages only a clean, error-free build (`build.sh`)](build-tools/DESIGN.md#buildsh-packages-only-a-clean-error-free-build-buildsh) — Packaging clears `dist/` and fails on `tsc` errors, so a failed or partial build is never shipped.

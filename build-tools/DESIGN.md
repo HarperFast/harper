@@ -72,3 +72,7 @@ user-visible in four ways worth knowing before changing the entrypoint:
 Volumes written by older PID-1 images stay compatible: `utility/processManagement` treats a pid
 file naming PID 1 as stale when PID 1 is an init process, so a container restarted onto such a
 volume does not refuse to start on a "still running" pid that is now `tini`.
+
+## `build.sh` packages only a clean, error-free build (`build.sh`)
+
+`build.sh` deletes `dist/` and stops when `npm run build` fails, so `npm run package` stops at a type error, and with it the release workflow, `npm-package-app-e2e` and the Docker image. It used to run `npm run build || true`. `tsc` emits even while reporting errors, so a failed build was still packaged, and a stale `dist/` could hide a declaration file the compiler had stopped emitting. TypeScript 6.0+ does exactly that for `resources/Table.d.ts`. A local `npm run package` over a tree with type errors now fails instead of packaging; fix the error rather than restoring the tolerance.
