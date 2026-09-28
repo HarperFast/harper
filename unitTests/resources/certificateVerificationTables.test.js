@@ -357,18 +357,25 @@ async function startCertificateAuthority() {
 	let crlBody = null;
 	let crlRequests = 0;
 	let stallNext = false;
-	const server = createServer((request, response) => {
-		crlRequests++;
-		if (!crlBody) {
+	let responseDelay = 0;
+	function respond(response, body) {
+		if (response.destroyed) return;
+		if (!body) {
 			response.writeHead(503);
 			return response.end();
 		}
-		response.writeHead(200, { 'Content-Type': 'application/pkix-crl', 'Content-Length': crlBody.length });
+		response.writeHead(200, { 'Content-Type': 'application/pkix-crl', 'Content-Length': body.length });
 		if (stallNext) {
 			stallNext = false;
-			return response.write(crlBody.subarray(0, 16));
+			return response.write(body.subarray(0, 16));
 		}
-		response.end(crlBody);
+		response.end(body);
+	}
+	const server = createServer((request, response) => {
+		crlRequests++;
+		const body = crlBody;
+		if (responseDelay) setTimeout(() => respond(response, body), responseDelay);
+		else respond(response, body);
 	});
 	await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 	const crlUrl = `http://127.0.0.1:${server.address().port}/ca-${Date.now()}.crl`;
@@ -414,6 +421,9 @@ async function startCertificateAuthority() {
 		},
 		stallNextResponse() {
 			stallNext = true;
+		},
+		delayResponses(milliseconds) {
+			responseDelay = milliseconds;
 		},
 		get crlRequests() {
 			return crlRequests;
@@ -774,6 +784,31 @@ describe('certificate verification tables', function () {
 
 			const result = await verifyCertificate(peerCertificate(authority, client), config);
 			assert.strictEqual(result.status, 'revoked');
+			assert.strictEqual(authority.crlRequests, 2);
+		});
+
+		it('a check does not share a download made with a shorter timeout than its own', async () => {
+			const shortWait = await authority.issue();
+			const longWait = await authority.issue();
+			await authority.publish({
+				revokedSerials: [shortWait.serialNumber, longWait.serialNumber],
+				thisUpdate: Date.now() - HOUR,
+				nextUpdate: Date.now() + DAY,
+			});
+			authority.delayResponses(2 * SECOND);
+
+			const shortCheck = verifyCertificate(
+				peerCertificate(authority, shortWait),
+				crlOnlyVerification('fail-open', { timeout: SECOND })
+			);
+			await waitFor(() => authority.crlRequests === 1, { timeout: 5 * SECOND, interval: 10 });
+			const longResult = await verifyCertificate(
+				peerCertificate(authority, longWait),
+				crlOnlyVerification('fail-open', { timeout: 5 * SECOND })
+			);
+
+			assert.strictEqual(longResult.status, 'revoked', "the CRL arrived within this check's own timeout");
+			assert.strictEqual((await shortCheck).status, 'verification-unavailable-allowed');
 			assert.strictEqual(authority.crlRequests, 2);
 		});
 

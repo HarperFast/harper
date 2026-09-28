@@ -388,11 +388,11 @@ async function checkCRLFreshness(
 
 // Concurrent checks of certificates from one CA share one download and replacement per distribution point on
 // this thread; each replacing the same rows would make their commits conflict, and past the retry limit that
-// fails the check.
+// fails the check. The key holds every input the download uses, so no check inherits another's deadline.
 const crlDownloads = new Map<string, Promise<DownloadedCRL>>();
 
 function downloadAndParseCRLOnce(distributionPoint: string, issuerPemStr: string, config: CRLConfig) {
-	const key = `${distributionPoint}\n${config.gracePeriod}\n${issuerPemStr}`;
+	const key = `${distributionPoint}\n${config.gracePeriod}\n${config.timeout}\n${issuerPemStr}`;
 	let download = crlDownloads.get(key);
 	if (!download) {
 		download = downloadAndParseCRL(distributionPoint, issuerPemStr, config).finally(() => crlDownloads.delete(key));
