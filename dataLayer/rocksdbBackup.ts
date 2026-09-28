@@ -168,7 +168,7 @@ function requireBackupId(backupId: any): number {
 	return backupId;
 }
 
-function requireBooleanOption(value: any, name: string): boolean {
+export function requireBooleanOption(value: any, name: string): boolean {
 	if (value !== undefined && typeof value !== 'boolean') {
 		throw new ClientError(`'${name}' must be a boolean`);
 	}
@@ -572,10 +572,8 @@ export async function restoreBackup(request: any) {
 	const blobRoots = getBlobPathsForDatabaseName(databaseName);
 	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
 	const allowEngineOnly = requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
-	// Checked once, and deliberately not repeated under the fence: the decision reads the manifest and
-	// the operator's opt-in, never the destination, so nothing a concurrent writer does between here
-	// and the purge can change the answer. An engine-only restore that reaches the purge is one the
-	// operator explicitly accepted.
+	// Once is enough: the decision reads the manifest and the opt-in, never the destination, so no
+	// concurrent writer can change the answer between here and the purge.
 	assertEngineOnlyRestoreAllowed(databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
 	const lock = beginRestoreForDatabase(databaseDir, databaseName);
 	const restoreToken = randomUUID();
@@ -622,7 +620,7 @@ export async function restoreBackup(request: any) {
 		// nothing destructive happened and the marker was fresh — clear it and let every thread reload
 		// the intact database
 		completeRestore(lock);
-		await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken));
+		await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken, false));
 		throw error;
 	}
 	completeRestore(lock);
@@ -636,10 +634,18 @@ export async function restoreBackup(request: any) {
  * can overlap, so a worker releases the fence only for the token that established it -- see
  * `resumeBlobSavesAfterRestore`.
  */
-function restoreSchemaEvent(databaseName: string, restorePhase: 'close' | 'reload', restoreToken: string) {
+function restoreSchemaEvent(
+	databaseName: string,
+	restorePhase: 'close' | 'reload',
+	restoreToken: string,
+	generationReplaced = true
+) {
 	const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.RESTORE_BACKUP, databaseName);
 	message.restorePhase = restorePhase;
 	message.restoreToken = restoreToken;
+	// Tells a worker whether the blob roots it fenced were actually replaced. A restore that failed its
+	// admission checks destroyed nothing, so that worker's queued reclamations are still valid.
+	message.generationReplaced = generationReplaced;
 	return message;
 }
 
@@ -1020,8 +1026,11 @@ export async function restoreBackupOffline(
 	databaseName: string,
 	backupId?: number,
 	targetDatabase?: string,
-	allowEngineOnly = false
+	allowEngineOnlyOption?: boolean
 ) {
+	// Validated the same way the online path validates it, so a malformed opt-in is refused rather than
+	// silently read as "no". The CLI JSON-parses `key=value`, so a typo arrives here as a string.
+	const allowEngineOnly = requireBooleanOption(allowEngineOnlyOption, 'allow_engine_only');
 	validateDatabaseName(databaseName);
 	const backupDir = backupDirForDatabase(databaseName);
 	// resolve to the latest complete backup (or the requested id, rejected if incomplete)

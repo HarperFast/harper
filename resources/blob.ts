@@ -1578,8 +1578,7 @@ function runReclamation(): void {
 	let earliest = Infinity;
 	for (const [filePath, pending] of pendingReclamation) {
 		if (pending.unlinking) continue;
-		// A restore is rewriting this database's roots; unlinking now would delete bytes it just wrote.
-		// The entry is dropped outright when the fence lifts, since it condemns a replaced generation.
+		// Unlinking during a restore would delete bytes it just wrote at this path.
 		if (isBlobRestoreFenced(pending.fileInfo?.store)) continue;
 		if (pending.deadline > now) {
 			earliest = pending.deadline;
@@ -1813,14 +1812,16 @@ export function createBlobFromStoredBody(
 // can be committed referencing fileIds whose blob files were never durably written.
 let pendingMigrationBlobSaves: Promise<void>[] | undefined;
 
-// Database -> the token of the restore that currently owns its fence. Two restores of one database
-// can overlap (a restore releases its lock before awaiting its `reload` broadcast), so a plain flag
-// lets the first one's late reload lift the second one's fence. Ownership rather than a token set:
-// a later close takes ownership from an earlier restore without ever unfencing, a superseded
-// restore's late reload is a no-op, and -- the part a set gets wrong -- a restore that dies after
-// destruction leaves no token behind to fence the database forever, so the rerun it tells the
-// operator to perform can actually clear it.
+// Database -> the token of the restore that currently owns its fence. Restores of one database can
+// overlap, because a restore releases its lock before awaiting its `reload` broadcast. Ownership, so
+// that a superseded restore's late reload cannot unfence a database another restore is still working
+// on, and a restore that dies without reloading leaves nothing behind that a rerun cannot take over.
 const blobRestoreFences = new Map<string, string>();
+// Bumped every time a restore takes a database's fence. A check for "is it fenced right now" is not
+// enough for work that spans the whole restore: an orphan sweep can read the fence as clear, have an
+// entire restore happen while it awaits an unlink, and then keep deleting on a verdict reached
+// against the generation that restore replaced. Long-running work captures this instead.
+const blobRestoreEpochs = new Map<string, number>();
 const inFlightBlobSaves = new Map<string, Set<Promise<void>>>();
 // Count of blob-root unlinks dispatched per database, with the waiters a fence parks on until that
 // count reaches zero. A counter rather than a set of promises: this sits on the deletion path for
@@ -1857,18 +1858,17 @@ function trackBlobSave(store: any, saving?: Promise<void>): void {
 }
 
 /**
- * Fence blob saves, deferred reclamation and orphan cleanup for a database so a restore can purge
- * and rewrite its roots safely, and wait out that work already in flight.
+ * Fence blob saves, deferred reclamation and orphan cleanup for a database, and wait out the work
+ * already dispatched, so a restore can purge and rewrite its roots safely.
  *
- * Closing the database is not a barrier on its own: a save is an asynchronous file pipeline that
- * outlives the handle it started from, a reclamation is a timer that does not consult the database
- * at all, and an orphan sweep is dispatched fire-and-forget. All of them are stopped here -- new
- * saves are refused, new unlinks are skipped, a running sweep bails at its next file, and the
- * dispatched unlinks are awaited -- so the walk that follows sees a root nothing is still changing.
+ * Closing the database does not do this: a save is an asynchronous file pipeline that outlives the
+ * handle it started from, a reclamation is a timer that never consults the database, and an orphan
+ * sweep is dispatched fire-and-forget.
  */
 export async function blockBlobSavesForRestore(databaseName: string, restoreToken: string): Promise<void> {
 	// Takes ownership whether or not another restore held it: the database never unfences in between.
 	blobRestoreFences.set(databaseName, restoreToken);
+	blobRestoreEpochs.set(databaseName, (blobRestoreEpochs.get(databaseName) ?? 0) + 1);
 	const saves = inFlightBlobSaves.get(databaseName);
 	if (saves) await Promise.allSettled([...saves]);
 	await drainBlobUnlinks(databaseName);
@@ -1878,10 +1878,18 @@ export async function blockBlobSavesForRestore(databaseName: string, restoreToke
  * Release one restore's fence. The fence lifts only when the last token is released, so an earlier
  * restore's late `reload` cannot unfence a database another restore is still working on.
  */
-export function resumeBlobSavesAfterRestore(databaseName: string, restoreToken: string): void {
+export function resumeBlobSavesAfterRestore(
+	databaseName: string,
+	restoreToken: string,
+	generationReplaced = true
+): void {
 	// Only the owner may lift the fence; a superseded restore's reload arriving late does nothing.
 	if (blobRestoreFences.get(databaseName) !== restoreToken) return;
 	blobRestoreFences.delete(databaseName);
+	// A restore that aborted before it destroyed anything leaves the generation intact, so its queued
+	// reclamations still condemn the files they were queued against. Discarding those would strand
+	// every superseded blob the database had pending at the moment an admission check happened to fail.
+	if (!generationReplaced) return;
 	// Every queued reclamation for this database belongs to the generation the restore just replaced:
 	// its file paths were condemned against records that no longer exist. Draining them now would
 	// unlink restored bytes at the same paths, so they are dropped rather than resumed.
@@ -1891,6 +1899,26 @@ export function resumeBlobSavesAfterRestore(databaseName: string, restoreToken: 
 function isBlobRestoreFenced(store: any): boolean {
 	const databaseName = blobSaveDatabaseName(store);
 	return !!databaseName && blobRestoreFences.has(databaseName);
+}
+
+/**
+ * A token for work that outlives a single check -- an orphan sweep, say -- so it can tell whether any
+ * restore has touched this database since it started, not merely whether one is running right now.
+ */
+export function blobRestoreGeneration(store: any): { database?: string; epoch: number; fenced: boolean } {
+	const database = blobSaveDatabaseName(store);
+	return {
+		database,
+		epoch: database ? (blobRestoreEpochs.get(database) ?? 0) : 0,
+		fenced: !!database && blobRestoreFences.has(database),
+	};
+}
+
+/** True once a restore has fenced this database since `since` was taken, or is fencing it now. */
+export function blobRestoreGenerationChanged(since: { database?: string; epoch: number }): boolean {
+	if (!since.database) return false;
+	if (blobRestoreFences.has(since.database)) return true;
+	return (blobRestoreEpochs.get(since.database) ?? 0) !== since.epoch;
 }
 
 function discardReclamationForDatabase(databaseName: string): void {
@@ -2200,8 +2228,6 @@ function writeBlobWithStream(
 				}
 				if (storageInfo.deleteOnFailure) {
 					store.unlock(lockKey);
-					// Registered like any other blob-root deletion: a restore fence must not complete its walk
-					// while this cleanup is still in flight, or it would land on the path the restore rewrote.
 					const unlinkDone = beginBlobUnlink(blobSaveDatabaseName(store));
 					unlink(filePath, (error) => {
 						unlinkDone();
@@ -3568,6 +3594,8 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 		for (const path of pathsToCheck) {
 			if (pendingReclamation.has(path)) pathsToCheck.delete(path);
 		}
+		// Captured before the first deletion, so any restore that lands mid-sweep invalidates this pass.
+		const generation = blobRestoreGeneration(store);
 		const repairTempLocks = new Map<string, string>();
 		for (const path of pathsToCheck) {
 			if (!path.endsWith(BLOB_REPAIR_SUFFIX)) continue;
@@ -3578,15 +3606,21 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 		logger.warn?.('Deleting', pathsToCheck.size, 'orphaned blobs');
 		orphansDeleted += pathsToCheck.size;
 		let deleted = 0;
+		let abandonedForRestore = false;
+		const remaining = new Set(pathsToCheck);
 		for (const path of pathsToCheck) {
 			// This walk is dispatched fire-and-forget and can outlive a restore's close acknowledgement.
-			// Its verdict -- "no record references this path" -- was reached against the generation the
-			// restore is replacing, so continuing would unlink blobs the restore has just written.
-			if (isBlobRestoreFenced(store)) {
-				logger.warn?.('Stopping orphaned blob cleanup: database is being restored');
-				orphansDeleted -= pathsToCheck.size - deleted;
+			// Its verdict -- "no record references this path" -- was reached against a generation a restore
+			// may since have replaced, so continuing would unlink blobs that restore has just written.
+			// Compared by generation, not by "is a restore running now": an await here can easily span a
+			// whole restore, leaving the fence clear again by the time the next iteration looks.
+			if (blobRestoreGenerationChanged(generation)) {
+				logger.warn?.('Stopping orphaned blob cleanup: the database has been restored since this scan began');
+				orphansDeleted -= remaining.size;
+				abandonedForRestore = true;
 				break;
 			}
+			remaining.delete(path);
 			const unlinkDone = beginBlobUnlink(blobSaveDatabaseName(store));
 			try {
 				await unlinkPromised(path);
@@ -3595,6 +3629,14 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 				logger.debug?.('Error deleting file', error);
 			} finally {
 				unlinkDone();
+				const lockKey = repairTempLocks.get(path);
+				if (lockKey) (store as any).unlock(lockKey);
+			}
+		}
+		if (abandonedForRestore) {
+			// The locks were taken for every candidate up front, so the ones this loop never reached are
+			// still held; leaving them would block the repair path until the process restarts.
+			for (const path of remaining) {
 				const lockKey = repairTempLocks.get(path);
 				if (lockKey) (store as any).unlock(lockKey);
 			}

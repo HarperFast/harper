@@ -360,7 +360,9 @@ export function assertEngineOnlyRestoreAllowed(
 	databaseName: string,
 	{ backupHasBlobs, allowEngineOnly }: { backupHasBlobs: boolean; allowEngineOnly: boolean }
 ): void {
-	if (backupHasBlobs || allowEngineOnly) return;
+	// Strictly true, not merely truthy: a manifest is on-disk data, and a corrupt `blobs` value must not
+	// be read as "this backup has blobs" and waved past the guard.
+	if (backupHasBlobs === true || allowEngineOnly === true) return;
 	// Decided from the manifest alone. Walking the destination to tailor the message would turn a
 	// deterministic 400 into a traversal that can be slow or fail outright (EACCES on an unreadable
 	// root), for wording -- and both hazards are worth stating anyway, since the operator who passes

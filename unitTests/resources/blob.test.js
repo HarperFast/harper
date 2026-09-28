@@ -38,6 +38,8 @@ const {
 	watchInProgressFile,
 	blockBlobSavesForRestore,
 	resumeBlobSavesAfterRestore,
+	blobRestoreGeneration,
+	blobRestoreGenerationChanged,
 } = require('#src/resources/blob');
 const {
 	existsSync,
@@ -1782,6 +1784,57 @@ describe('Blob test', () => {
 		resumeBlobSavesAfterRestore(databaseName, 'restore-rerun');
 		await decodeFromDatabase(() => saveBlob(blob).saving, store);
 		removeBlobFile(blob);
+	});
+
+	it('a restore that aborted before destroying anything keeps its queued reclamations', async () => {
+		// The generation was not replaced, so those entries still condemn the files they were queued
+		// against. Discarding them would strand every superseded blob the database happened to have
+		// pending at the moment an admission check failed.
+		const store = BlobTest.primaryStore.rootStore;
+		const databaseName = store.databaseName;
+		setDeletionDelay(200);
+		let condemnedPath;
+		let survivor;
+		try {
+			const first = await createBlob(Readable.from('aborted-restore-generation'.repeat(64)));
+			await BlobTest.put({ id: 92, blob: first });
+			condemnedPath = getFilePathForBlob(first);
+			const second = await createBlob(Readable.from('still-valid-generation'.repeat(64)));
+			await BlobTest.put({ id: 92, blob: second });
+			survivor = getFilePathForBlob(second);
+
+			await blockBlobSavesForRestore(databaseName, 'restore-aborted');
+			// The restore failed its admission checks and destroyed nothing.
+			resumeBlobSavesAfterRestore(databaseName, 'restore-aborted', false);
+
+			await waitFor(() => !existsSync(condemnedPath), {
+				timeout: 2000,
+				message: 'a reclamation kept across an aborted restore must still run',
+			});
+		} finally {
+			await BlobTest.delete(92).catch(() => {});
+			for (const path of [condemnedPath, survivor]) if (path && existsSync(path)) unlinkSync(path);
+			setDeletionDelay(500);
+		}
+	});
+
+	it('reports a restore generation change to work that spans a whole restore', async () => {
+		// An orphan sweep can read the fence as clear, await an unlink while an entire restore happens,
+		// and resume deleting on a verdict reached against the generation that restore replaced. Asking
+		// "is it fenced now" cannot see that; the generation can.
+		const store = BlobTest.primaryStore.rootStore;
+		const databaseName = store.databaseName;
+
+		const before = blobRestoreGeneration(store);
+		assert.strictEqual(blobRestoreGenerationChanged(before), false, 'nothing has happened yet');
+
+		await blockBlobSavesForRestore(databaseName, 'restore-epoch');
+		assert.strictEqual(blobRestoreGenerationChanged(before), true, 'fenced right now');
+		resumeBlobSavesAfterRestore(databaseName, 'restore-epoch');
+
+		// The fence is clear again, and this is the case a fenced-right-now check misses.
+		assert.strictEqual(blobRestoreGenerationChanged(before), true, 'a restore completed since `before`');
+		assert.strictEqual(blobRestoreGenerationChanged(blobRestoreGeneration(store)), false);
 	});
 
 	it('a reclamation queued before a restore does not unlink what the restore wrote', async () => {
