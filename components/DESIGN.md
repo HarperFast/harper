@@ -49,11 +49,44 @@ The ordering is the design. Three things used to be wrong, the first two in a wa
   load-error PROBE, not a safety guarantee: it executes the component's own top-level code with
   incomplete side-effect isolation. It also remains a no-op on the main thread, and the operations API
   deploys on the main thread — so operator deploys are still unvalidated, exactly as before. Fixing that
-  is separate work; this only fixed the order.
+  is separate work; this only fixed the order. Nor does it run on a worker under the default lockdown —
+  see the next section.
 - **Root config was written before the build and never rolled back**, so a build or validation that failed
   still left config naming the release, and `installApplications()` installed it at the next restart. The
   entry is now the transaction's third effect, published after the commit — see "Root config is an effect
   of the activation" below.
+
+### The load validation runs only where it can reproduce a boot load
+
+`validateComponentLoads` (`components/operations.js`) loads the candidate in the thread running the deploy,
+so its verdict is only worth what that thread has in common with a freshly started worker. Two kinds of
+thread have too little, and it runs in neither:
+
+- **The main thread**, where the operations API deploys: application code does not run there.
+- **A worker under `applications.lockdown: freeze-after-load`**, the default, which is where a replicated
+  peer runs the deploy. The lockdown freezes a worker's intrinsics once its boot load finishes, and a freeze
+  is per realm and cannot be undone. A dependency that extends an intrinsic as it loads (reflect-metadata
+  defines `Reflect.decorate`) then throws in the deploying worker, yet loads in every worker a restart
+  starts. 5.2 hid this by swapping before it validated, so a failed first deploy still landed and
+  `restart: true` loaded it. Once validation moved before the swap, every peer refused every retry of a
+  working component while the origin, which does not validate, ran it (#2881).
+  `laterLoadsMeetFrozenIntrinsics()` (`security/jsLoader.ts`) is the test. It holds in any thread that
+  runs the boot load, so a deploy racing that load is excluded as well.
+
+Workers still validate under the other modes
+(`integrationTests/deploy/worker-deploy-frozen-intrinsics.test.ts`). `freeze` and `ses` freeze before the
+boot load, so a later load meets exactly the intrinsics it met. `none` freezes nothing, but an intrinsic the
+live version of a component changed, such as a property it made non-configurable, still differs from what a
+fresh worker's load of the candidate meets. That narrower mismatch predates this and is left alone.
+
+Under the default, no node load-validates a deploy. A candidate that throws at load goes live on every node
+alike, and each restarted worker fails that component closed and serves the rest. That was always the
+origin's behavior, and it replaces a cluster split between versions. A node on an earlier 5.3 build still
+validates in its frozen workers and keeps refusing a candidate whose dependency extends an intrinsic at load,
+so such a deploy converges only once every node is upgraded; retry it then. The `load` progress phase no
+longer fires on a worker either; the operations API, on the main thread, never emitted it. Validating there
+again needs a load in a fresh realm: #2315 step 2 plans it as a canary rollout, whose first replacement
+worker boots the candidate before it takes traffic.
 
 ### Staging a build now and activating it later
 
@@ -94,7 +127,8 @@ did not need it:
   them:** nothing stops a dormant artifact being edited while it waits, so the link rule and the load
   validation are both re-run at activation rather than trusted from the marker. Content tampering is still
   not detected — that needs a manifest the marker is bound to, and the load validation that would catch a
-  broken entry point is a no-op on the main thread until #2315 step 2.
+  broken entry point is a no-op on the main thread, and on a worker under the default lockdown, until
+  #2315 step 2.
 
 Certification moved out of `activateCandidateApplication` and up into `prepareApplication` for the same
 reason: `markCandidateComplete` fsyncs the whole candidate tree, and a delayed activation must not re-walk
@@ -196,7 +230,8 @@ and the journal removal: the journal is what would carry the activation forward 
 
 Two limits are deliberate and tracked separately: activation is two renames, so the live _pathname_ is
 briefly absent (in-memory resources are unaffected, but a component that opens its own files during a
-request can still see a gap); and validation does not run on the main-thread deploy path.
+request can still see a gap); and validation does not run on the main-thread deploy path, nor on a worker
+under the default lockdown.
 
 ### Root config is an effect of the activation
 
