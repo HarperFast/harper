@@ -65,11 +65,11 @@ describe('componentLoader per-application plugin lock isolation', () => {
 	after(async () => {
 		// Let the hog finish so its load settles cleanly before teardown; on the red path this also
 		// releases the bystander's parked lock waiter.
-		releaseHog();
+		if (typeof releaseHog === 'function') releaseHog();
 		if (hogLoad) await hogLoad.catch(() => {});
 		delete TRUSTED_RESOURCE_PLUGINS[PLUGIN_NAME];
 		statusInternal.componentStatusRegistry.reset();
-		rmSync(tempRoot, { recursive: true, force: true });
+		if (tempRoot) rmSync(tempRoot, { recursive: true, force: true });
 	});
 
 	function makeApp(name, timeoutMs) {
