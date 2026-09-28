@@ -515,6 +515,68 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	it('starts the shared wait deadline when lazy index execution begins', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'waiting-lazy-execution';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		auditStore.setCoverage(readinessId, 100_000_000n);
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+		});
+		const start = Promise.withResolvers();
+		const pending = index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'shoe', waitForIndexMilliseconds: 100 },
+			{ indexSearchStart: start.promise },
+			{ minResults: 1 }
+		);
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		start.resolve();
+		index.attachDerivedHost({
+			readiness: () => ({ state: 'ready' }),
+			requestRebuild: () => true,
+			waitForCoverage: async () => {},
+		});
+		assert.deepStrictEqual(
+			(await pending).map(({ key }) => key),
+			['one']
+		);
+		await index.close();
+	});
+
+	it('shares one wait deadline across local host attachment and coverage', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'shared-host-coverage-deadline';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		auditStore.setCoverage(readinessId, 99_000_000n);
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+		});
+		let coverageTimeout;
+		const pending = index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'shoe', waitForIndexMilliseconds: 1000 },
+			{ indexSearchStart: Promise.resolve() },
+			{ minResults: 1 }
+		);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		index.attachDerivedHost({
+			readiness: () => ({ state: 'ready' }),
+			requestRebuild: () => true,
+			waitForCoverage: async (_started, timeout) => {
+				coverageTimeout = timeout;
+			},
+		});
+		await pending;
+		assert(coverageTimeout > 0);
+		assert(coverageTimeout < 1000);
+		await index.close();
+	});
+
 	it('keeps coverage-only publication off the data-freshness path', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'coverage-only-publication';

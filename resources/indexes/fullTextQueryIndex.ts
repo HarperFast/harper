@@ -184,8 +184,9 @@ export class FullTextQueryIndex {
 				this.#definition.name
 			);
 			if (waiting) {
-				const waitDeadline = performance.now() + waitForIndexMilliseconds;
+				await context?.indexSearchStart;
 				context?.signal?.throwIfAborted();
+				const waitDeadline = performance.now() + waitForIndexMilliseconds;
 				const host = this.#derivedHost ?? (await this.#waitForDerivedHost(waitForIndexMilliseconds, context?.signal));
 				const state = host?.readiness().state;
 				if (state !== 'ready')
@@ -193,7 +194,6 @@ export class FullTextQueryIndex {
 						`Full-text index '${this.#definition.name}' is ${state === 'unavailable' ? 'unavailable' : 'rebuilding'}`,
 						503
 					);
-				await context?.indexSearchStart;
 				context?.signal?.throwIfAborted();
 				if (options.minResults === 0) return [];
 				const started = derivedIndexTime(this.#options.Table.primaryStore.rootStore);
