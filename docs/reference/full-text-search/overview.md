@@ -46,7 +46,7 @@ On restart, Harper reuses compatible local index files and replays committed cha
 
 A rebuild scans the current table and replays changes committed during the scan. An unreadable or corrupt transaction log can make a rebuild fail. The same applies when [transaction-log cleanup](../database/transaction.md#delete_transaction_logs_before) or automatic retention removes history required to bridge the scan to current writes. Harper retries with backoff; after the retry budget is exhausted, readiness becomes `unavailable`. Inspect `describe_table` and the node logs for the reason before retrying activation.
 
-Ordinary table reads and writes remain available during a rebuild. Full-text queries return `503` with `code: "INDEX_REBUILDING"` and `retryable: true` until the index is ready. A new replica follows the same process before serving full-text queries.
+Ordinary table reads and writes remain available during a rebuild. While readiness is `rebuilding`, full-text queries return `503` with `code: "INDEX_REBUILDING"` and `retryable: true`. If rebuild attempts are exhausted and readiness becomes `unavailable`, queries return a generic, non-retryable `503` until an operator corrects the cause and retries activation. A new replica follows the same process before serving full-text queries.
 
 Use `describe_table` to inspect each index's declaration and readiness. See [Inspecting an index](./configuration.md#inspecting-an-index).
 
@@ -62,6 +62,7 @@ Full-text search can be combined with structured filters. Harper pushes compatib
 - Prefix expressions have a 100-record native result window. Use a bounded `limit`; requests beyond the window fail instead of truncating silently.
 - One query can use only one full-text index. An `or` group cannot mix full-text and ordinary record conditions.
 - `INDEX_REBUILDING` is transient and retryable. `unavailable` means automatic rebuild attempts were exhausted or activation failed; inspect readiness and logs rather than retrying every `503` indefinitely.
+- Generated GraphQL field arguments remain equality conditions; use `Table.search()`, REST, or `search_by_conditions` for full-text comparators.
 
 See [Querying](./querying.md) for exact condition rules and [Configuration](./configuration.md#inspecting-an-index) for readiness details.
 

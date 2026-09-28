@@ -81,6 +81,7 @@ Optional arguments:
 | `eviction`           | `Int`     | `0`                           | Additional seconds after `expiration` before a record is physically removed                 |
 | `scanInterval`       | `Int`     | `(expiration + eviction) / 4` | Seconds between eviction scans                                                              |
 | `replicate`          | `Boolean` | true                          | Enable replication of this table                                                            |
+| `audit`              | `Boolean` | `logging.auditLog`            | Enable the table's transaction log; `@fullText` requires an explicit `true`                 |
 | `cacheControl`       | `String`  | —                             | `Cache-Control` header value emitted on anonymous GET/HEAD 200/304 responses for this table |
 | `randomAccessFields` | `Boolean` | `storage.randomAccessFields`  | [Pin this table's record encoding](#randomaccessfields)                                     |
 

@@ -972,15 +972,19 @@ The `Query` object is accepted by `search()` and the static `get()` method.
 
 Array of condition objects to filter records. Each condition:
 
-| Property     | Description                                                                                                                                                                                                                        |
-| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `attribute`  | Property name, or an array for chained/joined properties (e.g. `['brand', 'name']`)                                                                                                                                                |
-| `value`      | The value to match                                                                                                                                                                                                                 |
-| `comparator` | `equals` (default), `greater_than`, `greater_than_equal`, `less_than`, `less_than_equal`, `starts_with`, `contains`, `ends_with`, `between`, `not_equal`, or a [full-text comparator](../full-text-search/querying.md#match-modes) |
-| `conditions` | Nested conditions array                                                                                                                                                                                                            |
-| `operator`   | `and` (default) or `or` for the nested `conditions`                                                                                                                                                                                |
+| Property                   | Description                                                                                                                                                                                                                        |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `attribute`                | Property name, or an array for chained/joined properties (e.g. `['brand', 'name']`)                                                                                                                                                |
+| `value`                    | The value to match                                                                                                                                                                                                                 |
+| `comparator`               | `equals` (default), `greater_than`, `greater_than_equal`, `less_than`, `less_than_equal`, `starts_with`, `contains`, `ends_with`, `between`, `not_equal`, or a [full-text comparator](../full-text-search/querying.md#match-modes) |
+| `conditions`               | Nested conditions array                                                                                                                                                                                                            |
+| `operator`                 | `and` (default) or `or` for the nested `conditions`                                                                                                                                                                                |
+| `fields`                   | Full-text source fields to search; every name must belong to the selected full-text index                                                                                                                                          |
+| `includeHighlights`        | Include configured full-text highlights                                                                                                                                                                                            |
+| `maxIndexLagMilliseconds`  | Maximum accepted full-text index lag; defaults to `3000`                                                                                                                                                                           |
+| `waitForIndexMilliseconds` | Time to wait for acceptable full-text coverage, from `0` through `30000`                                                                                                                                                           |
 
-Full-text comparators and condition options: <VersionBadge version="v5.3.0" />
+The final four properties apply to full-text conditions: <VersionBadge version="v5.3.0" /> See [Querying Full-Text Indexes](../full-text-search/querying.md) for their constraints and error behavior.
 
 Example with nested conditions:
 

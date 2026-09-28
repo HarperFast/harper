@@ -172,6 +172,8 @@ fragment sharedFields on Any {
 
 Any attribute can be used as an argument for a query. In this short form, multiple arguments is treated as multiple equivalency conditions with the default `and` operation.
 
+These arguments always use equality. A declared `@fullText` index does not change GraphQL argument semantics; use [full-text search through `Table.search()`, REST, or the Operations API](../full-text-search/querying.md) for match comparators and BM25 ranking.
+
 For example, the following query requires an `id` variable to be provided, and the system will search for a `Dog` record matching that id.
 
 ```graphql

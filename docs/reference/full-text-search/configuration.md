@@ -52,7 +52,7 @@ Each field entry supports:
 | `highlight` | `false`  | Allows highlights from this field when index highlighting is enabled.          |
 | `mediaType` | omitted  | Required as `"text/plain"` for a `Blob` source; invalid on other source types. |
 
-Source fields cannot use `@computed` or `@relationship`. At write time, a source value must be a string, an array containing strings or nulls, or a matching text Blob.
+Source fields cannot use `@computed` or `@relationship`. Indexable source values are strings, arrays containing strings or nulls, or Blob values declared as plain text.
 
 ## Phrase and prefix support
 
@@ -134,7 +134,7 @@ type Document
 }
 ```
 
-Harper validates the Blob's media type when applying it to the index.
+`mediaType: "text/plain"` declares how Harper interprets the Blob; it does not validate runtime Blob metadata or reject the record write. The derived index decodes the Blob as UTF-8. A Blob that cannot be decoded or exceeds the one-MiB source-value limit is omitted from the index until a later valid write replaces it.
 
 ## Schema changes and rebuilds
 
@@ -177,8 +177,8 @@ The table response includes entries shaped like this:
 }
 ```
 
-`readiness.state` is `ready`, `rebuilding`, or `unavailable`. A rebuilding query returns retryable `INDEX_REBUILDING`. `unavailable` means activation failed or the automatic rebuild budget was exhausted; inspect `readiness.reason` and the node logs, correct the underlying storage, native-module, schema, or audit-log problem, then reload or reapply the schema to retry activation. Full-text queries are served only when the state is `ready`.
+`readiness.state` is `ready`, `rebuilding`, or `unavailable`. A rebuilding query returns `503` with retryable code `INDEX_REBUILDING`. `unavailable` means activation failed or the automatic rebuild budget was exhausted; queries return a generic, non-retryable `503`. Inspect the optional `readiness.reason` and the node logs, correct the underlying storage, native-module, schema, or transaction-log problem, then reload or reapply the schema to retry activation. Full-text queries are served only when the state is `ready`.
 
-`query_modes` maps to comparators as follows: `any` → `matches`, `all` → `matches_all`, `fuzzy` → `matches_fuzzy`, `phrase` → `matches_phrase`, `prefix` → `matches_prefix`, and `fuzzy-prefix` → `matches_fuzzy_prefix`. `owner_epoch` is an opaque decimal string used to fence work between derived-index owners; clients should not parse or persist it. `rebuild_attempts` is the current automatic-attempt count.
+`query_modes` maps to comparators as follows: `any` → `matches`, `all` → `matches_all`, `fuzzy` → `matches_fuzzy`, `phrase` → `matches_phrase`, `prefix` → `matches_prefix`, and `fuzzy-prefix` → `matches_fuzzy_prefix`. `owner_epoch` is an opaque decimal string used to fence work between derived-index owners; clients should not parse or persist it. `rebuild_attempts` is the current automatic-attempt count. `reason` is present when readiness has an operator-actionable explanation.
 
 The Operations API uses snake_case for response metadata such as `stop_words`, `surface_terms`, and `owner_epoch`. The nested `highlighting` value mirrors the GraphQL option names `maxFragments` and `fragmentLength`.
