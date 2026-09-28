@@ -190,7 +190,12 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 			).unref()
 		),
 	])
-		.then(() => true)
+		.then(() => {
+			// The catch below records a failed status on this thread; record recovery too, or a
+			// retried start would leave the application in error here until the process restarts.
+			componentLifecycle.loaded(application, `Component '${application}' dedicated worker ready`);
+			return true;
+		})
 		.catch(async (error) => {
 			harperLogger.error(`Dedicated worker for isolated application '${application}' failed to start`, error);
 			componentLifecycle.failed(application, error, `Component '${application}' failed to load`);

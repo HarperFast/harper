@@ -169,6 +169,35 @@ async function getAllStatus(includeMiddleware = false): Promise<AllStatusSummary
 	return summary;
 }
 
+/**
+ * The availability status is what the public status endpoint serves to routing (GTM):
+ * Available keeps the node in rotation, Unavailable drains it. The stored record is
+ * operator-owned (set_status), but a node whose components failed to load is serving errors
+ * over their URL space, so the read combines the two: an operator's Unavailable always
+ * wins, and an Available (or absent) record is served as Unavailable while any component on
+ * this thread is in error (#3184). Derived at read time rather than written on failure so
+ * nothing goes stale: a component that loads cleanly again heals the registry and the node
+ * rejoins rotation on its own, and an automatic write can never clobber an operator drain.
+ * Deploy-validation failures land in the validation sink, never the live registry, so a
+ * candidate's failure cannot drain the node. Scope is this thread's registry: the
+ * operations thread loads every non-isolated component itself and records isolated
+ * applications' worker failures (socketRouter), so load failures visible only on another
+ * HTTP worker are not reflected here.
+ */
+async function getAvailabilityStatus(): Promise<StatusRecord<'availability'> | undefined> {
+	const record = (await getStatusTable().get('availability')) as StatusRecord<'availability'> | undefined;
+	if (record?.status === 'Unavailable') return record;
+	const failed = statusInternal.componentStatusRegistry.getComponentsByStatus(
+		statusInternal.COMPONENT_STATUS_LEVELS.ERROR
+	);
+	if (failed.length === 0) return record;
+	return {
+		id: 'availability',
+		status: 'Unavailable',
+		message: `Component failure: ${failed.map(({ name }) => name).join(', ')}`,
+	};
+}
+
 function getStatus({ id, middleware }: Partial<StatusRequestBody>): Promise<StatusRecord | AllStatusSummary> {
 	if (!id) {
 		statusLogger.debug?.('getStatus', 'all');
@@ -176,6 +205,7 @@ function getStatus({ id, middleware }: Partial<StatusRequestBody>): Promise<Stat
 	}
 
 	statusLogger.debug?.('getStatus', id);
+	if (id === 'availability') return getAvailabilityStatus() as Promise<StatusRecord>;
 	return getStatusTable().get(id) as unknown as Promise<StatusRecord>;
 }
 

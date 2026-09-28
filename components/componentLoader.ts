@@ -1289,5 +1289,12 @@ export async function loadComponent(
 		error.message = `Could not load application due to ${error.message}`;
 		errorReporter?.(error);
 		resources.set('', new ErrorResource(error));
+		// A whole-application failure serves errors over the entire URL space; it must reach the
+		// status registry like per-component failures do, so availability reflects it (#3184).
+		componentLifecycle.failed(
+			appName ?? basename(componentDirectory),
+			error,
+			`Could not load application '${appName ?? basename(componentDirectory)}'`
+		);
 	}
 }
