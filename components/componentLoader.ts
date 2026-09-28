@@ -829,15 +829,12 @@ export async function loadComponent(
 	applicationScope.runtimeRoot ??= resolvedFolder;
 	applicationScope.allowedPath ??= realpathSync(componentDirectory);
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
-	// The application's own top-level status key, given a full lifecycle below so a whole-application
-	// failure (the outer catch) drains availability yet a later successful reload heals it (#3184).
-	// Declared out here so the catch can see it. Only the top-level application load owns this key: a
-	// load is top-level when it has no inherited appName (a directory-scanned app) or its appName
-	// matches its own directory (a root-config package application). A nested sub-component inherits
-	// the parent's appName, which differs from its own directory, so it is excluded and cannot
-	// overwrite the parent's status. Root has no single owning application.
-	const appDirName = basename(componentDirectory);
-	const appStatusKey = !isRoot && (appName === undefined || appName === appDirName) ? appDirName : undefined;
+	// This load's own status key, given a full lifecycle below so a whole-application failure (the
+	// outer catch) drains availability yet a later successful reload heals it (#3184). Declared out
+	// here so the catch can see it. Keyed by the load's own directory, not the inherited appName, so
+	// a nested package's load and its enclosing application get distinct keys and neither overwrites
+	// the other's failure. Root has no single owning application.
+	const appStatusKey = isRoot ? undefined : basename(componentDirectory);
 	try {
 		let config;
 		let configPath = join(componentDirectory, 'harper-config.yaml'); // look for the specific harperdb-config.yaml first
@@ -949,9 +946,10 @@ export async function loadComponent(
 
 		const parentCompName: string = compName;
 		const componentFunctionality = {};
-		// Mark the application itself loading before its plugins, so a reload of a previously failed
-		// application clears that error the moment it starts rather than after it finishes (#3184).
-		if (appStatusKey) componentLifecycle.loading(appStatusKey);
+		// Do not mark the application loading here: loading is not treated as a drain, so clearing a
+		// prior error before the reload has actually succeeded would put the node back in rotation
+		// while it is still serving errors, and keep it there if the reload then hangs (#3184). The
+		// error is cleared only by loaded() below, once the load genuinely completes.
 		// iterate through the app handlers so they can each do their own loading process
 		for (const componentName in config) {
 			if (componentName === 'env') continue; // handled above — not a plugin

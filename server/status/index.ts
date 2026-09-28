@@ -5,6 +5,7 @@ import { validateStatus } from '../../validation/statusValidator.ts';
 import { type StatusId, type StatusValueMap, type StatusRecord, DEFAULT_STATUS_ID } from './definitions.ts';
 import { internal as statusInternal, type AggregatedComponentStatus } from '../../components/status/index.ts';
 import { restartNeeded } from '../../components/requestRestart.ts';
+import { anyThreadHasComponentError } from '../../components/componentHealth.ts';
 import { sendItcEvent } from '../threads/itc.js';
 import { onMessageByType, workers } from '../threads/manageThreads.js';
 import { ITC_EVENT_TYPES, THREAD_TYPES } from '../../utility/hdbTerms.ts';
@@ -146,7 +147,6 @@ async function getMiddlewareChains(): Promise<MiddlewareChainsSummary | null> {
 
 async function getAllStatus(includeMiddleware = false): Promise<AllStatusSummary> {
 	statusLogger.debug?.('getAllStatus');
-	const statusRecords = getStatusTable().search([]);
 
 	// Get aggregated component statuses from all threads
 	const aggregatedStatuses = await statusInternal.query.allThreads();
@@ -160,8 +160,15 @@ async function getAllStatus(includeMiddleware = false): Promise<AllStatusSummary
 	// Get restart flag status
 	const restartRequired = restartNeeded();
 
+	// Resolve the availability record the same way the single-id read does, so the aggregate
+	// response never contradicts get_status {id:'availability'} for the same component failure.
+	const derivedAvailability = await getAvailabilityStatus();
+
 	const summary: AllStatusSummary = {
-		systemStatus: statusRecords as Promise<AsyncIterable<StatusRecord>>,
+		systemStatus: resolveAvailabilityInStream(
+			getStatusTable().search([]) as AsyncIterable<StatusRecord>,
+			derivedAvailability
+		) as unknown as Promise<AsyncIterable<StatusRecord>>,
 		componentStatus: componentStatusArray,
 		restartRequired,
 	};
@@ -169,30 +176,48 @@ async function getAllStatus(includeMiddleware = false): Promise<AllStatusSummary
 	return summary;
 }
 
+// Yield the stored status records, but substitute the resolved availability value (see
+// getAvailabilityStatus) for the raw availability record, appending it when no record is stored.
+async function* resolveAvailabilityInStream(
+	records: AsyncIterable<StatusRecord>,
+	availability: StatusRecord<'availability'> | undefined
+): AsyncIterable<StatusRecord> {
+	let sawAvailability = false;
+	for await (const record of records) {
+		if (record?.id === 'availability') {
+			sawAvailability = true;
+			yield (availability ?? record) as StatusRecord;
+		} else yield record;
+	}
+	if (!sawAvailability && availability) yield availability as StatusRecord;
+}
+
 /**
- * The availability status routing (GTM) consults, combining the operator-owned record with
- * live component health (#3184): an operator's Unavailable always wins, otherwise the node
- * reads Unavailable while any component is in error. Derived at read time so a component that
- * recovers heals on its own and no automatic write can clobber an operator drain; validation
- * failures divert to the sink, never the live registry, so a candidate cannot drain the node.
+ * The availability status routing (GTM) consults, combining the operator-owned record with live
+ * component health (#3184): an operator's Unavailable always wins, otherwise the node reads
+ * Unavailable while any component is in error. Derived at read time so a component that recovers
+ * heals on its own and no automatic write can clobber an operator drain; validation failures divert
+ * to the sink, never the live registry, so a candidate cannot drain the node.
  *
- * Health comes from the all-threads aggregate, not this thread's registry: get_status runs on
- * the operations thread, which loads with isWorker=false and never runs handleApplication, so
- * a wedged worker's load failure is only visible in the cross-thread aggregate. The aggregate
- * reports a component in error when any thread does.
+ * Component health comes from the shared cross-thread signal (componentHealth), not this thread's
+ * registry: get_status runs on the operations thread, which loads with isWorker=false and never runs
+ * handleApplication, so a wedged worker's load failure is invisible here. Each thread publishes its
+ * own error state into that shared signal as its registry changes, so this read is local with no
+ * cross-thread round trip per poll.
  */
 async function getAvailabilityStatus(): Promise<StatusRecord<'availability'> | undefined> {
 	const record = (await getStatusTable().get('availability')) as StatusRecord<'availability'> | undefined;
 	if (record?.status === 'Unavailable') return record;
-	const aggregated = await statusInternal.query.allThreads();
-	const failed = Array.from(aggregated.values()).filter(
-		(component) => component.status === statusInternal.COMPONENT_STATUS_LEVELS.ERROR
-	);
-	if (failed.length === 0) return record;
+	if (!anyThreadHasComponentError()) return record;
+	// The shared signal is a per-thread boolean, so it cannot name components on other threads; name
+	// the ones this thread can see, and fall back to a generic message for a worker-only failure.
+	const local = statusInternal.componentStatusRegistry
+		.getComponentsByStatus(statusInternal.COMPONENT_STATUS_LEVELS.ERROR)
+		.map(({ name }) => name);
 	return {
 		id: 'availability',
 		status: 'Unavailable',
-		message: `Component failure: ${failed.map((component) => component.componentName).join(', ')}`,
+		message: local.length ? `Component failure: ${local.join(', ')}` : 'A component failed to load',
 	};
 }
 
