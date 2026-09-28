@@ -443,11 +443,14 @@ For deploying from private repositories, SSH keys must be registered on the Harp
 #### `add_ssh_key`
 
 - `name` _(required)_ — Key name
-- `key` _(required)_ — Private key contents, with `\n` for line breaks. An unencrypted OpenSSH or PEM private key (Ed25519, ECDSA, or RSA of at least 1024 bits); a key ssh couldn't use is refused — see [what `key` must be](../operations-api/operations.md#what-key-host-and-hostname-must-be)
-- `host` _(required)_ — Host alias for SSH config (used in `package` URL); one alias, not a pattern, with no spaces, quotes or `=`
-- `hostname` _(required)_ — Actual domain (e.g., `github.com`); no spaces, quotes or `=`
+- `key` <VersionBadge type="changed" version="v5.3.0" /> _(required unless `generate` is `true`)_ — Private key contents, with `\n` for line breaks: an unencrypted OpenSSH or PEM private key (Ed25519, ECDSA, or RSA of at least 1024 bits)
+- `generate` <VersionBadge version="v5.2.4" /> _(optional)_ — `true` to have Harper mint an ed25519 keypair in place of `key`, returning only the public key; see [Server-side key generation](../operations-api/operations.md#server-side-key-generation-generate)
+- `host` <VersionBadge type="changed" version="v5.3.0" /> _(required)_ — Host alias for SSH config (used in `package` URL): a single alias, not a pattern
+- `hostname` <VersionBadge type="changed" version="v5.3.0" /> _(required)_ — Actual domain (e.g., `github.com`)
 - `known_hosts` _(optional)_ — Public SSH keys of the host. Auto-retrieved for `github.com`
 - `replicated` _(optional)_ — Replicate to all cluster nodes
+
+A `key`, `host` or `hostname` that ssh couldn't use is refused with a `400` naming the problem; see [what `key`, `host` and `hostname` must be](../operations-api/operations.md#what-key-host-and-hostname-must-be).
 
 ```json
 {
