@@ -547,9 +547,23 @@ describe('calibration store and facade (#2841)', function () {
 
 	it('counts decisions read for fitting against the run budget', async () => {
 		await recordCases(models, 0, 30);
-		const run = await runCalibration({ maxDecisions: 20 });
+		const run = await runCalibration({ maxDecisions: 20, maxExamplesPerKey: 10 });
 		assert.strictEqual(run.scanned, 10);
 		assert.strictEqual(run.read, 10, 'fitting reads only what discovery left');
+		const short = await runCalibration({ maxDecisions: 20 });
+		assert.strictEqual(short.read, 0, 'a population whose sample does not fit what is left is deferred, not truncated');
+		assert.strictEqual(short.stoppedBy, 'maxDecisions');
+		assert.ok(short.pending >= 1);
+	});
+
+	it('never revokes a fit from a sample truncated by the decision budget', async () => {
+		await recordCases(models, 0, 300);
+		await models.calibrate();
+		assert.strictEqual((await warmDecide(models, 'case-1400')).calibrated, true);
+		const low = await runCalibration({ maxDecisions: 40 });
+		assert.strictEqual(low.written, 0, 'nothing is written from a partial read');
+		resetCalibrationCache();
+		assert.strictEqual((await warmDecide(models, 'case-1401')).calibrated, true, 'the fit still applies');
 	});
 
 	it('makes progress one decision at a time', async () => {

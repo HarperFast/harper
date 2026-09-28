@@ -664,6 +664,11 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 			break;
 		}
 		const outcome = await processPopulation(order[i], bytes);
+		if (outcome === 'deferred') {
+			result.stoppedBy ??= 'maxDecisions';
+			result.pending += order.length - i;
+			break;
+		}
 		if (outcome === 'budget') {
 			result.stoppedBy ??= 'maxBytes';
 			result.pending += order.length - i;
@@ -802,7 +807,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 	async function processPopulation(
 		found: Discovered,
 		baseBytes: number
-	): Promise<'done' | 'budget' | 'deadline' | 'failed'> {
+	): Promise<'done' | 'budget' | 'deadline' | 'failed' | 'deferred'> {
 		const { head } = found;
 		const schema = head.schema;
 		let perKey: Array<{
@@ -838,6 +843,11 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 			} catch {}
 			return 'failed';
 		}
+		const sample = Math.min(
+			config.maxExamplesPerKey,
+			Math.max(1, Math.floor((config.maxBytes - baseBytes) / EXAMPLE_OVERHEAD_BYTES))
+		);
+		if (allowance < sample) return 'deferred';
 		let rows: DecisionRow[];
 		let used = baseBytes;
 		let newestExpiry = 0;
@@ -848,11 +858,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 					conditions: [
 						{ attribute: 'populationRank', comparator: 'starts_with', value: `${head.population}|`, descending: true },
 					],
-					limit: Math.min(
-						config.maxExamplesPerKey,
-						allowance,
-						Math.max(1, Math.floor((config.maxBytes - baseBytes) / EXAMPLE_OVERHEAD_BYTES))
-					),
+					limit: sample,
 				})) {
 					out.push(row);
 				}
