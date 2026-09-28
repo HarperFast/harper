@@ -64,6 +64,10 @@ const EXCLUDED = [
 	// `after each` dies with an uncaught `EPERM: operation not permitted, watch` out
 	// of `FSWatcher._handle.onchange`. 39 passing / 2 failing; reproduces on `main`.
 	'unitTests/components/EntryHandler.test.js',
+	// Its loadComponent calls install the same chokidar watcher; on Windows the watcher
+	// leaks that EPERM into a later suite's hook (done() called multiple times). The
+	// derivation and loader-failure behaviour are covered on Linux.
+	'unitTests/components/componentFailureAvailability.test.js',
 
 	// --- Hangs, never exits (leaked handle) ----------------------------------------
 	// Both produce no output at all and have to be killed rather than failing an
