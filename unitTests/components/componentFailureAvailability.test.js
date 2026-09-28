@@ -27,6 +27,7 @@ const { waitFor } = require('../waitFor.js');
 const PLUGIN_NAME = 'availabilityProbePlugin';
 const THROWING_APP = 'availability-throwing-app';
 const HANGING_APP = 'availability-hanging-app';
+const PACKAGE_APP = 'availability-package-app';
 // Long enough that the throwing app never brushes its timeout, short enough that the hanging
 // app's load settles quickly through withDeployAwareTimeout's rejection.
 const THROWING_APP_TIMEOUT_MS = 30000;
@@ -118,6 +119,34 @@ describe('availability status after component load failure', () => {
 			'Available',
 			'with no failed components the operator record is served as written'
 		);
+	});
+
+	// A root-config package application loads through the same nested path as a sub-component (it is
+	// handed an application scope), but it is a top-level application and its appName matches its own
+	// directory. Its whole-application failure must still be recorded and drain the node; only a real
+	// nested sub-component (whose inherited appName differs from its directory) is excluded from the
+	// application status key.
+	it('a package-style top-level failure (has an application scope, appName matches its directory) still drains', async () => {
+		await seedInRotation();
+		const dir = path.join(tempRoot, PACKAGE_APP);
+		mkdirSync(dir, { recursive: true });
+		// branchedDatabases in a non-root component's own config is a whole-application load failure
+		// (thrown before the plugin loop), so it exercises loadComponent's outer catch.
+		writeFileSync(path.join(dir, 'config.yaml'), 'branchedDatabases:\n  - data\n');
+		await loadComponent(dir, resources, 'test-origin', {
+			isRoot: false,
+			appName: PACKAGE_APP,
+			applicationScope: { runtimeRoot: dir },
+		});
+		assert.strictEqual(
+			statusInternal.componentStatusRegistry.getStatus(PACKAGE_APP)?.status,
+			'error',
+			'a top-level package application must record its whole-application failure, not be excluded as if nested'
+		);
+		await waitFor(async () => (await status.get({ id: 'availability' }))?.status === 'Unavailable', {
+			timeout: 5000,
+			message: 'a failed package application must drain the node',
+		});
 	});
 });
 

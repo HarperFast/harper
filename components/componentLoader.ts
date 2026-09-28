@@ -826,10 +826,13 @@ export async function loadComponent(
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
 	// The application's own top-level status key, given a full lifecycle below so a whole-application
 	// failure (the outer catch) drains availability yet a later successful reload heals it (#3184).
-	// Declared out here so the catch can see it. Only the top-level application load owns this key:
-	// root has no single owning application, and nested loads inherit the same appName, so letting
-	// them touch it would have an enclosing load's success overwrite a nested load's failure.
-	const appStatusKey = isRoot || options.applicationScope ? undefined : (appName ?? basename(componentDirectory));
+	// Declared out here so the catch can see it. Only the top-level application load owns this key: a
+	// load is top-level when it has no inherited appName (a directory-scanned app) or its appName
+	// matches its own directory (a root-config package application). A nested sub-component inherits
+	// the parent's appName, which differs from its own directory, so it is excluded and cannot
+	// overwrite the parent's status. Root has no single owning application.
+	const appDirName = basename(componentDirectory);
+	const appStatusKey = !isRoot && (appName === undefined || appName === appDirName) ? appDirName : undefined;
 	try {
 		let config;
 		let configPath = join(componentDirectory, 'harper-config.yaml'); // look for the specific harperdb-config.yaml first
