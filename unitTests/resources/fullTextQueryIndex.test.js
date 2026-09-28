@@ -3,6 +3,7 @@ const assert = require('node:assert');
 const { toBufferKey } = require('ordered-binary');
 const { waitFor } = require('../waitFor');
 const { publishDerivedIndexReadiness } = require('#src/resources/derivedIndexRuntime');
+const { searchByIndex } = require('#src/resources/search');
 const {
 	FullTextQueryIndex,
 	fullTextComparatorMode,
@@ -575,6 +576,45 @@ describe('FullTextQueryIndex', () => {
 		assert(coverageTimeout > 0);
 		assert(coverageTimeout < 1000);
 		await index.close();
+	});
+
+	it('settles a waiting index search abandoned before its first result', async () => {
+		const operationSettled = Promise.withResolvers();
+		const customIndex = {
+			filePrimary: true,
+			search(_condition, context) {
+				return context.indexSearchStart
+					.then(() => {
+						context.signal.throwIfAborted();
+						return [];
+					})
+					.finally(operationSettled.resolve);
+			},
+		};
+		const Table = {
+			attributes: [],
+			fullTextIndexes: [{ name: 'catalogSearch' }],
+			fullTextQueryIndexes: { catalogSearch: { customIndex } },
+			primaryKey: 'id',
+			primaryStore: {},
+		};
+		const results = searchByIndex(
+			{
+				attribute: 'catalogSearch',
+				comparator: 'matches',
+				value: 'shoe',
+				waitForIndexMilliseconds: 1000,
+			},
+			undefined,
+			false,
+			Table,
+			{ context: {} }
+		);
+		await results.iterate({ async: true }).return();
+		await Promise.race([
+			operationSettled.promise,
+			new Promise((_, reject) => setTimeout(() => reject(new Error('abandoned index search did not settle')), 250)),
+		]);
 	});
 
 	it('keeps coverage-only publication off the data-freshness path', async () => {

@@ -827,7 +827,10 @@ export function searchByIndex(
 						},
 						return(value?: any) {
 							closed = true;
-							if (!settled) controller?.abort();
+							if (!settled) {
+								start?.resolve();
+								controller?.abort();
+							}
 							iteratorPromise.then(
 								(inner) => (inner as any).return?.(value),
 								() => {}

@@ -187,7 +187,13 @@ export class FullTextQueryIndex {
 				await context?.indexSearchStart;
 				context?.signal?.throwIfAborted();
 				const waitDeadline = performance.now() + waitForIndexMilliseconds;
-				const host = this.#derivedHost ?? (await this.#waitForDerivedHost(waitForIndexMilliseconds, context?.signal));
+				let host = this.#derivedHost;
+				if (!host) {
+					const remaining = waitDeadline - performance.now();
+					if (remaining <= 0)
+						throw new DerivedIndexLagError('Timed out waiting for the local full-text query host; retry this query');
+					host = await this.#waitForDerivedHost(remaining, context?.signal);
+				}
 				const state = host?.readiness().state;
 				if (state !== 'ready')
 					throw new ServerError(
