@@ -288,15 +288,8 @@ async function processGraphQLSchema(
 					if (directive.name.value === 'splitSegments') typeDef.splitSegments = true;
 					if (directive.name.value === 'replicate') typeDef.replicate = true;
 					if (directive.name.value === 'hidden') typeDef.hidden = true;
-					if (directive.name.value === 'fullText') {
-						const definition: Record<string, unknown> = Object.create(null);
-						for (const arg of directive.arguments || []) {
-							if (Object.hasOwn(definition, arg.name.value))
-								throw new ClientError(`@fullText declares "${arg.name.value}" more than once`, 400);
-							definition[arg.name.value] = coerceDirectiveValue(arg.value);
-						}
-						typeDef.fullTextIndexes.push(definition);
-					}
+					if (directive.name.value === 'fullText')
+						throw new ClientError('@fullText must be declared on a FullText field', 400);
 					if (directive.name.value === 'export') {
 						typeDef.export = true;
 						for (const arg of directive.arguments) {

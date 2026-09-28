@@ -96,7 +96,6 @@ import { isProcessRunning } from '../utility/processManagement/processManagement
 import {
 	compileFullTextDefinitions,
 	compileFullTextFields,
-	migratePersistedFullTextValues,
 	persistedFullTextIndexNames,
 	reconcileFullTextIndexGenerations,
 	type FullTextDefinition,
@@ -3640,7 +3639,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			if (
 				(persistedFullTextValues !== undefined && (rootStore instanceof RocksDatabase || fullTextIndexesExplicit)) ||
 				persistedPrimary.descriptor?.fullTextIndexRetirements !== undefined ||
-				persistedPrimary.descriptor?.fullTextFields !== undefined ||
+				(persistedPrimary.descriptor?.fullTextFields !== undefined &&
+					(rootStore instanceof RocksDatabase || fullTextIndexesExplicit || fullTextFields !== undefined)) ||
 				(fullTextFields !== undefined && (!Array.isArray(fullTextFields) || fullTextFields.length > 0)) ||
 				Table.fullTextIndexes?.length > 0 ||
 				(fullTextIndexesExplicit && (!Array.isArray(incomingFullTextValues) || incomingFullTextValues.length > 0))
@@ -3721,17 +3721,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							validationAttributes,
 							fullTextWarning
 						);
-					const retained = readPersistedFullTextFields(
-						persistedPrimary.descriptor?.fullTextFields,
-						persistedFullTextValues,
-						durableAttributes,
-						fullTextWarning
-					);
 					const requestedNames = new Set(names.map(({ name }) => name));
 					return compileFullTextFields(
-						fullTextFields === undefined ? retained.filter((name) => requestedNames.has(name)) : fullTextFields,
+						fullTextFields === undefined ? [...requestedNames] : fullTextFields,
 						names,
-						[...durableAttributes, ...validationAttributes]
+						validationAttributes
 					);
 				};
 
@@ -3755,8 +3749,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					fullTextPersistencePending = merged.changed;
 					activeFullTextIndexes = rootStore instanceof RocksDatabase && finalAudit ? merged.definitions : [];
 				} else if (origin === 'cluster') {
-					fullTextValuesForPersistence = migratePersistedFullTextValues(persistedFullTextValues);
-					fullTextPersistencePending = !definitionsEqual(fullTextValuesForPersistence, persistedFullTextValues);
+					fullTextValuesForPersistence = persistedFullTextValues;
 					activeFullTextIndexes =
 						rootStore instanceof RocksDatabase && finalAudit
 							? readPersistedFullTextDefinitions(persistedFullTextValues, validationAttributes, fullTextWarning)
@@ -3846,8 +3839,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							`Table '${databaseName}.${tableName}' must keep audit logging enabled while @fullText is declared`,
 							400
 						);
-					fullTextValuesForPersistence = migratePersistedFullTextValues(persistedFullTextValues);
-					fullTextPersistencePending = !definitionsEqual(fullTextValuesForPersistence, persistedFullTextValues);
+					fullTextValuesForPersistence = persistedFullTextValues;
 					activeFullTextIndexes = rootStore instanceof RocksDatabase && finalAudit ? retained : [];
 				}
 				fullTextFieldsForPersistence ??= validateFullTextFields(fullTextValuesForPersistence);
@@ -3972,7 +3964,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							fullTextWarning
 						)
 					: compileFullTextFields(
-							fullTextFields === undefined ? [] : fullTextFields,
+							fullTextFields === undefined ? persistedFullTextIndexNames(fullTextValuesForPersistence) : fullTextFields,
 							persistedFullTextIndexNames(fullTextValuesForPersistence).map((name) => ({ name })),
 							attributes
 						);

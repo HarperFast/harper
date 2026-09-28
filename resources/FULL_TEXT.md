@@ -18,7 +18,7 @@ type Product @table(audit: true) @export {
 }
 ```
 
-The field name, `catalogSearch`, identifies the index. Omit the directive's `name` argument on field declarations. Source order in the table declaration does not matter.
+The field name, `catalogSearch`, identifies the index. `@fullText` accepts no `name` argument and is supported only on a `FullText` field. Source order in the table declaration does not matter.
 
 Sources may be stored `String`, `[String]`, or `Blob` fields. A Blob source requires `mediaType: "text/plain"` in its `fields` entry. Computed fields, relationships, and other full-text fields cannot be sources. Weights must be positive finite numbers and default to `1`.
 
@@ -71,34 +71,21 @@ Indexes follow committed record changes asynchronously. `waitForIndexMillisecond
 
 ## Fields, permissions, and results
 
-`FullText` is declaration-only: `catalogSearch` has no stored or selectable record value. Ordinary GET results and record input/output schemas omit it. Selecting it, sorting on it, comparing it as an ordinary scalar, or writing it returns an error. Write protection also applies to unsealed tables and persists while the index is unavailable. Use `$score` and `$highlights` for search results.
+`FullText` is declaration-only: `catalogSearch` has no stored or selectable record value. Records written under this schema and record input/output schemas omit it. Selecting it, sorting on it, comparing it as an ordinary scalar, or writing it returns an error. New-write protection also applies to unsealed tables and persists while the index is unavailable. Use `$score` and `$highlights` for search results.
 
 Use the nullable `FullText` type exactly. Lists, non-null forms, and additional directives such as `@computed`, `@indexed`, or `@allow` are rejected. `FullText` without `@fullText` is also invalid.
 
 Authorization uses the searched source fields. A caller must be allowed to read every source searched by the condition; specifying `fields` narrows that set. Configure permissions on sources such as `title`, not on `catalogSearch`. A permission entry for the virtual index name does not grant access to its sources. Normal table authorization and application row filters still apply. Internal calls without a user or explicit permissions are trusted. Custom endpoints must preserve the authenticated context and set `checkPermission: true` when delegating to the table; context propagation alone does not request its table permission check.
 
-`describe_table` exposes the declaration under `full_text_indexes`, including its name, `field: true`, source configuration, supported query modes, and readiness. Source lists are filtered by the caller's read permissions. The declaration is absent from the ordinary `attributes` list and record schemas, including generated OpenAPI and MCP schemas.
+`describe_table` exposes the declaration under `full_text_indexes`, including its name, source configuration, supported query modes, and readiness. Source lists are filtered by the caller's read permissions. The declaration is absent from the ordinary `attributes` list and record schemas, including generated OpenAPI and MCP schemas.
 
-## Migrate an existing declaration
-
-The deprecated table-level form remains accepted:
-
-```graphql
-type Product @table(audit: true) @export @fullText(name: "catalogSearch", fields: [{ name: "title", weight: 3 }]) {
-	id: ID @primaryKey
-	title: String
-}
-```
-
-Move the directive onto `catalogSearch: FullText` and remove its `name` argument. Preserve the index name and all source/analyzer options. Do not leave both declarations in place: duplicate index names are rejected.
-
-Changing only declaration placement preserves the existing persisted index generation. Weight and highlighting changes also preserve the physical index; changes to sources, analyzer settings, synonyms, positions, or surface terms require rebuilding. Renaming the index creates a new identity.
-
-Resolve any existing stored attribute named `catalogSearch` before adopting the field form. Legacy table-level declarations preserve their existing name-collision behavior; the field form reserves its name against stored data.
+Weight and highlighting changes preserve the physical index; changes to sources, analyzer settings, synonyms, positions, or surface terms require rebuilding. Renaming the index creates a new identity.
 
 ## Native package and limits
 
 Harper pins `@harperfast/fulltext` to **0.3.0** and validates the native runtime capabilities before activation. Full-text activation requires RocksDB and explicit `@table(audit: true)`; keep audit logging enabled while an index is declared. LMDB is rejected. A missing or incompatible native package prevents activation.
+
+Earlier beta declarations and indexes are unsupported. This field-only API does not provide a compatibility or upgrade path for them.
 
 Native queries have finite result windows and execution budgets. Reduce the requested offset/limit or narrow the query when a window is exceeded; filtering can also exhaust the window. Prefix modes use the native autocomplete window. Highlight tracing has separate record and source-byte bounds. These are functional constraints, not catalog-scale performance guarantees.
 

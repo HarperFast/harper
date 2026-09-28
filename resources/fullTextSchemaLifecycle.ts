@@ -4,7 +4,6 @@ import {
 	compileFullTextDefinitions,
 	compileFullTextFields,
 	compileValidFullTextDefinitions,
-	migratePersistedFullTextDefinition,
 	persistedFullTextIndexNames,
 	sortFullTextDefinitions,
 	type FullTextDefinition,
@@ -51,7 +50,7 @@ export function mergePeerFullTextFields(
 	warn: FullTextWarning
 ): string[] {
 	const retained = readPersistedFullTextFields(persistedValues, persistedDefinitions, attributes, warn);
-	if (incomingValues === undefined) return retained;
+	if (incomingValues === undefined) incomingValues = persistedFullTextIndexNames(finalDefinitions);
 	let incoming: string[];
 	try {
 		incoming = compileFullTextFields(
@@ -113,7 +112,7 @@ export function mergePeerFullTextDefinitions(
 	for (const value of incomingValues) {
 		let incoming: FullTextDefinition;
 		try {
-			incoming = compileFullTextDefinition(migratePersistedFullTextDefinition(value), attributes);
+			incoming = compileFullTextDefinition(value, attributes);
 		} catch (error) {
 			if (!(error instanceof ClientError)) throw error;
 			warn(`Ignoring invalid peer @fullText declaration: ${error.message}`);

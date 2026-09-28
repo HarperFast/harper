@@ -1,6 +1,6 @@
 /**
  * Published fulltext 0.3.0 through deployed field declarations, Table.search and REST:
- * query modes, authorization, pagination, mutations, and durable syntax migration.
+ * query modes, authorization, pagination, mutations, restart, and index lifecycle.
  * https://github.com/HarperFast/harper/pull/2855
  */
 import { suite, test, before, after } from 'node:test';
@@ -147,7 +147,6 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		const description = await operation({ operation: 'describe_table', schema: 'data', table: 'Product' });
 		const index = description.full_text_indexes.find(({ name }) => name === 'catalogSearch');
 		assert.strictEqual(index.readiness.state, 'ready');
-		assert.strictEqual(index.field, true);
 		assert.deepStrictEqual(
 			index.fields.map(({ name }) => name),
 			['title', 'description', 'tags', 'content']
@@ -395,48 +394,39 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		await waitForIds(query('asteroid'), []);
 	});
 
-	test('preserves generation across legacy-to-field migration and protects declarations after restart', async () => {
-		await request('/LegacyProduct/legacy', { method: 'PUT', body: JSON.stringify({ title: 'Legacy migration' }) }, 204);
-		await waitForReady('LegacyProduct');
-		const legacyQuery = query('migration');
-		await request('/LegacyProduct/', { method: 'QUERY', body: JSON.stringify(legacyQuery) });
+	test('preserves index generation and physical paths and protects declarations after restart', async () => {
+		await request(
+			'/LifecycleProduct/lifecycle',
+			{ method: 'PUT', body: JSON.stringify({ title: 'Original constellation' }) },
+			204
+		);
+		await waitForReady('LifecycleProduct');
+		const lifecycleQuery = query('constellation');
+		await request('/LifecycleProduct/', { method: 'QUERY', body: JSON.stringify(lifecycleQuery) });
 		const beforeRestart = await request('/FullTextState/');
-		assert.strictEqual(typeof beforeRestart.LegacyProduct.generations.catalogSearch, 'string');
+		assert.strictEqual(typeof beforeRestart.LifecycleProduct.generations.catalogSearch, 'string');
 		await killHarper(ctx);
-		const beforePaths = (await readdir(beforeRestart.LegacyProduct.storePath))
+		const beforePaths = (await readdir(beforeRestart.LifecycleProduct.storePath))
 			.filter((name) => name.endsWith('.fulltext'))
 			.sort();
 		assert.strictEqual(beforePaths.length, 2);
-		const deployedSchemaPath = join(ctx.harper.dataRootDir, 'components', 'full-text-search', 'schema.graphql');
-		const schema = await readFile(deployedSchemaPath, 'utf8');
-		const legacyDeclaration = '@fullText(name: "catalogSearch", fields: [{ name: "title", weight: 3 }])';
-		assert.ok(schema.includes(legacyDeclaration));
-		await writeFile(
-			deployedSchemaPath,
-			schema
-				.replace(legacyDeclaration, '')
-				.replace(
-					/(type LegacyProduct[\s\S]*title: String)/,
-					'$1\n\tcatalogSearch: FullText @fullText(fields: [{ name: "title", weight: 3 }])'
-				)
-		);
 		await startHarper(ctx, OPTIONS);
-		await waitForReady('LegacyProduct');
-		const legacy = await request('/LegacyProduct/', { method: 'QUERY', body: JSON.stringify(legacyQuery) });
-		assert.deepStrictEqual(ids(legacy), ['legacy']);
+		await waitForReady('LifecycleProduct');
+		const lifecycle = await request('/LifecycleProduct/', { method: 'QUERY', body: JSON.stringify(lifecycleQuery) });
+		assert.deepStrictEqual(ids(lifecycle), ['lifecycle']);
 		const afterRestart = await request('/FullTextState/');
-		assert.strictEqual(afterRestart.LegacyProduct.tableId, beforeRestart.LegacyProduct.tableId);
-		assert.deepStrictEqual(afterRestart.LegacyProduct.generations, beforeRestart.LegacyProduct.generations);
-		assert.strictEqual(afterRestart.LegacyProduct.storePath, beforeRestart.LegacyProduct.storePath);
+		assert.strictEqual(afterRestart.LifecycleProduct.tableId, beforeRestart.LifecycleProduct.tableId);
+		assert.deepStrictEqual(afterRestart.LifecycleProduct.generations, beforeRestart.LifecycleProduct.generations);
+		assert.strictEqual(afterRestart.LifecycleProduct.storePath, beforeRestart.LifecycleProduct.storePath);
 		assert.deepStrictEqual(
-			(await readdir(afterRestart.LegacyProduct.storePath)).filter((name) => name.endsWith('.fulltext')).sort(),
+			(await readdir(afterRestart.LifecycleProduct.storePath)).filter((name) => name.endsWith('.fulltext')).sort(),
 			beforePaths
 		);
 		assert.deepStrictEqual(afterRestart.Product.generations, beforeRestart.Product.generations);
-		assert.deepStrictEqual(afterRestart.LegacyProduct.fields, ['catalogSearch']);
+		assert.deepStrictEqual(afterRestart.LifecycleProduct.fields, ['catalogSearch']);
 		await waitForReady('Product');
 		await waitForIds(query('waterproof'), ['one', 'two']);
-		for (const table of ['Product', 'LegacyProduct']) {
+		for (const table of ['Product', 'LifecycleProduct']) {
 			await request(
 				`/${table}/shadow`,
 				{ method: 'PUT', body: JSON.stringify({ title: 'Shadow', catalogSearch: 'shadow' }) },
@@ -447,11 +437,11 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 
 	test('rebuilds changed sources under a renamed field and retires removed index storage', async () => {
 		await request(
-			'/LegacyProduct/legacy',
+			'/LifecycleProduct/lifecycle',
 			{ method: 'PATCH', body: JSON.stringify({ description: 'Replacement galaxy' }) },
 			204
 		);
-		const previous = (await request('/FullTextState/')).LegacyProduct;
+		const previous = (await request('/FullTextState/')).LifecycleProduct;
 		const nativePaths = async () =>
 			(await readdir(previous.storePath)).filter((name) => name.endsWith('.fulltext')).sort();
 		const previousPaths = await nativePaths();
@@ -466,31 +456,34 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		const sourceDeclaration = replacementDeclaration.replace('replacementSearch:', 'catalogSearch:');
 		await writeFile(schemaPath, schema.replace(fieldDeclaration, sourceDeclaration));
 		await startHarper(ctx, OPTIONS);
-		await waitForReady('LegacyProduct');
-		const changedSource = (await request('/FullTextState/')).LegacyProduct;
+		await waitForReady('LifecycleProduct');
+		const changedSource = (await request('/FullTextState/')).LifecycleProduct;
 		assert.deepStrictEqual(changedSource.fields, ['catalogSearch']);
 		assert.notStrictEqual(changedSource.generations.catalogSearch, previous.generations.catalogSearch);
 		assert.deepStrictEqual(await nativePaths(), previousPaths, 'source rebuild keeps its index-name-derived path');
-		const sourceRecords = await request('/LegacyProduct/', { method: 'QUERY', body: JSON.stringify(query('galaxy')) });
-		assert.deepStrictEqual(ids(sourceRecords), ['legacy']);
-		const formerSourceRecords = await request('/LegacyProduct/', {
+		const sourceRecords = await request('/LifecycleProduct/', {
 			method: 'QUERY',
-			body: JSON.stringify(query('migration')),
+			body: JSON.stringify(query('galaxy')),
+		});
+		assert.deepStrictEqual(ids(sourceRecords), ['lifecycle']);
+		const formerSourceRecords = await request('/LifecycleProduct/', {
+			method: 'QUERY',
+			body: JSON.stringify(query('constellation')),
 		});
 		assert.deepStrictEqual(formerSourceRecords, []);
 		await killHarper(ctx);
 		await writeFile(schemaPath, schema.replace(fieldDeclaration, replacementDeclaration));
 		await startHarper(ctx, OPTIONS);
-		await waitForReady('LegacyProduct');
+		await waitForReady('LifecycleProduct');
 		const replacementQuery = query('galaxy', { attribute: 'replacementSearch' });
-		const records = await request('/LegacyProduct/', { method: 'QUERY', body: JSON.stringify(replacementQuery) });
-		assert.deepStrictEqual(ids(records), ['legacy']);
-		const oldSource = await request('/LegacyProduct/', {
+		const records = await request('/LifecycleProduct/', { method: 'QUERY', body: JSON.stringify(replacementQuery) });
+		assert.deepStrictEqual(ids(records), ['lifecycle']);
+		const oldSource = await request('/LifecycleProduct/', {
 			method: 'QUERY',
-			body: JSON.stringify(query('migration', { attribute: 'replacementSearch' })),
+			body: JSON.stringify(query('constellation', { attribute: 'replacementSearch' })),
 		});
 		assert.deepStrictEqual(oldSource, []);
-		const renamed = (await request('/FullTextState/')).LegacyProduct;
+		const renamed = (await request('/FullTextState/')).LifecycleProduct;
 		assert.strictEqual(renamed.tableId, previous.tableId);
 		assert.deepStrictEqual(renamed.fields, ['replacementSearch']);
 		assert.strictEqual(renamed.generations.catalogSearch, undefined);
@@ -510,9 +503,9 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 		await killHarper(ctx);
 		await writeFile(schemaPath, schema.replace(fieldDeclaration, ''));
 		await startHarper(ctx, OPTIONS);
-		const description = await operation({ operation: 'describe_table', schema: 'data', table: 'LegacyProduct' });
+		const description = await operation({ operation: 'describe_table', schema: 'data', table: 'LifecycleProduct' });
 		assert.strictEqual(description.full_text_indexes, undefined);
-		const removed = (await request('/FullTextState/')).LegacyProduct;
+		const removed = (await request('/FullTextState/')).LifecycleProduct;
 		assert.deepStrictEqual(removed.fields, []);
 		assert.deepStrictEqual(removed.generations, {});
 		let remainingPaths: string[] = [];

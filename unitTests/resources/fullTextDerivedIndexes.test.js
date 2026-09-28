@@ -256,7 +256,7 @@ describe('@fullText derived-index activation', () => {
 		await assert.rejects(Product.clear(), /whole-table invalidation is crash-safe/);
 	});
 
-	rocksOnly('keeps ordinary attribute equality separate from a same-name full-text index', async () => {
+	rocksOnly('keeps ordinary source equality separate from full-text search', async () => {
 		Product = table({
 			database: `fulltext-query-routing-${Date.now()}`,
 			table: 'Product',
@@ -267,7 +267,7 @@ describe('@fullText derived-index activation', () => {
 			],
 			fullTextIndexes: [
 				{
-					name: 'title',
+					name: 'titleSearch',
 					fields: [{ name: 'title', weight: 1, highlight: true }],
 					analyzer: 'english@2',
 					stopWords: true,
@@ -278,7 +278,7 @@ describe('@fullText derived-index activation', () => {
 				},
 			],
 		});
-		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'title').state === 'ready', 30_000);
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'titleSearch').state === 'ready', 30_000);
 		const description = await describeTable({
 			database: Product.databaseName,
 			table: Product.tableName,
@@ -311,7 +311,7 @@ describe('@fullText derived-index activation', () => {
 		assert.strictEqual(binding.readerOpens.length, 0);
 
 		const matched = await collect(
-			Product.search({ conditions: [{ attribute: 'title', comparator: 'matches', value: 'shoe' }] })
+			Product.search({ conditions: [{ attribute: 'titleSearch', comparator: 'matches', value: 'shoe' }] })
 		);
 		assert.deepStrictEqual(
 			matched.map(({ id }) => id),
@@ -329,7 +329,7 @@ describe('@fullText derived-index activation', () => {
 					operator: 'and',
 					conditions: [
 						{
-							attribute: 'title',
+							attribute: 'titleSearch',
 							comparator: 'matches',
 							value: 'running',
 							waitForIndexMilliseconds: 1_000,
@@ -348,7 +348,7 @@ describe('@fullText derived-index activation', () => {
 		}
 		const [highlighted] = await collect(
 			Product.search({
-				conditions: [{ attribute: 'title', comparator: 'matches', value: 'shoe', includeHighlights: true }],
+				conditions: [{ attribute: 'titleSearch', comparator: 'matches', value: 'shoe', includeHighlights: true }],
 			})
 		);
 		assert.deepStrictEqual(highlighted.$highlights.title[0].spans, [{ start: 8, end: 12 }]);
@@ -356,7 +356,7 @@ describe('@fullText derived-index activation', () => {
 		positionalSelect.asArray = true;
 		const [selectedAsArray] = await collect(
 			Product.search({
-				conditions: [{ attribute: 'title', comparator: 'matches', value: 'shoe', includeHighlights: true }],
+				conditions: [{ attribute: 'titleSearch', comparator: 'matches', value: 'shoe', includeHighlights: true }],
 				select: positionalSelect,
 			})
 		);
@@ -367,14 +367,14 @@ describe('@fullText derived-index activation', () => {
 		nullSelect.forceNulls = true;
 		const [selectedWithNull] = await collect(
 			Product.search({
-				conditions: [{ attribute: 'title', comparator: 'matches', value: 'shoe', includeHighlights: true }],
+				conditions: [{ attribute: 'titleSearch', comparator: 'matches', value: 'shoe', includeHighlights: true }],
 				select: nullSelect,
 			})
 		);
 		assert.strictEqual(selectedWithNull.missing, null);
 		assert.deepStrictEqual(selectedWithNull.$highlights.title[0].spans, [{ start: 8, end: 12 }]);
 		const counted = await Product.search({
-			conditions: [{ attribute: 'title', comparator: 'matches', value: 'running' }],
+			conditions: [{ attribute: 'titleSearch', comparator: 'matches', value: 'running' }],
 			limit: 1,
 			count: 'exact',
 		});
@@ -384,8 +384,8 @@ describe('@fullText derived-index activation', () => {
 			Product.search({
 				operator: 'and',
 				conditions: [
-					{ attribute: 'title', comparator: 'matches', value: 'running' },
-					{ attribute: 'title', comparator: 'not_matches', value: 'jacket' },
+					{ attribute: 'titleSearch', comparator: 'matches', value: 'running' },
+					{ attribute: 'titleSearch', comparator: 'not_matches', value: 'jacket' },
 				],
 			})
 		);
@@ -395,13 +395,15 @@ describe('@fullText derived-index activation', () => {
 		);
 		await assert.rejects(
 			async () =>
-				collect(Product.search({ conditions: [{ attribute: 'title', comparator: 'not_matches', value: 'jacket' }] })),
+				collect(
+					Product.search({ conditions: [{ attribute: 'titleSearch', comparator: 'not_matches', value: 'jacket' }] })
+				),
 			/requires at least one non-negated condition/
 		);
 		assert.strictEqual(binding.readerOpens.length, 1);
 	});
 
-	rocksOnly('routes a full-text index that shares the primary-key name through Tantivy', async () => {
+	rocksOnly('routes nested full-text and record conditions through Tantivy', async () => {
 		Product = table({
 			database: `fulltext-primary-name-${Date.now()}`,
 			table: 'Product',
@@ -414,20 +416,20 @@ describe('@fullText derived-index activation', () => {
 			fullTextIndexes: [
 				{
 					...definition(),
-					name: 'id',
+					name: 'search',
 					fields: [{ name: 'title', weight: 1 }],
 				},
 			],
 		});
 		await Product.put('cheap', { title: 'Trail shoe', price: 50 });
 		await Product.put('premium', { title: 'Hiking shoe', price: 150 });
-		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'id').state === 'ready', 30_000);
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
 		const matched = await collect(
 			Product.search({
 				conditions: [
 					{
 						conditions: [
-							{ attribute: 'id', comparator: 'matches', value: 'shoe' },
+							{ attribute: 'search', comparator: 'matches', value: 'shoe' },
 							{ attribute: 'price', comparator: 'greater_than', value: 100 },
 						],
 					},
@@ -447,7 +449,7 @@ describe('@fullText derived-index activation', () => {
 							{
 								operator: 'or',
 								conditions: [
-									{ attribute: 'id', comparator: 'matches', value: 'shoe' },
+									{ attribute: 'search', comparator: 'matches', value: 'shoe' },
 									{ attribute: 'price', comparator: 'greater_than', value: 100 },
 								],
 							},

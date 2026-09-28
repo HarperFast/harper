@@ -10,183 +10,154 @@ function attributes() {
 		{ name: 'title', type: 'String' },
 	];
 }
-
 function definition(name = 'search') {
 	return { name, fields: [{ name: 'title', weight: 1 }] };
 }
-
 const rocksOnly = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
-
-rocksOnly('durable full-text field declarations', () => {
+rocksOnly('durable full-text declarations', () => {
 	let database;
 	let release;
 	let sequence = 0;
-
 	before(() => setupTestDBPath());
-
 	beforeEach(() => {
 		database = `fulltext-fields-${process.pid}-${Date.now()}-${sequence++}`;
 		release = suspendDerivedIndexActivation(openDatabase({ database }));
 	});
-
 	afterEach(async () => {
 		await closeDatabase(database);
 		release();
 	});
-
 	function declare(options = {}) {
 		return table({ database, table: 'Product', audit: true, attributes: attributes(), ...options });
 	}
-
 	function descriptor(Product) {
 		return Product.dbisDB.getSync('Product/');
 	}
+	function names(Product) {
+		return Product.fullTextIndexes.map(({ name }) => name);
+	}
 
-	it('persists virtual names outside the index definition and retains generation when adopting field syntax', () => {
+	it('persists the declaration without a stored attribute and retains its unchanged generation', () => {
 		let Product = declare({ fullTextIndexes: [definition()] });
 		const original = descriptor(Product);
-		Product = declare({ fullTextIndexes: [definition()], fullTextFields: ['search'] });
-		const adopted = descriptor(Product);
-		assert.deepStrictEqual(Product.fullTextFields, ['search']);
-		assert.deepStrictEqual(adopted.fullTextFields, ['search']);
-		assert.deepStrictEqual(adopted.fullTextIndexes, original.fullTextIndexes);
-		assert.deepStrictEqual(adopted.fullTextIndexGenerations, original.fullTextIndexGenerations);
-		assert.strictEqual(
-			Product.attributes.some(({ name }) => name === 'search'),
-			false
-		);
+		Product = declare({ fullTextIndexes: [definition()] });
+		assert.deepStrictEqual(descriptor(Product).fullTextIndexes, original.fullTextIndexes);
+		assert.deepStrictEqual(descriptor(Product).fullTextIndexGenerations, original.fullTextIndexGenerations);
+		assert.deepStrictEqual(names(Product), ['search']);
+		assert(!Product.attributes.some(({ name }) => name === 'search'));
 		assert.strictEqual(Product.dbisDB.getSync('Product/search'), undefined);
 	});
 
-	it('retains names on omitted programmatic options and removes them on explicit empty options', () => {
-		let Product = declare({ fullTextIndexes: [definition()], fullTextFields: ['search'] });
+	it('retains omitted indexes and removes declarations only when explicitly emptied', async () => {
+		let Product = declare({ fullTextIndexes: [definition()] });
 		const generation = Product.fullTextIndexGenerations.search;
 		Product = declare();
-		assert.deepStrictEqual(Product.fullTextFields, ['search']);
-		assert.deepStrictEqual(descriptor(Product).fullTextFields, ['search']);
-		Product = declare({ fullTextFields: [] });
-		assert.deepStrictEqual(Product.fullTextFields, []);
-		assert.deepStrictEqual(descriptor(Product).fullTextFields, []);
+		assert.deepStrictEqual(names(Product), ['search']);
 		assert.strictEqual(Product.fullTextIndexGenerations.search, generation);
-	});
-
-	it('filters retained names when their definitions are removed', () => {
-		let Product = declare({
-			fullTextIndexes: [definition(), definition('other')],
-			fullTextFields: ['search', 'other'],
-		});
-		Product = declare({ fullTextIndexes: [definition('other')] });
-		assert.deepStrictEqual(Product.fullTextFields, ['other']);
-		assert.deepStrictEqual(descriptor(Product).fullTextFields, ['other']);
+		await assert.rejects(async () => Product.put('one', { title: 'shoes', search: 'not writable' }), /query-only/);
 		Product = declare({ fullTextIndexes: [] });
-		assert.deepStrictEqual(Product.fullTextFields, []);
-		assert.deepStrictEqual(descriptor(Product).fullTextFields, []);
+		assert.deepStrictEqual(Product.fullTextIndexes, []);
+		assert.strictEqual(descriptor(Product).fullTextIndexes, undefined);
+		await Product.put('one', { title: 'shoes', search: 'ordinary dynamic value' });
+		assert.strictEqual((await Product.get('one')).search, 'ordinary dynamic value');
 	});
 
-	it('hydrates names after a schema reload and database reopen while preserving the storage generation', async () => {
-		let Product = declare({ fullTextIndexes: [definition()], fullTextFields: ['search'] });
+	it('updates reserved names when an index is removed', async () => {
+		let Product = declare({ fullTextIndexes: [definition(), definition('other')] });
+		Product = declare({ fullTextIndexes: [definition('other')] });
+		assert.deepStrictEqual(names(Product), ['other']);
+		await Product.put('one', { title: 'shoes', search: 'ordinary dynamic value' });
+		await assert.rejects(async () => Product.put('two', { title: 'shoes', other: 'not writable' }), /query-only/);
+	});
+
+	it('restores declarations and write guards after reload and database reopen', async () => {
+		let Product = declare({ fullTextIndexes: [definition()] });
 		const generation = Product.fullTextIndexGenerations.search;
-		Product.fullTextFields = [];
 		resetDatabases();
-		assert.deepStrictEqual(databases[database].Product.fullTextFields, ['search']);
+		Product = databases[database].Product;
+		assert.deepStrictEqual(names(Product), ['search']);
+		await assert.rejects(async () => Product.put('one', { title: 'shoes', search: 'not writable' }), /query-only/);
 		await closeDatabase(database);
 		release();
 		release = suspendDerivedIndexActivation(openDatabase({ database }));
 		resetDatabases();
 		Product = databases[database].Product;
-		assert.deepStrictEqual(Product.fullTextFields, ['search']);
+		assert.deepStrictEqual(names(Product), ['search']);
 		assert.strictEqual(Product.fullTextIndexGenerations.search, generation);
-		assert.deepStrictEqual(descriptor(Product).fullTextFields, ['search']);
+		await assert.rejects(async () => Product.put('two', { title: 'shoes', search: 'not writable' }), /query-only/);
 	});
 
-	it('retains names when the persisted index is temporarily unavailable', async () => {
-		const Product = declare({ fullTextIndexes: [definition()], fullTextFields: ['search'] });
+	it('protects declared names before the native query index is available', async () => {
+		const Product = declare({ fullTextIndexes: [definition()] });
+		assert(!Product.fullTextQueryIndexes.search);
+		await assert.rejects(async () => Product.put('one', { title: 'shoes', search: 'not writable' }), /query-only/);
+	});
+
+	it('keeps write guards when persisted audit eligibility disables the query index', async () => {
+		const Product = declare({ fullTextIndexes: [definition()] });
 		Product.dbisDB.putSync('Product/', { ...descriptor(Product), audit: false });
 		resetDatabases();
 		const reloaded = databases[database].Product;
 		assert.deepStrictEqual(reloaded.fullTextIndexes, []);
-		assert.deepStrictEqual(reloaded.fullTextFields, ['search']);
-		await assert.rejects(async () => reloaded.put('shadow', { id: 'shadow', title: 'valid', search: 'injected' }), {
-			statusCode: 400,
-		});
+		await assert.rejects(async () => reloaded.put('one', { title: 'shoes', search: 'not writable' }), /query-only/);
+		await assert.rejects(async () => reloaded.get({ id: 'one', select: ['search'] }), /query-only/);
 	});
 
-	it('rejects malformed field metadata before changing durable definitions or retiring an index', () => {
-		const Product = declare({ fullTextIndexes: [definition()], fullTextFields: ['search'] });
+	it('rejects malformed declarations without changing durable definitions', () => {
+		const Product = declare({ fullTextIndexes: [definition()] });
 		const original = descriptor(Product);
-		for (const fullTextFields of [null, 'search', [null], ['missing'], ['search', 'search']]) {
-			assert.throws(() => declare({ fullTextIndexes: [], fullTextFields }), { statusCode: 400 });
+		for (const fullTextIndexes of [null, 'search', [null], [definition(), definition()]]) {
+			assert.throws(() => declare({ fullTextIndexes }), { statusCode: 400 });
 			assert.deepStrictEqual(descriptor(Product), original);
-			assert.deepStrictEqual(Product.fullTextFields, ['search']);
 			assert.deepStrictEqual(Product.fullTextIndexes, original.fullTextIndexes);
 		}
 	});
 
-	it('rejects stored-field collisions atomically, including retained markers and primary keys', () => {
-		const Product = declare({ fullTextIndexes: [definition()], fullTextFields: ['search'] });
+	it('rejects current stored-attribute and primary-key collisions atomically', () => {
+		const Product = declare({ fullTextIndexes: [definition()] });
 		const original = descriptor(Product);
 		assert.throws(
 			() => declare({ attributes: [...attributes(), { name: 'search', type: 'String' }] }),
 			/stored attribute/
 		);
 		assert.deepStrictEqual(descriptor(Product), original);
-		assert.strictEqual(
-			Product.attributes.some(({ name }) => name === 'search'),
-			false
-		);
-		assert.throws(() => declare({ fullTextIndexes: [definition('id')], fullTextFields: ['id'] }), /stored attribute/);
+		assert(!Product.attributes.some(({ name }) => name === 'search'));
+		assert.throws(() => declare({ fullTextIndexes: [definition('id')] }), /stored attribute/);
 		assert.deepStrictEqual(descriptor(Product), original);
 	});
 
-	it('rejects replacing a durable stored attribute with a virtual field without discarding its data', async () => {
-		const Product = declare({ attributes: [...attributes(), { name: 'search', type: 'String' }] });
-		await Product.put('one', { title: 'trail shoes', search: 'stored value' });
-		const original = descriptor(Product);
-		assert.throws(() => declare({ fullTextIndexes: [definition()], fullTextFields: ['search'] }), /stored attribute/);
-		assert.deepStrictEqual(descriptor(Product), original);
-		assert.strictEqual((await Product.get('one')).search, 'stored value');
-		assert.deepStrictEqual(Product.fullTextFields, []);
-	});
-
-	it('validates names before publishing a table or pinning audit logging on an existing one', () => {
-		assert.throws(() => declare({ fullTextIndexes: [definition()], fullTextFields: null }), { statusCode: 400 });
+	it('validates declarations before publishing a table or enabling audit logging', () => {
+		assert.throws(() => declare({ fullTextIndexes: [definition('id')] }), { statusCode: 400 });
 		assert.strictEqual(databases[database]?.Product, undefined);
 		const Product = declare({ audit: false });
 		const original = descriptor(Product);
-		assert.throws(() => declare({ fullTextIndexes: [definition()], fullTextFields: ['missing'] }), { statusCode: 400 });
+		assert.throws(() => declare({ fullTextIndexes: [definition('id')] }), { statusCode: 400 });
 		assert.deepStrictEqual(descriptor(Product), original);
 		assert.strictEqual(Product.audit, false);
-		assert.deepStrictEqual(Product.fullTextFields, []);
+		assert.deepStrictEqual(Product.fullTextIndexes, []);
 	});
 
-	it('preserves local names when an older peer omits metadata or a peer sends an empty list', () => {
-		let Product = declare({ fullTextIndexes: [definition()], fullTextFields: ['search'] });
-		for (const options of [{}, { fullTextFields: [] }]) {
-			Product = declare({ origin: 'cluster', fullTextIndexes: [definition()], ...options });
-			assert.deepStrictEqual(Product.fullTextFields, ['search']);
-			assert.deepStrictEqual(descriptor(Product).fullTextFields, ['search']);
+	it('preserves local declarations when a peer omits or empties its index list', () => {
+		let Product = declare({ fullTextIndexes: [definition()] });
+		const original = descriptor(Product);
+		for (const options of [{}, { fullTextIndexes: [] }]) {
+			Product = declare({ origin: 'cluster', ...options });
+			assert.deepStrictEqual(names(Product), ['search']);
+			assert.deepStrictEqual(descriptor(Product).fullTextIndexes, original.fullTextIndexes);
 		}
 	});
 
-	it('accepts new peer fields while preserving existing local legacy declarations', () => {
+	it('accepts a new peer index without replacing the local declaration', () => {
 		let Product = declare({ fullTextIndexes: [definition()] });
-		Product = declare({
-			origin: 'cluster',
-			fullTextIndexes: [definition(), definition('peerSearch')],
-			fullTextFields: ['search', 'peerSearch'],
-		});
-		assert.deepStrictEqual(Product.fullTextFields, ['peerSearch']);
-		assert.deepStrictEqual(descriptor(Product).fullTextFields, ['peerSearch']);
+		Product = declare({ origin: 'cluster', fullTextIndexes: [definition(), definition('peerSearch')] });
+		assert.deepStrictEqual(names(Product), ['peerSearch', 'search']);
 	});
 
-	it('ignores peer stored attributes that conflict with a local virtual declaration', () => {
-		let Product = declare({ fullTextIndexes: [definition()], fullTextFields: ['search'] });
+	it('ignores peer stored attributes that conflict with a local declaration', () => {
+		let Product = declare({ fullTextIndexes: [definition()] });
 		Product = declare({ origin: 'cluster', attributes: [...attributes(), { name: 'search', type: 'String' }] });
-		assert.deepStrictEqual(Product.fullTextFields, ['search']);
-		assert.strictEqual(
-			Product.attributes.some(({ name }) => name === 'search'),
-			false
-		);
+		assert.deepStrictEqual(names(Product), ['search']);
+		assert(!Product.attributes.some(({ name }) => name === 'search'));
 		assert.strictEqual(Product.dbisDB.getSync('Product/search'), undefined);
 	});
 });

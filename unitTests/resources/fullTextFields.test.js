@@ -3,26 +3,18 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
-const { compileFullTextFields } = require('#src/resources/fullTextSchema');
+const { compileFullTextDefinitions } = require('#src/resources/fullTextSchema');
 const { getDatabases } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { deriveCreateSchema, deriveSearchSchema } = require('#src/components/mcp/tools/schemas/derive');
 
 describe('full-text field names', () => {
-	it('validates virtual names without changing legacy index names', () => {
-		const definitions = [{ name: 'title' }, { name: 'search' }];
+	it('rejects index names that conflict with current stored attributes', () => {
 		const attributes = [{ name: 'title', type: 'String' }];
-		assert.deepStrictEqual(compileFullTextFields([], definitions, attributes), []);
-		assert.deepStrictEqual(compileFullTextFields(['search'], definitions, attributes), ['search']);
-		for (const [names, pattern] of [
-			[null, /must be a list/],
-			[[''], /non-empty/],
-			[['search', 'search'], /more than once/],
-			[['missing'], /requires a declared/],
-			[['title'], /conflicts with a stored attribute/],
-		]) {
-			assert.throws(() => compileFullTextFields(names, definitions, attributes), pattern);
-		}
+		assert.throws(
+			() => compileFullTextDefinitions([{ name: 'title', fields: [{ name: 'title' }] }], attributes),
+			/stored attribute/
+		);
 	});
 });
 
@@ -40,7 +32,6 @@ rocksDescribe('FullText field declarations', () => {
 			}
 		`);
 		const Product = getDatabases().fulltext_fields.VirtualSearchProduct;
-		assert.deepStrictEqual(Product.fullTextFields, ['catalogSearch']);
 		assert.strictEqual(Product.fullTextIndexes[0].name, 'catalogSearch');
 		assert.strictEqual(Product.fullTextIndexes[0].fields[0].weight, 3);
 		assert(!Product.attributes.some(({ name }) => name === 'catalogSearch'));
@@ -74,7 +65,7 @@ rocksDescribe('FullText field declarations', () => {
 		['search: FullText @fullText(fields: [{ name: "title" }])', /only supported on a @table type/, ''],
 		[
 			'search: FullText @fullText(fields: [{ name: "title" }])',
-			/declared more than once/,
+			/must be declared on a FullText field/,
 			'@table(audit: true) @fullText(name: "search", fields: [{ name: "title" }])',
 		],
 	]) {

@@ -33,7 +33,7 @@ export class FullTextState extends Resource {
 
 	get() {
 		return Object.fromEntries(
-			['Product', 'LegacyProduct'].map((name) => {
+			['Product', 'LifecycleProduct'].map((name) => {
 				const Table = tables[name];
 				return [
 					name,
@@ -41,7 +41,7 @@ export class FullTextState extends Resource {
 						tableId: Table.tableId,
 						generations: Table.fullTextIndexGenerations,
 						storePath: Table.primaryStore.rootStore.path,
-						fields: Table.fullTextFields,
+						fields: Table.fullTextIndexes.map(({ name }) => name),
 						attributes: Table.attributes.map(({ name }) => name),
 						properties: Table.properties,
 					},
