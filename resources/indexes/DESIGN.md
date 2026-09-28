@@ -480,9 +480,11 @@ until every active token is cleared by its matching resume or completed readines
 cannot clear a newer token. A worker with no query index on the path retains no token because it has
 no reader to fence, and any later attachment remains gated by its generation's shared readiness.
 After the last local attachment for a superseded readiness id drains and unregisters, Harper clears
-that id's exact-epoch token from surviving readers on the path; a duplicate attachment for the same
-readiness id keeps the fence. This closes both handoff directions without assuming an ordering between
-generation-local epochs. If the native
+that id's exact-epoch token from surviving readers on the path. A delayed pause is accepted only while
+an attachment for that readiness id remains registered, so a retired generation cannot reinstall its
+fence on a successor. Closing attachments remain registered until their readers drain, and a duplicate
+attachment for the same readiness id keeps the fence. This closes both handoff directions without
+assuming an ordering between generation-local epochs. If the native
 reader violates its contract by rejecting close, Harper logs the failure and proceeds with reset
 rather than wedging the path indefinitely; the reset therefore assumes that rejected handle is dead.
 

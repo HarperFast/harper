@@ -255,7 +255,9 @@ export class FullTextQueryIndex {
 
 	async close(): Promise<void> {
 		this.#closed = true;
-		this.#publicationSubscription?.close();
+		const publicationSubscription = this.#publicationSubscription;
+		this.#publicationSubscription = undefined;
+		publicationSubscription?.close();
 		const retirement = this.#retireAllReaders();
 		void retirement.then(
 			() => this.#unregister(),
@@ -266,6 +268,10 @@ export class FullTextQueryIndex {
 			(this.#maxSearchBudgetMilliseconds ?? 30_000) + READER_DRAIN_GRACE_MILLISECONDS,
 			() => new ServerError('Full-text reader drain did not settle before timeout', 503)
 		);
+	}
+
+	hasReadinessId(readinessId: string): boolean {
+		return this.#options.readinessId === readinessId;
 	}
 
 	async pause(readinessId: string, ownerEpoch: bigint): Promise<void> {
@@ -752,6 +758,7 @@ export async function pauseNativeFullTextQueryReaders(
 ): Promise<void> {
 	const indexes = queryIndexesByPath.get(path);
 	if (!indexes || indexes.size === 0) return;
+	if (![...indexes].some((index) => index.hasReadinessId(readinessId))) return;
 	let pauses = pausedQueryPaths.get(path);
 	if (!pauses) pausedQueryPaths.set(path, (pauses = new Map()));
 	const current = pauses.get(readinessId);

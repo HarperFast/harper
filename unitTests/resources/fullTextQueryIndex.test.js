@@ -2028,6 +2028,7 @@ describe('FullTextQueryIndex', () => {
 		assert.match(closeError?.message, /reader drain did not settle/);
 		assert.strictEqual(closeError.statusCode, 503);
 		await close;
+		const replacement = readyQueryIndex(auditStore, 'replacement-readiness', storeName);
 		let pauseSettled = false;
 		const pause = pauseNativeFullTextQueryReaders(nativePath, 'replacement-readiness', 2n).then(() => {
 			pauseSettled = true;
@@ -2041,6 +2042,7 @@ describe('FullTextQueryIndex', () => {
 		resumeNativeFullTextQueryReaders(nativePath, 'replacement-readiness', 2n);
 		await waitFor(() => closes === 1);
 		await index.close();
+		await replacement.close();
 	});
 
 	it('does not let a native reader close failure reject lifecycle shutdown', async () => {
@@ -2673,6 +2675,23 @@ describe('FullTextQueryIndex', () => {
 		await currentIndex.close();
 	});
 
+	it('ignores a delayed pause after its generation attachment retires', async () => {
+		const auditStore = sharedStore();
+		const oldReadinessId = 'query-delayed-pause-old';
+		const currentReadinessId = 'query-delayed-pause-current';
+		const storeName = 'query-delayed-pause';
+		const path = nativeFullTextIndexPath('/unused', storeName);
+		const oldIndex = readyQueryIndex(auditStore, oldReadinessId, storeName);
+		const currentIndex = readyQueryIndex(auditStore, currentReadinessId, storeName);
+		const query = { attribute: currentReadinessId, comparator: 'matches', value: 'shoe' };
+
+		await oldIndex.close();
+		publishDerivedIndexReadiness(auditStore, oldReadinessId, 'rebuilding');
+		await pauseNativeFullTextQueryReaders(path, oldReadinessId, 1n);
+		assert.strictEqual((await currentIndex.search(query, {}, { minResults: 1 })).length, 1);
+		await currentIndex.close();
+	});
+
 	it('keeps a pause until every same-generation attachment retires', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'query-shared-generation-pause';
@@ -2720,6 +2739,14 @@ describe('FullTextQueryIndex', () => {
 		const storePath = '/unused';
 		const storeName = 'query-missed-resume';
 		const path = nativeFullTextIndexPath(storePath, storeName);
+		const pausedIndex = simpleQueryIndex({
+			auditStore,
+			readinessId: pausedReadinessId,
+			payload: publicationPayload(),
+			hits: () => [],
+			storeName,
+			sourceGeneration: pausedReadinessId,
+		}).index;
 		const index = new FullTextQueryIndex({
 			Table: {
 				tableId: 1,
@@ -2769,6 +2796,7 @@ describe('FullTextQueryIndex', () => {
 		);
 		publishDerivedIndexReadiness(auditStore, pausedReadinessId, 'ready');
 		assert.strictEqual((await index.search(query, {})).length, 1);
+		await pausedIndex.close();
 		await index.close();
 	});
 
