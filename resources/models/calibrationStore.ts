@@ -76,9 +76,13 @@ export type CalibrationBudgets = Pick<
 
 const BUDGET_KEYS = ['maxDecisions', 'maxPopulations', 'maxExamplesPerKey', 'maxBytes', 'maxRunMs'] as const;
 
-function budgetsOnly(budgets: CalibrationBudgets): CalibrationBudgets {
+function budgetsOnly(budgets: CalibrationBudgets, configured: Settings): CalibrationBudgets {
 	const out: CalibrationBudgets = {};
-	for (const key of BUDGET_KEYS) if (budgets[key] !== undefined) out[key] = budgets[key];
+	for (const key of BUDGET_KEYS) {
+		const value = budgets?.[key];
+		if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0)
+			out[key] = Math.min(value, configured[key]);
+	}
 	return out;
 }
 
@@ -124,7 +128,7 @@ export interface CalibrationRow extends Population {
 	applyUntil: number;
 	expiresAt: number;
 	eligible: boolean;
-	reason?: 'too-few-labels' | 'no-improvement';
+	reason?: 'too-few-labels' | 'no-improvement' | 'no-match-schema';
 	policy: FitPolicy;
 	policyDigest: string;
 	inputDigest: string;
@@ -138,6 +142,7 @@ interface PopulationHead extends Population {
 	id: string;
 	kind: 'population';
 	population: string;
+	owner: string;
 	schema: DecisionSchema;
 	lastFittedAt: number;
 	expiresAt: number;
@@ -197,6 +202,8 @@ export const CALIBRATION_ATTRIBUTES = [
 	{ name: 'evidenceAt', type: 'number' },
 	{ name: 'fittedAt', type: 'number' },
 	{ name: 'lastFittedAt', type: 'number', indexed: true },
+	{ name: 'owner', type: 'string', indexed: true },
+	{ name: 'boundary' },
 	{ name: 'before', type: 'number' },
 	{ name: 'applyUntil', type: 'number' },
 	{ name: 'expiresAt', expiresAt: true, indexed: true },
@@ -292,10 +299,16 @@ export function configureCalibration(
 			name: 'calibrate',
 			componentName: internalJobOwner(JOB_NAME),
 			intervalMs: settings.interval,
-			handler: () => runCalibration(),
+			handler: calibrationJob,
 		},
 	]);
 	startSchedulerEngine();
+}
+
+/** The scheduled run: a failed run fails the job, so the scheduler's state shows it. */
+export async function calibrationJob(): Promise<void> {
+	const run = await runCalibration();
+	if (run.status === 'failed') throw new Error(`calibration run failed: ${run.error}`);
 }
 
 function definedOnly(block: CalibrationConfig): CalibrationConfig {
@@ -328,7 +341,6 @@ function invalidate(keys: string[]): void {
 	}
 }
 
-/** Reads still unsettled, including ones whose load already timed out. */
 export function outstandingCalibrationReads(): number {
 	return outstandingReads;
 }
@@ -344,6 +356,10 @@ function logFault(what: string, err: unknown): void {
 	if (now - lastFaultLog < FAULT_LOG_INTERVAL_MS) return;
 	lastFaultLog = now;
 	log.warn?.(`models: ${what}: ${safeErrorMessage(err)}`);
+}
+
+function ownerOf(tenant: string | undefined): string {
+	return tenant == null ? 'none' : `t:${tenant}`;
 }
 
 function pad(n: number): string {
@@ -423,7 +439,6 @@ function isUsable(row: CalibrationRow | null | undefined, now: number): row is C
 	);
 }
 
-/** A usable fit when cached and fresh; otherwise undefined, after scheduling a load for next time. */
 function cachedFit(key: string, now: number): CalibrationRow | undefined {
 	const entry = cache.get(key);
 	if (entry && now - entry.loadedAt < CACHE_FRESH_MS) {
@@ -559,7 +574,8 @@ interface Discovered {
 
 async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<CalibrationRunResult> {
 	const now = deps.now ?? Date.now;
-	const config: Settings = { ...DEFAULTS, ...settings, ...budgetsOnly(budgets) };
+	const configured: Settings = { ...DEFAULTS, ...settings };
+	const config: Settings = { ...configured, ...budgetsOnly(budgets, configured) };
 	const policy = policyOf(config);
 	const digestOfPolicy = policyDigest(policy);
 	const started = now();
@@ -649,27 +665,34 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 	 * where the previous run stopped, so an older, quiet population is reached within a bounded number of runs.
 	 */
 	async function discover(): Promise<void> {
-		const newest = await scan(undefined, Math.ceil(config.maxDecisions / 2));
+		const newest = await scan(undefined, [], Math.ceil(config.maxDecisions / 2));
 		if (newest.fault || newest.stopped) return;
-		if (newest.end) return saveCursor(undefined);
-		let cursor: number | undefined;
+		if (newest.end) return saveCursor(undefined, []);
+		let cursor: { before?: unknown; boundary?: unknown } | undefined;
 		try {
-			cursor = (await transaction(freshContext(), () => store.get(CURSOR_ID)))?.before;
+			cursor = await transaction(freshContext(), () => store.get(CURSOR_ID));
 		} catch (err) {
 			logFault('calibration could not read its discovery cursor', err);
 		}
-		const from =
-			typeof cursor === 'number' && newest.before !== undefined && cursor < newest.before ? cursor : newest.before;
-		const rest = await scan(from, config.maxDecisions - result.scanned);
+		const saved = typeof cursor?.before === 'number' ? cursor.before : undefined;
+		const savedSeen = Array.isArray(cursor?.boundary) ? (cursor.boundary as string[]) : [];
+		const resume = saved !== undefined && newest.before !== undefined && saved <= newest.before;
+		const from = resume ? saved : newest.before;
+		const seen = !resume
+			? newest.boundary
+			: saved === newest.before
+				? [...new Set([...savedSeen, ...newest.boundary])]
+				: savedSeen;
+		const rest = await scan(from, seen, config.maxDecisions - result.scanned);
 		if (rest.fault) return;
 		if (result.scanned >= config.maxDecisions) result.stoppedBy ??= 'maxDecisions';
-		return saveCursor(rest.end ? undefined : rest.before);
+		return rest.end ? saveCursor(undefined, []) : saveCursor(rest.before, rest.boundary);
 	}
 
-	async function saveCursor(before: number | undefined): Promise<void> {
+	async function saveCursor(before: number | undefined, boundary: string[]): Promise<void> {
 		try {
 			await transaction(freshContext(), () =>
-				store.put({ id: CURSOR_ID, kind: 'cursor', before, expiresAt: now() + DECISION_RETENTION_MS })
+				store.put({ id: CURSOR_ID, kind: 'cursor', before, boundary, expiresAt: now() + DECISION_RETENTION_MS })
 			);
 		} catch (err) {
 			logFault('calibration could not save its discovery cursor', err);
@@ -678,11 +701,12 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 
 	async function scan(
 		start: number | undefined,
+		startSeen: string[],
 		budget: number
-	): Promise<{ before?: number; end: boolean; stopped: boolean; fault?: boolean }> {
+	): Promise<{ before?: number; boundary: string[]; end: boolean; stopped: boolean; fault?: boolean }> {
 		let before = start;
 		let taken = 0;
-		const seenAtBoundary = new Set<string>();
+		const seenAtBoundary = new Set<string>(start === undefined ? [] : startSeen);
 		while (true) {
 			let page: DecisionRow[];
 			try {
@@ -699,14 +723,14 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 				});
 			} catch (err) {
 				fail('discovering populations', err);
-				return { before, end: false, stopped: true, fault: true };
+				return { before, boundary: [...seenAtBoundary], end: false, stopped: true, fault: true };
 			}
-			if (page.length === 0) return { before, end: true, stopped: false };
+			if (page.length === 0) return { before, boundary: [...seenAtBoundary], end: true, stopped: false };
 			for (const row of page) {
-				if (taken >= budget) return { before, end: false, stopped: false };
+				if (taken >= budget) return { before, boundary: [...seenAtBoundary], end: false, stopped: false };
 				if (now() >= deadline) {
 					result.stoppedBy ??= 'maxRunMs';
-					return { before, end: false, stopped: true };
+					return { before, boundary: [...seenAtBoundary], end: false, stopped: true };
 				}
 				taken++;
 				result.scanned++;
@@ -718,12 +742,12 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 				if (!row.population || !row.signature || populations.has(row.population)) continue;
 				if (populations.size >= config.maxPopulations) {
 					result.stoppedBy ??= 'maxPopulations';
-					return { before, end: false, stopped: true };
+					return { before, boundary: [...seenAtBoundary], end: false, stopped: true };
 				}
 				const size = POPULATION_OVERHEAD_BYTES + canonicalJson(row.schema).length;
 				if (bytes + size > config.maxBytes) {
 					result.stoppedBy ??= 'maxBytes';
-					return { before, end: false, stopped: true };
+					return { before, boundary: [...seenAtBoundary], end: false, stopped: true };
 				}
 				bytes += size;
 				populations.set(row.population, {
@@ -732,6 +756,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 						id: `population/${row.population}`,
 						kind: 'population',
 						population: row.population,
+						owner: ownerOf(row.tenant),
 						tenant: row.tenant,
 						model: row.model,
 						entry: row.entry ?? `registered:${row.backend}`,
@@ -742,7 +767,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 					},
 				});
 			}
-			if (page.length < SCAN_PAGE) return { before, end: true, stopped: false };
+			if (page.length < SCAN_PAGE) return { before, boundary: [...seenAtBoundary], end: true, stopped: false };
 		}
 	}
 
@@ -753,18 +778,39 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 	): Promise<'done' | 'budget' | 'deadline' | 'failed'> {
 		const { head } = found;
 		const schema = head.schema;
-		const leaves: Array<[string | undefined, DecisionLeaf]> = isObjectSchema(schema)
-			? Object.entries(schema.properties)
-			: [[undefined, schema as DecisionLeaf]];
-		const perKey = leaves.map(([field, leaf]) => ({
-			field,
-			leaf,
-			values: allowedValues(leaf),
-			examples: [] as Array<Example & { at: number }>,
-			digester: inputDigester(),
-			evidenceAt: 0,
-			cutoff: 0,
-		}));
+		let perKey: Array<{
+			field: string | undefined;
+			values: readonly unknown[];
+			examples: Array<Example & { at: number }>;
+			digester: ReturnType<typeof inputDigester>;
+			evidenceAt: number;
+			cutoff: number;
+		}>;
+		let noMatchSchema: boolean;
+		try {
+			const leaves: Array<[string | undefined, DecisionLeaf]> = isObjectSchema(schema)
+				? Object.entries(schema.properties)
+				: [[undefined, schema as DecisionLeaf]];
+			perKey = leaves.map(([field, leaf]) => ({
+				field,
+				values: allowedValues(leaf),
+				examples: [],
+				digester: inputDigester(),
+				evidenceAt: 0,
+				cutoff: 0,
+			}));
+			noMatchSchema = hasNoMatchLeaf(schema);
+		} catch (err) {
+			result.failed++;
+			logFault('calibration found a malformed population', err);
+			try {
+				const touchedAt = now();
+				await transaction(freshContext(), () =>
+					store.put({ ...head, lastFittedAt: touchedAt, expiresAt: touchedAt + policy.maxAgeMs })
+				);
+			} catch {}
+			return 'failed';
+		}
 		let rows: DecisionRow[];
 		let used = baseBytes;
 		let newestExpiry = 0;
@@ -772,8 +818,9 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 			rows = await transaction(freshContext(), async () => {
 				const out: DecisionRow[] = [];
 				for await (const row of decisions.search({
-					conditions: [{ attribute: 'population', value: head.population }],
-					sort: { attribute: 'expiresAt', descending: true },
+					conditions: [
+						{ attribute: 'populationRank', comparator: 'starts_with', value: `${head.population}|`, descending: true },
+					],
 					limit: config.maxExamplesPerKey,
 				})) {
 					out.push(row);
@@ -848,7 +895,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 				const heldOutInSet = heldOut.filter((example) => example.truth !== NO_MATCH_TRUTH);
 				const enough = trainInSet.length >= policy.minTrain && heldOutInSet.length >= policy.minHeldOut;
 				let params: CalibrationParams | undefined;
-				if (enough) {
+				if (enough && !noMatchSchema) {
 					params = await fitCalibration(trainInSet, epsilon, deadline, now);
 					if (!params) return 'deadline';
 				}
@@ -880,7 +927,13 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 					};
 				}
 				const eligible = Boolean(params) && improves;
-				const reason: CalibrationRow['reason'] = !params ? 'too-few-labels' : improves ? undefined : 'no-improvement';
+				const reason: CalibrationRow['reason'] = noMatchSchema
+					? 'no-match-schema'
+					: !params
+						? 'too-few-labels'
+						: improves
+							? undefined
+							: 'no-improvement';
 				const t = params?.t ?? 1;
 				const id = fitId(keyId, inputDigest, policy, { t, epsilon, eligible, reason: reason ?? null });
 				if (previous?.id === id) {
@@ -888,11 +941,12 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 					continue;
 				}
 				const applyUntil = fittedAt + policy.maxAgeMs;
+				const evidenceAt = Math.max(key.evidenceAt, (previous?.evidenceAt ?? 0) + 1);
 				const row: CalibrationRow = {
 					id,
 					kind: 'fit',
 					key: keyId,
-					rank: rankOf(keyId, key.evidenceAt, fittedAt, id),
+					rank: rankOf(keyId, evidenceAt, fittedAt, id),
 					population: head.population,
 					field: key.field,
 					tenant: head.tenant,
@@ -904,7 +958,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 					t,
 					epsilon,
 					cutoff: key.cutoff,
-					evidenceAt: key.evidenceAt,
+					evidenceAt,
 					fittedAt,
 					applyUntil,
 					expiresAt: applyUntil + DECISION_RETENTION_MS,
@@ -921,6 +975,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 			}
 			const headRow: PopulationHead = {
 				...head,
+				owner: ownerOf(head.tenant),
 				lastFittedAt: fittedAt,
 				expiresAt: Math.max(newestExpiry, fittedAt + policy.maxAgeMs),
 			};
@@ -970,15 +1025,6 @@ export function processingOrder<P extends { head: { population: string }; lastFi
 	);
 }
 
-async function* heads(store: any): AsyncGenerator<PopulationHead> {
-	const found: PopulationHead[] = await transaction(freshContext(), async () => {
-		const out: PopulationHead[] = [];
-		for await (const row of store.search({ conditions: [{ attribute: 'kind', value: 'population' }] })) out.push(row);
-		return out;
-	});
-	yield* found;
-}
-
 /**
  * The newest version of every field of every population whose tenant equals the caller's, from the trusted
  * call context: absent matches only absent.
@@ -991,14 +1037,25 @@ export async function listCalibrations(
 	if (!store) return [];
 	const now = Date.now();
 	const out: CalibrationSummary[] = [];
-	for await (const head of heads(store)) {
+	const owned: PopulationHead[] = await transaction(freshContext(), async () => {
+		const rows: PopulationHead[] = [];
+		for await (const row of store.search({
+			conditions: [
+				{ attribute: 'owner', value: ownerOf(tenant) },
+				{ attribute: 'kind', value: 'population' },
+			],
+		}))
+			rows.push(row);
+		return rows;
+	});
+	for (const head of owned) {
 		if ((head.tenant ?? null) !== (tenant ?? null)) continue;
 		if (filter.model !== undefined && head.model !== filter.model) continue;
 		const fields: Array<string | undefined> = isObjectSchema(head.schema)
 			? Object.keys(head.schema.properties)
 			: [undefined];
-		for (const field of fields) {
-			const row = await readNewest(calibrationKey(head.population, field));
+		const newest = await Promise.all(fields.map((field) => readNewest(calibrationKey(head.population, field))));
+		for (const row of newest) {
 			if (!row) continue;
 			out.push({
 				model: row.model,

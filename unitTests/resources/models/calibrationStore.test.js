@@ -10,6 +10,7 @@ const { Models } = require('#src/resources/models/Models');
 const { getDecisionTables, resetDecisionTables } = require('#src/resources/models/decisionStore');
 const {
 	applyFits,
+	calibrationJob,
 	processingOrder,
 	configureCalibration,
 	getCalibrationsTable,
@@ -149,7 +150,10 @@ describe('calibration store and facade (#2841)', function () {
 			'the upgrade creates the table on an existing install'
 		);
 		const decisions = getDecisionTables().decisions;
-		assert.ok(decisions.attributes.find((a) => a.name === 'population')?.indexed, 'decisions are read by population');
+		assert.ok(
+			decisions.attributes.find((a) => a.name === 'populationRank')?.indexed,
+			'decisions are read newest first within a population'
+		);
 	});
 
 	it('fits from recorded outcomes and calibrates later decisions without changing their value', async () => {
@@ -508,6 +512,108 @@ describe('calibration store and facade (#2841)', function () {
 		} finally {
 			outcomes.get = get;
 		}
+	});
+
+	it('makes progress through the table even with a budget of two decisions', async () => {
+		await recordCases(models, 0, 20, { instructions: 'older population' });
+		await recordCases(models, 100, 20);
+		let reached = false;
+		for (let i = 0; i < 30 && !reached; i++) {
+			const run = await runCalibration({ maxDecisions: 2 });
+			assert.strictEqual(run.scanned, 2);
+			reached = (await models.getCalibrations()).some((summary) => summary.instructionsHash);
+		}
+		assert.ok(reached, 'the older population was reached two decisions at a time');
+	});
+
+	it('fails the scheduled job when its run fails', async () => {
+		await recordCases(models, 0, 30);
+		const { outcomes } = getDecisionTables();
+		const get = outcomes.get;
+		outcomes.get = function () {
+			throw new Error('outcome read failed');
+		};
+		try {
+			await assert.rejects(calibrationJob(), /calibration run failed/);
+		} finally {
+			outcomes.get = get;
+		}
+	});
+
+	it('lets a correction revoke a fit even when its facts carry an older time', async () => {
+		const ids = await recordCases(models, 0, 300);
+		await models.calibrate();
+		assert.strictEqual((await warmDecide(models, 'case-1300')).calibrated, true);
+		const { outcomes } = getDecisionTables();
+		await transaction({}, async () => {
+			for (const id of ids)
+				await outcomes.put({
+					id: `${id}/truth`,
+					decisionId: id,
+					fact: 'truth',
+					state: { kind: 'unknown' },
+					at: 1,
+					expiresAt: Date.now() + 86_400_000,
+				});
+		});
+		const run = await models.calibrate();
+		assert.strictEqual(run.written, 1);
+		resetCalibrationCache();
+		assert.strictEqual((await warmDecide(models, 'case-1301')).calibrated, false, 'the skewed correction still wins');
+	});
+
+	it('reports a population whose schema has a no-match leaf, and says why it is not applied', async () => {
+		const NM = { enum: VALUES, noMatch: true };
+		setDecision(
+			'default',
+			defineBackend({
+				name: 'nomatch',
+				noMatch: true,
+				decide: async (state) => ({
+					status: 'completed',
+					output: { distribution: distributionFor(state), noMatch: 0.1, signature: SIGNATURE },
+				}),
+			})
+		);
+		for (let i = 0; i < 300; i++) {
+			const d = await models.decide(`case-${i}`, NM, { persist: true });
+			await models.recordOutcome(d.id, { truth: { kind: 'value', value: truthOf(i) } });
+		}
+		await models.calibrate();
+		const [summary] = await models.getCalibrations();
+		assert.strictEqual(summary.eligible, false);
+		assert.strictEqual(summary.applied, false);
+		assert.strictEqual(summary.reason, 'no-match-schema');
+		assert.ok(summary.report.raw, 'its reliability is still reported');
+	});
+
+	it('lets a run lower its budgets but never raise them, and ignores invalid ones', async () => {
+		configureCalibration({ ...CONFIG, maxDecisions: 10 }, false);
+		await recordCases(models, 0, 30);
+		assert.strictEqual((await runCalibration({ maxDecisions: 1000 })).scanned, 10);
+		assert.strictEqual((await runCalibration({ maxDecisions: 4 })).scanned, 4);
+		assert.strictEqual((await runCalibration({ maxDecisions: '2', maxRunMs: 'x' })).scanned, 10);
+	});
+
+	it('contains a malformed population row and moves it to the back', async () => {
+		await recordCases(models, 0, 30);
+		await models.calibrate();
+		const tbl = getCalibrationsTable();
+		const bad = {
+			id: 'population/bad',
+			kind: 'population',
+			population: 'bad',
+			owner: 'none',
+			schema: 42,
+			lastFittedAt: 0,
+			expiresAt: Date.now() + 86_400_000,
+		};
+		await transaction({}, () => tbl.put(bad));
+		const run = await models.calibrate();
+		assert.strictEqual(run.failed, 1);
+		assert.strictEqual(run.status, 'failed');
+		const after = await transaction({}, () => tbl.get('population/bad'));
+		assert.ok(after.lastFittedAt > 0, 'it rotates to the back instead of blocking every run');
 	});
 
 	it('reports a discovery failure as a failed run and still processes known populations', async () => {

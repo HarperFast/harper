@@ -19,7 +19,7 @@ import {
 	listCalibrations,
 	runCalibration,
 } from './calibrationStore.ts';
-import { populationKey } from './calibration.ts';
+import { populationKey, populationRank } from './calibration.ts';
 import { safeErrorMessage } from '../scheduler/engine.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { getRouter, registerRouter as registerRouterImpl } from './routing.ts';
@@ -592,7 +592,10 @@ export class Models implements ModelsContract {
 		};
 		if (decision.noMatch !== undefined) row.noMatch = decision.noMatch;
 		if (calibration.entry !== undefined) row.entry = calibration.entry;
-		if (calibration.population !== undefined) row.population = calibration.population;
+		if (calibration.population !== undefined) {
+			row.population = calibration.population;
+			row.populationRank = populationRank(calibration.population, row.expiresAt, row.id);
+		}
 		if (calibration.applied) {
 			row.rawDistribution = calibration.applied.rawDistribution;
 			row.rawFields = calibration.applied.rawFields;

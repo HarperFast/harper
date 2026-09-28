@@ -54,6 +54,7 @@ export interface DecisionRow {
 	entry?: string;
 	/** The calibration population, for a decision whose score source is identified. */
 	population?: string;
+	populationRank?: string;
 }
 
 type Fact = 'truth' | 'action';
@@ -97,7 +98,8 @@ export const DECISION_ATTRIBUTES = [
 	{ name: 'rawFields' },
 	{ name: 'calibration' },
 	{ name: 'entry', type: 'string' },
-	{ name: 'population', type: 'string', indexed: true },
+	{ name: 'population', type: 'string' },
+	{ name: 'populationRank', type: 'string', indexed: true },
 ];
 
 export const OUTCOME_ATTRIBUTES = [

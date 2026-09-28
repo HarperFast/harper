@@ -64,7 +64,6 @@ export function setBackendSource(backend: ModelBackend, fingerprint: string): vo
 	sources.set(backend, fingerprint);
 }
 
-/** Undefined for a backend registered from code, whose score source Harper cannot identify. */
 export function getBackendSource(backend: ModelBackend): string | undefined {
 	return sources.get(backend);
 }

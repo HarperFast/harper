@@ -14,13 +14,11 @@ export const MAX_TEMPERATURE = 20;
 /** The `truth` of an example whose recorded truth is `noMatch`: counted by operational risk only. */
 export const NO_MATCH_TRUTH = -1;
 
-/** Temperature scaling, `p_i ∝ p'_i^(1/t)`, on the distribution smoothed by `epsilon`. */
 export interface CalibrationParams {
 	t: number;
 	epsilon: number;
 }
 
-/** A labelled example: the raw distribution in schema order and the index of the true value, or `NO_MATCH_TRUTH`. */
 export interface Example {
 	probabilities: number[];
 	truth: number;
@@ -84,6 +82,11 @@ export function populationKey(population: Population): string {
 		instructionsHash: population.instructionsHash ?? null,
 		schemaHash: population.schemaHash,
 	});
+}
+
+/** Orders a population's decisions newest first under one indexed prefix, so a run reads only the newest it needs. */
+export function populationRank(population: string, expiresAt: number, id: string): string {
+	return `${population}|${String(Math.max(0, Math.floor(expiresAt))).padStart(16, '0')}|${id}`;
 }
 
 export function calibrationKey(population: string, field: string | undefined): string {
@@ -207,7 +210,6 @@ function argmax(p: number[]): number {
 	return top;
 }
 
-/** The 95% Wilson upper bound on an error rate of `errors` in `count`. */
 export function wilsonUpper(errors: number, count: number): number | null {
 	if (count === 0) return null;
 	const p = errors / count;
