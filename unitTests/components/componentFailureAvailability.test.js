@@ -174,16 +174,19 @@ describe('availability derivation reads the all-threads aggregate', () => {
 		assert.strictEqual((await availability())?.status, 'Unavailable', 'an operator set_status Unavailable must win');
 	});
 
-	it('the no-id get_status response resolves availability the same way as the single-id read', async () => {
+	it('the no-id get_status response serializes availability the same way as the single-id read', async () => {
 		await status.set({ id: 'availability', status: 'Available' });
 		setAggregate([
 			['app.jsResource', { componentName: 'app.jsResource', status: 'error', lastChecked: { workers: {} } }],
 		]);
 		status.resetComponentHealthCache?.();
 		const all = await status.get({});
-		const records = [];
-		for await (const record of all.systemStatus) records.push(record);
-		const availabilityRecord = records.find((record) => record.id === 'availability');
+		// systemStatus is consumed over HTTP, so it must serialize to a JSON array of records. A bare
+		// async generator has no toJSON and serializes to {}, dropping every record including the
+		// derived availability, so assert on the serialized shape rather than in-process iteration.
+		const serialized = JSON.parse(JSON.stringify(all.systemStatus));
+		assert.ok(Array.isArray(serialized), 'systemStatus must serialize to an array of records, not {}');
+		const availabilityRecord = serialized.find((record) => record.id === 'availability');
 		assert.strictEqual(
 			availabilityRecord?.status,
 			'Unavailable',

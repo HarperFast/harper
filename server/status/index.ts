@@ -79,7 +79,7 @@ interface AggregatedComponentStatusWithName extends AggregatedComponentStatus {
 }
 
 interface AllStatusSummary {
-	systemStatus: Promise<AsyncIterable<StatusRecord>>;
+	systemStatus: StatusRecord[];
 	componentStatus: AggregatedComponentStatusWithName[];
 	restartRequired: boolean;
 	// Only present when the request opts in with `middleware: true`.
@@ -163,32 +163,26 @@ async function getAllStatus(includeMiddleware = false): Promise<AllStatusSummary
 	// response never contradicts get_status {id:'availability'} for the same component failure.
 	const derivedAvailability = await getAvailabilityStatus();
 
+	// Materialize the stored records into a plain array (not a generator): the serialized response
+	// relies on toJSON, which an async generator lacks, so a generator emits systemStatus:{} to HTTP
+	// callers. Substitute the derived availability for the stored record, appending it when none is stored.
+	const systemStatus: StatusRecord[] = [];
+	let sawAvailability = false;
+	for await (const record of getStatusTable().search([]) as AsyncIterable<StatusRecord>) {
+		if (record?.id === 'availability') {
+			sawAvailability = true;
+			systemStatus.push((derivedAvailability ?? record) as StatusRecord);
+		} else systemStatus.push(record);
+	}
+	if (!sawAvailability && derivedAvailability) systemStatus.push(derivedAvailability as StatusRecord);
+
 	const summary: AllStatusSummary = {
-		systemStatus: resolveAvailabilityInStream(
-			getStatusTable().search([]) as AsyncIterable<StatusRecord>,
-			derivedAvailability
-		) as unknown as Promise<AsyncIterable<StatusRecord>>,
+		systemStatus,
 		componentStatus: componentStatusArray,
 		restartRequired,
 	};
 	if (includeMiddleware) summary.middlewareChains = await getMiddlewareChains();
 	return summary;
-}
-
-// Yield the stored status records, but substitute the resolved availability value (see
-// getAvailabilityStatus) for the raw availability record, appending it when no record is stored.
-async function* resolveAvailabilityInStream(
-	records: AsyncIterable<StatusRecord>,
-	availability: StatusRecord<'availability'> | undefined
-): AsyncIterable<StatusRecord> {
-	let sawAvailability = false;
-	for await (const record of records) {
-		if (record?.id === 'availability') {
-			sawAvailability = true;
-			yield (availability ?? record) as StatusRecord;
-		} else yield record;
-	}
-	if (!sawAvailability && availability) yield availability as StatusRecord;
 }
 
 // Cached list of failed component names, so the availability read does not make a cross-thread
