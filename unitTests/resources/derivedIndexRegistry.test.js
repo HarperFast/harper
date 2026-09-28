@@ -114,7 +114,9 @@ describe('derived index registration tracking', () => {
 			const releaseWinner = await Promise.race(waiters);
 			await new Promise((resolve) => setTimeout(resolve, 20));
 			assert.strictEqual(acquired.length, 1);
-			assert.strictEqual(acquireFullTextRetirementFence(store, 'Product'), undefined);
+			const probe = acquireFullTextRetirementFence(store, 'Product');
+			probe?.();
+			assert.strictEqual(probe, undefined, 'the fence was free while a waiter held its lease');
 			releaseWinner();
 			const releaseLoser = await waiters[1 - acquired[0]];
 			assert.strictEqual(acquired.length, 2);

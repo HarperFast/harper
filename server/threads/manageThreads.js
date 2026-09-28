@@ -2024,9 +2024,7 @@ function addPort(port, keepRef, isJobWorker) {
 			}
 		})
 		.on('close', () => {
-			// A worker's parentPort closes because this worker is leaving, not because the main thread
-			// exited. Announcing thread 0 dead would make every sibling fail its pending acks to main and
-			// drop its own parentPort.
+			// A worker's parentPort closing is this worker leaving, not main exiting (server/DESIGN.md).
 			removePort(port, port === parentPort ? undefined : portThreadId);
 		})
 		.on('exit', () => {
