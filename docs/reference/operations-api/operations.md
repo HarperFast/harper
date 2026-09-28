@@ -888,7 +888,7 @@ Additional parameters:
 - `deployment_timeout` <VersionBadge version="v5.1.4" /> — how long, in milliseconds, a peer waits to receive the replicated deployment payload before failing (default: `120000`)
 - `ignore_replication_errors` <VersionBadge version="v5.1.4" /> — set to `true` to treat a peer that fails to receive the deploy as non-fatal instead of failing the whole operation. By default a failed peer causes `deploy_component` to return a non-2xx status; the component is still deployed (and, if requested, restarted) on the origin node.
 - `activate` <VersionBadge version="v5.3.0" /> — set to `false` to build and install the component without making it live. See [Staging a build and activating it later](#staging-a-build-and-activating-it-later).
-- `deployment_id` <VersionBadge version="v5.3.0" /> — make a previously staged build live. Takes no build inputs of its own.
+- `deployment_id` <VersionBadge version="v5.3.0" /> — make a staged build live, or return to a release a later deploy replaced. Takes no build inputs of its own. See [Going back to a previous release](#going-back-to-a-previous-release).
 
 `urlPath` and `host` both require `package` and are rejected on a payload-only deploy. To mount a payload-deployed component, add `host`/`urlPath` to its entry in the root `harper-config.yaml` instead.
 
@@ -950,21 +950,58 @@ That request takes no `package`, `payload`, `credentials`, install options, or `
 
 A few things worth knowing before you rely on it:
 
-- **Activation consumes the build.** The swap is a rename, so a deployment id can be activated once. Activating it again returns `404`.
-- **A staged build outlives later deploys, which is how you go back.** Staging a release keeps it available even if you deploy something else afterwards: stage v2, deploy v3, and activating v2's id later returns the component to v2. Only versions you staged can be returned to — an ordinary deploy leaves nothing behind to activate.
-- **Staged builds are bounded.** [`deployment.stagingRetention.maxCount`](../configuration/options.md#deployment) caps how many unactivated builds a component keeps (default `5`); the oldest are removed at the start of that component's next deploy and at startup. A build pruned before you activate it has to be staged again.
-- **A deployment id names one build.** Staging again with the same id is rejected rather than rebuilding over it, and the id stays bound to that build until it is activated or pruned.
+- **Activating the release that is already live succeeds and changes nothing.** A retry is therefore safe: see [Retrying an activation](#retrying-an-activation).
+- **A staged build outlives later deploys.** Stage v2, deploy v3, and activating v2's id later returns the component to v2.
+- **Builds that are not live are bounded.** [`deployment.stagingRetention.maxCount`](../configuration/options.md#deployment) caps how many a component keeps — staged builds and [replaced releases](#going-back-to-a-previous-release) together (default `5`). The oldest are removed at the start of that component's next deploy and at startup. A build pruned before you activate it has to be staged again.
+- **A deployment id names one release on a node for as long as the node holds it** — waiting, live, or kept after a later deploy replaced it. Staging again with the same id is rejected rather than rebuilding over it.
 - **`file:` directory sources cannot be staged.** A local-directory package is linked rather than copied, so the bytes could change between staging and activation. Deploy those normally.
 - **`restart` belongs on the activation, not the stage.** A stage changes nothing that is running, so `restart` is rejected alongside `activate: false`; pass it with `deployment_id` to restart as the new version goes live.
 - **Reclaiming the payload does not disable the artifact.** [`delete_deployment_payload`](#delete_deployment_payload) on a staged deployment frees the stored tarball; the build is already installed on disk, so its id still activates.
 
-A refused activation says which kind of refusal it is: `404` when nothing on that node answers to the id — it never existed, or it has already been activated or pruned — and `409` when the build is there but cannot be activated, such as one belonging to another component or one whose files changed after it was staged.
+A refused activation says which kind of refusal it is: `404` when nothing on that node answers to the id — it never existed there, it was pruned, or its release was replaced and not kept — and `409` when the build is there but cannot be activated, such as one belonging to another component or one whose files changed after it was staged.
 
 :::warning
 **Upgrade every node before staging.** A stage is replicated like any other deploy. A node still running a version before v5.3.0 does not recognize `activate: false`. It performs an ordinary deploy and serves the release immediately.
 
 The origin cannot detect this in advance, so it checks afterward. Any peer that does not confirm staging fails the operation with the node names. Check those nodes before activating. Pass `ignore_replication_errors: true` only if you have accepted that difference.
 :::
+
+#### Going back to a previous release
+
+<VersionBadge version="v5.3.0" />
+
+When a deploy replaces the release that is live, Harper keeps the replaced one under the `deployment_id` that deployed it. Activating that id puts it back, with no rebuild, resolve or install:
+
+```json
+{
+	"operation": "deploy_component",
+	"project": "my-app",
+	"deployment_id": "<id of the deployment you want back>",
+	"restart": true
+}
+```
+
+[`list_deployments`](#list_deployments) shows each deployment's id. The activation publishes the root config entry that deployment published, so a `package` release gets its `package` entry back and a `payload` release removes the one a later deploy added. The release it replaces is kept in turn, so you can go forward again the same way.
+
+- **Kept releases count against [`deployment.stagingRetention.maxCount`](../configuration/options.md#deployment)**, with staged builds. The most recently replaced ones are kept.
+- **Each kept release is a full installed copy of the component, `node_modules` included.** At the default of `5`, budget disk for up to five extra copies per component. `0` keeps no replaced release.
+- **A release is kept as it was when it was replaced**, including anything it wrote into its own directory while it was live.
+- **Not every release can be kept.** A release made live before v5.3.0, or deployed from a `file:` directory, is not kept. A release whose dependency links use absolute paths is kept but refused (`409`) when you try to activate it; on Windows, npm writes such links for `file:` and workspace dependencies.
+- **Each node answers for itself.** A node that never had the release, or no longer keeps it, answers `404`. `deploy_component` reports that as a failed peer.
+
+#### Retrying an activation
+
+<VersionBadge version="v5.3.0" />
+
+An activation of the id that is already live on a node succeeds there without a swap. If an activation fails partway — a peer was unreachable, or the component went live on the origin but its root config entry could not be written — retry the same `deployment_id`:
+
+- a node that already switched answers success,
+- a node still holding the build switches now,
+- a node that holds neither answers `404`.
+
+The retry also finishes anything the failed attempt left half done on that node, such as writing the root config entry. A node that answers "already live" still restarts if you pass `restart`. Without `restart`, it marks the component as needing a restart, because it cannot tell whether every worker has loaded that release.
+
+A plain deploy (without `activate: false`) that went live only on the origin leaves the peers nothing to activate. Their retry answers `404`, so deploy the release again instead.
 
 #### Deploy credentials (`credentials`)
 
