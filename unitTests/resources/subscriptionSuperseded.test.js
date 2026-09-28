@@ -7,7 +7,7 @@ const { waitFor } = require('../waitFor.js');
 require('#src/server/serverHelpers/serverUtilities');
 
 // `startTime: 1` replays walk the database's whole audit log, and 'test' carries every earlier
-// suite's writes in a full run (~0.8s per collection subscription, 20s for the suite on CI).
+// suite's writes in a full run.
 const DATABASE = 'supersededbase';
 
 describe('Subscription superseded versions', () => {
