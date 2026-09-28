@@ -439,9 +439,7 @@ export class FullTextQueryIndex {
 		ownerEpoch: bigint,
 		publicationGeneration: bigint
 	): Promise<{ reader: NativeFullTextReader; release: () => Promise<void> }> {
-		const slot = await this.#readerFor(ownerEpoch, publicationGeneration);
-		if (slot.retired) return this.#acquireReader(ownerEpoch, publicationGeneration);
-		slot.active++;
+		const slot = await this.#readerFor(ownerEpoch, publicationGeneration, true);
 		let released = false;
 		return {
 			reader: slot.reader,
@@ -462,7 +460,7 @@ export class FullTextQueryIndex {
 		};
 	}
 
-	#readerFor(ownerEpoch: bigint, publicationGeneration: bigint): Promise<ReaderSlot> {
+	#readerFor(ownerEpoch: bigint, publicationGeneration: bigint, reserve = false): Promise<ReaderSlot> {
 		if (this.#closed) return Promise.reject(new ServerError('Full-text index is closed', 503));
 		for (const [readinessId, pausedEpoch] of this.#pauses) {
 			const readiness = readDerivedIndexReadiness(this.#options.auditStore, readinessId);
@@ -488,10 +486,12 @@ export class FullTextQueryIndex {
 			current.ownerEpoch === ownerEpoch &&
 			current.publicationGeneration >= publicationGeneration &&
 			current.configurationRevision === this.#configurationRevision
-		)
+		) {
+			if (reserve) current.active++;
 			return Promise.resolve(current);
+		}
 		if (this.#readerOperation)
-			return this.#readerOperation.then(() => this.#readerFor(ownerEpoch, publicationGeneration));
+			return this.#readerOperation.then(() => this.#readerFor(ownerEpoch, publicationGeneration, reserve));
 		const configurationRevision = this.#configurationRevision;
 		this.#readerOperation = (async () => {
 			const existing = this.#readerSlot;
@@ -544,7 +544,7 @@ export class FullTextQueryIndex {
 				this.#readerOperation = undefined;
 			}
 		})();
-		return this.#readerOperation.then(() => this.#readerFor(ownerEpoch, publicationGeneration));
+		return this.#readerOperation.then(() => this.#readerFor(ownerEpoch, publicationGeneration, reserve));
 	}
 
 	#decodeReaderPublication(reader: NativeFullTextReader): FullTextPublication {

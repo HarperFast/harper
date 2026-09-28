@@ -1010,8 +1010,8 @@ async function toFullTextMutationSlice(
 			: undefined;
 		yieldDeadline += performance.now() - readStartedAt;
 		if (resolved?.error) throw resolved.error;
-		if (resolved?.rejected || resolved?.error) rejected++;
-		if (resolved?.fields && !resolved.rejected && !resolved.error)
+		if (resolved?.rejected) rejected++;
+		if (resolved?.fields && !resolved.rejected)
 			upserts.push({ id, version: String(recordState!.version), fields: resolved.fields });
 		else deletes.push(id);
 		const now = performance.now();

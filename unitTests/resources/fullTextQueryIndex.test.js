@@ -57,6 +57,12 @@ function sharedStore() {
 			if (notify) for (const callback of callbacks.get(name) ?? []) setImmediate(callback);
 			return revision;
 		},
+		publishSynchronously(readinessId) {
+			const name = `derived-index:${readinessId}:publication`;
+			const revision = Atomics.add(new BigInt64Array(buffers.get(name), 0, 1), 0, 1n) + 1n;
+			for (const callback of callbacks.get(name) ?? []) callback();
+			return revision;
+		},
 	};
 }
 
@@ -1536,6 +1542,67 @@ describe('FullTextQueryIndex', () => {
 		await waitFor(() => closes === 1);
 		await index.close();
 		assert.strictEqual(closes, 2);
+	});
+
+	it('reserves a reader before a newer query can reload it', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'query-reader-reservation';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let opens = 0;
+		let reloads = 0;
+		const index = new FullTextQueryIndex({
+			Table: {
+				tableId: 1,
+				primaryStore: { getEntry: () => ({ version: 1, value: { title: 'shoe' } }) },
+				_readTxnForContext: () => undefined,
+			},
+			definition: definition(),
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath: '/unused',
+			storeName: 'unused',
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
+					};
+				},
+				async openNativeFullTextReader() {
+					opens++;
+					return {
+						async search() {
+							return {
+								total: 1,
+								totalRelation: 'exact',
+								hits: [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+							};
+						},
+						committedPayload: publicationPayload(),
+						async reload() {
+							reloads++;
+						},
+						async close() {},
+					};
+				},
+			},
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
+		await index.search(query, {}, { minResults: 1 });
+		assert.strictEqual(auditStore.listenerCount(readinessId), 1);
+
+		const first = index.search(query, {}, { minResults: 1 });
+		auditStore.publishSynchronously(readinessId);
+		assert.strictEqual((await first).length, 1);
+		await waitFor(() => opens === 2);
+		assert.strictEqual(opens, 2);
+		assert.strictEqual(reloads, 0);
+		assert.strictEqual((await index.search(query, {}, { minResults: 1 })).length, 1);
+		await index.close();
 	});
 
 	it('keeps an aligned reader after a transient replacement-open failure', async () => {

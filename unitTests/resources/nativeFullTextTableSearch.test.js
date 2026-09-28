@@ -71,6 +71,7 @@ describe('published native full-text Table.search integration', () => {
 	it('executes every query mode, negation, REST syntax, field selection, and same-index OR', async () => {
 		const searchDefinition = definition('catalogSearch', [
 			{ name: 'title', weight: 2, highlight: true },
+			{ name: 'description', weight: 1, highlight: true },
 			{ name: 'tags', weight: 1, highlight: false },
 		]);
 		searchDefinition.highlighting = { maxFragments: 2, fragmentLength: 80 };
@@ -81,6 +82,7 @@ describe('published native full-text Table.search integration', () => {
 			attributes: [
 				{ name: 'id', type: 'ID', isPrimaryKey: true },
 				{ name: 'title', type: 'String' },
+				{ name: 'description', type: 'String' },
 				{ name: 'tags', type: 'array', elements: { type: 'String' } },
 			],
 			fullTextIndexes: [searchDefinition],
@@ -160,6 +162,7 @@ describe('published native full-text Table.search integration', () => {
 		});
 		assert.strictEqual(typeof highlighted.$score, 'number');
 		assert.deepStrictEqual(highlighted.$highlights.title[0].spans, [{ start: 11, end: 24 }]);
+		assert.strictEqual(highlighted.$highlights.description, undefined);
 
 		const orResults = await collect(
 			Product.search({
