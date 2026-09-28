@@ -230,4 +230,27 @@ describe('a removed application stops draining the node', () => {
 			'once the removed application is retired, the node rejoins rotation'
 		);
 	});
+
+	// watchDedicatedStart records failed(application) when a dedicated worker does not become ready,
+	// and loaded(application) when a (replacement) worker does. This models those two status
+	// transitions and asserts the node drains on the start failure and rejoins on a successful retry.
+	it('a dedicated-worker start failure clears when a retry starts successfully', async () => {
+		await status.set({ id: 'availability', status: 'Available' });
+		statusInternal.componentStatusRegistry.markFailed(
+			'isolated-app',
+			new Error('did not become ready in time'),
+			'start failed'
+		);
+		assert.strictEqual(
+			(await availability())?.status,
+			'Unavailable',
+			'a dedicated-worker start failure drains the node'
+		);
+		statusInternal.componentStatusRegistry.markLoaded('isolated-app', 'dedicated worker started');
+		assert.strictEqual(
+			(await availability())?.status,
+			'Available',
+			'a successful retry clears the operations-thread start failure and the node rejoins'
+		);
+	});
 });
