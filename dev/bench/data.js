@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790581207721,
+  "lastUpdate": 1790581212049,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -15730,6 +15730,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 46.22,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "2e73eb7f1b363fd7398cf69fac3246afcdb44b77",
+          "message": "Test that same-transaction writes to one record build on each other, on LMDB and RocksDB (#2820)\n\n* test: cover same-transaction write chains on LMDB and RocksDB\n\nSeveral writes to one record in one transaction must each apply on top of\nthe previous one (#1968, fixed by #1970). Pins three consumers on both\nengines, forcing each engine in-file so CI exercises LMDB: a PATCH chain's\nmerge base (and the @computed value derived from it), blob reclamation\nacross a 3-write chain, and a 2-write chain racing single-step writers\nnever committing its intermediate state. All three LMDB arms fail on\n80ef45996 (before #1970) and pass on e84cb965e and current main.\n\nOriginating QA scenario: QA-849 (promote candidate P-609).\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KE3cY12YB5dSbHoVQPFW37\n\n* test: make the same-txn race arm deterministic and index the computed sum\n\nReview round 1: the race arm placed its writers inside the chain's open\ntransaction with a fixed sleep, so on a loaded runner it could pass without\nracing. The chain now holds its transaction open until the test releases\nit, after the writers have committed, and the arm asserts the chain won,\na writer committed inside the window, no writer read LOCKED, and the row\nis one whole write's result (which write wins is engine ordering: LMDB\nstamps at commit, RocksDB at transaction start).\n\nThe @computed sum is now @indexed, so arm 1 checks a write-time consumer:\non the pre-fix build the index held the record under 101 and 201, not 300.\nFixture resources renamed away from CAS terms, since nothing here is a\ncompare-and-swap.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KE3cY12YB5dSbHoVQPFW37\n\n* test: release the same-txn chain before awaiting its racing writers\n\nReview round 2: on RocksDB a writer that conflicts with the chain's write\nintent is parked until the chain commits, so awaiting every writer before\nreleasing the chain could stall until the chain's timeout. The arm now\nwaits until a writer's commit is visible in the row, releases the chain,\nthen awaits both. The blob poll waits for the target count without a\nplateau exit, since a deferred reclamation looks like a leak until it\nlands.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KE3cY12YB5dSbHoVQPFW37\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-28T03:52:33Z",
+          "url": "https://github.com/HarperFast/harper/commit/2e73eb7f1b363fd7398cf69fac3246afcdb44b77"
+        },
+        "date": 1790581210941,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 14.25,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 14.19,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 21.28,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 17.01,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 31.55,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 16.39,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 36.27,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 14.71,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 19.45,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 177.91,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 50.49,
             "unit": "ms"
           }
         ]
