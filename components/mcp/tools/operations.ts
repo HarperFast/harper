@@ -45,6 +45,7 @@ import {
 	type ToolDef,
 	type ToolResult,
 } from '../toolRegistry.ts';
+import { wrapToolResult } from './results.ts';
 import { OPERATION_INPUT_SCHEMAS, PERMISSIVE_SCHEMA } from './schemas/operations.ts';
 import { OPERATION_DESCRIPTIONS } from './schemas/operationDescriptions.ts';
 
@@ -355,14 +356,7 @@ export function makeOperationToolHandler(operationName: string) {
 					],
 				};
 			}
-			const text = typeof data === 'string' ? data : JSON.stringify(data ?? null);
-			const result: ToolResult = {
-				content: [{ type: 'text', text }],
-			};
-			if (data !== null && typeof data === 'object') {
-				result.structuredContent = data as object;
-			}
-			return result;
+			return wrapToolResult(data);
 		} catch (err) {
 			const e = err as { message?: string; http_resp_msg?: string; statusCode?: number };
 			const message = e?.http_resp_msg ?? e?.message ?? `operation '${operationName}' failed`;

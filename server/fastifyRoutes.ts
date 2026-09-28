@@ -11,7 +11,8 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { realExit } from './threads/workerProcessGuard.ts';
 import * as hdbCore from './fastifyRoutes/plugins/hdbCore.js';
-import * as userSchema from '../security/user.ts';
+// installs server.getUser/authenticateUser
+import '../security/user.ts';
 import getServerOptions from './fastifyRoutes/helpers/getServerOptions.js';
 import getCORSOptions from './fastifyRoutes/helpers/getCORSOptions.js';
 import getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig.js';
@@ -111,8 +112,6 @@ export async function customFunctionsServer() {
 		harperLogger.info(`Custom Functions Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
 		harperLogger.debug(`Custom Functions server process ${process.pid} starting up.`);
 
-		await setUp();
-
 		const isHttps = env.get(CONFIG_PARAMS.HTTP_SECUREPORT) > 0;
 		let server;
 		try {
@@ -138,20 +137,6 @@ export async function customFunctionsServer() {
 		// Use realExit so this fatal worker bootstrap failure still terminates
 		// the worker even with the worker process guard installed.
 		realExit(1);
-	}
-}
-
-/**
- * Makes sure global values are set before server starts.
- * @returns {Promise<void>}
- */
-async function setUp() {
-	try {
-		harperLogger.info('Custom Functions starting configuration.');
-		await userSchema.setUsersWithRolesCache();
-		harperLogger.info('Custom Functions completed configuration.');
-	} catch (e) {
-		harperLogger.error(e);
 	}
 }
 

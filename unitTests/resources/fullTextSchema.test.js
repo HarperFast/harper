@@ -398,6 +398,7 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 		removeOwner.removeSync = function (key, ...args) {
 			if (String(key) === 'FullTextRemovalOrder/title') {
 				assert.strictEqual(primaryDescriptor(Removal).fullTextIndexes, undefined);
+				assert.strictEqual(primaryDescriptor(Removal).fullTextIndexRetirements[0].name, 'search');
 				throw new Error('crash before source removal');
 			}
 			return originalRemove.call(this, key, ...args);
@@ -418,8 +419,53 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 			removeOwner.removeSync = originalRemove;
 		}
 		assert.strictEqual(primaryDescriptor(Removal).fullTextIndexes, undefined);
-		assert.deepStrictEqual(Removal.fullTextIndexes, []);
+		assert.strictEqual(primaryDescriptor(Removal).fullTextIndexRetirements[0].name, 'search');
+		assert.strictEqual(Removal.fullTextIndexes.length, 0);
+		assert.strictEqual(Removal.fullTextIndexRetirements[0], 'search');
 		assert(Removal.dbisDB.getSync('FullTextRemovalOrder/title'));
+
+		const Replacement = table({
+			table: 'FullTextReplacementOrder',
+			database: 'test',
+			audit: true,
+			attributes: [...productAttributes(), { name: 'description', type: 'String' }],
+			fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+		});
+		if (Replacement.dbisDB.committed) await Replacement.dbisDB.committed;
+		let replacementRemoveOwner = Replacement.dbisDB;
+		while (replacementRemoveOwner && !Object.hasOwn(replacementRemoveOwner, 'removeSync'))
+			replacementRemoveOwner = Object.getPrototypeOf(replacementRemoveOwner);
+		const originalReplacementRemove = replacementRemoveOwner.removeSync;
+		replacementRemoveOwner.removeSync = function (key, ...args) {
+			if (String(key) === 'FullTextReplacementOrder/title') {
+				assert.strictEqual(primaryDescriptor(Replacement).fullTextIndexes[0].fields[0].name, 'title');
+				assert.strictEqual(primaryDescriptor(Replacement).fullTextIndexRetirements[0].name, 'search');
+				throw new Error('crash before replaced source removal');
+			}
+			return originalReplacementRemove.call(this, key, ...args);
+		};
+		try {
+			assert.throws(
+				() =>
+					table({
+						table: Replacement.tableName,
+						database: Replacement.databaseName,
+						audit: true,
+						attributes: [
+							{ name: 'id', type: 'ID', isPrimaryKey: true },
+							{ name: 'description', type: 'String' },
+						],
+						fullTextIndexes: [{ name: 'search', fields: [{ name: 'description' }] }],
+					}),
+				/crash before replaced source removal/
+			);
+		} finally {
+			replacementRemoveOwner.removeSync = originalReplacementRemove;
+		}
+		assert.strictEqual(primaryDescriptor(Replacement).fullTextIndexes[0].fields[0].name, 'title');
+		assert.strictEqual(primaryDescriptor(Replacement).fullTextIndexRetirements[0].name, 'search');
+		assert.strictEqual(Replacement.fullTextIndexes[0].fields[0].name, 'title');
+		assert(Replacement.dbisDB.getSync('FullTextReplacementOrder/title'));
 
 		const Addition = table({
 			table: 'FullTextAdditionOrder',
@@ -573,6 +619,7 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 		if (AfterPeer.dbisDB.committed) await AfterPeer.dbisDB.committed;
 		assert.deepStrictEqual(AfterPeer.fullTextIndexes, []);
 		assert.strictEqual(primaryDescriptor(AfterPeer).fullTextIndexes[0].name, 'search');
+		assert.match(primaryDescriptor(AfterPeer).fullTextIndexGenerations.search, /^[0-9a-f-]+$/);
 	});
 });
 
@@ -603,6 +650,7 @@ lmdbDescribe('@fullText LMDB eligibility', () => {
 		if (Peer.dbisDB.committed) await Peer.dbisDB.committed;
 		assert.deepStrictEqual(Peer.fullTextIndexes, []);
 		assert.strictEqual(primaryDescriptor(Peer).fullTextIndexes[0].name, 'search');
+		assert.match(primaryDescriptor(Peer).fullTextIndexGenerations.search, /^[0-9a-f-]+$/);
 
 		let transactionOwner = Peer.primaryStore.rootStore;
 		while (transactionOwner && !Object.hasOwn(transactionOwner, 'transactionSync'))

@@ -10,7 +10,7 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ## OIDC trusted publishing (`security/authn/oidc/`)
 
-`exchange_oidc_token` lets a workload authenticate with no stored Harper credential (#2171): it presents an identity token minted by its runtime, and gets back a one-hour operation token for the user a stored trust policy names. It is in `NO_AUTH_OPERATIONS` because it _is_ the authentication, the same way `create_authentication_tokens` is against a password — the same three wiring points apply (`serverHandlers.js` `NO_AUTH_OPERATIONS`, the `verifyPerms` bypass in `serverUtilities.ts`, and a `permission(false, [])` registration).
+`exchange_oidc_token` lets a workload authenticate with no stored Harper credential (#2171): it presents an identity token minted by its runtime, and gets back a one-hour operation token for the user a stored trust policy names. It is in `NO_AUTH_OPERATIONS` because it _is_ the authentication, the same way `create_authentication_tokens` is against a password — the same three wiring points apply (`serverHandlers.js` `NO_AUTH_OPERATIONS`, the `verifyPerms` bypass in `serverUtilities.ts`, and a `permission(false, [], OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN)` registration).
 
 **The core is issuer-agnostic; everything issuer-specific lives in `providers/`.** That split is the point of the layout, not an accident of it — a new workload-identity issuer should be a profile, not a change to verification, matching, or storage.
 
@@ -66,6 +66,20 @@ which never reaches `verifyPerms` and calls `verifyOperationsAllowlist` directly
 on translated table CRUD permissions only. A scoped token intended to be read-only on app
 endpoints must carry restrictive table permissions; `operations: ['read_only']` alone does not
 constrain REST writes if table perms allow them.
+
+Which name the allowlist is checked against: `verifyPerms` is handed the handler, not the invoked
+operation, so gate 1 checks the registered entry's `api_name`, and never the handler's own name —
+only a name with no registration at all (`sql`) is checked as given. The `permission` constructor
+requires that argument: an API name, or `null` when no allowlist may grant the operation. Leaving it
+out is a compile error, which closes the old failure where an omitted name made gate 1 fall back to
+the handler name — refusing every role that listed the operation, unless the handler name happened
+to equal the API name, when it silently granted it instead.
+Aliases share a handler, so listing the canonical name grants both spellings and the alias spelling
+grants neither. `get_backup`, `read_transaction_log` and `catchup` are registered with `null`: gate 2
+would grant `get_backup` ahead of its READ check on a whole-database copy, `read_transaction_log`
+lacks `read_audit_log`'s `system.hdb_secret` guard, and the legacy `catchup` applies writes to any
+table with no table permission check. A test in `unitTests/utility/operation_authorization.test.js`
+holds every dispatched operation to this.
 
 The invariant to preserve when touching any synthetic (inline/impersonated/scoped) role:
 `permissionsTranslator.getRolePermissions` memoizes translated permissions **by role name** (keyed
@@ -173,3 +187,13 @@ Two consequences that are easy to miss:
   `settleDeferredCredentialRejection` _before_ they read `request.user`, so once a credential is deferred,
   resolving a principal from a different credential is a contradiction. Hence a rejected certificate
   identity stops resolution outright instead of falling through to Basic, the session, or the local bypass.
+
+## User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)
+
+There is no per-thread copy of `hdb_user`/`hdb_role`: every lookup point-reads the user by name and its role by id through the primary store's record cache, so no writer (an operation, a replicated commit) has to announce a change for lookups to see it. Three rules keep that true:
+
+- **One committed state.** RocksDB point reads share no snapshot, so `readUserEntries` re-checks the user's version after reading its role and retries if it moved; otherwise one transaction that moves a user to role B and grants role A super_user could be read as the user on A with A's new grant.
+- **Derived data is keyed by entry version, not object identity.** With `storage.caching: false` every read returns a new object. The per-role memo of `appendSystemTablesToRole` + expanded operations, and `isCurrentUser`, compare versions; a `VERSION_REUSED` entry is compared by value instead, since its version no longer identifies one value. `auth.ts` runs `isCurrentUser` on every `authorizationCache` hit, so a cached principal is re-verified once its user or role record changes; a component's `server.getUser` principal is checked against the versions read for its name before it was resolved (`trackUserRecords`).
+- **Notifications are only for holders of a user.** `onUserChange` feeds live-subscription revocation and MCP list-changed from per-thread `hdb_user`/`hdb_role` subscriptions. It never subscribes to an unaudited table, because `subscribe()` would enable and persist auditing on it; on such a node those consumers fall back to their own backstops.
+
+LMDB lookups use the thread's shared read txn, which lmdb-js renews at most once per event-loop turn, so a commit on another thread is seen from the next turn. Resetting it per lookup would give each in-flight transaction its own reader slot. Enforced by `unitTests/security/userRecordLookups.test.js` and `unitTests/resources/replicatedUserWrites.test.js`.

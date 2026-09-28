@@ -70,6 +70,19 @@ describe('ModelCallAnalyticsWriter', () => {
 			assert.strictEqual(table.store.size, 0);
 		});
 
+		it('returns the monotonic id the row is written under, and still returns one after stop()', async () => {
+			const first = writer.write(makeRecord());
+			const second = writer.write(makeRecord());
+			assert.strictEqual(typeof first, 'number');
+			assert.ok(second > first);
+			await writer.flush();
+			assert.ok(table.store.has(first));
+			assert.ok(table.store.has(second));
+			writer.stop();
+			assert.strictEqual(typeof writer.write(makeRecord()), 'number');
+			assert.strictEqual(writer.bufferSize, 0);
+		});
+
 		it('multiple writes grow the buffer in order', () => {
 			writer.write(makeRecord({ backend: 'a' }));
 			writer.write(makeRecord({ backend: 'b' }));

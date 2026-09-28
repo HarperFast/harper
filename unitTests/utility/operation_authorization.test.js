@@ -45,6 +45,12 @@ const OPERATION_MAP = initializeOperationFunctionMap_rw();
 server.registerOperation = realRegisterOperation;
 server.operation = realOperation;
 
+const { OPERATION_FUNCTION_MAP } = require('#src/server/serverHelpers/serverUtilities');
+function dispatchedHandlerName(operation) {
+	const { operation_function, job_operation_function } = OPERATION_FUNCTION_MAP.get(operation);
+	return (job_operation_function ?? operation_function).name;
+}
+
 const test_terms = testUtils.COMMON_TEST_TERMS;
 const crud_keys = test_terms.TEST_CRUD_PERM_KEYS;
 
@@ -441,6 +447,73 @@ describe('Test operation_authorization', function () {
 		});
 
 		assert.deepEqual(missing_ops, []);
+	});
+
+	describe('every dispatched operation is grantable by the API name a role lists', function () {
+		const { canRoleInvokeOperation } = require('#src/components/mcp/operationVisibility');
+		const ALL_OPERATIONS = Object.values(terms.OPERATIONS_ENUM);
+		// Registered with a null api_name on purpose; the reasons are at their registrations.
+		const UNGRANTABLE = [
+			terms.OPERATIONS_ENUM.GET_BACKUP,
+			terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG,
+			terms.OPERATIONS_ENUM.CATCHUP,
+		];
+		// Built-ins only, since other suites register throwaway operations on this map; `sql` reaches gate 1
+		// by its API name, not through a handler.
+		const dispatched = [...OPERATION_FUNCTION_MAP.keys()].filter(
+			(operation) => ALL_OPERATIONS.includes(operation) && operation !== terms.OPERATIONS_ENUM.SQL
+		);
+		const sharingHandler = (operation) =>
+			dispatched.filter((other) => dispatchedHandlerName(other) === dispatchedHandlerName(operation));
+		const allowlisted = (operations) => ({ hdb_user: { role: { permission: { super_user: false, operations } } } });
+
+		it('is granted by listing an API name that reaches its handler, and by no other', function () {
+			const offenders = [];
+			for (const operation of dispatched) {
+				if (UNGRANTABLE.includes(operation)) continue;
+				const names = sharingHandler(operation);
+				const others = ALL_OPERATIONS.filter((other) => !names.includes(other));
+				if (op_auth.verifyOperationsAllowlist(allowlisted(names), dispatchedHandlerName(operation)) !== null) {
+					offenders.push(`${operation} is not granted by listing ${names.join(' or ')}`);
+				}
+				if (op_auth.verifyOperationsAllowlist(allowlisted(others), dispatchedHandlerName(operation)) === null) {
+					offenders.push(`${operation} is granted without being listed`);
+				}
+			}
+			assert.deepEqual(offenders, []);
+		});
+
+		it('keeps get_backup, read_transaction_log and catchup ungrantable, even by a matching handler name', function () {
+			for (const operation of UNGRANTABLE) {
+				assert.ok(dispatched.includes(operation), `${operation} is dispatched`);
+				const listed = [...ALL_OPERATIONS, dispatchedHandlerName(operation)];
+				const denial = op_auth.verifyOperationsAllowlist(
+					{ ...allowlisted(listed), operation },
+					dispatchedHandlerName(operation)
+				);
+				assert.deepEqual(denial?.unauthorized_access, [TEST_OPERATION_AUTH_ERROR.OP_NOT_IN_OPERATIONS(operation)]);
+			}
+		});
+
+		// Discovery does not model the ungrantable operations: it still advertises them to a role that
+		// lists them.
+		it('is advertised by MCP discovery exactly when gate 1 grants it', function () {
+			const disagreements = [];
+			for (const operation of dispatched) {
+				if (UNGRANTABLE.includes(operation)) continue;
+				for (const listed of sharingHandler(operation)) {
+					const granted =
+						op_auth.verifyOperationsAllowlist(allowlisted([listed]), dispatchedHandlerName(operation)) === null;
+					// super_user, so the allowlist alone decides: it binds super_user as well.
+					const user = { role: { permission: { super_user: true, operations: [listed] } } };
+					const advertised = canRoleInvokeOperation(user, operation);
+					if (advertised !== granted) {
+						disagreements.push(`${operation} with ${listed} listed: dispatch ${granted}, discovery ${advertised}`);
+					}
+				}
+			}
+			assert.deepEqual(disagreements, []);
+		});
 	});
 
 	describe(`Test verifyPermsAST`, function () {
@@ -1667,5 +1740,58 @@ describe('Test operations permissions', function () {
 				JSON.stringify(result).includes(TEST_OPERATION_AUTH_ERROR.OP_NOT_IN_OPERATIONS(terms.OPERATIONS_ENUM.INSERT))
 			);
 		});
+	});
+
+	describe('verifyPerms() — operations allowlist grants by API name', function () {
+		const GRANTED_BY_NAME = [
+			terms.OPERATIONS_ENUM.DEPLOY_COMPONENT,
+			terms.OPERATIONS_ENUM.PACKAGE_COMPONENT,
+			terms.OPERATIONS_ENUM.ADD_COMPONENT,
+			terms.OPERATIONS_ENUM.DROP_COMPONENT,
+			terms.OPERATIONS_ENUM.SET_COMPONENT_FILE,
+			terms.OPERATIONS_ENUM.SET_CUSTOM_FUNCTION,
+			terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION,
+			terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION_PROJECT,
+			terms.OPERATIONS_ENUM.INSTALL_NODE_MODULES,
+			terms.OPERATIONS_ENUM.RESTART_SERVICE,
+			terms.OPERATIONS_ENUM.SET_CONFIGURATION,
+			terms.OPERATIONS_ENUM.GET_STATUS,
+			terms.OPERATIONS_ENUM.SET_STATUS,
+			terms.OPERATIONS_ENUM.CLEAR_STATUS,
+			terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE,
+			terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE,
+			terms.OPERATIONS_ENUM.DELETE_AUDIT_LOGS_BEFORE,
+			terms.OPERATIONS_ENUM.CLEANUP_ORPHAN_BLOBS,
+			terms.OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE,
+			terms.OPERATIONS_ENUM.REGISTRATION_INFO,
+		];
+
+		for (const operation of GRANTED_BY_NAME) {
+			it(`${operation} is allowed when listed`, function () {
+				const req_json = makeOpUserSystemRequest([operation]);
+				req_json.operation = operation;
+				assert.equal(op_auth.verifyPerms(req_json, dispatchedHandlerName(operation)), null);
+			});
+
+			it(`${operation} is refused when not listed`, function () {
+				const req_json = makeOpUserSystemRequest([terms.OPERATIONS_ENUM.GET_CONFIGURATION]);
+				req_json.operation = operation;
+				const result = op_auth.verifyPerms(req_json, dispatchedHandlerName(operation));
+				assert.deepEqual(result?.unauthorized_access, [TEST_OPERATION_AUTH_ERROR.OP_NOT_IN_OPERATIONS(operation)]);
+			});
+		}
+
+		for (const [alias, canonical] of [
+			[terms.OPERATIONS_ENUM.DEPLOY_CUSTOM_FUNCTION_PROJECT, terms.OPERATIONS_ENUM.DEPLOY_COMPONENT],
+			[terms.OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT, terms.OPERATIONS_ENUM.PACKAGE_COMPONENT],
+			[terms.OPERATIONS_ENUM.ADD_CUSTOM_FUNCTION_PROJECT, terms.OPERATIONS_ENUM.ADD_COMPONENT],
+			[terms.OPERATIONS_ENUM.DELETE_RECORDS_BEFORE, terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE],
+		]) {
+			it(`${alias} is allowed when ${canonical} is listed`, function () {
+				const req_json = makeOpUserSystemRequest([canonical]);
+				req_json.operation = alias;
+				assert.equal(op_auth.verifyPerms(req_json, dispatchedHandlerName(alias)), null);
+			});
+		}
 	});
 });

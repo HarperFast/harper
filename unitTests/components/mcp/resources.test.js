@@ -463,6 +463,39 @@ describe('mcp/resources', () => {
 			assert.ok(!names.includes('add_node'));
 		});
 
+		it('omits schema DDL when an operations allowlist excludes it', async () => {
+			// harper#2176: the allowlist gate runs ahead of the structure_user early-return in
+			// `verifyPerms`, so these ops fail closed on call and must not be listed as available.
+			const user = { role: { permission: { structure_user: ['orders_db'], operations: ['sql'] } } };
+			const res = await readResource({ uri: 'harper://operations', user, profile: 'operations' });
+			assert.equal(res.ok, true);
+			const names = JSON.parse(res.contents[0].text).operations.map((o) => o.name);
+			for (const op of [
+				'create_schema',
+				'create_database',
+				'drop_schema',
+				'drop_database',
+				'create_table',
+				'drop_table',
+				'create_attribute',
+				'drop_attribute',
+			]) {
+				assert.ok(!names.includes(op), `expected ${op} to be omitted`);
+			}
+			assert.ok(names.includes('sql'));
+		});
+
+		it('lists group-expanded operations for an allowlisted role', async () => {
+			const user = { role: { permission: { operations: ['read_only'] } } };
+			const res = await readResource({ uri: 'harper://operations', user, profile: 'operations' });
+			assert.equal(res.ok, true);
+			const names = JSON.parse(res.contents[0].text).operations.map((o) => o.name);
+			assert.ok(names.includes('sql'));
+			assert.ok(names.includes('describe_all'));
+			assert.ok(!names.includes('insert'));
+			assert.ok(!names.includes('create_table'));
+		});
+
 		it('returns an empty catalog for a user with no operations perms', async () => {
 			const res = await readResource({ uri: 'harper://operations', user: NOBODY, profile: 'operations' });
 			assert.equal(res.ok, true);

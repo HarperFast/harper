@@ -84,3 +84,29 @@ describe('directivesController — hdb_secret table-creation directive', () => {
 		expect(versions).to.not.include('5.2.0');
 	});
 });
+
+describe('directivesController — decision tables in the 5.3.0 directive', () => {
+	it('registers the decision table creators on the 5.3.0 directive', () => {
+		const directive = directivesController.getDirectiveByVersion('5.3.0');
+		expect(directive, 'expected a directive registered for version 5.3.0').to.exist;
+		expect(directive.async_functions.map((fn) => fn.name)).to.include.members([
+			'createHdbModelDecisionsIfMissing',
+			'createHdbModelOutcomesIfMissing',
+		]);
+	});
+
+	it('runs on the 5.2.x -> 5.3.0 upgrade path', () => {
+		const versions = directivesController.getVersionsForUpgrade(new UpgradeObject('5.2.1', '5.3.0'));
+		expect(versions).to.include('5.3.0');
+	});
+
+	it('does not run on a 5.1.x -> 5.2.x upgrade (not yet shipped there)', () => {
+		const versions = directivesController.getVersionsForUpgrade(new UpgradeObject('5.1.15', '5.2.1'));
+		expect(versions).to.not.include('5.3.0');
+	});
+
+	it('does not re-run when the install is already at or past 5.3.0', () => {
+		const versions = directivesController.getVersionsForUpgrade(new UpgradeObject('5.3.0', '5.3.1'));
+		expect(versions).to.not.include('5.3.0');
+	});
+});

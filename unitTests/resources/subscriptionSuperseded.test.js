@@ -1,6 +1,7 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
+const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor.js');
 require('#src/server/serverHelpers/serverUtilities');
@@ -27,8 +28,8 @@ describe('Subscription superseded versions', () => {
 	async function subscribe(options) {
 		const events = [];
 		let replayEnd = 0;
-		if (options.startTime && options.id === undefined) {
-			for (const record of T.auditStore.getRange({ start: options.startTime })) {
+		if ((options.startTime || options.previousCount) && options.id === undefined) {
+			for (const record of T.auditStore.getRange({ start: options.startTime || 1 })) {
 				if (record.tableId === T.tableId) replayEnd = Math.max(replayEnd, record.txnLogKey);
 			}
 		}
@@ -41,6 +42,42 @@ describe('Subscription superseded versions', () => {
 		await T.put('A', { value: 2 });
 		await T.patch('A', { value: 3 });
 		await T.patch('A', { value: 4 });
+	}
+
+	for (const scope of [
+		{ startTime: 1 },
+		{ startTime: 1, id: 'A' },
+		{ previousCount: 10, id: 'A' },
+		...(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? [{ previousCount: 10 }] : []),
+	]) {
+		it(`filters superseded relocations for ${JSON.stringify(scope)}`, async () => {
+			if (scope.previousCount && scope.id === undefined) {
+				const Other = table({
+					database: 'test',
+					table: 'RelocationReplayNoise',
+					audit: true,
+					attributes: [{ name: 'id', isPrimaryKey: true }],
+				});
+				for (let id = 0; id < 120; id++) await Other.put(id, {});
+			}
+			await T.put('A', { value: 2 });
+			const context = {};
+			await transaction(context, async () => {
+				const resource = await T.getResource('A', context);
+				resource._writeRelocate('A', {});
+			});
+			await T.put('A', { value: 4 });
+			const current = await subscribe(scope);
+			assert.deepStrictEqual(
+				current.events.map((event) => [event.type, event.value?.value]),
+				[['put', 4]]
+			);
+			const history = await subscribe({ ...scope, includeSuperseded: true });
+			assert.deepStrictEqual(
+				history.events.map((event) => event.type),
+				['put', 'relocate', 'put']
+			);
+		});
 	}
 
 	for (const scope of [{ isCollection: true }, { id: 'A' }]) {
@@ -181,6 +218,19 @@ describe('Subscription superseded versions', () => {
 		);
 		const current = await subscribe({ startTime: 1, rowFilter: (row) => row.value === 3 });
 		assert.deepStrictEqual(current.events, []);
+	});
+
+	it('retains the current snapshot when eventFilter rejects audit metadata across older versions', async () => {
+		await versions();
+		const { events } = await subscribe({
+			id: 'A',
+			startTime: 1,
+			eventFilter: (event) => event.recordId === undefined,
+		});
+		assert.deepStrictEqual(
+			events.map((event) => [event.type, event.value?.value]),
+			[['put', 4]]
+		);
 	});
 
 	it('keeps invalidation typed as invalidate', async () => {

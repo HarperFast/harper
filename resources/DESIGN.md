@@ -142,10 +142,16 @@ Consequences worth knowing:
   branches and, when a RocksDB record version differs from its log key, the record's own audit head.
   Under stage 2 the stored reference field can be renamed; until then, "fixing" it to the record
   version silently unaddresses the entry it points at.
-- **Crash replay uses both.** `replayLogs` delimits transactions by `txnLogKey` (which is also what
-  `CorruptFrameStop.truncatedVersions` records) and replays each write at its stored `version`.
-  Stamping a replayed record at its log key would move its version forward and make a later
-  legitimate write look stale.
+- **Crash replay uses both.** `replayLogs` replays each write at its stored `version`; stamping a
+  replayed record at its log key would move its version forward and make a later legitimate write
+  look stale. Its transactions follow native commits: one ends at a commit's last-entry `endTxn`
+  marker, at a change of physical log, or at a change of `txnLogKey` (what
+  `CorruptFrameStop.truncatedVersions` records), and one a corrupt frame or a stalled replay cut
+  short is discarded, never committed. A log key alone is not a commit: a receiver commits every re-delivery of a source
+  transaction under the origin's key, and grouping by key once staged millions of them into one
+  replay transaction (harper#2161). Entries skipped as unrecoverable are still left out of their
+  commit. Other consumers still treat a second commit at one key as a duplicate
+  (`resumePastExactStart`, the derived-index runtime, subscription delivery).
 - **Compatibility surfaces still report `localTime` as the transaction timestamp.** Subscription,
   history, and pro-to-core replication event shapes predate this internal name and remain unchanged;
   no on-disk or on-wire identifier changes in this stage.
@@ -260,6 +266,11 @@ Seven things that are easy to get wrong here:
   file was dropped or not. Entries below that horizon are often still on disk, and a cursor among
   them is told to resync — conservative in the safe direction only. LMDB can see a single eligible
   entry, so it raises off the first one it finds instead.
+- **A prune's clamped floor can sit past `Date.now() + 1`.** `boundedAuditPruneEnd` records `newest + 1`
+  when the newest log key is at or past the clock, and log keys are fractional `getNextMonotonicTime`
+  values, not `Date.now()`, so for the rest of that key's millisecond the floor exceeds the wall clock
+  by more than one. Bound it by the newest key, never the wall clock alone (`auditFloor.test.js`, the
+  far-future `deleteHistory` case — it failed twice on main that way).
 - **Untrustworthy metadata resolves to `Infinity`, not to a number.** A wrong-length record, or eight
   bytes decoding to NaN/negative, must not become a floor: `cursor < NaN` is false, so a consumer
   spelling the check that way would read corrupt metadata as safe.
@@ -515,6 +526,14 @@ continue-on-failure behavior. Core has no timeout or durable fallback for listen
 listener backpressures the source, and a rejected persistence operation cannot establish durable
 hole state. The transport owns recovery and fail-closed behavior for those cases.
 
+## Source transactions are delimited per connection, and a transaction log holds one origin (`Table.sourcedFrom`, `RocksTransactionLogStore`)
+
+A replication receiver feeds one source subscription per database from every connection on a thread, and its receive loop yields partway through a frame. So `beginTxn` / `end_txn` can only delimit a transaction within one connection: each event carries its connection's `txnStream` token, and the apply loop keeps the open transaction per token (untagged events share one default stream, which is the behavior every other source relies on). Without the token, another connection's `beginTxn` commits the open transaction early, its writes join it, and its `end_txn` commits it under its own cursor (harper#1162). `abort_txn` rolls back a token's unfinished transaction; harper-pro sends it after a connection's last queued record when a frame ends without its `end_txn`, so a partial frame never commits.
+
+A transaction-log entry's identity is (`txnLogKey`, `nodeId`): the key alone repeats across origins, and a receiver files a replicated transaction under the origin's key. `RocksTransactionLogStore.put` therefore files an origin's entries in that origin's own log, created on first use, never in the relaying peer's log, so a key stays unique within a log (exact resume, `resumePastExactStart`, depends on it). A relayed entry whose origin id has no node name is rejected rather than misfiled; an unnamed id that was not relayed (`viaNodeId` equal to `nodeId` or absent) is not a replication origin and stays in `local`.
+
+A failed transaction on a tagged stream (a non-retryable commit failure, including a segment closed by a later `beginTxn`) is reported at that stream's next `end_txn`: when the `end_txn` carries `onFailure(error, txnLogKey)`, neither its `onCommit` nor its sequence id passes the failure, and `onFailure` returning true _holds_ the stream — every later `end_txn` on it commits its writes without `onCommit` or a cursor, because the source is reconnecting to replay from its durable cursor under a new token (a held token is never reused). A held failure is not reported to the apply-failure listeners, since the replay applies it; a failure the source moves past (`onFailure` false, or no `onFailure`) is. An `end_txn` without `onFailure` keeps the older behavior of recording its cursor, so holding is opt-in per source. `txnStream` must be an object: streams are held in a `WeakMap`, so a closed connection's state is collected with its token.
+
 ## Repeat writes to the same key in one transaction carry their state forward (`DatabaseTransaction`/`Table`)
 
 A transaction can hold more than one write to the same record key — two `patch()` calls inside one `transaction()`, or a replicated transaction carrying two updates to a record. Each write captures `operation.entry` (its idea of the current record) when it is staged, and **neither engine can refresh that from a read**: LMDB queues staged puts and applies them only in the commit batch, so a `getEntry` inside that loop still returns the pre-transaction record (the exclusive `store.transaction()` fallback is no better), and RocksDB read-your-writes only sees writes already staged into the native transaction — which the source-apply path, staging its whole batch before `commit()`, hasn't done yet.
@@ -537,6 +556,12 @@ An ordinary tracked update instance represents one staged write at a time. Once 
 
 Two consequences of that scoping are worth knowing, both pre-existing and neither closed by the ordering fix. `_writeRelocate` still saves eagerly, so a replicated `put K; relocate K` where the residency list excludes this host strips K to its indexed-attribute stub first and then re-stores the **full record** — content retained on a node the residency policy excludes; `_writeInvalidate` has the milder form (a lost invalidation, so stale reads until TTL). Closing those means teaching both handlers `priorStagedWrite()`/`stagedEntry` and then flagging them, not simply deferring them. Separately, the apply loop's per-key chain narrows but does not close the cross-key escape: in `{put A, delete B}` where A's resource load rejects and B's is slow, the abort lands at `end_txn` and B's continuation then reaches `addWrite` on a CLOSED transaction, where `save()` commits it alone.
 
+## A delete re-delivered onto its own removal is a no-op (`Table._writeDelete`, harper-pro#826)
+
+When the key already holds no record because this same write — origin node plus log key, `isAuditEntryWrite` — removed it, the delete writes nothing: no index change, no tombstone rewrite, no audit entry. It still stages the removal, so later writes in the transaction see program order unchanged. The removal is either the stored tombstone (a copy in a later frame) or the `stagedEntry` of the nearest earlier write to the key that staged one (an earlier copy in this transaction), which is why a delete's `stagedEntry` carries `localTime` (its log key) and `nodeId` as well as `value`. The walk passes only writes marked `skipped`: an invalidate or relocate writes a null stub carrying the same identity without publishing it to the chain, so any other unstaged write — and any `INVALIDATED` stored entry — means the delete applies. Known gap: a null stored by a publish or a residency-local relocate carries no marker, so if one origin transaction ever arrived split with the delete alone in the later frame, that delete would log nothing (the key is null either way).
+
+Without this, every re-delivery appended another entry under the origin's log key; in a mesh each appended copy is new log tail every peer forwards and re-logs in turn. A delete that follows another write to the key in its transaction still applies — it is not a tie with its own removal. LMDB keys its log by local time, so a stored tombstone there carries no origin log key and only copies within one transaction collapse. Pinned by `../unitTests/resources/replicatedDeleteRedelivery.test.js`.
+
 ## A second sequential save() on the same ImmediateTransaction context must chain on `operation.innerCommit`
 
 Two `update()`+`save()` cycles on the _same resource instance_, outside an explicit `transaction()`,
@@ -544,7 +569,8 @@ reuse the same `ImmediateTransaction` object even after its first cycle has clos
 CLOSED`). The second `save()` re-enters `ImmediateTransaction.save()` with `isCommitting` false, so it
 calls `this.commit()` again; that `commit()`'s own sweep loop calls `this.save(newWrite, ...)` — a
 **polymorphic re-dispatch to `ImmediateTransaction.save()`**, now with `isCommitting` true, which takes
-the `super.save(operation, null, true)` branch and (since `this.open` is still `CLOSED`) creates its own
+the `super.save(operation, transaction, true)` branch with no handle to forward (a CLOSED context has
+none) and so creates its own
 brand-new `RocksTransaction` and immediately commits it, stashing the real commit promise on
 `operation.innerCommit`. But the outer `commit()`'s sweep loop discards the return value of
 `this.save(operation, ...)` for every write it processes — that's fine when the write commits inline,
@@ -560,6 +586,20 @@ operation.innerCommit)`. `operation.innerCommit` is `undefined` when a write com
 immediateCommit), so this is safe for the common case. Found via record-lock scoped-lock staging
 (harper#483), which is what first made this reused-closed-context pattern reachable for an ordinary
 resource, but the gap is general to `Table.save()`, not lock-specific.
+
+## A commit retry re-saves into the transaction it is retrying; `ImmediateTransaction.save()` must forward it
+
+Every retry and replay round of `commit()` (`ERR_BUSY`/`ERR_TRY_AGAIN`, `RETRY_NOW`, the
+retained-iterator replay) passes its native transaction into the save loop so each re-save re-stages
+into the handle being retried. `ImmediateTransaction.save()`'s `isCommitting` branch is the one
+`save` that could drop that argument: with none, `DatabaseTransaction.save()` opens a fresh handle and,
+the wrapper being `CLOSED` by then, commits it through a nested `commit()` whose own retry loop
+(`retries > 0` skips nothing) re-enters the override — unbounded, synchronously (`RangeError` on the
+first conflicting hold-lock save of a request). The override forwards the handle; the named test
+`immediateTransactionConflictRetry.test.js` asserts two commit attempts on one native transaction id.
+A retry round's handle is not `this.transaction` (detached before the first submission), so a throw
+from the re-save loop — a lapsed lease refusing the re-save — releases it explicitly before `abort()`,
+or its write intents park other writers until GC.
 
 ## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
 
@@ -664,7 +704,7 @@ The additive-only rule above repairs the _consumer_ of a partial peer snapshot; 
 
 ## Subscription version selection (`Table.ts`)
 
-`Table.subscribe` resolves audit events through `eventFromAudit` for both replay and live delivery: unless `includeSuperseded` (defaulting to `rawEvents`) is enabled, record mutations must match the current primary version; an absent primary entry cannot establish a current version and is skipped. Publishing advances that primary version too, so this matches the existing live equality rule rather than tracking a separate latest-mutation clock. Messages and control events are independent. Version filtering precedes historical reconstruction and `previousCount` acceptance, while audit cursors advance over rejected entries. Single-record replay retains its bounded history walk because it also contains independent published messages. Default replay reads the current primary entry for each mutation; opting into superseded full records retains audit-history reconstruction costs and retention limits.
+`Table.subscribe` resolves audit events through `eventFromAudit` for both replay and live delivery: unless `includeSuperseded` (defaulting to `rawEvents`) is enabled, record mutations must match the current primary version; an absent primary entry cannot establish a current version and is skipped. Publishing advances that primary version too: a put followed by a publish replays the message but not the put under the default rule. Messages and control events are independent. Version filtering precedes historical reconstruction and `previousCount` acceptance, while audit cursors advance over rejected entries. Single-record replay retains its bounded history walk because it also contains independent published messages; only an accepted replay event suppresses the current snapshot, and `eventFilter` also applies to that fallback. Default replay reads the current primary entry for each mutation. Opting into superseded full records retains audit-history reconstruction costs and retention limits, including patch reconstruction on durable MQTT live delivery. Collection `startTime` replay leaves `subscription.startTime` — the exclusive resume cursor `DurableSubscriptionsSession.saveSubscriptions` persists — never past a key with an unhandled in-table record: RocksDB gives every record of a transaction one `txnLogKey`, so the cursor moves to a key only on reaching the next key or finishing, and an early return (failed send, close at a yield or drain) leaves it up to one transaction back, which the resume re-sends (`subscriptionReplay.test.js`, "cursor after replay stops early"). The cursor counts events handed to the subscription queue, not consumed ones; `close()` discards the queue.
 
 ## Subscription origin identity (`Table.ts`)
 
@@ -772,11 +812,11 @@ number into its write instruction synchronously and the native writer consumes i
 (`node_modules/lmdb/write.js`), so a pass suspended inside `await removeAuditEntry()` still has a
 delete pending against the primary and audit DBIs, and LMDB forbids closing a DBI an existing
 transaction has modified. `dropDatabase()` and the legacy arm of `Table.dropTable()` await it.
-`closeDatabase()` and branch `close()` are synchronous and cannot; what covers them is that every
-environment touch remaining in a resumed pass — cursor advance, cursor release, marker write, re-arm —
-re-checks `rootStore.status`, plus the fact that their production callers reach them only for RocksDB
-stores, whose pass is one synchronous `purgeLogs()` call with nothing suspended mid-removal.
-`resetDatabases()` closes LMDB roots with no retirement call at all, so that re-check is a routine
+`closeDatabase()` and branch `close()` close commit admission, then drain tracked Rocks transactions,
+table maintenance, audit cleanup, and derived-index work before closing stores. Every environment
+touch remaining in a resumed cleanup pass — cursor advance, cursor release, marker write, re-arm —
+also re-checks `rootStore.status`. `resetDatabases()` closes LMDB roots with no retirement call at all,
+so that re-check is a routine
 path rather than a defensive one.
 
 The last-removed marker is retained until it commits. A rejected write is logged and carried to the
@@ -809,6 +849,32 @@ interrupted drop instead of resurrecting the table. Without this, surviving cata
 silently re-opened with create-if-missing on the next start, which resurrects "deleted" tables
 (with their data, if the column families were never actually removed).
 
+## The exclusive `update-attributes` lock is a bounded synchronous wait, and drop-then-recreate needs the column-family eviction fix (`Table.ts`)
+
+Two related traps: the create/schema-update path's exclusive `update-attributes` lock is a
+synchronous bounded wait (`acquireUpdateAttributesLock` in `Table.ts`: brief hot spin, then
+`Atomics.wait` backoff, retryable `ServerError` after the 10s `UPDATE_ATTRIBUTES_LOCK_TIMEOUT` — harper#2251; it used to be
+an unbounded `while (!tryLock()) {}` spin that pinned a worker core forever if the holder never
+released). Release is structural — `table()` releases in a single `finally` and `dropTable` uses
+`withUpdateAttributesLock` — so a throw inside the locked window cannot leak the lock (regression
+suite: `unitTests/resources/updateAttributesLock.test.js`). Because the acquire can now throw,
+`table()` takes the RocksDB lock _before_ it mutates the live `Table` (attributes, class metadata,
+index handles): losing the race then leaves this worker's in-memory schema exactly as it found it,
+and moving any mutation above that acquire reintroduces schema drift the catalog never saw. LMDB
+keeps the lazy acquire — its `exclusiveLock()` is an environment-wide write transaction that cannot
+time out, so taking it eagerly would stall every write to the database on an unchanged reload. A
+successful acquire that waited past `UPDATE_ATTRIBUTES_LOCK_SLOW_WAIT` (1s) warns once, since
+contention is otherwise invisible until it becomes a timeout. The locked
+sections MUST stay synchronous: the wait blocks the event loop, so an awaited operation inside
+one would stall a concurrent acquirer to its deadline. And dropping then recreating a
+same-named table within one process requires @harperfast/rocksdb-js >= the column-family
+eviction fix (2.1.0 / rocksdb-js#647): older bindings keep the dropped column family's
+by-name registry entry alive whenever other worker threads hold handles, so the recreate
+silently reuses a dangling handle and every write fails with "Invalid column family specified
+in write batch", poisoning the whole database env until restart. The regression suite for all
+of this is `unitTests/resources/dropTableGhost.test.js` (it fails by design on pre-fix
+bindings).
+
 ## RocksDB transaction log purges are database-wide only (`ResourceBridge.deleteTransactionLogsBefore`)
 
 On RocksDB, every table in a database writes to one shared set of transaction logs (partitioned per
@@ -822,6 +888,10 @@ the deprecated `delete_audit_logs_before` op _requires_ `table`, so it always er
 (the message steers callers to the new op without `table`); and the table/no-table checks in the
 bridge use `!= null` presence, not truthiness, so a table named `"0"` addressed numerically stays
 table-scoped instead of widening to a database purge.
+
+## A numeric transaction-log selector is a lookup, never a log name (`RocksTransactionLogStore.getRange`)
+
+`useLog` is get-or-create, so only a string log name may reach it; a node id with no log (a relayed or removed origin, whose writes `put()` routes to the via-node or `local` log) is an empty range ([harper#2778](https://github.com/HarperFast/harper/issues/2778)). Pinned by `auditLog.test.js` "a numeric log id with no log misses without creating one".
 
 ## Query-plan range estimation blends statistical estimates by confidence (`search.ts`)
 
@@ -921,3 +991,13 @@ can be replaced through `set_env_value`, and a replicated encrypted value cannot
 node. The application sees a missing variable rather than ciphertext. Plaintext and encrypted values
 coexist per value; `get_env_keys` and `get_component_file` still expose key names only. The
 envelope format, key model and client flow are user-facing and belong in HarperFast/documentation.
+
+## Closing an LMDB database closes its environment, never its dbis (`databases.ts` `closeDatabase`)
+
+Database aliases that resolve to one path share one LMDB root store, but each alias opens its own
+dbi handles. `mdb_env_close` releases every dbi, while lmdb-js's native `DbiWrap.close()` calls
+`mdb_dbi_close` on the `MDB_env*` it captured at open, so closing a dbi after another alias closed the
+environment is a use-after-free (an intermittent segfault in the lmdb unit run). `closeDatabase` closes
+an LMDB root once, only while `open`, skips its dbis, and closes every alias sharing it. RocksDB
+column families are independently refcounted handles, so they are still closed one by one. Enforced by
+the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.

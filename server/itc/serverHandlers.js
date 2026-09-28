@@ -5,22 +5,24 @@ const hdbLogger = require('../../utility/logging/harper_logger.ts');
 const hdbTerms = require('../../utility/hdbTerms.ts');
 const cleanLmdbMap =
 	require('../../utility/lmdb/cleanLMDBMap.ts').default || require('../../utility/lmdb/cleanLMDBMap.ts');
-const userSchema = require('../../security/user.ts');
 const { validateEvent } = require('../threads/itc.js');
-const harperBridge =
-	require('../../dataLayer/harperBridge/harperBridge.ts').default ||
-	require('../../dataLayer/harperBridge/harperBridge.ts');
-const process = require('process');
 const { isMainThread, threadId, workerData } = require('node:worker_threads');
-const { resetDatabases, closeDatabase, reloadBranchAt } = require('../../resources/databases.ts');
+const {
+	databases,
+	resetDatabases,
+	closeDatabase,
+	prepareDatabaseDrop,
+	completeDatabaseDropPreparation,
+	reloadBranchAt,
+	markDropInProgress,
+} = require('../../resources/databases.ts');
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
- * @type {{schema: ((function(*): Promise<void>)|*), job: ((function(*): Promise<void>)|*), user: ((function(): Promise<void>)|*)}}
+ * @type {{schema: ((function(*): Promise<void>)|*), job: ((function(*): Promise<void>)|*)}}
  */
 const serverItcHandlers = {
 	[hdbTerms.ITC_EVENT_TYPES.SCHEMA]: schemaHandler,
-	[hdbTerms.ITC_EVENT_TYPES.USER]: userHandler,
 	[hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST]: componentStatusRequestHandler,
 	[hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_REQUEST]: resourceOpenApiRequestHandler,
 	[hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_REQUEST]: middlewareChainsRequestHandler,
@@ -46,11 +48,37 @@ async function schemaHandler(event) {
 	}
 
 	hdbLogger.trace(`ITC schemaHandler received schema event:`, event);
+	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA && event.message.schema) {
+		if (event.message.prepareDrop) {
+			if (!event.message.dropPreparationId) throw new Error('Drop-schema preparation is missing its id');
+			if (!Number.isInteger(event.message.dropPreparationOwnerThreadId))
+				throw new Error('Drop-schema preparation is missing its owner thread id');
+			await prepareDatabaseDrop(
+				event.message.schema,
+				event.message.dropPreparationId,
+				event.message.dropPreparationOwnerThreadId,
+				event.message.dropPreparationRootPaths
+			);
+			return;
+		}
+		if (event.message.dropPreparationId)
+			await completeDatabaseDropPreparation(
+				event.message.schema,
+				event.message.dropPreparationId,
+				event.message.dropPreparationRootPaths
+			);
+	}
 	// restore_backup: this thread must release its store handles so the restore can purge and
 	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
 	// the restoring marker is present, and reloads it on the completion signal (marker gone).
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {
-		closeDatabase(event.message.schema);
+		try {
+			await closeDatabase(event.message.schema);
+		} catch (error) {
+			// Let the originator's process-wide closure check fail the restore immediately instead of
+			// withholding this worker's acknowledgement until the broadcast timeout.
+			hdbLogger.error(`Could not release database '${event.message.schema}' for restore`, error);
+		}
 	}
 	await cleanLmdbMap(event.message);
 	await syncSchemaMetadata(event.message);
@@ -65,6 +93,10 @@ async function schemaHandler(event) {
 
 schemaHandler.addListener = function (listener) {
 	schemaListeners.push(listener);
+	return () => {
+		const index = schemaListeners.indexOf(listener);
+		if (index !== -1) schemaListeners.splice(index, 1);
+	};
 };
 
 /**
@@ -83,48 +115,40 @@ async function syncSchemaMetadata(msg) {
 			reloadBranchAt(msg.branchPath);
 			return;
 		}
+		if (msg.operation === hdbTerms.OPERATIONS_ENUM.DROP_TABLE && msg.table) {
+			const releaseDropMark = msg.dropGeneration ? markDropInProgress(msg.dropGeneration) : undefined;
+			try {
+				const dropped = databases[msg.schema]?.[msg.table];
+				if (
+					dropped &&
+					(msg.dropTableId == null ? dropped.tableId == null : dropped.tableId === msg.dropTableId) &&
+					(!msg.dropGeneration || !dropped.storageGeneration || dropped.storageGeneration === msg.dropGeneration)
+				) {
+					const derivedIndexRuntime = dropped.derivedIndexRuntime;
+					dropped.derivedIndexRuntime = undefined;
+					delete databases[msg.schema][msg.table];
+					dropped.cleanup?.();
+					try {
+						await derivedIndexRuntime?.close();
+					} catch (error) {
+						hdbLogger.warn(`Derived index shutdown failed for dropped table ${msg.schema}.${msg.table}`, error);
+					}
+				}
+				resetDatabases();
+			} finally {
+				releaseDropMark?.();
+			}
+			return;
+		}
 		// TODO: Eventually should indicate which database/table changed so we don't have to scan everything
-		let databases = resetDatabases();
+		const rescanned = resetDatabases();
 		if (msg.table && msg.database)
 			// wait for a write to finish to ensure all writes have been written
-			await databases[msg.database][msg.table].put(Symbol.for('write-verify'), null);
+			await rescanned[msg.database][msg.table].put(Symbol.for('write-verify'), null);
 	} catch (e) {
 		hdbLogger.error(e);
 	}
 }
-
-const userListeners = [];
-/**
- * Updates the global hdbUsers object by querying the hdbRole table.
- * @param event
- * @returns {Promise<void>}
- */
-async function userHandler(event) {
-	try {
-		try {
-			harperBridge.resetReadTxn(hdbTerms.SYSTEM_SCHEMA_NAME, hdbTerms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME);
-			harperBridge.resetReadTxn(hdbTerms.SYSTEM_SCHEMA_NAME, hdbTerms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME);
-		} catch (error) {
-			// this can happen during tests, best to ignore
-			hdbLogger.warn(error);
-		}
-		const validate = validateEvent(event);
-		if (validate) {
-			hdbLogger.error(validate);
-			return;
-		}
-
-		hdbLogger.trace(`ITC userHandler ${hdbTerms.HDB_ITC_CLIENT_PREFIX}${process.pid} received user event:`, event);
-		await userSchema.setUsersWithRolesCache();
-		for (let listener of userListeners) listener();
-	} catch (err) {
-		hdbLogger.error(err);
-	}
-}
-
-userHandler.addListener = function (listener) {
-	userListeners.push(listener);
-};
 
 const resourceListeners = [];
 /**
@@ -295,8 +319,6 @@ async function middlewareChainsRequestHandler(event) {
 }
 
 module.exports = serverItcHandlers;
-// Named exports so consumers (e.g., MCP listChanged) can subscribe via
-// `userHandler.addListener(fn)` / `schemaHandler.addListener(fn)`.
-module.exports.userHandler = userHandler;
+// Named exports so consumers (e.g., MCP listChanged) can subscribe via `schemaHandler.addListener(fn)`.
 module.exports.schemaHandler = schemaHandler;
 module.exports.resourceHandler = resourceHandler;

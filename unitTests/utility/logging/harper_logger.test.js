@@ -18,6 +18,7 @@ const { getHttpOptions, handleApplication, logRequest } = require('#src/server/h
 const { ApplicationScope } = require('#src/components/ApplicationScope');
 const { waitFor } = require('../../waitFor.js');
 const { pinLogConfig } = require('../../logConfigFixture.js');
+const { clearRootPath } = require('../../bootPropsFixture.js');
 
 const HARPER_LOGGER_MODULE = '#js/utility/logging/harper_logger';
 const LOG_DIR_TEST = 'testLogger';
@@ -172,15 +173,7 @@ describe('Test harper_logger module', () => {
 		// ROOTPATH export shadows (see its header comment) — clear it for this describe only:
 		// the stdio-capture tests below must keep it, or their fresh module copies bind the
 		// log file to the installed root
-		let savedRootPathEnv;
-		before(() => {
-			savedRootPathEnv = process.env.ROOTPATH;
-			delete process.env.ROOTPATH;
-		});
-
-		after(() => {
-			if (savedRootPathEnv !== undefined) process.env.ROOTPATH = savedRootPathEnv;
-		});
+		clearRootPath();
 
 		afterEach(() => {
 			while (afterThisTest.length) afterThisTest.pop()();

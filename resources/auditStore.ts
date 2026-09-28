@@ -433,7 +433,7 @@ export function openAuditStore(rootStore) {
  * its version in the compatibility word and keeps a divergent log key in `additionalAuditRefs`.
  * Absent identity answers false. The direction is deliberate: uncertainty retains.
  */
-export function isAuditEntryWrite(entry: any, auditRecord: AuditRecord): boolean {
+export function isAuditEntryWrite(entry: any, auditRecord: Pick<AuditRecord, 'txnLogKey' | 'nodeId'>): boolean {
 	if (entry == null || auditRecord.txnLogKey == null) return false;
 	const auditNodeId = auditRecord.nodeId ?? 0;
 	return (

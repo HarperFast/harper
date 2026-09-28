@@ -1,9 +1,27 @@
 const assert = require('node:assert');
 const {
+	acquireFullTextRetirementFence,
 	derivedIndexWriteRejection,
 	hasDerivedIndexRegistration,
 	registerDerivedIndexTables,
+	waitForFullTextRetirement,
+	waitForFullTextRetirementLease,
 } = require('#src/resources/derivedIndexRegistry');
+
+function lockStore() {
+	const held = new Set();
+	return {
+		status: 'open',
+		tryLock(key) {
+			if (held.has(key)) return false;
+			held.add(key);
+			return true;
+		},
+		unlock(key) {
+			held.delete(key);
+		},
+	};
+}
 
 describe('derived index registration tracking', () => {
 	it('counts registrations independently by audit store and table', () => {
@@ -44,5 +62,57 @@ describe('derived index registration tracking', () => {
 		assert.strictEqual(hasDerivedIndexRegistration(store, 1), true);
 		releaseOpen();
 		assert.strictEqual(hasDerivedIndexRegistration(store, 1), false);
+	});
+
+	it('cancels a retirement-fence wait when its owner is no longer current', async () => {
+		const store = lockStore();
+		const release = acquireFullTextRetirementFence(store, 'Product');
+		try {
+			assert.strictEqual(await waitForFullTextRetirement(store, 'Product', { shouldContinue: () => false }), false);
+		} finally {
+			release();
+		}
+	});
+
+	it('rejects retirement-fence waits after the store starts closing', async () => {
+		const store = lockStore();
+		store.status = 'closing';
+		await assert.rejects(waitForFullTextRetirement(store, 'Product'), /closing store/);
+	});
+
+	it('bounds retirement-fence waits', async () => {
+		const store = lockStore();
+		const release = acquireFullTextRetirementFence(store, 'Product');
+		try {
+			await assert.rejects(waitForFullTextRetirement(store, 'Product', { timeoutMilliseconds: 5 }), (error) => {
+				assert.strictEqual(error.name, 'DerivedIndexLagError');
+				assert.strictEqual(error.statusCode, 503);
+				assert.strictEqual(error.retryable, true);
+				return /Timed out waiting/.test(error.message);
+			});
+		} finally {
+			release();
+		}
+	});
+
+	it('hands a retirement fence directly to one waiter at a time', async () => {
+		const store = lockStore();
+		const releaseInitial = acquireFullTextRetirementFence(store, 'Product');
+		const first = waitForFullTextRetirementLease(store, 'Product');
+		await new Promise((resolve) => setImmediate(resolve));
+		let secondAcquired = false;
+		const second = waitForFullTextRetirementLease(store, 'Product').then((release) => {
+			secondAcquired = true;
+			return release;
+		});
+
+		releaseInitial();
+		const releaseFirst = await first;
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(secondAcquired, false);
+		releaseFirst();
+		const releaseSecond = await second;
+		assert.strictEqual(typeof releaseSecond, 'function');
+		releaseSecond();
 	});
 });

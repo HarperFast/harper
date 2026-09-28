@@ -162,6 +162,16 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 				nullable: att.nullable,
 				computed: att.computed ? true : undefined, // only include if computed
 				embed: att.embed ? { source: att.embed.source, model: att.embed.model } : undefined,
+				decide: att.decide
+					? {
+							source: att.decide.source,
+							model: att.decide.model,
+							confidence: att.decide.confidence,
+							decision: att.decide.decision,
+							instructions: att.decide.instructions,
+							schema: att.decide.schema,
+						}
+					: undefined,
 				properties: att.properties
 					? att.properties.map((prop) => {
 							return { type: prop.type, name: prop.name };

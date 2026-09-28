@@ -53,6 +53,7 @@ import {
 } from '../customResourceRegistry.ts';
 import { notifyPromptsListChanged, notifyResourcesListChanged, notifyToolsListChanged } from '../listChanged.ts';
 import { decodeCursor, encodeCursor } from '../pagination.ts';
+import { serializesToArray, wrapToolResult } from './results.ts';
 import {
 	type AttributePermissionEntry,
 	type HarperAttribute,
@@ -476,13 +477,41 @@ function isStructuredEnvelope(data: unknown): data is object {
 	return typeof data === 'object' && data !== null;
 }
 
-function wrapResult(data: unknown): ToolResult {
-	const text = typeof data === 'string' ? data : JSON.stringify(data ?? null);
-	const result: ToolResult = { content: [{ type: 'text', text }] };
-	if (data !== null && typeof data === 'object') {
-		result.structuredContent = data as object;
+/** Mirrors registration's `overrideOutput`: did the author declare this verb's output schema? */
+function hasAuthoredOutputSchema(ResourceClass: ResourceClassLike, verb: string): boolean {
+	const schemas = (ResourceClass as { outputSchemas?: Record<string, object> }).outputSchemas;
+	return Boolean(schemas?.[verb] ?? schemas?.[CONTRACT_VERB[verb]]);
+}
+
+const warnedArrayContractTools = new Set<string>();
+
+/**
+ * MCP requires `outputSchema` to describe an object, so an array satisfies neither the derived
+ * record schema these verbs advertise nor the wrapped `{ results }` form a client validates
+ * against it. An authored `static outputSchemas.<verb>` means the author owns the contract.
+ */
+function rejectArrayForSchemaBearingVerb(
+	toolName: string,
+	verb: string,
+	data: unknown,
+	ResourceClass: ResourceClassLike
+): ToolResult | undefined {
+	// Classified the same way `wrapToolResult` classifies it: a `toJSON` returning an array
+	// reaches the wire as `{ results }` just like a bare array does.
+	if (!serializesToArray(data)) return undefined;
+	if (hasAuthoredOutputSchema(ResourceClass, verb)) return undefined;
+	const message =
+		`${toolName} resolved to an array, but the tool advertises an object outputSchema. ` +
+		`Return an object envelope — e.g. { results: [...] } — and declare it with ` +
+		`\`static outputSchemas.${verb}\`.`;
+	if (!warnedArrayContractTools.has(toolName)) {
+		warnedArrayContractTools.add(toolName);
+		harperLogger.warn(`MCP ${toolName}: ${message}`);
 	}
-	return result;
+	return {
+		isError: true,
+		content: [{ type: 'text', text: JSON.stringify({ kind: 'harper_error', tool: toolName, message }) }],
+	};
 }
 
 function wrapError(toolName: string, err: unknown): ToolResult {
@@ -537,7 +566,7 @@ function makeGetHandler(toolName: string, path: string, capturedClass: ResourceC
 			if (Array.isArray(a.get_attributes)) target.select = a.get_attributes as string[];
 			applyContractInputs(target, ResourceClass, a, 'get');
 			const data = await ResourceClass.get!(target, buildContext(context.user));
-			return wrapResult(data);
+			return rejectArrayForSchemaBearingVerb(toolName, 'get', data, ResourceClass) ?? wrapToolResult(data);
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
@@ -569,7 +598,7 @@ function makeSearchHandler(toolName: string, path: string, capturedClass: Resour
 			const page = hasMore ? rows.slice(0, limit) : rows;
 			const result: { rows: unknown[]; nextCursor?: string } = { rows: page };
 			if (hasMore) result.nextCursor = encodeCursor(offset + limit);
-			return wrapResult(result);
+			return wrapToolResult(result);
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
@@ -616,7 +645,10 @@ function makeCreateHandler(toolName: string, path: string, capturedClass: Resour
 			// scalar against a declared outputSchema with -32600. A custom Resource
 			// that returns a structured record/envelope (typically with a
 			// `static outputSchemas.create` override) is passed through unchanged (#1324).
-			return wrapResult(isStructuredEnvelope(data) ? data : { id: data });
+			return (
+				rejectArrayForSchemaBearingVerb(toolName, 'create', data, ResourceClass) ??
+				wrapToolResult(isStructuredEnvelope(data) ? data : { id: data })
+			);
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
@@ -647,7 +679,10 @@ function makeUpdateHandler(toolName: string, path: string, capturedClass: Resour
 			// derive{Update,Patch}OutputSchema. A custom Resource that returns a
 			// structured envelope (with a static outputSchemas override) passes
 			// through unchanged (#1324).
-			return wrapResult(isStructuredEnvelope(data) ? data : { ok: true });
+			return (
+				rejectArrayForSchemaBearingVerb(toolName, verb === 'put' ? 'update' : 'patch', data, ResourceClass) ??
+				wrapToolResult(isStructuredEnvelope(data) ? data : { ok: true })
+			);
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
@@ -667,7 +702,10 @@ function makeDeleteHandler(toolName: string, path: string, capturedClass: Resour
 			// result carries structuredContent matching deriveDeleteOutputSchema. A
 			// custom Resource that returns a structured envelope (typically with a
 			// `static outputSchemas.delete` override) is passed through unchanged (#1324).
-			return wrapResult(isStructuredEnvelope(data) ? data : { deleted: Boolean(data) });
+			return (
+				rejectArrayForSchemaBearingVerb(toolName, 'delete', data, ResourceClass) ??
+				wrapToolResult(isStructuredEnvelope(data) ? data : { deleted: Boolean(data) })
+			);
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
@@ -1201,7 +1239,7 @@ function makeCustomMethodHandler(toolName: string, path: string, capturedClass: 
 				serverRequest: context.serverRequest,
 			};
 			const data = await method.call(instance, args ?? {}, mcpContext);
-			return wrapResult(data ?? { ok: true });
+			return wrapToolResult(data ?? { ok: true });
 		} catch (err) {
 			return wrapError(toolName, err);
 		}
@@ -1266,6 +1304,9 @@ export function registerApplicationTools(): void {
 		return;
 	}
 	applicationToolsRegistered = true;
+	// A rebuild is the lifecycle point where an author's fix (or re-break) lands, so the
+	// warn-once set resets with it.
+	warnedArrayContractTools.clear();
 	// Capture BEFORE walking: a registration landing mid-walk bumps the version
 	// past this snapshot, so the next request's freshness check re-walks.
 	lastWalkedRegistrationVersion = (resources as { registrationVersion?: number }).registrationVersion ?? 0;

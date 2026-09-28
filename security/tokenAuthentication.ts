@@ -28,9 +28,7 @@ import type { ImpersonatePayload } from '../server/operationsServer.ts';
 import { expandOperationsPerms } from '../utility/operationPermissions.ts';
 import { update } from '../dataLayer/insert.ts';
 import UpdateObject from '../dataLayer/UpdateObject.ts';
-import * as signalling from '../utility/signalling.ts';
 import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
-import { UserEventMsg } from '../server/threads/itc.js';
 import * as env from '../utility/environment/environmentManager.ts';
 env.initSync();
 
@@ -265,8 +263,6 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 
 	if (updateResult.skipped_hashes.length > 0)
 		throw new ClientError(AUTHENTICATION_ERROR_MSGS.REFRESH_TOKEN_SAVE_FAILED, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
-
-	signalling.signalUserChange(new UserEventMsg(process.pid));
 
 	return {
 		operation_token: operationToken,
