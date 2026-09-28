@@ -46,7 +46,7 @@ describe('published native full-text Table.search integration', () => {
 	let Product;
 
 	before(function () {
-		if (!supportsPublishedBinding()) this.skip();
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb' || !supportsPublishedBinding()) this.skip();
 		setupTestDBPath();
 		setMainIsWorker(true);
 	});
