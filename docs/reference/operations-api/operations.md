@@ -1250,7 +1250,7 @@ These are refused:
 
 Harper stores the key the way ssh needs it: each line trimmed, blank lines dropped, and a final newline added. An indented or CRLF paste therefore works. A value already sealed as `enc:v1:` (for example one copied from another node's `get_ssh_key`) is stored as-is, since it can't be read without decrypting it.
 
-`host` and `hostname` are written into the ssh config that every key on the node shares, so a value that would break it is refused: any whitespace or control character, such as a space, tab or line break (`Host my key` matches two aliases, and `HostName my key` stops ssh for every key), a quote, an `=`, or a leading `#`. A leading `-` is refused too, because no host can start with one, and so is a pattern (`*`, `?`, `!`) in `host`, whose block would also apply to other keys' aliases. Surrounding whitespace is trimmed.
+`host` and `hostname` are written into the ssh config that every key on the node shares, so a value that would break it is refused: any whitespace or control character, such as a space, tab or line break (`Host my key` matches two aliases, and `HostName my key` stops ssh for every key), a quote, an `=`, or a leading `#`. A leading `-` or any backslash is refused too, since no real host has either, and so is a pattern (`*`, `?`, `!`) in `host`, whose block would also apply to other keys' aliases. Surrounding whitespace is trimmed.
 
 #### Server-side key generation (`generate`)
 
