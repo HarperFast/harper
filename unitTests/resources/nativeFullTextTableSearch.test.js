@@ -179,6 +179,7 @@ describe('published native full-text Table.search integration', () => {
 		const [restResult] = await collect(Product.search(restQuery));
 		assert.strictEqual(restResult.id, 'one');
 		assert.strictEqual(restResult.title, 'Waterproof Trail Running Shoes');
+		assert.strictEqual(restResult.tags, undefined);
 		assert.strictEqual(typeof restResult.$score, 'number');
 		assert.deepStrictEqual(restResult.$highlights.title[0].spans, [{ start: 11, end: 24 }]);
 	});
