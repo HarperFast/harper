@@ -57,7 +57,7 @@ import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts
 import * as httpComponent from '../server/http.ts';
 import * as mcpComponent from './mcp/index.ts';
 import { Status } from '../server/status/index.ts';
-import { lifecycle as componentLifecycle, statusForComponent, STATUS } from './status/index.ts';
+import { lifecycle as componentLifecycle, statusForComponent } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { materializeGlobalSecrets, processComponentEnv } from './componentSecrets.ts';
 import { PluginModule } from './PluginModule.ts';
@@ -1085,13 +1085,11 @@ export async function loadComponent(
 				}
 
 				if (!extensionModule) {
-					// This is an application-only component (no extension module), or a package component
-					// whose own load already recorded its outcome under this same name. Don't mark it loaded
-					// if that load recorded a failure: a root-config package app's leaf load keys its outer
-					// failure under this component name, and overwriting it here would heal it away in the
-					// same pass, leaving the node reporting healthy while it serves errors (#3184).
-					if (statusForComponent(componentStatusName).get()?.status !== STATUS.ERROR)
-						componentLifecycle.loaded(componentStatusName, `Application component '${componentStatusName}' processed`);
+					// This is an application-only component (no extension module). Mark it loaded; a nested
+					// package's own load records its failure under its resolved-directory key (appStatusKey),
+					// a different key from this per-component name, so this success write cannot heal a
+					// nested failure away (#3184).
+					componentLifecycle.loaded(componentStatusName, `Application component '${componentStatusName}' processed`);
 					continue;
 				}
 
@@ -1330,12 +1328,11 @@ export async function loadComponent(
 			return extensionModule;
 		}
 		// The application's plugins loaded without a whole-application throw, so clear its top-level
-		// status. Done before the "did not load anything" heuristic below so that heuristic's own
-		// failure report stands. Per-plugin failures keep their own error entries. Skip if this key is
-		// already error from this pass (defense in depth alongside the unique-per-load key), so a
-		// success write never masks a failure recorded under the same key.
-		if (appStatusKey && statusForComponent(appStatusKey).get()?.status !== STATUS.ERROR)
-			componentLifecycle.loaded(appStatusKey, `Application '${appStatusKey}' loaded`);
+		// status unconditionally: a prior failure under this same resolved-directory key must be healed
+		// by a later clean reload. The key is unique per load, so this cannot clear a different load's
+		// failure. Done before the "did not load anything" heuristic below so that heuristic's own
+		// failure report stands. Per-plugin failures keep their own error entries.
+		if (appStatusKey) componentLifecycle.loaded(appStatusKey, `Application '${appStatusKey}' loaded`);
 		const componentFunctionalityValues = Object.values(componentFunctionality);
 		if (
 			componentFunctionalityValues.length > 0 &&
