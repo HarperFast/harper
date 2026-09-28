@@ -4,14 +4,12 @@ import {
 	DatabaseTransaction,
 	isJoinableScope,
 	isReleasedTransaction,
-	TRANSACTION_STATE,
 	type Transaction,
 } from './DatabaseTransaction.ts';
 import { AsyncLocalStorage } from 'async_hooks';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 
 export const contextStorage = new AsyncLocalStorage<Context>();
-const ONCE = Object.freeze({ once: true });
 
 export function transaction<T>(context: Context, callback: (transaction: Transaction) => T): T;
 export function transaction<T>(callback: (transaction: Transaction) => T): T;
@@ -57,14 +55,11 @@ export function transaction<T>(
 	if (context.sourceApply) transaction.sourceApply = true;
 	transaction.setContext(context);
 
-	// Abort promptly on client disconnect (harper#2001) rather than waiting on the callback or the
-	// long-transaction monitor. Gated like the monitor gates abortDueToTimeout: write-bearing only, never
-	// sourceApply (no resume path, harper-pro#348). Cancellation belongs to the request, not to one
-	// transaction instance, so a signal that already fired cuts off this scope's writes too; work that
-	// must outlive the client runs on a context without the signal (resources/DESIGN.md).
-	const signal = context.signal;
-	let onDisconnect: (() => void) | undefined;
-	if (!transaction.sourceApply) transaction.requestSignal = signal;
+	// Cancellation belongs to the request (harper#2001): once its signal aborts, the chain refuses new
+	// writes and releases what it staged (DatabaseTransaction.admitRequestWrite). sourceApply is exempt,
+	// having no resume path (harper-pro#348); work that must outlive the client runs on a context without
+	// the signal (resources/DESIGN.md).
+	if (!transaction.sourceApply) transaction.requestSignal = context.signal;
 
 	let result;
 	try {
@@ -73,43 +68,12 @@ export function transaction<T>(
 				? callback(transaction)
 				: contextStorage.run(context, () => callback(transaction));
 		if ((result as any)?.then) {
-			armDisconnectListener();
 			return (result as any).then(onComplete, onError);
 		}
 	} catch (error) {
 		onError(error);
 	}
 	return onComplete(result);
-	// Only armed once something the scope owns is actually going to yield to the event loop — a pending
-	// callback, or a commit that returned a promise. Nothing synchronous can miss an abort event by
-	// arming late: no microtask has run between the call and the check that arms this.
-	function armDisconnectListener() {
-		if (onDisconnect || !signal) return;
-		onDisconnect = () => {
-			try {
-				// isCommittingWrites() is not redundant: commit() marks itself CLOSED and clears its
-				// staged writes before the native commit settles, so for that whole window a
-				// write-bearing transaction reads as idle and read-only.
-				// A read-only transaction has nothing to cut off yet; requestSignal refuses its later writes.
-				if (
-					!transaction.sourceApply &&
-					!transaction.isReplay &&
-					((transaction.open === TRANSACTION_STATE.OPEN && transaction.hasPendingWrites()) ||
-						transaction.isCommittingWrites())
-				) {
-					transaction.abortDueToDisconnect();
-				}
-			} catch (error) {
-				harperLogger.debug?.('aborting transaction on client disconnect', error);
-			}
-		};
-		// The event fires once: a signal the callback aborted synchronously would never deliver it.
-		if (signal.aborted) onDisconnect();
-		else signal.addEventListener('abort', onDisconnect, ONCE);
-	}
-	function removeDisconnectListener() {
-		if (onDisconnect) signal.removeEventListener('abort', onDisconnect);
-	}
 	// when the transaction function completes, run this to commit the transaction
 	function onComplete(result) {
 		let committed;
@@ -119,23 +83,15 @@ export function transaction<T>(
 			return onCommitError(error, result);
 		}
 		if ((committed as any).then) {
-			// A synchronous callback never armed one, and this commit is where its writes actually become
-			// durable — the pre-commit `before` phase (a blob's file write) alone can outlast the request.
-			armDisconnectListener();
 			return (committed as any).then(
-				() => {
-					removeDisconnectListener();
-					return result;
-				},
+				() => result,
 				(error) => onCommitError(error, result)
 			);
 		} else {
-			removeDisconnectListener();
 			return result;
 		}
 	}
 	function onCommitError(error, result) {
-		removeDisconnectListener();
 		try {
 			if (typeof result?.onDone === 'function') result.onDone();
 		} catch (cleanupError) {
@@ -145,7 +101,6 @@ export function transaction<T>(
 	}
 	// if the transaction function throws an error, we abort
 	function onError(error) {
-		removeDisconnectListener();
 		abortAndThrow(error, true);
 	}
 	function abortAndThrow(error, callbackThrew: boolean): never {

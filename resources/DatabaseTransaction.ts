@@ -34,6 +34,7 @@ const trackedTxns = new Set<DatabaseTransaction>();
 const readTransactionOwners = new WeakMap<ReadTransaction, DatabaseTransaction>();
 // Read options for a rotated generation's native transactions; shared because they never vary.
 const SNAPSHOT_FREE = Object.freeze({ disableSnapshot: true });
+const ONCE = Object.freeze({ once: true });
 // Logical transactions the monitor supervises for their WRITES, kept apart from trackedTxns because the
 // two have different units and different consumers: trackedTxns is per-link, bounds a read snapshot, and
 // is what the read-queue-depth metric counts, while this holds one entry per logical transaction — the
@@ -811,6 +812,9 @@ export class DatabaseTransaction implements Transaction {
 	// for a request context (resources/transaction.ts, Table.ts txnForContext). Cancellation belongs to
 	// the request: once it aborts, no link admits another write, whichever transaction it arrives on.
 	declare requestSignal?: AbortSignal;
+	// On the root while the chain owns writes: attached at the first admitted write, released once they
+	// and every commit attempt have settled, so a read-only request never registers one.
+	declare requestAbortListener?: () => void;
 	// Read references taken through useReadTxn() and not yet returned: the ownership record that bounds a
 	// retained read snapshot. See closeOwnedReadIterators().
 	declare ownedReadIterators?: Set<OwnedReadIterator>;
@@ -1350,7 +1354,7 @@ export class DatabaseTransaction implements Transaction {
 	addWrite(operation: TransactionWrite) {
 		if (this.timedOut || this.postSubmitPoisoned) throw transactionOpenTooLongError();
 		if (this.disconnected) throw requestAbortedError();
-		this.rejectIfRequestCancelled();
+		this.admitRequestWrite();
 		// A write is activity: it re-arms the idle limit on this link even though the reads it
 		// performs no longer do (see getReadTxn), so a transaction that keeps writing stays alive
 		// and only an idle one holding write intents is reaped.
@@ -1395,7 +1399,7 @@ export class DatabaseTransaction implements Transaction {
 			if (this.disconnected) throw requestAbortedError();
 			// A deferred save is admitted here rather than in addWrite(), and on a self-committing link
 			// nothing else would stop it.
-			this.rejectIfRequestCancelled();
+			this.admitRequestWrite();
 		}
 		if (!transaction && this.open !== TRANSACTION_STATE.OPEN) {
 			if (this.timedOut || this.postSubmitPoisoned) throw transactionOpenTooLongError();
@@ -1665,14 +1669,40 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * Admission check for a new write: the request this chain writes for was cancelled, so poison the
-	 * chain (releasing whatever it staged) and refuse. Reads are unaffected; an iterator already
-	 * streaming a response keeps its handle.
+	 * Admission for a new write on behalf of a request. A request already cancelled poisons the chain
+	 * (releasing whatever it staged) and is refused; otherwise the chain subscribes to the cancellation
+	 * for as long as it owns writes, so a disconnect releases its intents at once instead of when its
+	 * scope or pre-commit work happens to finish. Reads never subscribe.
 	 */
-	rejectIfRequestCancelled(): void {
-		if (!(this.root ?? this).requestSignal?.aborted) return;
-		this.abortDueToDisconnect();
-		throw requestAbortedError();
+	admitRequestWrite(): void {
+		const root = this.root ?? this;
+		const signal = root.requestSignal;
+		if (!signal) return;
+		if (signal.aborted) {
+			this.abortDueToDisconnect();
+			throw requestAbortedError();
+		}
+		if (root.requestAbortListener) return;
+		const listener = () => {
+			root.requestAbortListener = undefined;
+			try {
+				// isCommittingWrites() is not redundant: commit() marks itself CLOSED and clears its staged
+				// writes before the native commit settles, so for that window the chain reads as idle.
+				if ((root.open === TRANSACTION_STATE.OPEN && root.hasPendingWrites()) || root.isCommittingWrites())
+					root.abortDueToDisconnect();
+			} catch (error) {
+				harperLogger.debug?.('aborting transaction on client disconnect', error);
+			}
+		};
+		root.requestAbortListener = listener;
+		signal.addEventListener('abort', listener, ONCE);
+	}
+
+	protected releaseRequestAbortListener(): void {
+		const listener = this.requestAbortListener;
+		if (!listener) return;
+		this.requestAbortListener = undefined;
+		this.requestSignal.removeEventListener('abort', listener);
 	}
 
 	/** Protected work has no proven resume path, so the monitor may observe but never poison it. */
@@ -1744,6 +1774,7 @@ export class DatabaseTransaction implements Transaction {
 			if (txn.writeSupervised) stillWriteSupervised = true;
 		}
 		if (!stillWriteSupervised) supervisedWriteRoots.delete(root);
+		if (!root.hasPendingWrites()) root.releaseRequestAbortListener();
 		if (root.scopeAbandoned) {
 			root.scopeAbandoned = false;
 			// The links captured when the scope was abandoned, not the current `next` chain: a successful
@@ -2385,6 +2416,7 @@ export class DatabaseTransaction implements Transaction {
 				// brand-new transaction after an earlier one was rolled back (#1411). Releasing here would
 				// make that check see `undefined?.timedOut` and take the "start fresh" branch instead.
 				this.releaseContext(!this.timedOut && !this.disconnected);
+				if (!this.root) this.releaseRequestAbortListener();
 			} finally {
 				if (next && !(next.nativeCommitSubmitted && next.commitsInFlight)) {
 					try {
@@ -2660,6 +2692,7 @@ export class ImmediateTransaction extends DatabaseTransaction {
 			// and reload within it; with no handle super.save() would open its own and nest a commit().
 			super.save(operation, args[1], true);
 		} else {
+			this.admitRequestWrite(); // a deferred save reaches here without passing through addWrite()
 			this.isCommitting = true;
 			// A synchronous throw from commit() (e.g. a 409 from an expired lock handle) would
 			// otherwise leave isCommitting latched at true, causing every subsequent save() in this

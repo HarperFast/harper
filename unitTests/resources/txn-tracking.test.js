@@ -21,6 +21,7 @@ const {
 } = require('#src/resources/analytics/write');
 const { setTimeout: delay } = require('node:timers/promises');
 const { PassThrough } = require('node:stream');
+const { getEventListeners } = require('node:events');
 const { RocksDatabase, registryStatus, constants } = require('@harperfast/rocksdb-js');
 const { RETRY_NOW_VALUE } = constants;
 const { createBlob } = require('#src/resources/blob');
@@ -1821,6 +1822,48 @@ describe('Disconnect abort', () => {
 		await assert.rejects(async () => receiver.put(569, { name: 'after the disconnect' }), /disconnected/);
 		assert.ok((await DisconnectResource.get(569)) == null, 'the post-disconnect instance write must not commit');
 		assert.equal((await DisconnectResource.get(568))?.name, 'updated', 'the write before the disconnect stands');
+	});
+
+	// The chain owns the subscription only while it owns writes: a read-only request registers nothing,
+	// and the listener a write attached is gone once that write's commit has settled.
+	it('subscribes to the request signal only while the chain owns writes', async function () {
+		await DisconnectResource.put(595, { name: 'readable' }, {});
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		await transaction(context, async () => {
+			await DisconnectResource.get(595, context);
+			assert.equal(getEventListeners(ac.signal, 'abort').length, 0, 'a read registers no listener');
+			await DisconnectResource.put(596, { name: 'owned write' }, context);
+			assert.equal(getEventListeners(ac.signal, 'abort').length, 1, 'the first write subscribes the chain once');
+			await DisconnectResource.put(597, { name: 'second write' }, context);
+			assert.equal(getEventListeners(ac.signal, 'abort').length, 1);
+		});
+		assert.equal(getEventListeners(ac.signal, 'abort').length, 0, 'the settled commit releases the listener');
+		assert.equal((await DisconnectResource.get(596))?.name, 'owned write');
+	});
+
+	// A retained instance's write after its scope completed runs on a per-context self-committing
+	// transaction. Parked in pre-commit work, it still holds its staged writes, so a disconnect must
+	// release them at once rather than when that work happens to finish.
+	it('aborts a self-committing write parked in pre-commit work when the client disconnects', async function () {
+		await DisconnectBlobResource.put({ id: 2076 }, {});
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		const receiver = await DisconnectBlobResource.update(2076, {}, context);
+		await receiver.save();
+		const slow = new PassThrough();
+		const committing = receiver.put(2077, { id: 2077, blob: createBlob(slow) });
+		committing.catch(() => {});
+		slow.write(Buffer.alloc(4096, 'p'));
+		await waitFor(() => context.transaction?.committing, {
+			message: 'the self-committing write should park in its pre-commit phase',
+		});
+		const parked = context.transaction;
+		ac.abort();
+		assert.equal(parked.disconnected, true, 'the disconnect must reach the parked write at once');
+		slow.end();
+		await assert.rejects(committing, /disconnected/);
+		assert.ok((await DisconnectBlobResource.get(2077)) == null, 'the parked write must not land');
 	});
 
 	// The shape that made the edge-triggered rule an API-dependent atomicity hole: write A is rolled back

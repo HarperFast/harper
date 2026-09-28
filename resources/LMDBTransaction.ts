@@ -114,7 +114,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 	addWrite(operation: TransactionWrite): any {
 		if (this.timedOut || this.postSubmitPoisoned) throw transactionOpenTooLongError();
 		if (this.disconnected) throw requestAbortedError();
-		this.rejectIfRequestCancelled();
+		this.admitRequestWrite();
 		if (this.open === TRANSACTION_STATE.CLOSED) {
 			throw new Error('Can not use a transaction that is no longer open');
 		}
@@ -446,6 +446,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 				this.endScopeOwnership();
 				this.clearWrites();
 				this.releaseContext(!this.timedOut && !this.disconnected);
+				if (!this.root) this.releaseRequestAbortListener();
 			} finally {
 				// Same guard as DatabaseTransaction.abort(): a child whose native commit is outstanding owns
 				// its own cleanup, and clearing its writes here would unlink blobs that commit still references.
