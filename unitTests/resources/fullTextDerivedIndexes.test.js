@@ -618,7 +618,7 @@ describe('@fullText derived-index activation', () => {
 					)
 				)
 			),
-			(error) => error.statusCode === 400
+			(error) => error.name === 'AccessViolation' || error.statusCode === 403
 		);
 		const explicitPermission = user.role.permission;
 		const explicitAllowed = await collect(

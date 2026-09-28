@@ -81,6 +81,18 @@ function definition() {
 	};
 }
 
+function queryLimits(overrides = {}) {
+	const maxSearchWindow = overrides.maxSearchWindow ?? 10_000;
+	return {
+		maxSearchWindow,
+		maxAutocompleteResults: Math.min(100, maxSearchWindow),
+		maxSearchBudgetMilliseconds: 30_000,
+		maxTraceRecords: 10,
+		maxTraceSourceBytes: Number.MAX_SAFE_INTEGER,
+		...overrides,
+	};
+}
+
 function attachCurrentCoverage(index, auditStore, readinessId) {
 	auditStore.setCoverage(readinessId, 99_000_000n);
 	index.attachDerivedHost({
@@ -116,7 +128,10 @@ function simpleQueryIndex({ auditStore, readinessId, payload, hits, onReload, on
 		limits: {},
 		binding: {
 			async runtimeInfo() {
-				return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+				return {
+					queryClassIsolationMinimumSearchThreads: 1,
+					limits: queryLimits({ maxSearchWindow: 10, maxTraceRecords: 10 }),
+				};
 			},
 			async openNativeFullTextReader() {
 				return {
@@ -265,7 +280,7 @@ describe('FullTextQueryIndex', () => {
 			async runtimeInfo() {
 				return {
 					queryClassIsolationMinimumSearchThreads: 3,
-					limits: { maxSearchWindow: 10_000, maxTraceRecords: 10, maxTraceSourceBytes: 20 },
+					limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10, maxTraceSourceBytes: 20 }),
 				};
 			},
 			async openNativeFullTextReader(options) {
@@ -376,7 +391,10 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: queryLimits({ maxSearchWindow: 10, maxTraceRecords: 10 }),
+					};
 				},
 				async openNativeFullTextReader() {
 					return {
@@ -533,7 +551,10 @@ describe('FullTextQueryIndex', () => {
 				limits: {},
 				binding: {
 					async runtimeInfo() {
-						return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+						return {
+							queryClassIsolationMinimumSearchThreads: 1,
+							limits: queryLimits({ maxSearchWindow: 10, maxTraceRecords: 10 }),
+						};
 					},
 					async openNativeFullTextReader() {
 						return { committedPayload: payload, async search() {}, async reload() {}, async close() {} };
@@ -571,7 +592,10 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: queryLimits({ maxSearchWindow: 10, maxTraceRecords: 10 }),
+					};
 				},
 				async openNativeFullTextReader() {
 					return { committedPayload: undefined, async search() {}, async reload() {}, async close() {} };
@@ -612,7 +636,10 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: queryLimits({ maxSearchWindow: 10, maxTraceRecords: 10 }),
+					};
 				},
 				async openNativeFullTextReader() {
 					return { committedPayload: undefined, async search() {}, async reload() {}, async close() {} };
@@ -685,7 +712,7 @@ describe('FullTextQueryIndex', () => {
 					if (++probes === 1) throw new Error('temporary capability probe failure');
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+						limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
 					};
 				},
 				async openNativeFullTextReader() {
@@ -710,6 +737,41 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	it('rejects an incomplete injected query capability contract before opening a reader', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'binding-capabilities';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let opens = 0;
+		const index = new FullTextQueryIndex({
+			Table: { tableId: 1, primaryStore: {}, _readTxnForContext: () => undefined },
+			definition: definition(),
+			auditStore,
+			readinessId,
+			indexId: readinessId,
+			storePath: '/unused',
+			storeName: 'unused',
+			sourceGeneration: 'generation',
+			limits: {},
+			binding: {
+				async runtimeInfo() {
+					const limits = queryLimits();
+					delete limits.maxAutocompleteResults;
+					return { queryClassIsolationMinimumSearchThreads: 1, limits };
+				},
+				async openNativeFullTextReader() {
+					opens++;
+				},
+			},
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}),
+			/Full-text search on 'catalogSearch' failed/
+		);
+		assert.strictEqual(opens, 0);
+		await index.close();
+	});
+
 	it('maps native query failures without exposing native details', async () => {
 		const auditStore = sharedStore();
 		publishDerivedIndexReadiness(auditStore, 'query-errors', 'ready');
@@ -731,7 +793,7 @@ describe('FullTextQueryIndex', () => {
 				async runtimeInfo() {
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: { maxSearchWindow: 10_000, maxAutocompleteResults: 100, maxTraceRecords: 10 },
+						limits: queryLimits({ maxSearchWindow: 10_000, maxAutocompleteResults: 100, maxTraceRecords: 10 }),
 					};
 				},
 				async openNativeFullTextReader() {
@@ -769,7 +831,10 @@ describe('FullTextQueryIndex', () => {
 		let failReload = false;
 		const binding = {
 			async runtimeInfo() {
-				return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 } };
+				return {
+					queryClassIsolationMinimumSearchThreads: 1,
+					limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
+				};
 			},
 			async openNativeFullTextReader(options) {
 				opens.push(structuredClone(options));
@@ -852,7 +917,7 @@ describe('FullTextQueryIndex', () => {
 				async runtimeInfo() {
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+						limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
 					};
 				},
 				async openNativeFullTextReader() {
@@ -915,7 +980,10 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 2, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: queryLimits({ maxSearchWindow: 2, maxTraceRecords: 10 }),
+					};
 				},
 				async openNativeFullTextReader() {
 					return {
@@ -977,7 +1045,7 @@ describe('FullTextQueryIndex', () => {
 				async runtimeInfo() {
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+						limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
 					};
 				},
 				async openNativeFullTextReader() {
@@ -1038,7 +1106,7 @@ describe('FullTextQueryIndex', () => {
 				async runtimeInfo() {
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: { maxSearchWindow: 10_000, maxAutocompleteResults: 100, maxTraceRecords: 10 },
+						limits: queryLimits({ maxSearchWindow: 10_000, maxAutocompleteResults: 100, maxTraceRecords: 10 }),
 					};
 				},
 				async openNativeFullTextReader() {
@@ -1071,13 +1139,14 @@ describe('FullTextQueryIndex', () => {
 				],
 			},
 		};
-		assert.strictEqual((await index.search(query, {})).length, 100);
+		await assert.rejects(index.search(query, {}), /100-result search window; add a limit/);
 		assert.deepStrictEqual(
 			requests.map(({ offset, limit, exactTotal }) => ({ offset, limit, exactTotal })),
 			[{ offset: 0, limit: 100, exactTotal: true }]
 		);
+		assert.strictEqual((await index.search(query, {}, { minResults: 100 })).length, 100);
 		await assert.rejects(index.search(query, {}, { minResults: 101 }), /100-result autocomplete search window/);
-		assert.strictEqual(requests.length, 1);
+		assert.strictEqual(requests.length, 2);
 		await index.close();
 	});
 
@@ -1104,7 +1173,7 @@ describe('FullTextQueryIndex', () => {
 				async runtimeInfo() {
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: { maxSearchWindow: 10_000, maxSearchBudgetMilliseconds: 20, maxTraceRecords: 10 },
+						limits: queryLimits({ maxSearchWindow: 10_000, maxSearchBudgetMilliseconds: 20, maxTraceRecords: 10 }),
 					};
 				},
 				async openNativeFullTextReader() {
@@ -1157,7 +1226,10 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 2, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: queryLimits({ maxSearchWindow: 2, maxTraceRecords: 10 }),
+					};
 				},
 				async openNativeFullTextReader() {
 					return {
@@ -1209,7 +1281,10 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 2, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: queryLimits({ maxSearchWindow: 2, maxTraceRecords: 10 }),
+					};
 				},
 				async openNativeFullTextReader() {
 					return {
@@ -1255,7 +1330,10 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: queryLimits({ maxSearchWindow: 10, maxTraceRecords: 10 }),
+					};
 				},
 				async openNativeFullTextReader() {
 					return {
@@ -1306,7 +1384,10 @@ describe('FullTextQueryIndex', () => {
 				limits: {},
 				binding: {
 					async runtimeInfo() {
-						return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+						return {
+							queryClassIsolationMinimumSearchThreads: 1,
+							limits: queryLimits({ maxSearchWindow: 10, maxTraceRecords: 10 }),
+						};
 					},
 					async openNativeFullTextReader() {
 						return {
@@ -1354,7 +1435,10 @@ describe('FullTextQueryIndex', () => {
 			limits: {},
 			binding: {
 				async runtimeInfo() {
-					return { queryClassIsolationMinimumSearchThreads: 1, limits: { maxSearchWindow: 10, maxTraceRecords: 10 } };
+					return {
+						queryClassIsolationMinimumSearchThreads: 1,
+						limits: queryLimits({ maxSearchWindow: 10, maxTraceRecords: 10 }),
+					};
 				},
 				async openNativeFullTextReader() {
 					return {
@@ -1408,7 +1492,7 @@ describe('FullTextQueryIndex', () => {
 				async runtimeInfo() {
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+						limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
 					};
 				},
 				async openNativeFullTextReader() {
@@ -1482,7 +1566,7 @@ describe('FullTextQueryIndex', () => {
 				async runtimeInfo() {
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: { maxSearchWindow: 10, maxSearchBudgetMilliseconds: 1_000, maxTraceRecords: 10 },
+						limits: queryLimits({ maxSearchWindow: 10, maxSearchBudgetMilliseconds: 1_000, maxTraceRecords: 10 }),
 					};
 				},
 				async openNativeFullTextReader() {
@@ -1561,7 +1645,7 @@ describe('FullTextQueryIndex', () => {
 				async runtimeInfo() {
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: { maxSearchWindow: 10, maxSearchBudgetMilliseconds: 100, maxTraceRecords: 10 },
+						limits: queryLimits({ maxSearchWindow: 10, maxSearchBudgetMilliseconds: 100, maxTraceRecords: 10 }),
 					};
 				},
 				async openNativeFullTextReader() {
@@ -1637,7 +1721,7 @@ describe('FullTextQueryIndex', () => {
 				async runtimeInfo() {
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+						limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
 					};
 				},
 				async openNativeFullTextReader() {
@@ -1707,7 +1791,7 @@ describe('FullTextQueryIndex', () => {
 				async runtimeInfo() {
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+						limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
 					};
 				},
 				async openNativeFullTextReader() {
@@ -1870,7 +1954,7 @@ describe('FullTextQueryIndex', () => {
 				async runtimeInfo() {
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: { maxSearchWindow: 10, maxTraceRecords: 10, maxTraceSourceBytes: 4 },
+						limits: queryLimits({ maxSearchWindow: 10, maxTraceRecords: 10, maxTraceSourceBytes: 4 }),
 					};
 				},
 				async openNativeFullTextReader() {
@@ -1944,7 +2028,7 @@ describe('FullTextQueryIndex', () => {
 				async runtimeInfo() {
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+						limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
 					};
 				},
 				async openNativeFullTextReader() {
@@ -2005,7 +2089,7 @@ describe('FullTextQueryIndex', () => {
 				async runtimeInfo() {
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+						limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
 					};
 				},
 				async openNativeFullTextReader() {
@@ -2074,7 +2158,7 @@ describe('FullTextQueryIndex', () => {
 					async runtimeInfo() {
 						return {
 							queryClassIsolationMinimumSearchThreads: 1,
-							limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+							limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
 						};
 					},
 					async openNativeFullTextReader() {
@@ -2170,7 +2254,7 @@ describe('FullTextQueryIndex', () => {
 					async runtimeInfo() {
 						return {
 							queryClassIsolationMinimumSearchThreads: 1,
-							limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+							limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
 						};
 					},
 					async openNativeFullTextReader() {
@@ -2246,7 +2330,7 @@ describe('FullTextQueryIndex', () => {
 				async runtimeInfo() {
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+						limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
 					};
 				},
 				async openNativeFullTextReader() {
@@ -2307,7 +2391,7 @@ describe('FullTextQueryIndex', () => {
 				async runtimeInfo() {
 					return {
 						queryClassIsolationMinimumSearchThreads: 1,
-						limits: { maxSearchWindow: 10_000, maxTraceRecords: 10 },
+						limits: queryLimits({ maxSearchWindow: 10_000, maxTraceRecords: 10 }),
 					};
 				},
 				async openNativeFullTextReader() {

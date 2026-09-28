@@ -188,9 +188,10 @@ export function migratePersistedFullTextDefinition(value: unknown): unknown {
 	if (
 		definition.highlighting != null &&
 		Array.isArray(definition.fields) &&
-		!definition.fields.some(
-			(field) => field && typeof field === 'object' && !Array.isArray(field) && (field as any).highlight === true
-		)
+		(definition.surfaceTerms === false ||
+			!definition.fields.some(
+				(field) => field && typeof field === 'object' && !Array.isArray(field) && (field as any).highlight === true
+			))
 	) {
 		migrated ??= { ...definition };
 		delete migrated.highlighting;

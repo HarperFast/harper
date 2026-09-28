@@ -187,6 +187,19 @@ describe('@fullText declaration compiler', () => {
 			() => 'new-generation'
 		);
 		assert.strictEqual(generations.search, 'old-generation');
+
+		const withoutSurfaceTerms = {
+			name: 'search',
+			fields: [{ name: 'title', highlight: true }],
+			surfaceTerms: false,
+			highlighting: { maxFragments: 2, fragmentLength: 120 },
+		};
+		const [migrated] = compileValidFullTextDefinitions([withoutSurfaceTerms], productAttributes(), () => {
+			assert.fail('persisted highlighting without surface terms should migrate');
+		});
+		assert.strictEqual(migrated.highlighting, undefined);
+		assert.strictEqual(migrated.surfaceTerms, false);
+		assert.throws(() => compileFullTextDefinitions([withoutSurfaceTerms], productAttributes()), /surfaceTerms: true/);
 	});
 });
 

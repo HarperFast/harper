@@ -102,6 +102,20 @@ export type NativeFullTextRuntimeInfo = {
 	};
 };
 
+export type NativeFullTextQueryRuntimeInfo = Pick<
+	NativeFullTextRuntimeInfo,
+	'queryClassIsolationMinimumSearchThreads'
+> & {
+	limits: Pick<
+		NativeFullTextRuntimeInfo['limits'],
+		| 'maxSearchWindow'
+		| 'maxAutocompleteResults'
+		| 'maxSearchBudgetMilliseconds'
+		| 'maxTraceRecords'
+		| 'maxTraceSourceBytes'
+	>;
+};
+
 export interface NativeFullTextModule {
 	NativeFullTextIndex: {
 		prototype: Pick<FullTextDerivedIndexEngine, 'applyMutationBatch' | 'publish' | 'close'>;
@@ -201,13 +215,12 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		throw new TypeError('@harperfast/fulltext/native does not implement the required Harper binding contract');
 	const binding = module as NativeFullTextModule;
 	const info = await binding.runtimeInfo();
+	validateFullTextQueryRuntimeInfo(info);
 	if (
 		!info ||
 		typeof info.packageVersion !== 'string' ||
 		typeof info.tantivyVersion !== 'string' ||
 		!Number.isSafeInteger(info.nativeAbiVersion) ||
-		!Number.isSafeInteger(info.queryClassIsolationMinimumSearchThreads) ||
-		info.queryClassIsolationMinimumSearchThreads <= 0 ||
 		info.lifecycleApiVersion !== FULLTEXT_LIFECYCLE_API_VERSION ||
 		info.mutationBatchApiVersion !== FULLTEXT_MUTATION_BATCH_API_VERSION ||
 		info.queryApiVersion !== FULLTEXT_QUERY_API_VERSION ||
@@ -215,18 +228,7 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		!info.storageBackends.includes('native') ||
 		!info.limits ||
 		!Number.isSafeInteger(info.limits.maxCommitPayloadBytes) ||
-		info.limits.maxCommitPayloadBytes <= 0 ||
-		!Number.isSafeInteger(info.limits.maxSearchWindow) ||
-		info.limits.maxSearchWindow <= 0 ||
-		!Number.isSafeInteger(info.limits.maxAutocompleteResults) ||
-		info.limits.maxAutocompleteResults <= 0 ||
-		info.limits.maxAutocompleteResults > info.limits.maxSearchWindow ||
-		!Number.isSafeInteger(info.limits.maxSearchBudgetMilliseconds) ||
-		info.limits.maxSearchBudgetMilliseconds <= 0 ||
-		!Number.isSafeInteger(info.limits.maxTraceRecords) ||
-		info.limits.maxTraceRecords <= 0 ||
-		!Number.isSafeInteger(info.limits.maxTraceSourceBytes) ||
-		info.limits.maxTraceSourceBytes <= 0
+		info.limits.maxCommitPayloadBytes <= 0
 	)
 		throw new TypeError('@harperfast/fulltext/native reported incompatible runtime capabilities');
 	validatedRuntimeInfo.set(binding, info);
@@ -247,4 +249,28 @@ export function nativeFullTextSearchThreads(
 	if (!Number.isSafeInteger(minimum) || minimum <= 0)
 		throw new TypeError('@harperfast/fulltext/native reported an invalid query-class isolation threshold');
 	return Math.max(configured, minimum);
+}
+
+export function validateFullTextQueryRuntimeInfo(info: unknown): NativeFullTextQueryRuntimeInfo {
+	const runtime = info as NativeFullTextQueryRuntimeInfo;
+	if (
+		!runtime ||
+		typeof runtime !== 'object' ||
+		!Number.isSafeInteger(runtime.queryClassIsolationMinimumSearchThreads) ||
+		runtime.queryClassIsolationMinimumSearchThreads <= 0 ||
+		!runtime.limits ||
+		!Number.isSafeInteger(runtime.limits.maxSearchWindow) ||
+		runtime.limits.maxSearchWindow <= 0 ||
+		!Number.isSafeInteger(runtime.limits.maxAutocompleteResults) ||
+		runtime.limits.maxAutocompleteResults <= 0 ||
+		runtime.limits.maxAutocompleteResults > runtime.limits.maxSearchWindow ||
+		!Number.isSafeInteger(runtime.limits.maxSearchBudgetMilliseconds) ||
+		runtime.limits.maxSearchBudgetMilliseconds <= 0 ||
+		!Number.isSafeInteger(runtime.limits.maxTraceRecords) ||
+		runtime.limits.maxTraceRecords <= 0 ||
+		!Number.isSafeInteger(runtime.limits.maxTraceSourceBytes) ||
+		runtime.limits.maxTraceSourceBytes <= 0
+	)
+		throw new TypeError('@harperfast/fulltext/native reported incompatible runtime capabilities');
+	return runtime;
 }

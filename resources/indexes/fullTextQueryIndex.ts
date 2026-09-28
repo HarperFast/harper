@@ -15,6 +15,7 @@ import type { RocksTransactionLogStore } from '../RocksTransactionLogStore.ts';
 import {
 	loadFullTextNativeBinding,
 	nativeFullTextSearchThreads,
+	validateFullTextQueryRuntimeInfo,
 	type NativeFullTextIndexConfiguration,
 	type NativeFullTextModule,
 	type NativeFullTextReader,
@@ -330,7 +331,7 @@ export class FullTextQueryIndex {
 				if (!moreMayExist) break;
 				if (accepted.length < target) await new Promise((resolve) => setImmediate(resolve));
 			}
-			if (!bounded && moreMayExist && !autocomplete)
+			if (!bounded && moreMayExist)
 				throw new ClientError(`Full-text query exceeds the ${searchWindow}-result search window; add a limit`, 400);
 			if (bounded && accepted.length < target && moreMayExist && staleVersionHits > 0)
 				throw new DerivedIndexLagError(
@@ -656,16 +657,16 @@ export class FullTextQueryIndex {
 				? await configured()
 				: configured
 			: await loadFullTextNativeBinding();
-		const info = await binding.runtimeInfo();
+		const info = validateFullTextQueryRuntimeInfo(await binding.runtimeInfo());
 		this.#nativeOptions.limits.searchThreads = nativeFullTextSearchThreads(
 			info,
 			this.#nativeOptions.limits.searchThreads
 		);
 		this.#maxSearchWindow = info.limits.maxSearchWindow;
 		this.#maxAutocompleteResults = info.limits.maxAutocompleteResults;
-		this.#maxSearchBudgetMilliseconds = info.limits.maxSearchBudgetMilliseconds ?? 30_000;
+		this.#maxSearchBudgetMilliseconds = info.limits.maxSearchBudgetMilliseconds;
 		this.#maxTraceRecords = info.limits.maxTraceRecords;
-		this.#maxTraceSourceBytes = info.limits.maxTraceSourceBytes ?? Number.MAX_SAFE_INTEGER;
+		this.#maxTraceSourceBytes = info.limits.maxTraceSourceBytes;
 		return (this.#binding = binding);
 	}
 
