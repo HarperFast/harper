@@ -1022,8 +1022,8 @@ describe('Querying through Resource API', () => {
 				assert.equal(explanation.conditions[0].attribute, 'league');
 				assert(explanation.conditions[0].estimated_count > 3);
 				assert.deepStrictEqual(await teamsWithPlayerNamed('erin', north), [{ id: 'team-e', players: ['erin-1'] }]);
-				// four franks on one team drive the id-set switch's size-1 branch (a single distinct `to`
-				// value), not just its multi-id branch
+				// four franks keep the join's estimate above league's, so league leads and their single
+				// `to` value takes the id-set switch's size-1 branch
 				assert.deepStrictEqual(await teamsWithPlayerNamed('frank', north), [
 					{ id: 'team-c', players: ['frank-1', 'frank-2', 'frank-3', 'frank-4'] },
 				]);
