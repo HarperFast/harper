@@ -336,19 +336,6 @@ export async function assertBlobSnapshotRestorable(
 	}
 }
 
-/** Whether any configured blob root holds at least one file. Stops at the first one it finds. */
-export async function blobRootsHaveFiles(blobRoots: string[]): Promise<boolean> {
-	for (const root of blobRoots) {
-		try {
-			for await (const _ of walkBlobFiles(root)) return true;
-		} catch (error: any) {
-			if (error.code === 'ENOTDIR') continue;
-			throw error;
-		}
-	}
-	return false;
-}
-
 /**
  * Refuse an engine-only restore unless the operator has accepted the mixed result.
  *
@@ -369,19 +356,18 @@ export async function blobRootsHaveFiles(blobRoots: string[]): Promise<boolean> 
  * hazard if the blob-id high-water mark were persisted with the engine and restored alongside it, so
  * the counter could not fall behind the references it has already handed out.
  */
-export async function assertEngineOnlyRestoreAllowed(
+export function assertEngineOnlyRestoreAllowed(
 	databaseName: string,
-	blobRoots: string[],
 	{ backupHasBlobs, allowEngineOnly }: { backupHasBlobs: boolean; allowEngineOnly: boolean }
-): Promise<void> {
+): void {
 	if (backupHasBlobs || allowEngineOnly) return;
-	// Which hazard applies is only used to explain the refusal -- the refusal itself does not depend on
-	// the destination, because an empty root is not evidence that the backup's records are blob-free.
-	const hazard = (await blobRootsHaveFiles(blobRoots))
-		? `the database still has blob files, so a restored record could resolve to a blob that no longer belongs to it`
-		: `the database has no blob files, so blob ids will be reissued from 1 and the next blob written will land on a path a restored record already references`;
+	// Decided from the manifest alone. Walking the destination to tailor the message would turn a
+	// deterministic 400 into a traversal that can be slow or fail outright (EACCES on an unreadable
+	// root), for wording -- and both hazards are worth stating anyway, since the operator who passes
+	// the opt-in is accepting whichever one applies.
 	throw new ClientError(
-		`Cannot restore an engine-only backup over database '${databaseName}': the backup captured no blobs, but ${hazard}. ` +
+		`Cannot restore an engine-only backup over database '${databaseName}': the backup captured no blobs, so the restored records would address whichever blobs are on disk now. ` +
+			`If the database still has blob files, a record can resolve to a blob that no longer belongs to it; if it has none, blob ids restart at 1 and the next blob written lands on a path a restored record already references — so a new target database is not an escape. ` +
 			`Restore a backup that includes blobs, or pass 'allow_engine_only' to accept the mixed result.`
 	);
 }

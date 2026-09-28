@@ -1651,8 +1651,7 @@ function runReclamation(): void {
 			const instanceStorageInfo = storageInfoForBlob.get(blob);
 			if (instanceStorageInfo) discardStorage(instanceStorageInfo);
 		}
-		let unlinkDone: () => void;
-		trackBlobUnlink(blobSaveDatabaseName(storageInfo?.store), new Promise<void>((resolve) => (unlinkDone = resolve)));
+		const unlinkDone = beginBlobUnlink(blobSaveDatabaseName(storageInfo?.store));
 		unlink(filePath, (error) => {
 			unlinkDone();
 			pendingReclamation.delete(filePath);
@@ -1814,16 +1813,19 @@ export function createBlobFromStoredBody(
 // can be committed referencing fileIds whose blob files were never durably written.
 let pendingMigrationBlobSaves: Promise<void>[] | undefined;
 
-// Fenced by token rather than by flag. Two restores of the same database can overlap -- a restore
-// releases its lock before awaiting its `reload` broadcast -- so a database-wide boolean lets the
-// first restore's late reload lift the second one's fence, and saves are accepted during the second
-// one's post-close check. A database is fenced while any token is outstanding.
-const blobRestoreFences = new Map<string, Set<string>>();
+// Database -> the token of the restore that currently owns its fence. Two restores of one database
+// can overlap (a restore releases its lock before awaiting its `reload` broadcast), so a plain flag
+// lets the first one's late reload lift the second one's fence. Ownership rather than a token set:
+// a later close takes ownership from an earlier restore without ever unfencing, a superseded
+// restore's late reload is a no-op, and -- the part a set gets wrong -- a restore that dies after
+// destruction leaves no token behind to fence the database forever, so the rerun it tells the
+// operator to perform can actually clear it.
+const blobRestoreFences = new Map<string, string>();
 const inFlightBlobSaves = new Map<string, Set<Promise<void>>>();
-// Unlinks already dispatched when a fence goes up. A reclamation that lands after the restore has
-// rewritten the file would delete the restored bytes, so the fence waits these out before the
-// restore proceeds.
-const inFlightBlobUnlinks = new Map<string, Set<Promise<void>>>();
+// Count of blob-root unlinks dispatched per database, with the waiters a fence parks on until that
+// count reaches zero. A counter rather than a set of promises: this sits on the deletion path for
+// every blob, and the overwhelmingly common case has no restore running and nothing to await.
+const inFlightBlobUnlinks = new Map<string, { count: number; waiters: Array<() => void> }>();
 
 function blobSaveDatabaseName(store: any): string | undefined {
 	return typeof store?.databaseName === 'string' ? store.databaseName : undefined;
@@ -1864,13 +1866,11 @@ function trackBlobSave(store: any, saving?: Promise<void>): void {
  * dispatched ones are awaited -- so the walk that follows sees a root nothing is still changing.
  */
 export async function blockBlobSavesForRestore(databaseName: string, restoreToken: string): Promise<void> {
-	let tokens = blobRestoreFences.get(databaseName);
-	if (!tokens) blobRestoreFences.set(databaseName, (tokens = new Set()));
-	tokens.add(restoreToken);
+	// Takes ownership whether or not another restore held it: the database never unfences in between.
+	blobRestoreFences.set(databaseName, restoreToken);
 	const saves = inFlightBlobSaves.get(databaseName);
 	if (saves) await Promise.allSettled([...saves]);
-	const unlinks = inFlightBlobUnlinks.get(databaseName);
-	if (unlinks) await Promise.allSettled([...unlinks]);
+	await drainBlobUnlinks(databaseName);
 }
 
 /**
@@ -1878,9 +1878,8 @@ export async function blockBlobSavesForRestore(databaseName: string, restoreToke
  * restore's late `reload` cannot unfence a database another restore is still working on.
  */
 export function resumeBlobSavesAfterRestore(databaseName: string, restoreToken: string): void {
-	const tokens = blobRestoreFences.get(databaseName);
-	if (!tokens?.delete(restoreToken)) return;
-	if (tokens.size > 0) return;
+	// Only the owner may lift the fence; a superseded restore's reload arriving late does nothing.
+	if (blobRestoreFences.get(databaseName) !== restoreToken) return;
 	blobRestoreFences.delete(databaseName);
 	// Every queued reclamation for this database belongs to the generation the restore just replaced:
 	// its file paths were condemned against records that no longer exist. Draining them now would
@@ -1903,16 +1902,26 @@ function discardReclamationForDatabase(databaseName: string): void {
 	if (pendingReclamation.size === 0) resetDrainedQueue();
 }
 
-function trackBlobUnlink(databaseName: string | undefined, unlinking: Promise<void>): void {
-	if (!databaseName) return;
+/** Register a dispatched blob-root unlink so a restore fence can wait for it to land. */
+export function beginBlobUnlink(databaseName: string | undefined): () => void {
+	if (!databaseName) return () => {};
 	let unlinks = inFlightBlobUnlinks.get(databaseName);
-	if (!unlinks) inFlightBlobUnlinks.set(databaseName, (unlinks = new Set()));
-	unlinks.add(unlinking);
-	const remove = () => {
-		unlinks.delete(unlinking);
-		if (unlinks.size === 0) inFlightBlobUnlinks.delete(databaseName);
+	if (!unlinks) inFlightBlobUnlinks.set(databaseName, (unlinks = { count: 0, waiters: [] }));
+	unlinks.count++;
+	let settled = false;
+	return () => {
+		if (settled) return;
+		settled = true;
+		if (--unlinks.count > 0) return;
+		inFlightBlobUnlinks.delete(databaseName);
+		for (const wake of unlinks.waiters) wake();
 	};
-	unlinking.then(remove, remove);
+}
+
+function drainBlobUnlinks(databaseName: string): Promise<void> | undefined {
+	const unlinks = inFlightBlobUnlinks.get(databaseName);
+	if (!unlinks || unlinks.count === 0) return;
+	return new Promise<void>((resolve) => unlinks.waiters.push(resolve));
 }
 
 export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
@@ -2190,7 +2199,11 @@ function writeBlobWithStream(
 				}
 				if (storageInfo.deleteOnFailure) {
 					store.unlock(lockKey);
+					// Registered like any other blob-root deletion: a restore fence must not complete its walk
+					// while this cleanup is still in flight, or it would land on the path the restore rewrote.
+					const unlinkDone = beginBlobUnlink(blobSaveDatabaseName(store));
 					unlink(filePath, (error) => {
+						unlinkDone();
 						if (error) logger.debug?.('Error while deleting aborted blob file', error);
 					});
 				} else if (idleTimeoutMs > 0 && !(error as { sourceBlobUnavailable?: boolean }).sourceBlobUnavailable) {
@@ -3563,17 +3576,29 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 		}
 		logger.warn?.('Deleting', pathsToCheck.size, 'orphaned blobs');
 		orphansDeleted += pathsToCheck.size;
+		let deleted = 0;
 		for (const path of pathsToCheck) {
+			// This walk is dispatched fire-and-forget and can outlive a restore's close acknowledgement.
+			// Its verdict -- "no record references this path" -- was reached against the generation the
+			// restore is replacing, so continuing would unlink blobs the restore has just written.
+			if (isBlobRestoreFenced(store)) {
+				logger.warn?.('Stopping orphaned blob cleanup: database is being restored');
+				orphansDeleted -= pathsToCheck.size - deleted;
+				break;
+			}
+			const unlinkDone = beginBlobUnlink(blobSaveDatabaseName(store));
 			try {
 				await unlinkPromised(path);
+				deleted++;
 			} catch (error) {
 				logger.debug?.('Error deleting file', error);
 			} finally {
+				unlinkDone();
 				const lockKey = repairTempLocks.get(path);
 				if (lockKey) (store as any).unlock(lockKey);
 			}
 		}
-		logger.warn?.('Finished deleting', pathsToCheck.size, 'orphaned blobs');
+		logger.warn?.('Finished deleting', deleted, 'orphaned blobs');
 		pathsToCheck.clear();
 	}
 	// check each object for any blob references and removes from the paths to check if found

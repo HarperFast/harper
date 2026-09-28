@@ -442,9 +442,12 @@ the backup (blobs are restored automatically). Restore the latest backup in plac
 
     harper restore_backup database=${databaseName} backup_id=<id>
 
-A backup created with \`exclude_blobs\` carries no blobs. Restoring one **in place** over a database
-that still has blob files is refused, because the restored records would address whichever blobs are
-on disk now; pass \`allow_engine_only=true\` to accept that, or restore into a new database instead.
+A backup created with \`exclude_blobs\` carries no blobs, so restoring one is refused unless you pass
+\`allow_engine_only=true\`. The restored records address whichever blobs are on disk now: if the
+database still has blob files a record can resolve to one that no longer belongs to it, and if it has
+none the blob ids start over at 1 and the next blob written lands on a path a restored record already
+references. Restoring into a new database is **not** a way around this — its blob roots are empty for
+the same reason. Restore a backup that includes blobs, or accept the mixed result explicitly.
 
 A database held open by a loaded component — and always the \`system\` database — cannot be restored
 while Harper is running; stop the server and run the same command offline. Offline you can also
@@ -569,10 +572,11 @@ export async function restoreBackup(request: any) {
 	const blobRoots = getBlobPathsForDatabaseName(databaseName);
 	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
 	const allowEngineOnly = requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
-	await assertEngineOnlyRestoreAllowed(databaseName, blobRoots, {
-		backupHasBlobs: manifest.blobs,
-		allowEngineOnly,
-	});
+	// Checked once, and deliberately not repeated under the fence: the decision reads the manifest and
+	// the operator's opt-in, never the destination, so nothing a concurrent writer does between here
+	// and the purge can change the answer. An engine-only restore that reaches the purge is one the
+	// operator explicitly accepted.
+	assertEngineOnlyRestoreAllowed(databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
 	const lock = beginRestoreForDatabase(databaseDir, databaseName);
 	const restoreToken = randomUUID();
 	let destructionStarted = false;
@@ -591,12 +595,6 @@ export async function restoreBackup(request: any) {
 		// purging — restoring under an open instance would corrupt it. If handles remain, fail
 		// with a clear pointer to the offline CLI path rather than purging.
 		await verifyDatabaseClosed(databaseDir, databaseName);
-		// Re-check while every worker's blob-save barrier is held. The preflight above ran while the
-		// database was still serving, so it can only fail early; this is the sound admission check.
-		await assertEngineOnlyRestoreAllowed(databaseName, blobRoots, {
-			backupHasBlobs: manifest.blobs,
-			allowEngineOnly,
-		});
 		destructionStarted = true;
 		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
 		// restore blobs only for a backup that captured them (an engine-only backup leaves the live
@@ -1043,10 +1041,7 @@ export async function restoreBackupOffline(
 	// destructive (records persist their root index, so collapsing would mis-address blobs)
 	const blobRoots = getBlobPathsForDatabaseName(targetDatabase ?? databaseName);
 	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
-	await assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, blobRoots, {
-		backupHasBlobs: manifest.blobs,
-		allowEngineOnly,
-	});
+	assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
 	// Take the restore lock + marker BEFORE probing so a server that starts after this point sees the
 	// marker and refuses to load the database (closing the window between the probe and the purge).
 	const lock = beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName);
@@ -1073,12 +1068,6 @@ export async function restoreBackupOffline(
 			}
 			handle?.close();
 		}
-		// The marker now excludes new loaders and the probe excluded a live holder. Repeat the early
-		// preflight here so a blob created during the PID-file/probe window cannot survive the restore.
-		await assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, blobRoots, {
-			backupHasBlobs: manifest.blobs,
-			allowEngineOnly,
-		});
 		destructionStarted = true;
 		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
 		// restore blobs only for a backup that captured them (per the manifest, not snapshot presence)
