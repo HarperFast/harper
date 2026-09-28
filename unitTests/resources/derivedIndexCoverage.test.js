@@ -610,11 +610,18 @@ describe('native derived-index query coverage', function () {
 		const ageWord = new BigInt64Array(buffer, READINESS_BYTES - 8, 1);
 		Atomics.store(ageWord, 0, 0n);
 		assert.equal((await search(0)).indexCoverage.state, 'current');
+		// Any drain republishes the durable coverage's capture time, which the tolerance would accept,
+		// so clear it in the query's own turn and hold the barrier so the proof cannot reach the write.
+		const releaseBarrier = holdBarrier();
 		await Product.put('after-proof', { vector });
 		await assert.rejects(
-			Promise.resolve().then(() => search(60_000)),
+			Promise.resolve().then(() => {
+				Atomics.store(ageWord, 0, 0n);
+				return search(60_000);
+			}),
 			{ code: 'DERIVED_INDEX_LAGGING' }
 		);
+		releaseBarrier();
 		await current();
 	});
 	it('refreshes owned idle coverage, fences old owners, and certifies without a registered reader', async () => {

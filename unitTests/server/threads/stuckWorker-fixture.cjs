@@ -3,13 +3,18 @@
 const { parentPort } = require('node:worker_threads');
 const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
 const {
+	broadcast,
 	broadcastWithAcknowledgement,
 	broadcastWithStrictAcknowledgement,
 	notifyJobCleanupComplete,
 	onMessageFromWorkers,
+	onThreadExit,
+	sendToThread,
 } = require('#js/server/threads/manageThreads');
 const { databaseDropPreparationSnapshot } = require('#src/resources/databaseDropPreparation');
 let acknowledgementCount = 0;
+const exitedThreadIds = [];
+onThreadExit((threadId) => exitedThreadIds.push(threadId));
 
 parentPort.on('message', (message) => {
 	if (message.type === 'send-probe') {
@@ -28,7 +33,19 @@ parentPort.on('message', (message) => {
 	}
 });
 
+// Registered after manageThreads' own close handling, and sent on the same sibling ports, so a
+// sibling handles this only after whatever that close sent it.
+parentPort.on('close', () => broadcast({ type: 'fixture-parent-port-closed' }));
+
 onMessageFromWorkers((message, port) => {
+	if (message.type === 'fixture-parent-port-closed') {
+		parentPort.postMessage({
+			type: 'sibling-parent-port-closed',
+			exitedThreadIds,
+			routesToMain: sendToThread(0, { type: 'fixture-route-check' }),
+		});
+		return;
+	}
 	if (!message.requestId || !port) return;
 	if (process.argv.includes('--report-acknowledge')) {
 		port.postMessage({ type: 'fixture-received', requestId: message.requestId });

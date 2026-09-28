@@ -98,21 +98,36 @@ describe('derived index registration tracking', () => {
 	it('hands a retirement fence directly to one waiter at a time', async () => {
 		const store = lockStore();
 		const releaseInitial = acquireFullTextRetirementFence(store, 'Product');
-		const first = waitForFullTextRetirementLease(store, 'Product');
-		await new Promise((resolve) => setImmediate(resolve));
-		let secondAcquired = false;
-		const second = waitForFullTextRetirementLease(store, 'Product').then((release) => {
-			secondAcquired = true;
-			return release;
-		});
+		// Waiters poll with independent backoff, so either may take the released fence first.
+		const acquired = [];
+		const releases = [];
+		const waiters = [0, 1].map((waiter) =>
+			waitForFullTextRetirementLease(store, 'Product').then((release) => {
+				acquired.push(waiter);
+				releases.push(release);
+				return release;
+			})
+		);
 
 		releaseInitial();
-		const releaseFirst = await first;
-		await new Promise((resolve) => setImmediate(resolve));
-		assert.strictEqual(secondAcquired, false);
-		releaseFirst();
-		const releaseSecond = await second;
-		assert.strictEqual(typeof releaseSecond, 'function');
-		releaseSecond();
+		try {
+			const releaseWinner = await Promise.race(waiters);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			assert.strictEqual(acquired.length, 1);
+			const probe = acquireFullTextRetirementFence(store, 'Product');
+			probe?.();
+			assert.strictEqual(probe, undefined, 'the fence was free while a waiter held its lease');
+			releaseWinner();
+			const releaseLoser = await waiters[1 - acquired[0]];
+			assert.strictEqual(acquired.length, 2);
+			releaseLoser();
+			const releaseAfter = acquireFullTextRetirementFence(store, 'Product');
+			assert.strictEqual(typeof releaseAfter, 'function');
+			releaseAfter();
+		} finally {
+			// A failed assertion must not leave the other waiter polling out its 70 s deadline.
+			for (const release of releases) release();
+			for (const release of await Promise.all(waiters)) release();
+		}
 	});
 });
