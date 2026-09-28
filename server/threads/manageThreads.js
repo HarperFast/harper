@@ -2024,7 +2024,8 @@ function addPort(port, keepRef, isJobWorker) {
 			}
 		})
 		.on('close', () => {
-			removePort(port, portThreadId);
+			// A worker's parentPort closing is this worker leaving, not main exiting (server/DESIGN.md).
+			removePort(port, port === parentPort ? undefined : portThreadId);
 		})
 		.on('exit', () => {
 			// Let a cleanup proof already queued by the worker reach this port before exit becomes

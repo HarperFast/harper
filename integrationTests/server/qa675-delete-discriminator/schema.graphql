@@ -1,0 +1,5 @@
+type Widget @table @export {
+	id: ID @primaryKey
+	value: Int
+	tag: String
+}
