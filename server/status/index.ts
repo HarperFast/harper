@@ -198,13 +198,26 @@ async function* resolveAvailabilityInStream(
 // first read refreshes; later reads within the TTL are served locally and refresh once it lapses.
 const COMPONENT_HEALTH_TTL_MS = 2000;
 let componentHealthCache: { failed: string[]; at: number } | undefined;
+// A single in-flight refresh shared by every concurrent stale read, so a burst of polls during one
+// slow aggregate (e.g. a worker taking the collector's full timeout to answer) triggers one round
+// trip rather than one per poll.
+let componentHealthRefresh: Promise<void> | undefined;
 
-async function refreshComponentHealth(): Promise<void> {
-	const aggregated = await statusInternal.query.allThreads();
-	const failed = Array.from(aggregated.values())
-		.filter((component) => component.status === statusInternal.COMPONENT_STATUS_LEVELS.ERROR)
-		.map((component) => component.componentName);
-	componentHealthCache = { failed, at: Date.now() };
+function refreshComponentHealth(): Promise<void> {
+	if (!componentHealthRefresh) {
+		componentHealthRefresh = statusInternal.query
+			.allThreads()
+			.then((aggregated) => {
+				const failed = Array.from(aggregated.values())
+					.filter((component) => component.status === statusInternal.COMPONENT_STATUS_LEVELS.ERROR)
+					.map((component) => component.componentName);
+				componentHealthCache = { failed, at: Date.now() };
+			})
+			.finally(() => {
+				componentHealthRefresh = undefined;
+			});
+	}
+	return componentHealthRefresh;
 }
 
 async function failedComponents(): Promise<string[]> {
@@ -217,6 +230,7 @@ async function failedComponents(): Promise<string[]> {
 // without waiting out the TTL.
 export function resetComponentHealthCache(): void {
 	componentHealthCache = undefined;
+	componentHealthRefresh = undefined;
 }
 
 /**

@@ -184,15 +184,17 @@ export class ComponentStatusRegistry {
 	}
 
 	/**
-	 * Forget an application's status and that of its sub-components (keyed `name.*`), for when the
-	 * application has been removed. A removed application is no longer serving, so its old error must
-	 * stop counting toward availability; leaving it would keep the node drained until a process
-	 * restart, and an operator set_status Available cannot override a component error (#3184).
+	 * Forget a removed application's own status entry, so its stale error stops counting toward
+	 * availability once the application is gone (otherwise the node stays drained until a process
+	 * restart, and an operator set_status Available cannot override a component error, #3184). Only
+	 * the exact key is removed, never a dotted prefix: application names may themselves contain dots
+	 * (`shop` and `shop.backup` can be separate applications), so a prefix sweep could erase a live
+	 * application's errors. Plugin- and nested-package-scoped entries are therefore not retired here;
+	 * on a worker those clear on its restart, and retiring them on the operations thread needs
+	 * per-application ownership tracking, left as a follow-up.
 	 */
 	public retire(componentName: string): void {
 		this.statusMap.delete(componentName);
-		const prefix = `${componentName}.`;
-		for (const key of [...this.statusMap.keys()]) if (key.startsWith(prefix)) this.statusMap.delete(key);
 	}
 
 	/**
