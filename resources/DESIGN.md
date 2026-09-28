@@ -772,9 +772,9 @@ of the exported `scheduleAuditCleanup`, because a store-wide segment purge loopi
 duplicated work. If a future change passes `skipThreadCheck: true` at the registration site, that
 backstop — not the registration — becomes the thing keeping the loop single.
 
-Both re-arm guards are **Rocks-only**, deliberately: the LMDB arm re-arms unconditionally, so it
-neither yields to an already-pending pass (a pressure-armed 100ms pass can be cancelled and replaced
-by the idle backoff) nor restricts itself to one worker, so the re-arm paragraph above is Rocks-only.
+Both re-arm guards are **Rocks-only**. The LMDB arm re-arms unconditionally, so it neither yields to
+an already-pending pass (a pressure-armed 100ms pass can be cancelled and replaced by the idle
+backoff) nor restricts itself to one worker — pre-existing LMDB behavior, not an invariant.
 
 Two things a purge does **not** need to coordinate, both load-bearing for the continuous cadence.
 Unlinking a segment a consumer has mapped is safe **on POSIX**: the inode outlives the unlink, and the
@@ -848,7 +848,8 @@ MUST stay synchronous: the wait blocks the event loop, so an awaited operation i
 a concurrent acquirer to its deadline. Dropping then recreating a same-named table within one process
 depends on rocksdb-js's column-family eviction fix (≥ 2.1.0, rocksdb-js#647; `package.json` pins a
 later release): without it the recreate reuses a dangling handle and every write fails with "Invalid
-column family specified in write batch". Regression suite: `unitTests/resources/dropTableGhost.test.js`.
+column family specified in write batch". Regression suite: `unitTests/resources/dropTableGhost.test.js`,
+which fails by design on pre-fix bindings.
 
 ## RocksDB transaction log purges are database-wide only (`ResourceBridge.deleteTransactionLogsBefore`)
 
