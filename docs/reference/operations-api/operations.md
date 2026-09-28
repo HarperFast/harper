@@ -1269,9 +1269,9 @@ Host my-key.github.com
 # END harper ssh key my-key
 ```
 
-`get_ssh_key`, `list_ssh_keys` and `delete_ssh_key` read and change only the lines from `#<name>` through `# END harper ssh key <name>`, so you can add your own sections and settings anywhere outside them. `delete_ssh_key` removes exactly those lines, including anything you put between them, and leaves the rest of the file as it was. ssh_config has no end-of-section marker, so ssh still reads a line placed just after a key's `END` line as part of that key's `Host` section. Put your own settings under a `Host` or `Match` line of your own.
+`get_ssh_key`, `list_ssh_keys` and `delete_ssh_key` read and change only the lines from `#<name>` through `# END harper ssh key <name>`, so you can add your own sections and settings anywhere outside them. `delete_ssh_key` removes exactly those lines, including anything you put between them, and leaves every other line of the file as it was. ssh_config has no end-of-section marker, so ssh still reads a line placed just after a key's `END` line as part of that key's `Host` section. Put your own settings under a `Host` or `Match` line of your own.
 
-A config written by an earlier version gets these lines when the node starts, without changing what ssh resolves for any host. Only blocks whose `IdentityFile` is the key's own file in `<rootPath>/ssh/` get them, so a section of your own under a comment that looks like a key's name stays yours.
+A config written by an earlier version gets these lines when the node starts, without changing what ssh resolves for any host. Only blocks whose `IdentityFile` is exactly `<rootPath>/ssh/<name>.key` get them, so a section of your own under a comment that looks like a key's name stays yours.
 
 If a key's `BEGIN` line has no matching `END` line, where its block ends is unknown. `delete_ssh_key` then refuses that key with a `400` naming the line, until the `END` line is restored or the block is removed by hand. Other keys are unaffected.
 
