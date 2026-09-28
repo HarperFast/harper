@@ -450,7 +450,7 @@ For deploying from private repositories, SSH keys must be registered on the Harp
 - `known_hosts` _(optional)_ — Public SSH keys of the host. Auto-retrieved for `github.com`
 - `replicated` _(optional)_ — Replicate to all cluster nodes
 
-A `key`, `host` or `hostname` that ssh couldn't use is refused with a `400` naming the problem; see [what `key`, `host` and `hostname` must be](../operations-api/operations.md#what-key-host-and-hostname-must-be).
+A `key`, `host` or `hostname` that ssh couldn't use is refused with a `400` naming the problem; see [what `key`, `host` and `hostname` must be](../operations-api/operations.md#what-key-host-and-hostname-must-be). Each key's settings live in a block of `<rootPath>/ssh/config` that Harper owns; you can edit the file outside those blocks (see [the key's block in the ssh config](../operations-api/operations.md#the-keys-block-in-the-ssh-config)).
 
 ```json
 {
