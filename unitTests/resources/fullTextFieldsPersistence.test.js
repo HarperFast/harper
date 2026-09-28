@@ -223,4 +223,18 @@ rocksOnly('durable full-text declarations', () => {
 		assert(!Product.attributes.some(({ name }) => name === 'search'));
 		assert.strictEqual(Product.dbisDB.getSync('Product/search'), undefined);
 	});
+
+	it('derives peer collision guards when persisted field metadata is missing', () => {
+		let Product = declare({ fullTextIndexes: [definition()] });
+		const persisted = { ...descriptor(Product) };
+		delete persisted.fullTextFields;
+		Product.dbisDB.putSync('Product/', persisted);
+
+		Product = declare({ origin: 'cluster', attributes: [...attributes(), { name: 'search', type: 'String' }] });
+
+		assert.deepStrictEqual(Product.fullTextFields, ['search']);
+		assert.deepStrictEqual(descriptor(Product).fullTextFields, ['search']);
+		assert(!Product.attributes.some(({ name }) => name === 'search'));
+		assert.strictEqual(Product.dbisDB.getSync('Product/search'), undefined);
+	});
 });

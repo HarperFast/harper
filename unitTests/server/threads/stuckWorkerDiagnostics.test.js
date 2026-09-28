@@ -229,6 +229,8 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 2000), (error) => {
 			assert(error instanceof AggregateError);
 			assert.match(error.errors[0].message, /exited before acknowledging preparation/);
+			assert.strictEqual(error.code, 'E_ITC_RECIPIENT_EXITED');
+			assert.strictEqual(error.retryable, true);
 			return true;
 		});
 	});

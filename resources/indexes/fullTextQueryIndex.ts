@@ -214,39 +214,41 @@ export class FullTextQueryIndex {
 						503
 					);
 				context?.signal?.throwIfAborted();
-				if (options.minResults === 0) return [];
+				if (options.minResults === 0) {
+					this.#unexpectedSearchFailureWarned = false;
+					return [];
+				}
 				if (this.#readCoverage(0).state !== 'current') {
 					await host.waitForCoverage(started, Math.max(0, waitDeadline - performance.now()), context?.signal);
 				}
 				context?.signal?.throwIfAborted();
-				return this.#search(condition, context, options);
-			}
-			coverage = this.#queryCoverage(maxIndexLagMilliseconds);
-			return this.#search(condition, context, options);
-		};
-		const operation = execute()
-			.then((result) => {
+				const result = await this.#search(condition, context, options);
 				this.#unexpectedSearchFailureWarned = false;
 				return result;
-			})
-			.catch((error) => {
-				if (error === context?.signal?.reason) throw error;
-				if (nativeErrorNeedsRebuild(error)) {
-					this.#requestRebuild();
-					void this.#retireAllReaders().catch(() => undefined);
-				}
-				const publicError = publicSearchError(error, this.#definition.name);
-				if (
-					publicError !== error &&
-					publicError instanceof ServerError &&
-					publicError.statusCode === 500 &&
-					!this.#unexpectedSearchFailureWarned
-				) {
-					this.#unexpectedSearchFailureWarned = true;
-					logger.error?.(`Unexpected full-text search failure on '${this.#definition.name}'`, error);
-				}
-				throw publicError;
-			});
+			}
+			coverage = this.#queryCoverage(maxIndexLagMilliseconds);
+			const result = await this.#search(condition, context, options);
+			this.#unexpectedSearchFailureWarned = false;
+			return result;
+		};
+		const operation = execute().catch((error) => {
+			if (error === context?.signal?.reason) throw error;
+			if (nativeErrorNeedsRebuild(error)) {
+				this.#requestRebuild();
+				void this.#retireAllReaders().catch(() => undefined);
+			}
+			const publicError = publicSearchError(error, this.#definition.name);
+			if (
+				publicError !== error &&
+				publicError instanceof ServerError &&
+				publicError.statusCode === 500 &&
+				!this.#unexpectedSearchFailureWarned
+			) {
+				this.#unexpectedSearchFailureWarned = true;
+				logger.error?.(`Unexpected full-text search failure on '${this.#definition.name}'`, error);
+			}
+			throw publicError;
+		});
 		if (!waiting && coverage) Object.defineProperty(operation, 'indexCoverage', { value: coverage });
 		operation.catch(() => {});
 		return operation;

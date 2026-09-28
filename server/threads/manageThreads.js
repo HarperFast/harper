@@ -1172,10 +1172,16 @@ function broadcastWithAcknowledgement(
 					}
 				};
 				ackHandler.port = port;
-				ackHandler.closeResponse = strict
-					? { error: { message: 'exited before acknowledging preparation' } }
-					: undefined;
 				ackHandler.allowNormalJobExit = strict && includeJobWorkers && port.isJobWorker;
+				ackHandler.closeResponse = strict
+					? {
+							error: {
+								message: 'exited before acknowledging preparation',
+								code: 'E_ITC_RECIPIENT_EXITED',
+								retryable: true,
+							},
+						}
+					: undefined;
 				pending.add(ackHandler);
 				waitingCount++;
 				port.refCount = (port.refCount || 0) + 1;

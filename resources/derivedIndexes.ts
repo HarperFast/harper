@@ -763,7 +763,13 @@ export async function retireFullTextIndexes(
 							...(fullTextTest ? { binding: fullTextTest.binding } : {}),
 						});
 					} finally {
-						await coordinateFullTextQueryReaders(nativePath, readinessId, 0n, false);
+						await coordinateFullTextQueryReaders(
+							nativePath,
+							readinessId,
+							0n,
+							false,
+							Math.max(1, Math.min(coordinationTimeoutMilliseconds, deadline - Date.now()))
+						);
 					}
 				} finally {
 					rootStore.unlock(lockKey);
@@ -775,13 +781,9 @@ export async function retireFullTextIndexes(
 					error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
 						? error.code
 						: undefined;
+				const retryable = error && typeof error === 'object' && 'retryable' in error && error.retryable === true;
 				const remaining = deadline - Date.now();
-				if (
-					(code === 'E_LOCK_BUSY' ||
-						code === 'E_FULL_TEXT_READER_COORDINATION_TIMEOUT' ||
-						code === 'E_ITC_ACK_TIMEOUT') &&
-					remaining > 0
-				) {
+				if ((code === 'E_LOCK_BUSY' || retryable) && remaining > 0) {
 					if (!retrying) {
 						retrying = true;
 						fullTextLogger.warn?.(

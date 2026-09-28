@@ -3619,7 +3619,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			}
 			let persistedPrimary = persistedPrimaryDescriptor(Table.dbisDB);
 			let persistedFullTextValues = persistedPrimary.descriptor?.fullTextIndexes;
-			if (origin === 'cluster' && persistedPrimary.descriptor?.fullTextFields !== undefined) {
+			if (origin === 'cluster') {
 				const declaredFields = new Set(
 					readPersistedFullTextFields(
 						persistedPrimary.descriptor.fullTextFields,
