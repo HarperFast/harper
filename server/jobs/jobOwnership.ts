@@ -28,9 +28,9 @@ let reconciliation: Promise<number> | undefined;
 
 /**
  * Reconcile at most once per process. `loadRootComponents` re-runs on every root component reload, and
- * no process can add a row that this one owns, so every pass after a successful one could only find
- * nothing. A failed pass clears the memo, because the recovery this exists for must not be lost to one
- * transient error.
+ * no process can add a row that this one owns, so every pass after a *complete* one could only find
+ * nothing. A pass that left any row unsettled clears the memo instead, so the next reload retries the
+ * stragglers — the recovery this exists for must not be lost to one transient write failure.
  */
 export function reconcileInterruptedJobsOnce(): Promise<number> {
 	return (reconciliation ??= reconcileInterruptedJobs().catch((error) => {
@@ -64,6 +64,7 @@ export async function reconcileInterruptedJobs(): Promise<number> {
 	}
 
 	let settled = 0;
+	let unsettled = 0;
 	for (const { id, owner_pid } of interrupted) {
 		const owner = owner_pid == null ? 'an earlier Harper process' : `Harper process ${owner_pid}`;
 		try {
@@ -76,9 +77,13 @@ export async function reconcileInterruptedJobs(): Promise<number> {
 			});
 			settled++;
 		} catch (error) {
+			// Keep going: one unwritable row must not strand the rest.
+			unsettled++;
 			log.error(`Could not settle interrupted job ${id}`, error);
 		}
 	}
 	if (settled > 0) log.warn(`Settled ${settled} job(s) left unfinished by a Harper process that is no longer running`);
+	// Reported as a failure so the pass is not memoized as complete while rows are still stuck.
+	if (unsettled > 0) throw new Error(`Could not settle ${unsettled} of ${interrupted.length} interrupted job(s)`);
 	return settled;
 }

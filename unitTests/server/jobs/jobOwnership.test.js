@@ -16,7 +16,7 @@ const {
 	reconcileInterruptedJobsOnce,
 	stampJobOwner,
 } = require('#src/server/jobs/jobOwnership');
-const manageThreads = require('#src/server/threads/manageThreads');
+const manageThreads = require('#js/server/threads/manageThreads');
 const jobs = require('#src/server/jobs/jobs');
 
 function jobTable() {
