@@ -86,6 +86,7 @@ type FullTextTestConfiguration = {
 	binding: NativeFullTextModule;
 	closeTimeoutMilliseconds: number;
 	shutdownTimeoutMilliseconds: number;
+	readerCoordinationTimeoutMilliseconds?: number;
 	runnerOptions: {
 		rebuildBackoffMilliseconds: number;
 		maxRebuildBackoffMilliseconds: number;
@@ -692,7 +693,12 @@ async function coordinateFullTextQueryReaders(
 ): Promise<void> {
 	if (pause) {
 		const draining = pauseNativeFullTextQueryReaders(path, readinessId, ownerEpoch, allowUnregisteredReadiness);
-		await settleBeforeDeadline([draining], Date.now() + timeout, () => new Error('Full-text reader drain timed out'));
+		await settleBeforeDeadline([draining], Date.now() + timeout, () =>
+			Object.assign(new Error('Full-text reader drain timed out'), {
+				code: 'E_FULL_TEXT_READER_COORDINATION_TIMEOUT',
+				retryable: true,
+			})
+		);
 		await draining;
 	} else resumeNativeFullTextQueryReaders(path, readinessId, ownerEpoch);
 	await sendItcEventStrict(
@@ -720,6 +726,8 @@ export async function retireFullTextIndexes(
 	const fullTextTest = fullTextTestConfiguration;
 	const retryMilliseconds =
 		fullTextTest?.shutdownTimeoutMilliseconds ?? DEFAULT_FULL_TEXT_RETIREMENT_RETRY_MILLISECONDS;
+	const coordinationTimeoutMilliseconds =
+		fullTextTest?.readerCoordinationTimeoutMilliseconds ?? FULL_TEXT_READER_COORDINATION_TIMEOUT_MILLISECONDS;
 	const deadline = Date.now() + retryMilliseconds;
 	let retired = true;
 	const rootStore = Table.primaryStore.rootStore;
@@ -744,7 +752,7 @@ export async function retireFullTextIndexes(
 							readinessId,
 							0n,
 							true,
-							Math.max(1, Math.min(FULL_TEXT_READER_COORDINATION_TIMEOUT_MILLISECONDS, deadline - Date.now())),
+							Math.max(1, Math.min(coordinationTimeoutMilliseconds, deadline - Date.now())),
 							true
 						);
 						if (!shouldContinue()) return false;
@@ -768,7 +776,12 @@ export async function retireFullTextIndexes(
 						? error.code
 						: undefined;
 				const remaining = deadline - Date.now();
-				if (code === 'E_LOCK_BUSY' && remaining > 0) {
+				if (
+					(code === 'E_LOCK_BUSY' ||
+						code === 'E_FULL_TEXT_READER_COORDINATION_TIMEOUT' ||
+						code === 'E_ITC_ACK_TIMEOUT') &&
+					remaining > 0
+				) {
 					if (!retrying) {
 						retrying = true;
 						fullTextLogger.warn?.(

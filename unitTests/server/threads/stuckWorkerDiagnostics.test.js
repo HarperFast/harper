@@ -169,6 +169,17 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		});
 	});
 
+	it('marks a strict acknowledgement timeout as retryable', async function () {
+		const worker = await startFixtureWorker('ignore');
+		started.push(worker);
+		await assert.rejects(broadcastWithStrictAcknowledgement({ type: 'diagnostic-probe' }, 100), (error) => {
+			assert(error instanceof AggregateError);
+			assert.strictEqual(error.code, 'E_ITC_ACK_TIMEOUT');
+			assert.strictEqual(error.retryable, true);
+			return true;
+		});
+	});
+
 	it('settles immediately when recipient setup fails', async function () {
 		const worker = await startFixtureWorker('acknowledge');
 		started.push(worker);

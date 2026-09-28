@@ -1731,6 +1731,7 @@ describe('@fullText derived-index activation', () => {
 			binding,
 			closeTimeoutMilliseconds: 50,
 			shutdownTimeoutMilliseconds: 2_000,
+			readerCoordinationTimeoutMilliseconds: 30,
 			runnerOptions: {
 				rebuildBackoffMilliseconds: 10,
 				maxRebuildBackoffMilliseconds: 50,
@@ -1764,11 +1765,11 @@ describe('@fullText derived-index activation', () => {
 		peerBinding.readerSearches = [];
 		const heldSearch = Promise.withResolvers();
 		peerBinding.readerSearchWait = heldSearch.promise;
-		let paused = false;
+		let pauseCount = 0;
 		class SeparateReader extends FullTextQueryIndex {
 			pause(...args) {
 				const draining = super.pause(...args);
-				paused = true;
+				pauseCount++;
 				return draining;
 			}
 		}
@@ -1793,8 +1794,9 @@ describe('@fullText derived-index activation', () => {
 			await waitFor(() => peerBinding.readerSearches.length === 1);
 			const resetsBefore = binding.resets.length;
 			Product = table({ database, table: 'Product', audit: true, attributes: attributes(), fullTextIndexes: [] });
-			await waitFor(() => paused || binding.resets.length > resetsBefore);
+			await waitFor(() => pauseCount > 1 || binding.resets.length > resetsBefore);
 			assert.strictEqual(binding.resets.length, resetsBefore, 'native reset must wait for the separately held reader');
+			assert(pauseCount > 1, 'retirement must retry a timed-out reader drain');
 			assert.strictEqual(rootStore.tryLock(`derived-index:${indexId}:runner`), false);
 			await assert.rejects(reader.search(query, {}), /reader fence/);
 			heldSearch.resolve();

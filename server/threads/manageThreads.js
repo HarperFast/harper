@@ -1202,7 +1202,17 @@ function broadcastWithAcknowledgement(
 				const stuck = [];
 				for (let ackHandler of [...pending]) {
 					stuck.push(ackHandler.port);
-					ackHandler(strict ? { error: { message: `did not acknowledge within ${timeout}ms` } } : undefined); // same cleanup path as an ack/close; drives waitingCount to 0 and settles
+					ackHandler(
+						strict
+							? {
+									error: {
+										message: `did not acknowledge within ${timeout}ms`,
+										code: 'E_ITC_ACK_TIMEOUT',
+										retryable: true,
+									},
+								}
+							: undefined
+					); // same cleanup path as an ack/close; drives waitingCount to 0 and settles
 				}
 				harperLogger.warn(
 					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.map((port) => port?.threadId).join(', ')} within ${timeout}ms; ${strict ? 'failing the coordinated operation' : 'proceeding best-effort'}`
