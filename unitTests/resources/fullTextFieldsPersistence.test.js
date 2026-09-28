@@ -138,6 +138,16 @@ rocksOnly('durable full-text field declarations', () => {
 		assert.deepStrictEqual(descriptor(Product), original);
 	});
 
+	it('rejects replacing a durable stored attribute with a virtual field without discarding its data', async () => {
+		const Product = declare({ attributes: [...attributes(), { name: 'search', type: 'String' }] });
+		await Product.put('one', { title: 'trail shoes', search: 'stored value' });
+		const original = descriptor(Product);
+		assert.throws(() => declare({ fullTextIndexes: [definition()], fullTextFields: ['search'] }), /stored attribute/);
+		assert.deepStrictEqual(descriptor(Product), original);
+		assert.strictEqual((await Product.get('one')).search, 'stored value');
+		assert.deepStrictEqual(Product.fullTextFields, []);
+	});
+
 	it('validates names before publishing a table or pinning audit logging on an existing one', () => {
 		assert.throws(() => declare({ fullTextIndexes: [definition()], fullTextFields: null }), { statusCode: 400 });
 		assert.strictEqual(databases[database]?.Product, undefined);

@@ -24,4 +24,5 @@ type LegacyProduct
 	@fullText(name: "catalogSearch", fields: [{ name: "title", weight: 3 }]) {
 	id: ID @primaryKey
 	title: String
+	description: String
 }

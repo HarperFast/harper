@@ -3731,7 +3731,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					return compileFullTextFields(
 						fullTextFields === undefined ? retained.filter((name) => requestedNames.has(name)) : fullTextFields,
 						names,
-						validationAttributes
+						[...durableAttributes, ...validationAttributes]
 					);
 				};
 

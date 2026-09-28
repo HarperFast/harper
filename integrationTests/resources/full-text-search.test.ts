@@ -444,4 +444,86 @@ suite('deployed full-text fields and native search', (ctx: ContextWithHarper) =>
 			);
 		}
 	});
+
+	test('rebuilds changed sources under a renamed field and retires removed index storage', async () => {
+		await request(
+			'/LegacyProduct/legacy',
+			{ method: 'PATCH', body: JSON.stringify({ description: 'Replacement galaxy' }) },
+			204
+		);
+		const previous = (await request('/FullTextState/')).LegacyProduct;
+		const nativePaths = async () =>
+			(await readdir(previous.storePath)).filter((name) => name.endsWith('.fulltext')).sort();
+		const previousPaths = await nativePaths();
+		assert.strictEqual(previousPaths.length, 2);
+		const schemaPath = join(ctx.harper.dataRootDir, 'components', 'full-text-search', 'schema.graphql');
+		const fieldDeclaration = 'catalogSearch: FullText @fullText(fields: [{ name: "title", weight: 3 }])';
+		const replacementDeclaration =
+			'replacementSearch: FullText @fullText(fields: [{ name: "description", weight: 3 }])';
+		await killHarper(ctx);
+		const schema = await readFile(schemaPath, 'utf8');
+		assert.ok(schema.includes(fieldDeclaration));
+		const sourceDeclaration = replacementDeclaration.replace('replacementSearch:', 'catalogSearch:');
+		await writeFile(schemaPath, schema.replace(fieldDeclaration, sourceDeclaration));
+		await startHarper(ctx, OPTIONS);
+		await waitForReady('LegacyProduct');
+		const changedSource = (await request('/FullTextState/')).LegacyProduct;
+		assert.deepStrictEqual(changedSource.fields, ['catalogSearch']);
+		assert.notStrictEqual(changedSource.generations.catalogSearch, previous.generations.catalogSearch);
+		assert.deepStrictEqual(await nativePaths(), previousPaths, 'source rebuild keeps its index-name-derived path');
+		const sourceRecords = await request('/LegacyProduct/', { method: 'QUERY', body: JSON.stringify(query('galaxy')) });
+		assert.deepStrictEqual(ids(sourceRecords), ['legacy']);
+		const formerSourceRecords = await request('/LegacyProduct/', {
+			method: 'QUERY',
+			body: JSON.stringify(query('migration')),
+		});
+		assert.deepStrictEqual(formerSourceRecords, []);
+		await killHarper(ctx);
+		await writeFile(schemaPath, schema.replace(fieldDeclaration, replacementDeclaration));
+		await startHarper(ctx, OPTIONS);
+		await waitForReady('LegacyProduct');
+		const replacementQuery = query('galaxy', { attribute: 'replacementSearch' });
+		const records = await request('/LegacyProduct/', { method: 'QUERY', body: JSON.stringify(replacementQuery) });
+		assert.deepStrictEqual(ids(records), ['legacy']);
+		const oldSource = await request('/LegacyProduct/', {
+			method: 'QUERY',
+			body: JSON.stringify(query('migration', { attribute: 'replacementSearch' })),
+		});
+		assert.deepStrictEqual(oldSource, []);
+		const renamed = (await request('/FullTextState/')).LegacyProduct;
+		assert.strictEqual(renamed.tableId, previous.tableId);
+		assert.deepStrictEqual(renamed.fields, ['replacementSearch']);
+		assert.strictEqual(renamed.generations.catalogSearch, undefined);
+		assert.strictEqual(typeof renamed.generations.replacementSearch, 'string');
+		assert.notStrictEqual(renamed.generations.replacementSearch, changedSource.generations.catalogSearch);
+		let renamedPaths: string[] = [];
+		const renameDeadline = Date.now() + 30_000;
+		do {
+			renamedPaths = await nativePaths();
+			if (renamedPaths.length === 2 && renamedPaths.filter((path) => previousPaths.includes(path)).length === 1) break;
+			await delay(50);
+		} while (Date.now() < renameDeadline);
+		assert.strictEqual(renamedPaths.length, 2);
+		const unaffectedPaths = renamedPaths.filter((path) => previousPaths.includes(path));
+		assert.strictEqual(unaffectedPaths.length, 1, 'rename must retire the previous active directory');
+
+		await killHarper(ctx);
+		await writeFile(schemaPath, schema.replace(fieldDeclaration, ''));
+		await startHarper(ctx, OPTIONS);
+		const description = await operation({ operation: 'describe_table', schema: 'data', table: 'LegacyProduct' });
+		assert.strictEqual(description.full_text_indexes, undefined);
+		const removed = (await request('/FullTextState/')).LegacyProduct;
+		assert.deepStrictEqual(removed.fields, []);
+		assert.deepStrictEqual(removed.generations, {});
+		let remainingPaths: string[] = [];
+		const removalDeadline = Date.now() + 30_000;
+		do {
+			remainingPaths = await nativePaths();
+			if (JSON.stringify(remainingPaths) === JSON.stringify(unaffectedPaths)) break;
+			await delay(50);
+		} while (Date.now() < removalDeadline);
+		assert.deepStrictEqual(remainingPaths, unaffectedPaths, 'removed declaration must retire its active directory');
+		await waitForReady('Product');
+		await waitForIds(query('waterproof'), ['one', 'two']);
+	});
 });

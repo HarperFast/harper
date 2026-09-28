@@ -2715,6 +2715,7 @@ export function makeTable(options) {
 								if (
 									!attrsForType ||
 									attrsForType[propertyName] ||
+									fullTextFieldNames?.has(propertyName) ||
 									propertyName === '$score' ||
 									propertyName === '$highlights'
 								) {

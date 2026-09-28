@@ -5,6 +5,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { compileFullTextFields } = require('#src/resources/fullTextSchema');
 const { getDatabases } = require('#src/resources/databases');
+const { RequestTarget } = require('#src/resources/RequestTarget');
 const { deriveCreateSchema, deriveSearchSchema } = require('#src/components/mcp/tools/schemas/derive');
 
 describe('full-text field names', () => {
@@ -151,12 +152,22 @@ rocksDescribe('FullText field declarations', () => {
 				},
 			},
 		};
+		for (const read of [false, true]) {
+			user.role.permission.fulltext_fields.tables.PermissionSearchProduct.attribute_permissions[2].read = read;
+			await assert.rejects(
+				async () => Product.get({ id: 'one', select: ['searchText'], checkPermission: true }, { user }),
+				/query-only/
+			);
+		}
 		const record = await Product.get({ id: 'one', checkPermission: true }, { user });
 		assert.deepStrictEqual(record, { id: 'one', title: 'trail shoes' });
 		const results = [];
 		for await (const result of await Product.search({ checkPermission: true }, { user })) results.push(result);
 		assert.deepStrictEqual(results, [{ id: 'one', title: 'trail shoes' }]);
-		await Product.put({ id: 'one', checkPermission: true }, { title: 'updated shoes' }, { user });
+		const updateTarget = new RequestTarget();
+		updateTarget.id = 'one';
+		updateTarget.checkPermission = true;
+		await Product.put(updateTarget, { title: 'updated shoes' }, { user });
 		const updated = await Product.get('one');
 		assert.strictEqual(updated.title, 'updated shoes');
 		assert(!Object.hasOwn(updated, 'searchText'));
@@ -190,10 +201,12 @@ rocksDescribe('FullText field declarations', () => {
 				}
 			}, /query-only/);
 		}
-		const record = await Owner.get({
-			id: 'owner',
+		const records = [];
+		for await (const record of await Owner.search({
 			select: [{ name: 'product', select: [{ name: 'details', select: ['searchText'] }] }],
-		});
-		assert.deepStrictEqual(record, { product: { details: { searchText: 'ordinary nested value' } } });
+		})) {
+			records.push(record);
+		}
+		assert.deepStrictEqual(records, [{ product: { details: { searchText: 'ordinary nested value' } } }]);
 	});
 });
