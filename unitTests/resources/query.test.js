@@ -967,6 +967,10 @@ describe('Querying through Resource API', () => {
 				await Player.put({ id: 'erin-2', name: 'erin', teamCode: 'team-b' });
 				await Player.put({ id: 'erin-3', name: 'erin', teamCode: 'code-f' });
 				await Player.put({ id: 'erin-4', name: 'erin', teamCode: 'code-g' });
+				await Player.put({ id: 'frank-1', name: 'frank', teamCode: 'code-c' });
+				await Player.put({ id: 'frank-2', name: 'frank', teamCode: 'code-c' });
+				await Player.put({ id: 'frank-3', name: 'frank', teamCode: 'code-c' });
+				await Player.put({ id: 'frank-4', name: 'frank', teamCode: 'code-c' });
 			});
 
 			async function teamsWithPlayerNamed(name, conditions = []) {
@@ -1018,6 +1022,11 @@ describe('Querying through Resource API', () => {
 				assert.equal(explanation.conditions[0].attribute, 'league');
 				assert(explanation.conditions[0].estimated_count > 3);
 				assert.deepStrictEqual(await teamsWithPlayerNamed('erin', north), [{ id: 'team-e', players: ['erin-1'] }]);
+				// four franks on one team drive the id-set switch's size-1 branch (a single distinct `to`
+				// value), not just its multi-id branch
+				assert.deepStrictEqual(await teamsWithPlayerNamed('frank', north), [
+					{ id: 'team-c', players: ['frank-1', 'frank-2', 'frank-3', 'frank-4'] },
+				]);
 			});
 
 			it('does not resolve the scalar form and logs that it must be an array type', async function () {
