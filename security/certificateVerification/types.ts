@@ -34,7 +34,6 @@ export interface CertificateCacheEntry {
 	status: CertificateStatus;
 	reason?: string;
 	checked_at: number;
-	expiresAt: number;
 	method: VerificationMethod;
 }
 
@@ -45,7 +44,6 @@ export interface CRLCacheEntry {
 	this_update: number;
 	next_update: number;
 	signature_valid: boolean;
-	expiresAt: number;
 }
 
 export interface RevokedCertificateEntry {
@@ -56,7 +54,6 @@ export interface RevokedCertificateEntry {
 	revocation_reason?: string;
 	crl_source: string; // Links to CRLCacheEntry.crl_id
 	crl_next_update: number;
-	expiresAt: number;
 }
 
 export interface CertificateChainEntry {
