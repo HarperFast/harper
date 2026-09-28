@@ -337,7 +337,31 @@ describe('Transaction native-submit boundary', () => {
 
 		transaction.commitsInFlight = 0;
 	});
-	it('does not defer a disconnect-poisoned pre-submit sibling behind a submitted link', function () {
+	it('lets a disconnect after native submission spare the rest of the chain', function () {
+		const root = new DatabaseTransaction();
+		const sibling = new DatabaseTransaction();
+		const unsentWrite = { key: 3 };
+		let siblingAborts = 0;
+		root.next = sibling;
+		sibling.root = root;
+		sibling.writes.push(unsentWrite);
+		sibling.transaction = { abort: () => siblingAborts++ };
+		root.commitsInFlight = 1;
+		root.commitSubmitted = true;
+		root.nativeCommitSubmitted = true;
+
+		root.abortDueToDisconnect();
+
+		assert.equal(siblingAborts, 0, 'the unsubmitted store rides the cascade instead of splitting the commit');
+		assert.equal(sibling.writes[0], unsentWrite);
+		assert.equal(sibling.open, TRANSACTION_STATE.OPEN);
+		assert.equal(sibling.poisonedMidCommit, true, 'its cascade continuation is excused from the poison');
+		assert.throws(() => sibling.addWrite({ key: 4 }), /client disconnected/, 'fresh work on it is still refused');
+
+		root.commitsInFlight = 0;
+	});
+
+	it('does not defer a timeout-aborted pre-submit sibling behind a submitted link', function () {
 		const root = new DatabaseTransaction();
 		const sibling = new DatabaseTransaction();
 		root.next = sibling;
@@ -348,12 +372,13 @@ describe('Transaction native-submit boundary', () => {
 		sibling.commitsInFlight = 1;
 		sibling.committing = true;
 
-		root.abortDueToDisconnect();
-		assert.equal(sibling.open, TRANSACTION_STATE.CLOSED, 'the unsubmitted sibling is aborted by the poison');
+		// The monitor's own path when a sibling's pre-commit work outlives its grace: aborted independently.
+		root.abortDueToTimeout();
+		assert.equal(sibling.open, TRANSACTION_STATE.CLOSED);
 		assert.equal(
 			deferForCommitInFlight(sibling, '/poisoned-sibling', 1000),
 			false,
-			'a poisoned pre-submit link has no native outcome of its own to hold its snapshot for'
+			'an aborted pre-submit link has no native outcome of its own to hold its snapshot for'
 		);
 
 		// The stalled-commit poison runs later on the same chain; it must not excuse the continuation this

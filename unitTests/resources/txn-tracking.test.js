@@ -13,7 +13,12 @@ const { setReadTxnExpiration, checkReadTxnTimeouts } = require('#src/resources/R
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { table } = require('#src/resources/databases');
 const { transaction, contextStorage } = require('#src/resources/transaction');
-const { recordAction, addAnalyticsListener, analyticsDelay } = require('#src/resources/analytics/write');
+const {
+	recordAction,
+	addAnalyticsListener,
+	analyticsDelay,
+	setAnalyticsEnabled,
+} = require('#src/resources/analytics/write');
 const { setTimeout: delay } = require('node:timers/promises');
 const { PassThrough } = require('node:stream');
 const { RocksDatabase, registryStatus, constants } = require('@harperfast/rocksdb-js');
@@ -1175,7 +1180,7 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 // same signal a Request/UwsRequest populates on client disconnect) and, while the callback is still
 // running, aborts the transaction immediately instead.
 describe('Disconnect abort', () => {
-	let DisconnectResource, DisconnectBlobResource;
+	let DisconnectResource, DisconnectBlobResource, DisconnectOtherDbResource;
 	before(async function () {
 		setupTestDBPath();
 		setMainIsWorker(true);
@@ -1192,6 +1197,17 @@ describe('Disconnect abort', () => {
 				{ name: 'blob', type: 'Blob' },
 			],
 		});
+		// test/test2 alias one physical path in testUtils, so only a separately named database forms a chain.
+		DisconnectOtherDbResource = table({
+			table: 'DisconnectOtherDbTable',
+			database: 'disconnect_other',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		assert.notEqual(
+			DisconnectOtherDbResource.primaryStore.path,
+			DisconnectResource.primaryStore.path,
+			'premise: the second database must be a separate store'
+		);
 	});
 
 	// On RocksDB the table's first access claims `context.transaction` itself (txnForContext in
@@ -1447,11 +1463,7 @@ describe('Disconnect abort', () => {
 	// This deliberately stays in the head database; the distinct-database late-link propagation case is
 	// covered by "propagates stalled-commit poison to a database linked afterward" above.
 	it('rejects a write to a database first touched after the disconnect', async function () {
-		const OtherDisconnectResource = table({
-			table: 'OtherDisconnectTxnTable2',
-			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
-		});
+		const OtherDisconnectResource = DisconnectOtherDbResource;
 		const ac = new AbortController();
 		const context = { signal: ac.signal };
 		await assert.rejects(
@@ -1547,11 +1559,7 @@ describe('Disconnect abort', () => {
 	});
 
 	it('rejects a database first touched after a read-only disconnect', async function () {
-		const LateDisconnectResource = table({
-			table: 'LateDisconnectTxnTable',
-			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
-		});
+		const LateDisconnectResource = DisconnectOtherDbResource;
 		await DisconnectResource.put(522, { name: 'readable' }, {});
 		const ac = new AbortController();
 		const context = { signal: ac.signal };
@@ -1692,14 +1700,8 @@ describe('Disconnect abort', () => {
 		assert.ok((await DisconnectResource.get(536)) == null, 'a later scope on the aborted request must not commit');
 	});
 
-	// The same boundary from the other side of commit()'s CLOSED flip: once the native commit is in
-	// flight the transaction has already marked itself CLOSED, so the listener's OPEN + hasPendingWrites()
-	// test alone would see nothing to protect and let the scope rotate back open and commit later writes
-	// for a client that is already gone. RocksDB only: LMDB commits its writes through the store's batch
-	// rather than a native transaction handle this can gate on.
-	// The listener used to be armed only when the callback returned a promise, which left a synchronous
-	// callback's writes to be committed by onComplete with no cancellation armed at all — and that commit
-	// is where they become durable.
+	// A synchronous callback leaves the wrapper's own commit as the scope's only asynchronous phase, and
+	// that commit is where its writes become durable, so the listener must be armed for it.
 	it('arms cancellation for a synchronous callback whose final commit is asynchronous', async function () {
 		// LMDB reaches txnForContext only after an await inside put(), so a synchronous callback leaves it
 		// nothing staged to commit and the shape does not exist on that engine.
@@ -1724,6 +1726,11 @@ describe('Disconnect abort', () => {
 		assert.ok((await DisconnectBlobResource.get(538)) == null, 'a pre-submit commit must not land after a disconnect');
 	});
 
+	// The same boundary from the other side of commit()'s CLOSED flip: once the native commit is in
+	// flight the transaction has already marked itself CLOSED, so the listener's OPEN + hasPendingWrites()
+	// test alone would see nothing to protect and let the scope rotate back open and commit later writes
+	// for a client that is already gone. RocksDB only: LMDB commits its writes through the store's batch
+	// rather than a native transaction handle this can gate on.
 	it('poisons a disconnect that lands after the commit marked itself closed', async function () {
 		if (isLMDB) return;
 		const ac = new AbortController();
@@ -1802,6 +1809,20 @@ describe('Disconnect abort', () => {
 		assert.ok((await DisconnectResource.get(567)) == null, 'the synchronously staged write must not commit');
 	});
 
+	// A retained instance can write after its scope completed: txnForContext hands it a per-context
+	// self-committing transaction, which never passes through transaction() but belongs to the request.
+	it('rejects an instance write outside any scope once the request signal has aborted', async function () {
+		await DisconnectResource.put(568, { name: 'receiver' }, {});
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		const receiver = await DisconnectResource.update(568, { name: 'updated' }, context);
+		await receiver.save();
+		ac.abort();
+		await assert.rejects(async () => receiver.put(569, { name: 'after the disconnect' }), /disconnected/);
+		assert.ok((await DisconnectResource.get(569)) == null, 'the post-disconnect instance write must not commit');
+		assert.equal((await DisconnectResource.get(568))?.name, 'updated', 'the write before the disconnect stands');
+	});
+
 	// The shape that made the edge-triggered rule an API-dependent atomicity hole: write A is rolled back
 	// by the disconnect, and the handler's catch opens a fresh scope on the same request for write B.
 	it('rejects a later transaction() on the same request after a disconnect rolled back the first', async function () {
@@ -1845,19 +1866,24 @@ describe('Disconnect abort', () => {
 	// it must not run under a request whose aborted signal would refuse every write it makes.
 	it('does not flush analytics under the context of the request that armed the flush', async function () {
 		this.timeout(analyticsDelay * 10);
-		await delay(analyticsDelay + 200); // let a flush another test armed run first
-		let flushedUnder = 'not flushed';
-		addAnalyticsListener(() => {
-			if (flushedUnder === 'not flushed') flushedUnder = contextStorage.getStore();
-		});
-		const ac = new AbortController();
-		ac.abort();
-		contextStorage.run({ signal: ac.signal }, () => recordAction(1, 'disconnect-context-probe'));
-		await waitFor(() => flushedUnder !== 'not flushed', {
-			timeout: analyticsDelay * 5,
-			message: 'the analytics flush should run',
-		});
-		assert.equal(flushedUnder, undefined, 'the flush must run outside the arming request context');
+		// Unit tests normally run with analytics off; enabling also discards a flush timer another test left.
+		setAnalyticsEnabled(true);
+		try {
+			let flushedUnder = 'not flushed';
+			addAnalyticsListener(() => {
+				if (flushedUnder === 'not flushed') flushedUnder = contextStorage.getStore();
+			});
+			const ac = new AbortController();
+			ac.abort();
+			contextStorage.run({ signal: ac.signal }, () => recordAction(1, 'disconnect-context-probe'));
+			await waitFor(() => flushedUnder !== 'not flushed', {
+				timeout: analyticsDelay * 5,
+				message: 'the analytics flush should run',
+			});
+			assert.equal(flushedUnder, undefined, 'the flush must run outside the arming request context');
+		} finally {
+			setAnalyticsEnabled(false);
+		}
 	});
 
 	it('keeps a returned iterator alive when the transaction commits normally', async function () {
@@ -2075,23 +2101,50 @@ describe('Disconnect abort', () => {
 		assert.equal(closed, 1, 'a link detached before abandonment must close its own iterators on settle');
 	});
 
+	// A disconnect landing while the head store's native commit is in flight must not split the logical
+	// commit: the chained store has not submitted yet, and aborting it would leave the head durable and the
+	// chained store discarded.
+	it('lands every store of a multi-store commit when the disconnect follows native submission', async function () {
+		if (isLMDB) this.skip(); // gates the RocksDB native handle, as the single-store test above does
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		let head, releaseNativeCommit;
+		const handled = transaction(context, async (txn) => {
+			head = txn;
+			await DisconnectResource.put(594, { name: 'head store' }, context);
+			await DisconnectOtherDbResource.put(594, { name: 'chained store' }, context);
+			assert.ok(txn.next, 'premise: the second database must be a chain link');
+			const nativeTransaction = txn.transaction;
+			const nativeCommit = nativeTransaction.commit.bind(nativeTransaction);
+			const nativeGate = new Promise((resolve) => (releaseNativeCommit = resolve));
+			nativeTransaction.commit = () => nativeGate.then(nativeCommit);
+		});
+		await waitFor(() => head?.commitSubmitted, { message: 'the head must submit its native commit' });
+		ac.abort();
+		releaseNativeCommit();
+		await handled;
+		assert.equal((await DisconnectResource.get(594))?.name, 'head store');
+		assert.equal(
+			(await DisconnectOtherDbResource.get(594))?.name,
+			'chained store',
+			'the chained store must land with the head rather than split the commit'
+		);
+	});
+
 	// The head marks itself CLOSED and detaches its handle as soon as its own commit starts, while a
 	// second database's link is still holding uncommitted writes for the cascade. Without the deferral
 	// the monitor reads that as "nothing left to supervise" and releases the chained link's handle,
 	// dropping its writes even though the head's commit succeeds.
 	it('does not unsupervise a multi-store chain while the head commit is in flight', async function () {
 		if (isLMDB) return; // gating a native handle's commit; LMDB commits through the store's batch
-		const SecondDbResource = table({
-			table: 'DisconnectSecondDbTable',
-			database: 'test2',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
-		});
+		const SecondDbResource = DisconnectOtherDbResource;
 		setDisconnectExpiration(50);
 		try {
 			const context = {};
 			await transaction(context, async (txn) => {
 				await DisconnectResource.put(580, { name: 'head write' }, context);
 				await SecondDbResource.put(580, { name: 'chained write' }, context);
+				assert.ok(txn.next, 'premise: the second database must be a chain link');
 				const nativeTransaction = context.transaction.transaction;
 				const nativeCommit = nativeTransaction.commit.bind(nativeTransaction);
 				let releaseNativeCommit;

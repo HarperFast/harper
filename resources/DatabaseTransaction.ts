@@ -498,7 +498,6 @@ export function trackReadRange(transaction: ReadTransaction, createRange: () => 
 	return range;
 }
 
-/** Thrown by a transaction poisoned via abortDueToDisconnect (see below) if still used afterward. */
 export function requestAbortedError(): ServerError {
 	// 499 (client closed request) rather than a retryable 503/408: no client is left to retry.
 	return new ServerError('Transaction was aborted because the client disconnected', 499);
@@ -808,11 +807,10 @@ export class DatabaseTransaction implements Transaction {
 	// open (harper#2001). Once poisoned, any further addWrite/commit throws requestAbortedError, mirroring
 	// timedOut above — the difference is only WHY the transaction was cut short.
 	declare disconnected?: boolean;
-	// Set on the chain root by resources/transaction.ts when the client disconnected while this
-	// transaction had nothing to cut off (read-only, no commit in flight). The abort event fires once and
-	// the scope keeps running, so the decision has to outlive the event: addWrite() poisons on the write
-	// that makes the transaction write-bearing.
-	declare disconnectPending?: boolean;
+	// The signal of the request this chain writes for, set on the root wherever a transaction is created
+	// for a request context (resources/transaction.ts, Table.ts txnForContext). Cancellation belongs to
+	// the request: once it aborts, no link admits another write, whichever transaction it arrives on.
+	declare requestSignal?: AbortSignal;
 	// Read references taken through useReadTxn() and not yet returned: the ownership record that bounds a
 	// retained read snapshot. See closeOwnedReadIterators().
 	declare ownedReadIterators?: Set<OwnedReadIterator>;
@@ -1352,12 +1350,7 @@ export class DatabaseTransaction implements Transaction {
 	addWrite(operation: TransactionWrite) {
 		if (this.timedOut || this.postSubmitPoisoned) throw transactionOpenTooLongError();
 		if (this.disconnected) throw requestAbortedError();
-		// The client already disconnected while this chain was still read-only; this write is what makes
-		// it write-bearing, which is the state the disconnect gate exists to cut off.
-		if ((this.root ?? this).disconnectPending) {
-			this.abortDueToDisconnect();
-			throw requestAbortedError();
-		}
+		this.rejectIfRequestCancelled();
 		// A write is activity: it re-arms the idle limit on this link even though the reads it
 		// performs no longer do (see getReadTxn), so a transaction that keeps writing stays alive
 		// and only an idle one holding write intents is reaped.
@@ -1400,6 +1393,9 @@ export class DatabaseTransaction implements Transaction {
 		if (!transaction && !options) {
 			if (this.timedOut || this.postSubmitPoisoned) throw transactionOpenTooLongError();
 			if (this.disconnected) throw requestAbortedError();
+			// A deferred save is admitted here rather than in addWrite(), and on a self-committing link
+			// nothing else would stop it.
+			this.rejectIfRequestCancelled();
 		}
 		if (!transaction && this.open !== TRANSACTION_STATE.OPEN) {
 			if (this.timedOut || this.postSubmitPoisoned) throw transactionOpenTooLongError();
@@ -1641,7 +1637,6 @@ export class DatabaseTransaction implements Transaction {
 		);
 	}
 
-	/** Mark the exact point immediately before this link submits writes to its storage engine. */
 	protected markNativeCommitSubmitted(): void {
 		this.nativeCommitSubmitted = true;
 		const root = this.root ?? this;
@@ -1667,6 +1662,17 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	commitAttemptDoomedByPoison(): boolean {
 		return !this.nativeCommitSubmitted && !this.poisonedMidCommit && Boolean(this.timedOut || this.disconnected);
+	}
+
+	/**
+	 * Admission check for a new write: the request this chain writes for was cancelled, so poison the
+	 * chain (releasing whatever it staged) and refuse. Reads are unaffected; an iterator already
+	 * streaming a response keeps its handle.
+	 */
+	rejectIfRequestCancelled(): void {
+		if (!(this.root ?? this).requestSignal?.aborted) return;
+		this.abortDueToDisconnect();
+		throw requestAbortedError();
 	}
 
 	/** Protected work has no proven resume path, so the monitor may observe but never poison it. */
@@ -2515,12 +2521,16 @@ export class DatabaseTransaction implements Transaction {
 	 *
 	 * A link whose native commit was submitted is past the point of no destructive return: poison it for
 	 * everything that comes after, but let that attempt reach its outcome rather than racing cleanup
-	 * against unknown durability. Unsubmitted links in the same chain are aborted independently, without
-	 * cascading into submitted work. Accepted consequence: a submitted write can land after the client is gone.
+	 * against unknown durability. Accepted consequence: a submitted write can land after the client is gone.
+	 *
+	 * For a disconnect that point covers the whole chain: its unsubmitted links ride the cascade already
+	 * under way, so the logical commit lands whole instead of splitting across stores (#1407). The monitor
+	 * aborts them independently instead, because it only gets here for pre-commit work that outlived its grace.
 	 */
 	abortAndPoison(reason: 'timedOut' | 'disconnected'): void {
 		const root = this.root ?? this;
 		const submittedCommit = root.commitSubmitted && this.isChainCommitting();
+		const spareWholeChain = submittedCommit && reason === 'disconnected';
 		const links = new Set<DatabaseTransaction>();
 		const collect = (start: DatabaseTransaction | undefined) => {
 			for (let txn = start; txn; txn = txn.next) links.add(txn);
@@ -2531,12 +2541,13 @@ export class DatabaseTransaction implements Transaction {
 		if (root.submittedLinks) for (const txn of root.submittedLinks) collect(txn);
 		for (const txn of links) {
 			txn[reason] = true;
-			if (submittedCommit && txn.nativeCommitSubmitted) txn.poisonedMidCommit = true;
+			if (spareWholeChain || (submittedCommit && txn.nativeCommitSubmitted)) txn.poisonedMidCommit = true;
 			else {
 				txn.poisonedMidCommit = false;
 				txn.open = TRANSACTION_STATE.CLOSED;
 			}
 		}
+		if (spareWholeChain) return;
 		for (const txn of links) {
 			if (submittedCommit && txn.nativeCommitSubmitted) continue;
 			try {

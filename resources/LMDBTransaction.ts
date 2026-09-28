@@ -114,12 +114,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 	addWrite(operation: TransactionWrite): any {
 		if (this.timedOut || this.postSubmitPoisoned) throw transactionOpenTooLongError();
 		if (this.disconnected) throw requestAbortedError();
-		// Same gate as DatabaseTransaction.addWrite: the disconnect arrived while this chain was still
-		// read-only, and this write is what makes it write-bearing.
-		if ((this.root ?? this).disconnectPending) {
-			this.abortDueToDisconnect();
-			throw requestAbortedError();
-		}
+		this.rejectIfRequestCancelled();
 		if (this.open === TRANSACTION_STATE.CLOSED) {
 			throw new Error('Can not use a transaction that is no longer open');
 		}
@@ -371,8 +366,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 					}
 					if (options) options.retries = retries + 1;
 					else options = { retries: 1 };
-					// A continuation, not a fresh attempt: a poison that landed mid-commit must not abandon
-					// the retry ladder (DESIGN.md's "a retry continuation is never abandoned").
+					// A continuation: a poison that landed mid-commit must not abandon the retry ladder.
 					return this.commit({ ...options, continuation: true }); // try again
 				}
 			});

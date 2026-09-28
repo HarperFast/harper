@@ -8708,6 +8708,8 @@ export function makeTable(options): TableResourceClass {
 			if (context) {
 				context.transaction = transaction;
 				if (context.timestamp) transaction.timestamp = context.timestamp;
+				// Writes outside any transaction() scope still belong to the request (resources/DESIGN.md).
+				if (!context.sourceApply) transaction.requestSignal = context.signal;
 			}
 			return transaction;
 		}
