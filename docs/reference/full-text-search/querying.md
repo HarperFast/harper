@@ -25,12 +25,12 @@ Results are ordered by BM25 relevance. The index declaration, not the source fie
 | `matches_all`          | Requires every analyzed query term.                                   | —                     |
 | `matches_phrase`       | Matches analyzed terms in order as a phrase.                          | `positions: true`     |
 | `matches_prefix`       | Matches records whose analyzed terms start with the final query term. | `surfaceTerms: true`  |
-| `matches_fuzzy`        | Matches terms within the supported edit distance.                     | —                     |
-| `matches_fuzzy_prefix` | Combines fuzzy matching with a final-term prefix.                     | `surfaceTerms: true`  |
+| `matches_fuzzy`        | Matches terms within one edit, including a transposition.             | —                     |
+| `matches_fuzzy_prefix` | Combines one-edit fuzzy matching with a final-term prefix.            | `surfaceTerms: true`  |
 
 Every comparator also has a negated form: `not_matches`, `not_matches_all`, `not_matches_phrase`, `not_matches_prefix`, `not_matches_fuzzy`, and `not_matches_fuzzy_prefix`.
 
-A query containing a negated full-text condition must also contain a positive condition. The positive condition bounds the candidate set; the negated condition filters it.
+A query containing a negated full-text condition must also contain a non-negated full-text condition on the same index. A structured record condition alone does not satisfy this requirement. The positive full-text condition bounds the candidate set; the negated condition filters it.
 
 ```javascript
 const products = await Product.search({
@@ -169,7 +169,9 @@ const products = await Product.search({
 });
 ```
 
-A non-waiting HTTP query returns `Harper-Index-Coverage` with the admitted state, lag upper bound, and requested tolerance. Waiting queries establish coverage while the response stream is consumed and do not emit that header before completion.
+All full-text conditions combined into one query must use the same freshness values. Harper returns `400` when combined conditions specify different values.
+
+A non-waiting HTTP query returns `Harper-Index-Coverage` with the admitted state, lag upper bound, and requested tolerance. Waiting queries, available through `Table.search()` and `search_by_conditions`, establish coverage while the response stream is consumed and do not emit that header before completion.
 
 ## Prefix result window
 
@@ -214,4 +216,4 @@ REST supports all positive and negated full-text comparators. It can express the
 }
 ```
 
-If an index is rebuilding or unavailable, the query returns a retryable `503`. Invalid declarations, unsupported match modes, incompatible combinations, and out-of-range options return `400` responses.
+If an index is rebuilding, the query returns `503` with `code: "INDEX_REBUILDING"` and `retryable: true`. Other unavailable or busy paths can return a generic `503`, so clients should branch on the code rather than the status alone. Invalid declarations, unsupported match modes, incompatible combinations, and out-of-range options return `400` responses.

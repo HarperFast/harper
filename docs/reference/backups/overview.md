@@ -5,7 +5,7 @@ title: Backups
 
 <!-- Source: HarperFast/harper#1831 (RocksDB managed backup and restore operations) -->
 
-Harper can back up and restore its databases natively. A backup is a whole-database copy — all tables, the audit/transaction log, and any file-backed blobs — so a restored database is a consistent point-in-time image of everything in it. (`get_backup` on an LMDB database is the exception: it can stream a subset of tables, and includes the audit store only when requested.)
+Harper can back up and restore its databases natively. A backup is a whole-database copy of authoritative state — all tables, the audit/transaction log, and any file-backed blobs — so a restored database is a consistent point-in-time image. Local derived state, including full-text index files, is excluded and rebuilt after restore. (`get_backup` on an LMDB database is the exception: it can stream a subset of tables, and includes the audit store only when requested.)
 
 Two complementary mechanisms are available:
 
@@ -38,6 +38,7 @@ The offline path matters for restore. RocksDB is single-writer, so an in-place r
 - **Backups live on the node that created them.** The backup repository is a local directory. RocksDB shares files across backup IDs (a backup ID is not a self-contained folder), so disaster-recovery copies must take the entire per-database repository — `<backupPath>/<database>` — not an individual backup, and must do so while no backup operation is running, or from an atomic filesystem snapshot. A live recursive copy can race `create_backup`/`delete_backup`/`purge_backups` and produce an unrestorable copy. Alternatively, use `get_backup` to pull a snapshot from a running server.
 - **`get_backup` always streams the current state.** It cannot download a historical managed backup; to move a retained backup off-host, copy its whole per-database repository as above.
 - **A restore is a point-in-time rollback.** In a replicated cluster, coordinate a restore with replication before bringing the node back.
+- **Full-text indexes rebuild locally after restore.** Ordinary table traffic remains available, but full-text requests return `INDEX_REBUILDING` until the restored node catches up.
 - **An interrupted restore leaves the database unloadable.** If `restore_backup` is interrupted before completing (crash, power loss), Harper marks the database as incompletely restored and skips loading it on the next start, logging an incomplete-restore error. Rerun `restore_backup` for the same database and `backup_id` to recover; do not load or hand-repair the directory.
 
 ### When can a database be restored?

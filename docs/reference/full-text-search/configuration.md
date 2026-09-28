@@ -144,7 +144,7 @@ Changing source weights or highlighting settings changes query behavior without 
 
 ## Inspecting an index
 
-`describe_table` reports `full_text_indexes`, including fields, analyzer options, supported query modes, generation, and readiness:
+`describe_table` reports `full_text_indexes`, including fields, analyzer options, supported query modes, and readiness:
 
 ```json
 {
@@ -154,4 +154,25 @@ Changing source weights or highlighting settings changes query behavior without 
 }
 ```
 
-An index can report states such as ready, rebuilding, or unavailable. Full-text queries are served only after readiness is established.
+The table response includes entries shaped like this:
+
+```json
+{
+	"full_text_indexes": [
+		{
+			"name": "catalogSearch",
+			"fields": [{ "name": "name", "weight": 3, "highlight": true }],
+			"analyzer": "english@2",
+			"stop_words": true,
+			"positions": true,
+			"surface_terms": true,
+			"synonyms": [],
+			"highlighting": { "maxFragments": 2, "fragmentLength": 120 },
+			"query_modes": ["any", "all", "fuzzy", "phrase", "prefix", "fuzzy-prefix"],
+			"readiness": { "state": "ready", "owner_epoch": "4", "rebuild_attempts": 0 }
+		}
+	]
+}
+```
+
+`readiness.state` is `ready`, `rebuilding`, or `unavailable`. `readiness.reason` is included when Harper has more detail. Full-text queries are served only after readiness is established.

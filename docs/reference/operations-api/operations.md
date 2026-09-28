@@ -63,10 +63,25 @@ Returns all table definitions within the specified database. Each table definiti
 
 ### `describe_table`
 
-Returns the definition of a specific table.
+Returns the definition of a specific table. A table with native full-text indexes includes `full_text_indexes`; each entry reports its source fields, analyzer options, enabled query modes, and `readiness` (`ready`, `rebuilding`, or `unavailable`). The readiness object also includes `owner_epoch`, `rebuild_attempts`, and an optional `reason`.
 
 ```json
 { "operation": "describe_table", "table": "dog", "database": "dev" }
+```
+
+```json
+{
+	"name": "Product",
+	"full_text_indexes": [
+		{
+			"name": "catalogSearch",
+			"fields": [{ "name": "name", "weight": 3 }],
+			"analyzer": "english@2",
+			"query_modes": ["any", "all", "fuzzy", "phrase", "prefix", "fuzzy-prefix"],
+			"readiness": { "state": "ready", "owner_epoch": "4", "rebuild_attempts": 0 }
+		}
+	]
+}
 ```
 
 <VersionBadge type="changed" version="v5.2.5" />
@@ -284,7 +299,7 @@ Returns records matching one or more conditions. Supports `operator` (`and`/`or`
 }
 ```
 
-Conditions can also query a declared full-text index with the `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, and `matches_fuzzy_prefix` comparators. The Operations API preserves advanced condition options such as source `fields`, `includeHighlights`, `maxIndexLagMilliseconds`, and `waitForIndexMilliseconds`. See [Querying Full-Text Indexes](../full-text-search/querying.md#operations-api).
+Conditions can also query a declared full-text index with the `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, and `matches_fuzzy_prefix` comparators and their `not_` forms. A negated full-text condition requires a non-negated condition on the same full-text index. The Operations API preserves advanced condition options such as source `fields`, `includeHighlights`, `maxIndexLagMilliseconds`, and `waitForIndexMilliseconds`. See [Querying Full-Text Indexes](../full-text-search/querying.md#operations-api).
 
 ---
 
