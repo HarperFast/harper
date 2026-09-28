@@ -149,9 +149,9 @@ function simpleQueryIndex({ auditStore, readinessId, payload, hits, onReload, on
 					get committedPayload() {
 						return committedPayload;
 					},
-					async search() {
+					async search({ offset = 0, limit }) {
 						const current = hits();
-						return { total: current.length, totalRelation: 'exact', hits: current };
+						return { total: current.length, totalRelation: 'exact', hits: current.slice(offset, offset + limit) };
 					},
 					async reload() {
 						reloads++;
@@ -613,6 +613,25 @@ describe('FullTextQueryIndex', () => {
 		assert.deepStrictEqual(
 			results.map(({ key }) => key),
 			['live']
+		);
+		await index.close();
+	});
+
+	it('reports an expired bounded native window as retryable index lag', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'expired-native-window';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => Array.from({ length: 11 }, (_, id) => ({ id: nativeId(1, id), version: '1', score: 11 - id })),
+			entryForKey: (key) => ({ version: 1, value: { title: key }, expiresAt: Date.now() - 1 }),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
+			(error) => error.code === 'DERIVED_INDEX_LAGGING'
 		);
 		await index.close();
 	});

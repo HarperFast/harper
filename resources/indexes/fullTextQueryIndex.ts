@@ -355,7 +355,10 @@ export class FullTextQueryIndex {
 						staleVersionHits++;
 						continue;
 					}
-					if (entry.expiresAt !== undefined && entry.expiresAt < Date.now()) continue;
+					if (entry.expiresAt !== undefined && entry.expiresAt < Date.now()) {
+						staleVersionHits++;
+						continue;
+					}
 					if (options.filter && !options.filter(key, entry)) continue;
 					accepted.push({ key, $score: hit.score, nativeId: hit.id, record: entry.value, recordEntry: entry });
 					if (accepted.length >= target) break;
