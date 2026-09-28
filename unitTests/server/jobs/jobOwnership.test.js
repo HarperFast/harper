@@ -7,6 +7,7 @@ const assert = require('node:assert');
 const { execFileSync } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { join } = require('node:path');
+const sinon = require('sinon');
 const { JOB_STATUS_ENUM, SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
 const { getDatabases } = require('#src/resources/databases');
 const {
@@ -191,21 +192,57 @@ describe('jobOwnership', function () {
 		});
 	});
 
+	// One ordered narrative, because these share the process-lifetime memo on purpose: a pass that
+	// left rows stuck must not count as done, and only a complete pass may be cached. The failure
+	// cases have to run before the success case that finally spends the guard.
 	describe('reconcileInterruptedJobsOnce', function () {
-		// Runs last on purpose: it spends the process-lifetime guard, so any later call is a no-op.
-		it('sweeps once per process, however many times a reload calls it', async function () {
-			const first = await seedJob({ owner_instance: randomUUID() });
-			seeded.push(first);
+		// One ordered narrative sharing the process-lifetime memo on purpose: a pass that left rows stuck
+		// must not count as done, and only a complete pass may be cached. These rows deliberately outlive
+		// the outer afterEach, because the straggler has to survive into the retry.
+		let stuck;
+		let settleable;
+		let later;
 
+		after(async function () {
+			await removeSeededJobs([settleable, stuck, later].filter(Boolean));
+		});
+
+		afterEach(function () {
+			sinon.restore();
+		});
+
+		it('a pass that cannot settle every row reports the shortfall instead of resolving', async function () {
+			settleable = await seedJob({ owner_instance: randomUUID() });
+			stuck = await seedJob({ owner_instance: randomUUID() });
+
+			const updateJob = jobs.updateJob;
+			sinon.stub(jobs, 'updateJob').callsFake(async (job) => {
+				if (job.id === stuck) throw new Error('simulated write failure');
+				return updateJob(job);
+			});
+
+			await assert.rejects(reconcileInterruptedJobsOnce(), /Could not settle 1 of 2/);
+
+			assert.strictEqual(
+				await statusOf(settleable),
+				JOB_STATUS_ENUM.ERROR,
+				'one unwritable row must not strand the rest'
+			);
+			assert.strictEqual(await statusOf(stuck), JOB_STATUS_ENUM.IN_PROGRESS);
+		});
+
+		it('retries the straggler on the next call rather than returning a cached result', async function () {
+			// The memo was cleared by the rejection above, so this is a real second sweep.
 			assert.strictEqual(await reconcileInterruptedJobsOnce(), 1);
-			assert.strictEqual(await statusOf(first), JOB_STATUS_ENUM.ERROR);
+			assert.strictEqual(await statusOf(stuck), JOB_STATUS_ENUM.ERROR);
+		});
 
+		it('caches a complete pass, so a reload does not re-walk job history', async function () {
 			// Stands in for a root component reload after a new job has been created.
-			const second = await seedJob({ owner_instance: randomUUID() });
-			seeded.push(second);
+			later = await seedJob({ owner_instance: randomUUID() });
 
-			assert.strictEqual(await reconcileInterruptedJobsOnce(), 1, 'the cached first result, not a second sweep');
-			assert.strictEqual(await statusOf(second), JOB_STATUS_ENUM.IN_PROGRESS, 'a reload must not re-walk job history');
+			assert.strictEqual(await reconcileInterruptedJobsOnce(), 1, 'the cached result, not a third sweep');
+			assert.strictEqual(await statusOf(later), JOB_STATUS_ENUM.IN_PROGRESS);
 		});
 	});
 });
