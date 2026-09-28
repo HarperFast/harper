@@ -208,6 +208,14 @@ module.exports = {
 	// would not. `undefined` on a worker started without it; consumers must fall back, not treat that
 	// as a mismatch.
 	processIncarnation: workerData ? workerData.processIncarnation : randomBytes(8).toString('hex'),
+	// Assigned further down once defined. Listed here because TypeScript 7 only treats keys of this
+	// literal as exports of the module, not later `module.exports.x =` assignments.
+	sendToThread: undefined,
+	whenThreadsStarted: undefined,
+	threadsHaveStarted: undefined,
+	getThreadInfo: undefined,
+	getRunningIsolatedApplications: undefined,
+	watchDir: undefined,
 };
 
 connectedPorts.onMessageByType = onMessageByType;
