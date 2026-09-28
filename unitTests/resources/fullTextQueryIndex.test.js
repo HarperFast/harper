@@ -487,6 +487,34 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	it('waits for the local query host to attach when shared readiness is already ready', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'waiting-local-query-host';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		auditStore.setCoverage(readinessId, 99_000_000n);
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+		});
+		const pending = index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'shoe', waitForIndexMilliseconds: 1000 },
+			{},
+			{ minResults: 1 }
+		);
+		index.attachDerivedHost({
+			readiness: () => ({ state: 'ready' }),
+			requestRebuild: () => true,
+			waitForCoverage: async () => {},
+		});
+		assert.deepStrictEqual(
+			(await pending).map(({ key }) => key),
+			['one']
+		);
+		await index.close();
+	});
+
 	it('keeps coverage-only publication off the data-freshness path', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'coverage-only-publication';

@@ -116,6 +116,7 @@ export class FullTextQueryIndex {
 	#closed = false;
 	#pauses: QueryPauses = new Map();
 	#derivedHost?: FullTextQueryHost;
+	readonly #derivedHostReady = Promise.withResolvers<FullTextQueryHost>();
 	#publicationSubscription?: DerivedIndexPublicationSubscription;
 	#publicationRebuildRequested = false;
 	#refreshFailureWarned = false;
@@ -184,7 +185,7 @@ export class FullTextQueryIndex {
 			);
 			if (waiting) {
 				context?.signal?.throwIfAborted();
-				const host = this.#derivedHost;
+				const host = this.#derivedHost ?? (await this.#waitForDerivedHost(waitForIndexMilliseconds, context?.signal));
 				const state = host?.readiness().state;
 				if (state !== 'ready')
 					throw new ServerError(
@@ -218,6 +219,30 @@ export class FullTextQueryIndex {
 
 	attachDerivedHost(host: FullTextQueryHost): void {
 		this.#derivedHost = host;
+		this.#derivedHostReady.resolve(host);
+	}
+
+	async #waitForDerivedHost(timeout: number, signal?: AbortSignal): Promise<FullTextQueryHost> {
+		signal?.throwIfAborted();
+		let timer: NodeJS.Timeout;
+		let abort: (() => void) | undefined;
+		const unavailable = new Promise<never>((_resolve, reject) => {
+			timer = setTimeout(
+				() =>
+					reject(new DerivedIndexLagError('Timed out waiting for the local full-text query host; retry this query')),
+				timeout
+			);
+			if (signal) {
+				abort = () => reject(signal.reason ?? new Error('Index wait aborted'));
+				signal.addEventListener('abort', abort, { once: true });
+			}
+		});
+		try {
+			return await Promise.race([this.#derivedHostReady.promise, unavailable]);
+		} finally {
+			clearTimeout(timer!);
+			if (abort) signal!.removeEventListener('abort', abort);
+		}
 	}
 
 	async close(): Promise<void> {
