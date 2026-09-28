@@ -1418,8 +1418,7 @@ function setMonitorListener(listener) {
 
 const MONITORING_INTERVAL = 1000;
 
-// Detects the worker-deadlock family (harper-pro#788, #696) ahead of the reactive
-// ITC ack-timeout diagnostic above; see server/DESIGN.md.
+// See server/DESIGN.md.
 const PINNED_ELU_UTILIZATION_THRESHOLD = 0.99;
 const PINNED_ELU_SUSTAINED_MS = 30_000;
 const PINNED_ELU_SUSTAINED_TICKS = Math.ceil(PINNED_ELU_SUSTAINED_MS / MONITORING_INTERVAL);
@@ -1427,7 +1426,8 @@ module.exports.PINNED_ELU_UTILIZATION_THRESHOLD = PINNED_ELU_UTILIZATION_THRESHO
 module.exports.PINNED_ELU_SUSTAINED_TICKS = PINNED_ELU_SUSTAINED_TICKS;
 
 function describePinnedWorker(worker) {
-	return `Worker thread ${worker.threadId}${worker.name ? ` (${worker.name}${worker.application ? `/${worker.application}` : ''})` : ''}`;
+	const identity = [worker.name, worker.application].filter(Boolean).join('/');
+	return `Worker thread ${worker.threadId}${identity ? ` (${identity})` : ''}`;
 }
 
 function checkPinnedWorkerELU(worker, recentELU) {
@@ -1457,8 +1457,9 @@ function sampleWorkerELU(worker) {
 	if (!isBun && worker.performance?.eventLoopUtilization) {
 		let current_ELU = worker.performance.eventLoopUtilization();
 		let recent_ELU;
-		// Node's lifetime-total ELU on a worker's first-ever sample, not a 1s delta — excluded below.
-		const hadBaseline = Boolean(worker.lastTotalELU);
+		// Excludes Node's pre-online placeholder ({ idle: 0, active: 0 }, truthy but not a real
+		// sample) as well as a worker's first real sample, which is a lifetime total, not a 1s delta.
+		const hadBaseline = worker.lastTotalELU?.active > 0 || worker.lastTotalELU?.idle > 0;
 		if (hadBaseline) {
 			// get the difference between current and last to determine the last second of utilization
 			recent_ELU = worker.performance.eventLoopUtilization(current_ELU, worker.lastTotalELU);

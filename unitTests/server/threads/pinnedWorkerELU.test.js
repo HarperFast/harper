@@ -9,12 +9,8 @@ const {
 	PINNED_ELU_SUSTAINED_TICKS,
 } = require('#js/server/threads/manageThreads');
 
-// Mirrors Node's eventLoopUtilization() well enough to drive sampleWorkerELU through its real
-// tick path: a 0-arg call snapshots the running cumulative totals, a 2-arg call computes the
-// delta between two such snapshots. `forceNextDelta` lets a test substitute one out-of-range
-// reading (as Node can briefly produce mid-teardown) without losing the running totals.
-function makeFakeWorker(threadId, { initialActiveMs = 0 } = {}) {
-	let idle = 0;
+function makeFakeWorker(threadId, { initialActiveMs = 0, initialIdleMs = 1 } = {}) {
+	let idle = initialIdleMs;
 	let active = initialActiveMs;
 	let forcedDelta;
 	return {
@@ -44,9 +40,6 @@ function makeFakeWorker(threadId, { initialActiveMs = 0 } = {}) {
 	};
 }
 
-// Drives one sample per entry in `utilizations` through the exact function the monitoring tick
-// calls. Safe to call more than once per worker: the worker's one lifetime-baseline sample (never
-// checked against the threshold) is consumed on the first call only.
 function runTicks(worker, utilizations) {
 	if (!worker.primed) {
 		sampleWorkerELU(worker);
@@ -97,7 +90,7 @@ describe('pinned worker event-loop utilization warning', () => {
 		runTicks(worker, [PINNED_ELU_UTILIZATION_THRESHOLD - 0.01]);
 		assert.strictEqual(warnings.length, 2);
 		assert.match(warnings[1], /Worker thread 4 event loop utilization has recovered/);
-		runTicks(worker, new Array(5).fill(0)); // staying recovered must not repeat the warning
+		runTicks(worker, new Array(5).fill(0));
 		assert.strictEqual(warnings.length, 2);
 	});
 
@@ -112,22 +105,38 @@ describe('pinned worker event-loop utilization warning', () => {
 	});
 
 	it('does not count a saturated first-ever sample toward the streak', () => {
-		// The worker had already been busy since it started, so its first-ever
-		// eventLoopUtilization() call (a lifetime total, not a 1s delta) is itself saturated.
 		const worker = makeFakeWorker(6, { initialActiveMs: 60_000 });
 		runTicks(worker, new Array(PINNED_ELU_SUSTAINED_TICKS - 1).fill(PINNED_ELU_UTILIZATION_THRESHOLD));
-		assert.deepStrictEqual(warnings, []); // only PINNED_ELU_SUSTAINED_TICKS - 1 real ticks counted
+		assert.deepStrictEqual(warnings, []);
 		runTicks(worker, [PINNED_ELU_UTILIZATION_THRESHOLD]);
 		assert.strictEqual(warnings.length, 1);
 	});
 
-	it('ignores an out-of-range sample (e.g. idle briefly negative during worker teardown) without resetting or completing the streak', () => {
+	it('ignores an out-of-range sample without resetting or completing the streak', () => {
 		const worker = makeFakeWorker(7);
 		runTicks(worker, new Array(PINNED_ELU_SUSTAINED_TICKS - 1).fill(PINNED_ELU_UTILIZATION_THRESHOLD));
 		worker.forceNextDelta({ idle: -1, active: 1001, utilization: 1001 });
 		sampleWorkerELU(worker);
-		assert.deepStrictEqual(warnings, []); // must not complete the streak early on garbage data
+		assert.deepStrictEqual(warnings, []);
 		runTicks(worker, [PINNED_ELU_UTILIZATION_THRESHOLD]);
-		assert.strictEqual(warnings.length, 1); // the real streak resumes rather than having reset
+		assert.strictEqual(warnings.length, 1);
+	});
+
+	it('excludes a pre-online placeholder sample and the first real sample after it', () => {
+		const worker = makeFakeWorker(8, { initialActiveMs: 0, initialIdleMs: 0 });
+		sampleWorkerELU(worker);
+		worker.primed = true;
+		runTicks(worker, new Array(PINNED_ELU_SUSTAINED_TICKS).fill(PINNED_ELU_UTILIZATION_THRESHOLD));
+		assert.deepStrictEqual(warnings, []);
+		runTicks(worker, [PINNED_ELU_UTILIZATION_THRESHOLD]);
+		assert.strictEqual(warnings.length, 1);
+	});
+
+	it('names the worker by name and application when set', () => {
+		const worker = makeFakeWorker(9);
+		worker.name = 'http';
+		worker.application = 'my-app';
+		runTicks(worker, new Array(PINNED_ELU_SUSTAINED_TICKS).fill(PINNED_ELU_UTILIZATION_THRESHOLD));
+		assert.match(warnings[0], /Worker thread 9 \(http\/my-app\) event loop/);
 	});
 });
