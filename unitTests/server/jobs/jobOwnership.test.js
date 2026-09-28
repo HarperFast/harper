@@ -11,6 +11,7 @@ const {
 	JOB_OWNER_ATTRIBUTES,
 	JOB_OWNER_INSTANCE_ID,
 	reconcileInterruptedJobs,
+	settleAbandonedJob,
 	stampJobOwner,
 } = require('#src/server/jobs/jobOwnership');
 const jobs = require('#src/server/jobs/jobs');
@@ -128,6 +129,67 @@ describe('jobOwnership', function () {
 
 			assert.strictEqual(await reconcileInterruptedJobs(), 1);
 			assert.strictEqual(await reconcileInterruptedJobs(), 0);
+			assert.strictEqual(await statusOf(id), JOB_STATUS_ENUM.ERROR);
+		});
+	});
+
+	describe('settleAbandonedJob', function () {
+		it('settles a job this process owns, which the boot sweep by design will not', async function () {
+			const id = await seedJob({ owner_instance: JOB_OWNER_INSTANCE_ID, owner_pid: process.pid });
+			seeded.push(id);
+
+			// The gap this closes: the row is owned by a live process, so the sweep leaves it running.
+			assert.strictEqual(await reconcileInterruptedJobs(), 0);
+			assert.strictEqual(await statusOf(id), JOB_STATUS_ENUM.IN_PROGRESS);
+
+			assert.strictEqual(await settleAbandonedJob(id), true);
+
+			const job = await jobTable().get(id);
+			assert.strictEqual(job.status, JOB_STATUS_ENUM.ERROR);
+			assert.match(job.message, /worker thread/i);
+			assert.ok(job.end_datetime, 'a settled job must carry an end time');
+		});
+
+		it('settles a CREATED job whose worker died before it started', async function () {
+			const id = await seedJob({ status: JOB_STATUS_ENUM.CREATED, owner_instance: JOB_OWNER_INSTANCE_ID });
+			seeded.push(id);
+
+			assert.strictEqual(await settleAbandonedJob(id), true);
+			assert.strictEqual(await statusOf(id), JOB_STATUS_ENUM.ERROR);
+		});
+
+		it('leaves a job the worker finished alone', async function () {
+			// The worker writes its terminal status before it schedules its exit, so this is the ordinary
+			// case on every successful job: the hook fires and must find nothing to do.
+			const id = await seedJob({ status: JOB_STATUS_ENUM.COMPLETE, owner_instance: JOB_OWNER_INSTANCE_ID });
+			seeded.push(id);
+
+			assert.strictEqual(await settleAbandonedJob(id), false);
+			assert.strictEqual(await statusOf(id), JOB_STATUS_ENUM.COMPLETE);
+		});
+
+		it('does not rewrite the message of a job that already failed', async function () {
+			const id = await seedJob({
+				status: JOB_STATUS_ENUM.ERROR,
+				message: 'the operation itself failed',
+				owner_instance: JOB_OWNER_INSTANCE_ID,
+			});
+			seeded.push(id);
+
+			assert.strictEqual(await settleAbandonedJob(id), false);
+			assert.strictEqual((await jobTable().get(id)).message, 'the operation itself failed');
+		});
+
+		it('is a no-op for a row that is gone', async function () {
+			assert.strictEqual(await settleAbandonedJob(randomUUID()), false);
+		});
+
+		it('is idempotent', async function () {
+			const id = await seedJob({ owner_instance: JOB_OWNER_INSTANCE_ID });
+			seeded.push(id);
+
+			assert.strictEqual(await settleAbandonedJob(id), true);
+			assert.strictEqual(await settleAbandonedJob(id), false);
 			assert.strictEqual(await statusOf(id), JOB_STATUS_ENUM.ERROR);
 		});
 	});
