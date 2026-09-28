@@ -52,9 +52,34 @@ function decryptorFor({ privateKey, kid }) {
 	return (value) => decryptEnvelope(value.slice(ENC_PREFIX.length), privateKey, kid);
 }
 
-const tempSSHDirs = () => fs.readdirSync(os.tmpdir()).filter((entry) => entry.startsWith('harper-ssh-'));
+// `harper-ssh-*` dirs land wherever `os.tmpdir()` resolves at the moment materializeGitSSH
+// mkdtemps; each suite below stubs it to a private dir (see `scopeTmpdir`) so this sweep/assert
+// never touches, or is clobbered by, a concurrently running process's own tmpdir.
+const tempSSHDirs = (dir) => fs.readdirSync(dir).filter((entry) => entry.startsWith('harper-ssh-'));
+
+// Node's `os.tmpdir()` re-resolves on every call (no caching), and a named ESM import of a
+// builtin CJS module is a live binding onto its exports object — so stubbing the property here
+// is what materializeGitSSH's own `tmpdir()` call sees, same as the `logger` stub below.
+// Called from within a describe's own beforeEach/afterEach (rather than registering its own
+// hooks) so callers control ordering relative to their other per-test setup.
+function scopeTmpdir() {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitssh-suite-'));
+	const original = os.tmpdir;
+	os.tmpdir = () => dir;
+	return {
+		dir,
+		restore() {
+			os.tmpdir = original;
+			for (const leftover of tempSSHDirs(dir)) {
+				fs.rmSync(path.join(dir, leftover), { recursive: true, force: true });
+			}
+			fs.rmSync(dir, { recursive: true, force: true });
+		},
+	};
+}
 
 describe('materializeGitSSH', () => {
+	let scopedTmpdir;
 	let rootDir;
 	let sshDir;
 	let keypair;
@@ -79,6 +104,7 @@ describe('materializeGitSSH', () => {
 	const seal = (plaintext, kp = keypair) => ENC_PREFIX + encryptEnvelope(plaintext, kp.publicKey, kp.kid);
 
 	beforeEach(() => {
+		scopedTmpdir = scopeTmpdir();
 		rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-ssh-test-'));
 		sshDir = path.join(rootDir, 'ssh');
 		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, rootDir);
@@ -96,9 +122,7 @@ describe('materializeGitSSH', () => {
 		logger.warn = originalWarn;
 		secretDecryptor.clearSecretDecryptor();
 		fs.rmSync(rootDir, { recursive: true, force: true });
-		for (const leftover of tempSSHDirs()) {
-			fs.rmSync(path.join(os.tmpdir(), leftover), { recursive: true, force: true });
-		}
+		scopedTmpdir.restore();
 	});
 
 	it('returns undefined when the node has no ssh dir', async () => {
@@ -336,10 +360,12 @@ describe('rewriteSshConfigPaths (cross-platform IdentityFile rewrite)', () => {
 });
 
 describe('nonInteractiveSpawn transient ssh lifetime', () => {
+	let scopedTmpdir;
 	let rootDir;
 	let sshDir;
 
 	beforeEach(() => {
+		scopedTmpdir = scopeTmpdir();
 		rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-ssh-spawn-test-'));
 		sshDir = path.join(rootDir, 'ssh');
 		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, rootDir);
@@ -354,9 +380,7 @@ describe('nonInteractiveSpawn transient ssh lifetime', () => {
 
 	afterEach(() => {
 		fs.rmSync(rootDir, { recursive: true, force: true });
-		for (const leftover of tempSSHDirs()) {
-			fs.rmSync(path.join(os.tmpdir(), leftover), { recursive: true, force: true });
-		}
+		scopedTmpdir.restore();
 	});
 
 	it('exposes GIT_SSH_COMMAND to the child and removes the key material once it exits', async () => {
@@ -364,19 +388,27 @@ describe('nonInteractiveSpawn transient ssh lifetime', () => {
 
 		assert.strictEqual(code, 0);
 		assert.match(stdout, /^ssh -F \S*harper-ssh-\S+[/\\]config /, `unexpected GIT_SSH_COMMAND: ${stdout}`);
-		assert.deepStrictEqual(tempSSHDirs(), [], 'the transient ssh dir must not outlive the spawn');
+		assert.deepStrictEqual(tempSSHDirs(scopedTmpdir.dir), [], 'the transient ssh dir must not outlive the spawn');
 	});
 
 	it('removes the key material when the command FAILS (cleanup-on-error)', async () => {
 		const { code } = await nonInteractiveSpawn('app', 'sh', ['-c', '"exit 3"'], rootDir);
 
 		assert.strictEqual(code, 3);
-		assert.deepStrictEqual(tempSSHDirs(), [], 'a failed git operation must still clean up the plaintext key');
+		assert.deepStrictEqual(
+			tempSSHDirs(scopedTmpdir.dir),
+			[],
+			'a failed git operation must still clean up the plaintext key'
+		);
 	});
 
 	it('removes the key material when the command times out', async () => {
 		await assert.rejects(nonInteractiveSpawn('app', 'sleep', ['30'], rootDir, 200), /timed out/);
 
-		assert.deepStrictEqual(tempSSHDirs(), [], 'a timed-out git operation must still clean up the plaintext key');
+		assert.deepStrictEqual(
+			tempSSHDirs(scopedTmpdir.dir),
+			[],
+			'a timed-out git operation must still clean up the plaintext key'
+		);
 	});
 });
