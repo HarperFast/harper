@@ -8,7 +8,7 @@
 const assert = require('node:assert');
 const path = require('node:path');
 const { tmpdir } = require('node:os');
-const { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } = require('node:fs');
+const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
@@ -52,9 +52,7 @@ describe('componentSecrets load-gate (loader integration)', () => {
 		// resolves (no throw) — the instance keeps running
 		const result = await loadComponent(dir, resources, 'test-origin', { isRoot: false, appName: 'gated-app' });
 		assert.equal(result, undefined);
-		// The load's status is keyed by its resolved directory (see componentLoader appStatusKey), so a
-		// later clean reload heals it and two same-named directories cannot collide.
-		const status = statusInternal.componentStatusRegistry.getStatus(realpathSync(dir));
+		const status = statusInternal.componentStatusRegistry.getStatus('gated-app');
 		assert.equal(status.status, 'error');
 		assert.equal(/CS_GATE_REQ/.test(String(status.error?.message ?? status.message)), true);
 		assert.equal(/missing/.test(String(status.error?.message ?? status.message)), true);

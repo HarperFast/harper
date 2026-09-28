@@ -15,7 +15,7 @@
 const assert = require('node:assert');
 const path = require('node:path');
 const { tmpdir } = require('node:os');
-const { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } = require('node:fs');
+const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
 const sinon = require('sinon');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
@@ -30,15 +30,16 @@ const { waitFor } = require('../waitFor.js');
 const PLUGIN_NAME = 'availabilityProbePlugin';
 const THROWING_APP = 'availability-throwing-app';
 const HANGING_APP = 'availability-hanging-app';
-const PACKAGE_APP = 'availability-package-app';
 // Long enough that the throwing app never brushes its timeout, short enough that the hanging app's
 // load settles quickly through withDeployAwareTimeout's rejection.
 const THROWING_APP_TIMEOUT_MS = 30000;
 const HANGING_APP_TIMEOUT_MS = 500;
 
 // The availability read caches the aggregate; reset it so each read re-aggregates the current state.
+// Optional-chained so the suite still runs (and fails on the assertions) against a build without the
+// derivation, where this reset does not exist.
 const availability = async () => {
-	status.resetComponentHealthCache();
+	status.resetComponentHealthCache?.();
 	return status.get({ id: 'availability' });
 };
 
@@ -127,56 +128,6 @@ describe('availability status after component load failure', () => {
 			'with no failed components the operator record is served as written'
 		);
 	});
-
-	it('a whole-application load failure (keyed by its resolved directory) drains and heals', async () => {
-		await seedInRotation();
-		// branchedDatabases in a non-root component's own config is a whole-application load failure
-		// (thrown before the plugin loop), exercising loadComponent's outer catch. It is keyed by the
-		// load's resolved directory, unique per load, so nothing clobbers it.
-		const appDir = makeApp(PACKAGE_APP, 'branchedDatabases:\n  - data\n');
-		await loadComponent(appDir, resources, 'test-origin', { isRoot: false, appName: PACKAGE_APP });
-		const key = realpathSync(appDir);
-		assert.strictEqual(
-			statusInternal.componentStatusRegistry.getStatus(key)?.status,
-			'error',
-			'a whole-application failure must be recorded under the resolved directory key'
-		);
-		await waitFor(async () => (await availability())?.status === 'Unavailable', {
-			timeout: 5000,
-			message: 'a whole-application failure must drain the node',
-		});
-		statusForComponent(key).healthy('recovered');
-		assert.strictEqual((await availability())?.status, 'Available', 'clearing the application error heals the node');
-	});
-
-	it('two applications with the same-named directory do not share a status key', async () => {
-		await seedInRotation();
-		// A resolved-directory key cannot collide even when two loads share a basename: the classic
-		// ambiguity is a top-level app named `a.b` versus a package `b` nested under `a`, which any
-		// dot-joined name key renders identical. Model it with two distinct directories that both
-		// basename to the same string, and assert each failure is recorded under its own key.
-		const dirA = makeApp('same-name', 'branchedDatabases:\n  - data\n');
-		const nested = path.join(tempRoot, 'enclosing', 'same-name');
-		mkdirSync(nested, { recursive: true });
-		writeFileSync(path.join(nested, 'config.yaml'), 'branchedDatabases:\n  - data\n');
-		await loadComponent(dirA, resources, 'test-origin', { isRoot: false, appName: 'app-a' });
-		await loadComponent(nested, resources, 'test-origin', { isRoot: false, appName: 'app-b' });
-		assert.strictEqual(
-			statusInternal.componentStatusRegistry.getStatus(realpathSync(dirA))?.status,
-			'error',
-			"the first application's failure is recorded under its own resolved directory"
-		);
-		assert.strictEqual(
-			statusInternal.componentStatusRegistry.getStatus(realpathSync(nested))?.status,
-			'error',
-			"the second application's failure is recorded under its own resolved directory, not clobbered"
-		);
-		assert.notStrictEqual(
-			realpathSync(dirA),
-			realpathSync(nested),
-			'the two keys are distinct despite the shared basename'
-		);
-	});
 });
 
 // get_status runs on the operations thread, which never runs handleApplication, so a worker's load
@@ -224,7 +175,7 @@ describe('availability derivation reads the all-threads aggregate', () => {
 		setAggregate([
 			['app.jsResource', { componentName: 'app.jsResource', status: 'error', lastChecked: { workers: {} } }],
 		]);
-		status.resetComponentHealthCache();
+		status.resetComponentHealthCache?.();
 		const all = await status.get({});
 		const records = [];
 		for await (const record of all.systemStatus) records.push(record);
@@ -233,54 +184,6 @@ describe('availability derivation reads the all-threads aggregate', () => {
 			availabilityRecord?.status,
 			'Unavailable',
 			'systemStatus must reflect the derived availability, not the raw stored record'
-		);
-	});
-});
-
-// A removed application's stale error must stop draining the node: it is no longer serving, and an
-// operator set_status Available cannot override a component error. loadComponentDirectories retires
-// the status of directory applications that disappear between load cycles; this exercises that
-// retirement's effect on the availability read directly through the registry.
-describe('a removed application stops draining the node', () => {
-	before(() => statusInternal.componentStatusRegistry.reset());
-
-	after(async () => {
-		statusInternal.componentStatusRegistry.reset();
-		await status.clear({ id: 'availability' });
-	});
-
-	it('retiring a failed application clears its drain', async () => {
-		await status.set({ id: 'availability', status: 'Available' });
-		statusInternal.componentStatusRegistry.markFailed('removed-app', new Error('bad config'), 'failed to load');
-		assert.strictEqual((await availability())?.status, 'Unavailable', 'a failed application drains the node');
-		statusInternal.componentStatusRegistry.retire('removed-app');
-		assert.strictEqual(
-			(await availability())?.status,
-			'Available',
-			'once the removed application is retired, the node rejoins rotation'
-		);
-	});
-
-	// watchDedicatedStart records failed(application) when a dedicated worker does not become ready,
-	// and loaded(application) when a (replacement) worker does. This models those two status
-	// transitions and asserts the node drains on the start failure and rejoins on a successful retry.
-	it('a dedicated-worker start failure clears when a retry starts successfully', async () => {
-		await status.set({ id: 'availability', status: 'Available' });
-		statusInternal.componentStatusRegistry.markFailed(
-			'isolated-app',
-			new Error('did not become ready in time'),
-			'start failed'
-		);
-		assert.strictEqual(
-			(await availability())?.status,
-			'Unavailable',
-			'a dedicated-worker start failure drains the node'
-		);
-		statusInternal.componentStatusRegistry.markLoaded('isolated-app', 'dedicated worker started');
-		assert.strictEqual(
-			(await availability())?.status,
-			'Available',
-			'a successful retry clears the operations-thread start failure and the node rejoins'
 		);
 	});
 });
