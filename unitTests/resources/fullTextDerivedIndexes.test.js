@@ -604,6 +604,11 @@ describe('@fullText derived-index activation', () => {
 					(error) => error.statusCode === 400
 				);
 		}
+		await assert.rejects(
+			async () =>
+				query(Order, [{ attribute: ['product', 'catalogSearch'], comparator: 'equals', value: 'classified' }]),
+			(error) => error.statusCode === 400 && /query-only/.test(error.message)
+		);
 		assert.throws(
 			() =>
 				searchByIndex(
@@ -614,6 +619,17 @@ describe('@fullText derived-index activation', () => {
 					{ context: { user }, filtered: {} }
 				),
 			(error) => error.statusCode === 400
+		);
+		assert.throws(
+			() =>
+				searchByIndex(
+					{ attribute: ['product', 'catalogSearch'], comparator: 'equals', value: 'classified' },
+					undefined,
+					false,
+					Order,
+					{ context: { user }, filtered: {} }
+				),
+			(error) => error.statusCode === 400 && /query-only/.test(error.message)
 		);
 	});
 

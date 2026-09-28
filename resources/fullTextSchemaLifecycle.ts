@@ -30,14 +30,15 @@ export function readPersistedFullTextFields(
 	attributes: readonly FullTextSchemaAttribute[],
 	warn: FullTextWarning
 ): string[] {
-	if (values === undefined) return [];
-	const names = persistedFullTextIndexNames(definitions).map((name) => ({ name }));
+	const persistedNames = persistedFullTextIndexNames(definitions);
+	if (values === undefined) return persistedNames;
+	const names = persistedNames.map((name) => ({ name }));
 	try {
-		return compileFullTextFields(values, names, attributes);
+		return compileFullTextFields(values, names, attributes, true);
 	} catch (error) {
 		if (!(error instanceof ClientError)) throw error;
-		warn(`Ignoring invalid persisted full-text fields: ${error.message}`);
-		return [];
+		warn(`Invalid persisted full-text fields; reserving every persisted index name: ${error.message}`);
+		return persistedNames;
 	}
 }
 

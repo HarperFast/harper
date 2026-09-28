@@ -3804,12 +3804,14 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 								delete interimPrimary.fullTextIndexes;
 								delete interimPrimary.fullTextIndexGenerations;
 							}
-							interimPrimary.fullTextFields = readPersistedFullTextFields(
+							const interimFullTextFields = readPersistedFullTextFields(
 								persistedPrimary.descriptor?.fullTextFields,
 								persistedFullTextValues,
 								durableAttributes,
 								fullTextWarning
 							).filter((name) => requestedNames.has(name));
+							if (interimFullTextFields.length > 0) interimPrimary.fullTextFields = interimFullTextFields;
+							else delete interimPrimary.fullTextFields;
 							const retirements = new Set(
 								persistedFullTextIndexNames(persistedPrimary.descriptor?.fullTextIndexRetirements)
 							);
@@ -4555,7 +4557,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			const { key, descriptor } = persistedPrimaryDescriptor(attributesDbi);
 			if (descriptor && !tableIsDropping(descriptor, key)) {
 				const updatedPrimary = { ...descriptor };
-				if (fullTextFieldsForPersistence !== undefined) updatedPrimary.fullTextFields = fullTextFieldsForPersistence;
+				if (fullTextFieldsForPersistence?.length) updatedPrimary.fullTextFields = fullTextFieldsForPersistence;
+				else if (fullTextFieldsForPersistence) delete updatedPrimary.fullTextFields;
 				if (Array.isArray(fullTextValuesForPersistence) && fullTextValuesForPersistence.length > 0) {
 					updatedPrimary.fullTextIndexes = fullTextValuesForPersistence;
 					updatedPrimary.fullTextIndexGenerations = fullTextIndexGenerationMap;

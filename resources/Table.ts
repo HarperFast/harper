@@ -1133,6 +1133,9 @@ export function makeTable(options) {
 			assertFullTextSelection(select);
 			for (let order = sort; order; order = order.next) assertRecordField(order.attribute);
 		}
+		static assertFullTextRecordField(name: unknown): void {
+			assertRecordField(name);
+		}
 		static fullTextQueryIndexes: { [name: string]: { customIndex: unknown } } = Object.create(null);
 		static hasFullTextQueryIndexes = false;
 		static fullTextIndexGenerations: FullTextIndexGenerations = fullTextIndexGenerations;
@@ -5052,7 +5055,9 @@ export function makeTable(options) {
 					}
 					const attribute_name = condition[0] ?? condition.attribute;
 					const fullTextMode =
-						TableResource.fullTextIndexes.length > 0 || Array.isArray(attribute_name)
+						TableResource.fullTextIndexes.length > 0 ||
+						Array.isArray(attribute_name) ||
+						(typeof attribute_name === 'string' && fullTextFieldNames?.has(attribute_name))
 							? fullTextComparatorMode(condition.comparator)
 							: undefined;
 					if (!fullTextMode && fullTextFieldNames) assertRecordField(attribute_name);
@@ -5062,7 +5067,7 @@ export function makeTable(options) {
 							: undefined;
 					if (fullTextMode && Array.isArray(attribute_name))
 						throw new ClientError('Full-text predicates must directly name an index on the queried table', 400);
-					if (fullTextMode && !fullTextDefinition) throwUnknownFullTextIndex(context, target);
+					if (fullTextMode && !fullTextDefinition) throwUnknownFullTextIndex(context, target, attribute_name);
 					if (fullTextDefinition) {
 						const fields = condition.fields;
 						if (fields !== undefined) {
@@ -7998,10 +8003,16 @@ export function makeTable(options) {
 		const searched = requestedFields ?? definition.fields.map(({ name }) => name);
 		if (searched.some((name) => !readable[name])) throw new AccessViolation(user);
 	}
-	function throwUnknownFullTextIndex(context: Context | undefined, target: RequestTarget): never {
+	function throwUnknownFullTextIndex(
+		context: Context | undefined,
+		target: RequestTarget,
+		attributeName?: unknown
+	): never {
 		const user = (context as any)?.user;
 		const permission = (target as any)[FULL_TEXT_READ_PERMISSION] ?? getTablePermissions(user, target);
 		if (permission?.attribute_permissions?.length) throw new AccessViolation(user);
+		if (typeof attributeName === 'string' && fullTextFieldNames?.has(attributeName))
+			throw new IndexRebuildingError(`Full-text index '${attributeName}' is unavailable`);
 		throw new ClientError('Full-text comparator requires a declared @fullText index', 400);
 	}
 
@@ -8478,7 +8489,6 @@ export function makeTable(options) {
 							}
 						}
 						updatedRecord = storedFieldsOnly(primaryStore.encoder, updatedRecord);
-						// A 304 reuses an already-stored record; preserving it avoids turning this guard into a history scan.
 						if (!reusedCachedRecord) assertFullTextWrite(updatedRecord, true);
 						if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
 					}

@@ -58,6 +58,7 @@ rocksOnly('durable full-text declarations', () => {
 		Product = declare({ fullTextIndexes: [] });
 		assert.deepStrictEqual(Product.fullTextIndexes, []);
 		assert.strictEqual(descriptor(Product).fullTextIndexes, undefined);
+		assert.strictEqual(descriptor(Product).fullTextFields, undefined);
 		await Product.put('one', { title: 'shoes', search: 'ordinary dynamic value' });
 		assert.strictEqual((await Product.get('one')).search, 'ordinary dynamic value');
 	});
@@ -126,6 +127,30 @@ rocksOnly('durable full-text declarations', () => {
 		assert.deepStrictEqual(reloaded.fullTextIndexes, []);
 		await assert.rejects(async () => reloaded.put('one', { title: 'shoes', search: 'not writable' }), /query-only/);
 		await assert.rejects(async () => reloaded.get({ id: 'one', select: ['search'] }), /query-only/);
+		await assert.rejects(
+			async () => {
+				for await (const _record of reloaded.search({
+					conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoes' }],
+				})) {
+				}
+			},
+			(error) => error.statusCode === 503 && /unavailable/.test(error.message)
+		);
+	});
+
+	it('fails closed when persisted field metadata is missing or malformed', async () => {
+		let Product = declare({ fullTextIndexes: [definition(), definition('other')] });
+		const original = descriptor(Product);
+		for (const fullTextFields of [undefined, null, ['search'], ['unknown']]) {
+			const corrupted = { ...original, fullTextFields };
+			if (fullTextFields === undefined) delete corrupted.fullTextFields;
+			Product.dbisDB.putSync('Product/', corrupted);
+			resetDatabases();
+			Product = databases[database].Product;
+			assert.deepStrictEqual(Product.fullTextFields, ['other', 'search']);
+			for (const name of ['other', 'search'])
+				await assert.rejects(async () => Product.put(name, { title: 'shoes', [name]: 'not writable' }), /query-only/);
+		}
 	});
 
 	it('rejects malformed declarations without changing durable definitions', () => {

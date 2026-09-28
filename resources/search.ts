@@ -466,6 +466,7 @@ export function searchByIndex(
 	const fullTextMode = fullTextComparatorMode(comparator);
 	if (fullTextMode && typeof attribute_name !== 'string')
 		throw new ClientError('Full-text comparator requires an index directly on the queried table', 400);
+	if (!fullTextMode) Table.assertFullTextRecordField?.(attribute_name);
 	if (value === undefined && (comparator as any) !== 'sort') {
 		throw new ClientError(`Search condition for ${attribute_name} must have a value`);
 	}
