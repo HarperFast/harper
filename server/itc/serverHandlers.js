@@ -75,11 +75,11 @@ async function schemaHandler(event) {
 	let resumeBlobSavesFor;
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {
 		if (event.message.restorePhase === 'reload') {
-			resumeBlobSavesFor = event.message.schema;
+			resumeBlobSavesFor = { database: event.message.schema, token: event.message.restoreToken };
 		} else {
 			// Stop and drain blob writes before releasing the handles: closing a database is not a
 			// write barrier on its own, because a save's file pipeline outlives the handle it started from.
-			await blockBlobSavesForRestore(event.message.schema);
+			await blockBlobSavesForRestore(event.message.schema, event.message.restoreToken);
 			try {
 				await closeDatabase(event.message.schema);
 			} catch (error) {
@@ -93,7 +93,7 @@ async function schemaHandler(event) {
 		await cleanLmdbMap(event.message);
 		await syncSchemaMetadata(event.message);
 	} finally {
-		if (resumeBlobSavesFor) resumeBlobSavesAfterRestore(resumeBlobSavesFor);
+		if (resumeBlobSavesFor) resumeBlobSavesAfterRestore(resumeBlobSavesFor.database, resumeBlobSavesFor.token);
 	}
 	for (let listener of schemaListeners) {
 		try {

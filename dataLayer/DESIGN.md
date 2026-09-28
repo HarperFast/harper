@@ -98,15 +98,25 @@ Three non-obvious mechanics keep that safe:
   verifies closure independently: `restoreBackup` polls rocksdb-js `registryStatus()` (process-global
   across worker threads) until the database path has no open instance, and aborts with a 409 —
   _cleaning up the marker, since nothing was destroyed_ — if handles remain.
-- **The close acknowledgement is also a blob-write barrier.** A store handle can close while a
-  `saveBlob` file pipeline it started is still pending, because blob roots live outside RocksDB and
-  streamed saves settle independently of the record write. The restore signal therefore has
-  explicit `close` and `reload` phases: every worker blocks new saves for that database, awaits its
-  in-flight saves (including replication receives and in-place repairs), then closes the store and
-  acknowledges. Restore signals are the one schema broadcast that includes job workers; ordinary
-  gossip still excludes them to avoid re-entrant broadcast deadlocks. The block stays held through
-  the engine restore and the post-close blob-root check; the `reload` phase rescans first and only
-  then admits saves again.
+- **The close acknowledgement is a fence on every blob-root mutation, not just on writes.** A store
+  handle can close while a `saveBlob` file pipeline it started is still pending, because blob roots
+  live outside RocksDB and streamed saves settle independently of the record write; a queued
+  reclamation is worse still, being a timer that never consults the database at all. The restore
+  signal therefore has explicit `close` and `reload` phases: every worker refuses new saves for that
+  database, stops draining reclamations for it, awaits the saves and unlinks already dispatched, then
+  closes the store and acknowledges. Restore signals are the one schema broadcast that includes job
+  workers; ordinary gossip still excludes them to avoid re-entrant broadcast deadlocks.
+
+  The fence is keyed by a per-restore token rather than a flag. Two restores of the same database can
+  overlap — a restore releases its lock before awaiting its `reload` broadcast — so a database-wide
+  boolean lets the first restore's late reload lift the second one's fence, admitting saves during the
+  second one's post-close check. A worker releases only the token it was given, and the database stays
+  fenced while any token is outstanding.
+
+  When the last token is released, that database's queued reclamations are _discarded_ rather than
+  resumed: they condemn file paths belonging to the generation the restore just replaced, so draining
+  them would unlink the bytes the restore wrote at those same paths.
+
 - **Online restore is impossible for a database a component holds open — and that failure is
   correct.** rocksdb-js's registry is process-global but records only a per-path refCount, with no
   attribution to a thread or component; Harper keeps no component→database ownership map. So when a

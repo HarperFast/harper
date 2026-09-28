@@ -1578,6 +1578,9 @@ function runReclamation(): void {
 	let earliest = Infinity;
 	for (const [filePath, pending] of pendingReclamation) {
 		if (pending.unlinking) continue;
+		// A restore is rewriting this database's roots; unlinking now would delete bytes it just wrote.
+		// The entry is dropped outright when the fence lifts, since it condemns a replaced generation.
+		if (isBlobRestoreFenced(pending.fileInfo?.store)) continue;
 		if (pending.deadline > now) {
 			earliest = pending.deadline;
 			break; // insertion order is deadline order; nothing behind this entry is due
@@ -1648,7 +1651,10 @@ function runReclamation(): void {
 			const instanceStorageInfo = storageInfoForBlob.get(blob);
 			if (instanceStorageInfo) discardStorage(instanceStorageInfo);
 		}
+		let unlinkDone: () => void;
+		trackBlobUnlink(blobSaveDatabaseName(storageInfo?.store), new Promise<void>((resolve) => (unlinkDone = resolve)));
 		unlink(filePath, (error) => {
+			unlinkDone();
 			pendingReclamation.delete(filePath);
 			if (pendingReclamation.size === 0) queueTailDeadline = 0;
 			// Hand the slot back: it is shared by hash, so leaving it claimed would make every later
@@ -1808,8 +1814,16 @@ export function createBlobFromStoredBody(
 // can be committed referencing fileIds whose blob files were never durably written.
 let pendingMigrationBlobSaves: Promise<void>[] | undefined;
 
-const blockedBlobSaveDatabases = new Set<string>();
+// Fenced by token rather than by flag. Two restores of the same database can overlap -- a restore
+// releases its lock before awaiting its `reload` broadcast -- so a database-wide boolean lets the
+// first restore's late reload lift the second one's fence, and saves are accepted during the second
+// one's post-close check. A database is fenced while any token is outstanding.
+const blobRestoreFences = new Map<string, Set<string>>();
 const inFlightBlobSaves = new Map<string, Set<Promise<void>>>();
+// Unlinks already dispatched when a fence goes up. A reclamation that lands after the restore has
+// rewritten the file would delete the restored bytes, so the fence waits these out before the
+// restore proceeds.
+const inFlightBlobUnlinks = new Map<string, Set<Promise<void>>>();
 
 function blobSaveDatabaseName(store: any): string | undefined {
 	return typeof store?.databaseName === 'string' ? store.databaseName : undefined;
@@ -1817,7 +1831,7 @@ function blobSaveDatabaseName(store: any): string | undefined {
 
 function assertBlobSaveAllowed(store: any): void {
 	const databaseName = blobSaveDatabaseName(store);
-	if (databaseName && blockedBlobSaveDatabases.has(databaseName)) {
+	if (databaseName && blobRestoreFences.has(databaseName)) {
 		// 503, not a bare Error: the block is lifted by the restore's `reload` phase, so this is a
 		// retry-after condition rather than a fault in the request.
 		throw new BlobReadError(
@@ -1840,14 +1854,65 @@ function trackBlobSave(store: any, saving?: Promise<void>): void {
 	saving.then(remove, remove);
 }
 
-export async function blockBlobSavesForRestore(databaseName: string): Promise<void> {
-	blockedBlobSaveDatabases.add(databaseName);
+/**
+ * Fence every blob-root mutation for a database so a restore can purge and rewrite it safely, and
+ * wait out the work already in flight.
+ *
+ * Closing the database is not a barrier on its own: a save is an asynchronous file pipeline that
+ * outlives the handle it started from, and a reclamation is a timer that does not consult the
+ * database at all. Both are stopped here -- new saves are refused, new unlinks are skipped, and the
+ * dispatched ones are awaited -- so the walk that follows sees a root nothing is still changing.
+ */
+export async function blockBlobSavesForRestore(databaseName: string, restoreToken: string): Promise<void> {
+	let tokens = blobRestoreFences.get(databaseName);
+	if (!tokens) blobRestoreFences.set(databaseName, (tokens = new Set()));
+	tokens.add(restoreToken);
 	const saves = inFlightBlobSaves.get(databaseName);
 	if (saves) await Promise.allSettled([...saves]);
+	const unlinks = inFlightBlobUnlinks.get(databaseName);
+	if (unlinks) await Promise.allSettled([...unlinks]);
 }
 
-export function resumeBlobSavesAfterRestore(databaseName: string): void {
-	blockedBlobSaveDatabases.delete(databaseName);
+/**
+ * Release one restore's fence. The fence lifts only when the last token is released, so an earlier
+ * restore's late `reload` cannot unfence a database another restore is still working on.
+ */
+export function resumeBlobSavesAfterRestore(databaseName: string, restoreToken: string): void {
+	const tokens = blobRestoreFences.get(databaseName);
+	if (!tokens?.delete(restoreToken)) return;
+	if (tokens.size > 0) return;
+	blobRestoreFences.delete(databaseName);
+	// Every queued reclamation for this database belongs to the generation the restore just replaced:
+	// its file paths were condemned against records that no longer exist. Draining them now would
+	// unlink restored bytes at the same paths, so they are dropped rather than resumed.
+	discardReclamationForDatabase(databaseName);
+}
+
+function isBlobRestoreFenced(store: any): boolean {
+	const databaseName = blobSaveDatabaseName(store);
+	return !!databaseName && blobRestoreFences.has(databaseName);
+}
+
+function discardReclamationForDatabase(databaseName: string): void {
+	for (const [filePath, pending] of [...pendingReclamation]) {
+		if (pending.unlinking) continue; // already dispatched; its callback owns the entry
+		if (blobSaveDatabaseName(pending.fileInfo?.store) !== databaseName) continue;
+		pendingReclamation.delete(filePath);
+		settleReclamationWaiters(pending);
+	}
+	if (pendingReclamation.size === 0) resetDrainedQueue();
+}
+
+function trackBlobUnlink(databaseName: string | undefined, unlinking: Promise<void>): void {
+	if (!databaseName) return;
+	let unlinks = inFlightBlobUnlinks.get(databaseName);
+	if (!unlinks) inFlightBlobUnlinks.set(databaseName, (unlinks = new Set()));
+	unlinks.add(unlinking);
+	const remove = () => {
+		unlinks.delete(unlinking);
+		if (unlinks.size === 0) inFlightBlobUnlinks.delete(databaseName);
+	};
+	unlinking.then(remove, remove);
 }
 
 export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {

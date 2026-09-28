@@ -413,11 +413,25 @@ describe('blobBackup', function () {
 			await assertEngineOnlyRestoreAllowed('somedb', [rootA], { ...engineOnly, allowEngineOnly: true });
 		});
 
-		it('allows it when the roots are empty, so nothing can disagree', async function () {
-			await assertEngineOnlyRestoreAllowed('somedb', [rootA], engineOnly);
+		it('refuses it even when the roots are empty, because blob ids restart at 1', async function () {
+			// Empty roots are not evidence that the backup is blob-free. getNextFileId re-seeds the
+			// per-database counter by scanning the roots, so empty roots re-seed at 1 -- the same id
+			// space the restored records already reference -- and the next blob written lands on a path
+			// one of them points at.
+			await assert.rejects(
+				assertEngineOnlyRestoreAllowed('somedb', [rootA], engineOnly),
+				(error) =>
+					error.statusCode === 400 && /allow_engine_only/.test(error.message) && /reissued from 1/.test(error.message)
+			);
 		});
 
-		it('refuses a named target whose blob roots still hold files', async function () {
+		it('allows it when the operator opts in, whatever the roots hold', async function () {
+			writeBlob(rootA, '001/002/003', 'alpha');
+			await assertEngineOnlyRestoreAllowed('somedb', [rootA], { ...engineOnly, allowEngineOnly: true });
+			await assertEngineOnlyRestoreAllowed('somedb', [rootB], { ...engineOnly, allowEngineOnly: true });
+		});
+
+		it('refuses a named target whose blob roots still hold files, naming that hazard', async function () {
 			// A target's blob roots live outside its database directory, so "no database of that name"
 			// does not mean "no blobs of that name" — a dropped database leaves them for a retention
 			// window. Exempting a restore because it names a different database reopened the very

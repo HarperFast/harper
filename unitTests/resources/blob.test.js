@@ -141,7 +141,7 @@ describe('Blob test', () => {
 		const inFlightBlob = await createBlob(source);
 		const inFlight = decodeFromDatabase(() => saveBlob(inFlightBlob).saving, store);
 		let drained = false;
-		const barrier = blockBlobSavesForRestore(databaseName).then(() => {
+		const barrier = blockBlobSavesForRestore(databaseName, 'restore-drain').then(() => {
 			drained = true;
 		});
 		try {
@@ -155,11 +155,87 @@ describe('Blob test', () => {
 			await Promise.all([inFlight, barrier]);
 			assert.strictEqual(drained, true);
 		} finally {
-			resumeBlobSavesAfterRestore(databaseName);
+			resumeBlobSavesAfterRestore(databaseName, 'restore-drain');
 			source.destroy();
 		}
 		unlinkSync(getFilePathForBlob(inFlightBlob));
 	});
+	it("a late reload from an earlier restore does not lift a later restore's fence", async () => {
+		// Restore A releases its lock before awaiting its reload broadcast, so B can acquire the lock and
+		// fence the database while A's reload is still in flight. With a database-wide flag, A's late
+		// reload cleared B's fence and saves were admitted during B's post-close check and purge.
+		const store = BlobTest.primaryStore.rootStore;
+		const databaseName = store.databaseName;
+		const blocked = await createBlob(Buffer.alloc(2048, 'b'));
+
+		await blockBlobSavesForRestore(databaseName, 'restore-A');
+		try {
+			await blockBlobSavesForRestore(databaseName, 'restore-B');
+			resumeBlobSavesAfterRestore(databaseName, 'restore-A');
+
+			assert.throws(
+				() => decodeFromDatabase(() => saveBlob(blocked), store),
+				/while it is being restored/,
+				"restore B's fence must survive restore A's reload"
+			);
+
+			// An unknown token releases nothing, so a stray reload cannot unfence either.
+			resumeBlobSavesAfterRestore(databaseName, 'restore-unknown');
+			assert.throws(() => decodeFromDatabase(() => saveBlob(blocked), store), /while it is being restored/);
+		} finally {
+			resumeBlobSavesAfterRestore(databaseName, 'restore-A');
+			resumeBlobSavesAfterRestore(databaseName, 'restore-B');
+		}
+
+		// The fence is fully lifted once the last token is released.
+		const allowed = await createBlob(Buffer.alloc(2048, 'c'));
+		await decodeFromDatabase(() => saveBlob(allowed).saving, store);
+		const savedPath = getFilePathForBlob(allowed);
+		if (existsSync(savedPath)) unlinkSync(savedPath);
+	});
+
+	it('a reclamation queued before a restore does not unlink what the restore wrote', async () => {
+		// The fence has to cover deletions, not just writes: a pendingReclamation entry is a timer that
+		// never consults the database, so an entry queued against the pre-restore generation would
+		// unlink the bytes the restore just wrote at that same path.
+		const store = BlobTest.primaryStore.rootStore;
+		const databaseName = store.databaseName;
+		// Long enough that the entry is still queued when the fence goes up.
+		setDeletionDelay(3000);
+		let condemnedPath;
+		try {
+			const first = await createBlob(Readable.from('condemned-generation'.repeat(64)));
+			await BlobTest.put({ id: 91, blob: first });
+			condemnedPath = getFilePathForBlob(first);
+			assert.ok(existsSync(condemnedPath));
+
+			// Supersede it, queueing its file for reclamation, while saves are still permitted.
+			const second = await createBlob(Readable.from('next-generation'.repeat(64)));
+			await BlobTest.put({ id: 91, blob: second });
+			assert.ok(existsSync(condemnedPath), 'still queued, not yet drained');
+
+			await blockBlobSavesForRestore(databaseName, 'restore-reclaim');
+			try {
+				// Stand in for the restore rewriting that path with the backup's bytes.
+				writeFileSync(condemnedPath, Buffer.from('restored-bytes'));
+			} finally {
+				resumeBlobSavesAfterRestore(databaseName, 'restore-reclaim');
+			}
+
+			// Past the original deadline: the entry must have been discarded with the old generation.
+			await new Promise((resolve) => setTimeout(resolve, 3200));
+			assert.ok(
+				existsSync(condemnedPath),
+				'the queued reclamation belonged to the replaced generation and must not delete restored bytes'
+			);
+			assert.strictEqual(readFileSync(condemnedPath).toString(), 'restored-bytes');
+		} finally {
+			setDeletionDelay(500);
+			await BlobTest.delete(91).catch(() => {});
+			if (condemnedPath && existsSync(condemnedPath)) unlinkSync(condemnedPath);
+		}
+	});
+
 	it('create a blob from a buffer and save it', async () => {
 		let random = randomBytes(25000);
 		let blob = await createBlob(random);

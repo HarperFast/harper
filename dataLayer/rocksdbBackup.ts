@@ -1,5 +1,6 @@
 'use strict';
 
+import { randomUUID } from 'node:crypto';
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import { open, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
@@ -573,12 +574,13 @@ export async function restoreBackup(request: any) {
 		allowEngineOnly,
 	});
 	const lock = beginRestoreForDatabase(databaseDir, databaseName);
+	const restoreToken = randomUUID();
 	let destructionStarted = false;
 	try {
 		// Block new blob saves, drain in-flight saves, and close the database across all worker threads.
 		// Each thread also rescans, and the restoring marker keeps it from reloading mid-restore.
 		try {
-			await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'close'));
+			await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'close', restoreToken));
 		} catch {
 			throw new BackupInProgressError(
 				`Cannot restore database '${databaseName}': not every worker completed the blob-save barrier before the acknowledgement deadline. Retry the restore after the stalled work has cleared.`
@@ -622,18 +624,24 @@ export async function restoreBackup(request: any) {
 		// nothing destructive happened and the marker was fresh — clear it and let every thread reload
 		// the intact database
 		completeRestore(lock);
-		await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload'));
+		await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken));
 		throw error;
 	}
 	completeRestore(lock);
 	// signal again: with the marker gone, every thread's rescan reloads the restored database
-	await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload'));
+	await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken));
 	return { database: databaseName, backup_id: backupId, ...(allowEngineOnly ? { allow_engine_only: true } : {}) };
 }
 
-function restoreSchemaEvent(databaseName: string, restorePhase: 'close' | 'reload') {
+/**
+ * `restoreToken` identifies the restore that owns the blob fence. Two restores of the same database
+ * can overlap, so a worker releases the fence only for the token that established it -- see
+ * `resumeBlobSavesAfterRestore`.
+ */
+function restoreSchemaEvent(databaseName: string, restorePhase: 'close' | 'reload', restoreToken: string) {
 	const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.RESTORE_BACKUP, databaseName);
 	message.restorePhase = restorePhase;
+	message.restoreToken = restoreToken;
 	return message;
 }
 
