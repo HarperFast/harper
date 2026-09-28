@@ -472,20 +472,21 @@ exact readiness-id and owner-epoch token that paused the path, preventing an old
 readers after a newer owner has paused them. Epochs from different readiness generations are never
 compared because each generation owns an independent counter.
 The runtime publishes `rebuilding` before invoking reset, so a worker created after the pause
-broadcast cannot admit a new reader. A worker that misses resume clears a token only after that
-token's own shared readiness reaches ready at the same or a newer owner epoch. These orderings are
-part of the reset protocol. The pause covers every reader on the physical path, including a
-superseded generation. Concurrent resets retain independent tokens, and the path remains fenced
-until every active token is cleared by its matching resume or completed readiness. A stale resume
-cannot clear a newer token. A worker with no query index on the path retains no token because it has
-no reader to fence, and any later attachment remains gated by its generation's shared readiness.
-After the last local attachment for a superseded readiness id drains and unregisters, Harper clears
-that id's exact-epoch token from surviving readers on the path. A delayed pause is accepted only while
-an attachment for that readiness id remains registered, so a retired generation cannot reinstall its
-fence on a successor. Closing attachments remain registered until their readers drain, and a duplicate
-attachment for the same readiness id keeps the fence. This closes both handoff directions without
-assuming an ordering between generation-local epochs. If the native
-reader violates its contract by rejecting close, Harper logs the failure and proceeds with reset
+broadcast cannot admit a new reader. A worker that misses resume clears a token after that
+token's own shared readiness reaches ready at the same or a newer owner epoch. A predecessor generation
+that crashes during reset may never publish ready again. A ready successor can clear that foreign token
+only while holding the shared backend runner lock: every generation holds this lock through reset and
+shutdown, so acquisition proves no reset remains active. Recovery waits if a writer still owns the lock.
+The pause covers every reader on the physical path, including a superseded generation. Each active reset
+retains its own token; stale resumes cannot clear newer tokens. These rules do not compare generation-local
+epochs. A worker with no query index on the path retains no token because it has no reader to fence, and
+any later attachment remains gated by its generation's shared readiness. After the last local attachment
+for a superseded readiness id drains and unregisters, Harper clears that id's exact-epoch token from
+surviving readers on the path. A delayed pause is accepted only while an attachment for that readiness id
+remains registered, so a retired generation cannot reinstall its fence on a successor. Closing attachments
+remain registered until their readers drain, and a duplicate attachment for the same readiness id keeps
+the fence. This closes both handoff directions without assuming an ordering between generation-local
+epochs. If the native reader violates its contract by rejecting close, Harper logs the failure and proceeds with reset
 rather than wedging the path indefinitely; the reset therefore assumes that rejected handle is dead.
 
 Weights and highlighting are query configuration. Changing either refreshes readers without rotating

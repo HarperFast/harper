@@ -505,12 +505,31 @@ export class FullTextQueryIndex {
 
 	#readerFor(ownerEpoch: bigint, publicationGeneration: bigint, reserve = false): Promise<ReaderSlot> {
 		if (this.#closed) return Promise.reject(new ServerError('Full-text index is closed', 503));
+		let hasForeignPause = false;
 		for (const [readinessId, pausedEpoch] of this.#pauses) {
 			const readiness = readDerivedIndexReadiness(this.#options.auditStore, readinessId);
 			const completed = readiness.state === 'ready' && readiness.ownerEpoch >= pausedEpoch;
 			if (completed) {
 				this.#pauses.delete(readinessId);
 				clearPathPause(this.#nativeOptions.path, readinessId, pausedEpoch);
+			} else if (readinessId !== this.#options.readinessId) hasForeignPause = true;
+		}
+		if (hasForeignPause) {
+			const { auditStore, indexId, readinessId } = this.#options;
+			const lockKey = `derived-index:${indexId}:runner`;
+			if (auditStore.tryLock(lockKey)) {
+				try {
+					// Every generation holds this lock through reset and shutdown, so acquisition proves reset quiescence.
+					if (readDerivedIndexReadiness(auditStore, readinessId).state === 'ready') {
+						for (const [pausedId, pausedEpoch] of this.#pauses) {
+							if (pausedId === readinessId) continue;
+							this.#pauses.delete(pausedId);
+							clearPathPause(this.#nativeOptions.path, pausedId, pausedEpoch);
+						}
+					}
+				} finally {
+					auditStore.unlock(lockKey);
+				}
 			}
 		}
 		const blocked = this.#pauses.entries().next();

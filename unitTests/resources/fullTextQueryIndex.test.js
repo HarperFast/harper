@@ -16,6 +16,7 @@ const { nativeFullTextIndexPath } = require('#src/resources/indexes/nativeFullTe
 function sharedStore() {
 	const buffers = new Map();
 	const callbacks = new Map();
+	const locks = new Set();
 	let committedPosition;
 	let monotonicTime = 100;
 	const rootStore = {
@@ -31,6 +32,18 @@ function sharedStore() {
 	return {
 		buffers,
 		rootStore,
+		tryLock(key) {
+			if (locks.has(key)) return false;
+			locks.add(key);
+			return true;
+		},
+		unlock(key) {
+			locks.delete(key);
+		},
+		setEpoch(readinessId, epoch) {
+			const buffer = buffers.get(`derived-index:${readinessId}:readiness`);
+			Atomics.store(new BigInt64Array(buffer, buffer.byteLength - 16, 1), 0, epoch);
+		},
 		getUserSharedBuffer(name, proposed, options) {
 			if (!buffers.has(name)) buffers.set(name, new SharedArrayBuffer(proposed.byteLength));
 			const buffer = structuredClone(buffers.get(name));
@@ -117,6 +130,7 @@ function attachCurrentCoverage(index, auditStore, readinessId) {
 function simpleQueryIndex({
 	auditStore,
 	readinessId,
+	indexId = readinessId,
 	payload,
 	hits,
 	onReload,
@@ -143,7 +157,7 @@ function simpleQueryIndex({
 		definition: definition(),
 		auditStore,
 		readinessId,
-		indexId: readinessId,
+		indexId,
 		storePath: '/unused',
 		storeName,
 		sourceGeneration,
@@ -2510,6 +2524,8 @@ describe('FullTextQueryIndex', () => {
 		publishDerivedIndexReadiness(auditStore, newReadinessId, 'ready');
 		const storePath = '/unused';
 		const storeName = 'query-pause-generations';
+		const lockKey = `derived-index:${storeName}:runner`;
+		assert(auditStore.tryLock(lockKey));
 		const path = nativeFullTextIndexPath(storePath, storeName);
 		const searchStarted = Promise.withResolvers();
 		const finishSearch = Promise.withResolvers();
@@ -2524,7 +2540,7 @@ describe('FullTextQueryIndex', () => {
 				definition: definition(),
 				auditStore,
 				readinessId,
-				indexId: readinessId,
+				indexId: storeName,
 				storePath,
 				storeName,
 				sourceGeneration: readinessId,
@@ -2599,6 +2615,7 @@ describe('FullTextQueryIndex', () => {
 		);
 		await oldIndex.close();
 		await newIndex.close();
+		auditStore.unlock(lockKey);
 	});
 
 	it('requires the exact generation-scoped reset token to resume a shared path', async () => {
@@ -2609,6 +2626,8 @@ describe('FullTextQueryIndex', () => {
 		publishDerivedIndexReadiness(auditStore, newReadinessId, 'ready');
 		const storePath = '/unused';
 		const storeName = 'query-predecessor-successor';
+		const lockKey = `derived-index:${storeName}:runner`;
+		assert(auditStore.tryLock(lockKey));
 		const path = nativeFullTextIndexPath(storePath, storeName);
 		const createIndex = (readinessId) => {
 			const index = new FullTextQueryIndex({
@@ -2620,7 +2639,7 @@ describe('FullTextQueryIndex', () => {
 				definition: definition(),
 				auditStore,
 				readinessId,
-				indexId: readinessId,
+				indexId: storeName,
 				storePath,
 				storeName,
 				sourceGeneration: readinessId,
@@ -2676,6 +2695,7 @@ describe('FullTextQueryIndex', () => {
 		);
 		await oldIndex.close();
 		await newIndex.close();
+		auditStore.unlock(lockKey);
 	});
 
 	it('orders a pause started during close before the last generation attachment unregisters', async () => {
@@ -2806,6 +2826,8 @@ describe('FullTextQueryIndex', () => {
 		const auditStore = sharedStore();
 		const pausedReadinessId = 'query-missed-resume-old';
 		const currentReadinessId = 'query-missed-resume-current';
+		const lockKey = `derived-index:${currentReadinessId}:runner`;
+		assert(auditStore.tryLock(lockKey));
 		publishDerivedIndexReadiness(auditStore, pausedReadinessId, 'rebuilding');
 		publishDerivedIndexReadiness(auditStore, currentReadinessId, 'ready');
 		const storePath = '/unused';
@@ -2870,6 +2892,60 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual((await index.search(query, {})).length, 1);
 		await pausedIndex.close();
 		await index.close();
+		auditStore.unlock(lockKey);
+	});
+
+	it('recovers an orphaned predecessor pause only after the stable runner lock is released', async () => {
+		const auditStore = sharedStore();
+		const oldReadinessId = 'query-orphan-old';
+		const readinessId = 'query-orphan-successor';
+		const indexId = 'query-orphan-stable';
+		const storeName = 'query-orphan-recovery';
+		const path = nativeFullTextIndexPath('/unused', storeName);
+		const lockKey = `derived-index:${indexId}:runner`;
+		publishDerivedIndexReadiness(auditStore, oldReadinessId, 'rebuilding');
+		auditStore.setEpoch(oldReadinessId, 10n);
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		auditStore.setEpoch(readinessId, 1n);
+		const createIndex = () => {
+			const { index } = simpleQueryIndex({
+				auditStore,
+				readinessId,
+				indexId,
+				storeName,
+				payload: publicationPayload(),
+				hits: () => [{ id: nativeId(1, 'one'), version: '1', score: 1 }],
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			return index;
+		};
+		const indexes = [];
+		const query = { attribute: readinessId, comparator: 'matches', value: 'shoe' };
+		try {
+			assert(auditStore.tryLock(lockKey));
+			await pauseNativeFullTextQueryReaders(path, oldReadinessId, 10n);
+			const index = createIndex();
+			indexes.push(index);
+			await assert.rejects(index.search(query, {}), (error) => error.name === 'IndexRebuildingError');
+			auditStore.unlock(lockKey);
+			assert.strictEqual((await index.search(query, {})).length, 1);
+			assert(auditStore.tryLock(lockKey));
+			const recreated = createIndex();
+			indexes.push(recreated);
+			assert.strictEqual((await recreated.search(query, {})).length, 1);
+			await pauseNativeFullTextQueryReaders(path, readinessId, 2n);
+			auditStore.unlock(lockKey);
+			resumeNativeFullTextQueryReaders(path, readinessId, 1n);
+			for (const current of indexes)
+				await assert.rejects(current.search(query, {}), (error) => error.name === 'IndexRebuildingError');
+			resumeNativeFullTextQueryReaders(path, readinessId, 2n);
+			for (const current of indexes) assert.strictEqual((await current.search(query, {})).length, 1);
+		} finally {
+			auditStore.unlock(lockKey);
+			resumeNativeFullTextQueryReaders(path, oldReadinessId, 10n);
+			resumeNativeFullTextQueryReaders(path, readinessId, 2n);
+			await Promise.all(indexes.map((index) => index.close()));
+		}
 	});
 
 	it('reports bounded coverage and waits for current coverage when requested', async () => {
