@@ -348,10 +348,15 @@ test('two live footers are both scored on the last one', () => {
 test('a footer that names no authoring family cannot be counted', () => {
 	// Without `authored=` the parser cannot exclude the authoring model, so `ran=claude,codex`
 	// on a Claude-authored PR would score two outside families.
-	const body = '<sub>Review-Coverage: ran=claude,codex; rounds=1 @ abcdef123456</sub>\nComplexity: medium';
-	const r = evaluateCiCoverage(pr({ body }), { mode: 'enforce' });
+	const missing = '<sub>Review-Coverage: ran=claude,codex; rounds=1 @ abcdef123456</sub>\nComplexity: medium';
+	const r = evaluateCiCoverage(pr({ body: missing }), { mode: 'enforce' });
 	assert.strictEqual(r.pass, false);
-	assert.match(r.detail, /names no `authored=` family/);
+	assert.match(r.detail, /has no `authored=` segment/);
+	// The helper's own fallback when no round recorded an author: well-formed, still not countable.
+	const unknown = '<sub>Review-Coverage: authored=unknown; ran=claude,codex; rounds=1 @ abcdef123456</sub>';
+	const u = evaluateCiCoverage(pr({ body: unknown }), { mode: 'enforce' });
+	assert.strictEqual(u.pass, false);
+	assert.match(u.detail, /names no `authored=` family/);
 });
 
 const PIN = HEAD.slice(0, 12);
@@ -436,7 +441,10 @@ test('a footer the helper could not have written is reported but not enforceable
 		assert.strictEqual(r.pass, false, footer);
 		assert.strictEqual(r.count, 2, `${footer} is still reported`);
 		assert.match(r.detail, why, footer);
-		assert.match(r.detail, /counts 0 toward enforcement — re-materialize it with `pr-body-review-need\.mjs --write`/);
+		assert.match(
+			r.detail,
+			/counts 0 toward enforcement — re-materialize it with a current `pr-body-review-need\.mjs --write`/
+		);
 	}
 });
 
@@ -445,6 +453,21 @@ test('the grammar is checked on the last footer only', () => {
 	const good = covered('codex,gemini');
 	assert.strictEqual(evaluateCiCoverage(pr({ body: `${bad}\n\n${good}` }), { mode: 'enforce' }).pass, true);
 	assert.strictEqual(evaluateCiCoverage(pr({ body: `${good}\n\n${bad}` }), { mode: 'enforce' }).pass, false);
+});
+
+test('a last footer too broken to parse reports nothing rather than an earlier footer', () => {
+	const r = evaluateCiCoverage(pr({ body: `${covered('codex,gemini')}\n\nReview-Coverage:` }), { mode: 'enforce' });
+	assert.strictEqual(r.pass, false);
+	assert.strictEqual(r.count, 0);
+	assert.match(r.detail, /does not begin `Review-Coverage:`.*counts 0 toward enforcement/);
+	assert.doesNotMatch(r.detail, /prose-only/);
+});
+
+test('a masked suffix cannot change the reported families', () => {
+	const body = `${covered('codex')} <!-- ran=gemini -->`;
+	const r = evaluateCiCoverage(pr({ body }), { mode: 'enforce' });
+	assert.deepStrictEqual(r.families, ['openai']);
+	assert.strictEqual(r.pass, false);
 });
 
 test('a malformed one-leg footer does not earn the easy waiver', () => {

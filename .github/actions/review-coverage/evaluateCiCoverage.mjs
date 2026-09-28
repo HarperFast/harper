@@ -4,8 +4,7 @@ import { classifyPullRequest, easyDiffWaiver, isAiAuthored } from './prExemption
 
 // The exact output of `formatReviewCoverage` (HarperFast/skills-internal
 // skills/cross-model-review/bin/prepush-policy.mjs), whose leg names come from REVIEW_LEGS there.
-// A footer that helper could not have written was typed or edited by hand, so it grants no
-// enforceable coverage. A well-formed forgery still passes: this checks shape, not receipts.
+// A footer that helper could not have written grants no enforceable coverage.
 const COVERAGE_LEGS = new Set([
 	'codex',
 	'claude',
@@ -92,18 +91,18 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	const body = String(pr?.body ?? '');
 	// reviewGate.mjs is a vendored byte-identical copy and does not blank fenced blocks.
 	const prose = stripFencedBlocks(body);
-	const footerLines = prose
-		.split('\n')
-		.flatMap((line, index) => (/^[ \t]*(?:<sub>[ \t]*)?Review-Coverage:/i.test(line) ? [index] : []));
+	const proseLines = prose.split('\n');
+	const footerIndex = proseLines.findLastIndex((line) => /^[ \t]*(?:<sub>[ \t]*)?Review-Coverage:/i.test(line));
 	// The LAST footer, matching the review-need read below: a body that appended a fresh round above
 	// or below an older one must be scored on the current line, and `structuredCoverage` takes a
-	// non-global exec, so it is handed that line rather than the whole body. The line is read from
-	// the unmasked body: masking blanks a trailing `<!-- -->` or inline code the grammar must see.
-	const coverageLine = footerLines.length ? body.replace(/\r\n?/g, '\n').split('\n')[footerLines.at(-1)] : null;
-	const structured = coverageLine === null ? null : structuredCoverage(coverageLine);
-	const grammarProblem = coverageLine === null ? '' : coverageFooterProblem(coverageLine);
-	// Report what is enforced: the summary and the gate must not read different lines.
-	const { count, families } = structured ?? reportedCrossModelReviews(prose);
+	// non-global exec, so it is handed that line rather than the whole body. The grammar reads the
+	// unmasked line: masking blanks a trailing `<!-- -->` or inline code the helper never writes.
+	const hasFooter = footerIndex >= 0;
+	const structured = hasFooter ? structuredCoverage(proseLines[footerIndex]) : null;
+	const grammarProblem = hasFooter ? coverageFooterProblem(body.replace(/\r\n?/g, '\n').split('\n')[footerIndex]) : '';
+	// Report what is enforced: the summary and the gate must not read different lines, so a footer
+	// too broken to parse reports nothing rather than falling back to an earlier one.
+	const { count, families } = hasFooter ? (structured ?? { count: 0, families: [] }) : reportedCrossModelReviews(prose);
 	// Only the receipt-derived footer is enforceable. Prose is written from memory, and cannot
 	// exclude the authoring family when the body carries no generator signature.
 	//
@@ -140,14 +139,14 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 		(easyWaived ? `Complexity: easy on a ${waiver.lines}-line diff — one outside review is enough` : '');
 	const compliant = enforceable >= required;
 	const pass = mode !== 'enforce' || Boolean(exempt) || compliant;
-	const proseNote = !structured
+	const proseNote = !hasFooter
 		? count > 0
 			? '; coverage is prose-only — only the `Review-Coverage:` footer is counted for enforcement'
 			: ''
-		: !structured.generator
-			? '; the `Review-Coverage:` footer names no `authored=` family, so it cannot exclude the authoring model and is not counted'
-			: grammarProblem
-				? `; the \`Review-Coverage:\` footer ${grammarProblem}, which the helper never writes, so it is typed or hand-edited and counts 0 toward enforcement — re-materialize it with \`pr-body-review-need.mjs --write\``
+		: grammarProblem
+			? `; the \`Review-Coverage:\` footer ${grammarProblem}, which the helper never writes (a hand edit, or a helper older than this check), so it counts 0 toward enforcement — re-materialize it with a current \`pr-body-review-need.mjs --write\``
+			: !structured.generator
+				? '; the `Review-Coverage:` footer names no `authored=` family, so it cannot exclude the authoring model and is not counted'
 				: '';
 	const easyNote =
 		waiver.claimed && !waiver.waived ? `; \`Complexity: easy\` does not waive here — ${waiver.reason}` : '';
