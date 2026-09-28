@@ -139,12 +139,9 @@ function openWebSocket(url: string, authorization: string): Promise<EventStream>
 async function waitForEvent(stream: EventStream, start: number, name: string): Promise<Event> {
 	const deadline = Date.now() + 6_000;
 	while (Date.now() < deadline && stream.events.length <= start && !stream.error) await sleep(25);
+	if (stream.events.length > start) return stream.events[start];
 	if (stream.error) throw new Error(`${name}: stream failed`, { cause: stream.error });
-	assert.ok(
-		stream.events.length > start,
-		`${name}: no event after index ${start}; events=${JSON.stringify(stream.events)}`
-	);
-	return stream.events[start];
+	assert.fail(`${name}: no event after index ${start}; events=${JSON.stringify(stream.events)}`);
 }
 
 suite('QA-675 REST delete discriminator', { skip: skipSuite }, (ctx: ContextWithHarper) => {
@@ -225,7 +222,9 @@ suite('QA-675 REST delete discriminator', { skip: skipSuite }, (ctx: ContextWith
 
 			const sseDeleteStart = sse.events.length;
 			const wsDeleteStart = ws.events.length;
-			assert.strictEqual((await rest('DELETE')).status, 200);
+			const deleted = await rest('DELETE');
+			assert.strictEqual(deleted.status, 200);
+			await deleted.text();
 			await waitForRecord(404);
 			const deleteEvents = [
 				await waitForEvent(sse, sseDeleteStart, 'SSE DELETE'),
