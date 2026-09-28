@@ -59,13 +59,12 @@ export function transaction<T>(
 
 	// Abort promptly on client disconnect (harper#2001) rather than waiting on the callback or the
 	// long-transaction monitor. Gated like the monitor gates abortDueToTimeout: write-bearing only, never
-	// sourceApply/isReplay (no resume path, harper-pro#348). No `signal.aborted` fast path — a signal
-	// stays aborted forever and later transaction() calls share it, so only a disconnect that happens
-	// while THIS transaction is open poisons it. That is not a compensation-work escape hatch, and the
-	// static-API and transaction() spellings of the same post-disconnect write behave oppositely.
-	// DESIGN.md carries the full reasoning for all three.
+	// sourceApply (no resume path, harper-pro#348). Cancellation belongs to the request, not to one
+	// transaction instance, so a signal that already fired cuts off this scope's writes too; work that
+	// must outlive the client runs on a context without the signal (resources/DESIGN.md).
 	const signal = context.signal;
 	let onDisconnect: (() => void) | undefined;
+	if (signal?.aborted && !transaction.sourceApply) transaction.disconnectPending = true;
 
 	let result;
 	try {
@@ -108,7 +107,9 @@ export function transaction<T>(
 				harperLogger.debug?.('aborting transaction on client disconnect', error);
 			}
 		};
-		signal.addEventListener('abort', onDisconnect, ONCE);
+		// The event fires once: a signal the callback aborted synchronously would never deliver it.
+		if (signal.aborted) onDisconnect();
+		else signal.addEventListener('abort', onDisconnect, ONCE);
 	}
 	function removeDisconnectListener() {
 		if (onDisconnect) signal.removeEventListener('abort', onDisconnect);

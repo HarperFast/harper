@@ -12,7 +12,8 @@ const { setTxnExpiration: setLMDBTxnExpiration, LMDBTransaction } = require('#sr
 const { setReadTxnExpiration, checkReadTxnTimeouts } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { table } = require('#src/resources/databases');
-const { transaction } = require('#src/resources/transaction');
+const { transaction, contextStorage } = require('#src/resources/transaction');
+const { recordAction, addAnalyticsListener, analyticsDelay } = require('#src/resources/analytics/write');
 const { setTimeout: delay } = require('node:timers/promises');
 const { PassThrough } = require('node:stream');
 const { RocksDatabase, registryStatus, constants } = require('@harperfast/rocksdb-js');
@@ -1049,7 +1050,7 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		const context = {};
 		let parked;
 		const committing = transaction(context, async () => {
-			await BlobResource.put({ id: 2071, blob }, context);
+			await BlobResource.put({ id: 2075, blob }, context);
 			parked = databaseTxns(context)[0];
 		});
 		slow.write(Buffer.alloc(16384, 'l'));
@@ -1059,7 +1060,7 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		parked.abortDueToDisconnect();
 		slow.end();
 		await assert.rejects(committing, /client disconnected/);
-		assert.equal(await BlobResource.get(2071), undefined, 'the disconnected write must not be committed');
+		assert.equal(await BlobResource.get(2075), undefined, 'the disconnected write must not be committed');
 	});
 
 	it('keeps disconnect cancellation armed through the wrapper final commit', async function () {
@@ -1322,9 +1323,13 @@ describe('Disconnect abort', () => {
 			undefined,
 			'an abandoned iterator must be closed when the poisoned callback settles'
 		);
-		// Idempotent: draining the already-closed iterator must not double-release, and must not fault
-		// on the released handle.
-		while (!(await iterator.next()).done);
+		// A late consumer must not double-release or resurrect the native handle. On RocksDB the read-range
+		// guard also names the expired snapshot rather than letting the scan end as if it were complete.
+		if (!isLMDB) {
+			await assert.rejects(async () => {
+				while (!(await iterator.next()).done);
+			}, /snapshot expired/);
+		} else while (!(await iterator.next()).done);
 		assert.equal(
 			getReadTransaction(context.transaction),
 			undefined,
@@ -1359,7 +1364,11 @@ describe('Disconnect abort', () => {
 					await waitFor(() => (iteratorTransaction.transaction ?? iteratorTransaction.readTxn) == null, {
 						message: 'the monitor must reclaim an undrained poisoned iterator past the open-transaction limit',
 					});
-					while (!(await iterator.next()).done);
+					if (!isLMDB) {
+						await assert.rejects(async () => {
+							while (!(await iterator.next()).done);
+						}, /snapshot expired/);
+					} else while (!(await iterator.next()).done);
 				}),
 				/disconnected/
 			);
@@ -1674,10 +1683,13 @@ describe('Disconnect abort', () => {
 		assert.equal((await DisconnectResource.get(535))?.name, 'wrapper commit outcome');
 		assertChainReleased(context.transaction);
 
-		await transaction(context, async () => {
-			await DisconnectResource.put(536, { name: 'later scope on aborted signal' }, context);
-		});
-		assert.equal((await DisconnectResource.get(536))?.name, 'later scope on aborted signal');
+		await assert.rejects(
+			transaction(context, async () => {
+				await DisconnectResource.put(536, { name: 'later scope on aborted signal' }, context);
+			}),
+			/disconnected/
+		);
+		assert.ok((await DisconnectResource.get(536)) == null, 'a later scope on the aborted request must not commit');
 	});
 
 	// The same boundary from the other side of commit()'s CLOSED flip: once the native commit is in
@@ -1748,17 +1760,104 @@ describe('Disconnect abort', () => {
 		assert.ok((await DisconnectResource.get(533)) == null, 'the post-commit write must not land');
 	});
 
-	// The deliberate limit of the no-sticky-fast-path rule, pinned so it cannot change by accident: a
-	// transaction created after the disconnect never sees an 'abort' event and is NOT poisoned, which is
-	// what keeps post-disconnect compensation work runnable. It falls back to the monitor instead.
-	it('does not poison a transaction created after the client already disconnected', async function () {
+	// Cancellation belongs to the request, not to one transaction instance: a scope opened on a signal
+	// that already fired still reads, cannot stage a write, and independent work on a context without
+	// the signal commits.
+	it('rejects writes in a transaction created after the client already disconnected', async function () {
+		await DisconnectResource.put(534, { name: 'readable' }, {});
 		const ac = new AbortController();
 		ac.abort();
 		const context = { signal: ac.signal };
-		await transaction(context, async () => {
-			await DisconnectResource.put(534, { name: 'compensation write' }, context);
+		let readDuringScope;
+		await assert.rejects(
+			transaction(context, async () => {
+				readDuringScope = await DisconnectResource.get(534, context);
+				await DisconnectResource.put(562, { name: 'post-disconnect write' }, context);
+			}),
+			/disconnected/
+		);
+		assert.equal(readDuringScope?.name, 'readable', 'reads on an aborted request still work');
+		assert.ok((await DisconnectResource.get(562)) == null, 'the post-disconnect write must not commit');
+
+		const independent = {};
+		await transaction(independent, async () => {
+			await DisconnectResource.put(562, { name: 'independent work' }, independent);
 		});
-		assert.equal((await DisconnectResource.get(534))?.name, 'compensation write');
+		assert.equal((await DisconnectResource.get(562))?.name, 'independent work');
+	});
+
+	// Arming the listener on an already-aborted signal covers a callback that returns a promise; only the
+	// check at scope entry covers a synchronous one whose commit submits before anything could be armed.
+	it('rejects a write staged synchronously on a request whose client already disconnected', async function () {
+		const ac = new AbortController();
+		ac.abort();
+		const context = { signal: ac.signal };
+		let staged;
+		await assert.rejects(async () => {
+			await transaction(context, () => {
+				staged = DisconnectResource.put(567, { name: 'must not commit' }, context);
+			});
+			await staged;
+		}, /disconnected/);
+		assert.ok((await DisconnectResource.get(567)) == null, 'the synchronously staged write must not commit');
+	});
+
+	// The shape that made the edge-triggered rule an API-dependent atomicity hole: write A is rolled back
+	// by the disconnect, and the handler's catch opens a fresh scope on the same request for write B.
+	it('rejects a later transaction() on the same request after a disconnect rolled back the first', async function () {
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		let followUp;
+		await assert.rejects(
+			transaction(context, async () => {
+				await DisconnectResource.put(563, { name: 'A' }, context);
+				ac.abort();
+				await delay(10);
+				await DisconnectResource.put(564, { name: 'staged after the disconnect' }, context);
+			}).catch((error) => {
+				followUp = transaction(context, async () => DisconnectResource.put(565, { name: 'B' }, context));
+				throw error;
+			}),
+			/disconnected|no longer open/
+		);
+		await assert.rejects(followUp, /disconnected/);
+		assert.ok((await DisconnectResource.get(563)) == null, 'A was rolled back by the disconnect');
+		assert.ok((await DisconnectResource.get(565)) == null, 'B must not commit on the aborted request');
+	});
+
+	// Both spellings of a post-disconnect write now agree: a static-API write after a read-only scope
+	// ended (nothing was poisoned, so nothing is joined) opens a fresh transaction, which is refused too.
+	it('rejects a static-API write on a request whose client disconnected during a read-only scope', async function () {
+		await DisconnectResource.put(566, { name: 'readable' }, {});
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		await transaction(context, async () => {
+			await DisconnectResource.get(566, context);
+			ac.abort();
+			await delay(10);
+		});
+		await assert.rejects(async () => DisconnectResource.put(566, { name: 'overwritten' }, context), /disconnected/);
+		assert.equal((await DisconnectResource.get(566))?.name, 'readable');
+	});
+
+	// Background work armed from inside a request inherits that request's context through
+	// AsyncLocalStorage. The analytics flush (and the scheduled tasks it starts) is process-wide work, so
+	// it must not run under a request whose aborted signal would refuse every write it makes.
+	it('does not flush analytics under the context of the request that armed the flush', async function () {
+		this.timeout(analyticsDelay * 10);
+		await delay(analyticsDelay + 200); // let a flush another test armed run first
+		let flushedUnder = 'not flushed';
+		addAnalyticsListener(() => {
+			if (flushedUnder === 'not flushed') flushedUnder = contextStorage.getStore();
+		});
+		const ac = new AbortController();
+		ac.abort();
+		contextStorage.run({ signal: ac.signal }, () => recordAction(1, 'disconnect-context-probe'));
+		await waitFor(() => flushedUnder !== 'not flushed', {
+			timeout: analyticsDelay * 5,
+			message: 'the analytics flush should run',
+		});
+		assert.equal(flushedUnder, undefined, 'the flush must run outside the arming request context');
 	});
 
 	it('keeps a returned iterator alive when the transaction commits normally', async function () {
