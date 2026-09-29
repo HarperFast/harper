@@ -17,7 +17,6 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [`Table.ts` — section map](resources/DESIGN.md#tablets--section-map) — Section markers for the 4.7K-line `makeTable()` factory.
 - ["Where is X" cheat sheet](resources/DESIGN.md#where-is-x-cheat-sheet) — Symbol lookup for the read/write path, audit, subscriptions and schema.
 - [Full-text declarations and reader snapshots](resources/DESIGN.md#full-text-declarations-and-reader-snapshots) — Declaration names stay separate from stored attributes; a query retains one native reader across every page.
-- [Audit retention floor](resources/DESIGN.md#audit-retention-floor) — A saved audit cursor below the floor must resync; the floor is internal, and `Table.commit` skips the out-of-order walk below it.
 - [Path routing & parameterised routes](resources/DESIGN.md#path-routing--parameterised-routes) — How resource paths and route parameters resolve.
 - [Persisted relationship catalog](resources/DESIGN.md#persisted-relationship-catalog) — Where relationship definitions are stored and rebuilt.
 - [Typed, discoverable resources (code-first schema + request contract)](resources/DESIGN.md#typed-discoverable-resources-code-first-schema--request-contract) — Declaring schema and request contracts from code.
@@ -43,8 +42,6 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [A table is invisible to catalog scans until its create is complete (`databases.ts` `table()` / `initStores`)](resources/DESIGN.md#a-table-is-invisible-to-catalog-scans-until-its-create-is-complete-databasests-table--initstores) — The primary-key catalog descriptor is written last, so `initStores` never loads a half-created table.
 - [Subscription version selection (`Table.ts`)](resources/DESIGN.md#subscription-version-selection-tablets) — Replay and live delivery share primary-version filtering; messages remain independent and raw events preserve history by default.
 - [Audit-store `'committed'` notification batching (`transactionBroadcast.ts`)](resources/DESIGN.md#audit-store-committed-notification-batching-transactionbroadcastts) — `'committed'` notifications are deferred with `setImmediate`, collapsed per turn and batched with yields; the ancestor key walk must strictly shrink.
-- [Audit-entry removal loops must track every `removeAuditEntry()`/`removeEntry()` promise](resources/DESIGN.md#audit-entry-removal-loops-must-track-every-removeauditentryremoveentry-promise) — Every removal promise in a batch loop needs a rejection handler attached immediately.
-- [Audit retention cleanup is a self-rearming, engine-independent lifecycle](resources/DESIGN.md#audit-retention-cleanup-is-a-self-rearming-engine-independent-lifecycle) — One `scheduleAuditCleanup` call re-arms until the root store closes; engines differ in the work per pass, not in the lifecycle.
 - [`createBlob(readable)` and `table.put()` don't synchronously drain the source](resources/DESIGN.md#createblobreadable-and-tableput-dont-synchronously-drain-the-source) — `table.put()` returns before a `Readable`-backed blob has drained; finalize a hash on the stream's end or await `storageInfo.saving`.
 - [Table drops, the `dropping` tombstone, and ghost tables](resources/DESIGN.md#table-drops-the-dropping-tombstone-and-ghost-tables) — `dropTable()` persists a `dropping` tombstone before destructive work; boot and a same-name create complete an interrupted drop.
 - [The exclusive `update-attributes` lock is a bounded synchronous wait, and drop-then-recreate needs the column-family eviction fix (`Table.ts`)](resources/DESIGN.md#the-exclusive-update-attributes-lock-is-a-bounded-synchronous-wait-and-drop-then-recreate-needs-the-column-family-eviction-fix-tablets) — The lock is a bounded `Atomics.wait` with structural release, acquired before any live-`Table` mutation; drop-then-recreate needs the `@harperfast/rocksdb-js` column-family eviction fix.
@@ -58,6 +55,12 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [Closing an LMDB database closes its environment, never its dbis (`databases.ts` `closeDatabase`)](resources/DESIGN.md#closing-an-lmdb-database-closes-its-environment-never-its-dbis-databasests-closedatabase) — An LMDB root closes once and its dbis are never closed natively; every alias sharing it closes with it. RocksDB column families still close individually.
 
 - [A local-only write marks both the record and its audit entry, and replay preserves it (`Table.ts` internal writes, `replayLogs.ts`)](resources/DESIGN.md#a-local-only-write-marks-both-the-record-and-its-audit-entry-and-replay-preserves-it-tablets-internal-writes-replaylogsts) — `LOCAL_ONLY` is set on both persisted forms from one per-write option; every internal write routine forwards it and crash replay reads it back from the entry, because replay re-encodes the record but never re-appends the audit entry (harper#2711).
+
+## resources/audit-retention.md — audit retention and cleanup
+
+- [Audit retention floor](resources/audit-retention.md#audit-retention-floor) — A saved audit cursor below the floor must resync; the floor is internal, and `Table.commit` skips the out-of-order walk below it.
+- [Audit retention cleanup is a self-rearming, engine-independent lifecycle](resources/audit-retention.md#audit-retention-cleanup-is-a-self-rearming-engine-independent-lifecycle) — One `scheduleAuditCleanup` call re-arms until the root store closes; engines differ in the work per pass, not in the lifecycle.
+- [Audit-entry removal loops must track every `removeAuditEntry()`/`removeEntry()` promise](resources/audit-retention.md#audit-entry-removal-loops-must-track-every-removeauditentryremoveentry-promise) — Every removal promise in a batch loop needs a rejection handler attached immediately.
 
 ## resources/record-locks.md — `table.lock()`
 
