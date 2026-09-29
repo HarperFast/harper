@@ -1691,6 +1691,7 @@ export class DatabaseTransaction implements Transaction {
 								} catch (error) {
 									// This store has landed; its bookkeeping below must run before the failure surfaces.
 									nextCommit = Promise.reject(error);
+									nextCommit.catch(() => {}); // still rejects Promise.all, even if bookkeeping throws first
 								}
 								completions.push(nextCommit);
 							}
