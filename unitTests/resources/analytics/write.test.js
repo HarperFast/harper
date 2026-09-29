@@ -614,7 +614,7 @@ describe('storeDBSizeMetrics', () => {
 	it('LMDB branch: reports total/used/free/audit from a file stat plus per-table sizes', async () => {
 		const dbPath = join(tmpDir, 'db.mdb');
 		await writeFile(dbPath, 'x'.repeat(500));
-		const lmdbPrimaryStore = { path: dbPath }; // not instanceof RocksDatabase — takes the LMDB branch
+		const lmdbPrimaryStore = { path: dbPath };
 		const t1 = { getSize: () => 40, getAuditSize: () => 77, primaryStore: lmdbPrimaryStore };
 		const t2 = { getSize: () => 60, primaryStore: lmdbPrimaryStore };
 		const analyticsTable = collectingAnalyticsTable();
@@ -776,8 +776,8 @@ describe('storeRocksDBStatsMetrics', () => {
 
 		const logMetric = analyticsTable.puts.find((m) => m.metric === 'rocksdb-txnlog-stats');
 		assert.strictEqual(logMetric.log, 'audit');
-		assert.strictEqual(logMetric.totalsTransactionsWritten, 4); // counter — diffed against the baseline
-		assert.strictEqual(logMetric.totalSizeBytes, 20); // gauge — absolute, not diffed
+		assert.strictEqual(logMetric.totalsTransactionsWritten, 4);
+		assert.strictEqual(logMetric.totalSizeBytes, 20);
 	});
 
 	it('a table whose stats call throws does not stop metrics for its sibling table', () => {
