@@ -716,6 +716,7 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 				links.every((txn) => txn.timeout > 20),
 				'the commit-phase re-arm must preserve the transaction timeout budget'
 			);
+			for (const link of links) trackedTxns.delete(link);
 			slow.end(Buffer.alloc(16384, 'i'));
 			await committing;
 		} finally {
@@ -727,16 +728,24 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		assert.equal((await SecondaryBlobResource.get(2067))?.value, 'secondary', 'the linked database write must commit');
 	});
 
-	// Defers a link's native store commit so the monitor runs while the chain is mid-cascade.
-	function stallNativeCommit(link, ms, onStart) {
+	// Defers a link's native store commit so the monitor runs over `monitored` while the chain is mid-cascade,
+	// and only then: the real commit after the stall runs at the runner's disk speed, which none of these
+	// idle windows is sized for.
+	function stallNativeCommit(link, ms, trackedTxns, monitored, { onStart, onEnd } = {}) {
 		const store = link.writes.find(Boolean).store;
+		const stall = async () => {
+			for (const txn of monitored) trackedTxns.add(txn);
+			onStart?.();
+			await delay(ms);
+			for (const txn of monitored) trackedTxns.delete(txn);
+			onEnd?.();
+		};
 		if (store instanceof RocksDatabase) {
 			const nativeTxn = link.transaction;
 			const commit = nativeTxn.commit;
 			nativeTxn.commit = function (...args) {
 				nativeTxn.commit = commit;
-				onStart?.();
-				return delay(ms).then(() => commit.apply(this, args));
+				return stall().then(() => commit.apply(this, args));
 			};
 			return () => {
 				nativeTxn.commit = commit;
@@ -745,8 +754,7 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		const ifVersion = store.ifVersion;
 		store.ifVersion = function (...args) {
 			store.ifVersion = ifVersion;
-			onStart?.();
-			return delay(ms).then(() => ifVersion.apply(this, args));
+			return stall().then(() => ifVersion.apply(this, args));
 		};
 		return () => {
 			store.ifVersion = ifVersion;
@@ -792,8 +800,10 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 				timeout: 5000,
 				message: 'the idle window should decay while the blob save is parked',
 			});
-			restore = stallNativeCommit(links[0], 250, () => {
-				armed = links.map((txn) => txn.timeout);
+			restore = stallNativeCommit(links[0], 250, trackedTxns, links, {
+				onStart: () => {
+					armed = links.map((txn) => txn.timeout);
+				},
 			});
 			slow.end(Buffer.alloc(16384, 'm'));
 			await committing;
@@ -813,6 +823,7 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		const trackedTxns = setExpiration(20);
 		let links;
 		const restores = [];
+		const consumed = [];
 		try {
 			const committing = transaction(context, async (txn) => {
 				txn.timeoutBudget = 500;
@@ -821,12 +832,26 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 				await ThirdResource.put({ id: 2071, value: 'third' }, context);
 				links = databaseTxns(context);
 				assert.equal(links.length, 3);
-				for (const link of links) trackedTxns.add(link);
-				// Any two hops outlast one window, so only a re-arm at every hop keeps the last link alive; each
-				// hop still leaves ~200ms of its own window for the real native commit on a slow-disk runner.
-				for (const link of links) restores.push(stallNativeCommit(link, 300));
+				const last = links[2];
+				// Any two hops outlast one window, so only a re-arm at every hop keeps the last link alive.
+				links.forEach((link, hop) => {
+					let windowAtStart;
+					restores.push(
+						stallNativeCommit(link, 300, trackedTxns, links.slice(hop), {
+							onStart: () => {
+								windowAtStart = last.timeout;
+							},
+							onEnd: () => consumed.push(windowAtStart - last.timeout),
+						})
+					);
+				});
 			});
 			await committing;
+			assert.equal(consumed.length, 3, 'every hop must stall');
+			assert.ok(
+				consumed.every((ms) => ms > 0),
+				`the monitor must run down the last link's window during every stall: ${consumed}`
+			);
 		} finally {
 			for (const restore of restores) restore();
 			for (const link of links ?? []) trackedTxns.delete(link);
