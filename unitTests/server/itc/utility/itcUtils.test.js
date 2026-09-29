@@ -86,6 +86,18 @@ describe('Test itcUtils module', () => {
 			expect(broadcast_stub).to.have.been.calledOnce;
 		});
 
+		it('sends the restore release to job workers too, so the close fence is actually lifted', () => {
+			const event = {
+				type: 'schema',
+				message: { operation: 'restore_backup', restorePhase: 'reload' },
+			};
+			itc_rewired.sendItcEvent(event);
+			// Best-effort rather than strict -- the work is already done -- but it must reach the job
+			// workers the close phase fenced, or they stay fenced for the life of the process.
+			expect(strict_broadcast_stub).to.not.have.been.called;
+			expect(broadcast_stub).to.have.been.calledOnceWithExactly(event, undefined, false, true);
+		});
+
 		it('gives a restore close barrier a bounded, strict broadcast that includes job workers', () => {
 			const event = {
 				type: 'schema',
