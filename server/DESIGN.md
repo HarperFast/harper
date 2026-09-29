@@ -662,3 +662,11 @@ gate is per instance on purpose: a shared one let a cache-fill shed silence the 
 Reproduce with a large concurrent non-GET burst on one CPU-starved worker
 (`integrationTests/resources/sourcedfrom-eav-cache-coherence.test.ts` P1 under Bun pinned to a contended
 core).
+
+## Response compression dispatches on the serialized output, with one brotli policy (`server/serverHelpers/contentTypes.ts`)
+
+With `http.compressionThreshold` non-zero (the shipped default is 0, off) and `Accept-Encoding: br`, `serialize()` compresses. It chooses between `serialize` and `serializeStream` by the _input_ (iterable or not), but it chooses how to compress by what the serializer _returned_: a `serializeStream` handler may return a complete body (the built-in msgpack handler returns `pack(data)` for a plain array; third-party `server.contentTypes` handlers may return strings or generators). A string or byte body takes the single-buffer path, where the threshold applies; a Readable is compressed as-is; any other iterable is adapted with `Readable.from`, as `http.ts` does for uncompressed iterable bodies. Piping a non-stream failed the request (#2421).
+
+The compressor is attached with `stream.pipeline`, not `.pipe()`: `.pipe()` does not forward a source error, so a source failing mid-stream left the compressor open and the response hanging. With `pipeline` the failure destroys the compressor, which the HTTP layer's own `pipeline` (`pipeBodyToResponse`) reports and closes abruptly.
+
+Both compressor call sites take their parameters from `brotliOptions(contentType)`. Node's brotli default is quality 11, which compresses at about 1–2 MB/s — seconds of libuv-pool CPU for a multi-megabyte response — while quality 2 runs at 400–600 MB/s for a third to a half more bytes than 11 on JSON. A second call site with its own parameters is how the single-buffer path came to run at quality 11 while the stream path ran at 2; keep one definition. The operations API's Fastify compression (`operationsServer.ts`) is configured separately.

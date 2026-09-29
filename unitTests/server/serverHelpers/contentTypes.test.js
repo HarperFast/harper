@@ -10,7 +10,9 @@ const {
 	findBestSerializer,
 	waitForStreamStartup,
 	discardSerializedStream,
+	brotliOptions,
 } = require('#src/server/serverHelpers/contentTypes');
+const { constants } = require('node:zlib');
 const { pipeBodyToResponse } = require('#src/server/http');
 
 function streamToString(readable) {
@@ -513,4 +515,21 @@ describe('contentTypes – an operations-server error to a request that negotiat
 			assert.deepStrictEqual(decodeCbor(res.rawPayload), refusal);
 		});
 	}
+});
+
+describe('brotliOptions', function () {
+	it("uses a low quality level rather than Node's default of 11", function () {
+		for (const type of ['application/json', 'application/x-msgpack', 'text/html']) {
+			assert.strictEqual(brotliOptions(type).params[constants.BROTLI_PARAM_QUALITY], 2);
+		}
+	});
+
+	it('selects text mode for JSON and text types and generic mode otherwise', function () {
+		const mode = (type) => brotliOptions(type).params[constants.BROTLI_PARAM_MODE];
+		assert.strictEqual(mode('application/json'), constants.BROTLI_MODE_TEXT);
+		assert.strictEqual(mode('application/x-ndjson'), constants.BROTLI_MODE_TEXT);
+		assert.strictEqual(mode('text/csv'), constants.BROTLI_MODE_TEXT);
+		assert.strictEqual(mode('application/x-msgpack'), constants.BROTLI_MODE_GENERIC);
+		assert.strictEqual(mode('application/octet-stream'), constants.BROTLI_MODE_GENERIC);
+	});
 });
