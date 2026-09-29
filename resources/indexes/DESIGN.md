@@ -180,9 +180,9 @@ as an automatically scaled graph grows.
 
 ## Derived-index runtime: committed-log delivery to native index backends (`resources/derivedIndexRuntime.ts`)
 
-A derived index (the native HNSW plane, a future Tantivy full-text index) is a materialized view
-that lives outside the record transaction: its apply is native, costs 0.2–1.4 ms per mutation, and
-its durability barrier is an `msync` or a segment publish, none of which belong on the commit path.
+A derived index (the native HNSW or Tantivy full-text plane) is a materialized view
+that lives outside the record transaction: its apply is native and its durability barrier is an
+`msync` or a segment publish, neither of which belongs on the commit path.
 The runtime is the one Harper-side implementation of the delivery protocol in harper#2489: **the
 transaction log is the durable fact, a commit only wakes a runner, and every backend resumes from an
 exact cursor into that log.** There is deliberately no second delivery fact — no transactional
@@ -327,13 +327,14 @@ cursor is backend-owned and validation is Harper's.
 `@harperfast/fulltext/native`; it does not implement another replay or ownership protocol. Harper
 turns each resolved mutation into one stable document id from `tableId` and the record id's
 ordered-binary storage-key bytes, and
-passes only the schema-selected string and array fields to the wrapper. Harper does not rescan array
-contents; the wrapper owns value validation, Tantivy schema, exact frame partitioning, its exclusive writer, segment publication, and file
-lifecycle. Harper keeps accepted runtime batches in a 64 MiB bounded queue and submits at most 256
+passes only the schema-selected string and array fields to the wrapper. Harper validates each selected
+value, including every array element, and resolves text Blobs before submission. The wrapper owns
+native document validation, Tantivy schema, exact frame partitioning, its exclusive writer, segment
+publication, and file lifecycle. Harper keeps accepted runtime batches in a 64 MiB bounded queue and submits at most 256
 records or 5 ms of conversion work per turn, so the runtime's 4096-record chunk cannot become one
 long event-loop task. Awaited Blob reads yield the event loop and therefore do not consume that
-conversion budget; otherwise ordinary storage latency would fragment a rebuild into one native
-commit per record. Blob-bearing slices also have a wall-time ceiling derived from the writer shutdown
+conversion budget; otherwise ordinary storage latency would fragment a rebuild into small native
+mutation submissions. Blob-bearing slices also have a wall-time ceiling derived from the writer shutdown
 budget, so a run of slow reads cannot keep one drain turn alive through hundreds of per-record read
 timeouts. A rebuild chunk without a source-size estimate consumes the adapter's entire
 queue-byte allowance, ensuring that only one unknown-size chunk is retained at a time. Wrapper
@@ -368,7 +369,7 @@ not prove the index files should be reset. Persistent writer unavailability emit
 or record content. Ownership handoff does not finish until drain and close prove quiescence. A
 writer-open failure that lands after shutdown begins discards queued work before finalization so it
 cannot enter another retry drain. Harper
-gives native close its own 35-second bound and bounds the complete handoff at 70 seconds. If that proof fails, shutdown rejects and the runtime keeps its
+gives native close its own 35-second bound and bounds the complete handoff at 105 seconds. If that proof fails, shutdown rejects and the runtime keeps its
 runner lock, preventing a second writer. The underlying native operation continues and a later operator
 retry attaches to the same shutdown rather than starting a competing close. A cursor that cannot fit
 the native commit-payload limit is terminal for that backend instance: accepted work is rollback-closed
@@ -419,15 +420,14 @@ the full-text directory with the same filesystem controls as Harper data. Removi
 does not erase old segment bytes immediately; normal Tantivy merge/reclamation governs physical
 removal, and destroying an index uses the wrapper's retirement protocol.
 
-The binding remains unloaded until a full-text declaration is activated. Before activation can
-construct this backend, Harper must exact-pin the Fulltext package, document the dependency in
-`dependencies.md`, and prove that its native prebuild loads on Linux, macOS, and Windows CI. A
-missing or incompatible binding is an activation error; Harper must not silently omit the declared
-index.
+The binding remains unloaded until a full-text declaration is activated. Harper exact-pins the
+Fulltext package, documents it in `dependencies.md`, and loads its native prebuild in dedicated
+Linux, macOS, and Windows CI jobs. A missing or incompatible binding is an activation error; Harper
+does not silently omit the declared index.
 
 ### Full-text query plane
 
-Each declared full-text index has a read-only native handle beside its derived-index writer. Readers
+Each declared full-text index can lazily open a read-only native handle beside its derived-index writer. Readers
 are keyed by native path, readiness id and owner epoch. A process-wide atomic publication generation
 invalidates stale handles and notifies peer workers. A warm reader reloads in the background after a
 notification, while every query still samples the generation and reloads on mismatch; notification
@@ -496,7 +496,7 @@ rather than wedging the path indefinitely; the reset therefore assumes that reje
 
 Weights and highlighting are query configuration. Changing either refreshes readers without rotating
 the persisted generation. Analyzer behavior, stop words, positions, surface terms, synonyms, source
-media types and source-field membership are storage identity and require a new generation. The
+media types, source-field membership and source order are storage identity and require a new generation. The
 wrapper validates that identity on inspection and open, so an older analyzer generation fails closed
 and rebuilds instead of serving mixed tokenization semantics.
 

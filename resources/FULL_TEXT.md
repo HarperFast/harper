@@ -18,7 +18,7 @@ type Product @table(audit: true) @export {
 }
 ```
 
-The field name, `catalogSearch`, identifies the index. `@fullText` accepts no `name` argument and is supported only on a `FullText` field. Source order in the table declaration does not matter.
+The field name, `catalogSearch`, identifies the index. `@fullText` accepts no `name` argument and is supported only on a `FullText` field. Keep the source order stable: reordering the `fields` entries is treated as a storage configuration change and rebuilds the index.
 
 Sources may be stored `String`, `[String]`, or `Blob` fields. A Blob source requires `mediaType: "text/plain"` in its `fields` entry. Computed fields, relationships, and other full-text fields cannot be sources. Weights must be positive finite numbers and default to `1`.
 
@@ -69,7 +69,7 @@ Use `fields: ['title']` on a structured condition to search a subset of an index
 
 Full-text predicates must name an index directly on the queried table; relationship and nested-path full-text predicates are unsupported.
 
-Indexes follow committed record changes asynchronously. `waitForIndexMilliseconds` bounds how long the query waits for index coverage; `maxIndexLagMilliseconds` controls acceptable lag. A query can fail while its index is unavailable, rebuilding, or behind the requested coverage. Waiting for coverage does not promise a global snapshot across concurrent record changes.
+Indexes follow committed record changes asynchronously. `maxIndexLagMilliseconds` defaults to `3000`; set it to `0` to require current coverage. `waitForIndexMilliseconds` defaults to `0` and may be set as high as `30000` to wait for writes committed before the search begins. A query can fail while its index is unavailable, rebuilding, or behind the requested coverage. A non-waiting REST response includes `Harper-Index-Coverage`. Waiting for coverage does not promise a global snapshot across concurrent record changes.
 
 ## Fields, permissions, and results
 
@@ -84,11 +84,11 @@ Authorization uses the searched source fields. A caller must be allowed to read 
 
 `describe_table` exposes the declaration under `full_text_indexes`, including its name, source configuration, supported query modes, and readiness. Source lists are filtered by the caller's read permissions. The declaration is absent from the ordinary `attributes` list and record schemas, including generated OpenAPI and MCP schemas.
 
-Weight and highlighting changes preserve the physical index; changes to sources, analyzer settings, synonyms, positions, or surface terms require rebuilding. Renaming the index creates a new identity.
+Weight and highlighting changes preserve the physical index and refresh query readers. Changing source membership, order, or media type, or changing the analyzer, stop words, synonyms, positions, or surface terms requires rebuilding. Renaming the index creates a new identity.
 
 ## Native package and limits
 
-Harper pins `@harperfast/fulltext` to **0.3.0** and validates the native runtime capabilities before activation. Full-text activation requires RocksDB and explicit `@table(audit: true)`; keep audit logging enabled while an index is declared. LMDB is rejected. A missing or incompatible native package prevents activation.
+Harper pins `@harperfast/fulltext` to **0.3.0** and validates the native runtime capabilities before activation. Full-text activation requires RocksDB and an audited table. Declare new schema tables with `@table(audit: true)` and keep audit logging enabled while an index is declared. LMDB is rejected. A missing or incompatible native package prevents activation.
 
 Earlier beta declarations and indexes are unsupported. This field-only API does not provide a compatibility or upgrade path for them.
 
