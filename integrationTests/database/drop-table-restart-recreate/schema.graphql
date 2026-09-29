@@ -7,3 +7,7 @@ type SchemaDefinedCrash @table(database: "drop_restart") {
 	id: ID @primaryKey
 	n: Int @indexed
 }
+
+type ReplayBarrier @table(database: "drop_restart") {
+	id: ID @primaryKey
+}
