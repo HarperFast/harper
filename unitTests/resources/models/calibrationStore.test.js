@@ -376,6 +376,28 @@ describe('calibration store and facade (#2841)', function () {
 		assert.strictEqual(d.calibrated, false);
 	});
 
+	it('keeps applying a cached fit while it refreshes, instead of returning a raw decision', async () => {
+		await recordCases(models, 0, 300);
+		await models.calibrate();
+		assert.strictEqual((await warmDecide(models, 'case-1600')).calibrated, true);
+		const population = populationKey({
+			model: 'default',
+			entry: 'registered:scorer',
+			signature: SIGNATURE,
+			schemaHash: require('#src/resources/models/decision').hashSchema(SCHEMA),
+		});
+		const decision = {
+			value: topOf(1601),
+			probability: 0.9,
+			distribution: distributionFor('case-1601'),
+			calibrated: false,
+		};
+		const later = applyFits(SCHEMA, decision, population, Date.now() + 61_000);
+		assert.ok(later, 'the stale entry is served');
+		assert.strictEqual(later.decision.calibrated, true);
+		await waitFor(() => outstandingCalibrationReads() === 0, 'the refresh');
+	});
+
 	it('never fit-calibrates a schema with a no-match leaf', () => {
 		const decision = { value: 'a', probability: 0.9, distribution: distributionFor('case-0'), calibrated: false };
 		assert.strictEqual(applyFits({ enum: VALUES, noMatch: true }, decision, 'p'), undefined);

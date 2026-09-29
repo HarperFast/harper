@@ -457,13 +457,14 @@ function isUsable(row: CalibrationRow | null | undefined, now: number): row is C
 
 function cachedFit(key: string, now: number): CalibrationRow | undefined {
 	const entry = cache.get(key);
-	if (entry && now - entry.loadedAt < CACHE_FRESH_MS) {
-		cache.delete(key);
-		cache.set(key, entry);
-		return isUsable(entry.fit, now) ? entry.fit : undefined;
+	if (!entry) {
+		scheduleLoad(key, readForLoads);
+		return undefined;
 	}
-	scheduleLoad(key, readForLoads);
-	return undefined;
+	cache.delete(key);
+	cache.set(key, entry);
+	if (now - entry.loadedAt >= CACHE_FRESH_MS) scheduleLoad(key, readForLoads);
+	return isUsable(entry.fit, now) ? entry.fit : undefined;
 }
 
 export interface CalibrationSnapshot {
