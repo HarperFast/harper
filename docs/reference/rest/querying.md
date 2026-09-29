@@ -84,7 +84,7 @@ GET /Product/?catalogSearch=matches=waterproof&catalogSearch=not_matches=leather
 
 Use `Table.search()` or `search_by_conditions` when conditions need source-field selection, condition-level highlighting, or freshness controls. See [Querying Full-Text Indexes](../full-text-search/querying.md) for ranking, highlights, query combinations, and freshness controls.
 
-The REST URL syntax searches every source field in the index, so the caller must be allowed to read every source field. Prefix and fuzzy-prefix queries have a 100-record window; `offset + limit` cannot exceed 100. Full-text queries cannot provide an exact total count; a `Prefer: count=exact` request returns an unavailable total (`Content-Range: items <range>/*`).
+The REST URL syntax searches every source field in the index, so the caller must be allowed to read every source field. Prefix and fuzzy-prefix queries have a 100-record window; `offset + limit` cannot exceed 100. Full-text queries cannot provide an exact total count. On a REST interface with `exactCount: true`, a `Prefer: count=exact` request returns an unavailable total (`Content-Range: items <range>/*`). Without that opt-in, Harper applies `count=estimated` instead and can return an estimate.
 
 For date fields, colons must be URL-encoded as `%3A`:
 
@@ -207,10 +207,10 @@ Counting is opt-in: without the header, no count is computed and no count header
 
 Send a `Prefer` header on a `GET` (or `HEAD`) request to a collection:
 
-| Value             | Meaning                                                                                                                                                                                                                                                                                                           |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `count=exact`     | The exact number of matching records when the query plan can count them. Scans the full matched set, so it is off by default (see [below](#enabling-exact-counts)) and served as an estimate unless enabled for the REST interface. Full-text and other custom-index queries report an unavailable total instead. |
-| `count=estimated` | A fast planner/table estimate. Cheap, approximate.                                                                                                                                                                                                                                                                |
+| Value             | Meaning                                                                                                                                                                                                                                                                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `count=exact`     | The exact number of matching records when the query plan can count them. Scans the full matched set, so it is off by default (see [below](#enabling-exact-counts)) and served as an estimate unless enabled for the REST interface. When enabled, full-text and other custom-index queries report an unavailable total instead. |
+| `count=estimated` | A fast planner/table estimate. Cheap, approximate.                                                                                                                                                                                                                                                                              |
 
 ```http
 GET /Product/?category=software&limit(0,25)
