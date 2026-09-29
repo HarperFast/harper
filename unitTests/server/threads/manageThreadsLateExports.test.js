@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const { Worker } = require('node:worker_threads');
 
 const manageThreadsPath = require.resolve('#js/server/threads/manageThreads');
-const LATE_BOUND_FUNCTIONS = ['sendToThread', 'threadsHaveStarted', 'getThreadInfo', 'getRunningIsolatedApplications'];
+const LATE_BOUND_FUNCTIONS = ['sendToThread', 'getThreadInfo', 'getRunningIsolatedApplications'];
 const REPORT = 'late-export-report';
 
 describe('manageThreads late-bound exports', () => {
