@@ -367,9 +367,12 @@ function streamResponse(
 		finished = true;
 		source.destroy?.();
 	}
+	// Attached before anything can return: destroy(error) emits on a later tick, and an 'error' with
+	// no listener is thrown. Not once(), because a source may emit more than one.
+	source.on('error', fail);
 	if (signal?.aborted) return onAbort();
-	// the handler resolves asynchronously, so the source may have failed before it got here, and a
-	// destroyed stream emits nothing further
+	// the handler resolves asynchronously, so a source can be destroyed, and its 'close' already
+	// emitted, before this gets to listen for it
 	if (source.destroyed) return fail(source.errored);
 	signal?.addEventListener('abort', onAbort, { once: true });
 
@@ -396,8 +399,6 @@ function streamResponse(
 		}
 	});
 	source.once('end', () => finish(true));
-	// not once(): a source that emits a second error would otherwise throw it as unhandled
-	source.on('error', fail);
 	source.once('close', () => fail());
 }
 

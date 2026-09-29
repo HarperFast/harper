@@ -184,9 +184,19 @@ function readBody(request) {
 	let server;
 	let socketPath;
 	let onDispatch; // set per-test to observe when the handler is dispatched
-	let failing; // the source and request of the last failing-stream response, for inspection
+	let failing;
 
-	const handler = async (request) => {
+	// Not async: the sink then receives the source in the tick that destroyed it, while the 'error'
+	// that destroy() queued has not been emitted yet.
+	const handler = (request) => {
+		if (request.pathname !== '/failing-at-handoff') return respond(request);
+		const source = new Readable({ read() {} });
+		source.destroy(new Error('source failure'));
+		failing = { source, request };
+		return { status: 200, body: source };
+	};
+
+	const respond = async (request) => {
 		switch (request.pathname) {
 			case '/echo':
 				return { status: 200, body: await readBody(request) };
@@ -254,7 +264,6 @@ function readBody(request) {
 					},
 				});
 				failing = { source, request };
-				// streamResponse pauses the source once uWS stops accepting writes; fail it while it is held
 				const poll = setInterval(() => {
 					if (!source.isPaused()) return;
 					clearInterval(poll);
@@ -470,7 +479,12 @@ function readBody(request) {
 			});
 		}
 
-		for (const pathName of ['/fail-before-chunk', '/failed-before-handoff', '/closed-before-handoff']) {
+		for (const pathName of [
+			'/fail-before-chunk',
+			'/failing-at-handoff',
+			'/failed-before-handoff',
+			'/closed-before-handoff',
+		]) {
 			it(`gives the client no complete response when nothing was streamed (${pathName})`, async function () {
 				const response = await rawExchange(socketPath, pathName);
 				assert.ok(!response.complete, `a failed source must not be framed as a complete body: ${response.raw}`);
