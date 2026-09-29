@@ -7,6 +7,7 @@ const { existsSync } = require('node:fs');
 const os = require('node:os');
 const zlib = require('node:zlib');
 const tar = require('tar-fs');
+const tarStream = require('tar-stream');
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
@@ -19,7 +20,6 @@ const {
 	DEPLOY_STAGING_DIR,
 	Application,
 } = require('#src/components/Application');
-const { setTimeout: sleep } = require('node:timers/promises');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { inventoryBuild, packBuild } = require('#src/components/buildArtifact');
@@ -153,6 +153,25 @@ describe('replicated builds', () => {
 			);
 			assert.strictEqual(await readLive(root), 'LIVE\n');
 			assert.strictEqual(existsSync(deploymentDir(root, 'd1')), false, 'the candidate is discarded');
+		});
+
+		it('never writes through a link the archive planted, whatever the link rule allows', async function () {
+			if (process.platform === 'win32') return this.skip(); // links are not extracted there at all
+			this.timeout(30000);
+			const root = await newRoot('write-through');
+			const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'prebuilt-outside-'));
+			const pack = tarStream.pack();
+			pack.entry({ name: 'escape', type: 'symlink', linkname: outside });
+			pack.entry({ name: 'escape/planted.txt' }, 'written through the link');
+			pack.finalize();
+			const chunks = [];
+			for await (const chunk of pack.pipe(zlib.createGzip())) chunks.push(chunk);
+			const archive = Buffer.concat(chunks);
+			const manifest = { tree: 'a'.repeat(64), platform: { os: 'x', arch: 'x', libc: null, abi: 'x', binds: {} } };
+
+			await assert.rejects(() => receive(root, 'd1', { archive, manifest }), /is not a valid path/);
+			assert.deepStrictEqual(await fs.readdir(outside), [], 'nothing landed outside the candidate');
+			assert.strictEqual(existsSync(deploymentDir(root, 'd1')), false, 'and the candidate is discarded');
 		});
 
 		it('keeps the tree its own load wrote into as what it certified', async function () {
@@ -440,7 +459,6 @@ describe('replicated builds', () => {
 				await lockHeld;
 				// Boot looks while the deploy holds the lock: no tree yet, so it sets out to install.
 				const booting = installConfiguredApplication('web', entry, dirPath, lockPath, () => {});
-				await sleep(200);
 				releaseDeploy();
 				await deploying;
 				await booting;

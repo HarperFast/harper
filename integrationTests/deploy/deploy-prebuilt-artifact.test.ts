@@ -47,7 +47,6 @@ function writeTree(files: Record<string, string>): string {
 	return dir;
 }
 
-/** What an origin would publish for this tree. */
 async function artifactOf(dir: string): Promise<Artifact> {
 	const chunks: Buffer[] = [];
 	for await (const chunk of packBuild(dir)) chunks.push(chunk as Buffer);

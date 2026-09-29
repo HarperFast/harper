@@ -5130,7 +5130,10 @@ async function activateStagedArtifact(
 		if (certifiedTree !== undefined && (loaded || failed)) {
 			const recertify = async () => {
 				const { tree } = await inventoryBuild(candidateDirPath);
-				if (tree !== certifiedTree) await writeCertifiedTree(deploymentDirPath, tree);
+				if (tree === certifiedTree) return;
+				// Named only once it is on storage, or a power loss leaves a digest no retry can match.
+				await syncTreeContents(candidateDirPath);
+				await writeCertifiedTree(deploymentDirPath, tree);
 			};
 			if (failed) {
 				await recertify().catch((error) =>
