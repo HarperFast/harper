@@ -139,7 +139,7 @@ type Document @table(audit: true) {
 }
 ```
 
-`mediaType: "text/plain"` declares how Harper interprets the Blob; it does not validate runtime Blob metadata or reject the record write. The derived index decodes the Blob as UTF-8. A Blob source is limited to 1 MiB (1,048,576 bytes). If it exceeds that limit or is invalid UTF-8, Harper removes that whole record from the index rather than indexing only its other fields. A transient Blob read failure rolls back the accepted native batch and retries it, so index coverage does not advance past unread source data.
+`mediaType: "text/plain"` declares the expected Blob media type. Harper does not reject the source record write, but the derived index checks a nonempty runtime `Blob.type` and excludes the record when it does not match `text/plain`. The index decodes matching Blobs as UTF-8. A Blob source is limited to 1 MiB (1,048,576 bytes). A media-type mismatch, oversized value, or invalid UTF-8 removes the whole record from the index rather than indexing only its other fields. A transient Blob read failure rolls back the accepted native batch and retries it, so index coverage does not advance past unread source data.
 
 ## Schema changes and rebuilds
 

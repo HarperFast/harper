@@ -162,7 +162,8 @@ A full-text index is derived from committed table changes. Each condition accept
 For read-after-write behavior, require current coverage and allow a bounded wait:
 
 ```javascript
-const products = await Product.search({
+const products = [];
+for await (const product of Product.search({
 	conditions: [
 		{
 			attribute: 'catalogSearch',
@@ -172,7 +173,9 @@ const products = await Product.search({
 			waitForIndexMilliseconds: 10000,
 		},
 	],
-});
+})) {
+	products.push(product);
+}
 ```
 
 All full-text conditions combined into one query must use the same freshness values. Harper returns `400` when combined conditions specify different values.

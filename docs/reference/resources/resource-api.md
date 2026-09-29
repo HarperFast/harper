@@ -1114,7 +1114,7 @@ If `true`, forces conditions to execute in the order supplied, disabling Harper'
 
 ### `checkPermission`
 
-Trusted server-side calls skip table authorization by default. When delegating a request to `Table.search()`, set `checkPermission: true` on the query and pass the authenticated `context` as the second argument. Harper then performs a one-shot read authorization using `context.user`, including table, row, selected-property, and full-text source-field permissions. Passing the context alone does not request this check.
+Trusted server-side calls skip table authorization by default. When delegating a request to `Table.search()`, set `checkPermission: true` on the query and pass the authenticated `context` as the second argument. Harper then performs a one-shot read authorization using `context.user`, including table, selected-property, and full-text source-field permissions. Passing the context alone does not request this check. Record-level restrictions require a synchronous, server-controlled `rowFilter`.
 
 Set this flag in server-controlled code whenever the endpoint promises authorized access. Never accept its value or copy a permission object from client data.
 
