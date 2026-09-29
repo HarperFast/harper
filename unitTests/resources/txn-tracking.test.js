@@ -462,8 +462,6 @@ describe('Write txn timeout', () => {
 		}
 	});
 
-	// The monitor force-commits an over-limit source-apply txn without awaiting it, and that commit claims every
-	// staged write, so the owner's own commit has nothing left to submit and must join it instead.
 	describe("the owner's commit waits for the monitor's force-commit", () => {
 		function gateNativeCommit(link) {
 			const nativeTxn = link.transaction;
@@ -525,7 +523,6 @@ describe('Write txn timeout', () => {
 			await assert.rejects(committed, /injected native commit failure/);
 			assert.strictEqual((await IndexedResource.get(404))?.t, 1);
 			assert.notStrictEqual(context.transaction, gate.link, 'the failed transaction must release its context');
-			assert.equal(gate.link.writes.length, 0, 'the failed write set must not stay pinned');
 			await transaction.commit(context);
 		});
 

@@ -1427,13 +1427,10 @@ export class DatabaseTransaction implements Transaction {
 			return this.monitorCommit.then(
 				() => this.commit(options),
 				(error) => {
+					// The failed commit ran its own terminal cleanup, but as a non-final commit it kept the context.
 					if (options.doneWriting) {
 						this.monitorCommit = undefined;
-						try {
-							this.abort();
-						} catch (abortError) {
-							harperLogger.debug?.('cleaning up a transaction whose monitor commit failed', abortError);
-						}
+						this.releaseContext(true);
 					}
 					throw error;
 				}
