@@ -81,7 +81,7 @@ Optional arguments:
 | `eviction`           | `Int`     | `0`                           | Additional seconds after `expiration` before a record is physically removed                 |
 | `scanInterval`       | `Int`     | `(expiration + eviction) / 4` | Seconds between eviction scans                                                              |
 | `replicate`          | `Boolean` | true                          | Enable replication of this table                                                            |
-| `audit`              | `Boolean` | `logging.auditLog`            | Enable the table's transaction log; `@fullText` requires an explicit `true`                 |
+| `audit`              | `Boolean` | `logging.auditLog`            | Enable the table's transaction log; new tables with `@fullText` must set this to `true`     |
 | `cacheControl`       | `String`  | —                             | `Cache-Control` header value emitted on anonymous GET/HEAD 200/304 responses for this table |
 | `randomAccessFields` | `Boolean` | `storage.randomAccessFields`  | [Pin this table's record encoding](#randomaccessfields)                                     |
 
@@ -259,25 +259,6 @@ type InternalConfig @table @hidden {
 
 `@hidden` is also available as a [field directive](#hidden-field-directive) to suppress individual attributes.
 
-### `@fullText`
-
-<VersionBadge version="v5.3.0" /> <EngineBadge engines="RocksDB" />
-
-Creates a BM25-ranked full-text derived index from one or more stored text fields. The directive is declared on the table type and can be repeated for multiple independent indexes.
-
-```graphql
-type Product
-	@table(database: "catalog", audit: true)
-	@fullText(name: "catalogSearch", fields: [{ name: "name", weight: 3 }, { name: "description" }, { name: "tags" }]) {
-	id: ID @primaryKey
-	name: String
-	description: String
-	tags: [String]
-}
-```
-
-Full-text indexes require RocksDB and an audited table. They are local derived state rebuilt from committed table data rather than authoritative record storage. See [Full-Text Search Configuration](../full-text-search/configuration.md) for fields, phrase and prefix storage, synonyms, highlighting, and rebuild behavior.
-
 ## Documenting Types and Fields
 
 Harper picks up GraphQL's standard triple-quoted docstrings on type and field definitions. Docstrings flow through to:
@@ -381,6 +362,24 @@ Write semantics:
 - Replicated writes and audit-log replays do not re-embed — the vector travels with the record, and only the node that accepted the original write calls the model.
 
 Multiple `@embed` attributes on one type are computed concurrently.
+
+### `@fullText`
+
+<VersionBadge version="v5.3.0" /> <EngineBadge engines="RocksDB" />
+
+Creates a BM25-ranked full-text derived index from one or more stored text fields. Declare the directive on a nullable `FullText` field; that field's name identifies the index.
+
+```graphql
+type Product @table(database: "catalog", audit: true) {
+	id: ID @primaryKey
+	name: String
+	description: String
+	tags: [String]
+	catalogSearch: FullText @fullText(fields: [{ name: "name", weight: 3 }, { name: "description" }, { name: "tags" }])
+}
+```
+
+The `FullText` field is query-only. It is not stored with records or exposed as a selectable record property. Add another `FullText` field to create another independent index. Full-text indexes require RocksDB and an audited table. They are local derived state rebuilt from committed table data rather than authoritative record storage. See [Full-Text Search Configuration](../full-text-search/configuration.md) for the complete field contract, phrase and prefix storage, synonyms, highlighting, and rebuild behavior.
 
 ### `@createdTime`
 
@@ -811,19 +810,20 @@ Graph navigation runs on the quantized (approximate) distances. For nearest-neig
 
 Harper supports the following field types:
 
-| Type      | Description                                                                                    |
-| --------- | ---------------------------------------------------------------------------------------------- |
-| `String`  | Unicode text, UTF-8 encoded                                                                    |
-| `Int`     | 32-bit signed integer (−2,147,483,648 to 2,147,483,647)                                        |
-| `Long`    | 54-bit signed integer (−9,007,199,254,740,992 to 9,007,199,254,740,992)                        |
-| `Float`   | 64-bit double precision floating point                                                         |
-| `BigInt`  | Integer up to ~300 digits. Note: distinct JavaScript type; handle appropriately in custom code |
-| `Boolean` | `true` or `false`                                                                              |
-| `ID`      | String; indicates a non-human-readable identifier                                              |
-| `Any`     | Any primitive, object, or array                                                                |
-| `Date`    | JavaScript `Date` object                                                                       |
-| `Bytes`   | Binary data as `Buffer` or `Uint8Array`                                                        |
-| `Blob`    | Binary large object; designed for streaming content >20KB                                      |
+| Type       | Description                                                                                    |
+| ---------- | ---------------------------------------------------------------------------------------------- |
+| `String`   | Unicode text, UTF-8 encoded                                                                    |
+| `Int`      | 32-bit signed integer (−2,147,483,648 to 2,147,483,647)                                        |
+| `Long`     | 54-bit signed integer (−9,007,199,254,740,992 to 9,007,199,254,740,992)                        |
+| `Float`    | 64-bit double precision floating point                                                         |
+| `BigInt`   | Integer up to ~300 digits. Note: distinct JavaScript type; handle appropriately in custom code |
+| `Boolean`  | `true` or `false`                                                                              |
+| `ID`       | String; indicates a non-human-readable identifier                                              |
+| `Any`      | Any primitive, object, or array                                                                |
+| `Date`     | JavaScript `Date` object                                                                       |
+| `Bytes`    | Binary data as `Buffer` or `Uint8Array`                                                        |
+| `Blob`     | Binary large object; designed for streaming content >20KB                                      |
+| `FullText` | Query-only full-text index declaration; valid only with `@fullText` and never stored           |
 
 Added `BigInt` in v4.3.0
 

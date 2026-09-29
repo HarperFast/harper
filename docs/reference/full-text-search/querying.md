@@ -6,7 +6,7 @@ title: Querying
 
 <VersionBadge version="v5.3.0" /> <EngineBadge engines="RocksDB" />
 
-Use the full-text index name as a condition attribute in `Table.search()`.
+Use the query-only `FullText` field name as a condition attribute in `Table.search()`.
 
 ```javascript
 const products = await Product.search({
@@ -15,7 +15,7 @@ const products = await Product.search({
 });
 ```
 
-Results are ordered by BM25 relevance. The index declaration, not the source field name, identifies the full-text search target.
+Results are ordered by BM25 relevance. The `FullText` field, not one of its source fields, identifies the search target.
 
 ## Match modes
 
@@ -63,7 +63,7 @@ const products = await Product.search({
 
 Every requested field must belong to the index and be readable by the caller. Without `fields`, the caller must be allowed to read every source field in the index. Harper rejects an external REST or Operations API query with `403` if any searched source field is not readable. `$highlights` never bypasses this check.
 
-Direct calls through `tables` or `databases` run in a trusted server-side context and do not reapply the caller's role or attribute permissions. Custom resources must authorize protected searches before returning records or highlights.
+Direct calls through `tables` or `databases` run in a trusted server-side context. From an authenticated custom resource, pass `this.getContext()` to `Table.search()` and set `checkPermission: true` in the search options to enforce the caller's table and source-field permissions. Context propagation alone does not request the table permission check.
 
 ## Score and ordering
 
@@ -78,6 +78,8 @@ const products = await Product.search({
 ```
 
 Full-text results use descending relevance order. The only explicit full-text sort is `$score` descending; other sort keys and reverse iteration are rejected because they would discard the native ranking.
+
+Count requests do not report an exact full-text count after authorization, structured filtering, and current-record validation. They return `recordCount: null` and `recordCountExact: false`.
 
 ## Highlights
 
@@ -146,7 +148,7 @@ const products = await Product.search({
 });
 ```
 
-An `or` group cannot mix full-text and ordinary record conditions, and one query cannot combine different full-text indexes. Run separate queries when either boundary is required.
+An `or` group cannot mix full-text and ordinary record conditions, and one query cannot combine different full-text indexes. Full-text conditions must name a field directly on the queried table; relationship and nested-property paths are not supported. Run separate queries when any of these boundaries is required.
 
 ## Freshness controls
 

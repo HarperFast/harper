@@ -12,9 +12,9 @@ Use full-text search when users need relevance-ranked matching across product na
 
 ## Requirements
 
-- The table must use RocksDB and explicitly declare [`audit: true`](../database/transaction.md#enabling-the-transaction-log-per-table). <EngineBadge engines="RocksDB" /> A new or updated declaration without it fails with `400`, even when transaction logging is enabled globally.
+- The table must use RocksDB and have [transaction logging enabled](../database/transaction.md#enabling-the-transaction-log-per-table). <EngineBadge engines="RocksDB" /> New schema tables should declare `@table(audit: true)`. An existing table that already persisted audit logging can add a full-text field without restating the option, but `audit: false` is always rejected while an index is declared.
 - Full-text source fields must be stored `String`, `[String]`, or `Blob` values. Blob sources must be declared as `text/plain`.
-- Creating or updating an LMDB table with `@fullText` fails with `400`. A persisted declaration encountered while opening LMDB is ignored with a warning. Migrate the table to RocksDB before activating the index.
+- Creating or updating an LMDB table with an `@fullText` field fails with `400`. A persisted declaration encountered while opening LMDB is ignored with a warning. Migrate the table to RocksDB before activating the index.
 
 See [Configuration](./configuration.md) for the complete schema contract, [Querying](./querying.md) for search examples, and [Query optimization](../resources/query-optimization.md) for performance guidance.
 

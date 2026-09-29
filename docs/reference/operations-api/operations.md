@@ -63,7 +63,7 @@ Returns all table definitions within the specified database. Each table definiti
 
 ### `describe_table`
 
-Returns the definition of a specific table. A table with native full-text indexes includes `full_text_indexes`; each entry reports its source fields, analyzer options, enabled query modes, and `readiness` (`ready`, `rebuilding`, or `unavailable`). The readiness object also includes `owner_epoch`, `rebuild_attempts`, and an optional `reason`.
+Returns the definition of a specific table. A table with native full-text indexes includes `full_text_indexes`; each entry reports its query-only field name, source fields, analyzer options, enabled query modes, and `readiness` (`ready`, `rebuilding`, or `unavailable`). The readiness object also includes `owner_epoch`, `rebuild_attempts`, and an optional `reason`. Query-only `FullText` fields do not appear in the ordinary `attributes` list.
 
 Full-text response metadata: <VersionBadge version="v5.3.0" />
 

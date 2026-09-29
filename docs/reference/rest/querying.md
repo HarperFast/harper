@@ -68,7 +68,7 @@ GET /Product/?category=software&price=gt=100&price=lt=200
 
 <VersionBadge version="v5.3.0" /> <EngineBadge engines="RocksDB" />
 
-For a declared `@fullText` index, use its name as the query attribute and one of the full-text comparators:
+For a `FullText` field carrying `@fullText`, use the field name as the query attribute and choose a full-text comparator:
 
 ```http
 GET /Product/?catalogSearch=matches=waterproof%20trail

@@ -6,42 +6,50 @@ title: Configuration
 
 <VersionBadge version="v5.3.0" /> <EngineBadge engines="RocksDB" />
 
-Declare a full-text index with `@fullText` on an audited RocksDB table type. The directive is repeatable, so one table can have independent indexes for different search experiences.
+Declare a nullable `FullText` field on an audited RocksDB table and attach `@fullText` to that field. The field name identifies the index. Add another `FullText` field when one table needs independent indexes for different search experiences.
 
 ```graphql
-type Product
-	@table(database: "catalog", audit: true)
-	@fullText(
-		name: "catalogSearch"
-		fields: [
-			{ name: "name", weight: 3, highlight: true }
-			{ name: "description", weight: 1, highlight: true }
-			{ name: "tags", weight: 1 }
-		]
-		highlighting: { maxFragments: 2, fragmentLength: 120 }
-	) {
+type Product @table(database: "catalog", audit: true) {
 	id: ID @primaryKey
 	name: String
 	description: String
 	tags: [String]
 	price: Float @indexed
+	catalogSearch: FullText
+		@fullText(
+			fields: [
+				{ name: "name", weight: 3, highlight: true }
+				{ name: "description", weight: 1, highlight: true }
+				{ name: "tags", weight: 1 }
+			]
+			highlighting: { maxFragments: 2, fragmentLength: 120 }
+		)
 }
 ```
 
-The index name is the attribute used in search conditions. It does not add a stored field to each record.
+`catalogSearch` is a query-only declaration. It is not stored, selectable, writable, or included in record, OpenAPI, or MCP schemas. Use the field name as the condition attribute and select `$score` or `$highlights` for search metadata.
+
+The declaration must use nullable `FullText` exactly and carry one `@fullText` directive. Lists, non-null forms, a bare `FullText` field, and additional directives such as `@computed`, `@indexed`, or `@allow` are rejected. `@fullText` is not valid on a table type or any other field type.
+
+New schema tables must explicitly set `@table(audit: true)`. An existing table that already has persisted audit logging can add the field without restating `audit`, but disabling audit logging while a full-text field exists is rejected.
+
+Writing the declaration-only field or selecting it as record data returns an error, including on unsealed tables. A read-through source response containing that name fails with `502` and is not cached, indexed, or audited. For HTTP-sourced caching tables, avoid index names that collide with response wrapper fields such as `data`, `headers`, `body`, and `status`.
+
+:::warning Prerelease schema declarations
+Earlier prerelease type-level `@fullText(name: ...)` declarations are not supported. Move the directive to a nullable `FullText` field and use that field's name as the index identity.
+:::
 
 ## Directive options
 
-| Option         | Default       | Description                                                                          |
-| -------------- | ------------- | ------------------------------------------------------------------------------------ |
-| `name`         | required      | Unique index name on the table.                                                      |
-| `fields`       | required      | One or more source fields.                                                           |
-| `analyzer`     | `"english@2"` | Versioned text analyzer. `english@2` is the only supported value.                    |
-| `stopWords`    | `true`        | Removes common English terms during analysis.                                        |
-| `positions`    | `true`        | Stores token positions. Required for phrase queries.                                 |
-| `surfaceTerms` | `true`        | Stores original analyzed terms. Required for prefix, fuzzy-prefix, and highlighting. |
-| `synonyms`     | `[]`          | Index-time synonym expansion rules.                                                  |
-| `highlighting` | omitted       | Enables highlight generation and sets fragment limits.                               |
+| Option         | Default       | Description                                                                           |
+| -------------- | ------------- | ------------------------------------------------------------------------------------- |
+| `fields`       | required      | One or more source fields.                                                            |
+| `analyzer`     | `"english@2"` | Versioned text analyzer. `english@2` is the only supported value.                     |
+| `stopWords`    | `true`        | Removes common English terms during analysis.                                         |
+| `positions`    | `true`        | Stores token positions. Required for phrase queries.                                  |
+| `surfaceTerms` | `true`        | Stores unstemmed analyzed terms. Required for prefix, fuzzy-prefix, and highlighting. |
+| `synonyms`     | `[]`          | Index-time synonym expansion rules.                                                   |
+| `highlighting` | omitted       | Enables highlight generation and sets fragment limits.                                |
 
 Each field entry supports:
 
@@ -59,11 +67,10 @@ Source fields cannot use `@computed` or `@relationship`. Indexable source values
 `positions` and `surfaceTerms` trade index size for query features. Keep their defaults unless storage measurements show that the features are unnecessary.
 
 ```graphql
-type Article
-	@table(audit: true)
-	@fullText(name: "bodySearch", fields: [{ name: "body" }], positions: false, surfaceTerms: false) {
+type Article @table(audit: true) {
 	id: ID @primaryKey
 	body: String
+	bodySearch: FullText @fullText(fields: [{ name: "body" }], positions: false, surfaceTerms: false)
 }
 ```
 
@@ -78,11 +85,11 @@ Highlighting is off by default. To enable it:
 3. Keep `surfaceTerms: true`.
 
 ```graphql
-@fullText(
-	name: "articleSearch"
-	fields: [{ name: "title", highlight: true }, { name: "body", highlight: true }]
-	highlighting: { maxFragments: 3, fragmentLength: 160 }
-)
+articleSearch: FullText
+	@fullText(
+		fields: [{ name: "title", highlight: true }, { name: "body", highlight: true }]
+		highlighting: { maxFragments: 3, fragmentLength: 160 }
+	)
 ```
 
 `maxFragments` and `fragmentLength` must be positive integers. Query results contain offsets into the original field value; see [Highlights](./querying.md#highlights).
@@ -92,30 +99,29 @@ Highlighting is off by default. To enable it:
 Synonyms expand terms while records are indexed:
 
 ```graphql
-@fullText(
-	name: "catalogSearch"
-	fields: [{ name: "description" }]
-	synonyms: [
-		{ source: "sneaker", replacements: ["shoe", "trainer"] }
-		{ source: "tv", replacements: ["television"] }
-	]
-)
+catalogSearch: FullText
+	@fullText(
+		fields: [{ name: "description" }]
+		synonyms: [
+			{ source: "sneaker", replacements: ["shoe", "trainer"] }
+			{ source: "tv", replacements: ["television"] }
+		]
+	)
 ```
 
 Rules require one source term and one or more unique replacement terms. A rule cannot replace a term with itself.
 
 ## Multiple indexes
 
-Repeat `@fullText` when separate index definitions are useful:
+Add separate `FullText` fields when separate index definitions are useful:
 
 ```graphql
-type Product
-	@table(database: "catalog", audit: true)
-	@fullText(name: "titleSearch", fields: [{ name: "name", weight: 2 }])
-	@fullText(name: "tagSearch", fields: [{ name: "tags" }]) {
+type Product @table(database: "catalog", audit: true) {
 	id: ID @primaryKey
 	name: String
 	tags: [String]
+	titleSearch: FullText @fullText(fields: [{ name: "name", weight: 2 }])
+	tagSearch: FullText @fullText(fields: [{ name: "tags" }])
 }
 ```
 
@@ -126,23 +132,22 @@ The indexes update independently and can be queried independently. A single quer
 Only plain-text Blob fields are supported:
 
 ```graphql
-type Document
-	@table(audit: true)
-	@fullText(name: "contentSearch", fields: [{ name: "content", mediaType: "text/plain" }]) {
+type Document @table(audit: true) {
 	id: ID @primaryKey
 	content: Blob
+	contentSearch: FullText @fullText(fields: [{ name: "content", mediaType: "text/plain" }])
 }
 ```
 
-`mediaType: "text/plain"` declares how Harper interprets the Blob; it does not validate runtime Blob metadata or reject the record write. The derived index decodes the Blob as UTF-8. A Blob that cannot be decoded or exceeds the one-MiB source-value limit is omitted from the index until a later valid write replaces it.
+`mediaType: "text/plain"` declares how Harper interprets the Blob; it does not validate runtime Blob metadata or reject the record write. The derived index decodes the Blob as UTF-8. If a Blob is invalid UTF-8 or exceeds the native source limit, Harper removes that whole record from the index rather than indexing only its other fields. A transient Blob read failure rolls back the accepted native batch and retries it, so index coverage does not advance past unread source data.
 
 ## Schema changes and rebuilds
 
-Changes that affect indexed storage create a new local index generation and rebuild from source data. These include source names and media types, analyzer settings, stop-word handling, positions, surface terms, and synonyms.
+Changes that affect indexed storage create a new local index generation and rebuild from source data. These include source membership, source order, media types, analyzer settings, stop-word handling, positions, surface terms, and synonyms. Keep the `fields` list in a stable order when its meaning has not changed.
 
 While a generation rebuilds, ordinary table reads and writes remain available, but full-text queries on that node return retryable `503` responses until the index is ready.
 
-Changing source weights or highlighting settings changes query behavior without rebuilding indexed term storage. Removing an index retires its local files after the schema change is confirmed.
+Changing source weights or highlighting settings changes query behavior without rebuilding indexed term storage. Removing the `FullText` field retires its local files after the schema change is confirmed. Renaming the field creates a new index identity and retires the old one.
 
 ## Inspecting an index
 
