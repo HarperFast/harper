@@ -74,8 +74,11 @@ function isNativeBinary(head: Buffer): boolean {
 		magic === 0xfeedface ||
 		magic === 0xfeedfacf ||
 		magic === 0xcefaedfe ||
-		magic === 0xcffaedfe ||
-		magic === 0xcafebabe // Mach-O, thin or fat
+		magic === 0xcffaedfe || // Mach-O
+		magic === 0xcafebabe ||
+		magic === 0xbebafeca ||
+		magic === 0xcafebabf ||
+		magic === 0xbfbafeca // fat Mach-O, 32- and 64-bit, either byte order
 	);
 }
 

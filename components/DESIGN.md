@@ -483,16 +483,18 @@ canonical digest over every path, file content, link target and owner-exec bit.
 - **Platform facts.** The same walk records what the build binds. A `.node` addon binds OS, CPU architecture and
   libc, and the Node ABI unless it is a Node-API addon (it references `napi_` and none of the V8 or node C++ linkage
   names; lmdb's `node.napi.node`, which also references `node_module_register`, reads as ABI-bound, on the safe
-  side). Any other ELF, Mach-O or PE file, and any `package.json` declaring `os`, `cpu` or `libc`, bind the first
-  three. On a POSIX host, a link or an owner-executable file binds POSIX semantics, which win32 cannot hold — tar-fs
+  side). Any other ELF, Mach-O (thin or fat, 32- or 64-bit, either byte order) or PE file, and any `package.json`
+  declaring `os`, `cpu` or `libc`, bind the first three. On a POSIX host, a link or an owner-executable file binds POSIX semantics, which win32 cannot hold — tar-fs
   drops links there silently; a tree built on Windows holds nothing Windows cannot. An install that ran
   `install_command` or install scripts — including the scripts `npm pack` runs for a git reference with
   `install_allow_scripts` — binds all four, since nothing inspects what it produced. A node refuses a build only on a field it binds and the node does not share, naming the field,
   the path that binds it and both values; a zero-dependency or pure-JS tree runs anywhere.
 - **The origin publishes before it swaps.** `prepareApplication`'s `publishBuild` runs after the manifest and before
-  `.complete` and the swap, so a failure leaves nothing live. `deploy_component` wires it only when the operation
-  will reach another node (`publishesBuild`: a recorder, `replicated !== false`, `server.nodes` non-empty); core,
-  a single node and an explicitly local deploy pack nothing. Publishing refuses what no other node could receive: a
+  `.complete` and the swap, so a failure leaves nothing live. `deploy_component` wires it for every replicated deploy
+  on a node with a replication layer (`publishesBuild`: a recorder, `replicated !== false`, and `server.nodes`
+  present, even empty). It does not wait for a peer: the replicator lists `server.nodes` only when it sends, so a peer
+  that joins while the build runs would otherwise get no build and build its own. Core, which has no replication
+  layer, and an explicitly local deploy pack nothing. Publishing refuses what no other node could receive: a
   `file:` directory source, which is a link, and a tree that links outside itself (`assertOwnedArtifactTree`, the
   `replicate` action). The pack is `streamPackagedDirectory` with `skip_symlinks`, which packs links as links — the
   option only stops them being followed. It streams through the recorder's hash/size tap into `artifact_blob`,
@@ -521,7 +523,9 @@ canonical digest over every path, file content, link target and owner-exec bit.
   re-derives to `.certified`. The check runs before the activation's own load check, and `.certified` is rewritten
   after that load — whether it passed or threw — so a retry compares against the tree that attempt left instead of
   refusing what its load wrote. A kept release is not re-verified: a component may write into its own tree while it
-  serves (the Next.js plugin runs `next build` into it at load). Roll-forward admits a journal written after these
+  serves (the Next.js plugin runs `next build` into it at load). Activating the id that is already live sends its
+  record's tree too, so a descriptor there that cannot be read, or is gone, refuses 409 rather than sending none; only
+  a legacy one, which recorded no tree, activates with nothing to check. Roll-forward admits a journal written after these
   checks; the already-live retry swaps nothing.
 - **Boot keeps what a deploy made live.** `installApplications` runs at start and in every `restartWorkers` reload,
   including a package deploy's own `restart: true`, and used to reinstall whenever `harper-application-lock.json`
@@ -529,10 +533,12 @@ canonical digest over every path, file content, link target and owner-exec bit.
   its record's descriptor keeps the tree when `package` and `install` match (routing, isolation and credentials do not
   decide bytes), and reinstalls otherwise. A marker written with `described: true` whose record is missing or
   unreadable keeps the tree and logs that a redeploy is needed, never rebuilding from a reference that may have
-  moved; so does a marker that cannot be read at all. A platform the node no longer shares is logged, not rebuilt or
+  moved; so does a marker that cannot be read at all, or is present but does not parse. A platform the node no longer shares is logged, not rebuilt or
   quarantined (the addon classification would quarantine a loadable Node-API addon). A tree nothing described falls
   back to the lock, as before. The verdict is taken again in the preparation's `beforePrepare`, under the component
-  lock: a deploy that swapped a release in while boot waited for that lock is kept, not rebuilt over.
+  lock: a deploy that swapped a release in while boot waited for that lock is kept, not rebuilt over. A different
+  deployment live there than before the wait keeps the tree outright, since the configuration boot read before the
+  wait says nothing about what that deploy decided.
 
 Not covered: a node that joins after a deploy installs from configuration, since it received no deploy to take a build
 from; a build's own load-time output (the Next.js plugin's `.next`) is still produced per node; glibc version skew is

@@ -4902,15 +4902,22 @@ export async function prepareApplication(application: Application, options: Prep
 					// it can go on to the nodes still holding the artifact. Nothing can tell whether the running workers
 					// loaded it, hence the restart request.
 					if ((await readDeploymentProvenance(application.dirPath, application.name)) === artifactId) {
-						application.alreadyActive = true;
-						application.packageMetadataChanged = true;
-						application.admittedTree = await readArtifactDescriptor(
+						// Its tree is what the other nodes check theirs against, so a descriptor that cannot be read refuses
+						// instead of sending none. Only a legacy descriptor, which recorded no tree, has nothing to check.
+						const descriptor = await readArtifactDescriptor(
 							candidateDeploymentDirPath(application.dirPath, artifactId),
 							application.name
-						).then(
-							(descriptor) => descriptor?.build?.tree,
-							() => undefined
 						);
+						if (!descriptor) {
+							throw new ClientError(
+								`Deployment ${artifactId} is live on this node, but its record holds no descriptor naming the tree ` +
+									`the other nodes must hold. Redeploy ${application.name}`,
+								409
+							);
+						}
+						application.alreadyActive = true;
+						application.packageMetadataChanged = true;
+						application.admittedTree = descriptor.build?.tree;
 						application.logger.debug?.(`Deployment ${artifactId} is already live; nothing to swap`);
 						return;
 					}
@@ -5376,6 +5383,7 @@ export async function installConfiguredApplication(
 	onDeployStart: (deploymentId: string) => void
 ): Promise<void> {
 	try {
+		const liveDeployment = await liveDeploymentOf(dirPath, name);
 		const deployed = existsSync(dirPath) ? await deployedReleaseVerdict(dirPath, name, applicationConfig) : 'unknown';
 		if (deployed === 'keep') return;
 		// Lock check: only install if not already installed with matching configuration
@@ -5422,9 +5430,13 @@ export async function installConfiguredApplication(
 				applicationConfig,
 				(clearEntry) =>
 					prepareApplication(application, {
-						// Decided again once no deploy can be swapping the tree: one may have made a release live since.
+						// Decided again once no deploy can be swapping the tree: one may have made a release live since, and the
+						// configuration read before the wait says nothing about what that deploy decided.
 						beforePrepare: async () => {
-							if ((await deployedReleaseVerdict(dirPath, name, applicationConfig)) === 'keep') {
+							if (
+								(await liveDeploymentOf(dirPath, name)) !== liveDeployment ||
+								(await deployedReleaseVerdict(dirPath, name, applicationConfig)) === 'keep'
+							) {
 								throw new DeployedReleaseKept();
 							}
 							await clearEntry();
@@ -5444,6 +5456,17 @@ export async function installConfiguredApplication(
 }
 
 class DeployedReleaseKept extends Error {}
+
+/** Whether the live tree holds a provenance marker at all, readable or not; a failed look counts as one. */
+async function provenanceMarkerPresent(dirPath: string): Promise<boolean> {
+	if (!(await presentOrAbsent(dirPath).catch(() => undefined))?.isDirectory()) return false;
+	return presentOrAbsent(join(dirPath, DEPLOYMENT_PROVENANCE_FILE)).then(Boolean, () => true);
+}
+
+/** Which deployment the live tree came from; a marker that cannot be read reads as none this could compare equal. */
+function liveDeploymentOf(dirPath: string, name: string): Promise<string | symbol | undefined> {
+	return readDeploymentProvenance(dirPath, name).catch(() => Symbol('unreadable provenance'));
+}
 
 /**
  * Whether the live tree is a deployed release that boot must keep. A deployment's record decides, since only it says
@@ -5467,7 +5490,17 @@ export async function deployedReleaseVerdict(
 		);
 		return 'keep';
 	}
-	if (!provenance) return 'unknown';
+	if (!provenance) {
+		// A marker that is there and does not parse is not the absence of one: the tree may be a deployed release.
+		if (await provenanceMarkerPresent(dirPath)) {
+			logger.error?.(
+				`Application ${name}'s record of which deployment it runs is not valid; keeping the running release ` +
+					`rather than reinstalling it from configuration. Redeploy ${name} to repair it`
+			);
+			return 'keep';
+		}
+		return 'unknown';
+	}
 	const { deploymentId, described } = provenance;
 	let descriptor: ArtifactDescriptor | undefined;
 	let unreadable: unknown;

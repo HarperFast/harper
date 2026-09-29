@@ -389,6 +389,33 @@ describe('replicated builds', () => {
 			assert.strictEqual(app.admittedTree, (await descriptorOf(root, 's1')).build.tree);
 		});
 
+		it('tells the other nodes the live release’s tree when activating the id that is already live', async function () {
+			this.timeout(30000);
+			const root = await newRoot('live-tree');
+			await deploy(root, 'd1', { 'index.js': 'V1\n' });
+			const app = await activate(root, 'd1');
+			assert.strictEqual(app.alreadyActive, true);
+			assert.strictEqual(app.admittedTree, (await descriptorOf(root, 'd1')).build.tree);
+		});
+
+		it('refuses to activate the id that is already live when its descriptor cannot be read, or is gone', async function () {
+			this.timeout(30000);
+			const root = await newRoot('live-unreadable');
+			await deploy(root, 'd1', { 'index.js': 'V1\n' });
+			const descriptorPath = path.join(deploymentDir(root, 'd1'), '.artifact.json');
+			await fs.writeFile(descriptorPath, 'not json');
+			await assert.rejects(
+				() => activate(root, 'd1'),
+				(error) => error.statusCode === 409 && /is not readable JSON/.test(error.message)
+			);
+			await fs.rm(descriptorPath);
+			await assert.rejects(
+				() => activate(root, 'd1'),
+				(error) => error.statusCode === 409 && /holds no descriptor/.test(error.message)
+			);
+			assert.strictEqual(await readLive(root), 'V1\n', 'and nothing changed');
+		});
+
 		it('admits an artifact staged before builds recorded a manifest, with nothing to check', async function () {
 			this.timeout(30000);
 			const root = await newRoot('v1');
@@ -456,9 +483,9 @@ describe('replicated builds', () => {
 			}
 		});
 
-		it('decides again under the preparation lock, so a deploy that lands meanwhile is not rebuilt over', async function () {
-			this.timeout(30000);
-			const root = await newRoot('boot-race');
+		// Boot reads its entry, then waits for the preparation lock a deploy holds; that deploy lands with `deployed`.
+		async function bootRacingADeploy(label, deployed) {
+			const root = await newRoot(label);
 			const dirPath = path.join(root, 'web');
 			const lockPath = path.join(root, 'harper-application-lock.json');
 			// A package boot could never install, so reaching the build at all fails the test.
@@ -476,7 +503,7 @@ describe('replicated builds', () => {
 					'd1',
 					{ 'index.js': 'DEPLOYED\n' },
 					{
-						describeArtifact: () => ({ rootConfig: entry, isolated: false }),
+						describeArtifact: () => ({ rootConfig: deployed ?? entry, isolated: false }),
 						beforePrepare: async () => {
 							deployHasLock();
 							await deployHolding;
@@ -492,6 +519,26 @@ describe('replicated builds', () => {
 				assert.strictEqual(await readLive(root), 'DEPLOYED\n', 'the deploy’s release is what runs');
 			} finally {
 				env.setProperty(CONFIG_PARAMS.COMPONENTSROOT, priorComponentsRoot);
+			}
+		}
+
+		it('decides again under the preparation lock, so a deploy that lands meanwhile is not rebuilt over', async function () {
+			this.timeout(30000);
+			await bootRacingADeploy('boot-race');
+		});
+
+		it('keeps a deploy that lands meanwhile with another package than the entry boot read', async function () {
+			this.timeout(30000);
+			await bootRacingADeploy('boot-race-other', { package: 'npm:web@2' });
+		});
+
+		it('keeps a release whose provenance marker is present but not valid, rather than treating it as absent', async function () {
+			this.timeout(30000);
+			const root = await deployedPackage('marker-invalid');
+			const marker = path.join(root, 'web', DEPLOYMENT_PROVENANCE_FILE);
+			for (const content of ['not json', JSON.stringify({ v: 1, component: 'another', deploymentId: 'd1' })]) {
+				await fs.writeFile(marker, content);
+				assert.strictEqual(await deployedReleaseVerdict(path.join(root, 'web'), 'web', config()), 'keep', content);
 			}
 		});
 
@@ -597,7 +644,7 @@ describe('replicated builds', () => {
 			server.nodes = priorNodes;
 		});
 
-		it('is packed only for an operation that will reach another node', () => {
+		it('is packed for every replicated deploy on a node that replicates, whoever is connected now', () => {
 			const recorder = {};
 			assert.strictEqual(publishesBuild({}, recorder, false), true);
 			assert.strictEqual(publishesBuild({ replicated: true }, recorder, false), true);
@@ -605,9 +652,13 @@ describe('replicated builds', () => {
 			assert.strictEqual(publishesBuild({}, undefined, false), false, 'a peer, which records nothing');
 			assert.strictEqual(publishesBuild({}, recorder, true), false, 'an activation, which builds nothing');
 			server.nodes = [];
-			assert.strictEqual(publishesBuild({}, recorder, false), false, 'no other node');
+			assert.strictEqual(
+				publishesBuild({}, recorder, false),
+				true,
+				'no peer yet, but one that joins before the operation is sent must get the build'
+			);
 			server.nodes = undefined;
-			assert.strictEqual(publishesBuild({}, recorder, false), false, 'core, which has no peers');
+			assert.strictEqual(publishesBuild({}, recorder, false), false, 'core, which has no replication');
 		});
 
 		it('is refused when its copies for every peer pass the replication message bound', () => {

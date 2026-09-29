@@ -1210,8 +1210,13 @@ function unconfirmedStagingPeers(replicated) {
 	return replicated.filter((peer) => peer && !confirmed(peer));
 }
 
+/**
+ * Whether this deploy hands its build to other nodes. Not decided by the peers connected now: the replicator lists
+ * `server.nodes` only when it sends, so a peer that joins while this builds would otherwise get no build and build its
+ * own. Core has no replication layer, and so no `server.nodes`.
+ */
 function publishesBuild(req, recorder, isActivation) {
-	return Boolean(recorder) && !isActivation && req.replicated !== false && (server.nodes?.length ?? 0) > 0;
+	return Boolean(recorder) && !isActivation && req.replicated !== false && Array.isArray(server.nodes);
 }
 
 const BUILD_CONFIRMATION_VERBS = { deploy: 'deployed', stage: 'staged', activate: 'activated' };

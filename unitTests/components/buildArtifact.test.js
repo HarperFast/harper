@@ -140,6 +140,16 @@ describe('build manifests', () => {
 			assert.deepStrictEqual(binds, { os: 'bin/tool', arch: 'bin/tool', libc: 'bin/tool' });
 		});
 
+		it('binds os, arch and libc to every Mach-O header, thin or fat, 32- or 64-bit, in either byte order', async () => {
+			const magics = [0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca];
+			for (const magic of magics) {
+				const header = Buffer.alloc(32);
+				header.writeUInt32BE(magic, 0);
+				const binds = await bindsOf({ 'bin/tool': header });
+				assert.deepStrictEqual(binds, { os: 'bin/tool', arch: 'bin/tool', libc: 'bin/tool' }, magic.toString(16));
+			}
+		});
+
 		it('binds the Node ABI only for an addon that links against V8 or node, not a Node-API one', async () => {
 			const nodeApi = Buffer.from('\x7fELF.... napi_register_module_v1 napi_create_function');
 			const v8 = Buffer.from('\x7fELF.... node_register_module_v137 _ZN2v87Isolate');
