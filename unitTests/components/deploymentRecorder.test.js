@@ -20,6 +20,7 @@ const {
 	readPayloadBlobWithRetry,
 	ingestTransactionTimeoutMs,
 	DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS,
+	deploymentTableAvailable,
 } = require('#src/components/deploymentRecorder');
 const { databases } = require('#src/resources/databases');
 const { contextStorage } = require('#src/resources/transaction');
@@ -392,6 +393,19 @@ describe('DeploymentRecorder artifact', () => {
 		assert.strictEqual(recorder.row.artifact_size, 4096);
 		assert.ok(recorder.row.payload_blob, 'the payload is untouched');
 		assert.strictEqual(recorder.dropArtifact(), 0, 'nothing left to drop');
+	});
+
+	it('is carried in the row only where the deployment table exists', () => {
+		assert.strictEqual(deploymentTableAvailable(), true);
+		installed.restore();
+		const prior = databases.system[DEPLOYMENT_TABLE];
+		delete databases.system[DEPLOYMENT_TABLE];
+		try {
+			assert.strictEqual(deploymentTableAvailable(), false);
+		} finally {
+			databases.system[DEPLOYMENT_TABLE] = prior;
+			installed = installMockDeploymentTable();
+		}
 	});
 
 	it('is what a peer waits for when it takes the origin’s build', async () => {
