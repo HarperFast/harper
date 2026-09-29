@@ -109,6 +109,14 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	// A footer with no recognized `authored=` cannot exclude that family either, so `ran=claude,codex`
 	// would score two on a Claude-authored PR. Materialized footers always carry it.
 	const enforceable = structured?.generator && !grammarProblem ? structured.count : 0;
+	// The helper lists a leg under `blocked=` only when it failed in EVERY round of the branch, so a
+	// blocked adjudicator means no round's outside findings were ever filtered or ruled on: unreviewed
+	// review output, however many families ran. `declined=domain` is a policy choice (no-claude
+	// pruning, say) and stays acceptable.
+	const footerLine = hasFooter && !grammarProblem ? proseLines[footerIndex] : '';
+	const adjudicatorBlocked = /;\s*adjudicated=[^;@]*\bdomain\b/.test(footerLine)
+		? ''
+		: (/;\s*blocked=(?:[^;@]*,)?domain\(([^)]+)\)/.exec(footerLine)?.[1] ?? '');
 	const plural = count === 1 ? 'review' : 'reviews';
 	const reported = `${count} cross-model ${plural} reported${families.length ? ` (${families.join(', ')})` : ''}`;
 	const coverage = count >= required ? reported : `${reported} — policy asks for ${required}`;
@@ -131,13 +139,13 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	const waiver = easyDiffWaiver(pr, easy);
 	const aiAuthored = isAiAuthored(prose);
 	// Waives ONE leg, not "all but one": a consumer asking for three still gets two.
-	const easyWaived = waiver.waived && enforceable >= Math.max(1, required - 1);
+	const easyWaived = waiver.waived && !adjudicatorBlocked && enforceable >= Math.max(1, required - 1);
 	const exempt =
 		classification.exempt ||
 		(classification.draft ? 'draft — checked again at ready-for-review' : '') ||
 		(!aiAuthored ? 'not AI-authored — coverage is reported, not required' : '') ||
 		(easyWaived ? `Complexity: easy on a ${waiver.lines}-line diff — one outside review is enough` : '');
-	const compliant = enforceable >= required;
+	const compliant = enforceable >= required && !adjudicatorBlocked;
 	const pass = mode !== 'enforce' || Boolean(exempt) || compliant;
 	const proseNote = !hasFooter
 		? count > 0
@@ -150,7 +158,10 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 				: '';
 	const easyNote =
 		waiver.claimed && !waiver.waived ? `; \`Complexity: easy\` does not waive here — ${waiver.reason}` : '';
-	const summary = exempt ? `exempt: ${exempt}` : coverage;
+	const adjudicationNote = adjudicatorBlocked
+		? `; the Harper adjudicator (\`domain\`) is blocked (${adjudicatorBlocked}) in every round, so no outside finding was adjudicated — rerun the pre-push review until \`domain\` completes and re-materialize the footer`
+		: '';
+	const summary = exempt ? `exempt: ${exempt}` : adjudicatorBlocked ? `${coverage}; adjudication blocked` : coverage;
 	return {
 		pass,
 		exempt,
@@ -159,6 +170,6 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 		families,
 		aiAuthored,
 		summary,
-		detail: `${coverage}; ${footerNote}${easyNote}${proseNote}`,
+		detail: `${coverage}; ${footerNote}${easyNote}${proseNote}${adjudicationNote}`,
 	};
 }
