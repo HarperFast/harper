@@ -589,7 +589,7 @@ describe('storeDBSizeMetrics', () => {
 	});
 
 	afterEach(async () => {
-		await rm(tmpDir, { recursive: true, force: true });
+		if (tmpDir) await rm(tmpDir, { recursive: true, force: true });
 	});
 
 	it('RocksDB branch: sums .sst file bytes and reports transactionLog, with no used/free', async () => {
