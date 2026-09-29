@@ -1,9 +1,6 @@
 /**
- * Type-contract test for the plugin-parity exports (#2715): a package-installed protocol plugin reaches
- * `registerShutdownDrain`, `verifyCertificate` and the deferred-authentication helpers through the
- * shipped `harper` declarations, typed, with the companion types importable by name.
- *
- * Run (after `npm run build`):  npm run test:types
+ * Asserts the SHIPPED declarations (imported from the build output, so this strict tsconfig checks the
+ * declaration surface rather than the repo graph). Run after `npm run build`: npm run test:types
  */
 
 /* eslint-disable @typescript-eslint/no-unused-vars */

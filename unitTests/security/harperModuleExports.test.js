@@ -1,8 +1,7 @@
-// #2715: the helpers Harper's own MQTT endpoint uses to drain on shutdown, verify a client certificate
-// and settle post-handshake authentication must reach a package-installed plugin through the `harper`
-// module on BOTH load paths — the package (`dist/index.js`, what a natively loaded module gets) and the
-// synthetic module a VM compartment builds from `getHarperExports` — as the identical live functions.
-// See security/DESIGN.md "A component-facing export needs BOTH `index.ts` and `getHarperExports`".
+// A component resolves `harper` through one of two independent lists — the package's own exports, or
+// the object `getHarperExports` builds for a VM compartment — and a value on only one of them fails at
+// component load. Identity matters as much as presence: a second copy of a module carries a second
+// drain registry and a second private Symbol, both of which fail silently (#2715).
 const assert = require('node:assert');
 const { join } = require('node:path');
 const { scopedImport } = require('#src/security/jsLoader');

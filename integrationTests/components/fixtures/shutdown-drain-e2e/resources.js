@@ -1,9 +1,5 @@
-// QA-519 — end-to-end verification of the shutdown-drain mechanism (components/shutdownDrain.ts).
-//
-// Registers a real ShutdownDrain inside an actual HTTP worker thread through the public `harper`
-// module — the surface a package-installed plugin uses (#2715) — and gives the test a way to
-// observe, via a marker file, when the worker's simulated in-flight task finished relative to when
-// the worker itself exited.
+// Registers a drain in a real worker through the public `harper` import, and records to a marker file
+// when the in-flight task finished relative to when the worker exited — the ordering is the assertion.
 import { threadId } from 'node:worker_threads';
 import { appendFileSync } from 'node:fs';
 import { registerShutdownDrain } from 'harper';

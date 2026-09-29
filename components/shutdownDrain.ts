@@ -85,10 +85,13 @@ const drains = new Set<ShutdownDrain>();
  * when `'close'` listeners run, so the hook still drains. `hasWork()` returning `true` holds the worker
  * open up to `replication.blobSendDrainTimeout` (default 10 minutes; `0` disables draining).
  * `drain(deadlineMs)` must settle by that absolute time; a hook that ignores it is abandoned, and a
- * throw or rejection is logged and treated as settled. On Windows, macOS and Bun the replacement
- * worker starts only after this one is told to stop, so a hook that keeps an exclusive listener open
- * delays the port's release and the replacement can fail to bind until the drain settles
- * (harper#1813).
+ * throw or rejection is logged and treated as settled.
+ *
+ * On Windows, macOS and Bun the replacement worker starts as soon as this one is told to stop, on the
+ * assumption that listeners are released immediately; a drain holds them open instead. So a hook that
+ * keeps an exclusive (non-`reusePort`) listener open can make the replacement lose that bind, and a
+ * lost bind is resolved rather than retried — the listener then stays absent until the next restart,
+ * not merely until the drain settles (harper#1813).
  */
 export function registerShutdownDrain(drain: ShutdownDrain): () => void {
 	drains.add(drain);

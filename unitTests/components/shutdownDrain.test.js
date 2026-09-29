@@ -135,7 +135,6 @@ describe('shutdownDrain', () => {
 			await scope.ready;
 			return scope;
 		}
-		// the registration shape the public contract prescribes
 		function handleApplication(scope, drain) {
 			scope.once('close', registerShutdownDrain(drain));
 		}
