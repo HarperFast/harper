@@ -1117,7 +1117,7 @@ describe('Test configValidator module', () => {
 				config.models = {
 					calibration: {
 						interval: 3_600_000,
-						maxDecisions: 1000,
+						maxDecisions: 2000,
 						maxPopulations: 10,
 						maxExamplesPerKey: 500,
 						maxBytes: 8_000_000,
@@ -1132,7 +1132,14 @@ describe('Test configValidator module', () => {
 					},
 				};
 				assert.strictEqual(configValidator(config, true).error, undefined);
-				for (const bad of [{ interval: 60_000 }, { maxReads: 10 }, { heldOutShare: 1 }, { minReport: 0 }]) {
+				for (const bad of [
+					{ interval: 60_000 },
+					{ maxReads: 10 },
+					{ heldOutShare: 1 },
+					{ minReport: 0 },
+					{ maxDecisions: 1000 },
+					{ maxDecisions: 1000, maxExamplesPerKey: 500 },
+				]) {
 					const broken = baseConfig();
 					broken.models = { calibration: bad };
 					assert.notStrictEqual(configValidator(broken, true).error, undefined, JSON.stringify(bad));

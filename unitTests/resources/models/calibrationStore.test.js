@@ -623,6 +623,16 @@ describe('calibration store and facade (#2841)', function () {
 		);
 	});
 
+	it('moves a population too large for this run to the back, so smaller ones behind it are fitted', async () => {
+		await recordCases(models, 0, 300, { instructions: 'large population' });
+		await recordCases(models, 1000, 30);
+		for (let i = 0; i < 4 && (await models.getCalibrations()).length < 1; i++)
+			await runCalibration({ maxDecisions: 100 });
+		const fitted = await models.getCalibrations();
+		assert.strictEqual(fitted.length, 1, 'the small population was fitted');
+		assert.strictEqual(fitted[0].instructionsHash, undefined);
+	});
+
 	it('fits a population whose size exactly matches what the budget leaves', async () => {
 		await recordCases(models, 0, 30);
 		const run = await runCalibration({ maxDecisions: 60 });

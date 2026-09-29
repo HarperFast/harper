@@ -250,6 +250,16 @@ const modelsSchema = Joi.object({
 		maxAgeMs: Joi.number().integer().min(60_000),
 	})
 		.unknown(false)
+		.custom((block: { maxDecisions?: number; maxExamplesPerKey?: number }, helpers: any) => {
+			// Half of maxDecisions is left for fitting, and a population is fitted from up to maxExamplesPerKey decisions.
+			const decisions = block.maxDecisions ?? 100_000;
+			const examples = block.maxExamplesPerKey ?? 5_000;
+			if (decisions < 2 * examples + 2)
+				return helpers.message(
+					`models.calibration.maxDecisions (${decisions}) must be at least twice maxExamplesPerKey (${examples}) plus 2, so a full sample can be fitted`
+				);
+			return block;
+		})
 		.allow(null)
 		.optional(),
 });

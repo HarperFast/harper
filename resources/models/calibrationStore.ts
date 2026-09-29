@@ -673,6 +673,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 		}
 		const outcome = await processPopulation(order[i], bytes);
 		if (outcome === 'deferred') {
+			await rotate(order[i]);
 			result.stoppedBy ??= 'maxDecisions';
 			result.pending += order.length - i;
 			break;
@@ -1052,6 +1053,18 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 		result.written += written.length;
 		result.eligible += written.filter((row) => row.eligible).length;
 		return 'done';
+	}
+
+	/** A population this run could not fit goes to the back of the queue, so it cannot hold up the ones behind it. */
+	async function rotate(found: Discovered): Promise<void> {
+		try {
+			const at = now();
+			await transaction(freshContext(), () =>
+				store.put({ ...found.head, lastFittedAt: at, expiresAt: Math.max(found.expiresAt ?? 0, at + policy.maxAgeMs) })
+			);
+		} catch (err) {
+			logFault('calibration could not requeue a population', err);
+		}
 	}
 
 	function fail(what: string, err: unknown): void {
