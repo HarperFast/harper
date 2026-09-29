@@ -165,6 +165,7 @@ describe('automatic application installation', () => {
 			'--no-fund',
 		]);
 		assert.equal(application.installationIsOpaque, true);
+		assert.equal(application.uninspectableInstall, 'install_allow_scripts', 'which binds the build to its platform');
 	});
 
 	it('keeps install_command as the development-dependency escape hatch', async function () {
@@ -186,6 +187,7 @@ describe('automatic application installation', () => {
 		assert.deepEqual(JSON.parse(await readFile(customMarker, 'utf8')), []);
 		await assert.rejects(access(automaticCapture), (error) => error.code === 'ENOENT');
 		assert.equal(application.installationIsOpaque, true);
+		assert.equal(application.uninspectableInstall, 'install_command', 'which binds the build to its platform');
 	});
 
 	it('applies the lifecycle-script policy to custom install commands', async function () {

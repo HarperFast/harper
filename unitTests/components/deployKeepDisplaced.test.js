@@ -105,8 +105,7 @@ async function entriesOf(dirPath) {
 	return (await fs.readdir(dirPath).catch(() => [])).sort();
 }
 
-const RECORD = ['.artifact.json', '.complete', '.component'];
-// A kept release is marked as having been live, which exempts it from the tree check a staged build gets.
+const RECORD = ['.artifact.json', '.certified', '.complete', '.component'];
 const KEPT = [...RECORD, '.displaced', 'web'];
 
 function setMaxCount(value) {

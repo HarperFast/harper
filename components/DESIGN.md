@@ -469,20 +469,25 @@ and when it activates D from a staged build that never went live — is the tree
 canonical digest over every path, file content, link target and owner-exec bit.
 
 - **The manifest.** Every described build (every `deploy_component`) writes descriptor v2: `.artifact.json` gains
-  `build: { tree, platform }` and `certifiedTree`, from one walk of the certified candidate
+  `build: { tree, platform }`, from one walk of the certified candidate
   (`components/buildArtifact.ts` `inventoryBuild`). The digest is one JSON record per path — `D`, `F` with owner-exec
   and sha256, `L` with the link target, `P` for presence only — sorted by the path's UTF-8 bytes, so no filename
   can spell another record. It leaves out what every node writes for itself: the provenance marker,
   `node_modules/harper`, the `node_modules` directory a load creates to hold that link, and the contents and target of
-  `node_modules/harperdb`, which the loader re-points whenever it exists. v1 descriptors are still read and activated,
-  with nothing to check; a build older than this refuses v2, so a downgrade cannot activate past the checks.
+  `node_modules/harperdb`, which the loader re-points whenever it exists. The walk streams every file, 32 at a time, so
+  its memory is bounded whatever the addons weigh. v1 descriptors are still read and activated, with nothing to check;
+  a build older than this refuses v2, so a downgrade cannot activate past the checks. Beside it, `.certified` holds the
+  digest this node certified: the build's tree, or what a load check on this node then wrote into it — a load writes
+  into the tree it loads, as it will again on every worker that serves it, so refusing that output would prevent
+  nothing.
 - **Platform facts.** The same walk records what the build binds. A `.node` addon binds OS, CPU architecture and
   libc, and the Node ABI unless it is a Node-API addon (it references `napi_` and none of the V8 or node C++ linkage
   names; lmdb's `node.napi.node`, which also references `node_module_register`, reads as ABI-bound, on the safe
   side). Any other ELF, Mach-O or PE file, and any `package.json` declaring `os`, `cpu` or `libc`, bind the first
-  three. A link or an owner-executable file binds POSIX semantics, which win32 cannot hold — tar-fs drops links
-  there silently. An install that ran `install_command` or install scripts binds all four, since nothing inspects
-  what it produced. A node refuses a build only on a field it binds and the node does not share, naming the field,
+  three. On a POSIX host, a link or an owner-executable file binds POSIX semantics, which win32 cannot hold — tar-fs
+  drops links there silently; a tree built on Windows holds nothing Windows cannot. An install that ran
+  `install_command` or install scripts — including the scripts `npm pack` runs for a git reference with
+  `install_allow_scripts` — binds all four, since nothing inspects what it produced. A node refuses a build only on a field it binds and the node does not share, naming the field,
   the path that binds it and both values; a zero-dependency or pure-JS tree runs anywhere.
 - **The origin publishes before it swaps.** `prepareApplication`'s `publishBuild` runs after the manifest and before
   `.complete` and the swap, so a failure leaves nothing live. `deploy_component` wires it only when the operation
@@ -500,8 +505,8 @@ canonical digest over every path, file content, link target and owner-exec bit.
   (`awaitDeploymentRow` with `blobAttribute`) or the body, verifies sha256 and size as the archive ends, extracts
   with `validateSymlinks: false` — the tree's links include links through links — and no wrapper-flattening,
   resolves no credentials, installs nothing, re-derives the digest from what landed and refuses any difference. It
-  keeps the origin's `installationIsOpaque`, and records the origin's manifest with `certifiedTree` re-derived when
-  its own load check ran, since a load can write into the tree. It answers `artifact: <tree>`.
+  keeps the origin's `installationIsOpaque`, and records the origin's manifest, with `.certified` re-derived when
+  its own load check ran. It answers `artifact: <tree>`.
 - **The origin checks the answers.** A successful peer answer without the published tree is recorded as a failed
   peer — typically a node on an older build that built the release itself — so the deploy reports it and, with
   `ignore_replication_errors`, the build is not reclaimed from under it. A stage's unconfirmed-staging message keeps
@@ -511,7 +516,9 @@ canonical digest over every path, file content, link target and owner-exec bit.
 - **A delayed activation checks what it swaps in.** The origin puts its descriptor's tree in the replicated
   activation. Each node refuses 409, before the swap: a platform its descriptor binds and it does not share; a
   descriptor naming another tree; and, for a staged build never live (no `.displaced`), a tree that no longer
-  re-derives to `certifiedTree`. A kept release is not re-verified: a component may write into its own tree while it
+  re-derives to `.certified`. The check runs before the activation's own load check, and `.certified` is rewritten
+  after that load — whether it passed or threw — so a retry compares against the tree that attempt left instead of
+  refusing what its load wrote. A kept release is not re-verified: a component may write into its own tree while it
   serves (the Next.js plugin runs `next build` into it at load). Roll-forward admits a journal written after these
   checks; the already-live retry swaps nothing.
 - **Boot keeps what a deploy made live.** `installApplications` runs at start and in every `restartWorkers` reload,
@@ -520,8 +527,10 @@ canonical digest over every path, file content, link target and owner-exec bit.
   its record's descriptor keeps the tree when `package` and `install` match (routing, isolation and credentials do not
   decide bytes), and reinstalls otherwise. A marker written with `described: true` whose record is missing or
   unreadable keeps the tree and logs that a redeploy is needed, never rebuilding from a reference that may have
-  moved; a platform the node no longer shares is logged, not rebuilt or quarantined (the addon classification would
-  quarantine a loadable Node-API addon). A tree nothing described falls back to the lock, as before.
+  moved; so does a marker that cannot be read at all. A platform the node no longer shares is logged, not rebuilt or
+  quarantined (the addon classification would quarantine a loadable Node-API addon). A tree nothing described falls
+  back to the lock, as before. The verdict is taken again in the preparation's `beforePrepare`, under the component
+  lock: a deploy that swapped a release in while boot waited for that lock is kept, not rebuilt over.
 
 Not covered: a node that joins after a deploy installs from configuration, since it received no deploy to take a build
 from; a build's own load-time output (the Next.js plugin's `.next`) is still produced per node; glibc version skew is

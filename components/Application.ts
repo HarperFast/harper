@@ -863,7 +863,10 @@ async function resolveApplicationTarball(application: Application): Promise<Reso
 			// not have, so this gates the pack step regardless of whether a credential happens to be in
 			// play.
 			const allowScripts = !!application.install?.allowInstallScripts;
-			if (allowScripts) application.installationIsOpaque = true;
+			if (allowScripts) {
+				application.installationIsOpaque = true;
+				application.uninspectableInstall = 'install_allow_scripts';
+			}
 			// `--ignore-scripts` alone isn't a reliable way to enforce that: pacote's DirFetcher runs a
 			// git source's `prepare` unconditionally on npm versions before 11.0.0 (see
 			// packGitReferenceWithoutScripts), which is exactly what Node 22's bundled npm ships. For a
@@ -1093,13 +1096,16 @@ const CANDIDATE_ARTIFACT_FILE = '.artifact.json';
 // its journal; `readActivationJournal` derives its effect from the artifact descriptor where one exists.
 const ACTIVATION_JOURNAL_VERSION = 2;
 const LEGACY_ACTIVATION_JOURNAL_VERSION = 1;
-// v2 adds the build's manifest. v1 was written by a build that recorded no identity or platform; it is still
-// activated, with nothing to check.
+// A v1 descriptor records no manifest; it is still activated, with nothing to check.
 const ARTIFACT_DESCRIPTOR_VERSION = 2;
 const LEGACY_ARTIFACT_DESCRIPTOR_VERSION = 1;
 // Written into a deployment's record before the tree it displaced is put back. That tree was live, and a component
 // may write into its own tree while it serves, so it no longer has to match the manifest its build recorded.
 const DISPLACED_MARKER = '.displaced';
+// The tree digest this node holds for the deployment, which a delayed activation re-derives: the build's own tree, or
+// what a load check on this node then wrote into it. Rewritten when an activation's own load check writes, so a retry
+// compares against the tree that attempt left.
+const CERTIFIED_TREE_FILE = '.certified';
 const DEFAULT_STAGING_RETENTION_MAX_COUNT = 5;
 // A digest of the component, not its name, follows the uuid in a claim's name: a long name would pass the filename
 // limit.
@@ -1387,11 +1393,6 @@ export type ArtifactDescriptor = {
 	isolated: boolean;
 	/** Absent only in a v1 descriptor, written before builds recorded one. */
 	build?: BuildManifest;
-	/**
-	 * The tree this node certified, which a delayed activation re-derives. The build's own tree unless this node took
-	 * another node's build and its load then wrote into it.
-	 */
-	certifiedTree?: string;
 };
 
 /**
@@ -1427,12 +1428,7 @@ async function readArtifactDescriptor(
 	) {
 		throw unusable(`Artifact descriptor ${descriptorPath} is version ${parsed?.v}, which this build cannot activate`);
 	}
-	if (
-		parsed.v === ARTIFACT_DESCRIPTOR_VERSION &&
-		(!isBuildManifest(parsed.build) ||
-			typeof parsed.certifiedTree !== 'string' ||
-			!/^[0-9a-f]{64}$/.test(parsed.certifiedTree))
-	) {
+	if (parsed.v === ARTIFACT_DESCRIPTOR_VERSION && !isBuildManifest(parsed.build)) {
 		throw unusable(`Artifact descriptor ${descriptorPath} does not record its build's tree and platform`);
 	}
 	if (!isJoinableComponentName(parsed.component) || parsed.component !== componentName) {
@@ -1570,6 +1566,31 @@ async function writeArtifactDescriptor(
 		// else can have written one — which makes this a retry of its own stage rather than a conflict.
 		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
 	}
+}
+
+async function writeCertifiedTree(deploymentDirPath: string, tree: string): Promise<void> {
+	const filePath = join(deploymentDirPath, CERTIFIED_TREE_FILE);
+	const tempPath = `${filePath}.partial-${process.pid}-${randomUUID()}`;
+	const handle = await open(tempPath, 'wx', 0o600);
+	try {
+		await handle.writeFile(tree, 'utf8');
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+	await rename(tempPath, filePath);
+	await syncDirectory(deploymentDirPath);
+}
+
+/** `undefined` only when the file is absent; any other read failure propagates. */
+async function readCertifiedTree(deploymentDirPath: string): Promise<string | undefined> {
+	const raw = await readFile(join(deploymentDirPath, CERTIFIED_TREE_FILE), 'utf8').catch(
+		(error: NodeJS.ErrnoException) => {
+			if (error?.code === 'ENOENT') return undefined;
+			throw error;
+		}
+	);
+	return raw?.trim();
 }
 
 async function writeDeploymentProvenance(
@@ -4632,7 +4653,6 @@ export class Application {
 	installationIsOpaque: boolean = false;
 	/** Set when the install ran something whose output nothing can inspect: a custom command, or install scripts. */
 	uninspectableInstall?: 'install_command' | 'install_allow_scripts';
-	/** The tree digest of the build this preparation admitted, when its manifest records one. */
 	admittedTree?: string;
 	alreadyActive: boolean = false;
 
@@ -4940,24 +4960,18 @@ export async function prepareApplication(application: Application, options: Prep
 								mode === 'stage' ? 'stage' : 'replicate'
 							);
 						}
-						let manifest: BuildManifest | undefined;
-						let certifiedTree: string | undefined;
-						if (described) {
-							manifest =
-								options.prebuilt?.manifest ??
-								(await inventoryBuild(candidateDirPath, { uninspectableInstall: application.uninspectableInstall }));
-							application.admittedTree = manifest.tree;
-							// A load can write into the tree it loads, so what this node keeps is what it holds now.
-							certifiedTree =
-								options.prebuilt && loaded ? (await inventoryBuild(candidateDirPath)).tree : manifest.tree;
-						}
+						const manifest = described
+							? (options.prebuilt?.manifest ??
+								(await inventoryBuild(candidateDirPath, { uninspectableInstall: application.uninspectableInstall })))
+							: undefined;
+						if (manifest) application.admittedTree = manifest.tree;
 						if (options.publishBuild && manifest) {
 							await options.publishBuild(candidateDirPath, {
 								manifest,
 								installationIsOpaque: application.installationIsOpaque,
 							});
 						}
-						if (described) {
+						if (described && manifest) {
 							// The descriptor goes first so `.complete` vouches for it: a delayed activation reads its build's
 							// decisions from here because nothing on disk carries them otherwise.
 							await writeArtifactDescriptor(application.dirPath, artifactId, {
@@ -4967,8 +4981,12 @@ export async function prepareApplication(application: Application, options: Prep
 								installationIsOpaque: application.installationIsOpaque,
 								isolated: described.isolated,
 								build: manifest,
-								certifiedTree,
 							});
+							// The origin's manifest already holds what its own load wrote; another node's load writes its own.
+							await writeCertifiedTree(
+								candidateDeploymentDirPath(application.dirPath, artifactId),
+								options.prebuilt && loaded ? (await inventoryBuild(candidateDirPath)).tree : manifest.tree
+							);
 						}
 						await markCandidateComplete(application.dirPath, artifactId, application.name);
 						// A stage's artifact, and a deploy's record, outlive this call, so their entries have to be on storage.
@@ -5088,15 +5106,41 @@ async function activateStagedArtifact(
 	await assertOwnedArtifactTree(candidateDirPath, application.name, 'activate');
 	// A release that was live may carry what the component wrote into it while serving; one that never was must still
 	// be the tree it was certified as.
-	if (descriptor.certifiedTree && !(await presentOrAbsent(join(deploymentDirPath, DISPLACED_MARKER)))) {
+	const certifiedTree =
+		descriptor.build && !(await presentOrAbsent(join(deploymentDirPath, DISPLACED_MARKER)))
+			? ((await readCertifiedTree(deploymentDirPath)) ?? descriptor.build.tree)
+			: undefined;
+	if (certifiedTree !== undefined) {
 		const { tree } = await inventoryBuild(candidateDirPath);
-		if (tree !== descriptor.certifiedTree) {
-			throw unusable(`its tree (${tree}) is no longer the one this node certified (${descriptor.certifiedTree})`);
+		if (tree !== certifiedTree) {
+			throw unusable(`its tree (${tree}) is no longer the one this node certified (${certifiedTree})`);
 		}
 	}
 	// Also the activation's `prepare` phase end: the deploy path emits `prepare`/`start` for every mode but
 	// only ever emitted its `done` from here.
-	await options.validateCandidate?.(candidateDirPath);
+	let loaded: boolean | void = false;
+	let failed = false;
+	try {
+		loaded = await options.validateCandidate?.(candidateDirPath);
+	} catch (error) {
+		failed = true;
+		throw error;
+	} finally {
+		// What a load check wrote stays, and a retry of this id has to compare against it rather than refuse it.
+		if (certifiedTree !== undefined && (loaded || failed)) {
+			const recertify = async () => {
+				const { tree } = await inventoryBuild(candidateDirPath);
+				if (tree !== certifiedTree) await writeCertifiedTree(deploymentDirPath, tree);
+			};
+			if (failed) {
+				await recertify().catch((error) =>
+					application.logger.warn(`Could not record what the failed load check left in ${artifactId}:`, error)
+				);
+			} else {
+				await recertify();
+			}
+		}
+	}
 
 	if (!application.isNewComponent) {
 		application.packageMetadataChanged = installedRuntimeChanged(
@@ -5318,7 +5362,7 @@ export async function installApplications() {
 	if (![...preparations].some((preparation) => preparation.leftBehind)) logger.info?.('All root applications loaded');
 }
 
-async function installConfiguredApplication(
+export async function installConfiguredApplication(
 	name: string,
 	applicationConfig: ApplicationConfig,
 	dirPath: string,
@@ -5366,17 +5410,34 @@ async function installConfiguredApplication(
 		// Once preparation is required, the old entry is no longer evidence of a complete
 		// installation. In particular, a failed reinstall may leave a partial directory behind;
 		// retaining the prior entry would make the next boot skip that partial component.
-		await recordApplicationPreparation(
-			name,
-			applicationConfig,
-			(clearEntry) => prepareApplication(application, { beforePrepare: clearEntry, onDeployStart }),
-			(mutate) => updateApplicationLock(harperApplicationLockPath, mutate)
-		);
+		try {
+			await recordApplicationPreparation(
+				name,
+				applicationConfig,
+				(clearEntry) =>
+					prepareApplication(application, {
+						// Decided again once no deploy can be swapping the tree: one may have made a release live since.
+						beforePrepare: async () => {
+							if ((await deployedReleaseVerdict(dirPath, name, applicationConfig)) === 'keep') {
+								throw new DeployedReleaseKept();
+							}
+							await clearEntry();
+						},
+						onDeployStart,
+					}),
+				(mutate) => updateApplicationLock(harperApplicationLockPath, mutate)
+			);
+		} catch (error) {
+			if (error instanceof DeployedReleaseKept) return;
+			throw error;
+		}
 	} catch (error) {
 		logger.error?.(`Failed to prepare application ${name}:`, errorForLog(error));
 		throw error;
 	}
 }
+
+class DeployedReleaseKept extends Error {}
 
 /**
  * Whether the live tree is a deployed release that boot must keep. A deployment's record decides, since only it says
@@ -5389,7 +5450,17 @@ export async function deployedReleaseVerdict(
 	name: string,
 	applicationConfig: ApplicationConfig
 ): Promise<'keep' | 'reinstall' | 'unknown'> {
-	const provenance = await readDeploymentProvenanceRecord(dirPath, name).catch(() => undefined);
+	let provenance: DeploymentProvenance | undefined;
+	try {
+		provenance = await readDeploymentProvenanceRecord(dirPath, name);
+	} catch (error) {
+		// Whatever wrote it, the tree may be a deployed release, and rebuilding one resolves its package again.
+		logger.error?.(
+			`Could not read which deployment ${name}'s running release came from (${errorMessage(error)}); keeping it ` +
+				`rather than reinstalling it from configuration`
+		);
+		return 'keep';
+	}
 	if (!provenance) return 'unknown';
 	const { deploymentId, described } = provenance;
 	let descriptor: ArtifactDescriptor | undefined;

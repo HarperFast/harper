@@ -15,9 +15,13 @@ const {
 	prepareApplication,
 	recoverInterruptedActivations,
 	deployedReleaseVerdict,
+	installConfiguredApplication,
 	DEPLOY_STAGING_DIR,
 	Application,
 } = require('#src/components/Application');
+const { setTimeout: sleep } = require('node:timers/promises');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { inventoryBuild, packBuild } = require('#src/components/buildArtifact');
 const { DEPLOYMENT_PROVENANCE_FILE } = require('#src/components/deploymentProvenance');
 const { preserveRootConfig } = require('../rootConfigFixture.js');
@@ -59,7 +63,6 @@ async function sourceArchive(files) {
 	return Buffer.concat(chunks);
 }
 
-/** What an origin publishes: its certified tree packed, and that tree's manifest. */
 async function originBuild(files) {
 	const dir = await writeTree(await fs.mkdtemp(path.join(os.tmpdir(), 'prebuilt-origin-')), files);
 	const chunks = [];
@@ -88,6 +91,8 @@ function deploymentDir(root, id) {
 async function descriptorOf(root, id) {
 	return JSON.parse(await fs.readFile(path.join(deploymentDir(root, id), '.artifact.json'), 'utf8'));
 }
+
+const certifiedTreeOf = async (root, id) => fs.readFile(path.join(deploymentDir(root, id), '.certified'), 'utf8');
 
 async function receive(root, id, build, options = {}) {
 	const app = applicationAt(root, 'web', { payload: build.archive, install: FAILING_INSTALL });
@@ -130,7 +135,7 @@ describe('replicated builds', () => {
 			assert.strictEqual(app.admittedTree, build.manifest.tree);
 			const descriptor = await descriptorOf(root, 'd1');
 			assert.deepStrictEqual(descriptor.build, build.manifest, 'recorded with the origin’s manifest');
-			assert.strictEqual(descriptor.certifiedTree, build.manifest.tree);
+			assert.strictEqual(await certifiedTreeOf(root, 'd1'), build.manifest.tree);
 			const marker = JSON.parse(await fs.readFile(path.join(root, 'web', DEPLOYMENT_PROVENANCE_FILE), 'utf8'));
 			assert.deepStrictEqual(marker, { v: 1, component: 'web', deploymentId: 'd1', described: true });
 		});
@@ -165,7 +170,11 @@ describe('replicated builds', () => {
 
 			const descriptor = await descriptorOf(root, 's1');
 			assert.strictEqual(descriptor.build.tree, build.manifest.tree, 'identity is still the origin’s');
-			assert.notStrictEqual(descriptor.certifiedTree, build.manifest.tree, 'but this node certified what it holds');
+			assert.notStrictEqual(
+				await certifiedTreeOf(root, 's1'),
+				build.manifest.tree,
+				'but this node certified what it holds'
+			);
 			await activate(root, 's1', { expectedTree: build.manifest.tree });
 			assert.strictEqual(await readLive(root), 'V1\n', 'which a delayed activation then finds unchanged');
 		});
@@ -268,6 +277,27 @@ describe('replicated builds', () => {
 			assert.strictEqual(await readLive(root), 'LIVE\n');
 		});
 
+		it('lets a retry through after its own load check wrote into the tree and then failed', async function () {
+			this.timeout(30000);
+			const root = await newRoot('load-then-fail');
+			await deploy(root, 'd0', { 'index.js': 'LIVE\n' });
+			await deploy(root, 's1', { 'index.js': 'STAGED\n' }, { mode: 'stage' });
+			await assert.rejects(
+				() =>
+					activate(root, 's1', {
+						validateCandidate: async (candidateDirPath) => {
+							await fs.writeFile(path.join(candidateDirPath, '.next-build'), 'written by a plugin at load');
+							throw new Error('the component threw while loading');
+						},
+					}),
+				/threw while loading/
+			);
+			assert.strictEqual(await readLive(root), 'LIVE\n');
+
+			await activate(root, 's1');
+			assert.strictEqual(await readLive(root), 'STAGED\n', 'the retry is not refused for what that load left');
+		});
+
 		it('does not re-verify a kept release, which may hold what it wrote while live', async function () {
 			this.timeout(30000);
 			const root = await newRoot('kept');
@@ -365,6 +395,59 @@ describe('replicated builds', () => {
 				'keep',
 				'or its whole record'
 			);
+		});
+
+		it('keeps a release whose provenance cannot be read, rather than treating it as absent', async function () {
+			if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip(); // chmod does not deny either
+			this.timeout(30000);
+			const root = await deployedPackage('marker-unreadable');
+			const marker = path.join(root, 'web', DEPLOYMENT_PROVENANCE_FILE);
+			await fs.chmod(marker, 0o000);
+			try {
+				assert.strictEqual(await deployedReleaseVerdict(path.join(root, 'web'), 'web', config()), 'keep');
+			} finally {
+				await fs.chmod(marker, 0o600);
+			}
+		});
+
+		it('decides again under the preparation lock, so a deploy that lands meanwhile is not rebuilt over', async function () {
+			this.timeout(30000);
+			const root = await newRoot('boot-race');
+			const dirPath = path.join(root, 'web');
+			const lockPath = path.join(root, 'harper-application-lock.json');
+			// A package boot could never install, so reaching the build at all fails the test.
+			const entry = { package: `file:${path.join(root, 'no-such-package.tgz')}` };
+			// Boot builds its own Application, at the configured components root.
+			const priorComponentsRoot = env.get(CONFIG_PARAMS.COMPONENTSROOT);
+			env.setProperty(CONFIG_PARAMS.COMPONENTSROOT, root);
+			try {
+				let releaseDeploy;
+				const deployHolding = new Promise((resolve) => (releaseDeploy = resolve));
+				let deployHasLock;
+				const lockHeld = new Promise((resolve) => (deployHasLock = resolve));
+				const deploying = deploy(
+					root,
+					'd1',
+					{ 'index.js': 'DEPLOYED\n' },
+					{
+						describeArtifact: () => ({ rootConfig: entry, isolated: false }),
+						beforePrepare: async () => {
+							deployHasLock();
+							await deployHolding;
+						},
+					}
+				);
+				await lockHeld;
+				// Boot looks while the deploy holds the lock: no tree yet, so it sets out to install.
+				const booting = installConfiguredApplication('web', entry, dirPath, lockPath, () => {});
+				await sleep(200);
+				releaseDeploy();
+				await deploying;
+				await booting;
+				assert.strictEqual(await readLive(root), 'DEPLOYED\n', 'the deploy’s release is what runs');
+			} finally {
+				env.setProperty(CONFIG_PARAMS.COMPONENTSROOT, priorComponentsRoot);
+			}
 		});
 
 		it('keeps a release whose descriptor is unreadable', async function () {

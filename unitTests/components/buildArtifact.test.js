@@ -145,6 +145,34 @@ describe('build manifests', () => {
 			assert.strictEqual((await bindsOf({ 'addon.node': unclassified })).abi, 'addon.node', 'unknown binds');
 		});
 
+		it('reads an addon as it streams, finding a marker a chunk boundary splits', async () => {
+			// The first read chunk ends 3 bytes into `napi_`.
+			const split = Buffer.concat([Buffer.alloc(64 * 1024 - 3, 0x7f), Buffer.from('napi_create_function')]);
+			assert.deepStrictEqual(await bindsOf({ 'big.node': split }), {
+				os: 'big.node',
+				arch: 'big.node',
+				libc: 'big.node',
+			});
+		});
+
+		it('binds a package.json too large to read whole as if it declared a platform', async () => {
+			const huge = JSON.stringify({ name: 'huge', description: 'x'.repeat(1024 * 1024 + 1) });
+			const binds = await bindsOf({ 'node_modules/huge/package.json': huge });
+			assert.strictEqual(binds.arch, 'node_modules/huge/package.json');
+		});
+
+		it('binds nothing POSIX-only in a tree built on Windows, whose links and modes Windows made', async function () {
+			if (process.platform === 'win32') this.skip(); // the case below is what the override simulates
+			const root = await tree({ 'run.sh': { content: '#!/bin/sh', mode: 0o755 } });
+			const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+			Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+			try {
+				assert.deepStrictEqual((await inventoryBuild(root)).platform.binds, {});
+			} finally {
+				Object.defineProperty(process, 'platform', platform);
+			}
+		});
+
 		it('binds everything to an install nothing can inspect', async () => {
 			const binds = await bindsOf({ 'index.js': 'x' }, { uninspectableInstall: 'install_command' });
 			assert.deepStrictEqual(binds, {

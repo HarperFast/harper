@@ -1,11 +1,6 @@
 /**
- * A peer taking the origin's build (#2315 step 7, #2295).
- *
- * The origin packs its certified tree and replicates it with a manifest; a peer checks it can run the build, verifies
- * the archive and the extracted tree, installs nothing, and answers with the tree it admitted. This drives that peer
- * branch on one node, with the build carried in the operation body — the transport a cluster uses when its system
- * database does not replicate — as `deploy-tracking-peer-branch.test.ts` drives the payload branch. The origin side and
- * the row transport need real replication and live in harper-pro's cluster tests.
+ * The peer side of a replicated build, driven on one node through the operation-body transport. The origin side and
+ * the row transport need real replication; harper-pro's cluster tests cover them.
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, notStrictEqual, match } from 'node:assert';

@@ -135,7 +135,11 @@ describe('staging a build without activating it', () => {
 		assert.strictEqual(descriptor.installationIsOpaque, false);
 		assert.strictEqual(descriptor.isolated, false);
 		assert.match(descriptor.build.tree, /^[0-9a-f]{64}$/, 'and the tree it built');
-		assert.strictEqual(descriptor.certifiedTree, descriptor.build.tree, 'which is the tree it certified');
+		assert.strictEqual(
+			await fs.readFile(path.join(deploymentDir(root, 'a1'), '.certified'), 'utf8'),
+			descriptor.build.tree,
+			'which is the tree it certified'
+		);
 		assert.deepStrictEqual(descriptor.build.platform.binds, {}, 'a tree with nothing native binds no platform');
 		await fs.rm(root, { recursive: true, force: true });
 	});
@@ -474,7 +478,7 @@ describe('activating a staged artifact', () => {
 		assert.strictEqual(await readLive(root, 'web'), 'STAGED v2\n');
 		assert.deepStrictEqual(
 			(await fs.readdir(deploymentDir(root, 'a1'))).sort(),
-			['.artifact.json', '.complete', '.component'],
+			['.artifact.json', '.certified', '.complete', '.component'],
 			'the rename consumes the tree, and the id keeps its record of the release that is now live'
 		);
 		await fs.rm(root, { recursive: true, force: true });
@@ -973,7 +977,7 @@ describe('an activation that fails after it commits', () => {
 		assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@2', isolated: true });
 		assert.deepStrictEqual(
 			(await fs.readdir(deploymentDir(root, 'd1'))).sort(),
-			['.artifact.json', '.complete', '.component'],
+			['.artifact.json', '.certified', '.complete', '.component'],
 			'and the activation is settled, leaving the record of the release it made live'
 		);
 		assert.strictEqual(await readLive(root, 'web'), 'DEPLOYED v2\n');

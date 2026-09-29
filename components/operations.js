@@ -641,7 +641,7 @@ async function deployComponent(req) {
 	const isReplicatedExecution = typeof req._deploymentId === 'string';
 	const mode = req.deployment_id ? 'activate' : req.activate === false ? 'stage' : 'deploy';
 	const isActivation = mode === 'activate';
-	// Only the origin names the build its peers take, and only for an operation it replicates itself.
+	// A caller cannot name the build a node takes; only the origin's replication can.
 	if (!isReplicatedExecution) delete req._artifact;
 	const receivesBuild = isReplicatedExecution && !isActivation && req._artifact != null;
 	if (receivesBuild) assertReceivableBuild(req);
@@ -979,7 +979,6 @@ async function deployComponent(req) {
 			// when the per-peer callback already fired for these.
 			recorder.recordPeers(response.replicated);
 		}
-		// What this node admitted, so the node that asked can tell it from a node that built the release itself.
 		if (isReplicatedExecution && application.admittedTree) response.artifact = application.admittedTree;
 		const expectedTree = published?.build.tree ?? (isActivation ? req._artifact?.tree : undefined);
 		if (recorder && expectedTree) recordUnconfirmedBuildPeers(recorder, response?.replicated, expectedTree, mode);
@@ -1199,7 +1198,6 @@ function unconfirmedStagingPeers(replicated) {
 	return replicated.filter((peer) => peer && !confirmed(peer));
 }
 
-/** Only where the operation will reach another node: in core, on a single node, and for `replicated: false`, nothing is packed. */
 function publishesBuild(req, recorder, isActivation) {
 	return Boolean(recorder) && !isActivation && req.replicated !== false && (server.nodes?.length ?? 0) > 0;
 }

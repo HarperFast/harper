@@ -72,7 +72,7 @@ suite(
 			);
 			deepStrictEqual(
 				(await readdir(join(componentsRoot, '.deploy-staging', deployed.deployment_id))).sort(),
-				['.artifact.json', '.complete', '.component'],
+				['.artifact.json', '.certified', '.complete', '.component'],
 				'a record, not a build: it holds no tree, so retention does not count it'
 			);
 		});

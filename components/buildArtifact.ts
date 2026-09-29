@@ -42,9 +42,24 @@ const NODE_API_MARKER = Buffer.from('napi_');
 const V8_ABI_MARKERS = ['node_module_register', 'node_register_module_v', '_ZN2v8', '_ZN4node', '@v8@@', '@node@@'].map(
 	(marker) => Buffer.from(marker)
 );
+const LONGEST_MARKER = Math.max(NODE_API_MARKER.length, ...V8_ABI_MARKERS.map((marker) => marker.length));
 
-function bindsNodeAbi(addon: Buffer): boolean {
-	return !addon.includes(NODE_API_MARKER) || V8_ABI_MARKERS.some((marker) => addon.includes(marker));
+/** Reads an addon as it streams by, keeping enough of each chunk's end to find a marker a chunk boundary splits. */
+class AddonLinkage {
+	#tail = Buffer.alloc(0);
+	#nodeApi = false;
+	#v8 = false;
+
+	update(chunk: Buffer): void {
+		const window = this.#tail.length ? Buffer.concat([this.#tail, chunk]) : chunk;
+		this.#nodeApi ||= window.includes(NODE_API_MARKER);
+		this.#v8 ||= V8_ABI_MARKERS.some((marker) => window.includes(marker));
+		this.#tail = Buffer.from(window.subarray(Math.max(0, window.length - LONGEST_MARKER + 1)));
+	}
+
+	get bindsAbi(): boolean {
+		return !this.#nodeApi || this.#v8;
+	}
 }
 
 function isNativeBinary(head: Buffer): boolean {
@@ -79,9 +94,10 @@ function declaresPlatform(manifest: Buffer): boolean {
 }
 
 const INVENTORY_CONCURRENCY = 32;
-const WHOLE_READ_LIMIT = 1024 * 1024;
+// Only a package.json is held whole, to be parsed; one larger than this is bound as if it declared a platform.
+const MANIFEST_READ_LIMIT = 1024 * 1024;
 
-type InventoryRecord = { path: string; fields: unknown[] };
+type InventoryRecord = { path: string; key: Buffer; fields: unknown[] };
 
 /**
  * Derive a tree's manifest. The digest covers every path, file content, link target and owner-exec bit, in a canonical
@@ -106,6 +122,13 @@ export async function inventoryBuild(
 		}
 	};
 	if (options.uninspectableInstall) bind(['os', 'arch', 'libc', 'abi'], options.uninspectableInstall);
+	// A tree built on Windows holds nothing Windows cannot, whatever its links and modes say.
+	const bindPosix = process.platform === 'win32' ? () => {} : (path: string) => bind(['posix'], path);
+	const record = (path: string, fields: unknown[]) => {
+		const entry = { path, key: Buffer.from(path), fields };
+		records.push(entry);
+		return entry;
+	};
 
 	const walk = async (dirPath: string, relativeDir: string): Promise<void> => {
 		for (const entry of await readdir(dirPath, { withFileTypes: true })) {
@@ -113,21 +136,19 @@ export async function inventoryBuild(
 			if (path === DEPLOYMENT_PROVENANCE_FILE || path === 'node_modules/harper') continue;
 			const entryPath = join(dirPath, entry.name);
 			if (path === 'node_modules/harperdb') {
-				records.push({ path, fields: ['P', path] });
+				record(path, ['P', path]);
 			} else if (entry.isSymbolicLink()) {
-				records.push({ path, fields: ['L', path, await readlink(entryPath)] });
-				bind(['posix'], path);
+				record(path, ['L', path, await readlink(entryPath)]);
+				bindPosix(path);
 			} else if (entry.isDirectory()) {
 				// Every load creates the component's own `node_modules`, to link the install into, so the directory
 				// alone says nothing about the build.
-				if (path !== 'node_modules') records.push({ path, fields: ['D', path] });
+				if (path !== 'node_modules') record(path, ['D', path]);
 				await walk(entryPath, path);
 			} else if (entry.isFile()) {
-				const record = { path, fields: [] as unknown[] };
-				records.push(record);
-				files.push(record);
+				files.push(record(path, []));
 			} else if (!entry.isSocket()) {
-				records.push({ path, fields: ['S', path] });
+				record(path, ['S', path]);
 			}
 		}
 	};
@@ -136,38 +157,38 @@ export async function inventoryBuild(
 	let next = 0;
 	const hashFiles = async () => {
 		while (next < files.length) {
-			const record = files[next++];
-			const filePath = join(treePath, ...record.path.split('/'));
+			const file = files[next++];
+			const filePath = join(treePath, ...file.path.split('/'));
 			const stats = await lstat(filePath);
 			const executable = (stats.mode & 0o100) !== 0;
-			if (executable) bind(['posix'], record.path);
-			const name = record.path.slice(record.path.lastIndexOf('/') + 1);
+			if (executable) bindPosix(file.path);
+			const name = file.path.slice(file.path.lastIndexOf('/') + 1);
 			const hash = createHash('sha256');
 			let head: Buffer | undefined;
-			if (stats.size <= WHOLE_READ_LIMIT || name.endsWith('.node')) {
+			if (name === 'package.json' && stats.size <= MANIFEST_READ_LIMIT) {
 				const content = await readFile(filePath);
 				hash.update(content);
 				head = content;
-				if (name.endsWith('.node')) {
-					bind(bindsNodeAbi(content) ? ['os', 'arch', 'libc', 'abi'] : ['os', 'arch', 'libc'], record.path);
-				} else if (name === 'package.json' && declaresPlatform(content)) {
-					bind(['os', 'arch', 'libc'], record.path);
-				}
+				if (declaresPlatform(content)) bind(['os', 'arch', 'libc'], file.path);
 			} else {
+				const addon = name.endsWith('.node') ? new AddonLinkage() : undefined;
 				for await (const chunk of createReadStream(filePath)) {
 					head ??= chunk as Buffer;
 					hash.update(chunk as Buffer);
+					addon?.update(chunk as Buffer);
 				}
+				if (addon) bind(addon.bindsAbi ? ['os', 'arch', 'libc', 'abi'] : ['os', 'arch', 'libc'], file.path);
+				else if (name === 'package.json') bind(['os', 'arch', 'libc'], file.path);
 			}
-			if (head && isNativeBinary(head)) bind(['os', 'arch', 'libc'], record.path);
-			record.fields = ['F', record.path, executable ? 1 : 0, hash.digest('hex')];
+			if (head && isNativeBinary(head)) bind(['os', 'arch', 'libc'], file.path);
+			file.fields = ['F', file.path, executable ? 1 : 0, hash.digest('hex')];
 		}
 	};
 	await Promise.all(Array.from({ length: Math.min(INVENTORY_CONCURRENCY, files.length) }, hashFiles));
 
-	records.sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)));
+	records.sort((left, right) => Buffer.compare(left.key, right.key));
 	const tree = createHash('sha256');
-	for (const record of records) tree.update(`${JSON.stringify(record.fields)}\n`);
+	for (const entry of records) tree.update(`${JSON.stringify(entry.fields)}\n`);
 	return { tree: tree.digest('hex'), platform: { ...hostPlatform(), binds } };
 }
 
@@ -178,7 +199,6 @@ const FIELD_LABELS: Record<Exclude<BoundField, 'posix'>, string> = {
 	abi: 'Node ABI',
 };
 
-/** Why this node cannot run a build, or `undefined` when every field the build binds matches. */
 export function platformRefusal(
 	built: BuildPlatform,
 	here: HostPlatform = hostPlatform(),
@@ -203,7 +223,6 @@ export function platformRefusal(
 const TREE_DIGEST = /^[0-9a-f]{64}$/;
 const BOUND_FIELDS = new Set<string>(['os', 'arch', 'libc', 'abi', 'posix']);
 
-/** Whether `value` is a manifest this build can check. Callers decide what an unusable one means. */
 export function isBuildManifest(value: unknown): value is BuildManifest {
 	const manifest = value as BuildManifest;
 	if (!manifest || typeof manifest !== 'object' || typeof manifest.tree !== 'string') return false;
@@ -219,7 +238,7 @@ export function isBuildManifest(value: unknown): value is BuildManifest {
 	return Object.entries(binds).every(([field, path]) => BOUND_FIELDS.has(field) && typeof path === 'string');
 }
 
-/** The built tree as one archive: links as links, with the pack's standing exclusions. */
+/** `skip_symlinks` only stops links being followed: they are packed as links. */
 export function packBuild(candidateDirPath: string): Readable {
 	return streamPackagedDirectory(candidateDirPath, { skip_node_modules: false, skip_symlinks: true }, undefined, []);
 }

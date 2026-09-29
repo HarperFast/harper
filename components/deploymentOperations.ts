@@ -36,7 +36,6 @@ interface GetRequest {
 interface PayloadRequest {
 	deployment_id: string;
 	hdb_user?: { username?: string; role?: { permission?: { super_user?: boolean } } };
-	/** `delete_deployment_payload` only: also delete the build the origin replicated. */
 	artifact?: boolean;
 }
 

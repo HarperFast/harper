@@ -424,7 +424,6 @@ export class DeploymentRecorder {
 		return this.drop('payload');
 	}
 
-	/** `dropPayload`'s counterpart for the replicated build. */
 	dropArtifact(): number {
 		return this.drop('artifact');
 	}
@@ -570,7 +569,6 @@ export class DeploymentRecorder {
 // via the `deployment_timeout` operation parameter.
 export const DEFAULT_AWAIT_ROW_TIMEOUT_MS = 120_000;
 
-/** Whether this node can keep deployment rows, and so carry a blob in one. */
 export function deploymentTableAvailable(): boolean {
 	return Boolean((databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME]);
 }
