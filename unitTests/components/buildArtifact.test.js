@@ -24,8 +24,16 @@ const { DEPLOYMENT_PROVENANCE_FILE } = require('#src/components/deploymentProven
 
 const onWindows = process.platform === 'win32';
 
+const temporaryDirectories = [];
+async function temporaryDirectory(prefix) {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+	temporaryDirectories.push(dir);
+	return dir;
+}
+after(() => Promise.all(temporaryDirectories.map((dir) => fs.rm(dir, { recursive: true, force: true }))));
+
 async function tree(files, label = 'tree') {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), `build-artifact-${label}-`));
+	const root = await temporaryDirectory(`build-artifact-${label}-`);
 	for (const [rel, content] of Object.entries(files)) {
 		const full = path.join(root, rel);
 		await fs.mkdir(path.dirname(full), { recursive: true });
@@ -280,7 +288,7 @@ describe('build manifests', () => {
 				[DEPLOYMENT_PROVENANCE_FILE]: '{"v":1}',
 			});
 			const archive = await packed(root);
-			const target = await fs.mkdtemp(path.join(os.tmpdir(), 'build-artifact-received-'));
+			const target = await temporaryDirectory('build-artifact-received-');
 			await pipeline(Readable.from([archive]), zlib.createGunzip(), tar.extract(target, { validateSymlinks: false }));
 
 			assert.strictEqual(await fs.readlink(path.join(target, 'node_modules/ws')), '../packages/ws');

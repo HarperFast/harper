@@ -37,8 +37,16 @@ const configUtils = require('#src/config/configUtils');
 const PACKAGE_V1 = { rootConfig: { package: 'npm:web@1' }, isolated: false };
 const PAYLOAD = { rootConfig: null, isolated: false };
 
+const temporaryDirectories = [];
+async function temporaryDirectory(prefix) {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+	temporaryDirectories.push(dir);
+	return dir;
+}
+after(() => Promise.all(temporaryDirectories.map((dir) => fs.rm(dir, { recursive: true, force: true }))));
+
 async function newRoot(label) {
-	return fs.mkdtemp(path.join(os.tmpdir(), `prebuilt-${label}-`));
+	return temporaryDirectory(`prebuilt-${label}-`);
 }
 
 async function writeTree(dir, files) {
@@ -51,7 +59,7 @@ async function writeTree(dir, files) {
 }
 
 async function sourceArchive(files) {
-	const dir = await writeTree(await fs.mkdtemp(path.join(os.tmpdir(), 'prebuilt-src-')), files);
+	const dir = await writeTree(await temporaryDirectory('prebuilt-src-'), files);
 	const chunks = [];
 	await new Promise((resolve, reject) => {
 		const gzip = zlib.createGzip();
@@ -64,7 +72,7 @@ async function sourceArchive(files) {
 }
 
 async function originBuild(files) {
-	const dir = await writeTree(await fs.mkdtemp(path.join(os.tmpdir(), 'prebuilt-origin-')), files);
+	const dir = await writeTree(await temporaryDirectory('prebuilt-origin-'), files);
 	const chunks = [];
 	for await (const chunk of packBuild(dir)) chunks.push(chunk);
 	return { archive: Buffer.concat(chunks), manifest: await inventoryBuild(dir), dir };
@@ -159,7 +167,7 @@ describe('replicated builds', () => {
 			if (process.platform === 'win32') return this.skip(); // links are not extracted there at all
 			this.timeout(30000);
 			const root = await newRoot('write-through');
-			const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'prebuilt-outside-'));
+			const outside = await temporaryDirectory('prebuilt-outside-');
 			const pack = tarStream.pack();
 			pack.entry({ name: 'escape', type: 'symlink', linkname: outside });
 			pack.entry({ name: 'escape/planted.txt' }, 'written through the link');
@@ -246,7 +254,7 @@ describe('replicated builds', () => {
 			if (process.platform === 'win32') return this.skip(); // packed rather than linked there
 			this.timeout(30000);
 			const root = await newRoot('publish-link');
-			const source = await writeTree(await fs.mkdtemp(path.join(os.tmpdir(), 'prebuilt-linked-')), {
+			const source = await writeTree(await temporaryDirectory('prebuilt-linked-'), {
 				'package.json': '{"name":"web","version":"1.0.0"}',
 				'index.js': 'LINKED\n',
 			});
@@ -266,7 +274,7 @@ describe('replicated builds', () => {
 			if (process.platform === 'win32') return this.skip();
 			this.timeout(30000);
 			const root = await newRoot('publish-escape');
-			const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'prebuilt-outside-'));
+			const outside = await temporaryDirectory('prebuilt-outside-');
 			// Extraction already refuses such a link in a payload; an install is what can still make one.
 			const app = applicationAt(root, 'web', {
 				payload: await sourceArchive({ 'package.json': '{"name":"web","version":"1.0.0"}', 'index.js': 'V1\n' }),
