@@ -110,15 +110,19 @@ Three non-obvious mechanics keep that safe:
   closes the store and acknowledges. Restore signals are the one schema broadcast that includes job
   workers; ordinary gossip still excludes them to avoid re-entrant broadcast deadlocks.
 
-  The fence is keyed by a per-restore token rather than a flag. Two restores of the same database can
-  overlap — a restore releases its lock before awaiting its `reload` broadcast — so a database-wide
-  boolean lets the first restore's late reload lift the second one's fence, admitting saves during the
-  second one's post-close check. A worker releases only the token it was given, and the database stays
-  fenced while any token is outstanding.
+  The fence records the token of the restore that currently owns it, not a flag and not a set. Two
+  restores of the same database can overlap — a restore releases its lock before awaiting its `reload`
+  broadcast — so a database-wide boolean lets the first restore's late reload lift the second one's
+  fence, admitting saves during the second one's post-close check. A later close takes ownership
+  without the database ever unfencing in between, and a release whose token is not the current owner
+  does nothing. A _set_ of tokens fails the opposite way: a restore that dies after destruction never
+  reloads, so its token would keep the database fenced for the life of the process, defeating the
+  rerun the failure tells the operator to perform.
 
-  When the last token is released, that database's queued reclamations are _discarded_ rather than
-  resumed: they condemn file paths belonging to the generation the restore just replaced, so draining
-  them would unlink the bytes the restore wrote at those same paths.
+  Releasing the fence discards that database's queued reclamations rather than resuming them: they
+  condemn file paths belonging to the generation the restore just replaced, so draining them would
+  unlink the bytes the restore wrote at those same paths. A restore that aborted before destroying
+  anything says so, and its queue is kept and rewoken instead.
 
 - **Online restore is impossible for a database a component holds open — and that failure is
   correct.** rocksdb-js's registry is process-global but records only a per-path refCount, with no

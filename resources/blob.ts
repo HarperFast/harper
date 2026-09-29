@@ -1875,8 +1875,8 @@ export async function blockBlobSavesForRestore(databaseName: string, restoreToke
 }
 
 /**
- * Release one restore's fence. The fence lifts only when the last token is released, so an earlier
- * restore's late `reload` cannot unfence a database another restore is still working on.
+ * Release one restore's fence. Only the current owner's token lifts it, so an earlier restore's late
+ * `reload` cannot unfence a database another restore has since taken over.
  */
 export function resumeBlobSavesAfterRestore(
 	databaseName: string,
