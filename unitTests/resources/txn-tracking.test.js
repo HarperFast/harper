@@ -716,6 +716,7 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 				links.every((txn) => txn.timeout > 20),
 				'the commit-phase re-arm must preserve the transaction timeout budget'
 			);
+			// Only the blob's real I/O and the native commit are left; the monitor must not time the runner's disk.
 			for (const link of links) trackedTxns.delete(link);
 			slow.end(Buffer.alloc(16384, 'i'));
 			await committing;
@@ -728,9 +729,8 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		assert.equal((await SecondaryBlobResource.get(2067))?.value, 'secondary', 'the linked database write must commit');
 	});
 
-	// Defers a link's native store commit so the monitor runs over `monitored` while the chain is mid-cascade,
-	// and only then: the real commit after the stall runs at the runner's disk speed, which none of these
-	// idle windows is sized for.
+	// Defers a link's native store commit so the monitor runs while the chain is mid-cascade. The real commit
+	// after the stall runs unmonitored: its duration is the runner's disk speed, not what these tests check.
 	function stallNativeCommit(link, ms, trackedTxns, monitored, { onStart, onEnd } = {}) {
 		const store = link.writes.find(Boolean).store;
 		const stall = async () => {
@@ -805,6 +805,7 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 					armed = links.map((txn) => txn.timeout);
 				},
 			});
+			for (const link of links) trackedTxns.delete(link);
 			slow.end(Buffer.alloc(16384, 'm'));
 			await committing;
 			assert.deepEqual(armed, [400, 400], 'every link must start the cascade with the full engine window');
