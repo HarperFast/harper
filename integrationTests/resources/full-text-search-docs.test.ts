@@ -61,6 +61,24 @@ suite('documented native full-text examples', (ctx: ContextWithHarper) => {
 		assert.ok(states.length > 0 && states.every((state) => state === 'ready'), `${database}.${table}: ${states}`);
 	}
 
+	async function waitForCoverage(database: string, table: string, attribute: string, value: string) {
+		const records = await operation({
+			operation: 'search_by_conditions',
+			database,
+			table,
+			conditions: [
+				{
+					attribute,
+					comparator: 'matches',
+					value,
+					maxIndexLagMilliseconds: 0,
+					waitForIndexMilliseconds: 30_000,
+				},
+			],
+		});
+		assert.ok(records.length > 0, `${database}.${table}.${attribute} reached current coverage without a match`);
+	}
+
 	async function documentedQuery(example: string) {
 		return request('/DocumentedProductQueries/', {
 			method: 'POST',
@@ -199,6 +217,17 @@ suite('documented native full-text examples', (ctx: ContextWithHarper) => {
 			['data', 'Document'],
 		]) {
 			await waitForReady(database, table);
+		}
+		for (const [database, table, attribute, value] of [
+			['catalog', 'Product', 'catalogSearch', 'waterproof'],
+			['data', 'Article', 'bodySearch', 'trail'],
+			['data', 'HighlightArticle', 'articleSearch', 'trail'],
+			['data', 'SynonymProduct', 'catalogSearch', 'sneaker'],
+			['catalog', 'MultipleIndexProduct', 'titleSearch', 'trail'],
+			['catalog', 'MultipleIndexProduct', 'tagSearch', 'outdoor'],
+			['data', 'Document', 'contentSearch', 'constellation'],
+		]) {
+			await waitForCoverage(database, table, attribute, value);
 		}
 	});
 
