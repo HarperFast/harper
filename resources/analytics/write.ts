@@ -355,7 +355,7 @@ function storeTableSizeMetrics(analyticsTable: Table, dbName: string, tables: Ta
 	return dbUsedSize;
 }
 
-function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
+export function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 	for (const [db, tables] of Object.entries(databases)) {
 		try {
 			const [firstTable] = Object.values(tables);
@@ -400,7 +400,7 @@ function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 	}
 }
 
-async function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
+export async function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
 	await Promise.all(
 		Object.entries(databases).map(async ([db, tables]) => {
 			try {
@@ -669,7 +669,7 @@ export function buildRocksDBTxnLogMetric(
  * @param now - The current time.
  * @param period - The period to store the metrics for.
  */
-function storeRocksDBStatsMetrics(
+export function storeRocksDBStatsMetrics(
 	analyticsTable: Table,
 	databases: Databases,
 	now: number,
