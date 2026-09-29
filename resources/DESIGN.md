@@ -188,11 +188,10 @@ Index waits use the ordinary transaction timeout; they do not renew it. The adap
 ## Audit retention floor
 
 `Table.subscribe`'s `startTime` replay just begins wherever the audit log now begins, so a consumer
-resuming below the retention horizon is silently handed a short replay. The floor is the primitive
-that makes that detectable (harper#2447). It is internal, with deliberately no public accessor, and **no
-resume path consumes it yet**: harper#2448 is to put the check inside `Table.subscribe` itself — the same shape as
-replication's `shouldForceBaseCopyForRetention`, and the only one where the floor cannot move between
-being read and being acted on. Until then the short replay above is unchanged.
+resuming below the retention horizon is silently handed a short replay. The floor records what
+pruning removed (harper#2447); it is internal, with deliberately no public accessor. **A resume is
+not checked against it** but against the database generation (next section): this floor also steers
+reconciliation, survives a restore, and absorbs at `Infinity`.
 
 **The one consumer today is not a resume**: `Table.commit`'s out-of-order reconciliation reads the
 floor before entering the audit walk (harper#2642). The walk terminates at the incoming write only by
@@ -226,50 +225,31 @@ Things that are easy to get wrong here:
   surviving entry would do, because they prune a database-wide time prefix. `Table.deleteHistory`
   removes one table's entries from a database-scoped log, so a sibling's entry survives _below_ the
   newest entry it removed, and a floor taken from that survivor certifies cursors over removed history.
-- **The record's presence is the trust marker.** `Symbol.for('audit-floor')` is a different key from
-  `last-removed`, which is still live and still maintained by the LMDB retention loop (#2338 hardened
-  its write path and added tests for the retry-carry — do not remove it). They coexist because they
-  answer different questions: `last-removed` records where the LMDB loop got to, after the fact,
-  while the floor is written ahead of every one of the five prune paths and its commit is verified.
-  A value found under `last-removed` therefore cannot be told apart from one carrying those
-  guarantees, which is why the floor needs its own key rather than reusing it.
-- **A store with no floor record is a store whose retention history we cannot account for.** That
-  includes the empty audit store an LMDB→RocksDB migration leaves behind, since `bin/copyDb.ts`
-  deliberately does not migrate it, and the audit-DBI-less result of a table-scoped backup taken
-  without `include_audit` — so `openAuditStore` stamps `max(Date.now(), newest retained key)` as a
-  one-time resync epoch. There is no permissive-baseline case: creating the audit DBI proves the
-  DBI was absent, not that the database is new.
-- **That epoch is a guess, and it is recorded as one.** Its bound is surviving state, which cannot see
-  history a selective prune already removed: a legacy `deleteHistory` takes one table's entries out of
-  the shared log, so a table that held the newest entries can leave the newest _survivor_ older than
-  entries that are gone, and a clock rolled back between the two stamps a floor below them (#2458).
-  Refusing to stamp is worse — `AUDIT_FLOOR_UNKNOWN` is absorbing (`raiseAuditFloor` cannot lift it,
-  `establishAuditFloor` skips any existing record), so it would make every upgraded deployment fail
-  closed forever. So `establishAuditFloor` writes the epoch under `Symbol.for('audit-floor-bootstrap')`
-  first, then stamps the floor from what that record holds.
+- **The record's presence is the trust marker.** `Symbol.for('audit-floor')` is not `last-removed`,
+  which the LMDB retention loop still maintains (#2338 — do not remove it): that one records where the
+  loop got to, after the fact, so a value there cannot be told apart from a write-ahead, verified floor.
+- **A store with no floor record is one whose retention history we cannot account for** (the empty
+  audit store a migration leaves, a table-scoped backup without `include_audit`), so `openAuditStore`
+  stamps `max(Date.now(), newest retained key)` as a one-time resync epoch. There is no
+  permissive-baseline case: creating the audit DBI proves only that it was absent.
+- **That epoch is a guess, and it is recorded as one.** Surviving state cannot see history a legacy
+  selective prune removed, so a rolled-back clock can stamp it below entries that are gone (#2458).
+  Refusing to stamp is worse — `AUDIT_FLOOR_UNKNOWN` is absorbing — so `establishAuditFloor` writes the
+  epoch under `Symbol.for('audit-floor-bootstrap')` first, then stamps the floor from that record.
 
-  **The record's presence is the signal; comparing it against the floor is not.** A store carrying one
-  has an unverified pre-tracking window for as long as the record exists, however far the floor has
-  since moved — a prune raising the floor above the epoch certifies only what that prune removed, and
-  says nothing about history removed before tracking began, which may sit _above_ the epoch, since that
-  is precisely what the guess could not see. Worked example: a v4-era `deleteHistory` removes tableA up
-  to t=1000 while sibling tableB's newest survivor is 900; a rolled-back clock stamps bootstrap=900 and
-  floor=900; a later retention pass raises the floor to 950. A repair keyed on `floor > bootstrap` would
-  read 950 > 900, call it earned, and leave a consumer at cursor 970 certified over tableA's missing
-  950–1000. So the mark is retired by a database generation (#2451), never by a floor that climbed past
-  it; what the recorded _value_ is for is telling that repair how far the guess reached.
+  **The record's presence is the signal; comparing it against the floor is not.** Worked example: a
+  v4-era `deleteHistory` removes tableA up to t=1000 while tableB's newest survivor is 900; a
+  rolled-back clock stamps bootstrap=floor=900; a later pass raises the floor to 950 — and a cursor at
+  970 still sits over tableA's missing 950–1000. No timestamp can close that window, which is why
+  resumable positions are bound to a generation instead: a position naming one postdates tracking.
 
-  Two properties it does depend on. **Ordering:** the record is written first, so a crash between the
-  two writes leaves a record with no floor, which the next open retries because the early return tests
-  the _floor_. **Undecodable bytes are overwritten** rather than kept — unlike the floor, where a
-  present record may be a deliberate `AUDIT_FLOOR_UNKNOWN` and rewriting it would lower a floor.
-  Keeping torn bytes pinned the store to unknown _forever_: the resolver skipped the write because a
-  record existed, the read back failed identically on every later open, and no retry could succeed.
+  **Ordering:** the record is written first, so a crash between the two writes leaves a record with no
+  floor, which the next open retries. **Undecodable bytes are overwritten** (unlike the floor, where a
+  present record may be a deliberate unknown): keeping them pinned the store to unknown forever.
 
-- **`getHistory` is not in the floor's time domain.** The floor is an audit-log key, which is what
-  `subscribe`'s events carry as `localTime`; `getHistory` reports each entry's origin `version` under
-  that same name, and a backdated or replicated write makes the two differ. A cursor saved from
-  `getHistory` cannot be compared against the floor.
+- **`getHistory` is not in the floor's time domain.** The floor is an audit-log key (`subscribe`'s
+  `localTime`); `getHistory` reports each entry's origin `version` under that name, which a backdated
+  or replicated write makes differ, so its cursors cannot be compared against the floor.
 - **On RocksDB the floor tracks the configured retention horizon, not retained reality.** Whole-log-file
   purge granularity means the branch cannot know which entries a purge will drop, and the floor is
   written first, so each pass advances it to `Date.now() - auditRetention/(1+priority²)` whether a
@@ -284,11 +264,37 @@ Things that are easy to get wrong here:
 - **Untrustworthy metadata resolves to `Infinity`, not to a number.** A wrong-length record, or eight
   bytes decoding to NaN/negative, must not become a floor: `cursor < NaN` is false, so a consumer
   spelling the check that way would read corrupt metadata as safe.
-- **A restore is outside what the floor can see.** `restore_backup` reinstalls the backup's floor
-  along with everything else, so a cursor from after the backup point reads as safe against it. The
-  audit floor is one of three carriers of resumable state a restore rolls back (record versions and
-  per-node `Symbol.for('seq')` records are the others), so this wants a database-level generation
-  rather than a fix in this one field — harper#2451.
+- **A copy keeps this floor honest for the log it carried.** A restore carries its log, so the floor
+  stands; a branch or migration carries none, so its stamp raises a finite floor to the copy's epoch.
+  Which history the database is belongs to the generation.
+
+---
+
+## Database generation and resumable positions
+
+Every copy path gives the copy a generation of its own before anything can read it (harper#2451),
+so no live subscription or persisted position carries over from the source. **Invariant: no readable
+copy carries its source's generation; a position resumes only if it names the current generation, its
+cursor is finite, and no prune within the generation reached above it** (`isResumablePosition`).
+
+- **Two records beside the floor:** the generation (a 16-byte random id and a float64 epoch, 0 for
+  genesis) and the resume floor (highest prune cutoff in the generation). `raiseAuditFloor` raises
+  both in one verified transaction; the resume floor is not absorbed by an unknown floor.
+- **Stamped into the copy before publication:** restore (before `completeRestore`), branch and
+  migration (before their renames), via a private open plus an engine flush — a root-store write is
+  not power-loss durable and directory fsync is best-effort. `copydb` never copies the source's
+  records and stamps the target; `compactOnStart` keeps them (same history).
+- **An ordinary open never repairs:** it adopts the record, mints genesis as a compare-and-set on
+  absence, or leaves the handle without one (every resume refused), and raises the resume floor to a
+  finite audit floor above it — an older binary's prunes raise only the audit floor.
+- **No scalar mode.** A position without an id is never resumable; bind an id only to a position
+  established within the generation. Cursors must be progress-based: a snapshot's newest in-scope key
+  can sit below a floor that retention advances on a quiet database, and would be refused forever.
+- **Live subscriptions:** the per-path registry outlives the store, so an open under a different or
+  unknown generation detaches it and closes each subscription with `DatabaseGenerationChangedError`
+  (forced even when a listener throws on the final event).
+- **Not covered:** copies no generation-aware code made, keys reissued below a cursor after a clock
+  rollback across a restart, and cross-node identity (an id is per database per node).
 
 ---
 

@@ -149,6 +149,11 @@ Three non-obvious mechanics keep that safe:
   calls `closeLoadedDatabases()` (`resources/databases.ts`) in its `finally`, closing every loaded
   user database on that thread (the non-enumerable `system` DB is intentionally skipped), so an
   exited job worker leaves no residual handle to be mistaken for a live holder.
+- **A restore stamps a new database generation before `completeRestore`.** The restored files carry
+  the backup's generation, so both paths open the restored directory privately, stamp it and flush
+  (`stampDatabaseDirectory`, [database generation](../resources/DESIGN.md#database-generation-and-resumable-positions))
+  inside the destructive section: a failed stamp leaves the marker, and the rerun re-purges and
+  re-stamps. The stamp is as durable as the marker protocol it runs inside.
 - **`dropDatabase` and `restore_backup` serialize on the same lock, not a check-then-act probe.**
   A drop's `destroy()` interleaving with a restore's purge-and-copy on the same directory would gut
   a "successful" restore (or vice versa). `dropDatabase` takes the restore lock for every RocksDB or

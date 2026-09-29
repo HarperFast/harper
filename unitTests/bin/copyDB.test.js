@@ -10,6 +10,27 @@ const copyDB = require('#src/bin/copyDb');
 const { resetDatabases } = require('#src/resources/databases');
 const { get: envGet } = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+const { open: openLmdb } = require('lmdb');
+const OpenEnvironmentObject = require('#src/utility/lmdb/OpenEnvironmentObject').default;
+const { AUDIT_STORE_NAME } = require('#src/utility/lmdb/terms');
+
+const generationIdFrom = (bytes) => bytes && Buffer.from(bytes).subarray(0, 16).toString('hex');
+/**
+ * The database generation id a copy's LMDB file records. Only for a file this process has not opened:
+ * lmdb hands back the already-open environment for a path, and closing it would close Harper's.
+ */
+function generationIdIn(mdbPath) {
+	const env = openLmdb(new OpenEnvironmentObject(mdbPath, true));
+	try {
+		return generationIdFrom(
+			env.openDB(AUDIT_STORE_NAME, { create: false })?.getBinary(Symbol.for('database-generation'))
+		);
+	} finally {
+		env.close();
+	}
+}
+const sourceGenerationId = () =>
+	generationIdFrom(getDatabases()['copy-test'].TestTable.auditStore.getBinary(Symbol.for('database-generation')));
 
 describe('Test database copy and compact', () => {
 	const sandbox = sinon.createSandbox();
@@ -84,7 +105,13 @@ describe('Test database copy and compact', () => {
 
 	it('Test copyDB copies and compacts a DB', async () => {
 		const compacted_db = path.join(storage_path, 'db-copy.mdb');
+		const sourceGeneration = sourceGenerationId();
+		assert.match(sourceGeneration, /^[0-9a-f]{32}$/, 'precondition: the source records a generation');
 		await copyDB.copyDb('copy-test', compacted_db, { blobs: 'copy' });
+		// a copy beside its source is a separate database from here on (harper#2451)
+		const copyGeneration = generationIdIn(compacted_db);
+		assert.match(copyGeneration, /^[0-9a-f]{32}$/);
+		assert.notStrictEqual(copyGeneration, sourceGeneration);
 		await TestTable.put(105, {
 			// should not be written
 			id: 105,
@@ -106,6 +133,18 @@ describe('Test database copy and compact', () => {
 		assert.equal(matches.length, 0);
 		await fs.remove(compacted_db);
 		await fs.remove(compacted_db + '-lock');
+	});
+
+	it('keeps the generation in a copy that replaces its source in place, as compaction does', async () => {
+		const replacement = path.join(storage_path, 'db-replacement.mdb');
+		const sourceGeneration = sourceGenerationId();
+		await copyDB.copyDb('copy-test', replacement, { blobs: 'preserve-source-roots' });
+		try {
+			assert.strictEqual(generationIdIn(replacement), sourceGeneration, 'it is the same history');
+		} finally {
+			await fs.remove(replacement);
+			await fs.remove(replacement + '-lock');
+		}
 	});
 
 	it('Test compactOnStart compacts and overwrites DB', async () => {

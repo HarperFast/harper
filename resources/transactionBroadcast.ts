@@ -60,6 +60,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		}
 	}
 	databaseSubscriptions.auditStore = table.auditStore;
+	databaseSubscriptions.generationId ??= table.auditStore?.databaseGeneration?.id ?? null;
 	if (databaseSubscriptions.lastTxnTime == null) {
 		databaseSubscriptions.lastTxnTime = Date.now();
 	}
@@ -88,6 +89,56 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	subscription.subscriptions = subscriptions;
 	databaseSubscriptions.activeCount = (databaseSubscriptions.activeCount || 0) + 1;
 	return subscription;
+}
+
+/** Ends a live subscription whose database was replaced by a copy: its consumer must resync. */
+export class DatabaseGenerationChangedError extends Error {
+	name = 'DatabaseGenerationChangedError';
+	code = 'DATABASE_GENERATION_CHANGED';
+	statusCode = 409;
+}
+
+/**
+ * End every live subscription this thread registered on the database at `path` under a generation
+ * other than `generationId` (undefined when the reopened store's is unknown). The registry outlives
+ * the store handle, so without this a subscriber from before a restore would receive the restored
+ * database's events as a silent resume. The entry is detached before anything is closed, so queued
+ * drains, pending transaction state and a listener that throws all stay with the old entry.
+ */
+export function endSubscriptionsOfOtherGenerations(path: string, generationId: string | undefined): void {
+	for (const registry of [allSubscriptions, allSameThreadSubscriptions]) {
+		const databaseSubscriptions = registry[path];
+		if (!databaseSubscriptions || (generationId !== undefined && databaseSubscriptions.generationId === generationId))
+			continue;
+		delete registry[path];
+		for (const tableId in databaseSubscriptions) {
+			const tableSubscriptions = databaseSubscriptions[tableId];
+			if (!(tableSubscriptions instanceof Map)) continue;
+			for (const keySubscriptions of tableSubscriptions.values()) {
+				for (const subscription of [...keySubscriptions]) {
+					try {
+						subscription.close(
+							new DatabaseGenerationChangedError(
+								`The database at ${path} was replaced by a copy; resubscribe to resynchronize`
+							)
+						);
+					} catch (error) {
+						try {
+							warn(error);
+						} catch {}
+					} finally {
+						// close() delivers its final event before marking the queue closed, so a listener that
+						// threw there left it open; a bare close sends nothing and finishes the job
+						if (!subscription.closed) {
+							try {
+								subscription.close();
+							} catch {}
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 /**
