@@ -31,7 +31,7 @@ type Product @table(database: "catalog", audit: true) {
 
 The declaration must use nullable `FullText` exactly and carry one `@fullText` directive. Lists, non-null forms, a bare `FullText` field, and additional directives such as `@computed`, `@indexed`, or `@allow` are rejected. `@fullText` is not valid on a table type or any other field type.
 
-New schema tables must explicitly set `@table(audit: true)`. An existing table that already has persisted audit logging can add the field without restating `audit`, but disabling audit logging while a full-text field exists is rejected.
+New schema tables must explicitly set `@table(audit: true)`; omitting it or setting `audit: false` returns `400`. An existing table that already has persisted audit logging can add the field without restating `audit`. A previously unaudited table can enable `audit: true` in the same schema change that adds its first full-text field; the initial build scans current records and does not require older transaction history. Disabling audit logging while a full-text field exists is rejected.
 
 Writing the declaration-only field or selecting it as record data returns an error, including on unsealed tables. A read-through source response containing that name fails with `502` and is not cached, indexed, or audited. For HTTP-sourced caching tables, avoid index names that collide with response wrapper fields such as `data`, `headers`, `body`, and `status`.
 
@@ -139,7 +139,7 @@ type Document @table(audit: true) {
 }
 ```
 
-`mediaType: "text/plain"` declares how Harper interprets the Blob; it does not validate runtime Blob metadata or reject the record write. The derived index decodes the Blob as UTF-8. If a Blob is invalid UTF-8 or exceeds the native source limit, Harper removes that whole record from the index rather than indexing only its other fields. A transient Blob read failure rolls back the accepted native batch and retries it, so index coverage does not advance past unread source data.
+`mediaType: "text/plain"` declares how Harper interprets the Blob; it does not validate runtime Blob metadata or reject the record write. The derived index decodes the Blob as UTF-8. A Blob source is limited to 1 MiB (1,048,576 bytes). If it exceeds that limit or is invalid UTF-8, Harper removes that whole record from the index rather than indexing only its other fields. A transient Blob read failure rolls back the accepted native batch and retries it, so index coverage does not advance past unread source data.
 
 ## Schema changes and rebuilds
 
@@ -182,7 +182,7 @@ The table response includes entries shaped like this:
 }
 ```
 
-`readiness.state` is `ready`, `rebuilding`, or `unavailable`. A rebuilding query returns `503` with retryable code `INDEX_REBUILDING`. `unavailable` means activation failed or the automatic rebuild budget was exhausted; queries return a generic, non-retryable `503`. Inspect the optional `readiness.reason` and the node logs, correct the underlying storage, native-module, schema, or transaction-log problem, then reload or reapply the schema to retry activation. Full-text queries are served only when the state is `ready`.
+`readiness.state` is `unknown`, `ready`, `needs-rebuild`, `rebuilding`, or `unavailable`. Only `ready` serves full-text queries. `unknown` is an activation or owner-election transition. `needs-rebuild` means the runtime has condemned the current generation and queued an automatic rebuild. Queries in `unknown`, `needs-rebuild`, or `rebuilding` return `503` with retryable code `INDEX_REBUILDING`. `unavailable` means activation failed or the automatic rebuild budget was exhausted; queries return a generic, non-retryable `503`. Inspect the optional `readiness.reason` and the node logs, correct the underlying storage, native-module, schema, or transaction-log problem, then reload or reapply the schema to retry activation.
 
 `query_modes` maps to comparators as follows: `any` → `matches`, `all` → `matches_all`, `fuzzy` → `matches_fuzzy`, `phrase` → `matches_phrase`, `prefix` → `matches_prefix`, and `fuzzy-prefix` → `matches_fuzzy_prefix`. `owner_epoch` is an opaque decimal string used to fence work between derived-index owners; clients should not parse or persist it. `rebuild_attempts` is the current automatic-attempt count. `reason` is present when readiness has an operator-actionable explanation.
 

@@ -984,7 +984,7 @@ Array of condition objects to filter records. Each condition:
 | `maxIndexLagMilliseconds`  | Maximum accepted full-text index lag; defaults to `3000`                                                                                                                                                                           |
 | `waitForIndexMilliseconds` | Time to wait for acceptable full-text coverage, from `0` through `30000`                                                                                                                                                           |
 
-The final four properties apply to full-text conditions: <VersionBadge version="v5.3.0" /> See [Querying Full-Text Indexes](../full-text-search/querying.md) for their constraints and error behavior.
+The final four properties apply to full-text conditions (v5.3.0). See [Querying Full-Text Indexes](../full-text-search/querying.md) for their constraints and error behavior.
 
 Example with nested conditions:
 
@@ -1033,16 +1033,16 @@ Properties to include in each returned record. Can be:
 
 Special properties:
 
-- `$id` — Returns the primary key regardless of its name
-- `$updatedtime` — Returns the last-updated timestamp
-- `$distance` — When the query ranks or filters by a vector index, returns the computed distance from the target vector. See [Vector Indexing](../database/schema.md#vector-indexing).
+- `$id`: Returns the primary key regardless of its name
+- `$updatedtime`: Returns the last-updated timestamp
+- `$distance`: When the query ranks or filters by a vector index, returns the computed distance from the target vector. See [Vector Indexing](../database/schema.md#vector-indexing).
 
 <VersionBadge version="v5.3.0" />
 
 Full-text queries add two special properties:
 
-- `$score` — When a query uses a full-text index, returns its BM25 relevance score.
-- `$highlights` — Enables and returns full-text fragments and matching spans when the index has highlighting configured. See [Highlights](../full-text-search/querying.md#highlights).
+- `$score`: When a query uses a full-text index, returns its BM25 relevance score.
+- `$highlights`: Enables and returns full-text fragments and matching spans when the index has highlighting configured. See [Highlights](../full-text-search/querying.md#highlights).
 
 #### Selecting related records
 

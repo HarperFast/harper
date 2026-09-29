@@ -825,6 +825,8 @@ Harper supports the following field types:
 | `Blob`     | Binary large object; designed for streaming content >20KB                                      |
 | `FullText` | Query-only full-text index declaration; valid only with `@fullText` and never stored           |
 
+Added `FullText` in v5.3.0
+
 Added `BigInt` in v4.3.0
 
 Added `Blob` in v4.5.0

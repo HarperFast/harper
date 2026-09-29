@@ -63,9 +63,9 @@ Returns all table definitions within the specified database. Each table definiti
 
 ### `describe_table`
 
-Returns the definition of a specific table. A table with native full-text indexes includes `full_text_indexes`; each entry reports its query-only field name, source fields, analyzer options, enabled query modes, and `readiness` (`ready`, `rebuilding`, or `unavailable`). The readiness object also includes `owner_epoch`, `rebuild_attempts`, and an optional `reason`. Query-only `FullText` fields do not appear in the ordinary `attributes` list.
+Returns the definition of a specific table. A table with native full-text indexes includes `full_text_indexes`; each entry reports its query-only field name, source fields, analyzer options, enabled query modes, and `readiness` (`unknown`, `ready`, `needs-rebuild`, `rebuilding`, or `unavailable`). The readiness object also includes `owner_epoch`, `rebuild_attempts`, and an optional `reason`. Query-only `FullText` fields do not appear in the ordinary `attributes` list.
 
-Full-text response metadata: <VersionBadge version="v5.3.0" />
+Requesting a table with full-text indexes (Added in: v5.3.0):
 
 ```json
 { "operation": "describe_table", "table": "Product", "database": "catalog" }
@@ -87,6 +87,8 @@ The response also includes the table's ordinary schema and storage metadata. The
 	]
 }
 ```
+
+#### Record-structure dictionaries
 
 <VersionBadge type="changed" version="v5.2.5" />
 
@@ -303,7 +305,7 @@ Returns records matching one or more conditions. Supports `operator` (`and`/`or`
 }
 ```
 
-Full-text conditions: <VersionBadge version="v5.3.0" />
+Full-text conditions (Added in: v5.3.0):
 
 Conditions can query a declared full-text index with the `matches`, `matches_all`, `matches_phrase`, `matches_prefix`, `matches_fuzzy`, and `matches_fuzzy_prefix` comparators and their `not_` forms. A negated full-text condition requires a non-negated condition on the same full-text index. The Operations API preserves advanced condition options such as source `fields`, `includeHighlights`, `maxIndexLagMilliseconds`, and `waitForIndexMilliseconds`. See [Querying Full-Text Indexes](../full-text-search/querying.md#operations-api).
 

@@ -84,6 +84,8 @@ GET /Product/?catalogSearch=matches=waterproof&catalogSearch=not_matches=leather
 
 Use `Table.search()` or `search_by_conditions` when conditions need source-field selection, condition-level highlighting, or freshness controls. See [Querying Full-Text Indexes](../full-text-search/querying.md) for ranking, highlights, query combinations, and freshness controls.
 
+The REST URL syntax searches every source field in the index, so the caller must be allowed to read every source field. Full-text queries cannot provide an exact total count; a `Prefer: count=exact` request returns an unavailable total (`Content-Range: items <range>/*`).
+
 For date fields, colons must be URL-encoded as `%3A`:
 
 ```http

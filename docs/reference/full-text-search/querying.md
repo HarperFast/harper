@@ -63,7 +63,7 @@ const products = await Product.search({
 
 Every requested field must belong to the index and be readable by the caller. Without `fields`, the caller must be allowed to read every source field in the index. Harper rejects an external REST or Operations API query with `403` if any searched source field is not readable. `$highlights` never bypasses this check.
 
-Direct calls through `tables` or `databases` run in a trusted server-side context. From an authenticated custom resource, pass `this.getContext()` to `Table.search()` and set `checkPermission: true` in the search options to enforce the caller's table and source-field permissions. Context propagation alone does not request the table permission check.
+Direct calls through `tables` or `databases` run in a trusted server-side context. From an authenticated custom resource, pass the `context` received by the static resource method to `Table.search()` and set `checkPermission: true` in the search options to enforce the caller's table and source-field permissions. Context propagation alone does not request the table permission check.
 
 ## Score and ordering
 
@@ -83,7 +83,7 @@ Count requests do not report an exact full-text count after authorization, struc
 
 ## Highlights
 
-Highlighting returns source-field fragments and matching character spans. The index must enable highlighting for each requested source field.
+Highlighting returns source-field fragments and matching character spans. The index must configure highlighting and mark at least one source with `highlight: true`. A query can also search sources without that option; those sources can affect matching and ranking but are omitted from `$highlights`.
 
 Selecting `$highlights` turns highlighting on for the query:
 
@@ -181,6 +181,8 @@ A non-waiting HTTP query can return `Harper-Index-Coverage` with the admitted st
 
 If acceptable coverage is not reached before `waitForIndexMilliseconds` expires, Harper returns `503` with `code: "DERIVED_INDEX_LAGGING"` and `retryable: true`. For `Table.search()`, the error is raised while the async iterator is consumed. An HTTP response may already be streaming, so clients should also handle a terminal stream error rather than relying only on the initial status.
 
+The same code is also used when prolonged derived-index lag causes Harper to reject local writes. Query waits can be retried according to the caller's freshness needs; rejected writes should use backoff while the index catches up. See [Write backpressure](./overview.md#write-backpressure).
+
 ## Prefix result window
 
 `matches_prefix` and `matches_fuzzy_prefix` are autocomplete-style record searches. Any expression containing one of these modes uses a 100-record native result window, and `offset + limit` cannot exceed that window. If an unbounded query has more than 100 matches, Harper returns `400` and requires a limit instead of silently truncating the result. These modes return matching records, not a separate list of suggested terms.
@@ -232,4 +234,4 @@ REST can return configured highlights by selecting `$highlights`. Use `Table.sea
 }
 ```
 
-If an index is rebuilding, the query returns `503` with `code: "INDEX_REBUILDING"` and `retryable: true`. An index in terminal `unavailable` state returns a generic, non-retryable `503`; inspect readiness and logs instead of retrying it as a rebuild. Other busy paths can also return a generic `503`, so clients should branch on the code rather than the status alone. Unreadable source fields return `403`. Invalid declarations, unsupported match modes, incompatible combinations, and out-of-range options return `400` responses.
+If an index is `unknown`, `needs-rebuild`, or `rebuilding`, the query returns `503` with `code: "INDEX_REBUILDING"` and `retryable: true`. An index in terminal `unavailable` state returns a generic, non-retryable `503`; inspect readiness and logs instead of retrying it as a rebuild. Other busy paths can also return a generic `503`, so clients should branch on the code rather than the status alone. Unreadable source fields return `403`. Invalid declarations, unsupported match modes, incompatible combinations, and out-of-range options return `400` responses.
