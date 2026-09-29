@@ -462,6 +462,84 @@ describe('Write txn timeout', () => {
 		}
 	});
 
+	// The monitor force-commits an over-limit source-apply txn without awaiting it; the owner's own commit then
+	// finds every write saved and no native handle, and used to resolve at once — acking writes still in flight,
+	// or already lost to a failure the monitor only logs.
+	describe("the owner's commit waits for the monitor's force-commit", () => {
+		// Holds the link's next native commit until released; `entered` resolves once the monitor submits it.
+		function gateNativeCommit(link) {
+			const nativeTxn = link.transaction;
+			const commit = nativeTxn.commit;
+			let enter;
+			const entered = new Promise((resolve) => (enter = resolve));
+			let release;
+			const released = new Promise((resolve) => (release = resolve));
+			nativeTxn.commit = function (...args) {
+				nativeTxn.commit = commit;
+				enter();
+				return released.then((failure) => (failure ? Promise.reject(failure) : commit.apply(this, args)));
+			};
+			return { entered, release };
+		}
+
+		// The handler returns once the monitor's commit is gated, after `whileHeld` if given.
+		function runSourceApply(id, value, whileHeld) {
+			const context = { sourceApply: true };
+			let settled = false;
+			let onGated;
+			const gated = new Promise((resolve) => (onGated = resolve));
+			const committed = transaction(context, async () => {
+				await IndexedResource.put(id, { t: value }, context);
+				const gate = gateNativeCommit(databaseTxns(context)[0]);
+				await gate.entered;
+				onGated(gate);
+				await whileHeld?.(gate);
+			});
+			committed.then(
+				() => (settled = true),
+				() => (settled = true)
+			);
+			return { committed, gated, isSettled: () => settled };
+		}
+
+		beforeEach(function () {
+			if (isLMDB) this.skip();
+			setExpiration(20);
+		});
+		afterEach(() => setExpiration(30000));
+
+		it('resolves only after the force-commit lands', async function () {
+			await IndexedResource.put(403, { t: 1 });
+			const { committed, gated, isSettled } = runSourceApply(403, 2);
+			const gate = await gated;
+			await delay(50);
+			assert.equal(isSettled(), false, "transaction() must not resolve while the monitor's commit is in flight");
+			gate.release();
+			await committed;
+			assert.strictEqual((await IndexedResource.get(403))?.t, 2);
+		});
+
+		it('rejects when the force-commit fails while the owner is waiting on it', async function () {
+			await IndexedResource.put(404, { t: 1 });
+			const { committed, gated } = runSourceApply(404, 2);
+			const gate = await gated;
+			await delay(50);
+			gate.release(new Error('injected native commit failure'));
+			await assert.rejects(committed, /injected native commit failure/);
+			assert.strictEqual((await IndexedResource.get(404))?.t, 1);
+		});
+
+		it('rejects when the force-commit failed before the handler returned', async function () {
+			await IndexedResource.put(405, { t: 1 });
+			const { committed } = runSourceApply(405, 2, async (gate) => {
+				gate.release(new Error('injected native commit failure'));
+				await delay(50);
+			});
+			await assert.rejects(committed, /injected native commit failure/);
+			assert.strictEqual((await IndexedResource.get(405))?.t, 1);
+		});
+	});
+
 	describe('abort releases the native handle', () => {
 		// A write-first link (save() built the handle with no prior read) has no readTxnsUsed, so the
 		// refcount loop never runs and the handle was stranded — permanently, since rocksdb-js's
