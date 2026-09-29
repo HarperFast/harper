@@ -27,7 +27,6 @@ describe('A restore starts a new database generation', function () {
 		for (const database of databases) rmSync(backupDirForDatabase(database), { recursive: true, force: true });
 	});
 
-	/** A database with one write in its backup and one after it. */
 	async function backedUpDatabase() {
 		const database = `restore_generation_${++sequence}`;
 		databases.push(database);
