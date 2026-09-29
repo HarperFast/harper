@@ -1282,6 +1282,20 @@ setLockCoordinatorResolver(
 	}
 );
 
+// A key's subscribers on this thread all receive one fresh audit-record object per log entry, so the
+// current entry is read once per record, not once per subscriber (resources/DESIGN.md).
+let memoizedEntryAuditRecord: any;
+let memoizedEntryStore: any;
+let memoizedEntry: Entry | undefined;
+function currentEntryForAudit(store: any, id: Id, auditRecord: any): Entry | undefined {
+	if (auditRecord !== memoizedEntryAuditRecord || store !== memoizedEntryStore) {
+		memoizedEntry = store.getEntry(id);
+		memoizedEntryAuditRecord = auditRecord;
+		memoizedEntryStore = store;
+	}
+	return memoizedEntry;
+}
+
 export function makeTable(options): TableResourceClass {
 	const {
 		primaryKey,
@@ -6821,7 +6835,7 @@ export function makeTable(options): TableResourceClass {
 					type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate';
 				if (isMutation && !includeSuperseded) {
 					if (id === undefined) return;
-					const entry: Entry = primaryStore.getEntry(id);
+					const entry = currentEntryForAudit(primaryStore, id, auditRecord);
 					if (!entry || entry.version !== auditRecord.version) return;
 					if (getFullRecord) {
 						value = entry?.value;
