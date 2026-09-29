@@ -149,6 +149,15 @@ describe('score-source identity for calibration (#2841)', () => {
 			assert.strictEqual(getBackendSource(getBackend('generative', 'default')), before);
 		});
 
+		it('tells apart two identically configured entries by name', async () => {
+			await bootstrapModels({ models: { generative: { default: entry(), twin: entry() } } });
+			assert.notStrictEqual(
+				getBackendSource(getBackend('generative', 'default')),
+				getBackendSource(getBackend('generative', 'twin')),
+				'a module can choose its scorer by name, so the name is part of the source'
+			);
+		});
+
 		it('leaves a vote unsigned when a later sample falls back to another entry of the same provider', async () => {
 			await bootstrapModels({
 				models: {

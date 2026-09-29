@@ -444,10 +444,15 @@ export function setCalibrationReadForTests(read: ((key: string) => Promise<Calib
 	readForLoads = read;
 }
 
-function isUsable(row: CalibrationRow | null | undefined, now: number): row is CalibrationRow {
+function isUsable(row: CalibrationRow | null | undefined, now: number, key: string): row is CalibrationRow {
 	return (
 		!!row &&
 		row.kind === 'fit' &&
+		row.key === key &&
+		typeof row.rank === 'string' &&
+		row.rank.startsWith(`${key}|`) &&
+		typeof row.population === 'string' &&
+		calibrationKey(row.population, row.field) === key &&
 		row.eligible === true &&
 		row.applyUntil > now &&
 		row.policyDigest === activePolicyDigest &&
@@ -464,7 +469,7 @@ function cachedFit(key: string, now: number): CalibrationRow | undefined {
 	cache.delete(key);
 	cache.set(key, entry);
 	if (now - entry.loadedAt >= CACHE_FRESH_MS) scheduleLoad(key, readForLoads);
-	return isUsable(entry.fit, now) ? entry.fit : undefined;
+	return isUsable(entry.fit, now, key) ? entry.fit : undefined;
 }
 
 export interface CalibrationSnapshot {
@@ -679,11 +684,13 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 			break;
 		}
 		if (outcome === 'budget') {
+			await rotate(order[i]);
 			result.stoppedBy ??= 'maxBytes';
 			result.pending += order.length - i;
 			break;
 		}
 		if (outcome === 'deadline') {
+			await rotate(order[i]);
 			result.stoppedBy ??= 'maxRunMs';
 			result.pending += order.length - i;
 			break;
@@ -1133,7 +1140,8 @@ export async function listCalibrations(
 		newest.push(...(await Promise.all(keys.slice(i, i + LIST_BATCH).map((key) => readNewest(key)))));
 	}
 	{
-		for (const row of newest) {
+		for (let i = 0; i < newest.length; i++) {
+			const row = newest[i];
 			if (!row) continue;
 			out.push({
 				model: row.model,
@@ -1144,7 +1152,7 @@ export async function listCalibrations(
 				fittedAt: row.fittedAt,
 				applyUntil: row.applyUntil,
 				eligible: row.eligible,
-				applied: isUsable(row, now),
+				applied: isUsable(row, now, keys[i]),
 				reason: row.reason,
 				decisions: row.decisions,
 				labelled: row.labelled,

@@ -354,6 +354,50 @@ describe('calibration store and facade (#2841)', function () {
 		assert.strictEqual((await warmDecide(models, 'case-5000')).calibrated, false, 'the newer evidence revokes');
 	});
 
+	it('never applies a replicated row that does not belong to the key it was read under', async () => {
+		await recordCases(models, 0, 300);
+		await models.calibrate();
+		const tbl = getCalibrationsTable();
+		const population = populationKey({
+			model: 'default',
+			entry: 'registered:scorer',
+			signature: SIGNATURE,
+			schemaHash: require('#src/resources/models/decision').hashSchema(SCHEMA),
+		});
+		const key = calibrationKey(population, undefined);
+		const current = await transaction({}, async () => {
+			for await (const row of tbl.search({
+				conditions: [{ attribute: 'rank', comparator: 'starts_with', value: `${key}|` }],
+			}))
+				return row;
+		});
+		const forged = {
+			...current,
+			id: 'forged',
+			population: 'someone-else',
+			rank: `${key}|9999999999999999|9999999999999999|forged`,
+		};
+		await transaction({}, () => tbl.put(forged));
+		resetCalibrationCache();
+		assert.strictEqual(
+			(await warmDecide(models, 'case-1800')).calibrated,
+			false,
+			'a row whose population does not match its key is refused'
+		);
+	});
+
+	it('moves a population stopped by the byte budget to the back of the queue', async () => {
+		await recordCases(models, 0, 30);
+		await runCalibration({ maxBytes: 5_000 });
+		const tbl = getCalibrationsTable();
+		const heads = await transaction({}, async () => {
+			const out = [];
+			for await (const row of tbl.search({ conditions: [{ attribute: 'kind', value: 'population' }] })) out.push(row);
+			return out;
+		});
+		assert.ok(heads.length >= 1 && heads.every((head) => head.lastFittedAt > 0), 'the stopped population was requeued');
+	});
+
 	it('applies nothing fitted under a different policy', async () => {
 		await recordCases(models, 0, 300);
 		await models.calibrate();

@@ -292,7 +292,7 @@ function publishEntry(
 	const { kind, logicalName, entry, entryJson } = desiredEntry;
 	const key = slotKey(kind, logicalName);
 	const sourceConfig = desiredEntry.configJson ? JSON.parse(desiredEntry.configJson) : entry;
-	setBackendSource(backend, sourceFingerprint(kind, undefined, sourceConfig));
+	setBackendSource(backend, sourceFingerprint(kind, logicalName, sourceConfig));
 	for (const extra of extras)
 		setBackendSource(extra.backend, sourceFingerprint(extra.kind, extra.logicalName, sourceConfig));
 	// Boot overwrites occupants (the documented contract); a reload replaces only what this
