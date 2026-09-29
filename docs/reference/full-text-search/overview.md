@@ -70,7 +70,7 @@ Full-text search can be combined with structured filters. Harper pushes compatib
 - Phrase search requires `positions: true`; prefix and fuzzy-prefix require `surfaceTerms: true`.
 - Prefix expressions have a 100-record native result window. Use a bounded `limit`; requests beyond the window fail instead of truncating silently.
 - One query can use only one full-text index. An `or` group cannot mix full-text and ordinary record conditions.
-- Each Blob source is limited to 1 MiB (1,048,576 bytes). Invalid UTF-8 or an oversized Blob removes the entire record from the index, including its other full-text source fields, until valid content is indexed.
+- Each Blob source is limited to 1 MiB (1,048,576 bytes). A media-type mismatch, oversized value, or invalid UTF-8 removes the entire record from the index, including its other full-text source fields, until valid content is indexed.
 - `INDEX_REBUILDING` is transient and retryable. `DERIVED_INDEX_LAGGING` can mean a query coverage wait expired or local writes were shed after prolonged index lag. `unavailable` means automatic rebuild attempts were exhausted or activation failed; inspect readiness and logs rather than retrying every `503` indefinitely.
 - Generated GraphQL field arguments remain equality conditions; use `Table.search()`, REST, or `search_by_conditions` for full-text comparators.
 
