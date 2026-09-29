@@ -9,11 +9,13 @@ title: Querying
 Use the query-only `FullText` field name as a condition attribute in `Table.search()`.
 
 ```javascript
-const products = await Product.search({
+const products = Product.search({
 	conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'waterproof trail shoes' }],
 	limit: 20,
 });
 ```
+
+`Table.search()` returns an async iterable. Consume it with `for await...of`, or return it directly from a custom Resource to stream the results.
 
 Results are ordered by BM25 relevance. The `FullText` field, not one of its source fields, identifies the search target.
 
@@ -35,7 +37,7 @@ An empty string is invalid and returns `400`. Whitespace-only text or text reduc
 A query containing a negated full-text condition must also contain a non-negated full-text condition on the same index. A structured record condition alone does not satisfy this requirement. The positive full-text condition bounds the candidate set; the negated condition filters it.
 
 ```javascript
-const products = await Product.search({
+const products = Product.search({
 	operator: 'and',
 	conditions: [
 		{ attribute: 'catalogSearch', comparator: 'matches', value: 'waterproof' },
@@ -49,7 +51,7 @@ const products = await Product.search({
 By default, a condition searches every source field in the index. Use `fields` to restrict it:
 
 ```javascript
-const products = await Product.search({
+const products = Product.search({
 	conditions: [
 		{
 			attribute: 'catalogSearch',
@@ -70,7 +72,7 @@ Direct calls through `tables` or `databases` run in a trusted server-side contex
 Select `$score` to include the BM25 score:
 
 ```javascript
-const products = await Product.search({
+const products = Product.search({
 	conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'trail shoes' }],
 	select: ['id', 'name', '$score'],
 	limit: 20,
@@ -88,7 +90,7 @@ Highlighting returns source-field fragments and matching character spans. The in
 Selecting `$highlights` turns highlighting on for the query:
 
 ```javascript
-const products = await Product.search({
+const products = Product.search({
 	conditions: [{ attribute: 'catalogSearch', comparator: 'matches_phrase', value: 'trail running' }],
 	select: ['id', 'name', '$score', '$highlights'],
 });
@@ -126,7 +128,7 @@ Offsets are UTF-16 half-open ranges. Value-level spans address the original sour
 Full-text conditions can be combined with structured filters using `and`:
 
 ```javascript
-const products = await Product.search({
+const products = Product.search({
 	operator: 'and',
 	conditions: [
 		{ attribute: 'catalogSearch', comparator: 'matches', value: 'trail shoe' },
@@ -139,7 +141,7 @@ const products = await Product.search({
 An `or` group may combine conditions from the same full-text index:
 
 ```javascript
-const products = await Product.search({
+const products = Product.search({
 	operator: 'or',
 	conditions: [
 		{ attribute: 'catalogSearch', comparator: 'matches_phrase', value: 'trail running' },
