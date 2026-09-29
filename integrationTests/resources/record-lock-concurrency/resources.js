@@ -9,7 +9,9 @@
 //   see each other, so holders overlap across threads and increments are lost.
 // POST /LockHold/ { id, lease } — take a held lock ({ hold: true }) and return without releasing it;
 //   only its lease ends it (the abandoned-holder case).
+// POST /MixedTransactionLock/ { id, interleave? } — lock after a write in the same transaction; see below.
 import { threadId } from 'node:worker_threads';
+import { setTimeout } from 'node:timers/promises';
 
 let workerMutex = Promise.resolve();
 function withWorkerMutex(fn) {
@@ -55,5 +57,24 @@ export class LockHold extends Resource {
 			worker: threadId,
 			n: record.getProperty('n'),
 		};
+	}
+}
+
+// POST /MixedTransactionLock/ { id, interleave? }
+//   Locks a record after deleting the scratch row in the same request transaction (REST wraps the
+//   handler in transaction(request, ...)). `interleave` lands a plain write in between, which the
+//   lock must refuse 409 rather than commit behind.
+export class MixedTransactionLock extends Resource {
+	static loadAsInstance = false;
+
+	async post(query, body) {
+		const id = body?.id ?? 'default';
+		await tables.Counter.delete(`${id}-scratch`);
+		await setTimeout(20);
+		if (body?.interleave) await transaction({ sourceApply: true }, () => tables.Counter.put({ id, n: 99 }));
+		const record = await tables.Counter.lock(id);
+		record.set('n', (record.getProperty('n') ?? 0) + 1);
+		await record.save();
+		return { id, n: record.getProperty('n'), worker: threadId };
 	}
 }

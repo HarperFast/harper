@@ -692,6 +692,10 @@ export class DatabaseTransaction implements Transaction {
 	// LMDBTransaction's save() is a no-op — its commit applies `writes` — so there a write can only be
 	// committed by the transaction that holds it.
 	stagesWriteOnSave = true;
+	// Whether a write may have reached `this.transaction`, which is what makes aborting the handle
+	// lossy. Conservative by construction — a commit handler that returns without staging can still set
+	// it — so it gates only the snapshot release, never the clock. Owned by the handle, clears with one.
+	nativeWritesStaged = false;
 	validated = 0;
 	timestamp = 0;
 	retries = 0;
@@ -845,6 +849,7 @@ export class DatabaseTransaction implements Transaction {
 	// Monitor state is not ownership state: it stays with `trackedTxns.add` in getReadTxn().
 	private attachOwnedTransaction(transaction: RocksTransactionWithRetry): void {
 		this.transaction = transaction;
+		this.nativeWritesStaged = false;
 		readTransactionOwners.set(transaction, this);
 		this.rangeReadActive = false;
 		this.readTxnsUsed = 1;
@@ -888,6 +893,7 @@ export class DatabaseTransaction implements Transaction {
 		trackedTxns.delete(this);
 		this.endWriteSupervision();
 		this.transaction = null;
+		this.nativeWritesStaged = false;
 		this.rangeReadActive = false;
 		this.readTxnsUsed = 0;
 		this.readTxnRefCount = 0;
@@ -952,6 +958,46 @@ export class DatabaseTransaction implements Transaction {
 		if (!this.pendingContextRelease) return;
 		this.pendingContextRelease = false;
 		if (this.#context?.transaction === this) this.#context.transaction = RELEASED_TRANSACTION;
+	}
+
+	/**
+	 * Bring the commit clock up to a record lock's acquisition, or report the version that makes the
+	 * lock unsafe without it — see resources/record-locks.md. A caller's own clock is never moved.
+	 */
+	lockOrderingConflict(store: any, key: unknown, acquiredAt: number, callerTimestamp?: number): number | undefined {
+		if (this.timestamp >= acquiredAt) return undefined;
+		if (!(callerTimestamp > 0 && this.timestamp === callerTimestamp) && this.#raiseClockTo(acquiredAt))
+			return undefined;
+		const committedVersion = store.getEntry(key)?.version;
+		return committedVersion >= this.timestamp ? committedVersion : undefined;
+	}
+
+	/**
+	 * The handle is asked first so the record version, the transaction and the log key never disagree,
+	 * and it is asked rather than inferred: a commit handler can return without staging and without
+	 * marking itself skipped, and refusing a lock whose clock was still movable is a false 409.
+	 */
+	#raiseClockTo(timestamp: number): boolean {
+		if (this.transaction) {
+			try {
+				this.transaction.setTimestamp(timestamp);
+			} catch (error) {
+				if ((error as { code?: string })?.code !== 'ERR_TIMESTAMP_FROZEN') throw error;
+				return false;
+			}
+		}
+		this.timestamp = timestamp;
+		return true;
+	}
+
+	/**
+	 * Give up the read snapshot so what follows reads, and commits against, current state. Refused once
+	 * the handle carries a write or an iterator still holds it — either makes aborting it lossy.
+	 */
+	releaseReadSnapshotForLock(): void {
+		if (this.nativeWritesStaged || this.readTxnsUsed > 1) return;
+		this.releaseReadTxn();
+		this.snapshotFree = true;
 	}
 
 	disregardReadTxn(): void {
@@ -1390,6 +1436,7 @@ export class DatabaseTransaction implements Transaction {
 		try {
 			completion = operation.commit(writeVersion, operation.entry, this.retries > 0, transaction) as Promise<void>;
 		} finally {
+			if (transaction === this.transaction && !operation.skipped) this.nativeWritesStaged = true;
 			closeWriteInstance(operation);
 		}
 		if (operation.trackRecordVersion)

@@ -21,10 +21,8 @@ out-of-order duplicates and discard.
 **Phase 0 contract.** `lock()` is mutually exclusive only with other `lock()` calls on the same key.
 Plain writes (`put`, `patch`, `delete`, `create`, `invalidate`, `relocate`) are never gated, parked,
 or restaged — they proceed immediately at real wall-clock time. A holder write starts at the lock
-acquisition time, so a later plain write wins under LWW unless the holder first wrote through an
-unpinned mixed explicit transaction. That transaction's later timestamp becomes the handle's floor
-so the holder cannot lose its own subsequent writes; ordering against plain writes between acquisition
-and that transaction timestamp is best-effort. Use `lock()` when the caller needs to read-then-
+acquisition time, so a later plain write wins under LWW, and one that landed **before** the
+acquisition is never ordered after it (harper#2712, below). Use `lock()` when the caller needs to read-then-
 conditionally-write without another holder interleaving, not to serialize arbitrary writers.
 
 Consequences that shape the code:
@@ -78,14 +76,53 @@ Consequences that shape the code:
   takes the record from there — the same basis a chained write picks up (harper#1968): the record
   comes from the prior staged write, the rest of the entry (version, audit chain, blob metadata) stays
   the pre-transaction one.
-- **Scoped lock in an explicit `transaction()` scope.** After acquisition, when no writes have been
-  staged yet (`link.writes.length === 0`), the transaction clock is pinned to `acquiredAt` so the
-  holder write wins over any pre-lock concurrent write. When prior staged writes already exist,
-  ordering is best-effort — no 409 is thrown. In an `ImmediateTransaction` context (no explicit
-  scope), a scoped lock's writes go through the same `update()`-style staging as above; each explicit
-  `update()`+`save()` cycle is stamped with `nextHolderVersion()` independently. A scoped lock acquired
-  outside any explicit `transaction()` scope persists until `unlock()` or the lease expires
-  (ImmediateTransaction's `releaseRecordLocks()` is a no-op for record locks).
+- **A write made under a lock is never ordered behind one made before the lock (harper#2712).** That
+  is the enforced statement, and it is weaker than "the transaction commits at or after the
+  acquisition": a transaction whose clock is already frozen below the acquisition still commits
+  there, it is only refused when something actually landed in the window that leaves open. An
+  explicit scope has one commit clock for every write it makes, and `lock()` moves it up to
+  `handle.acquiredAt` on each fresh acquisition — the second lock in a scope too, because a clock left
+  at the first acquisition lets a plain write made between the two outrank the second lock's own
+  write. Enforced in `DatabaseTransaction.lockOrderingConflict()`, called from `lock()` before
+  `registerRecordLock`. The native transaction is the authority on whether the clock can still move:
+  rocksdb-js freezes it (`ERR_TIMESTAMP_FROZEN`) once a write or transaction-log entry is staged,
+  because the producer has already encoded the old value into that write's record bytes, so
+  `this.timestamp` follows `setTimestamp()` rather than leading it and the record version, the native
+  transaction and the log batch key stay on one value. The probe is made rather than inferred: a commit
+  handler can return without staging and without marking itself skipped, and a flag that read true
+  there would refuse a lock whose clock was still movable. `nativeWritesStaged` is that conservative
+  flag, and it gates only the snapshot release below, where being wrong costs nothing. Two clocks therefore do not move: a frozen one, and one the caller put on
+  the context (`transaction({ timestamp })`), which is their own ordering choice. Either way the
+  record's committed version is read at the acquisition and the lock is refused **409** when something
+  already landed inside the window — the interleave that used to be taken silently. With nothing there
+  the lock proceeds, so `put(); lock()` in one scope still works; it is a conflict, not a ban on
+  locking after writing, and that is deliberate: `put`, `patch`, `create` and `delete` all stage
+  natively at once in an explicit scope, so an unconditional refusal would reject every such caller
+  while refusing nothing that is actually unsafe.
+  Every exit from the check releases the native key and any cluster admission before it throws, which
+  is why it runs ahead of `registerRecordLock`: `releaseRecordLocks()` deliberately skips `hold`
+  handles, so a registered-then-refused hold would keep the key for its whole lease.
+  **Not enforced:** a plain write carrying a caller-supplied _future_ timestamp can still outrank a
+  later holder — `transaction({ timestamp })` puts any value on the clock; a transaction holding two
+  locks commits both writes at the later acquisition, so a plain write made between them loses to the
+  first lock's write as well; and on a table that keeps no tombstone a concurrent delete leaves no
+  version to compare against, which is also why nothing is left for the locked write to lose to.
+  Pinned by "mixed-transaction lock ordering (harper#2712)" in `unitTests/resources/recordLock.test.js`
+  and by the mixed-transaction case in `integrationTests/resources/record-lock-concurrency.test.ts`.
+- **Scoped lock in an explicit `transaction()` scope.** After acquisition the read snapshot is
+  released (`DatabaseTransaction.releaseReadSnapshotForLock()`) so the scope reads — and takes its
+  commit basis from — what it locked rather than a snapshot that predates it; a stale basis makes the
+  scope's own conditional put refuse against a record `#reloadLocked` had just re-read fresh, which is
+  the same write loss by another route. It is refused only once a write has reached the native handle
+  (aborting it would drop that write, the same thing `disregardReadTxn()` refuses) or while read
+  iterators still hold the handle. **Not enforced:** in those two cases, and for a `hold` lock (which
+  writes from `acquiredAt` and leaves the snapshot alone), the stale basis survives and such a write
+  can still be refused at commit without an error reaching the caller. In an `ImmediateTransaction`
+  context (no explicit scope), a scoped lock's writes go through the same `update()`-style staging as
+  above; each explicit `update()`+`save()` cycle is stamped with `nextHolderVersion()` independently,
+  which is never below `acquiredAt`, so the clock rule above has nothing to enforce there. A scoped
+  lock acquired outside any explicit `transaction()` scope persists until `unlock()` or the lease
+  expires (ImmediateTransaction's `releaseRecordLocks()` is a no-op for record locks).
 - **Scoped → hold upgrade.** Calling `lock(id, { hold: true })` while the same transaction already
   holds a scoped lock on the same key upgrades it via `handle.upgradeToHold(lease)`, which flips the
   existing handle object to hold mode in place (new lease timer, `nextHolderVersion()` primed) rather
@@ -148,15 +185,13 @@ never assigned to the link clock: pinning `link.timestamp` would stamp every OTH
 same context before the commit resets it — a concurrent write in the caller's own `Promise.all`, an
 off-key write through the locked instance, the next operation in a retry or replay save loop — with
 the lock's acquisition time, which LWW then silently drops against a newer record version. In an
-explicit OPEN transaction, when the hold is the first write (no prior staged writes), the transaction
-clock is pinned to `handle.acquiredAt`; subsequent saves reuse that pinned clock. When non-hold writes
-were staged before the lock was acquired, the clock is left alone (best-effort ordering; no 409 is
-thrown for the mixed-write case). After a lock-backed record change commits, its transaction timestamp
-advances `handle.noteHolderVersion()`, so a surviving hold's later saves advance past that version
-rather than going backwards and being dropped by LWW. A skipped or rolled-back change never advances
-the floor. Consequently, a mixed transaction can
-make later holder writes outrank a plain write whose timestamp falls between `acquiredAt` and the mixed
-transaction timestamp. A caller-supplied future `context.timestamp` likewise remains the handle's floor
+explicit OPEN transaction the clock is moved up to `handle.acquiredAt` at every fresh acquisition
+(harper#2712) and subsequent saves reuse it; a clock a staged write has already frozen below that
+point, or one the caller set on the context, is left alone and the lock is refused 409 if anything
+landed in the window it leaves open. After a lock-backed record change commits, its transaction
+timestamp advances `handle.noteHolderVersion()`, so a surviving hold's later saves advance past that
+version rather than going backwards and being dropped by LWW. A skipped or rolled-back change never
+advances the floor. A caller-supplied future `context.timestamp` remains the handle's floor
 for the life of the lease; clamping it would put the next holder write behind the handle's own committed
 version and recreate the silent-drop bug.
 
@@ -1026,8 +1061,9 @@ feature that has not yet been measured.
 >    - **(1a) clock skew.** The predecessor's clock ran ahead of its successor's, and its write is
 >      still in flight when the successor writes.
 >    - **(1b) a timestamp pushed ahead on purpose, on a completely clean handoff.** A caller-supplied
->      future `context.timestamp`, or a mixed explicit transaction whose later timestamp becomes the
->      handle's floor — both documented as deliberate Phase 0 behavior (`DESIGN.md:305-309`). The
+>      future `context.timestamp`, which becomes the handle's floor — documented as deliberate Phase 0
+>      behavior. (A mixed explicit transaction no longer reaches here from below the acquisition:
+>      harper#2712 raises that clock, or refuses the lock.) The
 >      predecessor commits, replicates, drains and releases cleanly; the successor is admitted with
 >      correct freshness, reads the current value, and writes at real wall-clock time — and its write
 >      is the older one, silently, because the stored version is stamped in the future. What the

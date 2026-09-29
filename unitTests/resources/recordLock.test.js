@@ -1160,11 +1160,11 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'in-transaction write landed');
 		});
 
-		it('minor-3: second lock in same transaction does not shift the pinned clock', async function () {
-			// The first lock pins link.timestamp to A.acquiredAt.  A second lock on a different
-			// key B must NOT re-pin the clock to B.acquiredAt (which is later).  We verify the
-			// invariant directly: capture link.timestamp after locking A and assert it is
-			// unchanged after locking B — no wall-clock margins required.
+		it('minor-3: a second lock advances the clock to its own acquisition', async function () {
+			// The first lock puts link.timestamp at A.acquiredAt; a second lock on a different key B
+			// must move it up to B.acquiredAt (harper#2712), because a transaction has one clock and
+			// leaving it at A.acquiredAt lets a plain write made between the two acquisitions outrank
+			// B's own locked write.
 			if (isLMDB) return this.skip();
 			this.timeout(2000);
 			const idA = id();
@@ -1173,13 +1173,13 @@ describe('Record locks (harper#483)', () => {
 			await LockTest.put({ id: idB, n: 0 });
 			let timestampAfterLockA;
 			await transaction(async () => {
-				const rA = await LockTest.lock(idA); // clock pinned to rA.acquiredAt
+				const rA = await LockTest.lock(idA); // clock pinned at rA.acquiredAt
 				timestampAfterLockA = contextStorage.getStore().transaction.timestamp;
 				assert.ok(timestampAfterLockA > 0, 'clock pinned after locking A');
 				await delay(20); // ensure T_B is well after T_A
-				await LockTest.lock(idB); // must NOT re-pin the clock
+				await LockTest.lock(idB); // re-pins the clock at its own acquisition
 				const timestampAfterLockB = contextStorage.getStore().transaction.timestamp;
-				assert.strictEqual(timestampAfterLockB, timestampAfterLockA, 'clock unchanged after locking B');
+				assert.ok(timestampAfterLockB > timestampAfterLockA, 'clock advanced to the second acquisition');
 				rA.set('n', 1);
 				await rA.save();
 			});
@@ -1493,6 +1493,266 @@ describe('Record locks (harper#483)', () => {
 			await waitFor(() => LockTest.primaryStore.getEntry(otherId)?.value == null);
 			await holder.unlock();
 			assert.strictEqual(await LockTest.get(otherId), null, 'ordinary delete used its own current timestamp');
+		});
+	});
+
+	describe('mixed-transaction lock ordering (harper#2712)', function () {
+		/** The live handle of the only record lock registered on this transaction. */
+		const handleOf = (txn) => [...txn.recordLocks.values()][0].values().next().value;
+		/** A write from outside this transaction, at its own (later) wall-clock version. */
+		const plainWrite = (record) => transaction({ sourceApply: true }, () => LockTest.put(record));
+
+		it('raises an unfixed clock to the acquisition, so a write made before the lock loses', async function () {
+			// A deferred update() leaves the clock unfixed but gives the link a native read handle, whose
+			// creation time the commit used to take — earlier than a plain write made before the lock.
+			if (isLMDB) return this.skip();
+			this.timeout(5000);
+			const otherId = id();
+			const recordId = id();
+			await LockTest.put({ id: otherId, n: 0 });
+			await LockTest.put({ id: recordId, n: 0 });
+			await transaction(async (txn) => {
+				await LockTest.update(otherId, { n: 1 });
+				await delay(20);
+				await plainWrite({ id: recordId, n: 99 });
+				const plainVersion = entryOf(recordId).version;
+				const locked = await LockTest.lock(recordId);
+				assert.strictEqual(txn.timestamp, handleOf(txn).acquiredAt, 'the clock sits at the acquisition');
+				assert.ok(txn.timestamp > plainVersion, 'and above the version the lock read');
+				locked.set('n', 1);
+				await locked.save();
+			});
+			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'the locked write outranks the pre-lock plain write');
+			assert.strictEqual((await LockTest.get(otherId)).n, 1, 'the earlier staged write still committed');
+		});
+
+		it('a plain write between two locks does not outrank the second lock write', async function () {
+			// One transaction has one clock, so it has to sit at or after the LATEST acquisition. Left at
+			// the first lock's, a plain write made between the two beat the second lock's own write.
+			if (isLMDB) return this.skip();
+			this.timeout(5000);
+			const idA = id();
+			const idB = id();
+			await LockTest.put({ id: idA, n: 0 });
+			await LockTest.put({ id: idB, n: 0 });
+			await transaction(async () => {
+				const a = await LockTest.lock(idA);
+				await delay(20);
+				await plainWrite({ id: idB, n: 99 });
+				const b = await LockTest.lock(idB);
+				a.set('n', 1);
+				b.set('n', 2);
+				await b.save();
+				await a.save();
+			});
+			assert.strictEqual((await LockTest.get(idB)).n, 2, 'the second lock write outranks the plain write before it');
+			assert.strictEqual((await LockTest.get(idA)).n, 1, 'the first lock write still committed');
+		});
+
+		it('refuses a lock a write already beat inside a frozen transaction clock window (409)', async function () {
+			// delete() stages natively at once, which freezes the transaction clock. A plain write then
+			// lands before the lock, so a write made under it would be ordered behind one made before it.
+			if (isLMDB) return this.skip();
+			this.timeout(5000);
+			const otherId = id();
+			const recordId = id();
+			await LockTest.put({ id: otherId, n: 0 });
+			await LockTest.put({ id: recordId, n: 0 });
+			let caught;
+			await transaction(async (txn) => {
+				await LockTest.delete(otherId, txn);
+				await delay(20);
+				await plainWrite({ id: recordId, n: 99 });
+				try {
+					await LockTest.lock(recordId);
+				} catch (error) {
+					caught = error;
+				}
+			});
+			assert.ok(caught, 'lock() rejected rather than taking a backdated lock');
+			assert.strictEqual(caught.statusCode, 409);
+			assert.match(caught.message, /before the lock was acquired at/);
+			assert.strictEqual((await LockTest.get(recordId)).n, 99, 'the plain write stands');
+			const next = await LockTest.lock(recordId, { hold: true, timeout: 200 });
+			await next.unlock();
+		});
+
+		it('refuses a hold lock the same way, without leaking the native key', async function () {
+			// A hold handle registered before the refusal would outlive the commit — releaseRecordLocks()
+			// skips hold handles — and hold the key for its whole lease.
+			if (isLMDB) return this.skip();
+			this.timeout(5000);
+			const otherId = id();
+			const recordId = id();
+			await LockTest.put({ id: otherId, n: 0 });
+			await LockTest.put({ id: recordId, n: 0 });
+			let caught;
+			await transaction(async (txn) => {
+				await LockTest.delete(otherId, txn);
+				await delay(20);
+				await plainWrite({ id: recordId, n: 99 });
+				try {
+					await LockTest.lock(recordId, { hold: true, lease: 30_000 });
+				} catch (error) {
+					caught = error;
+				}
+			});
+			assert.strictEqual(caught?.statusCode, 409);
+			const next = await LockTest.lock(recordId, { hold: true, timeout: 200 });
+			await next.unlock();
+		});
+
+		it('an uncaught refusal rolls the transaction back', async function () {
+			if (isLMDB) return this.skip();
+			this.timeout(5000);
+			const otherId = id();
+			const recordId = id();
+			await LockTest.put({ id: otherId, n: 0 });
+			await LockTest.put({ id: recordId, n: 0 });
+			await assert.rejects(
+				transaction(async (txn) => {
+					await LockTest.delete(otherId, txn);
+					await delay(20);
+					await plainWrite({ id: recordId, n: 99 });
+					await LockTest.lock(recordId);
+				}),
+				{ statusCode: 409 }
+			);
+			assert.strictEqual((await LockTest.get(otherId)).n, 0, 'the delete rolled back with the transaction');
+		});
+
+		it('a frozen clock with nothing written since still takes the lock, below the acquisition', async function () {
+			// The accepted cost, asserted rather than implied: a frozen clock commits the locked write
+			// below its own acquisition, above every version that was visible there.
+			if (isLMDB) return this.skip();
+			this.timeout(5000);
+			const otherId = id();
+			const recordId = id();
+			await LockTest.put({ id: otherId, n: 0 });
+			await LockTest.put({ id: recordId, n: 0 });
+			const seededVersion = entryOf(recordId).version;
+			let acquiredAt;
+			await transaction(async (txn) => {
+				await LockTest.delete(otherId, txn);
+				await delay(20);
+				const locked = await LockTest.lock(recordId);
+				acquiredAt = handleOf(txn).acquiredAt;
+				locked.set('n', 1);
+				await locked.save();
+			});
+			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'the locked write landed');
+			assert.strictEqual(await LockTest.get(otherId), null, 'the earlier delete landed');
+			const committed = entryOf(recordId).version;
+			assert.ok(committed < acquiredAt, 'the frozen clock kept the write below its acquisition');
+			assert.ok(committed > seededVersion, 'but above every version visible when the lock was taken');
+		});
+
+		it('a concurrent delete inside the window is a conflict too', async function () {
+			// The table is audited, so the delete leaves a versioned tombstone for the check to compare
+			// against; a table that keeps none leaves nothing for the locked write to lose to either.
+			if (isLMDB) return this.skip();
+			this.timeout(5000);
+			const otherId = id();
+			const recordId = id();
+			await LockTest.put({ id: otherId, n: 0 });
+			await LockTest.put({ id: recordId, n: 0 });
+			let caught;
+			await transaction(async (txn) => {
+				await LockTest.delete(otherId, txn);
+				await delay(20);
+				await transaction({ sourceApply: true }, () => LockTest.delete(recordId));
+				try {
+					await LockTest.lock(recordId);
+				} catch (error) {
+					caught = error;
+				}
+			});
+			assert.strictEqual(caught?.statusCode, 409);
+			const next = await LockTest.lock(recordId, { hold: true, timeout: 200 });
+			await next.unlock();
+		});
+
+		it('a fresh lock after a scoped→hold upgrade is not tripped by the detached write', async function () {
+			// The upgrade marks the scoped write's slot in link.writes empty, and the next acquisition
+			// still has to decide the clock and the read snapshot over that write set.
+			if (isLMDB) return this.skip();
+			this.timeout(5000);
+			const idA = id();
+			const idB = id();
+			await LockTest.put({ id: idA, n: 0 });
+			await LockTest.put({ id: idB, n: 0 });
+			let holdRef;
+			await transaction(async () => {
+				const a = await LockTest.lock(idA);
+				a.set('n', 1);
+				holdRef = await LockTest.lock(idA, { hold: true, lease: 30_000 });
+				const b = await LockTest.lock(idB);
+				b.set('n', 2);
+				await b.save();
+			});
+			holdRef.set('n', 1);
+			await holdRef.save();
+			await holdRef.unlock();
+			assert.strictEqual((await LockTest.get(idB)).n, 2, 'the later lock committed its write');
+			assert.strictEqual((await LockTest.get(idA)).n, 1, 'the upgraded hold committed its own');
+		});
+
+		it('refuses when the caller pinned the transaction below the acquisition', async function () {
+			// The caller chose that version, so it is not moved up; the record is already newer than it,
+			// so a write made under the lock would land behind one made before it.
+			if (isLMDB) return this.skip();
+			this.timeout(5000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			let caught;
+			await transaction({ timestamp: Date.now() - 60_000 }, async () => {
+				try {
+					await LockTest.lock(recordId);
+				} catch (error) {
+					caught = error;
+				}
+			});
+			assert.strictEqual(caught?.statusCode, 409);
+			const next = await LockTest.lock(recordId, { hold: true, timeout: 200 });
+			await next.unlock();
+		});
+
+		it('leaves a caller timestamp later than the acquisition alone', async function () {
+			if (isLMDB) return this.skip();
+			this.timeout(5000);
+			const recordId = id();
+			const timestamp = Date.now() + 60_000;
+			await LockTest.put({ id: recordId, n: 0 });
+			await transaction({ timestamp }, async (txn) => {
+				const locked = await LockTest.lock(recordId);
+				assert.strictEqual(txn.timestamp, timestamp, 'the caller timestamp is untouched');
+				locked.set('n', 1);
+				await locked.save();
+			});
+			assert.strictEqual(entryOf(recordId).version, timestamp, 'the locked write kept the caller timestamp');
+		});
+
+		it('an ImmediateTransaction is out of scope: its writes stamp from the handle floor', async function () {
+			// saveCommits stamps every lock write with holderVersionCandidate(), which is never below
+			// acquiredAt, so the clock rule has nothing to enforce and no 409 is raised.
+			if (isLMDB) return this.skip();
+			this.timeout(5000);
+			const otherId = id();
+			const recordId = id();
+			const context = {};
+			await LockTest.put({ id: otherId, n: 0 }, context);
+			await LockTest.put({ id: recordId, n: 0 }, context);
+			await LockTest.delete(otherId, context);
+			await delay(20);
+			await plainWrite({ id: recordId, n: 99 });
+			const holder = await LockTest.lock(recordId, { hold: true, lease: 30_000 }, context);
+			const acquiredAt = handleOf(context.transaction).acquiredAt;
+			holder.set('n', 1);
+			await holder.save();
+			const version = entryOf(recordId).version;
+			await holder.unlock();
+			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'the holder write landed');
+			assert.ok(version >= acquiredAt, 'and was stamped at or after the acquisition');
 		});
 	});
 

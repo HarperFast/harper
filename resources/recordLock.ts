@@ -148,6 +148,22 @@ export function lockNotHeldError(handle: Pick<RecordLockHandle, 'expired'>): Cli
 	return new ClientError(handle.expired ? 'Record lock lease expired' : 'Record lock already released', 409);
 }
 
+/**
+ * Names all three versions: the caller's next move depends on which one is wrong — the clock they
+ * set, the lock they took late, or the writer that beat them.
+ */
+export function lockOrderingError(
+	qualifiedTable: string,
+	timestamp: number,
+	acquiredAt: number,
+	committedVersion: number
+): ClientError {
+	return new ClientError(
+		`Cannot take a record lock on ${qualifiedTable}: this transaction commits at ${timestamp}, before the lock was acquired at ${acquiredAt}, and the record was already written at ${committedVersion} inside that window, so a write made under the lock would be ordered behind one made before it. Take the lock before this transaction fixes its commit timestamp — its first committed write, or an explicit context timestamp — or write the locked record in a transaction of its own.`,
+		409
+	);
+}
+
 /** The advisory key for this (table, record) pair, distinct from getFromSource's bare-id single-flight lock. */
 export function lockAttemptKey(tableId: number, id: any): any[] {
 	return Array.isArray(id) ? [LOCK_KEY_PREFIX, tableId, ...id] : [LOCK_KEY_PREFIX, tableId, id];

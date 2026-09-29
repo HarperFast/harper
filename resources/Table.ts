@@ -45,6 +45,7 @@ import {
 	acquireRecordKey,
 	lockAttemptKey,
 	lockNotHeldError,
+	lockOrderingError,
 	resolveLockOptions,
 	type RecordLockHandle,
 	type RecordLockOptions,
@@ -3520,32 +3521,38 @@ export function makeTable(options) {
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 					}
 				}
-				link.registerRecordLock(handle);
-				if (link.saveCommits && (context as any)?.timestamp) handle.noteCandidateFloor((context as any).timestamp);
 				if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
-					// Explicit transaction() (not ImmediateTransaction): pin the clock to
-					// acquiredAt when no writes have been staged yet.  When writes already
-					// exist, leave the clock alone (ordering is best-effort; write held records
-					// in their own transaction for the guarantee).  ImmediateTransaction is
-					// excluded (saveCommits=true) — its clock is never pinned in lock();
-					// each save() stamps from the handle's committed version floor instead.
-					if (link.writes.length === 0 && !link.timestamp) {
-						link.timestamp = handle.acquiredAt;
+					// Before registerRecordLock: releaseRecordLocks() skips hold handles, so a
+					// registered-then-refused hold would keep the native key for its whole lease.
+					let conflictingVersion: number | undefined;
+					try {
+						conflictingVersion = link.lockOrderingConflict(
+							primaryStore,
+							id,
+							handle.acquiredAt,
+							(context as any)?.timestamp
+						);
+					} catch (error) {
+						handle.release();
+						throw error as Error;
 					}
-					if (!resolved.hold && link.transaction) {
-						// Scoped lock: the read snapshot may predate the lock; drop it so the
-						// scope reads what it locked.  Hold locks use acquiredAt directly and
-						// do not update the read snapshot.
-						// The timestamp guard matches DatabaseTransaction's own setTimestamp calls: a
-						// deferred update() write leaves the clock at 0, which rocksdb-js rejects.
-						if (link.writes.length === 0 && link.readTxnsUsed <= 1) {
-							link.releaseReadTxn();
-							link.snapshotFree = true;
-						} else if (link.timestamp) link.transaction.setTimestamp(link.timestamp);
+					if (conflictingVersion !== undefined) {
+						handle.release();
+						throw lockOrderingError(
+							`${databaseName}.${tableName}`,
+							link.timestamp,
+							handle.acquiredAt,
+							conflictingVersion
+						);
 					}
 				}
-				// ImmediateTransaction: no clock pinning in lock(); save() stamps each write
-				// from the committed handle floor for both scoped and hold handles.
+				link.registerRecordLock(handle);
+				if (link.saveCommits && (context as any)?.timestamp) handle.noteCandidateFloor((context as any).timestamp);
+				if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits && !resolved.hold && link.transaction) {
+					// The snapshot is also the scope's commit basis, so one predating the lock refuses the
+					// scope's own write against the record #reloadLocked just re-read fresh.
+					link.releaseReadSnapshotForLock();
+				}
 				return handle;
 			});
 			link.registerPendingLock(primaryStore, keyId, acquisition);
