@@ -1,0 +1,9 @@
+type SchemaDefinedGraceful @table(database: "drop_restart") {
+	id: ID @primaryKey
+	n: Int @indexed
+}
+
+type SchemaDefinedCrash @table(database: "drop_restart") {
+	id: ID @primaryKey
+	n: Int @indexed
+}
