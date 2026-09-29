@@ -2038,9 +2038,9 @@ export class HierarchicalNavigableSmallWorld {
 						return residual(primaryKey);
 					};
 			// Only a filter the set DECIDES gets the derived budget: an admitted visit on the residual
-			// path still costs a record decode, so that path keeps today's ceiling. A configured
-			// filterExpansion is an authoritative cost ceiling and is used exactly as given, zero
-			// included.
+			// path still costs a record decode, so that path keeps today's ceiling. A positive per-query
+			// or any schema-configured filterExpansion is an authoritative cost ceiling and is used
+			// exactly as given; a per-query 0 still means unset.
 			if (allowDecides) {
 				const configured =
 					filterExpansion && filterExpansion > 0

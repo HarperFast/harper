@@ -3420,8 +3420,11 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			[{ attribute: 'rank', comparator: 'lt', value: 100 }, false],
 			[{ attribute: 'rank', comparator: 'le', value: 99 }, false],
 			[{ attribute: 'rank', comparator: 'between', value: [null, 60] }, false],
+			// Satisfied by a rank of 0, which a record written as -0 holds and its index entry cannot supply.
+			[{ attribute: 'rank', comparator: 'equals', value: 0 }, false],
+			[{ attribute: 'rank', comparator: 'between', value: [-0, 60] }, false],
 			// -0 encodes above every number, so an unnormalized lower bound would scan an empty range.
-			[{ attribute: 'rank', comparator: 'between', value: [-0, 60] }, true],
+			[{ attribute: 'rank', comparator: 'gtlt', value: [-0, 60] }, true],
 		]) {
 			const label = `${condition.comparator} ${JSON.stringify(condition.value)}`;
 			const { results, probed } = await searchWithSpy([0, 0], [condition], { limit: 5 });
@@ -3438,6 +3441,53 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 				unplanned.results.map((record) => record.id),
 				`${label}: the allow-set must not change the results`
 			);
+		}
+	});
+
+	it('leaves a range admitting 0 to the predicate, since a -0 written there is indexed unreadably', async () => {
+		const Z = table({
+			table: 'HNSWAllowNegativeZero',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'rank', indexed: true, type: 'Int' },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		try {
+			for (let i = 1; i <= 40; i++) await Z.put(i, { rank: i, vector: [i, 0] });
+			// Math.round(-0.3) is -0. The record reads back as 0, but its index entry sorts past every
+			// number and decodes to a different primary key.
+			await Z.put(100, { rank: Math.round(-0.3), vector: [0, 0] });
+			const customIndex = Z.indices.vector.customIndex;
+			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			const run = async (planned) => {
+				customIndex.candidateKeyFilter = planned;
+				try {
+					const results = await fromAsync(
+						Z.search(
+							{
+								conditions: [
+									{ attribute: 'vector', comparator: 'sort', ...sort },
+									{ attribute: 'rank', comparator: 'between', value: [-5, 5] },
+								],
+								sort,
+								enforceExecutionOrder: true,
+								select: ['id'],
+								limit: 3,
+							},
+							{}
+						)
+					);
+					return results.map((record) => record.id);
+				} finally {
+					customIndex.candidateKeyFilter = true;
+				}
+			};
+			assert.deepStrictEqual(await run(true), [100, 1, 2]);
+			assert.deepStrictEqual(await run(false), [100, 1, 2]);
+		} finally {
+			Z.dropTable();
 		}
 	});
 
@@ -3831,6 +3881,8 @@ describeUnlessLmdbFilter('HNSW allow-set admission (#2688)', () => {
 		const keys = keySet([4n, 7, 0, ['a', 'b'], 'x']);
 		assert(keys.has(4), 'a number matches the BigInt it encodes as');
 		assert(keys.has(7n), 'a BigInt matches the number it encodes as');
+		assert(keySet([2 ** 60]).has(2n ** 60n));
+		assert(!keySet([2 ** 53]).has(2n ** 53n + 1n), 'a BigInt does not match the number it rounds to');
 		assert(keys.has(0));
 		assert(!keys.has(-0), '-0 and 0 are different stored keys');
 		assert(keys.has(['a', 'b']));

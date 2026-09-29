@@ -425,35 +425,44 @@ export interface CandidateKeyPlan {
 
 /**
  * Primary keys by storage identity. Strings and non-zero numbers are their own identity, which spares
- * encoding the common key shapes; the rest go by writeKeyId, the encoder the stores index by —
- * flattenKey joins composite keys with NUL and collapses ['a', 'b\0c'] and ['a\0b', 'c'], and Set
- * membership calls -0 and 0 one key. The two are kept apart because an encoded identity is a string
- * that can equal a string key: writeKeyId(['a', 'b']) is 'a\0b'. An index scan and a graph traversal
- * decode an int64 differently, so a BigInt and a number that encode alike are the same key.
+ * encoding the common key shapes, and the stores encode -0 and 0 apart where Set membership does not.
+ * The rest go by writeKeyId, the encoder the stores index by — flattenKey joins composite keys with
+ * NUL and collapses ['a', 'b\0c'] and ['a\0b', 'c'] — kept apart from the values because an encoded
+ * identity is a string that can equal a string key: writeKeyId(['a', 'b']) is 'a\0b'. An index scan
+ * decodes an int64 as the number it encodes as when that is exact, while a traversal may report the
+ * BigInt, so the two are the same key.
  */
 export class CandidateKeySet {
 	#byValue = new Set<Id>();
 	#encoded = new Set<unknown>();
+	#zero = false;
+	#negativeZero = false;
 	#holdsBigInt = false;
 	add(primaryKey: Id): void {
 		if (typeof primaryKey === 'string' || (typeof primaryKey === 'number' && primaryKey !== 0))
 			this.#byValue.add(primaryKey);
-		else {
+		else if (primaryKey === 0) {
+			if (Object.is(primaryKey, -0)) this.#negativeZero = true;
+			else this.#zero = true;
+		} else {
 			if (typeof primaryKey === 'bigint') this.#holdsBigInt = true;
 			this.#encoded.add(writeKeyId(primaryKey));
 		}
 	}
 	has(primaryKey: Id): boolean {
 		if (typeof primaryKey === 'string') return this.#byValue.has(primaryKey);
-		if (typeof primaryKey === 'number' && primaryKey !== 0)
+		if (typeof primaryKey === 'number') {
+			if (primaryKey === 0) return Object.is(primaryKey, -0) ? this.#negativeZero : this.#zero;
 			return this.#byValue.has(primaryKey) || (this.#holdsBigInt && this.#encoded.has(writeKeyId(primaryKey)));
-		return (
-			this.#encoded.has(writeKeyId(primaryKey)) ||
-			(typeof primaryKey === 'bigint' && this.#byValue.has(Number(primaryKey)))
-		);
+		}
+		if (typeof primaryKey === 'bigint') {
+			const number = Number(primaryKey);
+			if (BigInt(number) === primaryKey && (number === 0 ? this.#zero : this.#byValue.has(number))) return true;
+		}
+		return this.#encoded.has(writeKeyId(primaryKey));
 	}
 	get size(): number {
-		return this.#byValue.size + this.#encoded.size;
+		return this.#byValue.size + this.#encoded.size + (this.#zero ? 1 : 0) + (this.#negativeZero ? 1 : 0);
 	}
 }
 
@@ -497,12 +506,14 @@ function planCandidateKeyScan(condition, table): CandidateKeyScan | undefined {
 	if (!index || index.customIndex) return undefined;
 	const comparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] ?? condition.comparator ?? 'equals';
 	if (!CANDIDATE_KEY_COMPARATORS.has(comparator)) return undefined;
-	// The scan has to hold every key the record predicate admits, and the index holds no entry for a
-	// record lacking the attribute, nor for a null one unless it indexes nulls. compareKeys ranks
-	// undefined below every scalar, so `rank < 100` admits a record with no rank at all: a condition
-	// like that is left to the predicate, or results would depend on whether the plan was built.
+	// The scan has to hold every key the record predicate admits, or results would depend on whether
+	// the plan was built. The index cannot supply a record lacking the attribute, a null one unless it
+	// indexes nulls, or one written as -0: ordered-binary encodes -0 past every number, and that entry's
+	// primary key decodes wrong. compareKeys ranks undefined below every scalar, so `rank < 100` admits
+	// a record with no rank at all; a condition admitting any of these is left to the predicate.
 	const predicate = filterByType(condition, table, undefined, null);
-	if (predicate({}) || (!index.indexNulls && predicate({ [attributeName]: null }))) return undefined;
+	if (predicate({}) || predicate({ [attributeName]: 0 }) || (!index.indexNulls && predicate({ [attributeName]: null })))
+		return undefined;
 	let value = condition[1] ?? condition.value;
 	if (value instanceof Date) value = value.getTime();
 	let start;

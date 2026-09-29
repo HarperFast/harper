@@ -187,14 +187,14 @@ every pushed-down condition, with no `rowFilter`/`vectorFilter`, replaces the pr
 gates the residual predicate. The post-filter re-checks every row, so the set may over-admit but must
 never omit: an omission is unrecoverable and makes results depend on whether the cost model built it.
 
-`planCandidateKeyScan` enforces that by running the condition's own `filterByType` predicate on a
-record lacking the attribute, and on a null one when the index holds no nulls; a condition either
-passes stays on the predicate path. `compareKeys` ranks undefined below every scalar, so this declines
-`lt`/`le` over a number, string or boolean bound, `ge null` and `between [null, x]`. The `lt`/`le` that
-remain (a BigInt bound) start at `null`, not `searchByIndex`'s `true`, so indexed nulls are read. A `-0`
-bound is normalized, because ordered-binary encodes `-0` above every number. Open: a record written with
-a literal `-0` gets an index entry that sorts past every number and decodes to a wrong primary key, so
-no scan can supply it; index-led queries miss it too, and the fix belongs in the encoder or index writer.
+`planCandidateKeyScan` enforces that by running the condition's own `filterByType` predicate on the
+records an index cannot supply: one lacking the attribute, a null one when the index holds no nulls,
+and a `0`, because a number written as `-0` is indexed under an encoding that sorts past every number
+and decodes to a wrong primary key (ordered-binary; index-led queries miss that row too). A condition
+admitting any of them stays on the predicate path. `compareKeys` ranks undefined below every scalar, so
+this declines `lt`/`le` over a number, string or boolean bound, `ge null` and any range covering 0; the
+`lt`/`le` that remain (a BigInt bound) start at `null`, not `searchByIndex`'s `true`, so indexed nulls
+are read. Normalizing `-0` in the encoder or index writer would let zero-covering ranges plan again.
 
 Building the set is a cost decision: one index-entry read per match against a record load per visited
 node, where filling `ef` matches at selectivity `s` takes about `ef / s` visits. `KEYS_PER_PREDICATE_VISIT`
