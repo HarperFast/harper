@@ -551,5 +551,37 @@ suite('documented native full-text examples', (ctx: ContextWithHarper) => {
 			conditions: [{ attribute: 'contentSearch', comparator: 'matches', value: 'constellation' }],
 		});
 		assert.deepStrictEqual(ids(documents), ['document-1']);
+
+		await request('/WriteDocumentWithMediaType/', {
+			method: 'POST',
+			body: JSON.stringify({
+				id: 'document-1',
+				text: 'A luminous constellation lights the sky.',
+				mediaType: 'application/json',
+			}),
+		});
+		const stored = await operation({
+			operation: 'search_by_conditions',
+			database: 'data',
+			table: 'Document',
+			get_attributes: ['id'],
+			conditions: [{ attribute: 'id', comparator: 'equals', value: 'document-1' }],
+		});
+		assert.deepStrictEqual(stored, [{ id: 'document-1' }]);
+		const mismatched = await operation({
+			operation: 'search_by_conditions',
+			database: 'data',
+			table: 'Document',
+			conditions: [
+				{
+					attribute: 'contentSearch',
+					comparator: 'matches',
+					value: 'constellation',
+					maxIndexLagMilliseconds: 0,
+					waitForIndexMilliseconds: 30_000,
+				},
+			],
+		});
+		assert.deepStrictEqual(mismatched, []);
 	});
 });

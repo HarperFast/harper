@@ -124,7 +124,8 @@ export class DocumentedProductQueries extends Resource {
 				return products;
 			}
 			case 'freshness': {
-				const products = await Product.search({
+				const products = [];
+				for await (const product of Product.search({
 					conditions: [
 						{
 							attribute: 'catalogSearch',
@@ -134,7 +135,9 @@ export class DocumentedProductQueries extends Resource {
 							waitForIndexMilliseconds: 10000,
 						},
 					],
-				});
+				})) {
+					products.push(product);
+				}
 				return products;
 			}
 			case 'tutorial-freshness': {
@@ -170,6 +173,20 @@ export class WriteDocument extends Resource {
 			{
 				id: body.id,
 				content: createBlob(body.text, { type: 'text/plain' }),
+			},
+			context
+		);
+		return { id: body.id };
+	}
+}
+
+export class WriteDocumentWithMediaType extends Resource {
+	static async post(_target, data, context) {
+		const body = await data;
+		await databases.data.Document.put(
+			{
+				id: body.id,
+				content: createBlob(body.text, { type: body.mediaType }),
 			},
 			context
 		);
