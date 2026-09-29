@@ -53,6 +53,7 @@ suite('documented native full-text examples', (ctx: ContextWithHarper) => {
 		let states: string[] = [];
 		do {
 			const description = await operation({ operation: 'describe_table', database, table });
+			assert.ok(Array.isArray(description.full_text_indexes), `${database}.${table} has no full-text indexes`);
 			states = description.full_text_indexes.map(({ readiness }) => readiness.state);
 			if (states.length > 0 && states.every((state) => state === 'ready')) return;
 			assert.ok(!states.includes('unavailable'), `${database}.${table} full-text index is unavailable`);
@@ -160,6 +161,13 @@ suite('documented native full-text examples', (ctx: ContextWithHarper) => {
 					name: 'Ordinary catalog item',
 					description: 'Aurora',
 					category: 'accessories',
+					price: 30,
+				},
+				{
+					id: 'highlight-bounds',
+					name: 'Highlight bounds',
+					description: `luminescent ${'catalog detail '.repeat(18)}`.repeat(8),
+					category: 'documentation',
 					price: 30,
 				},
 			],
@@ -425,6 +433,26 @@ suite('documented native full-text examples', (ctx: ContextWithHarper) => {
 	});
 
 	test('runs the documented highlighting, synonym, multiple-index, and Blob declarations', async () => {
+		const productHighlights = await operation({
+			operation: 'search_by_conditions',
+			database: 'catalog',
+			table: 'Product',
+			get_attributes: ['id', '$highlights'],
+			conditions: [
+				{
+					attribute: 'catalogSearch',
+					comparator: 'matches',
+					value: 'luminescent',
+					fields: ['description'],
+					includeHighlights: true,
+				},
+			],
+		});
+		assert.deepStrictEqual(ids(productHighlights), ['highlight-bounds']);
+		const [productDescriptionHighlights] = productHighlights[0].$highlights.description;
+		assert.strictEqual(productDescriptionHighlights.fragments.length, 2);
+		assert.ok(productDescriptionHighlights.fragments.every(({ text }) => text.length <= 120));
+
 		const highlighted = await operation({
 			operation: 'search_by_conditions',
 			database: 'data',
