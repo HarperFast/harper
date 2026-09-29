@@ -11,7 +11,7 @@ const {
 	stampDatabaseGeneration,
 	stampDatabaseDirectory,
 } = require('#src/resources/auditStore');
-const { DatabaseGenerationChangedError } = require('#src/utility/errors/hdbError');
+const { DatabaseClosingError, DatabaseGenerationChangedError } = require('#src/utility/errors/hdbError');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
@@ -301,7 +301,7 @@ describe('Database generation', () => {
 			const subscription = await copy.subscribe({ id: 'A', listener: (event) => events.push(event) });
 			await copy.put('A', { value: 2 });
 			await waitFor(() => events.some((event) => event.value?.value === 2));
-			return subscription;
+			return { subscription, events };
 		}
 
 		it('refuses a resubscribe that a listener makes through the replaced database while it is being ended', async () => {
@@ -327,8 +327,10 @@ describe('Database generation', () => {
 			assert.deepStrictEqual(stale, []);
 			assert.ok(await closeDatabase(`generation_${name}`));
 			tableInOwnDatabase(name);
-			assert.strictEqual(current.closed, false, 'a reopen of the same generation keeps the copy’s subscribers');
-			current.end();
+			assert.ok(
+				current.events.at(-1) instanceof DatabaseClosingError,
+				'the copy’s subscriber ends as a same-generation reopen, not as a replaced database'
+			);
 		});
 
 		it('refuses a subscription through a resource loaded before the database was replaced', async () => {
@@ -342,18 +344,22 @@ describe('Database generation', () => {
 				resource.subscribe({ listener: (event) => stale.push(event) }),
 				DatabaseGenerationChangedError
 			);
-			(await subscribeAndWrite(copy)).end();
+			(await subscribeAndWrite(copy)).subscription.end();
 			assert.deepStrictEqual(stale, []);
 		});
 
-		it('keeps subscriptions across a reopen of the same generation', async () => {
+		it('ends a subscription at a reopen of the same generation with a retryable error, and a resubscribe resumes', async () => {
 			const name = 'LiveSame';
 			const T = tableInOwnDatabase(name);
-			const subscription = await T.subscribe({ id: 'A' });
+			const events = [];
+			const subscription = await T.subscribe({ id: 'A', listener: (event) => events.push(event) });
 			assert.ok(await closeDatabase(`generation_${name}`));
-			tableInOwnDatabase(name);
-			assert.strictEqual(subscription.closed, false);
-			subscription.end();
+			const reopened = tableInOwnDatabase(name);
+			await reopened.put('A', { value: 1 });
+			await waitFor(() => events.some((event) => event instanceof Error || event.value?.value === 1));
+			assert.ok(events.at(-1) instanceof DatabaseClosingError, 'the consumer is told to resubscribe');
+			assert.strictEqual(subscription.closed, true);
+			(await subscribeAndWrite(reopened)).subscription.end();
 		});
 	});
 });

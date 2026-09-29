@@ -1,5 +1,6 @@
+import { basename } from 'node:path';
 import { warn } from '../utility/logging/harper_logger.js';
-import { DatabaseGenerationChangedError } from '../utility/errors/hdbError.ts';
+import { DatabaseClosingError, DatabaseGenerationChangedError } from '../utility/errors/hdbError.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { keyArrayToString } from './Resources.ts';
 import type { Id } from './ResourceInterface.ts';
@@ -101,27 +102,38 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 }
 
 /**
- * End every live subscription this thread registered on the database at `path` under a generation
- * other than `generationId` (undefined when the reopened store's is unknown): the registry outlives
- * the store handle, and a subscriber from before a restore would otherwise receive the restored
- * database's events. The entry is detached first, so its queued drains and pending state go with it.
- * `generationId` becomes the only one `addSubscription` accepts on `path` before any listener runs, so a
- * listener that resubscribes through the replaced database while it is being ended is refused too.
+ * End every live subscription this thread registered on the database at `path` before it was reopened
+ * under `generationId` (undefined when the reopened store's is unknown). The registry outlives the store
+ * handle, but a subscription from before the reopen can never deliver again: its commit listener and its
+ * table's stores belong to the closed handle. One from another or an unknown generation must resynchronize
+ * (a restore would otherwise feed it the restored database's events); one from the same generation gets
+ * the retryable `DatabaseClosingError`, and its position still resumes. The entry is detached first, so its
+ * queued drains and pending state go with it. `generationId` becomes the only one `addSubscription` accepts
+ * on `path` before any listener runs, so a listener that resubscribes through a replaced database while it
+ * is being ended is refused too.
  */
-export function endSubscriptionsOfOtherGenerations(path: string, generationId: string | undefined): void {
+export function endSubscriptionsFromEarlierHandles(
+	path: string,
+	generationId: string | undefined,
+	databaseName: string | undefined
+): void {
 	currentGenerationIds.set(path, generationId ?? null);
 	for (const registry of [allSubscriptions, allSameThreadSubscriptions]) {
 		const databaseSubscriptions = registry[path];
-		if (!databaseSubscriptions || (generationId !== undefined && databaseSubscriptions.generationId === generationId))
-			continue;
+		if (!databaseSubscriptions) continue;
 		delete registry[path];
+		const sameGeneration = generationId !== undefined && databaseSubscriptions.generationId === generationId;
 		for (const tableId in databaseSubscriptions) {
 			const tableSubscriptions = databaseSubscriptions[tableId];
 			if (!(tableSubscriptions instanceof Map)) continue;
 			for (const keySubscriptions of tableSubscriptions.values()) {
 				for (const subscription of [...keySubscriptions]) {
 					try {
-						subscription.close(new DatabaseGenerationChangedError());
+						subscription.close(
+							sameGeneration
+								? new DatabaseClosingError(databaseName ?? basename(path))
+								: new DatabaseGenerationChangedError()
+						);
 					} catch (error) {
 						try {
 							warn(error);

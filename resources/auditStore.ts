@@ -13,7 +13,7 @@ import { onStorageReclamation } from '../server/storageReclamation.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { asBinary } from 'lmdb';
 import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
-import { endSubscriptionsOfOtherGenerations } from './transactionBroadcast.ts';
+import { endSubscriptionsFromEarlierHandles } from './transactionBroadcast.ts';
 import { isReadOnlyMode, openRocksDatabase } from './databases.ts';
 
 /**
@@ -210,7 +210,7 @@ export function openAuditStore(rootStore) {
 	auditStore.rootStore = rootStore;
 	establishAuditFloor(auditStore);
 	establishDatabaseGeneration(auditStore);
-	endSubscriptionsOfOtherGenerations(rootStore.path, auditStore.databaseGeneration?.id);
+	endSubscriptionsFromEarlierHandles(rootStore.path, auditStore.databaseGeneration?.id, rootStore.databaseName);
 	auditStore.tableStores = [];
 	const deleteCallbacks = [];
 	auditStore.addDeleteRemovalCallback = function (tableId, table, callback) {
