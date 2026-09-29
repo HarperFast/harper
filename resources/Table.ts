@@ -1282,16 +1282,22 @@ setLockCoordinatorResolver(
 	}
 );
 
-// A key's subscribers on this thread all receive one fresh audit-record object per log entry, so the
-// current entry is read once per record, not once per subscriber (resources/DESIGN.md).
+// Valid for one synchronous notify pass, in which a key's subscribers on this thread all receive the same
+// freshly decoded audit record; cleared after it so it pins no store or record once delivery is done.
 let memoizedEntryAuditRecord: any;
 let memoizedEntryStore: any;
+let memoizedEntryId: Id;
 let memoizedEntry: Entry | undefined;
+function clearEntryMemo() {
+	memoizedEntryAuditRecord = memoizedEntryStore = memoizedEntryId = memoizedEntry = undefined;
+}
 function currentEntryForAudit(store: any, id: Id, auditRecord: any): Entry | undefined {
-	if (auditRecord !== memoizedEntryAuditRecord || store !== memoizedEntryStore) {
+	if (auditRecord !== memoizedEntryAuditRecord || store !== memoizedEntryStore || id !== memoizedEntryId) {
+		if (memoizedEntryAuditRecord === undefined) queueMicrotask(clearEntryMemo);
 		memoizedEntry = store.getEntry(id);
 		memoizedEntryAuditRecord = auditRecord;
 		memoizedEntryStore = store;
+		memoizedEntryId = id;
 	}
 	return memoizedEntry;
 }
