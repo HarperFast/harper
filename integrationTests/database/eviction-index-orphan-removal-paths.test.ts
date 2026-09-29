@@ -33,7 +33,7 @@
  *   npm run test:integration -- "integrationTests/database/eviction-index-orphan-removal-paths.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual } from 'node:assert';
+import { strictEqual, deepStrictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -282,6 +282,14 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				);
 
 				strictEqual(bucketConsistency.baseCount, HEARTBEAT_IDS.length, 'only heartbeat rows survive the sweep');
+				// Count alone can't catch a swap (one heartbeat id evicted, one non-heartbeat id spared
+				// -- count stays 12 either way). Pin the actual surviving id set.
+				const postSweepBase = await primaryDump('Expiring');
+				deepStrictEqual(
+					postSweepBase.rows.map((r: any) => r.id).sort(),
+					[...HEARTBEAT_IDS].sort(),
+					`surviving primary ids must be exactly HEARTBEAT_IDS, got ${JSON.stringify(postSweepBase.rows.map((r: any) => r.id).sort())}`
+				);
 				strictEqual(
 					bucketConsistency.dangling.length,
 					0,
@@ -352,6 +360,19 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 
 			const delRes = await postJSON('/DeleteIds/', { table: 'Perm', ids: toDelete });
 			strictEqual(delRes.status, 200, 'DeleteIds should succeed');
+
+			// checkConsistency alone can't tell "deleted and cleaned up" from "never touched": a
+			// no-op DeleteIds leaves both the rows and their index entries untouched, which reads as
+			// perfectly consistent. Confirm the delete actually happened first, via the standard
+			// @table GET path (same 404-after-delete oracle as blob-reader-supersession.test.ts).
+			await Promise.all(
+				toDelete.map(async (id: string) => {
+					const res = await fetch(`${httpURL}/Perm/${encodeURIComponent(id)}`, {
+						headers: { Authorization: client.headers.Authorization },
+					});
+					strictEqual(res.status, 404, `deleted id ${id} should 404 after DeleteIds, got ${res.status}`);
+				})
+			);
 
 			// delete() (with audit on, the default) writes an audit tombstone (value=null) and only
 			// physically removes the base row later via the async scheduleCleanup() sweep — but
