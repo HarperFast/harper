@@ -976,7 +976,11 @@ export function establishDatabaseGeneration(auditStore: any): void {
 					// compare-and-set on absence, so racing workers converge on the first one's id
 					if (read(DATABASE_GENERATION_KEY) !== undefined) return undefined;
 					const writes: Array<[symbol, Uint8Array]> = [[DATABASE_GENERATION_KEY, genesis]];
-					if (read(AUDIT_RESUME_FLOOR_KEY) === undefined) writes.push([AUDIT_RESUME_FLOOR_KEY, encodeAuditFloor(0)]);
+					if (read(AUDIT_RESUME_FLOOR_KEY) === undefined) {
+						// starting at the audit floor rather than 0 keeps the next prune's lock-free skip effective
+						const auditFloor = decodeAuditFloor(read(AUDIT_FLOOR_KEY));
+						writes.push([AUDIT_RESUME_FLOOR_KEY, encodeAuditFloor(Number.isFinite(auditFloor) ? auditFloor : 0)]);
+					}
 					return writes;
 				},
 				'database generation'
