@@ -587,6 +587,7 @@ export class FullTextQueryIndex {
 		}
 		const current = this.#readerSlot;
 		if (
+			!this.#readerOperation &&
 			current &&
 			!current.retired &&
 			current.ownerEpoch === ownerEpoch &&

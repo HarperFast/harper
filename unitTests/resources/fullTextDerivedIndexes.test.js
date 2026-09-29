@@ -686,6 +686,24 @@ describe('@fullText derived-index activation', () => {
 			restrictedDescription.full_text_indexes[0].fields.map(({ name }) => name),
 			['title']
 		);
+		const unrestrictedDescription = await describeTable({
+			database,
+			table: 'Product',
+			hdb_user: {
+				role: {
+					permission: {
+						[database]: {
+							tables: { Product: { read: true, describe: true, attribute_permissions: [] } },
+						},
+					},
+				},
+			},
+			skip_record_count: true,
+		});
+		assert.deepStrictEqual(
+			unrestrictedDescription.full_text_indexes[0].fields.map(({ name }) => name),
+			['title', 'tags']
+		);
 		const allowed = await collect(
 			Product.search(
 				{

@@ -182,7 +182,7 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 
 	let attributes = [];
 	let readableAttributes: Set<string> | undefined;
-	if (tableAttrPerms) {
+	if (tableAttrPerms?.length) {
 		let permittedAttr = {};
 		let readableAttr = {};
 		tableAttrPerms.forEach((a) => {

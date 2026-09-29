@@ -1680,6 +1680,16 @@ describe('Test operations permissions', function () {
 			assert.equal(result, null);
 		});
 
+		it('preserves full-text metadata selections while expanding a wildcard', function () {
+			const req_json = makeOpUserRequest(['read_only'], { read: true });
+			req_json.operation = terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS;
+			req_json.get_attributes = ['*', '$score', '$highlights'];
+			const result = op_auth.verifyPerms(req_json, search.searchByConditions.name);
+			assert.equal(result, null);
+			assert(req_json.get_attributes.includes('$score'));
+			assert(req_json.get_attributes.includes('$highlights'));
+		});
+
 		it('op NOT in operations list — insert blocked even with table perms', function () {
 			const req_json = makeOpUserRequest(['read_only'], { insert: true });
 			const result = op_auth.verifyPerms(req_json, write.insert.name);

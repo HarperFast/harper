@@ -888,6 +888,10 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	//we will convert the * to the specific attributes the user has READ permissions for via their role.
 	if (!isSuperUser && requestJson.get_attributes && terms.SEARCH_WILDCARDS.includes(requestJson.get_attributes[0])) {
 		let finalGetAttrs = [];
+		const requestedMetadata =
+			requestJson.operation === terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS
+				? requestJson.get_attributes.filter((attribute) => attribute === '$score' || attribute === '$highlights')
+				: [];
 		const table_perms = (fullRolePerms as any)[operationSchema].tables[table];
 
 		if (table_perms[terms.PERMS_CRUD_ENUM.READ]) {
@@ -900,7 +904,7 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 				finalGetAttrs = global.hdb_schema[operationSchema][table].attributes.map((obj) => obj.attribute);
 			}
 
-			requestJson.get_attributes = finalGetAttrs;
+			requestJson.get_attributes = [...new Set([...finalGetAttrs, ...requestedMetadata])];
 		}
 	}
 
