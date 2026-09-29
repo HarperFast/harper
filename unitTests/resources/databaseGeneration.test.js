@@ -296,6 +296,56 @@ describe('Database generation', () => {
 			assert.strictEqual(sibling.closed, true, 'one throwing listener must not strand the others');
 		});
 
+		async function subscribeAndWrite(copy) {
+			const events = [];
+			const subscription = await copy.subscribe({ id: 'A', listener: (event) => events.push(event) });
+			await copy.put('A', { value: 2 });
+			await waitFor(() => events.some((event) => event.value?.value === 2));
+			return subscription;
+		}
+
+		it('refuses a resubscribe that a listener makes through the replaced database while it is being ended', async () => {
+			const name = 'LiveReentrant';
+			const T = tableInOwnDatabase(name);
+			await T.put('A', { value: 1 });
+			const resource = await T.getResource('A', {});
+			const stale = [];
+			let resubscribe;
+			await T.subscribe({
+				id: 'A',
+				listener: (event) => {
+					if (event instanceof DatabaseGenerationChangedError && !resubscribe) {
+						resubscribe = resource.subscribe({ listener: (staleEvent) => stale.push(staleEvent) });
+						resubscribe.catch(() => {});
+					}
+				},
+			});
+			const copy = await reopenAsCopy(name, T);
+			assert.ok(resubscribe, 'precondition: the listener resubscribed during the teardown');
+			await assert.rejects(resubscribe, DatabaseGenerationChangedError);
+			const current = await subscribeAndWrite(copy);
+			assert.deepStrictEqual(stale, []);
+			assert.ok(await closeDatabase(`generation_${name}`));
+			tableInOwnDatabase(name);
+			assert.strictEqual(current.closed, false, 'a reopen of the same generation keeps the copy’s subscribers');
+			current.end();
+		});
+
+		it('refuses a subscription through a resource loaded before the database was replaced', async () => {
+			const name = 'LiveStaleResource';
+			const T = tableInOwnDatabase(name);
+			await T.put('A', { value: 1 });
+			const resource = await T.getResource('A', {});
+			const copy = await reopenAsCopy(name, T);
+			const stale = [];
+			await assert.rejects(
+				resource.subscribe({ listener: (event) => stale.push(event) }),
+				DatabaseGenerationChangedError
+			);
+			(await subscribeAndWrite(copy)).end();
+			assert.deepStrictEqual(stale, []);
+		});
+
 		it('keeps subscriptions across a reopen of the same generation', async () => {
 			const name = 'LiveSame';
 			const T = tableInOwnDatabase(name);

@@ -6,6 +6,9 @@ import type { Id } from './ResourceInterface.ts';
 
 const allSubscriptions = Object.create(null); // using it as a map that doesn't change much
 const allSameThreadSubscriptions = Object.create(null); // using it as a map that doesn't change much
+// The generation each database path was last opened under on this thread. A registration through a table of any
+// other generation would join the entry the current database's commits drive, under that other generation's tag.
+const currentGenerationIds = new Map<string, string | null>();
 /**
  * This module/function is responsible for the main work of tracking subscriptions and listening for new transactions
  * that have occurred on any thread, and then reading through the transaction log to notify listeners. This is
@@ -24,6 +27,11 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	let databaseSubscriptions;
 	if (!path) {
 		throw new Error('No path for table primary store');
+	}
+	const generationId = table.auditStore?.databaseGeneration?.id ?? null;
+	if (currentGenerationIds.has(path) && currentGenerationIds.get(path) !== generationId) {
+		if (options?.scope === 'full-database') return;
+		throw new DatabaseGenerationChangedError();
 	}
 	if (options?.crossThreads === false) {
 		// we are only listening for commits on our own thread, so we use a separate subscriber and sequencer tracker
@@ -61,7 +69,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		}
 	}
 	databaseSubscriptions.auditStore = table.auditStore;
-	databaseSubscriptions.generationId ??= table.auditStore?.databaseGeneration?.id ?? null;
+	databaseSubscriptions.generationId ??= generationId;
 	if (databaseSubscriptions.lastTxnTime == null) {
 		databaseSubscriptions.lastTxnTime = Date.now();
 	}
@@ -97,8 +105,11 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
  * other than `generationId` (undefined when the reopened store's is unknown): the registry outlives
  * the store handle, and a subscriber from before a restore would otherwise receive the restored
  * database's events. The entry is detached first, so its queued drains and pending state go with it.
+ * `generationId` becomes the only one `addSubscription` accepts on `path` before any listener runs, so a
+ * listener that resubscribes through the replaced database while it is being ended is refused too.
  */
 export function endSubscriptionsOfOtherGenerations(path: string, generationId: string | undefined): void {
+	currentGenerationIds.set(path, generationId ?? null);
 	for (const registry of [allSubscriptions, allSameThreadSubscriptions]) {
 		const databaseSubscriptions = registry[path];
 		if (!databaseSubscriptions || (generationId !== undefined && databaseSubscriptions.generationId === generationId))
