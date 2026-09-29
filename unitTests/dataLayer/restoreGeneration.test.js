@@ -5,6 +5,7 @@ const { table, closeDatabase } = require('#src/resources/databases');
 const { createBackupOffline, restoreBackupOffline, backupDirForDatabase } = require('#src/dataLayer/rocksdbBackup');
 const { getAuditFloor, getDatabaseGeneration, isResumablePosition } = require('#src/resources/auditStore');
 const { DatabaseGenerationChangedError } = require('#src/utility/errors/hdbError');
+const { setAnalyticsEnabled } = require('#src/resources/analytics/write');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
@@ -16,8 +17,13 @@ describe('A restore starts a new database generation', function () {
 	before(() => {
 		setupTestDBPath();
 		setMainIsWorker(true);
+		// An analytics flush declares its table, and the schema rescan that follows opens every database
+		// under STORAGE_PATH and keeps it open: one this suite is about to restore, or, once the flush
+		// outlives the suite, the next suite's.
+		setAnalyticsEnabled(false);
 	});
 	after(() => {
+		setAnalyticsEnabled(true);
 		for (const database of databases) rmSync(backupDirForDatabase(database), { recursive: true, force: true });
 	});
 
