@@ -577,6 +577,41 @@ describe('calibration store and facade (#2841)', function () {
 		assert.strictEqual((await warmDecide(models, 'case-1401')).calibrated, true, 'the fit still applies');
 	});
 
+	it('never reads a discovery page larger than the budget left', async () => {
+		await recordCases(models, 0, 30);
+		const { decisions } = getDecisionTables();
+		const search = decisions.search;
+		const limits = [];
+		decisions.search = function (request) {
+			if (request?.conditions?.[0]?.attribute === 'expiresAt') limits.push(request.limit);
+			return search.call(this, request);
+		};
+		try {
+			await runCalibration({ maxDecisions: 4 });
+		} finally {
+			decisions.search = search;
+		}
+		assert.ok(limits.length > 0);
+		assert.ok(
+			limits.every((limit) => limit <= 3),
+			`page limits ${limits}`
+		);
+	});
+
+	it('returns early when a reload leaves calibration unchanged, keeping its cache and its job', async () => {
+		await recordCases(models, 0, 300);
+		await models.calibrate();
+		assert.strictEqual((await warmDecide(models, 'case-1500')).calibrated, true);
+		configureCalibration({ ...CONFIG }, false);
+		assert.strictEqual(
+			(await models.decide('case-1501', SCHEMA)).calibrated,
+			true,
+			'an unchanged reload does not reset anything'
+		);
+		configureCalibration({ ...CONFIG, eceMargin: 0.02 }, false);
+		assert.strictEqual((await models.decide('case-1502', SCHEMA)).calibrated, false, 'a changed one does');
+	});
+
 	it('makes progress one decision at a time', async () => {
 		await recordCases(models, 0, 20, { instructions: 'older population' });
 		await recordCases(models, 100, 5);

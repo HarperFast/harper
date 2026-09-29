@@ -22,6 +22,8 @@ export interface CalibrationParams {
 export interface Example {
 	probabilities: number[];
 	truth: number;
+	/** Index of the value the decision returned; among tied scores it need not be the first. */
+	chosen?: number;
 }
 
 export interface SelectivePoint {
@@ -245,7 +247,7 @@ export function reliability(examples: Example[], transform: (p: number[]) => num
 	let nll = 0;
 	for (const example of examples) {
 		const p = transform(example.probabilities);
-		const top = argmax(p);
+		const top = example.chosen ?? argmax(p);
 		const confidence = p[top];
 		if (example.truth === NO_MATCH_TRUTH) {
 			all.push({ confidence, correct: false });

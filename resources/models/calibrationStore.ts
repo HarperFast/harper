@@ -262,6 +262,7 @@ function freshContext(): Context {
 
 let settings: Settings | undefined;
 let activePolicyDigest: string | undefined;
+let registeredBlock: string | undefined;
 
 export function isCalibrationEnabled(): boolean {
 	return settings !== undefined;
@@ -286,16 +287,22 @@ export function configureCalibration(
 	block: CalibrationConfig | null | undefined,
 	primary = isApplicationPrimaryWorker(undefined)
 ): void {
-	resetCalibrationCache();
 	if (!block) {
+		resetCalibrationCache();
 		settings = undefined;
 		activePolicyDigest = undefined;
+		registeredBlock = undefined;
 		if (primary) unregisterInternalJobs(JOB_NAME);
 		return;
 	}
-	settings = { ...DEFAULTS, ...definedOnly(block) };
+	const next = { ...DEFAULTS, ...definedOnly(block) };
+	const digest = canonicalJson(next);
+	if (settings && canonicalJson(settings) === digest && (registeredBlock === digest || !primary)) return;
+	resetCalibrationCache();
+	settings = next;
 	activePolicyDigest = policyDigest(policyOf(settings));
 	if (!primary || isReadOnlyMode()) return;
+	registeredBlock = digest;
 	registerInternalJobs(JOB_NAME, [
 		{
 			name: 'calibrate',
@@ -739,7 +746,10 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 		let added = 0;
 		const seenAtBoundary = new Set<string>(start === undefined ? [] : startSeen);
 		while (true) {
+			if (taken >= budget) return { before, boundary: [...seenAtBoundary], end: false, stopped: false };
 			let page: DecisionRow[];
+			const requested = Math.min(SCAN_PAGE, budget - taken) + seenAtBoundary.size;
+			let returned = 0;
 			try {
 				page = await transaction(freshContext(), async () => {
 					const rows: DecisionRow[] = [];
@@ -747,7 +757,11 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 						before === undefined
 							? [{ attribute: 'expiresAt', comparator: 'greater_than', value: 0, descending: true }]
 							: [{ attribute: 'expiresAt', comparator: 'less_than_equal', value: before, descending: true }];
-					for await (const row of decisions.search({ conditions, limit: SCAN_PAGE + seenAtBoundary.size })) {
+					for await (const row of decisions.search({
+						conditions,
+						limit: requested,
+					})) {
+						returned++;
 						if (!seenAtBoundary.has(row.id)) rows.push(row);
 					}
 					return rows;
@@ -800,7 +814,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 					},
 				});
 			}
-			if (page.length < SCAN_PAGE) return { before, boundary: [...seenAtBoundary], end: true, stopped: false };
+			if (returned < requested) return { before, boundary: [...seenAtBoundary], end: true, stopped: false };
 		}
 	}
 
@@ -901,7 +915,11 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 						}
 						used += EXAMPLE_OVERHEAD_BYTES + probabilities.length * 8;
 						if (used > config.maxBytes) return 'budget';
-						key.examples.push({ probabilities, truth, at: row.at });
+						const returned = canonicalJson(
+							key.field === undefined ? row.value : (row.value as Record<string, unknown> | undefined)?.[key.field]
+						);
+						const chosen = key.values.findIndex((value) => canonicalJson(value) === returned);
+						key.examples.push({ probabilities, truth, at: row.at, chosen: chosen >= 0 ? chosen : undefined });
 						key.cutoff = row.at;
 					}
 				}

@@ -162,6 +162,13 @@ describe('reliability report', () => {
 		assert.deepStrictEqual(none, { threshold: 0.9, count: 0, coverage: 0, risk: null, riskUpper: null });
 	});
 
+	it('scores the value a decision chose, not the first of tied values', () => {
+		const tied = { probabilities: [0.4, 0.4, 0.2], truth: 1 };
+		const correct = (report) => report.bins.reduce((n, b) => n + (b.accuracy ?? 0) * b.count, 0);
+		assert.strictEqual(correct(reliability([{ ...tied, chosen: 1 }], identity)), 1, 'the chosen value was right');
+		assert.strictEqual(correct(reliability([tied], identity)), 0, 'without it, the schema-first value is scored');
+	});
+
 	it('counts an accepted no-match truth as an error operationally but not conditionally', () => {
 		const examples = [];
 		for (let i = 0; i < 70; i++) examples.push({ probabilities: [0.95, 0.05], truth: 0 });
