@@ -595,7 +595,7 @@ describe('storeDBSizeMetrics', () => {
 	it('RocksDB branch: sums .sst file bytes and reports transactionLog, with no used/free', async () => {
 		await writeFile(join(tmpDir, 'a.sst'), 'x'.repeat(100));
 		await writeFile(join(tmpDir, 'b.sst'), 'y'.repeat(150));
-		await writeFile(join(tmpDir, 'c.log'), 'z'.repeat(41)); // non-.sst — must be excluded from the sum
+		await writeFile(join(tmpDir, 'c.log'), 'z'.repeat(41));
 		const firstTable = { getAuditSize: () => 999, primaryStore: fakeRocksStore({ path: tmpDir }) };
 		const analyticsTable = collectingAnalyticsTable();
 
@@ -614,9 +614,9 @@ describe('storeDBSizeMetrics', () => {
 	it('LMDB branch: reports total/used/free/audit from a file stat plus per-table sizes', async () => {
 		const dbPath = join(tmpDir, 'db.mdb');
 		await writeFile(dbPath, 'x'.repeat(500));
-		const primaryStore = { path: dbPath }; // plain object — not instanceof RocksDatabase
-		const t1 = { getSize: () => 40, getAuditSize: () => 77, primaryStore };
-		const t2 = { getSize: () => 60, primaryStore };
+		const lmdbPrimaryStore = { path: dbPath }; // not instanceof RocksDatabase — takes the LMDB branch
+		const t1 = { getSize: () => 40, getAuditSize: () => 77, primaryStore: lmdbPrimaryStore };
+		const t2 = { getSize: () => 60, primaryStore: lmdbPrimaryStore };
 		const analyticsTable = collectingAnalyticsTable();
 
 		storeDBSizeMetrics(analyticsTable, { mydb: { t1, t2 } });
@@ -667,10 +667,12 @@ describe('storeDBSizeMetrics', () => {
 
 describe('storeVolumeMetrics', () => {
 	it('stores a storage-volume metric per database, keyed by database name', async () => {
+		// Table.getStorageStats() forwards getStorageSpaceStats() (server/storageReclamation.ts),
+		// whose return shape is { available, free, size, basis }.
 		const analyticsTable = collectingAnalyticsTable();
 		const databases = {
-			dbA: { t1: { getStorageStats: async () => ({ available: 111, total: 222 }) } },
-			dbB: { t1: { getStorageStats: async () => ({ available: 333, total: 444 }) } },
+			dbA: { t1: { getStorageStats: async () => ({ available: 111, free: 111, size: 222, basis: 'filesystem' }) } },
+			dbB: { t1: { getStorageStats: async () => ({ available: 333, free: 333, size: 444, basis: 'quota' }) } },
 		};
 
 		await storeVolumeMetrics(analyticsTable, databases);
@@ -679,8 +681,11 @@ describe('storeVolumeMetrics', () => {
 		const byDb = new Map(analyticsTable.puts.map((m) => [m.database, m]));
 		assert.strictEqual(byDb.get('dbA').metric, 'storage-volume');
 		assert.strictEqual(byDb.get('dbA').available, 111);
-		assert.strictEqual(byDb.get('dbA').total, 222);
+		assert.strictEqual(byDb.get('dbA').size, 222);
+		assert.strictEqual(byDb.get('dbA').basis, 'filesystem');
 		assert.strictEqual(byDb.get('dbB').available, 333);
+		assert.strictEqual(byDb.get('dbB').size, 444);
+		assert.strictEqual(byDb.get('dbB').basis, 'quota');
 	});
 
 	it('skips a database with no storage stats', async () => {
@@ -701,7 +706,7 @@ describe('storeVolumeMetrics', () => {
 					},
 				},
 			},
-			healthy: { t1: { getStorageStats: async () => ({ available: 1, total: 2 }) } },
+			healthy: { t1: { getStorageStats: async () => ({ available: 1, free: 1, size: 2, basis: 'filesystem' }) } },
 		};
 
 		await storeVolumeMetrics(analyticsTable, databases);
@@ -753,7 +758,8 @@ describe('storeRocksDBStatsMetrics', () => {
 				},
 			},
 		};
-		storeRocksDBStatsMetrics(collectingAnalyticsTable(), databases, 1000, undefined); // seeds the baseline
+		const baselineAnalyticsTable = collectingAnalyticsTable();
+		storeRocksDBStatsMetrics(baselineAnalyticsTable, databases, 1000, undefined);
 
 		databases[dbName].t1.primaryStore = fakeRocksStoreWithStats(
 			{ 'rocksdb.bytes-read': 250, 'rocksdb.bytes-written': 130 },
@@ -764,13 +770,13 @@ describe('storeRocksDBStatsMetrics', () => {
 		storeRocksDBStatsMetrics(analyticsTable, databases, 2000, 1000);
 
 		const dbMetric = analyticsTable.puts.find((m) => m.metric === 'rocksdb-stats' && !m.table);
-		assert.strictEqual(dbMetric.bytesRead, 150); // diffed: 250 - 100
-		assert.strictEqual(dbMetric.bytesWritten, 80); // diffed: 130 - 50
+		assert.strictEqual(dbMetric.bytesRead, 150);
+		assert.strictEqual(dbMetric.bytesWritten, 80);
 		assert.strictEqual(dbMetric.period, 1000);
 
 		const logMetric = analyticsTable.puts.find((m) => m.metric === 'rocksdb-txnlog-stats');
 		assert.strictEqual(logMetric.log, 'audit');
-		assert.strictEqual(logMetric.totalsTransactionsWritten, 4); // diffed: 9 - 5
+		assert.strictEqual(logMetric.totalsTransactionsWritten, 4); // counter — diffed against the baseline
 		assert.strictEqual(logMetric.totalSizeBytes, 20); // gauge — absolute, not diffed
 	});
 
