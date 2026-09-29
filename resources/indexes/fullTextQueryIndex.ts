@@ -60,6 +60,7 @@ export type FullTextCondition = {
 
 type ReaderSlot = {
 	reader: NativeFullTextReader;
+	definition: FullTextDefinition;
 	ownerEpoch: bigint;
 	publicationGeneration: bigint;
 	publication: FullTextPublication;
@@ -339,7 +340,15 @@ export class FullTextQueryIndex {
 		if (!this.#derivedHost) throw new IndexRebuildingError(`Full-text index '${this.#definition.name}' is not ready`);
 		if (options.minResults === 0) return [];
 		const publicationGeneration = this.#publicationRevision();
-		const lease = await this.#acquireReader(readiness.ownerEpoch, publicationGeneration);
+		const acquisitionTimeout = Math.min(
+			MAX_WAIT_FOR_INDEX_MILLISECONDS,
+			Math.max(1, condition.waitForIndexMilliseconds ?? MAX_WAIT_FOR_INDEX_MILLISECONDS)
+		);
+		const lease = await withTimeout(
+			this.#acquireReader(readiness.ownerEpoch, publicationGeneration),
+			acquisitionTimeout,
+			() => new ServerError('Full-text reader acquisition exceeded the search budget', 503)
+		);
 		const reader = lease.reader;
 		try {
 			const deadline = performance.now() + this.#maxSearchBudgetMilliseconds!;
@@ -428,7 +437,13 @@ export class FullTextQueryIndex {
 					400
 				);
 			if (condition.includeHighlights && accepted.length > 0)
-				await this.#addHighlights(reader, condition, accepted.slice(options.resultOffset ?? 0), deadline);
+				await this.#addHighlights(
+					reader,
+					lease.definition,
+					condition,
+					accepted.slice(options.resultOffset ?? 0),
+					deadline
+				);
 			return accepted.map((entry) => ({
 				key: entry.key,
 				$score: entry.$score,
@@ -442,6 +457,7 @@ export class FullTextQueryIndex {
 
 	async #addHighlights(
 		reader: NativeFullTextReader,
+		definition: FullTextDefinition,
 		condition: FullTextCondition,
 		entries: Array<{
 			key: unknown;
@@ -453,10 +469,10 @@ export class FullTextQueryIndex {
 		}>,
 		deadline: number
 	): Promise<void> {
-		const highlighting = this.#definition.highlighting;
+		const highlighting = definition.highlighting;
 		if (!highlighting) return;
 		const highlightFields = new Set(
-			this.#definition.fields.filter((field) => field.highlight === true).map((field) => field.name)
+			definition.fields.filter((field) => field.highlight === true).map((field) => field.name)
 		);
 		if (highlightFields.size === 0) return;
 		const leaves = (condition.fullTextLeaves ?? [leafDescriptor(condition)]).map((leaf) => ({
@@ -471,7 +487,7 @@ export class FullTextQueryIndex {
 			let group = leafGroups.get(key);
 			if (!group) {
 				const selected = new Set(leaf.fields);
-				const fields = this.#definition.fields.map(({ name }) => name).filter((name) => selected.has(name));
+				const fields = definition.fields.map(({ name }) => name).filter((name) => selected.has(name));
 				leafGroups.set(key, (group = { fields, leaves: [] }));
 			}
 			group.leaves.push(leaf);
@@ -480,7 +496,7 @@ export class FullTextQueryIndex {
 			const leafFields = new Set(fields);
 			for (const sourceEntries of traceEntryBatches(
 				entries,
-				this.#definition,
+				definition,
 				leafFields,
 				this.#maxTraceRecords!,
 				this.#maxTraceSourceBytes!
@@ -488,7 +504,7 @@ export class FullTextQueryIndex {
 				const records = await Promise.all(
 					sourceEntries.map(async ({ nativeId, record }) => ({
 						id: nativeId,
-						fields: await sourceFields(record, this.#definition, leafFields, deadline),
+						fields: await sourceFields(record, definition, leafFields, deadline),
 					}))
 				);
 				for (const leaf of fieldLeaves) {
@@ -523,11 +539,12 @@ export class FullTextQueryIndex {
 	async #acquireReader(
 		ownerEpoch: bigint,
 		publicationGeneration: bigint
-	): Promise<{ reader: NativeFullTextReader; release: () => Promise<void> }> {
+	): Promise<{ reader: NativeFullTextReader; definition: FullTextDefinition; release: () => Promise<void> }> {
 		const slot = await this.#readerFor(ownerEpoch, publicationGeneration, true);
 		let released = false;
 		return {
 			reader: slot.reader,
+			definition: slot.definition,
 			release: () => {
 				if (released) return Promise.resolve();
 				released = true;
@@ -629,6 +646,7 @@ export class FullTextQueryIndex {
 				}
 				const slot = {
 					reader,
+					definition: this.#definition,
 					ownerEpoch,
 					publicationGeneration,
 					publication,
