@@ -505,6 +505,8 @@ canonical digest over every path, file content, link target and owner-exec bit.
   (`awaitDeploymentRow` with `blobAttribute`) or the body, verifies sha256 and size as the archive ends, extracts
   with `validateSymlinks: false` — the tree's links include links through links — and no wrapper-flattening,
   resolves no credentials, installs nothing, re-derives the digest from what landed and refuses any difference. It
+  refuses a tree that links outside itself too (`assertOwnedArtifactTree`, the `receive` action): the manifest
+  arrives with the request, so the digest cannot vouch for what the origin's own check refused. It
   keeps the origin's `installationIsOpaque`, and records the origin's manifest, with `.certified` re-derived when
   its own load check ran. It answers `artifact: <tree>`.
 - **The origin checks the answers.** A successful peer answer without the published tree is recorded as a failed
