@@ -610,6 +610,19 @@ export async function restoreBackup(request: any) {
 		// before any destruction is safe to clear.
 		if (destructionStarted || lock.preexisting) {
 			abandonRestore(lock);
+			// The restore is over even though it failed, so release the workers' blob fence. Without this
+			// the fence outlives the attempt: the marker keeps the database from loading, but an operator
+			// who gives up and drops/recreates the name instead of rerunning gets a database whose writes
+			// are refused by a fence no restore owns any more. Treated as a replaced generation because
+			// destruction may have begun -- forgoing a deletion only leaks a file for the orphan sweep,
+			// while performing a stale one destroys restored bytes.
+			try {
+				await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken, true));
+			} catch (releaseError) {
+				// Never mask the restore failure with a broadcast failure; the fence is worker-local state
+				// and a process restart clears it regardless.
+				logger.error(`Could not release the blob fence after a failed restore of '${databaseName}'`, releaseError);
+			}
 			// wrap rather than mutate error.message: a frozen/library error can have a non-writable
 			// message (assigning it throws TypeError under 'use strict')
 			throw new Error(

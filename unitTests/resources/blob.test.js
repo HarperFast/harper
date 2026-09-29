@@ -1857,6 +1857,27 @@ describe('Blob test', () => {
 		assert.strictEqual(blobRestoreGenerationChanged(blobRestoreGeneration(store)), false);
 	});
 
+	it('a failed restore releases its fence, so the database is not left unwritable', async () => {
+		// A restore that fails after destruction leaves its marker, which keeps the database from
+		// loading and tells the operator to rerun. But an operator who gives up and drops/recreates the
+		// name instead has no marker -- and must not inherit a fence no restore owns any more. The
+		// release is deterministic (the restore broadcasts reload on its way out) rather than a lease,
+		// because a lease that expired during a slow restore would re-admit saves mid-purge.
+		const store = BlobTest.primaryStore.rootStore;
+		const databaseName = store.databaseName;
+
+		await blockBlobSavesForRestore(databaseName, 'restore-that-failed');
+		const blocked = await createBlob(Buffer.alloc(20000, 'f'));
+		assert.throws(() => decodeFromDatabase(() => saveBlob(blocked), store), /while it is being restored/);
+
+		// What the failure path now broadcasts on its way out.
+		resumeBlobSavesAfterRestore(databaseName, 'restore-that-failed');
+
+		const allowed = await createBlob(Buffer.alloc(20000, 'g'));
+		await decodeFromDatabase(() => saveBlob(allowed).saving, store);
+		removeBlobFile(allowed);
+	});
+
 	it('a reclamation queued before a restore does not unlink what the restore wrote', async () => {
 		// The fence has to cover deletions, not just writes: a pendingReclamation entry is a timer that
 		// never consults the database, so an entry queued against the pre-restore generation would unlink
