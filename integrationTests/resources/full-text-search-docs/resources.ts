@@ -88,6 +88,13 @@ export class DocumentedProductQueries extends Resource {
 				});
 				return products;
 			}
+			case 'weight': {
+				const products = await Product.search({
+					conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'aurora' }],
+					select: ['id', '$score'],
+				});
+				return products;
+			}
 			case 'highlights': {
 				const products = await Product.search({
 					conditions: [{ attribute: 'catalogSearch', comparator: 'matches_phrase', value: 'trail running' }],

@@ -148,6 +148,20 @@ suite('documented native full-text examples', (ctx: ContextWithHarper) => {
 					category: 'accessories',
 					price: 25,
 				},
+				{
+					id: 'rank-name',
+					name: 'Aurora',
+					description: 'Ordinary catalog item',
+					category: 'accessories',
+					price: 30,
+				},
+				{
+					id: 'rank-description',
+					name: 'Ordinary catalog item',
+					description: 'Aurora',
+					category: 'accessories',
+					price: 30,
+				},
 			],
 		});
 		await operation({
@@ -160,7 +174,13 @@ suite('documented native full-text examples', (ctx: ContextWithHarper) => {
 			operation: 'insert',
 			database: 'data',
 			table: 'HighlightArticle',
-			records: [{ id: 'highlight-1', title: 'Trail guide', body: 'A trail running field guide' }],
+			records: [
+				{
+					id: 'highlight-1',
+					title: 'Trail guide',
+					body: 'A trail running field guide with practical route details and equipment notes. '.repeat(8),
+				},
+			],
 		});
 		await operation({
 			operation: 'insert',
@@ -276,6 +296,12 @@ suite('documented native full-text examples', (ctx: ContextWithHarper) => {
 		assert.ok(shoe.$highlights.name);
 		const tagOnly = records.find(({ id }) => id === 'tag-only');
 		assert.ok(!tagOnly.$highlights || !Object.hasOwn(tagOnly.$highlights, 'tags'));
+		await request(
+			'/SearchProducts/',
+			{ method: 'POST', body: JSON.stringify({ q: 'trail', category: 'footwear' }) },
+			401,
+			''
+		);
 		await request('/SearchProducts/', { method: 'POST', body: JSON.stringify({}) }, 400);
 		await request(
 			'/SearchProducts/',
@@ -294,10 +320,19 @@ suite('documented native full-text examples', (ctx: ContextWithHarper) => {
 		assert.deepStrictEqual(ids(await documentedQuery('restricted')), ['shoe-1']);
 		const scored = await documentedQuery('score');
 		assert.ok(scored.length > 0 && scored.every(({ $score }) => typeof $score === 'number'));
+		const ranked = await documentedQuery('weight');
+		assert.deepStrictEqual(
+			ranked.map(({ id }) => id),
+			['rank-name', 'rank-description']
+		);
+		assert.ok(ranked[0].$score > ranked[1].$score);
 		const [highlighted] = await documentedQuery('highlights');
 		assert.strictEqual(highlighted.id, 'shoe-1');
 		assert.deepStrictEqual(highlighted.$highlights.name[0].spans, [{ start: 11, end: 24 }]);
-		assert.ok(!ids(await documentedQuery('structured-and')).includes('expensive-trail'));
+		const structured = ids(await documentedQuery('structured-and'));
+		assert.ok(structured.includes('shoe-1'));
+		assert.ok(!structured.includes('shoe-2'));
+		assert.ok(!structured.includes('expensive-trail'));
 		assert.deepStrictEqual(ids(await documentedQuery('full-text-or')), ['shoe-1', 'shoe-2']);
 		assert.deepStrictEqual(ids(await documentedQuery('freshness')), ['seasonal']);
 		assert.deepStrictEqual(ids(await documentedQuery('tutorial-freshness')), ['seasonal']);
@@ -314,6 +349,10 @@ suite('documented native full-text examples', (ctx: ContextWithHarper) => {
 		assert.deepStrictEqual(
 			ids(await request('/Product/?catalogSearch=matches_prefix=waterproof%20tra&select(id,name)&limit(10)')),
 			['shoe-1', 'shoe-2']
+		);
+		assert.ok(ids(await request('/Product/?catalogSearch=matches_fuzzy=waterprof&limit(20)')).includes('shoe-1'));
+		assert.ok(
+			ids(await request('/Product/?catalogSearch=matches_fuzzy_prefix=waterproof%20tral&limit(20)')).includes('shoe-1')
 		);
 		const negated = await request(
 			'/Product/?catalogSearch=matches=waterproof&catalogSearch=not_matches=leather&limit(20)'
@@ -367,16 +406,22 @@ suite('documented native full-text examples', (ctx: ContextWithHarper) => {
 			conditions: [{ attribute: 'bodySearch', comparator: 'matches', value: 'trail' }],
 		};
 		assert.deepStrictEqual(ids(await operation(base)), ['article-1']);
-		for (const comparator of ['matches_phrase', 'matches_prefix', 'matches_fuzzy_prefix']) {
-			await operation(
+		for (const [comparator, expectedError] of [
+			['matches_phrase', /does not store phrase positions/],
+			['matches_prefix', /does not store surface terms/],
+			['matches_fuzzy_prefix', /does not store surface terms/],
+		]) {
+			const result = await operation(
 				{
 					...base,
 					conditions: [{ attribute: 'bodySearch', comparator, value: 'trail running' }],
 				},
 				400
 			);
+			assert.match(result.error, expectedError);
 		}
-		await operation({ ...base, get_attributes: ['id', '$highlights'] }, 400);
+		const highlightError = await operation({ ...base, get_attributes: ['id', '$highlights'] }, 400);
+		assert.match(highlightError.error, /does not enable highlighting/);
 	});
 
 	test('runs the documented highlighting, synonym, multiple-index, and Blob declarations', async () => {
@@ -388,7 +433,10 @@ suite('documented native full-text examples', (ctx: ContextWithHarper) => {
 			conditions: [{ attribute: 'articleSearch', comparator: 'matches_phrase', value: 'trail running' }],
 		});
 		assert.deepStrictEqual(ids(highlighted), ['highlight-1']);
-		assert.ok(highlighted[0].$highlights.body);
+		const [bodyHighlights] = highlighted[0].$highlights.body;
+		assert.ok(bodyHighlights.fragments.length > 0 && bodyHighlights.fragments.length <= 3);
+		assert.ok(bodyHighlights.fragments.every(({ text }) => text.length <= 160));
+		assert.ok(bodyHighlights.spans.length > 0);
 
 		for (const value of ['shoe', 'trainer']) {
 			const records = await operation({
