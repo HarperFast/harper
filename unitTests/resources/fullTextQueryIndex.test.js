@@ -137,6 +137,7 @@ function simpleQueryIndex({
 	onClose,
 	onGetEntry,
 	entryForKey,
+	isEntryCurrent,
 	storeName = 'unused',
 	sourceGeneration = 'generation',
 }) {
@@ -145,6 +146,7 @@ function simpleQueryIndex({
 	const index = new FullTextQueryIndex({
 		Table: {
 			tableId: 1,
+			...(isEntryCurrent ? { isFullTextSearchEntryCurrent: isEntryCurrent } : null),
 			primaryStore: {
 				rootStore: auditStore.rootStore,
 				getEntry: (key) => {
@@ -682,7 +684,27 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('reports an expired bounded native window as exhausted filters', async () => {
+	it('fails closed for source-invalidated entries that still match the native version', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'invalidated-native-hit';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => Array.from({ length: 11 }, (_, id) => ({ id: nativeId(1, id), version: '1', score: 11 - id })),
+			entryForKey: (key) => ({ version: 1, value: { title: key }, metadataFlags: 1 }),
+			isEntryCurrent: (entry) => entry.metadataFlags === 0,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
+			(error) => error.name === 'DerivedIndexLagError'
+		);
+		await index.close();
+	});
+
+	it('reports an expired bounded native window as expired matches', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'expired-native-window';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -696,7 +718,9 @@ describe('FullTextQueryIndex', () => {
 		attachCurrentCoverage(index, auditStore, readinessId);
 		await assert.rejects(
 			index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
-			(error) => error.statusCode === 400 && /filters exhausted the 10-result search window/.test(error.message)
+			(error) =>
+				error.statusCode === 400 &&
+				/Expired full-text matches exhausted the 10-result search window/.test(error.message)
 		);
 		await index.close();
 	});

@@ -1136,6 +1136,9 @@ export function makeTable(options) {
 		static assertFullTextRecordField(name: unknown): void {
 			assertFullTextRecordField(name);
 		}
+		static isFullTextSearchEntryCurrent(entry: Entry): boolean {
+			return !(entry.metadataFlags & (INVALIDATED | EVICTED));
+		}
 		static fullTextQueryIndexes: { [name: string]: { customIndex: unknown } } = Object.create(null);
 		static hasFullTextQueryIndexes = false;
 		static fullTextIndexGenerations: FullTextIndexGenerations = fullTextIndexGenerations;
@@ -3904,7 +3907,7 @@ export function makeTable(options) {
 				captureChanges,
 				validate: (txnTime, committedBy = transaction) => {
 					write.captureChanges?.();
-					if ((context as any)?.source && !committedBy.isReplay) assertFullTextWrite(recordUpdate);
+					if ((context as any)?.source && !committedBy.isReplay) assertFullTextWrite(recordUpdate, true);
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
 						if (!(context as any)?.source) {
 							committedBy.checkOverloaded();

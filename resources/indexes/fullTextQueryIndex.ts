@@ -365,6 +365,7 @@ export class FullTextQueryIndex {
 			let offset = 0;
 			let moreMayExist = false;
 			let staleVersionHits = 0;
+			let expiredHits = 0;
 			const transaction = context && this.#options.Table._readTxnForContext(context);
 			while (accepted.length < target && offset < searchWindow) {
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
@@ -396,7 +397,12 @@ export class FullTextQueryIndex {
 						staleVersionHits++;
 						continue;
 					}
+					if (this.#options.Table.isFullTextSearchEntryCurrent?.(entry) === false) {
+						staleVersionHits++;
+						continue;
+					}
 					if (entry.expiresAt !== undefined && entry.expiresAt < Date.now()) {
+						expiredHits++;
 						continue;
 					}
 					if (options.filter && !options.filter(key, entry)) continue;
@@ -416,7 +422,9 @@ export class FullTextQueryIndex {
 				);
 			if (bounded && accepted.length < target && moreMayExist)
 				throw new ClientError(
-					`Full-text filters exhausted the ${searchWindow}-result search window; narrow the query or reduce offset`,
+					expiredHits > 0
+						? `Expired full-text matches exhausted the ${searchWindow}-result search window; retry after index cleanup or narrow the query`
+						: `Full-text filters exhausted the ${searchWindow}-result search window; narrow the query or reduce offset`,
 					400
 				);
 			if (condition.includeHighlights && accepted.length > 0)
@@ -601,10 +609,11 @@ export class FullTextQueryIndex {
 				let reader: NativeFullTextReader;
 				let publication: FullTextPublication;
 				if (canReload) {
+					const reloadedPublicationGeneration = this.#publicationRevision();
 					await existing.reader.reload();
 					existing.publication = this.#decodeReaderPublication(existing.reader);
 					existing.reloadFailures = 0;
-					existing.publicationGeneration = publicationGeneration;
+					existing.publicationGeneration = reloadedPublicationGeneration;
 					return existing;
 				} else {
 					const binding = await this.#getBinding();

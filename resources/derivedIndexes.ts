@@ -763,13 +763,7 @@ export async function retireFullTextIndexes(
 							...(fullTextTest ? { binding: fullTextTest.binding } : {}),
 						});
 					} finally {
-						await coordinateFullTextQueryReaders(
-							nativePath,
-							readinessId,
-							0n,
-							false,
-							Math.max(1, Math.min(coordinationTimeoutMilliseconds, deadline - Date.now()))
-						);
+						await coordinateFullTextQueryReaders(nativePath, readinessId, 0n, false, coordinationTimeoutMilliseconds);
 					}
 				} finally {
 					rootStore.unlock(lockKey);
