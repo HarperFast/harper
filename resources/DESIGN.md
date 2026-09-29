@@ -285,8 +285,8 @@ cursor is finite, and no prune within the generation reached above it** (`isResu
   not power-loss durable and directory fsync is best-effort. `copydb` never copies the source's
   records and stamps the target; `compactOnStart` keeps them (same history).
 - **An ordinary open never repairs:** it adopts the record, mints genesis as a compare-and-set on
-  absence, or leaves the handle without one (every resume refused), and raises the resume floor to a
-  finite audit floor above it — an older binary's prunes raise only the audit floor.
+  absence, or leaves the handle without one (every resume refused). The resume floor is read as never
+  below a finite audit floor, since an older binary's prunes raise only the audit floor.
 - **No scalar mode.** A position without an id is never resumable; bind an id only to a position
   established within the generation. Cursors must be progress-based: a snapshot's newest in-scope key
   can sit below a floor that retention advances on a quiet database, and would be refused forever.

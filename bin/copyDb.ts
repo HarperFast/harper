@@ -401,9 +401,7 @@ async function copyDbEnvironment(
 			if (!sourceAuditDbi) throw new Error(`Could not open the audit store of ${sourceDatabase} to copy it`);
 			const targetAuditStore = (targetEnv as any).openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
 			console.log('copying audit log for', sourceDatabase, 'to', targetDatabasePath);
-			// A copy beside its source is a separate database from here on: the source's generation is
-			// never copied in, so a copy cut short lacks one rather than holding the source's, and a
-			// finished copy gets its own.
+			// a copy beside its source is a separate history, and one cut short must not hold the source's
 			await copyDbi(
 				useRawBytes(sourceAuditDbi),
 				useRawBytes(targetAuditStore),
@@ -1014,8 +1012,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 			targetRootStore.putSync(REMOTE_NODE_IDS_KEY, asBinary(idMappingBytes));
 		}
 
-		// The migrated store has none of the source's transaction log, so it starts a generation of its
-		// own; flushed so the stamp is durable before the caller publishes the staging directory.
+		// flushed so the stamp is durable before the caller publishes the staging directory
 		stampDatabaseGeneration(targetRootStore, { carriesLog: false });
 		await targetRootStore.flush({ allowWriteStall: true });
 

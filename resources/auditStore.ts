@@ -157,23 +157,18 @@ const FLOOR_BUFFER = new Uint8Array(FLOOR_TARGET.buffer);
 const AUDIT_FLOOR_UNKNOWN = Infinity;
 /**
  * Which copy of this database's history this is: a sixteen-byte random id, then the float64 time the
- * generation began (0 for a genesis generation, which no copy produced). Every path that publishes a
- * copy of a database's state stamps a fresh one into the copy before anything can read it
- * (`stampDatabaseGeneration`), so a resumable position naming an older id is refused rather than
- * resumed across the copy (harper#2451).
+ * generation began (0 for genesis). Every path that publishes a copy stamps a fresh one first
+ * (`stampDatabaseGeneration`), so a position naming an older id is refused (harper#2451).
  */
 const DATABASE_GENERATION_KEY = Symbol.for('database-generation');
 const GENERATION_ID_BYTES = 16;
 const GENERATION_RECORD_BYTES = GENERATION_ID_BYTES + 8;
 /**
- * The highest cutoff any prune has used within the current generation, encoded like the floor: the
- * bound a resumed position is checked against. It is not the floor, because the floor also steers
- * `Table.commit`'s reconciliation, which walks on `Infinity` and skips history below a finite floor.
- * Resume validity has to restart at a copy and must not be absorbed by the floor's unknown sentinel,
- * and doing either to the floor would change merge results.
+ * The highest prune cutoff within the current generation, encoded like the floor. Kept apart from the
+ * floor, which also steers `Table.commit`'s reconciliation: resume validity must restart at a copy and
+ * must not be absorbed by the floor's unknown sentinel, and doing either to the floor changes merges.
  */
 const AUDIT_RESUME_FLOOR_KEY = Symbol.for('audit-resume-floor');
-/** The records a copy that starts a history of its own must not carry over from its source. */
 export const DATABASE_GENERATION_KEYS: ReadonlySet<symbol> = new Set([DATABASE_GENERATION_KEY, AUDIT_RESUME_FLOOR_KEY]);
 
 /** Last resort on a detached path: a failing log sink must not itself become an unhandled rejection. */
@@ -575,19 +570,16 @@ function updateAuditFloor(
 }
 
 /**
- * Write audit metadata records under one store transaction, all or none. `plan` reads through the
- * transaction and returns the records to write, or undefined to leave the store alone. Every write is
- * read back before commit, and a mismatch throws inside the transaction so it aborts: returning
- * instead would commit on LMDB, and leave half of a multi-record write in place.
+ * Write audit metadata records under one store transaction, all or none: every write is read back,
+ * and a mismatch throws inside the transaction so it aborts — returning false commits on LMDB.
  */
 function commitAuditMetadata(
 	store: any,
 	plan: (read: (key: symbol) => any) => Array<[symbol, Uint8Array]> | undefined,
 	what: string
 ): void {
-	// On RocksDB audit metadata lives in the root store, which a copy being stamped passes directly. A
-	// legacy `auditPath` layout is opened as its own standalone LMDB root (databases.ts) and has no
-	// `.rootStore`, so it owns the transaction itself.
+	// A copy being stamped passes its RocksDB root directly. A legacy `auditPath` layout is opened as its
+	// own standalone LMDB root (databases.ts) and has no `.rootStore`, so it owns the transaction itself.
 	const onRocksDB = store instanceof RocksTransactionLogStore || store instanceof RocksDatabase;
 	const transactionOwner = store instanceof RocksDatabase ? store : (store?.rootStore ?? store);
 	if (!transactionOwner?.transactionSync)
@@ -711,9 +703,9 @@ export function raiseAuditFloor(auditStore: any, cutoff: number): void {
 	// discover that serializes every worker's boot and reclamation on it. The in-transaction guards
 	// below stay authoritative.
 	// Skips only the case it can prove is a no-op: both records exist and already sit at or above the
-	// cutoff (an undecodable resume floor reads as unknown, which no cutoff exceeds). An absent record
-	// is NOT decided here — the presence question is settled inside the transaction below, because
-	// another worker's establishAuditFloor can land between this read and that write.
+	// cutoff. An absent record is NOT decided here — the presence question is settled inside the
+	// transaction below, because another worker's establishAuditFloor can land between this read and
+	// that write.
 	if (auditStore?.getBinary) {
 		const stored = auditStore.getBinary(AUDIT_FLOOR_KEY);
 		const resume = auditStore.getBinary(AUDIT_RESUME_FLOOR_KEY);
@@ -734,8 +726,7 @@ export function raiseAuditFloor(auditStore: any, cutoff: number): void {
 			// lets the next open stamp a FINITE epoch, and a prune bound above that epoch (a future
 			// `endTime`, or a rolled-back clock) then certifies cursors whose history this prune deleted.
 			// Unknown is the honest value, because a store with no record may have been pruned before this
-			// run too. A record that appeared while we were getting here is an ordinary monotonic raise:
-			// pruning to `cutoff` against a floor left below it is exactly the silent gap this prevents.
+			// run too.
 			if (stored === undefined) writes.push([AUDIT_FLOOR_KEY, encodeAuditFloor(AUDIT_FLOOR_UNKNOWN)]);
 			else if (cutoff > decodeAuditFloor(stored)) writes.push([AUDIT_FLOOR_KEY, encodeAuditFloor(cutoff)]);
 			const resume = read(AUDIT_RESUME_FLOOR_KEY);
@@ -910,27 +901,39 @@ export interface DatabaseGeneration {
 }
 
 /**
- * The generation this handle's open established, or undefined when it could not establish one — an
- * undecodable record, a read-only open of a store that has none, or an error — in which case nothing
- * may resume against it.
- *
- * A position is resumable only if it names this generation's id, its cursor is finite, and the
- * cursor is at or above `getAuditResumeFloor`. That cursor must be progress-based — no lower than the
- * log position observed when the position was established — because a snapshot's newest in-scope
- * key can sit arbitrarily far below a floor that retention advances even on a quiet database, and a
- * position re-established at that same key would be refused on every resume. The id is per database
- * per node: it identifies this node's copy of the history, never a cluster-wide one.
+ * The generation this handle's open established, or undefined when it could not establish one, in
+ * which case nothing may resume against it. Per database per node, never cluster-wide.
  */
 export function getDatabaseGeneration(auditStore: any): DatabaseGeneration | undefined {
 	return auditStore?.databaseGeneration;
 }
 
 /**
- * The highest cutoff any prune has used within the current generation, or `Infinity` when unknown.
- * Read from the store each call, unlike the generation: every prune raises it.
+ * The bound a resumed position is checked against, or `Infinity` when unknown: the resume floor, but
+ * never below a finite audit floor, since a binary that predates the resume floor raised only the
+ * audit floor when it pruned.
  */
 export function getAuditResumeFloor(auditStore: any): number {
-	return decodeAuditFloor(auditStore.getBinary(AUDIT_RESUME_FLOOR_KEY));
+	const resumeFloor = decodeAuditFloor(auditStore.getBinary(AUDIT_RESUME_FLOOR_KEY));
+	const auditFloor = getAuditFloor(auditStore);
+	return Number.isFinite(auditFloor) && auditFloor > resumeFloor ? auditFloor : resumeFloor;
+}
+
+/**
+ * Whether a position may resume here: it names this handle's generation and carries a finite cursor
+ * at or above the resume floor. The cursor must be progress-based — no lower than the log position
+ * observed when the position was established — or a quiet scope's snapshot key falls below a floor
+ * that retention keeps advancing and is refused on every resume.
+ */
+export function isResumablePosition(auditStore: any, generationId: string | undefined, cursor: number): boolean {
+	const generation = getDatabaseGeneration(auditStore);
+	return (
+		generation !== undefined &&
+		generationId === generation.id &&
+		typeof cursor === 'number' &&
+		Number.isFinite(cursor) &&
+		cursor >= getAuditResumeFloor(auditStore)
+	);
 }
 
 function newGeneration(epoch: number): DatabaseGeneration {
@@ -955,12 +958,9 @@ function decodeGeneration(stored: any): DatabaseGeneration | undefined {
 }
 
 /**
- * Establish this handle's generation at open: adopt the recorded one, or mint the genesis generation
- * of a store that has none. It never replaces an undecodable record — only a copy's stamp may
- * replace a generation, because an ordinary open cannot know whether another worker already serves
- * the old one — so such a store is left without a generation, which refuses every resume. Genesis is
- * a compare-and-set on absence: the first worker's write consumes the precondition, so racing workers
- * converge on one id. Never fails the open, like `establishAuditFloor`.
+ * Establish this handle's generation at open: adopt the recorded one, or mint genesis for a store
+ * that has none. An undecodable record is never replaced here — an ordinary open cannot know whether
+ * another worker already serves it; only a copy's stamp replaces a generation. Never fails the open.
  */
 export function establishDatabaseGeneration(auditStore: any): void {
 	auditStore.databaseGeneration = undefined;
@@ -972,14 +972,15 @@ export function establishDatabaseGeneration(auditStore: any): void {
 			commitAuditMetadata(
 				auditStore,
 				(read) => {
+					// compare-and-set on absence, so racing workers converge on the first one's id
 					if (read(DATABASE_GENERATION_KEY) !== undefined) return undefined;
-					return [[DATABASE_GENERATION_KEY, genesis], ...resumeFloorCatchUp(read, 0)];
+					const writes: Array<[symbol, Uint8Array]> = [[DATABASE_GENERATION_KEY, genesis]];
+					if (read(AUDIT_RESUME_FLOOR_KEY) === undefined) writes.push([AUDIT_RESUME_FLOOR_KEY, encodeAuditFloor(0)]);
+					return writes;
 				},
 				'database generation'
 			);
 			stored = auditStore.getBinary(DATABASE_GENERATION_KEY);
-		} else if (!isReadOnlyMode() && resumeFloorCatchUp((key) => auditStore.getBinary(key)).length > 0) {
-			commitAuditMetadata(auditStore, (read) => resumeFloorCatchUp(read), 'audit resume floor');
 		}
 		auditStore.databaseGeneration = decodeGeneration(stored);
 		if (!auditStore.databaseGeneration)
@@ -993,45 +994,11 @@ export function establishDatabaseGeneration(auditStore: any): void {
 }
 
 /**
- * The resume-floor write that brings it up to a finite audit floor above it: a binary that predates
- * the resume floor raises only the audit floor when it prunes, and a database it ran against must
- * not keep certifying positions below what it removed. `initial` is the value for a store with no
- * resume floor yet. Never lowers, and leaves an undecodable resume floor unknown.
- */
-function resumeFloorCatchUp(read: (key: symbol) => any, initial?: number): Array<[symbol, Uint8Array]> {
-	const floor = decodeAuditFloor(read(AUDIT_FLOOR_KEY));
-	const resume = read(AUDIT_RESUME_FLOOR_KEY);
-	const bound = Number.isFinite(floor) ? floor : 0;
-	if (resume === undefined)
-		return initial === undefined ? [] : [[AUDIT_RESUME_FLOOR_KEY, encodeAuditFloor(Math.max(initial, bound))]];
-	return bound > decodeAuditFloor(resume) ? [[AUDIT_RESUME_FLOOR_KEY, encodeAuditFloor(bound)]] : [];
-}
-
-/**
- * Whether a position may resume here: it names this handle's generation, its cursor is finite, and
- * no prune within the generation reached above the cursor. `Infinity` is refused explicitly, since it
- * would compare at or above an unknown resume floor.
- */
-export function isResumablePosition(auditStore: any, generationId: string | undefined, cursor: number): boolean {
-	const generation = getDatabaseGeneration(auditStore);
-	return (
-		generation !== undefined &&
-		generationId === generation.id &&
-		typeof cursor === 'number' &&
-		Number.isFinite(cursor) &&
-		cursor >= getAuditResumeFloor(auditStore)
-	);
-}
-
-/**
- * Give a copy of a database a generation of its own before anything can read the copy. Every path
- * that publishes a copy calls this while it still holds the copy exclusively, then makes the stamp
- * durable before publishing. The resume floor restarts at 0: no prune has run in the new generation.
- *
- * `carriesLog` says whether the copy kept its transaction log. One that did not has nothing below its
- * epoch, so a finite floor is raised to it — accurate there, unlike raising it over history a copy
- * carried, which would change `Table.commit`'s reconciliation. An unknown floor is left unknown.
- * `generation` lets a caller replay a value it recorded durably first.
+ * Give a copy of a database a generation of its own, before anything can read it; the caller holds
+ * the copy exclusively and makes the stamp durable before publishing. A copy that kept no
+ * transaction log has nothing below its epoch, so a finite floor is raised to it — raising it over
+ * history a copy carried would change `Table.commit`'s reconciliation, and an unknown floor stays
+ * unknown. `generation` lets a caller replay a value it recorded durably first.
  */
 export function stampDatabaseGeneration(
 	store: any,
@@ -1062,9 +1029,8 @@ export function stampDatabaseGeneration(
 }
 
 /**
- * Stamp the RocksDB database at `path`, which nothing else may have open, and flush it. The flush is
- * what makes the stamp durable before the caller publishes the copy: a root-store write alone is not
- * power-loss durable, and directory fsync is a best-effort no-op on platforms that cannot do it.
+ * Stamp the RocksDB database at `path`, which nothing else may have open, and flush it: a root-store
+ * write alone is not power-loss durable, and directory fsync is best-effort where unsupported.
  */
 export async function stampDatabaseDirectory(
 	path: string,

@@ -602,8 +602,6 @@ export async function restoreBackup(request: any) {
 		if (manifest.blobs) {
 			await restoreBlobSnapshot(backupDir, backupId, databaseName, getBlobPathsForDatabaseName(databaseName));
 		}
-		// The restored files carry the generation the backup was taken under; a resumable position
-		// minted after that point must not match the restored database.
 		await stampDatabaseDirectory(databaseDir, { carriesLog: true });
 	} catch (error: any) {
 		// Leave the marker (so startup/rescan detection reports an incomplete restore until a rerun

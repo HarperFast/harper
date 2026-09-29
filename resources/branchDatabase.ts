@@ -346,8 +346,6 @@ async function materializeBranch(
 		await base.createCheckpoint(staging);
 		report.progress();
 		await cloneBlobRoots(baseName, baseRoots, blobRoots, report.progress);
-		// The checkpoint carries the base's generation and no transaction log; a base position must not
-		// resume against the fork.
 		await stampDatabaseDirectory(staging, { carriesLog: false });
 		await writeFile(join(staging, COMPLETION_MARKER), JSON.stringify({ blobRoots } satisfies BranchCompletion));
 		await rename(staging, branchPath);

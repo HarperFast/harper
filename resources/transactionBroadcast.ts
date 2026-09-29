@@ -1,4 +1,5 @@
 import { warn } from '../utility/logging/harper_logger.js';
+import { DatabaseGenerationChangedError } from '../utility/errors/hdbError.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { keyArrayToString } from './Resources.ts';
 import type { Id } from './ResourceInterface.ts';
@@ -91,19 +92,11 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	return subscription;
 }
 
-/** Ends a live subscription whose database was replaced by a copy: its consumer must resync. */
-export class DatabaseGenerationChangedError extends Error {
-	name = 'DatabaseGenerationChangedError';
-	code = 'DATABASE_GENERATION_CHANGED';
-	statusCode = 409;
-}
-
 /**
  * End every live subscription this thread registered on the database at `path` under a generation
- * other than `generationId` (undefined when the reopened store's is unknown). The registry outlives
- * the store handle, so without this a subscriber from before a restore would receive the restored
- * database's events as a silent resume. The entry is detached before anything is closed, so queued
- * drains, pending transaction state and a listener that throws all stay with the old entry.
+ * other than `generationId` (undefined when the reopened store's is unknown): the registry outlives
+ * the store handle, and a subscriber from before a restore would otherwise receive the restored
+ * database's events. The entry is detached first, so its queued drains and pending state go with it.
  */
 export function endSubscriptionsOfOtherGenerations(path: string, generationId: string | undefined): void {
 	for (const registry of [allSubscriptions, allSameThreadSubscriptions]) {
@@ -117,18 +110,13 @@ export function endSubscriptionsOfOtherGenerations(path: string, generationId: s
 			for (const keySubscriptions of tableSubscriptions.values()) {
 				for (const subscription of [...keySubscriptions]) {
 					try {
-						subscription.close(
-							new DatabaseGenerationChangedError(
-								`The database at ${path} was replaced by a copy; resubscribe to resynchronize`
-							)
-						);
+						subscription.close(new DatabaseGenerationChangedError());
 					} catch (error) {
 						try {
 							warn(error);
 						} catch {}
 					} finally {
-						// close() delivers its final event before marking the queue closed, so a listener that
-						// threw there left it open; a bare close sends nothing and finishes the job
+						// a listener that threw on the final event left the queue open; a bare close sends nothing
 						if (!subscription.closed) {
 							try {
 								subscription.close();

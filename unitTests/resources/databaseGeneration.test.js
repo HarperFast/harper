@@ -1,9 +1,6 @@
 /**
- * The database generation (harper#2451): which copy of a database's history an open is serving. Every
- * path that publishes a copy of a database's state stamps a fresh generation into it first, so a
- * resumable position minted against the source is refused against the copy instead of resuming across
- * a history it never saw. Positions are bound to the generation and checked against its resume floor,
- * which prunes raise; the audit floor keeps its meaning for `Table.commit`'s reconciliation.
+ * The database generation (harper#2451): positions and live subscriptions are bound to the copy of a
+ * database's history they were minted against.
  */
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
@@ -18,7 +15,7 @@ const {
 	stampDatabaseGeneration,
 	stampDatabaseDirectory,
 } = require('#src/resources/auditStore');
-const { DatabaseGenerationChangedError } = require('#src/resources/transactionBroadcast');
+const { DatabaseGenerationChangedError } = require('#src/utility/errors/hdbError');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
@@ -158,21 +155,24 @@ describe('Database generation', () => {
 			raiseAuditFloor(store, cutoff + 1000);
 			await clearRecord(store, RESUME_FLOOR_KEY);
 			raiseAuditFloor(store, cutoff);
+			putRecord(store, FLOOR_KEY, floorBytes(Infinity));
 			assert.strictEqual(getAuditResumeFloor(store), cutoff, 'the lock-free skip must check both records');
 		});
 
-		it('catches up at open with prunes a generation-unaware binary recorded only in the audit floor', async () => {
-			const name = 'OlderWriter';
-			const store = tableInOwnDatabase(name).auditStore;
+		it('is never below a finite audit floor, which a generation-unaware binary raises alone when it prunes', () => {
+			const store = tableInOwnDatabase().auditStore;
 			const { id } = getDatabaseGeneration(store);
 			const cursor = Date.now();
 			assert.strictEqual(isResumablePosition(store, id, cursor), true, 'precondition');
-			// what an older binary's prune leaves: a raised audit floor, and a resume floor it knows nothing of
 			putRecord(store, FLOOR_KEY, floorBytes(cursor + 5000));
-			assert.ok(await closeDatabase(`generation_${name}`));
-			const reopened = tableInOwnDatabase(name).auditStore;
-			assert.strictEqual(getAuditResumeFloor(reopened), cursor + 5000);
-			assert.strictEqual(isResumablePosition(reopened, id, cursor), false);
+			assert.strictEqual(getAuditResumeFloor(store), cursor + 5000);
+			assert.strictEqual(isResumablePosition(store, id, cursor), false);
+			__setReadOnlyModeForTest(true);
+			try {
+				assert.strictEqual(isResumablePosition(store, id, cursor), false, 'read-only opens read the same bound');
+			} finally {
+				__setReadOnlyModeForTest(undefined);
+			}
 		});
 	});
 
@@ -186,7 +186,7 @@ describe('Database generation', () => {
 			assert.notStrictEqual(stamped.id, before.id);
 			assert.ok(stamped.epoch > 0);
 			assert.strictEqual(getAuditFloor(store), floor);
-			assert.strictEqual(getAuditResumeFloor(store), 0, 'no prune has run in the new generation');
+			assert.strictEqual(getAuditResumeFloor(store), floor, 'no prune has run in the new generation');
 			establishDatabaseGeneration(store);
 			assert.deepStrictEqual(getDatabaseGeneration(store), stamped);
 			assert.strictEqual(isResumablePosition(store, before.id, Date.now()), false, 'the old generation is refused');
@@ -215,6 +215,7 @@ describe('Database generation', () => {
 		it('commits none of its records when one of them does not land', function () {
 			if (isRocksDB) return this.skip(); // the LMDB write branch reads its puts back through the store
 			const store = tableInOwnDatabase().auditStore;
+			raiseAuditFloor(store, Date.now()); // so the dropped resume-floor write differs from what is stored
 			const before = new Uint8Array(store.getBinary(GENERATION_KEY));
 			const realPut = store.put.bind(store);
 			store.put = (key, value) => (key === RESUME_FLOOR_KEY ? Promise.resolve(true) : realPut(key, value));

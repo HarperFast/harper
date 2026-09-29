@@ -1,15 +1,11 @@
-/**
- * A restore replaces a database with a copy of an earlier state, so nothing minted against the
- * replaced history may carry over into the restored one (harper#2451): not a live subscription, and
- * not a resumable position.
- */
+/** A restore gives the database a new generation, so nothing minted before it resumes (harper#2451). */
 const assert = require('node:assert');
 const { rmSync } = require('node:fs');
 const { setupTestDBPath } = require('../testUtils');
 const { table, closeDatabase } = require('#src/resources/databases');
 const { createBackupOffline, restoreBackupOffline, backupDirForDatabase } = require('#src/dataLayer/rocksdbBackup');
 const { getAuditFloor, getDatabaseGeneration, isResumablePosition } = require('#src/resources/auditStore');
-const { DatabaseGenerationChangedError } = require('#src/resources/transactionBroadcast');
+const { DatabaseGenerationChangedError } = require('#src/utility/errors/hdbError');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');

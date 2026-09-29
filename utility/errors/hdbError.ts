@@ -117,6 +117,16 @@ export class DatabaseClosingError extends ServerError {
 	}
 }
 
+/** Ends a live subscription whose database was replaced by a restored or copied state: resync. */
+export class DatabaseGenerationChangedError extends ClientError {
+	code: string;
+	constructor() {
+		super('The database was replaced by a restored or copied state; resubscribe to resynchronize', 409);
+		this.name = 'DatabaseGenerationChangedError';
+		this.code = 'DATABASE_GENERATION_CHANGED';
+	}
+}
+
 export class DatabaseDrainTimeoutError extends DatabaseClosingError {
 	constructor(databaseName: string, timeoutMilliseconds: number) {
 		super(databaseName);
