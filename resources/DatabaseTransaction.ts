@@ -1427,7 +1427,7 @@ export class DatabaseTransaction implements Transaction {
 			return this.monitorCommit.then(
 				() => this.commit(options),
 				(error) => {
-					// The failed commit ran its own terminal cleanup, but as a non-final commit it kept the context.
+					// The failed commit ran its terminal cleanup, but as a non-final commit it kept the context.
 					if (options.doneWriting) {
 						this.monitorCommit = undefined;
 						this.releaseContext(true);
@@ -1685,9 +1685,14 @@ export class DatabaseTransaction implements Transaction {
 							if (this.next) {
 								// never forward options.transaction (a retry/replay round's HEAD-store handle) to
 								// the next store — it must commit its own writes through its own transaction
-								completions.push(
-									this.next.commit(options.transaction ? { ...options, transaction: undefined } : options)
-								);
+								let nextCommit: MaybePromise<CommitResolution>;
+								try {
+									nextCommit = this.next.commit(options.transaction ? { ...options, transaction: undefined } : options);
+								} catch (error) {
+									// This store has landed; its bookkeeping below must run before the failure surfaces.
+									nextCommit = Promise.reject(error);
+								}
+								completions.push(nextCommit);
 							}
 							if (options?.flush) {
 								completions.push(this.writes[0].store.flushed);

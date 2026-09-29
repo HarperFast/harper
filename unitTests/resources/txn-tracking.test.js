@@ -704,6 +704,26 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		}
 	}
 
+	it("finishes a landed store's bookkeeping when the next store's commit throws synchronously", async function () {
+		if (isLMDB) this.skip();
+		const context = {};
+		let links;
+		await assert.rejects(
+			transaction(context, async () => {
+				await SecondaryBlobResource.put({ id: 2080, value: 'head' }, context);
+				await ThirdResource.put({ id: 2080, value: 'next' }, context);
+				links = databaseTxns(context);
+				assert.equal(links.length, 2);
+				links[1].commit = () => {
+					throw new Error('injected synchronous next-store failure');
+				};
+			}),
+			/injected synchronous next-store failure/
+		);
+		assert.equal((await SecondaryBlobResource.get(2080))?.value, 'head', 'test setup: the head store must land');
+		assert.equal(links[0].writes.length, 0, "the landed head's write set must be cleared");
+	});
+
 	it('marks and clears the commit phase across an LMDB transaction chain', function () {
 		const head = new LMDBTransaction();
 		const next = new LMDBTransaction();
