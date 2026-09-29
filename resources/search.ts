@@ -433,10 +433,22 @@ interface CandidateKeyTerm {
 	scans: CandidateKeyScan[];
 	estimatedCount: number;
 }
+/**
+ * Matched primary keys by identity. Strings and non-zero numbers are their own identity, which spares
+ * encoding the common key shapes; the rest go by writeKeyId, the encoder the stores index by —
+ * flattenKey joins composite keys with NUL and collapses ['a', 'b\0c'] and ['a\0b', 'c'], and Set
+ * membership calls -0 and 0 one key. Kept apart because an encoded identity is a string that can
+ * equal a string key: writeKeyId(['a', 'b']) is 'a\0b'.
+ */
+interface CandidateKeyMatches {
+	byValue: Set<Id>;
+	encoded: Map<unknown, Id>;
+}
 
-// Comparators whose secondary-index range is EXACTLY the condition, so scanning that range yields
-// every matching primary key and nothing else. `ne`, `in`, `contains`, `ends_with` and any negated
-// condition are excluded because searchByIndex answers them with a scan plus a record filter.
+// Comparators whose secondary-index range is EXACTLY the condition over the values an index holds,
+// so scanning that range yields every indexed match and nothing else. `ne`, `in`, `contains`,
+// `ends_with` and any negated condition are excluded because searchByIndex answers them with a scan
+// plus a record filter.
 const CANDIDATE_KEY_COMPARATORS = new Set([
 	'equals',
 	'lt',
@@ -463,9 +475,14 @@ function planCandidateKeyScan(condition, table): CandidateKeyScan | undefined {
 	if (!index || index.customIndex) return undefined;
 	const comparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] ?? condition.comparator ?? 'equals';
 	if (!CANDIDATE_KEY_COMPARATORS.has(comparator)) return undefined;
+	// The scan has to hold every key the record predicate admits, and the index holds no entry for a
+	// record lacking the attribute, nor for a null one unless it indexes nulls. compareKeys ranks
+	// undefined below every scalar, so `rank < 100` admits a record with no rank at all: a condition
+	// like that is left to the predicate, or results would depend on whether the plan was built.
+	const predicate = filterByType(condition, table, undefined, null);
+	if (predicate({}) || (!index.indexNulls && predicate({ [attributeName]: null }))) return undefined;
 	let value = condition[1] ?? condition.value;
 	if (value instanceof Date) value = value.getTime();
-	if (value === null && !index.indexNulls) return undefined;
 	let start;
 	let end;
 	let inclusiveEnd = false;
@@ -506,6 +523,9 @@ function planCandidateKeyScan(condition, table): CandidateKeyScan | undefined {
 			end = value;
 			inclusiveEnd = true;
 	}
+	// ordered-binary encodes -0 above every number, where the predicate's compareKeys calls it 0.
+	if (start === 0) start = 0;
+	if (end === 0) end = 0;
 	// An over-length string key is stored truncated behind an overflow marker, which makes the range
 	// wider than the condition and needs a record filter to narrow again.
 	if (
@@ -592,7 +612,7 @@ function collectCandidateKeys(
 	planned: boolean
 ): { keys: Id[]; complete: boolean } | null {
 	const ordered = terms.length > 1 ? terms.slice().sort((a, b) => a.estimatedCount - b.estimatedCount) : terms;
-	let matched: Map<unknown, Id> | undefined;
+	let matched: CandidateKeyMatches | undefined;
 	let complete = planned;
 	let scanned = 0;
 	for (const term of ordered) {
@@ -600,7 +620,7 @@ function collectCandidateKeys(
 			complete = false;
 			continue;
 		}
-		const next = new Map<unknown, Id>();
+		const next: CandidateKeyMatches = { byValue: new Set(), encoded: new Map() };
 		let overran = false;
 		for (const scan of term.scans) {
 			for (const { value: primaryKey } of scan.index.getRange({ ...scan.range, values: true, transaction })) {
@@ -608,12 +628,12 @@ function collectCandidateKeys(
 					overran = true;
 					break;
 				}
-				// writeKeyId, not flattenKey: the encoder the stores index by. flattenKey joins composite
-				// keys with NUL, which collapses ['a', 'b\0c'] and ['a\0b', 'c'] into one entry and would
-				// drop one of two real matches.
-				const identity = writeKeyId(primaryKey);
-				if (matched && !matched.has(identity)) continue;
-				next.set(identity, primaryKey);
+				if (typeof primaryKey === 'string' || (typeof primaryKey === 'number' && primaryKey !== 0)) {
+					if (!matched || matched.byValue.has(primaryKey)) next.byValue.add(primaryKey);
+				} else {
+					const identity = writeKeyId(primaryKey);
+					if (!matched || matched.encoded.has(identity)) next.encoded.set(identity, primaryKey);
+				}
 			}
 			if (overran) break;
 		}
@@ -624,9 +644,9 @@ function collectCandidateKeys(
 			break;
 		}
 		matched = next;
-		if (matched.size === 0) break;
+		if (matched.byValue.size === 0 && matched.encoded.size === 0) break;
 	}
-	return { keys: [...matched!.values()], complete };
+	return { keys: [...matched!.byValue, ...matched!.encoded.values()], complete };
 }
 
 /**

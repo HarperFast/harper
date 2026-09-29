@@ -3327,15 +3327,16 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			],
 		});
 		for (let i = 0; i < 300; i++) {
-			await A.put(i, {
+			const record = {
 				tenant: i % 3 === 0 ? 'a' : 'b',
-				// rank 0 is deliberately null: `null < n` holds for the record predicate's compareKeys,
-				// so the allow-set has to carry an indexed null too.
-				rank: i === 0 ? null : i,
 				shard: i < 290 ? 'wide' : 'narrow',
 				note: i % 2 === 0 ? 'keep' : 'drop',
 				vector: [i, 0],
-			});
+			};
+			// id 0 has no rank and id 1 a null one. The record predicate's compareKeys ranks both below
+			// every number, so `rank < n` admits them, and the index holds only the null.
+			if (i > 0) record.rank = i === 1 ? null : i;
+			await A.put(i, record);
 		}
 	});
 	after(() => A.dropTable());
@@ -3392,12 +3393,8 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 		);
 	});
 
-	it('builds the allow-set from each range comparator', async () => {
+	it('builds the allow-set from each range comparator a missing value cannot satisfy', async () => {
 		for (const [comparator, value, target, expected] of [
-			// id 0 has a null rank, which `lt`/`le` must still admit — an index range starting above
-			// null would drop a row the record predicate keeps.
-			['lt', 100, [0, 0], [0, 1, 2, 3, 4]],
-			['le', 99, [0, 0], [0, 1, 2, 3, 4]],
 			['ge', 200, [200, 0], [200, 201, 202, 203, 204]],
 			['gt', 199, [200, 0], [200, 201, 202, 203, 204]],
 			['between', [100, 199], [150.3, 0], [150, 151, 149, 152, 148]],
@@ -3415,20 +3412,50 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 		}
 	});
 
+	it('returns what the predicate path returns when a condition admits a record the index does not hold', async () => {
+		const customIndex = A.indices.vector.customIndex;
+		for (const [condition, planned] of [
+			// Satisfied by id 0, which has no rank, so no index range can supply every match.
+			[{ attribute: 'rank', comparator: 'lt', value: 100 }, false],
+			[{ attribute: 'rank', comparator: 'le', value: 99 }, false],
+			[{ attribute: 'rank', comparator: 'between', value: [null, 60] }, false],
+			// -0 encodes above every number, so an unnormalized lower bound would scan an empty range.
+			[{ attribute: 'rank', comparator: 'between', value: [-0, 60] }, true],
+		]) {
+			const label = `${condition.comparator} ${JSON.stringify(condition.value)}`;
+			const { results, probed } = await searchWithSpy([0, 0], [condition], { limit: 5 });
+			assert.strictEqual(Boolean(probed), planned, `${label}: planned`);
+			customIndex.candidateKeyFilter = false;
+			let unplanned;
+			try {
+				unplanned = await searchWithSpy([0, 0], [condition], { limit: 5 });
+			} finally {
+				customIndex.candidateKeyFilter = true;
+			}
+			assert.deepStrictEqual(
+				results.map((record) => record.id),
+				unplanned.results.map((record) => record.id),
+				`${label}: the allow-set must not change the results`
+			);
+		}
+	});
+
 	it('counts the null block a lt/le range reads, so a mostly-null column is not mis-estimated', async () => {
+		// A BigInt bound, because it is the one lt/le a missing value cannot satisfy: compareKeys has no
+		// type order for bigint and ranks undefined above it, while null still sorts below.
 		const N = table({
 			table: 'HNSWAllowNulls',
 			database: 'test',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
-				{ name: 'rank', indexed: true, type: 'Int' },
+				{ name: 'rank', indexed: true, type: 'BigInt' },
 				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
 			],
 		});
 		try {
 			// 200 of 300 rows have a null rank. The range starts at null and reads that block first, so
-			// an estimate taken over `[true, 50)` would size the budget at 50 and overrun it on entry 51.
-			for (let i = 0; i < 300; i++) await N.put(i, { rank: i < 200 ? null : i, vector: [i, 0] });
+			// an estimate taken over `[true, 250n)` would size the budget at 50 and overrun it on entry 51.
+			for (let i = 0; i < 300; i++) await N.put(i, { rank: i < 200 ? null : BigInt(i), vector: [i, 0] });
 			const customIndex = N.indices.vector.customIndex;
 			const original = customIndex.search;
 			let plan;
@@ -3443,7 +3470,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 						{
 							conditions: [
 								{ attribute: 'vector', comparator: 'sort', ...sort },
-								{ attribute: 'rank', comparator: 'lt', value: 250 },
+								{ attribute: 'rank', comparator: 'lt', value: 250n },
 							],
 							sort,
 							enforceExecutionOrder: true,
@@ -3608,6 +3635,47 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			);
 		} finally {
 			C.dropTable();
+		}
+	});
+
+	it('a string key and a composite key encoding to that string are both admitted', async () => {
+		const M = table({
+			table: 'HNSWAllowMixedKeys',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tenant', indexed: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		try {
+			// A string key is matched by value and ['a', 'b'] by writeKeyId, which is the string 'a\0b':
+			// one identity map for both would keep only one of the two.
+			await M.put('a\0b', { tenant: 'a', vector: [1, 0] });
+			await M.put(['a', 'b'], { tenant: 'a', vector: [2, 0] });
+			await M.put('other', { tenant: 'b', vector: [3, 0] });
+			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			const results = await fromAsync(
+				M.search(
+					{
+						conditions: [
+							{ attribute: 'vector', comparator: 'sort', ...sort },
+							{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+						],
+						sort,
+						enforceExecutionOrder: true,
+						select: ['id'],
+						limit: 5,
+					},
+					{}
+				)
+			);
+			assert.deepStrictEqual(
+				results.map((record) => record.id),
+				['a\0b', ['a', 'b']]
+			);
+		} finally {
+			M.dropTable();
 		}
 	});
 });
