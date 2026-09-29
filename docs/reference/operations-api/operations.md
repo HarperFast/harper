@@ -970,7 +970,7 @@ The origin cannot detect this in advance, so it checks afterward. Any peer that 
 
 <VersionBadge version="v5.3.0" />
 
-When a deploy replaces the release that is live, Harper keeps the replaced one under the `deployment_id` that deployed it. Activating that id puts it back, with no rebuild, resolve or install:
+When a deploy replaces the release that is live, Harper keeps the replaced one under the `deployment_id` that deployed it. Activating that id puts it back, with no rebuild, resolve, or install:
 
 ```json
 {
@@ -981,7 +981,7 @@ When a deploy replaces the release that is live, Harper keeps the replaced one u
 }
 ```
 
-[`list_deployments`](#list_deployments) shows each deployment's id. The activation publishes the root config entry that deployment published, so a `package` release gets its `package` entry back and a `payload` release removes the one a later deploy added. The release it replaces is kept in turn, so you can go forward again the same way.
+[`list_deployments`](#list_deployments) shows each deployment's id. The activation publishes the root config entry published by that deployment, so a `package` release gets its `package` entry back and a `payload` release removes the one a later deploy added. The release it replaces is kept in turn, so you can go forward again the same way.
 
 - **Kept releases count against [`deployment.stagingRetention.maxCount`](../configuration/options.md#deployment)**, with staged builds. The most recently replaced ones are kept.
 - **Each kept release is a full installed copy of the component, `node_modules` included.** At the default of `5`, budget disk for up to five extra copies per component. `0` keeps no replaced release.
@@ -993,13 +993,13 @@ When a deploy replaces the release that is live, Harper keeps the replaced one u
 
 <VersionBadge version="v5.3.0" />
 
-An activation of the id that is already live on a node succeeds there without a swap. If an activation fails partway — a peer was unreachable, or the component went live on the origin but its root config entry could not be written — retry the same `deployment_id`:
+An activation of the id that is already live on a node succeeds there without a swap. If an activation fails partway — a peer was unreachable, or the component went live on the origin but its root config entry could not be written — retry the same `deployment_id`. During the retry:
 
-- a node that already switched answers success,
-- a node still holding the build switches now,
-- a node that holds neither answers `404`.
+- A node that already switched answers success.
+- A node still holding the build switches now.
+- A node that holds neither answers `404`.
 
-The retry also finishes anything the failed attempt left half done on that node, such as writing the root config entry. A node that answers "already live" still restarts if you pass `restart`. Without `restart`, it marks the component as needing a restart, because it cannot tell whether every worker has loaded that release.
+The retry also finishes anything the failed attempt left half done on that node, such as writing the root config entry. A node that answers "already live" still restarts if you pass `restart` — every worker, including those of isolated applications, since it cannot tell which ones loaded the previous release. Without `restart`, it marks the component as needing a restart, because it cannot tell whether every worker has loaded that release.
 
 A plain deploy (without `activate: false`) that went live only on the origin leaves the peers nothing to activate. Their retry answers `404`, so deploy the release again instead.
 
