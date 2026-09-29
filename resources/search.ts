@@ -788,8 +788,8 @@ export function searchByIndex(
 							recordRead(loadedEntry);
 							// The hit is the index's own per-hit object (HNSW/full-text allocates one per
 							// result), so the loaded fields merge onto it in place; loadedEntry is the shared
-							// cached Entry. Overwrite rather than delete the supplied-entry marker so it
-							// doesn't leak into the result without forcing the hit into V8 dictionary mode.
+							// cached Entry. Null out rather than delete the supplied-entry marker: `delete`
+							// would force the hit into V8 dictionary mode when the key isn't last.
 							if (suppliedEntry !== undefined) entry.loadedEntry = undefined;
 							return Object.assign(entry, loadedEntry);
 						}
