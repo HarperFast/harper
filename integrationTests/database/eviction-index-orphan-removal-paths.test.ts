@@ -282,7 +282,6 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				);
 
 				strictEqual(bucketConsistency.baseCount, HEARTBEAT_IDS.length, 'only heartbeat rows survive the sweep');
-				// Count alone misses a swap (one heartbeat id evicted, one non-heartbeat id spared).
 				const postSweepBase = await primaryDump('Expiring');
 				deepStrictEqual(
 					postSweepBase.rows.map((r: any) => r.id).sort(),
@@ -361,11 +360,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 			strictEqual(delRes.status, 200, 'DeleteIds should succeed');
 
 			// checkConsistency alone can't tell "deleted and cleaned up" from "never touched": a
-			// no-op DeleteIds leaves both the rows and their index entries untouched, which reads as
-			// perfectly consistent. Confirm the delete actually happened first, via the same raw
-			// primaryStore oracle as the rest of this file (PrimaryDump already excludes a delete()
-			// tombstone's null value) rather than a REST GET, which would 404 the same way if Perm's
-			// own route broke instead of the delete running.
+			// no-op DeleteIds leaves both rows and index untouched, which reads as consistent.
 			const postDeleteDump = await primaryDump('Perm');
 			strictEqual(
 				postDeleteDump.rows.length,

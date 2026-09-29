@@ -424,17 +424,14 @@ suite(
 				const trajectory: string[] = [];
 
 				// DANGLING/MIRROR-FAILURE signature: record still resident (rawPresent) but its blob
-				// body can no longer be read. Checked on every poll tick below, not just once after
-				// full convergence -- by then rawPresent===false for every id and it can never fire.
-				// Keyed by id so a record stuck across many ticks reports once, not once per tick.
+				// body can no longer be read. Checked on every poll tick, keyed by id.
 				const danglingRefs = new Map<string, any>();
 				let normalRaw: any[] = [];
 				let alreadyRaw: any[] = [];
 
-				// A `raw` read outside a transaction takes no snapshot (resources/blob.ts
-				// snapshotStillSees), so its only margin against an in-flight eviction is the blob's
-				// reclamation delay (DEFAULT_RECLAMATION_DELAY). A genuine dangling ref persists, so
-				// one fresh re-read confirms it and rules out a stale one-off observation.
+				// LMDB has no snapshot-timestamp mechanism (resources/blob.ts snapshotStillSees), so a
+				// `raw` read's only margin against an in-flight eviction is the reclamation delay; a
+				// fresh re-read rules out a stale one-off observation.
 				async function confirmDangling(candidates: any[]) {
 					for (const body of candidates) {
 						if (body.rawPresent !== true || !body.readError) continue;
@@ -484,8 +481,7 @@ suite(
 
 				const anomalies = await checkAnomalyLog();
 
-				// ── DECISIVE ground-truth check for ALL normal-N and already-N ids — re-read once more
-				// so a deadline-exit is judged from the freshest state, not the last poll tick. ──
+				// ── DECISIVE ground-truth check for ALL normal-N and already-N ids ──
 				normalRaw = await Promise.all(
 					Array.from({ length: NORMAL_COUNT }, (_, i) => op({ action: 'raw', id: `normal-${i}` }).expect(200))
 				);
