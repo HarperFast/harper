@@ -4,8 +4,7 @@ import { FLOAT32_OPTIONS, pack, unpack } from 'msgpackr';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { ClientError, ServerError, DerivedIndexLagError } from '../../utility/errors/hdbError.ts';
 import type { Id } from '../../resources/ResourceInterface.ts';
-import type { CandidateKeyPlan } from '../search.ts';
-import { writeKeyId } from '../DatabaseTransaction.ts';
+import type { CandidateKeyPlan, CandidateKeySet } from '../search.ts';
 import {
 	DEFAULT_MAX_INDEX_LAG_MILLISECONDS,
 	MAX_WAIT_FOR_INDEX_MILLISECONDS,
@@ -884,7 +883,7 @@ export class HierarchicalNavigableSmallWorld {
 		plan: CandidateKeyPlan,
 		ef: number,
 		predicateMaxVisits: number
-	): { keys: Id[]; complete: boolean } | undefined {
+	): { keys: CandidateKeySet; complete: boolean } | undefined {
 		const nodeCount = this.approximateNodeCount();
 		const estimated = Math.max(1, plan.estimatedCount);
 		// Filling ef matches at selectivity s costs ~ef/s visits, and s is estimated/nodeCount, so a
@@ -1926,10 +1925,7 @@ export class HierarchicalNavigableSmallWorld {
 			// (AUTO_EF_MAX) however large the limit was. Raising ef to cover the request keeps `limit`
 			// meaningful; the caller pays for what it asked for.
 			minResults?: number;
-			// The sibling conditions search.ts could answer from secondary indexes. Turned into the
-			// traversal's admission set when that is cheaper than the predicate visits it replaces,
-			// and a set covering every pushed-down condition then replaces `filter` outright. Always
-			// optional — the predicate path is the fallback for every case this declines.
+			// Always optional: the predicate path is the fallback for every plan this declines.
 			candidateKeys?: CandidateKeyPlan;
 		} = {}
 	) {
@@ -2014,55 +2010,23 @@ export class HierarchicalNavigableSmallWorld {
 		const budgetEf = explicitEf || this.efSearchConfigured ? resolvedEf : Math.min(resolvedEf, AUTO_EF_MAX);
 		const predicateMaxVisits =
 			budgetEf * (filterExpansion && filterExpansion > 0 ? filterExpansion : this.filterExpansion);
-		// The keys an indexed companion condition selects, when reading them off the index costs less
-		// than the record loads the predicate would do instead.
 		const allowedKeys =
 			filter && candidateKeys ? this.collectCandidateKeys(candidateKeys, resolvedEf, predicateMaxVisits) : undefined;
-		// A plan is only allowed to REPLACE the predicate when it covers every pushed-down condition and
-		// no opaque record guard is in play; anything else keeps the predicate behind the allow-set.
 		const allowDecides = Boolean(allowedKeys?.complete);
 		const filterState: FilterState | undefined = filter
 			? {
 					maxVisits: predicateMaxVisits,
 					nodesVisited: 0,
 					filterEvaluations: 0,
-					candidateKeys: allowedKeys?.keys.length,
+					candidateKeys: allowedKeys?.keys.size,
 				}
 			: undefined;
 		if (allowedKeys && filter && filterState) {
 			// Both traversals admit by primary key — the plane hands its predicate the key of every
 			// candidate — so the set is a membership test in front of the record load, and a complete
 			// plan removes the load entirely.
-			//
-			// String and number keys are held by value, so an all-scalar set decides a scalar key from
-			// the traversal without encoding either a hit or a miss. Everything else goes to storage
-			// identity, which is what folds a BigInt onto the number the stores index it as — the two
-			// sides of a query decode an int64 differently, so a key can arrive as either. Zero goes
-			// there as well — Set membership is SameValueZero, which calls -0 and 0 the same key while
-			// the stores encode them apart — but only zero, not the set that happens to contain it.
-			const allowedScalars = new Set<Id>();
-			let byValue = true;
-			for (const primaryKey of allowedKeys.keys) {
-				const type = typeof primaryKey;
-				if (type !== 'string' && type !== 'number') byValue = false;
-				else if (primaryKey !== 0) allowedScalars.add(primaryKey);
-			}
-			// Built on the first key the value set cannot decide, which in by-value mode is a key shape
-			// the collected set does not even contain.
-			let allowedIds: Set<unknown> | undefined;
-			const encodedAdmits = (primaryKey: Id) => {
-				if (!allowedIds) {
-					allowedIds = new Set();
-					for (const key of allowedKeys.keys) allowedIds.add(writeKeyId(key));
-				}
-				return allowedIds.has(writeKeyId(primaryKey));
-			};
-			const admits = byValue
-				? (primaryKey: Id) =>
-						typeof primaryKey === 'string' || (typeof primaryKey === 'number' && primaryKey !== 0)
-							? allowedScalars.has(primaryKey)
-							: encodedAdmits(primaryKey)
-				: (primaryKey: Id) => allowedScalars.has(primaryKey) || encodedAdmits(primaryKey);
+			const allowed = allowedKeys.keys;
+			const admits = (primaryKey: Id) => allowed.has(primaryKey);
 			const residual = filter;
 			const state = filterState;
 			state.countsOwnEvaluations = true;
@@ -2086,7 +2050,7 @@ export class HierarchicalNavigableSmallWorld {
 							: undefined;
 				state.maxVisits =
 					configured === undefined
-						? this.allowSetVisitBudget(allowedKeys.keys.length, predicateMaxVisits, budgetEf)
+						? this.allowSetVisitBudget(allowedKeys.keys.size, predicateMaxVisits, budgetEf)
 						: budgetEf * configured;
 			}
 		}

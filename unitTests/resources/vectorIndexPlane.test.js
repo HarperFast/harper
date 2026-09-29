@@ -7,6 +7,7 @@ const { waitFor } = require('../waitFor');
 const { table, resetDatabases } = require('#src/resources/databases');
 const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
+const { CandidateKeySet } = require('#src/resources/search');
 const { DERIVED_INDEX_CURSOR_KEY, derivedIndexReadiness } = require('#src/resources/indexes/hnswDerivedIndex');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { pack } = require('msgpackr');
@@ -922,7 +923,9 @@ describe('HNSW native plane allow-set filtering (#2688)', function () {
 	}
 	/** A CandidateKeyPlan over a known id set, so the plane's admission path is exercised on its own. */
 	function planFor(ids, complete = true) {
-		return { estimatedCount: ids.length, collect: () => ({ keys: [...ids], complete }) };
+		const keys = new CandidateKeySet();
+		for (const id of ids) keys.add(id);
+		return { estimatedCount: ids.length, collect: () => ({ keys, complete }) };
 	}
 
 	before(async () => {

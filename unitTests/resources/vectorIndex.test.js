@@ -4,6 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { HierarchicalNavigableSmallWorld } = require('#src/resources/indexes/HierarchicalNavigableSmallWorld');
+const { CandidateKeySet } = require('#src/resources/search');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
@@ -3384,7 +3385,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			{ limit: 5 }
 		);
 		assert.strictEqual(probed.complete, true, 'no residual predicate is needed');
-		assert.strictEqual(probed.keys.length, 100, 'the allow-set is every tenant-a record');
+		assert.strictEqual(probed.keys.size, 100, 'the allow-set is every tenant-a record');
 		assert.strictEqual(stats.candidateKeys, 100);
 		assert.strictEqual(stats.filterEvaluations, 0, 'admission never loads a record');
 		assert.deepStrictEqual(
@@ -3483,7 +3484,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			} finally {
 				customIndex.search = original;
 			}
-			assert.strictEqual(plan.keys.length, 250, 'the 200 nulls plus ranks 200-249');
+			assert.strictEqual(plan.keys.size, 250, 'the 200 nulls plus ranks 200-249');
 			assert.strictEqual(plan.complete, true);
 		} finally {
 			N.dropTable();
@@ -3547,10 +3548,13 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			(plan) => ({ capped: plan.collect(150), full: plan.collect(100_000) })
 		);
 		assert.strictEqual(probed.capped.complete, false, 'a dropped term leaves the set incomplete');
-		assert.strictEqual(probed.capped.keys.length, 100, 'only the tenant term was scanned');
+		assert.strictEqual(probed.capped.keys.size, 100, 'only the tenant term was scanned');
 		assert.strictEqual(probed.full.complete, true, 'given the whole budget both terms are scanned');
-		assert.strictEqual(probed.full.keys.length, 97, 'tenant a minus the three narrow-shard multiples of 3');
-		assert(stats.filterEvaluations >= 0);
+		assert.strictEqual(probed.full.keys.size, 97, 'tenant a minus the three narrow-shard multiples of 3');
+		assert(
+			stats.filterEvaluations > 0 && stats.filterEvaluations <= stats.candidateKeys,
+			'the dropped shard term is evaluated only behind the allow-set'
+		);
 		assert.deepStrictEqual(
 			results.map((record) => record.id),
 			[0, 3, 6]
@@ -3578,7 +3582,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			(plan) => ({ capped: plan.collect(1), full: plan.collect(100_000) })
 		);
 		assert.strictEqual(probed.capped, null, 'the narrowest term overrunning gives up instead of reading on');
-		assert.strictEqual(probed.full.keys.length, 100);
+		assert.strictEqual(probed.full.keys.size, 100);
 		assert.strictEqual(probed.full.complete, true);
 	});
 
@@ -3592,7 +3596,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			{ limit: 1 }
 		);
 		assert.strictEqual(probed.complete, false, 'ne is answered by a scan plus a filter, so it stays residual');
-		assert.strictEqual(probed.keys.length, 100, 'only the equality became a scan');
+		assert.strictEqual(probed.keys.size, 100, 'only the equality became a scan');
 	});
 
 	it('composite primary keys that flatten alike are both admitted', async () => {
@@ -3690,10 +3694,15 @@ describeUnlessLmdbFilter('HNSW allow-set admission (#2688)', () => {
 		for (let i = 0; i < count; i++) hnsw.index(i, [i], null, {});
 		return hnsw;
 	}
+	function keySet(keys) {
+		const set = new CandidateKeySet();
+		for (const key of keys) set.add(key);
+		return set;
+	}
 	function plan(keys, complete = true, collect) {
 		return {
 			estimatedCount: keys.length,
-			collect: collect ?? (() => ({ keys: [...keys], complete })),
+			collect: collect ?? (() => ({ keys: keySet(keys), complete })),
 		};
 	}
 	const even = (primaryKey) => Number(primaryKey) % 2 === 0;
@@ -3747,7 +3756,7 @@ describeUnlessLmdbFilter('HNSW allow-set admission (#2688)', () => {
 				estimatedCount: 150,
 				collect() {
 					collected = true;
-					return { keys: [], complete: true };
+					return { keys: keySet([]), complete: true };
 				},
 			},
 		});
@@ -3816,6 +3825,19 @@ describeUnlessLmdbFilter('HNSW allow-set admission (#2688)', () => {
 			[2, 4, 6, 8, 10],
 			'a number allow-set must match the BigInt keys the graph reports'
 		);
+	});
+
+	it('CandidateKeySet matches keys by storage identity', () => {
+		const keys = keySet([4n, 7, 0, ['a', 'b'], 'x']);
+		assert(keys.has(4), 'a number matches the BigInt it encodes as');
+		assert(keys.has(7n), 'a BigInt matches the number it encodes as');
+		assert(keys.has(0));
+		assert(!keys.has(-0), '-0 and 0 are different stored keys');
+		assert(keys.has(['a', 'b']));
+		assert(!keys.has('a\0b'), 'a string is not the composite key whose encoding it spells');
+		assert(!keySet(['a\0b']).has(['a', 'b']));
+		assert(keys.has('x'));
+		assert.strictEqual(keys.size, 5);
 	});
 
 	it('an incomplete plan keeps the predicate behind the allow-set', () => {

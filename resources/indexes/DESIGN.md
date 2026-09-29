@@ -193,16 +193,17 @@ passes stays on the predicate path. `compareKeys` ranks undefined below every sc
 `lt`/`le` over a number, string or boolean bound, `ge null` and `between [null, x]`. The `lt`/`le` that
 remain (a BigInt bound) start at `null`, not `searchByIndex`'s `true`, so indexed nulls are read. A `-0`
 bound is normalized, because ordered-binary encodes `-0` above every number. Open: a record written with
-a literal `-0` is indexed at that encoding and missed by every numeric range, index-led queries included.
+a literal `-0` gets an index entry that sorts past every number and decodes to a wrong primary key, so
+no scan can supply it; index-led queries miss it too, and the fix belongs in the encoder or index writer.
 
 Building the set is a cost decision: one index-entry read per match against a record load per visited
 node, where filling `ef` matches at selectivity `s` takes about `ef / s` visits. `KEYS_PER_PREDICATE_VISIT`
 is that ratio at the warm, regression-safe end of the measured range; `MAX_CANDIDATE_KEYS` and half the
 node count cap the synchronous scan. A complete set derives the visit budget from its selectivity,
 widening the `filterExpansion` budget by at most `ALLOW_SET_BUDGET_MAX_WIDENING` and never narrowing it;
-a configured `filterExpansion` stays authoritative. Keys match by value for strings and non-zero numbers
-and by `writeKeyId` otherwise, in separate maps: `writeKeyId(['a', 'b'])` is the string `'a\0b'`. A
-node-id bitset for the native plane is not built: the pk → node-id lookup costs more than the load it saves.
+a configured `filterExpansion` stays authoritative. `CandidateKeySet` is the one identity rule for both
+the scan's intersection and admission. A node-id bitset for the native plane is not built: the
+pk → node-id lookup costs more than the record load it saves.
 
 ## Derived-index runtime: committed-log delivery to native index backends (`resources/derivedIndexRuntime.ts`)
 

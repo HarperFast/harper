@@ -420,7 +420,41 @@ export interface CandidateKeyPlan {
 	 * superset that gates the predicate instead of replacing it. Null when even the narrowest term
 	 * overruns, which means the whole plan was not worth what it read.
 	 */
-	collect(maxKeys: number): { keys: Id[]; complete: boolean } | null;
+	collect(maxKeys: number): { keys: CandidateKeySet; complete: boolean } | null;
+}
+
+/**
+ * Primary keys by storage identity. Strings and non-zero numbers are their own identity, which spares
+ * encoding the common key shapes; the rest go by writeKeyId, the encoder the stores index by —
+ * flattenKey joins composite keys with NUL and collapses ['a', 'b\0c'] and ['a\0b', 'c'], and Set
+ * membership calls -0 and 0 one key. The two are kept apart because an encoded identity is a string
+ * that can equal a string key: writeKeyId(['a', 'b']) is 'a\0b'. An index scan and a graph traversal
+ * decode an int64 differently, so a BigInt and a number that encode alike are the same key.
+ */
+export class CandidateKeySet {
+	#byValue = new Set<Id>();
+	#encoded = new Set<unknown>();
+	#holdsBigInt = false;
+	add(primaryKey: Id): void {
+		if (typeof primaryKey === 'string' || (typeof primaryKey === 'number' && primaryKey !== 0))
+			this.#byValue.add(primaryKey);
+		else {
+			if (typeof primaryKey === 'bigint') this.#holdsBigInt = true;
+			this.#encoded.add(writeKeyId(primaryKey));
+		}
+	}
+	has(primaryKey: Id): boolean {
+		if (typeof primaryKey === 'string') return this.#byValue.has(primaryKey);
+		if (typeof primaryKey === 'number' && primaryKey !== 0)
+			return this.#byValue.has(primaryKey) || (this.#holdsBigInt && this.#encoded.has(writeKeyId(primaryKey)));
+		return (
+			this.#encoded.has(writeKeyId(primaryKey)) ||
+			(typeof primaryKey === 'bigint' && this.#byValue.has(Number(primaryKey)))
+		);
+	}
+	get size(): number {
+		return this.#byValue.size + this.#encoded.size;
+	}
 }
 
 interface CandidateKeyScan {
@@ -432,17 +466,6 @@ interface CandidateKeyScan {
 interface CandidateKeyTerm {
 	scans: CandidateKeyScan[];
 	estimatedCount: number;
-}
-/**
- * Matched primary keys by identity. Strings and non-zero numbers are their own identity, which spares
- * encoding the common key shapes; the rest go by writeKeyId, the encoder the stores index by —
- * flattenKey joins composite keys with NUL and collapses ['a', 'b\0c'] and ['a\0b', 'c'], and Set
- * membership calls -0 and 0 one key. Kept apart because an encoded identity is a string that can
- * equal a string key: writeKeyId(['a', 'b']) is 'a\0b'.
- */
-interface CandidateKeyMatches {
-	byValue: Set<Id>;
-	encoded: Map<unknown, Id>;
 }
 
 // Comparators whose secondary-index range is EXACTLY the condition over the values an index holds,
@@ -471,7 +494,6 @@ function planCandidateKeyScan(condition, table): CandidateKeyScan | undefined {
 	const attributeName = condition.attribute ?? condition[0];
 	if (typeof attributeName !== 'string' || attributeName === table.primaryKey) return undefined;
 	const index = usableIndex(table, attributeName);
-	// A custom index (another HNSW) has no scannable value range.
 	if (!index || index.customIndex) return undefined;
 	const comparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] ?? condition.comparator ?? 'equals';
 	if (!CANDIDATE_KEY_COMPARATORS.has(comparator)) return undefined;
@@ -555,12 +577,10 @@ function planCandidateKeyScan(condition, table): CandidateKeyScan | undefined {
 	return { index, range: { start, end, inclusiveEnd, exclusiveStart }, estimatedCount };
 }
 
-/** Undefined when nothing among the siblings can be read off an index exactly. */
 function planCandidateKeys(conditions, table, transaction, guardFree: boolean): CandidateKeyPlan | undefined {
 	const terms: CandidateKeyTerm[] = [];
 	const planned = collectCandidateKeyTerms(conditions, table, terms) && guardFree;
 	if (terms.length === 0) return undefined;
-	// AND terms intersect, so the narrowest one bounds the result; scanning is bounded separately.
 	const estimatedCount = terms.reduce((narrowest, term) => Math.min(narrowest, term.estimatedCount), Infinity);
 	return {
 		estimatedCount,
@@ -568,7 +588,7 @@ function planCandidateKeys(conditions, table, transaction, guardFree: boolean): 
 	};
 }
 
-/** Fills `terms` with the plannable AND terms; returns whether every condition was covered. */
+/** Returns whether every condition was covered. */
 function collectCandidateKeyTerms(conditions, table, terms: CandidateKeyTerm[]): boolean {
 	let complete = true;
 	for (const condition of conditions) {
@@ -610,9 +630,9 @@ function collectCandidateKeys(
 	transaction,
 	maxKeys: number,
 	planned: boolean
-): { keys: Id[]; complete: boolean } | null {
+): { keys: CandidateKeySet; complete: boolean } | null {
 	const ordered = terms.length > 1 ? terms.slice().sort((a, b) => a.estimatedCount - b.estimatedCount) : terms;
-	let matched: CandidateKeyMatches | undefined;
+	let matched: CandidateKeySet | undefined;
 	let complete = planned;
 	let scanned = 0;
 	for (const term of ordered) {
@@ -620,7 +640,7 @@ function collectCandidateKeys(
 			complete = false;
 			continue;
 		}
-		const next: CandidateKeyMatches = { byValue: new Set(), encoded: new Map() };
+		const next = new CandidateKeySet();
 		let overran = false;
 		for (const scan of term.scans) {
 			for (const { value: primaryKey } of scan.index.getRange({ ...scan.range, values: true, transaction })) {
@@ -628,12 +648,7 @@ function collectCandidateKeys(
 					overran = true;
 					break;
 				}
-				if (typeof primaryKey === 'string' || (typeof primaryKey === 'number' && primaryKey !== 0)) {
-					if (!matched || matched.byValue.has(primaryKey)) next.byValue.add(primaryKey);
-				} else {
-					const identity = writeKeyId(primaryKey);
-					if (!matched || matched.encoded.has(identity)) next.encoded.set(identity, primaryKey);
-				}
+				if (!matched || matched.has(primaryKey)) next.add(primaryKey);
 			}
 			if (overran) break;
 		}
@@ -644,9 +659,9 @@ function collectCandidateKeys(
 			break;
 		}
 		matched = next;
-		if (matched.byValue.size === 0 && matched.encoded.size === 0) break;
+		if (matched.size === 0) break;
 	}
-	return { keys: [...matched!.byValue, ...matched!.encoded.values()], complete };
+	return { keys: matched!, complete };
 }
 
 /**
@@ -986,8 +1001,6 @@ export function searchByIndex(
 			// exploring until it has enough MATCHING results, rather than post-filtering an under-filled
 			// candidate set. Only indexes that opt in (filteredSearch) receive it; others post-filter as before.
 			const recordFilter = index.customIndex.filteredSearch ? searchCondition.recordFilter : undefined;
-			// Offered only to an index that advertises the capability, so an external filteredSearch
-			// implementation keeps the predicate-only call shape it was written against.
 			const candidateKeys = index.customIndex.candidateKeyFilter ? (searchCondition as any).candidateKeys : undefined;
 			const waiting = index.customIndex.filePrimary && searchCondition.waitForIndexMilliseconds > 0;
 			const start = waiting ? Promise.withResolvers<void>() : undefined;
