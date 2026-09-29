@@ -810,7 +810,7 @@ export interface TableResourceClass {
 	};
 	userSetDeciders: Set<string>;
 	decideAttributes: DecideAttribute[];
-	source?: TableResourceClass;
+	source?: any;
 	sourceOptions: any;
 	intermediateSource: boolean;
 	getResidencyById: (id: Id) => number | void;
@@ -826,7 +826,7 @@ export interface TableResourceClass {
 	 * @param options
 	 * @returns
 	 */
-	sourcedFrom(source: any, options: any): TableResourceClass;
+	sourcedFrom<This extends TableResourceClass>(this: This, source: any, options: any): This | undefined;
 	get isCaching(): any;
 	/** Indicates if the events should be revalidated when they are received. By default we do this if the get
 	 * method is overriden */
@@ -1756,7 +1756,7 @@ export function makeTable(options): TableResourceClass {
 		static userDeciders: { [name: string]: Decider } = {};
 		static userSetDeciders: Set<string> = new Set();
 		static decideAttributes: DecideAttribute[] = (attributes as any[]).filter((a) => a?.decide);
-		static source?: TableResourceClass;
+		static source?: any;
 		declare static sourceOptions: any;
 		declare static intermediateSource: boolean;
 		static getResidencyById: (id: Id) => number | void;
@@ -1777,7 +1777,7 @@ export function makeTable(options): TableResourceClass {
 		 * @returns
 		 */
 		// #section: resource-registry
-		static sourcedFrom(source, options): TableResourceClass {
+		static sourcedFrom<This extends TableResourceClass>(this: This, source: any, options: any): This | undefined {
 			// define a source for retrieving invalidated entries for caching purposes
 			if (options) {
 				this.sourceOptions = options;
@@ -8222,6 +8222,8 @@ export function makeTable(options): TableResourceClass {
 		AssertNoDrift<MemberDrift<TableResource<ParitySentinel>, TableResourceInstance<ParitySentinel>>>,
 		AssertNoDrift<MemberDrift<Omit<typeof TableResource, 'prototype'>, Omit<TableResourceClass, 'prototype'>>>,
 		AssertTrue<ExactlyEqual<ConstructorParameters<typeof TableResource>, ConstructorParameters<TableResourceClass>>>,
+		AssertTrue<ExactlyEqual<InstanceType<TableResourceClass>, TableResourceInstance<object>>>,
+		AssertTrue<ExactlyEqual<TableResourceClass['prototype'], TableResourceInstance>>,
 	];
 	const throttledCallToSource = throttle(
 		async (source, id, sourceContext, existingEntry) => {

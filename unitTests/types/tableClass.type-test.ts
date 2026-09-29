@@ -4,10 +4,7 @@
  * accessors, its statics and instances are typed, and none of its private state is part of the type.
  *
  * Run (after `npm run build`):  npm run test:types
- * A green run IS the proof; `@ts-expect-error` lines prove the negative cases.
  */
-
-/* eslint-disable @typescript-eslint/no-unused-vars */
 
 import type { Table } from '../../dist/index.js';
 import type { TableResourceClass, TableResourceInstance } from '../../dist/resources/Table.js';
@@ -29,9 +26,6 @@ export class CachedDog extends Dog {
 	get isCollection() {
 		return super.isCollection;
 	}
-	static sourcedFrom(source: any, options: any) {
-		return super.sourcedFrom(source, options);
-	}
 }
 
 type _tableIsTheClass = Expect<Table extends TableResourceClass ? true : false>;
@@ -40,7 +34,6 @@ type _instanceIsTyped = Expect<Equal<IsAny<InstanceType<Table>>, false>>;
 type _getUpdatedTime = Expect<Equal<ReturnType<TableResourceInstance['getUpdatedTime']>, number>>;
 type _recordCount = Expect<Equal<Awaited<ReturnType<Table['getRecordCount']>>['recordCount'], number>>;
 type _staticMetadata = Expect<Equal<Table['get']['reliesOnPrototype'], boolean>>;
-type _sourcedFromReturnsTheClass = Expect<Equal<ReturnType<Table['sourcedFrom']>, TableResourceClass>>;
 
 interface DogRecord {
 	name: string;
@@ -52,10 +45,13 @@ type _getResource = Expect<
 	Equal<typeof loaded, Promise<TableResourceInstance<DogRecord>> | TableResourceInstance<DogRecord>>
 >;
 
+const cached = CachedDog.sourcedFrom({ get() {} }, {});
+type _sourcedFromKeepsTheSubclass = Expect<Equal<typeof cached, typeof CachedDog | undefined>>;
+
 // @ts-expect-error a DogRecord's name is a string
 dog.put(1 as any, { name: 1 });
 // @ts-expect-error getUpdatedTime returns a number
-const updated: string = dog.getUpdatedTime();
+const _updated: string = dog.getUpdatedTime();
 
 // @ts-expect-error private state is not part of the instance type
 dog['__#private@#record'];
