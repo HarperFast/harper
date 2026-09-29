@@ -45,11 +45,19 @@ type _getResource = Expect<
 	Equal<typeof loaded, Promise<TableResourceInstance<DogRecord>> | TableResourceInstance<DogRecord>>
 >;
 
-const cached = CachedDog.sourcedFrom({ get() {} }, {});
-type _sourcedFromKeepsTheSubclass = Expect<Equal<typeof cached, typeof CachedDog | undefined>>;
+export class DogCache extends Dog<DogRecord> {
+	get(target?: any) {
+		return super.get(target);
+	}
+}
+DogCache.sourcedFrom({ get() {} }, {});
+CachedDog.sourcedFrom({ get() {} }, {});
+const cachedDog = new DogCache(1, null);
 
 // @ts-expect-error a DogRecord's name is a string
 dog.put(1 as any, { name: 1 });
+// @ts-expect-error a record-specialized subclass keeps its record type
+cachedDog.put(1 as any, { name: 1 });
 // @ts-expect-error getUpdatedTime returns a number
 const _updated: string = dog.getUpdatedTime();
 
