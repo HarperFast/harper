@@ -401,6 +401,18 @@
 				"attribute": "payload_blob"
 			},
 			{
+				"attribute": "artifact_hash"
+			},
+			{
+				"attribute": "artifact_size"
+			},
+			{
+				"attribute": "artifact_blob"
+			},
+			{
+				"attribute": "artifact_build"
+			},
+			{
 				"attribute": "status"
 			},
 			{

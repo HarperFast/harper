@@ -343,9 +343,10 @@ recovery runs on main before `installApplications()` reads `getConfigObj()`.
 
 Not covered, and pre-existing: other threads' memoized config stays stale until a restart re-inits it; the
 boot-time config writers and out-of-process editors are not serialized with the lock; and
-`installApplications()` still reinstalls a package-deployed component from its source at the next start
-whenever `harper-application-lock.json` does not match its entry — which, since no deploy writes that file, is
-the first start after every package deploy. Validation of a package deploy now runs under the entry in force
+`installApplications()` reinstalled a package-deployed component from its source at the next start whenever
+`harper-application-lock.json` did not match its entry — which, since no deploy writes that file, was the first start
+after every package deploy; since #2315 step 7 the live tree's provenance decides first (_Every node runs the tree
+the origin built_, below). Validation of a package deploy now runs under the entry in force
 rather than the one being deployed, since the latter is no longer published until the commit.
 
 ### Retention of dormant staged builds
@@ -386,8 +387,8 @@ later activation displaces it, it becomes dormant again under the same id, withi
 `deployment_stagingRetention_maxCount`. A node holding neither answers 404 (#2315 step 5). Four pieces:
 
 - **Provenance rides the tree.** `buildCandidateApplication` writes `.harper-deployment.json` — `{ v, component,
-deploymentId }` — at the top of every candidate it extracts, after the install and before `.complete`, replacing
-  any marker the payload carried. It moves with the tree through the commit rename, so the live tree always names
+deploymentId }`, plus `described: true` for a build that keeps a record — at the top of every candidate it extracts,
+  after the install and before `.complete`, replacing any marker the payload carried. It moves with the tree through the commit rename, so the live tree always names
   the build that made it live, and anything else that replaces the directory replaces the marker too: it is
   absent, never stale. A `file:` link gets none, since its target is not the deploy's to write, and a live link
   has no provenance whatever its target holds. The tree is the component's own to write, which is why the marker
@@ -454,9 +455,78 @@ it. An older build reads a record as residue and removes it, and a kept release 
 can activate; the marker is an ignored file to it. The journal format is unchanged. A peer on an older build
 answers 404 to a consumed id, as before. `deployment_stagingRetention_maxCount` (default 5) now bounds kept
 releases with staged builds, and each is a whole installed tree, so at the default a component holds up to five
-extra copies of itself; `0` keeps no previous release, and the rest of this section still applies. Until #2315
-step 7, a package component reinstalls from its source on the first start after each package deploy; that
-reinstall keeps no record, but the certified tree it displaces is kept, which is the one worth keeping.
+extra copies of itself; `0` keeps no previous release, and the rest of this section still applies. A kept release
+is marked `.displaced` before its tree is put back, which exempts it from the tree check a staged build gets at
+activation (next section).
+
+### Every node runs the tree the origin built
+
+A replicated deploy used to hand peers a recipe: the uploaded source, or a `package:` identifier, which each peer
+resolved and installed itself, so a moving reference, a dependency range, an install script or an `install_command`
+could leave nodes running different bytes (#2295). Since #2315 step 7 the origin builds once and every peer takes
+that tree. When every participating node runs this, the tree a node admits for deployment D — when it receives D,
+and when it activates D from a staged build that never went live — is the tree D's origin built, compared by a
+canonical digest over every path, file content, link target and owner-exec bit.
+
+- **The manifest.** Every described build (every `deploy_component`) writes descriptor v2: `.artifact.json` gains
+  `build: { tree, platform }` and `certifiedTree`, from one walk of the certified candidate
+  (`components/buildArtifact.ts` `inventoryBuild`). The digest is one JSON record per path — `D`, `F` with owner-exec
+  and sha256, `L` with the link target, `P` for presence only — sorted by the path's UTF-8 bytes, so no filename
+  can spell another record. It leaves out what every node writes for itself: the provenance marker,
+  `node_modules/harper`, the `node_modules` directory a load creates to hold that link, and the contents and target of
+  `node_modules/harperdb`, which the loader re-points whenever it exists. v1 descriptors are still read and activated,
+  with nothing to check; a build older than this refuses v2, so a downgrade cannot activate past the checks.
+- **Platform facts.** The same walk records what the build binds. A `.node` addon binds OS, CPU architecture and
+  libc, and the Node ABI unless it is a Node-API addon (it references `napi_` and none of the V8 or node C++ linkage
+  names; lmdb's `node.napi.node`, which also references `node_module_register`, reads as ABI-bound, on the safe
+  side). Any other ELF, Mach-O or PE file, and any `package.json` declaring `os`, `cpu` or `libc`, bind the first
+  three. A link or an owner-executable file binds POSIX semantics, which win32 cannot hold — tar-fs drops links
+  there silently. An install that ran `install_command` or install scripts binds all four, since nothing inspects
+  what it produced. A node refuses a build only on a field it binds and the node does not share, naming the field,
+  the path that binds it and both values; a zero-dependency or pure-JS tree runs anywhere.
+- **The origin publishes before it swaps.** `prepareApplication`'s `publishBuild` runs after the manifest and before
+  `.complete` and the swap, so a failure leaves nothing live. `deploy_component` wires it only when the operation
+  will reach another node (`publishesBuild`: a recorder, `replicated !== false`, `server.nodes` non-empty); core,
+  a single node and an explicitly local deploy pack nothing. Publishing refuses what no other node could receive: a
+  `file:` directory source, which is a link, and a tree that links outside itself (`assertOwnedArtifactTree`, the
+  `replicate` action). The pack is `streamPackagedDirectory` with `skip_symlinks`, which packs links as links — the
+  option only stops them being followed. It streams through the recorder's hash/size tap into `artifact_blob`,
+  beside `payload_blob`, whose meaning (the uploaded bytes) is unchanged. The operation carries
+  `_artifact: { sha256, size, installationIsOpaque, build }`. When `system` does not replicate, or this node has no
+  deployment table, the build rides as `payload` instead, which the operation logs already mask; harper-pro encodes
+  the operation once per peer, so that path is refused before the swap once `size × peers` passes
+  `replication_maxPayload` (default 100 MB).
+- **A peer takes the build as it is.** It checks the platform before fetching anything, reads `artifact_blob`
+  (`awaitDeploymentRow` with `blobAttribute`) or the body, verifies sha256 and size as the archive ends, extracts
+  with `validateSymlinks: false` — the tree's links include links through links — and no wrapper-flattening,
+  resolves no credentials, installs nothing, re-derives the digest from what landed and refuses any difference. It
+  keeps the origin's `installationIsOpaque`, and records the origin's manifest with `certifiedTree` re-derived when
+  its own load check ran, since a load can write into the tree. It answers `artifact: <tree>`.
+- **The origin checks the answers.** A successful peer answer without the published tree is recorded as a failed
+  peer — typically a node on an older build that built the release itself — so the deploy reports it and, with
+  `ignore_replication_errors`, the build is not reclaimed from under it. A stage's unconfirmed-staging message keeps
+  precedence. After a fully successful non-stage deploy the artifact blob is dropped past
+  `deployment_payloadRetention_maxSize`, like the payload; a stage keeps it. `delete_deployment_payload` drops it only
+  with `artifact: true`.
+- **A delayed activation checks what it swaps in.** The origin puts its descriptor's tree in the replicated
+  activation. Each node refuses 409, before the swap: a platform its descriptor binds and it does not share; a
+  descriptor naming another tree; and, for a staged build never live (no `.displaced`), a tree that no longer
+  re-derives to `certifiedTree`. A kept release is not re-verified: a component may write into its own tree while it
+  serves (the Next.js plugin runs `next build` into it at load). Roll-forward admits a journal written after these
+  checks; the already-live retry swaps nothing.
+- **Boot keeps what a deploy made live.** `installApplications` runs at start and in every `restartWorkers` reload,
+  including a package deploy's own `restart: true`, and used to reinstall whenever `harper-application-lock.json`
+  did not match — which no deploy writes. `deployedReleaseVerdict` now decides first from the live tree's provenance:
+  its record's descriptor keeps the tree when `package` and `install` match (routing, isolation and credentials do not
+  decide bytes), and reinstalls otherwise. A marker written with `described: true` whose record is missing or
+  unreadable keeps the tree and logs that a redeploy is needed, never rebuilding from a reference that may have
+  moved; a platform the node no longer shares is logged, not rebuilt or quarantined (the addon classification would
+  quarantine a loadable Node-API addon). A tree nothing described falls back to the lock, as before.
+
+Not covered: a node that joins after a deploy installs from configuration, since it received no deploy to take a build
+from; a build's own load-time output (the Next.js plugin's `.next`) is still produced per node; glibc version skew is
+not checked. Enforced by `unitTests/components/buildArtifact.test.js`, `deployPrebuiltBuild.test.js` and
+`integrationTests/deploy/deploy-prebuilt-artifact.test.ts`; the replicated row path by harper-pro's cluster tests.
 
 ## Component preparation is serialized across worker threads
 

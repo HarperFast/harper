@@ -35,8 +35,10 @@ import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 import {
 	DEPLOYMENT_PROVENANCE_FILE,
 	formatDeploymentProvenance,
-	parseDeploymentProvenance,
+	parseDeploymentProvenanceRecord,
+	type DeploymentProvenance,
 } from './deploymentProvenance.ts';
+import { inventoryBuild, isBuildManifest, platformRefusal, type BuildManifest } from './buildArtifact.ts';
 
 import { basename, dirname, extname, isAbsolute, join, relative, sep, win32 } from 'node:path';
 import {
@@ -1091,7 +1093,13 @@ const CANDIDATE_ARTIFACT_FILE = '.artifact.json';
 // its journal; `readActivationJournal` derives its effect from the artifact descriptor where one exists.
 const ACTIVATION_JOURNAL_VERSION = 2;
 const LEGACY_ACTIVATION_JOURNAL_VERSION = 1;
-const ARTIFACT_DESCRIPTOR_VERSION = 1;
+// v2 adds the build's manifest. v1 was written by a build that recorded no identity or platform; it is still
+// activated, with nothing to check.
+const ARTIFACT_DESCRIPTOR_VERSION = 2;
+const LEGACY_ARTIFACT_DESCRIPTOR_VERSION = 1;
+// Written into a deployment's record before the tree it displaced is put back. That tree was live, and a component
+// may write into its own tree while it serves, so it no longer has to match the manifest its build recorded.
+const DISPLACED_MARKER = '.displaced';
 const DEFAULT_STAGING_RETENTION_MAX_COUNT = 5;
 // A digest of the component, not its name, follows the uuid in a claim's name: a long name would pass the filename
 // limit.
@@ -1377,6 +1385,13 @@ export type ArtifactDescriptor = {
 	rootConfig: Record<string, unknown> | null;
 	installationIsOpaque: boolean;
 	isolated: boolean;
+	/** Absent only in a v1 descriptor, written before builds recorded one. */
+	build?: BuildManifest;
+	/**
+	 * The tree this node certified, which a delayed activation re-derives. The build's own tree unless this node took
+	 * another node's build and its load then wrote into it.
+	 */
+	certifiedTree?: string;
 };
 
 /**
@@ -1405,8 +1420,20 @@ async function readArtifactDescriptor(
 	} catch (error) {
 		throw unusable(`Artifact descriptor ${descriptorPath} is not readable JSON: ${errorMessage(error)}`);
 	}
-	if (!parsed || typeof parsed !== 'object' || parsed.v !== ARTIFACT_DESCRIPTOR_VERSION) {
+	if (
+		!parsed ||
+		typeof parsed !== 'object' ||
+		(parsed.v !== ARTIFACT_DESCRIPTOR_VERSION && parsed.v !== LEGACY_ARTIFACT_DESCRIPTOR_VERSION)
+	) {
 		throw unusable(`Artifact descriptor ${descriptorPath} is version ${parsed?.v}, which this build cannot activate`);
+	}
+	if (
+		parsed.v === ARTIFACT_DESCRIPTOR_VERSION &&
+		(!isBuildManifest(parsed.build) ||
+			typeof parsed.certifiedTree !== 'string' ||
+			!/^[0-9a-f]{64}$/.test(parsed.certifiedTree))
+	) {
+		throw unusable(`Artifact descriptor ${descriptorPath} does not record its build's tree and platform`);
 	}
 	if (!isJoinableComponentName(parsed.component) || parsed.component !== componentName) {
 		throw unusable(
@@ -1451,12 +1478,16 @@ const LOADER_OWNED_LINKS = new Set(['harper', 'harperdb']);
 async function assertOwnedArtifactTree(
 	candidateDirPath: string,
 	componentName: string,
-	action: 'stage' | 'activate' = 'stage'
+	action: 'stage' | 'activate' | 'replicate' = 'stage'
 ): Promise<void> {
-	// The operator supplied a component that cannot be staged (400); or the artifact they named exists and is
-	// theirs but is no longer what was certified (409). Neither is a server fault, and both reached the
+	// The operator supplied a component that cannot be staged or replicated (400); or the artifact they named exists
+	// and is theirs but is no longer what was certified (409). Neither is a server fault, and both reached the
 	// operations handler as a bare 500 until a live run showed what that looks like to a caller.
-	const refuse = (message: string) => new ClientError(message, action === 'stage' ? 400 : 409);
+	const refuse = (message: string) => new ClientError(message, action === 'activate' ? 409 : 400);
+	const consequence =
+		action === 'replicate'
+			? 'so the other nodes would not receive the bytes this build certified'
+			: 'so the bytes activated later would not be the bytes this build certified';
 	const ownedRoot = await realpath(candidateDirPath);
 	// The loader repairs the component's OWN `node_modules/harper`, not a copy nested inside a dependency,
 	// so only that one path is exempt. Matching the name at any depth would let `dep/node_modules/harper`
@@ -1479,7 +1510,7 @@ async function assertOwnedArtifactTree(
 			if (target === undefined || (target !== ownedRoot && !target.startsWith(ownedRoot + sep))) {
 				throw refuse(
 					`Cannot ${action} ${componentName}: ${entryPath} links outside the build to ${target ?? 'a missing target'}, ` +
-						`so the bytes activated later would not be the bytes this build certified`
+						consequence
 				);
 			}
 			// `repairRelocatedDependencyLinks` re-points links after the swap, but it runs PAST THE COMMIT
@@ -1544,18 +1575,22 @@ async function writeArtifactDescriptor(
 async function writeDeploymentProvenance(
 	candidateDirPath: string,
 	componentName: string,
-	deploymentId: string
+	deploymentId: string,
+	described: boolean
 ): Promise<void> {
 	const markerPath = join(candidateDirPath, DEPLOYMENT_PROVENANCE_FILE);
 	await rm(markerPath, { recursive: true, force: true });
-	await writeControlFileDurably(markerPath, formatDeploymentProvenance(componentName, deploymentId));
+	await writeControlFileDurably(markerPath, formatDeploymentProvenance(componentName, deploymentId, described));
 }
 
 /**
  * A link carries no provenance, whatever its target holds. A read that fails propagates rather than reading as
  * absent.
  */
-async function readDeploymentProvenance(treePath: string, componentName: string): Promise<string | undefined> {
+async function readDeploymentProvenanceRecord(
+	treePath: string,
+	componentName: string
+): Promise<DeploymentProvenance | undefined> {
 	const tree = await presentOrAbsent(treePath);
 	if (!tree?.isDirectory()) return undefined;
 	const raw = await readFile(join(treePath, DEPLOYMENT_PROVENANCE_FILE), 'utf8').catch(
@@ -1564,7 +1599,11 @@ async function readDeploymentProvenance(treePath: string, componentName: string)
 			throw error;
 		}
 	);
-	return raw === undefined ? undefined : parseDeploymentProvenance(raw, componentName);
+	return raw === undefined ? undefined : parseDeploymentProvenanceRecord(raw, componentName);
+}
+
+async function readDeploymentProvenance(treePath: string, componentName: string): Promise<string | undefined> {
+	return (await readDeploymentProvenanceRecord(treePath, componentName))?.deploymentId;
 }
 
 async function isDeploymentRecord(deploymentDirPath: string, componentName: string): Promise<boolean> {
@@ -1682,6 +1721,9 @@ async function retainDisplacedRelease(
 	}
 	const keptTreePath = join(recordDirPath, componentName);
 	try {
+		await writeControlFileDurably(join(recordDirPath, DISPLACED_MARKER), '').catch((error: NodeJS.ErrnoException) => {
+			if (error?.code !== 'EEXIST') throw error;
+		});
 		await renameThroughTransientHolder(displacedTreePath, keptTreePath);
 	} catch (error) {
 		logger.warn(
@@ -3523,6 +3565,17 @@ async function discardCandidate(application: Application, deploymentId: string):
 	await rmdir(dirname(deploymentDirPath)).catch(() => {});
 }
 
+/** A build another node made and certified, which this node takes as it is: nothing is resolved or installed. */
+export type PrebuiltBuild = { manifest: BuildManifest; installationIsOpaque: boolean };
+
+export type CandidateBuildOptions = {
+	/** Why a `file:` directory, which is linked rather than copied, cannot be this build's source. */
+	rejectLinkSource?: 'stage' | 'replicate';
+	prebuilt?: PrebuiltBuild;
+	/** The build will be recorded as `.deploy-staging/<id>`, which its provenance says so boot can tell. */
+	described?: boolean;
+};
+
 /**
  * Build a deploy candidate at `.deploy-staging/<deploymentId>/<component>`, leaving the live tree
  * completely untouched — this is what lets the previous version keep serving through the clone, the
@@ -3534,7 +3587,7 @@ async function discardCandidate(application: Application, deploymentId: string):
 export async function buildCandidateApplication(
 	application: Application,
 	deploymentId: string,
-	options: { rejectLinkSource?: boolean } = {}
+	options: CandidateBuildOptions = {}
 ): Promise<string> {
 	const deploymentDirPath = candidateDeploymentDirPath(application.dirPath, deploymentId);
 	const candidateDirPath = candidateApplicationPath(application.dirPath, deploymentId);
@@ -3547,8 +3600,12 @@ export async function buildCandidateApplication(
 		if (resolved.kind === 'link' && options.rejectLinkSource) {
 			// What the operator asked for, not a server fault: the same component deploys immediately.
 			throw new ClientError(
-				`Cannot stage ${application.name} from ${application.packageIdentifier}: a 'file:' directory is linked ` +
-					`rather than copied, so the bytes activated later are not the bytes this build certified`
+				options.rejectLinkSource === 'stage'
+					? `Cannot stage ${application.name} from ${application.packageIdentifier}: a 'file:' directory is linked ` +
+							`rather than copied, so the bytes activated later are not the bytes this build certified`
+					: `Cannot replicate ${application.name} from ${application.packageIdentifier}: a 'file:' directory is ` +
+							`linked rather than copied, so the other nodes cannot receive the bytes this node would run. Deploy ` +
+							`a packed tarball instead, or deploy with replicated: false on each node`
 			);
 		}
 		if (resolved.kind === 'link') {
@@ -3558,7 +3615,8 @@ export async function buildCandidateApplication(
 		} else {
 			const { tarball, tarballPath, shouldDeleteTarball } = resolved;
 			try {
-				await extractTarballInto(tarball, candidateDirPath, deploymentDirPath);
+				if (options.prebuilt) await extractBuildInto(tarball, candidateDirPath);
+				else await extractTarballInto(tarball, candidateDirPath, deploymentDirPath);
 			} finally {
 				if (!tarball.destroyed) tarball.destroy();
 				if (shouldDeleteTarball && tarballPath) {
@@ -3573,15 +3631,52 @@ export async function buildCandidateApplication(
 		// which are arbitrary code from the registry running as this uid, cannot ask the helper for the
 		// deployer's git token. `prepareApplication`'s finally still calls this; it is idempotent.
 		await application.cleanupGitCredentialSession();
-		await installApplication(application, candidateDirPath);
+		if (options.prebuilt) {
+			const received = await inventoryBuild(candidateDirPath);
+			if (received.tree !== options.prebuilt.manifest.tree) {
+				throw new ClientError(
+					`Cannot deploy ${application.name} from deployment ${deploymentId}: the tree extracted here (${received.tree}) ` +
+						`is not the tree its origin built (${options.prebuilt.manifest.tree})`,
+					409
+				);
+			}
+			application.installationIsOpaque = options.prebuilt.installationIsOpaque;
+		} else {
+			await installApplication(application, candidateDirPath);
+		}
 		// After the install, which can rewrite the tree; never through a link, whose target is not the deploy's to write.
 		if (resolved.kind !== 'link') {
-			await writeDeploymentProvenance(candidateDirPath, application.name, deploymentId);
+			await writeDeploymentProvenance(candidateDirPath, application.name, deploymentId, !!options.described);
 		}
 		return candidateDirPath;
 	} catch (error) {
 		await discardCandidate(application, deploymentId);
 		throw error;
+	}
+}
+
+/**
+ * Extract a tree `packBuild` packed on another node. Its links are part of the tree, including links through links,
+ * which tar-fs refuses unless told otherwise; the tree digest checked after this is what vouches for them.
+ */
+async function extractBuildInto(archive: Readable, targetDirPath: string): Promise<void> {
+	await mkdir(targetDirPath, { recursive: true });
+	// tar-fs drops every link on win32 without a word, which would leave a tree the manifest does not describe.
+	let droppedLink: string | undefined;
+	// `validateSymlinks` postdates tar-fs's published types.
+	const extractOptions: import('tar-fs').ExtractOptions & { validateSymlinks: boolean } = {
+		validateSymlinks: false,
+		ignore:
+			process.platform === 'win32'
+				? (name, header) => {
+						if (header?.type === 'symlink') droppedLink ??= name;
+						return false;
+					}
+				: undefined,
+	};
+	await pipeline(archive, gunzip(), extract(targetDirPath, extractOptions));
+	if (droppedLink !== undefined) {
+		throw new ClientError(`This node cannot create the link ${droppedLink} the build carries`, 409);
 	}
 }
 
@@ -4317,6 +4412,7 @@ export async function installApplication(application: Application, buildDirPath 
 			);
 		}
 		const [command, ...args] = application.install.command.split(' ');
+		application.uninspectableInstall = 'install_command';
 		const customOnLine = application.onInstallLine
 			? (stream: 'stdout' | 'stderr', line: string) => application.onInstallLine!(command, stream, line)
 			: undefined;
@@ -4362,6 +4458,7 @@ export async function installApplication(application: Application, buildDirPath 
 		application.logger.info(`Application ${application.name} has no production package work; skipping install`);
 		return;
 	}
+	if (allowInstallScripts) application.uninspectableInstall = 'install_allow_scripts';
 
 	// Next, try package.json devEngines field
 	// Custom package manager specified
@@ -4533,6 +4630,10 @@ export class Application {
 	isNewComponent: boolean = true;
 	packageMetadataChanged: boolean = false;
 	installationIsOpaque: boolean = false;
+	/** Set when the install ran something whose output nothing can inspect: a custom command, or install scripts. */
+	uninspectableInstall?: 'install_command' | 'install_allow_scripts';
+	/** The tree digest of the build this preparation admitted, when its manifest records one. */
+	admittedTree?: string;
 	alreadyActive: boolean = false;
 
 	constructor({ name, payload, packageIdentifier, install, onInstallLine, credentials }: ApplicationOptions) {
@@ -4697,7 +4798,7 @@ export type PrepareApplicationOptions = {
 	 * behavior, where the swap committed first and a load failure was reported over an already-live
 	 * broken release.
 	 */
-	validateCandidate?: (candidateDirPath: string) => Promise<void>;
+	validateCandidate?: (candidateDirPath: string) => Promise<boolean | void>;
 	/**
 	 * Names `.deploy-staging/<artifactId>`, and is not the deploy-lifecycle token: that token de-duplicates
 	 * overlapping deploys of one component and is released by the first matching end, so two activations of
@@ -4721,6 +4822,16 @@ export type PrepareApplicationOptions = {
 	describeArtifact?: () => { rootConfig: Record<string, unknown> | null; isolated: boolean };
 	/** `activate` only: admit the artifact's isolation intent under the preparation lock, before the swap. */
 	admitIsolation?: (descriptor: ArtifactDescriptor) => Promise<void>;
+	/** `deploy` and `stage`: another node's certified build, taken as it is instead of being resolved and installed. */
+	prebuilt?: PrebuiltBuild;
+	/**
+	 * `deploy` and `stage`: hand the certified candidate and its manifest to the other nodes, before the candidate is
+	 * described or goes live, so a throw leaves nothing activated. A `file:` directory source, and a tree that links
+	 * outside itself, are refused when this is set: no other node could receive them.
+	 */
+	publishBuild?: (candidateDirPath: string, build: PrebuiltBuild) => Promise<void>;
+	/** `activate` only: the tree the requesting node's record of this deployment names. */
+	expectedTree?: string;
 };
 
 export async function prepareApplication(application: Application, options: PrepareApplicationOptions = {}) {
@@ -4771,6 +4882,13 @@ export async function prepareApplication(application: Application, options: Prep
 					if ((await readDeploymentProvenance(application.dirPath, application.name)) === artifactId) {
 						application.alreadyActive = true;
 						application.packageMetadataChanged = true;
+						application.admittedTree = await readArtifactDescriptor(
+							candidateDeploymentDirPath(application.dirPath, artifactId),
+							application.name
+						).then(
+							(descriptor) => descriptor?.build?.tree,
+							() => undefined
+						);
 						application.logger.debug?.(`Deployment ${artifactId} is already live; nothing to swap`);
 						return;
 					}
@@ -4788,7 +4906,9 @@ export async function prepareApplication(application: Application, options: Prep
 						// that fail before it gets there.
 						await application.startGitCredentialSession();
 						candidateDirPath = await buildCandidateApplication(application, artifactId, {
-							rejectLinkSource: mode === 'stage',
+							rejectLinkSource: mode === 'stage' ? 'stage' : options.publishBuild ? 'replicate' : undefined,
+							prebuilt: options.prebuilt,
+							described: options.describeArtifact !== undefined,
 						});
 					} finally {
 						await application.cleanupGitCredentialSession();
@@ -4796,7 +4916,7 @@ export async function prepareApplication(application: Application, options: Prep
 					try {
 						// Validated while the previous version is still the one serving, so a candidate that
 						// installs cleanly but throws at load is rejected without ever having been live.
-						await options.validateCandidate?.(candidateDirPath);
+						const loaded = await options.validateCandidate?.(candidateDirPath);
 						if (!application.isNewComponent) {
 							application.packageMetadataChanged = installedRuntimeChanged(
 								previousPackageMetadata,
@@ -4804,39 +4924,56 @@ export async function prepareApplication(application: Application, options: Prep
 								application.installationIsOpaque
 							);
 						}
-						if (mode === 'stage') {
-							await assertOwnedArtifactTree(candidateDirPath, application.name);
-							// The descriptor goes first so `.complete` vouches for it: after this pair the artifact
-							// is dormant, and a delayed activation reads its build's decisions from here because
-							// nothing on disk carries them otherwise.
-							const declared = options.describeArtifact?.() ?? { rootConfig: null, isolated: false };
-							await writeArtifactDescriptor(application.dirPath, artifactId, {
-								v: ARTIFACT_DESCRIPTOR_VERSION,
-								component: application.name,
-								rootConfig: declared.rootConfig,
-								installationIsOpaque: application.installationIsOpaque,
-								isolated: declared.isolated,
-							});
-							await markCandidateComplete(application.dirPath, artifactId, application.name);
-							await syncArtifactAncestors(candidateDeploymentDirPath(application.dirPath, artifactId));
-							return;
-						}
 						const declared = options.describeArtifact?.();
 						// The directory outlives the swap as the record a later displacement puts this release back into;
 						// a link has no bytes of its own to put back.
-						const described = declared && !(await lstat(candidateDirPath)).isSymbolicLink() ? declared : undefined;
+						const described =
+							mode === 'stage'
+								? (declared ?? { rootConfig: null, isolated: false })
+								: declared && !(await lstat(candidateDirPath)).isSymbolicLink()
+									? declared
+									: undefined;
+						if (mode === 'stage' || options.publishBuild) {
+							await assertOwnedArtifactTree(
+								candidateDirPath,
+								application.name,
+								mode === 'stage' ? 'stage' : 'replicate'
+							);
+						}
+						let manifest: BuildManifest | undefined;
+						let certifiedTree: string | undefined;
 						if (described) {
+							manifest =
+								options.prebuilt?.manifest ??
+								(await inventoryBuild(candidateDirPath, { uninspectableInstall: application.uninspectableInstall }));
+							application.admittedTree = manifest.tree;
+							// A load can write into the tree it loads, so what this node keeps is what it holds now.
+							certifiedTree =
+								options.prebuilt && loaded ? (await inventoryBuild(candidateDirPath)).tree : manifest.tree;
+						}
+						if (options.publishBuild && manifest) {
+							await options.publishBuild(candidateDirPath, {
+								manifest,
+								installationIsOpaque: application.installationIsOpaque,
+							});
+						}
+						if (described) {
+							// The descriptor goes first so `.complete` vouches for it: a delayed activation reads its build's
+							// decisions from here because nothing on disk carries them otherwise.
 							await writeArtifactDescriptor(application.dirPath, artifactId, {
 								v: ARTIFACT_DESCRIPTOR_VERSION,
 								component: application.name,
 								rootConfig: described.rootConfig,
 								installationIsOpaque: application.installationIsOpaque,
 								isolated: described.isolated,
+								build: manifest,
+								certifiedTree,
 							});
 						}
 						await markCandidateComplete(application.dirPath, artifactId, application.name);
-						// The record is meant to outlive the swap, so its own entry has to be on storage, as a stage's is.
+						// A stage's artifact, and a deploy's record, outlive this call, so their entries have to be on storage.
 						if (described) await syncArtifactAncestors(candidateDeploymentDirPath(application.dirPath, artifactId));
+						if (mode === 'stage') return;
 						await activateCandidateApplication(application, artifactId, {
 							rootConfig: declared ? rootConfigEffectFromDeclaration(declared.rootConfig) : { kind: 'keep' },
 						});
@@ -4930,6 +5067,17 @@ async function activateStagedArtifact(
 	}
 	const descriptor = await readArtifactDescriptor(deploymentDirPath, application.name);
 	if (!descriptor) throw unusable('it does not record what its build decided');
+	if (descriptor.build) {
+		const refusal = platformRefusal(descriptor.build.platform);
+		if (refusal) throw unusable(refusal);
+	}
+	if (options.expectedTree !== undefined && descriptor.build?.tree !== options.expectedTree) {
+		throw unusable(
+			`the build this node holds (${descriptor.build?.tree ?? 'recorded without a tree'}) is not the one the ` +
+				`requesting node holds (${options.expectedTree})`
+		);
+	}
+	application.admittedTree = descriptor.build?.tree;
 
 	await options.admitIsolation?.(descriptor);
 
@@ -4938,6 +5086,14 @@ async function activateStagedArtifact(
 	// `repairRelocatedDependencyLinks` runs past the commit point and can only warn, so a link planted while
 	// the artifact sat dormant would otherwise go live with the operation reporting success.
 	await assertOwnedArtifactTree(candidateDirPath, application.name, 'activate');
+	// A release that was live may carry what the component wrote into it while serving; one that never was must still
+	// be the tree it was certified as.
+	if (descriptor.certifiedTree && !(await presentOrAbsent(join(deploymentDirPath, DISPLACED_MARKER)))) {
+		const { tree } = await inventoryBuild(candidateDirPath);
+		if (tree !== descriptor.certifiedTree) {
+			throw unusable(`its tree (${tree}) is no longer the one this node certified (${descriptor.certifiedTree})`);
+		}
+	}
 	// Also the activation's `prepare` phase end: the deploy path emits `prepare`/`start` for every mode but
 	// only ever emitted its `done` from here.
 	await options.validateCandidate?.(candidateDirPath);
@@ -5170,9 +5326,12 @@ async function installConfiguredApplication(
 	onDeployStart: (deploymentId: string) => void
 ): Promise<void> {
 	try {
+		const deployed = existsSync(dirPath) ? await deployedReleaseVerdict(dirPath, name, applicationConfig) : 'unknown';
+		if (deployed === 'keep') return;
 		// Lock check: only install if not already installed with matching configuration
 		const installedConfig = (await readApplicationLock(harperApplicationLockPath)).applications[name];
 		if (
+			deployed === 'unknown' &&
 			existsSync(dirPath) &&
 			installedConfig &&
 			JSON.stringify(installedConfig) === JSON.stringify(applicationConfig)
@@ -5217,6 +5376,66 @@ async function installConfiguredApplication(
 		logger.error?.(`Failed to prepare application ${name}:`, errorForLog(error));
 		throw error;
 	}
+}
+
+/**
+ * Whether the live tree is a deployed release that boot must keep. A deployment's record decides, since only it says
+ * what the tree was built from; the install lock describes boot's own installs, not what a deploy made live since.
+ * `unknown` leaves the decision to the lock: the tree is a boot install, or older than deployments recording
+ * themselves.
+ */
+export async function deployedReleaseVerdict(
+	dirPath: string,
+	name: string,
+	applicationConfig: ApplicationConfig
+): Promise<'keep' | 'reinstall' | 'unknown'> {
+	const provenance = await readDeploymentProvenanceRecord(dirPath, name).catch(() => undefined);
+	if (!provenance) return 'unknown';
+	const { deploymentId, described } = provenance;
+	let descriptor: ArtifactDescriptor | undefined;
+	let unreadable: unknown;
+	try {
+		descriptor = await readArtifactDescriptor(candidateDeploymentDirPath(dirPath, deploymentId), name);
+	} catch (error) {
+		unreadable = error;
+	}
+	if (!descriptor) {
+		if (!described) return 'unknown';
+		// Rebuilding would resolve the package again, and a moving reference would replace the release this record
+		// described with different bytes, unasked.
+		logger.error?.(
+			`Application ${name} runs deployment ${deploymentId}, whose record is ` +
+				`${unreadable ? `unreadable (${errorMessage(unreadable)})` : 'missing'}; keeping the running release ` +
+				`rather than reinstalling it from configuration. Redeploy ${name} to repair it`
+		);
+		return 'keep';
+	}
+	if (!builtFromConfiguration(descriptor.rootConfig, applicationConfig)) return 'reinstall';
+	const refusal = descriptor.build && platformRefusal(descriptor.build.platform);
+	if (refusal) {
+		logger.error?.(
+			`Application ${name} runs deployment ${deploymentId}, which this node cannot run: ${refusal}. Redeploy ${name}`
+		);
+	} else {
+		logger.info?.(
+			`Application ${name} runs deployment ${deploymentId}, built from this configuration; skipping installation`
+		);
+	}
+	return 'keep';
+}
+
+/** Only the package and its install settings decide the bytes; routing, isolation and credentials do not. */
+function builtFromConfiguration(built: Record<string, unknown> | null, configured: ApplicationConfig): boolean {
+	if (!built || built.package !== configured.package) return false;
+	return canonicalInstall(built.install) === canonicalInstall(configured.install);
+}
+
+function canonicalInstall(install: unknown): string | undefined {
+	if (!install || typeof install !== 'object') return undefined;
+	const defined = Object.entries(install)
+		.filter(([, value]) => value !== undefined)
+		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+	return defined.length ? JSON.stringify(defined) : undefined;
 }
 
 type ApplicationLockFile = { applications: Record<string, ApplicationConfig> };

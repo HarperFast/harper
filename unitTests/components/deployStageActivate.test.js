@@ -129,11 +129,14 @@ describe('staging a build without activating it', () => {
 		await stage(root, 'web', 'a1', 'STAGED v2\n');
 
 		const descriptor = await readDescriptor(root, 'a1');
-		assert.strictEqual(descriptor.v, 1);
+		assert.strictEqual(descriptor.v, 2);
 		assert.strictEqual(descriptor.component, 'web');
 		assert.strictEqual(descriptor.rootConfig, null, 'a payload deploy owns no root-config entry');
 		assert.strictEqual(descriptor.installationIsOpaque, false);
 		assert.strictEqual(descriptor.isolated, false);
+		assert.match(descriptor.build.tree, /^[0-9a-f]{64}$/, 'and the tree it built');
+		assert.strictEqual(descriptor.certifiedTree, descriptor.build.tree, 'which is the tree it certified');
+		assert.deepStrictEqual(descriptor.build.platform.binds, {}, 'a tree with nothing native binds no platform');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 

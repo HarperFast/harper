@@ -34,6 +34,7 @@ const IPV6_SCHEMA = Joi.string().ip({ version: 'ipv6' });
 // filesystem resolves an uppercase id to the real directory while every string compare against it fails:
 // the retention pin would not recognise the artifact the request is about to activate, and would evict it.
 const DEPLOYMENT_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 module.exports = {
 	getDropCustomFunctionValidator,
@@ -514,6 +515,15 @@ function deployComponentValidator(req) {
 		_deploymentId: Joi.string().pattern(DEPLOYMENT_ID_REGEX).optional().messages({
 			'string.pattern.base': `'_deploymentId' must be a UUID`,
 		}),
+		// Set by deployComponent from the origin's certified build and carried to peers, which install it instead of
+		// building the release themselves. The manifest inside is checked in full where it is used.
+		_artifact: Joi.object({
+			sha256: Joi.string().pattern(SHA256_HEX),
+			size: Joi.number().integer().min(0),
+			installationIsOpaque: Joi.boolean().strict(),
+			build: Joi.object(),
+			tree: Joi.string().pattern(SHA256_HEX),
+		}).optional(),
 		restart: Joi.alternatives()
 			.try(Joi.boolean(), Joi.string().valid('rolling'))
 			.optional()

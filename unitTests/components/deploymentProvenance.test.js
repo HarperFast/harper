@@ -2,11 +2,31 @@
 
 const assert = require('node:assert');
 
-const { formatDeploymentProvenance, parseDeploymentProvenance } = require('#src/components/deploymentProvenance');
+const {
+	formatDeploymentProvenance,
+	parseDeploymentProvenance,
+	parseDeploymentProvenanceRecord,
+} = require('#src/components/deploymentProvenance');
 
 describe('deployment provenance', () => {
 	it('reads back the id it wrote, for the component it wrote it for', () => {
 		assert.strictEqual(parseDeploymentProvenance(formatDeploymentProvenance('web', 'd1'), 'web'), 'd1');
+	});
+
+	it('says whether the build recorded itself, in a form older readers still accept', () => {
+		const described = formatDeploymentProvenance('web', 'd1', true);
+		assert.deepStrictEqual(parseDeploymentProvenanceRecord(described, 'web'), { deploymentId: 'd1', described: true });
+		assert.strictEqual(parseDeploymentProvenance(described, 'web'), 'd1', 'the id reads the same');
+		assert.strictEqual(JSON.parse(described).v, 1, 'no new version for a field old readers ignore');
+		assert.deepStrictEqual(parseDeploymentProvenanceRecord(formatDeploymentProvenance('web', 'd1'), 'web'), {
+			deploymentId: 'd1',
+			described: false,
+		});
+		assert.deepStrictEqual(JSON.parse(formatDeploymentProvenance('web', 'd1')), {
+			v: 1,
+			component: 'web',
+			deploymentId: 'd1',
+		});
 	});
 
 	it('records nothing usable for a different component, version, or shape', () => {

@@ -36,6 +36,8 @@ interface GetRequest {
 interface PayloadRequest {
 	deployment_id: string;
 	hdb_user?: { username?: string; role?: { permission?: { super_user?: boolean } } };
+	/** `delete_deployment_payload` only: also delete the build the origin replicated. */
+	artifact?: boolean;
 }
 
 function requireSuperUser(req: PayloadRequest, operationName: string): void {
@@ -58,12 +60,13 @@ function deploymentTable() {
 	return table;
 }
 
-// Strip the blob attribute from a row; the bytes never travel over the operations API.
-// A separate get_deployment_payload operation streams the raw bytes when callers need them.
+// Strip the blob attributes from a row; the bytes never travel over the operations API.
+// A separate get_deployment_payload operation streams the raw payload bytes when callers need them.
 function stripBlob(row: any): any {
 	if (!row || typeof row !== 'object') return row;
-	const { payload_blob, ...rest } = row;
+	const { payload_blob, artifact_blob, ...rest } = row;
 	rest.payload_blob_present = payload_blob != null;
+	rest.artifact_blob_present = artifact_blob != null;
 	return rest;
 }
 
@@ -249,6 +252,9 @@ export async function handleGetDeploymentPayload(req: PayloadRequest): Promise<R
 export async function handleDeleteDeploymentPayload(
 	req: PayloadRequest
 ): Promise<{ message: string; deployment_id: string; freed_bytes: number }> {
+	if (req?.artifact !== undefined && typeof req.artifact !== 'boolean') {
+		throw new ClientError(`'artifact' must be a boolean`, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
 	const row = await requireDeploymentRow(req?.deployment_id);
 	if (!TERMINAL_STATUSES.has(row.status)) {
 		// A non-terminal deployment's blob may still be the replication channel peers are
@@ -259,27 +265,34 @@ export async function handleDeleteDeploymentPayload(
 			409
 		);
 	}
-	if (row.payload_blob == null) {
+	const kinds = req.artifact ? (['payload', 'artifact'] as const) : (['payload'] as const);
+	const dropping = kinds.filter((kind) => row[`${kind}_blob`] != null);
+	if (!dropping.length) {
 		// Idempotent: deleting an already-reclaimed payload succeeds without a write.
 		return {
-			message: `No payload stored for deployment '${req.deployment_id}'`,
+			message: `No ${req.artifact ? 'payload or build' : 'payload'} stored for deployment '${req.deployment_id}'`,
 			deployment_id: req.deployment_id,
 			freed_bytes: 0,
 		};
 	}
-	const freedBytes = typeof row.payload_size === 'number' ? row.payload_size : 0;
 	// Copy before mutating — the row from get() may be a shared/cached record.
-	const updated: any = { ...row, payload_blob: null };
+	const updated: any = { ...row };
 	updated.event_log = Array.isArray(row.event_log) ? [...row.event_log] : [];
-	// Mirror the recorder's event_log entry shape and the automatic drop's event name.
-	updated.event_log.push({
-		t: Date.now(),
-		event: 'payload_dropped',
-		data: { payload_size: freedBytes, deleted_by: req.hdb_user?.username ?? null },
-	});
+	let freedBytes = 0;
+	for (const kind of dropping) {
+		const size = typeof row[`${kind}_size`] === 'number' ? row[`${kind}_size`] : 0;
+		freedBytes += size;
+		updated[`${kind}_blob`] = null;
+		// Mirror the recorder's event_log entry shape and the automatic drop's event name.
+		updated.event_log.push({
+			t: Date.now(),
+			event: `${kind}_dropped`,
+			data: { [`${kind}_size`]: size, deleted_by: req.hdb_user?.username ?? null },
+		});
+	}
 	await deploymentTable().put(updated);
 	return {
-		message: `Deleted payload for deployment '${req.deployment_id}'`,
+		message: `Deleted ${dropping.map((kind) => (kind === 'artifact' ? 'build' : kind)).join(' and ')} for deployment '${req.deployment_id}'`,
 		deployment_id: req.deployment_id,
 		freed_bytes: freedBytes,
 	};

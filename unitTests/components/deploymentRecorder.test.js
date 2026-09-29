@@ -345,6 +345,61 @@ describe('DeploymentRecorder.dropPayload', () => {
 	});
 });
 
+describe('DeploymentRecorder artifact', () => {
+	let installed;
+	beforeEach(() => {
+		installed = installMockDeploymentTable();
+	});
+	afterEach(() => installed.restore());
+	const manifest = {
+		tree: 'a'.repeat(64),
+		platform: { os: 'linux', arch: 'x64', libc: 'glibc', abi: '137', binds: {} },
+	};
+
+	it('starts every row with no build', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		for (const field of ['artifact_blob', 'artifact_hash', 'artifact_size', 'artifact_build']) {
+			assert.strictEqual(recorder.row[field], null, field);
+		}
+	});
+
+	it('ingests a build beside the payload, with its own digest, size and manifest', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		await recorder.ingestPayload(Buffer.from('the upload'));
+		await recorder.ingestArtifact(Buffer.from('the built tree'), manifest);
+		const persisted = await installed.mock.get(recorder.deploymentId);
+		const sha256 = require('node:crypto').createHash('sha256').update('the built tree').digest('hex');
+		assert.strictEqual(persisted.artifact_hash, sha256);
+		assert.strictEqual(persisted.artifact_size, Buffer.byteLength('the built tree'));
+		assert.deepStrictEqual(persisted.artifact_build, manifest);
+		assert.ok(persisted.artifact_blob);
+		assert.strictEqual(persisted.payload_size, Buffer.byteLength('the upload'), 'the payload is its own');
+	});
+
+	it('drops the build independently of the payload, keeping its metadata', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		recorder.row.payload_blob = { fake: true };
+		recorder.row.artifact_blob = { fake: true };
+		recorder.row.artifact_size = 4096;
+		assert.strictEqual(recorder.dropArtifact(), 4096);
+		assert.strictEqual(recorder.row.artifact_blob, null);
+		assert.strictEqual(recorder.row.artifact_size, 4096);
+		assert.ok(recorder.row.payload_blob, 'the payload is untouched');
+		assert.strictEqual(recorder.dropArtifact(), 0, 'nothing left to drop');
+	});
+
+	it('is what a peer waits for when it takes the origin’s build', async () => {
+		installed.mock.rows.set('d1', { deployment_id: 'd1', payload_blob: { fake: true }, artifact_blob: null });
+		await assert.rejects(
+			() => awaitDeploymentRow('d1', { timeoutMs: 50, pollIntervalMs: 10, blobAttribute: 'artifact_blob' }),
+			/replicated but its artifact_blob has not arrived/
+		);
+		setTimeout(() => installed.mock.rows.set('d1', { deployment_id: 'd1', artifact_blob: { fake: true } }), 20);
+		const row = await awaitDeploymentRow('d1', { timeoutMs: 1000, pollIntervalMs: 10, blobAttribute: 'artifact_blob' });
+		assert.ok(row.artifact_blob);
+	});
+});
+
 describe('awaitDeploymentRow', () => {
 	let installed;
 	beforeEach(() => {

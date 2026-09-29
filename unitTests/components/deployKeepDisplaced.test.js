@@ -106,7 +106,8 @@ async function entriesOf(dirPath) {
 }
 
 const RECORD = ['.artifact.json', '.complete', '.component'];
-const DORMANT = [...RECORD, 'web'];
+// A kept release is marked as having been live, which exempts it from the tree check a staged build gets.
+const KEPT = [...RECORD, '.displaced', 'web'];
 
 function setMaxCount(value) {
 	env.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, value);
@@ -255,7 +256,7 @@ describe('keeping the release an activation displaces', () => {
 			await deploy(root, 'd2', 'V2\n');
 
 			assert.strictEqual(await readLive(root), 'V2\n');
-			assert.deepStrictEqual(await entriesOf(deploymentDir(root, 'd1')), DORMANT, 'V1 is dormant under d1');
+			assert.deepStrictEqual(await entriesOf(deploymentDir(root, 'd1')), KEPT, 'V1 is dormant under d1');
 			assert.strictEqual(await fs.readFile(path.join(deploymentDir(root, 'd1'), 'web', 'index.js'), 'utf8'), 'V1\n');
 			assert.strictEqual(existsSync(path.join(root, ASIDE_STAGING_DIR, 'web')), false, 'and nothing is left aside');
 			assert.strictEqual(rootConfigEntry('web'), undefined, 'the payload release owns no registry provenance');
@@ -264,8 +265,12 @@ describe('keeping the release an activation displaces', () => {
 
 			assert.strictEqual(await readLive(root), 'V1\n');
 			assert.deepStrictEqual(rootConfigEntry('web'), PACKAGE_V1.rootConfig, 'what d1 declared, published again');
-			assert.deepStrictEqual(await entriesOf(deploymentDir(root, 'd2')), DORMANT, 'and V2 took its place');
-			assert.deepStrictEqual(await entriesOf(deploymentDir(root, 'd1')), RECORD);
+			assert.deepStrictEqual(await entriesOf(deploymentDir(root, 'd2')), KEPT, 'and V2 took its place');
+			assert.deepStrictEqual(
+				await entriesOf(deploymentDir(root, 'd1')),
+				[...RECORD, '.displaced'],
+				'a record whose release was kept stays marked as once live'
+			);
 
 			await activate(root, 'd2');
 
@@ -319,7 +324,7 @@ describe('keeping the release an activation displaces', () => {
 
 			await stage(root, 's1', 'STAGED\n');
 
-			assert.deepStrictEqual(await entriesOf(deploymentDir(root, 'd1')), DORMANT, 'kept by the next preparation');
+			assert.deepStrictEqual(await entriesOf(deploymentDir(root, 'd1')), KEPT, 'kept by the next preparation');
 			assert.strictEqual(await fs.readFile(path.join(deploymentDir(root, 'd1'), 'web', 'index.js'), 'utf8'), 'V1\n');
 			assert.strictEqual(existsSync(path.join(root, ASIDE_STAGING_DIR, 'web')), false);
 			await fs.rm(root, { recursive: true, force: true });
@@ -335,7 +340,7 @@ describe('keeping the release an activation displaces', () => {
 			await deploy(root, 'd2', 'V2\n');
 
 			assert.deepStrictEqual(await entriesOf(path.join(root, DEPLOY_STAGING_DIR)), ['d1', 'd2']);
-			assert.deepStrictEqual(await entriesOf(deploymentDir(root, 'd1')), DORMANT, 'the release a revert wants');
+			assert.deepStrictEqual(await entriesOf(deploymentDir(root, 'd1')), KEPT, 'the release a revert wants');
 			await fs.rm(root, { recursive: true, force: true });
 		});
 	});
@@ -364,7 +369,7 @@ describe('keeping the release an activation displaces', () => {
 			assert.strictEqual((await recoverInterruptedActivations(root)).size, 0, 'and again, idempotently');
 
 			assert.strictEqual(await readLive(root), 'V2\n');
-			assert.deepStrictEqual(await entriesOf(deploymentDir(root, 'd1')), DORMANT);
+			assert.deepStrictEqual(await entriesOf(deploymentDir(root, 'd1')), KEPT);
 			assert.deepStrictEqual(await entriesOf(deploymentDir(root, 'd2')), RECORD);
 			assert.strictEqual(existsSync(path.join(root, ASIDE_STAGING_DIR, 'web')), false);
 			await fs.rm(root, { recursive: true, force: true });
@@ -442,7 +447,7 @@ describe('keeping the release an activation displaces', () => {
 			const retry = await activate(root, 'd2');
 
 			assert.strictEqual(retry.alreadyActive, true);
-			assert.deepStrictEqual(await entriesOf(deploymentDir(root, 'd1')), DORMANT, 'the release just put back');
+			assert.deepStrictEqual(await entriesOf(deploymentDir(root, 'd1')), KEPT, 'the release just put back');
 			await fs.rm(root, { recursive: true, force: true });
 		});
 	});

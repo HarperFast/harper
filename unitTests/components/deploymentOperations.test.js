@@ -187,4 +187,64 @@ describe('handleDeleteDeploymentPayload', () => {
 		assert.match(result.message, /No payload stored/);
 		assert.strictEqual(installed.mock.puts.length, 0, 'no write on the idempotent path');
 	});
+
+	describe('the replicated build', () => {
+		const both = () => ({
+			deployment_id: 'd1',
+			status: 'staged',
+			payload_blob: mockBlob(Buffer.from('x')),
+			payload_size: 100,
+			artifact_blob: mockBlob(Buffer.from('y')),
+			artifact_size: 900,
+			event_log: [],
+		});
+
+		it('is kept unless asked for, so the default deletes exactly what it always did', async () => {
+			installed.mock.rows.set('d1', both());
+			const result = await handleDeleteDeploymentPayload({ deployment_id: 'd1' });
+			assert.strictEqual(result.freed_bytes, 100);
+			const written = installed.mock.puts[0];
+			assert.strictEqual(written.payload_blob, null);
+			assert.ok(written.artifact_blob, 'the build stays');
+			assert.deepStrictEqual(
+				written.event_log.map((entry) => entry.event),
+				['payload_dropped']
+			);
+		});
+
+		it('goes too with artifact: true, and the freed bytes count both', async () => {
+			installed.mock.rows.set('d1', both());
+			const result = await handleDeleteDeploymentPayload({ deployment_id: 'd1', artifact: true, hdb_user: SUPER_USER });
+			assert.strictEqual(result.freed_bytes, 1000);
+			assert.match(result.message, /Deleted payload and build/);
+			const written = installed.mock.puts[0];
+			assert.strictEqual(written.payload_blob, null);
+			assert.strictEqual(written.artifact_blob, null);
+			assert.strictEqual(written.artifact_size, 900, 'metadata is retained');
+			assert.deepStrictEqual(written.event_log.at(-1), {
+				t: written.event_log.at(-1).t,
+				event: 'artifact_dropped',
+				data: { artifact_size: 900, deleted_by: 'admin' },
+			});
+		});
+
+		it('is deleted alone from a package deployment, which stored no payload, and a repeat frees nothing', async () => {
+			installed.mock.rows.set('d1', { ...both(), payload_blob: null, payload_size: null });
+			assert.match((await handleDeleteDeploymentPayload({ deployment_id: 'd1' })).message, /No payload stored/);
+			const first = await handleDeleteDeploymentPayload({ deployment_id: 'd1', artifact: true });
+			assert.strictEqual(first.freed_bytes, 900);
+			assert.match(first.message, /Deleted build for/);
+			const repeat = await handleDeleteDeploymentPayload({ deployment_id: 'd1', artifact: true });
+			assert.strictEqual(repeat.freed_bytes, 0);
+			assert.match(repeat.message, /No payload or build stored/);
+		});
+
+		it('refuses an artifact flag that is not a boolean', async () => {
+			installed.mock.rows.set('d1', both());
+			await assert.rejects(handleDeleteDeploymentPayload({ deployment_id: 'd1', artifact: 'yes' }), (err) => {
+				assert.strictEqual(err.statusCode, 400);
+				return true;
+			});
+		});
+	});
 });

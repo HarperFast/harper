@@ -21,6 +21,9 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { hostname } from 'node:os';
 import { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
+import type { BuildManifest } from './buildArtifact.ts';
+
+type BlobKind = 'payload' | 'artifact';
 
 // Bound the event_log so a pathologically chatty install can't grow a row without limit.
 // 200 entries comfortably covers a real deploy with headroom (phase events plus install
@@ -137,6 +140,10 @@ export class DeploymentRecorder {
 			payload_hash: null,
 			payload_size: null,
 			payload_blob: null,
+			artifact_hash: null,
+			artifact_size: null,
+			artifact_blob: null,
+			artifact_build: null,
 			status: 'pending' as DeploymentStatus,
 			phase: 'pending',
 			event_log: [],
@@ -235,6 +242,24 @@ export class DeploymentRecorder {
 	 * materialized by the time they reach us, so they take the simpler buffer path.
 	 */
 	async ingestPayload(source: Readable | Buffer | string): Promise<void> {
+		await this.ingest(source, 'payload');
+	}
+
+	/**
+	 * The origin's certified build, packed, into `artifact_blob` — the channel peers install from instead of resolving
+	 * and installing the release themselves. Handled exactly as a payload is, including a failure midway.
+	 */
+	async ingestArtifact(source: Readable | Buffer, build: BuildManifest): Promise<void> {
+		this.record.artifact_build = build;
+		try {
+			await this.ingest(source, 'artifact');
+		} catch (error) {
+			this.record.artifact_build = null;
+			throw error;
+		}
+	}
+
+	private async ingest(source: Readable | Buffer | string, kind: BlobKind): Promise<void> {
 		this.flushSuppressed = true;
 		try {
 			while (this.pendingPut) {
@@ -244,7 +269,7 @@ export class DeploymentRecorder {
 					/* already logged; the ingest write carries the current row state */
 				}
 			}
-			await this.ingestPayloadWithoutFlush(source);
+			await this.ingestWithoutFlush(source, kind);
 		} finally {
 			this.flushSuppressed = false;
 			if (this.dirty && !this.sealed) {
@@ -254,7 +279,10 @@ export class DeploymentRecorder {
 		}
 	}
 
-	private async ingestPayloadWithoutFlush(source: Readable | Buffer | string): Promise<void> {
+	private async ingestWithoutFlush(source: Readable | Buffer | string, kind: BlobKind): Promise<void> {
+		const blobField = `${kind}_blob`;
+		const hashField = `${kind}_hash`;
+		const sizeField = `${kind}_size`;
 		const hash = createHash('sha256');
 
 		// In-memory sources: the bytes are already resident, so hashing them and creating a
@@ -263,9 +291,9 @@ export class DeploymentRecorder {
 		if (Buffer.isBuffer(source) || typeof source === 'string') {
 			const buffer = Buffer.isBuffer(source) ? source : Buffer.from(source, 'base64');
 			hash.update(buffer);
-			this.record.payload_blob = createBlob(buffer, { type: 'application/gzip' });
-			this.record.payload_hash = hash.digest('hex');
-			this.record.payload_size = buffer.length;
+			this.record[blobField] = createBlob(buffer, { type: 'application/gzip' });
+			this.record[hashField] = hash.digest('hex');
+			this.record[sizeField] = buffer.length;
 			// Same blob-durability gate as the streaming path below applies here too (the commit
 			// waits for the buffer to land on disk), so a large base64-in-JSON/CBOR body needs the
 			// same extended budget.
@@ -291,19 +319,20 @@ export class DeploymentRecorder {
 				if (collected > UNTRACKED_PAYLOAD_BUFFER_CAP_BYTES) {
 					(source as Readable).destroy?.();
 					throw new ClientError(
-						`Deploy payload exceeds the ${UNTRACKED_PAYLOAD_BUFFER_CAP_BYTES}-byte limit that applies while ` +
-							`deployment tracking is unavailable (the system.${terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME} ` +
-							`table is missing — likely a pending upgrade). Retry once the upgrade completes, or use a ` +
-							`package identifier (npm:/file:/git:) for larger components.`
+						`Deploy ${kind === 'payload' ? 'payload' : 'build'} exceeds the ${UNTRACKED_PAYLOAD_BUFFER_CAP_BYTES}-byte ` +
+							`limit that applies while deployment tracking is unavailable (the ` +
+							`system.${terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME} table is missing — likely a pending ` +
+							`upgrade). Retry once the upgrade completes` +
+							(kind === 'payload' ? `, or use a package identifier (npm:/file:/git:) for larger components.` : '.')
 					);
 				}
 				chunks.push(buf);
 			}
 			const buffer = Buffer.concat(chunks);
 			hash.update(buffer);
-			this.record.payload_blob = createBlob(buffer, { type: 'application/gzip' });
-			this.record.payload_hash = hash.digest('hex');
-			this.record.payload_size = buffer.length;
+			this.record[blobField] = createBlob(buffer, { type: 'application/gzip' });
+			this.record[hashField] = hash.digest('hex');
+			this.record[sizeField] = buffer.length;
 			await this.put();
 			return;
 		}
@@ -329,7 +358,7 @@ export class DeploymentRecorder {
 			pipeline(source, tap, (error) => (error ? reject(error) : resolve()));
 		});
 		const blob = createBlob(tap, { type: 'application/gzip' });
-		this.record.payload_blob = blob;
+		this.record[blobField] = blob;
 		// This row's commit is gated on the blob's durable file write (resources/blob.ts,
 		// startPreCommitBlobsForRecord's local-write branch) so a peer never sees a row that
 		// references a not-yet-durable blob — the write transaction is legitimately held open for
@@ -357,9 +386,9 @@ export class DeploymentRecorder {
 			// only reclaims UNreferenced blobs, leaving it would leak the file permanently. Drop
 			// the reference and delete the partial file. Cleanup is best-effort — never let it
 			// mask the original failure.
-			this.record.payload_blob = null;
-			this.record.payload_hash = null;
-			this.record.payload_size = null;
+			this.record[blobField] = null;
+			this.record[hashField] = null;
+			this.record[sizeField] = null;
 			try {
 				// Let the first put and the blob write fully settle before re-putting: this
 				// ensures the null-reference write lands after the original reference write
@@ -374,8 +403,8 @@ export class DeploymentRecorder {
 		}
 		// Bytes are fully hashed (tapDone) and the file is flushed with its size header
 		// back-patched (saving), so the digest and blob.size below are final.
-		this.record.payload_hash = hash.digest('hex');
-		this.record.payload_size = blob.size ?? byteCount;
+		this.record[hashField] = hash.digest('hex');
+		this.record[sizeField] = blob.size ?? byteCount;
 		// Persist the now-known hash + size. The blob is already saved, so this re-put does
 		// not re-stream — saveBlob short-circuits on the existing fileId.
 		await this.put(ingestTransactionTimeoutMs(this.ingestTimeoutMs));
@@ -392,10 +421,19 @@ export class DeploymentRecorder {
 	 * Returns the freed payload size (bytes) when a blob was present and dropped, otherwise 0.
 	 */
 	dropPayload(): number {
-		if (this.finished || this.record.payload_blob == null) return 0;
-		const freed = typeof this.record.payload_size === 'number' ? this.record.payload_size : 0;
-		this.record.payload_blob = null;
-		return freed;
+		return this.drop('payload');
+	}
+
+	/** `dropPayload`'s counterpart for the replicated build. */
+	dropArtifact(): number {
+		return this.drop('artifact');
+	}
+
+	private drop(kind: BlobKind): number {
+		if (this.finished || this.record[`${kind}_blob`] == null) return 0;
+		const size = this.record[`${kind}_size`];
+		this.record[`${kind}_blob`] = null;
+		return typeof size === 'number' ? size : 0;
 	}
 
 	async transitionPhase(phase: string, status?: DeploymentStatus): Promise<void> {
@@ -532,6 +570,11 @@ export class DeploymentRecorder {
 // via the `deployment_timeout` operation parameter.
 export const DEFAULT_AWAIT_ROW_TIMEOUT_MS = 120_000;
 
+/** Whether this node can keep deployment rows, and so carry a blob in one. */
+export function deploymentTableAvailable(): boolean {
+	return Boolean((databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME]);
+}
+
 // Default open-time budget for the origin's payload-ingest write transaction (ingestPayload,
 // below). Distinct from DEFAULT_AWAIT_ROW_TIMEOUT_MS (that one bounds a *replication* wait;
 // this one bounds *local disk I/O* for a component the deploy system explicitly supports at
@@ -576,8 +619,15 @@ export function ingestTransactionTimeoutMs(deploymentTimeout: unknown): number {
  */
 export async function awaitDeploymentRow(
 	deploymentId: string,
-	options: { timeoutMs?: number; pollIntervalMs?: number; initialPollIntervalMs?: number } = {}
+	options: {
+		timeoutMs?: number;
+		pollIntervalMs?: number;
+		initialPollIntervalMs?: number;
+		/** The blob the caller reads: the upload, or the origin's packed build. */
+		blobAttribute?: 'payload_blob' | 'artifact_blob';
+	} = {}
 ): Promise<Record<string, any>> {
+	const blobAttribute = options.blobAttribute ?? 'payload_blob';
 	// Coerce defensively: the deploy operation's `deployment_timeout` reaches us via the
 	// operation body, and the Joi validator's coerced number is discarded by validateBySchema
 	// (it returns only the error, never writes the parsed value back), so a JSON/multipart
@@ -607,7 +657,7 @@ export async function awaitDeploymentRow(
 		try {
 			const row = await table.get(deploymentId);
 			if (row) {
-				if (row.payload_blob != null) return row;
+				if (row[blobAttribute] != null) return row;
 				// Row replicated but its payload_blob write hasn't landed yet — replication is
 				// alive, just mid-flight. Remember this so the timeout message points at the
 				// payload write rather than a dead channel.
@@ -623,7 +673,7 @@ export async function awaitDeploymentRow(
 		intervalMs = Math.min(intervalMs * 2, maxIntervalMs);
 	}
 	const cause = sawRow
-		? `row '${deploymentId}' replicated but its payload_blob has not arrived`
+		? `row '${deploymentId}' replicated but its ${blobAttribute} has not arrived`
 		: `hdb_deployment row '${deploymentId}' did not replicate`;
 	throw new Error(
 		`Timed out after ${timeoutMs}ms waiting for the deployment payload: ${cause}` +

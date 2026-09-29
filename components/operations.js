@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const { Readable, pipeline } = require('node:stream');
 const { isMainThread, parentPort } = require('node:worker_threads');
 const fs = require('fs-extra');
 const fg = require('fast-glob');
@@ -52,6 +53,7 @@ const {
 	awaitDeploymentRow,
 	readPayloadBlobWithRetry,
 	coerceTimeoutMs,
+	deploymentTableAvailable,
 	DEFAULT_AWAIT_ROW_TIMEOUT_MS,
 } = require('./deploymentRecorder.ts');
 const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
@@ -468,7 +470,7 @@ async function validateComponentLoads(candidateDirPath, emit) {
 		log.trace(
 			`Not load-validating ${path.basename(candidateDirPath)}: this worker's intrinsics are frozen after its boot load, so the load would not match the one a restarted worker performs`
 		);
-		return;
+		return false;
 	}
 	const run = validationChain.then(
 		() => validateComponentLoadsExclusive(candidateDirPath, emit),
@@ -553,7 +555,9 @@ async function validateComponentLoadsExclusive(candidateDirPath, emit) {
 		emit('phase', { phase: 'load', status: 'done' });
 
 		if (lastError) throw lastError;
+		return true;
 	}
+	return false;
 }
 
 const BRANCH_STORAGE_RETAINED =
@@ -637,6 +641,10 @@ async function deployComponent(req) {
 	const isReplicatedExecution = typeof req._deploymentId === 'string';
 	const mode = req.deployment_id ? 'activate' : req.activate === false ? 'stage' : 'deploy';
 	const isActivation = mode === 'activate';
+	// Only the origin names the build its peers take, and only for an operation it replicates itself.
+	if (!isReplicatedExecution) delete req._artifact;
+	const receivesBuild = isReplicatedExecution && !isActivation && req._artifact != null;
+	if (receivesBuild) assertReceivableBuild(req);
 	// this thread's cached config may predate an earlier deploy that changed the entry without a restart
 	env.initSync(true);
 	const initiallyIsolated = isIsolatedApplication(req.project);
@@ -763,6 +771,8 @@ async function deployComponent(req) {
 			// `package` nor `payload` — so without this branch every peer would wait out `deployment_timeout`
 			// for a payload its row never had while the origin swapped successfully.
 			extractionPayload = undefined;
+		} else if (receivesBuild) {
+			extractionPayload = await receiveBuild(req);
 		} else if (recorder && req.payload != null) {
 			await recorder.ingestPayload(req.payload);
 			extractionPayload = recorder.row.payload_blob.stream();
@@ -801,16 +811,17 @@ async function deployComponent(req) {
 		}
 		// Skipped for an activation, which runs no pack, clone or install: waiting for an hdb_secret row to
 		// replicate in would only delay a swap that has nothing to authenticate to.
-		const resolvedCredentials = isActivation
-			? undefined
-			: await resolveCredentials(req.credentials, req.project, {
-					waitMs: credentialsWaitMs,
-				});
+		const resolvedCredentials =
+			isActivation || receivesBuild
+				? undefined
+				: await resolveCredentials(req.credentials, req.project, {
+						waitMs: credentialsWaitMs,
+					});
 
 		const application = new Application({
 			name: req.project,
 			payload: extractionPayload,
-			packageIdentifier: req.package,
+			packageIdentifier: receivesBuild ? undefined : req.package,
 			install: {
 				command: req.install_command,
 				timeout: req.install_timeout,
@@ -844,6 +855,9 @@ async function deployComponent(req) {
 		// is the authority on whether the deploy landed, not the phase stream.
 		emit('phase', { phase: 'prepare', status: 'start' });
 		let declaredRootConfig = null;
+		const publishes = publishesBuild(req, recorder, isActivation);
+		const buildTravelsInRow = systemReplicated && deploymentTableAvailable();
+		let published;
 		await prepareApplication(application, {
 			// `.deploy-staging/<artifactId>`. The public deployment id, so the id the caller was handed is
 			// the id a later `deployment_id` request can name; an activation names the artifact's own id,
@@ -886,8 +900,27 @@ async function deployComponent(req) {
 			},
 			validateCandidate: async (candidateDirPath) => {
 				emit('phase', { phase: 'prepare', status: 'done' });
-				await validateComponentLoads(candidateDirPath, emit);
+				return validateComponentLoads(candidateDirPath, emit);
 			},
+			prebuilt: receivesBuild
+				? { manifest: req._artifact.build, installationIsOpaque: req._artifact.installationIsOpaque }
+				: undefined,
+			publishBuild: publishes
+				? async (candidateDirPath, build) => {
+						const { packBuild } = require('./buildArtifact.ts');
+						emit('phase', { phase: 'pack', status: 'start' });
+						await recorder.ingestArtifact(packBuild(candidateDirPath), build.manifest);
+						emit('phase', { phase: 'pack', status: 'done' });
+						published = {
+							sha256: recorder.row.artifact_hash,
+							size: recorder.row.artifact_size,
+							installationIsOpaque: build.installationIsOpaque,
+							build: build.manifest,
+						};
+						if (!buildTravelsInRow) assertBuildFitsOperationBody(application.name, published.size);
+					}
+				: undefined,
+			expectedTree: isActivation && isReplicatedExecution ? req._artifact?.tree : undefined,
 		});
 		// Nothing ran `validateCandidate`, which ends this phase.
 		if (application.alreadyActive) emit('phase', { phase: 'prepare', status: 'done' });
@@ -910,6 +943,13 @@ async function deployComponent(req) {
 			// blob-replication channel doesn't share). _deploymentId is the handoff that
 			// lets peers find the replicated row.
 			delete req.payload;
+		}
+		if (published) {
+			req._artifact = published;
+			// Without a replicated row the build rides the operation itself, where `payload` is already kept out of logs.
+			if (!buildTravelsInRow) req.payload = Buffer.from(await recorder.row.artifact_blob.bytes());
+		} else if (isActivation && application.admittedTree) {
+			req._artifact = { tree: application.admittedTree };
 		}
 		// As each peer settles, update the origin row so observers polling get_deployment
 		// see per-peer progress in real time rather than only at the aggregate end.
@@ -939,6 +979,10 @@ async function deployComponent(req) {
 			// when the per-peer callback already fired for these.
 			recorder.recordPeers(response.replicated);
 		}
+		// What this node admitted, so the node that asked can tell it from a node that built the release itself.
+		if (isReplicatedExecution && application.admittedTree) response.artifact = application.admittedTree;
+		const expectedTree = published?.build.tree ?? (isActivation ? req._artifact?.tree : undefined);
+		if (recorder && expectedTree) recordUnconfirmedBuildPeers(recorder, response?.replicated, expectedTree, mode);
 		// A still-isolated application restarts only its own dedicated worker. Everything else restarts the
 		// pool: a shared application, and either direction of an isolation flip, where the reconcile in
 		// restartWorkers starts or stops the moving application's own worker. An already-live retry cannot know
@@ -1074,6 +1118,16 @@ async function deployComponent(req) {
 				const freed = recorder.dropPayload();
 				if (freed > 0) emit('payload_dropped', { payload_size: freed, max_size: retentionMaxSize });
 			}
+			const artifactSize = recorder.row.artifact_size;
+			if (
+				mode !== 'stage' &&
+				typeof artifactSize === 'number' &&
+				artifactSize > retentionMaxSize &&
+				recorder.getFailedPeers().length === 0
+			) {
+				const freed = recorder.dropArtifact();
+				if (freed > 0) emit('artifact_dropped', { artifact_size: freed, max_size: retentionMaxSize });
+			}
 			emit('phase', { phase: mode === 'stage' ? 'staged' : 'success', status: 'done' });
 			await recorder.finish(mode === 'stage' ? 'staged' : 'success');
 			if (mode === 'stage') {
@@ -1143,6 +1197,114 @@ function unconfirmedStagingPeers(replicated) {
 	if (!Array.isArray(replicated)) return [];
 	const confirmed = (peer) => peer?.staged === true || peer?.value?.staged === true || peer?.body?.staged === true;
 	return replicated.filter((peer) => peer && !confirmed(peer));
+}
+
+/** Only where the operation will reach another node: in core, on a single node, and for `replicated: false`, nothing is packed. */
+function publishesBuild(req, recorder, isActivation) {
+	return Boolean(recorder) && !isActivation && req.replicated !== false && (server.nodes?.length ?? 0) > 0;
+}
+
+const BUILD_CONFIRMATION_VERBS = { deploy: 'deployed', stage: 'staged', activate: 'activated' };
+
+/**
+ * A peer that answered success without naming the tree this node published admitted something else — typically its own
+ * build of the release, from a Harper version that predates replicated builds. Recorded as a failed peer, so the
+ * deploy reports it and, when `ignore_replication_errors` masks it, the build is not reclaimed from under it.
+ */
+function recordUnconfirmedBuildPeers(recorder, replicated, expectedTree, mode) {
+	if (!Array.isArray(replicated)) return;
+	const failed = new Set(recorder.getFailedPeers().map((peer) => peer.node));
+	// A stage that did not confirm staging gets the staging message instead, which says the release may be serving.
+	const stagingUnconfirmed = new Set(mode === 'stage' ? unconfirmedStagingPeers(replicated) : []);
+	for (const peer of replicated) {
+		if (!peer || typeof peer !== 'object' || stagingUnconfirmed.has(peer)) continue;
+		const node = peer.node ?? peer.name ?? peer.hostname ?? null;
+		if (failed.has(node)) continue;
+		const confirmed = peer.artifact ?? peer.value?.artifact ?? peer.body?.artifact;
+		if (confirmed === expectedTree) continue;
+		recorder.recordPeer({
+			node,
+			status: 'failed',
+			error: confirmed
+				? `${BUILD_CONFIRMATION_VERBS[mode]} a different build (tree ${confirmed})`
+				: `${BUILD_CONFIRMATION_VERBS[mode]} the release without confirming it holds this node's build; it may run ` +
+					`a Harper version that resolves and installs the release itself`,
+		});
+	}
+}
+
+function assertReceivableBuild(req) {
+	const { isBuildManifest } = require('./buildArtifact.ts');
+	const artifact = req._artifact;
+	if (
+		typeof artifact.sha256 !== 'string' ||
+		!Number.isInteger(artifact.size) ||
+		typeof artifact.installationIsOpaque !== 'boolean' ||
+		!isBuildManifest(artifact.build)
+	) {
+		throw handleHDBError(
+			new Error(),
+			`'_artifact' does not describe a build this node can take`,
+			HTTP_STATUS_CODES.BAD_REQUEST
+		);
+	}
+}
+
+/**
+ * The origin's packed build, verified as it is read. Refused before anything is fetched when this node cannot run
+ * it. It rides the operation when the origin had no replicated row to carry it in.
+ */
+async function receiveBuild(req) {
+	const { platformRefusal, verifiedArchive } = require('./buildArtifact.ts');
+	const refusal = platformRefusal(req._artifact.build.platform);
+	if (refusal) {
+		throw handleHDBError(
+			new Error(),
+			`Cannot deploy '${req.project}' from deployment ${req._deploymentId} on this node: ${refusal}`,
+			HTTP_STATUS_CODES.CONFLICT
+		);
+	}
+	let archive;
+	if (req.payload instanceof Readable) {
+		archive = req.payload;
+	} else if (req.payload != null) {
+		archive = Readable.from([
+			typeof req.payload === 'string' ? Buffer.from(req.payload, 'base64') : Buffer.from(req.payload),
+		]);
+	} else {
+		// One deadline covers the row and the first bytes of its blob, as for a replicated payload.
+		const payloadTimeoutMs = coerceTimeoutMs(req.deployment_timeout, DEFAULT_AWAIT_ROW_TIMEOUT_MS);
+		const payloadDeadline = Date.now() + payloadTimeoutMs;
+		const row = await awaitDeploymentRow(req._deploymentId, {
+			timeoutMs: payloadTimeoutMs,
+			blobAttribute: 'artifact_blob',
+		});
+		archive = readPayloadBlobWithRetry(() => row.artifact_blob.stream(), {
+			timeoutMs: Math.max(0, payloadDeadline - Date.now()),
+		});
+	}
+	return pipeline(archive, verifiedArchive(req._artifact), () => {});
+}
+
+const DEFAULT_REPLICATION_MAX_PAYLOAD = 100_000_000;
+
+/**
+ * The replicator encodes the whole operation once for every peer and holds each copy until it is sent, so a build
+ * carried in the operation costs its size times the peer count. Refused before the swap when that passes the bound a
+ * replication message already has.
+ */
+function assertBuildFitsOperationBody(componentName, size) {
+	const peers = server.nodes?.length ?? 0;
+	const configured = Number(configUtils.getConfigValue(hdbTerms.CONFIG_PARAMS.REPLICATION_MAXPAYLOAD));
+	const bound = Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_REPLICATION_MAX_PAYLOAD;
+	if (size * peers <= bound) return;
+	throw handleHDBError(
+		new Error(),
+		`Cannot replicate '${componentName}': with no replicated deployment row to carry it, its ${size}-byte build ` +
+			`would travel inside the operation to each of ${peers} node(s), ${size * peers} bytes in all, past the ` +
+			`${bound}-byte bound (replication_maxPayload). Replicate the system database, or raise replication_maxPayload`,
+		HTTP_STATUS_CODES.CONFLICT
+	);
 }
 
 // Ring buffer of install stdout/stderr lines, capped by both line count and bytes so
@@ -1634,6 +1796,9 @@ exports.dropCustomFunctionProject = dropCustomFunctionProject;
 exports.packageComponent = packageComponent;
 exports.deployComponent = deployComponent;
 exports.unconfirmedStagingPeers = unconfirmedStagingPeers;
+exports.recordUnconfirmedBuildPeers = recordUnconfirmedBuildPeers;
+exports.publishesBuild = publishesBuild;
+exports.assertBuildFitsOperationBody = assertBuildFitsOperationBody;
 exports.peerDeployAnswerTimeoutMs = peerDeployAnswerTimeoutMs;
 exports.getComponents = getComponents;
 exports.getComponentFile = getComponentFile;
