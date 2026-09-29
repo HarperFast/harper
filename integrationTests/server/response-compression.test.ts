@@ -1,9 +1,3 @@
-/**
- * Brotli response compression (http.compressionThreshold > 0, Accept-Encoding: br) across the
- * shapes serialize() can produce: a complete buffer (plain object, msgpack array), a stream
- * (iterable resource, custom Readable), and a custom handler returning a generator. Bodies are
- * captured as bytes and brotli-decoded, so byte preservation is checked, not just the header.
- */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
@@ -79,7 +73,6 @@ suite('response compression', { skip: process.platform === 'win32' }, (ctx: Cont
 		strictEqual(response.headers['content-encoding'], 'br');
 		deepStrictEqual(JSON.parse(decoded(response).toString()), { records: records(200) });
 		ok(response.body.length < decoded(response).length / 3, 'compressed body should be much smaller');
-		// Node's default quality (11) is far too slow for a request path; the server encodes at the streaming quality
 		if (process.env.HARPER_RUNTIME !== 'bun') {
 			const expected = brotliCompressSync(decoded(response), {
 				params: { [constants.BROTLI_PARAM_MODE]: constants.BROTLI_MODE_TEXT, [constants.BROTLI_PARAM_QUALITY]: 2 },

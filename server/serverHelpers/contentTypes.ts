@@ -414,20 +414,14 @@ export function findBestSerializer(incomingMessage) {
 	return { serializer: bestSerializer, type: bestType, parameters: bestParameters };
 }
 
-// about an average TCP packet size (if headers included)
 const COMPRESSION_THRESHOLD = envMgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD);
-// Node's brotli default is quality 11, which compresses at ~1-2 MB/s; a request path needs the low levels
-const BROTLI_QUALITY = 2;
+const brotliParams = (mode: number) => ({
+	params: { [constants.BROTLI_PARAM_MODE]: mode, [constants.BROTLI_PARAM_QUALITY]: 2 },
+});
+const BROTLI_TEXT_OPTIONS = brotliParams(constants.BROTLI_MODE_TEXT);
+const BROTLI_GENERIC_OPTIONS = brotliParams(constants.BROTLI_MODE_GENERIC);
 export function brotliOptions(contentType: string) {
-	return {
-		params: {
-			[constants.BROTLI_PARAM_MODE]:
-				contentType.includes('json') || contentType.includes('text')
-					? constants.BROTLI_MODE_TEXT
-					: constants.BROTLI_MODE_GENERIC,
-			[constants.BROTLI_PARAM_QUALITY]: BROTLI_QUALITY,
-		},
-	};
+	return contentType.includes('json') || contentType.includes('text') ? BROTLI_TEXT_OPTIONS : BROTLI_GENERIC_OPTIONS;
 }
 /**
  * Serialize a response
@@ -487,7 +481,7 @@ export function serialize(responseData, request, responseObject) {
 			}
 			const serialized = serializer.serializer.serializeStream(responseData, responseObject, request);
 			if (!canCompress) return serialized;
-			// a handler may return a complete body (msgpack does for arrays); that takes the thresholded buffer path
+			// a handler may return a complete body (msgpack does for arrays)
 			if (typeof serialized === 'string' || serialized instanceof Uint8Array) responseBody = serialized;
 			else {
 				responseObject.headers.set('Content-Encoding', 'br');
