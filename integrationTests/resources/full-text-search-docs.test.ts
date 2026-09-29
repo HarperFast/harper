@@ -91,18 +91,21 @@ suite('documented native full-text examples', (ctx: ContextWithHarper) => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, OPTIONS);
 		authorization = `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`;
 
-		const inserted = await response('/Product/', {
-			method: 'POST',
-			body: JSON.stringify({
-				id: 'shoe-1',
-				name: 'Waterproof trail running shoe',
-				description: 'Lightweight shoe for wet mountain trails',
-				tags: ['outdoor', 'trail'],
-				category: 'footwear',
-				price: 129,
-			}),
-		});
-		assert.ok(inserted.status >= 200 && inserted.status < 300, `documented Product POST: ${await inserted.text()}`);
+		await request(
+			'/Product/',
+			{
+				method: 'POST',
+				body: JSON.stringify({
+					id: 'shoe-1',
+					name: 'Waterproof trail running shoe',
+					description: 'Lightweight shoe for wet mountain trails',
+					tags: ['outdoor', 'trail'],
+					category: 'footwear',
+					price: 129,
+				}),
+			},
+			201
+		);
 
 		await operation({
 			operation: 'insert',
@@ -317,6 +320,26 @@ suite('documented native full-text examples', (ctx: ContextWithHarper) => {
 			403,
 			READER_AUTH
 		);
+		const readable = await operation(
+			{
+				operation: 'search_by_conditions',
+				database: 'catalog',
+				table: 'Product',
+				get_attributes: ['id', 'name'],
+				conditions: [
+					{
+						attribute: 'catalogSearch',
+						comparator: 'matches',
+						value: 'waterproof',
+						fields: ['name', 'tags'],
+					},
+				],
+			},
+			200,
+			READER_AUTH
+		);
+		assert.ok(ids(readable).includes('shoe-1'));
+		assert.ok(readable.every((record) => !Object.hasOwn(record, 'description')));
 	});
 
 	test('runs every documented Table.search query shape', async () => {
@@ -407,6 +430,13 @@ suite('documented native full-text examples', (ctx: ContextWithHarper) => {
 	});
 
 	test('runs the documented reduced phrase and prefix configuration', async () => {
+		const description = await operation({ operation: 'describe_table', database: 'data', table: 'Article' });
+		const index = description.full_text_indexes.find(({ name }) => name === 'bodySearch');
+		assert.deepStrictEqual(index.query_modes, ['any', 'all', 'fuzzy']);
+		assert.strictEqual(index.positions, false);
+		assert.strictEqual(index.surface_terms, false);
+		assert.strictEqual(index.highlighting, false);
+
 		const base = {
 			operation: 'search_by_conditions',
 			database: 'data',
