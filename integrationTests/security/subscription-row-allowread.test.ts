@@ -10,6 +10,10 @@
  *   PROBE    — Alice opens a whole-table `/Vault/` SSE subscription. Writes land on Alice's
  *              rows, Bob's rows, and a neutral row. Alice's stream must receive ONLY her own
  *              rows' events; Bob's and the neutral row's events must be filtered out.
+ *   FAILING FILTER — Bob's whole-table stream opens before Alice's (one worker thread, so both
+ *              share the table's subscriber list). A row Alice owns is marked to make Bob's
+ *              rowFilter throw; ending Bob's subscription mid-delivery must not cost Alice's
+ *              stream that row (#2771).
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/security/subscription-row-allowread.test.ts"
@@ -41,6 +45,7 @@ const CAROL_ROW = 'row-c1';
 const ALICE_ROWS = ['row-a1', 'row-a2', 'row-a3'];
 const BOB_ROWS = ['row-b1', 'row-b2', 'row-b3'];
 const NEUTRAL_ROW = 'row-neutral';
+const FILTER_FAILURE_ROW = 'row-a-filter-failure';
 
 // ---------------------------------------------------------------- SSE helpers --
 interface SseEvent {
@@ -343,5 +348,42 @@ suite('explicit rowFilter filters subscription delivery', { skip: skipSuite }, (
 			stream.events.length === eventsAfterRevoke,
 			`role lost read but subscription kept receiving ${stream.events.length - eventsAfterRevoke} event(s)`
 		);
+	});
+
+	test('FAILING FILTER (#2771): a subscriber whose rowFilter throws does not cost the next one that row', async () => {
+		const bobToken = await client
+			.req()
+			.send({ operation: 'create_authentication_tokens', username: BOB.username, password: BOB.password });
+		const bobStream = await openSse(`${restURL}/Vault/`, { Authorization: `Bearer ${bobToken.body.operation_token}` });
+		openStreams.add(bobStream);
+		ok(await waitFor(() => streamMentions(bobStream, BOB_ROWS[0]), 8000), "Bob's stream should open with his rows");
+		const aliceStream = await openSse(`${restURL}/Vault/`, { Authorization: aliceBearer });
+		openStreams.add(aliceStream);
+		ok(
+			await waitFor(() => streamMentions(aliceStream, ALICE_ROWS[0]), 8000),
+			"Alice's stream should open with her rows"
+		);
+
+		await adminPut(FILTER_FAILURE_ROW, {
+			id: FILTER_FAILURE_ROW,
+			owner: ALICE.username,
+			secret: `fail-filter-for-${BOB.username}`,
+		}).expect(204);
+
+		ok(
+			await waitFor(() => streamMentions(aliceStream, FILTER_FAILURE_ROW), 8000),
+			"SIBLING SKIPPED (#2771): Alice's stream missed the row whose rowFilter failed on Bob's subscription"
+		);
+
+		// Bob's write commits before Alice's, so once Alice's arrives Bob's has been delivered to whoever still listens.
+		await adminPut(BOB_ROWS[1], { id: BOB_ROWS[1], owner: BOB.username, secret: 'bob-after-failure' }).expect(204);
+		await adminPut(ALICE_ROWS[1], { id: ALICE_ROWS[1], owner: ALICE.username, secret: 'alice-after-failure' }).expect(
+			204
+		);
+		ok(
+			await waitFor(() => streamMentions(aliceStream, 'alice-after-failure'), 8000),
+			"Alice's stream should keep delivering after Bob's subscription failed"
+		);
+		ok(!streamMentions(bobStream, 'bob-after-failure'), "Bob's failed subscription kept delivering rows");
 	});
 });
