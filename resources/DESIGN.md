@@ -272,29 +272,14 @@ Things that are easy to get wrong here:
 
 ## Database generation and resumable positions
 
-Every copy path gives the copy a generation of its own before anything can read it (harper#2451),
-so no live subscription or persisted position carries over from the source. **Invariant: no readable
-copy carries its source's generation; a position resumes only if it names the current generation, its
-cursor is finite, and no prune within the generation reached above it** (`isResumablePosition`).
+Every copy path gives the copy a generation of its own before anything can read it (harper#2451), so no live subscription or persisted position carries over from the source. **Invariant: no readable copy carries its source's generation; a position resumes only if it names the current generation, its cursor is finite, and no prune within the generation reached above it** (`isResumablePosition`).
 
-- **Two records beside the floor:** the generation (a 16-byte random id and a float64 epoch, 0 for
-  genesis) and the resume floor (highest prune cutoff in the generation). `raiseAuditFloor` raises
-  both in one verified transaction; the resume floor is not absorbed by an unknown floor.
-- **Stamped into the copy before publication:** restore (before `completeRestore`), branch and
-  migration (before their renames), via a private open plus an engine flush — a root-store write is
-  not power-loss durable and directory fsync is best-effort. `copydb` never copies the source's
-  records and stamps the target; `compactOnStart` keeps them (same history).
-- **An ordinary open never repairs:** it adopts the record, mints genesis as a compare-and-set on
-  absence, or leaves the handle without one (every resume refused). The resume floor is read as never
-  below a finite audit floor, since an older binary's prunes raise only the audit floor.
-- **No scalar mode.** A position without an id is never resumable; bind an id only to a position
-  established within the generation. Cursors must be progress-based: a snapshot's newest in-scope key
-  can sit below a floor that retention advances on a quiet database, and would be refused forever.
-- **Live subscriptions:** the per-path registry outlives the store, but a subscription from before a reopen can never deliver again (its commit listener and table stores belong to the closed handle). Every open first records its audit store as the only handle a registration on the path may use,
-  then detaches the registry and ends each subscription: `DatabaseGenerationChangedError` for another or an unknown generation, the retryable `DatabaseClosingError` for the same one (its position still resumes). A registration through an earlier or closed handle, even from inside that close, is refused with the same pair of errors.
-- **Not covered:** copies no generation-aware code made, a pre-generation binary pruning while the audit floor is unknown,
-  keys reissued below a cursor after a clock rollback across a restart, cross-node identity (an id is per database per node),
-  and subscription teardown and the handle check on a legacy LMDB `auditPath` root, which is reopened on every metadata read.
+- **Two records beside the floor:** the generation (a 16-byte random id and a float64 epoch, 0 for genesis) and the resume floor (highest prune cutoff in the generation). `raiseAuditFloor` raises both in one verified transaction; the resume floor is not absorbed by an unknown floor.
+- **Stamped into the copy before publication:** restore (before `completeRestore`), branch and migration (before their renames), via a private open plus an engine flush — a root-store write is not power-loss durable and directory fsync is best-effort. `copydb` never copies the source's records and stamps the target; `compactOnStart` keeps them (same history).
+- **An ordinary open never repairs:** it adopts the record, mints genesis as a compare-and-set on absence, or leaves the handle without one (every resume refused). The resume floor is read as never below a finite audit floor, since an older binary's prunes raise only the audit floor.
+- **No scalar mode.** A position without an id is never resumable; bind an id only to a position established within the generation. Cursors must be progress-based: a snapshot's newest in-scope key can sit below a floor that retention advances on a quiet database, and would be refused forever.
+- **Live subscriptions:** the per-path registry outlives the store, but a subscription from before a reopen can never deliver again (its commit listener and table stores belong to the closed handle). Every open first records its audit store as the only handle a registration on the path may use, then detaches the registry and ends each subscription: `DatabaseGenerationChangedError` for another or an unknown generation, the retryable `DatabaseClosingError` for the same one (its position still resumes). A registration through an earlier or closed handle, even from inside that close, is refused with the same pair of errors.
+- **Not covered:** copies no generation-aware code made, a pre-generation binary pruning while the audit floor is unknown, keys reissued below a cursor after a clock rollback across a restart, cross-node identity (an id is per database per node), and subscription teardown and the handle check on a legacy LMDB `auditPath` root, which is reopened on every metadata read.
 
 ---
 
