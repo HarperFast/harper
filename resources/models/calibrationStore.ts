@@ -862,7 +862,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 			config.maxExamplesPerKey,
 			Math.max(1, Math.floor((config.maxBytes - baseBytes) / EXAMPLE_OVERHEAD_BYTES))
 		);
-		const limit = Math.min(sample, allowance);
+		const limit = Math.min(sample, allowance + 1);
 		let rows: DecisionRow[];
 		let used = baseBytes;
 		let newestExpiry = 0;
@@ -879,9 +879,10 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 				}
 				return out;
 			});
+			const available = allowance;
 			allowance -= rows.length;
 			result.read += rows.length;
-			if (rows.length === limit && limit < sample) return 'deferred';
+			if (rows.length > available && available < sample) return 'deferred';
 			rows.sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 			for (let start = 0; start < rows.length; start += YIELD_EVERY) {
 				if (start > 0) {

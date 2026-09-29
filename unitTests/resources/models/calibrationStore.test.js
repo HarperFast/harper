@@ -456,7 +456,10 @@ describe('calibration store and facade (#2841)', function () {
 		const tiny = await runCalibration({ maxDecisions: 10 });
 		assert.strictEqual(tiny.stoppedBy, 'maxDecisions');
 		assert.strictEqual(tiny.scanned, 5, 'discovery takes half the decision budget');
-		assert.ok(tiny.read <= 5, 'fitting reads the rest, never more');
+		assert.ok(
+			tiny.read <= 6,
+			'fitting reads the rest, and at most one decision more to tell a truncated population from one that fits'
+		);
 		assert.strictEqual(typeof tiny.reachedAt, 'number');
 	});
 
@@ -618,6 +621,33 @@ describe('calibration store and facade (#2841)', function () {
 			limits.every((limit) => limit <= 3),
 			`page limits ${limits}`
 		);
+	});
+
+	it('fits a population whose size exactly matches what the budget leaves', async () => {
+		await recordCases(models, 0, 30);
+		const run = await runCalibration({ maxDecisions: 60 });
+		assert.strictEqual(run.scanned, 30, 'discovery read the whole table');
+		assert.strictEqual(run.read, 30, 'the population fits exactly what is left');
+		assert.strictEqual(run.written, 1);
+	});
+
+	it('keeps the job and cache on an unchanged reload on the primary worker too', async () => {
+		const engine = require('#src/resources/scheduler/engine');
+		const owner = engine.internalJobOwner('models-calibration');
+		try {
+			configureCalibration(CONFIG, true);
+			assert.deepStrictEqual(engine.getRegisteredJobNames(owner), ['calibrate']);
+			await recordCases(models, 0, 300);
+			await models.calibrate();
+			assert.strictEqual((await warmDecide(models, 'case-1700')).calibrated, true);
+			configureCalibration({ ...CONFIG }, true);
+			assert.strictEqual((await models.decide('case-1701', SCHEMA)).calibrated, true, 'the reload returned early');
+			assert.deepStrictEqual(engine.getRegisteredJobNames(owner), ['calibrate']);
+		} finally {
+			configureCalibration(undefined, true);
+			engine.stopSchedulerEngine();
+		}
+		assert.deepStrictEqual(engine.getRegisteredJobNames(owner), [], 'removing the block unregisters the job');
 	});
 
 	it('returns early when a reload leaves calibration unchanged, keeping its cache and its job', async () => {
