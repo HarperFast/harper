@@ -292,9 +292,9 @@ cursor is finite, and no prune within the generation reached above it** (`isResu
   can sit below a floor that retention advances on a quiet database, and would be refused forever.
 - **Live subscriptions:** the per-path registry outlives the store, but a subscription from before a reopen can never deliver again (its commit listener and table stores belong to the closed handle). Every open first records its audit store as the only handle a registration on the path may use,
   then detaches the registry and ends each subscription: `DatabaseGenerationChangedError` for another or an unknown generation, the retryable `DatabaseClosingError` for the same one (its position still resumes). A registration through an earlier or closed handle, even from inside that close, is refused with the same pair of errors.
-- **Not covered:** copies no generation-aware code made, a pre-generation binary pruning while the
-  audit floor is unknown, keys reissued below a cursor after a clock rollback across a restart, and
-  cross-node identity (an id is per database per node).
+- **Not covered:** copies no generation-aware code made, a pre-generation binary pruning while the audit floor is unknown,
+  keys reissued below a cursor after a clock rollback across a restart, cross-node identity (an id is per database per node),
+  and subscription teardown and the handle check on a legacy LMDB `auditPath` root, which is reopened on every metadata read.
 
 ---
 

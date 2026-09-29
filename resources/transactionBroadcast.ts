@@ -7,9 +7,11 @@ import type { Id } from './ResourceInterface.ts';
 
 const allSubscriptions = Object.create(null); // using it as a map that doesn't change much
 const allSameThreadSubscriptions = Object.create(null); // using it as a map that doesn't change much
-// The audit store each database path was last opened with on this thread. A registration through any other handle
-// would join the entry the current store's commits drive while reading through that handle's closed stores.
-const currentAuditStores = new Map<string, any>();
+// The handle each database path was last opened with on this thread, kept as a token so a retired database's closed
+// store graph is not retained. A registration through any other handle would join the entry the current store's
+// commits drive while reading through that handle's closed stores.
+const HANDLE_TOKEN = Symbol('subscription-handle');
+const currentHandles = new Map<string, { token: symbol; generationId: string | undefined }>();
 
 function sameGeneration(generationId: string | null | undefined, otherId: string | null | undefined): boolean {
 	return generationId != null && generationId === otherId;
@@ -38,11 +40,11 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		throw new Error('No path for table primary store');
 	}
 	const generationId = table.auditStore?.databaseGeneration?.id ?? null;
-	const current = currentAuditStores.get(path);
-	const replaced = current !== undefined && table.auditStore !== current;
+	const current = currentHandles.get(path);
+	const replaced = current !== undefined && table.auditStore?.[HANDLE_TOKEN] !== current.token;
 	if (replaced || table.auditStore?.rootStore?.status === 'closed') {
 		if (options?.scope === 'full-database') return;
-		throw replaced && !sameGeneration(generationId, current.databaseGeneration?.id)
+		throw replaced && !sameGeneration(generationId, current.generationId)
 			? new DatabaseGenerationChangedError()
 			: closingError(table.auditStore, path);
 	}
@@ -114,19 +116,17 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 }
 
 /**
- * End every live subscription this thread registered on the database before `auditStore` reopened it. The
- * registry outlives the store handle, but a subscription from before the reopen can never deliver again: its
- * commit listener and its table's stores belong to the closed handle. One from another or an unknown
- * generation must resynchronize (a restore would otherwise feed it the restored database's events); one from
- * the same generation gets the retryable `DatabaseClosingError`, and its position still resumes. The entry is
- * detached first, so its queued drains and pending state go with it. `auditStore` becomes the only handle
- * `addSubscription` accepts on the path before any listener runs, so a listener that resubscribes through an
- * earlier handle while it is being ended is refused too.
+ * End every subscription this thread registered on the database before `auditStore` reopened it: its commit
+ * listener and its table's stores belong to the closed handle, so it can never deliver again. Another or an
+ * unknown generation must resynchronize; the same one gets the retryable `DatabaseClosingError`. `auditStore`
+ * becomes the only handle `addSubscription` accepts on the path before any listener runs.
  */
 export function endSubscriptionsFromEarlierHandles(auditStore: any): void {
 	const path = auditStore.rootStore.path;
 	const generationId = auditStore.databaseGeneration?.id;
-	currentAuditStores.set(path, auditStore);
+	const token = Symbol(basename(path));
+	auditStore[HANDLE_TOKEN] = token;
+	currentHandles.set(path, { token, generationId });
 	for (const registry of [allSubscriptions, allSameThreadSubscriptions]) {
 		const databaseSubscriptions = registry[path];
 		if (!databaseSubscriptions) continue;
