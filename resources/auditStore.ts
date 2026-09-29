@@ -158,7 +158,8 @@ const AUDIT_FLOOR_UNKNOWN = Infinity;
 /**
  * Which copy of this database's history this is: a sixteen-byte random id, then the float64 time the
  * generation began (0 for genesis). Every path that publishes a copy stamps a fresh one first
- * (`stampDatabaseGeneration`), so a position naming an older id is refused (harper#2451).
+ * (`stampDatabaseGeneration`), so a position naming an older id is refused (harper#2451). RocksDB only,
+ * like the resume floor: an LMDB database carries neither, so no position is resumable against it.
  */
 const DATABASE_GENERATION_KEY = Symbol.for('database-generation');
 const GENERATION_ID_BYTES = 16;
@@ -169,7 +170,10 @@ const GENERATION_RECORD_BYTES = GENERATION_ID_BYTES + 8;
  * must not be absorbed by the floor's unknown sentinel, and doing either to the floor changes merges.
  */
 const AUDIT_RESUME_FLOOR_KEY = Symbol.for('audit-resume-floor');
-export const DATABASE_GENERATION_KEYS: ReadonlySet<symbol> = new Set([DATABASE_GENERATION_KEY, AUDIT_RESUME_FLOOR_KEY]);
+
+function isRocksStore(store: any): boolean {
+	return store instanceof RocksTransactionLogStore || store instanceof RocksDatabase;
+}
 
 /** Last resort on a detached path: a failing log sink must not itself become an unhandled rejection. */
 function warnContained(message: string, error: unknown) {
@@ -210,7 +214,7 @@ export function openAuditStore(rootStore) {
 	auditStore.rootStore = rootStore;
 	establishAuditFloor(auditStore);
 	establishDatabaseGeneration(auditStore);
-	endSubscriptionsFromEarlierHandles(auditStore);
+	endSubscriptionsFromEarlierHandles(auditStore, isRocksStore(auditStore));
 	auditStore.tableStores = [];
 	const deleteCallbacks = [];
 	auditStore.addDeleteRemovalCallback = function (tableId, table, callback) {
@@ -580,7 +584,7 @@ function commitAuditMetadata(
 ): void {
 	// A copy being stamped passes its RocksDB root directly. A legacy `auditPath` layout is opened as its
 	// own standalone LMDB root (databases.ts) and has no `.rootStore`, so it owns the transaction itself.
-	const onRocksDB = store instanceof RocksTransactionLogStore || store instanceof RocksDatabase;
+	const onRocksDB = isRocksStore(store);
 	const transactionOwner = store instanceof RocksDatabase ? store : (store?.rootStore ?? store);
 	if (!transactionOwner?.transactionSync)
 		throw new Error(`Cannot record the ${what}: this database has no audit store`);
@@ -702,18 +706,18 @@ export function raiseAuditFloor(auditStore: any, cutoff: number): void {
 	// database, a cutoff below one a wider prune already set), and taking the env write lock to
 	// discover that serializes every worker's boot and reclamation on it. The in-transaction guards
 	// below stay authoritative.
-	// Skips only the case it can prove is a no-op: both records exist and already sit at or above the
-	// cutoff. An absent record is NOT decided here — the presence question is settled inside the
-	// transaction below, because another worker's establishAuditFloor can land between this read and
-	// that write.
+	// Skips only the case it can prove is a no-op: the floor, and on RocksDB the resume record, exist and
+	// already sit at or above the cutoff. An absent record is NOT decided here — the presence question is
+	// settled inside the transaction below, because another worker's establishAuditFloor can land between
+	// this read and that write.
+	const resumeTracked = isRocksStore(auditStore);
 	if (auditStore?.getBinary) {
 		const stored = auditStore.getBinary(AUDIT_FLOOR_KEY);
-		const resume = auditStore.getBinary(AUDIT_RESUME_FLOOR_KEY);
+		const resume = resumeTracked ? auditStore.getBinary(AUDIT_RESUME_FLOOR_KEY) : undefined;
 		if (
 			stored !== undefined &&
 			!(cutoff > decodeAuditFloor(stored)) &&
-			resume !== undefined &&
-			!(cutoff > decodeAuditFloor(resume))
+			(!resumeTracked || (resume !== undefined && !(cutoff > decodeAuditFloor(resume))))
 		)
 			return;
 	}
@@ -729,9 +733,11 @@ export function raiseAuditFloor(auditStore: any, cutoff: number): void {
 			// run too.
 			if (stored === undefined) writes.push([AUDIT_FLOOR_KEY, encodeAuditFloor(AUDIT_FLOOR_UNKNOWN)]);
 			else if (cutoff > decodeAuditFloor(stored)) writes.push([AUDIT_FLOOR_KEY, encodeAuditFloor(cutoff)]);
-			const resume = read(AUDIT_RESUME_FLOOR_KEY);
-			if (resume === undefined || cutoff > decodeAuditFloor(resume))
-				writes.push([AUDIT_RESUME_FLOOR_KEY, encodeAuditFloor(cutoff)]);
+			if (resumeTracked) {
+				const resume = read(AUDIT_RESUME_FLOOR_KEY);
+				if (resume === undefined || cutoff > decodeAuditFloor(resume))
+					writes.push([AUDIT_RESUME_FLOOR_KEY, encodeAuditFloor(cutoff)]);
+			}
 			return writes;
 		},
 		'audit retention floor'
@@ -927,7 +933,8 @@ export function getAuditResumeFloor(auditStore: any): number {
  * at or above the resume floor. The cursor must be progress-based — no lower than the log position
  * observed when the position was established — or a quiet scope's snapshot key falls below a floor
  * that retention keeps advancing and is refused on every resume. The answer holds as of the read: a
- * prune that commits after it returns is the caller's to order against its replay.
+ * prune that commits after it returns is the caller's to order against its replay. Always false on
+ * LMDB, which has no generation: a caller applies the check to RocksDB databases only.
  */
 export function isResumablePosition(auditStore: any, generationId: string | undefined, cursor: number): boolean {
 	const generation = getDatabaseGeneration(auditStore);
@@ -962,12 +969,14 @@ function decodeGeneration(stored: any): DatabaseGeneration | undefined {
 }
 
 /**
- * Establish this handle's generation at open: adopt the recorded one, or mint genesis for a store
- * that has none. An undecodable record is never replaced here — an ordinary open cannot know whether
- * another worker already serves it; only a copy's stamp replaces a generation. Never fails the open.
+ * Establish this handle's generation at open: adopt the recorded one, or mint genesis for a RocksDB
+ * store that has none (an LMDB store gets none). An undecodable record is never replaced here — an
+ * ordinary open cannot know whether another worker already serves it; only a copy's stamp replaces a
+ * generation. Never fails the open.
  */
 export function establishDatabaseGeneration(auditStore: any): void {
 	auditStore.databaseGeneration = undefined;
+	if (!isRocksStore(auditStore)) return;
 	try {
 		let stored = auditStore.getBinary(DATABASE_GENERATION_KEY);
 		if (stored === undefined) {

@@ -15,12 +15,7 @@ import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
 import { CONFIG_PARAMS, DATABASES_DIR_NAME, MIGRATING_DIR_SUFFIX } from '../utility/hdbTerms.ts';
-import {
-	AUDIT_STORE_OPTIONS,
-	DATABASE_GENERATION_KEYS,
-	auditRetention,
-	stampDatabaseGeneration,
-} from '../resources/auditStore.ts';
+import { AUDIT_STORE_OPTIONS, auditRetention, stampDatabaseGeneration } from '../resources/auditStore.ts';
 import { blobsReadmeContent, copyBlobRootsByIndex } from '../dataLayer/blobBackup.ts';
 import { describeSchema } from '../dataLayer/schemaDescribe.ts';
 import { updateConfigValue } from '../config/configUtils.ts';
@@ -328,13 +323,7 @@ export async function copyDb(
 		primaryStoresByDbi.set(table.primaryStore.name, table.primaryStore);
 	}
 	try {
-		await copyDbEnvironment(
-			sourceDatabase,
-			targetDatabasePath,
-			rootStore,
-			primaryStoresByDbi,
-			blobDisposition === 'copy'
-		);
+		await copyDbEnvironment(sourceDatabase, targetDatabasePath, rootStore, primaryStoresByDbi);
 		if (blobDisposition === 'copy') await copyDatabaseBlobs(sourceDatabase, targetDatabasePath, blobRoots);
 	} catch (error) {
 		// Every path removed here was created by this call — both targets are rejected above if they
@@ -350,8 +339,7 @@ async function copyDbEnvironment(
 	sourceDatabase: string,
 	targetDatabasePath: string,
 	rootStore,
-	primaryStoresByDbi: Map<string, any>,
-	newHistory: boolean
+	primaryStoresByDbi: Map<string, any>
 ) {
 	// this contains the list of all the dbis
 	const sourceDbisDb = rootStore.dbisDb;
@@ -401,16 +389,7 @@ async function copyDbEnvironment(
 			if (!sourceAuditDbi) throw new Error(`Could not open the audit store of ${sourceDatabase} to copy it`);
 			const targetAuditStore = (targetEnv as any).openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
 			console.log('copying audit log for', sourceDatabase, 'to', targetDatabasePath);
-			// a copy beside its source is a separate history, and one cut short must not hold the source's
-			await copyDbi(
-				useRawBytes(sourceAuditDbi),
-				useRawBytes(targetAuditStore),
-				false,
-				transaction,
-				undefined,
-				newHistory ? DATABASE_GENERATION_KEYS : undefined
-			);
-			if (newHistory) stampDatabaseGeneration(targetAuditStore, { carriesLog: true });
+			await copyDbi(useRawBytes(sourceAuditDbi), useRawBytes(targetAuditStore), false, transaction);
 		}
 
 		/**
@@ -447,14 +426,7 @@ async function copyDbEnvironment(
 			}
 		}
 
-		async function copyDbi(
-			sourceDbi,
-			targetDbi,
-			isPrimary,
-			transaction,
-			primaryStore?,
-			skipKeys?: ReadonlySet<symbol>
-		) {
+		async function copyDbi(sourceDbi, targetDbi, isPrimary, transaction, primaryStore?) {
 			let recordsCopied = 0;
 			let bytesCopied = 0;
 			let skippedRecord = 0;
@@ -471,7 +443,6 @@ async function copyDbEnvironment(
 					)) {
 						try {
 							start = key;
-							if (skipKeys?.has(key)) continue;
 							// Drop a tombstone only once it is past audit retention, the point the runtime
 							// removes it too: dropping a live one loses the delete, letting a peer that
 							// missed it resurrect the record. A tombstone's body is a lone msgpack nil, so

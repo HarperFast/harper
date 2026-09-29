@@ -47,7 +47,6 @@ const { forComponent } = harperLogger;
 import * as manageThreads from '../server/threads/manageThreads.js';
 import {
 	establishAuditFloor,
-	establishDatabaseGeneration,
 	openAuditStore,
 	readAuditEntry,
 	createAuditEntry,
@@ -1269,10 +1268,9 @@ function initStores(
 					}) as any;
 				}
 				auditStore.isLegacy = true;
-				// A legacy standalone audit root skips openAuditStore, so give it a floor and a generation
-				// here, or it reports its retention horizon as permanently unknown and refuses every resume.
+				// A legacy standalone audit root skips openAuditStore, so give it a floor here or it
+				// reports its retention horizon as permanently unknown.
 				establishAuditFloor(auditStore);
-				establishDatabaseGeneration(auditStore);
 			}
 		} else {
 			auditStore = openAuditStore(rootStore);

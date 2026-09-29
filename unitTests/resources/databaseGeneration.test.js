@@ -47,6 +47,7 @@ function tableInOwnDatabase(name = `Generation${++sequence}`) {
 }
 
 describe('Database generation', () => {
+	if (!isRocksDB) return; // RocksDB only; the LMDB behavior is below
 	before(() => {
 		setupTestDBPath();
 		setMainIsWorker(true);
@@ -229,25 +230,6 @@ describe('Database generation', () => {
 			establishDatabaseGeneration(store);
 			assert.deepStrictEqual(getDatabaseGeneration(store), recorded);
 		});
-
-		it('commits none of its records when one of them does not land', function () {
-			if (isRocksDB) return this.skip(); // the LMDB write branch reads its puts back through the store
-			const store = tableInOwnDatabase().auditStore;
-			raiseAuditFloor(store, Date.now()); // so the dropped resume-floor write differs from what is stored
-			const before = new Uint8Array(store.getBinary(GENERATION_KEY));
-			const realPut = store.put.bind(store);
-			store.put = (key, value) => (key === RESUME_FLOOR_KEY ? Promise.resolve(true) : realPut(key, value));
-			try {
-				assert.throws(() => stampDatabaseGeneration(store, { carriesLog: true }), /did not commit/);
-			} finally {
-				store.put = realPut;
-			}
-			assert.deepStrictEqual(
-				new Uint8Array(store.getBinary(GENERATION_KEY)),
-				before,
-				'the generation must roll back too'
-			);
-		});
 	});
 
 	describe('resumable positions', () => {
@@ -275,10 +257,6 @@ describe('Database generation', () => {
 	});
 
 	describe('live subscriptions across a generation change', function () {
-		before(function () {
-			if (!isRocksDB) this.skip(); // copies of a live database are RocksDB paths
-		});
-
 		async function reopenAsCopy(name, stampedTable) {
 			const path = stampedTable.auditStore.rootStore.path;
 			assert.ok(await closeDatabase(`generation_${name}`));
@@ -398,5 +376,40 @@ describe('Database generation', () => {
 			await assert.rejects(resource.subscribe({}), DatabaseClosingError, 'it is not the reopened handle');
 			(await subscribeAndWrite(reopened)).subscription.end();
 		});
+	});
+});
+
+describe('Database generation on LMDB', () => {
+	if (isRocksDB) return;
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	it('records neither a generation nor a resume floor, so no position resumes', () => {
+		const store = tableInOwnDatabase().auditStore;
+		assert.strictEqual(getDatabaseGeneration(store), undefined);
+		const cutoff = Date.now() + 1000;
+		raiseAuditFloor(store, cutoff);
+		assert.strictEqual(getAuditFloor(store), cutoff);
+		assert.strictEqual(store.getBinary(GENERATION_KEY), undefined);
+		assert.strictEqual(store.getBinary(RESUME_FLOOR_KEY), undefined);
+		assert.strictEqual(isResumablePosition(store, undefined, cutoff + 1), false);
+	});
+
+	it('ends a subscription at a reopen with the retryable DatabaseClosingError, never as a replaced database', async () => {
+		const name = 'LmdbReopen';
+		const T = tableInOwnDatabase(name);
+		const events = [];
+		const subscription = await T.subscribe({ id: 'A', listener: (event) => events.push(event) });
+		assert.ok(await closeDatabase(`generation_${name}`));
+		const reopened = tableInOwnDatabase(name);
+		assert.ok(events.at(-1) instanceof DatabaseClosingError);
+		assert.strictEqual(subscription.closed, true);
+		const current = [];
+		const resubscribed = await reopened.subscribe({ id: 'A', listener: (event) => current.push(event) });
+		await reopened.put('A', { value: 1 });
+		await waitFor(() => current.some((event) => event.value?.value === 1));
+		resubscribed.end();
 	});
 });
