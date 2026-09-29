@@ -3063,6 +3063,7 @@ export function makeTable(options) {
 								isRocksDB && audit && txnLogKey !== txnTime
 									? [{ version: txnLogKey, nodeId: options?.nodeId }]
 									: undefined,
+							localOnly: options?.localOnly,
 						},
 						'invalidate'
 					);
@@ -3131,6 +3132,7 @@ export function makeTable(options) {
 								isRocksDB && audit && txnLogKey !== txnTime
 									? [{ version: txnLogKey, nodeId: options?.nodeId }]
 									: undefined,
+							localOnly: options?.localOnly,
 						},
 						'relocate',
 						false,
@@ -4778,6 +4780,7 @@ export function makeTable(options) {
 									isRocksDB && audit && txnLogKey !== txnTime
 										? [{ version: txnLogKey, nodeId: options?.nodeId }]
 										: undefined,
+								localOnly: options?.localOnly,
 							},
 							'delete'
 						);
@@ -6354,6 +6357,7 @@ export function makeTable(options) {
 							viaNodeId: options?.viaNodeId,
 							transaction,
 							tableToTrack: tableName,
+							localOnly: options?.localOnly,
 						},
 						'message',
 						false,

@@ -978,3 +978,20 @@ environment is a use-after-free (an intermittent segfault in the lmdb unit run).
 an LMDB root once, only while `open`, skips its dbis, and closes every alias sharing it. RocksDB
 column families are independently refcounted handles, so they are still closed one by one. Enforced by
 the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.
+
+## A local-only write marks both the record and its audit entry, and replay preserves it (`Table.ts` internal writes, `replayLogs.ts`)
+
+`LOCAL_ONLY` keeps a write off replication with no value decode on the send path: harper-pro's
+audit-forward sender tests the audit entry's `extendedType` and its full-copy sender the stored
+`entry.metadataFlags`, so `RecordEncoder.updateRecord` sets both from one `options.localOnly`.
+Every path that re-derives a write from either must preserve it. The caller-optioned internal write
+routines (`_writeUpdate`, `_writeDelete`, `_writeInvalidate`, `_writeRelocate`, `_writePublish`) each
+forward `localOnly` to `updateRecord`. The static protocol verbs never carry it; of the instance
+verbs only `publish(target, message, options)` forwards an options argument, so a local-only put,
+patch or delete goes through the internal routine, as harper-pro's `ensureNode` does. Crash replay
+re-encodes the record
+but never re-appends its audit entry (replay transactions are `isRetry`), so the record metadata is
+what a replay can lose: `replayLogs` reads the bit back from the entry's `extendedType`. The bit
+reflects the latest write, not history — a later plain write clears it (harper-pro#246 re-asserts it).
+Reload and derived-index `evict` markers are always local-only; lock control entries never are.
+Enforced by `unitTests/resources/localOnly.test.js` (both engines; crash + boot replay on RocksDB).
