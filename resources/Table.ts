@@ -614,7 +614,6 @@ export interface TableResourceInstance<Record extends object = any> {
 	/**
 	 * This is a request to explicitly ensure that the record is loaded from source, rather than only using the local record.
 	 * This will load from source if the current record is expired, missing, or invalidated.
-	 * @returns
 	 */
 	ensureLoaded(): void | Promise<void>;
 	/**
@@ -707,9 +706,6 @@ export interface TableResourceInstance<Record extends object = any> {
 	/**
 	 * Publishing a message to a record adds an (observable) entry in the audit log, but does not change
 	 * the record at all. This entries should be replicated and trigger subscription listeners.
-	 * @param id
-	 * @param message
-	 * @param options
 	 */
 	publish(target: RequestTarget, message: Record, options?: any): void | Promise<void>;
 	_writePublish(id: Id, message: any, options?: any): void;
@@ -822,11 +818,8 @@ export interface TableResourceClass {
 	 * This defines a source for a table. This effectively makes a table into a cache, where the canonical
 	 * source of data (or source of truth) is provided here in the Resource argument. Additional options
 	 * can be provided to indicate how the caching should be handled.
-	 * @param source
-	 * @param options
-	 * @returns
 	 */
-	sourcedFrom<This extends TableResourceClass>(this: This, source: any, options: any): This | undefined;
+	sourcedFrom(source: any, options: any): any;
 	get isCaching(): any;
 	/** Indicates if the events should be revalidated when they are received. By default we do this if the get
 	 * method is overriden */
@@ -834,10 +827,7 @@ export interface TableResourceClass {
 	/**
 	 * Gets a resource instance, as defined by the Resource class, adding the table-specific handling
 	 * of also loading the stored record into the resource instance.
-	 * @param target
-	 * @param request
 	 * @param resourceOptions An important option is ensureLoaded, which can be used to indicate that it is necessary for a caching table to load data from the source if there is not a local copy of the data in the table (usually not necessary for a delete, for example).
-	 * @returns
 	 */
 	getResource<Record extends object = any>(
 		target: RequestTarget,
@@ -875,8 +865,6 @@ export interface TableResourceClass {
 	enableAuditing(): void;
 	/**
 	 * Coerce the id as a string to the correct type for the primary key
-	 * @param id
-	 * @returns
 	 */
 	coerceId(id: string): number | string;
 	/**
@@ -890,8 +878,6 @@ export interface TableResourceClass {
 	dropTable(): Promise<void>;
 	/**
 	 * Record the relocation of an entry (when a record is moved to a different node), return true if it is now located locally
-	 * @param existingEntry
-	 * @param entry
 	 */
 	_recordRelocate(existingEntry: any, entry: any): boolean;
 	/**
@@ -912,12 +898,6 @@ export interface TableResourceClass {
 	operation(operation: any, context: any): any;
 	/**
 	 * This is responsible for ordering and select()ing the attributes/properties from returned entries
-	 * @param select
-	 * @param context
-	 * @param filtered
-	 * @param ensure_loaded
-	 * @param canSkip
-	 * @returns
 	 */
 	transformToOrderedSelect(
 		entries: any[],
@@ -929,18 +909,12 @@ export interface TableResourceClass {
 	): any;
 	/**
 	 * This is responsible for select()ing the attributes/properties from returned entries
-	 * @param select
-	 * @param context
-	 * @param filtered
-	 * @param ensure_loaded
-	 * @param canSkip
 	 * @param rowFilter explicit row predicate applied to the record actually being
 	 * returned — i.e. AFTER any caching-source revalidation replaces a stale local copy — so an
 	 * authorization verdict can't be made on bytes that differ from what the caller receives.
 	 * @param includeExpired when true, a row past its TTL but not yet swept is treated as a live
 	 * match rather than gone (used by the SQL engine's UPDATE/DELETE row-finder).
 	 * @param sort post-ordering owned by this selection
-	 * @returns
 	 */
 	transformEntryForSelect(
 		select: any,
@@ -955,8 +929,6 @@ export interface TableResourceClass {
 	): (entry: Entry) => any;
 	/**
 	 * Subscribe on one thread unless this is a per-thread subscription
-	 * @param workerIndex
-	 * @param options
 	 */
 	subscribeOnThisThread(workerIndex: any, options: any): boolean;
 	/**
@@ -998,7 +970,6 @@ export interface TableResourceClass {
 	removeAttributes(names: string[]): Promise<any>;
 	/**
 	 * Get the size of the table in bytes (based on amount of pages stored in the database)
-	 * @param options
 	 */
 	getSize(): number;
 	/** Sizes of this table's durable record-structure dictionaries. */
@@ -1777,7 +1748,7 @@ export function makeTable(options): TableResourceClass {
 		 * @returns
 		 */
 		// #section: resource-registry
-		static sourcedFrom<This extends TableResourceClass>(this: This, source: any, options: any): This | undefined {
+		static sourcedFrom(source: any, options: any): any {
 			// define a source for retrieving invalidated entries for caching purposes
 			if (options) {
 				this.sourceOptions = options;
