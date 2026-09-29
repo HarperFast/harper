@@ -757,6 +757,7 @@ async function deployComponent(req) {
 	const systemReplicated = isSystemDatabaseReplicated();
 
 	let extractionPayload = req.payload;
+	let openedPayload;
 	// Bounded ring buffer of install stdout/stderr so a non-SSE caller sees the tail
 	// in the thrown error. SSE callers still stream every line live.
 	const installCapture = createInstallCapture();
@@ -772,10 +773,10 @@ async function deployComponent(req) {
 			// for a payload its row never had while the origin swapped successfully.
 			extractionPayload = undefined;
 		} else if (receivesBuild) {
-			extractionPayload = await receiveBuild(req);
+			extractionPayload = openedPayload = await receiveBuild(req);
 		} else if (recorder && req.payload != null) {
 			await recorder.ingestPayload(req.payload);
-			extractionPayload = recorder.row.payload_blob.stream();
+			extractionPayload = openedPayload = recorder.row.payload_blob.stream();
 		} else if (isReplicatedExecution && req.payload == null && !req.package) {
 			// Peer received a replicated deploy without a payload — read the tarball from
 			// the replicated hdb_deployment row's payload_blob. Blob.stream() blocks on
@@ -796,7 +797,7 @@ async function deployComponent(req) {
 			// blobReadTimeout of no progress. Retry with backoff, bounded by the remaining
 			// budget, so a transient stall doesn't fail the whole deploy (harper-pro incident,
 			// 2026-07-16).
-			extractionPayload = readPayloadBlobWithRetry(() => row.payload_blob.stream(), {
+			extractionPayload = openedPayload = readPayloadBlobWithRetry(() => row.payload_blob.stream(), {
 				timeoutMs: Math.max(0, payloadDeadline - Date.now()),
 			});
 		}
@@ -1179,6 +1180,17 @@ async function deployComponent(req) {
 			}
 		}
 		throw outErr;
+	} finally {
+		releaseUnreadPayload(openedPayload);
+	}
+}
+
+/** A preparation that ends before extraction leaves the stream it was given holding its stored blob open. */
+function releaseUnreadPayload(stream) {
+	if (stream instanceof Readable) {
+		if (!stream.readableEnded) stream.destroy();
+	} else if (stream && !stream.locked) {
+		stream.cancel?.().catch(() => {});
 	}
 }
 
@@ -1793,6 +1805,7 @@ exports.addComponent = addComponent;
 exports.dropCustomFunctionProject = dropCustomFunctionProject;
 exports.packageComponent = packageComponent;
 exports.deployComponent = deployComponent;
+exports.releaseUnreadPayload = releaseUnreadPayload;
 exports.unconfirmedStagingPeers = unconfirmedStagingPeers;
 exports.recordUnconfirmedBuildPeers = recordUnconfirmedBuildPeers;
 exports.publishesBuild = publishesBuild;

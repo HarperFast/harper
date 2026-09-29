@@ -29,6 +29,7 @@ const {
 	recordUnconfirmedBuildPeers,
 	assertBuildFitsOperationBody,
 	publishesBuild,
+	releaseUnreadPayload,
 } = require('#src/components/operations');
 const { deployComponentValidator } = require('#src/components/operationsValidation');
 const { server } = require('#src/server/Server');
@@ -619,6 +620,30 @@ describe('replicated builds', () => {
 					/each of 3 node\(s\).*replication_maxPayload/.test(error.message) &&
 					/Replicate the system database/.test(error.message)
 			);
+		});
+	});
+
+	describe('a deploy that ends before reading what it opened', () => {
+		it('releases the build it was verifying, down to the stored blob it came from', async () => {
+			const { Readable, pipeline } = require('node:stream');
+			const { verifiedArchive } = require('#src/components/buildArtifact');
+			const blobRead = new Readable({ read() {} });
+			const verifying = pipeline(blobRead, verifiedArchive({ sha256: 'a'.repeat(64), size: 1 }), () => {});
+			releaseUnreadPayload(verifying);
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.ok(blobRead.destroyed, 'the blob read is closed');
+		});
+
+		it('cancels a blob stream nothing took, and leaves one that is being read', async () => {
+			let cancelled = 0;
+			const stream = () => new ReadableStream({ cancel: () => void cancelled++ });
+			releaseUnreadPayload(stream());
+			const reading = stream();
+			reading.getReader();
+			releaseUnreadPayload(reading);
+			releaseUnreadPayload(undefined);
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.strictEqual(cancelled, 1);
 		});
 	});
 
