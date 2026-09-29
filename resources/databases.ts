@@ -1450,6 +1450,9 @@ function initStores(
 		const fullTextIndexRetirements = persistedFullTextIndexNames(primaryAttribute.fullTextIndexRetirements);
 		if (table && !recreateTable) {
 			if (primaryAttribute.audit === true && table.audit !== true) table.enableAuditing();
+			// Absent means unchanged, not `replicates`: NON_REPLICATING_SYSTEM_TABLES sets `replicate = false`
+			// on the live class and stores nothing, so an unconditional refresh would clear that override.
+			if (typeof primaryAttribute.replicate === 'boolean') table.replicate = primaryAttribute.replicate;
 			table.fullTextIndexes = fullTextIndexes;
 			table.fullTextIndexGenerations = fullTextIndexGenerations;
 			table.fullTextIndexRetirements = fullTextIndexRetirements;
@@ -4198,7 +4201,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					(schemaDefinedMismatch ||
 						(typeof audit === 'boolean' && audit !== attributeDescriptor.audit) ||
 						(sealed !== undefined && sealed !== Table.sealed) ||
-						(replicate !== undefined && replicate !== Table.replicate) ||
+						(replicate !== undefined && replicate !== attributeDescriptor.replicate) ||
 						(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
 						(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
 						attribute.type !== attributeDescriptor.type)
@@ -4583,6 +4586,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		);
 	refreshDerivedIndexes(Table);
 
+	if (typeof replicate === 'boolean' && origin !== 'cluster') Table.replicate = replicate;
 	Table.origin = origin;
 	// scope-private: replication and other global subscribers must not learn of a branch class
 	if ((hasChanges || refreshRelationshipAttributes) && !target.branch) {

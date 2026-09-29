@@ -978,3 +978,7 @@ environment is a use-after-free (an intermittent segfault in the lmdb unit run).
 an LMDB root once, only while `open`, skips its dbis, and closes every alias sharing it. RocksDB
 column families are independently refcounted handles, so they are still closed one by one. Enforced by
 the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.
+
+## A defaulted `lock()` scope comes from the table's declaration, never from the transport registry (`recordLock.ts`, `Table.ts`)
+
+`resolveLockOptions` defaults `scope` to `'node'` on a `replicate: false` table and `'cluster'` otherwise, read from `Table.replicate` at the one call in `Table.lock()` and again after the native wait, so neither registering a transport nor a redeclaration mid-wait can re-scope a call (harper#2716). `Table.replicate` is therefore refreshed on redeclaration and catalog reload, and a redeclaration is persisted against the durable primary row, not the possibly stale static. **Not enforced:** a hold granted before a live `false → true` change keeps node scope for its lease, so drain holds before changing a live table's `replicate`. Pinned by "a table that does not replicate" in `recordLockCluster.test.js`.

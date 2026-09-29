@@ -356,10 +356,15 @@ construction the one most likely to be truncated, so that rule reports a contend
 coordination failure at random.
 
 **`{ scope: 'node' }`** opts out of the cluster step and keeps exact Phase 0 semantics, which by
-design permits simultaneous holders on different nodes. An **explicit** `{ scope: 'cluster' }` with no
-transport rejects 503 rather than silently returning the weaker lock, and a transaction that already
-holds a key node-scoped cannot take a cluster lock on it (409) — including through the concurrent-lock
-coalescing path, where a follower would otherwise inherit the leader's weaker handle.
+design permits simultaneous holders on different nodes. A defaulted scope is `'node'` on a table
+declared `replicate: false` — it has no cluster to lock across, and the transport an operator registers
+for the database must not re-scope it (harper#2716) — and `'cluster'` otherwise, which includes a table
+whose declaration omits `replicate`, since that is the replicating default. A hold already granted keeps
+the scope it was granted at: a `replicate` change re-scopes later calls, not live handles. An **explicit**
+`{ scope: 'cluster' }` with no transport rejects 503 rather than silently returning the weaker lock,
+and a transaction that already holds a key node-scoped cannot take a cluster lock on it (409) —
+including through the concurrent-lock coalescing path, where a follower would otherwise inherit the
+leader's weaker handle.
 
 **Routing and exclusion from record surfaces.** The replicated-event consumer in `Table.ts` dispatches
 the release entry to the table's `LockCoordinator` before it resolves a resource, so it never reaches

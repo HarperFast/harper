@@ -12,8 +12,10 @@ import { ClientError } from '../utility/errors/hdbError.ts';
  * Phase 1 layers cluster-wide exclusion on top without changing that: once the native key is held,
  * `Table.lock()` obtains a delegation for the key from its home node (see `recordLockCoordinator.ts`)
  * and calls `joinClusterRound()` on the handle. A live delegation serves repeat locks with no cluster
- * message at all. A node-scoped lock (`{ scope: 'node' }`), or any lock on a database with no
- * transport registered, skips the cluster step entirely and behaves exactly as it did in Phase 0.
+ * message at all. A node-scoped lock (`{ scope: 'node' }`) or a defaulted lock on a table declared
+ * `replicate: false` skips the cluster step entirely and behaves exactly as it did in Phase 0; so does
+ * a defaulted lock on a replicating table while no transport has ever been registered for the
+ * database — once one has been, its absence fails closed (`isClusterLockRequired`).
  */
 
 export const DEFAULT_LOCK_LEASE_MS = 30_000;
@@ -32,8 +34,9 @@ export interface RecordLockOptions {
 	/** A held lock outlives the acquiring transaction; it is released by `unlock()` or by its lease */
 	hold?: boolean;
 	/**
-	 * `'cluster'` (default) is exclusive across every participating node; `'node'` keeps Phase 0
-	 * semantics and is exclusive only across this node's worker threads.
+	 * `'cluster'` is exclusive across every participating node; `'node'` keeps Phase 0 semantics and is
+	 * exclusive only across this node's worker threads. Defaults to `'cluster'` on a replicating table
+	 * and to `'node'` on a table declared `replicate: false`, which has no cluster to lock across.
 	 */
 	scope?: 'cluster' | 'node';
 }
@@ -122,12 +125,15 @@ function requireDuration(name: string, value: unknown, fallback: number, min: nu
 	return value;
 }
 
-export function resolveLockOptions(options?: RecordLockOptions | null): ResolvedRecordLockOptions {
+export function resolveLockOptions(
+	options: RecordLockOptions | null | undefined,
+	tableReplicates: boolean
+): ResolvedRecordLockOptions {
 	if (options != null && typeof options !== 'object')
 		throw new ClientError(`Lock options must be an object, but received ${typeof options}`);
 	const hold = options?.hold ?? false;
 	if (typeof hold !== 'boolean') throw new ClientError(`Lock option hold must be a boolean, but received ${hold}`);
-	const scope = options?.scope ?? 'cluster';
+	const scope = options?.scope ?? (tableReplicates ? 'cluster' : 'node');
 	if (scope !== 'cluster' && scope !== 'node')
 		throw new ClientError(`Lock option scope must be 'cluster' or 'node', but received ${scope}`);
 	return {

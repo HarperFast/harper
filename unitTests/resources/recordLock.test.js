@@ -6,7 +6,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction, contextStorage } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
-const { MIN_LOCK_LEASE_MS, makeKeyLockHandle } = require('#src/resources/recordLock');
+const { MIN_LOCK_LEASE_MS, makeKeyLockHandle, resolveLockOptions } = require('#src/resources/recordLock');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -51,6 +51,28 @@ describe('Record locks (harper#483)', () => {
 			handle.noteHolderVersion(150);
 			assert.ok(handle.nextHolderVersion() > 200);
 			handle.release();
+		});
+
+		it('defaults the scope from the table: cluster when it replicates, node when it does not', () => {
+			const scopes = (...resolved) => resolved.map((r) => [r.scope, r.scopeRequested]);
+			assert.deepStrictEqual(scopes(resolveLockOptions(undefined, true), resolveLockOptions(undefined, false)), [
+				['cluster', false],
+				['node', false],
+			]);
+			assert.deepStrictEqual(
+				scopes(resolveLockOptions({ scope: 'cluster' }, false), resolveLockOptions({ scope: 'node' }, true)),
+				[
+					['cluster', true],
+					['node', true],
+				]
+			);
+			assert.deepStrictEqual(
+				scopes(resolveLockOptions({ scope: undefined }, false), resolveLockOptions({ scope: undefined }, true)),
+				[
+					['node', false],
+					['cluster', false],
+				]
+			);
 		});
 
 		it('lock() and unlock() do not change the record version or stored bytes', async function () {
