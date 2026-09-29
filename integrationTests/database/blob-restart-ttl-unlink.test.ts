@@ -424,13 +424,24 @@ suite(
 				const trajectory: string[] = [];
 
 				// DANGLING/MIRROR-FAILURE signature: record still resident (rawPresent) but its blob
-				// body can no longer be read (readError, e.g. ENOENT) — the exact "later read 500s/
-				// ENOENTs" shape the scenario warns about. Accumulated across every poll tick below:
-				// checked only once after the loop breaks on full convergence, every id already has
-				// rawPresent===false by construction and the check can never fire (vacuous).
-				const danglingRefs: any[] = [];
+				// body can no longer be read. Checked on every poll tick below, not just once after
+				// full convergence -- by then rawPresent===false for every id and it can never fire.
+				// Keyed by id so a record stuck across many ticks reports once, not once per tick.
+				const danglingRefs = new Map<string, any>();
 				let normalRaw: any[] = [];
 				let alreadyRaw: any[] = [];
+
+				// A `raw` read outside a transaction takes no snapshot (resources/blob.ts
+				// snapshotStillSees), so its only margin against an in-flight eviction is the blob's
+				// reclamation delay (DEFAULT_RECLAMATION_DELAY). A genuine dangling ref persists, so
+				// one fresh re-read confirms it and rules out a stale one-off observation.
+				async function confirmDangling(candidates: any[]) {
+					for (const body of candidates) {
+						if (body.rawPresent !== true || !body.readError) continue;
+						const recheck = await op({ action: 'raw', id: body.id }).expect(200);
+						if (recheck.body.rawPresent === true && recheck.body.readError) danglingRefs.set(body.id, recheck.body);
+					}
+				}
 
 				while (Date.now() < deadline) {
 					const d = await diskFiles(blobRootDir);
@@ -448,10 +459,6 @@ suite(
 						`MIRROR-FAILURE (Q3): update-target became dangling/absent mid-sweep: ${JSON.stringify(updateCheck.body)}`
 					);
 
-					// Ground-truth sample of the FULL normal-N/already-N cohorts (bypassing the lazy
-					// filter), on EVERY tick — both to drive the convergence check below and to catch a
-					// dangling ref while it's actually possible for one to exist (mid-sweep, before every
-					// id has settled to rawPresent===false).
 					normalRaw = await Promise.all(
 						Array.from({ length: NORMAL_COUNT }, (_, i) => op({ action: 'raw', id: `normal-${i}` }).expect(200))
 					);
@@ -461,9 +468,7 @@ suite(
 					trajectory.push(
 						`[normal rawPresent=${normalRaw.map((r) => r.body.rawPresent).join(',')} already rawPresent=${alreadyRaw.map((r) => r.body.rawPresent).join(',')}]`
 					);
-					for (const r of [...normalRaw, ...alreadyRaw]) {
-						if (r.body.rawPresent === true && r.body.readError) danglingRefs.push(r.body);
-					}
+					await confirmDangling([...normalRaw, ...alreadyRaw].map((r) => r.body));
 
 					if (
 						normalRaw.every((r) => r.body.rawPresent === false) &&
@@ -480,17 +485,14 @@ suite(
 				const anomalies = await checkAnomalyLog();
 
 				// ── DECISIVE ground-truth check for ALL normal-N and already-N ids — re-read once more
-				// so a deadline-exit (loop ended without full convergence) is judged from the freshest
-				// state, not the last poll tick. ──
+				// so a deadline-exit is judged from the freshest state, not the last poll tick. ──
 				normalRaw = await Promise.all(
 					Array.from({ length: NORMAL_COUNT }, (_, i) => op({ action: 'raw', id: `normal-${i}` }).expect(200))
 				);
 				alreadyRaw = await Promise.all(
 					Array.from({ length: ALREADY_COUNT }, (_, i) => op({ action: 'raw', id: `already-${i}` }).expect(200))
 				);
-				for (const r of [...normalRaw, ...alreadyRaw]) {
-					if (r.body.rawPresent === true && r.body.readError) danglingRefs.push(r.body);
-				}
+				await confirmDangling([...normalRaw, ...alreadyRaw].map((r) => r.body));
 
 				const normalStillResident = normalRaw.filter((r) => r.body.rawPresent === true);
 				const alreadyStillResident = alreadyRaw.filter((r) => r.body.rawPresent === true);
@@ -501,7 +503,7 @@ suite(
 				findings.push(
 					`Q4 already-N ground truth: ${ALREADY_COUNT - alreadyStillResident.length}/${ALREADY_COUNT} evicted, ${alreadyStillResident.length} still resident`
 				);
-				findings.push(`Q3 dangling-ref (rawPresent + unreadable body) count: ${danglingRefs.length}`);
+				findings.push(`Q3 dangling-ref (rawPresent + unreadable body) count: ${danglingRefs.size}`);
 
 				if (normalStillResident.length === 0) {
 					findings.push(
@@ -522,12 +524,12 @@ suite(
 					);
 				}
 				findings.push(
-					`Q3 VERDICT: ${danglingRefs.length === 0 ? 'no mirror-failure observed (CLEAN)' : 'MIRROR-FAILURE DEFECT observed'}`
+					`Q3 VERDICT: ${danglingRefs.size === 0 ? 'no mirror-failure observed (CLEAN)' : 'MIRROR-FAILURE DEFECT observed'}`
 				);
 
 				ok(
-					danglingRefs.length === 0,
-					`Q3 DEFECT (mirror-failure): ${danglingRefs.length} record(s) resident-but-unreadable: ${JSON.stringify(danglingRefs)}`
+					danglingRefs.size === 0,
+					`Q3 DEFECT (mirror-failure): ${danglingRefs.size} record(s) resident-but-unreadable: ${JSON.stringify([...danglingRefs.values()])}`
 				);
 				ok(
 					normalStillResident.length === 0,

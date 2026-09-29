@@ -282,8 +282,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				);
 
 				strictEqual(bucketConsistency.baseCount, HEARTBEAT_IDS.length, 'only heartbeat rows survive the sweep');
-				// Count alone can't catch a swap (one heartbeat id evicted, one non-heartbeat id spared
-				// -- count stays 12 either way). Pin the actual surviving id set.
+				// Count alone misses a swap (one heartbeat id evicted, one non-heartbeat id spared).
 				const postSweepBase = await primaryDump('Expiring');
 				deepStrictEqual(
 					postSweepBase.rows.map((r: any) => r.id).sort(),
@@ -363,15 +362,22 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 
 			// checkConsistency alone can't tell "deleted and cleaned up" from "never touched": a
 			// no-op DeleteIds leaves both the rows and their index entries untouched, which reads as
-			// perfectly consistent. Confirm the delete actually happened first, via the standard
-			// @table GET path (same 404-after-delete oracle as blob-reader-supersession.test.ts).
-			await Promise.all(
-				toDelete.map(async (id: string) => {
-					const res = await fetch(`${httpURL}/Perm/${encodeURIComponent(id)}`, {
-						headers: { Authorization: client.headers.Authorization },
-					});
-					strictEqual(res.status, 404, `deleted id ${id} should 404 after DeleteIds, got ${res.status}`);
-				})
+			// perfectly consistent. Confirm the delete actually happened first, via the same raw
+			// primaryStore oracle as the rest of this file (PrimaryDump already excludes a delete()
+			// tombstone's null value) rather than a REST GET, which would 404 the same way if Perm's
+			// own route broke instead of the delete running.
+			const postDeleteDump = await primaryDump('Perm');
+			strictEqual(
+				postDeleteDump.rows.length,
+				total - toDelete.length,
+				`DeleteIds must remove rows from the raw primary store, expected ${total - toDelete.length} remaining, got ${postDeleteDump.rows.length}`
+			);
+			const stillPresentIds = new Set(postDeleteDump.rows.map((r: any) => r.id));
+			const notActuallyDeleted = toDelete.filter((id: string) => stillPresentIds.has(id));
+			strictEqual(
+				notActuallyDeleted.length,
+				0,
+				`deleted ids must be gone from the raw primary store: ${JSON.stringify(notActuallyDeleted.slice(0, 10))}`
 			);
 
 			// delete() (with audit on, the default) writes an audit tombstone (value=null) and only
