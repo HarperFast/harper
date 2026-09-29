@@ -23,10 +23,9 @@ export {
 	credentialRejectionError,
 	isCredentialRejection,
 } from './security/credentialRejection.ts';
-// What the built-in MQTT endpoint uses to drain on worker shutdown, verify a client certificate on an
-// mTLS listener and settle authentication after a protocol handshake, so a protocol plugin can do the
-// same (#2715). Exported from the defining modules: the plugin must share the drain registry and the
-// credential-rejection tag with core, not get copies.
+// Exported from the modules that define them, never re-exported through an intermediate: a plugin has
+// to share core's drain registry and its module-private rejection tag, and a second copy of either
+// fails silently rather than loudly (#2715).
 export { registerShutdownDrain, type ShutdownDrain } from './components/shutdownDrain.ts';
 export { verifyCertificate } from './security/certificateVerification/index.ts';
 export type { PeerCertificate, CertificateVerificationResult } from './security/certificateVerification/types.ts';
