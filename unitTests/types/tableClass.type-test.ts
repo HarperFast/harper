@@ -6,7 +6,8 @@
  * Run (after `npm run build`):  npm run test:types
  */
 
-import type { Table, TableResourceClass, TableResourceInstance } from '../../dist/index.js';
+import type { Table } from '../../dist/index.js';
+import type { TableResourceClass, TableResourceInstance } from '../../dist/resources/Table.js';
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 type Expect<T extends true> = T;

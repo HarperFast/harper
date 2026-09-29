@@ -46,7 +46,7 @@ export type { User } from './security/user.ts';
 export type { RecordObject } from './resources/RecordEncoder.ts';
 export type { IterableEventQueue } from './resources/IterableEventQueue.ts';
 export type { Table } from './resources/databases.ts';
-export type { Attribute, TableResourceClass, TableResourceInstance } from './resources/Table.ts';
+export type { Attribute } from './resources/Table.ts';
 // Code-first schema types: the table handle and field model. Per-verb record shapes are
 // discoverable on the handle itself: (typeof Track)['$record' | '$insert' | '$upsert' | '$patch' | '$query'].
 export type {
