@@ -737,7 +737,12 @@ function getSelect({ get_attributes }: any, table: any) {
 		if (get_attributes[0] === '*') {
 			const metadata = get_attributes.slice(1).filter((name) => name === '$score' || name === '$highlights');
 			if (table.schemaDefined && metadata.length === 0) return;
-			get_attributes = [...table.attributes.map((attribute) => attribute.name), ...metadata];
+			get_attributes = [
+				...table.attributes
+					.filter((attribute) => !attribute.computed && !attribute.relationship)
+					.map((attribute) => attribute.name),
+				...metadata,
+			];
 		}
 		get_attributes.forceNulls = true;
 		return get_attributes;

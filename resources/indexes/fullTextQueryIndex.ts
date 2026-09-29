@@ -344,11 +344,31 @@ export class FullTextQueryIndex {
 			MAX_WAIT_FOR_INDEX_MILLISECONDS,
 			Math.max(1, condition.waitForIndexMilliseconds ?? MAX_WAIT_FOR_INDEX_MILLISECONDS)
 		);
-		const lease = await withTimeout(
-			this.#acquireReader(readiness.ownerEpoch, publicationGeneration),
-			acquisitionTimeout,
-			() => new ServerError('Full-text reader acquisition exceeded the search budget', 503)
-		);
+		const acquisition = this.#acquireReader(readiness.ownerEpoch, publicationGeneration);
+		let abortListener: (() => void) | undefined;
+		const abort = context?.signal
+			? new Promise<never>((_resolve, reject) => {
+					abortListener = () => reject(context.signal.reason ?? new Error('Full-text search aborted'));
+					if (context.signal.aborted) abortListener();
+					else context.signal.addEventListener('abort', abortListener, { once: true });
+				})
+			: undefined;
+		let lease: Awaited<typeof acquisition>;
+		try {
+			lease = await withTimeout(
+				abort ? Promise.race([acquisition, abort]) : acquisition,
+				acquisitionTimeout,
+				() => new ServerError('Full-text reader acquisition exceeded the index-wait budget', 503)
+			);
+		} catch (error) {
+			void acquisition.then(
+				(orphaned) => orphaned.release(),
+				() => {}
+			);
+			throw error;
+		} finally {
+			if (abortListener) context.signal.removeEventListener('abort', abortListener);
+		}
 		const reader = lease.reader;
 		try {
 			const deadline = performance.now() + this.#maxSearchBudgetMilliseconds!;

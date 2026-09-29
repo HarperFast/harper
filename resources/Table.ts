@@ -163,6 +163,7 @@ import {
 	recordUpdater,
 	removeEntry,
 	PENDING_LOCAL_TIME,
+	VERSION_REUSED,
 	RecordObject,
 	type Entry,
 	type StructureCounts,
@@ -1137,7 +1138,7 @@ export function makeTable(options) {
 			assertFullTextRecordField(name);
 		}
 		static isFullTextSearchEntryCurrent(entry: Entry): boolean {
-			return !(entry.metadataFlags & (INVALIDATED | EVICTED));
+			return !(entry.metadataFlags & (INVALIDATED | EVICTED | VERSION_REUSED));
 		}
 		static fullTextQueryIndexes: { [name: string]: { customIndex: unknown } } = Object.create(null);
 		static hasFullTextQueryIndexes = false;
