@@ -20,7 +20,8 @@ if (require.main === module) {
 		const { directCommitSync } = DatabaseTransaction.prototype;
 		DatabaseTransaction.prototype.directCommitSync = function () {
 			if (!this.isReplay) return directCommitSync.call(this);
-			const applied = this.writes.filter((write) => !write.skipped);
+			// detachWrite() leaves nulls in `writes` (DatabaseTransaction.ts), so guard before reading
+			const applied = this.writes.filter((write) => write && !write.skipped);
 			for (const { key, store } of applied)
 				replayed[key] ??= { commits: 0, absentBeforeReplay: store.getEntry(key) === undefined };
 			const result = directCommitSync.call(this);
