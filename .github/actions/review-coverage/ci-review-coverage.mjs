@@ -182,7 +182,7 @@ function main(mode, formatMode, framingMode) {
 		);
 	if (!r.pass) {
 		console.error(
-			`::error::${r.detail} — ${r.adjudicatorBlocked ? 'rerun the pre-push review until the adjudicator completes' : 'report the reviews in the PR description'} to pass; the dispatch gate will block at review time if the fleet's review also finds issues`
+			`::error::${r.detail} — ${r.adjudicatorBlocked ? '' : 'report the reviews in the PR description to pass; '}the dispatch gate will block at review time if the fleet's review also finds issues`
 		);
 		process.exitCode = 1;
 	}

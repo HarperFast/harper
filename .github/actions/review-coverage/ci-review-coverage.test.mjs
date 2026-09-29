@@ -993,6 +993,7 @@ test('the CLI tells a blocked-adjudicator PR to rerun the review, not to report 
 	const body = `<sub>Review-Coverage: authored=claude; ran=cursor-composer,gemini,codex; blocked=domain(exit--1); rounds=4; full=4 @ ${PIN}</sub>`;
 	const result = runResult({ pull_request: pr({ body }) }, '--mode', 'enforce');
 	assert.strictEqual(result.status, 1);
-	assert.match(result.stderr, /::error::.*rerun the pre-push review until the adjudicator completes to pass/);
+	const error = result.stderr.split('\n').find((line) => line.startsWith('::error::'));
+	assert.strictEqual(error.match(/rerun the pre-push review/g)?.length, 1, error);
 	assert.doesNotMatch(result.stderr, /report the reviews in the PR description/);
 });
