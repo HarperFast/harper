@@ -5,7 +5,7 @@
  */
 
 import { CONFIG_PARAMS, OPERATIONS_ENUM, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
-import { type Database } from 'lmdb';
+import { type Database, type Transaction as LMDBReadTransaction } from 'lmdb';
 import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
@@ -22,8 +22,13 @@ import type {
 	Sort,
 	SubSelect,
 	RequestTargetOrId,
+	Query,
+	SourceContext,
 } from './ResourceInterface.ts';
 import type { User } from '../security/user.ts';
+import type { AssertNoDrift, AssertTrue, ExactlyEqual, MemberDrift, ParitySentinel } from './typeParity.ts';
+import type { IterableEventQueue } from './IterableEventQueue.ts';
+import type { Contract, SchemaClass } from './defineResource.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
 import { Resource, SEARCH_AUTHORIZATION, transformForSelect } from './Resource.ts';
 import { settleBeforeDeadline, when, promiseNormalize } from '../utility/when.ts';
@@ -40,6 +45,7 @@ import {
 	commitTrackedRocksTransaction,
 	getDatabaseCommitDrainTimeoutMilliseconds,
 	type WriteGeneration,
+	type Transaction as DatabaseTransactionRecord,
 } from './DatabaseTransaction.ts';
 import {
 	acquireRecordKey,
@@ -180,6 +186,7 @@ import {
 	removeStorageReclamation,
 	removeStorageReclamationHandler,
 	getStorageSpaceStats,
+	type StorageSpaceStats,
 } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
@@ -597,6 +604,551 @@ export interface Table {
 }
 type ResidencyDefinition = number | string[] | void;
 
+export interface TableResourceInstance<Record extends object = any> {
+	getProperty: (name: string) => any;
+	_loadRecord(
+		target: RequestTarget,
+		request: Context,
+		resourceOptions?: any
+	): MaybePromise<TableResourceInstance<Record>>;
+	/**
+	 * This is a request to explicitly ensure that the record is loaded from source, rather than only using the local record.
+	 * This will load from source if the current record is expired, missing, or invalidated.
+	 * @returns
+	 */
+	ensureLoaded(): void | Promise<void>;
+	/**
+	 * This retrieves the data of this resource.
+	 * @param target - If included, is an identifier/query that specifies the requested target to retrieve and query
+	 */
+	get(target?: any): any;
+	/**
+	 * Determine if the user is allowed to get/read data from the current resource
+	 * @deprecated Override the resource operation for application-specific authorization.
+	 */
+	allowRead(user: User, target: RequestTarget, context: Context): boolean;
+	/**
+	 * Determine if the user is allowed to update data from the current resource
+	 * @deprecated Override the resource operation for application-specific authorization.
+	 */
+	allowUpdate(user: User, updatedData: Record, context: Context): boolean;
+	/**
+	 * Determine if the user is allowed to create new data in the current resource
+	 * @deprecated Override the resource operation for application-specific authorization.
+	 */
+	allowCreate(user: User, newData: Record, context: Context): boolean;
+	/**
+	 * Determine if the user is allowed to delete from the current resource
+	 * @deprecated Override the resource operation for application-specific authorization.
+	 */
+	allowDelete(user: User, target: RequestTarget, context: Context): boolean;
+	/**
+	 * Start updating a record. The returned resource will record changes which are written
+	 * once the corresponding transaction is committed. These changes can (eventually) include CRDT type operations.
+	 */
+	update(updates: Record & RecordObject, fullUpdate: true): any;
+	update(updates: Partial<Record & RecordObject>, target?: RequestTarget): any;
+	update(target: RequestTarget, updates?: any): any;
+	/**
+	 * Save any changes into this instance to the current transaction
+	 */
+	save(): any;
+	addTo(property: any, value: any): void;
+	subtractFrom(property: any, value: any): void;
+	getMetadata(): Entry;
+	getRecord(): any;
+	getChanges(): any;
+	_setChanges(changes: any): void;
+	setRecord(record: any): void;
+	invalidate(target: RequestTargetOrId): void | Promise<void>;
+	_writeInvalidate(id: Id, partialRecord?: any, options?: any): void;
+	_writeRelocate(id: Id, options: any): void;
+	/**
+	 * Acquire an exclusive lock on this record (or on `target`'s) and return it ready for updates
+	 * (harper#483, Phase 0: exclusive across every worker thread of this node). The lock is held
+	 * in process memory only — no durable writes. Phase 0 contract: lock() is mutually exclusive
+	 * with other lock() calls on the same key; plain writes (put/patch/delete/create) are never
+	 * gated or blocked. The generation expires after `lease` if it is never released.
+	 *
+	 * Transaction-scoped (default): write through the returned record (or the table's static verbs
+	 * in the same transaction), and the commit or abort releases it. `{ hold: true }`: the lock
+	 * outlives the transaction; write through the returned record and release with `unlock()`, or
+	 * let the lease expire.
+	 */
+	lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions): Promise<any>;
+	/**
+	 * Release the lock this instance holds. Resolves true when this call cleared the native key lock.
+	 * Works for both held (`{ hold: true }`) and transaction-scoped locks. After unlock() the
+	 * instance is no longer lock-writable; writes through it require a fresh lock.
+	 */
+	unlock(): Promise<boolean>;
+	/**
+	 * Store the provided record data into the current resource. This is not written
+	 * until the corresponding transaction is committed.
+	 */
+	put(
+		target: RequestTarget,
+		record: Record & RecordObject
+	): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)>;
+	create(
+		target: RequestTargetOrId,
+		record: Partial<Record & RecordObject>
+	): void | (Record & Partial<RecordObject>) | Promise<Record & Partial<RecordObject>>;
+	patch(
+		target: RequestTarget,
+		recordUpdate: Partial<Record & RecordObject>
+	): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)>;
+	_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any): any;
+	delete(target: RequestTargetOrId): Promise<boolean>;
+	_writeDelete(id: Id, options?: any): boolean;
+	search(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>>;
+	subscribe(request: SubscriptionRequest): Promise<AsyncIterable<Record>>;
+	doesExist(): boolean;
+	/**
+	 * Publishing a message to a record adds an (observable) entry in the audit log, but does not change
+	 * the record at all. This entries should be replicated and trigger subscription listeners.
+	 * @param id
+	 * @param message
+	 * @param options
+	 */
+	publish(target: RequestTarget, message: Record, options?: any): void | Promise<void>;
+	_writePublish(id: Id, message: any, options?: any): void;
+	validate(record: any, patch?: boolean): void;
+	getUpdatedTime(): number;
+	[ASSERT_TRACKED_WRITABLE](generation?: WriteGeneration): void;
+	[GET_TRACKED_WRITE_GENERATION](): WriteGeneration;
+	post(target: RequestTargetOrId, newRecord: Partial<Record & RecordObject>): Promise<Record & Partial<RecordObject>>;
+	get isCollection(): boolean;
+	connect(
+		target: RequestTarget,
+		incomingMessages: IterableEventQueue<Record>
+	): AsyncIterable<Record> | Promise<AsyncIterable<Record>>;
+	getId(): Id;
+	getContext(): Context | SourceContext;
+	getCurrentUser(): User | undefined;
+}
+
+export interface TableResourceClass {
+	new <Record extends object = any>(identifier: Id, source: any): TableResourceInstance<Record>;
+	prototype: TableResourceInstance;
+	name: any;
+	primaryStore: any;
+	storageGeneration: any;
+	auditStore: any;
+	primaryKey: any;
+	tableName: any;
+	tableId: any;
+	indices: any;
+	derivedIndexRuntime:
+		| {
+				close(dropping?: boolean): Promise<void>;
+				fullTextDefinitions?(): readonly FullTextDefinition[];
+				matchesCurrent?(): boolean;
+				restoreAfterFailedDrop?(): {
+					close(dropping?: boolean): Promise<void>;
+					fullTextDefinitions?(): readonly FullTextDefinition[];
+					matchesCurrent?(): boolean;
+					restoreAfterFailedDrop?(): TableResourceClass['derivedIndexRuntime'];
+					retireAfterConfirmedDrop?(definitions?: readonly Pick<FullTextDefinition, 'name'>[]): Promise<boolean>;
+					completeDrop?(dropped?: boolean): void;
+				};
+				retireAfterConfirmedDrop?(definitions?: readonly Pick<FullTextDefinition, 'name'>[]): Promise<boolean>;
+				completeDrop?(dropped?: boolean): void;
+		  }
+		| undefined;
+	audit: any;
+	fullTextIndexes: FullTextDefinition[];
+	get fullTextFields(): readonly string[];
+	set fullTextFields(names: readonly string[]);
+	assertFullTextSelection(select: unknown, sort?: any): void;
+	assertFullTextRecordField(name: unknown): void;
+	isFullTextSearchEntryCurrent(entry: Entry): boolean;
+	fullTextQueryIndexes: {
+		[name: string]: {
+			customIndex: unknown;
+		};
+	};
+	hasFullTextQueryIndexes: boolean;
+	fullTextIndexGenerations: FullTextIndexGenerations;
+	fullTextIndexRetirements: string[];
+	hasCurrentFullTextIndexRetirements(names: readonly string[]): boolean | Promise<boolean>;
+	completeFullTextIndexRetirements(names: readonly string[]): void | Promise<void>;
+	databasePath: any;
+	databaseName: any;
+	attributes: Attribute[];
+	description: any;
+	properties: Record<string, JsonSchemaFragment>;
+	hidden: any;
+	cacheControl: any;
+	outputSchemas:
+		| {
+				[verb: string]: JsonSchemaFragment;
+		  }
+		| undefined;
+	mcp:
+		| {
+				annotations?: {
+					[verb: string]: any;
+				};
+		  }
+		| undefined;
+	replicate: any;
+	sealed: any;
+	splitSegments: any;
+	createdTimeProperty: Attribute;
+	updatedTimeProperty: Attribute;
+	propertyResolvers: any;
+	enumerableRelationDefs: any;
+	userResolvers: {};
+	userEmbedders: {
+		[name: string]: Embedder;
+	};
+	userSetEmbedders: Set<string>;
+	embedAttributes: EmbedAttribute[];
+	userDeciders: {
+		[name: string]: Decider;
+	};
+	userSetDeciders: Set<string>;
+	decideAttributes: DecideAttribute[];
+	source?: TableResourceClass;
+	sourceOptions: any;
+	intermediateSource: boolean;
+	getResidencyById: (id: Id) => number | void;
+	get expirationMS(): any;
+	get evictionMS(): any;
+	dbisDB: any;
+	schemaDefined: any;
+	/**
+	 * This defines a source for a table. This effectively makes a table into a cache, where the canonical
+	 * source of data (or source of truth) is provided here in the Resource argument. Additional options
+	 * can be provided to indicate how the caching should be handled.
+	 * @param source
+	 * @param options
+	 * @returns
+	 */
+	sourcedFrom(source: any, options: any): TableResourceClass;
+	get isCaching(): any;
+	/** Indicates if the events should be revalidated when they are received. By default we do this if the get
+	 * method is overriden */
+	get shouldRevalidateEvents(): boolean;
+	/**
+	 * Gets a resource instance, as defined by the Resource class, adding the table-specific handling
+	 * of also loading the stored record into the resource instance.
+	 * @param target
+	 * @param request
+	 * @param resourceOptions An important option is ensureLoaded, which can be used to indicate that it is necessary for a caching table to load data from the source if there is not a local copy of the data in the table (usually not necessary for a delete, for example).
+	 * @returns
+	 */
+	getResource<Record extends object = any>(
+		target: RequestTarget,
+		request: Context,
+		resourceOptions?: any
+	): Promise<TableResourceInstance<Record>> | TableResourceInstance<Record>;
+	_updateResource(resource: any, entry: any): void;
+	getNewId(): any;
+	/**
+	 * Set TTL expiration for records in this table. On retrieval, record timestamps are checked for expiration.
+	 * This also informs the scheduling for record eviction.
+	 * @param opts Time in seconds until records expire, or an options object with `expiration`, `eviction`,
+	 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
+	 * eviction/scanInterval; object form replaces all three. An internal schema ownership-only call with
+	 * none of those values preserves the settings already loaded from the catalog.
+	 */
+	setTTLExpiration(
+		opts:
+			| number
+			| {
+					expiration?: number;
+					eviction?: number;
+					scanInterval?: number;
+					fromSchema?: boolean;
+					isolatedApplicationOwner?: boolean;
+			  }
+	): void;
+	getResidencyRecord(id: Id): any;
+	setResidency(getResidency?: (record: object, context: Context) => ResidencyDefinition): void;
+	setResidencyById(getResidencyById?: (id: Id) => number | void): void;
+	getResidency(record: object, context: Context): number | void | string[];
+	/**
+	 * Turn on auditing at runtime
+	 */
+	enableAuditing(): void;
+	/**
+	 * Coerce the id as a string to the correct type for the primary key
+	 * @param id
+	 * @returns
+	 */
+	coerceId(id: string): number | string;
+	/**
+	 * A branch's Table classes deliberately carry the BASE's logical database name so an
+	 * application's schema and code resolve unchanged (harper#643). That makes every schema
+	 * mutation resolve against the global catalog — a `dropTable()` through a branch would delete
+	 * the live base table. Reads and writes are per-branch and unaffected; DDL is refused until a
+	 * branch owns a schema identity of its own.
+	 */
+	assertSchemaMutable(operation: string): void;
+	dropTable(): Promise<void>;
+	/**
+	 * Record the relocation of an entry (when a record is moved to a different node), return true if it is now located locally
+	 * @param existingEntry
+	 * @param entry
+	 */
+	_recordRelocate(existingEntry: any, entry: any): boolean;
+	/**
+	 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
+	 */
+	evict(id: any, existingRecord: any, existingVersion: any): Promise<unknown>;
+	/**
+	 * Static entry point: `Table.lock(id, options?, context?)` — creates an instance in the given,
+	 * ambient, or a fresh context and delegates to the instance lock(). This shadows Resource.static
+	 * lock so that both callers share the same transaction link (required for cross-instance upgrade
+	 * detection).  lock() is an in-process API with no authorization hook of its own; it is not
+	 * protocol-dispatched, so no allowUpdate/allowCreate check runs on acquisition.
+	 *
+	 * Dropping the trailing `context` leaks the key: the bare `{}` fallback is an
+	 * ImmediateTransaction, which releases no record locks.
+	 */
+	lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions, context?: any): Promise<any>;
+	operation(operation: any, context: any): any;
+	/**
+	 * This is responsible for ordering and select()ing the attributes/properties from returned entries
+	 * @param select
+	 * @param context
+	 * @param filtered
+	 * @param ensure_loaded
+	 * @param canSkip
+	 * @returns
+	 */
+	transformToOrderedSelect(
+		entries: any[],
+		select: (string | SubSelect)[],
+		sort: Sort,
+		context: Context,
+		readTxn: any,
+		transformToRecord: Function
+	): any;
+	/**
+	 * This is responsible for select()ing the attributes/properties from returned entries
+	 * @param select
+	 * @param context
+	 * @param filtered
+	 * @param ensure_loaded
+	 * @param canSkip
+	 * @param rowFilter explicit row predicate applied to the record actually being
+	 * returned — i.e. AFTER any caching-source revalidation replaces a stale local copy — so an
+	 * authorization verdict can't be made on bytes that differ from what the caller receives.
+	 * @param includeExpired when true, a row past its TTL but not yet swept is treated as a live
+	 * match rather than gone (used by the SQL engine's UPDATE/DELETE row-finder).
+	 * @param sort post-ordering owned by this selection
+	 * @returns
+	 */
+	transformEntryForSelect(
+		select: any,
+		context: any,
+		readTxn: any,
+		filtered: any,
+		ensure_loaded?: any,
+		canSkip?: any,
+		rowFilter?: any,
+		includeExpired?: any,
+		sort?: any
+	): (entry: Entry) => any;
+	/**
+	 * Subscribe on one thread unless this is a per-thread subscription
+	 * @param workerIndex
+	 * @param options
+	 */
+	subscribeOnThisThread(workerIndex: any, options: any): boolean;
+	/**
+	 * Write a single table-reload marker for this table (harper-pro#489): a LOCAL_ONLY audit entry of
+	 * type 'reload' with no record, committed in its own transaction. Subscribers driven off the audit
+	 * stream — hdb_nodes peer discovery and hdb_certificate CA install — treat it as "this table was
+	 * bulk-reloaded, re-read it". It is needed after a copyApply base copy, whose per-row snapshot rows
+	 * carry no audit entry, so the per-row events those subscribers rely on never fire. The marker is
+	 * never replicated (its LOCAL_ONLY bit makes the send path skip it without decoding the
+	 * peers-may-not-know type), and a lost marker self-heals on restart because each subscriber re-scans
+	 * the table when it (re)subscribes.
+	 */
+	writeReloadMarker(context?: any): void;
+	/**
+	 * Write one cluster record-lock control entry (harper#483 Phase 1). Not local-only: replicating
+	 * it IS the send.
+	 *
+	 * `recordId` must stay null. An entry carrying the locked key would share
+	 * `(version, tableId, recordId, nodeId)` with the holder's own first write, which is stamped at
+	 * exactly `ts_R`, and `RocksTransactionLogStore.getSync` answers with the FIRST entry at a
+	 * timestamp and key — so `_writeUpdate`'s keyed dedup would find this one and drop that write.
+	 * The payload goes in as bytes rather than through `recordUpdater`, which would run it through
+	 * schema projection and the table's shared structure dictionary.
+	 */
+	writeLockControlEntry(entry: LockControlEntry): Promise<number | undefined>;
+	/**
+	 * The coordinator that holds this node's admissions, transport or not. Releasing and registering
+	 * go here rather than through `lockCoordinator`, which answers undefined while a transport is
+	 * momentarily unregistered — and a release dropped on that answer leaves the key's home holding
+	 * its grant until the delegation's own deadline.
+	 */
+	get admittingCoordinator(): LockCoordinator | undefined;
+	/**
+	 * This table's cluster lock coordinator, created on first use and only while a transport is
+	 * registered for the database. Nothing is allocated on the Phase 0 path.
+	 */
+	get lockCoordinator(): LockCoordinator | undefined;
+	addAttributes(attributesToAdd: Attribute[]): Promise<any>;
+	removeAttributes(names: string[]): Promise<any>;
+	/**
+	 * Get the size of the table in bytes (based on amount of pages stored in the database)
+	 * @param options
+	 */
+	getSize(): number;
+	/** Sizes of this table's durable record-structure dictionaries. */
+	getStructureCounts(): StructureCounts | undefined;
+	getAuditSize(): number;
+	/**
+	 * Get available/free/size storage stats for the table's underlying volume. Async because
+	 * this may need to read quota-status.json (#1976); getSize/getAuditSize stay sync because
+	 * they only read in-memory store stats.
+	 */
+	getStorageStats(): Promise<StorageSpaceStats>;
+	getRecordCount(options?: any): Promise<
+		| {
+				recordCount: number;
+				estimatedRange?: undefined;
+		  }
+		| {
+				recordCount: number;
+				estimatedRange: number[];
+		  }
+	>;
+	/**
+	 * When attributes have been changed, we update the accessors that are assigned to this table
+	 */
+	updatedAttributes(): void;
+	setComputedAttribute(attribute_name: any, resolver: any): void;
+	/**
+	 * Override the default embedder for an `@embed` attribute. Return the vector to
+	 * store at `attribute_name`. The embedder receives the write payload (the fields
+	 * present in the PUT/PATCH body), not the post-merge record, so multi-field
+	 * concatenation only works when all source fields are in the same write.
+	 */
+	setEmbedAttribute(attribute_name: string, embedder: Embedder): void;
+	/**
+	 * Override the default decider for a `@decide` attribute. Return `{ value, probability }`
+	 * to store at the attribute and its confidence attribute, or `null` to clear both. The
+	 * value must be one the directive allows, and the probability is required when the
+	 * directive names a confidence attribute. Like an embedder, the decider receives the write
+	 * payload, not the post-merge record, and a `signal` that aborts when a sibling hook fails.
+	 */
+	setDecideAttribute(attribute_name: string, decider: Decider): void;
+	deleteHistory(endTime?: number, cleanupDeletedRecords?: boolean): Promise<number>;
+	getHistory(
+		startTime?: number,
+		endTime?: number
+	): AsyncGenerator<
+		{
+			id: any;
+			localTime: any;
+			version: any;
+			type: any;
+			value: any;
+			user: any;
+			operation: any;
+		},
+		void,
+		unknown
+	>;
+	getHistoryOfRecord(id: any): Promise<any[]>;
+	clear(): any;
+	/** Release everything makeTable() registered process-wide; the class must not be used afterwards. */
+	cleanup(): void;
+	closeMaintenance(deadline?: number): Promise<void>;
+	resumeMaintenance(): void;
+	_readTxnForContext(context: any): (LMDBReadTransaction | RocksTransaction) & {
+		openTimer?: number;
+		retryRisk?: number;
+		isDone?: boolean;
+		isCommitted?: boolean;
+	};
+	transactions: DatabaseTransactionRecord[] & {
+		timestamp: number;
+	};
+	path?: string;
+	directURLMapping: boolean;
+	loadAsInstance: boolean;
+	requestContract?: Contract;
+	inputSchemas?: {
+		[verb: string]: {
+			query?: JsonSchemaFragment;
+			body?: JsonSchemaFragment;
+		};
+	};
+	withSchema<Base extends new (...args: any[]) => any, const C extends Contract>(
+		this: Base,
+		contract: C
+	): SchemaClass<Base, C>;
+	get: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	put: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	patch: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	delete: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	create(idPrefix: Id, record: any, context: Context): Promise<Id>;
+	create(record: any, context: Context): Promise<Id>;
+	invalidate: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	post: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	update: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	connect: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	subscribe: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	publish: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	search: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	query: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	copy: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	move: {
+		(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context): any;
+		reliesOnPrototype: boolean;
+	};
+	isCollection(resource: any): any;
+	parseQuery(search: any, query: any): any;
+	parsePath(path: any, context: any, query: any): any;
+}
+
 /**
  * This returns a Table class for the given table settings (determined from the metadata table)
  * Instances of the returned class are Resource instances, intended to provide a consistent view or transaction of the table
@@ -766,7 +1318,7 @@ setLockCoordinatorResolver(
 	}
 );
 
-export function makeTable(options) {
+export function makeTable(options): TableResourceClass {
 	const {
 		primaryKey,
 		indices,
@@ -1116,7 +1668,7 @@ export function makeTable(options) {
 					close(dropping?: boolean): Promise<void>;
 					fullTextDefinitions?(): readonly FullTextDefinition[];
 					matchesCurrent?(): boolean;
-					restoreAfterFailedDrop?(): typeof TableResource.derivedIndexRuntime;
+					restoreAfterFailedDrop?(): TableResourceClass['derivedIndexRuntime'];
 					retireAfterConfirmedDrop?(definitions?: readonly Pick<FullTextDefinition, 'name'>[]): Promise<boolean>;
 					completeDrop?(dropped?: boolean): void;
 			  }
@@ -1204,7 +1756,7 @@ export function makeTable(options) {
 		static userDeciders: { [name: string]: Decider } = {};
 		static userSetDeciders: Set<string> = new Set();
 		static decideAttributes: DecideAttribute[] = (attributes as any[]).filter((a) => a?.decide);
-		static source?: typeof TableResource;
+		static source?: TableResourceClass;
 		declare static sourceOptions: any;
 		declare static intermediateSource: boolean;
 		static getResidencyById: (id: Id) => number | void;
@@ -1225,7 +1777,7 @@ export function makeTable(options) {
 		 * @returns
 		 */
 		// #section: resource-registry
-		static sourcedFrom(source, options) {
+		static sourcedFrom(source, options): TableResourceClass {
 			// define a source for retrieving invalidated entries for caching purposes
 			if (options) {
 				this.sourceOptions = options;
@@ -1356,7 +1908,7 @@ export function makeTable(options) {
 					}
 					if (Table && event.type === 'put' && value == null && !shouldRevalidateEvents)
 						await reportDroppedWrite(event, context, new Error('Source-applied put has no record content'));
-					const resource: TableResource = await Table.getResource(id, context, options);
+					const resource = await Table.getResource(id, context, options);
 					if (event.finished) await event.finished;
 					// an aborted source transaction's released context would otherwise commit this write on its own
 					if (context.sourceAborted) return;
@@ -1814,7 +2366,7 @@ export function makeTable(options) {
 			target: RequestTarget,
 			request: Context,
 			resourceOptions?: any
-		): Promise<TableResource<Record>> | TableResource<Record> {
+		): Promise<TableResourceInstance<Record>> | TableResourceInstance<Record> {
 			if (databaseDropPrepared(tableRootPath) || databaseCommitsSuspended(tableRootStore))
 				throw new DatabaseClosingError(
 					databaseName,
@@ -1826,7 +2378,11 @@ export function makeTable(options) {
 			}
 			return resource;
 		}
-		_loadRecord(target: RequestTarget, request: Context, resourceOptions?: any): MaybePromise<TableResource<Record>> {
+		_loadRecord(
+			target: RequestTarget,
+			request: Context,
+			resourceOptions?: any
+		): MaybePromise<TableResourceInstance<Record>> {
 			const id = target && typeof target === 'object' ? target.id : target;
 			if (id == null) return this;
 			checkValidId(id);
@@ -7662,6 +8218,11 @@ export function makeTable(options) {
 			return txnForContext(context).getReadTxn();
 		}
 	}
+	type _TableResourceMatchesItsDeclaredTypes = [
+		AssertNoDrift<MemberDrift<TableResource<ParitySentinel>, TableResourceInstance<ParitySentinel>>>,
+		AssertNoDrift<MemberDrift<Omit<typeof TableResource, 'prototype'>, Omit<TableResourceClass, 'prototype'>>>,
+		AssertTrue<ExactlyEqual<ConstructorParameters<typeof TableResource>, ConstructorParameters<TableResourceClass>>>,
+	];
 	const throttledCallToSource = throttle(
 		async (source, id, sourceContext, existingEntry) => {
 			// call the data source if it exists and will fulfill our request for data
@@ -8035,7 +8596,7 @@ export function makeTable(options) {
 		// target may be a primitive id on instance-API calls, which can't hold the flag
 		if (target && typeof target === 'object') target.loadedFromSource = loadedFromSource;
 	}
-	function ensureLoadedFromSource(source: typeof TableResource, id, entry, context, resource?, target?) {
+	function ensureLoadedFromSource(source: TableResourceClass, id, entry, context, resource?, target?) {
 		if (context?.onlyIfCached) {
 			if (!entry?.value) throw new ServerError('Entry is not cached', 504);
 			return;
@@ -8311,7 +8872,7 @@ export function makeTable(options) {
 	 * This is used to record that a retrieve a record from source
 	 */
 	async function getFromSource(
-		source: typeof TableResource,
+		source: TableResourceClass,
 		id: Id,
 		existingEntry: Entry,
 		context: Context,
