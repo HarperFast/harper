@@ -1474,7 +1474,7 @@ const LOADER_OWNED_LINKS = new Set(['harper', 'harperdb']);
 async function assertOwnedArtifactTree(
 	candidateDirPath: string,
 	componentName: string,
-	action: 'stage' | 'activate' | 'replicate' = 'stage'
+	action: 'stage' | 'activate' | 'replicate' | 'receive' = 'stage'
 ): Promise<void> {
 	// The operator supplied a component that cannot be staged or replicated (400); or the artifact they named exists
 	// and is theirs but is no longer what was certified (409). Neither is a server fault, and both reached the
@@ -1483,7 +1483,9 @@ async function assertOwnedArtifactTree(
 	const consequence =
 		action === 'replicate'
 			? 'so the other nodes would not receive the bytes this build certified'
-			: 'so the bytes activated later would not be the bytes this build certified';
+			: action === 'receive'
+				? 'so this node would run bytes the build does not carry'
+				: 'so the bytes activated later would not be the bytes this build certified';
 	const ownedRoot = await realpath(candidateDirPath);
 	// The loader repairs the component's OWN `node_modules/harper`, not a copy nested inside a dependency,
 	// so only that one path is exempt. Matching the name at any depth would let `dep/node_modules/harper`
@@ -4953,11 +4955,12 @@ export async function prepareApplication(application: Application, options: Prep
 								: declared && !(await lstat(candidateDirPath)).isSymbolicLink()
 									? declared
 									: undefined;
-						if (mode === 'stage' || options.publishBuild) {
+						// A received build is checked again here, so the rule does not rest on the request's origin.
+						if (mode === 'stage' || options.publishBuild || options.prebuilt) {
 							await assertOwnedArtifactTree(
 								candidateDirPath,
 								application.name,
-								mode === 'stage' ? 'stage' : 'replicate'
+								mode === 'stage' ? 'stage' : options.prebuilt ? 'receive' : 'replicate'
 							);
 						}
 						const manifest = described

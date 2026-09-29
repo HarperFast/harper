@@ -182,6 +182,24 @@ describe('replicated builds', () => {
 			assert.strictEqual(existsSync(deploymentDir(root, 'd1')), false, 'and the candidate is discarded');
 		});
 
+		it('refuses a build that links outside itself, whatever manifest came with it', async function () {
+			if (process.platform === 'win32') return this.skip(); // links are not extracted there at all
+			this.timeout(30000);
+			const root = await newRoot('receive-escape');
+			const dir = await writeTree(await temporaryDirectory('prebuilt-escape-'), { 'index.js': 'V1\n' });
+			await fs.symlink('../../../outside', path.join(dir, 'escape'));
+			const chunks = [];
+			for await (const chunk of packBuild(dir)) chunks.push(chunk);
+			const build = { archive: Buffer.concat(chunks), manifest: await inventoryBuild(dir) };
+
+			await assert.rejects(
+				() => receive(root, 'd1', build),
+				(error) => error.statusCode === 400 && /Cannot receive web: .* links outside the build/.test(error.message)
+			);
+			assert.strictEqual(existsSync(path.join(root, 'web')), false, 'nothing went live');
+			assert.strictEqual(existsSync(deploymentDir(root, 'd1')), false, 'and the candidate is discarded');
+		});
+
 		it('keeps the tree its own load wrote into as what it certified', async function () {
 			this.timeout(30000);
 			const root = await newRoot('load-writes');
