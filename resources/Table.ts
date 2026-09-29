@@ -56,6 +56,7 @@ import { addSubscription } from './transactionBroadcast.ts';
 import { databaseDropPrepared } from './databaseDropPreparation.ts';
 import {
 	DerivedIndexLagError,
+	IndexRebuildingError,
 	DatabaseClosingError,
 	DatabaseDrainTimeoutError,
 	handleHDBError,
@@ -91,6 +92,7 @@ import {
 	COERCIBLE_OPERATORS,
 	executeConditions,
 	resolveComparator,
+	fullTextComparatorMode,
 } from './search.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
@@ -161,6 +163,7 @@ import {
 	recordUpdater,
 	removeEntry,
 	PENDING_LOCAL_TIME,
+	VERSION_REUSED,
 	RecordObject,
 	type Entry,
 	type StructureCounts,
@@ -541,6 +544,7 @@ const MAX_OUT_OF_ORDER_AUDIT_DEPTH = 1000;
 const MAX_PREVIOUS_COUNT_SCAN = 10_000;
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
+const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
 function propagateSearchAuthorization(iterable: any, authorization: Promise<any>, source?: any) {
@@ -616,6 +620,31 @@ function cloneConditions(conditions: any[]): any[] {
 		if (copy.conditions) copy.conditions = cloneConditions(copy.conditions);
 		return copy;
 	});
+}
+
+function selectRequestsProperty(select: any, propertyName: string): boolean {
+	if (!select) return false;
+	const selected = Array.isArray(select) ? select : [select];
+	return selected.some((property) => (typeof property === 'string' ? property : property?.name) === propertyName);
+}
+
+function appendSelectProperty(select: any, propertyName: string): any[] {
+	if (!Array.isArray(select)) return [select, propertyName];
+	return Object.assign([...select, propertyName], select);
+}
+
+function conditionsContainFullText(entries: any[], definitions: readonly FullTextDefinition[]): boolean {
+	for (const entry of entries) {
+		if (entry.conditions) {
+			if (conditionsContainFullText(entry.conditions, definitions)) return true;
+		} else if (
+			fullTextComparatorMode(entry.comparator) &&
+			typeof (entry[0] ?? entry.attribute) === 'string' &&
+			definitions.some(({ name }) => name === (entry[0] ?? entry.attribute))
+		)
+			return true;
+	}
+	return false;
 }
 // Ambient, path-scoped cycle guard for the enumerable-struct `toJSON` serialization path. A record on
 // a cyclically-enumerable table can (transitively) reference itself, which would recurse forever through
@@ -757,9 +786,12 @@ export function makeTable(options) {
 		cacheControl,
 		isBranch,
 		fullTextIndexes = [],
+		fullTextFields = [],
 		fullTextIndexGenerations = Object.create(null),
 		fullTextIndexRetirements = [],
 	} = options;
+	let declaredFullTextFields: readonly string[] = Object.freeze([...fullTextFields]);
+	let fullTextFieldNames = fullTextFields.length > 0 ? new Set<string>(fullTextFields) : undefined;
 	const tableRootStore = primaryStore.rootStore;
 	const tableRootPath = tableRootStore.path;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
@@ -1091,6 +1123,25 @@ export function makeTable(options) {
 			| undefined;
 		static audit = audit;
 		static fullTextIndexes: FullTextDefinition[] = fullTextIndexes;
+		static get fullTextFields(): readonly string[] {
+			return declaredFullTextFields;
+		}
+		static set fullTextFields(names: readonly string[]) {
+			declaredFullTextFields = Object.freeze([...names]);
+			fullTextFieldNames = names.length > 0 ? new Set(names) : undefined;
+		}
+		static assertFullTextSelection(select: unknown, sort?: any): void {
+			assertFullTextSelection(select);
+			for (let order = sort; order; order = order.next) assertRecordField(order.attribute);
+		}
+		static assertFullTextRecordField(name: unknown): void {
+			assertFullTextRecordField(name);
+		}
+		static isFullTextSearchEntryCurrent(entry: Entry): boolean {
+			return !(entry.metadataFlags & (INVALIDATED | EVICTED | VERSION_REUSED));
+		}
+		static fullTextQueryIndexes: { [name: string]: { customIndex: unknown } } = Object.create(null);
+		static hasFullTextQueryIndexes = false;
 		static fullTextIndexGenerations: FullTextIndexGenerations = fullTextIndexGenerations;
 		static fullTextIndexRetirements: string[] = fullTextIndexRetirements;
 		static hasCurrentFullTextIndexRetirements(names: readonly string[]): boolean | Promise<boolean> {
@@ -1671,13 +1722,14 @@ export function makeTable(options) {
 												hasChanges = true;
 											}
 										}
-										if (hasChanges || event.fullTextIndexes !== undefined) {
+										if (hasChanges || event.fullTextIndexes !== undefined || event.fullTextFields !== undefined) {
 											const schemaVersion = (this as any).schemaVersion;
 											const definedTable: any = table({
 												table: tableName,
 												database: databaseName,
 												attributes: updatedAttributes,
 												fullTextIndexes: event.fullTextIndexes,
+												fullTextFields: event.fullTextFields,
 												origin: 'cluster',
 											});
 											if (definedTable.schemaVersion !== schemaVersion)
@@ -2530,6 +2582,12 @@ export function makeTable(options) {
 		 */
 		get(target?: any): any {
 			const constructor: any = this.constructor;
+			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target?.select);
+			if (fullTextFieldNames) {
+				assertRecordField(
+					target?.property ?? (typeof target === 'string' && constructor.loadAsInstance !== false ? target : undefined)
+				);
+			}
 			if (typeof target === 'string' && constructor.loadAsInstance !== false) return this.getProperty(target);
 			if (isSearchTarget(target)) {
 				// go back to the static search method so it gets a chance to override
@@ -2643,6 +2701,9 @@ export function makeTable(options) {
 		 */
 		allowRead(user: User, target: RequestTarget, context: Context): boolean {
 			const tablePermission = getTablePermissions(user, target);
+			// Resource.search consumes checkPermission before full-text source-field authorization runs.
+			if (TableResource.fullTextIndexes.length > 0 && target?.checkPermission && tablePermission)
+				(target as any)[FULL_TEXT_READ_PERMISSION] = tablePermission;
 			if (tablePermission?.read) {
 				if (tablePermission.isSuperUser) return true;
 				const attribute_permissions = tablePermission.attribute_permissions;
@@ -2658,7 +2719,13 @@ export function makeTable(options) {
 						(target as any).select = selectArray
 							.map((property: any) => {
 								const propertyName = property.name || property;
-								if (!attrsForType || attrsForType[propertyName]) {
+								if (
+									!attrsForType ||
+									attrsForType[propertyName] ||
+									fullTextFieldNames?.has(propertyName) ||
+									propertyName === '$score' ||
+									propertyName === '$highlights'
+								) {
 									const relatedTable = propertyResolvers[propertyName]?.definition?.tableClass;
 									if (relatedTable) {
 										// if there is a related table, we need to ensure the user has permission to read from that table and that attributes are properly restricted
@@ -2677,7 +2744,12 @@ export function makeTable(options) {
 							.filter(Boolean);
 					} else {
 						target.select = attribute_permissions
-							.filter((attribute) => attribute.read && !propertyResolvers[attribute.attribute_name])
+							.filter(
+								(attribute) =>
+									attribute.read &&
+									!fullTextFieldNames?.has(attribute.attribute_name) &&
+									!propertyResolvers[attribute.attribute_name]
+							)
 							.map((attribute) => attribute.attribute_name);
 					}
 					(target as any)[AUTHORIZATION_SELECT] = true;
@@ -2708,7 +2780,7 @@ export function makeTable(options) {
 					// that the user doesn't have permission to remove
 					for (const permission of attribute_permissions) {
 						const key = permission.attribute_name;
-						if (!permission.update && !(key in updatedData)) {
+						if (!permission.update && !fullTextFieldNames?.has(key) && !(key in updatedData)) {
 							updatedData[key] = this.getProperty(key);
 						}
 					}
@@ -3838,6 +3910,7 @@ export function makeTable(options) {
 				captureChanges,
 				validate: (txnTime, committedBy = transaction) => {
 					write.captureChanges?.();
+					if ((context as any)?.source && !committedBy.isReplay) assertFullTextWrite(recordUpdate, true);
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
 						if (!(context as any)?.source) {
 							committedBy.checkOverloaded();
@@ -4807,6 +4880,7 @@ export function makeTable(options) {
 			const txn = txnForContext(context);
 			if (!target) throw new Error('No query provided');
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
+			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target.select);
 			const getColumns = () => {
 				const select = target.select;
 				if (select) {
@@ -4955,6 +5029,7 @@ export function makeTable(options) {
 			conditions = cloneConditions(conditions);
 			let orderAlignedCondition;
 			let syntheticOrderCondition;
+			let includeFullTextHighlights = false;
 			const filtered = {};
 
 			function prepareConditions(conditions: any[], operator: string) {
@@ -4986,6 +5061,54 @@ export function makeTable(options) {
 						}
 					}
 					const attribute_name = condition[0] ?? condition.attribute;
+					const fullTextMode =
+						TableResource.fullTextIndexes.length > 0 ||
+						Array.isArray(attribute_name) ||
+						(typeof attribute_name === 'string' && fullTextFieldNames?.has(attribute_name))
+							? fullTextComparatorMode(condition.comparator)
+							: undefined;
+					if (!fullTextMode && (fullTextFieldNames || hasRelationships)) assertFullTextRecordField(attribute_name);
+					const fullTextDefinition =
+						fullTextMode && typeof attribute_name === 'string'
+							? TableResource.fullTextIndexes.find((definition) => definition.name === attribute_name)
+							: undefined;
+					if (fullTextMode && Array.isArray(attribute_name))
+						throw new ClientError('Full-text predicates must directly name an index on the queried table', 400);
+					if (fullTextMode && !fullTextDefinition) throwUnknownFullTextIndex(context, target, attribute_name);
+					if (fullTextDefinition) {
+						const fields = condition.fields;
+						if (fields !== undefined) {
+							if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => typeof field !== 'string'))
+								throw new ClientError(`Full-text index '${attribute_name}' requires a non-empty fields list`, 400);
+							assertFullTextReadAccess(context, target, fullTextDefinition, fields);
+						} else assertFullTextReadAccess(context, target, fullTextDefinition);
+						const value = condition[1] ?? condition.value;
+						if (typeof value !== 'string' || value.length === 0)
+							throw new ClientError(
+								`Full-text index '${attribute_name}' requires a full-text comparator and non-empty string value`,
+								400
+							);
+						if (fullTextMode === 'phrase' && !fullTextDefinition.positions)
+							throw new ClientError(`Full-text index '${attribute_name}' does not store phrase positions`, 400);
+						if ((fullTextMode === 'prefix' || fullTextMode === 'fuzzy-prefix') && !fullTextDefinition.surfaceTerms)
+							throw new ClientError(`Full-text index '${attribute_name}' does not store surface terms`, 400);
+						if (fields !== undefined) {
+							const sourceNames = new Set(fullTextDefinition.fields.map(({ name }) => name));
+							if (new Set(fields).size !== fields.length || fields.some((field) => !sourceNames.has(field)))
+								throw new ClientError(
+									`Full-text index '${attribute_name}' contains an unknown or duplicate field`,
+									400
+								);
+						}
+						condition.includeHighlights =
+							condition.includeHighlights === true || selectRequestsProperty(target.select, '$highlights');
+						if (condition.includeHighlights && !fullTextDefinition.highlighting)
+							throw new ClientError(`Full-text index '${attribute_name}' does not enable highlighting`, 400);
+						if (!TableResource.fullTextQueryIndexes[attribute_name]?.customIndex)
+							throw new IndexRebuildingError(`Full-text index '${attribute_name}' is not ready`);
+						includeFullTextHighlights ||= condition.includeHighlights;
+						continue;
+					}
 					let attribute = attribute_name == null ? primaryKeyAttribute : findAttribute(attributes, attribute_name);
 					if (!attribute && Array.isArray(attribute_name) && attribute_name.length > 1) {
 						// Plain JSON nested path: the leaf may not be declared in the
@@ -5061,8 +5184,19 @@ export function makeTable(options) {
 			}
 			const operator = target.operator;
 			if (conditions.length > 0 || operator) conditions = prepareConditions(conditions, operator);
-			const sort = typeof target.sort === 'object' && target.sort;
+			let sort = typeof target.sort === 'object' && target.sort;
+			if (
+				TableResource.fullTextIndexes.length > 0 &&
+				conditionsContainFullText(conditions, TableResource.fullTextIndexes)
+			) {
+				if ((target as any).reverse)
+					throw new ClientError('Full-text results can only use descending $score order', 400);
+				if (sort && (sort.attribute !== '$score' || sort.next || sort.descending !== true))
+					throw new ClientError('Full-text results can only use descending $score order', 400);
+				sort = undefined;
+			}
 			for (let order = sort; order; order = order.next) {
+				if (fullTextFieldNames) assertRecordField(order.attribute);
 				if (typeof order.attribute !== 'string') continue;
 				const customIndex = indices[order.attribute]?.customIndex;
 				if (customIndex?.exactDistance) customIndex.exactDistance(order, null);
@@ -5136,7 +5270,13 @@ export function makeTable(options) {
 					postOrdering = sort;
 				}
 			}
-			const select = target.select;
+			const select = includeFullTextHighlights
+				? target.select === undefined
+					? ['*', '$highlights']
+					: selectRequestsProperty(target.select, '$highlights')
+						? target.select
+						: appendSelectProperty(target.select, '$highlights')
+				: target.select;
 			// Whether the caller supplied real filter conditions — read from the raw request, NOT the
 			// planner-augmented `conditions` (which by now may carry a synthetic `sort` pseudo-condition and
 			// injected full-scan condition). Used to pick the count-estimate source below.
@@ -5266,7 +5406,10 @@ export function makeTable(options) {
 							if (!c) return false;
 							if (c.conditions) return touchesCustomIndex(c.conditions);
 							const attr = Array.isArray(c.attribute) ? c.attribute[0] : (c.attribute ?? c[0]);
-							return typeof attr === 'string' && Boolean(indices[attr]?.customIndex);
+							if (typeof attr !== 'string') return false;
+							return fullTextComparatorMode(c.comparator)
+								? Boolean(TableResource.fullTextQueryIndexes?.[attr]?.customIndex)
+								: Boolean(indices[attr]?.customIndex);
 						});
 					const approximateResultSet = typeof target.vectorFilter === 'function' || touchesCustomIndex(conditions);
 					return (async () => {
@@ -6516,6 +6659,7 @@ export function makeTable(options) {
 		}
 		// #section: validation
 		validate(record: any, patch?: boolean) {
+			if (fullTextFieldNames) assertFullTextWrite(record);
 			// Accumulate structured per-field issues so the 400 carries `{ path, code,
 			// message }[]` matching the emitted OpenAPI, instead of a single joined string. The joined
 			// message is still built for the HTTP title, preserving back-compat for callers that read it.
@@ -6959,6 +7103,8 @@ export function makeTable(options) {
 				$updatedTime: (object, context, entry) => entry.version,
 				$expiresAt: (object, context, entry) => entry.expiresAt,
 				$record: (object, context, entry) => (entry ? { value: object } : object),
+				$score: (object, context, entry) => entry?.$score,
+				$highlights: (object, context, entry) => entry?.$highlights,
 				$distance: (object, context, entry, returnEntry, sort) => {
 					if (!entry) return;
 					if (entry.distance !== undefined) return entry.distance;
@@ -6979,6 +7125,7 @@ export function makeTable(options) {
 					return customIndex.propertyResolver(vector, context, entry, distanceSort);
 				},
 			};
+			propertyResolvers.$highlights.directReturn = true;
 			for (const attribute of this.attributes) {
 				if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
 				attribute.resolve = null; // reset this
@@ -7813,6 +7960,79 @@ export function makeTable(options) {
 			return table;
 		}
 	}
+	function assertRecordField(name: unknown): void {
+		const field = Array.isArray(name) ? name[0] : name;
+		if (typeof field === 'string' && fullTextFieldNames?.has(field))
+			throw new ClientError(
+				`Full-text field "${field}" is query-only; use a full-text comparator and select $score or $highlights`,
+				400
+			);
+	}
+
+	function assertFullTextRecordField(name: unknown): void {
+		if (!Array.isArray(name)) return assertRecordField(name);
+		const [first, ...remaining] = name;
+		assertRecordField(first);
+		if (remaining.length === 0) return;
+		propertyResolvers[first]?.definition?.tableClass?.assertFullTextRecordField?.(
+			remaining.length === 1 ? remaining[0] : remaining
+		);
+	}
+
+	function assertFullTextSelection(select: unknown): void {
+		if (!fullTextFieldNames && !hasRelationships) return;
+		if (typeof select === 'string') assertRecordField(select);
+		else if (Array.isArray(select)) {
+			for (const property of select) {
+				const name = typeof property === 'object' ? property?.name : property;
+				assertRecordField(name);
+				if (property && typeof property === 'object')
+					propertyResolvers[name]?.definition?.tableClass?.assertFullTextSelection?.(
+						property.select || (Array.isArray(property) ? property : undefined),
+						property.sort
+					);
+			}
+		}
+	}
+
+	function assertFullTextWrite(record: any, sourceFill = false): void {
+		if (!fullTextFieldNames || !record || typeof record !== 'object') return;
+		for (const name in record) {
+			if (fullTextFieldNames.has(name)) {
+				if (sourceFill)
+					throw new ServerError(`Source for ${tableName} returned query-only full-text field "${name}"`, 502);
+				throw new ClientError(`Full-text field "${name}" is query-only and cannot be written`, 400);
+			}
+		}
+	}
+
+	function assertFullTextReadAccess(
+		context: Context | undefined,
+		target: RequestTarget,
+		definition: FullTextDefinition,
+		requestedFields?: string[]
+	) {
+		const user = (context as any)?.user;
+		const permission = (target as any)[FULL_TEXT_READ_PERMISSION] ?? getTablePermissions(user, target);
+		// Calls without a principal or explicit permission are trusted internal calls, matching allowRead.
+		if (!permission && !user) return;
+		if (permission?.isSuperUser || !permission?.attribute_permissions?.length) return;
+		const readable = attributesAsObject(permission.attribute_permissions, 'read');
+		const searched = requestedFields ?? definition.fields.map(({ name }) => name);
+		if (searched.some((name) => !readable[name])) throw new AccessViolation(user);
+	}
+	function throwUnknownFullTextIndex(
+		context: Context | undefined,
+		target: RequestTarget,
+		attributeName?: unknown
+	): never {
+		const user = (context as any)?.user;
+		const permission = (target as any)[FULL_TEXT_READ_PERMISSION] ?? getTablePermissions(user, target);
+		if (permission?.attribute_permissions?.length) throw new AccessViolation(user);
+		if (typeof attributeName === 'string' && fullTextFieldNames?.has(attributeName))
+			throw new IndexRebuildingError(`Full-text index '${attributeName}' is unavailable`);
+		throw new ClientError('Full-text comparator requires a declared @fullText index', 400);
+	}
 
 	function setLoadedFromSource(target: RequestTarget | undefined, loadedFromSource: boolean) {
 		// cache disposition is a per-get result, recorded on the RequestTarget of the get (#1576)
@@ -8174,6 +8394,7 @@ export function makeTable(options) {
 			const commitPromise = transaction(sourceContext, async (_txn) => {
 				const start = performance.now();
 				let updatedRecord, assignCreatedTime, sourceVersion;
+				let reusedCachedRecord = false;
 				let hasChanges, invalidated;
 				try {
 					updatedRecord = await throttledCallToSource(source, id, sourceContext, existingEntry);
@@ -8217,6 +8438,7 @@ export function makeTable(options) {
 							if (status === 304) {
 								// revalidation of our current cached record
 								updatedRecord = existingRecord;
+								reusedCachedRecord = true;
 								sourceVersion = existingVersion;
 							} else if (!CACHEABLE_STATUS_CODES.has(status)) {
 								// non-cacheable status - propagate to client without caching
@@ -8285,6 +8507,7 @@ export function makeTable(options) {
 							}
 						}
 						updatedRecord = storedFieldsOnly(primaryStore.encoder, updatedRecord);
+						if (!reusedCachedRecord) assertFullTextWrite(updatedRecord, true);
 						if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
 					}
 					assignCreatedTime = createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null;

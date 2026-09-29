@@ -8,7 +8,7 @@ import type { DirectiveNode, NamedTypeNode, StringValueNode, ValueNode } from 'g
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { attributeToFragment, type JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
-import { compileFullTextDefinitions } from './fullTextSchema.ts';
+import { compileFullTextDefinitions, compileFullTextFields } from './fullTextSchema.ts';
 import { validateDecisionSchema } from './models/decision.ts';
 import { assertDerivedFieldOwnership } from './models/embedHook.ts';
 import type { DecideConfig } from './models/decideHook.ts';
@@ -253,6 +253,7 @@ async function processGraphQLSchema(
 					attributes,
 					properties: typeProperties,
 					fullTextIndexes: [],
+					fullTextFields: [],
 				};
 				if (definition.description?.value) typeDef.description = definition.description.value;
 				types.set(typeName, typeDef);
@@ -287,15 +288,8 @@ async function processGraphQLSchema(
 					if (directive.name.value === 'splitSegments') typeDef.splitSegments = true;
 					if (directive.name.value === 'replicate') typeDef.replicate = true;
 					if (directive.name.value === 'hidden') typeDef.hidden = true;
-					if (directive.name.value === 'fullText') {
-						const definition: Record<string, unknown> = Object.create(null);
-						for (const arg of directive.arguments || []) {
-							if (Object.hasOwn(definition, arg.name.value))
-								throw new ClientError(`@fullText declares "${arg.name.value}" more than once`, 400);
-							definition[arg.name.value] = coerceDirectiveValue(arg.value);
-						}
-						typeDef.fullTextIndexes.push(definition);
-					}
+					if (directive.name.value === 'fullText')
+						throw new ClientError('@fullText must be declared on a FullText field', 400);
 					if (directive.name.value === 'export') {
 						typeDef.export = true;
 						for (const arg of directive.arguments) {
@@ -318,12 +312,40 @@ async function processGraphQLSchema(
 						};
 					}
 					const typeName = (type as NamedTypeNode).name?.value;
+					if (typeName === 'FullText') throw new ClientError('FullText fields require @fullText', 400);
 					const property = { type: typeName };
 					Object.defineProperty(property, 'location', { value: type.loc.startToken });
 					return property;
 				}
 				const attributesObject = {};
 				for (const field of definition.fields) {
+					const name = field.name.value;
+					const fullTextDirectives = field.directives.filter(({ name }) => name.value === 'fullText');
+					if (fullTextDirectives.length > 0) {
+						if (fullTextDirectives.length !== 1)
+							throw new ClientError(`Full-text field "${name}" requires exactly one @fullText directive`, 400);
+						if (field.type.kind !== 'NamedType' || field.type.name.value !== 'FullText')
+							throw new ClientError(`@fullText field "${name}" requires the nullable FullText type`, 400);
+						for (const directive of field.directives) {
+							if (directive.name.value !== 'fullText')
+								throw new ClientError(
+									`Full-text field "${name}" cannot use @${directive.name.value}; configure permissions and record values on its source fields`,
+									400
+								);
+						}
+						const index: Record<string, unknown> = Object.create(null);
+						index.name = name;
+						for (const arg of fullTextDirectives[0].arguments || []) {
+							if (arg.name.value === 'name')
+								throw new ClientError(`@fullText uses the field name "${name}"; remove its name argument`, 400);
+							if (Object.hasOwn(index, arg.name.value))
+								throw new ClientError(`@fullText declares "${arg.name.value}" more than once`, 400);
+							index[arg.name.value] = coerceDirectiveValue(arg.value);
+						}
+						typeDef.fullTextIndexes.push(index);
+						typeDef.fullTextFields.push(name);
+						continue;
+					}
 					const property = getProperty(field.type);
 					property.name = field.name.value;
 					if (field.description?.value) property.description = field.description.value;
@@ -392,8 +414,6 @@ async function processGraphQLSchema(
 							// Resolved after the field's other directives so @primaryKey / @computed in any
 							// order are seen; the ownership checks below need every field of the type.
 							property.decide = directive;
-						} else if (directiveName === 'fullText') {
-							throw new ClientError('@fullText must be declared on a @table type, not on a field', 400);
 						} else if (directiveName === 'relationship') {
 							const relationshipDefinition = {};
 							for (const arg of directive.arguments) {
@@ -447,6 +467,7 @@ async function processGraphQLSchema(
 				if (typeDef.fullTextIndexes.length > 0 && !typeDef.table)
 					throw new ClientError('@fullText is only supported on a @table type', 400);
 				typeDef.fullTextIndexes = compileFullTextDefinitions(typeDef.fullTextIndexes, attributes);
+				typeDef.fullTextFields = compileFullTextFields(typeDef.fullTextFields, typeDef.fullTextIndexes, attributes);
 				// Project the array form into the canonical `properties` Record (JSON-Schema-shaped,
 				// keyed by attribute name). Both shapes are co-populated in this single pass;
 				// downstream consumers (MCP, OpenAPI) read whichever form they prefer.

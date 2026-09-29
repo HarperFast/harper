@@ -25,7 +25,7 @@
 				"compressionThreshold": {
 					"type": "integer",
 					"minimum": 0,
-					"description": "Responses larger than this threshold (bytes) will be compressed for clients that accept compression. Default: 1200"
+					"description": "Responses larger than this threshold (bytes) will be compressed for clients that accept brotli. Default: 0 (compression disabled)"
 				},
 				"cors": { "type": "boolean", "description": "Enable Cross Origin Resource Sharing. Default: true" },
 				"corsAccessList": {

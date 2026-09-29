@@ -6,6 +6,10 @@ const hdbTerms = require('../../utility/hdbTerms.ts');
 const cleanLmdbMap =
 	require('../../utility/lmdb/cleanLMDBMap.ts').default || require('../../utility/lmdb/cleanLMDBMap.ts');
 const { validateEvent } = require('../threads/itc.js');
+const {
+	FULL_TEXT_QUERY_PAUSE_OPERATION,
+	FULL_TEXT_QUERY_RESUME_OPERATION,
+} = require('../../resources/indexes/fullTextQueryProtocol.ts');
 const { isMainThread, threadId, workerData } = require('node:worker_threads');
 const {
 	databases,
@@ -44,6 +48,33 @@ async function schemaHandler(event) {
 	const validate = validateEvent(event);
 	if (validate) {
 		hdbLogger.error(validate);
+		return;
+	}
+	if (
+		event.message?.operation === FULL_TEXT_QUERY_PAUSE_OPERATION ||
+		event.message?.operation === FULL_TEXT_QUERY_RESUME_OPERATION
+	) {
+		if (typeof event.message.path !== 'string' || event.message.path.length === 0)
+			throw new Error('Full-text query reader coordination requires an index path');
+		if (typeof event.message.readinessId !== 'string' || event.message.readinessId.length === 0)
+			throw new Error('Full-text query reader coordination requires a readiness id');
+		if (typeof event.message.ownerEpoch !== 'string' || !/^(?:0|[1-9]\d*)$/.test(event.message.ownerEpoch))
+			throw new Error('Full-text query reader coordination requires an owner epoch');
+		if (
+			event.message.allowUnregisteredReadiness !== undefined &&
+			typeof event.message.allowUnregisteredReadiness !== 'boolean'
+		)
+			throw new Error('Full-text query reader coordination requires a boolean unregistered-readiness flag');
+		const fullTextQueries = require('../../resources/indexes/fullTextQueryIndex.ts');
+		const ownerEpoch = BigInt(event.message.ownerEpoch);
+		if (event.message.operation === FULL_TEXT_QUERY_PAUSE_OPERATION)
+			await fullTextQueries.pauseNativeFullTextQueryReaders(
+				event.message.path,
+				event.message.readinessId,
+				ownerEpoch,
+				event.message.allowUnregisteredReadiness === true
+			);
+		else fullTextQueries.resumeNativeFullTextQueryReaders(event.message.path, event.message.readinessId, ownerEpoch);
 		return;
 	}
 

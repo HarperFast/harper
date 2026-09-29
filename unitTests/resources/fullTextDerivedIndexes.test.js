@@ -9,18 +9,26 @@ const {
 	getOutstandingCommits,
 	trackOutstandingCommit,
 } = require('#src/resources/DatabaseTransaction');
-const { publishDerivedIndexReadiness } = require('#src/resources/derivedIndexRuntime');
+const { publishDerivedIndexReadiness, readDerivedIndexReadiness } = require('#src/resources/derivedIndexRuntime');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 const { fullTextRetirementInProgress, hasDerivedIndexRegistration } = require('#src/resources/derivedIndexRegistry');
 const {
 	fullTextDerivedIndexId,
+	fullTextDerivedIndexReadinessId,
 	fullTextDerivedIndexReadiness,
 	refreshDerivedIndexes,
 	setFullTextNativeBindingForTests,
 	suspendDerivedIndexActivation,
 } = require('#src/resources/derivedIndexes');
 const { FullTextNativeTestBinding } = require('./fullTextNativeTestBinding');
+const { FullTextQueryIndex } = require('#src/resources/indexes/fullTextQueryIndex');
+const { describeTable } = require('#src/dataLayer/schemaDescribe');
+const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
+const searchValidator = require('#src/validation/searchValidator').default;
+const { loadGQLSchema } = require('#src/resources/graphql');
+const { searchByIndex } = require('#src/resources/search');
+const { FULL_TEXT_COMPARATORS } = require('#src/resources/indexes/fullTextQueryProtocol');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const rocksOnly = isLMDB ? it.skip : it;
@@ -33,7 +41,7 @@ function definition(weight = 1) {
 			{ name: 'title', weight },
 			{ name: 'tags', weight: 1 },
 		],
-		analyzer: 'english@1',
+		analyzer: 'english@2',
 		stopWords: true,
 		positions: true,
 		surfaceTerms: true,
@@ -47,6 +55,12 @@ function latestOpen(binding, Table) {
 	);
 	assert(opened);
 	return opened;
+}
+
+async function collect(iterable) {
+	const values = [];
+	for await (const value of iterable) values.push(value);
+	return values;
 }
 
 describe('@fullText derived-index activation', () => {
@@ -228,13 +242,628 @@ describe('@fullText derived-index activation', () => {
 		assert(opened);
 		assert(path.isAbsolute(opened.path));
 		assert(opened.path.startsWith(Product.primaryStore.rootStore.path + path.sep));
-		assert.strictEqual(opened.limits.indexingThreads, 1);
+		assert.strictEqual(opened.limits.indexingThreads, 2);
 		assert.strictEqual(opened.limits.searchThreads, 1);
+		assert.strictEqual(opened.limits.writerMemoryBytes, 64 * 1024 * 1024);
 		const state = binding.states.get(`${opened.path}\0${opened.indexId}\0${opened.generation}`);
 		await waitFor(() => state.documents.size === 1 && state.payload, 30_000);
 		const document = [...state.documents.values()][0];
 		assert.deepStrictEqual({ ...document.fields }, { title: 'Trail shoe', tags: ['trail', 'waterproof'] });
+		await assert.rejects(
+			async () =>
+				collect(
+					Product.search({
+						conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe', includeHighlights: true }],
+					})
+				),
+			/does not enable highlighting/
+		);
 		await assert.rejects(Product.clear(), /whole-table invalidation is crash-safe/);
+	});
+
+	rocksOnly('keeps ordinary source equality separate from full-text search', async () => {
+		Product = table({
+			database: `fulltext-query-routing-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String', indexed: true },
+			],
+			fullTextIndexes: [
+				{
+					name: 'titleSearch',
+					fields: [{ name: 'title', weight: 1, highlight: true }],
+					analyzer: 'english@2',
+					stopWords: true,
+					positions: true,
+					surfaceTerms: true,
+					synonyms: [],
+					highlighting: { maxFragments: 2, fragmentLength: 120 },
+				},
+			],
+		});
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'titleSearch').state === 'ready', 30_000);
+		const description = await describeTable({
+			database: Product.databaseName,
+			table: Product.tableName,
+			skip_record_count: true,
+		});
+		assert.deepStrictEqual(description.full_text_indexes[0].query_modes, [
+			'any',
+			'all',
+			'fuzzy',
+			'phrase',
+			'prefix',
+			'fuzzy-prefix',
+		]);
+		assert.strictEqual(description.full_text_indexes[0].readiness.state, 'ready');
+		assert.strictEqual(typeof description.full_text_indexes[0].readiness.owner_epoch, 'string');
+		await Product.put('exact', { title: 'running shoe' });
+		await Product.put('other', { title: 'running jacket' });
+		await waitFor(
+			() => [...binding.states.values()].some((state) => state.documents?.size === 2 && state.payload),
+			30_000
+		);
+
+		const exact = await collect(
+			Product.search({ conditions: [{ attribute: 'title', comparator: 'equals', value: 'running shoe' }] })
+		);
+		assert.deepStrictEqual(
+			exact.map(({ id }) => id),
+			['exact']
+		);
+		assert.strictEqual(binding.readerOpens.length, 0);
+
+		const matched = await collect(
+			Product.search({ conditions: [{ attribute: 'titleSearch', comparator: 'matches', value: 'shoe' }] })
+		);
+		assert.deepStrictEqual(
+			matched.map(({ id }) => id),
+			['exact']
+		);
+		const originalGetEntry = Product.primaryStore.getEntry;
+		let primaryReads = 0;
+		Product.primaryStore.getEntry = function (...args) {
+			primaryReads++;
+			return originalGetEntry.apply(this, args);
+		};
+		try {
+			const filtered = await collect(
+				Product.search({
+					operator: 'and',
+					conditions: [
+						{
+							attribute: 'titleSearch',
+							comparator: 'matches',
+							value: 'running',
+							waitForIndexMilliseconds: 1_000,
+						},
+						{ attribute: 'title', comparator: 'equals', value: 'running shoe' },
+					],
+				})
+			);
+			assert.deepStrictEqual(
+				filtered.map(({ id }) => id),
+				['exact']
+			);
+			assert.strictEqual(primaryReads, 2);
+		} finally {
+			Product.primaryStore.getEntry = originalGetEntry;
+		}
+		const [highlighted] = await collect(
+			Product.search({
+				conditions: [{ attribute: 'titleSearch', comparator: 'matches', value: 'shoe', includeHighlights: true }],
+			})
+		);
+		assert.deepStrictEqual(highlighted.$highlights.title[0].spans, [{ start: 8, end: 12 }]);
+		const positionalSelect = ['title'];
+		positionalSelect.asArray = true;
+		const [selectedAsArray] = await collect(
+			Product.search({
+				conditions: [{ attribute: 'titleSearch', comparator: 'matches', value: 'shoe', includeHighlights: true }],
+				select: positionalSelect,
+			})
+		);
+		assert.strictEqual(Array.isArray(selectedAsArray), true);
+		assert.strictEqual(selectedAsArray[0], 'running shoe');
+		assert.deepStrictEqual(selectedAsArray[1].title[0].spans, [{ start: 8, end: 12 }]);
+		const nullSelect = ['missing'];
+		nullSelect.forceNulls = true;
+		const [selectedWithNull] = await collect(
+			Product.search({
+				conditions: [{ attribute: 'titleSearch', comparator: 'matches', value: 'shoe', includeHighlights: true }],
+				select: nullSelect,
+			})
+		);
+		assert.strictEqual(selectedWithNull.missing, null);
+		assert.deepStrictEqual(selectedWithNull.$highlights.title[0].spans, [{ start: 8, end: 12 }]);
+		const counted = await Product.search({
+			conditions: [{ attribute: 'titleSearch', comparator: 'matches', value: 'running' }],
+			limit: 1,
+			count: 'exact',
+		});
+		assert.strictEqual(counted.recordCount, null);
+		assert.strictEqual(counted.recordCountExact, false);
+		const excluded = await collect(
+			Product.search({
+				operator: 'and',
+				conditions: [
+					{ attribute: 'titleSearch', comparator: 'matches', value: 'running' },
+					{ attribute: 'titleSearch', comparator: 'not_matches', value: 'jacket' },
+				],
+			})
+		);
+		assert.deepStrictEqual(
+			excluded.map(({ id }) => id),
+			['exact']
+		);
+		await assert.rejects(
+			async () =>
+				collect(
+					Product.search({ conditions: [{ attribute: 'titleSearch', comparator: 'not_matches', value: 'jacket' }] })
+				),
+			/requires at least one non-negated condition/
+		);
+		assert.strictEqual(binding.readerOpens.length, 1);
+	});
+
+	rocksOnly('routes nested full-text and record conditions through Tantivy', async () => {
+		Product = table({
+			database: `fulltext-primary-name-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'price', type: 'Int' },
+			],
+			fullTextIndexes: [
+				{
+					...definition(),
+					name: 'search',
+					fields: [{ name: 'title', weight: 1 }],
+				},
+			],
+		});
+		await Product.put('cheap', { title: 'Trail shoe', price: 50 });
+		await Product.put('premium', { title: 'Hiking shoe', price: 150 });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+		const matched = await collect(
+			Product.search({
+				conditions: [
+					{
+						conditions: [
+							{ attribute: 'search', comparator: 'matches', value: 'shoe' },
+							{ attribute: 'price', comparator: 'greater_than', value: 100 },
+						],
+					},
+				],
+				limit: 1,
+			})
+		);
+		assert.deepStrictEqual(
+			matched.map(({ id }) => id),
+			['premium']
+		);
+		await assert.rejects(
+			async () =>
+				collect(
+					Product.search({
+						conditions: [
+							{
+								operator: 'or',
+								conditions: [
+									{ attribute: 'search', comparator: 'matches', value: 'shoe' },
+									{ attribute: 'price', comparator: 'greater_than', value: 100 },
+								],
+							},
+						],
+					})
+				),
+			/full-text OR group cannot mix full-text and record conditions/
+		);
+	});
+
+	rocksOnly('preserves full-text condition options through search_by_conditions', async () => {
+		const database = `fulltext-operations-${Date.now()}`;
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'tags', type: 'array', elements: { type: 'String' } },
+			],
+			fullTextIndexes: [definition()],
+		});
+		let captured;
+		let fullTextCaptured;
+		const originalSearch = Product.search;
+		Product.search = (query, context) => {
+			captured = { query, context };
+			return [];
+		};
+		try {
+			const hdb_user = { username: 'catalog-reader' };
+			await ResourceBridge.prototype.searchByConditions.call(
+				{},
+				{
+					database,
+					schema: database,
+					table: 'Product',
+					hdb_user,
+					get_attributes: ['*'],
+					conditions: [
+						{
+							search_attribute: 'search',
+							search_type: 'matches_phrase',
+							search_value: 'trail shoe',
+							fields: ['title'],
+							includeHighlights: true,
+							maxIndexLagMilliseconds: 50,
+							waitForIndexMilliseconds: 100,
+						},
+					],
+				}
+			);
+			fullTextCaptured = captured;
+			await ResourceBridge.prototype.searchByConditions.call(
+				{},
+				{
+					database,
+					schema: database,
+					table: 'Product',
+					user: { username: 'spoofed-principal' },
+					get_attributes: ['*'],
+					conditions: [{ attribute: 'title', comparator: 'equals', value: 'Trail shoe' }],
+				}
+			);
+		} finally {
+			Product.search = originalSearch;
+		}
+		assert.deepStrictEqual(fullTextCaptured.query.conditions, [
+			{
+				attribute: 'search',
+				comparator: 'matches_phrase',
+				value: 'trail shoe',
+				fields: ['title'],
+				includeHighlights: true,
+				maxIndexLagMilliseconds: 50,
+				waitForIndexMilliseconds: 100,
+			},
+		]);
+		assert.strictEqual(fullTextCaptured.context.user.username, 'catalog-reader');
+		assert.deepStrictEqual(captured.query.conditions, [
+			{ attribute: 'title', comparator: 'equals', value: 'Trail shoe' },
+		]);
+		assert.strictEqual(captured.context.user, undefined);
+	});
+
+	rocksOnly('rejects related full-text predicates before they can bypass child source permissions', async () => {
+		const database = `fulltext-relationship-permissions-${Date.now()}`;
+		await loadGQLSchema(`
+			type Product @table(database: "${database}", audit: true) {
+				id: ID @primaryKey
+				title: String @indexed
+				secret: String
+				catalogSearch: FullText @fullText(fields: [{ name: "secret" }])
+			}
+			type Order @table(database: "${database}") {
+				id: ID @primaryKey
+				productId: ID @indexed
+				product: Product @relationship(from: "productId")
+			}
+		`);
+		Product = databases[database].Product;
+		const Order = databases[database].Order;
+		await Product.put('p1', { title: 'Visible', secret: 'classified' });
+		await Product.put('p2', { title: 'Other', secret: 'ordinary' });
+		await Order.put('o1', { productId: 'p1' });
+		await Order.put('o2', { productId: 'p2' });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30_000);
+		const user = {
+			role: {
+				permission: {
+					[database]: {
+						tables: {
+							Order: { read: true },
+							Product: {
+								read: true,
+								attribute_permissions: [
+									{ attribute_name: 'id', read: true },
+									{ attribute_name: 'title', read: true },
+									{ attribute_name: 'secret', read: false },
+								],
+							},
+						},
+					},
+				},
+			},
+		};
+		const query = (Table, conditions) =>
+			collect(Table.search({ conditions, select: ['id'], checkPermission: true }, { user }));
+		await assert.rejects(
+			async () => query(Product, [{ attribute: 'catalogSearch', comparator: 'matches', value: 'classified' }]),
+			(error) => error.statusCode === 403
+		);
+		assert.deepStrictEqual(
+			await query(Order, [{ attribute: ['product', 'title'], comparator: 'equals', value: 'Visible' }]),
+			[{ id: 'o1' }]
+		);
+		for (const comparator of FULL_TEXT_COMPARATORS) {
+			const condition = { attribute: ['product', 'catalogSearch'], comparator, value: 'classified' };
+			for (const conditions of [
+				[condition],
+				[{ operator: 'and', conditions: [condition] }],
+				[{ operator: 'or', conditions: [condition, { attribute: 'id', value: 'o2' }] }],
+			])
+				await assert.rejects(
+					async () => query(Order, conditions),
+					(error) => error.statusCode === 400
+				);
+		}
+		await assert.rejects(
+			async () =>
+				query(Order, [{ attribute: ['product', 'catalogSearch'], comparator: 'equals', value: 'classified' }]),
+			(error) => error.statusCode === 400 && /query-only/.test(error.message)
+		);
+		await assert.rejects(
+			async () =>
+				query(Order, [
+					{ attribute: 'id', comparator: 'equals', value: 'o1' },
+					{ attribute: ['product', 'catalogSearch'], comparator: 'equals', value: 'classified' },
+				]),
+			(error) => error.statusCode === 400 && /query-only/.test(error.message)
+		);
+		assert.throws(
+			() =>
+				searchByIndex(
+					{ attribute: ['product', 'catalogSearch'], comparator: 'matches', value: 'classified' },
+					undefined,
+					false,
+					Order,
+					{ context: { user }, filtered: {} }
+				),
+			(error) => error.statusCode === 400
+		);
+		assert.throws(
+			() =>
+				searchByIndex(
+					{ attribute: ['product', 'catalogSearch'], comparator: 'equals', value: 'classified' },
+					undefined,
+					false,
+					Order,
+					{ context: { user }, filtered: {} }
+				),
+			(error) => error.statusCode === 400 && /query-only/.test(error.message)
+		);
+	});
+
+	rocksOnly('authorizes full-text queries against their selected source fields', async () => {
+		const database = `fulltext-permissions-${Date.now()}`;
+		const fullTextDefinition = definition();
+		fullTextDefinition.fields[0].highlight = true;
+		fullTextDefinition.highlighting = { maxFragments: 2, fragmentLength: 120 };
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'tags', type: 'array', elements: { type: 'String' } },
+			],
+			fullTextIndexes: [fullTextDefinition],
+		});
+		await Product.put('shoe-1', { title: 'Trail shoe', tags: ['trail'] });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+		const user = {
+			role: {
+				permission: {
+					[database]: {
+						tables: {
+							Product: {
+								read: true,
+								attribute_permissions: [
+									{ attribute_name: 'title', read: true, describe: true },
+									{ attribute_name: 'tags', read: false, update: true, describe: true },
+								],
+							},
+						},
+					},
+				},
+			},
+		};
+		const restrictedDescription = await describeTable({
+			database,
+			table: 'Product',
+			hdb_user: user,
+			skip_record_count: true,
+		});
+		assert.deepStrictEqual(
+			restrictedDescription.full_text_indexes[0].fields.map(({ name }) => name),
+			['title']
+		);
+		const unrestrictedDescription = await describeTable({
+			database,
+			table: 'Product',
+			hdb_user: {
+				role: {
+					permission: {
+						[database]: {
+							tables: { Product: { read: true, describe: true, attribute_permissions: [] } },
+						},
+					},
+				},
+			},
+			skip_record_count: true,
+		});
+		assert.deepStrictEqual(
+			unrestrictedDescription.full_text_indexes[0].fields.map(({ name }) => name),
+			['title', 'tags']
+		);
+		const allowed = await collect(
+			Product.search(
+				{
+					conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe', fields: ['title'] }],
+					limit: 1,
+				},
+				{ user }
+			)
+		);
+		assert.strictEqual(allowed.length, 1);
+		const highlighted = await collect(
+			Product.search(
+				{
+					conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe', fields: ['title'] }],
+					select: ['title', '$score', '$highlights'],
+					checkPermission: true,
+					limit: 1,
+				},
+				{ user }
+			)
+		);
+		assert.strictEqual(highlighted.length, 1);
+		assert.strictEqual(typeof highlighted[0].$score, 'number');
+		assert.deepStrictEqual(highlighted[0].$highlights.title[0].spans, [{ start: 6, end: 10 }]);
+		await assert.rejects(
+			Promise.resolve().then(() =>
+				collect(
+					Product.search(
+						{
+							conditions: [{ attribute: 'search', comparator: 'matches', value: 'trail', fields: ['tags'] }],
+							limit: 1,
+						},
+						{ user }
+					)
+				)
+			),
+			(error) => error.name === 'AccessViolation' || error.statusCode === 403
+		);
+		assert.strictEqual(
+			searchValidator(
+				{
+					schema: database,
+					table: 'Product',
+					conditions: [{ attribute: 'hidden-search', comparator: 'matches', value: 'shoe' }],
+				},
+				'conditions'
+			),
+			undefined
+		);
+		await assert.rejects(
+			Promise.resolve().then(() =>
+				collect(
+					Product.search(
+						{ conditions: [{ attribute: 'hidden-search', comparator: 'matches', value: 'shoe' }], limit: 1 },
+						{ user }
+					)
+				)
+			),
+			(error) => error.name === 'AccessViolation' || error.statusCode === 403
+		);
+		const queryIndex = Product.fullTextQueryIndexes.search.customIndex;
+		Product.fullTextQueryIndexes.search.customIndex = undefined;
+		try {
+			await assert.rejects(
+				async () =>
+					collect(
+						Product.search({
+							conditions: [{ attribute: 'search', comparator: 'matches', value: 42 }],
+							limit: 1,
+						})
+					),
+				(error) => error.statusCode === 400
+			);
+			await assert.rejects(
+				Promise.resolve().then(() =>
+					collect(
+						Product.search(
+							{ conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }], limit: 1 },
+							{ user }
+						)
+					)
+				),
+				(error) => error.name === 'AccessViolation' || error.statusCode === 403
+			);
+		} finally {
+			Product.fullTextQueryIndexes.search.customIndex = queryIndex;
+		}
+		const compiledDefinition = Product.fullTextIndexes[0];
+		const positions = compiledDefinition.positions;
+		const surfaceTerms = compiledDefinition.surfaceTerms;
+		compiledDefinition.positions = false;
+		compiledDefinition.surfaceTerms = false;
+		try {
+			for (const comparator of ['matches_phrase', 'matches_prefix']) {
+				await assert.rejects(
+					Promise.resolve().then(() =>
+						collect(
+							Product.search({ conditions: [{ attribute: 'search', comparator, value: 'trail' }], limit: 1 }, { user })
+						)
+					),
+					(error) => error.name === 'AccessViolation' || error.statusCode === 403
+				);
+			}
+		} finally {
+			compiledDefinition.positions = positions;
+			compiledDefinition.surfaceTerms = surfaceTerms;
+		}
+		await assert.rejects(
+			Promise.resolve().then(() =>
+				collect(
+					Product.search(
+						{
+							conditions: [{ attribute: 'search', comparator: 'matches', value: 'trail', fields: ['unknown'] }],
+							limit: 1,
+						},
+						{ user }
+					)
+				)
+			),
+			(error) => error.name === 'AccessViolation' || error.statusCode === 403
+		);
+		const explicitPermission = user.role.permission;
+		const explicitAllowed = await collect(
+			Product.search({
+				conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe', fields: ['title'] }],
+				checkPermission: explicitPermission,
+				limit: 1,
+			})
+		);
+		assert.strictEqual(explicitAllowed.length, 1);
+		await assert.rejects(
+			Promise.resolve().then(() =>
+				collect(
+					Product.search({
+						conditions: [{ attribute: 'search', comparator: 'matches', value: 'trail', fields: ['tags'] }],
+						checkPermission: explicitPermission,
+						limit: 1,
+					})
+				)
+			),
+			(error) => error.name === 'AccessViolation' || error.statusCode === 401
+		);
+	});
+
+	it('rejects full-text comparators on ordinary and primary indexes', async () => {
+		Product = table({
+			database: `fulltext-query-fail-closed-${Date.now()}`,
+			table: 'Product',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String', indexed: true },
+			],
+		});
+		await Product.put('shoe-1', { title: 'Trail shoe' });
+		for (const attribute of ['id', 'title']) {
+			await assert.rejects(
+				async () => collect(Product.search({ conditions: [{ attribute, comparator: 'matches', value: 'shoe' }] })),
+				/requires a declared @fullText index/
+			);
+		}
 	});
 
 	rocksOnly('keeps quarantined full-text metadata inert during clear and drop', async () => {
@@ -664,7 +1293,7 @@ describe('@fullText derived-index activation', () => {
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
 	});
 
-	rocksOnly('preserves query-only generations and rebuilds storage changes', async () => {
+	rocksOnly('preserves query-only generations and rebuilds structural changes', async () => {
 		const database = `fulltext-generation-${Date.now()}`;
 		const attributes = () => [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
@@ -683,7 +1312,6 @@ describe('@fullText derived-index activation', () => {
 		const initialGeneration = Product.fullTextIndexGenerations.search;
 		const initialNativeGeneration = latestOpen(binding, Product).generation;
 		const initialRuntime = Product.derivedIndexRuntime;
-		const initialOpenCount = binding.opens.length;
 		const initialResetCount = binding.resets.length;
 
 		Product = table({
@@ -694,24 +1322,34 @@ describe('@fullText derived-index activation', () => {
 			fullTextIndexes: [{ ...definition(), synonyms: [{ source: 'shoe', replacements: ['sneaker'] }] }],
 		});
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
-		assert.strictEqual(Product.fullTextIndexGenerations.search, initialGeneration);
-		assert.strictEqual(latestOpen(binding, Product).generation, initialNativeGeneration);
-		assert.strictEqual(Product.derivedIndexRuntime, initialRuntime);
-		assert.strictEqual(binding.opens.length, initialOpenCount);
-		assert.strictEqual(binding.resets.length, initialResetCount);
+		assert.notStrictEqual(Product.fullTextIndexGenerations.search, initialGeneration);
+		assert.notStrictEqual(latestOpen(binding, Product).generation, initialNativeGeneration);
+		assert.notStrictEqual(Product.derivedIndexRuntime, initialRuntime);
+		assert(binding.resets.length > initialResetCount);
+		const synonymGeneration = Product.fullTextIndexGenerations.search;
+		const synonymNativeGeneration = latestOpen(binding, Product).generation;
+		const synonymRuntime = Product.derivedIndexRuntime;
+		const synonymOpenCount = binding.opens.length;
+		const synonymResetCount = binding.resets.length;
+		await collect(Product.search({ conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }] }));
+		const synonymReaderOpenCount = binding.readerOpens.length;
 
 		Product = table({
 			database,
 			table: 'Product',
 			audit: true,
 			attributes: attributes(),
-			fullTextIndexes: [definition(2)],
+			fullTextIndexes: [{ ...definition(2), synonyms: [{ source: 'shoe', replacements: ['sneaker'] }] }],
 		});
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
-		assert.notStrictEqual(Product.fullTextIndexGenerations.search, initialGeneration);
-		assert.notStrictEqual(latestOpen(binding, Product).generation, initialNativeGeneration);
-		assert.notStrictEqual(Product.derivedIndexRuntime, initialRuntime);
-		assert(binding.resets.length > 0);
+		assert.strictEqual(Product.fullTextIndexGenerations.search, synonymGeneration);
+		assert.strictEqual(latestOpen(binding, Product).generation, synonymNativeGeneration);
+		assert.strictEqual(Product.derivedIndexRuntime, synonymRuntime);
+		assert.strictEqual(binding.opens.length, synonymOpenCount);
+		assert.strictEqual(binding.resets.length, synonymResetCount);
+		await collect(Product.search({ conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }] }));
+		assert.strictEqual(binding.readerOpens.length, synonymReaderOpenCount + 1);
+		assert.strictEqual(binding.readerOpens.at(-1).fields[0].weight, 2);
 	});
 
 	rocksOnly('keeps the prior declaration when a storage-generation update fails before publication', async () => {
@@ -1071,6 +1709,138 @@ describe('@fullText derived-index activation', () => {
 		assert(binding.resets.length > 0);
 	});
 
+	rocksOnly('enforces score ordering after adding full text to an existing table class', async () => {
+		const database = `fulltext-redeclare-order-${Date.now()}`;
+		const attributes = [
+			{ name: 'id', type: 'ID', isPrimaryKey: true },
+			{ name: 'title', type: 'String' },
+			{ name: 'tags', type: 'array', elements: { type: 'String' } },
+		];
+		Product = table({ database, table: 'Product', audit: true, attributes });
+		Product = table({ database, table: 'Product', audit: true, attributes, fullTextIndexes: [definition()] });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+
+		assert.throws(
+			() =>
+				Product.search({
+					conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }],
+					sort: { attribute: 'title' },
+				}),
+			/Full-text results can only use descending \$score order/
+		);
+		assert.throws(
+			() =>
+				Product.search({
+					conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }],
+					sort: { attribute: '$score' },
+				}),
+			/Full-text results can only use descending \$score order/
+		);
+		assert.throws(
+			() =>
+				Product.search({
+					conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }],
+					reverse: true,
+				}),
+			/Full-text results can only use descending \$score order/
+		);
+		assert.doesNotThrow(() =>
+			Product.search({
+				conditions: [{ attribute: 'search', comparator: 'matches', value: 'shoe' }],
+				sort: { attribute: '$score', descending: true },
+			})
+		);
+	});
+
+	rocksOnly('drains a reader outside the retiring attachment before removing native storage', async () => {
+		setFullTextNativeBindingForTests({
+			binding,
+			closeTimeoutMilliseconds: 50,
+			shutdownTimeoutMilliseconds: 2_000,
+			readerCoordinationTimeoutMilliseconds: 30,
+			runnerOptions: {
+				rebuildBackoffMilliseconds: 10,
+				maxRebuildBackoffMilliseconds: 50,
+				maxRebuildAttempts: 2,
+				lockRetryMilliseconds: 10,
+			},
+		});
+		const database = `fulltext-retirement-reader-${Date.now()}`;
+		const attributes = () => [
+			{ name: 'id', type: 'ID', isPrimaryKey: true },
+			{ name: 'title', type: 'String' },
+			{ name: 'tags', type: 'array', elements: { type: 'String' } },
+		];
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: attributes(),
+			fullTextIndexes: [definition()],
+		});
+		await Product.put('shoe-1', { title: 'Trail shoe', tags: ['trail'] });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+		const query = { attribute: 'search', comparator: 'matches', value: 'shoe', waitForIndexMilliseconds: 1_000 };
+		await collect(Product.search({ conditions: [query] }));
+		const generation = Product.fullTextIndexGenerations.search;
+		const readinessId = fullTextDerivedIndexReadinessId(Product, 'search', generation);
+		const indexId = fullTextDerivedIndexId(Product, 'search');
+		const rootStore = Product.primaryStore.rootStore;
+		const auditStore = Product.auditStore;
+		const peerBinding = Object.create(binding);
+		peerBinding.readerSearches = [];
+		const heldSearch = Promise.withResolvers();
+		peerBinding.readerSearchWait = heldSearch.promise;
+		let pauseCount = 0;
+		class SeparateReader extends FullTextQueryIndex {
+			pause(...args) {
+				const draining = super.pause(...args);
+				pauseCount++;
+				return draining;
+			}
+		}
+		const reader = new SeparateReader({
+			Table: Product,
+			definition: definition(),
+			auditStore,
+			readinessId,
+			indexId,
+			storePath: rootStore.path,
+			storeName: 'Product/search',
+			sourceGeneration: `${Product.tableId}:${generation}`,
+			limits: {},
+			binding: peerBinding,
+		});
+		reader.attachDerivedHost({
+			readiness: () => readDerivedIndexReadiness(auditStore, readinessId),
+			waitForCoverage: async () => {},
+		});
+		const searching = reader.search(query, {});
+		try {
+			await waitFor(() => peerBinding.readerSearches.length === 1);
+			const resetsBefore = binding.resets.length;
+			Product = table({ database, table: 'Product', audit: true, attributes: attributes(), fullTextIndexes: [] });
+			await waitFor(() => pauseCount > 1 || binding.resets.length > resetsBefore);
+			assert.strictEqual(binding.resets.length, resetsBefore, 'native reset must wait for the separately held reader');
+			assert(pauseCount > 1, 'retirement must retry a timed-out reader drain');
+			assert.strictEqual(rootStore.tryLock(`derived-index:${indexId}:runner`), false);
+			await assert.rejects(reader.search(query, {}), /reader fence/);
+			heldSearch.resolve();
+			assert.deepStrictEqual(
+				(await searching).map(({ key }) => key),
+				['shoe-1']
+			);
+			await waitFor(() => binding.resets.length > resetsBefore);
+			await waitFor(() => !fullTextRetirementInProgress(rootStore, 'Product'));
+			assert(rootStore.tryLock(`derived-index:${indexId}:runner`));
+			rootStore.unlock(`derived-index:${indexId}:runner`);
+		} finally {
+			heldSearch.resolve();
+			await searching.catch(() => {});
+			await reader.close();
+		}
+	});
+
 	rocksOnly('waits for removal retirement before reopening the same native path', async () => {
 		const database = `fulltext-retirement-readd-${Date.now()}`;
 		const attributes = () => [
@@ -1086,7 +1856,6 @@ describe('@fullText derived-index activation', () => {
 			fullTextIndexes: [definition()],
 		});
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
-		const opensBeforeRemoval = binding.opens.length;
 		let releaseReset;
 		binding.resetWait = new Promise((resolve) => {
 			releaseReset = resolve;
@@ -1094,6 +1863,7 @@ describe('@fullText derived-index activation', () => {
 
 		Product = table({ database, table: 'Product', audit: true, attributes: attributes(), fullTextIndexes: [] });
 		await waitFor(() => binding.resets.length > 0, 30_000);
+		const opensAtRetirement = binding.opens.length;
 		const retirementInProgress = fullTextRetirementInProgress(Product.primaryStore.rootStore, Product.tableName);
 		Product = table({
 			database,
@@ -1103,7 +1873,11 @@ describe('@fullText derived-index activation', () => {
 			fullTextIndexes: [definition()],
 		});
 		await new Promise((resolve) => setImmediate(resolve));
-		assert.strictEqual(binding.opens.length, opensBeforeRemoval);
+		assert.strictEqual(
+			binding.opens.length,
+			opensAtRetirement,
+			're-declaration must not open a reader while destructive reset is active'
+		);
 		releaseReset();
 		await waitFor(() => binding.reclaims.length > 0, 30_000);
 
@@ -1653,13 +2427,18 @@ describe('@fullText derived-index activation', () => {
 			{ name: 'title', type: 'String' },
 			{ name: 'tags', type: 'array', elements: { type: 'String' } },
 		];
-		const declare = (weight) =>
+		const declare = (generation) =>
 			table({
 				database,
 				table: 'Product',
 				audit: true,
 				attributes: attributes(),
-				fullTextIndexes: [definition(weight)],
+				fullTextIndexes: [
+					{
+						...definition(),
+						synonyms: [{ source: 'shoe', replacements: [`sneaker-${generation}`] }],
+					},
+				],
 			});
 
 		Product = declare(1);

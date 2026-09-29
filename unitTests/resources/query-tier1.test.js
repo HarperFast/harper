@@ -128,6 +128,7 @@ describe('Query Tier-1 additions', () => {
 			assert.deepEqual(resolveComparator('not_between'), { comparator: 'between', negated: true });
 			assert.deepEqual(resolveComparator('not_contains'), { comparator: 'contains', negated: true });
 			assert.deepEqual(resolveComparator('not_ends_with'), { comparator: 'ends_with', negated: true });
+			assert.deepEqual(resolveComparator('not_matches_phrase'), { comparator: 'matches_phrase', negated: true });
 		});
 		it('returns input unchanged for unknown comparators', () => {
 			assert.deepEqual(resolveComparator('unknown'), { comparator: 'unknown', negated: false });
@@ -174,6 +175,66 @@ describe('Query Tier-1 additions', () => {
 			assert.equal(q.conditions[0].comparator, 'starts_with');
 			assert.equal(q.conditions[0].value, 'Joh');
 			assert.equal(q.conditions[0].negated, true);
+		});
+		it('parses not_matches as a negated full-text condition', () => {
+			const q = parseQuery('catalogSearch=not_matches=shoe');
+			assert.equal(q.conditions[0].comparator, 'matches');
+			assert.equal(q.conditions[0].value, 'shoe');
+			assert.equal(q.conditions[0].negated, true);
+		});
+		it('parses every full-text comparator and negated form', () => {
+			for (const comparator of [
+				'matches',
+				'matches_all',
+				'matches_phrase',
+				'matches_prefix',
+				'matches_fuzzy',
+				'matches_fuzzy_prefix',
+			]) {
+				const positive = parseQuery(`catalogSearch=${comparator}=trail%20shoe`);
+				assert.equal(positive.conditions[0].comparator, comparator);
+				assert.equal(positive.conditions[0].value, 'trail shoe');
+				assert.equal(positive.conditions[0].negated, undefined);
+				const negative = parseQuery(`catalogSearch=not_${comparator}=trail%20shoe`);
+				assert.equal(negative.conditions[0].comparator, comparator);
+				assert.equal(negative.conditions[0].value, 'trail shoe');
+				assert.equal(negative.conditions[0].negated, true);
+			}
+		});
+		it('preserves literal full-text strings for every comparator and negated form', () => {
+			for (const comparator of [
+				'matches',
+				'matches_all',
+				'matches_phrase',
+				'matches_prefix',
+				'matches_fuzzy',
+				'matches_fuzzy_prefix',
+			]) {
+				for (const negated of [false, true]) {
+					for (const value of ['null', 'number:1', 'boolean:true', 'date:2026-09-28', 'string:shoe', 'brand:shoe']) {
+						for (const encoded of [value, encodeURIComponent(value)]) {
+							const query = `catalogSearch=${negated ? 'not_' : ''}${comparator}=${encoded}`;
+							const [condition] = parseQuery(query).conditions;
+							assert.strictEqual(condition.value, value, query);
+							assert.strictEqual(condition.comparator, comparator, query);
+							assert.strictEqual(condition.negated, negated || undefined, query);
+						}
+					}
+				}
+			}
+		});
+		it('retains typed decoding for ordinary FIQL comparisons', () => {
+			for (const [encoded, expected] of [
+				['null', null],
+				['number:1', 1],
+				['boolean:true', true],
+				['date:2026-09-28', new Date('2026-09-28')],
+				['string:trail%20shoe', 'trail shoe'],
+			]) {
+				const [condition] = parseQuery(`value=eq=${encoded}`).conditions;
+				assert.deepStrictEqual(condition.value, expected, encoded);
+			}
+			assert.throws(() => parseQuery('value=eq=brand:shoe'), /Unknown type brand/);
 		});
 		it('parses between with list value', () => {
 			const q = parseQuery('age=between=(18,65)');

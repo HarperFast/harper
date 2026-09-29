@@ -166,6 +166,7 @@ module.exports = {
 	shutdownWorkersNow,
 	workers,
 	setMonitorListener,
+	sampleWorkerELU,
 	onMessageFromWorkers,
 	setIsolatedWorkerReconciler,
 	setRunningIsolatedApplicationsGetter,
@@ -1149,6 +1150,7 @@ function broadcastWithAcknowledgement(
 			)
 				continue;
 			let ackHandler;
+			let postingToRecipient = false;
 			try {
 				let requestId = nextId++;
 				ackHandler = (response) => {
@@ -1172,10 +1174,16 @@ function broadcastWithAcknowledgement(
 					}
 				};
 				ackHandler.port = port;
-				ackHandler.closeResponse = strict
-					? { error: { message: 'exited before acknowledging preparation' } }
-					: undefined;
 				ackHandler.allowNormalJobExit = strict && includeJobWorkers && port.isJobWorker;
+				ackHandler.closeResponse = strict
+					? {
+							error: {
+								message: 'exited before acknowledging preparation',
+								code: 'E_ITC_RECIPIENT_EXITED',
+								retryable: true,
+							},
+						}
+					: undefined;
 				pending.add(ackHandler);
 				waitingCount++;
 				port.refCount = (port.refCount || 0) + 1;
@@ -1188,10 +1196,16 @@ function broadcastWithAcknowledgement(
 						settleAcknowledgementsForClosedPort(port, port.jobCleanupComplete === true)
 					);
 				}
+				postingToRecipient = true;
 				port.postMessage(message);
 			} catch (error) {
 				harperLogger.error(`Unable to send message to worker`, error);
-				ackHandler?.({ error: { message: error.message ?? String(error) } });
+				ackHandler?.({
+					error: {
+						message: error.message ?? String(error),
+						...(postingToRecipient ? { code: 'E_ITC_RECIPIENT_EXITED', retryable: true } : null),
+					},
+				});
 			}
 		}
 		initializing = false;
@@ -1202,7 +1216,17 @@ function broadcastWithAcknowledgement(
 				const stuck = [];
 				for (let ackHandler of [...pending]) {
 					stuck.push(ackHandler.port);
-					ackHandler(strict ? { error: { message: `did not acknowledge within ${timeout}ms` } } : undefined); // same cleanup path as an ack/close; drives waitingCount to 0 and settles
+					ackHandler(
+						strict
+							? {
+									error: {
+										message: `did not acknowledge within ${timeout}ms`,
+										code: 'E_ITC_ACK_TIMEOUT',
+										retryable: true,
+									},
+								}
+							: undefined
+					); // same cleanup path as an ack/close; drives waitingCount to 0 and settles
 				}
 				harperLogger.warn(
 					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.map((port) => port?.threadId).join(', ')} within ${timeout}ms; ${strict ? 'failing the coordinated operation' : 'proceeding best-effort'}`
@@ -1393,6 +1417,64 @@ function setMonitorListener(listener) {
 }
 
 const MONITORING_INTERVAL = 1000;
+
+// See server/DESIGN.md.
+const PINNED_ELU_UTILIZATION_THRESHOLD = 0.99;
+const PINNED_ELU_SUSTAINED_MS = 30_000;
+const PINNED_ELU_SUSTAINED_TICKS = Math.ceil(PINNED_ELU_SUSTAINED_MS / MONITORING_INTERVAL);
+module.exports.PINNED_ELU_UTILIZATION_THRESHOLD = PINNED_ELU_UTILIZATION_THRESHOLD;
+module.exports.PINNED_ELU_SUSTAINED_TICKS = PINNED_ELU_SUSTAINED_TICKS;
+
+function describePinnedWorker(worker) {
+	const identity = [worker.name, worker.application].filter(Boolean).join('/');
+	return `Worker thread ${worker.threadId}${identity ? ` (${identity})` : ''}`;
+}
+
+function checkPinnedWorkerELU(worker, recentELU) {
+	const { utilization } = recentELU;
+	// idle can briefly read negative while a worker tears down, producing a nonsense ratio
+	// outside [0, 1]; treat that tick as unmeasured rather than counting or resetting on it.
+	if (!(utilization >= 0 && utilization <= 1)) return;
+	if (utilization >= PINNED_ELU_UTILIZATION_THRESHOLD) {
+		worker.pinnedELUTicks = (worker.pinnedELUTicks || 0) + 1;
+		if (worker.pinnedELUTicks === PINNED_ELU_SUSTAINED_TICKS) {
+			worker.pinnedELUWarned = true;
+			harperLogger.warn(
+				`${describePinnedWorker(worker)} event loop utilization has been pinned at ${Math.round(utilization * 100)}% for ${PINNED_ELU_SUSTAINED_MS / 1000}s; the worker may be wedged`
+			);
+		}
+	} else {
+		if (worker.pinnedELUWarned)
+			harperLogger.warn(
+				`${describePinnedWorker(worker)} event loop utilization has recovered to ${Math.round(utilization * 100)}% after being pinned`
+			);
+		worker.pinnedELUTicks = 0;
+		worker.pinnedELUWarned = false;
+	}
+}
+
+function sampleWorkerELU(worker) {
+	if (!isBun && worker.performance?.eventLoopUtilization) {
+		let current_ELU = worker.performance.eventLoopUtilization();
+		let recent_ELU;
+		// Excludes Node's pre-online placeholder ({ idle: 0, active: 0 }, truthy but not a real
+		// sample) as well as a worker's first real sample, which is a lifetime total, not a 1s delta.
+		const hadBaseline = worker.lastTotalELU?.active > 0 || worker.lastTotalELU?.idle > 0;
+		if (hadBaseline) {
+			// get the difference between current and last to determine the last second of utilization
+			recent_ELU = worker.performance.eventLoopUtilization(current_ELU, worker.lastTotalELU);
+		} else {
+			recent_ELU = current_ELU;
+		}
+		worker.lastTotalELU = current_ELU;
+		worker.recentELU = recent_ELU;
+		if (hadBaseline) checkPinnedWorkerELU(worker, recent_ELU);
+	} else {
+		// Bun doesn't support eventLoopUtilization, use a default idle value
+		worker.recentELU = worker.recentELU || { idle: 1, active: 0, utilization: 0 };
+	}
+}
+
 let monitoring = false;
 function startMonitoring() {
 	if (monitoring) return;
@@ -1400,23 +1482,7 @@ function startMonitoring() {
 	// we periodically get the event loop utilitization so we have a reasonable time frame to check the recent
 	// utilization levels (last second) and so we don't have to make these calls to frequently
 	setInterval(() => {
-		for (let worker of workers) {
-			if (!isBun && worker.performance?.eventLoopUtilization) {
-				let current_ELU = worker.performance.eventLoopUtilization();
-				let recent_ELU;
-				if (worker.lastTotalELU) {
-					// get the difference between current and last to determine the last second of utilization
-					recent_ELU = worker.performance.eventLoopUtilization(current_ELU, worker.lastTotalELU);
-				} else {
-					recent_ELU = current_ELU;
-				}
-				worker.lastTotalELU = current_ELU;
-				worker.recentELU = recent_ELU;
-			} else {
-				// Bun doesn't support eventLoopUtilization, use a default idle value
-				worker.recentELU = worker.recentELU || { idle: 1, active: 0, utilization: 0 };
-			}
-		}
+		for (let worker of workers) sampleWorkerELU(worker);
 		if (monitorListener) monitorListener();
 	}, MONITORING_INTERVAL).unref();
 }

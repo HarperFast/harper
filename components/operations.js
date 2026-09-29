@@ -39,6 +39,7 @@ const {
 	retireComponentDirectory,
 } = require('./Application.ts');
 const { COMPONENT_PREPARATION_LOCK_DIR, withComponentPreparationLock } = require('./componentPreparationLock.ts');
+const { DEPLOYMENT_PROVENANCE_FILE } = require('./deploymentProvenance.ts');
 const {
 	applyRootConfigEffect,
 	assertRootConfigEffectPublishable,
@@ -888,6 +889,8 @@ async function deployComponent(req) {
 				await validateComponentLoads(candidateDirPath, emit);
 			},
 		});
+		// Nothing ran `validateCandidate`, which ends this phase.
+		if (application.alreadyActive) emit('phase', { phase: 'prepare', status: 'done' });
 		// The build is certified on disk from here on, so every later failure — a peer result, or a rejection
 		// thrown by the replication layer itself — still leaves an artifact this id can activate.
 		if (mode === 'stage') stagedOnOrigin = true;
@@ -938,8 +941,9 @@ async function deployComponent(req) {
 		}
 		// A still-isolated application restarts only its own dedicated worker. Everything else restarts the
 		// pool: a shared application, and either direction of an isolation flip, where the reconcile in
-		// restartWorkers starts or stops the moving application's own worker.
-		const restartScope = wasIsolated && nowIsolated ? application.name : undefined;
+		// restartWorkers starts or stops the moving application's own worker. An already-live retry cannot know
+		// which workers loaded the previous release, so it restarts them all.
+		const restartScope = application.alreadyActive ? '*' : wasIsolated && nowIsolated ? application.name : undefined;
 		if (mode === 'stage') {
 			// No restart and no restart-required flag: nothing about the running component changed. The
 			// marker is what tells the origin which peers understood the request — see the confirmation
@@ -967,7 +971,8 @@ async function deployComponent(req) {
 				operation: 'restart_service',
 				service: 'http',
 				scope: manageThreads.encodeRestartScope(restartScope),
-				scopeFallback: restartScope === undefined ? undefined : manageThreads.encodeRestartScope(undefined),
+				scopeFallback:
+					restartScope === undefined || restartScope === '*' ? undefined : manageThreads.encodeRestartScope(undefined),
 				replicated: true,
 			});
 			emit('phase', { phase: 'restart', status: 'done' });
@@ -1204,6 +1209,7 @@ async function getComponents() {
 	// Recursive function that will traverse the components dir and build json
 	// directory tree as it goes.
 	const rootConfig = configUtils.getConfiguration();
+	const componentsRoot = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const walkDir = async (dir, result) => {
 		try {
 			const list = await fs.readdir(dir, { withFileTypes: true });
@@ -1211,12 +1217,13 @@ async function getComponents() {
 				const itemName = item.name;
 				// Deny-list, not a dot-prefix skip: component CONTENTS legitimately include dot-files
 				// (`.aiignore`, `.env.example`) that callers expect to see, so only Harper's own
-				// bookkeeping directories are excluded by name.
+				// bookkeeping is excluded by name: its directories, and each component's provenance marker.
 				if (
 					itemName === 'node_modules' ||
 					itemName === ASIDE_STAGING_DIR ||
 					itemName === DEPLOY_STAGING_DIR ||
-					itemName === COMPONENT_PREPARATION_LOCK_DIR
+					itemName === COMPONENT_PREPARATION_LOCK_DIR ||
+					(itemName === DEPLOYMENT_PROVENANCE_FILE && path.dirname(dir) === componentsRoot)
 				)
 					continue;
 				const itemPath = path.join(dir, itemName);
@@ -1248,8 +1255,8 @@ async function getComponents() {
 		}
 	};
 
-	const results = await walkDir(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), {
-		name: configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT).split(path.sep).slice(-1).pop(),
+	const results = await walkDir(componentsRoot, {
+		name: componentsRoot.split(path.sep).slice(-1).pop(),
 		entries: [],
 	});
 	const { getUnsatisfiedEnv } = require('./componentSecrets.ts');

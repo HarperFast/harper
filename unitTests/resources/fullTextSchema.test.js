@@ -3,7 +3,7 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
-const { compileFullTextDefinitions } = require('#src/resources/fullTextSchema');
+const { compileFullTextDefinitions, compileValidFullTextDefinitions } = require('#src/resources/fullTextSchema');
 const { getDatabases, resetDatabases, table } = require('#src/resources/databases');
 const environment = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
@@ -28,13 +28,13 @@ describe('@fullText declaration compiler', () => {
 	it('canonicalizes defaults, ordering, source weights, synonyms, and highlighting', () => {
 		const compiled = compileFullTextDefinitions(
 			[
-				{ name: 'z', fields: [{ name: 'tags', highlight: false }] },
+				{ name: 'z', fields: [{ name: 'tags', highlight: false }], surfaceTerms: false },
 				{
 					name: 'a',
 					fields: [{ name: 'title', weight: 3, highlight: true }],
 					stopWords: false,
 					positions: false,
-					surfaceTerms: false,
+					surfaceTerms: true,
 					synonyms: [{ source: 'shoe', replacements: ['sneaker'] }],
 					highlighting: { maxFragments: 2, fragmentLength: 120 },
 				},
@@ -45,30 +45,32 @@ describe('@fullText declaration compiler', () => {
 			{
 				name: 'a',
 				fields: [{ name: 'title', weight: 3, highlight: true }],
-				analyzer: 'english@1',
+				analyzer: 'english@2',
 				stopWords: false,
 				positions: false,
-				surfaceTerms: false,
+				surfaceTerms: true,
 				synonyms: [{ source: 'shoe', replacements: ['sneaker'] }],
 				highlighting: { maxFragments: 2, fragmentLength: 120 },
 			},
 			{
 				name: 'z',
 				fields: [{ name: 'tags', weight: 1, highlight: false }],
-				analyzer: 'english@1',
+				analyzer: 'english@2',
 				stopWords: true,
 				positions: true,
-				surfaceTerms: true,
+				surfaceTerms: false,
 				synonyms: [],
 			},
 		]);
 	});
 
 	for (const [label, definition, pattern] of [
+		['stored-attribute collision', { name: 'title', fields: [{ name: 'tags' }] }, /conflicts with a stored attribute/],
 		['unknown source', { name: 'search', fields: [{ name: 'missing' }] }, /unknown source field/],
-		['unsupported type', { name: 'search', fields: [{ name: 'id' }] }, /must be String or \[String\]/],
+		['unsupported type', { name: 'search', fields: [{ name: 'id' }] }, /must be String, \[String\]/],
 		['non-positive weight', { name: 'search', fields: [{ name: 'title', weight: 0 }] }, /greater than zero/],
-		['unversioned analyzer', { name: 'search', fields: [{ name: 'title' }], analyzer: 'english' }, /english@1/],
+		['unversioned analyzer', { name: 'search', fields: [{ name: 'title' }], analyzer: 'english' }, /english@2/],
+		['unsupported analyzer', { name: 'search', fields: [{ name: 'title' }], analyzer: 'english@1' }, /english@2/],
 		[
 			'duplicate source',
 			{ name: 'search', fields: [{ name: 'title' }, { name: 'title' }] },
@@ -88,11 +90,45 @@ describe('@fullText declaration compiler', () => {
 			{ name: 'search', fields: [{ name: 'title' }], highlighting: { maxFragments: 0 } },
 			/positive integer/,
 		],
+		[
+			'highlighting configuration without a highlighted source',
+			{ name: 'search', fields: [{ name: 'title' }], highlighting: {} },
+			/requires at least one source field/,
+		],
+		[
+			'highlighting without surface terms',
+			{
+				name: 'search',
+				fields: [{ name: 'title', highlight: true }],
+				surfaceTerms: false,
+				highlighting: {},
+			},
+			/requires surfaceTerms: true/,
+		],
 	]) {
 		it(`rejects ${label}`, () => {
 			assert.throws(() => compileFullTextDefinitions([definition], productAttributes()), pattern);
+			const invalid = [];
+			assert.deepStrictEqual(
+				compileValidFullTextDefinitions([definition], productAttributes(), (value, error) =>
+					invalid.push({ value, error })
+				),
+				[]
+			);
+			assert.strictEqual(invalid.length, 1);
+			assert.strictEqual(invalid[0].value, definition);
+			assert.match(invalid[0].error.message, pattern);
 		});
 	}
+
+	it('keeps highlighted fields disabled when highlighting configuration is omitted', () => {
+		const [definition] = compileFullTextDefinitions(
+			[{ name: 'search', fields: [{ name: 'title', highlight: true }] }],
+			productAttributes()
+		);
+		assert.strictEqual(definition.fields[0].highlight, true);
+		assert.strictEqual(definition.highlighting, undefined);
+	});
 
 	it('rejects computed and relationship sources', () => {
 		for (const source of [
@@ -110,45 +146,57 @@ describe('@fullText declaration compiler', () => {
 rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 	before(() => setupTestDBPath());
 
-	it('loads a repeatable directive and keeps the index out of the record schema', async () => {
+	it('loads multiple full-text fields and keeps them out of the record schema', async () => {
 		await loadGQLSchema(`
-			type FullTextSchemaProduct
-				@table(audit: true)
-				@fullText(name: "title", fields: [{ name: "title", weight: 3 }])
-				@fullText(
-					name: "catalog"
-					fields: [{ name: "title" }, { name: "tags", highlight: false }]
-					positions: false
-					surfaceTerms: false
-					highlighting: { maxFragments: 2, fragmentLength: 120 }
-				) {
+			type FullTextSchemaProduct @table(audit: true) {
 				id: ID @primaryKey
 				title: String
 				tags: [String]
+				titleSearch: FullText @fullText(fields: [{ name: "title", weight: 3 }])
+				catalog: FullText @fullText(
+					fields: [{ name: "title", highlight: true }, { name: "tags", highlight: false }]
+					positions: false
+					surfaceTerms: true
+					highlighting: { maxFragments: 2, fragmentLength: 120 }
+				)
 			}
 		`);
 		const Table = tables.FullTextSchemaProduct;
 		assert.deepStrictEqual(
 			Table.fullTextIndexes.map(({ name }) => name),
-			['catalog', 'title']
+			['catalog', 'titleSearch']
 		);
-		assert.strictEqual(
-			Table.attributes.some(({ name }) => name === 'catalog'),
-			false
-		);
-		assert.strictEqual(Table.indices.catalog, undefined);
+		for (const field of ['catalog', 'titleSearch']) {
+			assert.strictEqual(
+				Table.attributes.some(({ name }) => name === field),
+				false
+			);
+			assert.strictEqual(Table.indices[field], undefined);
+			assert.strictEqual(Table.dbisDB.getSync(`FullTextSchemaProduct/${field}`), undefined);
+		}
 		assert.strictEqual(primaryDescriptor(Table).fullTextIndexes.length, 2);
-		assert.strictEqual(Table.dbisDB.getSync('FullTextSchemaProduct/catalog'), undefined);
+	});
+
+	it('rejects object-level full-text declarations', async () => {
+		await assert.rejects(
+			loadGQLSchema(`
+				type FullTextObjectDeclaration @table(audit: true)
+					@fullText(name: "search", fields: [{ name: "title" }]) {
+					id: ID @primaryKey
+					title: String
+				}
+			`),
+			(error) => error.statusCode === 400 && /must be declared on a FullText field/.test(error.message)
+		);
 	});
 
 	it('persists, replaces, removes, and reloads canonical metadata', async () => {
 		const database = 'fulltext_schema_lifecycle';
 		const declare = (weight, include = true) => `
-			type FullTextLifecycle
-				@table(database: "${database}", audit: true)
-				${include ? `@fullText(name: "search", fields: [{ name: "title", weight: ${weight} }])` : ''} {
+			type FullTextLifecycle @table(database: "${database}", audit: true) {
 				id: ID @primaryKey
 				title: String
+				${include ? `search: FullText @fullText(fields: [{ name: "title", weight: ${weight} }])` : ''}
 			}
 		`;
 		await loadGQLSchema(declare(1));
@@ -207,7 +255,7 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 						attribute.name === 'title' ? { ...attribute, type: 'Int' } : attribute
 					),
 				}),
-			/must be String or \[String\]/
+			/must be String, \[String\]/
 		);
 
 		const Redeclared = table({
@@ -373,13 +421,13 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 			table: Table.tableName,
 			database: Table.databaseName,
 			attributes: [],
-			fullTextIndexes: [{ name: 'description', fields: [{ name: 'description' }] }],
+			fullTextIndexes: [{ name: 'descriptionSearch', fields: [{ name: 'description' }] }],
 			origin: 'cluster',
 		});
 		if (Table.dbisDB.committed) await Table.dbisDB.committed;
 		assert.deepStrictEqual(
 			primaryDescriptor(Table).fullTextIndexes.map(({ name }) => name),
-			['description']
+			['descriptionSearch']
 		);
 	});
 
@@ -510,12 +558,11 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 			type FullTextRollbackDetails {
 				label: String
 			}
-			type FullTextNestedRollback
-				@table(database: "test", audit: true)
-				${fullText ? '@fullText(name: "search", fields: [{ name: "title" }])' : ''} {
+			type FullTextNestedRollback @table(database: "test", audit: true) {
 				id: ID @primaryKey
 				title: ${titleType}
 				details: FullTextRollbackDetails
+				${fullText ? 'search: FullText @fullText(fields: [{ name: "title" }])' : ''}
 			}
 		`;
 		await loadGQLSchema(declaration('String', true));
@@ -557,16 +604,18 @@ rocksDescribe('@fullText RocksDB schema lifecycle', () => {
 			attributes: [{ name: 'description', type: 'String' }],
 			fullTextIndexes: [
 				{ name: 'search', fields: [{ name: 'title', weight: 9 }] },
-				{ name: 'description', fields: [{ name: 'description' }] },
+				{ name: 'descriptionSearch', fields: [{ name: 'description' }], analyzer: 'english@2' },
 			],
 			origin: 'cluster',
 		});
 		if (Merged.dbisDB.committed) await Merged.dbisDB.committed;
 		assert.deepStrictEqual(
 			Merged.fullTextIndexes.map(({ name }) => name),
-			['description', 'search']
+			['descriptionSearch', 'search']
 		);
 		assert.strictEqual(Merged.fullTextIndexes.find(({ name }) => name === 'search').fields[0].weight, 2);
+		assert.strictEqual(Merged.fullTextIndexes.find(({ name }) => name === 'descriptionSearch').analyzer, 'english@2');
+		assert.strictEqual(primaryDescriptor(Merged).fullTextIndexes[0].analyzer, 'english@2');
 		assert.strictEqual(primaryDescriptor(Merged).fullTextIndexes.length, 2);
 
 		table({
