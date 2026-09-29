@@ -34,6 +34,19 @@ The Resource layer is Harper's universal abstraction: all queryable/mutable thin
 
 ---
 
+## Full-text declarations and reader snapshots
+
+User-facing syntax: [Full-text search](FULL_TEXT.md).
+
+- Compile `name: FullText @fullText(...)` into `fullTextIndexes` and the internal durable `fullTextFields` name set. Programmatic declarations default that name set to every index name. Keep write/projection guards independent of query-reader readiness; the name set does not distinguish earlier declarations from new ones. Never add the declaration to `attributes` or record `properties`: it has no stored, computed, or selectable value. Source fields own permissions.
+- Accept only field placement with its name supplied by the field. Reject a `name` argument, table-level declarations, and index names that collide with current stored attributes. Earlier beta declarations and indexes have no supported upgrade path.
+- Hold one reader lease for the entire search, including every native result page and highlight trace. Reload only an idle reader. Publication during an active query opens a replacement for subsequent queries and retires the old reader after its lease drains. Offset paging across different native snapshots can duplicate or skip hits; deduplication cannot recover skipped hits.
+- Native fulltext owns commits and reader snapshots. Harper owns audit coverage, worker epochs, readiness, and publication notifications. A stable native snapshot does not imply a global record snapshot during concurrent writes; source versions are checked when hydrating hits.
+
+Sources: [schema parser](graphql.ts), [declaration compiler and generation identity](fullTextSchema.ts), [table read/write guards](Table.ts), [reader leases and paging](indexes/fullTextQueryIndex.ts), [publication-between-pages regression](../unitTests/resources/fullTextQueryIndex.test.js).
+
+---
+
 ## `Resource.ts` — base class
 
 Static methods are protocol entry points (each wrapped in `transactional()`); instance methods are the per-resource behavior hooks subclasses override.

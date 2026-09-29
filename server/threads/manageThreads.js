@@ -1149,6 +1149,7 @@ function broadcastWithAcknowledgement(
 			)
 				continue;
 			let ackHandler;
+			let postingToRecipient = false;
 			try {
 				let requestId = nextId++;
 				ackHandler = (response) => {
@@ -1172,10 +1173,16 @@ function broadcastWithAcknowledgement(
 					}
 				};
 				ackHandler.port = port;
-				ackHandler.closeResponse = strict
-					? { error: { message: 'exited before acknowledging preparation' } }
-					: undefined;
 				ackHandler.allowNormalJobExit = strict && includeJobWorkers && port.isJobWorker;
+				ackHandler.closeResponse = strict
+					? {
+							error: {
+								message: 'exited before acknowledging preparation',
+								code: 'E_ITC_RECIPIENT_EXITED',
+								retryable: true,
+							},
+						}
+					: undefined;
 				pending.add(ackHandler);
 				waitingCount++;
 				port.refCount = (port.refCount || 0) + 1;
@@ -1188,10 +1195,16 @@ function broadcastWithAcknowledgement(
 						settleAcknowledgementsForClosedPort(port, port.jobCleanupComplete === true)
 					);
 				}
+				postingToRecipient = true;
 				port.postMessage(message);
 			} catch (error) {
 				harperLogger.error(`Unable to send message to worker`, error);
-				ackHandler?.({ error: { message: error.message ?? String(error) } });
+				ackHandler?.({
+					error: {
+						message: error.message ?? String(error),
+						...(postingToRecipient ? { code: 'E_ITC_RECIPIENT_EXITED', retryable: true } : null),
+					},
+				});
 			}
 		}
 		initializing = false;
@@ -1202,7 +1215,17 @@ function broadcastWithAcknowledgement(
 				const stuck = [];
 				for (let ackHandler of [...pending]) {
 					stuck.push(ackHandler.port);
-					ackHandler(strict ? { error: { message: `did not acknowledge within ${timeout}ms` } } : undefined); // same cleanup path as an ack/close; drives waitingCount to 0 and settles
+					ackHandler(
+						strict
+							? {
+									error: {
+										message: `did not acknowledge within ${timeout}ms`,
+										code: 'E_ITC_ACK_TIMEOUT',
+										retryable: true,
+									},
+								}
+							: undefined
+					); // same cleanup path as an ack/close; drives waitingCount to 0 and settles
 				}
 				harperLogger.warn(
 					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.map((port) => port?.threadId).join(', ')} within ${timeout}ms; ${strict ? 'failing the coordinated operation' : 'proceeding best-effort'}`

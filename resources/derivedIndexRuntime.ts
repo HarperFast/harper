@@ -120,6 +120,8 @@ export interface DerivedIndexBackendHost {
 	/** True while `epoch` is the most recently minted owner epoch for this backend. */
 	isOwnerEpoch(epoch: bigint): boolean;
 	getReadiness(): DerivedIndexReadiness;
+	/** Publish a durable backend-only revision that peer workers must observe. */
+	publicationChanged(): void;
 }
 
 /**
@@ -131,6 +133,8 @@ export interface DerivedIndexBackendHost {
  */
 export interface DerivedIndexBackend {
 	readonly id: string;
+	/** Allocate and publish cross-worker query revisions for backends with external reader state. */
+	readonly publishesQueryRevisions?: boolean;
 	/** Receives the epoch fence and readiness reader before any delivery. */
 	attach(host: DerivedIndexBackendHost): void;
 	getDurableCursor(): DerivedIndexCursor | undefined;
@@ -345,8 +349,7 @@ export class DerivedIndexRuntime {
 				this.#runners.delete(registration.backend.id);
 				const waiting = this.#coverageWaits.get(registration.backend.id);
 				if (waiting) {
-					for (const waiter of waiting.waiters)
-						waiter.finish(new ServerError('The native HNSW index is unavailable', 503));
+					for (const waiter of waiting.waiters) waiter.finish(new ServerError('The derived index is unavailable', 503));
 				}
 				this.#stopListeningIfIdle();
 			}
@@ -387,7 +390,7 @@ export class DerivedIndexRuntime {
 
 	waitForCoverage(backendId: string, since: bigint, timeout: number, signal?: AbortSignal): Promise<void> {
 		if (this.#stopped || !this.#runners.has(backendId))
-			return Promise.reject(new ServerError('The native HNSW index is unavailable', 503));
+			return Promise.reject(new ServerError('The derived index is unavailable', 503));
 		let group = this.#coverageWaits.get(backendId);
 		const first = !group;
 		if (!group) this.#coverageWaits.set(backendId, (group = { waiters: new Set() }));
@@ -432,7 +435,7 @@ export class DerivedIndexRuntime {
 			const after = readReadiness(views);
 			if (after.state !== 'ready')
 				throw new ServerError(
-					`The native HNSW index is ${after.state === 'unavailable' ? 'unavailable' : 'rebuilding'}`,
+					`The derived index is ${after.state === 'unavailable' ? 'unavailable' : 'rebuilding'}`,
 					503
 				);
 			const now = derivedIndexTime(this.#logStore.rootStore);
@@ -440,7 +443,7 @@ export class DerivedIndexRuntime {
 			for (const waiter of group.waiters) {
 				if (before.state === 'ready' && before.ownerEpoch === after.ownerEpoch && time >= waiter.since) waiter.finish();
 				else if (now >= waiter.deadline)
-					waiter.finish(new DerivedIndexLagError('Timed out waiting for native HNSW index coverage; retry this query'));
+					waiter.finish(new DerivedIndexLagError('Timed out waiting for derived index coverage; retry this query'));
 				else delay = Math.min(delay, Math.max(1, Number(waiter.deadline - now) / 1e6));
 			}
 			if (group.waiters.size) group.timer = setTimeout(() => this.#pollCoverage(backendId, group), delay);
@@ -482,7 +485,7 @@ export class DerivedIndexRuntime {
 		if (this.#stopping) return this.#stopping;
 		this.#stopped = true;
 		for (const group of this.#coverageWaits.values()) {
-			for (const waiter of group.waiters) waiter.finish(new ServerError('The native HNSW index is unavailable', 503));
+			for (const waiter of group.waiters) waiter.finish(new ServerError('The derived index is unavailable', 503));
 		}
 		for (const runner of this.#runners.values()) this.#track(runner, runner.stop());
 		this.#runners.clear();
@@ -649,7 +652,9 @@ class DerivedIndexRunner {
 	#ownerEpoch?: bigint;
 	#readinessBuffer: SharedReadinessBuffer;
 	#wakeBuffer: SharedReadinessBuffer;
+	#publicationBuffer?: SharedReadinessBuffer;
 	#sharedViews: SharedViews;
+	#publicationRevision?: BigInt64Array;
 	#resetting?: Promise<void>;
 	status: DerivedIndexRunnerStatus = { state: 'idle' };
 
@@ -703,10 +708,15 @@ class DerivedIndexRunner {
 		);
 		this.#wakeBuffer = this.readinessId === this.id ? this.#readinessBuffer : wakeBuffer(logStore, this.id, notified);
 		this.#sharedViews = sharedViewsOf(this.#readinessBuffer);
+		if (registration.backend.publishesQueryRevisions) {
+			this.#publicationBuffer = publicationBuffer(logStore, this.readinessId);
+			this.#publicationRevision = new BigInt64Array(this.#publicationBuffer, 0, 1);
+		}
 		try {
 			registration.backend.attach({
 				isOwnerEpoch: (epoch) => Atomics.load(this.#sharedViews.epoch, 0) === epoch,
 				getReadiness: () => this.getReadiness(),
+				publicationChanged: () => this.#publicationChanged(),
 			});
 			this.#unsubscribeBackend = registration.backend.onStateChange((change = 'changed') =>
 				this.#backendStateChanged(change)
@@ -714,6 +724,7 @@ class DerivedIndexRunner {
 		} catch (error) {
 			this.#readinessBuffer.cancel?.();
 			if (this.#wakeBuffer !== this.#readinessBuffer) this.#wakeBuffer.cancel?.();
+			this.#publicationBuffer?.cancel?.();
 			throw error;
 		}
 		this.#unregisterTables = registerDerivedIndexTables(
@@ -775,6 +786,7 @@ class DerivedIndexRunner {
 			this.#unsubscribeBackend?.();
 			this.#readinessBuffer.cancel?.();
 			if (this.#wakeBuffer !== this.#readinessBuffer) this.#wakeBuffer.cancel?.();
+			this.#publicationBuffer?.cancel?.();
 		} catch (error) {
 			logger.warn?.(`Derived index '${this.id}' cleanup hook threw`, error);
 		}
@@ -1639,6 +1651,8 @@ class DerivedIndexRunner {
 			}
 		}
 		this.#boundaryPending = false;
+		// A waiter that observes the covering clock must also observe this durable publication revision.
+		if (offeredIndex > 0) this.#publicationChanged();
 		for (let i = offeredIndex; i >= 0; i--) {
 			const coverage = this.#offeredCursors[i].coverage;
 			if (coverage) {
@@ -1652,6 +1666,16 @@ class DerivedIndexRunner {
 		}
 		if (offeredIndex > 0 || sameCursor(cursor, this.#offered)) this.#lastCaughtUpAt = this.#options.now();
 		return true;
+	}
+
+	#publicationChanged(): void {
+		if (!this.#publicationRevision || !this.#publicationBuffer) return;
+		Atomics.add(this.#publicationRevision, 0, 1n);
+		try {
+			this.#publicationBuffer.notify?.();
+		} catch (error) {
+			logger.warn?.(`Derived index '${this.id}' could not notify peers of its publication`, error);
+		}
 	}
 
 	#publishCoverage(capture: CoverageCapture) {
@@ -2192,6 +2216,18 @@ function wakeBuffer(
 	}) as SharedReadinessBuffer;
 }
 
+function publicationBuffer(
+	logStore: RocksTransactionLogStore,
+	backendId: string,
+	callback?: () => void
+): SharedReadinessBuffer {
+	return logStore.getUserSharedBuffer(
+		`derived-index:${backendId}:publication`,
+		new ArrayBuffer(8),
+		callback ? { callback } : undefined
+	) as SharedReadinessBuffer;
+}
+
 type SharedViews = {
 	words: Int32Array;
 	epoch: BigInt64Array;
@@ -2207,6 +2243,7 @@ function sharedViewsOf(buffer: ArrayBufferLike): SharedViews {
 }
 
 const readinessViews = new WeakMap<object, Map<string, SharedViews>>();
+const publicationViews = new WeakMap<object, Map<string, BigInt64Array>>();
 
 function readReadiness({ words, epoch }: SharedViews): DerivedIndexReadiness {
 	const stateIndex = Atomics.load(words, READINESS_STATE);
@@ -2233,6 +2270,42 @@ export function readDerivedIndexReadiness(
 	backendId: string
 ): DerivedIndexReadiness {
 	return readReadiness(getReadinessViews(logStore, backendId));
+}
+
+export function readDerivedIndexPublicationRevision(
+	logStore: RocksTransactionLogStore,
+	backendId: string
+): { ownerEpoch: bigint; revision: bigint } {
+	const readiness = getReadinessViews(logStore, backendId);
+	let byBackend = publicationViews.get(logStore);
+	if (!byBackend) publicationViews.set(logStore, (byBackend = new Map()));
+	let revision = byBackend.get(backendId);
+	if (!revision) {
+		const buffer = publicationBuffer(logStore, backendId);
+		byBackend.set(backendId, (revision = new BigInt64Array(buffer, 0, 1)));
+	}
+	return {
+		ownerEpoch: Atomics.load(readiness.epoch, 0),
+		revision: Atomics.load(revision, 0),
+	};
+}
+
+export type DerivedIndexPublicationSubscription = {
+	revision(): bigint;
+	close(): void;
+};
+
+export function subscribeDerivedIndexPublications(
+	logStore: RocksTransactionLogStore,
+	backendId: string,
+	callback: () => void
+): DerivedIndexPublicationSubscription {
+	const buffer = publicationBuffer(logStore, backendId, callback);
+	const revision = new BigInt64Array(buffer, 0, 1);
+	return {
+		revision: () => Atomics.load(revision, 0),
+		close: () => buffer.cancel?.(),
+	};
 }
 
 /** Publish setup-time state before a backend runner exists. */

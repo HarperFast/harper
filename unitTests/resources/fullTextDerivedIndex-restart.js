@@ -71,6 +71,7 @@ if (require.main === module) {
 	backend.attach({
 		isOwnerEpoch: (candidate) => candidate === epoch,
 		getReadiness: () => ({ state: 'ready', ownerEpoch: epoch, rebuildAttempts: 0 }),
+		publicationChanged() {},
 	});
 	const timestamp = phase === 'seed' ? 10 : 20;
 	const id = phase === 'seed' ? 'a' : 'b';
