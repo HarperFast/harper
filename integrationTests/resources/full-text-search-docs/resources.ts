@@ -45,7 +45,7 @@ export class DocumentedProductQueries extends Resource {
 		const { example } = (await data) ?? {};
 		switch (example) {
 			case 'basic': {
-				const products = await Product.search({
+				const products = Product.search({
 					conditions: [
 						{
 							attribute: 'catalogSearch',
@@ -58,7 +58,7 @@ export class DocumentedProductQueries extends Resource {
 				return products;
 			}
 			case 'negated': {
-				const products = await Product.search({
+				const products = Product.search({
 					operator: 'and',
 					conditions: [
 						{ attribute: 'catalogSearch', comparator: 'matches', value: 'waterproof' },
@@ -68,7 +68,7 @@ export class DocumentedProductQueries extends Resource {
 				return products;
 			}
 			case 'restricted': {
-				const products = await Product.search({
+				const products = Product.search({
 					conditions: [
 						{
 							attribute: 'catalogSearch',
@@ -81,7 +81,7 @@ export class DocumentedProductQueries extends Resource {
 				return products;
 			}
 			case 'score': {
-				const products = await Product.search({
+				const products = Product.search({
 					conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'trail shoes' }],
 					select: ['id', 'name', '$score'],
 					limit: 20,
@@ -89,21 +89,21 @@ export class DocumentedProductQueries extends Resource {
 				return products;
 			}
 			case 'weight': {
-				const products = await Product.search({
+				const products = Product.search({
 					conditions: [{ attribute: 'catalogSearch', comparator: 'matches', value: 'aurora' }],
 					select: ['id', '$score'],
 				});
 				return products;
 			}
 			case 'highlights': {
-				const products = await Product.search({
+				const products = Product.search({
 					conditions: [{ attribute: 'catalogSearch', comparator: 'matches_phrase', value: 'trail running' }],
 					select: ['id', 'name', '$score', '$highlights'],
 				});
 				return products;
 			}
 			case 'structured-and': {
-				const products = await Product.search({
+				const products = Product.search({
 					operator: 'and',
 					conditions: [
 						{ attribute: 'catalogSearch', comparator: 'matches', value: 'trail shoe' },
@@ -114,7 +114,7 @@ export class DocumentedProductQueries extends Resource {
 				return products;
 			}
 			case 'full-text-or': {
-				const products = await Product.search({
+				const products = Product.search({
 					operator: 'or',
 					conditions: [
 						{ attribute: 'catalogSearch', comparator: 'matches_phrase', value: 'trail running' },
