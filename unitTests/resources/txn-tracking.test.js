@@ -462,6 +462,83 @@ describe('Write txn timeout', () => {
 		}
 	});
 
+	describe("the owner's commit waits for the monitor's force-commit", () => {
+		function gateNativeCommit(link) {
+			const nativeTxn = link.transaction;
+			const commit = nativeTxn.commit;
+			let enter;
+			const entered = new Promise((resolve) => (enter = resolve));
+			let release;
+			const released = new Promise((resolve) => (release = resolve));
+			nativeTxn.commit = function (...args) {
+				nativeTxn.commit = commit;
+				enter();
+				return released.then((failure) => (failure ? Promise.reject(failure) : commit.apply(this, args)));
+			};
+			return { link, entered, release };
+		}
+
+		function runSourceApply(id, value, whileHeld) {
+			const context = { sourceApply: true };
+			let settled = false;
+			let onGated;
+			const gated = new Promise((resolve) => (onGated = resolve));
+			const committed = transaction(context, async () => {
+				await IndexedResource.put(id, { t: value }, context);
+				const gate = gateNativeCommit(databaseTxns(context)[0]);
+				await gate.entered;
+				onGated(gate);
+				await whileHeld?.(gate);
+			});
+			committed.then(
+				() => (settled = true),
+				() => (settled = true)
+			);
+			return { context, committed, gated, isSettled: () => settled };
+		}
+
+		beforeEach(function () {
+			if (isLMDB) this.skip();
+			setExpiration(20);
+		});
+		afterEach(() => setExpiration(30000));
+
+		it('resolves only after the force-commit lands', async function () {
+			await IndexedResource.put(403, { t: 1 });
+			const { committed, gated, isSettled } = runSourceApply(403, 2);
+			const gate = await gated;
+			await delay(50);
+			assert.equal(isSettled(), false, "transaction() must not resolve while the monitor's commit is in flight");
+			gate.release();
+			await committed;
+			assert.strictEqual((await IndexedResource.get(403))?.t, 2);
+		});
+
+		it('rejects when the force-commit fails while the owner is waiting on it', async function () {
+			await IndexedResource.put(404, { t: 1 });
+			const { context, committed, gated } = runSourceApply(404, 2);
+			const gate = await gated;
+			await delay(50);
+			gate.release(new Error('injected native commit failure'));
+			await assert.rejects(committed, /injected native commit failure/);
+			assert.strictEqual((await IndexedResource.get(404))?.t, 1);
+			assert.notStrictEqual(context.transaction, gate.link, 'the failed transaction must release its context');
+			await transaction.commit(context);
+		});
+
+		it('rejects when the force-commit failed before the handler returned', async function () {
+			await IndexedResource.put(405, { t: 1 });
+			const { committed } = runSourceApply(405, 2, async (gate) => {
+				const monitorCommit = gate.link.monitorCommit;
+				assert.ok(monitorCommit, 'test setup: the monitor must have submitted its commit');
+				gate.release(new Error('injected native commit failure'));
+				await monitorCommit.catch(() => {});
+			});
+			await assert.rejects(committed, /injected native commit failure/);
+			assert.strictEqual((await IndexedResource.get(405))?.t, 1);
+		});
+	});
+
 	describe('abort releases the native handle', () => {
 		// A write-first link (save() built the handle with no prior read) has no readTxnsUsed, so the
 		// refcount loop never runs and the handle was stranded — permanently, since rocksdb-js's
@@ -626,6 +703,26 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 			assert.ok(!txn.timedOut, `the monitor must spare commit-phase tick ${tick + 1}`);
 		}
 	}
+
+	it("finishes a landed store's bookkeeping when the next store's commit throws synchronously", async function () {
+		if (isLMDB) this.skip();
+		const context = {};
+		let links;
+		await assert.rejects(
+			transaction(context, async () => {
+				await SecondaryBlobResource.put({ id: 2080, value: 'head' }, context);
+				await ThirdResource.put({ id: 2080, value: 'next' }, context);
+				links = databaseTxns(context);
+				assert.equal(links.length, 2);
+				links[1].commit = () => {
+					throw new Error('injected synchronous next-store failure');
+				};
+			}),
+			/injected synchronous next-store failure/
+		);
+		assert.equal((await SecondaryBlobResource.get(2080))?.value, 'head', 'test setup: the head store must land');
+		assert.equal(links[0].writes.length, 0, "the landed head's write set must be cleared");
+	});
 
 	it('marks and clears the commit phase across an LMDB transaction chain', function () {
 		const head = new LMDBTransaction();

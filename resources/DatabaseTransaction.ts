@@ -737,6 +737,9 @@ export class DatabaseTransaction implements Transaction {
 	// open-transaction limit. Once poisoned, any further addWrite/commit throws transactionOpenTooLongError
 	// so the request rolls back cleanly instead of silently committing a partial write set (issue #1407).
 	declare timedOut?: boolean;
+	// The monitor's force-commit, which the owner's commit joins (resources/DESIGN.md). Kept after a failure
+	// until a final commit reports it: the monitor only logs it.
+	declare monitorCommit?: Promise<CommitResolution>;
 	// Set once the retained read handle's write intents have been released (see commit()'s
 	// outstanding-iterators branch), so a retry round cannot re-fire the release.
 	declare writesAbandoned?: boolean;
@@ -1420,6 +1423,19 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	commit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
 		if (this.timedOut) throw transactionOpenTooLongError();
+		if (this.monitorCommit && !options.transaction) {
+			return this.monitorCommit.then(
+				() => this.commit(options),
+				(error) => {
+					// The failed commit ran its terminal cleanup, but as a non-final commit it kept the context.
+					if (options.doneWriting) {
+						this.monitorCommit = undefined;
+						this.releaseContext(true);
+					}
+					throw error;
+				}
+			);
+		}
 		// reused across retries — the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain —
 		// but reassigned to a fresh replay transaction when outstanding read iterators retain this.transaction
 		let transaction = options.transaction ?? this.transaction;
@@ -1669,9 +1685,15 @@ export class DatabaseTransaction implements Transaction {
 							if (this.next) {
 								// never forward options.transaction (a retry/replay round's HEAD-store handle) to
 								// the next store — it must commit its own writes through its own transaction
-								completions.push(
-									this.next.commit(options.transaction ? { ...options, transaction: undefined } : options)
-								);
+								let nextCommit: MaybePromise<CommitResolution>;
+								try {
+									nextCommit = this.next.commit(options.transaction ? { ...options, transaction: undefined } : options);
+								} catch (error) {
+									// This store has landed; its bookkeeping below must run before the failure surfaces.
+									nextCommit = Promise.reject(error);
+									nextCommit.catch(() => {}); // still rejects Promise.all, even if bookkeeping throws first
+								}
+								completions.push(nextCommit);
 							}
 							if (options?.flush) {
 								completions.push(this.writes[0].store.flushed);
@@ -2483,15 +2505,23 @@ function startMonitoringTxns() {
 					// Read-only long transaction (no atomicity/index risk — e.g. a large scan or export), or a
 					// canonical-source apply/replay that must never drop a write: preserve the prior behavior of
 					// committing to close out the snapshot without poisoning the transaction.
+					let result: MaybePromise<CommitResolution>;
 					try {
-						const result = txn.commit();
-						if ((result as any)?.then) {
-							(result as any).catch((error) => {
-								harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
-							});
-						}
+						result = txn.commit();
 					} catch (error) {
-						harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
+						result = Promise.reject(error);
+					}
+					if ((result as any)?.then) {
+						const monitorCommit = result as Promise<CommitResolution>;
+						txn.monitorCommit = monitorCommit;
+						monitorCommit.then(
+							() => {
+								if (txn.monitorCommit === monitorCommit) txn.monitorCommit = undefined;
+							},
+							(error) => {
+								harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
+							}
+						);
 					}
 					txn.timeout = Math.max(txnExpiration, txn.timeoutBudget ?? 0);
 				}
