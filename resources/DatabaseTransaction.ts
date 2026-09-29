@@ -737,9 +737,8 @@ export class DatabaseTransaction implements Transaction {
 	// open-transaction limit. Once poisoned, any further addWrite/commit throws transactionOpenTooLongError
 	// so the request rolls back cleanly instead of silently committing a partial write set (issue #1407).
 	declare timedOut?: boolean;
-	// The outcome of the monitor's force-commit (see startMonitoringTxns): it claims every write staged so
-	// far, so the owner's own commit must not resolve before it settles, or at all if it failed. Kept after
-	// a failure because the monitor only logs it; nobody else would report the lost writes.
+	// The monitor's force-commit, which the owner's commit joins (resources/DESIGN.md). Kept after a failure
+	// until a final commit reports it: the monitor only logs it.
 	declare monitorCommit?: Promise<CommitResolution>;
 	// Set once the retained read handle's write intents have been released (see commit()'s
 	// outstanding-iterators branch), so a retry round cannot re-fire the release.
@@ -1424,7 +1423,22 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	commit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
 		if (this.timedOut) throw transactionOpenTooLongError();
-		if (this.monitorCommit && !options.transaction) return this.monitorCommit.then(() => this.commit(options));
+		if (this.monitorCommit && !options.transaction) {
+			return this.monitorCommit.then(
+				() => this.commit(options),
+				(error) => {
+					if (options.doneWriting) {
+						this.monitorCommit = undefined;
+						try {
+							this.abort();
+						} catch (abortError) {
+							harperLogger.debug?.('cleaning up a transaction whose monitor commit failed', abortError);
+						}
+					}
+					throw error;
+				}
+			);
+		}
 		// reused across retries — the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain —
 		// but reassigned to a fresh replay transaction when outstanding read iterators retain this.transaction
 		let transaction = options.transaction ?? this.transaction;
