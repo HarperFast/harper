@@ -20,7 +20,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [Path routing & parameterised routes](resources/DESIGN.md#path-routing--parameterised-routes) — How resource paths and route parameters resolve.
 - [Persisted relationship catalog](resources/DESIGN.md#persisted-relationship-catalog) — Where relationship definitions are stored and rebuilt.
 - [Typed, discoverable resources (code-first schema + request contract)](resources/DESIGN.md#typed-discoverable-resources-code-first-schema--request-contract) — Declaring schema and request contracts from code.
-- [Conventions](resources/DESIGN.md#conventions) — Obligations when overriding a static entry point.
+- [Conventions](resources/DESIGN.md#conventions) — Obligations when overriding a static entry point; relationship accessor and join contracts.
 - [RecordObject prototype and entryMap](resources/DESIGN.md#recordobject-prototype-and-entrymap) — Records get a per-encoder `RecordObject` prototype; storage metadata lives in `entryMap`. Never copy a record other code still mutates.
 - [Struct mode is gated to primary DBIs (downgrade compatibility)](resources/DESIGN.md#struct-mode-is-gated-to-primary-dbis-downgrade-compatibility) — Struct encoding is written only for primary DBIs so a downgraded (msgpackr v1) reader still decodes; the write hook bails rather than clears.
 - [getFromSource() timing: promise resolves before commit runs](resources/DESIGN.md#getfromsource-timing-promise-resolves-before-commit-runs) — The awaited promise resolves before the commit callback mutates the record in place, so never replace the entry with a copy.
