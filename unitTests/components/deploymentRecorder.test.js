@@ -29,7 +29,7 @@ const { waitFor } = require('../waitFor.js');
 
 const DEPLOYMENT_TABLE = terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
 
-// Lightweight mock: keeps a Map of rows, exposes get(id) and put(row).
+// Lightweight mock: keeps a Map of rows, exposes get(id), put(row) and patch(id, changes).
 function installMockDeploymentTable() {
 	const rows = new Map();
 	const mock = {
@@ -39,6 +39,9 @@ function installMockDeploymentTable() {
 		},
 		async put(row) {
 			rows.set(row.deployment_id, row);
+		},
+		async patch(id, changes) {
+			rows.set(id, { ...rows.get(id), ...changes });
 		},
 	};
 	if (!databases.system) databases.system = {};
@@ -244,6 +247,9 @@ describe('DeploymentRecorder.seal', () => {
 				putLog.push({ status: row.status, peerCount: (row.peer_results ?? []).length });
 				rows.set(row.deployment_id, { ...row, peer_results: [...(row.peer_results ?? [])] });
 			},
+			async patch(id, changes) {
+				await this.put({ ...rows.get(id), ...changes });
+			},
 		};
 		if (!databases.system) databases.system = {};
 		const prior = databases.system[DEPLOYMENT_TABLE];
@@ -400,6 +406,71 @@ describe('DeploymentRecorder artifact', () => {
 	});
 });
 
+describe('DeploymentRecorder writes to a real table', () => {
+	const { table } = require('#src/resources/databases');
+	const { setupTestDBPath } = require('../testUtils.js');
+	const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+	const { setDeletionDelay } = require('#src/resources/blob');
+	const { randomBytes } = require('node:crypto');
+	const { Readable } = require('node:stream');
+	let DeploymentWrites;
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		DeploymentWrites = table({
+			table: DEPLOYMENT_TABLE,
+			database: 'system',
+			audit: true,
+			attributes: [
+				{ name: 'deployment_id', isPrimaryKey: true },
+				{ name: 'payload_blob', type: 'Blob' },
+				{ name: 'artifact_blob', type: 'Blob' },
+			],
+		});
+		setDeletionDelay(0);
+	});
+	after(async () => {
+		setDeletionDelay(500);
+		await DeploymentWrites.dropTable();
+	});
+
+	// A replicated record that carries a blob makes the replicator send that blob, so every write carrying one
+	// unchanged is a transfer a peer can be left waiting on.
+	it('carries each blob in the one write that stores or drops it, and keeps it readable through the others', async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		const upload = randomBytes(20_000);
+		const build = randomBytes(30_000);
+		await recorder.ingestPayload(Readable.from([upload]));
+		await recorder.ingestArtifact(Readable.from([build]), { tree: 'a'.repeat(64), platform: {} });
+		await recorder.transitionPhase('replicate', 'replicating');
+		recorder.seal();
+		recorder.dropPayload();
+		await recorder.finish('success');
+
+		const writes = [];
+		await waitFor(() => {
+			writes.length = 0;
+			for (const entry of DeploymentWrites.auditStore.getRange({ start: 1 })) {
+				if (entry.tableId !== DeploymentWrites.tableId || entry.recordId !== recorder.deploymentId) continue;
+				const value = entry.getValue(DeploymentWrites.primaryStore);
+				writes.push(['payload_blob', 'artifact_blob'].filter((attribute) => value?.[attribute] != null));
+			}
+			return writes.length >= 7;
+		});
+		assert.deepStrictEqual(
+			writes,
+			[[], ['payload_blob'], [], ['artifact_blob'], [], [], []],
+			'the row, the upload, its digest, the build, its digest, the phase, then the upload dropped'
+		);
+		const row = await DeploymentWrites.get(recorder.deploymentId);
+		assert.deepStrictEqual(Buffer.from(await row.artifact_blob.bytes()), build);
+		assert.strictEqual(row.payload_blob, null);
+		assert.strictEqual(row.payload_size, upload.length);
+		assert.strictEqual(row.artifact_size, recorder.row.artifact_size);
+		assert.strictEqual(row.status, 'success');
+	});
+});
+
 describe('awaitDeploymentRow', () => {
 	let installed;
 	beforeEach(() => {
@@ -537,7 +608,7 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 		let ingestContext;
 		const writeContexts = [];
 		const installed = installMockDeploymentTable();
-		installed.mock.put = async (row) => {
+		const record = (row) => {
 			const context = contextStorage.getStore();
 			const writeContext = {
 				...context,
@@ -547,8 +618,9 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 			if (row.payload_blob) {
 				ingestContext = writeContext;
 			}
-			installed.mock.rows.set(row.deployment_id, row);
 		};
+		installed.mock.put = async (row) => record(row);
+		installed.mock.patch = async (_id, changes) => record(changes);
 
 		try {
 			await contextStorage.run(ambientContext, async () => {
@@ -589,12 +661,13 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 		const ingestGate = new Promise((resolve) => (releaseIngest = resolve));
 		let putCalls = 0;
 		const installed = installMockDeploymentTable();
-		installed.mock.put = async (row) => {
+		const write = async (row) => {
 			putCalls++;
 			if (putCalls === 2) await flushGate;
 			if (putCalls === 3 && row.payload_blob) await ingestGate;
-			installed.mock.rows.set(row.deployment_id, row);
 		};
+		installed.mock.put = write;
+		installed.mock.patch = (_id, changes) => write(changes);
 
 		let recorder;
 		try {

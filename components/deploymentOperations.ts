@@ -274,22 +274,21 @@ export async function handleDeleteDeploymentPayload(
 			freed_bytes: 0,
 		};
 	}
-	// Copy before mutating — the row from get() may be a shared/cached record.
-	const updated: any = { ...row };
-	updated.event_log = Array.isArray(row.event_log) ? [...row.event_log] : [];
+	// Only what changes: a blob kept in the write would be sent to every peer again (see DeploymentRecorder.put).
+	const changes: any = { event_log: Array.isArray(row.event_log) ? [...row.event_log] : [] };
 	let freedBytes = 0;
 	for (const kind of dropping) {
 		const size = typeof row[`${kind}_size`] === 'number' ? row[`${kind}_size`] : 0;
 		freedBytes += size;
-		updated[`${kind}_blob`] = null;
+		changes[`${kind}_blob`] = null;
 		// Mirror the recorder's event_log entry shape and the automatic drop's event name.
-		updated.event_log.push({
+		changes.event_log.push({
 			t: Date.now(),
 			event: `${kind}_dropped`,
 			data: { [`${kind}_size`]: size, deleted_by: req.hdb_user?.username ?? null },
 		});
 	}
-	await deploymentTable().put(updated);
+	await deploymentTable().patch(req.deployment_id, changes);
 	return {
 		message: `Deleted ${dropping.map((kind) => (kind === 'artifact' ? 'build' : kind)).join(' and ')} for deployment '${req.deployment_id}'`,
 		deployment_id: req.deployment_id,

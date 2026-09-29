@@ -632,6 +632,29 @@ type detection remains asynchronous in extraction. Bare absolute Windows directo
 npm's copy/pack behavior rather than becoming live links; explicit `file:` and relative directory
 inputs retain their existing symlink behavior.
 
+## A deployment row carries each blob in one replicated record
+
+`DeploymentRecorder` puts the `hdb_deployment` row once, then patches it, leaving out any blob a write does not
+change; `delete_deployment_payload` patches only the blobs it drops. So `payload_blob` and `artifact_blob` each travel
+in exactly one replicated record, the write that stores them (a drop replicates a null).
+
+- **Why.** harper-pro's replicator sends a blob for every replicated record that carries one, and declines while a
+  send of that same blob is still running ("Blob already being sent"). A peer that applies the declined record after
+  that send finished opens a fresh receive stream that nothing fills, so its row points at a file holding only a
+  header, and reading it stalls for `blobReadTimeout`. Retrying the read doesn't help: the origin sends the blob again
+  only on its next write of the row. A replicated build hits this because the peer reads the row within milliseconds of
+  the origin's last writes; in the two-node cluster test, 3 of 4 deploys stalled. Re-putting the whole row also sent a
+  large payload to every peer again on every phase write.
+- **Testing it.** A `Buffer` blob under `FILE_STORAGE_THRESHOLD` (8 KB) is stored in the record itself and never
+  transferred, so a small buffered fixture passes whether or not a write re-carries it; stream the blob or make it
+  larger.
+- **Cost.** A streamed blob's reference keeps no size, since the size was unknown when the row was written, so the
+  read-side check against a header rewritten smaller (#1424) does not apply to it. `*_size` and `*_hash` still hold
+  both values, and a peer verifies the build's sha256 and size as it reads it.
+
+Enforced by `unitTests/components/deploymentRecorder.test.js` (against a real table, on both engines) and
+`deploymentOperations.test.js`; the transfer itself by harper-pro's `replicatedBuild.test.mjs`.
+
 ## Peer-side deploy_component payload read: retryable blob stalls and `Readable.from()` cancellation
 
 `readPayloadBlobWithRetry` (`components/deploymentRecorder.ts`) wraps the peer's read of a replicated `hdb_deployment` row's `payload_blob` so a transient 503 `BlobReadError` (`BLOB_UNAVAILABLE_STATUS`, `resources/blob.ts`) — content bytes not arriving within `blobReadTimeout`, e.g. a parked blob send on the origin — retries instead of failing the whole deploy. Two non-obvious constraints shaped the design:

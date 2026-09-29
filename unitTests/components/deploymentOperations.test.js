@@ -24,16 +24,20 @@ const NON_SUPER_USER = { username: 'operator', role: { permission: { super_user:
 
 function installMockDeploymentTable() {
 	const rows = new Map();
-	const puts = [];
+	const writes = [];
 	const mock = {
 		rows,
-		puts,
+		writes,
 		async get(id) {
 			return rows.get(id);
 		},
 		async put(row) {
-			puts.push(row);
+			writes.push(row);
 			rows.set(row.deployment_id, row);
+		},
+		async patch(id, changes) {
+			writes.push(changes);
+			rows.set(id, { ...rows.get(id), ...changes });
 		},
 	};
 	if (!databases.system) databases.system = {};
@@ -145,7 +149,7 @@ describe('handleDeleteDeploymentPayload', () => {
 			assert.strictEqual(err.statusCode, 409);
 			return true;
 		});
-		assert.strictEqual(installed.mock.puts.length, 0, 'must not write the row');
+		assert.strictEqual(installed.mock.writes.length, 0, 'must not write the row');
 	});
 
 	it('nulls the blob, retains metadata, and appends an audit event', async () => {
@@ -166,13 +170,14 @@ describe('handleDeleteDeploymentPayload', () => {
 		assert.strictEqual(result.freed_bytes, 12345);
 		assert.strictEqual(result.deployment_id, 'd1');
 
-		const written = installed.mock.puts[0];
+		const written = installed.mock.rows.get('d1');
 		assert.strictEqual(written.payload_blob, null);
 		assert.strictEqual(written.payload_size, 12345, 'metadata is retained');
 		assert.strictEqual(written.payload_hash, 'abc');
 		const dropEvent = written.event_log.at(-1);
 		assert.strictEqual(dropEvent.event, 'payload_dropped');
 		assert.deepStrictEqual(dropEvent.data, { payload_size: 12345, deleted_by: 'admin' });
+		assert.deepStrictEqual(Object.keys(installed.mock.writes[0]).sort(), ['event_log', 'payload_blob']);
 
 		// The fetched row object must not be mutated in place (it may be a shared/cached record).
 		assert.notStrictEqual(written, original);
@@ -185,7 +190,7 @@ describe('handleDeleteDeploymentPayload', () => {
 		const result = await handleDeleteDeploymentPayload({ deployment_id: 'd1' });
 		assert.strictEqual(result.freed_bytes, 0);
 		assert.match(result.message, /No payload stored/);
-		assert.strictEqual(installed.mock.puts.length, 0, 'no write on the idempotent path');
+		assert.strictEqual(installed.mock.writes.length, 0, 'no write on the idempotent path');
 	});
 
 	describe('the replicated build', () => {
@@ -203,9 +208,10 @@ describe('handleDeleteDeploymentPayload', () => {
 			installed.mock.rows.set('d1', both());
 			const result = await handleDeleteDeploymentPayload({ deployment_id: 'd1' });
 			assert.strictEqual(result.freed_bytes, 100);
-			const written = installed.mock.puts[0];
+			const written = installed.mock.rows.get('d1');
 			assert.strictEqual(written.payload_blob, null);
 			assert.ok(written.artifact_blob, 'the build stays');
+			assert.ok(!('artifact_blob' in installed.mock.writes[0]), 'and is not sent to the peers again');
 			assert.deepStrictEqual(
 				written.event_log.map((entry) => entry.event),
 				['payload_dropped']
@@ -217,7 +223,7 @@ describe('handleDeleteDeploymentPayload', () => {
 			const result = await handleDeleteDeploymentPayload({ deployment_id: 'd1', artifact: true, hdb_user: SUPER_USER });
 			assert.strictEqual(result.freed_bytes, 1000);
 			assert.match(result.message, /Deleted payload and build/);
-			const written = installed.mock.puts[0];
+			const written = installed.mock.rows.get('d1');
 			assert.strictEqual(written.payload_blob, null);
 			assert.strictEqual(written.artifact_blob, null);
 			assert.strictEqual(written.artifact_size, 900, 'metadata is retained');

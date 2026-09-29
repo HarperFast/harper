@@ -24,6 +24,7 @@ import { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
 import type { BuildManifest } from './buildArtifact.ts';
 
 type BlobKind = 'payload' | 'artifact';
+const BLOB_KINDS: readonly BlobKind[] = ['payload', 'artifact'];
 
 // Bound the event_log so a pathologically chatty install can't grow a row without limit.
 // 200 entries comfortably covers a real deploy with headroom (phase events plus install
@@ -122,6 +123,7 @@ export class DeploymentRecorder {
 	private dirty = false;
 	private sealed = false;
 	private flushSuppressed = false;
+	private writtenBlobs?: unknown[];
 	private readonly ingestTimeoutMs?: number;
 
 	private constructor(deploymentId: string, initial: Record<string, any>, ingestTimeoutMs?: number) {
@@ -557,7 +559,20 @@ export class DeploymentRecorder {
 			// We tolerate this — tracking is observability; the deploy itself must still succeed.
 			return;
 		}
-		await withIsolatedTransaction(() => table.put(this.record), timeoutMs);
+		const blobs = BLOB_KINDS.map((kind) => this.record[`${kind}_blob`]);
+		if (!this.writtenBlobs) {
+			await withIsolatedTransaction(() => table.put(this.record), timeoutMs);
+		} else {
+			// Every replicated record that carries a blob makes the replicator send that blob again, and it declines while
+			// a send of the same blob is running. A peer that applies the declined record after that send finished points
+			// its row at a file nothing fills, and reading it stalls. A write that leaves a blob unchanged omits it.
+			const changes = { ...this.record };
+			BLOB_KINDS.forEach((kind, index) => {
+				if (blobs[index] === this.writtenBlobs[index]) delete changes[`${kind}_blob`];
+			});
+			await withIsolatedTransaction(() => table.patch(this.deploymentId, changes), timeoutMs);
+		}
+		this.writtenBlobs = blobs;
 	}
 }
 
