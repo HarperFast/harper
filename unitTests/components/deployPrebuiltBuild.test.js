@@ -31,7 +31,9 @@ const {
 	publishesBuild,
 	carriesBuildInBody,
 	releaseUnreadPayload,
+	deployComponent,
 } = require('#src/components/operations');
+const { resetRestartNeeded } = require('#src/components/requestRestart');
 const { deployComponentValidator } = require('#src/components/operationsValidation');
 const { server } = require('#src/server/Server');
 const configUtils = require('#src/config/configUtils');
@@ -672,6 +674,56 @@ describe('replicated builds', () => {
 			assert.match(rec.recorded[0].error, /^staged the release without confirming/);
 			recordUnconfirmedBuildPeers(rec, undefined, TREE, 'deploy');
 			assert.strictEqual(rec.recorded.length, 1, 'no aggregate, nothing to check');
+		});
+
+		describe('in a deploy', () => {
+			const PROJECT = 'unconfirmed-peer-app';
+			let priorComponentsRoot;
+			let priorNodes;
+			let originalReplicateOperation;
+			before(async () => {
+				priorComponentsRoot = env.get(CONFIG_PARAMS.COMPONENTSROOT);
+				env.setProperty(CONFIG_PARAMS.COMPONENTSROOT, await newRoot('unconfirmed-peer'));
+				priorNodes = server.nodes;
+				server.nodes = [{ name: 'current' }, { name: 'older' }];
+				originalReplicateOperation = server.replication.replicateOperation;
+				server.replication.replicateOperation = async (operation) => ({
+					message: '',
+					replicated: [
+						{ node: 'current', artifact: operation._artifact.build.tree },
+						{ node: 'older', message: `Successfully deployed: ${PROJECT}` },
+					],
+				});
+			});
+			after(() => {
+				server.replication.replicateOperation = originalReplicateOperation;
+				server.nodes = priorNodes;
+				env.setProperty(CONFIG_PARAMS.COMPONENTSROOT, priorComponentsRoot);
+				resetRestartNeeded();
+			});
+
+			it('fails the deploy as a replication failure, which only ignore_replication_errors masks', async function () {
+				this.timeout(20_000);
+				const payload = (await sourceArchive({ 'resources.js': 'export {};\n' })).toString('base64');
+				const request = { operation: 'deploy_component', project: PROJECT, payload, restart: false, replicated: true };
+				let failure;
+				await assert.rejects(deployComponent({ ...request }), (error) => {
+					failure = error;
+					return true;
+				});
+				assert.strictEqual(failure.statusCode, 500);
+				assert.match(
+					failure.message,
+					/failed to replicate to 1 of 2 peer node\(s\): older \(deployed the release without confirming it holds this node's build/
+				);
+				assert.deepStrictEqual(
+					failure.http_resp_msg.failed_peers.map((peer) => peer.node),
+					['older']
+				);
+
+				const response = await deployComponent({ ...request, ignore_replication_errors: true });
+				assert.strictEqual(response.message, `Successfully deployed: ${PROJECT}`);
+			});
 		});
 	});
 
