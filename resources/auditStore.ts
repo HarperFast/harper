@@ -588,6 +588,7 @@ function commitAuditMetadata(
 	// On RocksDB audit metadata lives in the root store, which a copy being stamped passes directly. A
 	// legacy `auditPath` layout is opened as its own standalone LMDB root (databases.ts) and has no
 	// `.rootStore`, so it owns the transaction itself.
+	const onRocksDB = store instanceof RocksTransactionLogStore || store instanceof RocksDatabase;
 	const transactionOwner = store instanceof RocksDatabase ? store : (store?.rootStore ?? store);
 	if (!transactionOwner?.transactionSync)
 		throw new Error(`Cannot record the ${what}: this database has no audit store`);
@@ -596,35 +597,34 @@ function commitAuditMetadata(
 	// swallowed abort rather than throwing (see RecordEncoder.saveStructures). Reads inside a write
 	// transaction see their own writes on both engines, so the read-back observes what commit will make
 	// durable.
-	const committed =
-		transactionOwner instanceof RocksDatabase
-			? transactionOwner.transactionSync(
-					(txn) => {
-						const writes = plan((key) => txn.getBinarySync(key));
-						if (writes) {
-							for (const [key, bytes] of writes) txn.putSync(key, asBinary(bytes));
-							for (const [key, bytes] of writes) if (!writeLanded(txn.getBinarySync(key), bytes)) throw notCommitted();
-						}
-						return true;
-					},
-					{ retryOnBusy: true }
-				)
-			: transactionOwner.transactionSync(() => {
-					const writes = plan((key) => store.getBinary(key));
-					// `put` rather than `putSync`, and inside the transaction: lmdb's putSync is
-					// `put(...) === SYNC_PROMISE_SUCCESS`, so it drops whatever put returns, and a rejected put
-					// would leak with no owner. Within a write transaction put writes synchronously and returns
-					// an already-resolved sentinel, so the value is visible immediately either way and this
-					// only takes ownership of the failure case.
-					// asBinary: a legacy standalone audit root's encoder has no Uint8Array passthrough, so raw
-					// bytes would reach createAuditEntry and throw. This bypasses both encoders.
+	const committed = onRocksDB
+		? transactionOwner.transactionSync(
+				(txn) => {
+					const writes = plan((key) => txn.getBinarySync(key));
 					if (writes) {
-						for (const [key, bytes] of writes)
-							store.put(key, asBinary(bytes))?.catch?.((error) => warnContained(`Error writing the ${what}`, error));
-						for (const [key, bytes] of writes) if (!writeLanded(store.getBinary(key), bytes)) throw notCommitted();
+						for (const [key, bytes] of writes) txn.putSync(key, asBinary(bytes));
+						for (const [key, bytes] of writes) if (!writeLanded(txn.getBinarySync(key), bytes)) throw notCommitted();
 					}
 					return true;
-				});
+				},
+				{ retryOnBusy: true }
+			)
+		: transactionOwner.transactionSync(() => {
+				const writes = plan((key) => store.getBinary(key));
+				// `put` rather than `putSync`, and inside the transaction: lmdb's putSync is
+				// `put(...) === SYNC_PROMISE_SUCCESS`, so it drops whatever put returns, and a rejected put
+				// would leak with no owner. Within a write transaction put writes synchronously and returns
+				// an already-resolved sentinel, so the value is visible immediately either way and this
+				// only takes ownership of the failure case.
+				// asBinary: a legacy standalone audit root's encoder has no Uint8Array passthrough, so raw
+				// bytes would reach createAuditEntry and throw. This bypasses both encoders.
+				if (writes) {
+					for (const [key, bytes] of writes)
+						store.put(key, asBinary(bytes))?.catch?.((error) => warnContained(`Error writing the ${what}`, error));
+					for (const [key, bytes] of writes) if (!writeLanded(store.getBinary(key), bytes)) throw notCommitted();
+				}
+				return true;
+			});
 	if (committed !== true) throw notCommitted();
 }
 
