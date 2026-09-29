@@ -1,7 +1,3 @@
-/**
- * The database generation (harper#2451): positions and live subscriptions are bound to the copy of a
- * database's history they were minted against.
- */
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, closeDatabase, __setReadOnlyModeForTest } = require('#src/resources/databases');

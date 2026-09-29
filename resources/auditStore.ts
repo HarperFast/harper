@@ -911,7 +911,8 @@ export function getDatabaseGeneration(auditStore: any): DatabaseGeneration | und
 /**
  * The bound a resumed position is checked against, or `Infinity` when unknown: the resume floor, but
  * never below a finite audit floor, since a binary that predates the resume floor raised only the
- * audit floor when it pruned.
+ * audit floor when it pruned. Such a binary pruning while the audit floor was unknown records nothing
+ * either record can show.
  */
 export function getAuditResumeFloor(auditStore: any): number {
 	const resumeFloor = decodeAuditFloor(auditStore.getBinary(AUDIT_RESUME_FLOOR_KEY));

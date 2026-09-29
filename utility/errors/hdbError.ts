@@ -117,7 +117,6 @@ export class DatabaseClosingError extends ServerError {
 	}
 }
 
-/** Ends a live subscription whose database was replaced by a restored or copied state: resync. */
 export class DatabaseGenerationChangedError extends ClientError {
 	code: string;
 	constructor() {

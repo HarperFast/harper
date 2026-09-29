@@ -108,7 +108,6 @@ describe('Test database copy and compact', () => {
 		const sourceGeneration = sourceGenerationId();
 		assert.match(sourceGeneration, /^[0-9a-f]{32}$/, 'precondition: the source records a generation');
 		await copyDB.copyDb('copy-test', compacted_db, { blobs: 'copy' });
-		// a copy beside its source is a separate database from here on (harper#2451)
 		const copyGeneration = generationIdIn(compacted_db);
 		assert.match(copyGeneration, /^[0-9a-f]{32}$/);
 		assert.notStrictEqual(copyGeneration, sourceGeneration);

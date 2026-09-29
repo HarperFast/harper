@@ -290,11 +290,11 @@ cursor is finite, and no prune within the generation reached above it** (`isResu
 - **No scalar mode.** A position without an id is never resumable; bind an id only to a position
   established within the generation. Cursors must be progress-based: a snapshot's newest in-scope key
   can sit below a floor that retention advances on a quiet database, and would be refused forever.
-- **Live subscriptions:** the per-path registry outlives the store, so an open under a different or
-  unknown generation detaches it and closes each subscription with `DatabaseGenerationChangedError`
-  (forced even when a listener throws on the final event).
-- **Not covered:** copies no generation-aware code made, keys reissued below a cursor after a clock
-  rollback across a restart, and cross-node identity (an id is per database per node).
+- **Live subscriptions:** the per-path registry outlives the store, so an open under another or an
+  unknown generation detaches it and closes each subscription with `DatabaseGenerationChangedError`.
+- **Not covered:** copies no generation-aware code made, a pre-generation binary pruning while the
+  audit floor is unknown, keys reissued below a cursor after a clock rollback across a restart, and
+  cross-node identity (an id is per database per node).
 
 ---
 

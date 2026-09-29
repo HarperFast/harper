@@ -1,4 +1,3 @@
-/** A restore gives the database a new generation, so nothing minted before it resumes (harper#2451). */
 const assert = require('node:assert');
 const { rmSync } = require('node:fs');
 const { setupTestDBPath } = require('../testUtils');

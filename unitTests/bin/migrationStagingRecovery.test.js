@@ -92,8 +92,6 @@ describe('migration: staging directory recovery (#2012)', function () {
 				assert(entry.value instanceof RecordObject, `record ${id} lost its record prototype`);
 				assert(entry.version > 0, `record ${id} lost its version`);
 			}
-			// the migration carried none of the source's log, so it starts a generation of its own rather
-			// than reading as a genesis store (harper#2451)
 			const generation = root.getBinarySync(Symbol.for('database-generation'));
 			assert.strictEqual(generation?.byteLength, 24, 'the migrated store must carry a generation');
 			assert(Buffer.from(generation).readDoubleLE(16) > 0, 'a migrated generation is a copy, not genesis');
