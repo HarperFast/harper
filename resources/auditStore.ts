@@ -210,7 +210,7 @@ export function openAuditStore(rootStore) {
 	auditStore.rootStore = rootStore;
 	establishAuditFloor(auditStore);
 	establishDatabaseGeneration(auditStore);
-	endSubscriptionsFromEarlierHandles(rootStore.path, auditStore.databaseGeneration?.id, rootStore.databaseName);
+	endSubscriptionsFromEarlierHandles(auditStore);
 	auditStore.tableStores = [];
 	const deleteCallbacks = [];
 	auditStore.addDeleteRemovalCallback = function (tableId, table, callback) {

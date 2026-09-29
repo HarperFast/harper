@@ -7,9 +7,17 @@ import type { Id } from './ResourceInterface.ts';
 
 const allSubscriptions = Object.create(null); // using it as a map that doesn't change much
 const allSameThreadSubscriptions = Object.create(null); // using it as a map that doesn't change much
-// The generation each database path was last opened under on this thread. A registration through a table of any
-// other generation would join the entry the current database's commits drive, under that other generation's tag.
-const currentGenerationIds = new Map<string, string | null>();
+// The audit store each database path was last opened with on this thread. A registration through any other handle
+// would join the entry the current store's commits drive while reading through that handle's closed stores.
+const currentAuditStores = new Map<string, any>();
+
+function sameGeneration(generationId: string | null | undefined, otherId: string | null | undefined): boolean {
+	return generationId != null && generationId === otherId;
+}
+
+function closingError(auditStore: any, path: string): DatabaseClosingError {
+	return new DatabaseClosingError(auditStore?.rootStore?.databaseName ?? basename(path));
+}
 /**
  * This module/function is responsible for the main work of tracking subscriptions and listening for new transactions
  * that have occurred on any thread, and then reading through the transaction log to notify listeners. This is
@@ -30,9 +38,13 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		throw new Error('No path for table primary store');
 	}
 	const generationId = table.auditStore?.databaseGeneration?.id ?? null;
-	if (currentGenerationIds.has(path) && currentGenerationIds.get(path) !== generationId) {
+	const current = currentAuditStores.get(path);
+	const replaced = current !== undefined && table.auditStore !== current;
+	if (replaced || table.auditStore?.rootStore?.status === 'closed') {
 		if (options?.scope === 'full-database') return;
-		throw new DatabaseGenerationChangedError();
+		throw replaced && !sameGeneration(generationId, current.databaseGeneration?.id)
+			? new DatabaseGenerationChangedError()
+			: closingError(table.auditStore, path);
 	}
 	if (options?.crossThreads === false) {
 		// we are only listening for commits on our own thread, so we use a separate subscriber and sequencer tracker
@@ -102,38 +114,31 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 }
 
 /**
- * End every live subscription this thread registered on the database at `path` before it was reopened
- * under `generationId` (undefined when the reopened store's is unknown). The registry outlives the store
- * handle, but a subscription from before the reopen can never deliver again: its commit listener and its
- * table's stores belong to the closed handle. One from another or an unknown generation must resynchronize
- * (a restore would otherwise feed it the restored database's events); one from the same generation gets
- * the retryable `DatabaseClosingError`, and its position still resumes. The entry is detached first, so its
- * queued drains and pending state go with it. `generationId` becomes the only one `addSubscription` accepts
- * on `path` before any listener runs, so a listener that resubscribes through a replaced database while it
- * is being ended is refused too.
+ * End every live subscription this thread registered on the database before `auditStore` reopened it. The
+ * registry outlives the store handle, but a subscription from before the reopen can never deliver again: its
+ * commit listener and its table's stores belong to the closed handle. One from another or an unknown
+ * generation must resynchronize (a restore would otherwise feed it the restored database's events); one from
+ * the same generation gets the retryable `DatabaseClosingError`, and its position still resumes. The entry is
+ * detached first, so its queued drains and pending state go with it. `auditStore` becomes the only handle
+ * `addSubscription` accepts on the path before any listener runs, so a listener that resubscribes through an
+ * earlier handle while it is being ended is refused too.
  */
-export function endSubscriptionsFromEarlierHandles(
-	path: string,
-	generationId: string | undefined,
-	databaseName: string | undefined
-): void {
-	currentGenerationIds.set(path, generationId ?? null);
+export function endSubscriptionsFromEarlierHandles(auditStore: any): void {
+	const path = auditStore.rootStore.path;
+	const generationId = auditStore.databaseGeneration?.id;
+	currentAuditStores.set(path, auditStore);
 	for (const registry of [allSubscriptions, allSameThreadSubscriptions]) {
 		const databaseSubscriptions = registry[path];
 		if (!databaseSubscriptions) continue;
 		delete registry[path];
-		const sameGeneration = generationId !== undefined && databaseSubscriptions.generationId === generationId;
+		const unchanged = sameGeneration(databaseSubscriptions.generationId, generationId);
 		for (const tableId in databaseSubscriptions) {
 			const tableSubscriptions = databaseSubscriptions[tableId];
 			if (!(tableSubscriptions instanceof Map)) continue;
 			for (const keySubscriptions of tableSubscriptions.values()) {
 				for (const subscription of [...keySubscriptions]) {
 					try {
-						subscription.close(
-							sameGeneration
-								? new DatabaseClosingError(databaseName ?? basename(path))
-								: new DatabaseGenerationChangedError()
-						);
+						subscription.close(unchanged ? closingError(auditStore, path) : new DatabaseGenerationChangedError());
 					} catch (error) {
 						try {
 							warn(error);

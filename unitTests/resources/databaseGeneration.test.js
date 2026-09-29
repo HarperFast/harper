@@ -361,5 +361,20 @@ describe('Database generation', () => {
 			assert.strictEqual(subscription.closed, true);
 			(await subscribeAndWrite(reopened)).subscription.end();
 		});
+
+		it('refuses a retry through the handle that a same-generation reopen closed', async () => {
+			const name = 'LiveSameRetry';
+			const T = tableInOwnDatabase(name);
+			await T.put('A', { value: 1 });
+			const resource = await T.getResource('A', {});
+			const first = [];
+			await resource.subscribe({ listener: (event) => first.push(event) });
+			assert.ok(await closeDatabase(`generation_${name}`));
+			await assert.rejects(resource.subscribe({}), DatabaseClosingError, 'its store is closed');
+			const reopened = tableInOwnDatabase(name);
+			assert.ok(first.at(-1) instanceof DatabaseClosingError, 'precondition: the reopen ended the first subscription');
+			await assert.rejects(resource.subscribe({}), DatabaseClosingError, 'it is not the reopened handle');
+			(await subscribeAndWrite(reopened)).subscription.end();
+		});
 	});
 });
