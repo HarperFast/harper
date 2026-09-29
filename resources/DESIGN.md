@@ -847,7 +847,7 @@ silently re-opened with create-if-missing on the next start, which resurrects "d
 recreate, `integrationTests/database/drop-table-restart-recreate.test.ts`. The tombstone is
 node-local: `dropTable` (`dataLayer/schema.ts`) reaches peers only as a `replicateOperation`
 broadcast, so a peer offline for it keeps the table and its rows, and on reconnect its DB_SCHEMA
-handshake re-creates the table, empty, on the dropping node (seen on two-node harper-pro, #1212).
+handshake re-creates the table, empty, on the dropping node (seen on two-node harper-pro, harper#1212).
 
 ## The exclusive `update-attributes` lock is a bounded synchronous wait, and drop-then-recreate needs the column-family eviction fix (`Table.ts`)
 
