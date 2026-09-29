@@ -37,7 +37,7 @@ Each node builds its own index from committed transactions. Harper does not repl
 
 The `@fullText` declaration must also exist on each node. A replicated component deployment or schema propagation can install it, but table-record replication alone only supplies the source records. Once the declaration is present, the node builds its own index.
 
-This design has two consequences:
+This design has several consequences:
 
 - A committed record can be visible before its derived full-text index has applied the same transaction. Queries use a bounded staleness policy, described in [Freshness controls](./querying.md#freshness-controls).
 - A missing, corrupt, or incompatible index can be rebuilt from the table and audit stream without changing source records.
