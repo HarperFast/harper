@@ -51,9 +51,12 @@ class AddonLinkage {
 	#v8 = false;
 
 	update(chunk: Buffer): void {
-		const window = this.#tail.length ? Buffer.concat([this.#tail, chunk]) : chunk;
-		this.#nodeApi ||= window.includes(NODE_API_MARKER);
-		this.#v8 ||= V8_ABI_MARKERS.some((marker) => window.includes(marker));
+		// Only the seam is copied: the previous chunk's end and this one's start.
+		const seam = this.#tail.length ? Buffer.concat([this.#tail, chunk.subarray(0, LONGEST_MARKER - 1)]) : undefined;
+		const holds = (marker: Buffer) => chunk.includes(marker) || !!seam?.includes(marker);
+		this.#nodeApi ||= holds(NODE_API_MARKER);
+		this.#v8 ||= V8_ABI_MARKERS.some(holds);
+		const window = seam && chunk.length < LONGEST_MARKER - 1 ? seam : chunk;
 		this.#tail = Buffer.from(window.subarray(Math.max(0, window.length - LONGEST_MARKER + 1)));
 	}
 

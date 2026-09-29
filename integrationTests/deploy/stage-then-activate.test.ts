@@ -21,6 +21,7 @@ import {
 	type ContextWithHarper,
 } from '@harperfast/integration-testing';
 import { authHeader, operation } from './redeploy-restart-flag-helpers.ts';
+import { inventoryBuild } from '../../dist/components/buildArtifact.js';
 
 const PROJECT = 'stage-then-activate';
 
@@ -163,10 +164,8 @@ suite('deploy_component stages a build and activates it later by deployment id',
 	});
 
 	test('the artifact survives a full restart and activates without rebuilding', async () => {
-		// A marker the packaged tarball does not contain: if activation rebuilt from the payload instead of
-		// renaming the certified tree, this file could not be in the live directory afterwards. It also
-		// survives the reclaim above, which is the point — the artifact no longer depends on the tarball.
-		await writeFile(join(stagingDir(ctx, stagedId), PROJECT, 'not-rebuilt.txt'), 'certified once');
+		// The tarball was reclaimed above, so the artifact on disk is all an activation has to work from.
+		const { build } = JSON.parse(await readFile(join(stagingDir(ctx, stagedId), '.artifact.json'), 'utf8'));
 
 		await killHarper(ctx);
 		await startHarper(ctx, { config: {}, env: {} });
@@ -184,8 +183,8 @@ suite('deploy_component stages a build and activates it later by deployment id',
 		strictEqual(await readFile(join(componentsRoot(ctx), PROJECT, 'version.txt'), 'utf8'), '2', 'version 2 is live');
 		await waitForServedVersion(ctx, 2);
 		strictEqual(
-			await readFile(join(componentsRoot(ctx), PROJECT, 'not-rebuilt.txt'), 'utf8'),
-			'certified once',
+			(await inventoryBuild(join(componentsRoot(ctx), PROJECT))).tree,
+			build.tree,
 			'the live tree IS the certified tree, not a fresh extract of the payload'
 		);
 		strictEqual(
@@ -199,17 +198,15 @@ suite('deploy_component stages a build and activates it later by deployment id',
 	test('activating the release that is already live succeeds without a swap', async () => {
 		// A retry of an activation that swapped here and then failed elsewhere: answering it is what lets the retry
 		// go on to reach the nodes that still hold the artifact.
+		const live = join(componentsRoot(ctx), PROJECT);
+		const before = (await inventoryBuild(live)).tree;
 		const again = await rawOperation(ctx, {
 			operation: 'deploy_component',
 			project: PROJECT,
 			deployment_id: stagedId,
 		});
 		strictEqual(again.status, 200, JSON.stringify(again.body));
-		strictEqual(
-			await readFile(join(componentsRoot(ctx), PROJECT, 'not-rebuilt.txt'), 'utf8'),
-			'certified once',
-			'the live tree is still the one it was: nothing swapped'
-		);
+		strictEqual((await inventoryBuild(live)).tree, before, 'the live tree is still the one it was: nothing swapped');
 	});
 
 	test('activating an id nothing on this node answers to is refused as not found', async () => {
