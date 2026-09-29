@@ -3,8 +3,8 @@
  * shows the dropped table's rows.
  *
  * Three ways to get the table back, each run once with a graceful restart and once with a SIGKILL
- * right after the last write, so boot-time transaction-log replay runs over the dropped table's
- * unflushed entries:
+ * right after the last write, so boot-time transaction-log replay runs over whatever the kill left
+ * unflushed:
  * - recreated in the same process, before the restart — the ghost-table incident flow
  *   (https://github.com/HarperFast/harper/pull/1246);
  * - recreated with `create_table` after the restart;
