@@ -452,6 +452,8 @@ async function packageComponent(req) {
  *
  * A no-op on the main thread, and the operations API deploys there — so operator deploys are unvalidated
  * (#2315 step 2). What this guarantees is ORDER: where validation runs, a rejected candidate never goes live.
+ *
+ * Also a no-op on a worker that `freeze-after-load` froze after its boot load; see components/DESIGN.md.
  */
 // `componentLoader.setErrorReporter` is ONE process-global callback, so two components validating
 // concurrently on the same worker cross-attribute their failures: B installs its reporter while A is
@@ -461,6 +463,12 @@ async function packageComponent(req) {
 let validationChain = Promise.resolve();
 
 async function validateComponentLoads(candidateDirPath, emit) {
+	if (!isMainThread && require('../security/jsLoader.ts').laterLoadsMeetFrozenIntrinsics()) {
+		log.trace(
+			`Not load-validating ${path.basename(candidateDirPath)}: this worker's intrinsics are frozen after its boot load, so the load would not match the one a restarted worker performs`
+		);
+		return;
+	}
 	const run = validationChain.then(
 		() => validateComponentLoadsExclusive(candidateDirPath, emit),
 		() => validateComponentLoadsExclusive(candidateDirPath, emit)
