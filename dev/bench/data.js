@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790667216096,
+  "lastUpdate": 1790673370168,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -20415,6 +20415,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 642849,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "7c06b8364bbfd7e7560a2cc7300f2558659f0c4e",
+          "message": "Compress buffer responses at the fast brotli quality the stream path uses, and compress every serializeStream return form without failing (#2899)\n\n* Compress buffer responses at the stream path's brotli quality, and compress whatever shape serializeStream returns\n\nThe single-buffer path called brotliCompress with Node's default quality 11 (~1-2 MB/s),\nadding up to seconds of CPU per large JSON response once http.compressionThreshold is set,\nwhile the stream path used quality 2. Both now take brotliOptions(contentType).\n\nCompression now follows the serialized output: a string/byte body from serializeStream takes\nthe thresholded buffer path (fixes #2421, msgpack plain arrays failing with\n\"stream.pipe is not a function\"), a Readable is compressed as-is, and other iterables are\nadapted with Readable.from. The compressor is attached with stream.pipeline so a source error\ncloses the response instead of leaving it hanging.\n\nThe schema description now states the shipped compressionThreshold default (0, disabled).\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Share prebuilt brotli options and drop narrating comments\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-29T04:43:59Z",
+          "url": "https://github.com/HarperFast/harper/commit/7c06b8364bbfd7e7560a2cc7300f2558659f0c4e"
+        },
+        "date": 1790673367776,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 22804,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 21621,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 16106,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 31715904,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 9880,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 3787,
             "unit": "ops"
           }
         ]
