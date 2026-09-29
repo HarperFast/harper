@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import test from 'node:test';
 
-import { evaluateCiCoverage } from './evaluateCiCoverage.mjs';
+import { coverageFooterProblem, evaluateCiCoverage } from './evaluateCiCoverage.mjs';
 import { evaluateFramingVerdict, parseFramingPaths } from './evaluateFramingVerdict.mjs';
 
 const HEAD = 'abcdef1234567890abcdef1234567890abcdef12';
@@ -348,10 +348,133 @@ test('two live footers are both scored on the last one', () => {
 test('a footer that names no authoring family cannot be counted', () => {
 	// Without `authored=` the parser cannot exclude the authoring model, so `ran=claude,codex`
 	// on a Claude-authored PR would score two outside families.
-	const body = '<sub>Review-Coverage: ran=claude,codex; rounds=1 @ abcdef123456</sub>\nComplexity: medium';
+	const missing = '<sub>Review-Coverage: ran=claude,codex; rounds=1 @ abcdef123456</sub>\nComplexity: medium';
+	const r = evaluateCiCoverage(pr({ body: missing }), { mode: 'enforce' });
+	assert.strictEqual(r.pass, false);
+	assert.match(r.detail, /has no `authored=` segment/);
+	// The helper's own fallback when no round recorded an author: well-formed, still not countable.
+	const unknown = '<sub>Review-Coverage: authored=unknown; ran=claude,codex; rounds=1 @ abcdef123456</sub>';
+	const u = evaluateCiCoverage(pr({ body: unknown }), { mode: 'enforce' });
+	assert.strictEqual(u.pass, false);
+	assert.match(u.detail, /names no `authored=` family/);
+});
+
+const PIN = HEAD.slice(0, 12);
+// Each shape formatReviewCoverage in skills-internal prepush-policy.mjs emits.
+const HELPER_FOOTERS = [
+	`<sub>Review-Coverage: authored=claude; ran=none; rounds=1 @ ${PIN}</sub>`,
+	`Review-Coverage: authored=unknown; ran=none; rounds=1 @ ${PIN}`,
+	`<sub>Review-Coverage: authored=claude; ran=codex,gemini; declined=cursor-grok,cursor-composer,domain; rounds=2 @ ${PIN}</sub>`,
+	`<sub>Review-Coverage: authored=claude; ran=gemini,cursor-kimi,codex; adjudicated=domain; declined=cursor-grok,cursor-composer,cursor-muse; rounds=4; full=2 @ ${PIN}</sub>`,
+	`<sub>Review-Coverage: authored=codex; ran=claude(fallback),gemini; adjudicated=domain; blocked=cursor-grok(auth),domain(exit--1),conformance(no-linter); rounds=3; full=1 @ ${PIN}</sub>`,
+	`Review-Coverage: authored=claude; ran=codex,cursor-grok,cursor-composer; blocked=claude(fallback)(out-of-budget); declined=gemini; rounds=12; full=12 @ ${PIN}`,
+	`  <sub>Review-Coverage: authored=codex; ran=claude,cursor-muse; rounds=1 @ ${PIN}</sub>  `,
+];
+
+test('every helper-shaped Review-Coverage footer is enforceable', () => {
+	for (const footer of HELPER_FOOTERS) assert.strictEqual(coverageFooterProblem(footer), '', footer);
+	for (const footer of HELPER_FOOTERS.filter((line) => !line.includes('ran=none'))) {
+		const r = evaluateCiCoverage(pr({ body: `Summary\r\n\r\n${footer}\r\n` }), { mode: 'enforce' });
+		assert.strictEqual(r.pass, true, footer);
+		assert.doesNotMatch(r.detail, /counts 0 toward enforcement/, footer);
+	}
+});
+
+test('a footer the helper could not have written is reported but not enforceable, and says why', () => {
+	for (const [footer, why] of [
+		[
+			'<sub>Review-Coverage: authored=claude @ 5d0901e86b8f; ran=codex,gemini; rounds=4 @ 5d0901e86b8f</sub>',
+			/carries 2 `@` pins/,
+		],
+		[`<sub>Review-Coverage: authored=claude; rounds=1; ran=codex,gemini @ ${PIN}</sub>`, /has `ran=` after `rounds=`/],
+		[
+			`<sub>Review-Coverage: ran=codex,gemini; authored=claude; rounds=1 @ ${PIN}</sub>`,
+			/has `authored=` after `ran=`/,
+		],
+		[
+			`<sub>Review-Coverage: authored=claude; ran=codex,gemini-bot; rounds=1 @ ${PIN}</sub>`,
+			/unknown leg `gemini-bot` in `ran=`/,
+		],
+		[
+			`<sub>Review-Coverage: authored=claude; ran=codex,domain,gemini; rounds=1 @ ${PIN}</sub>`,
+			/unknown leg `domain` in `ran=`/,
+		],
+		['<sub>Review-Coverage: authored=claude; ran=codex,gemini; rounds=1</sub>', /no trailing ` @ <sha>` pin/],
+		[`<sub>Review-Coverage: authored=claude; ran=codex,gemini; rounds=1 @ ${PIN} @ ${PIN}</sub>`, /carries 2 `@` pins/],
+		[`<sub>Review-Coverage: authored=claude; ran=codex,gemini; rounds=1 @@ ${PIN}</sub>`, /carries 2 `@` pins/],
+		['<sub>Review-Coverage: authored=claude; ran=codex,gemini; rounds=1 @ 8f4977716</sub>', /not a 12-character/],
+		[
+			`<sub>Review-Coverage: authored=claude; ran=codex,gemini; rounds=1 @ ${PIN.toUpperCase()}</sub>`,
+			/not a 12-character/,
+		],
+		[
+			`<sub>Review-Coverage: authored=claude; ran=codex,gemini; unavailable=cursor-grok; rounds=1 @ ${PIN}</sub>`,
+			/segment `unavailable`/,
+		],
+		[
+			`<sub>Review-Coverage: authored=claude; ran=codex,gemini; blocked=cursor-grok; rounds=1 @ ${PIN}</sub>`,
+			/entry `cursor-grok`, not `<leg>\(<reason>\)`/,
+		],
+		[
+			`<sub>Review-Coverage: authored=claude; ran=codex,codex,gemini; rounds=1 @ ${PIN}</sub>`,
+			/repeats a leg in `ran=`/,
+		],
+		[
+			`<sub>Review-Coverage: authored=claude; ran=codex,gemini; rounds=01 @ ${PIN}</sub>`,
+			/`rounds=01`, not a positive integer/,
+		],
+		[`<sub>Review-Coverage: authored=claude; ran=codex,gemini @ ${PIN}</sub>`, /no `rounds=` segment/],
+		[`<sub>Review-Coverage: authored=claude; ran=codex,gemini; rounds=1; rounds=2 @ ${PIN}</sub>`, /repeats `rounds=`/],
+		[`<sub>Review-Coverage: authored=claude; ran=codex,gemini; rounds=1 @ ${PIN}`, /unpaired `<sub>`/],
+		// Masked from the prose the footer is selected in, so the raw line must be what is checked.
+		[
+			`<sub>Review-Coverage: authored=claude; ran=codex,gemini; rounds=1 @ ${PIN}</sub> <!-- gemini was the bot -->`,
+			/unpaired `<sub>`/,
+		],
+		[`<sub>Review-Coverage: authored=claude; ran=codex,gemini; rounds=1 @ ${PIN}</sub> \`edited\``, /unpaired `<sub>`/],
+		[
+			`<sub> Review-Coverage: authored=claude; ran=codex,gemini; rounds=1 @ ${PIN}</sub>`,
+			/does not begin `Review-Coverage:`/,
+		],
+	]) {
+		const r = evaluateCiCoverage(pr({ body: `Summary\n\n${footer}` }), { mode: 'enforce' });
+		assert.strictEqual(r.pass, false, footer);
+		assert.strictEqual(r.count, 2, `${footer} is still reported`);
+		assert.match(r.detail, why, footer);
+		assert.match(
+			r.detail,
+			/counts 0 toward enforcement — re-materialize it with a current `pr-body-review-need\.mjs --write`/
+		);
+	}
+});
+
+test('the grammar is checked on the last footer only', () => {
+	const bad = `<sub>Review-Coverage: authored=claude @ ${PIN}; ran=codex,gemini; rounds=1 @ ${PIN}</sub>`;
+	const good = covered('codex,gemini');
+	assert.strictEqual(evaluateCiCoverage(pr({ body: `${bad}\n\n${good}` }), { mode: 'enforce' }).pass, true);
+	assert.strictEqual(evaluateCiCoverage(pr({ body: `${good}\n\n${bad}` }), { mode: 'enforce' }).pass, false);
+});
+
+test('a last footer too broken to parse reports nothing rather than an earlier footer', () => {
+	const r = evaluateCiCoverage(pr({ body: `${covered('codex,gemini')}\n\nReview-Coverage:` }), { mode: 'enforce' });
+	assert.strictEqual(r.pass, false);
+	assert.strictEqual(r.count, 0);
+	assert.match(r.detail, /does not begin `Review-Coverage:`.*counts 0 toward enforcement/);
+	assert.doesNotMatch(r.detail, /prose-only/);
+});
+
+test('a masked suffix cannot change the reported families', () => {
+	const body = `${covered('codex')} <!-- note; ran=gemini -->`;
+	const r = evaluateCiCoverage(pr({ body }), { mode: 'enforce' });
+	assert.deepStrictEqual(r.families, ['openai']);
+	assert.strictEqual(r.pass, false);
+});
+
+test('a malformed one-leg footer does not earn the easy waiver', () => {
+	const body = `<sub>Review-Coverage: authored=claude; ran=codex; rounds=1</sub>\n\nComplexity: easy`;
 	const r = evaluateCiCoverage(pr({ body }), { mode: 'enforce' });
 	assert.strictEqual(r.pass, false);
-	assert.match(r.detail, /names no `authored=` family/);
+	assert.strictEqual(r.exempt, '');
 });
 
 test('the last Complexity field wins, like the coverage footer', () => {
@@ -466,6 +589,22 @@ test('exit codes: report never reds, enforce reds on policy AND on plumbing', ()
 	const invalidEnforce = runResult(bare, '--mode', 'enforce', '--required', 'tow');
 	assert.strictEqual(invalidEnforce.status, 1, 'enforce mode fails closed on bad input');
 	assert.match(invalidEnforce.stderr, /invalid required 'tow'/);
+});
+
+test('the CLI fails enforce mode on a hand-edited footer and names the mismatch', () => {
+	const valid = runResult({ pull_request: pr({ body: covered('codex,gemini') }) }, '--mode', 'enforce');
+	assert.strictEqual(valid.status, 0);
+	const edited = runResult(
+		{
+			pull_request: pr({
+				body: `<sub>Review-Coverage: authored=claude @ ${PIN}; ran=codex,gemini; rounds=4 @ ${PIN}</sub>`,
+			}),
+		},
+		'--mode',
+		'enforce'
+	);
+	assert.strictEqual(edited.status, 1);
+	assert.match(edited.stderr, /carries 2 `@` pins.*counts 0 toward enforcement/);
 });
 
 test('a pr-author-association override can promote a stale non-member payload to MEMBER', () => {

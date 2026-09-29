@@ -228,7 +228,7 @@ describe('CrossThread Module', function () {
 		});
 
 		describe('expectedResponses sizing (connectedPorts-based)', function () {
-			it('sizes expectedResponses from the exact eligible broadcast-recipient count, excluding job workers', async function () {
+			it('excludes job workers from ordinary broadcasts', async function () {
 				registry.setStatus('poolComp', 'healthy', 'Main thread');
 				getWorkerIndexStub.returns(0);
 
@@ -236,6 +236,9 @@ describe('CrossThread Module', function () {
 				const httpPortB = { threadId: 8 };
 				const jobPort = { threadId: 9, isJobWorker: true };
 				connectedPorts.push(httpPortA, httpPortB, jobPort);
+				// Restore is the one broadcast that must reach job workers too, but that is now expressed by
+				// the caller opting in (broadcastWithStrictAcknowledgement's includeJobWorkers), not by this
+				// helper inspecting the message -- see the restore-barrier case in itcUtils.test.js.
 				assert.equal(manageThreadsModule.getEligibleBroadcastRecipientThreadIds().size, 2);
 
 				let handler;

@@ -20,6 +20,7 @@ const {
 	reloadBranchAt,
 	markDropInProgress,
 } = require('../../resources/databases.ts');
+const { blockBlobSavesForRestore, resumeBlobSavesAfterRestore } = require('../../resources/blob.ts');
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
@@ -102,17 +103,38 @@ async function schemaHandler(event) {
 	// restore_backup: this thread must release its store handles so the restore can purge and
 	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
 	// the restoring marker is present, and reloads it on the completion signal (marker gone).
+	let resumeBlobSavesFor;
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {
-		try {
-			await closeDatabase(event.message.schema);
-		} catch (error) {
-			// Let the originator's process-wide closure check fail the restore immediately instead of
-			// withholding this worker's acknowledgement until the broadcast timeout.
-			hdbLogger.error(`Could not release database '${event.message.schema}' for restore`, error);
+		if (event.message.restorePhase === 'reload') {
+			resumeBlobSavesFor = {
+				database: event.message.schema,
+				token: event.message.restoreToken,
+				generationReplaced: event.message.generationReplaced !== false,
+			};
+		} else {
+			// Stop and drain blob writes before releasing the handles: closing a database is not a
+			// write barrier on its own, because a save's file pipeline outlives the handle it started from.
+			await blockBlobSavesForRestore(event.message.schema, event.message.restoreToken);
+			try {
+				await closeDatabase(event.message.schema);
+			} catch (error) {
+				// Let the originator's process-wide closure check fail the restore immediately instead of
+				// withholding this worker's acknowledgement until the broadcast timeout.
+				hdbLogger.error(`Could not release database '${event.message.schema}' for restore`, error);
+			}
 		}
 	}
-	await cleanLmdbMap(event.message);
-	await syncSchemaMetadata(event.message);
+	try {
+		await cleanLmdbMap(event.message);
+		await syncSchemaMetadata(event.message);
+	} finally {
+		if (resumeBlobSavesFor)
+			resumeBlobSavesAfterRestore(
+				resumeBlobSavesFor.database,
+				resumeBlobSavesFor.token,
+				resumeBlobSavesFor.generationReplaced
+			);
+	}
 	for (let listener of schemaListeners) {
 		try {
 			listener(event?.message);

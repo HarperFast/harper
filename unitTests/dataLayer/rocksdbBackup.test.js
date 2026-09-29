@@ -421,6 +421,87 @@ describe('rocksdbBackup', function () {
 			);
 		});
 
+		it('does not publish a complete backup when a configured blob root is not a directory', async function () {
+			this.timeout(30000);
+			writeBlobDbRecord();
+			const root = getBlobPathsForDatabaseName(BLOB_DB)[0];
+			mkdirSync(dirname(root), { recursive: true });
+			writeFileSync(root, 'not-a-directory');
+
+			await assert.rejects(createBackupOffline(BLOB_DB), (error) => error.code === 'ENOTDIR');
+			assert.deepStrictEqual(await listBackupsInDir(backupDirForDatabase(BLOB_DB)), []);
+		});
+
+		it('refuses an in-place restore of an engine-only backup while the database still has blobs', async function () {
+			this.timeout(30000);
+			writeBlobDbRecord();
+			writeBlobFile(BLOB_DB, BLOB_REL, 'blob-payload');
+			const created = await createBackupOffline(BLOB_DB, true);
+
+			await assert.rejects(
+				restoreBackupOffline(BLOB_DB, created.backup_id),
+				(error) => error.statusCode === 400 && /allow_engine_only/.test(error.message)
+			);
+			// nothing destructive ran: the blob and the database are untouched
+			assert.strictEqual(readBlobBody(join(getBlobPathsForDatabaseName(BLOB_DB)[0], BLOB_REL)), 'blob-payload');
+			assert.strictEqual(checkRestoreState(blobDbDir()), 'clear');
+		});
+
+		it('allows the same restore when the operator opts in, and records the opt-in', async function () {
+			this.timeout(30000);
+			writeBlobDbRecord();
+			writeBlobFile(BLOB_DB, BLOB_REL, 'blob-payload');
+			const created = await createBackupOffline(BLOB_DB, true);
+
+			const restored = await restoreBackupOffline(BLOB_DB, created.backup_id, undefined, true);
+			assert.strictEqual(restored.allow_engine_only, true);
+			// the live blob is deliberately left in place — that is what the opt-in accepts
+			assert.strictEqual(readBlobBody(join(getBlobPathsForDatabaseName(BLOB_DB)[0], BLOB_REL)), 'blob-payload');
+		});
+
+		it('refuses an engine-only restore with no opt-in even when the database has no blobs', async function () {
+			this.timeout(30000);
+			writeBlobDbRecord();
+			const created = await createBackupOffline(BLOB_DB, true);
+
+			// Empty roots do not make this safe: the id counter re-seeds from the roots, so it hands out
+			// 1 again and the next blob lands on a path the restored records already reference.
+			await assert.rejects(
+				restoreBackupOffline(BLOB_DB, created.backup_id),
+				(error) => error.statusCode === 400 && /allow_engine_only/.test(error.message)
+			);
+		});
+
+		it('allows it once the operator opts in, and reports the opt-in back', async function () {
+			this.timeout(30000);
+			writeBlobDbRecord();
+			const created = await createBackupOffline(BLOB_DB, true);
+
+			const restored = await restoreBackupOffline(BLOB_DB, created.backup_id, undefined, true);
+			assert.strictEqual(restored.backup_id, created.backup_id);
+			assert.strictEqual(restored.allow_engine_only, true);
+		});
+
+		it('refuses an engine-only restore into a new database too', async function () {
+			this.timeout(30000);
+			writeBlobDbRecord();
+			writeBlobFile(BLOB_DB, BLOB_REL, 'blob-payload');
+			const created = await createBackupOffline(BLOB_DB, true);
+			const target = `${BLOB_DB}-copy`;
+
+			try {
+				// A fresh target's roots are empty for the same reason, so it is exposed to the same
+				// id reissue -- naming a new database is not an escape hatch.
+				await assert.rejects(
+					restoreBackupOffline(BLOB_DB, created.backup_id, target),
+					(error) => error.statusCode === 400 && /allow_engine_only/.test(error.message)
+				);
+			} finally {
+				rmSync(join(storageDir, target), { recursive: true, force: true });
+				for (const root of getBlobPathsForDatabaseName(target)) rmSync(root, { recursive: true, force: true });
+			}
+		});
+
 		it('delete_backup and purge_backups remove the corresponding blob snapshots', async function () {
 			this.timeout(30000);
 			writeBlobDbRecord();

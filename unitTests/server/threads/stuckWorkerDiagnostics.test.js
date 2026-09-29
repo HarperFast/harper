@@ -118,6 +118,26 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		assert.ok(/cpuTicks \+[1-9]\d* /.test(progress), progress);
 	});
 
+	it('rejects a strict broadcast when a worker misses the acknowledgement deadline', async function () {
+		const worker = await startFixtureWorker('block');
+		started.push(worker);
+		const initialRefCount = worker.refCount;
+		await assert.rejects(broadcastWithAcknowledgement({ type: 'restore-close-probe' }, 100, true), (error) => {
+			// Strict rejects with an aggregate; the missed deadline is on the per-worker cause inside it.
+			assert.equal(error.name, 'AggregateError', error.stack);
+			assert.ok(
+				error.errors.some((cause) => /did not acknowledge within 100ms/.test(cause.cause?.message ?? cause.message)),
+				error.errors.map((cause) => cause.message).join('\n')
+			);
+			return true;
+		});
+		assert.equal(
+			worker.refCount,
+			initialRefCount,
+			'the timed-out acknowledgement must release its worker port reference'
+		);
+	});
+
 	it('samples a sibling that failed to ack a worker-originated broadcast', async function () {
 		if (process.platform !== 'linux') this.skip();
 		const blocked = await startFixtureWorker('block');
