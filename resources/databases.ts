@@ -4200,7 +4200,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					origin !== 'cluster' &&
 					(schemaDefinedMismatch ||
 						(typeof audit === 'boolean' && audit !== attributeDescriptor.audit) ||
-						(sealed !== undefined && sealed !== Table.sealed) ||
+						(sealed !== undefined && sealed !== attributeDescriptor.sealed) ||
 						(replicate !== undefined && replicate !== attributeDescriptor.replicate) ||
 						(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
 						(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
