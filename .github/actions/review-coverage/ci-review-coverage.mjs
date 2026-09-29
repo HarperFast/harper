@@ -134,7 +134,9 @@ function main(mode, formatMode, framingMode) {
 			? `_${r.exempt}_`
 			: r.compliant
 				? ''
-				: `Per team policy, a substantive AI-authored PR reports ${required} outside-model review families in its \`Review-Coverage:\` footer. Materialize it with the cross-model-review skill's \`pr-body-review-need.mjs --write\` (harper-engineering-guidelines, pr-conventions): it unions every review round the branch had, so the head commit does not need a receipt of its own — do not re-review just to produce the footer.`,
+				: r.adjudicatorBlocked
+					? `Per team policy, outside-model findings reach a human only after the Harper adjudicator (\`domain\`) has ruled on them. Every review round on this branch lost that leg (${r.adjudicatorBlocked}). Rerun the pre-push review until \`domain\` completes, then re-materialize the footer with \`pr-body-review-need.mjs --write\`.`
+					: `Per team policy, a substantive AI-authored PR reports ${required} outside-model review families in its \`Review-Coverage:\` footer. Materialize it with the cross-model-review skill's \`pr-body-review-need.mjs --write\` (harper-engineering-guidelines, pr-conventions): it unions every review round the branch had, so the head commit does not need a receipt of its own — do not re-review just to produce the footer.`,
 	].filter(Boolean);
 	if (formatMode !== 'off') {
 		lines.push(
@@ -180,7 +182,7 @@ function main(mode, formatMode, framingMode) {
 		);
 	if (!r.pass) {
 		console.error(
-			`::error::${r.detail} — report the reviews in the PR description to pass; the dispatch gate will block at review time if the fleet's review also finds issues`
+			`::error::${r.detail} — ${r.adjudicatorBlocked ? 'rerun the pre-push review until the adjudicator completes' : 'report the reviews in the PR description'} to pass; the dispatch gate will block at review time if the fleet's review also finds issues`
 		);
 		process.exitCode = 1;
 	}

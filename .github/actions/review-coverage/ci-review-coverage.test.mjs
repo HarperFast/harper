@@ -968,6 +968,11 @@ test('a blocked adjudicator fails enforcement however many families ran', () => 
 	assert.match(blocked.detail, /adjudicator \(`domain`\) is blocked \(exit--1\)/);
 	assert.strictEqual(evaluateCiCoverage(pr({ body: footer('blocked=domain(exit--1); ') })).pass, true, 'report mode');
 
+	const afterAnother = evaluateCiCoverage(pr({ body: footer('blocked=cursor-grok(auth),domain(timeout); ') }), {
+		mode: 'enforce',
+	});
+	assert.strictEqual(afterAnother.adjudicatorBlocked, 'timeout', 'domain listed after another blocked leg');
+
 	for (const extra of ['adjudicated=domain; ', 'declined=domain; ', 'blocked=gemini(timeout); ', '']) {
 		const r = evaluateCiCoverage(pr({ body: footer(extra) }), { mode: 'enforce' });
 		assert.strictEqual(r.pass, true, extra || 'no adjudicator segment');
@@ -982,4 +987,12 @@ test('a blocked adjudicator fails enforcement however many families ran', () => 
 		{ mode: 'enforce' }
 	);
 	assert.strictEqual(easy.pass, false, 'the easy-diff waiver does not waive adjudication');
+});
+
+test('the CLI tells a blocked-adjudicator PR to rerun the review, not to report more families', () => {
+	const body = `<sub>Review-Coverage: authored=claude; ran=cursor-composer,gemini,codex; blocked=domain(exit--1); rounds=4; full=4 @ ${PIN}</sub>`;
+	const result = runResult({ pull_request: pr({ body }) }, '--mode', 'enforce');
+	assert.strictEqual(result.status, 1);
+	assert.match(result.stderr, /::error::.*rerun the pre-push review until the adjudicator completes to pass/);
+	assert.doesNotMatch(result.stderr, /report the reviews in the PR description/);
 });
