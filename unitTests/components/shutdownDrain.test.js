@@ -116,13 +116,17 @@ describe('shutdownDrain', () => {
 		const { join } = require('node:path');
 		let directory;
 		beforeEach(() => {
+			// cleared before the call that can throw, so a setup failure cannot leave the previous
+			// case's path behind for afterEach to remove twice
+			directory = undefined;
 			directory = mkdtempSync(join(tmpdir(), 'harper.unit-test.drain-scope-'));
 			writeFileSync(join(directory, 'config.yaml'), 'resp:\n  port: 6379\n');
 		});
 		afterEach(async () => {
 			// let the closed scope's watcher teardown settle before the directory goes away (see Scope.test.js)
 			await new Promise((resolve) => setImmediate(resolve));
-			rmSync(directory, { recursive: true, force: true });
+			// a setup failure leaves no directory; cleaning up `undefined` would mask it
+			if (directory) rmSync(directory, { recursive: true, force: true });
 		});
 		async function readyScope() {
 			const scope = new Scope(
