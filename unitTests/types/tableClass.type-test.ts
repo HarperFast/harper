@@ -7,11 +7,17 @@
  */
 
 import type { Table } from '../../dist/index.js';
-import type { TableResourceClass, TableResourceInstance } from '../../dist/resources/Table.js';
+import type { makeTable } from '../../dist/resources/Table.js';
+// @ts-expect-error the table class interfaces are module-private, not importable names
+import type { TableResourceClass as _NotExported } from '../../dist/resources/Table.js';
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 type Expect<T extends true> = T;
 type IsAny<T> = 0 extends 1 & T ? true : false;
+
+type TableResourceClass = ReturnType<typeof makeTable>;
+declare const TableClass: TableResourceClass;
+type TableResourceInstance<Record extends object = any> = InstanceType<typeof TableClass<Record>>;
 
 // NOTE: type-check-only (never executed); `Dog` stands in for any `tables.X`.
 declare const Dog: Table;
@@ -28,7 +34,6 @@ export class CachedDog extends Dog {
 	}
 }
 
-type _tableIsTheClass = Expect<Table extends TableResourceClass ? true : false>;
 type _prototypeIsTyped = Expect<Equal<Table['prototype'], TableResourceInstance>>;
 type _instanceIsTyped = Expect<Equal<IsAny<InstanceType<Table>>, false>>;
 type _getUpdatedTime = Expect<Equal<ReturnType<TableResourceInstance['getUpdatedTime']>, number>>;

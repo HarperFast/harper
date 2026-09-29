@@ -604,7 +604,7 @@ export interface Table {
 }
 type ResidencyDefinition = number | string[] | void;
 
-export interface TableResourceInstance<Record extends object = any> {
+interface TableResourceInstance<Record extends object = any> {
 	getProperty: (name: string) => any;
 	_loadRecord(
 		target: RequestTarget,
@@ -724,7 +724,7 @@ export interface TableResourceInstance<Record extends object = any> {
 	getCurrentUser(): User | undefined;
 }
 
-export interface TableResourceClass {
+interface TableResourceClass {
 	new <Record extends object = any>(identifier: Id, source: any): TableResourceInstance<Record>;
 	prototype: TableResourceInstance;
 	name: any;
