@@ -842,17 +842,12 @@ dies or a drop fails partway, the tombstone survives; both the boot-time schema 
 `databases.ts` (`completeInterruptedDrop`) and a same-name `table()` create complete the
 interrupted drop instead of resurrecting the table. Without this, surviving catalog rows are
 silently re-opened with create-if-missing on the next start, which resurrects "deleted" tables
-(with their data, if the column families were never actually removed). A drop interrupted
-before it returns is covered by `unitTests/resources/dropTableGhost.test.js`; an acknowledged
-drop followed by a restart or kill and a same-name recreate, by
-`integrationTests/database/drop-table-restart-recreate.test.ts`.
-
-The tombstone is node-local. `dataLayer/schema.ts` `dropTable` sends the drop to peers through
-`server.replication.replicateOperation`, an operation broadcast rather than a logged event, so a
-peer that is offline at the time never gets it. Observed on a two-node harper-pro cluster
-(https://github.com/HarperFast/harper/issues/1212): that peer keeps the table and its rows, and on
-reconnect its DB_SCHEMA handshake (harper-pro `ensureTableIfChanged`) re-creates the table, empty,
-on the node that dropped it.
+(with their data, if the column families were never actually removed). Tests: interrupted drop,
+`unitTests/resources/dropTableGhost.test.js`; acknowledged drop, then restart or kill, then
+recreate, `integrationTests/database/drop-table-restart-recreate.test.ts`. The tombstone is
+node-local: `dropTable` (`dataLayer/schema.ts`) reaches peers only as a `replicateOperation`
+broadcast, so a peer offline for it keeps the table and its rows, and on reconnect its DB_SCHEMA
+handshake re-creates the table, empty, on the dropping node (seen on two-node harper-pro, #1212).
 
 ## The exclusive `update-attributes` lock is a bounded synchronous wait, and drop-then-recreate needs the column-family eviction fix (`Table.ts`)
 
