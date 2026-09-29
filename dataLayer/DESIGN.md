@@ -89,13 +89,41 @@ Three non-obvious mechanics keep that safe:
   it and broadcasting a reload would surface the earlier attempt's partial/corrupt directory as
   healthy. Only a _fresh_ marker on a _previously healthy_ database that failed before destruction is
   safe to clear.
-- **The ITC close broadcast is best-effort, so closure is verified before the purge.** The SCHEMA
-  broadcast (`signalSchemaChange`) resolves after remote handlers complete but times out at 30s
-  "best-effort", swallows errors, and never reaches job-worker threads at all (their ports are
-  excluded from broadcasts to avoid re-entrant deadlocks). A destructive purge cannot trust it:
-  `restoreBackup` polls rocksdb-js `registryStatus()` (process-global across worker threads) until
-  the database path has no open instance, and aborts with a 409 — _cleaning up the marker, since
-  nothing was destroyed_ — if handles remain.
+- **The ITC close broadcast is normally best-effort, so closure is verified before the purge.** A
+  SCHEMA broadcast (`signalSchemaChange`) usually resolves after remote handlers complete but times
+  out at 30s "best-effort" and swallows errors. The restore `close` phase is stricter: it waits until
+  every eligible recipient acknowledges or its port closes, and aborts the restore with a retryable
+  409 if that does not happen within 30s, because proceeding past an unconfirmed blob-save barrier
+  would re-open the race the barrier exists to close. A destructive purge still
+  verifies closure independently: `restoreBackup` polls rocksdb-js `registryStatus()` (process-global
+  across worker threads) until the database path has no open instance, and aborts with a 409 —
+  _cleaning up the marker, since nothing was destroyed_ — if handles remain.
+- **The close acknowledgement fences blob saves, deferred reclamation and orphan cleanup, not just
+  database handles.** A store
+  handle can close while a `saveBlob` file pipeline it started is still pending, because blob roots
+  live outside RocksDB and streamed saves settle independently of the record write; a queued
+  reclamation is worse still, being a timer that never consults the database at all. The restore
+  signal therefore has explicit `close` and `reload` phases: every worker refuses new saves for that
+  database, stops draining reclamations for it, stops any `cleanup_orphan_blobs` walk in progress
+  (its "nothing references this path" verdict was reached against the generation being replaced),
+  awaits the saves and unlinks already dispatched -- including a save-failure cleanup's -- then
+  closes the store and acknowledges. Restore signals are the one schema broadcast that includes job
+  workers; ordinary gossip still excludes them to avoid re-entrant broadcast deadlocks.
+
+  The fence records the token of the restore that currently owns it, not a flag and not a set. Two
+  restores of the same database can overlap — a restore releases its lock before awaiting its `reload`
+  broadcast — so a database-wide boolean lets the first restore's late reload lift the second one's
+  fence, admitting saves during the second one's post-close check. A later close takes ownership
+  without the database ever unfencing in between, and a release whose token is not the current owner
+  does nothing. A _set_ of tokens fails the opposite way: a restore that dies after destruction never
+  reloads, so its token would keep the database fenced for the life of the process, defeating the
+  rerun the failure tells the operator to perform.
+
+  Releasing the fence discards that database's queued reclamations rather than resuming them: they
+  condemn file paths belonging to the generation the restore just replaced, so draining them would
+  unlink the bytes the restore wrote at those same paths. A restore that aborted before destroying
+  anything says so, and its queue is kept and rewoken instead.
+
 - **Online restore is impossible for a database a component holds open — and that failure is
   correct.** rocksdb-js's registry is process-global but records only a per-path refCount, with no
   attribution to a thread or component; Harper keeps no component→database ownership map. So when a

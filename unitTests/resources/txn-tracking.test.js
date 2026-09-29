@@ -462,6 +462,83 @@ describe('Write txn timeout', () => {
 		}
 	});
 
+	describe("the owner's commit waits for the monitor's force-commit", () => {
+		function gateNativeCommit(link) {
+			const nativeTxn = link.transaction;
+			const commit = nativeTxn.commit;
+			let enter;
+			const entered = new Promise((resolve) => (enter = resolve));
+			let release;
+			const released = new Promise((resolve) => (release = resolve));
+			nativeTxn.commit = function (...args) {
+				nativeTxn.commit = commit;
+				enter();
+				return released.then((failure) => (failure ? Promise.reject(failure) : commit.apply(this, args)));
+			};
+			return { link, entered, release };
+		}
+
+		function runSourceApply(id, value, whileHeld) {
+			const context = { sourceApply: true };
+			let settled = false;
+			let onGated;
+			const gated = new Promise((resolve) => (onGated = resolve));
+			const committed = transaction(context, async () => {
+				await IndexedResource.put(id, { t: value }, context);
+				const gate = gateNativeCommit(databaseTxns(context)[0]);
+				await gate.entered;
+				onGated(gate);
+				await whileHeld?.(gate);
+			});
+			committed.then(
+				() => (settled = true),
+				() => (settled = true)
+			);
+			return { context, committed, gated, isSettled: () => settled };
+		}
+
+		beforeEach(function () {
+			if (isLMDB) this.skip();
+			setExpiration(20);
+		});
+		afterEach(() => setExpiration(30000));
+
+		it('resolves only after the force-commit lands', async function () {
+			await IndexedResource.put(403, { t: 1 });
+			const { committed, gated, isSettled } = runSourceApply(403, 2);
+			const gate = await gated;
+			await delay(50);
+			assert.equal(isSettled(), false, "transaction() must not resolve while the monitor's commit is in flight");
+			gate.release();
+			await committed;
+			assert.strictEqual((await IndexedResource.get(403))?.t, 2);
+		});
+
+		it('rejects when the force-commit fails while the owner is waiting on it', async function () {
+			await IndexedResource.put(404, { t: 1 });
+			const { context, committed, gated } = runSourceApply(404, 2);
+			const gate = await gated;
+			await delay(50);
+			gate.release(new Error('injected native commit failure'));
+			await assert.rejects(committed, /injected native commit failure/);
+			assert.strictEqual((await IndexedResource.get(404))?.t, 1);
+			assert.notStrictEqual(context.transaction, gate.link, 'the failed transaction must release its context');
+			await transaction.commit(context);
+		});
+
+		it('rejects when the force-commit failed before the handler returned', async function () {
+			await IndexedResource.put(405, { t: 1 });
+			const { committed } = runSourceApply(405, 2, async (gate) => {
+				const monitorCommit = gate.link.monitorCommit;
+				assert.ok(monitorCommit, 'test setup: the monitor must have submitted its commit');
+				gate.release(new Error('injected native commit failure'));
+				await monitorCommit.catch(() => {});
+			});
+			await assert.rejects(committed, /injected native commit failure/);
+			assert.strictEqual((await IndexedResource.get(405))?.t, 1);
+		});
+	});
+
 	describe('abort releases the native handle', () => {
 		// A write-first link (save() built the handle with no prior read) has no readTxnsUsed, so the
 		// refcount loop never runs and the handle was stranded — permanently, since rocksdb-js's
@@ -627,6 +704,26 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		}
 	}
 
+	it("finishes a landed store's bookkeeping when the next store's commit throws synchronously", async function () {
+		if (isLMDB) this.skip();
+		const context = {};
+		let links;
+		await assert.rejects(
+			transaction(context, async () => {
+				await SecondaryBlobResource.put({ id: 2080, value: 'head' }, context);
+				await ThirdResource.put({ id: 2080, value: 'next' }, context);
+				links = databaseTxns(context);
+				assert.equal(links.length, 2);
+				links[1].commit = () => {
+					throw new Error('injected synchronous next-store failure');
+				};
+			}),
+			/injected synchronous next-store failure/
+		);
+		assert.equal((await SecondaryBlobResource.get(2080))?.value, 'head', 'test setup: the head store must land');
+		assert.equal(links[0].writes.length, 0, "the landed head's write set must be cleared");
+	});
+
 	it('marks and clears the commit phase across an LMDB transaction chain', function () {
 		const head = new LMDBTransaction();
 		const next = new LMDBTransaction();
@@ -716,6 +813,8 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 				links.every((txn) => txn.timeout > 20),
 				'the commit-phase re-arm must preserve the transaction timeout budget'
 			);
+			// Only the blob's real I/O and the native commit are left; the monitor must not time the runner's disk.
+			for (const link of links) trackedTxns.delete(link);
 			slow.end(Buffer.alloc(16384, 'i'));
 			await committing;
 		} finally {
@@ -727,16 +826,23 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		assert.equal((await SecondaryBlobResource.get(2067))?.value, 'secondary', 'the linked database write must commit');
 	});
 
-	// Defers a link's native store commit so the monitor runs while the chain is mid-cascade.
-	function stallNativeCommit(link, ms, onStart) {
+	// Defers a link's native store commit so the monitor runs while the chain is mid-cascade. The real commit
+	// after the stall runs unmonitored: its duration is the runner's disk speed, not what these tests check.
+	function stallNativeCommit(link, ms, trackedTxns, monitored, { onStart, onEnd } = {}) {
 		const store = link.writes.find(Boolean).store;
+		const stall = async () => {
+			for (const txn of monitored) trackedTxns.add(txn);
+			onStart?.();
+			await delay(ms);
+			for (const txn of monitored) trackedTxns.delete(txn);
+			onEnd?.();
+		};
 		if (store instanceof RocksDatabase) {
 			const nativeTxn = link.transaction;
 			const commit = nativeTxn.commit;
 			nativeTxn.commit = function (...args) {
 				nativeTxn.commit = commit;
-				onStart?.();
-				return delay(ms).then(() => commit.apply(this, args));
+				return stall().then(() => commit.apply(this, args));
 			};
 			return () => {
 				nativeTxn.commit = commit;
@@ -745,8 +851,7 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		const ifVersion = store.ifVersion;
 		store.ifVersion = function (...args) {
 			store.ifVersion = ifVersion;
-			onStart?.();
-			return delay(ms).then(() => ifVersion.apply(this, args));
+			return stall().then(() => ifVersion.apply(this, args));
 		};
 		return () => {
 			store.ifVersion = ifVersion;
@@ -792,9 +897,12 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 				timeout: 5000,
 				message: 'the idle window should decay while the blob save is parked',
 			});
-			restore = stallNativeCommit(links[0], 250, () => {
-				armed = links.map((txn) => txn.timeout);
+			restore = stallNativeCommit(links[0], 250, trackedTxns, links, {
+				onStart: () => {
+					armed = links.map((txn) => txn.timeout);
+				},
 			});
+			for (const link of links) trackedTxns.delete(link);
 			slow.end(Buffer.alloc(16384, 'm'));
 			await committing;
 			assert.deepEqual(armed, [400, 400], 'every link must start the cascade with the full engine window');
@@ -813,6 +921,7 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		const trackedTxns = setExpiration(20);
 		let links;
 		const restores = [];
+		const consumed = [];
 		try {
 			const committing = transaction(context, async (txn) => {
 				txn.timeoutBudget = 500;
@@ -821,12 +930,26 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 				await ThirdResource.put({ id: 2071, value: 'third' }, context);
 				links = databaseTxns(context);
 				assert.equal(links.length, 3);
-				for (const link of links) trackedTxns.add(link);
-				// Any two hops outlast one window, so only a re-arm at every hop keeps the last link alive; each
-				// hop still leaves ~200ms of its own window for the real native commit on a slow-disk runner.
-				for (const link of links) restores.push(stallNativeCommit(link, 300));
+				const last = links[2];
+				// Any two hops outlast one window, so only a re-arm at every hop keeps the last link alive.
+				links.forEach((link, hop) => {
+					let windowAtStart;
+					restores.push(
+						stallNativeCommit(link, 300, trackedTxns, links.slice(hop), {
+							onStart: () => {
+								windowAtStart = last.timeout;
+							},
+							onEnd: () => consumed.push(windowAtStart - last.timeout),
+						})
+					);
+				});
 			});
 			await committing;
+			assert.equal(consumed.length, 3, 'every hop must stall');
+			assert.ok(
+				consumed.every((ms) => ms > 0),
+				`the monitor must run down the last link's window during every stall: ${consumed}`
+			);
 		} finally {
 			for (const restore of restores) restore();
 			for (const link of links ?? []) trackedTxns.delete(link);

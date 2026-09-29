@@ -84,6 +84,8 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		tableSubscriptions.set(key, (subscriptions = [subscription]));
 		subscriptions.tables = tableSubscriptions;
 		subscriptions.key = key;
+		subscriptions.traversals = 0;
+		subscriptions.hasEnded = false;
 	}
 	subscription.subscriptions = subscriptions;
 	databaseSubscriptions.activeCount = (databaseSubscriptions.activeCount || 0) + 1;
@@ -107,28 +109,43 @@ class Subscription extends IterableEventQueue {
 		this.on('close', () => this.end());
 	}
 	end() {
-		// cleanup
-		if (this.subscriptions) {
-			const tableSubscriptions = this.subscriptions.tables;
-			const envSubscriptions = tableSubscriptions?.envs;
-			this.subscriptions.splice(this.subscriptions.indexOf(this), 1);
-			if (this.subscriptions.length === 0) {
-				if (tableSubscriptions) {
-					// TODO: Handle cleanup of wildcard
-					const key = this.subscriptions.key;
-					tableSubscriptions.delete(key);
-					if (tableSubscriptions.size === 0) {
-						delete envSubscriptions[tableSubscriptions.tableId];
-					}
-				}
-			}
-			if (envSubscriptions?.activeCount > 0) envSubscriptions.activeCount--;
+		const subscriptions = this.subscriptions;
+		if (subscriptions) {
 			this.subscriptions = null;
+			const envSubscriptions = subscriptions.tables?.envs;
+			if (envSubscriptions?.activeCount > 0) envSubscriptions.activeCount--;
+			// splicing would shift the next subscriber past a loop walking this array, which compacts it when it finishes
+			if (subscriptions.traversals > 0) subscriptions.hasEnded = true;
+			else {
+				const index = subscriptions.indexOf(this);
+				if (index > -1) subscriptions.splice(index, 1);
+				if (subscriptions.length === 0) detachKeySubscriptions(subscriptions);
+			}
 		}
 		this.close();
 	}
 	toJSON() {
 		return { name: 'subscription' };
+	}
+}
+function endTraversal(keySubscriptions) {
+	if (--keySubscriptions.traversals === 0 && keySubscriptions.hasEnded) {
+		keySubscriptions.hasEnded = false;
+		let kept = 0;
+		for (let i = 0; i < keySubscriptions.length; i++) {
+			const subscription = keySubscriptions[i];
+			if (subscription.subscriptions) keySubscriptions[kept++] = subscription;
+		}
+		keySubscriptions.length = kept;
+		if (kept === 0) detachKeySubscriptions(keySubscriptions);
+	}
+}
+function detachKeySubscriptions(keySubscriptions) {
+	const tableSubscriptions = keySubscriptions.tables;
+	if (tableSubscriptions) {
+		// TODO: Handle cleanup of wildcard
+		tableSubscriptions.delete(keySubscriptions.key);
+		if (tableSubscriptions.size === 0) delete tableSubscriptions.envs[tableSubscriptions.tableId];
 	}
 }
 const ACTIONS_OF_INTEREST = ['put', 'patch', 'delete', 'message', 'invalidate'];
@@ -196,33 +213,41 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 						// this allows for efficient subscriptions to children ids/topics
 						const keySubscriptions = tableSubscriptions.get(matchingKey);
 						if (keySubscriptions) {
-							for (const subscription of keySubscriptions) {
-								if (
-									ancestorLevel > 0 && // only ancestors if the subscription is for ancestors (and apply onlyChildren filtering as necessary)
-									!(subscription.includeDescendants && !(subscription.onlyChildren && ancestorLevel > 1))
-								)
-									continue;
-								if (subscription.startTime >= timestamp) {
-									continue;
-								}
-								try {
-									let beginTxn;
-									if (subscription.supportsTransactions && subscription.txnInProgress !== txnKey) {
-										// if the subscriber supports transactions, we mark this as the beginning of a new transaction
-										// tracking the subscription so that we can delimit the transaction on next transaction
-										// (with a beginTxn flag, which may be on an endTxn event)
-										beginTxn = true;
-										if (!subscription.txnInProgress) {
-											// if first txn for subscriber of this cycle, add to the transactional subscribers that we are tracking
-											if (!subscribersWithTxns) subscribersWithTxns = [subscription];
-											else subscribersWithTxns.push(subscription);
-										}
-										subscription.txnInProgress = txnKey;
+							keySubscriptions.traversals++;
+							try {
+								// a subscriber added during this walk starts with the next record
+								for (let i = 0, length = keySubscriptions.length; i < length; i++) {
+									const subscription = keySubscriptions[i];
+									if (!subscription.subscriptions) continue;
+									if (
+										ancestorLevel > 0 && // only ancestors if the subscription is for ancestors (and apply onlyChildren filtering as necessary)
+										!(subscription.includeDescendants && !(subscription.onlyChildren && ancestorLevel > 1))
+									)
+										continue;
+									if (subscription.startTime >= timestamp) {
+										continue;
 									}
-									subscription.listener(recordId, auditRecord, timestamp, beginTxn);
-								} catch (error) {
-									warn(error);
+									try {
+										let beginTxn;
+										if (subscription.supportsTransactions && subscription.txnInProgress !== txnKey) {
+											// if the subscriber supports transactions, we mark this as the beginning of a new transaction
+											// tracking the subscription so that we can delimit the transaction on next transaction
+											// (with a beginTxn flag, which may be on an endTxn event)
+											beginTxn = true;
+											if (!subscription.txnInProgress) {
+												// if first txn for subscriber of this cycle, add to the transactional subscribers that we are tracking
+												if (!subscribersWithTxns) subscribersWithTxns = [subscription];
+												else subscribersWithTxns.push(subscription);
+											}
+											subscription.txnInProgress = txnKey;
+										}
+										subscription.listener(recordId, auditRecord, timestamp, beginTxn);
+									} catch (error) {
+										warn(error);
+									}
 								}
+							} finally {
+								endTraversal(keySubscriptions);
 							}
 						}
 						if (matchingKey == null) break;
@@ -242,14 +267,23 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 				// the bulk-reloaded table. hdb_nodes peer discovery and hdb_certificate CA install rely on this.
 				const tableSubscriptions = subscriptions[auditRecord.tableId];
 				if (tableSubscriptions) {
+					// keys added during the walk are appended, so this cap keeps listeners from extending it
+					let remainingKeys = tableSubscriptions.size;
 					for (const keySubscriptions of tableSubscriptions.values()) {
-						for (const subscription of keySubscriptions) {
-							if (subscription.startTime >= timestamp) continue;
-							try {
-								subscription.listener(null, auditRecord, timestamp, false);
-							} catch (error) {
-								warn(error);
+						if (remainingKeys-- === 0) break;
+						keySubscriptions.traversals++;
+						try {
+							for (let i = 0, length = keySubscriptions.length; i < length; i++) {
+								const subscription = keySubscriptions[i];
+								if (!subscription.subscriptions || subscription.startTime >= timestamp) continue;
+								try {
+									subscription.listener(null, auditRecord, timestamp, false);
+								} catch (error) {
+									warn(error);
+								}
 							}
+						} finally {
+							endTraversal(keySubscriptions);
 						}
 					}
 				}
@@ -272,7 +306,12 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 			// any subscribers with open transactions need to have an event to indicate that their transaction has been ended
 			for (const subscription of subscribersWithTxns) {
 				subscription.txnInProgress = null; // clean up
-				subscription.listener(null, { type: 'end_txn' }, subscriptions.lastTxnTime, true);
+				if (!subscription.subscriptions) continue;
+				try {
+					subscription.listener(null, { type: 'end_txn' }, subscriptions.lastTxnTime, true);
+				} catch (error) {
+					warn(error);
+				}
 			}
 		}
 	} finally {

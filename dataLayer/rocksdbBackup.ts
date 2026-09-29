@@ -1,7 +1,8 @@
 'use strict';
 
+import { randomUUID } from 'node:crypto';
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
-import { open, readdir, writeFile } from 'node:fs/promises';
+import { open, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -27,12 +28,14 @@ import { SchemaEventMsg } from '../server/threads/itc.js';
 import { beginRestore, completeRestore, abandonRestore, checkRestoreState, type RestoreLock } from './restoreMarker.ts';
 import {
 	assertBlobSnapshotRestorable,
+	assertEngineOnlyRestoreAllowed,
 	blobSnapshotDir,
 	blobsReadmeContent,
 	deleteBlobSnapshot,
 	purgeBlobSnapshots,
 	restoreBlobSnapshot,
 	snapshotBlobs,
+	walkBlobFiles,
 } from './blobBackup.ts';
 import {
 	deleteBackupManifest,
@@ -165,7 +168,7 @@ function requireBackupId(backupId: any): number {
 	return backupId;
 }
 
-function requireBooleanOption(value: any, name: string): boolean {
+export function requireBooleanOption(value: any, name: string): boolean {
 	if (value !== undefined && typeof value !== 'boolean') {
 		throw new ClientError(`'${name}' must be a boolean`);
 	}
@@ -439,6 +442,13 @@ the backup (blobs are restored automatically). Restore the latest backup in plac
 
     harper restore_backup database=${databaseName} backup_id=<id>
 
+A backup created with \`exclude_blobs\` carries no blobs, so restoring one is refused unless you pass
+\`allow_engine_only=true\`. The restored records address whichever blobs are on disk now: if the
+database still has blob files a record can resolve to one that no longer belongs to it, and if it has
+none the blob ids start over at 1 and the next blob written lands on a path a restored record already
+references. Restoring into a new database is **not** a way around this — its blob roots are empty for
+the same reason. Restore a backup that includes blobs, or accept the mixed result explicitly.
+
 A database held open by a loaded component — and always the \`system\` database — cannot be restored
 while Harper is running; stop the server and run the same command offline. Offline you can also
 restore into a *copy*, leaving the original untouched:
@@ -491,6 +501,7 @@ export async function verifyBackup(request: any) {
 
 export async function validateRestoreBackup(request: any) {
 	requireSuperUser(request, OPERATIONS_ENUM.RESTORE_BACKUP);
+	requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
 	const databaseName = getDatabaseName(request);
 	if (databaseName === 'system') {
 		throw new ClientError(
@@ -558,13 +569,25 @@ export async function restoreBackup(request: any) {
 			: resolveDatabasePath(databaseName);
 	// reject a backup with more blob roots than the current config *before* anything destructive —
 	// restoring it would mis-address blobs (records persist their root index)
-	await assertBlobSnapshotRestorable(backupDir, backupId, getBlobPathsForDatabaseName(databaseName));
+	const blobRoots = getBlobPathsForDatabaseName(databaseName);
+	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
+	const allowEngineOnly = requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
+	// Once is enough: the decision reads the manifest and the opt-in, never the destination, so no
+	// concurrent writer can change the answer between here and the purge.
+	assertEngineOnlyRestoreAllowed(databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
 	const lock = beginRestoreForDatabase(databaseDir, databaseName);
+	const restoreToken = randomUUID();
 	let destructionStarted = false;
 	try {
-		// close the database across all worker threads (each thread also rescans, and the
-		// restoring marker keeps the scan from reloading it mid-restore)
-		await signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.RESTORE_BACKUP, databaseName));
+		// Block new blob saves, drain in-flight saves, and close the database across all worker threads.
+		// Each thread also rescans, and the restoring marker keeps it from reloading mid-restore.
+		try {
+			await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'close', restoreToken));
+		} catch {
+			throw new BackupInProgressError(
+				`Cannot restore database '${databaseName}': not every worker completed the blob-save barrier before the acknowledgement deadline. Retry the restore after the stalled work has cleared.`
+			);
+		}
 		// A live component (or the system database) can hold its own handle on the database that
 		// Harper does not track and cannot close, so verify actual process-wide closure before
 		// purging — restoring under an open instance would corrupt it. If handles remain, fail
@@ -587,6 +610,19 @@ export async function restoreBackup(request: any) {
 		// before any destruction is safe to clear.
 		if (destructionStarted || lock.preexisting) {
 			abandonRestore(lock);
+			// The restore is over even though it failed, so release the workers' blob fence. Without this
+			// the fence outlives the attempt: the marker keeps the database from loading, but an operator
+			// who gives up and drops/recreates the name instead of rerunning gets a database whose writes
+			// are refused by a fence no restore owns any more. Treated as a replaced generation because
+			// destruction may have begun -- forgoing a deletion only leaks a file for the orphan sweep,
+			// while performing a stale one destroys restored bytes.
+			try {
+				await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken, true));
+			} catch (releaseError) {
+				// Never mask the restore failure with a broadcast failure; the fence is worker-local state
+				// and a process restart clears it regardless.
+				logger.error(`Could not release the blob fence after a failed restore of '${databaseName}'`, releaseError);
+			}
 			// wrap rather than mutate error.message: a frozen/library error can have a non-writable
 			// message (assigning it throws TypeError under 'use strict')
 			throw new Error(
@@ -597,13 +633,33 @@ export async function restoreBackup(request: any) {
 		// nothing destructive happened and the marker was fresh — clear it and let every thread reload
 		// the intact database
 		completeRestore(lock);
-		await signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.RESTORE_BACKUP, databaseName));
+		await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken, false));
 		throw error;
 	}
 	completeRestore(lock);
 	// signal again: with the marker gone, every thread's rescan reloads the restored database
-	await signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.RESTORE_BACKUP, databaseName));
-	return { database: databaseName, backup_id: backupId };
+	await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken));
+	return { database: databaseName, backup_id: backupId, ...(allowEngineOnly ? { allow_engine_only: true } : {}) };
+}
+
+/**
+ * `restoreToken` identifies the restore that owns the blob fence. Two restores of the same database
+ * can overlap, so a worker releases the fence only for the token that established it -- see
+ * `resumeBlobSavesAfterRestore`.
+ */
+function restoreSchemaEvent(
+	databaseName: string,
+	restorePhase: 'close' | 'reload',
+	restoreToken: string,
+	generationReplaced = true
+) {
+	const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.RESTORE_BACKUP, databaseName);
+	message.restorePhase = restorePhase;
+	message.restoreToken = restoreToken;
+	// Tells a worker whether the blob roots it fenced were actually replaced. A restore that failed its
+	// admission checks destroyed nothing, so that worker's queued reclamations are still valid.
+	message.generationReplaced = generationReplaced;
+	return message;
 }
 
 // After the close broadcast is acknowledged, every worker thread has released its Harper-managed
@@ -820,28 +876,11 @@ function writeWithBackpressure(dest: PassThrough, chunk: Buffer): Promise<void> 
 async function appendBlobEntries(pack: Pack, blobRoots: string[]): Promise<void> {
 	for (let index = 0; index < blobRoots.length; index++) {
 		const root = blobRoots[index];
-		if (!existsSync(root)) continue;
-		const stack: string[] = [root];
-		while (stack.length > 0) {
-			const dir = stack.pop() as string;
-			let entries;
-			try {
-				entries = await readdir(dir, { withFileTypes: true });
-			} catch (error: any) {
-				if (error.code === 'ENOENT') continue;
-				throw error;
-			}
-			for (const entry of entries) {
-				const filePath = join(dir, entry.name);
-				if (entry.isDirectory()) {
-					stack.push(filePath);
-				} else if (entry.isFile()) {
-					// tar entry names are always POSIX-separated; relative() yields `\` on Windows, which
-					// would otherwise become literal filename characters when extracted on POSIX
-					const relativePath = relative(root, filePath).split(sep).join('/');
-					await appendBlobEntry(pack, filePath, `blobs/${index}/${relativePath}`);
-				}
-			}
+		for await (const filePath of walkBlobFiles(root)) {
+			// tar entry names are always POSIX-separated; relative() yields `\` on Windows, which
+			// would otherwise become literal filename characters when extracted on POSIX
+			const relativePath = relative(root, filePath).split(sep).join('/');
+			await appendBlobEntry(pack, filePath, `blobs/${index}/${relativePath}`);
 		}
 	}
 }
@@ -996,7 +1035,15 @@ export async function createBackupOffline(databaseName: string, excludeBlobs = f
  * server start. `targetDatabase` restores into a different database directory (non-destructive
  * for the source database); the server picks it up on next start via normal engine detection.
  */
-export async function restoreBackupOffline(databaseName: string, backupId?: number, targetDatabase?: string) {
+export async function restoreBackupOffline(
+	databaseName: string,
+	backupId?: number,
+	targetDatabase?: string,
+	allowEngineOnlyOption?: boolean
+) {
+	// Validated the same way the online path validates it, so a malformed opt-in is refused rather than
+	// silently read as "no". The CLI JSON-parses `key=value`, so a typo arrives here as a string.
+	const allowEngineOnly = requireBooleanOption(allowEngineOnlyOption, 'allow_engine_only');
 	validateDatabaseName(databaseName);
 	const backupDir = backupDirForDatabase(databaseName);
 	// resolve to the latest complete backup (or the requested id, rejected if incomplete)
@@ -1014,7 +1061,9 @@ export async function restoreBackupOffline(databaseName: string, backupId?: numb
 	}
 	// reject a backup with more blob roots than the target's current config before anything
 	// destructive (records persist their root index, so collapsing would mis-address blobs)
-	await assertBlobSnapshotRestorable(backupDir, backupId, getBlobPathsForDatabaseName(targetDatabase ?? databaseName));
+	const blobRoots = getBlobPathsForDatabaseName(targetDatabase ?? databaseName);
+	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
+	assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
 	// Take the restore lock + marker BEFORE probing so a server that starts after this point sees the
 	// marker and refuses to load the database (closing the window between the probe and the purge).
 	const lock = beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName);
@@ -1069,7 +1118,12 @@ export async function restoreBackupOffline(databaseName: string, backupId?: numb
 		throw error;
 	}
 	completeRestore(lock);
-	return { database: databaseName, backup_id: backupId, restored_to: databaseDir };
+	return {
+		database: databaseName,
+		backup_id: backupId,
+		restored_to: databaseDir,
+		...(allowEngineOnly ? { allow_engine_only: true } : {}),
+	};
 }
 
 function isMissingOrEmptyDir(path: string): boolean {
