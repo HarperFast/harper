@@ -915,8 +915,10 @@ export function getDatabaseGeneration(auditStore: any): DatabaseGeneration | und
  * either record can show.
  */
 export function getAuditResumeFloor(auditStore: any): number {
-	const resumeFloor = decodeAuditFloor(auditStore.getBinary(AUDIT_RESUME_FLOOR_KEY));
+	// The audit floor first: both records only rise, and an unknown audit floor stays unknown, so a prune
+	// committing between the two reads is still seen through the resume floor read second.
 	const auditFloor = getAuditFloor(auditStore);
+	const resumeFloor = decodeAuditFloor(auditStore.getBinary(AUDIT_RESUME_FLOOR_KEY));
 	return Number.isFinite(auditFloor) && auditFloor > resumeFloor ? auditFloor : resumeFloor;
 }
 
@@ -924,7 +926,8 @@ export function getAuditResumeFloor(auditStore: any): number {
  * Whether a position may resume here: it names this handle's generation and carries a finite cursor
  * at or above the resume floor. The cursor must be progress-based — no lower than the log position
  * observed when the position was established — or a quiet scope's snapshot key falls below a floor
- * that retention keeps advancing and is refused on every resume.
+ * that retention keeps advancing and is refused on every resume. The answer holds as of the read: a
+ * prune that commits after it returns is the caller's to order against its replay.
  */
 export function isResumablePosition(auditStore: any, generationId: string | undefined, cursor: number): boolean {
 	const generation = getDatabaseGeneration(auditStore);

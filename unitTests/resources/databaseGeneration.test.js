@@ -125,6 +125,28 @@ describe('Database generation', () => {
 	});
 
 	describe('the resume floor', () => {
+		it('sees a prune that commits between its two metadata reads', () => {
+			const store = tableInOwnDatabase().auditStore;
+			putRecord(store, FLOOR_KEY, floorBytes(Infinity));
+			putRecord(store, RESUME_FLOOR_KEY, floorBytes(100));
+			const { id } = getDatabaseGeneration(store);
+			const getBinary = store.getBinary;
+			let pruned = false;
+			store.getBinary = function (key) {
+				const value = getBinary.call(this, key);
+				if (!pruned) {
+					pruned = true;
+					raiseAuditFloor(store, 200);
+				}
+				return value;
+			};
+			try {
+				assert.strictEqual(isResumablePosition(store, id, 150), false);
+			} finally {
+				store.getBinary = getBinary;
+			}
+		});
+
 		it('is raised by a prune together with the audit floor', () => {
 			const store = tableInOwnDatabase().auditStore;
 			const cutoff = Date.now() + 1000;
