@@ -18,7 +18,25 @@ export {
 export { getContext, getResponse, getUser } from './security/jsLoader.ts';
 // An untagged error from a `server.getUser` override is treated as an internal fault; these tag one
 // as a rejected credential, which authentication defers to the route owner instead (#2703).
-export { markCredentialRejection, credentialRejectionError } from './security/credentialRejection.ts';
+export {
+	markCredentialRejection,
+	credentialRejectionError,
+	isCredentialRejection,
+} from './security/credentialRejection.ts';
+// What the built-in MQTT endpoint uses to drain on worker shutdown, verify a client certificate on an
+// mTLS listener and settle authentication after a protocol handshake, so a protocol plugin can do the
+// same (#2715). Exported from the defining modules: the plugin must share the drain registry and the
+// credential-rejection tag with core, not get copies.
+export { registerShutdownDrain, type ShutdownDrain } from './components/shutdownDrain.ts';
+export { verifyCertificate } from './security/certificateVerification/index.ts';
+export type { PeerCertificate, CertificateVerificationResult } from './security/certificateVerification/types.ts';
+export {
+	assertNoDeferredCredentialRejection,
+	getAuthenticationRejectedInPlace,
+	getDeferredCredentialRejection,
+	settleDeferredCredentialRejection,
+	type DeferredCredentialRejection,
+} from './security/deferredAuthentication.ts';
 // Code-first schema authoring: declare a table as a TypeScript value; the returned
 // handle is the live, registered table class with per-verb shapes inferred from the definition.
 export { defineTable, types } from './resources/defineTable.ts';

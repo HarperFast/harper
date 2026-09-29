@@ -593,6 +593,15 @@ therefore starts that one built-in through `startSecretCustodyOnMainThread()` be
 root load reuses the start through the shared `mainThreadInitialized` gate ([#2780](https://github.com/HarperFast/harper/issues/2780)).
 Enforced by `integrationTests/components/boot-install-secret-custody.test.ts`.
 
+## A shutdown drain is registered in `handleApplication` and released on `'close'` (`components/shutdownDrain.ts`)
+
+`registerShutdownDrain` is public (`import { registerShutdownDrain } from 'harper'`, harper#2715) so a protocol plugin drains in-flight sessions the way the built-in MQTT endpoint does. Two facts make the prescribed shape — register in `handleApplication`, pass the unregister function to `scope.once('close', …)` — correct, and neither is visible from the function:
+
+- The registry is per worker and `runShutdownDrains` snapshots it synchronously in the `SHUTDOWN` handler (`server/threads/threadServer.js`), in the same message dispatch that starts `Scope.close()`; `Scope.close()` emits `'close'` only after awaiting its entry handlers. So unregistering on `'close'` cannot skip the drain at a real shutdown, and it is what removes the hook on a restart-free deploy, which closes the old scope in the same worker with no `SHUTDOWN` at all.
+- A hook that holds an exclusive listener open delays its release. On Windows, macOS and Bun the replacement worker starts only after `SHUTDOWN` is posted, so it can fail to bind until the drain settles (harper#1813). The API does not fix that; its contract states it.
+
+Enforced by the lifecycle cases in `unitTests/components/shutdownDrain.test.js` and by `integrationTests/components/shutdown-drain-e2e.test.ts`, whose fixture imports the function from `'harper'` and drains across a real worker restart.
+
 ## Startup waits for component preparation only up to `deployment.startupInstallTimeout`
 
 Listeners open and workers start only after `installApplications()` returns, so any component preparation it

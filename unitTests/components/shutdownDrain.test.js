@@ -107,6 +107,63 @@ describe('shutdownDrain', () => {
 		});
 	});
 
+	describe('a plugin drain across the scope lifecycle (#2715)', () => {
+		const { Scope } = require('#src/components/Scope');
+		const { ApplicationScope } = require('#src/components/ApplicationScope');
+		const { Resources } = require('#src/resources/Resources');
+		const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
+		const { tmpdir } = require('node:os');
+		const { join } = require('node:path');
+		let directory;
+		beforeEach(() => {
+			directory = mkdtempSync(join(tmpdir(), 'harper.unit-test.drain-scope-'));
+			writeFileSync(join(directory, 'config.yaml'), 'resp:\n  port: 6379\n');
+		});
+		afterEach(async () => {
+			// let the closed scope's watcher teardown settle before the directory goes away (see Scope.test.js)
+			await new Promise((resolve) => setImmediate(resolve));
+			rmSync(directory, { recursive: true, force: true });
+		});
+		async function readyScope() {
+			const scope = new Scope(
+				'app',
+				'resp',
+				directory,
+				join(directory, 'config.yaml'),
+				new ApplicationScope('app', new Resources(), {})
+			);
+			await scope.ready;
+			return scope;
+		}
+		// the registration shape the public contract prescribes
+		function handleApplication(scope, drain) {
+			scope.once('close', registerShutdownDrain(drain));
+		}
+
+		it('registered in handleApplication and released by scope.close(), so a restart-free reload leaves no stale hook', async () => {
+			const scope = await readyScope();
+			let ran = 0;
+			handleApplication(scope, { hasWork: () => true, drain: async () => void ran++ });
+			assert.equal(shutdownDrainsHaveWork(), true);
+			await scope.close();
+			assert.equal(shutdownDrainsHaveWork(), false);
+			await runShutdownDrains(Date.now() + 1000);
+			assert.equal(ran, 0);
+		});
+
+		it("still drains at worker shutdown, where the registry is snapshotted before the 'close' listener can run", async () => {
+			const scope = await readyScope();
+			let ran = 0;
+			handleApplication(scope, { hasWork: () => true, drain: async () => void ran++ });
+			// threadServer.js starts the scope close and the drain run in the same SHUTDOWN dispatch, in this order
+			const closing = scope.close();
+			const drained = runShutdownDrains(Date.now() + 1000);
+			await Promise.all([closing, drained]);
+			assert.equal(ran, 1);
+			assert.equal(shutdownDrainsHaveWork(), false);
+		});
+	});
+
 	describe('runShutdownDrains', () => {
 		it('resolves immediately when no drains are registered', async () => {
 			await runShutdownDrains(Date.now() + 10_000);

@@ -36,6 +36,11 @@ export function deferCredentialRejection(request: any, error: { message?: string
 	});
 }
 
+/**
+ * The credential rejection authentication deferred on this request, if any. A WebSocket or MQTT
+ * upgrade owner reads it after the HTTP chain settles, for the client-safe close reason; an HTTP route
+ * owner calls `settleDeferredCredentialRejection` instead, which renders it.
+ */
 export function getDeferredCredentialRejection(request: any): DeferredCredentialRejection | undefined {
 	return request?.[DEFERRED_CREDENTIAL_REJECTION];
 }
@@ -51,6 +56,10 @@ export function getDeferredCredentialRejection(request: any): DeferredCredential
  * challenge headers alone, so it stays byte-identical to the in-line 401 it replaced.
  *
  * Returns `undefined` when nothing was deferred, so a caller can `return settled ?? …` inline.
+ *
+ * A plugin-owned HTTP route calls it first, before reading `request.user`, and returns the result when
+ * it is defined: that is the 401 Harper would have sent in line, so the plugin's route and a Harper
+ * route reject the same credential identically.
  */
 export function settleDeferredCredentialRejection(
 	request: any
@@ -83,10 +92,21 @@ export function markAuthenticationRejectedInPlace(request: any, status: number, 
 	});
 }
 
+/**
+ * The 401 authentication already answered in place for this request, if any: the other record an
+ * upgrade owner reads for its close reason (`getDeferredCredentialRejection(request) ??
+ * getAuthenticationRejectedInPlace(request)`).
+ */
 export function getAuthenticationRejectedInPlace(request: any): { status: number; message: string } | undefined {
 	return request?.[REJECTED_IN_PLACE];
 }
 
+/**
+ * Fail an upgrade closed when authentication rejected the request's credential, deferred or in place:
+ * throws a `ClientError` carrying the rejection's status and client-safe message. A WebSocket owner
+ * calls it after awaiting the HTTP chain (`chainCompletion`) and before creating a session from
+ * `request.user`, because a returned 401 is invisible to an upgrade that only awaits the chain.
+ */
 export function assertNoDeferredCredentialRejection(request: any): void {
 	const rejected = getDeferredCredentialRejection(request) ?? getAuthenticationRejectedInPlace(request);
 	if (rejected) throw new ClientError(rejected.message, rejected.status);

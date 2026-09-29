@@ -1,27 +1,12 @@
-// QA-519 — end-to-end verification of the shutdown-drain mechanism
-// (components/shutdownDrain.ts, commit 9018760e4, PR #1621).
+// QA-519 — end-to-end verification of the shutdown-drain mechanism (components/shutdownDrain.ts).
 //
-// The shipped unit tests (unitTests/components/shutdownDrain.test.js) only exercise the pure
-// functions with fake drain objects — never a real worker, a real SHUTDOWN, or real in-flight
-// work. This fixture registers a REAL ShutdownDrain inside an actual HTTP worker thread and
-// gives the test a way to observe, via a marker file, exactly when the worker's simulated
-// in-flight task finished relative to when the worker itself exited.
-//
-// To register into the SAME per-worker `drains` registry that
-// `server/threads/threadServer.js` reads from (module state there is a plain in-memory `Set`,
-// naturally scoped per worker thread — see the doc comment on shutdownDrain.ts), this file must
-// land in Node's REAL native CJS `require` cache, not Harper's sandboxed VM module loader's
-// private per-component cache (which would produce an isolated copy of the module with its own
-// empty `Set`). `createRequire(import.meta.url)` escapes the sandbox for exactly this file,
-// giving a genuine native `require` bound to this file's real location; requiring the absolute
-// path to the compiled `dist/components/shutdownDrain.js` through it resolves to the exact same
-// cache entry `threadServer.js` itself populated at boot.
-import { createRequire } from 'node:module';
+// Registers a real ShutdownDrain inside an actual HTTP worker thread through the public `harper`
+// module — the surface a package-installed plugin uses (#2715) — and gives the test a way to
+// observe, via a marker file, when the worker's simulated in-flight task finished relative to when
+// the worker itself exited.
 import { threadId } from 'node:worker_threads';
 import { appendFileSync } from 'node:fs';
-
-const nativeRequire = createRequire(import.meta.url);
-const { registerShutdownDrain } = nativeRequire(process.env.QA519_SHUTDOWN_DRAIN_ABS_PATH);
+import { registerShutdownDrain } from 'harper';
 
 const MARKER_FILE = process.env.QA519_MARKER_FILE;
 const parsedTaskDelay = Number(process.env.QA519_TASK_DELAY_MS);

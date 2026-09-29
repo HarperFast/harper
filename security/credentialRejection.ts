@@ -17,6 +17,13 @@ export function credentialRejectionError(message: string, statusCode: number): C
 	return markCredentialRejection(new ClientError(message, statusCode));
 }
 
+/**
+ * Whether an error is a credential Harper, or a `server.getUser` override, rejected — as opposed to an
+ * internal fault. A protocol that authenticates after its handshake (`server.getUser(username,
+ * password)` on a RESP `AUTH`, as MQTT does on CONNECT) answers a rejection with its bad-credentials
+ * reply and treats anything else as a fault to close the connection on. Only an error tagged by
+ * `markCredentialRejection`/`credentialRejectionError` qualifies; a 4xx status alone does not.
+ */
 export function isCredentialRejection(error: unknown): boolean {
 	return (error as Record<symbol, unknown> | null | undefined)?.[CREDENTIAL_REJECTION] === true;
 }

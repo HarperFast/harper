@@ -58,7 +58,10 @@ export function boundedTerminateDelay(deadlineMs: number, now: number, baseMs: n
 }
 
 export interface ShutdownDrain {
-	/** Synchronous, cheap: is there in-flight work worth draining right now? Drives deadline extension. */
+	/**
+	 * Synchronous and cheap: is there in-flight work worth draining right now? While it returns `true`
+	 * the worker's force-terminate deadline extends, up to `replication.blobSendDrainTimeout`.
+	 */
 	hasWork(): boolean;
 	/**
 	 * Resolve once this hook's in-flight work has finished, stalled, or the absolute deadline has
@@ -70,7 +73,23 @@ export interface ShutdownDrain {
 
 const drains = new Set<ShutdownDrain>();
 
-/** Register a drain hook. Returns an unregister function. */
+/**
+ * Register a hook that lets in-flight work reach a safe point before this worker shuts down. The
+ * built-in MQTT endpoint and a protocol plugin (`import { registerShutdownDrain } from 'harper'`) share
+ * this registry. Returns the unregister function.
+ *
+ * Call it from `handleApplication`: the registry is per worker and is snapshotted the moment the
+ * worker is told to stop, so a hook registered later never runs. Pass the returned function to
+ * `scope.once('close', …)`: a restart-free reload closes the old scope in this same worker and would
+ * otherwise leave the stale hook registered, while at a real shutdown the snapshot is already taken
+ * when `'close'` listeners run, so the hook still drains. `hasWork()` returning `true` holds the worker
+ * open up to `replication.blobSendDrainTimeout` (default 10 minutes; `0` disables draining).
+ * `drain(deadlineMs)` must settle by that absolute time; a hook that ignores it is abandoned, and a
+ * throw or rejection is logged and treated as settled. On Windows, macOS and Bun the replacement
+ * worker starts only after this one is told to stop, so a hook that keeps an exclusive listener open
+ * delays the port's release and the replacement can fail to bind until the drain settles
+ * (harper#1813).
+ */
 export function registerShutdownDrain(drain: ShutdownDrain): () => void {
 	drains.add(drain);
 	return () => drains.delete(drain);
