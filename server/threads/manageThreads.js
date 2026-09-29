@@ -158,6 +158,7 @@ function notifyJobCleanupComplete() {
 
 const listenersByType = new Map();
 const messagesQueuedByType = new Map();
+const { promise: whenThreadsStarted, resolve: threadsHaveStarted } = Promise.withResolvers();
 
 module.exports = {
 	startWorker,
@@ -212,11 +213,11 @@ module.exports = {
 	// would not. `undefined` on a worker started without it; consumers must fall back, not treat that
 	// as a mismatch.
 	processIncarnation: workerData ? workerData.processIncarnation : randomBytes(8).toString('hex'),
+	whenThreadsStarted,
+	threadsHaveStarted,
 	// Assigned further down once defined. Listed here because TypeScript 7 only treats keys of this
 	// literal as exports of the module, not later `module.exports.x =` assignments.
 	sendToThread: undefined,
-	whenThreadsStarted: undefined,
-	threadsHaveStarted: undefined,
 	getThreadInfo: undefined,
 	getRunningIsolatedApplications: undefined,
 	watchDir: undefined,
@@ -241,9 +242,6 @@ connectedPorts.sendToThread = function (threadId, message) {
 // Direct thread-to-thread send, so a worker can reach a sibling (e.g. the record lock owner worker)
 // without a hop through main. Returns false when no port for the thread is connected.
 module.exports.sendToThread = connectedPorts.sendToThread;
-module.exports.whenThreadsStarted = new Promise((resolve) => {
-	module.exports.threadsHaveStarted = resolve;
-});
 
 // make sure this is set on all threads, including the main thread (this is no-op
 // if it was already with the execArgv below)
