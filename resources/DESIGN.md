@@ -774,11 +774,12 @@ the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.
 ## A local-only write marks both the record and its audit entry, and replay preserves it (`Table.ts` internal writes, `replayLogs.ts`)
 
 `LOCAL_ONLY` rides both persisted forms — the audit entry's `extendedType` and the stored record's
-`metadataFlags` — so a replication sender skips it by a bitmask test without decoding the value. Every
-internal write routine forwards `options.localOnly` to `updateRecord`; the static protocol verbs never
-carry it, and of the instance verbs only `publish(target, message, options)` forwards one. Crash replay
-re-derives it from the entry, because replay re-encodes the record but never re-appends its audit entry
-(replay transactions are `isRetry`), so the record metadata is the half a replay can lose. The bit
-reflects a row's latest write, so a caller needing a row to stay local re-asserts it on every write.
-Reload and derived-index `evict` markers are always local-only; lock control entries never are.
+`metadataFlags` — so a replication sender skips it by a bitmask test without decoding the value.
+Record mutations set both from `options.localOnly`. A publish applies the option only to its message
+audit entry and preserves the existing row bit, because a message does not change the row's replication
+eligibility. The static protocol verbs never carry the option; of the instance verbs only
+`publish(target, message, options)` forwards one. Crash replay re-derives it from the entry, because
+replay re-encodes the record but never re-appends its audit entry (replay transactions are `isRetry`).
+The row bit reflects its latest mutation, so a caller needing a row to stay local re-asserts it on every
+mutation. Reload and derived-index `evict` markers are always local-only; lock control entries never are.
 Enforced by `unitTests/resources/localOnly.test.js` (both engines; crash + boot replay on RocksDB).

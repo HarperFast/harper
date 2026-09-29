@@ -53,10 +53,6 @@ describe('local-only writes (harper#2711)', () => {
 			stage: (resource, id, options) => resource._writeInvalidate(id, undefined, options),
 		},
 		relocate: { type: 'relocate', stage: (resource, id, options) => resource._writeRelocate(id, options) },
-		publish: {
-			type: 'message',
-			stage: (resource, id, options) => resource._writePublish(id, { text: 'to ' + id }, options),
-		},
 	};
 
 	for (const [name, { type, stage }] of Object.entries(writes)) {
@@ -84,6 +80,42 @@ describe('local-only writes (harper#2711)', () => {
 			assert.strictEqual(Rows.primaryStore.getEntry(id).metadataFlags & LOCAL_ONLY, 0, 'no LOCAL_ONLY on the record');
 		});
 	}
+
+	it("keeps a message's replication eligibility separate from its row's eligibility", async function () {
+		const replicableId = 'replicable-row-local-message';
+		await Rows.put({ id: replicableId, name: 'row' });
+		await writeThrough(replicableId, (resource) =>
+			resource._writePublish(replicableId, { text: 'local message' }, { localOnly: true })
+		);
+
+		assert.strictEqual(
+			newestEntry(replicableId, 'message').extendedType & LOCAL_ONLY,
+			LOCAL_ONLY,
+			'the local-only message stays off audit forwarding'
+		);
+		assert.strictEqual(
+			Rows.primaryStore.getEntry(replicableId).metadataFlags & LOCAL_ONLY,
+			0,
+			'the unchanged replicable row remains eligible for a full copy'
+		);
+
+		const localId = 'local-row-replicable-message';
+		await writeThrough(localId, (resource) =>
+			resource._writeUpdate(localId, { id: localId, name: 'row' }, true, { localOnly: true })
+		);
+		await writeThrough(localId, (resource) => resource._writePublish(localId, { text: 'replicable message' }, {}));
+
+		assert.strictEqual(
+			newestEntry(localId, 'message').extendedType & LOCAL_ONLY,
+			0,
+			'the plain message remains eligible for audit forwarding'
+		);
+		assert.strictEqual(
+			Rows.primaryStore.getEntry(localId).metadataFlags & LOCAL_ONLY,
+			LOCAL_ONLY,
+			'the unchanged local-only row remains ineligible for a full copy'
+		);
+	});
 
 	describeUnlessLmdb('crash replay', () => {
 		async function runCrashChild(args) {

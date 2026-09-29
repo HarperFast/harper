@@ -6490,7 +6490,7 @@ export function makeTable(options) {
 						existingEntry?.value ?? null,
 						existingEntry,
 						txnTime,
-						0,
+						(existingEntry?.metadataFlags ?? 0) & LOCAL_ONLY,
 						true,
 						{
 							user: (context as any)?.user,
@@ -6500,7 +6500,7 @@ export function makeTable(options) {
 							viaNodeId: options?.viaNodeId,
 							transaction,
 							tableToTrack: tableName,
-							localOnly: options?.localOnly,
+							auditLocalOnly: options?.localOnly,
 						},
 						'message',
 						false,
