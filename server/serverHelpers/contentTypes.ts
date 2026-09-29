@@ -314,7 +314,19 @@ const registerFastifySerializers = fp(
 		fastify.addHook('preSerialization', async (request, reply) => {
 			const contentType = reply.raw.getHeader('content-type');
 			if (contentType) return;
-			const { serializer, type } = findBestSerializer(request.raw);
+			let { serializer, type } = findBestSerializer(request.raw);
+			// An error that no route chose to stream is an ordinary response: written as an unnamed event,
+			// an SSE client reads it as a stream that ended without a result.
+			if (
+				type === 'text/event-stream' &&
+				reply.statusCode >= 400 &&
+				!String(reply.getHeader('content-type') ?? '')
+					.toLowerCase()
+					.startsWith('text/event-stream')
+			) {
+				serializer = mediaTypes.get('application/json');
+				type = 'application/json';
+			}
 			reply.type(type);
 			reply.serializer(function (data: any) {
 				let serialize: (data: any, context: any) => any;
@@ -402,8 +414,15 @@ export function findBestSerializer(incomingMessage) {
 	return { serializer: bestSerializer, type: bestType, parameters: bestParameters };
 }
 
-// about an average TCP packet size (if headers included)
 const COMPRESSION_THRESHOLD = envMgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD);
+const brotliParams = (mode: number) => ({
+	params: { [constants.BROTLI_PARAM_MODE]: mode, [constants.BROTLI_PARAM_QUALITY]: 2 },
+});
+const BROTLI_TEXT_OPTIONS = brotliParams(constants.BROTLI_MODE_TEXT);
+const BROTLI_GENERIC_OPTIONS = brotliParams(constants.BROTLI_MODE_GENERIC);
+export function brotliOptions(contentType: string) {
+	return contentType.includes('json') || contentType.includes('text') ? BROTLI_TEXT_OPTIONS : BROTLI_GENERIC_OPTIONS;
+}
 /**
  * Serialize a response
  * @param responseData
@@ -416,24 +435,28 @@ export function serialize(responseData, request, responseObject) {
 	//  client itself actually (just) supports gzip/deflate
 	let canCompress = COMPRESSION_THRESHOLD && request.headers.asObject?.['accept-encoding']?.includes('br');
 	let responseBody;
+	let contentType: string;
 	if (responseData?.contentType != null && responseData.data != null) {
 		// we use this as a special marker for blobs of data that are explicitly one content type
-		responseObject.headers.set('Content-Type', responseData.contentType);
+		contentType = responseData.contentType;
+		responseObject.headers.set('Content-Type', contentType);
 		responseObject.headers.set('Vary', 'Accept-Encoding');
 		responseBody = responseData.data;
 	} else if (responseData instanceof Uint8Array || responseData instanceof Blob) {
 		// If a user function or property returns a direct Buffer of binary data, this is the most appropriate content
 		// type for it.
-		responseObject.headers.set('Content-Type', 'application/octet-stream');
+		contentType = 'application/octet-stream';
+		responseObject.headers.set('Content-Type', contentType);
 		responseObject.headers.set('Vary', 'Accept-Encoding');
 		responseBody = responseData;
 	} else {
 		const serializer = findBestSerializer(request);
 		if (serializer.serializer.compressible === false) canCompress = false;
+		contentType = serializer.type;
 		// TODO: If a different content type is preferred, look through resources to see if there is one
 		// specifically for that content type (most useful for html).
 		responseObject.headers.set('Vary', 'Accept, Accept-Encoding');
-		responseObject.headers.set('Content-Type', serializer.type);
+		responseObject.headers.set('Content-Type', contentType);
 		if (
 			typeof responseData === 'object' &&
 			responseData &&
@@ -442,9 +465,9 @@ export function serialize(responseData, request, responseObject) {
 		) {
 			if (
 				responseData.mapError &&
-				serializer.type !== 'application/x-ndjson' &&
-				serializer.type !== 'application/ndjson' &&
-				serializer.type !== 'text/event-stream'
+				contentType !== 'application/x-ndjson' &&
+				contentType !== 'application/ndjson' &&
+				contentType !== 'text/event-stream'
 			) {
 				// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
 				const getColumns = responseData.getColumns;
@@ -456,33 +479,27 @@ export function serialize(responseData, request, responseObject) {
 				});
 				responseData.getColumns = getColumns;
 			}
-			let stream = serializer.serializer.serializeStream(responseData, responseObject, request);
-			if (canCompress) {
+			const serialized = serializer.serializer.serializeStream(responseData, responseObject, request);
+			if (!canCompress) return serialized;
+			// a handler may return a complete body (msgpack does for arrays)
+			if (typeof serialized === 'string' || serialized instanceof Uint8Array) responseBody = serialized;
+			else {
 				responseObject.headers.set('Content-Encoding', 'br');
-				const uncompressedStream = stream;
-				stream = stream.pipe(
-					createBrotliCompress({
-						params: {
-							[constants.BROTLI_PARAM_MODE]:
-								serializer.type.includes('json') || serializer.type.includes('text')
-									? constants.BROTLI_MODE_TEXT
-									: constants.BROTLI_MODE_GENERIC,
-							[constants.BROTLI_PARAM_QUALITY]: 2, // go fast
-						},
-					})
-				);
-				if (uncompressedStream[streamStartup]) stream[streamStartup] = uncompressedStream[streamStartup];
+				const source = typeof serialized.pipe === 'function' ? serialized : Readable.from(serialized);
+				// pipeline, not pipe: a source error must destroy the compressor (which the HTTP layer reports) rather
+				// than be emitted with no listener
+				const compressed = stream.pipeline(source, createBrotliCompress(brotliOptions(contentType)), () => {});
+				if (source[streamStartup]) compressed[streamStartup] = source[streamStartup];
+				return compressed;
 			}
-			return stream;
-		}
-		responseBody = serializer.serializer.serialize(responseData, responseObject);
+		} else responseBody = serializer.serializer.serialize(responseData, responseObject);
 	}
 	if (canCompress && responseBody?.length > COMPRESSION_THRESHOLD) {
 		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
 		responseObject.headers.set('Content-Encoding', 'br');
 		// if we have a single buffer (or string) we compress in a single async call
 		return new Promise((resolve, reject) =>
-			brotliCompress(responseBody, (err, data) => {
+			brotliCompress(responseBody, brotliOptions(contentType), (err, data) => {
 				if (err) reject(err);
 				else resolve(data);
 			})

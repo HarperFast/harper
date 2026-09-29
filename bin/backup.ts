@@ -81,7 +81,7 @@ export async function runBackupCommand(command: string): Promise<void> {
 				databaseName,
 				request.backup_id,
 				request.target_database,
-				request.allow_engine_only === true
+				request.allow_engine_only
 			);
 			break;
 		default:

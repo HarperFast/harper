@@ -7,9 +7,10 @@ const { expect } = chai;
 const sinon_chai = require('sinon-chai').default;
 chai.use(sinon_chai);
 const harper_logger = require('#src/utility/logging/harper_logger');
-const user_schema = require('#src/security/user');
-const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default;
-// Note: rewire is used to access private functions (schemaHandler, userHandler, componentStatusRequestHandler)
+// The handlers require components/status lazily, and its first load replaces global `threads`; load it
+// before the tests stub `threads.sendToThread`
+require('#src/components/status/index');
+// Note: rewire is used to access private functions (schemaHandler, componentStatusRequestHandler)
 // for testing validation logic, not for replacing dependencies with mocks
 const server_itc_handlers = rewire('#js/server/itc/serverHandlers');
 const { resetResources } = require('#src/resources/Resources');
@@ -34,79 +35,6 @@ describe('Test hdbChildIpcHandler module', () => {
 
 	afterEach(() => {
 		sandbox.resetHistory();
-	});
-
-	describe('Test user event handler function', () => {
-		let user_handler;
-
-		before(() => {
-			user_handler = server_itc_handlers.__get__('userHandler');
-		});
-
-		// Tests error handling: verifies errors from setUsersWithRolesCache are caught and logged
-		it('Test User Handler log error upon setUsersWithRolesCache failure', async () => {
-			const setUserStub = sandbox.stub(user_schema, 'setUsersWithRolesCache').throws({ name: TEST_ERR });
-			const test_event = {
-				type: 'user',
-				message: { originator: 12345 },
-			};
-			await user_handler(test_event);
-			// Verify the specific error was logged (not just any error)
-			expect(log_error_stub.args[0][0].name).to.equal(TEST_ERR);
-			setUserStub.restore();
-		});
-
-		// Tests validation: verifies valid events pass validation and reach the cache update
-		it('Test User Handler calls setUsersWithRolesCache on valid event', async () => {
-			const setUserStub = sandbox.stub(user_schema, 'setUsersWithRolesCache').resolves();
-			const resetReadTxnStub = sandbox.stub(harperBridge, 'resetReadTxn');
-			const test_event = {
-				type: 'user',
-				message: { originator: 12345 },
-			};
-			await user_handler(test_event);
-			// Verifies validation passed and handler proceeded to update cache
-			expect(setUserStub).to.have.been.calledOnce;
-			setUserStub.restore();
-			resetReadTxnStub.restore();
-		});
-
-		// Tests validation: invalid events should be rejected and logged
-		it('Test User Handler logs error on invalid event (missing type)', async () => {
-			const test_event = {
-				message: { originator: 12345 },
-			};
-			await user_handler(test_event);
-			expect(log_error_stub).to.have.been.called;
-		});
-
-		// Tests validation: invalid events should be rejected and logged
-		it('Test User Handler logs error on invalid event (missing message)', async () => {
-			const test_event = {
-				type: 'user',
-			};
-			await user_handler(test_event);
-			expect(log_error_stub).to.have.been.called;
-		});
-
-		// Tests listener registration: verifies addListener actually registers callbacks
-		it('Test User Handler addListener functionality', async () => {
-			const setUserStub = sandbox.stub(user_schema, 'setUsersWithRolesCache').resolves();
-			const resetReadTxnStub = sandbox.stub(harperBridge, 'resetReadTxn');
-			let listenerCalled = false;
-			user_handler.addListener(() => {
-				listenerCalled = true;
-			});
-			const test_event = {
-				type: 'user',
-				message: { originator: 12345 },
-			};
-			await user_handler(test_event);
-			// Verifies registered listener was actually invoked
-			expect(listenerCalled).to.be.true;
-			setUserStub.restore();
-			resetReadTxnStub.restore();
-		});
 	});
 
 	describe('Test schema event handler function', () => {

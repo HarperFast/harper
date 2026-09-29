@@ -1,9 +1,21 @@
 import { type Logger } from '../utility/logging/logger.ts';
-import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.ts';
-import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import {
+	getConfigObj,
+	getConfigValue,
+	getConfigPath,
+	isUnsupportedSyncError as isUnsupportedSync,
+} from '../config/configUtils.ts';
+import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
+import {
+	applyRootConfigEffect,
+	assertRootConfigEffectPublishable,
+	isRootConfigEffect,
+	rootConfigEffectFromDeclaration,
+	type RootConfigEffect,
+} from './rootConfigPublication.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
-import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
+import { broadcastDeployStart, broadcastDeployEnd, deployLifecycle } from './deployLifecycle.ts';
 import { ComponentPreparationLockTimeoutError, withComponentPreparationLock } from './componentPreparationLock.ts';
 import {
 	isThreadRunning,
@@ -20,6 +32,11 @@ import {
 } from './gitCredentialServer.ts';
 import { getSecretDecryptor } from '../resources/secretDecryptor.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
+import {
+	DEPLOYMENT_PROVENANCE_FILE,
+	formatDeploymentProvenance,
+	parseDeploymentProvenance,
+} from './deploymentProvenance.ts';
 
 import { basename, dirname, extname, isAbsolute, join, relative, sep, win32 } from 'node:path';
 import {
@@ -40,11 +57,16 @@ import {
 	rm,
 	stat,
 	symlink,
+	utimes,
 	writeFile,
 } from 'node:fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
+import {
+	confirmWindowsProcessTreeGone,
+	type WindowsProcessTreeIdentity,
+} from '../server/threads/windowsProcessTree.ts';
 import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, createReadStream, existsSync, lstatSync, renameSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -579,6 +601,8 @@ const IN_PROGRESS_ASIDE_PREFIX = '.in-progress-';
 const RETIRED_ASIDE_PREFIX = '.retired-';
 const PRIOR_ABSENT_RECORD_SUFFIX = '-prior-absent';
 const DEFAULT_COMMAND_TIMEOUT_MS = 60 * 60 * 1000;
+const DEFAULT_STARTUP_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+const STARTUP_INSTALL_PROGRESS_INTERVAL_MS = 60 * 1000;
 const COMPONENT_PREPARATION_WAIT_MARGIN_MS = 30000;
 const COMPONENT_RECOVERY_WAIT_TIMEOUT_MS = 30000;
 const COMPONENT_RECOVERY_TRY_TIMEOUT_MS = 250;
@@ -596,6 +620,19 @@ const RECOVERY_LOCK_WAIT = {
 const COMPONENT_RECOVERY_LOCK_PURPOSE = 'component-recovery';
 const MAX_GIT_EXTRACTION_COMMANDS = 4;
 const MAX_INSTALL_COMMANDS = 2;
+
+/**
+ * The longest one preparation may legitimately run: the longest extraction path runs clone, tag listing,
+ * checkout, and npm pack, and a custom package manager configured to warn can then fall back to npm, yielding
+ * two install commands. What a preparation lock waits on, and what an origin allows a peer's replicated deploy.
+ */
+export function componentPreparationBudgetMs(installTimeoutMs: number = DEFAULT_COMMAND_TIMEOUT_MS): number {
+	return (
+		MAX_GIT_EXTRACTION_COMMANDS * DEFAULT_COMMAND_TIMEOUT_MS +
+		MAX_INSTALL_COMMANDS * installTimeoutMs +
+		COMPONENT_PREPARATION_WAIT_MARGIN_MS
+	);
+}
 const PRODUCTION_DEPENDENCY_FIELDS = ['dependencies', 'optionalDependencies', 'peerDependencies'] as const;
 const INSTALL_LIFECYCLE_SCRIPTS = new Set([
 	'preinstall',
@@ -1050,9 +1087,17 @@ const UNSETTLED_MARKER = '.unsettled';
 // Written before `.complete`, so the marker vouches for it. An OPTIONAL record would not do: it could not
 // distinguish a payload build, which owns no root config, from a package build whose record was lost.
 const CANDIDATE_ARTIFACT_FILE = '.artifact.json';
-const ACTIVATION_JOURNAL_VERSION = 1;
+// v2 carries the root-config effect. A v1 journal was written by a build that published config outside
+// its journal; `readActivationJournal` derives its effect from the artifact descriptor where one exists.
+const ACTIVATION_JOURNAL_VERSION = 2;
+const LEGACY_ACTIVATION_JOURNAL_VERSION = 1;
 const ARTIFACT_DESCRIPTOR_VERSION = 1;
 const DEFAULT_STAGING_RETENTION_MAX_COUNT = 5;
+// A digest of the component, not its name, follows the uuid in a claim's name: a long name would pass the filename
+// limit.
+const CLAIMING_PREFIX = '.claiming-';
+const CLAIMING_UUID_LENGTH = 36;
+const CLAIM_OWNER_DIGEST_LENGTH = 16;
 
 /** `deployment_stagingRetention_maxCount`; 0 keeps none. Only a number or numeric string counts, so `true`/`[]`/blank cannot become "keep nothing". */
 export function getStagingRetentionMaxCount(): number {
@@ -1068,6 +1113,10 @@ type DormantBuild = {
 	deploymentId: string;
 	completedAt: number;
 };
+
+function isDeploymentDirectoryEntry(entry: import('node:fs').Dirent): boolean {
+	return entry.isDirectory() && !entry.name.startsWith('.');
+}
 
 async function presentOrAbsent(path: string): Promise<import('node:fs').Stats | undefined> {
 	return lstat(path).catch((error: NodeJS.ErrnoException) => {
@@ -1097,20 +1146,24 @@ async function dormantBuildAt(deploymentDirPath: string, owner: string): Promise
  * cannot hold or miss a slot. Never throws: a failure must neither fail a component closed nor replace a
  * deploy's own error.
  *
- * `pinnedDeploymentId` is never evicted. A delayed activation runs this preamble under the same lock it is
- * about to activate under, so without the pin retention would delete the artifact the request named —
- * immediately, when the knob is `0`. The pin is applied after the kept set is chosen, so a pinned build in
- * the eviction tail leaves `maxCount + 1` on disk for the life of the request; the next preamble that does
- * not pin it brings the count back down.
+ * A `pinned` id is never evicted. A delayed activation runs this preamble under the same lock it is about to
+ * activate under, so without the pin retention would delete the artifact the request named — immediately, when the
+ * knob is `0` — and a settlement's pins keep the releases it just put back. Pins are applied after the kept set is
+ * chosen, so each pinned build in the eviction tail leaves one more than `maxCount` on disk until a pass that does
+ * not pin it.
  */
 export async function pruneDormantBuilds(
 	componentName: string,
 	builds: DormantBuild[],
 	maxCount: number,
-	pinnedDeploymentId?: string
+	pinned?: string | readonly string[]
 ): Promise<void> {
+	const pins = new Set(typeof pinned === 'string' ? [pinned] : (pinned ?? []));
 	const current: DormantBuild[] = [];
+	const seen = new Set<string>();
 	for (const build of builds) {
+		if (seen.has(build.deploymentDirPath)) continue;
+		seen.add(build.deploymentDirPath);
 		try {
 			const fresh = await dormantBuildAt(build.deploymentDirPath, componentName);
 			if (fresh && !(await presentOrAbsent(join(build.deploymentDirPath, ACTIVATION_JOURNAL)))) current.push(fresh);
@@ -1128,7 +1181,7 @@ export async function pruneDormantBuilds(
 				(left.deploymentId < right.deploymentId ? -1 : left.deploymentId > right.deploymentId ? 1 : 0)
 		)
 		.slice(Math.max(0, maxCount))
-		.filter((build) => build.deploymentId !== pinnedDeploymentId);
+		.filter((build) => !pins.has(build.deploymentId));
 	for (const build of evictions) {
 		try {
 			await rm(build.deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
@@ -1157,7 +1210,7 @@ async function dormantBuildsOf(componentsRootDirPath: string, componentName: str
 	}
 	const builds: DormantBuild[] = [];
 	for (const deployment of deployments) {
-		if (!deployment.isDirectory()) continue;
+		if (!isDeploymentDirectoryEntry(deployment)) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
 		try {
 			if ((await candidateComponentName(deploymentDirPath)) !== componentName) continue;
@@ -1298,6 +1351,7 @@ type ActivationJournal = {
 	v: number;
 	component: string;
 	candidateId: string;
+	rootConfig: RootConfigEffect;
 };
 
 function candidateCompleteMarkerPath(componentDirPath: string, deploymentId: string): string {
@@ -1487,6 +1541,162 @@ async function writeArtifactDescriptor(
 	}
 }
 
+async function writeDeploymentProvenance(
+	candidateDirPath: string,
+	componentName: string,
+	deploymentId: string
+): Promise<void> {
+	const markerPath = join(candidateDirPath, DEPLOYMENT_PROVENANCE_FILE);
+	await rm(markerPath, { recursive: true, force: true });
+	await writeControlFileDurably(markerPath, formatDeploymentProvenance(componentName, deploymentId));
+}
+
+/**
+ * A link carries no provenance, whatever its target holds. A read that fails propagates rather than reading as
+ * absent.
+ */
+async function readDeploymentProvenance(treePath: string, componentName: string): Promise<string | undefined> {
+	const tree = await presentOrAbsent(treePath);
+	if (!tree?.isDirectory()) return undefined;
+	const raw = await readFile(join(treePath, DEPLOYMENT_PROVENANCE_FILE), 'utf8').catch(
+		(error: NodeJS.ErrnoException) => {
+			if (error?.code === 'ENOENT' || error?.code === 'EISDIR') return undefined;
+			throw error;
+		}
+	);
+	return raw === undefined ? undefined : parseDeploymentProvenance(raw, componentName);
+}
+
+async function isDeploymentRecord(deploymentDirPath: string, componentName: string): Promise<boolean> {
+	if ((await candidateComponentName(deploymentDirPath)) !== componentName) return false;
+	if (!(await presentOrAbsent(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER)))) return false;
+	for (const unexpected of [ACTIVATION_JOURNAL, UNSETTLED_MARKER, componentName]) {
+		if (await presentOrAbsent(join(deploymentDirPath, unexpected))) return false;
+	}
+	try {
+		return (await readArtifactDescriptor(deploymentDirPath, componentName)) !== undefined;
+	} catch (error) {
+		if (error instanceof ClientError) return false;
+		throw error;
+	}
+}
+
+/**
+ * "Not live" does not make a record stale: a crash between the commit and the re-home leaves the displaced tree in
+ * `.deploy-aside`, retired or not, and a scan can reach the record before the journal that re-homes into it.
+ */
+async function deploymentRecordIsReferenced(
+	componentsRootDirPath: string,
+	componentName: string,
+	deploymentId: string
+): Promise<boolean> {
+	const liveDirPath = join(componentsRootDirPath, componentName);
+	if ((await readDeploymentProvenance(liveDirPath, componentName)) === deploymentId) return true;
+	const asideStagingDir = extractionStagingDirectory(liveDirPath);
+	const entries = await readdir(asideStagingDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+		if (error?.code === 'ENOENT') return [];
+		throw error;
+	});
+	for (const entry of entries) {
+		if (!entry.isDirectory() || !entry.name.startsWith(IN_PROGRESS_ASIDE_PREFIX)) continue;
+		if ((await readDeploymentProvenance(join(asideStagingDir, entry.name), componentName)) === deploymentId) {
+			return true;
+		}
+	}
+	return false;
+}
+
+async function isReferencedDeploymentRecord(
+	componentsRootDirPath: string,
+	deploymentDirPath: string,
+	owner: string
+): Promise<boolean> {
+	for (const expected of [CANDIDATE_COMPLETE_MARKER, CANDIDATE_ARTIFACT_FILE]) {
+		if (!(await presentOrAbsent(join(deploymentDirPath, expected)))) return false;
+	}
+	if (await presentOrAbsent(join(deploymentDirPath, owner))) return false;
+	return deploymentRecordIsReferenced(componentsRootDirPath, owner, basename(deploymentDirPath));
+}
+
+/** A failed read keeps the directory: a leftover record costs a few bytes, a lost one costs the release. */
+async function keepsDeploymentRecord(deploymentDirPath: string): Promise<boolean> {
+	return presentOrAbsent(join(deploymentDirPath, CANDIDATE_ARTIFACT_FILE)).then(Boolean, () => true);
+}
+
+/** Retention orders by `.complete`'s mtime, and a kept release has to outrank stages nobody activated. */
+async function refreshCompletedAt(deploymentDirPath: string, componentName: string, deploymentId: string) {
+	for (let attempt = 1; ; attempt++) {
+		const now = new Date();
+		try {
+			await utimes(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER), now, now);
+			return;
+		} catch (error) {
+			if (attempt >= 3) {
+				logger.warn(
+					`Kept deployment ${deploymentId} of ${componentName}, but retention may evict it ahead of older ` +
+						`builds: ${errorMessage(error)}`
+				);
+				return;
+			}
+			await delay(100 * attempt);
+		}
+	}
+}
+
+type DisplacedReleaseRetention = { verdict: 'kept'; deploymentId: string } | { verdict: 'ineligible' | 'failed' };
+
+/**
+ * Only an explicit retention decision deletes a displaced tree: `failed` leaves it for the next preparation to retry.
+ * A failure after the rename propagates, as the aside syncs around it do.
+ */
+async function retainDisplacedRelease(
+	componentsRootDirPath: string,
+	componentName: string,
+	displacedTreePath: string
+): Promise<DisplacedReleaseRetention> {
+	const keepNone = getStagingRetentionMaxCount() === 0;
+	let record: { deploymentId: string; recordDirPath: string } | undefined;
+	try {
+		const deploymentId = await readDeploymentProvenance(displacedTreePath, componentName);
+		if (deploymentId !== undefined) {
+			const recordDirPath = join(componentsRootDirPath, DEPLOY_STAGING_DIR, deploymentId);
+			if (await isDeploymentRecord(recordDirPath, componentName)) record = { deploymentId, recordDirPath };
+		}
+	} catch (error) {
+		if (keepNone) return { verdict: 'ineligible' };
+		logger.warn(
+			`Could not tell whether the previous release of ${componentName} at ${displacedTreePath} can be kept; ` +
+				`leaving it for its next deploy:`,
+			errorForLog(error)
+		);
+		return { verdict: 'failed' };
+	}
+	if (!record) return { verdict: 'ineligible' };
+	const { deploymentId, recordDirPath } = record;
+	if (keepNone) {
+		// Nothing will ever put the tree back into its record, so the record goes with it.
+		await rm(recordDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((error) =>
+			logger.warn(`Could not remove the record of deployment ${deploymentId} of ${componentName}:`, errorForLog(error))
+		);
+		return { verdict: 'ineligible' };
+	}
+	const keptTreePath = join(recordDirPath, componentName);
+	try {
+		await renameThroughTransientHolder(displacedTreePath, keptTreePath);
+	} catch (error) {
+		logger.warn(
+			`Could not keep the previous release of ${componentName} as deployment ${deploymentId}; leaving it for ` +
+				`its next deploy:`,
+			errorForLog(error)
+		);
+		return { verdict: 'failed' };
+	}
+	await syncRenameParents(displacedTreePath, keptTreePath);
+	await refreshCompletedAt(recordDirPath, componentName, deploymentId);
+	logger.trace?.(`Kept the previous release of ${componentName} as dormant deployment ${deploymentId}`);
+	return { verdict: 'kept', deploymentId };
+}
+
 /**
  * A component name safe to join onto the components root: no separator, no traversal, not dot-prefixed.
  * Applied to EVERY source of the name — the journal and the sidecar — because validating one and trusting
@@ -1523,9 +1733,9 @@ async function readActivationJournal(journalPath: string): Promise<ActivationJou
 	} catch (error) {
 		throw new Error(`Activation journal ${journalPath} could not be parsed: ${errorMessage(error)}`);
 	}
-	if (parsed?.v !== ACTIVATION_JOURNAL_VERSION) {
+	if (parsed?.v !== ACTIVATION_JOURNAL_VERSION && parsed?.v !== LEGACY_ACTIVATION_JOURNAL_VERSION) {
 		throw new Error(
-			`Activation journal ${journalPath} has version ${JSON.stringify(parsed?.v)}, expected ${ACTIVATION_JOURNAL_VERSION}`
+			`Activation journal ${journalPath} has version ${JSON.stringify(parsed?.v)}, expected ${LEGACY_ACTIVATION_JOURNAL_VERSION} or ${ACTIVATION_JOURNAL_VERSION}`
 		);
 	}
 	if (!isJoinableComponentName(parsed.component) || typeof parsed.candidateId !== 'string') {
@@ -1538,7 +1748,31 @@ async function readActivationJournal(journalPath: string): Promise<ActivationJou
 			`Activation journal ${journalPath} names candidate '${parsed.candidateId}', which is not its own deployment`
 		);
 	}
-	return parsed as ActivationJournal;
+	let rootConfig: RootConfigEffect;
+	if (parsed.v === LEGACY_ACTIVATION_JOURNAL_VERSION) {
+		// A v1 activation published config outside its journal: a staged artifact published its descriptor's
+		// entry between the first rename and the commit, so a crash in that window is exactly the one whose
+		// effect the descriptor still records; an immediate deploy published before it built, so there is
+		// nothing left to do for it.
+		const descriptor = await readArtifactDescriptor(dirname(journalPath), parsed.component);
+		rootConfig = descriptor ? rootConfigEffectFromDeclaration(descriptor.rootConfig) : { kind: 'keep' };
+	} else {
+		if (!isRootConfigEffect(parsed.rootConfig) || parsed.rootConfig.kind === 'remove') {
+			throw new Error(`Activation journal ${journalPath} does not record its root-config effect`);
+		}
+		rootConfig = parsed.rootConfig;
+	}
+	if (rootConfig.kind === 'set') {
+		try {
+			assertApplicationConfig(parsed.component, rootConfig.entry as any);
+		} catch (error) {
+			throw new Error(
+				`Activation journal ${journalPath} records a root-config entry that cannot be published: ${errorMessage(error)}`,
+				{ cause: error }
+			);
+		}
+	}
+	return { v: parsed.v, component: parsed.component, candidateId: parsed.candidateId, rootConfig };
 }
 
 /**
@@ -1648,103 +1882,127 @@ async function ensureSecureStagingDirectory(stagingDir: string): Promise<void> {
 }
 
 /**
- * Claim a deployment directory for this build, EXCLUSIVELY. The id is the public deployment id, which an
- * operator can repeat and a redelivered replication can repeat for them, so tolerating an existing
- * directory would let a replayed stage rewrite the bytes under an existing `.complete` and descriptor —
- * and a crash mid-rebuild would leave a partial tree that still reads as certified.
- *
- * The caller holds the component's preparation lock, which is what makes the EEXIST verdicts sound: no
- * other preparation of THIS component is running, and a directory belonging to another component is not
- * this lock's to touch.
+ * Exclusive, because an operator can repeat a public id; built aside and renamed onto it, so it never appears
+ * unattributed. The caller's preparation lock is what makes the verdicts on an existing directory sound.
  */
 async function claimDeploymentDirectory(deploymentDirPath: string, componentName: string): Promise<void> {
-	// Every refusal below is a conflict over an id that already exists, which is the caller's to resolve by
-	// naming a different one — not a server fault, and not the 500 a bare Error reaches the caller as.
-	const taken = (message: string) => new ClientError(message, 409);
+	const claimDirPath = join(
+		dirname(deploymentDirPath),
+		`${CLAIMING_PREFIX}${randomUUID()}-${claimOwnerDigest(componentName)}`
+	);
+	await mkdir(claimDirPath, { mode: 0o700 });
 	try {
-		await mkdir(deploymentDirPath, { mode: 0o700 });
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-		const owner = await candidateComponentName(deploymentDirPath);
-		if (owner !== undefined && owner !== componentName) {
-			throw taken(
-				`Deployment id ${basename(deploymentDirPath)} already holds a build of '${owner}'; a deployment id ` +
-					`names one artifact for its lifetime`
+		const claimed = await lstat(claimDirPath);
+		if (!claimed.isDirectory() || claimed.isSymbolicLink()) {
+			throw new Error(`Component deploy staging path is not a directory: ${claimDirPath}`);
+		}
+		if (process.platform !== 'win32' && (claimed.mode & 0o777) !== 0o700) {
+			await chmod(claimDirPath, 0o700).catch((error) =>
+				logger.warn(`Could not restrict component deploy staging permissions for ${claimDirPath}:`, errorForLog(error))
 			);
 		}
-		// Ownership has to be POSITIVE to reclaim, and EMPTINESS IS NOT A VERDICT. The sidecar below is
-		// written as part of the claim, so a directory naming nobody is another component between its own
-		// mkdir and that write, and a deploy can hold a nearly empty one for minutes while it resolves and
-		// packs. Nothing on disk separates that from a claim that got no further, and the lock that
-		// serializes it is not this one, so only the exclusive create may conclude the id is free: the
-		// directory can also have been discarded by a failed build between the first mkdir and this read,
-		// and another component can claim it in that same gap.
-		if (owner === undefined) {
-			await mkdir(deploymentDirPath, { mode: 0o700 }).catch((retry: NodeJS.ErrnoException) => {
-				if (retry?.code !== 'EEXIST') throw retry;
-				throw taken(
-					`Deployment id ${basename(deploymentDirPath)} is already claimed by a build that has not named its ` +
-						`component yet. If no deploy of any component is in flight, that directory is abandoned and has ` +
-						`to be removed by hand; deploying again without a deployment_id mints a fresh id`
-				);
-			});
-		} else {
-			if (await presentOrAbsent(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER))) {
-				throw taken(
-					`Deployment id ${basename(deploymentDirPath)} already holds a completed build of '${componentName}'; ` +
-						`deploy it with deployment_id, or deploy again to build a new one`
+		await publishClaimOwnership(claimDirPath, componentName);
+		for (let attempt = 1; ; attempt++) {
+			// Checked first: Windows refuses a rename onto an existing directory with a transient holder's EPERM.
+			if (!(await presentOrAbsent(deploymentDirPath))) {
+				try {
+					await renameThroughTransientHolder(claimDirPath, deploymentDirPath);
+					return;
+				} catch (error) {
+					// Only this component's lock can remove the claim, so a vanished source means the rename landed.
+					if (!(await presentOrAbsent(claimDirPath))) return;
+					if (!(await presentOrAbsent(deploymentDirPath))) throw error;
+				}
+			}
+			if (attempt >= MAX_CLAIM_ATTEMPTS) {
+				throw new ClientError(
+					`Deployment id ${basename(deploymentDirPath)} was claimed again each time it was freed; deploying ` +
+						`again without a deployment_id mints a fresh id`,
+					409
 				);
 			}
-			// This component's own preparation lock serializes the claim and nothing certified it, so nothing
-			// is lost by rebuilding over it.
-			await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-			await mkdir(deploymentDirPath, { mode: 0o700 });
+			await makeRoomForClaim(deploymentDirPath, componentName);
 		}
+	} finally {
+		// A claim that did not land names no id, so it is nobody else's.
+		await rm(claimDirPath, { recursive: true, force: true }).catch(() => {});
 	}
-	const claimed = await lstat(deploymentDirPath);
-	if (!claimed.isDirectory() || claimed.isSymbolicLink()) {
-		throw new Error(`Component deploy staging path is not a directory: ${deploymentDirPath}`);
-	}
-	if (process.platform !== 'win32' && (claimed.mode & 0o777) !== 0o700) {
-		await chmod(deploymentDirPath, 0o700).catch((error) =>
-			logger.warn(
-				`Could not restrict component deploy staging permissions for ${deploymentDirPath}:`,
-				errorForLog(error)
-			)
+}
+
+const MAX_CLAIM_ATTEMPTS = 3;
+
+/** Every refusal is a conflict the caller resolves by naming another id: a 409, not a server fault. */
+async function makeRoomForClaim(deploymentDirPath: string, componentName: string): Promise<void> {
+	const taken = (message: string) => new ClientError(message, 409);
+	const deploymentId = basename(deploymentDirPath);
+	const owner = await candidateComponentName(deploymentDirPath);
+	if (owner !== undefined && owner !== componentName) {
+		throw taken(
+			`Deployment id ${deploymentId} already holds a build of '${owner}'; a deployment id names one artifact for ` +
+				`its lifetime`
 		);
 	}
-	await publishClaimOwnership(deploymentDirPath, componentName);
+	if (owner === undefined) {
+		// Claims appear already attributed, so an EMPTY directory is only ever one a build created before naming it,
+		// abandoned; `rmdir` removes nothing else.
+		try {
+			await rmdir(deploymentDirPath);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === 'ENOENT') return;
+			if (code !== 'ENOTEMPTY' && code !== 'EEXIST') throw error;
+		}
+		throw taken(
+			`Deployment id ${deploymentId} is held by a directory that names no component. Remove it once you have ` +
+				`determined it holds nothing you need; deploying again without a deployment_id mints a fresh id`
+		);
+	}
+	if (await presentOrAbsent(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER))) {
+		throw taken(
+			`Deployment id ${deploymentId} already holds a completed build of '${componentName}'; deploy it with ` +
+				`deployment_id, or deploy again to build a new one`
+		);
+	}
+	// Nothing certified it, and this component's lock serializes its claims.
+	await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+}
+
+function claimOwnerDigest(componentName: string): string {
+	return createHash('sha256').update(componentName).digest('hex').slice(0, CLAIM_OWNER_DIGEST_LENGTH);
+}
+
+function isClaimOf(entryName: string, componentName: string): boolean {
+	return (
+		entryName.startsWith(CLAIMING_PREFIX) &&
+		entryName.slice(CLAIMING_PREFIX.length + CLAIMING_UUID_LENGTH + 1) === claimOwnerDigest(componentName)
+	);
+}
+
+/** The caller holds the component's preparation lock, so none of its claims is in flight. */
+async function sweepAbandonedClaims(stagingRoot: string, entries: import('node:fs').Dirent[], componentName: string) {
+	for (const entry of entries) {
+		if (!entry.isDirectory() || !isClaimOf(entry.name, componentName)) continue;
+		await rm(join(stagingRoot, entry.name), { recursive: true, force: true }).catch((error) =>
+			logger.warn(`Could not remove the abandoned deploy claim ${entry.name}:`, errorForLog(error))
+		);
+	}
 }
 
 /**
- * Name the component that owns a deployment directory THIS CALL created, and take the directory back if that
- * cannot be recorded.
- *
- * Ownership is published as part of the claim rather than at certification, because resolving and packing can
- * take minutes and until a tree exists to infer an owner from, a directory answering to nobody is one another
- * component will take for abandoned. Unattributed is a permanent refusal, though, so a failure here — a full
- * disk, an EIO on the temp write or its sync — would burn this deployment id for good, every retry refused by
- * its own wreckage. The removal is scoped to the directory this invocation made, and deliberately not
- * broadened to one found by EEXIST: that directory may be another claimant's, and removing it is the race the
- * refusal exists to prevent. Best-effort, because the claim failure is what the caller needs to see.
- *
- * `write` is a parameter so the failure is testable without a filesystem that can be made to fail on exactly
- * this write and nothing else.
+ * The claim names no id yet, so a failure burns nothing. `write` is a parameter so the failure is testable without a
+ * filesystem that can be made to fail on exactly this write.
  */
 export async function publishClaimOwnership(
-	deploymentDirPath: string,
+	claimDirPath: string,
 	componentName: string,
 	write: (filePath: string, contents: string) => Promise<void> = writeControlFileDurably
 ): Promise<void> {
 	try {
-		await write(join(deploymentDirPath, CANDIDATE_COMPONENT_FILE), componentName);
+		await write(join(claimDirPath, CANDIDATE_COMPONENT_FILE), componentName);
 	} catch (error) {
-		await rm(deploymentDirPath, { recursive: true, force: true }).catch((cleanupError) =>
-			logger.warn(
-				`Could not remove the deployment directory ${deploymentDirPath} after failing to publish its ` +
-					`ownership; the id stays unusable until it is removed:`,
-				errorForLog(cleanupError)
-			)
+		await rm(claimDirPath, { recursive: true, force: true }).catch((cleanupError) =>
+			logger.warn(`Could not remove the unfinished deploy claim ${claimDirPath}:`, errorForLog(cleanupError))
 		);
 		throw error;
 	}
@@ -1810,7 +2068,7 @@ async function journaledDeploymentForComponent(
 		throw error;
 	}
 	for (const deployment of deployments) {
-		if (!deployment.isDirectory()) continue;
+		if (!isDeploymentDirectoryEntry(deployment)) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
 		const journalPath = join(deploymentDirPath, ACTIVATION_JOURNAL);
 		// NOTHING is swallowed here. This is the gate that authorizes restoring an old tree over what may be
@@ -1928,9 +2186,11 @@ async function settleStagingForComponent(
 		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
 		throw error;
 	}
+	await sweepAbandonedClaims(stagingRoot, deployments, componentName);
 	const dormant: DormantBuild[] = [];
+	const kept: string[] = [];
 	for (const deployment of deployments) {
-		if (!deployment.isDirectory()) continue;
+		if (!isDeploymentDirectoryEntry(deployment)) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
 		// Ownership BEFORE parsing. Reading every journal first meant a truncated journal belonging to another
 		// component threw here — blocking the deploy of a healthy component because an unrelated one is
@@ -1975,10 +2235,33 @@ async function settleStagingForComponent(
 		// component's own unsettled activation in place while a new deploy proceeded over it, and an
 		// activation interrupted before B1 has no rollback record for the restore gate to catch.
 		if (journal.component !== componentName) continue;
-		await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, journal);
+		kept.push(...(await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, journal)));
 	}
+	await catalogueKeptReleases(stagingRoot, componentName, kept, dormant);
 	const maxCount = getStagingRetentionMaxCount();
-	if (dormant.length > maxCount) await pruneDormantBuilds(componentName, dormant, maxCount, pinnedDeploymentId);
+	if (dormant.length > maxCount) {
+		await pruneDormantBuilds(componentName, dormant, maxCount, [
+			...kept,
+			...(pinnedDeploymentId ? [pinnedDeploymentId] : []),
+		]);
+	}
+}
+
+/** Counted and pinned, or the pass a settlement ran inside can miss what it kept, or evict it after a failed refresh. */
+async function catalogueKeptReleases(
+	stagingRoot: string,
+	componentName: string,
+	kept: string[],
+	into: DormantBuild[]
+): Promise<void> {
+	const present = new Set(into.map((build) => build.deploymentDirPath));
+	for (const deploymentId of kept) {
+		const build = await dormantBuildAt(join(stagingRoot, deploymentId), componentName).catch(() => undefined);
+		if (build && !present.has(build.deploymentDirPath)) {
+			present.add(build.deploymentDirPath);
+			into.push(build);
+		}
+	}
 }
 
 /**
@@ -2005,7 +2288,7 @@ export async function unsettleableComponentsFromDisk(componentsRootDirPath: stri
 		throw error;
 	}
 	for (const deployment of deployments) {
-		if (!deployment.isDirectory()) continue;
+		if (!isDeploymentDirectoryEntry(deployment)) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
 		// Per deployment. `candidateComponentName` propagates every non-ENOENT error now, and this pass runs
 		// where the CALLER only warns — so one unreadable deployment escaping here would drop the verdict for
@@ -2093,12 +2376,20 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 	const dormant = new Map<string, DormantBuild[]>();
 	const catalogue = (owner: string, build: DormantBuild) => {
 		const builds = dormant.get(owner);
-		if (builds) builds.push(build);
-		else dormant.set(owner, [build]);
+		if (!builds) dormant.set(owner, [build]);
+		else if (!builds.some((existing) => existing.deploymentDirPath === build.deploymentDirPath)) builds.push(build);
+	};
+	const keptBy = new Map<string, string[]>();
+	const keptDuring = async (owner: string, kept: string[]) => {
+		if (kept.length === 0) return;
+		keptBy.set(owner, [...(keptBy.get(owner) ?? []), ...kept]);
+		const builds: DormantBuild[] = [];
+		await catalogueKeptReleases(stagingRoot, owner, kept, builds);
+		for (const build of builds) catalogue(owner, build);
 	};
 
 	for (const deployment of deployments) {
-		if (!deployment.isDirectory()) continue;
+		if (!isDeploymentDirectoryEntry(deployment)) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
 		const journalPath = join(deploymentDirPath, ACTIVATION_JOURNAL);
 		const fail = (component: string, error: unknown) => recordUnsettled(failures, component, error, deploymentDirPath);
@@ -2155,7 +2446,10 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 						throw splitAttributionError(deploymentDirPath, appeared.component, splitNames[0]);
 					}
 					activationToFail = appeared.component;
-					await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, appeared);
+					await keptDuring(
+						appeared.component,
+						await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, appeared)
+					);
 					// Settled. Anything that fails after this — releasing the lock, say — is not this
 					// activation's, and attributing it here would fail a correctly settled component closed.
 					activationToFail = undefined;
@@ -2199,6 +2493,8 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 					// Cleared, and still not a retainable build — an incomplete or treeless staged directory. That
 					// is residue like any other, so it falls through to the removal below.
 				}
+				// Re-derived under the lock too: the release may have been re-homed, or displaced, since the scan.
+				if (await isReferencedDeploymentRecord(componentsRootDirPath, deploymentDirPath, owner!)) return;
 				// Cleanup, not settlement. There was no activation here — this is most often the residue a
 				// SUCCESSFUL settlement leaves when its own sweep failed — so a sweep that fails again cannot
 				// make anything unsettled, and recording it would refuse a live component on every worker
@@ -2238,6 +2534,22 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 				}
 				if (build) {
 					catalogue(owner, build);
+					continue;
+				}
+				// The record of a release that is live, or displaced and not yet put back, is left alone without the
+				// lock for the same reason. A read that fails leaves it in place: deleting it is the irreversible side.
+				try {
+					if (
+						!(await presentOrAbsent(join(deploymentDirPath, UNSETTLED_MARKER))) &&
+						(await isReferencedDeploymentRecord(componentsRootDirPath, deploymentDirPath, owner))
+					) {
+						continue;
+					}
+				} catch (error) {
+					logger.warn(
+						`Leaving deploy staging ${deploymentDirPath} in place; it could not be read:`,
+						errorForLog(error)
+					);
 					continue;
 				}
 			}
@@ -2293,7 +2605,7 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 				continue;
 			}
 			const settling = journal;
-			await withComponentPreparationLock(
+			const kept = await withComponentPreparationLock(
 				join(componentsRootDirPath, settling.component),
 				() => settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, settling),
 				{
@@ -2302,6 +2614,7 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 					isOwnerAlive: (lockOwner) => lockOwner.pid !== process.pid || isThreadRunning(lockOwner.threadId),
 				}
 			);
+			await keptDuring(settling.component, kept);
 		} catch (error) {
 			// The journal named its component, so attribution is exact however the settle failed.
 			await fail(journal.component, error);
@@ -2310,7 +2623,14 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 
 	const maxCount = getStagingRetentionMaxCount();
 	for (const [owner, builds] of dormant) {
-		for (const [component, error] of await reconcileDormantBuilds(componentsRootDirPath, owner, builds, maxCount)) {
+		const pinned = keptBy.get(owner) ?? [];
+		for (const [component, error] of await reconcileDormantBuilds(
+			componentsRootDirPath,
+			owner,
+			builds,
+			maxCount,
+			pinned
+		)) {
 			if (!failures.has(component)) failures.set(component, error);
 		}
 	}
@@ -2350,7 +2670,8 @@ export async function reconcileDormantBuilds(
 	componentsRootDirPath: string,
 	owner: string,
 	builds: DormantBuild[],
-	maxCount: number
+	maxCount: number,
+	pinned: readonly string[] = []
 ): Promise<Map<string, Error>> {
 	const failures = new Map<string, Error>();
 	let journaled: DormantBuild | undefined;
@@ -2371,6 +2692,7 @@ export async function reconcileDormantBuilds(
 			join(componentsRootDirPath, owner),
 			async () => {
 				const stillDormant: DormantBuild[] = [];
+				const keptHere: string[] = [];
 				for (const build of builds) {
 					let journal: ActivationJournal | undefined;
 					try {
@@ -2392,12 +2714,16 @@ export async function reconcileDormantBuilds(
 						continue;
 					}
 					try {
-						await settleInterruptedActivation(componentsRootDirPath, build.deploymentDirPath, journal);
+						const kept = await settleInterruptedActivation(componentsRootDirPath, build.deploymentDirPath, journal);
+						keptHere.push(...kept);
+						await catalogueKeptReleases(join(componentsRootDirPath, DEPLOY_STAGING_DIR), owner, kept, stillDormant);
 					} catch (error) {
 						await recordUnsettled(failures, journal.component, error, build.deploymentDirPath);
 					}
 				}
-				if (stillDormant.length > maxCount) await pruneDormantBuilds(owner, stillDormant, maxCount);
+				if (stillDormant.length > maxCount) {
+					await pruneDormantBuilds(owner, stillDormant, maxCount, [...pinned, ...keptHere]);
+				}
 			},
 			{
 				purpose: 'activation-recovery',
@@ -2434,7 +2760,8 @@ async function sweepAsideRecords(
 	componentName: string,
 	liveDirPath: string,
 	asideStagingDir: string
-): Promise<void> {
+): Promise<string[]> {
+	const kept: string[] = [];
 	for (const record of records) {
 		// RETIRING IS CORRECTNESS, not hygiene: the retired marker is what stops the legacy pass treating this
 		// record as authoritative and restoring the displaced tree over the candidate that was just rolled
@@ -2442,6 +2769,11 @@ async function sweepAsideRecords(
 		// the inversion this protocol exists to prevent, so a failure here PROPAGATES — the caller keeps the
 		// journal and the next start retries.
 		const retiredMarkerPath = await retireExtractionAside(record);
+		// No prune here: settlement can run inside another request's preamble, whose pin it cannot see. A tree that
+		// could not be kept stays retired in the aside for the legacy pass to retry.
+		const retention = await retainDisplacedRelease(dirname(liveDirPath), componentName, record);
+		if (retention.verdict === 'kept') kept.push(retention.deploymentId);
+		if (retention.verdict === 'failed') continue;
 		// Sweeping the displaced tree is hygiene: it bounds disk, and a failure costs space rather than
 		// correctness, so it is logged. The retired marker above already makes the record non-authoritative.
 		await cleanupExtractionPaths(
@@ -2450,6 +2782,7 @@ async function sweepAsideRecords(
 			new Set([record, retiredMarkerPath])
 		).catch((error) => logger.warn(`Settled ${componentName} but could not sweep ${record}:`, errorForLog(error)));
 	}
+	return kept;
 }
 
 /**
@@ -2484,7 +2817,7 @@ async function settleInterruptedActivation(
 	componentsRootDirPath: string,
 	deploymentDirPath: string,
 	journal: ActivationJournal
-): Promise<void> {
+): Promise<string[]> {
 	const liveDirPath = join(componentsRootDirPath, journal.component);
 	const candidateDirPath = join(deploymentDirPath, journal.component);
 	const asideStagingDir = extractionStagingDirectory(liveDirPath);
@@ -2503,7 +2836,10 @@ async function settleInterruptedActivation(
 	const candidateComplete = await exists(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER));
 	const asideRecords = await inProgressAsideRecords(asideStagingDir);
 
+	let rolledForward = false;
+	let kept: string[] = [];
 	const rollForward = async () => {
+		rolledForward = true;
 		if (!liveExists) await renameThroughTransientHolder(candidateDirPath, liveDirPath);
 		// Unconditional, not only when THIS pass performed the rename: a crash after normal activation
 		// renamed the candidate but before it repaired the links leaves live present with stale targets, and
@@ -2511,11 +2847,14 @@ async function settleInterruptedActivation(
 		// re-point.
 		await repairRelocatedDependencyLinks(liveDirPath, candidateDirPath);
 		await syncRenameParents(candidateDirPath, liveDirPath);
+		// The committed release's config, before anything below can let the journal go: the journal is the only
+		// record of it. A failure propagates and keeps the journal, the same contract the retire has.
+		await applyRootConfigEffect(journal.component, journal.rootConfig);
 		// Retiring PROPAGATES from here: the retired marker is what stops the legacy pass restoring the tree
 		// this roll-forward just displaced. Failing the component closed and retrying at the next start is
 		// the cheaper mistake — the journal survives, so the verdict is re-derivable. Only the disk sweep
 		// inside is best-effort.
-		await sweepAsideRecords(asideRecords, journal.component, liveDirPath, asideStagingDir);
+		kept = await sweepAsideRecords(asideRecords, journal.component, liveDirPath, asideStagingDir);
 	};
 	const rollBack = async (restoreFrom?: string) => {
 		if (restoreFrom) {
@@ -2604,7 +2943,7 @@ async function settleInterruptedActivation(
 				`Returned the staged build ${basename(deploymentDirPath)} of ${journal.component} to dormant after an ` +
 					`activation that never moved its live tree aside`
 			);
-			return;
+			return kept;
 		}
 		await rollBack();
 	} else {
@@ -2626,7 +2965,7 @@ async function settleInterruptedActivation(
 			`Settled the interrupted activation of ${journal.component} but could not flush its rollback record; ` +
 				`leaving the journal for the next start: ${errorMessage(error)}`
 		);
-		return;
+		return kept;
 	}
 	// Best-effort, matching the activation path: the activation is settled by this point, so a transient
 	// EBUSY removing staging must not throw out of the recovery pass and take the other components with it.
@@ -2637,10 +2976,12 @@ async function settleInterruptedActivation(
 	await rm(journalPath, { force: true }).catch((error) =>
 		logger.warn(`Settled ${journal.component} but could not remove its activation journal:`, errorForLog(error))
 	);
+	if (rolledForward && (await keepsDeploymentRecord(deploymentDirPath))) return kept;
 	await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((error) =>
 		logger.warn(`Settled ${journal.component} but could not clean up its staging directory:`, errorForLog(error))
 	);
 	await rmdir(dirname(deploymentDirPath)).catch(() => {});
+	return kept;
 }
 
 /** Mark a candidate build+validation complete. Idempotent, so a retried activation is not a failure. */
@@ -2648,15 +2989,6 @@ async function settleInterruptedActivation(
  * fsync the candidate's contents before `.complete` vouches for them — otherwise the control files can
  * outlive the tree after a power loss and recovery rolls forward onto a truncated one.
  */
-// Codes that mean "this platform or filesystem will not fsync this handle", as opposed to "the write did
-// not reach storage". Windows raises EPERM fsyncing perfectly healthy files, and network/overlay mounts
-// return EINVAL or ENOTSUP — none of which say anything about durability, and all of which would otherwise
-// fail every deploy on those platforms.
-const UNSUPPORTED_SYNC_CODES = new Set(['EPERM', 'EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'EBADF', 'EISDIR']);
-
-function isUnsupportedSync(error: unknown): boolean {
-	return UNSUPPORTED_SYNC_CODES.has((error as NodeJS.ErrnoException)?.code ?? '');
-}
 
 // How many file syncs run at once while flushing a candidate. Serial open/sync/close over a large
 // dependency tree adds seconds to every activation, all of it under the component preparation lock; a small
@@ -2779,24 +3111,30 @@ async function syncArtifactAncestors(deploymentDirPath: string): Promise<void> {
 }
 
 /**
- * Make a built and validated candidate live, as one compensating transaction over two effects: the live tree
- * moves aside, then the candidate takes its place. Root config is NOT one of them — for an immediate deploy
- * it is still published before the build, unchanged, and making it transactional is tracked separately
- * (#2315). A delayed activation hands its artifact's recorded entry in as `afterJournal`, which publishes it
- * from inside the window a crash rolls forward from — see that call site.
+ * Make a built and validated candidate live, as one transaction over three effects: the live tree moves
+ * aside, the candidate takes its place, and the component's root-config entry follows `options.rootConfig`.
+ * The first two compensate; the third happens only after the commit, so nothing before the commit touches
+ * config and a failed activation has no config to undo.
  *
  * The candidate must ALREADY be certified: `markCandidateComplete` is the caller's, so a delayed activation
  * does not re-walk and re-fsync a whole dependency tree it certified when it was built. The activation
- * journal is still written and fsynced BEFORE the first rename, so a crash anywhere below is recoverable —
- * see `settleInterruptedActivation` for the state matrix. The second rename is the COMMIT POINT: nothing
- * after it may compensate, because the live path holds the candidate and renaming the aside back over it
- * cannot succeed.
+ * journal — with the config effect in it — is still written and fsynced BEFORE the first rename, so a crash
+ * anywhere below is recoverable, config included: see `settleInterruptedActivation` for the state matrix. The
+ * second rename is the COMMIT POINT: nothing after it may compensate, because the live path holds the
+ * candidate and renaming the aside back over it cannot succeed.
  */
 export async function activateCandidateApplication(
 	application: Application,
 	deploymentId: string,
-	options: { afterJournal?: () => Promise<(() => Promise<void>) | void> } = {}
+	options: { rootConfig?: RootConfigEffect } = {}
 ): Promise<void> {
+	const rootConfig = options.rootConfig ?? { kind: 'keep' };
+	// Before anything is on disk: a journal recovery would refuse to read is one it could never settle.
+	if (rootConfig.kind === 'set') assertApplicationConfig(application.name, rootConfig.entry as any);
+	else if (rootConfig.kind === 'remove') {
+		throw new Error(`Cannot activate ${application.name}: an activation never removes its root-config entry`);
+	}
+	await assertRootConfigEffectPublishable(application.name, rootConfig);
 	const liveDirPath = application.dirPath;
 	const candidateDirPath = candidateApplicationPath(liveDirPath, deploymentId);
 	const deploymentDirPath = candidateDeploymentDirPath(liveDirPath, deploymentId);
@@ -2877,7 +3215,6 @@ export async function activateCandidateApplication(
 	 * rename may enter this catch — see B2.
 	 */
 	let pendingEffect = 'record the activation';
-	let undoAfterJournal: (() => Promise<void>) | void;
 	try {
 		try {
 			await writeControlFileDurably(
@@ -2886,6 +3223,7 @@ export async function activateCandidateApplication(
 					v: ACTIVATION_JOURNAL_VERSION,
 					component: application.name,
 					candidateId: deploymentId,
+					rootConfig,
 				})
 			);
 		} catch (error) {
@@ -2924,23 +3262,6 @@ export async function activateCandidateApplication(
 		pendingEffect = 'record the displaced component directory';
 		await syncRenameParents(liveDirPath, asidePath ?? priorAbsentRecordPath!);
 
-		// Config is published HERE — after B1, before the commit — because this is the only point where the
-		// on-disk state recovery would find rolls FORWARD to the certified artifact: live is displaced, the
-		// candidate is complete, and the rollback record exists. Publishing before B1 (with or without the
-		// journal) leaves live present and the candidate present with no rollback record, which settlement
-		// reads as an activation that never started: it deletes the deployment directory, and the next boot
-		// re-resolves the published package identifier from the registry instead — the substitution this step
-		// exists to prevent.
-		//
-		// A crash in the remaining window — after the roll-forward state exists but before this publish — is
-		// the inverse hazard: `rollForward()` renames the candidate live and publishes nothing, so the
-		// certified artifact serves under the PREVIOUS release's config. That includes its ISOLATION intent,
-		// which is a containment boundary and not just a version string: a component staged to run isolated
-		// comes back non-isolated after an ordinary crash, with nothing in the operation reporting it.
-		// Closing it needs config to be an effect of the journal itself, which is #2315 step 3.
-		pendingEffect = 'publish the root configuration';
-		undoAfterJournal = await options.afterJournal?.();
-
 		// B2 — the candidate becomes live. THE RENAME IS THE COMMIT POINT: nothing after it may compensate,
 		// because the live path now holds the candidate and renaming the aside back over it cannot succeed. A
 		// compensating step there fails its own rollback and reports a failure for a deploy that is live. It is
@@ -2963,41 +3284,13 @@ export async function activateCandidateApplication(
 			},
 		});
 	} catch (error) {
-		// Whether the journal can still carry this activation forward, decided BEFORE compensation removes the
-		// evidence it is read from. Only a first-ever deploy qualifies: `restoreLive` leaves the live path
-		// absent, and recovery reads absent-plus-complete-candidate as a roll forward. A component that
-		// already had a tree gets that tree back and loses its rollback record with it, so the next settle
-		// reads live-plus-candidate-with-no-record and returns the artifact to dormant whatever the journal
-		// says — keeping it there defers the same verdict to the next start and strands config until then.
-		const recoveryCanRollForward = priorAbsentRecordPath !== undefined;
 		await compensate(error, pendingEffect, restoreLive, application);
-		let configRestored = true;
-		if (undoAfterJournal) {
-			configRestored = await undoAfterJournal().then(
-				() => true,
-				(undoError) => {
-					application.logger.warn(
-						`Restored ${application.name} after a failed activation but could not restore its root config, ` +
-							`which still names deployment ${deploymentId}` +
-							(recoveryCanRollForward
-								? '; keeping its activation journal so recovery can roll the certified build forward instead:'
-								: '. The certified build stays dormant and the previous release stays live, so the two ' +
-									'disagree until an operator republishes the component or activates it again:'),
-						undoError
-					);
-					return false;
-				}
-			);
-		}
-		// Kept only where it changes the outcome. Config is stranded either way for a component that already
-		// had a tree — the durable-config window #2315 step 3 closes — and a journal that recovery will only
-		// settle back to dormant buys nothing for holding it.
-		if (configRestored || !recoveryCanRollForward) await returnToDormant();
+		await returnToDormant();
 		throw error;
 	}
 
 	// Past the point of no return: each failure below leaves a state recovery settles forward, so they are
-	// logged, not thrown.
+	// logged, not thrown — all but the config effect, see there.
 	let swapDurable = true;
 	try {
 		await syncRenameParents(candidateDirPath, liveDirPath);
@@ -3010,16 +3303,38 @@ export async function activateCandidateApplication(
 	}
 	// The tree moved, so any dependency link that named its build path is now dangling.
 	await repairRelocatedDependencyLinks(liveDirPath, candidateDirPath);
+	// Before the rollback record is retired: the journal is the only record of this effect, and it goes once that
+	// record is settled. Thrown, unlike the failures below, because reporting success would restart workers under
+	// the previous entry — isolation included.
+	try {
+		await applyRootConfigEffect(application.name, rootConfig);
+	} catch (error) {
+		const failure = new Error(
+			`Deployed ${application.name} on this node, but could not publish its root configuration. The release is ` +
+				`live here and was not sent to any other node; its entry is published when recovery next settles this ` +
+				`activation — at the next start, or the next deploy of ${application.name}: ${errorMessage(error)}`,
+			{ cause: error }
+		);
+		(failure as any)[ACTIVATION_COMMITTED] = true;
+		if ((error as any)?.statusCode) (failure as any).statusCode = (error as any).statusCode;
+		throw failure;
+	}
 	const settledRecord = asidePath ?? priorAbsentRecordPath!;
 	let retired = false;
+	let keptDeploymentId: string | undefined;
 	// Skipped entirely when the swap is not known to be on storage, so the journal below survives.
 	if (swapDurable) {
 		try {
 			const retiredMarkerPath = await retireExtractionAside(settledRecord);
-			// Retiring only MARKS the displaced tree disposable. Without this sweep the tree every deploy
-			// displaces stays under `.deploy-aside/<component>` forever, so the components root grows by a
-			// whole component version per deploy.
-			await cleanupExtractionPaths(application, asideStagingDir, new Set([settledRecord, retiredMarkerPath]));
+			// A tree nothing can keep is swept, or the components root grows by a component version per deploy; one
+			// whose keep FAILED stays retired here for a retry.
+			const retention = asidePath
+				? await retainDisplacedRelease(dirname(liveDirPath), application.name, asidePath)
+				: ({ verdict: 'ineligible' } as const);
+			if (retention.verdict === 'kept') keptDeploymentId = retention.deploymentId;
+			if (retention.verdict !== 'failed') {
+				await cleanupExtractionPaths(application, asideStagingDir, new Set([settledRecord, retiredMarkerPath]));
+			}
 			// Before the journal goes: if the journal's removal persists but the record's does not, startup sees
 			// an in-progress aside with no journal and the legacy pass restores the old tree over the new one.
 			await syncDirectory(asideStagingDir);
@@ -3035,10 +3350,23 @@ export async function activateCandidateApplication(
 		await rm(journalPath, { force: true }).catch((error) =>
 			application.logger.warn(`Deployed ${application.name} but could not remove its activation journal:`, error)
 		);
-		await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((error) =>
-			application.logger.warn(`Deployed ${application.name} but could not clean up its staging directory:`, error)
-		);
-		await rmdir(dirname(deploymentDirPath)).catch(() => {});
+		if (!(await keepsDeploymentRecord(deploymentDirPath))) {
+			await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((error) =>
+				application.logger.warn(`Deployed ${application.name} but could not clean up its staging directory:`, error)
+			);
+			await rmdir(dirname(deploymentDirPath)).catch(() => {});
+		}
+	}
+	// Only here, where the request's own artifact is already live: a prune inside settlement could evict the
+	// artifact a request's preamble pinned. Best-effort, like every prune.
+	if (keptDeploymentId !== undefined) {
+		const maxCount = getStagingRetentionMaxCount();
+		try {
+			const builds = await dormantBuildsOf(dirname(liveDirPath), application.name);
+			if (builds.length > maxCount) await pruneDormantBuilds(application.name, builds, maxCount, keptDeploymentId);
+		} catch (error) {
+			application.logger.warn(`Deployed ${application.name} but could not bound its kept releases:`, error);
+		}
 	}
 }
 
@@ -3048,6 +3376,15 @@ export async function activateCandidateApplication(
  * rolls that state forward — so they must survive, and the caller keys on this to skip discarding them.
  */
 const COMPENSATION_INCOMPLETE = Symbol('compensationIncomplete');
+/**
+ * Marks a failure past the commit rename: the release is live and its journal holds an effect not yet
+ * applied. The deployment records are how recovery finishes it, so the caller must not discard them either.
+ */
+const ACTIVATION_COMMITTED = Symbol('activationCommitted');
+
+function activationCommitted(error: unknown): boolean {
+	return Boolean((error as any)?.[ACTIVATION_COMMITTED]);
+}
 
 function compensationIncomplete(error: unknown): boolean {
 	return Boolean((error as any)?.[COMPENSATION_INCOMPLETE]);
@@ -3237,6 +3574,10 @@ export async function buildCandidateApplication(
 		// deployer's git token. `prepareApplication`'s finally still calls this; it is idempotent.
 		await application.cleanupGitCredentialSession();
 		await installApplication(application, candidateDirPath);
+		// After the install, which can rewrite the tree; never through a link, whose target is not the deploy's to write.
+		if (resolved.kind !== 'link') {
+			await writeDeploymentProvenance(candidateDirPath, application.name, deploymentId);
+		}
 		return candidateDirPath;
 	} catch (error) {
 		await discardCandidate(application, deploymentId);
@@ -3304,6 +3645,22 @@ async function recoverOrCleanupStaleExtractionPaths(
 				(recoveryRecords.length > 1 ? `; discarded ${recoveryRecords.length - 1} older recovery candidates` : '')
 		);
 		return;
+	}
+	// Each retired tree left here is a displaced release: kept if it can be — the retry of a keep that failed — and
+	// swept only when it cannot.
+	for (const entry of entries) {
+		if (!entry.isDirectory() || !entry.name.startsWith(IN_PROGRESS_ASIDE_PREFIX)) continue;
+		const treePath = join(asideStagingDir, entry.name);
+		const retention = await retainDisplacedRelease(dirname(application.dirPath), application.name, treePath).catch(
+			(error) => {
+				application.logger.warn(`Could not keep the previous release at ${treePath}; leaving it in place:`, error);
+				return { verdict: 'failed' } as const;
+			}
+		);
+		if (retention.verdict === 'failed') {
+			paths.delete(treePath);
+			paths.delete(retiredMarkerForAside(treePath));
+		}
 	}
 	await cleanupExtractionPaths(application, asideStagingDir, paths);
 }
@@ -3440,28 +3797,122 @@ export async function dropComponentDirectory(
 	componentName = basename(componentDirPath),
 	componentLogger: Logger = logger
 ): Promise<void> {
+	await (await retireComponentDirectory(componentDirPath, componentName, componentLogger)).discard();
+}
+
+export interface RetiredComponentDirectory {
+	restore(): Promise<void>;
+	/** Delete the tree and the component's dormant builds, reporting failures to the log rather than throwing. */
+	discard(): Promise<void>;
+}
+
+/**
+ * Move a component's tree out of its live path with a single rename, reversibly: what `drop_component` does before it
+ * removes the component's root config entry, so that a failed removal can put the tree back instead of leaving a live
+ * component whose entry is gone.
+ */
+export async function retireComponentDirectory(
+	componentDirPath: string,
+	componentName = basename(componentDirPath),
+	componentLogger: Logger = logger
+): Promise<RetiredComponentDirectory> {
 	await retireComponentExtractionStaging(componentDirPath, componentName, componentLogger);
 	const asideStagingDir = extractionStagingDirectory(componentDirPath);
 	await ensureExtractionStagingDirectory(asideStagingDir);
 	const droppedPath = join(asideStagingDir, `.dropped-${process.pid}-${Date.now()}-${randomUUID()}`);
+	// Durable before the caller removes the entry, which it writes durably: otherwise power loss can keep the removal
+	// and lose the rename, putting the tree back live with no entry.
+	const syncBothParents = async () => {
+		await syncDirectory(dirname(componentDirPath));
+		await syncDirectory(asideStagingDir);
+	};
+	let retired = true;
 	try {
 		await rename(componentDirPath, droppedPath);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+		retired = false;
 	}
-	await cleanupExtractionPaths(
-		{ name: componentName, dirPath: componentDirPath, logger: componentLogger },
-		asideStagingDir,
-		new Set([droppedPath])
-	);
-	// A dropped component has no next deploy to bound its dormant builds.
-	try {
-		await pruneDormantBuilds(componentName, await dormantBuildsOf(dirname(componentDirPath), componentName), 0);
-	} catch (error) {
-		componentLogger.warn(
-			`Dropped ${componentName} but could not reclaim its dormant staged builds:`,
-			errorForLog(error)
-		);
+	if (retired) {
+		try {
+			await syncBothParents();
+		} catch (error) {
+			try {
+				await rename(droppedPath, componentDirPath);
+			} catch (restoreError) {
+				componentLogger.error(
+					`Could not put ${componentName} back from ${droppedPath} after its move aside failed to flush:`,
+					errorForLog(restoreError)
+				);
+				throw error;
+			}
+			await syncBothParents().catch((syncError) =>
+				componentLogger.warn(`Put ${componentName} back, but could not flush that either:`, errorForLog(syncError))
+			);
+			throw error;
+		}
+	}
+	return {
+		async restore() {
+			if (!retired) return;
+			try {
+				await rename(droppedPath, componentDirPath);
+			} catch (error) {
+				throw new Error(`Could not put ${componentName} back from ${droppedPath}: ${errorMessage(error)}`, {
+					cause: error,
+				});
+			}
+			try {
+				await syncBothParents();
+			} catch (error) {
+				throw new Error(`Put ${componentName} back, but could not flush its directories: ${errorMessage(error)}`, {
+					cause: error,
+				});
+			}
+		},
+		async discard() {
+			await cleanupExtractionPaths(
+				{ name: componentName, dirPath: componentDirPath, logger: componentLogger },
+				asideStagingDir,
+				new Set([droppedPath])
+			);
+			// A dropped component has no next deploy to bound its dormant builds, and nothing left for its records to
+			// describe.
+			try {
+				await pruneDormantBuilds(componentName, await dormantBuildsOf(dirname(componentDirPath), componentName), 0);
+				await reclaimDeploymentRecordsOf(dirname(componentDirPath), componentName);
+			} catch (error) {
+				componentLogger.warn(
+					`Dropped ${componentName} but could not reclaim its dormant staged builds:`,
+					errorForLog(error)
+				);
+			}
+		},
+	};
+}
+
+/** Journaled directories stay: an activation nobody settled is evidence, not litter. */
+async function reclaimDeploymentRecordsOf(componentsRootDirPath: string, componentName: string): Promise<void> {
+	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
+	const entries = await readdir(stagingRoot, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+		if (error?.code === 'ENOENT') return [];
+		throw error;
+	});
+	await sweepAbandonedClaims(stagingRoot, entries, componentName);
+	for (const entry of entries) {
+		if (!isDeploymentDirectoryEntry(entry)) continue;
+		const deploymentDirPath = join(stagingRoot, entry.name);
+		try {
+			if ((await candidateComponentName(deploymentDirPath)) !== componentName) continue;
+			if (await presentOrAbsent(join(deploymentDirPath, ACTIVATION_JOURNAL))) continue;
+			if (await presentOrAbsent(join(deploymentDirPath, componentName))) continue;
+			await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+		} catch (error) {
+			logger.warn(
+				`Could not reclaim the deployment record ${deploymentDirPath} of ${componentName}:`,
+				errorForLog(error)
+			);
+		}
 	}
 }
 
@@ -4082,6 +4533,7 @@ export class Application {
 	isNewComponent: boolean = true;
 	packageMetadataChanged: boolean = false;
 	installationIsOpaque: boolean = false;
+	alreadyActive: boolean = false;
 
 	constructor({ name, payload, packageIdentifier, install, onInstallLine, credentials }: ApplicationOptions) {
 		this.name = name;
@@ -4237,6 +4689,7 @@ export function shouldPackLocalDirectory(packageIdentifier: string | undefined, 
  * @returns A promise that resolves when all preparation steps complete.
  */
 export type PrepareApplicationOptions = {
+	onDeployStart?: (deploymentId: string) => void;
 	beforePrepare?: () => Promise<void>;
 	/**
 	 * Runs against the built candidate while the live version is still serving, and BEFORE the swap. A
@@ -4259,24 +4712,20 @@ export type PrepareApplicationOptions = {
 	 */
 	mode?: 'deploy' | 'stage' | 'activate';
 	/**
-	 * `stage` only: the build's declared intent, recorded with the artifact for whoever activates it.
-	 * A callback rather than a value because `beforePrepare` is what determines it, and that runs after
-	 * these options have been constructed.
+	 * `deploy` and `stage`: the build's declared intent — the root-config entry it owns, or `null` for a
+	 * payload build, which owns none. `deploy` publishes it once the swap commits; `stage` records it with the
+	 * artifact for whoever activates it. Omitted, the preparation leaves root config alone, which is what a
+	 * caller installing FROM root config needs. A callback rather than a value because `beforePrepare` is
+	 * what determines it, and that runs after these options have been constructed.
 	 */
 	describeArtifact?: () => { rootConfig: Record<string, unknown> | null; isolated: boolean };
-	/**
-	 * `activate` only: publish the artifact's recorded root-config entry, immediately before the swap. May
-	 * return an undo, run if the activation then fails before it commits — otherwise a failed activation
-	 * leaves config naming a release that is not live, which the next boot install would resolve and build
-	 * from scratch over a component whose certified artifact is sitting beside it.
-	 */
-	publishRootConfig?: (entry: Record<string, unknown>) => Promise<(() => Promise<void>) | void>;
 	/** `activate` only: admit the artifact's isolation intent under the preparation lock, before the swap. */
 	admitIsolation?: (descriptor: ArtifactDescriptor) => Promise<void>;
 };
 
 export async function prepareApplication(application: Application, options: PrepareApplicationOptions = {}) {
 	const lifecycleToken = await broadcastDeployStart(application.name);
+	options.onDeployStart?.(lifecycleToken);
 	const mode = options.mode ?? 'deploy';
 	const artifactId = options.artifactId ?? lifecycleToken;
 	try {
@@ -4316,6 +4765,15 @@ export async function prepareApplication(application: Application, options: Prep
 					}
 				));
 				if (mode === 'activate') {
+					// A retry of an activation that swapped here and failed later or elsewhere: answered without a swap so
+					// it can go on to the nodes still holding the artifact. Nothing can tell whether the running workers
+					// loaded it, hence the restart request.
+					if ((await readDeploymentProvenance(application.dirPath, application.name)) === artifactId) {
+						application.alreadyActive = true;
+						application.packageMetadataChanged = true;
+						application.logger.debug?.(`Deployment ${artifactId} is already live; nothing to swap`);
+						return;
+					}
 					await activateStagedArtifact(application, artifactId, previousPackageMetadata, options);
 					return;
 				}
@@ -4363,8 +4821,25 @@ export async function prepareApplication(application: Application, options: Prep
 							await syncArtifactAncestors(candidateDeploymentDirPath(application.dirPath, artifactId));
 							return;
 						}
+						const declared = options.describeArtifact?.();
+						// The directory outlives the swap as the record a later displacement puts this release back into;
+						// a link has no bytes of its own to put back.
+						const described = declared && !(await lstat(candidateDirPath)).isSymbolicLink() ? declared : undefined;
+						if (described) {
+							await writeArtifactDescriptor(application.dirPath, artifactId, {
+								v: ARTIFACT_DESCRIPTOR_VERSION,
+								component: application.name,
+								rootConfig: described.rootConfig,
+								installationIsOpaque: application.installationIsOpaque,
+								isolated: described.isolated,
+							});
+						}
 						await markCandidateComplete(application.dirPath, artifactId, application.name);
-						await activateCandidateApplication(application, artifactId);
+						// The record is meant to outlive the swap, so its own entry has to be on storage, as a stage's is.
+						if (described) await syncArtifactAncestors(candidateDeploymentDirPath(application.dirPath, artifactId));
+						await activateCandidateApplication(application, artifactId, {
+							rootConfig: declared ? rootConfigEffectFromDeclaration(declared.rootConfig) : { kind: 'keep' },
+						});
 					} catch (error) {
 						// The builder's own cleanup only covers a failed BUILD. A rejected validation, or an
 						// activation that was cleanly compensated, would otherwise leave a whole installed
@@ -4374,7 +4849,10 @@ export async function prepareApplication(application: Application, options: Prep
 						// path may be absent, and the candidate plus its `.complete` marker and journal are exactly
 						// what recovery needs to roll the validated deploy forward at the next start. Discarding
 						// them there trades a bounded disk cost for a component with no version at all.
-						if (!compensationIncomplete(error)) await discardCandidate(application, artifactId);
+						// Nor past the commit, where the journal still holds the config effect recovery has to finish.
+						if (!compensationIncomplete(error) && !activationCommitted(error)) {
+							await discardCandidate(application, artifactId);
+						}
 						throw error;
 					}
 				} finally {
@@ -4382,13 +4860,8 @@ export async function prepareApplication(application: Application, options: Prep
 				}
 			},
 			{
-				// The longest extraction path runs clone, tag listing, checkout, and npm pack. A custom
-				// package manager configured to warn can then fall back to npm, yielding two install
-				// commands. Bound orphaned same-process worker locks without rejecting behind a valid holder.
-				timeoutMs:
-					MAX_GIT_EXTRACTION_COMMANDS * DEFAULT_COMMAND_TIMEOUT_MS +
-					MAX_INSTALL_COMMANDS * commandTimeoutMs +
-					COMPONENT_PREPARATION_WAIT_MARGIN_MS,
+				// Bound orphaned same-process worker locks without rejecting behind a valid holder.
+				timeoutMs: componentPreparationBudgetMs(commandTimeoutMs),
 				onWait: (owner) =>
 					application.logger.info(
 						`Waiting for in-progress preparation of ${application.name}` +
@@ -4447,11 +4920,13 @@ async function activateStagedArtifact(
 		throw unusable('an activation of it is unsettled');
 	}
 	const candidateStat = await presentOrAbsent(candidateDirPath);
-	if (!candidateStat || !candidateStat.isDirectory()) {
+	// The record of a release that is neither live nor kept here: nothing on this node answers to the id.
+	if (!candidateStat) throw missing('that release is no longer on this node');
+	if (!candidateStat.isDirectory()) {
 		// Unlike an immediate deploy, a symlink is refused: a `file:` directory is linked rather than
 		// copied, so what it points at now is not what was certified. Staging rejects the source for the
 		// same reason; this is the other end of the same rule, for an artifact staged by an older build.
-		throw unusable('its build tree is missing or is a link rather than a copy');
+		throw unusable('its build tree is a link rather than a copy');
 	}
 	const descriptor = await readArtifactDescriptor(deploymentDirPath, application.name);
 	if (!descriptor) throw unusable('it does not record what its build decided');
@@ -4475,10 +4950,127 @@ async function activateStagedArtifact(
 		);
 	}
 	await activateCandidateApplication(application, artifactId, {
-		// Returns its own undo, which the swap runs inside its pre-commit boundary — see there for why it
-		// cannot be run out here.
-		afterJournal: descriptor.rootConfig ? () => options.publishRootConfig!(descriptor.rootConfig!) : undefined,
+		rootConfig: rootConfigEffectFromDeclaration(descriptor.rootConfig),
 	});
+}
+
+export function getStartupInstallTimeoutMs(): number {
+	const configured = getConfigValue(CONFIG_PARAMS.DEPLOYMENT_STARTUPINSTALLTIMEOUT);
+	if (configured === undefined || configured === null) return DEFAULT_STARTUP_INSTALL_TIMEOUT_MS;
+	if (typeof configured === 'string' && configured.trim() === '') return DEFAULT_STARTUP_INSTALL_TIMEOUT_MS;
+	const parsed = typeof configured === 'number' || typeof configured === 'string' ? Number(configured) : Number.NaN;
+	if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+	logger.warn?.(
+		`Ignoring invalid ${CONFIG_PARAMS.DEPLOYMENT_STARTUPINSTALLTIMEOUT} value ${JSON.stringify(configured)}; ` +
+			`using ${DEFAULT_STARTUP_INSTALL_TIMEOUT_MS}ms`
+	);
+	return DEFAULT_STARTUP_INSTALL_TIMEOUT_MS;
+}
+
+export type StartupPreparation = {
+	name: string;
+	configKey: string;
+	dirPath: string;
+	promise: Promise<void>;
+	deploymentId?: string;
+	/** Some installApplications() call stopped waiting for this, so a generation already running predates its swap. */
+	leftBehind: boolean;
+};
+
+// Process-wide, because a preparation startup stopped waiting for outlives the call that started it: the
+// next installApplications() (every worker restart runs one) must wait on it, not start a second one that
+// would queue on the first one's component lock and rebuild the component again when it finally gets it.
+// Keyed by configuration too, so a config that flips back while an older preparation is still running
+// rejoins that preparation.
+const startupPreparations = new Map<string, StartupPreparation>();
+
+export function trackStartupPreparation(
+	name: string,
+	configKey: string,
+	dirPath: string,
+	start: (onDeployStart: (deploymentId: string) => void) => Promise<void>,
+	onLateSuccess: (preparation: StartupPreparation) => void | Promise<void> = reportLateStartupPreparation
+): StartupPreparation {
+	const key = JSON.stringify([name, configKey]);
+	const existing = startupPreparations.get(key);
+	if (existing) return existing;
+	const preparation = { name, configKey, dirPath, leftBehind: false } as StartupPreparation;
+	preparation.promise = start((deploymentId) => {
+		preparation.deploymentId = deploymentId;
+		if (preparation.leftBehind) deployLifecycle.releaseLoads(name, deploymentId);
+	});
+	startupPreparations.set(key, preparation);
+	const settle = (succeeded: boolean) => {
+		startupPreparations.delete(key);
+		if (!succeeded || !preparation.leftBehind) return;
+		Promise.resolve()
+			.then(() => onLateSuccess(preparation))
+			.catch((error) => logger.error?.(`Could not report the late preparation of ${name}:`, errorForLog(error)));
+	};
+	preparation.promise.then(
+		() => settle(true),
+		() => settle(false)
+	);
+	return preparation;
+}
+
+async function reportLateStartupPreparation(preparation: StartupPreparation): Promise<void> {
+	const { requestRestart } = await import('./requestRestart.ts');
+	requestRestart();
+	logger.warn?.(
+		`Component ${preparation.name} finished preparing after startup stopped waiting for it; restart Harper to load it`
+	);
+}
+
+/**
+ * Wait for the given preparations until they all settle or `timeoutMs` elapses, warning periodically about
+ * what startup is still waiting for. Returns the ones this call stopped waiting for, which keep running (and
+ * holding their component locks) — the caller stops waiting, it does not cancel. Infinity waits indefinitely.
+ * One an earlier call already stopped waiting for is not waited for again: the node already runs without it.
+ */
+export async function waitForStartupPreparations(
+	preparations: Iterable<StartupPreparation>,
+	timeoutMs: number,
+	progressIntervalMs: number = STARTUP_INSTALL_PROGRESS_INTERVAL_MS
+): Promise<StartupPreparation[]> {
+	const pending = new Set<StartupPreparation>();
+	for (const preparation of preparations) {
+		if (!preparation.leftBehind) pending.add(preparation);
+	}
+	if (pending.size === 0) return [];
+	const startedAt = performance.now();
+	const allSettled = Promise.all(
+		[...pending].map((preparation) =>
+			preparation.promise.then(
+				() => pending.delete(preparation),
+				() => pending.delete(preparation)
+			)
+		)
+	);
+	let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<void>((resolve) => {
+		if (Number.isFinite(timeoutMs))
+			deadlineTimer = setTimeout(resolve, Math.min(Math.max(timeoutMs, 0), MAX_SET_TIMEOUT_MS));
+	});
+	const progressTimer = setInterval(() => {
+		logger.warn?.(
+			`Startup is still waiting for component preparation after ${Math.round((performance.now() - startedAt) / 1000)}s: ` +
+				[...pending].map((preparation) => preparation.name).join(', ')
+		);
+	}, progressIntervalMs);
+	progressTimer.unref();
+	try {
+		await Promise.race([allSettled, deadline]);
+	} finally {
+		clearTimeout(deadlineTimer);
+		clearInterval(progressTimer);
+	}
+	for (const preparation of pending) {
+		preparation.leftBehind = true;
+		// Startup loads the installed tree instead of waiting for this deploy, so no Scope may wait for it either.
+		if (preparation.deploymentId) deployLifecycle.releaseLoads(preparation.name, preparation.deploymentId);
+	}
+	return [...pending];
 }
 
 /**
@@ -4486,9 +5078,30 @@ async function activateStagedArtifact(
  *
  * This method should only be called from the main thread otherwise certain
  * operations may conflict with each other (such as writing to the same directory).
+ *
+ * Waits at most `deployment_startupInstallTimeout` for the preparations it needs: startup opens no
+ * listener until this returns, so one component that never finishes would otherwise keep the whole node
+ * down. A preparation still running then is left to finish in the background (see
+ * `trackStartupPreparation`), and startup loads whatever is installed at that point.
  */
 export async function installApplications() {
-	const applicationInstallationPromises: Promise<void>[] = [];
+	const timeoutMs = getStartupInstallTimeoutMs();
+	const config = getConfigObj();
+
+	const componentsRootDirPath = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+	if (!componentsRootDirPath) throw new Error('componentsRoot is not configured');
+
+	// Ensure component directory exists
+	await mkdir(componentsRootDirPath, { recursive: true });
+
+	const harperApplicationLockPath = join(getConfigValue(CONFIG_PARAMS.ROOTPATH), 'harper-application-lock.json');
+	// Creates the file on a first boot even when nothing needs preparing. Not awaited: every lock-file and
+	// credential read runs inside a preparation, where the deadline bounds it.
+	updateApplicationLock(harperApplicationLockPath, () => {}).catch((error) =>
+		logger.error?.(`Could not write ${harperApplicationLockPath}:`, errorForLog(error))
+	);
+
+	const preparations = new Set<StartupPreparation>();
 
 	// first install any built-in components specified from env vars
 	for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
@@ -4501,27 +5114,16 @@ export async function installApplications() {
 			packageIdentifier,
 		});
 
-		applicationInstallationPromises.push(prepareApplication(application));
-	}
-
-	const config = getConfigObj();
-
-	const componentsRootDirPath = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
-	if (!componentsRootDirPath) throw new Error('componentsRoot is not configured');
-
-	// Ensure component directory exists
-	await mkdir(componentsRootDirPath, { recursive: true });
-
-	const harperApplicationLockPath = join(getConfigValue(CONFIG_PARAMS.ROOTPATH), 'harper-application-lock.json');
-
-	let harperApplicationLock: { applications: Record<string, ApplicationConfig> } = { applications: {} };
-	try {
-		harperApplicationLock = JSON.parse(await readFile(harperApplicationLockPath, 'utf8'));
-	} catch (error) {
-		// Ignore file not found error; will create new lock file after installations
-		if (error.code !== 'ENOENT') {
-			throw error;
-		}
+		preparations.add(
+			trackStartupPreparation(name, packageIdentifier, application.dirPath, async (onDeployStart) => {
+				try {
+					await prepareApplication(application, { onDeployStart });
+				} catch (error) {
+					logger.error?.(`Failed to prepare built-in component ${name}:`, errorForLog(error));
+					throw error;
+				}
+			})
+		);
 	}
 
 	for (const [name, applicationConfig] of Object.entries(config)) {
@@ -4535,86 +5137,129 @@ export async function installApplications() {
 			// Then do proper error-based validation with TypeScript `asserts` to provide type safety
 			// This will throw if the config is invalid
 			assertApplicationConfig(name, applicationConfig);
-
-			// Resolve any credential references from the store so a cold install (fresh node, wiped
-			// components dir, new peer that never installed) can authenticate without the token being
-			// re-supplied. Best-effort: if custody isn't available yet or a referenced secret is
-			// missing, log and install without it (a truly private package then fails in npm with its
-			// own error) rather than blocking boot.
-			let credentials: ResolvedCredential[] | undefined;
-			if (applicationConfig.credentials?.length) {
-				try {
-					const { resolveCredentials } = await import('./secretOperations.ts');
-					credentials = await resolveCredentials(applicationConfig.credentials, name);
-				} catch (error) {
-					logger.warn?.(
-						`Could not resolve credentials for application ${name} at install time: ${(error as Error).message}`
-					);
-				}
-			}
-
-			const application = new Application({
-				name,
-				packageIdentifier: applicationConfig.package,
-				install: applicationConfig.install,
-				credentials,
-			});
-
-			// Lock check: only install if not already installed with matching configuration
-			if (
-				existsSync(application.dirPath) &&
-				harperApplicationLock.applications[name] &&
-				JSON.stringify(harperApplicationLock.applications[name]) === JSON.stringify(applicationConfig)
-			) {
-				logger.info?.(`Application ${name} is already installed with matching configuration; skipping installation`);
-				continue;
-			}
-			// Once preparation is required, the old entry is no longer evidence of a complete
-			// installation. In particular, a failed reinstall may leave a partial directory behind;
-			// retaining the prior entry would make the next boot skip that partial component.
-			applicationInstallationPromises.push(
-				recordApplicationPreparation(
-					harperApplicationLock,
-					name,
-					applicationConfig,
-					() => prepareApplication(application),
-					(lock) => persistApplicationLock(harperApplicationLockPath, lock)
-				)
-			);
 		} catch (error) {
 			logger.error?.(`Skipping installation of application ${name} due to invalid configuration: ${error.message}`);
+			continue;
 		}
+		const dirPath = join(componentsRootDirPath, name);
+		preparations.add(
+			trackStartupPreparation(name, JSON.stringify(applicationConfig), dirPath, (onDeployStart) =>
+				installConfiguredApplication(name, applicationConfig, dirPath, harperApplicationLockPath, onDeployStart)
+			)
+		);
 	}
 
-	const applicationInstallationStatuses = await Promise.allSettled(applicationInstallationPromises);
-	logger.debug?.(applicationInstallationStatuses);
-	logger.info?.('All root applications loaded');
-
-	// Finally, write the lock file. Every component that went through recordApplicationPreparation
-	// already persisted its own transition durably; this covers components that were skipped
-	// (matching-config, already installed) and never mutated the in-memory object at all.
-	await persistApplicationLock(harperApplicationLockPath, harperApplicationLock);
+	const leftBehind = await waitForStartupPreparations(preparations, timeoutMs === 0 ? Infinity : timeoutMs);
+	for (const { name, dirPath } of leftBehind) {
+		logger.error?.(
+			`Startup is no longer waiting for ${name}: its preparation is still running after ` +
+				`${CONFIG_PARAMS.DEPLOYMENT_STARTUPINSTALLTIMEOUT} (${timeoutMs}ms). It continues in the background; ` +
+				(existsSync(dirPath)
+					? 'until it finishes, the version already installed stays in place'
+					: 'until it finishes, the component is not installed')
+		);
+	}
+	if (![...preparations].some((preparation) => preparation.leftBehind)) logger.info?.('All root applications loaded');
 }
 
-// Concurrent components each persist the same shared lock file. Serialize per path so two
-// writers never race the same temp filename, and so a write always reflects the latest merged
-// in-memory state rather than a stale snapshot silently clobbering a sibling's just-written change.
-const applicationLockWriteQueues = new Map<string, Promise<void>>();
-
-async function persistApplicationLock(
+async function installConfiguredApplication(
+	name: string,
+	applicationConfig: ApplicationConfig,
+	dirPath: string,
 	harperApplicationLockPath: string,
-	harperApplicationLock: { applications: Record<string, ApplicationConfig> }
+	onDeployStart: (deploymentId: string) => void
 ): Promise<void> {
-	const previous = applicationLockWriteQueues.get(harperApplicationLockPath) ?? Promise.resolve();
-	const next = previous
-		.catch(() => {})
-		.then(async () => {
-			const tempPath = `${harperApplicationLockPath}.${process.pid}.${randomUUID()}.tmp`;
-			await writeFile(tempPath, JSON.stringify(harperApplicationLock, null, 2), 'utf8');
-			await rename(tempPath, harperApplicationLockPath);
+	try {
+		// Lock check: only install if not already installed with matching configuration
+		const installedConfig = (await readApplicationLock(harperApplicationLockPath)).applications[name];
+		if (
+			existsSync(dirPath) &&
+			installedConfig &&
+			JSON.stringify(installedConfig) === JSON.stringify(applicationConfig)
+		) {
+			logger.info?.(`Application ${name} is already installed with matching configuration; skipping installation`);
+			return;
+		}
+
+		// Resolve any credential references from the store so a cold install (fresh node, wiped
+		// components dir, new peer that never installed) can authenticate without the token being
+		// re-supplied. Best-effort: if custody isn't available yet or a referenced secret is
+		// missing, log and install without it (a truly private package then fails in npm with its
+		// own error) rather than blocking boot.
+		let credentials: ResolvedCredential[] | undefined;
+		if (applicationConfig.credentials?.length) {
+			try {
+				const { resolveCredentials } = await import('./secretOperations.ts');
+				credentials = await resolveCredentials(applicationConfig.credentials, name);
+			} catch (error) {
+				logger.warn?.(
+					`Could not resolve credentials for application ${name} at install time: ${(error as Error).message}`
+				);
+			}
+		}
+
+		const application = new Application({
+			name,
+			packageIdentifier: applicationConfig.package,
+			install: applicationConfig.install,
+			credentials,
 		});
-	applicationLockWriteQueues.set(harperApplicationLockPath, next);
-	await next;
+		// Once preparation is required, the old entry is no longer evidence of a complete
+		// installation. In particular, a failed reinstall may leave a partial directory behind;
+		// retaining the prior entry would make the next boot skip that partial component.
+		await recordApplicationPreparation(
+			name,
+			applicationConfig,
+			(clearEntry) => prepareApplication(application, { beforePrepare: clearEntry, onDeployStart }),
+			(mutate) => updateApplicationLock(harperApplicationLockPath, mutate)
+		);
+	} catch (error) {
+		logger.error?.(`Failed to prepare application ${name}:`, errorForLog(error));
+		throw error;
+	}
+}
+
+type ApplicationLockFile = { applications: Record<string, ApplicationConfig> };
+type ApplicationLockMutation = (applications: ApplicationLockFile['applications']) => void;
+
+// Every read and read-modify-write of one lock file runs in this per-path order. A preparation can finish
+// after a later installApplications() call has read the file, so each transition is applied to what is on
+// disk at its turn rather than to a snapshot some caller took earlier.
+const applicationLockQueues = new Map<string, Promise<unknown>>();
+
+function enqueueApplicationLockTask<T>(harperApplicationLockPath: string, task: () => Promise<T>): Promise<T> {
+	const previous = applicationLockQueues.get(harperApplicationLockPath) ?? Promise.resolve();
+	const next = previous.catch(() => {}).then(task);
+	applicationLockQueues.set(harperApplicationLockPath, next);
+	return next;
+}
+
+async function readApplicationLockFile(harperApplicationLockPath: string): Promise<ApplicationLockFile> {
+	try {
+		return JSON.parse(await readFile(harperApplicationLockPath, 'utf8'));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { applications: {} };
+		throw error;
+	}
+}
+
+function readApplicationLock(harperApplicationLockPath: string): Promise<ApplicationLockFile> {
+	return enqueueApplicationLockTask(harperApplicationLockPath, () =>
+		readApplicationLockFile(harperApplicationLockPath)
+	);
+}
+
+export function updateApplicationLock(
+	harperApplicationLockPath: string,
+	mutate: ApplicationLockMutation
+): Promise<void> {
+	return enqueueApplicationLockTask(harperApplicationLockPath, async () => {
+		const lock = await readApplicationLockFile(harperApplicationLockPath);
+		mutate(lock.applications);
+		const tempPath = `${harperApplicationLockPath}.${process.pid}.${randomUUID()}.tmp`;
+		await writeFile(tempPath, JSON.stringify(lock, null, 2), 'utf8');
+		await rename(tempPath, harperApplicationLockPath);
+	});
 }
 
 /**
@@ -4622,28 +5267,26 @@ async function persistApplicationLock(
  * explicit production seam so the failure transition can be tested without replacing module
  * bindings: a stale success is removed before preparation starts and restored only on success.
  *
- * `persist` is durably awaited on both transitions — not just applied in memory — so a crash
- * mid-preparation can never leave the on-disk lock file still claiming success for a directory a
- * subsequent reinstall left partially written (which would make `installApplications`'s
- * already-installed check at the top of this loop skip the required reinstall forever).
+ * Each transition is durably awaited — not just applied in memory — so a crash mid-preparation can
+ * never leave the on-disk lock file still claiming success for a directory a subsequent reinstall
+ * left partially written (which would make `installApplications`'s already-installed check skip
+ * the required reinstall forever). `prepare` runs `clearEntry` under the component's preparation lock,
+ * so the removal cannot land before the success write of an earlier preparation still holding it.
  */
 export async function recordApplicationPreparation(
-	harperApplicationLock: { applications: Record<string, ApplicationConfig> },
 	name: string,
 	applicationConfig: ApplicationConfig,
-	prepare: () => Promise<void>,
-	persist: (lock: { applications: Record<string, ApplicationConfig> }) => Promise<void> = async () => {}
+	prepare: (clearEntry: () => Promise<void>) => Promise<void>,
+	updateLock: (mutate: ApplicationLockMutation) => Promise<void>
 ): Promise<void> {
-	delete harperApplicationLock.applications[name];
-	await persist(harperApplicationLock);
-	try {
-		await prepare();
-		harperApplicationLock.applications[name] = applicationConfig;
-		await persist(harperApplicationLock);
-	} catch (error) {
-		logger.error?.(`Failed to prepare application ${name}:`, errorForLog(error));
-		throw error;
-	}
+	await prepare(() =>
+		updateLock((applications) => {
+			delete applications[name];
+		})
+	);
+	await updateLock((applications) => {
+		applications[name] = applicationConfig;
+	});
 }
 
 /**
@@ -4949,6 +5592,10 @@ function spawnWithEnv(
 		}
 		const spawnLogger = logger.loggerWithTag(`${applicationName}:spawn:${command}`);
 
+		// The child is created inside spawn(), so the interval around the call bounds its creation
+		// time exactly — what the Windows tree scan needs to tell its children from an orphan of the
+		// PID's previous owner.
+		const spawnStartedAt = Date.now();
 		const childProcess = spawn(command, args, {
 			shell: true,
 			cwd,
@@ -4958,13 +5605,29 @@ function spawnWithEnv(
 			// and install-script descendant before the component preparation lock is released.
 			detached: process.platform !== 'win32',
 		});
+		const rootKnownAt = Date.now();
 		const trackedProcessId = childProcess.pid;
-		if (trackedProcessId) registerProcessGroup(trackedProcessId);
+		// Read live by the Windows tree scan: a root that exits mid-wait must bound its children
+		// from that moment, since its PID is reusable from then on.
+		const treeIdentity: WindowsProcessTreeIdentity = {
+			rootPid: trackedProcessId ?? 0,
+			rootKnownAt,
+			// A backward wall-clock step between the two Date.now() calls above (e.g. an NTP
+			// correction) would otherwise make this negative — the same case the registry path
+			// already guards (manageThreads.js's addProcessGroup discards spawnStartedAt entirely
+			// when it reads later than spawnedAt). Falling back to the same allowance here keeps both
+			// paths consistent instead of silently narrowing the window that admits the root's own
+			// earliest children.
+			rootStartedWithinMs: spawnStartedAt <= rootKnownAt ? rootKnownAt - spawnStartedAt : undefined,
+		};
+		const processGroupRegistration = trackedProcessId
+			? registerProcessGroup(trackedProcessId, rootKnownAt, spawnStartedAt)
+			: undefined;
 		let processGroupIsTracked = Boolean(trackedProcessId);
 		const untrackProcessGroup = () => {
 			if (!processGroupIsTracked || !trackedProcessId) return;
 			processGroupIsTracked = false;
-			unregisterProcessGroup(trackedProcessId);
+			unregisterProcessGroup(trackedProcessId, processGroupRegistration);
 		};
 
 		let didTimeout = false;
@@ -4975,7 +5638,7 @@ function spawnWithEnv(
 		});
 		const timeout = setTimeout(() => {
 			didTimeout = true;
-			void terminateProcessTree(childProcess, closePromise).then(
+			void terminateProcessTree(childProcess, closePromise, treeIdentity).then(
 				() => {
 					// Only untrack once terminateProcessTree has confirmed the group is actually gone.
 					// The direct child can emit 'close' mid-grace-period (e.g. right after SIGTERM)
@@ -5042,6 +5705,7 @@ function spawnWithEnv(
 		});
 
 		childProcess.on('exit', (code, signal) => {
+			treeIdentity.rootExitedAt = Date.now();
 			spawnLogger.debug?.(`Direct child exited with code ${code}, signal ${signal}; awaiting stdio close`);
 		});
 
@@ -5067,7 +5731,7 @@ function spawnWithEnv(
 			// when a timeout is already driving its own terminateProcessTree call for this process.
 			if (!didTimeout && trackedProcessId) {
 				try {
-					await terminateProcessTree(childProcess, closePromise);
+					await terminateProcessTree(childProcess, closePromise, treeIdentity);
 				} catch (error) {
 					untrackProcessGroup();
 					flushOutput();
@@ -5137,71 +5801,6 @@ export async function waitForConfirmedTermination(
 	while (await isAlive()) await delay(pollMs);
 }
 
-export async function waitForWindowsTreeTermination(
-	attemptTermination: () => boolean | Promise<boolean>,
-	treeIsAlive: () => boolean | null | Promise<boolean | null>,
-	pollMs: number = PROCESS_TERMINATION_POLL_MS
-): Promise<void> {
-	for (;;) {
-		// A successful taskkill exit only proves the request was accepted, not that the whole tree
-		// has actually exited — Windows termination is asynchronous, and taskkill can report overall
-		// success even when a descendant is not yet (or never) reaped. Only an explicit `false` from
-		// treeIsAlive, independently confirming no member of the tree remains, is safe to return on;
-		// `true` or `null` (unknown) must keep the loop retrying.
-		await attemptTermination();
-		if ((await treeIsAlive()) === false) return;
-		await delay(pollMs);
-	}
-}
-
-async function windowsProcessTreeIsAlive(rootPid: number): Promise<boolean | null> {
-	// Query the process table rather than probing only the parent PID: descendants retain their
-	// ParentProcessId after the parent exits, which is exactly the taskkill "process not found" race.
-	// Exit code 1 must mean "queried the process table and positively found nothing" — never
-	// "the query itself failed" (e.g. Get-CimInstance denied or WMI unavailable), which would
-	// otherwise read identically to a confirmed-gone tree and release the lock while a descendant
-	// may still be alive. ErrorActionPreference=Stop plus the wrapping try/catch turns a query
-	// failure into its own exit code (2), which the caller below already treats as unknown.
-	const script =
-		"$ErrorActionPreference = 'Stop'; try { " +
-		`$rootPid = ${rootPid}; ` +
-		'$all = @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId); ' +
-		'$frontier = @($rootPid); $seen = @{}; $found = $false; ' +
-		'while ($frontier.Count -gt 0) { ' +
-		'$next = @(); foreach ($parentPid in $frontier) { if ($seen[$parentPid]) { continue }; ' +
-		'$seen[$parentPid] = $true; foreach ($p in $all) { ' +
-		'if ($p.ProcessId -eq $parentPid) { $found = $true }; ' +
-		'if ($p.ParentProcessId -eq $parentPid) { $found = $true; $next += [int]$p.ProcessId } } }; ' +
-		'$frontier = $next }; ' +
-		'if ($found) { exit 0 } else { exit 1 } ' +
-		'} catch { exit 2 }';
-	return new Promise<boolean | null>((resolve) => {
-		const query = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
-			stdio: 'ignore',
-			windowsHide: true,
-		});
-		query.once('close', (code) => resolve(code === 0 ? true : code === 1 ? false : null));
-		query.once('error', () => resolve(null));
-	});
-}
-
-async function terminateWindowsProcessTree(childProcess: ChildProcess): Promise<void> {
-	if (!childProcess.pid) return;
-	const rootPid = childProcess.pid;
-	await waitForWindowsTreeTermination(
-		() =>
-			new Promise<boolean>((resolve) => {
-				const taskkill = spawn('taskkill', ['/pid', String(rootPid), '/T', '/F'], {
-					stdio: 'ignore',
-					windowsHide: true,
-				});
-				taskkill.once('close', (code) => resolve(code === 0));
-				taskkill.once('error', () => resolve(false));
-			}),
-		() => windowsProcessTreeIsAlive(rootPid)
-	);
-}
-
 async function waitForProcessClose(childProcess: ChildProcess, closePromise: Promise<void>): Promise<void> {
 	let timer: ReturnType<typeof setTimeout>;
 	const closeTimeout = new Promise<false>((resolve) => {
@@ -5218,13 +5817,19 @@ async function waitForProcessClose(childProcess: ChildProcess, closePromise: Pro
 	}
 }
 
-export async function terminateProcessTree(childProcess: ChildProcess, closePromise: Promise<void>): Promise<void> {
+export async function terminateProcessTree(
+	childProcess: ChildProcess,
+	closePromise: Promise<void>,
+	treeIdentity: WindowsProcessTreeIdentity
+): Promise<void> {
 	if (!childProcess.pid) {
 		await waitForProcessClose(childProcess, closePromise);
 		return;
 	}
 	if (process.platform === 'win32') {
-		await terminateWindowsProcessTree(childProcess);
+		await confirmWindowsProcessTreeGone(treeIdentity, {
+			label: `pid ${childProcess.pid} (${childProcess.spawnargs.join(' ')})`,
+		});
 		await waitForProcessClose(childProcess, closePromise);
 		return;
 	}

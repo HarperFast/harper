@@ -42,6 +42,12 @@ function estimate(table, condition) {
 }
 
 describe('estimateCondition range estimates', () => {
+	it('uses an index estimate for a single-element attribute path', () => {
+		const table = makeTable();
+		table.indices.attr.getValuesCount = () => 3;
+		assert.strictEqual(estimate(table, { attribute: ['attr'], comparator: 'equals', value: 'rare' }), 3);
+	});
+
 	it('uses the statistical estimate outright at confidence 1', () => {
 		const table = makeTable({ indexEstimate: { count: 120, confidence: 1 } });
 		const estimated = estimate(table, { attribute: 'attr', comparator: 'between', value: [5, 10] });

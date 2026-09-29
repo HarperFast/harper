@@ -180,9 +180,9 @@ as an automatically scaled graph grows.
 
 ## Derived-index runtime: committed-log delivery to native index backends (`resources/derivedIndexRuntime.ts`)
 
-A derived index (the native HNSW plane, a future Tantivy full-text index) is a materialized view
-that lives outside the record transaction: its apply is native, costs 0.2–1.4 ms per mutation, and
-its durability barrier is an `msync` or a segment publish, none of which belong on the commit path.
+A derived index (the native HNSW or Tantivy full-text plane) is a materialized view
+that lives outside the record transaction: its apply is native and its durability barrier is an
+`msync` or a segment publish, neither of which belongs on the commit path.
 The runtime is the one Harper-side implementation of the delivery protocol in harper#2489: **the
 transaction log is the durable fact, a commit only wakes a runner, and every backend resumes from an
 exact cursor into that log.** There is deliberately no second delivery fact — no transactional
@@ -327,15 +327,28 @@ cursor is backend-owned and validation is Harper's.
 `@harperfast/fulltext/native`; it does not implement another replay or ownership protocol. Harper
 turns each resolved mutation into one stable document id from `tableId` and the record id's
 ordered-binary storage-key bytes, and
-passes only the schema-selected string and array fields to the wrapper. Harper does not rescan array
-contents; the wrapper owns value validation, Tantivy schema, exact frame partitioning, its exclusive writer, segment publication, and file
-lifecycle. Harper keeps accepted runtime batches in a 64 MiB bounded queue and submits at most 256
+passes only the schema-selected string and array fields to the wrapper. Harper validates each selected
+value, including every array element, and resolves text Blobs before submission. The wrapper owns
+native document validation, Tantivy schema, exact frame partitioning, its exclusive writer, segment
+publication, and file lifecycle. Harper keeps accepted runtime batches in a 64 MiB bounded queue and submits at most 256
 records or 5 ms of conversion work per turn, so the runtime's 4096-record chunk cannot become one
-long event-loop task. A rebuild chunk without a source-size estimate consumes the adapter's entire
+long event-loop task. Awaited Blob reads yield the event loop and therefore do not consume that
+conversion budget; otherwise ordinary storage latency would fragment a rebuild into small native
+mutation submissions. Blob-bearing slices also have a wall-time ceiling derived from the writer shutdown
+budget, so a run of slow reads cannot keep one drain turn alive through hundreds of per-record read
+timeouts. A rebuild chunk without a source-size estimate consumes the adapter's entire
 queue-byte allowance, ensuring that only one unknown-size chunk is retained at a time. Wrapper
 rejections remove the previous document and count it as unindexable; they do not leave stale search
 content. A projector returning null or no string-valued fields deletes the prior document rather
 than indexing an empty replacement.
+
+The elected runner opens one writer per index with two Tantivy indexing threads. The wrapper passes
+the 64 MiB total writer budget to Tantivy's multi-threaded writer, which divides it into a 32 MiB
+arena per indexing thread. Harper does not search through that writer handle, so it keeps the one
+search worker required by the wrapper. Query readers can open on every Harper worker, so each uses
+only the wrapper's minimum search pool for ordinary-versus-expensive query isolation rather than
+scaling with host CPU. Read-only handles reserve search threads and queue bytes, but the wrapper
+does not reserve their validation-only indexing-thread or writer-memory values.
 
 Every runtime flush is a native publication barrier. Full-text activation chooses and benchmarks the
 runtime flush thresholds; the adapter does not reinterpret a flush because the runtime uses durable
@@ -356,7 +369,7 @@ not prove the index files should be reset. Persistent writer unavailability emit
 or record content. Ownership handoff does not finish until drain and close prove quiescence. A
 writer-open failure that lands after shutdown begins discards queued work before finalization so it
 cannot enter another retry drain. Harper
-gives native close its own 35-second bound and bounds the complete handoff at 70 seconds. If that proof fails, shutdown rejects and the runtime keeps its
+gives native close its own 35-second bound and bounds the complete handoff at 105 seconds. If that proof fails, shutdown rejects and the runtime keeps its
 runner lock, preventing a second writer. The underlying native operation continues and a later operator
 retry attaches to the same shutdown rather than starting a competing close. A cursor that cannot fit
 the native commit-payload limit is terminal for that backend instance: accepted work is rollback-closed
@@ -373,6 +386,8 @@ Inspection is synchronous and writer-free. The first durable-cursor read in each
 refreshes native state, while later reads in the same acquisition use the cache; every shutdown path
 invalidates it, including an owner that received no batch. A refresh failure never falls back to a
 cached checkpoint because the runtime can publish `ready` before lazy writer-open reconciliation.
+Query readers never use inspection: their committed payload belongs to the native snapshot they
+actually search, while inspection is an ownership-acquisition and recovery primitive.
 The synchronous backend contract has no retryable acquisition result, so an inspection exception
 deliberately fails closed: the runtime condemns the generation and rebuilds from authoritative
 records rather than trusting an unverified cursor. A transient filesystem error can therefore cost
@@ -381,24 +396,138 @@ Missing, cursorless, incompatible, or malformed native state has no usable curso
 the runtime's ordinary local rebuild from records.
 Reset first asks the wrapper to retire the live generation atomically, then reclaims only wrapper-
 validated retired paths. The reset operation is tracked and bounded; shutdown attaches to the same
-operation and keeps the runner lock if it cannot prove settlement. Retired-path reclamation is
+operation and keeps the runner lock if it cannot prove settlement. If that operation outlives its
+owner's bound, a successor waits for the same operation to settle and then issues its own epoch's
+reset; it does not spend the remaining rebuild attempts on immediate owner-epoch mismatches.
+Retired-path reclamation is
 best-effort, serialized per lifecycle, and never extends that reset handoff. The native directory is node-local derived state: restarts reuse it and
 replay after its payload; replicas independently derive it from their own applied transaction log;
 backup and restore need only authoritative records and schema. A new or unusable directory serves no
 full-text queries until rebuild and catch-up publish `ready`.
 
+A table drop keeps the tombstoned catalog descriptor, including its native index names, until
+retirement completes. The drop broadcast first unloads peer attachments and awaits their writer
+shutdown; only then may the wrapper retire native storage, followed by RocksDB column families and
+catalog rows. If native retirement cannot prove success, the table remains logically dropped and
+unloaded but its tombstone stays durable so restart or same-name creation retries cleanup. Removing
+the catalog first would turn a crash in that interval into an untraceable native-directory leak.
+
 Tantivy files are not an opaque encrypted cache. They contain the document-id term dictionary,
 analyzed term dictionaries, postings, frequencies and optionally positions; `surfaceTerms: true`
-also stores the original projected strings needed for surface-term features. Operators must protect
+adds an unstemmed companion term field for surface-term features, but does not store the original
+source values. Operators must protect
 the full-text directory with the same filesystem controls as Harper data. Removing source records
 does not erase old segment bytes immediately; normal Tantivy merge/reclamation governs physical
 removal, and destroying an index uses the wrapper's retirement protocol.
 
-The binding remains unloaded until a full-text declaration is activated. Before activation can
-construct this backend, Harper must exact-pin the Fulltext package, document the dependency in
-`dependencies.md`, and prove that its native prebuild loads on Linux, macOS, and Windows CI. A
-missing or incompatible binding is an activation error; Harper must not silently omit the declared
-index.
+The binding remains unloaded until a full-text declaration is activated. Harper exact-pins the
+Fulltext package, documents it in `dependencies.md`, and loads its native prebuild in dedicated
+Linux, macOS, and Windows CI jobs. A missing or incompatible binding is an activation error; Harper
+does not silently omit the declared index.
+
+### Full-text query plane
+
+Each declared full-text index can lazily open a read-only native handle beside its derived-index writer. Readers
+are keyed by native path, readiness id and owner epoch. A process-wide atomic publication generation
+invalidates stale handles and notifies peer workers. A warm reader reloads in the background after a
+notification, while every query still samples the generation and reloads on mismatch; notification
+delivery is an optimization, not a correctness dependency. Workers that never query an index open no
+reader or publication subscription. The shared derived-index runtime allocates this publication state
+only for backends with external reader snapshots; HNSW does not pay for it. A waiting query samples the
+generation after its coverage wait, so the data-publication bump that precedes the covering watermark
+is included in reader acquisition. The wrapper refreshes the reader's committed payload with the
+searcher, and Harper keeps that decoded checkpoint on the reader slot so coverage always describes the
+snapshot being searched.
+Coverage-only publications do not change the document set: the runtime permits them only after every
+accepted index mutation through that capture is durable. The shared live watermark may therefore wake a
+waiting query before Tantivy commits the newer restart checkpoint; the existing reader is data-current,
+and the later publication notification reloads its checkpoint. Catalog-scale qualification measures this
+metadata-only reload cadence so unrelated write traffic cannot become a hidden query-plane cost.
+Missing, cursorless or malformed payloads fail closed and request one rebuild. A strict, non-waiting query on a
+cold worker can return retryable lag while it opens the reader; retrying, or using
+`waitForIndexMilliseconds`, allows the aligned reader to finish opening without synchronous filesystem
+inspection. An epoch or query-configuration change requires a replacement handle. A publication reload
+uses the existing handle only while it has no active lease; otherwise Harper opens a replacement and
+retires the old handle after its search finishes. One logical query therefore uses one native snapshot
+across all result pages and highlight tracing. The wrapper's reported query budget bounds that whole
+query, including page fetches, source Blob reads and tracing, rather than restarting for each native
+call. Highlight source materialization is bounded by both the wrapper's trace-record count and source-byte
+limit before Blob reads start. Query leaves with the same field set reuse that materialization; distinct
+field sets remain independently bounded. Requesting highlights from an index that did not enable them is rejected.
+A retired handle accepts no new leases but remains open until its active searches finish.
+Rejected closes remain tracked and are retried during the next pause or close; a fulfilled native
+cleanup warning is logged. Neither replaces an otherwise successful query response.
+One failed reload leaves the last aligned snapshot installed and returns retryable lag. Three
+consecutive reload failures retire that handle so the next query reopens from native storage.
+Table close, drop and schema replacement never force-close an active native handle. They stop waiting
+after the wrapper's query budget plus a small settlement grace and report a retryable teardown failure;
+the retired handle remains registered for reset fencing and closes when the query eventually releases
+its lease. It unregisters only after that drain settles.
+
+Reset is destructive, so the elected writer first pauses readers in every worker and waits for their
+active leases to drain. Harper does not force-close a handle that native code may still be using; a
+stuck native request therefore delays reset rather than risking use-after-close. The reset handoff
+allows two reader-coordination bounds plus the native reset bound. Resume carries the
+exact readiness-id and owner-epoch token that paused the path, preventing an old reset from reopening
+readers after a newer owner has paused them. Epochs from different readiness generations are never
+compared because each generation owns an independent counter.
+The runtime publishes `rebuilding` before invoking reset, so a worker created after the pause
+broadcast cannot admit a new reader. A worker that misses resume clears a token after that
+token's own shared readiness reaches ready at the same or a newer owner epoch. A predecessor generation
+that crashes during reset may never publish ready again. A successor that observed the foreign token
+before reaching ready can clear it when that same successor becomes ready: reaching ready requires the
+stable backend runner lock, so the predecessor's reset can no longer be active. A generation that was
+already ready when it observed the token must acquire the runner lock before clearing it. Recovery waits
+if a writer still owns that lock.
+The pause covers every reader on the physical path, including a superseded generation. Each active reset
+retains its own token; stale resumes cannot clear newer tokens. A worker with no query index on the path
+retains no token because it has no reader to fence, and any later attachment remains gated by its
+generation's shared readiness.
+After the last local attachment for a superseded readiness id drains and unregisters, Harper clears
+that id's exact-epoch token from surviving readers on the path and remembers that the id retired. A
+delayed pause for that retired id cannot reinstall its fence on a successor. A readiness id never seen
+on this worker is still accepted, so a successor reset fences a predecessor reader on a worker whose
+schema refresh is late. Closing attachments remain registered until their readers drain, and a duplicate
+attachment for the same readiness id keeps the fence. This closes both handoff directions without
+assuming an ordering between generation-local epochs. Retirement uses an explicit synthetic token that
+still pauses every reader because it is not tied to a generation attachment. If the native
+reader violates its contract by rejecting close, Harper logs the failure and proceeds with reset
+rather than wedging the path indefinitely; the reset therefore assumes that rejected handle is dead.
+
+Weights and highlighting are query configuration. Changing either refreshes readers without rotating
+the persisted generation. Analyzer behavior, stop words, positions, surface terms, synonyms, source
+media types, source-field membership and source order are storage identity and require a new generation. The
+wrapper validates that identity on inspection and open, so an older analyzer generation fails closed
+and rebuilds instead of serving mixed tokenization semantics.
+
+Highlighting is declaration-controlled and off unless configured. Snippet fragments contain source
+plaintext, so Harper authorizes every highlighted source field before search; selecting
+`$highlights` is also selecting that configured plaintext egress. Harper bounds each native trace call
+by both record count and encoded source bytes and sends only the fields used by that query leaf. A
+single record larger than the native trace limit is rejected before crossing the binding.
+
+Search hits carry the source record version. Harper loads the authoritative record through its read
+transaction and omits a hit when that version no longer matches; it never attaches an old score or
+highlight to new content. Bounded searches over-fetch at least 32 and at most 256 native hits per
+page, growing through the native result window only when version checks or structured filters reject
+candidates. Exhausting that window because native versions are stale is retryable index lag; filter-
+only exhaustion remains a client error asking for a narrower query. During bounded lag a smaller
+result can still temporarily omit a recently changed record when the native result set ends before
+the search window is exhausted.
+REST exposes the index coverage header, and callers that require current coverage use
+`maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`.
+Full-text score descending is the only supported ordering in this release. Count requests return
+`recordCount: null` and `recordCountExact: false`; the native candidate total cannot become an exact
+Harper count after authorization, structured filtering and source-version checks.
+
+A declared Blob source is part of one index document. An oversized, invalid UTF-8 or otherwise
+permanently unusable Blob makes that whole document unindexable rather than publishing a partial
+document with different match semantics. A transient Blob read failure rolls back the accepted
+native batch and replays it. Each source read is time-bounded and replay uses the writer's bounded
+backoff, but an unreadable authoritative record never becomes an index deletion. Publication remains
+behind that record until its source is readable, preserving cursor and publication atomicity at the
+cost of delaying unrelated records in the batch. The normal derived-index lag policy makes prolonged
+failure visible and eventually applies write backpressure rather than silently diverging replicas.
 
 ### Bounded delivery
 
@@ -424,7 +553,11 @@ is the scheduler. It requests `flush('age')` when the first accepted batch since
 asynchronously, coalesces requests that arrive mid-barrier, and publishes `through` atomically with
 what the barrier made durable. Reaching the end of the log requests no extra barrier — arrivals
 spaced just beyond drain completion would otherwise pay one per write; the age timer is idle
-completion.
+completion. The timer is armed at a flush request while earlier work is still non-durable, and
+again after a barrier that stopped short of the offered cursor; a later write keeps an armed timer,
+so a write's barrier lands anywhere in (0, 1 s]. A test that needs a coverage wait to outlive the
+transaction monitor must therefore hold `flushDerived` until the monitor has acted (`holdBarrier`
+in `unitTests/resources/derivedIndexCoverage.test.js`).
 
 ### Rebuild
 
@@ -559,6 +692,9 @@ health transitions. An owner refreshes idle coverage at its flush cadence withou
 release deadline. A query within the certified age bound reads only shared memory and the monotonic
 clock; strict or older queries compare the persisted vector with current physical positions. This also
 certifies an unchanged index after owner release or process restart, when no usable time proof remains.
+An old owner can race with a non-ready transition and restore an earlier coverage time, but consumers
+gate the time on stable ready readiness; after rebuild, the rebuilt anchor still covers that earlier true
+prefix.
 Concurrent waiters on one worker/index share a single 25 ms poll timer, removed when all resolve,
 time out, or abort. A first waiter nudges its local runner without changing writer-lag accounting or
 retrying a deferred batch; an active peer owner already refreshes at flush cadence. No cross-worker

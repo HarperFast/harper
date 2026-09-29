@@ -468,6 +468,31 @@ test('exit codes: report never reds, enforce reds on policy AND on plumbing', ()
 	assert.match(invalidEnforce.stderr, /invalid required 'tow'/);
 });
 
+test('a pr-author-association override can promote a stale non-member payload to MEMBER', () => {
+	const staleContributor = { pull_request: pr({ author_association: 'CONTRIBUTOR' }) };
+	assert.strictEqual(run(staleContributor, '--mode', 'enforce'), 0, 'payload alone still exempts as non-member');
+	const corrected = runResult(staleContributor, '--mode', 'enforce', '--pr-author-association', 'MEMBER');
+	assert.strictEqual(corrected.status, 1, 'the override makes this a member PR subject to enforcement');
+	assert.match(corrected.stdout, /author_association resolved live as MEMBER/);
+});
+
+test('a pr-author-association override cannot demote a MEMBER payload', () => {
+	// Promote-only is enforced here in ci-review-coverage.mjs, not left as a property of what
+	// review-coverage.yml happens to pass — a future workflow edit can't accidentally start
+	// exempting real members just by handing this override a non-member value.
+	const staleMember = { pull_request: pr({ author_association: 'MEMBER' }) };
+	const result = runResult(staleMember, '--mode', 'enforce', '--pr-author-association', 'CONTRIBUTOR');
+	assert.strictEqual(result.status, 1, 'the demotion is refused; enforcement still applies as a member');
+	assert.match(result.stderr, /ignoring non-promoting live author_association 'CONTRIBUTOR'/);
+});
+
+test('an unrecognized pr-author-association override is ignored, not trusted', () => {
+	const staleContributor = { pull_request: pr({ author_association: 'CONTRIBUTOR' }) };
+	const result = runResult(staleContributor, '--mode', 'enforce', '--pr-author-association', 'SUPERADMIN');
+	assert.strictEqual(result.status, 0, 'falls back to the payload association rather than accepting garbage');
+	assert.match(result.stderr, /ignoring unrecognized live author_association 'SUPERADMIN'/);
+});
+
 test('the CLI runs through a symlinked entrypoint', () => {
 	const dir = mkdtempSync(path.join(tmpdir(), 'rc-link-'));
 	const link = path.join(dir, 'ci-review-coverage.mjs');

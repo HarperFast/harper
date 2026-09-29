@@ -1,0 +1,4 @@
+# jsResource fixtures need at least one exported type to be a valid component
+type Placeholder @table @export {
+	id: ID @primaryKey
+}

@@ -1,5 +1,6 @@
 'use strict';
 
+import { randomUUID } from 'node:crypto';
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import { open, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -193,7 +194,7 @@ function requireBackupId(backupId: any): number {
 	return backupId;
 }
 
-function requireBooleanOption(value: any, name: string): boolean {
+export function requireBooleanOption(value: any, name: string): boolean {
 	if (value !== undefined && typeof value !== 'boolean') {
 		throw new ClientError(`'${name}' must be a boolean`);
 	}
@@ -457,9 +458,12 @@ the backup (blobs are restored automatically). Restore the latest backup in plac
 
     harper restore_backup database=${databaseName} backup_id=<id>
 
-A backup created with \`exclude_blobs\` carries no blobs. Restoring one **in place** over a database
-that still has blob files is refused, because the restored records would address whichever blobs are
-on disk now; pass \`allow_engine_only=true\` to accept that, or restore into a new database instead.
+A backup created with \`exclude_blobs\` carries no blobs, so restoring one is refused unless you pass
+\`allow_engine_only=true\`. The restored records address whichever blobs are on disk now: if the
+database still has blob files a record can resolve to one that no longer belongs to it, and if it has
+none the blob ids start over at 1 and the next blob written lands on a path a restored record already
+references. Restoring into a new database is **not** a way around this — its blob roots are empty for
+the same reason. Restore a backup that includes blobs, or accept the mixed result explicitly.
 
 A database held open by a loaded component — and always the \`system\` database — cannot be restored
 while Harper is running; stop the server and run the same command offline. Offline you can also
@@ -571,16 +575,13 @@ export async function restoreBackup(request: any) {
 	const blobRoots = getBlobPathsForDatabaseName(databaseName);
 	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
 	const allowEngineOnly = requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
-	// A preflight, not the guard: refusing here spares the operator a database taken down for a
-	// restore that was never going to be allowed. It can only refuse, never clear — the sound check
-	// runs below, once no writer is left.
-	await assertEngineOnlyRestoreAllowed(databaseName, blobRoots, {
-		backupHasBlobs: manifest.blobs,
-		allowEngineOnly,
-	});
+	// Once is enough: the decision reads the manifest and the opt-in, never the destination, so no
+	// concurrent writer can change the answer between here and the purge.
+	assertEngineOnlyRestoreAllowed(databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
 	// The restore lock first, so only the attempt that will actually run ever touches the pin.
 	const lock = beginRestoreForDatabase(databaseDir, databaseName);
 	const pinId = restorePinId(databaseDir);
+	const restoreToken = randomUUID();
 	let destructionStarted = false;
 	try {
 		// Claim the source, then re-check it survived: repository maintenance no longer needs a loaded
@@ -592,18 +593,18 @@ export async function restoreBackup(request: any) {
 		await findBackup(backupDir, backupId, databaseName);
 		// Block new blob saves, drain in-flight saves, and close the database across all worker threads.
 		// Each thread also rescans, and the restoring marker keeps it from reloading mid-restore.
-		await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'close'));
+		try {
+			await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'close', restoreToken));
+		} catch {
+			throw new BackupInProgressError(
+				`Cannot restore database '${databaseName}': not every worker completed the blob-save barrier before the acknowledgement deadline. Retry the restore after the stalled work has cleared.`
+			);
+		}
 		// A live component (or the system database) can hold its own handle on the database that
 		// Harper does not track and cannot close, so verify actual process-wide closure before
 		// purging — restoring under an open instance would corrupt it. If handles remain, fail
 		// with a clear pointer to the offline CLI path rather than purging.
 		await verifyDatabaseClosed(databaseDir, databaseName);
-		// Re-check while every worker's blob-save barrier is held. The preflight above ran while the
-		// database was still serving, so it can only fail early; this is the sound admission check.
-		await assertEngineOnlyRestoreAllowed(databaseName, blobRoots, {
-			backupHasBlobs: manifest.blobs,
-			allowEngineOnly,
-		});
 		destructionStarted = true;
 		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
 		// restore blobs only for a backup that captured them (an engine-only backup leaves the live
@@ -623,6 +624,19 @@ export async function restoreBackup(request: any) {
 			// The marker stays, so the database is unloadable until a rerun — and the rerun needs this
 			// backup. The pin stays with it, and lapses on its own once the marker is gone.
 			abandonRestore(lock);
+			// The restore is over even though it failed, so release the workers' blob fence. Without this
+			// the fence outlives the attempt: the marker keeps the database from loading, but an operator
+			// who gives up and drops/recreates the name instead of rerunning gets a database whose writes
+			// are refused by a fence no restore owns any more. Treated as a replaced generation because
+			// destruction may have begun -- forgoing a deletion only leaks a file for the orphan sweep,
+			// while performing a stale one destroys restored bytes.
+			try {
+				await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken, true));
+			} catch (releaseError) {
+				// Never mask the restore failure with a broadcast failure; the fence is worker-local state
+				// and a process restart clears it regardless.
+				logger.error(`Could not release the blob fence after a failed restore of '${databaseName}'`, releaseError);
+			}
 			// wrap rather than mutate error.message: a frozen/library error can have a non-writable
 			// message (assigning it throws TypeError under 'use strict')
 			throw new Error(
@@ -634,19 +648,33 @@ export async function restoreBackup(request: any) {
 		// the intact database
 		completeRestore(lock);
 		unpinBackup(backupDir, pinId);
-		await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload'));
+		await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken, false));
 		throw error;
 	}
 	completeRestore(lock);
 	unpinBackup(backupDir, pinId);
 	// signal again: with the marker gone, every thread's rescan reloads the restored database
-	await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload'));
+	await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken));
 	return { database: databaseName, backup_id: backupId, ...(allowEngineOnly ? { allow_engine_only: true } : {}) };
 }
 
-function restoreSchemaEvent(databaseName: string, restorePhase: 'close' | 'reload') {
+/**
+ * `restoreToken` identifies the restore that owns the blob fence. Two restores of the same database
+ * can overlap, so a worker releases the fence only for the token that established it -- see
+ * `resumeBlobSavesAfterRestore`.
+ */
+function restoreSchemaEvent(
+	databaseName: string,
+	restorePhase: 'close' | 'reload',
+	restoreToken: string,
+	generationReplaced = true
+) {
 	const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.RESTORE_BACKUP, databaseName);
 	message.restorePhase = restorePhase;
+	message.restoreToken = restoreToken;
+	// Tells a worker whether the blob roots it fenced were actually replaced. A restore that failed its
+	// admission checks destroyed nothing, so that worker's queued reclamations are still valid.
+	message.generationReplaced = generationReplaced;
 	return message;
 }
 
@@ -1037,8 +1065,11 @@ export async function restoreBackupOffline(
 	databaseName: string,
 	backupId?: number,
 	targetDatabase?: string,
-	allowEngineOnly = false
+	allowEngineOnlyOption?: boolean
 ) {
+	// Validated the same way the online path validates it, so a malformed opt-in is refused rather than
+	// silently read as "no". The CLI JSON-parses `key=value`, so a typo arrives here as a string.
+	const allowEngineOnly = requireBooleanOption(allowEngineOnlyOption, 'allow_engine_only');
 	validateDatabaseName(databaseName);
 	const backupDir = backupDirForDatabase(databaseName);
 	// resolve to the latest complete backup (or the requested id, rejected if incomplete)
@@ -1058,10 +1089,7 @@ export async function restoreBackupOffline(
 	// destructive (records persist their root index, so collapsing would mis-address blobs)
 	const blobRoots = getBlobPathsForDatabaseName(targetDatabase ?? databaseName);
 	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
-	await assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, blobRoots, {
-		backupHasBlobs: manifest.blobs,
-		allowEngineOnly,
-	});
+	assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
 	// Take the restore lock + marker BEFORE probing so a server that starts after this point sees the
 	// marker and refuses to load the database (closing the window between the probe and the purge).
 	const lock = beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName);
@@ -1100,12 +1128,6 @@ export async function restoreBackupOffline(
 			}
 			handle?.close();
 		}
-		// The marker now excludes new loaders and the probe excluded a live holder. Repeat the early
-		// preflight here so a blob created during the PID-file/probe window cannot survive the restore.
-		await assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, blobRoots, {
-			backupHasBlobs: manifest.blobs,
-			allowEngineOnly,
-		});
 		destructionStarted = true;
 		await backups.restore(backupDir, databaseDir, { backupId, mode: 'purgeAllFiles' });
 		// restore blobs only for a backup that captured them (per the manifest, not snapshot presence)

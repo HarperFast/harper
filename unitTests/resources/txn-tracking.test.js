@@ -449,9 +449,10 @@ describe('Write txn timeout', () => {
 				String(message).includes('Harper transaction has held RocksDB transaction')
 			);
 			assert.ok(reported.length > 0, 'the un-reaped source-apply holder must be named');
-			assert.match(reported[0][0], /state: [^,]*source-apply/);
-			assert.match(reported[0][0], /IndexedTxnTable/);
-			assert.match(reported[0][0], /transaction \d+/, 'the native id is the join key with the registry sweep');
+			const indexedTableReport = reported.find(([message]) => /IndexedTxnTable/.test(String(message)));
+			assert.ok(indexedTableReport, 'the report for this transaction must name IndexedTxnTable');
+			assert.match(indexedTableReport[0], /state: [^,]*source-apply/);
+			assert.match(indexedTableReport[0], /transaction \d+/, 'the native id is the join key with the registry sweep');
 			// Attribution must not have changed the exemption it is reporting on.
 			assert.strictEqual((await IndexedResource.get(402))?.t, 8, 'source-apply write should still be preserved');
 		} finally {
@@ -814,15 +815,16 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		const restores = [];
 		try {
 			const committing = transaction(context, async (txn) => {
-				txn.timeoutBudget = 200;
+				txn.timeoutBudget = 500;
 				await BlobResource.put({ id: 2071 }, context);
 				await SecondaryBlobResource.put({ id: 2071, value: 'secondary' }, context);
 				await ThirdResource.put({ id: 2071, value: 'third' }, context);
 				links = databaseTxns(context);
 				assert.equal(links.length, 3);
 				for (const link of links) trackedTxns.add(link);
-				// Each hop takes most of one window; the whole cascade takes more than two.
-				for (const link of links) restores.push(stallNativeCommit(link, 150));
+				// Any two hops outlast one window, so only a re-arm at every hop keeps the last link alive; each
+				// hop still leaves ~200ms of its own window for the real native commit on a slow-disk runner.
+				for (const link of links) restores.push(stallNativeCommit(link, 300));
 			});
 			await committing;
 		} finally {

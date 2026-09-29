@@ -10,6 +10,10 @@ import { writeKeyId, getReadTransactionGuard } from './DatabaseTransaction.ts';
 import { recordAction } from './analytics/write';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
+import type { FullTextCondition } from './indexes/fullTextQueryIndex.ts';
+import { FULL_TEXT_POSITIVE_COMPARATORS, fullTextComparatorMode } from './indexes/fullTextQueryProtocol.ts';
+
+export { fullTextComparatorMode };
 
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;
@@ -72,7 +76,11 @@ export function executeConditions(
 	filtered,
 	recordAccess?
 ) {
+	conditions = combineFullTextConditions(conditions, operator, table);
 	const firstSearch = conditions[0];
+	// A same-index full-text OR is already one native expression. Route that single traversal through
+	// the AND path so row and vector guards are pushed down before the requested page is filled.
+	if (operator === 'or' && conditions.length === 1 && firstSearch.fullTextQuery) operator = 'and';
 	// Record-level guards (caller-supplied vectorFilter + rowFilter) apply to every record
 	// the query returns, independent of which condition leads (#1241). `recordAccess` is supplied only on
 	// the top-level executeConditions call (Table.search) and deliberately NOT threaded into the recursive
@@ -148,6 +156,7 @@ export function executeConditions(
 			context,
 			minResults:
 				request.limit === 0 ? 0 : request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
+			resultOffset: request.offset || 0,
 		});
 	}
 	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount) {
@@ -193,11 +202,164 @@ function buildRecordGuards(recordAccess): ((record: any) => boolean)[] | undefin
 	return guards.length > 0 ? guards : undefined;
 }
 
+function conditionIndex(table: any, attributeName: any, preferFullText = false): any {
+	if (Array.isArray(attributeName) && attributeName.length === 1) attributeName = attributeName[0];
+	if (typeof attributeName !== 'string') return;
+	return preferFullText ? table.fullTextQueryIndexes?.[attributeName] : table.indices?.[attributeName];
+}
+
+function combineFullTextConditions(conditions: any[], operator: string | undefined, table: any): any[] {
+	if (table.hasFullTextQueryIndexes === false || !containsFullTextCondition(conditions, table)) return conditions;
+	let indexName: string | undefined;
+	let positive = false;
+	const expressions: any[] = [];
+	const leaves: FullTextCondition['fullTextLeaves'] = [];
+	const remaining: any[] = [];
+	let includeHighlights = false;
+	let maxIndexLagMilliseconds: number | undefined;
+	let waitForIndexMilliseconds: number | undefined;
+	for (const condition of conditions) {
+		const compiled = compileFullTextExpression(condition, table);
+		if (!compiled) {
+			remaining.push(condition);
+			continue;
+		}
+		if (operator === 'or' && compiled.remaining?.length)
+			throw new ClientError('A full-text OR group cannot mix full-text and record conditions', 400);
+		if (indexName && indexName !== compiled.indexName)
+			throw new ClientError('One query cannot combine conditions from different full-text indexes', 400);
+		indexName = compiled.indexName;
+		expressions.push(compiled.expression);
+		leaves.push(...compiled.leaves);
+		positive ||= compiled.positive;
+		includeHighlights ||= compiled.includeHighlights;
+		maxIndexLagMilliseconds = mergeFullTextOption(
+			'maxIndexLagMilliseconds',
+			maxIndexLagMilliseconds,
+			compiled.maxIndexLagMilliseconds
+		);
+		waitForIndexMilliseconds = mergeFullTextOption(
+			'waitForIndexMilliseconds',
+			waitForIndexMilliseconds,
+			compiled.waitForIndexMilliseconds
+		);
+		if (compiled.remaining) remaining.push(...compiled.remaining);
+	}
+	if (!indexName) return conditions;
+	if (operator === 'or' && remaining.length > 0)
+		throw new ClientError('A full-text OR group can only contain conditions on the same full-text index', 400);
+	if (!positive) throw new ClientError('A full-text query requires at least one non-negated condition', 400);
+	const expression =
+		expressions.length === 1 ? expressions[0] : { operator: operator === 'or' ? 'or' : 'and', clauses: expressions };
+	const combined = {
+		attribute: indexName,
+		comparator: 'matches',
+		value: '',
+		fullTextQuery: expression,
+		fullTextLeaves: leaves,
+		includeHighlights,
+		...(maxIndexLagMilliseconds === undefined ? null : { maxIndexLagMilliseconds }),
+		...(waitForIndexMilliseconds === undefined ? null : { waitForIndexMilliseconds }),
+	};
+	return operator === 'or' ? [combined] : [combined, ...remaining];
+}
+
+function containsFullTextCondition(conditions: any[], table: any): boolean {
+	for (const condition of conditions) {
+		if (condition.conditions) {
+			if (containsFullTextCondition(condition.conditions, table)) return true;
+			continue;
+		}
+		const indexName = condition[0] ?? condition.attribute;
+		if (
+			typeof indexName === 'string' &&
+			table.fullTextQueryIndexes?.[indexName] &&
+			fullTextComparatorMode(condition.comparator)
+		)
+			return true;
+	}
+	return false;
+}
+
+function compileFullTextExpression(
+	condition: any,
+	table: any
+):
+	| {
+			indexName: string;
+			expression: any;
+			leaves: NonNullable<FullTextCondition['fullTextLeaves']>;
+			positive: boolean;
+			includeHighlights: boolean;
+			maxIndexLagMilliseconds?: number;
+			waitForIndexMilliseconds?: number;
+			remaining?: any[];
+	  }
+	| undefined {
+	if (condition.conditions) {
+		const children = condition.conditions.map((child) => compileFullTextExpression(child, table));
+		const fullTextChildren = children.filter(Boolean) as Array<NonNullable<(typeof children)[number]>>;
+		if (fullTextChildren.length === 0) return;
+		const groupOperator = condition.operator === 'or' ? 'or' : 'and';
+		const remaining = condition.conditions.filter((_child, index) => !children[index]);
+		for (const child of fullTextChildren) if (child.remaining) remaining.push(...child.remaining);
+		if (groupOperator === 'or' && remaining.length > 0)
+			throw new ClientError('A full-text OR group cannot mix full-text and record conditions', 400);
+		const indexName = fullTextChildren[0].indexName;
+		if (fullTextChildren.some((child) => child.indexName !== indexName))
+			throw new ClientError('One query cannot combine conditions from different full-text indexes', 400);
+		return {
+			indexName,
+			expression: { operator: groupOperator, clauses: fullTextChildren.map((child) => child.expression) },
+			leaves: fullTextChildren.flatMap((child) => child.leaves),
+			positive: fullTextChildren.some((child) => child.positive),
+			includeHighlights: fullTextChildren.some((child) => child.includeHighlights),
+			maxIndexLagMilliseconds: fullTextChildren.reduce(
+				(value, child) => mergeFullTextOption('maxIndexLagMilliseconds', value, child.maxIndexLagMilliseconds),
+				undefined as number | undefined
+			),
+			waitForIndexMilliseconds: fullTextChildren.reduce(
+				(value, child) => mergeFullTextOption('waitForIndexMilliseconds', value, child.waitForIndexMilliseconds),
+				undefined as number | undefined
+			),
+			...(remaining.length > 0 ? { remaining } : null),
+		};
+	}
+	const indexName = condition[0] ?? condition.attribute;
+	if (typeof indexName !== 'string' || !table.fullTextQueryIndexes?.[indexName]) return;
+	const mode = fullTextComparatorMode(condition.comparator);
+	if (!mode) return;
+	if (typeof (condition[1] ?? condition.value) !== 'string')
+		throw new ClientError(`Full-text index '${indexName}' requires a full-text comparator and string value`, 400);
+	const text = condition[1] ?? condition.value;
+	const leaf = { text, mode, ...(condition.fields ? { fields: condition.fields } : null) };
+	return {
+		indexName,
+		expression: condition.negated ? { operator: 'not', clause: leaf } : leaf,
+		leaves: condition.negated ? [] : [leaf],
+		positive: !condition.negated,
+		includeHighlights: condition.includeHighlights === true,
+		maxIndexLagMilliseconds: condition.maxIndexLagMilliseconds,
+		waitForIndexMilliseconds: condition.waitForIndexMilliseconds,
+	};
+}
+
+function mergeFullTextOption(name: string, current: number | undefined, next: number | undefined): number | undefined {
+	if (next === undefined) return current;
+	if (current !== undefined && current !== next)
+		throw new ClientError(`Combined full-text conditions must use the same ${name}`, 400);
+	return next;
+}
+
 /** True when a condition's index is a custom index that participates in predicate-aware traversal (HNSW). */
 function isFilterablePushdown(condition, table): boolean {
 	const attributeName = condition?.attribute ?? condition?.[0];
 	if (attributeName == null || table == null) return false;
-	const index = attributeName === table.primaryKey ? table.primaryStore : table.indices?.[attributeName];
+	const fullTextMode = Boolean(fullTextComparatorMode(condition?.comparator));
+	const index =
+		attributeName === table.primaryKey && !fullTextMode
+			? table.primaryStore
+			: conditionIndex(table, attributeName, fullTextMode);
 	return Boolean(index?.customIndex?.filteredSearch);
 }
 
@@ -207,14 +369,14 @@ function isFilterablePushdown(condition, table): boolean {
  * `primaryStore.getEntry` and frozen before the predicates see it. Verdicts are memoized per query since
  * the graph can reach a node from multiple neighbors. A missing/deleted record fails the predicate.
  */
-function composeRecordFilter(recordFilters, table, context): (primaryKey: Id) => boolean {
+function composeRecordFilter(recordFilters, table, context): (primaryKey: Id, suppliedEntry?: any) => boolean {
 	const memo = new Map<Id, boolean>();
 	const transaction = context && table._readTxnForContext ? table._readTxnForContext(context) : undefined;
-	return (primaryKey: Id) => {
+	return (primaryKey: Id, suppliedEntry?: any) => {
 		const cached = memo.get(primaryKey);
 		if (cached !== undefined) return cached;
 		let verdict = false;
-		const entry = table.primaryStore.getEntry(primaryKey, { transaction });
+		const entry = suppliedEntry ?? table.primaryStore.getEntry(primaryKey, { transaction });
 		const record = entry?.value;
 		if (record != null) {
 			freezeRecord(record);
@@ -289,16 +451,22 @@ export function searchByIndex(
 		// approximate index returns a fixed-size candidate list, so without this a query asking for more
 		// rows than that list holds silently gets a short result set. Only custom indexes read it.
 		minResults?: number;
+		// Rows before this offset are needed for correct paging but do not need highlight metadata.
+		resultOffset?: number;
 	} = {}
 ): AsyncIterable<Id | { key: Id; value: any }> {
 	// A stale positional caller passes `allowFullScan` here. Type checking only covers .ts callers, so
 	// fail loud rather than silently reading every option as undefined.
 	if (typeof options !== 'object' || options === null)
 		throw new TypeError('searchByIndex: the 5th argument is an options object (#2165), not a positional value');
-	const { allowFullScan, filtered, context, minResults } = options;
+	const { allowFullScan, filtered, context, minResults, resultOffset } = options;
 	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
 	const comparator = searchCondition.comparator;
+	const fullTextMode = fullTextComparatorMode(comparator);
+	if (fullTextMode && typeof attribute_name !== 'string')
+		throw new ClientError('Full-text comparator requires an index directly on the queried table', 400);
+	if (!fullTextMode) Table.assertFullTextRecordField?.(attribute_name);
 	if (value === undefined && (comparator as any) !== 'sort') {
 		throw new ClientError(`Search condition for ${attribute_name} must have a value`);
 	}
@@ -368,8 +536,14 @@ export function searchByIndex(
 			needFullScan = true;
 		}
 	}
-	const isPrimaryKey = attribute_name === Table.primaryKey || attribute_name == null;
-	const index = isPrimaryKey ? Table.primaryStore : Table.indices[attribute_name];
+	if (fullTextMode) {
+		if (typeof attribute_name !== 'string' || !Table.fullTextIndexes?.some(({ name }) => name === attribute_name))
+			throw new ClientError('Full-text comparator requires a declared @fullText index', 400);
+		if (!Table.fullTextQueryIndexes?.[attribute_name]?.customIndex)
+			throw new IndexRebuildingError(`Full-text index '${attribute_name}' is not ready`);
+	}
+	const isPrimaryKey = !fullTextMode && (attribute_name === Table.primaryKey || attribute_name == null);
+	const index = isPrimaryKey ? Table.primaryStore : conditionIndex(Table, attribute_name, Boolean(fullTextMode));
 	let start;
 	let end, inclusiveEnd, exclusiveStart, stringPrefix;
 	if (value instanceof Date) value = value.getTime();
@@ -379,6 +553,8 @@ export function searchByIndex(
 		// the bounded index iteration would only visit *included* rows.
 		start = true;
 		needFullScan = true;
+	} else if (fullTextMode) {
+		start = true;
 	} else
 		switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
 			case 'lt':
@@ -563,22 +739,26 @@ export function searchByIndex(
 					? AbortSignal.any([context.signal, controller.signal])
 					: controller.signal
 				: undefined;
+			const indexSearchStart = waiting ? start.promise.then(() => checkActive?.()) : undefined;
+			indexSearchStart?.catch(() => {});
 			const searchContext = waiting
 				? Object.create(context, {
 						signal: { value: signal },
-						indexSearchStart: { value: start.promise.then(() => checkActive?.()) },
+						indexSearchStart: { value: indexSearchStart },
 					})
 				: context;
 			const searched = index.customIndex.search(searchCondition, searchContext, {
 				filter:
 					waiting && recordFilter
-						? (id) => {
+						? (id, entry) => {
 								if (signal.aborted) return false;
 								checkActive?.();
-								return recordFilter(id);
+								return recordFilter(id, entry);
 							}
 						: recordFilter,
 				minResults,
+				resultOffset,
+				assertTransactionActive: checkActive,
 			});
 			const coverage = (searched as any).indexCoverage;
 			if (!waiting && coverage && context?.responseHeaders) {
@@ -595,11 +775,13 @@ export function searchByIndex(
 					.map((entry) => {
 						// if the custom index returns an entry with metadata, merge it with the loaded entry
 						if (typeof entry === 'object' && entry) {
-							const { key, ...otherProps } = entry;
+							const { key, loadedEntry: suppliedEntry, ...otherProps } = entry;
 							if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
-							const loadedEntry = Table.primaryStore.getEntry(key, {
-								transaction: waiting ? transaction : context && Table._readTxnForContext(context),
-							});
+							const loadedEntry =
+								suppliedEntry ??
+								Table.primaryStore.getEntry(key, {
+									transaction: waiting ? transaction : context && Table._readTxnForContext(context),
+								});
 							if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
 							freezeRecord(loadedEntry?.value);
 							recordRead(loadedEntry);
@@ -653,7 +835,10 @@ export function searchByIndex(
 						},
 						return(value?: any) {
 							closed = true;
-							if (!settled) controller?.abort();
+							if (!settled) {
+								start?.resolve();
+								controller?.abort();
+							}
 							iteratorPromise.then(
 								(inner) => (inner as any).return?.(value),
 								() => {}
@@ -919,7 +1104,15 @@ const LIST_VALUE_COMPARATORS = new Set(['in', 'between']);
 
 // Base comparators that accept the `not_` prefix to produce a negated form.
 // `not_equal` is an existing alias for `ne` and keeps its existing semantics.
-const NEGATABLE_BASE_COMPARATORS = new Set(['in', 'between', 'starts_with', 'ends_with', 'contains', 'equals']);
+const NEGATABLE_BASE_COMPARATORS = new Set([
+	'in',
+	'between',
+	'starts_with',
+	'ends_with',
+	'contains',
+	'equals',
+	...FULL_TEXT_POSITIVE_COMPARATORS,
+]);
 
 /**
  * Resolve a comparator name to a (possibly stripped) base comparator and a
@@ -1342,7 +1535,7 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 
 /** The index a condition can be driven by; searchByIndex refuses a rebuilding one, so it reads as absent. */
 function usableIndex(table, attributeName): any {
-	const index = attributeName == null ? undefined : table.indices[attributeName];
+	const index = attributeName == null ? undefined : conditionIndex(table, attributeName);
 	return index?.isIndexing ? undefined : index;
 }
 
@@ -1352,7 +1545,9 @@ function usableIndex(table, attributeName): any {
  */
 function drivesRebuildingIndex(table, attributeName, relationshipOffset = 0): boolean {
 	if (!Array.isArray(attributeName))
-		return attributeName != null && attributeName !== table.primaryKey && !!table.indices[attributeName]?.isIndexing;
+		return (
+			attributeName != null && attributeName !== table.primaryKey && !!conditionIndex(table, attributeName)?.isIndexing
+		);
 	if (relationshipOffset >= attributeName.length - 1)
 		return drivesRebuildingIndex(table, attributeName[relationshipOffset]);
 	const attribute = findAttribute(table.attributes, attributeName[relationshipOffset]);
@@ -1430,6 +1625,12 @@ export function estimateCondition(table) {
 					const index = usableIndex(table, attribute_name);
 					condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
 				}
+			} else if (fullTextComparatorMode(searchType)) {
+				const attributeName = condition[0] ?? condition.attribute;
+				const index = conditionIndex(table, attributeName, true);
+				condition.estimated_count = index?.customIndex?.estimateCount
+					? index.customIndex.estimateCount(condition.value)
+					: Infinity;
 			} else if (searchType === 'contains' || searchType === 'ends_with' || searchType === 'ne') {
 				const attribute_name = condition[0] ?? condition.attribute;
 				const index = usableIndex(table, attribute_name);
@@ -1557,7 +1758,9 @@ function parseBlock(query, expectedEnd) {
 					// caught at execution time with a clearer error.
 					if (FIQL_OPERATOR_NAME.test(value)) comparator = value;
 					else recordError(`invalid FIQL operator ${value}`);
-					valueDecoder = typedDecoding; // use typed/auto-cast decoding for FIQL operators
+					valueDecoder = fullTextComparatorMode(resolveComparator(comparator).comparator)
+						? decodeURIComponent
+						: typedDecoding;
 				} else {
 					// standard equal comparison
 					valueDecoder = decodeURIComponent; // use strict decoding

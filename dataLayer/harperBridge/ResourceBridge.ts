@@ -1,6 +1,19 @@
 import searchValidator from '../../validation/searchValidator.ts';
+import { randomUUID } from 'node:crypto';
+import { threadId } from 'node:worker_threads';
 import { handleHDBError, ClientError, hdbErrors } from '../../utility/errors/hdbError.ts';
-import { table, getDatabases, database, dropDatabase, type Table } from '../../resources/databases.ts';
+import {
+	table,
+	getDatabases,
+	database,
+	databaseDropPreparationTargets,
+	dropDatabase,
+	type Table,
+} from '../../resources/databases.ts';
+import {
+	claimDatabaseDropPreparations,
+	releaseDatabaseDropPreparations,
+} from '../../resources/databaseDropPreparation.ts';
 import insertUpdateValidate from './bridgeUtility/insertUpdateValidate.js';
 import SearchObject from '../SearchObject.ts';
 import {
@@ -43,6 +56,7 @@ export type SearchByConditionsRequest = Query &
 		database?: string;
 		table: string;
 		get_attributes: Select;
+		hdb_user?: Context['user'];
 		reverse?: boolean;
 		operator?: Operator;
 	};
@@ -72,6 +86,12 @@ export class ResourceBridge extends BridgeMethods {
 					attribute: c.attribute ?? c.search_attribute,
 					comparator: c.comparator ?? c.search_type,
 					value: c.value !== undefined ? c.value : c.search_value, // null is valid value
+					...(c.fields === undefined ? null : { fields: c.fields }),
+					...(c.includeHighlights === undefined ? null : { includeHighlights: c.includeHighlights }),
+					...(c.maxIndexLagMilliseconds === undefined ? null : { maxIndexLagMilliseconds: c.maxIndexLagMilliseconds }),
+					...(c.waitForIndexMilliseconds === undefined
+						? null
+						: { waitForIndexMilliseconds: c.waitForIndexMilliseconds }),
 				};
 			}
 		}
@@ -94,6 +114,7 @@ export class ResourceBridge extends BridgeMethods {
 				allowFullScan: true, // operations API can do full scans by default, but REST is more cautious about what it allows
 			} as any,
 			{
+				user: searchObject.hdb_user,
 				onlyIfCached: searchObject.onlyIfCached,
 				noCacheStore: searchObject.noCacheStore,
 				noCache: searchObject.noCache,
@@ -186,8 +207,31 @@ export class ResourceBridge extends BridgeMethods {
 	}
 
 	async dropSchema(dropSchemaObj) {
-		await dropDatabase(dropSchemaObj.schema);
-		signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, dropSchemaObj.schema));
+		const preparationId = randomUUID();
+		const { rootPaths } = databaseDropPreparationTargets(dropSchemaObj.schema);
+		const completion = () => {
+			const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, dropSchemaObj.schema);
+			message.dropPreparationId = preparationId;
+			message.dropPreparationOwnerThreadId = threadId;
+			message.dropPreparationRootPaths = rootPaths;
+			return message;
+		};
+		const preparation: any = completion();
+		preparation.prepareDrop = true;
+		claimDatabaseDropPreparations(rootPaths, preparationId, threadId, dropSchemaObj.schema);
+		try {
+			await signalling.signalSchemaChangeToPeers(preparation);
+			await dropDatabase(dropSchemaObj.schema, rootPaths);
+		} finally {
+			// The first round reaches current peers before local release; the second catches a worker whose
+			// startup snapshot inherited the fence. Cleanup-proven job workers are already exiting.
+			await signalling.signalSchemaChange(completion(), {
+				peersFirst: true,
+				includeJobWorkers: 'active',
+				peerRounds: 2,
+			});
+			releaseDatabaseDropPreparations(rootPaths, preparationId);
+		}
 	}
 
 	async updateRecords(updateObj) {
@@ -691,8 +735,14 @@ export class ResourceBridge extends BridgeMethods {
 function getSelect({ get_attributes }: any, table: any) {
 	if (get_attributes) {
 		if (get_attributes[0] === '*') {
-			if (table.schemaDefined) return;
-			else get_attributes = table.attributes.map((attribute) => attribute.name);
+			const metadata = get_attributes.slice(1).filter((name) => name === '$score' || name === '$highlights');
+			if (table.schemaDefined && metadata.length === 0) return;
+			get_attributes = [
+				...table.attributes
+					.filter((attribute) => !attribute.computed && !attribute.relationship)
+					.map((attribute) => attribute.name),
+				...metadata,
+			];
 		}
 		get_attributes.forceNulls = true;
 		return get_attributes;

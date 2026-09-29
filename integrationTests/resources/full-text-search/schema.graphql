@@ -1,0 +1,32 @@
+type Product @table(audit: true) @export {
+	id: ID @primaryKey
+	title: String
+	description: String
+	tags: [String]
+	content: Blob
+	category: String @indexed
+	owner: String
+	catalogSearch: FullText
+		@fullText(
+			fields: [
+				{ name: "title", weight: 3, highlight: true }
+				{ name: "description", highlight: true }
+				{ name: "tags" }
+				{ name: "content", mediaType: "text/plain", highlight: true }
+			]
+			highlighting: { maxFragments: 2, fragmentLength: 80 }
+		)
+}
+
+type LifecycleProduct @table(audit: true) @export {
+	id: ID @primaryKey
+	title: String
+	description: String
+	catalogSearch: FullText @fullText(fields: [{ name: "title", weight: 3 }])
+}
+
+type ProductOrder @table @export {
+	id: ID @primaryKey
+	productId: ID @indexed
+	product: Product @relationship(from: "productId")
+}

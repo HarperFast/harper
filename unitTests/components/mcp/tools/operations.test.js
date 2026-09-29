@@ -10,6 +10,12 @@ const {
 } = require('#src/components/mcp/tools/operations');
 const { listTools, getTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
 const env = require('#src/utility/environment/environmentManager');
+const { existsSync, readFileSync } = require('node:fs');
+const harperLogger = require('#src/utility/logging/harper_logger');
+const { handleHDBError } = require('#src/utility/errors/hdbError');
+const PermissionResponseObject = require('#src/security/data_objects/PermissionResponseObject').default;
+const { pinLogConfig } = require('../../../logConfigFixture.js');
+const { waitFor } = require('../../../waitFor.js');
 
 function makeOpMap(entries) {
 	const m = new Map();
@@ -509,6 +515,48 @@ describe('mcp/tools/operations — handler dispatch', () => {
 		assert.match(payload.message, /not permitted/);
 	});
 
+	it('maps a rejection with no reason to isError=true', async () => {
+		_setChooseOperationForTest(() => {
+			throw undefined;
+		});
+		_setProcessLocalTransactionForTest(async () => null);
+		_setOperationFunctionMapForTest(makeOpMap([['describe_all', null]]));
+		registerOperationsTools();
+
+		const res = await getTool('describe_all').handler({}, { user: NOBODY, profile: 'operations', sessionId: 's' });
+
+		assert.equal(res.isError, true);
+		assert.equal(JSON.parse(res.content[0].text).message, "operation 'describe_all' failed");
+	});
+
+	it('traces a refusal by its reason and returns the permission report as the message', async () => {
+		const reason = "Operation 'describe_all' is not permitted for this role's operations configuration";
+		const report = new PermissionResponseObject().handleUnauthorizedItem(reason);
+		_setChooseOperationForTest(() => {
+			throw handleHDBError(new Error(), report, 403, undefined, false, true);
+		});
+		_setProcessLocalTransactionForTest(async () => null);
+		_setOperationFunctionMapForTest(makeOpMap([['describe_all', null]]));
+		registerOperationsTools();
+
+		const restoreLogConfig = pinLogConfig({ level: 'trace' });
+		try {
+			const logPath = harperLogger.getLogFilePath();
+			const res = await getTool('describe_all').handler({}, { user: NOBODY, profile: 'operations', sessionId: 's' });
+			assert.deepStrictEqual(JSON.parse(res.content[0].text).message, JSON.parse(JSON.stringify(report)));
+
+			const traced = await waitFor(() =>
+				(existsSync(logPath) ? readFileSync(logPath, 'utf8') : '')
+					.split('\n')
+					.find((line) => line.includes('MCP operations/describe_all threw:'))
+			);
+			assert.ok(traced.includes(reason), traced);
+			assert.ok(!traced.includes('[object Object]'), traced);
+		} finally {
+			restoreLogConfig();
+		}
+	});
+
 	it('maps server-side validation errors to isError=true', async () => {
 		_setChooseOperationForTest(() => async () => {
 			throw new Error('table is required');
@@ -584,5 +632,91 @@ describe('mcp/tools/operations — handler dispatch', () => {
 		assert.equal(res.isError, true);
 		assert.match(res.content[0].text, /unexpected byte stream/);
 		assert.equal(stream.destroyed, true, 'backstop must still destroy an unconsumed stream');
+	});
+});
+
+describe('mcp/tools/operations — structuredContent is a spec-legal record', () => {
+	// Asserted against the SDK's own schema so these track the spec rather than drifting.
+	const { CallToolResultSchema } = require('@modelcontextprotocol/sdk/types.js');
+
+	function assertSpecLegal(res) {
+		const parsed = CallToolResultSchema.safeParse(res);
+		assert.ok(
+			parsed.success,
+			`result must satisfy the MCP CallToolResult schema: ${parsed.success ? '' : JSON.stringify(parsed.error?.issues)}`
+		);
+	}
+
+	async function callReturning(operationName, value) {
+		_setChooseOperationForTest(() => async () => value);
+		_setProcessLocalTransactionForTest(async (_req, fn) => await fn({}));
+		_setOperationFunctionMapForTest(makeOpMap([[operationName, null]]));
+		registerOperationsTools();
+		return getTool(operationName).handler({}, { user: SUPER, profile: 'operations', sessionId: 's' });
+	}
+
+	let envOverrides;
+	const originalEnvGet = env.get;
+
+	beforeEach(() => {
+		_resetRegistryForTest();
+		envOverrides = {};
+		env.get = (key) => (key in envOverrides ? envOverrides[key] : originalEnvGet.call(env, key));
+	});
+
+	afterEach(() => {
+		_resetRegistryForTest();
+		_setOperationFunctionMapForTest(undefined);
+		_setChooseOperationForTest(undefined);
+		_setProcessLocalTransactionForTest(undefined);
+		env.get = originalEnvGet;
+	});
+
+	it('wraps an array result (a sql SELECT) in { results } instead of emitting a bare array', async () => {
+		envOverrides.mcp_operations_allow = ['sql'];
+		const rows = [
+			{ id: 1, name: 'a' },
+			{ id: 2, name: 'b' },
+		];
+		const res = await callReturning('sql', rows);
+
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(res.structuredContent, { results: rows });
+		assertSpecLegal(res);
+		assert.deepEqual(JSON.parse(res.content[0].text), rows);
+	});
+
+	it('wraps the array-returning operations on the DEFAULT allow surface', async () => {
+		for (const operationName of ['list_users', 'list_roles', 'get_job', 'search_by_value']) {
+			_resetRegistryForTest();
+			const payload = [{ n: operationName }];
+			const res = await callReturning(operationName, payload);
+			assert.deepEqual(res.structuredContent, { results: payload }, operationName);
+			assertSpecLegal(res);
+		}
+	});
+
+	it('leaves an object result untouched (describe_all keeps its database tree)', async () => {
+		const tree = { data: { tables: { dog: { record_count: 3 } } } };
+		const res = await callReturning('describe_all', tree);
+
+		assert.deepEqual(res.structuredContent, tree, 'an object payload passes through unwrapped');
+		assertSpecLegal(res);
+	});
+
+	it('omits structuredContent for a payload with no object form', async () => {
+		for (const value of ['just a message', 42, true, new Date('2020-01-01T00:00:00Z')]) {
+			_resetRegistryForTest();
+			const res = await callReturning('system_information', value);
+			assert.equal(res.structuredContent, undefined, `${String(value)} must not become structuredContent`);
+			assertSpecLegal(res);
+		}
+	});
+
+	it('emits an empty array result as { results: [] }, not a bare []', async () => {
+		envOverrides.mcp_operations_allow = ['sql'];
+		const res = await callReturning('sql', []);
+		assert.deepEqual(res.structuredContent, { results: [] });
+		assertSpecLegal(res);
 	});
 });

@@ -463,17 +463,30 @@ describe('rocksdbBackup', function () {
 			assert.strictEqual(readBlobBody(join(getBlobPathsForDatabaseName(BLOB_DB)[0], BLOB_REL)), 'blob-payload');
 		});
 
-		it('allows an engine-only restore with no opt-in when the database has no blobs', async function () {
+		it('refuses an engine-only restore with no opt-in even when the database has no blobs', async function () {
 			this.timeout(30000);
 			writeBlobDbRecord();
 			const created = await createBackupOffline(BLOB_DB, true);
 
-			const restored = await restoreBackupOffline(BLOB_DB, created.backup_id);
-			assert.strictEqual(restored.backup_id, created.backup_id);
-			assert.strictEqual(restored.allow_engine_only, undefined);
+			// Empty roots do not make this safe: the id counter re-seeds from the roots, so it hands out
+			// 1 again and the next blob lands on a path the restored records already reference.
+			await assert.rejects(
+				restoreBackupOffline(BLOB_DB, created.backup_id),
+				(error) => error.statusCode === 400 && /allow_engine_only/.test(error.message)
+			);
 		});
 
-		it('allows an engine-only restore into a new database, which has no blobs to disagree with', async function () {
+		it('allows it once the operator opts in, and reports the opt-in back', async function () {
+			this.timeout(30000);
+			writeBlobDbRecord();
+			const created = await createBackupOffline(BLOB_DB, true);
+
+			const restored = await restoreBackupOffline(BLOB_DB, created.backup_id, undefined, true);
+			assert.strictEqual(restored.backup_id, created.backup_id);
+			assert.strictEqual(restored.allow_engine_only, true);
+		});
+
+		it('refuses an engine-only restore into a new database too', async function () {
 			this.timeout(30000);
 			writeBlobDbRecord();
 			writeBlobFile(BLOB_DB, BLOB_REL, 'blob-payload');
@@ -481,8 +494,12 @@ describe('rocksdbBackup', function () {
 			const target = `${BLOB_DB}-copy`;
 
 			try {
-				const restored = await restoreBackupOffline(BLOB_DB, created.backup_id, target);
-				assert.strictEqual(restored.restored_to, join(storageDir, target));
+				// A fresh target's roots are empty for the same reason, so it is exposed to the same
+				// id reissue -- naming a new database is not an escape hatch.
+				await assert.rejects(
+					restoreBackupOffline(BLOB_DB, created.backup_id, target),
+					(error) => error.statusCode === 400 && /allow_engine_only/.test(error.message)
+				);
 			} finally {
 				rmSync(join(storageDir, target), { recursive: true, force: true });
 				for (const root of getBlobPathsForDatabaseName(target)) rmSync(root, { recursive: true, force: true });

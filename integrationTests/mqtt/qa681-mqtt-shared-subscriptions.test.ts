@@ -475,4 +475,55 @@ suite('QA-681 MQTT shared-subscription ($share) semantics', { skip: skipSuite },
 			}
 		}
 	);
+
+	for (const wildcard of [false, true]) {
+		test(`durable QoS1 retains every publication across reconnect (${wildcard ? 'wildcard' : 'exact topic'})`, async () => {
+			requireMqtt();
+			const suffix = randomUUID();
+			const topic = `Events/retained-${suffix}`;
+			const options = baseOpts({
+				clientId: `retained-sub-${suffix}`,
+				clean: false,
+				properties: { sessionExpiryInterval: 60 },
+			});
+			const received: number[] = [];
+			const collect = (receivedTopic: string, payload: Buffer) => {
+				const seq = payloadSeq(payload.toString());
+				if (receivedTopic === topic && seq !== undefined) received.push(seq);
+			};
+			let publisher: MqttClient | undefined;
+			let subscriber: MqttClient | undefined;
+			try {
+				publisher = await connect(mqttURL, baseOpts({ clientId: `retained-pub-${suffix}` }));
+				subscriber = await connect(mqttURL, options, collect);
+				const granted = await subscribe(subscriber, wildcard ? 'Events/#' : topic, 1);
+				strictEqual(granted.err, undefined, 'the durable subscription must be established');
+				await publish(publisher, topic, JSON.stringify({ seq: 0 }), { retain: true });
+				ok(await waitFor(() => received.includes(0)), 'the initial subscription must deliver before disconnect');
+				await endQuiet(subscriber);
+				strictEqual(subscriber.connected, false, 'the subscriber must be offline before the retained updates');
+				for (const seq of [1, 2, 3]) {
+					await publish(publisher, topic, JSON.stringify({ seq }), { retain: true });
+				}
+				ok(
+					received.every((seq) => seq === 0),
+					'offline publications must not reach the old connection'
+				);
+
+				subscriber = await connect(mqttURL, options, collect);
+				ok(
+					await waitFor(() => [1, 2, 3].every((seq) => received.includes(seq))),
+					`resume must recover every retained publication without resubscribing; received ${JSON.stringify(received)}`
+				);
+				await Promise.all([4, 5, 6].map((seq) => publish(publisher, topic, JSON.stringify({ seq }), { retain: true })));
+				ok(
+					await waitFor(() => [4, 5, 6].every((seq) => received.includes(seq))),
+					`the resumed live subscription must retain every publication; received ${JSON.stringify(received)}`
+				);
+			} finally {
+				await endQuiet(subscriber);
+				await endQuiet(publisher);
+			}
+		});
+	}
 });

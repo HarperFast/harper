@@ -10,11 +10,28 @@
  * in via a constructor type so the thrown errors carry the backend's name
  * for `instanceof` matching in tests.
  */
+import { ServerError } from '../../utility/errors/hdbError.ts';
 import { isUnresolvedEnvVarPlaceholder } from '../../utility/expandEnvVar.ts';
 import type { TokenUsage } from './types.ts';
 
 /** Constructor signature for backend-specific error classes. */
 export type BackendErrorCtor = new (message: string) => Error;
+
+/**
+ * Thrown by a backend's `scoreChoices` for a call it cannot score (#2838), as distinct from a call
+ * that failed: the decision adapter votes instead in `auto` mode, and the facade records the
+ * attempt as `scoring_unsupported`. `usage` carries the tokens the attempt did consume (a
+ * completion that came back without log-probabilities is still billed), so the failure row
+ * accounts for them.
+ */
+export class ChoiceScoringUnsupportedError extends ServerError {
+	declare usage?: TokenUsage;
+	constructor(message: string, usage?: TokenUsage) {
+		super(message);
+		this.name = 'ChoiceScoringUnsupportedError';
+		if (usage) this.usage = usage;
+	}
+}
 
 /**
  * Combine a caller-supplied AbortSignal with a per-call timeout via

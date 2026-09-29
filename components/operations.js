@@ -2,7 +2,6 @@
 
 const path = require('node:path');
 const { isMainThread, parentPort } = require('node:worker_threads');
-const { isDeepStrictEqual } = require('node:util');
 const fs = require('fs-extra');
 const fg = require('fast-glob');
 const normalize = require('normalize-path');
@@ -33,11 +32,20 @@ const { Resources } = require('../resources/Resources.ts');
 const {
 	Application,
 	prepareApplication,
+	componentPreparationBudgetMs,
 	ASIDE_STAGING_DIR,
 	DEPLOY_STAGING_DIR,
 	dropComponentDirectory,
+	retireComponentDirectory,
 } = require('./Application.ts');
 const { COMPONENT_PREPARATION_LOCK_DIR, withComponentPreparationLock } = require('./componentPreparationLock.ts');
+const { DEPLOYMENT_PROVENANCE_FILE } = require('./deploymentProvenance.ts');
+const {
+	applyRootConfigEffect,
+	assertRootConfigEffectPublishable,
+	hasRootConfigEntry,
+	withRootConfigPublicationLock,
+} = require('./rootConfigPublication.ts');
 const { server } = require('../server/Server.ts');
 const {
 	DeploymentRecorder,
@@ -323,7 +331,7 @@ async function dropCustomFunctionProject(req) {
 		}
 
 		if (appFound) {
-			configUtils.updateConfigValue(hdbTerms.CONFIG_PARAMS.APPS, apps);
+			await withRootConfigPublicationLock(async () => configUtils.updateConfigValue(hdbTerms.CONFIG_PARAMS.APPS, apps));
 
 			return `Successfully deleted project: ${project}`;
 		}
@@ -445,6 +453,8 @@ async function packageComponent(req) {
  *
  * A no-op on the main thread, and the operations API deploys there — so operator deploys are unvalidated
  * (#2315 step 2). What this guarantees is ORDER: where validation runs, a rejected candidate never goes live.
+ *
+ * Also a no-op on a worker that `freeze-after-load` froze after its boot load; see components/DESIGN.md.
  */
 // `componentLoader.setErrorReporter` is ONE process-global callback, so two components validating
 // concurrently on the same worker cross-attribute their failures: B installs its reporter while A is
@@ -454,6 +464,12 @@ async function packageComponent(req) {
 let validationChain = Promise.resolve();
 
 async function validateComponentLoads(candidateDirPath, emit) {
+	if (!isMainThread && require('../security/jsLoader.ts').laterLoadsMeetFrozenIntrinsics()) {
+		log.trace(
+			`Not load-validating ${path.basename(candidateDirPath)}: this worker's intrinsics are frozen after its boot load, so the load would not match the one a restarted worker performs`
+		);
+		return;
+	}
 	const run = validationChain.then(
 		() => validateComponentLoadsExclusive(candidateDirPath, emit),
 		() => validateComponentLoadsExclusive(candidateDirPath, emit)
@@ -567,6 +583,32 @@ function logRestartOutcome(restart, what) {
 			`The restart after ${what} was still running after ${RESTART_WAIT_CEILING_MS}ms; worker threads may still be running the previous code`
 		);
 }
+
+// A peer's validation load and swap, which have no allowance of their own to sum.
+const PEER_DEPLOY_VALIDATION_MARGIN_MS = 10 * 60 * 1000;
+
+/**
+ * How long the origin waits for each peer to answer a replicated deploy: every wait and command the peer is
+ * allowed for this request, each at its full allowance. That includes the preparation lock's wait: a peer already
+ * preparing the same component for another deploy holds this one there for a preparation budget before the lock
+ * re-checks the holder. The lock keeps waiting while that holder is alive, so a peer queued behind a longer
+ * preparation, or behind several, can take longer; so can one validating plugins whose configured timeouts outlast
+ * the margin. Such a peer is reported as not answering, which says nothing of its outcome.
+ */
+function peerDeployAnswerTimeoutMs(req) {
+	const { RESTART_WAIT_CEILING_MS } = require('./awaitRestart.ts');
+	const payloadWaitMs = coerceTimeoutMs(req.deployment_timeout, DEFAULT_AWAIT_ROW_TIMEOUT_MS);
+	const installTimeoutMs = coerceTimeoutMs(req.install_timeout, undefined);
+	return Math.min(
+		payloadWaitMs * (req.credentials?.length ? 2 : 1) +
+			// the lock's wait on another deploy's preparation, then this deploy's own
+			2 * componentPreparationBudgetMs(installTimeoutMs) +
+			PEER_DEPLOY_VALIDATION_MARGIN_MS +
+			(req.restart === true ? RESTART_WAIT_CEILING_MS : 0),
+		hdbTerms.MAX_SET_TIMEOUT_MS
+	);
+}
+
 /**
  * Can deploy a component in multiple ways. If a 'package' is provided all it will do is write that package to
  * harperdb-config, when HDB is restarted the package will be installed in hdb/nodeModules. If a base64 encoded string is passed it
@@ -801,49 +843,19 @@ async function deployComponent(req) {
 		// committed" — so a later failure arrives after both phases reported success. The operation's error
 		// is the authority on whether the deploy landed, not the phase stream.
 		emit('phase', { phase: 'prepare', status: 'start' });
-		// The root-config entry a package deploy publishes. A stage records it with the artifact instead of
-		// publishing it, so a staged release nobody activated cannot leave config naming it — and the
-		// activation that eventually publishes it does so in the same order a normal deploy does.
-		let stagedRootConfig = null;
+		let declaredRootConfig = null;
 		await prepareApplication(application, {
 			// `.deploy-staging/<artifactId>`. The public deployment id, so the id the caller was handed is
 			// the id a later `deployment_id` request can name; an activation names the artifact's own id,
 			// not the new row's.
 			artifactId: req.deployment_id ?? req._deploymentId,
 			mode,
-			describeArtifact: () => ({ rootConfig: stagedRootConfig, isolated: Boolean(nowIsolated) }),
-			// Returns its own undo. Publication happens BEFORE the swap, in the same order a normal deploy
-			// uses, so an activation that fails pre-commit would otherwise leave config naming a release that
-			// is not live — and `installApplications()` would resolve and install that package from scratch at
-			// the next boot, over a component whose certified artifact is sitting right there. Restoring is
-			// best-effort and not durable (that is #2315 step 3's work); it is still the difference between a
-			// failed activation that changed nothing and one that re-points the component.
-			publishRootConfig: async (entry) => {
-				const previous = configUtils.getConfigObj()?.[req.project];
-				await configUtils.addConfig(req.project, entry);
-				env.initSync(true);
-				// Read BACK, not `entry` — see `publishedEntryStillStands`.
-				const published = configUtils.getConfigObj()?.[req.project];
-				return async () => {
-					if (
-						!publishedEntryStillStands(
-							published,
-							() => env.initSync(true),
-							() => configUtils.getConfigObj()?.[req.project]
-						)
-					) {
-						return;
-					}
-					if (previous === undefined) configUtils.deleteConfigFromFile([req.project]);
-					else await configUtils.addConfig(req.project, previous);
-					env.initSync(true);
-				};
-			},
+			describeArtifact: () => ({ rootConfig: declaredRootConfig, isolated: Boolean(nowIsolated) }),
 			admitIsolation: async (descriptor) => {
 				env.initSync(true);
 				wasIsolated = isIsolatedApplication(req.project);
-				// A package artifact restores its own root-config entry, so its recorded intent is what will
-				// be in force. A payload artifact publishes no config, so the effective configuration is the
+				// A package artifact publishes its own root-config entry, so its recorded intent is what will
+				// be in force. A payload artifact owns no `isolated` key, so the effective configuration is the
 				// only authority there — a saved `false` must not admit past an isolation the operator set
 				// between the stage and this call.
 				nowIsolated = descriptor.rootConfig ? descriptor.isolated : wasIsolated;
@@ -870,18 +882,15 @@ async function deployComponent(req) {
 				if (req.branchedDatabases !== undefined) applicationConfig.branchedDatabases = req.branchedDatabases;
 				if (nowIsolated) applicationConfig.isolated = true;
 				if (credentialReferences.length) applicationConfig.credentials = credentialReferences;
-				if (mode === 'stage') {
-					stagedRootConfig = applicationConfig;
-					return;
-				}
-				await configUtils.addConfig(req.project, applicationConfig);
-				env.initSync(true);
+				declaredRootConfig = applicationConfig;
 			},
 			validateCandidate: async (candidateDirPath) => {
 				emit('phase', { phase: 'prepare', status: 'done' });
 				await validateComponentLoads(candidateDirPath, emit);
 			},
 		});
+		// Nothing ran `validateCandidate`, which ends this phase.
+		if (application.alreadyActive) emit('phase', { phase: 'prepare', status: 'done' });
 		// The build is certified on disk from here on, so every later failure — a peer result, or a rejection
 		// thrown by the replication layer itself — still leaves an artifact this id can activate.
 		if (mode === 'stage') stagedOnOrigin = true;
@@ -919,7 +928,10 @@ async function deployComponent(req) {
 		// finish()'s single write; live SSE 'peer' events still fire below.
 		recorder?.seal();
 		emit('phase', { phase: 'replicate', status: 'start' });
-		let response = await server.replication.replicateOperation(req, { onPeerResult });
+		let response = await server.replication.replicateOperation(req, {
+			onPeerResult,
+			timeoutMs: peerDeployAnswerTimeoutMs(req),
+		});
 		emit('phase', { phase: 'replicate', status: 'done' });
 		if (recorder && response?.replicated) {
 			// Fallback path for replicators that don't honor onPeerResult: re-record the
@@ -929,8 +941,9 @@ async function deployComponent(req) {
 		}
 		// A still-isolated application restarts only its own dedicated worker. Everything else restarts the
 		// pool: a shared application, and either direction of an isolation flip, where the reconcile in
-		// restartWorkers starts or stops the moving application's own worker.
-		const restartScope = wasIsolated && nowIsolated ? application.name : undefined;
+		// restartWorkers starts or stops the moving application's own worker. An already-live retry cannot know
+		// which workers loaded the previous release, so it restarts them all.
+		const restartScope = application.alreadyActive ? '*' : wasIsolated && nowIsolated ? application.name : undefined;
 		if (mode === 'stage') {
 			// No restart and no restart-required flag: nothing about the running component changed. The
 			// marker is what tells the origin which peers understood the request — see the confirmation
@@ -958,7 +971,8 @@ async function deployComponent(req) {
 				operation: 'restart_service',
 				service: 'http',
 				scope: manageThreads.encodeRestartScope(restartScope),
-				scopeFallback: restartScope === undefined ? undefined : manageThreads.encodeRestartScope(undefined),
+				scopeFallback:
+					restartScope === undefined || restartScope === '*' ? undefined : manageThreads.encodeRestartScope(undefined),
 				replicated: true,
 			});
 			emit('phase', { phase: 'restart', status: 'done' });
@@ -1116,27 +1130,6 @@ async function deployComponent(req) {
 }
 
 /**
- * Whether the root-config entry an activation published is still the one on disk — the condition for that
- * activation's failure to take it back. A `set_configuration` acknowledged while the swap was retrying is
- * not this operation's to overwrite, and restoring a snapshot taken before it would silently drop it.
- *
- * Split out from the caller so it can be tested without a deploy: this is the only guard on a hazard the
- * preparation lock does not cover, and both ways it can regress fail silently. `refreshConfig` is called
- * BEFORE the read and is load-bearing — `set_configuration` writes the config file without refreshing this
- * process's config object, so a cached read compares against a value that predates the very change the
- * guard exists to protect and always concludes nothing moved. It narrows the window rather than closing
- * it; serializing config publication is #2315 step 3.
- *
- * `published` must be the entry as read back after publication, not as passed in: only two values that went
- * through the same write-and-parse round trip are comparable, and comparing against the argument would read
- * any serialization difference as a concurrent change and skip every undo.
- */
-function publishedEntryStillStands(published, refreshConfig, readCurrentEntry) {
-	refreshConfig();
-	return isDeepStrictEqual(readCurrentEntry(), published);
-}
-
-/**
  * Peers that did not answer a stage with `staged: true` — either unreachable, or running a build that
  * predates staged deploys and therefore treated the request as an ordinary deploy.
  *
@@ -1216,6 +1209,7 @@ async function getComponents() {
 	// Recursive function that will traverse the components dir and build json
 	// directory tree as it goes.
 	const rootConfig = configUtils.getConfiguration();
+	const componentsRoot = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const walkDir = async (dir, result) => {
 		try {
 			const list = await fs.readdir(dir, { withFileTypes: true });
@@ -1223,12 +1217,13 @@ async function getComponents() {
 				const itemName = item.name;
 				// Deny-list, not a dot-prefix skip: component CONTENTS legitimately include dot-files
 				// (`.aiignore`, `.env.example`) that callers expect to see, so only Harper's own
-				// bookkeeping directories are excluded by name.
+				// bookkeeping is excluded by name: its directories, and each component's provenance marker.
 				if (
 					itemName === 'node_modules' ||
 					itemName === ASIDE_STAGING_DIR ||
 					itemName === DEPLOY_STAGING_DIR ||
-					itemName === COMPONENT_PREPARATION_LOCK_DIR
+					itemName === COMPONENT_PREPARATION_LOCK_DIR ||
+					(itemName === DEPLOYMENT_PROVENANCE_FILE && path.dirname(dir) === componentsRoot)
 				)
 					continue;
 				const itemPath = path.join(dir, itemName);
@@ -1260,8 +1255,8 @@ async function getComponents() {
 		}
 	};
 
-	const results = await walkDir(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), {
-		name: configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT).split(path.sep).slice(-1).pop(),
+	const results = await walkDir(componentsRoot, {
+		name: componentsRoot.split(path.sep).slice(-1).pop(),
 		entries: [],
 	});
 	const { getUnsatisfiedEnv } = require('./componentSecrets.ts');
@@ -1548,13 +1543,24 @@ async function dropComponent(req) {
 				}
 				if (runningApplications.includes(project)) restartScope = project;
 			}
-			const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
-			if (!file && (await fs.pathExists(componentSymlink))) {
-				await fs.unlink(componentSymlink);
-			}
-
 			if (!file) {
-				await dropComponentDirectory(componentPath, project, log);
+				// The entry goes last, so a failed drop never leaves the component live without it.
+				await assertRootConfigEffectPublishable(project, { kind: 'remove' });
+				const retired = await retireComponentDirectory(componentPath, project, log);
+				try {
+					await applyRootConfigEffect(project, { kind: 'remove' });
+				} catch (error) {
+					// Only while the entry is still there: a failure after the removal was written, in the refresh that
+					// follows it, leaves the drop committed, and the tree goes with it.
+					if (hasRootConfigEntry(project)) await retired.restore().catch((restoreError) => log.error(restoreError));
+					else await retired.discard();
+					throw error;
+				}
+				await retired.discard();
+				const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
+				await fs.unlink(componentSymlink).catch((error) => {
+					if (error?.code !== 'ENOENT') log.warn(`Dropped ${project} but could not remove ${componentSymlink}:`, error);
+				});
 			} else if (await fs.pathExists(pathToComponent)) {
 				await fs.remove(pathToComponent);
 			}
@@ -1568,8 +1574,6 @@ async function dropComponent(req) {
 				await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
 			}
 
-			if (!file) configUtils.deleteConfigFromFile([project]);
-			if (!file && isMainThread) env.initSync(true);
 			response = await server.replication.replicateOperation(req);
 			const { applicationHasBranchStorage, removeBranchesForApplication } = require('../resources/branchDatabase.ts');
 			const branched = !file && applicationHasBranchStorage(project);
@@ -1630,7 +1634,7 @@ exports.dropCustomFunctionProject = dropCustomFunctionProject;
 exports.packageComponent = packageComponent;
 exports.deployComponent = deployComponent;
 exports.unconfirmedStagingPeers = unconfirmedStagingPeers;
-exports.publishedEntryStillStands = publishedEntryStillStands;
+exports.peerDeployAnswerTimeoutMs = peerDeployAnswerTimeoutMs;
 exports.getComponents = getComponents;
 exports.getComponentFile = getComponentFile;
 exports.setComponentFile = setComponentFile;
