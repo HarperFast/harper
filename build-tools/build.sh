@@ -6,7 +6,9 @@ echo -e "\n📦 Installing core deps"
 npm install --ignore-scripts
 
 echo -e "\n📦 Building project"
-npm run build || true
+# A stale dist/ would mask a declaration file the compiler stopped emitting.
+rm -rf dist
+npm run build
 
 echo -e "\n📦 Creating shrinkwrap"
 npm shrinkwrap
