@@ -213,12 +213,19 @@ module.exports = {
 	// as a mismatch.
 	processIncarnation: workerData ? workerData.processIncarnation : randomBytes(8).toString('hex'),
 	// Assigned further down once defined. Listed here because TypeScript 7 only treats keys of this
-	// literal as exports of the module, not later `module.exports.x =` assignments.
+	// literal as exports of the module, not later `module.exports.x =` assignments. Typed here too:
+	// a consumer compiling this source (harper-pro) otherwise sees each as `undefined`.
+	/** @type {(threadId: any, message: any) => boolean} */
 	sendToThread: undefined,
+	/** @type {Promise<any>} */
 	whenThreadsStarted: undefined,
+	/** @type {(value?: any) => void} */
 	threadsHaveStarted: undefined,
+	/** @type {any} */
 	getThreadInfo: undefined,
+	/** @type {any} */
 	getRunningIsolatedApplications: undefined,
+	/** @type {(dir: any, beforeRestartCallback: any) => Promise<void>} */
 	watchDir: undefined,
 };
 
