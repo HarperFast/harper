@@ -114,8 +114,7 @@ class Subscription extends IterableEventQueue {
 			this.subscriptions = null;
 			const envSubscriptions = subscriptions.tables?.envs;
 			if (envSubscriptions?.activeCount > 0) envSubscriptions.activeCount--;
-			// splicing an array a delivery loop is walking would shift the next subscriber past that loop, so the loop
-			// compacts the array when it finishes instead
+			// splicing would shift the next subscriber past a loop walking this array, which compacts it when it finishes
 			if (subscriptions.traversals > 0) subscriptions.hasEnded = true;
 			else {
 				const index = subscriptions.indexOf(this);
@@ -216,7 +215,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 						if (keySubscriptions) {
 							keySubscriptions.traversals++;
 							try {
-								// only the subscribers present when this walk began: one added during it starts with the next record
+								// a subscriber added during this walk starts with the next record
 								for (let i = 0, length = keySubscriptions.length; i < length; i++) {
 									const subscription = keySubscriptions[i];
 									if (!subscription.subscriptions) continue;
@@ -268,8 +267,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 				// the bulk-reloaded table. hdb_nodes peer discovery and hdb_certificate CA install rely on this.
 				const tableSubscriptions = subscriptions[auditRecord.tableId];
 				if (tableSubscriptions) {
-					// keys added during the walk are appended to the Map, so capping the visits at its size keeps
-					// listeners that subscribe to new keys from extending the walk
+					// keys added during the walk are appended, so this cap keeps listeners from extending it
 					let remainingKeys = tableSubscriptions.size;
 					for (const keySubscriptions of tableSubscriptions.values()) {
 						if (remainingKeys-- === 0) break;
@@ -308,8 +306,11 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 			// any subscribers with open transactions need to have an event to indicate that their transaction has been ended
 			for (const subscription of subscribersWithTxns) {
 				subscription.txnInProgress = null; // clean up
-				if (subscription.subscriptions) {
+				if (!subscription.subscriptions) continue;
+				try {
 					subscription.listener(null, { type: 'end_txn' }, subscriptions.lastTxnTime, true);
+				} catch (error) {
+					warn(error);
 				}
 			}
 		}

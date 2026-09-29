@@ -1,7 +1,5 @@
-// A subscription can end while the live fan-out is still delivering the same record to the other
-// subscribers of its key: its rowFilter or eventFilter throws, or its listener calls end() on itself or a
-// sibling. Every subscriber still registered when the delivery reaches it must get the record, and an
-// ended subscription must get nothing more, end_txn included (harper#2771).
+// A subscription that ends while the fan-out is delivering a record (a throwing filter, or a listener calling
+// end()) must not cost any other subscriber that record, and must itself get nothing more (harper#2771).
 const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
 const { setupTestDBPath } = require('../testUtils.js');
@@ -359,6 +357,19 @@ describe('Ending a subscription during live delivery (transaction and reload sig
 		}
 	});
 
+	it('an end_txn listener that throws does not cost the next subscriber its end_txn', () => {
+		const fakeTable = makeFakeTable();
+		subscribeRaw(fakeTable, null, (auditRecord) => {
+			if (auditRecord.type === 'end_txn') throw new Error('end_txn listener failed');
+		});
+		const sibling = subscribeRaw(fakeTable, null);
+		commit(fakeTable, [{ type: 'put', recordId: 'a' }]);
+		assert.deepStrictEqual(sibling.events, [
+			{ id: 'a', type: 'put', beginTxn: true },
+			{ id: null, type: 'end_txn', beginTxn: true },
+		]);
+	});
+
 	it('an end_txn listener ending a later subscriber keeps end_txn from reaching it', () => {
 		const fakeTable = makeFakeTable();
 		let later;
@@ -371,7 +382,7 @@ describe('Ending a subscription during live delivery (transaction and reload sig
 	});
 
 	it('a subscriber ending in the first batch of a longer transaction gets no more of it, and its sibling all of it', async () => {
-		// the cross-thread path, which yields every 256 records and carries the transaction's subscribers across the yield
+		// the committed path, which yields every 256 records
 		const auditStore = new EventEmitter();
 		const pending = [];
 		auditStore.reusableIterable = true;

@@ -139,7 +139,8 @@ suite('explicit rowFilter filters subscription delivery', { skip: skipSuite }, (
 	};
 
 	before(async () => {
-		await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: {}, env: {} });
+		// one worker, so the FAILING FILTER streams share the table's subscriber list
+		await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: { threads: { count: 1 } }, env: {} });
 		client = createApiClient(ctx.harper);
 		restURL = ctx.harper.httpURL;
 
@@ -375,7 +376,7 @@ suite('explicit rowFilter filters subscription delivery', { skip: skipSuite }, (
 			"SIBLING SKIPPED (#2771): Alice's stream missed the row whose rowFilter failed on Bob's subscription"
 		);
 
-		// Bob's write commits before Alice's, so once Alice's arrives Bob's has been delivered to whoever still listens.
+		// Alice's row commits after Bob's, so once it arrives Bob's row has reached every live subscriber
 		await adminPut(BOB_ROWS[1], { id: BOB_ROWS[1], owner: BOB.username, secret: 'bob-after-failure' }).expect(204);
 		await adminPut(ALICE_ROWS[1], { id: ALICE_ROWS[1], owner: ALICE.username, secret: 'alice-after-failure' }).expect(
 			204
