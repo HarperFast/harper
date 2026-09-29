@@ -740,14 +740,7 @@ export interface TableResourceClass {
 				close(dropping?: boolean): Promise<void>;
 				fullTextDefinitions?(): readonly FullTextDefinition[];
 				matchesCurrent?(): boolean;
-				restoreAfterFailedDrop?(): {
-					close(dropping?: boolean): Promise<void>;
-					fullTextDefinitions?(): readonly FullTextDefinition[];
-					matchesCurrent?(): boolean;
-					restoreAfterFailedDrop?(): TableResourceClass['derivedIndexRuntime'];
-					retireAfterConfirmedDrop?(definitions?: readonly Pick<FullTextDefinition, 'name'>[]): Promise<boolean>;
-					completeDrop?(dropped?: boolean): void;
-				};
+				restoreAfterFailedDrop?(): TableResourceClass['derivedIndexRuntime'];
 				retireAfterConfirmedDrop?(definitions?: readonly Pick<FullTextDefinition, 'name'>[]): Promise<boolean>;
 				completeDrop?(dropped?: boolean): void;
 		  }
