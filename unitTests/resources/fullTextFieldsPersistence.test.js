@@ -258,4 +258,48 @@ rocksOnly('durable full-text declarations', () => {
 		assert.deepStrictEqual(Product.fullTextFields, ['search']);
 		assert.strictEqual(Product.fullTextIndexGenerations.search, generation);
 	});
+
+	it('restores live full-text metadata when a peer write fails without a primary descriptor', async () => {
+		let Product = declare({ fullTextIndexes: [definition(), definition('retired')] });
+		Product = declare({ fullTextIndexes: [definition()] });
+		const original = {
+			indexes: structuredClone(Product.fullTextIndexes),
+			fields: [...Product.fullTextFields],
+			generations: { ...Product.fullTextIndexGenerations },
+			retirements: [...Product.fullTextIndexRetirements],
+		};
+		assert.deepStrictEqual(original.retirements, ['retired']);
+		Product.dbisDB.removeSync('Product/');
+
+		const catalogPrototype = Object.getPrototypeOf(Product.dbisDB);
+		const patched = [];
+		for (const method of ['put', 'putSync']) {
+			const original = catalogPrototype[method];
+			if (typeof original !== 'function') continue;
+			catalogPrototype[method] = function (key, value, ...args) {
+				if (key === 'Product/description') throw new Error('peer attribute write failed');
+				return original.call(this, key, value, ...args);
+			};
+			patched.push([method, original]);
+		}
+		try {
+			assert.throws(
+				() =>
+					declare({
+						origin: 'cluster',
+						attributes: [...attributes(), { name: 'description', type: 'String' }],
+					}),
+				/peer attribute write failed/
+			);
+		} finally {
+			for (const [method, original] of patched) catalogPrototype[method] = original;
+		}
+
+		assert.deepStrictEqual(Product.fullTextIndexes, original.indexes);
+		assert.deepStrictEqual(Product.fullTextFields, original.fields);
+		assert.deepStrictEqual({ ...Product.fullTextIndexGenerations }, original.generations);
+		assert.deepStrictEqual(Product.fullTextIndexRetirements, original.retirements);
+		assert(!Product.attributes.some(({ name }) => name === 'description'));
+		await assert.rejects(async () => Product.put('one', { title: 'shoes', search: 'not writable' }), /query-only/);
+	});
 });

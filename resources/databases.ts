@@ -3663,6 +3663,12 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					cacheControl: Table.cacheControl,
 					schemaDefined: Table.schemaDefined,
 				};
+				const originalFullTextState = {
+					indexes: Table.fullTextIndexes.slice(),
+					fields: [...Table.fullTextFields],
+					generations: Object.assign(Object.create(null), Table.fullTextIndexGenerations),
+					retirements: [...Table.fullTextIndexRetirements],
+				};
 				armFullTextLiveStateRestore = () => {
 					if (restoreFullTextLiveState) return;
 					restoreFullTextLiveState = () => {
@@ -3674,22 +3680,32 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						Object.assign(Table, originalMetadata);
 						Table.properties = projectAttributesToProperties(restored);
 						const restoredPrimary = persistedPrimaryDescriptor(Table.dbisDB).descriptor;
+						if (restoredPrimary === undefined) {
+							Table.fullTextIndexes = originalFullTextState.indexes;
+							Table.fullTextFields = originalFullTextState.fields;
+							Table.fullTextIndexGenerations = originalFullTextState.generations;
+							Table.fullTextIndexRetirements = originalFullTextState.retirements;
+							Table.schemaVersion++;
+							Table.updatedAttributes();
+							refreshDerivedIndexes(Table);
+							return;
+						}
 						const restoredFullTextIndexes =
-							rootStore instanceof RocksDatabase && restoredPrimary?.audit === true
-								? readPersistedFullTextDefinitions(restoredPrimary?.fullTextIndexes, restored, fullTextWarning)
+							rootStore instanceof RocksDatabase && restoredPrimary.audit === true
+								? readPersistedFullTextDefinitions(restoredPrimary.fullTextIndexes, restored, fullTextWarning)
 								: [];
 						Table.fullTextIndexes = restoredFullTextIndexes;
 						Table.fullTextFields = readPersistedFullTextFields(
-							restoredPrimary?.fullTextFields,
-							restoredPrimary?.fullTextIndexes,
+							restoredPrimary.fullTextFields,
+							restoredPrimary.fullTextIndexes,
 							restored,
 							fullTextWarning
 						);
 						Table.fullTextIndexGenerations = persistedFullTextIndexGenerations(
-							restoredPrimary?.fullTextIndexGenerations,
+							restoredPrimary.fullTextIndexGenerations,
 							restoredFullTextIndexes
 						);
-						Table.fullTextIndexRetirements = persistedFullTextIndexNames(restoredPrimary?.fullTextIndexRetirements);
+						Table.fullTextIndexRetirements = persistedFullTextIndexNames(restoredPrimary.fullTextIndexRetirements);
 						Table.schemaVersion++;
 						Table.updatedAttributes();
 						refreshDerivedIndexes(Table);
