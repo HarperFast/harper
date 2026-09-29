@@ -159,7 +159,15 @@ function notifyJobCleanupComplete() {
 const listenersByType = new Map();
 const messagesQueuedByType = new Map();
 const { promise: whenThreadsStarted, resolve: threadsHaveStarted } = Promise.withResolvers();
+const initialRestartNumber = workerData?.restartNumber || 1;
+// Identifies this process incarnation, where the PID cannot: a container reuses PID 1. Minted once
+// on the main thread and carried to workers, so live siblings agree on it — one derived per thread
+// would not. `undefined` on a worker started without it; consumers must fall back, not treat that
+// as a mismatch.
+const processIncarnation = workerData ? workerData.processIncarnation : randomBytes(8).toString('hex');
 
+// Every value in this literal is a bare identifier: Node's CommonJS export scan, which supplies the
+// named bindings an ES module import can use, stops reading the literal at the first value that is not.
 module.exports = {
 	startWorker,
 	restartWorkers,
@@ -207,12 +215,8 @@ module.exports = {
 	terminateProcessGroupsForThread,
 	isProcessGroupAlive,
 	isThreadRunning,
-	restartNumber: workerData?.restartNumber || 1,
-	// Identifies this process incarnation, where the PID cannot: a container reuses PID 1. Minted once
-	// on the main thread and carried to workers, so live siblings agree on it — one derived per thread
-	// would not. `undefined` on a worker started without it; consumers must fall back, not treat that
-	// as a mismatch.
-	processIncarnation: workerData ? workerData.processIncarnation : randomBytes(8).toString('hex'),
+	restartNumber: initialRestartNumber,
+	processIncarnation,
 	whenThreadsStarted,
 	threadsHaveStarted,
 	// Assigned further down once defined. Listed here because TypeScript 7 only treats keys of this

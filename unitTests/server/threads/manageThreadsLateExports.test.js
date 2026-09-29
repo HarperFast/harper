@@ -2,12 +2,13 @@
 
 const assert = require('node:assert');
 const { Worker } = require('node:worker_threads');
+const { pathToFileURL } = require('node:url');
 
 const manageThreadsPath = require.resolve('#js/server/threads/manageThreads');
 const LATE_BOUND_FUNCTIONS = ['sendToThread', 'getThreadInfo', 'getRunningIsolatedApplications'];
 const REPORT = 'late-export-report';
 
-describe('manageThreads late-bound exports', () => {
+describe('manageThreads exports', () => {
 	it('hold their real values on the main thread once the module has loaded', () => {
 		const manageThreads = require(manageThreadsPath);
 		for (const name of [...LATE_BOUND_FUNCTIONS, 'watchDir']) {
@@ -44,6 +45,12 @@ describe('manageThreads late-bound exports', () => {
 		} finally {
 			await worker.terminate();
 		}
+	});
+
+	it('are all importable by name from an ES module', async () => {
+		const namespace = await import(pathToFileURL(manageThreadsPath).href);
+		const missing = Object.keys(require(manageThreadsPath)).filter((name) => !(name in namespace));
+		assert.deepStrictEqual(missing, []);
 	});
 
 	it('settle whenThreadsStarted through the exported threadsHaveStarted', async () => {
