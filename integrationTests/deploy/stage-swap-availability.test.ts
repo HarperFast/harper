@@ -76,7 +76,7 @@ suite('deploy_component keeps the previous version in place while the replacemen
 		const release = join(scratch, 'install-release');
 
 		try {
-			await operation(ctx, {
+			const first = await operation(ctx, {
 				operation: 'deploy_component',
 				project: PROJECT,
 				payload: await buildPayload(1),
@@ -112,13 +112,22 @@ suite('deploy_component keeps the previous version in place while the replacemen
 			);
 
 			await writeFile(release, 'go');
-			await redeploy;
+			const second = await redeploy;
 
 			strictEqual(await readFile(versionFile, 'utf8'), '2', 'the replacement is live once it is complete');
-			// Nothing left behind: no candidate, and no displaced tree accumulating per deploy.
-			const staged = await readdir(join(componentsRoot, '.deploy-staging')).catch(() => []);
-			strictEqual(staged.length, 0, `staging should be empty, found ${JSON.stringify(staged)}`);
-			ok(!existsSync(join(componentsRoot, '.deploy-aside', PROJECT)), 'the displaced version is swept');
+			// Nothing left aside: the displaced release is kept under the deployment that built it, where
+			// deployment_id reaches it, and the new release's id keeps its record.
+			const staged = (await readdir(join(componentsRoot, '.deploy-staging')).catch(() => [])).sort();
+			strictEqual(
+				JSON.stringify(staged),
+				JSON.stringify([first.deployment_id, second.deployment_id].sort()),
+				'one directory per deployment id, and nothing else'
+			);
+			strictEqual(
+				await readFile(join(componentsRoot, '.deploy-staging', first.deployment_id, PROJECT, 'version.txt'), 'utf8'),
+				'1'
+			);
+			ok(!existsSync(join(componentsRoot, '.deploy-aside', PROJECT)), 'and nothing is left aside');
 		} finally {
 			await rm(scratch, { recursive: true, force: true });
 		}

@@ -327,46 +327,35 @@ describe('claiming a deployment id', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	it('refuses an id held by a build that has not named its component yet', async function () {
+	it('refuses an id held by a directory that names no component and holds something', async function () {
 		this.timeout(20000);
 		const root = await newRoot('claim-unattributable');
 		await writeLive(root, 'web', 'LIVE v1\n');
-		// A build in flight under this id, caught before it is attributable: no sidecar yet, and no single
-		// component directory for ownership to be inferred from either — an extraction that has written its
-		// tarball but not yet its tree. It may belong to ANOTHER component, and only that component's own
-		// lock serializes its claim, so removing it here would delete a live build.
+		// Claims appear at their id already named, so this is not one in flight; what it holds is unknown.
 		const dir = deploymentDir(root, 'a1');
 		await fs.mkdir(dir, { recursive: true });
 		await fs.writeFile(path.join(dir, 'payload.tgz'), 'BEING BUILT\n');
 
 		await assert.rejects(
 			() => stage(root, 'web', 'a1', 'WEB STAGED\n'),
-			(error) => /has not named its component yet/.test(error.message) && error.statusCode === 409
+			(error) => /names no component/.test(error.message) && error.statusCode === 409
 		);
-		assert.strictEqual(
-			await fs.readFile(path.join(dir, 'payload.tgz'), 'utf8'),
-			'BEING BUILT\n',
-			'the in-flight build is left alone'
-		);
+		assert.strictEqual(await fs.readFile(path.join(dir, 'payload.tgz'), 'utf8'), 'BEING BUILT\n', 'left alone');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	it('refuses an id whose directory is empty, because a claim in flight looks exactly like that', async function () {
+	it('takes over an id whose directory is empty, which only a claim that died before naming itself leaves', async function () {
 		this.timeout(20000);
 		const root = await newRoot('claim-empty');
 		await writeLive(root, 'web', 'LIVE v1\n');
-		// What another component's claim looks like for as long as it takes to resolve and pack: the
-		// directory exists, names nobody, and holds nothing yet. Emptiness cannot distinguish it from a
-		// claim that got no further, and only that component's own preparation lock — not this one —
-		// serializes it, so deleting on an empty read deletes a build that is still running.
+		// Claims appear at their id already named, so an empty directory is a claim that died before naming itself.
 		const dir = deploymentDir(root, 'a1');
 		await fs.mkdir(dir, { recursive: true });
 
-		await assert.rejects(
-			() => stage(root, 'web', 'a1', 'WEB STAGED\n'),
-			(error) => /has not named its component yet/.test(error.message) && error.statusCode === 409
-		);
-		assert.ok(existsSync(dir), 'the in-flight claim is left alone');
+		await stage(root, 'web', 'a1', 'WEB STAGED\n');
+
+		assert.strictEqual(await fs.readFile(path.join(dir, 'web', 'index.js'), 'utf8'), 'WEB STAGED\n');
+		assert.strictEqual(await fs.readFile(path.join(dir, '.component'), 'utf8'), 'web');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
@@ -401,35 +390,33 @@ describe('claiming a deployment id', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	it('takes back a directory it created but could not name, so the id is not burned', async () => {
-		// Unattributed is a permanent refusal, so a claim that wins the mkdir and then cannot record who it
-		// belongs to — a full disk, an EIO on the temp write or its sync — would leave every retry of that id
-		// refused by its own wreckage. The write is injected because no filesystem can be made to fail on
-		// exactly this write and nothing else.
+	it('takes back a claim it could not name, which never reached its id', async () => {
+		// Injected: no filesystem can be made to fail on exactly this write and nothing else.
 		const root = await newRoot('claim-unnameable');
-		const dir = deploymentDir(root, 'a1');
-		await fs.mkdir(dir, { recursive: true });
+		const claim = path.join(root, DEPLOY_STAGING_DIR, `.claiming-${'0'.repeat(36)}-web`);
+		await fs.mkdir(claim, { recursive: true });
 
 		await assert.rejects(
 			() =>
-				publishClaimOwnership(dir, 'web', async () => {
+				publishClaimOwnership(claim, 'web', async () => {
 					throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
 				}),
 			/no space left on device/
 		);
 
-		assert.strictEqual(existsSync(dir), false, 'the directory it created is gone, so the id can be claimed again');
+		assert.strictEqual(existsSync(claim), false, 'the unfinished claim is gone');
+		assert.strictEqual(existsSync(deploymentDir(root, 'a1')), false, 'and the id was never touched');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	it('keeps the directory when it can name it', async () => {
+	it('keeps the claim when it can name it', async () => {
 		const root = await newRoot('claim-nameable');
-		const dir = deploymentDir(root, 'a1');
-		await fs.mkdir(dir, { recursive: true });
+		const claim = path.join(root, DEPLOY_STAGING_DIR, `.claiming-${'0'.repeat(36)}-web`);
+		await fs.mkdir(claim, { recursive: true });
 
-		await publishClaimOwnership(dir, 'web');
+		await publishClaimOwnership(claim, 'web');
 
-		assert.strictEqual(await fs.readFile(path.join(dir, '.component'), 'utf8'), 'web');
+		assert.strictEqual(await fs.readFile(path.join(claim, '.component'), 'utf8'), 'web');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
@@ -482,10 +469,10 @@ describe('activating a staged artifact', () => {
 		await prepareApplication(applicationAt(root, 'web'), { mode: 'activate', artifactId: 'a1' });
 
 		assert.strictEqual(await readLive(root, 'web'), 'STAGED v2\n');
-		assert.strictEqual(
-			existsSync(deploymentDir(root, 'a1')),
-			false,
-			'the rename consumes the artifact, so the id is not activatable twice'
+		assert.deepStrictEqual(
+			(await fs.readdir(deploymentDir(root, 'a1'))).sort(),
+			['.artifact.json', '.complete', '.component'],
+			'the rename consumes the tree, and the id keeps its record of the release that is now live'
 		);
 		await fs.rm(root, { recursive: true, force: true });
 	});
@@ -981,8 +968,59 @@ describe('an activation that fails after it commits', () => {
 		assert.strictEqual((await recoverInterruptedActivations(root)).size, 0);
 
 		assert.deepStrictEqual(rootConfigEntry('web'), { package: 'npm:web@2', isolated: true });
-		assert.strictEqual(existsSync(deploymentDir(root, 'd1')), false, 'and the activation is settled');
+		assert.deepStrictEqual(
+			(await fs.readdir(deploymentDir(root, 'd1'))).sort(),
+			['.artifact.json', '.complete', '.component'],
+			'and the activation is settled, leaving the record of the release it made live'
+		);
 		assert.strictEqual(await readLive(root, 'web'), 'DEPLOYED v2\n');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('answers a retry of the same deployment id once the entry is published, instead of 404 for a consumed artifact', async function () {
+		// The publish throws past the commit and before replication, so only a retry of the same id reaches the peers.
+		this.timeout(30000);
+		if (process.platform === 'win32' || !(await readOnlyDirectoryDeniesWrites())) return this.skip();
+		const root = await newRoot('post-commit-retry');
+		await writeLive(root, 'web', 'LIVE v1\n');
+		await stage(root, 'web', 'a1', 'STAGED v2\n', {
+			describeArtifact: () => ({ rootConfig: { package: 'npm:web@2', isolated: false }, isolated: false }),
+		});
+		const intact = readFileSync(getConfigFilePath(), 'utf8');
+		// Parked in the move-aside's retry, as above, so the config can be broken after the up-front check.
+		await fs.mkdir(path.join(root, '.deploy-aside', 'web'), { recursive: true, mode: 0o700 });
+		await fs.chmod(root, 0o500);
+		const activating = prepareApplication(applicationAt(root, 'web'), { mode: 'activate', artifactId: 'a1' });
+		activating.catch(() => {});
+		try {
+			await waitFor(
+				async () => {
+					const entries = await fs.readdir(deploymentDir(root, 'a1')).catch(() => []);
+					return entries.includes('.activation.json') && !entries.some((entry) => entry.includes('.partial-'));
+				},
+				20000,
+				5
+			);
+			writeFileSync(getConfigFilePath(), intact + '\nunparseable: [unterminated\n');
+			await fs.chmod(root, 0o700);
+			await assert.rejects(activating, /could not publish its root configuration/);
+		} finally {
+			await fs.chmod(root, 0o700).catch(() => {});
+		}
+		assert.strictEqual(await readLive(root, 'web'), 'STAGED v2\n', 'live on this node only');
+
+		writeFileSync(getConfigFilePath(), intact);
+		const retry = applicationAt(root, 'web');
+		await prepareApplication(retry, { mode: 'activate', artifactId: 'a1' });
+
+		assert.strictEqual(retry.alreadyActive, true, 'answered without a swap, so it can go on to reach the peers');
+		assert.deepStrictEqual(
+			rootConfigEntry('web'),
+			{ package: 'npm:web@2', isolated: false },
+			'its preamble settled the journal the failure kept, publishing the entry'
+		);
+		assert.strictEqual(existsSync(path.join(deploymentDir(root, 'a1'), '.activation.json')), false);
+		assert.strictEqual(await readLive(root, 'web'), 'STAGED v2\n');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
