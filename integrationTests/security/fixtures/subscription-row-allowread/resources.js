@@ -27,7 +27,12 @@ export class Vault extends tables.Vault {
 	}
 
 	subscribe(request) {
-		request.rowFilter = (record, context) => isSuper(context.user) || record.owner === context.user?.username;
+		request.rowFilter = (record, context) => {
+			// a row marked for a subscriber makes that subscriber's filter throw, which ends its subscription
+			// while the same row is still being delivered to the others
+			if (record.secret === `fail-filter-for-${context.user?.username}`) throw new Error('rowFilter failed');
+			return isSuper(context.user) || record.owner === context.user?.username;
+		};
 		return super.subscribe(request);
 	}
 
