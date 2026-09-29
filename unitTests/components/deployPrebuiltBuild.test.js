@@ -29,6 +29,7 @@ const {
 	recordUnconfirmedBuildPeers,
 	assertBuildFitsOperationBody,
 	publishesBuild,
+	carriesBuildInBody,
 	releaseUnreadPayload,
 } = require('#src/components/operations');
 const { deployComponentValidator } = require('#src/components/operationsValidation');
@@ -532,6 +533,46 @@ describe('replicated builds', () => {
 			await bootRacingADeploy('boot-race-other', { package: 'npm:web@2' });
 		});
 
+		it('lets a queued boot install run when what went live meanwhile was another boot install, not a deploy', async function () {
+			this.timeout(60000);
+			const root = await newRoot('boot-boot-race');
+			const dirPath = path.join(root, 'web');
+			const lockPath = path.join(root, 'harper-application-lock.json');
+			const tarball = path.join(root, 'v2.tgz');
+			await fs.writeFile(
+				tarball,
+				await sourceArchive({ 'package.json': '{"name":"web","version":"2.0.0"}', 'index.js': 'V2\n' })
+			);
+			const entry = { package: `file:${tarball}`, install: { command: 'node -e 0' } };
+			const priorComponentsRoot = env.get(CONFIG_PARAMS.COMPONENTSROOT);
+			env.setProperty(CONFIG_PARAMS.COMPONENTSROOT, root);
+			try {
+				let releaseEarlier;
+				const earlierHolding = new Promise((resolve) => (releaseEarlier = resolve));
+				let earlierHasLock;
+				const lockHeld = new Promise((resolve) => (earlierHasLock = resolve));
+				// An earlier boot's install: it records its own lifecycle token and describes nothing.
+				const earlier = prepareApplication(
+					applicationAt(root, 'web', { payload: await sourceArchive({ 'index.js': 'V1\n' }) }),
+					{
+						artifactId: 'boot-token',
+						beforePrepare: async () => {
+							earlierHasLock();
+							await earlierHolding;
+						},
+					}
+				);
+				await lockHeld;
+				const booting = installConfiguredApplication('web', entry, dirPath, lockPath, () => {});
+				releaseEarlier();
+				await earlier;
+				await booting;
+				assert.strictEqual(await readLive(root), 'V2\n', 'the queued install of the newer configuration ran');
+			} finally {
+				env.setProperty(CONFIG_PARAMS.COMPONENTSROOT, priorComponentsRoot);
+			}
+		});
+
 		it('keeps a release whose provenance marker is present but not valid, rather than treating it as absent', async function () {
 			this.timeout(30000);
 			const root = await deployedPackage('marker-invalid');
@@ -659,6 +700,13 @@ describe('replicated builds', () => {
 			);
 			server.nodes = undefined;
 			assert.strictEqual(publishesBuild({}, recorder, false), false, 'core, which has no replication');
+		});
+
+		it('rides in the operation only while a peer can receive it, and only when no row carries it', () => {
+			assert.strictEqual(carriesBuildInBody(false), true, 'three peers, and no row to travel in');
+			assert.strictEqual(carriesBuildInBody(true), false, 'the replicated row carries it');
+			server.nodes = [];
+			assert.strictEqual(carriesBuildInBody(false), false, 'no peer to carry it to, so it is never read into memory');
 		});
 
 		it('is refused when its copies for every peer pass the replication message bound', () => {

@@ -5383,7 +5383,7 @@ export async function installConfiguredApplication(
 	onDeployStart: (deploymentId: string) => void
 ): Promise<void> {
 	try {
-		const liveDeployment = await liveDeploymentOf(dirPath, name);
+		const liveDeployment = (await liveProvenanceOf(dirPath, name))?.deploymentId;
 		const deployed = existsSync(dirPath) ? await deployedReleaseVerdict(dirPath, name, applicationConfig) : 'unknown';
 		if (deployed === 'keep') return;
 		// Lock check: only install if not already installed with matching configuration
@@ -5433,8 +5433,11 @@ export async function installConfiguredApplication(
 						// Decided again once no deploy can be swapping the tree: one may have made a release live since, and the
 						// configuration read before the wait says nothing about what that deploy decided.
 						beforePrepare: async () => {
+							// Only a deploy's release is kept outright: a boot install writes a marker too, and one queued with
+							// newer configuration still has to run over it.
+							const liveNow = await liveProvenanceOf(dirPath, name);
 							if (
-								(await liveDeploymentOf(dirPath, name)) !== liveDeployment ||
+								(liveNow?.described && liveNow.deploymentId !== liveDeployment) ||
 								(await deployedReleaseVerdict(dirPath, name, applicationConfig)) === 'keep'
 							) {
 								throw new DeployedReleaseKept();
@@ -5463,9 +5466,9 @@ async function provenanceMarkerPresent(dirPath: string): Promise<boolean> {
 	return presentOrAbsent(join(dirPath, DEPLOYMENT_PROVENANCE_FILE)).then(Boolean, () => true);
 }
 
-/** Which deployment the live tree came from; a marker that cannot be read reads as none this could compare equal. */
-function liveDeploymentOf(dirPath: string, name: string): Promise<string | symbol | undefined> {
-	return readDeploymentProvenance(dirPath, name).catch(() => Symbol('unreadable provenance'));
+/** The live tree's provenance record. One that cannot be read is left to `deployedReleaseVerdict`, which keeps it. */
+function liveProvenanceOf(dirPath: string, name: string): Promise<DeploymentProvenance | undefined> {
+	return readDeploymentProvenanceRecord(dirPath, name).catch(() => undefined);
 }
 
 /**

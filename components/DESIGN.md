@@ -483,8 +483,9 @@ canonical digest over every path, file content, link target and owner-exec bit.
 - **Platform facts.** The same walk records what the build binds. A `.node` addon binds OS, CPU architecture and
   libc, and the Node ABI unless it is a Node-API addon (it references `napi_` and none of the V8 or node C++ linkage
   names; lmdb's `node.napi.node`, which also references `node_module_register`, reads as ABI-bound, on the safe
-  side). Any other ELF, Mach-O (thin or fat, 32- or 64-bit, either byte order) or PE file, and any `package.json`
-  declaring `os`, `cpu` or `libc`, bind the first three. On a POSIX host, a link or an owner-executable file binds POSIX semantics, which win32 cannot hold — tar-fs
+  side). Any other ELF, Mach-O (thin or fat, 32- or 64-bit, either byte order; a Java class file, which shares the
+  fat magic, is told apart by the version after it) or PE file, and any `package.json` declaring `os`, `cpu` or
+  `libc`, bind the first three. On a POSIX host, a link or an owner-executable file binds POSIX semantics, which win32 cannot hold — tar-fs
   drops links there silently; a tree built on Windows holds nothing Windows cannot. An install that ran
   `install_command` or install scripts — including the scripts `npm pack` runs for a git reference with
   `install_allow_scripts` — binds all four, since nothing inspects what it produced. A node refuses a build only on a field it binds and the node does not share, naming the field,
@@ -500,9 +501,11 @@ canonical digest over every path, file content, link target and owner-exec bit.
   option only stops them being followed. It streams through the recorder's hash/size tap into `artifact_blob`,
   beside `payload_blob`, whose meaning (the uploaded bytes) is unchanged. The operation carries
   `_artifact: { sha256, size, installationIsOpaque, build }`. When `system` does not replicate, or this node has no
-  deployment table, the build rides as `payload` instead, which the operation logs already mask; harper-pro encodes
-  the operation once per peer, so that path is refused before the swap once `size × peers` passes
-  `replication_maxPayload` (default 100 MB).
+  deployment table, the build rides as `payload` instead, which the operation logs already mask. It rides only while
+  a peer is connected, since nothing would receive it otherwise; a peer that joins before the send then finds neither
+  body nor row, and fails. harper-pro encodes the operation once per peer, so that path is refused once
+  `size × peers` passes `replication_maxPayload` (default 100 MB): before the swap for the peers known then, and again
+  when the body is attached.
 - **A peer takes the build as it is.** It checks the platform before fetching anything, reads `artifact_blob`
   (`awaitDeploymentRow` with `blobAttribute`) or the body, verifies sha256 and size as the archive ends, extracts
   with `validateSymlinks: false` — the tree's links include links through links — and no wrapper-flattening,
@@ -536,9 +539,10 @@ canonical digest over every path, file content, link target and owner-exec bit.
   moved; so does a marker that cannot be read at all, or is present but does not parse. A platform the node no longer shares is logged, not rebuilt or
   quarantined (the addon classification would quarantine a loadable Node-API addon). A tree nothing described falls
   back to the lock, as before. The verdict is taken again in the preparation's `beforePrepare`, under the component
-  lock: a deploy that swapped a release in while boot waited for that lock is kept, not rebuilt over. A different
-  deployment live there than before the wait keeps the tree outright, since the configuration boot read before the
-  wait says nothing about what that deploy decided.
+  lock: a deploy that swapped a release in while boot waited for that lock is kept, not rebuilt over. A deploy's
+  release (a `described` marker) live there that was not before the wait keeps the tree outright, since the
+  configuration boot read before the wait says nothing about what that deploy decided. Another boot install writes a
+  marker too, but not a described one, so an install queued with newer configuration still runs over it.
 
 Not covered: a node that joins after a deploy installs from configuration, since it received no deploy to take a build
 from; a build's own load-time output (the Next.js plugin's `.next`) is still produced per node; glibc version skew is

@@ -140,6 +140,21 @@ describe('build manifests', () => {
 			assert.deepStrictEqual(binds, { os: 'bin/tool', arch: 'bin/tool', libc: 'bin/tool' });
 		});
 
+		it('tells a Java class file from a fat Mach-O binary, though both open with 0xcafebabe', async () => {
+			const classFile = Buffer.alloc(32);
+			classFile.writeUInt32BE(0xcafebabe, 0);
+			classFile.writeUInt32BE(52, 4); // Java 8's class file version
+			assert.deepStrictEqual(await bindsOf({ 'lib/Tool.class': classFile }), {});
+			const fat = Buffer.alloc(32);
+			fat.writeUInt32BE(0xcafebabe, 0);
+			fat.writeUInt32BE(2, 4); // two architectures
+			assert.deepStrictEqual(await bindsOf({ 'bin/tool': fat }), {
+				os: 'bin/tool',
+				arch: 'bin/tool',
+				libc: 'bin/tool',
+			});
+		});
+
 		it('binds os, arch and libc to every Mach-O header, thin or fat, 32- or 64-bit, in either byte order', async () => {
 			const magics = [0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca];
 			for (const magic of magics) {

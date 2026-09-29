@@ -51,7 +51,6 @@ class AddonLinkage {
 	#v8 = false;
 
 	update(chunk: Buffer): void {
-		// Only the seam is copied: the previous chunk's end and this one's start.
 		const seam = this.#tail.length ? Buffer.concat([this.#tail, chunk.subarray(0, LONGEST_MARKER - 1)]) : undefined;
 		const holds = (marker: Buffer) => chunk.includes(marker) || !!seam?.includes(marker);
 		this.#nodeApi ||= holds(NODE_API_MARKER);
@@ -65,6 +64,14 @@ class AddonLinkage {
 	}
 }
 
+// A Java class file shares the fat Mach-O magic; its version follows, at 45 or more, where a fat binary counts its few
+// architectures.
+const FIRST_JAVA_CLASS_VERSION = 45;
+
+function isJavaClass(head: Buffer): boolean {
+	return head.length >= 8 && head.readUInt32BE(4) >= FIRST_JAVA_CLASS_VERSION;
+}
+
 function isNativeBinary(head: Buffer): boolean {
 	if (head.length >= 2 && head[0] === 0x4d && head[1] === 0x5a) return true; // PE
 	if (head.length < 4) return false;
@@ -75,7 +82,7 @@ function isNativeBinary(head: Buffer): boolean {
 		magic === 0xfeedfacf ||
 		magic === 0xcefaedfe ||
 		magic === 0xcffaedfe || // Mach-O
-		magic === 0xcafebabe ||
+		(magic === 0xcafebabe && !isJavaClass(head)) ||
 		magic === 0xbebafeca ||
 		magic === 0xcafebabf ||
 		magic === 0xbfbafeca // fat Mach-O, 32- and 64-bit, either byte order

@@ -948,7 +948,10 @@ async function deployComponent(req) {
 		if (published) {
 			req._artifact = published;
 			// Without a replicated row the build rides the operation itself, where `payload` is already kept out of logs.
-			if (!buildTravelsInRow) req.payload = Buffer.from(await recorder.row.artifact_blob.bytes());
+			if (carriesBuildInBody(buildTravelsInRow)) {
+				assertBuildFitsOperationBody(application.name, published.size);
+				req.payload = Buffer.from(await recorder.row.artifact_blob.bytes());
+			}
 		} else if (isActivation && application.admittedTree) {
 			req._artifact = { tree: application.admittedTree };
 		}
@@ -1215,6 +1218,15 @@ function unconfirmedStagingPeers(replicated) {
  * `server.nodes` only when it sends, so a peer that joins while this builds would otherwise get no build and build its
  * own. Core has no replication layer, and so no `server.nodes`.
  */
+/**
+ * Whether the operation carries the build itself. Not while no peer is connected: nothing would receive it, and a
+ * build is only bounded by the peers there are. A peer that joins before the send then finds neither body nor row,
+ * and fails.
+ */
+function carriesBuildInBody(buildTravelsInRow) {
+	return !buildTravelsInRow && (server.nodes?.length ?? 0) > 0;
+}
+
 function publishesBuild(req, recorder, isActivation) {
 	return Boolean(recorder) && !isActivation && req.replicated !== false && Array.isArray(server.nodes);
 }
@@ -1814,6 +1826,7 @@ exports.releaseUnreadPayload = releaseUnreadPayload;
 exports.unconfirmedStagingPeers = unconfirmedStagingPeers;
 exports.recordUnconfirmedBuildPeers = recordUnconfirmedBuildPeers;
 exports.publishesBuild = publishesBuild;
+exports.carriesBuildInBody = carriesBuildInBody;
 exports.assertBuildFitsOperationBody = assertBuildFitsOperationBody;
 exports.peerDeployAnswerTimeoutMs = peerDeployAnswerTimeoutMs;
 exports.getComponents = getComponents;
