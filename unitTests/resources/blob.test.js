@@ -1824,6 +1824,11 @@ describe('Blob test', () => {
 			survivor = getFilePathForBlob(second);
 
 			await blockBlobSavesForRestore(databaseName, 'restore-aborted');
+			// Let the drain run and skip the entry while fenced -- that pass records no next deadline, so
+			// without a wakeup on release the entry is kept but never comes due again.
+			await new Promise((resolve) => setTimeout(resolve, 400));
+			assert.ok(existsSync(condemnedPath), 'fenced, so not yet drained');
+
 			// The restore failed its admission checks and destroyed nothing.
 			resumeBlobSavesAfterRestore(databaseName, 'restore-aborted', false);
 

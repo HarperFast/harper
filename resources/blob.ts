@@ -1886,6 +1886,9 @@ export function resumeBlobSavesAfterRestore(
 	// Only the owner may lift the fence; a superseded restore's reload arriving late does nothing.
 	if (blobRestoreFences.get(databaseName) !== restoreToken) return;
 	blobRestoreFences.delete(databaseName);
+	// A drain that ran while the fence was up skipped these entries without recording a next deadline,
+	// so nothing is scheduled to come back for them. Whatever survives below needs a wakeup.
+	if (pendingReclamation.size > 0) scheduleReclamation(Date.now());
 	// A restore that aborted before it destroyed anything leaves the generation intact, so its queued
 	// reclamations still condemn the files they were queued against. Discarding those would strand
 	// every superseded blob the database had pending at the moment an admission check happened to fail.
@@ -3501,6 +3504,10 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 		auditStore = table.auditStore;
 		if (auditStore) break;
 	}
+	// Captured before the scan, not before the deletions: the verdict this sweep acts on -- "no record
+	// references this path" -- is formed by the scan below, so a restore that lands while it runs has
+	// already invalidated it.
+	const generation = blobRestoreGeneration(store);
 	const pathsToCheck = new Set<string>();
 	const rootPaths = getRootBlobPathsForDB(store);
 	if (rootPaths) {
@@ -3594,8 +3601,6 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 		for (const path of pathsToCheck) {
 			if (pendingReclamation.has(path)) pathsToCheck.delete(path);
 		}
-		// Captured before the first deletion, so any restore that lands mid-sweep invalidates this pass.
-		const generation = blobRestoreGeneration(store);
 		const repairTempLocks = new Map<string, string>();
 		for (const path of pathsToCheck) {
 			if (!path.endsWith(BLOB_REPAIR_SUFFIX)) continue;
@@ -3606,21 +3611,26 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 		logger.warn?.('Deleting', pathsToCheck.size, 'orphaned blobs');
 		orphansDeleted += pathsToCheck.size;
 		let deleted = 0;
+		let skipped = 0;
 		let abandonedForRestore = false;
-		const remaining = new Set(pathsToCheck);
 		for (const path of pathsToCheck) {
-			// This walk is dispatched fire-and-forget and can outlive a restore's close acknowledgement.
-			// Its verdict -- "no record references this path" -- was reached against a generation a restore
-			// may since have replaced, so continuing would unlink blobs that restore has just written.
-			// Compared by generation, not by "is a restore running now": an await here can easily span a
-			// whole restore, leaving the fence clear again by the time the next iteration looks.
-			if (blobRestoreGenerationChanged(generation)) {
-				logger.warn?.('Stopping orphaned blob cleanup: the database has been restored since this scan began');
-				orphansDeleted -= remaining.size;
+			// This walk is dispatched fire-and-forget and can outlive a restore's close acknowledgement, so
+			// it compares generations rather than asking whether a restore is running right now: one await
+			// here can span a whole restore, leaving the fence clear again by the next iteration.
+			if (!abandonedForRestore && blobRestoreGenerationChanged(generation)) {
 				abandonedForRestore = true;
-				break;
+				logger.warn?.('Stopping orphaned blob cleanup: the database has been restored since this scan began');
 			}
-			remaining.delete(path);
+			if (abandonedForRestore) {
+				// Keep walking, but only to hand back the locks taken for every candidate up front. Leaving
+				// them held would block the repair path until the process restarts, and collecting the
+				// untouched paths into a second set first would double the footprint of a sweep this
+				// function is explicitly built to run over hours.
+				skipped++;
+				const lockKey = repairTempLocks.get(path);
+				if (lockKey) (store as any).unlock(lockKey);
+				continue;
+			}
 			const unlinkDone = beginBlobUnlink(blobSaveDatabaseName(store));
 			try {
 				await unlinkPromised(path);
@@ -3633,14 +3643,7 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 				if (lockKey) (store as any).unlock(lockKey);
 			}
 		}
-		if (abandonedForRestore) {
-			// The locks were taken for every candidate up front, so the ones this loop never reached are
-			// still held; leaving them would block the repair path until the process restarts.
-			for (const path of remaining) {
-				const lockKey = repairTempLocks.get(path);
-				if (lockKey) (store as any).unlock(lockKey);
-			}
-		}
+		orphansDeleted -= skipped;
 		logger.warn?.('Finished deleting', deleted, 'orphaned blobs');
 		pathsToCheck.clear();
 	}
