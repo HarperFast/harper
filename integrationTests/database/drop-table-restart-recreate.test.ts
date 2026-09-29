@@ -126,8 +126,8 @@ suite('drop_table survives restart; recreate starts empty (harper#1212)', (ctx: 
 		});
 	}
 
-	// Boot does not await transaction-log replay, and it replays one database's log in order: once a
-	// row written just before the kill is visible, every earlier entry has been applied or skipped.
+	// Boot does not await transaction-log replay, which applies one database's log in order. Reads wait
+	// for a row written just before the kill, as a proxy for replay having passed everything before it.
 	async function restart(crash: boolean) {
 		const barrier = randomUUID();
 		await operation({ operation: 'insert', database: DATABASE, table: BARRIER_TABLE, records: [{ id: barrier }] });
