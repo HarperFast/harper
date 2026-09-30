@@ -1108,7 +1108,7 @@ Until the restart happens, a request to a route of a never-loaded component retu
 
 <VersionBadge version="v5.3.1" />
 
-Each node of a replicated deploy resolves and installs the release itself. So a reference that moves between nodes' installs can leave them running different code: a branch or tag that moved, a `latest` published in between, or a dependency range that resolved to a newer version. Harper doesn't prevent this, but it reports it.
+Each node of a replicated deploy resolves and installs the release itself. So a mutable reference can resolve differently between nodes' installs and leave them running different code: a branch or tag that was updated, a `latest` version published in between, or a dependency range that resolved to a newer version. Harper doesn't prevent this, but it reports it.
 
 After it installs, each node records an install fingerprint:
 
@@ -1119,7 +1119,7 @@ Every node returns its fingerprint as `install` in its `deploy_component` respon
 
 - the response's `message` ends with a sentence naming them, such as `Install fingerprints differ from this node's on 1 of 2 peer node(s): node-b (source npm:web@1.5.0, package-lock.json).`;
 - a `warning` event goes to a caller streaming Server-Sent Events, and the Harper CLI prints it;
-- each peer's entry in the deployment's `peer_results` carries `install_matches` and `install_differs`, the fields that differ. `install_matches` is `false` when anything compared differs. Otherwise it is `null` when a fingerprint is missing or unreadable, or a source could not be identified (as from a peer on an earlier version), and `true` only when everything compared matches.
+- each peer's entry in the deployment's `peer_results` carries `install`, the peer's fingerprint; `install_matches`; and `install_differs`, the list of fields that differ. `install_matches` is `false` when anything compared differs. Otherwise it is `null` when a fingerprint is missing or unreadable, or a source could not be identified (as from a peer on an earlier version), and `true` only when everything compared matches.
 
 A difference never fails the deploy or changes the CLI's exit status. A match means the evidence is equal, not that the installed trees are: an `install_command` can install different dependencies and leave the same lockfile, and lockfiles written against different registry mirrors differ even when the code matches. A staged deploy reports at stage time, before you activate it.
 
