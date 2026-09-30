@@ -180,12 +180,17 @@ function requireBackupRepositoryAccess(databaseName: string, operation: string):
 		requireRocksRootStore(databaseName, operation);
 		return;
 	}
+	requireBackupRepositoryDirectory(databaseName);
+}
+
+function requireBackupRepositoryDirectory(databaseName: string): string {
 	const backupDir = backupDirForDatabase(databaseName);
 	if (!existsSync(backupDir)) {
 		throw new BackupNotFoundError(
 			`Database '${databaseName}' is not loaded and has no backup repository at ${backupDir}`
 		);
 	}
+	return backupDir;
 }
 
 function requireBackupId(backupId: any): number {
@@ -1213,7 +1218,7 @@ export async function verifyBackupOffline(databaseName: string, backupId: number
 export async function deleteBackupOffline(databaseName: string, backupId: number) {
 	validateDatabaseName(databaseName);
 	requireBackupId(backupId);
-	const backupDir = backupDirForDatabase(databaseName);
+	const backupDir = requireBackupRepositoryDirectory(databaseName);
 	return withBackupRepositoryLock(backupDir, databaseName, async () => {
 		await findBackup(backupDir, backupId, databaseName);
 		assertBackupsUnpinned(backupDir, [backupId], databaseName);
@@ -1239,7 +1244,7 @@ export async function purgeBackupsOffline(databaseName: string, keepCount: numbe
 	if (!Number.isSafeInteger(keepCount) || keepCount < 0) {
 		throw new ClientError(`'keep_count' must be a non-negative integer`);
 	}
-	const backupDir = backupDirForDatabase(databaseName);
+	const backupDir = requireBackupRepositoryDirectory(databaseName);
 	return withBackupRepositoryLock(backupDir, databaseName, async () => {
 		const before = await listBackupsInDir(backupDir);
 		if (before.length === 0) {

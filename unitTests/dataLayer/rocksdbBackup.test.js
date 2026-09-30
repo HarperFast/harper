@@ -534,6 +534,7 @@ describe('rocksdbBackup', function () {
 		// These tests run with no database loaded into Harper at all, which is the state an operator is
 		// in after a failed restore (blocked by its marker) or before an import creates the database.
 		const ORPHAN = `${DB_NAME}-orphan`;
+		const MISSING = `${DB_NAME}-never-existed`;
 
 		afterEach(async function () {
 			// The online operations reach getDatabases(), whose scan opens every database under
@@ -541,6 +542,9 @@ describe('rocksdbBackup', function () {
 			closeLoadedDatabases();
 			rmSync(join(storageDir, ORPHAN), { recursive: true, force: true });
 			rmSync(backupDirForDatabase(ORPHAN), { recursive: true, force: true });
+			for (const suffix of ['delete', 'purge']) {
+				rmSync(backupDirForDatabase(`${MISSING}-${suffix}`), { recursive: true, force: true });
+			}
 		});
 
 		async function seedOrphanRepository() {
@@ -579,9 +583,21 @@ describe('rocksdbBackup', function () {
 
 		it('still 404s for a name that is neither a loaded database nor a repository', async function () {
 			await assert.rejects(
-				listBackups({ ...SU, database: `${DB_NAME}-never-existed` }),
+				listBackups({ ...SU, database: MISSING }),
 				(error) => error.statusCode === 404 && /no backup repository/.test(error.message)
 			);
+		});
+
+		it('does not create a repository when offline delete or purge targets a missing one', async function () {
+			for (const [suffix, operation] of [
+				['delete', (name) => deleteBackupOffline(name, 1)],
+				['purge', (name) => purgeBackupsOffline(name, 0)],
+			]) {
+				const databaseName = `${MISSING}-${suffix}`;
+				const backupDir = backupDirForDatabase(databaseName);
+				await assert.rejects(operation(databaseName), (error) => error.statusCode === 404);
+				assert.ok(!existsSync(backupDir), `${suffix} must not create ${backupDir}`);
+			}
 		});
 	});
 
@@ -703,22 +719,6 @@ describe('rocksdbBackup', function () {
 
 			await restoreBackupOffline(PINNED, second.backup_id);
 			assert.deepStrictEqual(readBackupPins(backupDir), [], 'a finished restore must not hold the backup');
-		});
-
-		it('releases its claim when the restore is refused', async function () {
-			this.timeout(30000);
-			const { second } = await seedTwoBackups();
-			const backupDir = backupDirForDatabase(PINNED);
-			const occupied = `${PINNED}-occupied-target`;
-			mkdirSync(join(storageDir, occupied), { recursive: true });
-			writeFileSync(join(storageDir, occupied, 'CURRENT'), 'x');
-
-			try {
-				await assert.rejects(restoreBackupOffline(PINNED, second.backup_id, occupied), /already exists/);
-				assert.deepStrictEqual(readBackupPins(backupDir), [], 'a refused restore must not leak a pin');
-			} finally {
-				rmSync(join(storageDir, occupied), { recursive: true, force: true });
-			}
 		});
 
 		it('allows a purge that keeps every pinned backup', async function () {
@@ -919,6 +919,7 @@ describe('rocksdbBackup', function () {
 			this.timeout(30000);
 			writeRecords([['alpha', { n: 1 }]]);
 			const created = await createBackupOffline(DB_NAME);
+			const backupDir = backupDirForDatabase(DB_NAME);
 
 			// hold the database open in a separate process, as a running Harper would
 			const bindingPath = require.resolve('@harperfast/rocksdb-js');
@@ -943,6 +944,7 @@ describe('rocksdbBackup', function () {
 					restoreBackupOffline(DB_NAME, created.backup_id),
 					(error) => error.statusCode === 409 && /open by a running Harper process/.test(error.message)
 				);
+				assert.deepStrictEqual(readBackupPins(backupDir), [], 'a refused restore must release its source pin');
 			} finally {
 				child.kill('SIGKILL');
 				await purgeBackupsOffline(DB_NAME, 0);
