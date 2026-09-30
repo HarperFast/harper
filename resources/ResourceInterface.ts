@@ -317,7 +317,8 @@ export interface Subscription<Event extends object = any> extends IterableEventQ
 	/**
 	 * Present only when subscribed with `databaseGeneration`. Resolves `true` once the replay after the
 	 * position is complete and checked, or `false` if it was refused, cut short or closed first; never rejects.
-	 * Events delivered before it resolves `true` are not safe to checkpoint.
+	 * Events delivered before it resolves `true` are not safe to checkpoint. It does not detect a transaction
+	 * that commits after the position was recorded with a key below it.
 	 */
 	resumeVerified?: Promise<boolean>;
 
