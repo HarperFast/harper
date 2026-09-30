@@ -8,6 +8,8 @@ import { whenComponentsLoaded } from '../server/threads/threadServer.js';
 import { server } from '../server/Server.ts';
 import { RequestTarget } from '../resources/RequestTarget';
 import { cloneDeep } from 'lodash';
+import { randomBytes } from 'node:crypto';
+import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../resources/auditStore.ts';
 
 const AWAITING_ACKS_HIGH_WATER_MARK = 100;
 let _DurableSession: any;
@@ -26,6 +28,7 @@ function getDurableSession() {
 					name: 'awaitingAcks',
 					type: 'array',
 				},
+				{ name: 'incarnation', type: 'string' },
 			],
 		});
 	}
@@ -140,9 +143,22 @@ export async function getSession({
 	let session;
 	if (properties?.sessionExpiryInterval > 0) nonDurable = false;
 	if (sessionId && !nonDurable) {
-		const sessionResource = await getDurableSession().get(sessionId, { returnNonexistent: true });
+		let sessionResource = await getDurableSession().get(sessionId, { returnNonexistent: true });
+		if (sessionResource && !sessionRecordResumable(sessionResource)) {
+			warn(`Resetting MQTT session ${sessionId}: a subscription's position can no longer resume here`);
+			try {
+				await getDurableSession().delete(sessionId);
+			} catch (error) {
+				error.code ??= 0x80;
+				throw error;
+			}
+			sessionResource = undefined;
+		}
 		session = new DurableSubscriptionsSession(sessionId, user, sessionResource);
-		if (sessionResource) session.sessionWasPresent = true;
+		if (sessionResource) {
+			session.sessionWasPresent = true;
+			await session.takeOver();
+		}
 	} else {
 		if (sessionId) {
 			// connecting with a clean session and session id is how durable sessions are deleted
@@ -208,9 +224,22 @@ class SubscriptionsSession {
 	sessionWasPresent: boolean;
 	keepalive: number;
 	keepaliveTimer: any;
+	terminated = false;
+	/** Closes the transport; mqtt.ts supplies it, and sends a v5 DISCONNECT carrying `error` first. */
+	closeConnection?: (error?: Error) => void;
 	constructor(sessionId, user) {
 		this.sessionId = sessionId;
 		this.user = user;
+	}
+	consumed(_subscription) {}
+	subscribed(_subscription) {}
+	/** A subscription ended with an error or failed; its client cannot keep receiving through it. */
+	subscriptionFailed(subscription, error) {
+		if (this.terminated || subscription.failed) return;
+		subscription.failed = true;
+		warn(`MQTT subscription to ${subscription.topic ?? 'a topic'} ended`, error);
+		this.terminated = true;
+		this.closeConnection?.(error);
 	}
 	async addSubscription(subscriptionRequest, needsAck, filter?) {
 		const { topic, rh: retainHandling, startTime } = subscriptionRequest;
@@ -305,6 +334,8 @@ class SubscriptionsSession {
 			onlyChildren,
 			startTime,
 			omitCurrent,
+			databaseGeneration: subscriptionRequest.databaseGeneration,
+			reportProgress: subscriptionRequest.reportProgress,
 			includeSuperseded: this instanceof DurableSubscriptionsSession && subscriptionRequest.qos > 0 ? true : undefined,
 			checkPermission: this.user?.role?.permission ?? {},
 		});
@@ -321,9 +352,25 @@ class SubscriptionsSession {
 			}
 			if (!subscription[Symbol.asyncIterator])
 				throw new Error(`Subscription is not (async) iterable for topic ${topic}`);
+			if (this.terminated) {
+				// the session ended while this subscribe was in flight
+				subscription.end?.();
+				return;
+			}
+			subscription.topic = topic;
+			subscription.qos = subscriptionRequest.qos;
+			this.subscribed(subscription);
+			// a consumer blocked on socket back-pressure would not reach a final error for a long time
+			subscription.on?.('close', () => {
+				if (subscription.closedWith instanceof Error) this.subscriptionFailed(subscription, subscription.closedWith);
+			});
 			const _result = (async () => {
 				for await (const update of subscription) {
 					try {
+						if (update instanceof Error) {
+							this.subscriptionFailed(subscription, update);
+							break;
+						}
 						if (!update || typeof update !== 'object') continue;
 						let messageId;
 						if (
@@ -366,9 +413,12 @@ class SubscriptionsSession {
 						} else await new Promise(setImmediate); // yield event turn
 					} catch (error) {
 						warn(error);
+					} finally {
+						this.consumed(subscription);
 					}
 				}
 			})();
+			_result.catch((error) => this.subscriptionFailed(subscription, error));
 			return subscription;
 		});
 		if (!subscription) return;
@@ -493,29 +543,111 @@ async function publishMessage(message: any, data: any, context: any) {
 			: resource.publish(target, message.data, context);
 	});
 }
+type DurableEntry = { qos: number; topic: string; startTime: number; databaseGeneration?: string };
+type TopicState = {
+	entry: DurableEntry;
+	subscription?: any;
+	/** False while a resumed replay awaits its verdict; nothing is checkpointed past the resumed position until then. */
+	verified: boolean;
+	deliveredKey?: number;
+	keyBefore?: number;
+	unacked: Map<number, { key: number; previousKey?: number }>;
+	consumed: number;
+};
+
+const RESUME_REFUSALS = new Set(['DATABASE_GENERATION_CHANGED', 'RESUME_HISTORY_UNAVAILABLE']);
+
+function checkpointInterval(): number {
+	return Math.min(auditRetention / 10, 3_600_000);
+}
+
+/**
+ * Whether every generation-bound entry can still resume, checked from metadata before CONNACK. A
+ * collection is checked against the floor too; a record's own history walk decides the rest after
+ * CONNACK, and a resource that is not a table is left to its own subscribe.
+ */
+function sessionRecordResumable(record: any): boolean {
+	for (const entry of record.subscriptions || []) {
+		if (entry.databaseGeneration === undefined) continue;
+		const match = resources.getMatch(entry.topic.split('?')[0], 'mqtt');
+		const auditStore = match?.Resource?.auditStore;
+		if (!auditStore) continue;
+		const collection = /[+#]/.test(match.relativeURL ?? '');
+		const resumable = collection
+			? isResumablePosition(auditStore, entry.databaseGeneration, entry.startTime)
+			: getDatabaseGeneration(auditStore)?.id === entry.databaseGeneration;
+		if (!resumable) return false;
+	}
+	return true;
+}
+
 export class DurableSubscriptionsSession extends SubscriptionsSession {
 	committed: Promise<void> | void;
 	sessionRecord: any;
+	incarnation = randomBytes(8).toString('hex');
+	/** Only a session that found no record may create one; any other updates only a record it owns. */
+	mayCreate: boolean;
+	discarded = false;
+	topics = new Map<string, TopicState>();
+	writes: Promise<void> = Promise.resolve();
+	checkpointScheduled = false;
+	checkpointTimer: any;
 	constructor(sessionId, user, record?) {
 		super(sessionId, user);
 		this.sessionRecord = cloneDeep(record) || { id: sessionId, subscriptions: [] };
+		this.mayCreate = !record;
+		for (const { qos, topic, startTime, databaseGeneration } of this.sessionRecord.subscriptions || []) {
+			this.topics.set(topic, newTopicState({ qos, topic, startTime, databaseGeneration }));
+		}
+	}
+	/** Claim the record for this connection before CONNACK, so an older connection's writes stop. */
+	async takeOver() {
+		await getDurableSession().put(this.recordToWrite(), { source: true });
 	}
 	async resume() {
-		// resuming a session, we need to resume each subscription
-		for (const subscription of this.sessionRecord.subscriptions || []) {
-			await this.resumeSubscription(
-				{ omitCurrent: true, topic: subscription.topic, qos: subscription.qos, startTime: subscription.startTime },
-				true,
-				subscription.acks
-					? (update) => {
-							return !subscription.acks.includes(update.localTime);
-						}
-					: null
-			);
+		if (this.topics.size > 0) this.startCheckpoints();
+		for (const state of [...this.topics.values()]) {
+			if (this.terminated) return;
+			const { qos, topic, startTime, databaseGeneration } = state.entry;
+			try {
+				await this.resumeSubscription(
+					{ omitCurrent: true, topic, qos, startTime, databaseGeneration, reportProgress: true },
+					true
+				);
+			} catch (error) {
+				if (!RESUME_REFUSALS.has(error?.code)) throw error;
+				this.subscriptionFailed({ topic }, error);
+				return;
+			}
 		}
 	}
 	resumeSubscription(subscription, needsAck, filter?) {
 		return super.addSubscription(subscription, needsAck, filter);
+	}
+	subscribed(subscription) {
+		if (!(subscription.qos > 0)) return;
+		let state = this.topics.get(subscription.topic);
+		if (!state || state.subscription) {
+			const startTime = subscription.registeredThrough ?? getNextMonotonicTime();
+			const databaseGeneration =
+				subscription.registeredThrough === undefined ? undefined : subscription.databaseGeneration;
+			state = newTopicState({ qos: subscription.qos, topic: subscription.topic, startTime, databaseGeneration });
+			this.topics.set(subscription.topic, state);
+		}
+		state.subscription = subscription;
+		if (subscription.resumeVerified) {
+			state.verified = false;
+			subscription.resumeVerified
+				.then((verified) => {
+					if (!verified || state.subscription !== subscription) return;
+					state.verified = true;
+					this.scheduleCheckpoint();
+				})
+				.catch((error) => warn(error));
+		} else if (state.entry.databaseGeneration !== undefined && subscription.progress === undefined) {
+			// the resource did not check the position, so the entry no longer claims a checked one
+			state.entry.databaseGeneration = undefined;
+		}
 	}
 	needsAcknowledge(update) {
 		if (!this.awaitingAcks) this.awaitingAcks = new Map();
@@ -526,65 +658,170 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		};
 		if (update.acknowledge) ackInfo.acknowledge = update.acknowledge;
 		this.awaitingAcks.set(messageId, ackInfo);
+		const state = this.topics.get(update.topic);
+		// scan deliveries are state, not history: their keys follow no transaction order
+		if (state && !update.fromScan && typeof update.localTime === 'number') {
+			if (update.localTime !== state.deliveredKey) {
+				state.keyBefore = state.deliveredKey;
+				state.deliveredKey = update.localTime;
+			}
+			state.unacked.set(messageId, { key: update.localTime, previousKey: state.keyBefore });
+		}
 		return messageId;
 	}
 	acknowledge(messageId) {
 		const update = this.awaitingAcks?.get(messageId);
 		if (!update) return;
-		this.awaitingAcks?.delete(messageId);
+		this.awaitingAcks.delete(messageId);
 		update.acknowledge?.();
-		const topic = update.topic;
-		for (const [, remainingUpdate] of this.awaitingAcks) {
-			if (remainingUpdate.topic === topic) {
-				if (remainingUpdate.timestamp < update.timestamp) {
-					// this is an out of order ack, so instead of updating the timestamp, we record as an out-of-order ack
-					for (const subscription of this.sessionRecord.subscriptions) {
-						if (subscription.topic === topic) {
-							if (!subscription.acks) {
-								subscription.acks = [];
-							}
-							subscription.acks.push(update.timestamp);
-							trace('Received ack', topic, update.timestamp);
-							// add source: true context to bypass any overloaded checks, as skipping this can lead to increased load
-							return getDurableSession().put(this.sessionRecord, { source: true });
-						}
-					}
-				}
-			}
-		}
-
-		for (const subscription of this.sessionRecord.subscriptions) {
-			if (subscription.topic === topic) {
-				subscription.startTime = update.timestamp;
-			}
-		}
-		return getDurableSession().put(this.sessionRecord, { source: true });
-		// TODO: Increment the timestamp for the corresponding subscription, possibly recording any interim unacked messages
+		this.topics.get(update.topic)?.unacked.delete(messageId);
+		this.scheduleCheckpoint();
 	}
-
+	consumed(subscription) {
+		const state = this.topics.get(subscription.topic);
+		if (state?.subscription === subscription) state.consumed++;
+	}
 	async addSubscription(subscription, needsAck) {
-		await this.resumeSubscription(subscription, needsAck);
-		const { qos, startTime } = subscription;
-		if (qos > 0 && !startTime) await this.saveSubscriptions();
+		const durable = subscription.qos > 0;
+		await this.resumeSubscription(durable ? { ...subscription, reportProgress: true } : subscription, needsAck);
+		if (durable) {
+			this.startCheckpoints();
+			await this.persist();
+		}
 		return subscription;
 	}
 	async removeSubscription(topic) {
 		const existingSubscription = this.subscriptions.find((subscription) => subscription.topic === topic);
 		const result = super.removeSubscription(topic);
-		if (existingSubscription.qos > 0) await this.saveSubscriptions();
+		if (this.topics.delete(topic) && existingSubscription?.qos > 0) await this.persist();
 		return result;
 	}
 	saveSubscriptions() {
-		this.sessionRecord.subscriptions = this.subscriptions.map((subscription) => {
-			let startTime = subscription.startTime;
-			if (!startTime) startTime = subscription.startTime = getNextMonotonicTime();
-			trace('Added durable subscription', subscription.topic, startTime);
-			return {
-				qos: subscription.qos,
-				topic: subscription.topic,
-				startTime,
-			};
-		});
-		return getDurableSession().put(this.sessionRecord);
+		return this.persist();
 	}
+	/**
+	 * The newest position this topic can resume from with nothing it has delivered and not been acked
+	 * after it: `progress()` bounds what the subscription has sent, and the oldest unacked delivery bounds
+	 * what the client has taken. A transaction's deliveries share its key, so an unacked one holds the
+	 * position before its whole transaction.
+	 */
+	nextPosition(state: TopicState): number | undefined {
+		const subscription = state.subscription;
+		if (!subscription || !state.verified) return;
+		const progress = subscription.progress?.();
+		if (progress === undefined) return;
+		const oldestUnacked = state.unacked.values().next();
+		const boundary = !oldestUnacked.done
+			? oldestUnacked.value.previousKey
+			: subscription.sentCount === state.consumed
+				? Infinity
+				: state.keyBefore;
+		if (boundary === undefined) return;
+		return boundary < progress ? boundary : progress;
+	}
+	advancePositions(): boolean {
+		let changed = false;
+		for (const state of this.topics.values()) {
+			const next = this.nextPosition(state);
+			if (next === undefined) continue;
+			const bound = state.entry.databaseGeneration !== undefined;
+			// an unbound start came from a clock, so a certified position replaces it rather than racing it
+			if (bound && !(next > state.entry.startTime)) continue;
+			if (!bound && next === state.entry.startTime) continue;
+			state.entry.startTime = next;
+			state.entry.databaseGeneration = state.subscription.databaseGeneration;
+			changed = true;
+		}
+		return changed;
+	}
+	scheduleCheckpoint() {
+		if (this.checkpointScheduled || this.terminated) return;
+		this.checkpointScheduled = true;
+		setImmediate(() => {
+			this.checkpointScheduled = false;
+			this.checkpoint();
+		});
+	}
+	checkpoint() {
+		if (this.terminated) return;
+		if (this.advancePositions()) this.persist();
+	}
+	startCheckpoints() {
+		if (this.checkpointTimer) return;
+		this.checkpointTimer = setInterval(() => this.checkpoint(), checkpointInterval());
+		this.checkpointTimer.unref?.();
+	}
+	recordToWrite() {
+		const subscriptions = [];
+		for (const { entry } of this.topics.values()) {
+			const { qos, topic, startTime, databaseGeneration } = entry;
+			subscriptions.push(
+				databaseGeneration === undefined ? { qos, topic, startTime } : { qos, topic, startTime, databaseGeneration }
+			);
+		}
+		return { id: this.sessionId, incarnation: this.incarnation, subscriptions };
+	}
+	/** Writes this session's record, one write at a time, and only while this connection owns it. */
+	persist(): Promise<void> {
+		const write = this.writes.then(async () => {
+			if (this.discarded) return;
+			const record = this.recordToWrite();
+			const stored = await getDurableSession().get(this.sessionId);
+			if (stored ? stored.incarnation !== this.incarnation : !this.mayCreate) return this.supersede();
+			await getDurableSession().put(record, { source: true });
+			this.mayCreate = false;
+		});
+		this.writes = write.catch((error) => warn(`Failed to save MQTT session ${this.sessionId}`, error));
+		return this.writes;
+	}
+	/** Another connection took this session over: stop writing, and let the client go. */
+	supersede() {
+		if (this.terminated) return;
+		this.terminated = true;
+		clearInterval(this.checkpointTimer);
+		this.closeConnection?.();
+	}
+	subscriptionFailed(subscription, error) {
+		if (this.terminated || subscription.failed) return;
+		subscription.failed = true;
+		clearInterval(this.checkpointTimer);
+		if (!RESUME_REFUSALS.has(error?.code)) {
+			// the client can reconnect and resume from what this session saves now
+			this.advancePositions();
+			this.persist();
+			this.terminated = true;
+			warn(`Closing MQTT session ${this.sessionId}: its subscription to ${subscription.topic} failed`, error);
+			this.closeConnection?.(error);
+			return;
+		}
+		this.discarded = true;
+		this.terminated = true;
+		warn(`Resetting MQTT session ${this.sessionId}: ${error.message}`);
+		for (const other of this.subscriptions) other.end();
+		this.subscriptions = [];
+		try {
+			this.closeConnection?.(error);
+		} catch (closeError) {
+			warn(closeError);
+		}
+		const deletion = this.writes.then(async () => {
+			const stored = await getDurableSession().get(this.sessionId);
+			if (stored?.incarnation === this.incarnation) await getDurableSession().delete(this.sessionId);
+		});
+		this.writes = deletion.catch((deleteError) =>
+			warn(`Failed to delete the reset MQTT session ${this.sessionId}`, deleteError)
+		);
+	}
+	disconnect(clientTerminated) {
+		clearInterval(this.checkpointTimer);
+		// ending a subscription clears its queue, which would read as idle, so positions are taken first
+		const changed = !this.terminated && this.advancePositions();
+		this.terminated = true;
+		super.disconnect(clientTerminated);
+		if (changed && !this.discarded) this.persist();
+	}
+}
+
+function newTopicState(entry: DurableEntry): TopicState {
+	return { entry, verified: true, unacked: new Map(), consumed: 0 };
 }

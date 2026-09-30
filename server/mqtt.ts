@@ -275,6 +275,31 @@ function onSocket(socket, send, request, user, mqttSettings) {
 	};
 	liveConnections.add(connection);
 	let session: DurableSubscriptionsSession;
+	/**
+	 * Ends the connection from the server side: a v5 client is told why first (0x8E when another connection
+	 * took the session over, otherwise 0x83), and the transport closes whether or not that succeeds.
+	 */
+	function closeConnection(error?: Error) {
+		try {
+			if (mqttOptions.protocolVersion >= 5) {
+				const packet: any = { cmd: 'disconnect', reasonCode: error ? 0x83 : 0x8e };
+				const reasonString =
+					error?.message && sendProblemInformation && (error as any).statusCode < 500
+						? Buffer.from(String(error.message), 'utf8').subarray(0, REASON_STRING_LIMIT).toString('utf8')
+						: undefined;
+				if (
+					reasonString &&
+					(!maximumPacketSize || maximumPacketSize >= Buffer.byteLength(reasonString) + ACK_PACKET_OVERHEAD)
+				)
+					packet.properties = { reasonString };
+				send(generate(packet, mqttOptions));
+			}
+		} catch (sendError) {
+			mqttLog.warn?.('Could not send DISCONNECT before closing the connection', sendError);
+		} finally {
+			connection.close();
+		}
+	}
 	// [MQTT-3.1.2-29]: a client that asks for no problem information must not be sent a reason
 	// string on a PUBACK/PUBREC, and [MQTT-3.1.2-24] caps what it will accept at all.
 	let sendProblemInformation = true;
@@ -388,6 +413,13 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							...packet,
 						} as any) as any;
 						session = await session;
+						session.closeConnection = closeConnection;
+						if (session instanceof DurableSubscriptionsSession) {
+							// a durable session has one owner: an older connection for this client on this thread gives way
+							for (const other of mqttSettings.sessions) {
+								if (other !== session && other.sessionId === session.sessionId) other.supersede?.();
+							}
+						}
 						// the session is used in the context, and we want to make sure we can access this
 						session.socket = socket;
 						if (request) {
