@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { spawn } = require('node:child_process');
@@ -636,6 +636,22 @@ describe('rocksdbBackup', function () {
 
 			unpinBackup(backupDir, 'restore-pending');
 			assert.deepStrictEqual(await deleteBackupOffline(PINNED, first.backup_id), { ok: true });
+		});
+
+		it('refuses to report an unreadable repository as empty', async function () {
+			// an empty listing is what reconcileHarperManagedBackupFiles reads as "keep nothing", so
+			// answering [] for a repository that is merely unreadable licenses deleting every manifest
+			// and blob snapshot in it
+			if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+			const { first } = await seedTwoBackups();
+			assert.ok(first.backup_id);
+			const backupDir = backupDirForDatabase(PINNED);
+			chmodSync(backupDir, 0o000);
+			try {
+				await assert.rejects(listBackupsInDir(backupDir), (error) => error.code === 'EACCES');
+			} finally {
+				chmodSync(backupDir, 0o700);
+			}
 		});
 
 		it('refuses a purge that would remove a pinned backup, and removes nothing', async function () {

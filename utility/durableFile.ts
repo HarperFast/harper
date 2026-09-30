@@ -1,6 +1,6 @@
 'use strict';
 
-import { closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, fsyncSync, openSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fsyncTolerantSync, isUnsupportedSyncError } from './fsync.ts';
 
@@ -17,6 +17,22 @@ import { fsyncTolerantSync, isUnsupportedSyncError } from './fsync.ts';
  *   whether a database is safe to load. That needs an fsync of the file *and* of the directory that
  *   now names it.
  */
+
+/**
+ * Whether `path` is there, where only an established absence answers false. `existsSync` reports
+ * every errno as "missing", and the control-plane state this module writes is read to decide
+ * whether something may be destroyed — so a permission or I/O fault that reads as "absent" becomes
+ * permission to delete exactly what could not be checked.
+ */
+export function pathPresent(path: string): boolean {
+	try {
+		statSync(path);
+		return true;
+	} catch (error: any) {
+		if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return false;
+		throw error;
+	}
+}
 
 /**
  * fsync a directory so a create/unlink of an entry within it is durable. Best-effort: Windows and

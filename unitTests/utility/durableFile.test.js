@@ -3,10 +3,10 @@
 const assert = require('node:assert');
 const fs = require('node:fs');
 const { syncBuiltinESMExports } = require('node:module');
-const { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } = fs;
+const { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } = fs;
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
-const { fsyncDirectory, removeFileDurably, writeFileDurably } = require('#src/utility/durableFile');
+const { fsyncDirectory, pathPresent, removeFileDurably, writeFileDurably } = require('#src/utility/durableFile');
 
 describe('durableFile', function () {
 	let tempDir;
@@ -110,6 +110,32 @@ describe('durableFile', function () {
 			} finally {
 				fs.fsyncSync = originalFsyncSync;
 				syncBuiltinESMExports();
+			}
+		});
+	});
+
+	describe('pathPresent', function () {
+		it('reports a present file and a genuinely absent one', function () {
+			const target = join(tempDir, 'state.json');
+			assert.ok(!pathPresent(target));
+			writeFileDurably(target, 'written', 'state.tmp');
+			assert.ok(pathPresent(target));
+		});
+
+		it('propagates an undetermined answer rather than reporting absence', function () {
+			// callers read false as "nothing to protect" — an unreadable directory answering false is
+			// how an intact repository becomes licence to delete what could not be checked
+			if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+			const closed = join(tempDir, 'closed');
+			mkdirSync(closed);
+			chmodSync(closed, 0o000);
+			try {
+				assert.throws(
+					() => pathPresent(join(closed, 'meta')),
+					(error) => error.code === 'EACCES'
+				);
+			} finally {
+				chmodSync(closed, 0o700);
 			}
 		});
 	});

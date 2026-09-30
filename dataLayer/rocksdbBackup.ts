@@ -37,6 +37,7 @@ import {
 	type RestoreLock,
 } from './restoreMarker.ts';
 import { assertBackupsUnpinned, pinBackup, unpinBackup, withBackupRepositoryLock } from './backupRepository.ts';
+import { pathPresent } from '../utility/durableFile.ts';
 import {
 	assertBlobSnapshotRestorable,
 	assertEngineOnlyRestoreAllowed,
@@ -229,8 +230,11 @@ function mapLockedError(error: any, databaseName: string): any {
 // --- directory helpers (operate on a backup directory only; no open database, usable offline) ---
 
 export async function listBackupsInDir(backupDir: string): Promise<BackupInfo[]> {
-	// the backup dir doesn't exist until the first create_backup
-	if (!existsSync(backupDir)) return [];
+	// the backup dir doesn't exist until the first create_backup. pathPresent, not existsSync: an
+	// empty listing is what reconcileHarperManagedBackupFiles reads as "keep nothing", so a
+	// permission or I/O fault answering "absent" would license deleting every manifest and blob
+	// snapshot in a repository that is merely unreadable.
+	if (!pathPresent(backupDir)) return [];
 	try {
 		return await backups.list(backupDir);
 	} catch (error) {
@@ -238,7 +242,7 @@ export async function listBackupsInDir(backupDir: string): Promise<BackupInfo[]>
 		// engine metadata into it, so a directory with no metadata is an empty repository, not a
 		// failure — otherwise a purge on a database that never had a backup reports the binding's
 		// "meta is missing" instead of "no backups found".
-		if (!existsSync(join(backupDir, 'meta'))) return [];
+		if (!pathPresent(join(backupDir, 'meta'))) return [];
 		throw error;
 	}
 }
@@ -1315,10 +1319,14 @@ export async function purgeBackupsOffline(databaseName: string, keepCount: numbe
 			throw new BackupNotFoundError(`No backups found for database '${databaseName}'`);
 		}
 		// Every Harper writer is excluded by this lock, so `before` is exactly what the binding will
-		// see: `list` is ordered by id and `purge` keeps the newest `keepCount` by id, so the ids it
-		// will remove can be named here and checked against the pins before it runs. One bulk call
-		// then does the removal — a per-id loop would reopen the repository once per backup.
-		const removing = before.slice(0, Math.max(0, before.length - keepCount)).map((backup) => backup.backupId);
+		// see, and `purge` keeps the newest `keepCount` by id — so the ids it will remove can be named
+		// here and checked against the claims before it runs. One bulk call then does the removal.
+		// Sorted rather than sliced off the listing as returned: this set gates claim protection, so it
+		// does not rest on the documented list order holding, matching resolveCompleteBackup below.
+		const removing = [...before]
+			.sort((first, second) => first.backupId - second.backupId)
+			.slice(0, Math.max(0, before.length - keepCount))
+			.map((backup) => backup.backupId);
 		assertBackupsUnpinned(backupDir, removing, databaseName);
 		try {
 			await backups.purge(backupDir, keepCount);

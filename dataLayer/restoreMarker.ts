@@ -1,10 +1,10 @@
 'use strict';
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
-import { fsyncDirectory, writeFileDurably } from '../utility/durableFile.ts';
+import { fsyncDirectory, pathPresent, writeFileDurably } from '../utility/durableFile.ts';
 
 /**
  * Restore lock + marker protocol for RocksDB database restores (online operation and offline CLI),
@@ -100,28 +100,12 @@ export type RestoreState = 'in-progress' | 'incomplete' | 'clear';
  * a caller that a *leftover* marker is present. `dropDatabase` uses this after acquiring the lock to
  * distinguish debris from a crashed restore.
  */
-/**
- * Whether `path` is there. Only an established absence answers false: `existsSync` reports every
- * errno as "missing", and every caller here acts on false in the unsafe direction — a drop proceeds
- * over an incomplete restore, a half-restored database loads, a backup claim expires while its
- * restore still needs the source.
- */
-function present(path: string): boolean {
-	try {
-		statSync(path);
-		return true;
-	} catch (error: any) {
-		if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return false;
-		throw error;
-	}
-}
-
 export function restoreMarkerPresent(dbPath: string): boolean {
-	return present(restoringMarkerPath(dbPath));
+	return pathPresent(restoringMarkerPath(dbPath));
 }
 
 export function databaseDropMarkerPresent(dbPath: string): boolean {
-	return present(droppingMarkerPath(dbPath));
+	return pathPresent(droppingMarkerPath(dbPath));
 }
 
 /** The lock and (optional) marker held by a begin/acquire call, threaded back to complete/abandon. */
@@ -156,9 +140,9 @@ export type RestoreLock = {
  * before any destructive step, so a database without a marker has nothing to protect yet.
  */
 export function checkRestoreState(dbPath: string): RestoreState {
-	if (!present(restoringMarkerPath(dbPath))) return 'clear';
+	if (!pathPresent(restoringMarkerPath(dbPath))) return 'clear';
 	const lockPath = restoreLockPath(dbPath);
-	if (present(lockPath)) {
+	if (pathPresent(lockPath)) {
 		const token = tryFileLock(lockPath);
 		if (token === 0) return 'in-progress';
 		fileLockRelease(token);
