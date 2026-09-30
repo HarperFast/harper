@@ -1451,7 +1451,7 @@ interface SeenEntry {
 }
 
 function isBudgetSpent(budget: SanitizeBudget): boolean {
-	return budget.chars <= 0 || budget.discarded >= MAX_DISCARDED_RENDER || budget.nodes >= MAX_SANITIZE_NODES;
+	return budget.chars <= 0 || budget.nodes >= MAX_SANITIZE_NODES;
 }
 
 function entryOverhead(depth: number): number {
@@ -1480,14 +1480,15 @@ function renderedLeaf(text: string, budget: SanitizeBudget) {
 	return labelPlaceholder(chargeText(text, budget));
 }
 
-/** An opaque built-in or function in its native format. Only Buffer's own built-in hook is left to
- *  run: any other hook on the value would render unwalked output. */
-function leafText(value: object, budget: SanitizeBudget): string {
-	const bufferHookOnly =
-		Object.getPrototypeOf(value) === Buffer.prototype &&
-		!Object.getOwnPropertyDescriptor(value, inspect.custom) &&
-		Object.getOwnPropertyDescriptor(Buffer.prototype, inspect.custom)?.value === NATIVE_BUFFER_INSPECT;
-	return inspect(value, bufferHookOnly ? budget.renderOptions : budget.leafOptions);
+/** The custom inspect hook util.inspect would find on an opaque built-in or function, read through
+ *  descriptors only; a Proxy or accessor level yields none, and the leaf then prints natively. */
+function leafInspectHook(value: object): Function | undefined {
+	for (let level: any = value; level !== null; level = Object.getPrototypeOf(level)) {
+		if (types.isProxy(level)) return undefined;
+		const descriptor = Object.getOwnPropertyDescriptor(level, inspect.custom);
+		if (descriptor) return typeof descriptor.value === 'function' ? descriptor.value : undefined;
+	}
+	return undefined;
 }
 
 /** A container util.inspect prints only as `[ClassName]` at this depth, so none of its entries are
@@ -1877,7 +1878,7 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, SeenEntry>, depth:
 	if (++budget.nodes > MAX_SANITIZE_NODES) return labelPlaceholder('[Unrenderable value: sanitize budget exceeded]');
 	const isPrimitive = value === null || (typeof value !== 'object' && typeof value !== 'function');
 	if (depth > budget.renderDepth + 1) return isPrimitive ? value : labelPlaceholder(NOT_RENDERED_LABEL);
-	if (budget.chars <= 0 || budget.discarded >= MAX_DISCARDED_RENDER) return labelPlaceholder(OMITTED_LABEL);
+	if (budget.chars <= 0) return labelPlaceholder(OMITTED_LABEL);
 	budget.chars -= entryOverhead(depth);
 	if (typeof value === 'string') {
 		return chargeText(value, budget, Math.min(value.length, budget.maxStringLength) + 2);
@@ -1932,15 +1933,21 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, SeenEntry>, depth:
 		// is no supported synchronous way to read it in order to sanitize it - so unlike every other
 		// opaque built-in, a Promise is never handed to inspect() raw, sanitized or not.
 		if (!isArray && !isMap && !isSet && types.isPromise(value)) return labelPlaceholder('[Promise]');
-		if (!isArray && !isMap && !isSet && !isFunction && isOpaqueBuiltin(value)) {
-			// The overwhelming common case has no expando and renders in its normal native format.
-			// Only a value that actually carries an expando pays for safeOpaqueBuiltinSummary below.
-			if (hasEnumerableOwnProps(value)) {
-				return renderedLeaf(inspect(safeOpaqueBuiltinSummary(value), budget.renderOptions), budget);
-			}
-			return renderedLeaf(leafText(value, budget), budget);
+		const isLeaf = !isArray && !isMap && !isSet && (isFunction || isOpaqueBuiltin(value));
+		if (isLeaf && hasEnumerableOwnProps(value)) {
+			// An expando-carrying function falls through to the object walk below. Only an opaque
+			// built-in that actually carries one pays for safeOpaqueBuiltinSummary.
+			if (!isFunction) return renderedLeaf(inspect(safeOpaqueBuiltinSummary(value), budget.renderOptions), budget);
+		} else if (isLeaf) {
+			// A hook other than Node's own Buffer one is resolved like an object's, so its output is walked.
+			const hook = leafInspectHook(value);
+			if (hook === NATIVE_BUFFER_INSPECT) return renderedLeaf(inspect(value, budget.renderOptions), budget);
+			const output = hook ? callInspectHook(hook, value, depth, budget) : value;
+			if (output === value) return renderedLeaf(inspect(value, budget.leafOptions), budget);
+			return typeof output === 'string'
+				? renderedLeaf(output, budget)
+				: deepSanitizeErrors(output, seen, depth, budget);
 		}
-		if (isFunction && !hasEnumerableOwnProps(value)) return renderedLeaf(leafText(value, budget), budget);
 	} catch {
 		// The types.isProxy check above already routes every Proxy (revoked or not) to a placeholder
 		// before this block ever runs, so nothing YET IDENTIFIED reaches this catch on real input -
@@ -2118,6 +2125,11 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, SeenEntry>, depth:
 	// An inherited hook still reads the clone's properties, so only a hook-less one collapses; whether
 	// the original is empty is not checked, since that is the full key enumeration this avoids.
 	if (!expanded && !inheritedHook) return collapsedClone(entry, true);
+	if (inheritedHook && budget.discarded >= MAX_DISCARDED_RENDER) {
+		entry.clone = labelPlaceholder(OMITTED_LABEL);
+		entry.cost = 0;
+		return entry.clone;
+	}
 	const keys = Object.keys(value);
 	const keysLimit = keys.length > budget.maxKeys ? budget.maxKeys - 1 : keys.length;
 	let keyCount = 0;

@@ -2084,7 +2084,7 @@ describe('Test harper_logger module', () => {
 			assert.ok(!result.includes('sanitize budget'), result);
 		});
 
-		it('never runs a hook carried by a built-in or function leaf, whose output would skip the walk', () => {
+		it('walks and masks what a hook carried by a built-in or function leaf returns', () => {
 			const date = new Date(0);
 			Object.defineProperty(date, util.inspect.custom, { value: () => ({ password: 'date-hook-secret' }) });
 			class Client {
@@ -2095,8 +2095,19 @@ describe('Test harper_logger module', () => {
 			const result = render({ date, Client, buffer: Buffer.from('hi') }, { depth: 8 });
 			assert.ok(!result.includes('date-hook-secret'), result);
 			assert.ok(!result.includes('static-hook-secret'), result);
-			assert.ok(result.includes('1970-01-01T00:00:00.000Z'));
+			assert.ok(result.includes('[redacted]'));
 			assert.ok(result.includes('<Buffer 68 69>'));
+		});
+
+		it('keeps what a hook on a built-in leaf hides hidden', () => {
+			class SecretKey extends Uint8Array {
+				[util.inspect.custom]() {
+					return 'SecretKey(***)';
+				}
+			}
+			const result = render({ key: new SecretKey([11, 22, 33]) }, { depth: 8 });
+			assert.ok(result.includes('SecretKey(***)'), result);
+			assert.ok(!result.includes('22'), result);
 		});
 
 		it('bounds the properties walked for inherited hooks whose output replaces them, across all siblings', () => {
@@ -2121,7 +2132,7 @@ describe('Test harper_logger module', () => {
 			);
 			// Four budgets of replaced properties, each Error's stack read twice; 500 reads unbounded.
 			assert.ok(stack_reads <= 10, `formatted ${stack_reads} stacks`);
-			assert.ok(result.includes('more array entries omitted (sanitize budget)'));
+			assert.ok(result.includes('[omitted (sanitize budget)]'));
 		});
 
 		it("prints an inherited hook's short summary, and the fields after it, even when the properties it replaces are large", () => {
@@ -2141,7 +2152,21 @@ describe('Test harper_logger module', () => {
 			assert.ok(result.includes('deployment-123'), result);
 		});
 
-		it('never runs a replaced Buffer inspect hook', () => {
+		it('keeps rendering plain fields after the work cap for inherited-hook properties is reached', () => {
+			class Report {
+				constructor() {
+					this.lines = Array(4).fill('x'.repeat(1_000));
+				}
+				[util.inspect.custom]() {
+					return 'Report';
+				}
+			}
+			const reports = Array.from({ length: 250 }, () => new Report());
+			const result = render({ reports, deployment_id: 'deployment-123' }, { depth: 8, maxArrayLength: 250 });
+			assert.ok(result.includes('deployment-123'), result.slice(-300));
+		});
+
+		it('walks the output of a replaced Buffer inspect hook', () => {
 			const native_hook = Buffer.prototype[util.inspect.custom];
 			Buffer.prototype[util.inspect.custom] = () => ({ password: 'patched-buffer-secret' });
 			try {
