@@ -6,6 +6,9 @@ const { Resource } = require('#src/resources/Resource');
 const { raiseAuditFloor, getDatabaseGeneration } = require('#src/resources/auditStore');
 const { transaction } = require('#src/resources/transaction');
 const { getSession } = require('#src/server/DurableSubscriptionsSession');
+const { handleApplication } = require('#src/server/mqtt');
+const { generate } = require('mqtt-packet');
+const { EventEmitter } = require('node:events');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
@@ -543,6 +546,43 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		assert.match(second.closed[0].message, /temporarily unavailable/);
 		const kept = (await stored(clientId)).subscriptions[0];
 		assert.strictEqual(kept.startTime, entry.startTime, 'the session is kept for the next connect');
+	});
+
+	it('takes the session over when two CONNECTs for one client id arrive together', async () => {
+		let listener;
+		const server = {
+			ws: (fn) => ((listener = fn), []),
+			socket: () => ({}),
+			mqtt: { sessions: new Set(), events: new EventEmitter() },
+		};
+		handleApplication({ options: { getAll: () => ({ webSocket: {} }) }, server });
+		const sockets = [0, 1].map(() => {
+			const socket = { closes: [], sends: [], handlers: {}, _socket: { remoteAddress: '127.0.0.1' } };
+			socket.close = () => socket.closes.push(true);
+			socket.send = (message) => socket.sends.push(message);
+			socket.on = (event, handler) => (socket.handlers[event] = handler);
+			const headers = { 'sec-websocket-protocol': 'mqtt' };
+			const request = { headers: { asObject: headers, get: (name) => headers[name.toLowerCase()] }, user };
+			listener(socket, request, Promise.resolve({ status: 200 }), () => {});
+			return socket;
+		});
+		const packet = generate({
+			cmd: 'connect',
+			protocolId: 'MQTT',
+			protocolVersion: 5,
+			clientId: `together-${++sequence}`,
+			clean: false,
+		});
+		// both packets are parsed before either connection has registered its session
+		for (const socket of sockets) socket.handlers.message(packet);
+		await waitFor(() => sockets.every((socket) => socket.sends.length > 0) && sockets[0].closes.length > 0);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.deepStrictEqual(
+			sockets.map((socket) => socket.closes.length),
+			[1, 0],
+			'the later CONNECT takes over'
+		);
+		sockets[1].handlers.close();
 	});
 
 	it('stops writing when another connection takes the session over', async () => {

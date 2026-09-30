@@ -211,6 +211,8 @@ const ACK_PACKET_OVERHEAD = 16;
  * is indistinguishable to the client from a network failure.
  */
 const liveConnections = new Set<{ protocolVersion: () => number; send: (data: any) => void; close: () => void }>();
+/** The latest CONNECT still connecting for each client id on this thread. */
+const connecting = new Map<string, Promise<void>>();
 let shutdownDisconnectRegistered = false;
 
 /** v3.1.1 has no server-to-client DISCONNECT, so those connections are only closed. */
@@ -404,26 +406,43 @@ function onSocket(socket, send, request, user, mqttSettings) {
 								packet.will.payload?.length > 0 ? deserialize(packet.will.payload) : undefined;
 							delete packet.will.payload;
 						}
-						if (packet.clientId) {
-							// a durable session has one owner: an older connection for this client on this thread gives
-							// way, to a clean start too, and its save in flight lands before this one reads or deletes
-							const older = [...mqttSettings.sessions].filter((other) => other.sessionId === packet.clientId);
-							for (const other of older) other.supersede?.();
-							await Promise.all(older.map((other) => other.writes));
+						const clientId = packet.clientId;
+						let releaseClaim: (() => void) | undefined;
+						try {
+							if (clientId) {
+								// simultaneous CONNECTs for one client id take the session over in turn
+								const previous = connecting.get(clientId);
+								const claim = new Promise<void>(
+									(resolve) =>
+										(releaseClaim = () => {
+											if (connecting.get(clientId) === claim) connecting.delete(clientId);
+											resolve();
+										})
+								);
+								connecting.set(clientId, claim);
+								await previous;
+								// a durable session has one owner: an older connection for this client on this thread gives
+								// way, to a clean start too, and its save in flight lands before this one reads or deletes
+								const older = [...mqttSettings.sessions].filter((other) => other.sessionId === clientId);
+								for (const other of older) other.supersede?.();
+								await Promise.all(older.map((other) => other.writes));
+							}
+							session = getSession({
+								user,
+								...packet,
+							} as any) as any;
+							session = await session;
+							session.closeConnection = closeConnection;
+							// the session is used in the context, and we want to make sure we can access this
+							session.socket = socket;
+							if (request) {
+								// if there a request, store it in the session so we can use it as part of the context
+								session.request = request;
+							}
+							mqttSettings.sessions.add(session);
+						} finally {
+							releaseClaim?.();
 						}
-						session = getSession({
-							user,
-							...packet,
-						} as any) as any;
-						session = await session;
-						session.closeConnection = closeConnection;
-						// the session is used in the context, and we want to make sure we can access this
-						session.socket = socket;
-						if (request) {
-							// if there a request, store it in the session so we can use it as part of the context
-							session.request = request;
-						}
-						mqttSettings.sessions.add(session);
 					} catch (error) {
 						mqttLog.error?.(error);
 						emitEvent('auth-failed', packet, socket, error);

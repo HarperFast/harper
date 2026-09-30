@@ -658,7 +658,6 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			state = newTopicState({ qos: subscription.qos, topic: subscription.topic, startTime, databaseGeneration });
 			this.topics.set(subscription.topic, state);
 		} else if (state.subscription) {
-			// a replacement starts from this entry's position (subscribeTopic), so it continues the entry
 			state = newTopicState({ ...state.entry, qos: subscription.qos });
 			this.topics.set(subscription.topic, state);
 		}
