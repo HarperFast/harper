@@ -6868,9 +6868,13 @@ export function makeTable(options): TableResourceClass {
 							}
 						} while (nextTime > startTime && count !== 0);
 						const capped = inspected > MAX_PREVIOUS_COUNT_SCAN;
-						if (checkResume && (capped || missingVersion)) {
-							checkResume(new ResumeHistoryUnavailableError(capped ? VERSION_CAP_REFUSAL : undefined));
-							return;
+						if (checkResume) {
+							if (capped || missingVersion) {
+								checkResume(new ResumeHistoryUnavailableError(capped ? VERSION_CAP_REFUSAL : undefined));
+								return;
+							}
+							// a first version may be a record recreated after retention pruned its tombstone
+							if (!(nextTime > 0) && !checkResume()) return;
 						}
 						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;

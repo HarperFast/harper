@@ -321,6 +321,28 @@ describe('Resuming a subscription in a database generation', function () {
 			}
 		});
 
+		it('checks the floor when a walk ends at a first version, which a recreation after tombstone cleanup starts', async () => {
+			const T = tableInOwnDatabase();
+			const [cursor] = await writeEach(T, 1, () => 'A');
+			await T.delete('A');
+			const deleteKey = [...T.auditStore.getRange({ start: cursor, exclusiveStart: true })].at(-1).txnLogKey;
+			const created = await resume(T, cursor, { id: 'B', includeSuperseded: true });
+			await T.put('B', { value: 'first' });
+			await waitFor(() => valuesOf(created.events).includes('first'));
+			assert.strictEqual(await created.subscription.resumeVerified, true, 'a record first written after the cursor');
+			created.subscription.end();
+			// retention prunes the delete, and cleanup takes the tombstone with it
+			prune(T, deleteKey + 0.001);
+			const tombstone = T.primaryStore.getEntry('A');
+			await T.auditStore.deleteCallbacks[T.tableId]('A', tombstone.version);
+			assert.strictEqual(T.primaryStore.getEntry('A'), undefined, 'precondition: the tombstone is gone');
+			await T.put('A', { value: 'again' });
+			const { subscription, events } = await resume(T, cursor, { id: 'A', includeSuperseded: true });
+			assert.strictEqual(await subscription.resumeVerified, false, 'the delete between is gone, and nothing says so');
+			assert.strictEqual(events.length, 1);
+			assert.ok(events[0] instanceof ResumeHistoryUnavailableError);
+		});
+
 		it('checks the floor for a record with no entry, which a pruned tombstone may have taken', async () => {
 			const T = tableInOwnDatabase();
 			const positions = await writeEach(T, 2);
