@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790673374377,
+  "lastUpdate": 1790753420001,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -6779,6 +6779,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 946.38,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kyle Bernhardy",
+            "username": "kylebernhardy",
+            "email": "kyle@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "2d81ebc7c359cd2e29be83e400f0624864e7e2b7",
+          "message": "Test documented full-text examples (#2915)\n\n* Test documented full-text examples\n\n* Stabilize documented full-text tests\n\n* Strengthen documented search coverage\n\n* Verify documented highlight limits\n\n* Complete documented full-text contracts\n\n* Verify full-text documentation corrections\n\n* Align documented search iterator examples",
+          "timestamp": "2026-09-30T03:57:37Z",
+          "url": "https://github.com/HarperFast/harper/commit/2d81ebc7c359cd2e29be83e400f0624864e7e2b7"
+        },
+        "date": 1790753417462,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6733.71,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 10278.64,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 10216.06,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 7071.55,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 5003.81,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 9558.61,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1154.98,
             "unit": "ops/sec"
           }
         ]
