@@ -597,7 +597,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	writes: Promise<void> = Promise.resolve();
 	saving: Promise<void> | undefined;
 	dirty = false;
-	checkpointScheduled = false;
+	checkpointScheduled: Promise<void> | undefined;
 	checkpointTimer: any;
 	/** Packets are handled concurrently, so SUBSCRIBE, UNSUBSCRIBE and resume change `topics` one at a time. */
 	changes: Promise<unknown> = Promise.resolve();
@@ -703,7 +703,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		this.awaitingAcks.delete(messageId);
 		update.acknowledge?.();
 		this.topics.get(update.topic)?.unacked.delete(messageId);
-		this.scheduleCheckpoint();
+		// mqtt.ts reports the acknowledgement once this settles, so what it allows is saved by then
+		return this.scheduleCheckpoint();
 	}
 	consumed(subscription) {
 		const state = this.topics.get(subscription.topic);
@@ -814,13 +815,17 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		}
 		return changed;
 	}
-	scheduleCheckpoint() {
-		if (this.checkpointScheduled || this.terminated) return;
-		this.checkpointScheduled = true;
-		setImmediate(() => {
-			this.checkpointScheduled = false;
-			this.checkpoint();
-		});
+	/** Settles once the scheduled checkpoint's save has, and never rejects. */
+	scheduleCheckpoint(): Promise<void> {
+		if (this.terminated) return Promise.resolve();
+		this.checkpointScheduled ??= new Promise<void>((resolve) =>
+			setImmediate(() => {
+				this.checkpointScheduled = undefined;
+				this.checkpoint();
+				resolve(this.writes);
+			})
+		);
+		return this.checkpointScheduled;
 	}
 	checkpoint() {
 		if (this.terminated) return;

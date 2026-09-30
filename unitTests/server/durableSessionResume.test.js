@@ -85,6 +85,23 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		session.disconnect(true);
 	});
 
+	it('settles an acknowledgement once the position it allows is saved', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const topic = `${name}/#`;
+		const clientId = `ack-saved-${name}`;
+		const { session, received } = await connect(clientId);
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		await T.put('a', { value: 1 });
+		await waitFor(() => received.length >= 1);
+		const state = session.topics.get(topic);
+		await waitFor(() => state.subscription.progress() >= state.deliveredKey);
+		await session.acknowledge(received[0].messageId);
+		const saved = (await stored(clientId)).subscriptions[0];
+		assert.ok(saved.startTime >= state.deliveredKey, 'the acknowledged delivery is saved by then');
+		session.disconnect(true);
+	});
+
 	it('does not move past a transaction until every one of its messages is acknowledged', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
