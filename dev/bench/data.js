@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790753424005,
+  "lastUpdate": 1790760028246,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -20601,6 +20601,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 3787,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kyle Bernhardy",
+            "username": "kylebernhardy",
+            "email": "kyle@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "2d81ebc7c359cd2e29be83e400f0624864e7e2b7",
+          "message": "Test documented full-text examples (#2915)\n\n* Test documented full-text examples\n\n* Stabilize documented full-text tests\n\n* Strengthen documented search coverage\n\n* Verify documented highlight limits\n\n* Complete documented full-text contracts\n\n* Verify full-text documentation corrections\n\n* Align documented search iterator examples",
+          "timestamp": "2026-09-30T03:57:37Z",
+          "url": "https://github.com/HarperFast/harper/commit/2d81ebc7c359cd2e29be83e400f0624864e7e2b7"
+        },
+        "date": 1790760025089,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 14795,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 12363,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 12788,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 19034240,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 2833,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 312860,
             "unit": "ops"
           }
         ]
