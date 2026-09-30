@@ -53,6 +53,8 @@ Harper supports multi-level topics for both publishing and subscribing:
 
 ### Durable Sessions
 
+<VersionBadge type="changed" version="v5.3.1" />
+
 A durable session retains a client's subscription list and any unacknowledged messages across disconnects. When the client reconnects with the same client ID, it picks up from where it left off — including any messages published while it was offline.
 
 Durable sessions in Harper are persisted as records in the `hdb_durable_session` system table, indexed by client ID. The session record holds the list of subscriptions (topic + QoS) and, per topic, the position in the transaction log from which a reconnect catches up. Because durable sessions are records rather than in-memory state, an abandoned session sits idle with no runtime cost until the client reconnects or the record is deleted.
