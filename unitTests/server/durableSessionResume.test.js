@@ -401,6 +401,24 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		session.disconnect(true);
 	});
 
+	it('applies overlapping SUBSCRIBEs to one topic in order, leaving one subscription', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const topic = `${name}/#`;
+		const { session, received } = await connect(`in-order-${name}`);
+		await Promise.all([
+			session.addSubscription({ topic, qos: 1, rh: 2 }, true),
+			session.addSubscription({ topic, qos: 1, rh: 2 }, true),
+		]);
+		assert.strictEqual(session.subscriptions.length, 1);
+		assert.strictEqual(session.topics.get(topic).subscription, session.subscriptions[0]);
+		await T.put('a', { value: 1 });
+		await waitFor(() => values(received).includes(1));
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.deepStrictEqual(values(received), [1], 'one subscription delivers once');
+		session.disconnect(true);
+	});
+
 	it('drops a durable topic whose replacing SUBSCRIBE fails', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });

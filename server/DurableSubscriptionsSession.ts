@@ -599,6 +599,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	dirty = false;
 	checkpointScheduled = false;
 	checkpointTimer: any;
+	/** Packets are handled concurrently, so SUBSCRIBE, UNSUBSCRIBE and resume change `topics` one at a time. */
+	changes: Promise<unknown> = Promise.resolve();
 	constructor(sessionId, user, record?) {
 		super(sessionId, user);
 		this.mayCreate = !record;
@@ -610,7 +612,15 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	async takeOver() {
 		await getDurableSession().put(this.recordToWrite(), { source: true });
 	}
-	async resume() {
+	inOrder<T>(change: () => Promise<T>): Promise<T> {
+		const result = this.changes.then(change);
+		this.changes = result.catch(() => {});
+		return result;
+	}
+	resume() {
+		return this.inOrder(() => this.resumeTopics());
+	}
+	async resumeTopics() {
 		if (this.topics.size > 0) this.startCheckpoints();
 		for (const state of [...this.topics.values()]) {
 			if (this.terminated) return;
@@ -696,7 +706,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const state = this.topics.get(subscription.topic);
 		if (state?.subscription === subscription) state.consumed++;
 	}
-	async addSubscription(subscription, needsAck) {
+	addSubscription(subscription, needsAck) {
+		return this.inOrder(() => this.subscribeTopic(subscription, needsAck));
+	}
+	async subscribeTopic(subscription, needsAck) {
 		const { topic } = subscription;
 		const durable = subscription.qos > 0;
 		const replaced = this.topics.get(topic)?.subscription;
@@ -720,10 +733,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		}
 		return subscription;
 	}
-	/**
-	 * Removes what a failed SUBSCRIBE started, and the subscription it replaced, which replacing ended.
-	 * Overlapping SUBSCRIBEs to one topic are not serialized, so state a newer one owns is left alone.
-	 */
+	/** Replacing ends the old subscription before the new one can fail, so a failed SUBSCRIBE leaves its topic unsubscribed. */
 	dropFailedSubscription(topic, started, replaced) {
 		const index = started ? this.subscriptions.indexOf(started) : -1;
 		if (index > -1) {
@@ -736,10 +746,12 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			this.persist().catch(() => {});
 		}
 	}
-	async removeSubscription(topic) {
-		const result = super.removeSubscription(topic);
-		if (this.topics.delete(topic)) await this.persist();
-		return result;
+	removeSubscription(topic) {
+		return this.inOrder(async () => {
+			const result = await super.removeSubscription(topic);
+			if (this.topics.delete(topic)) await this.persist();
+			return result;
+		});
 	}
 	saveSubscriptions() {
 		return this.persist();
@@ -850,6 +862,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	supersede() {
 		if (this.terminated) return;
 		this.terminated = true;
+		// the record is another connection's now, or a clean start deleted it
+		this.discarded = true;
 		clearInterval(this.checkpointTimer);
 		this.closeConnection?.();
 	}
