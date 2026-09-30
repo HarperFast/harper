@@ -100,12 +100,15 @@ export type RestoreState = 'in-progress' | 'incomplete' | 'clear';
  * a caller that a *leftover* marker is present. `dropDatabase` uses this after acquiring the lock to
  * distinguish debris from a crashed restore.
  */
-export function restoreMarkerPresent(dbPath: string): boolean {
-	// Only an established absence answers false. `existsSync` reports every errno as "missing", and
-	// both callers act on false in the unsafe direction: a drop proceeds over an incomplete restore,
-	// and a backup pin expires while its restore still needs the source.
+/**
+ * Whether `path` is there. Only an established absence answers false: `existsSync` reports every
+ * errno as "missing", and every caller here acts on false in the unsafe direction — a drop proceeds
+ * over an incomplete restore, a half-restored database loads, a backup claim expires while its
+ * restore still needs the source.
+ */
+function present(path: string): boolean {
 	try {
-		statSync(restoringMarkerPath(dbPath));
+		statSync(path);
 		return true;
 	} catch (error: any) {
 		if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return false;
@@ -113,8 +116,12 @@ export function restoreMarkerPresent(dbPath: string): boolean {
 	}
 }
 
+export function restoreMarkerPresent(dbPath: string): boolean {
+	return present(restoringMarkerPath(dbPath));
+}
+
 export function databaseDropMarkerPresent(dbPath: string): boolean {
-	return existsSync(droppingMarkerPath(dbPath));
+	return present(droppingMarkerPath(dbPath));
 }
 
 /** The lock and (optional) marker held by a begin/acquire call, threaded back to complete/abandon. */
@@ -149,9 +156,9 @@ export type RestoreLock = {
  * before any destructive step, so a database without a marker has nothing to protect yet.
  */
 export function checkRestoreState(dbPath: string): RestoreState {
-	if (!existsSync(restoringMarkerPath(dbPath))) return 'clear';
+	if (!present(restoringMarkerPath(dbPath))) return 'clear';
 	const lockPath = restoreLockPath(dbPath);
-	if (existsSync(lockPath)) {
+	if (present(lockPath)) {
 		const token = tryFileLock(lockPath);
 		if (token === 0) return 'in-progress';
 		fileLockRelease(token);
