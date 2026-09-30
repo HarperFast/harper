@@ -2,6 +2,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, databases } = require('#src/resources/databases');
 const Resources = require('#src/resources/Resources');
+const { Resource } = require('#src/resources/Resource');
 const { raiseAuditFloor, getDatabaseGeneration } = require('#src/resources/auditStore');
 const { transaction } = require('#src/resources/transaction');
 const { getSession } = require('#src/server/DurableSubscriptionsSession');
@@ -23,6 +24,12 @@ function topicTable() {
 	});
 	Resources.resources.set(name, T, { mqtt: true });
 	return { T, name };
+}
+
+class Unavailable extends Resource {
+	static subscribe() {
+		return Promise.reject(new Error('temporarily unavailable'));
+	}
 }
 
 async function connect(clientId) {
@@ -377,6 +384,66 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		session.disconnect(true);
 	});
 
+	it('leaves a newer SUBSCRIBE to the topic in place when an older one fails', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const topic = `${name}/#`;
+		const { session, received } = await connect(`overlap-${name}`);
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const older = session.subscriptions[0];
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const newer = session.subscriptions[0];
+		assert.notStrictEqual(newer, older);
+		session.dropFailedSubscription(topic, older, undefined);
+		assert.deepStrictEqual(session.subscriptions, [newer]);
+		assert.strictEqual(session.topics.get(topic).subscription, newer);
+		await T.put('a', { value: 1 });
+		await waitFor(() => values(received).includes(1));
+		session.disconnect(true);
+	});
+
+	it('drops a durable topic whose replacing SUBSCRIBE fails', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const topic = `${name}/#`;
+		const clientId = `replaced-${name}`;
+		const { session } = await connect(clientId);
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		await storedEntry(clientId, () => true);
+		Resources.resources.set(name, Unavailable, { mqtt: true }, true);
+		await assert.rejects(session.addSubscription({ topic, qos: 1, rh: 2 }, true), /temporarily unavailable/);
+		assert.strictEqual(session.topics.size, 0);
+		assert.strictEqual(session.subscriptions.length, 0);
+		await waitFor(async () => (await stored(clientId)).subscriptions.length === 0);
+		session.disconnect(true);
+	});
+
+	it('keeps a QoS 0 subscription with the session, resuming it live', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const topic = `${name}/#`;
+		const clientId = `qos0-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 0, rh: 2 }, false);
+		const entry = await storedEntry(clientId, () => true);
+		assert.deepStrictEqual({ ...entry }, { qos: 0, topic });
+		first.session.disconnect(true);
+		const dispatched = [];
+		const observer = await T.subscribe({ omitCurrent: true, listener: (event) => dispatched.push(event.value?.value) });
+		await T.put('away', { value: 'away' });
+		// a live subscription registered before the write is dispatched would still receive it
+		await waitFor(() => dispatched.includes('away'));
+		observer.end();
+		const second = await connect(clientId);
+		assert.strictEqual(second.session.sessionWasPresent, true);
+		await second.session.resume();
+		await T.put('back', { value: 'back' });
+		await waitFor(() => values(second.received).includes('back'));
+		assert.deepStrictEqual(values(second.received), ['back'], 'QoS 0 replays nothing from while it was away');
+		assert.strictEqual(second.session.awaitingAcks?.size ?? 0, 0, 'QoS 0 deliveries await no acknowledgement');
+		second.session.disconnect(true);
+	});
+
 	it('closes the connection, keeping the session, when a resume fails for another reason', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
@@ -388,14 +455,9 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		await ackAll(first.session, first.received);
 		const entry = await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
 		first.session.disconnect(true);
+		Resources.resources.set(name, Unavailable, { mqtt: true }, true);
 		const second = await connect(clientId);
-		const subscribe = T.subscribe;
-		T.subscribe = () => Promise.reject(new Error('temporarily unavailable'));
-		try {
-			await second.session.resume();
-		} finally {
-			T.subscribe = subscribe;
-		}
+		await second.session.resume();
 		assert.strictEqual(second.closed.length, 1);
 		assert.match(second.closed[0].message, /temporarily unavailable/);
 		const kept = (await stored(clientId)).subscriptions[0];

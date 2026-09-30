@@ -541,7 +541,8 @@ async function publishMessage(message: any, data: any, context: any) {
 			: resource.publish(target, message.data, context);
 	});
 }
-type DurableEntry = { qos: number; topic: string; startTime: number; databaseGeneration?: string };
+/** A QoS 0 entry has no position: QoS 0 promises no delivery while the client is away, so it resumes live. */
+type DurableEntry = { qos: number; topic: string; startTime?: number; databaseGeneration?: string };
 type TopicState = {
 	entry: DurableEntry;
 	subscription?: any;
@@ -598,7 +599,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		this.sessionRecord = cloneDeep(record) || { id: sessionId, subscriptions: [] };
 		this.mayCreate = !record;
 		for (const { qos, topic, startTime, databaseGeneration } of this.sessionRecord.subscriptions || []) {
-			this.topics.set(topic, newTopicState({ qos, topic, startTime, databaseGeneration }));
+			this.topics.set(topic, newTopicState(qos > 0 ? { qos, topic, startTime, databaseGeneration } : { qos, topic }));
 		}
 	}
 	/** Claim the record for this connection before CONNACK, so an older connection's writes stop. */
@@ -610,10 +611,14 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		for (const state of [...this.topics.values()]) {
 			if (this.terminated) return;
 			const { qos, topic, startTime, databaseGeneration } = state.entry;
+			const durable = qos > 0;
 			try {
+				// retain handling, not omitCurrent, decides whether a subscription starts with current values
 				await this.resumeSubscription(
-					{ omitCurrent: true, topic, qos, startTime, databaseGeneration, reportProgress: true },
-					true
+					durable
+						? { omitCurrent: true, topic, qos, startTime, databaseGeneration, reportProgress: true }
+						: { topic, qos, rh: 2 },
+					durable
 				);
 			} catch (error) {
 				this.subscriptionFailed({ topic }, error);
@@ -625,9 +630,14 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		return super.addSubscription(subscription, needsAck, filter);
 	}
 	subscribed(subscription) {
-		if (!(subscription.qos > 0)) return;
 		let state = this.topics.get(subscription.topic);
-		if (!state || state.subscription) {
+		if (!(subscription.qos > 0)) {
+			state = newTopicState({ qos: 0, topic: subscription.topic });
+			state.subscription = subscription;
+			this.topics.set(subscription.topic, state);
+			return;
+		}
+		if (!state || state.subscription || !(state.entry.qos > 0)) {
 			const startTime = subscription.registeredThrough ?? getNextMonotonicTime();
 			const databaseGeneration =
 				subscription.registeredThrough === undefined ? undefined : subscription.databaseGeneration;
@@ -682,29 +692,48 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (state?.subscription === subscription) state.consumed++;
 	}
 	async addSubscription(subscription, needsAck) {
+		const { topic } = subscription;
 		const durable = subscription.qos > 0;
-		await this.resumeSubscription(durable ? { ...subscription, reportProgress: true } : subscription, needsAck);
-		if (durable) {
-			this.startCheckpoints();
-			try {
+		const replaced = this.topics.get(topic)?.subscription;
+		let started;
+		try {
+			started = await this.resumeSubscription(
+				durable ? { ...subscription, reportProgress: true } : subscription,
+				needsAck
+			);
+			if (durable) {
+				this.startCheckpoints();
 				await this.persist();
-			} catch (error) {
-				// the client is told this SUBSCRIBE failed, so it must not keep receiving or come back saved
-				const started = this.subscriptions.find((existing) => existing.topic === subscription.topic);
-				if (started) {
-					started.end();
-					this.subscriptions.splice(this.subscriptions.indexOf(started), 1);
-				}
-				this.topics.delete(subscription.topic);
-				throw error;
+			} else if (started) {
+				// a QoS 0 subscription promises no delivery, so a failed save need not refuse it
+				this.persist().catch(() => {});
 			}
+		} catch (error) {
+			// the client is told this SUBSCRIBE failed, so it must not keep receiving or come back saved
+			this.dropFailedSubscription(topic, started, replaced);
+			throw error;
 		}
 		return subscription;
 	}
+	/**
+	 * Removes what a failed SUBSCRIBE started, and the subscription it replaced, which replacing ended.
+	 * Overlapping SUBSCRIBEs to one topic are not serialized, so state a newer one owns is left alone.
+	 */
+	dropFailedSubscription(topic, started, replaced) {
+		const index = started ? this.subscriptions.indexOf(started) : -1;
+		if (index > -1) {
+			started.end();
+			this.subscriptions.splice(index, 1);
+		}
+		const owner = this.topics.get(topic)?.subscription;
+		if (owner && (owner === started || (owner === replaced && !this.subscriptions.includes(owner)))) {
+			this.topics.delete(topic);
+			this.persist().catch(() => {});
+		}
+	}
 	async removeSubscription(topic) {
-		const existingSubscription = this.subscriptions.find((subscription) => subscription.topic === topic);
 		const result = super.removeSubscription(topic);
-		if (this.topics.delete(topic) && existingSubscription?.qos > 0) await this.persist();
+		if (this.topics.delete(topic)) await this.persist();
 		return result;
 	}
 	saveSubscriptions() {
@@ -737,6 +766,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	advancePositions(): boolean {
 		let changed = false;
 		for (const state of this.topics.values()) {
+			if (!(state.entry.qos > 0)) continue;
 			const next = this.nextPosition(state);
 			if (next === undefined) continue;
 			const bound = state.entry.databaseGeneration !== undefined;
@@ -772,9 +802,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const subscriptions = [];
 		for (const { entry } of this.topics.values()) {
 			const { qos, topic, startTime, databaseGeneration } = entry;
-			subscriptions.push(
-				databaseGeneration === undefined ? { qos, topic, startTime } : { qos, topic, startTime, databaseGeneration }
-			);
+			const saved: DurableEntry = { qos, topic };
+			if (startTime !== undefined) saved.startTime = startTime;
+			if (databaseGeneration !== undefined) saved.databaseGeneration = databaseGeneration;
+			subscriptions.push(saved);
 		}
 		return { id: this.sessionId, incarnation: this.incarnation, subscriptions };
 	}
