@@ -100,7 +100,6 @@ describe('Reads of a write target', () => {
 		await Target.put('other', { value: 5 });
 		const created = (await Target.get('other')).created;
 		class WritesOther extends Target {
-			// loaded as the request's target, then writes a different key through the target-first form
 			put(data) {
 				return super.put('other', data);
 			}
@@ -160,10 +159,13 @@ describe('Reads of a write target', () => {
 		// LMDB diffs this write's index against the entry the eviction mutated (harper#2937)
 		if (isLMDB) this.skip();
 		const Target = freshTable();
-		Target.setTTLExpiration({ expiration: 0.005 });
-		Target.evict = () => Promise.resolve(); // keep the stored record, so only the write's base decides the index diff
+		// no cleanup scan and no eviction write: the stored row stays, and only ensureLoaded() sees it as expired
+		Target.setTTLExpiration({ expiration: 0.005, scanInterval: 3600 });
+		Target.evict = () => Promise.resolve();
 		await Target.put('expired', { value: 1 });
 		await new Promise((resolve) => setTimeout(resolve, 20));
+		Target.setTTLExpiration({ expiration: 0 });
+		assert.ok(Target.primaryStore.getSync('expired'), 'the expired row is still stored');
 		class LoadsFirst extends Target {
 			async put(data, target) {
 				await this.ensureLoaded();

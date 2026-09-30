@@ -2460,7 +2460,8 @@ export function makeTable(options): TableResourceClass {
 				throw error;
 			}
 		}
-		// (a source fill or retry replaces #entry, and ensureLoaded() can also evict it in place, so it drops the receipt)
+		// Reusable only for the key this instance read and while #entry is the entry that read returned: a source fill
+		// or retry replaces #entry, and ensureLoaded() can evict it in place, so ensureLoaded() drops the receipt.
 		#commitBaseTxn(id: Id) {
 			const baseReadTxn = this.#baseReadTxn;
 			if (!baseReadTxn || this.#baseReadEntry !== this.#entry) return;
