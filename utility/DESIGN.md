@@ -2,7 +2,7 @@
 
 Cross-cutting helpers.
 
-**Read this when:** touching `watchPath.ts` or anything that arms a native file watch, adding an interactive CLI prompt (`interactivePrompts.ts`), passing an object to `handleHDBError` (`errors/hdbError.ts`), or comparing which file a log descriptor is on (`logging/`).
+**Read this when:** touching `watchPath.ts` or anything that arms a native file watch, adding an interactive CLI prompt (`interactivePrompts.ts`), passing an object to `handleHDBError` (`errors/hdbError.ts`), comparing which file a log descriptor is on (`logging/`), or changing `inspectForLog`'s sanitize walk (`logging/harper_logger.ts`).
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -65,3 +65,9 @@ Every `@inquirer`-based one-shot prompt in the codebase (`bin/login.ts`, `bin/de
 ## Log-file identity is compared as BigInt (`utility/logging/logGenerationCoordinator.ts` `FileIdentity`)
 
 Every `(dev, ino)` log rotation compares is read with `{ bigint: true }`: Windows reports a 64-bit file ID, and past 2^53 a Number rounds neighbouring files to one value, so a descriptor on an archived generation passes as live. Enforced by the `FileIdentity` type on every identity producer and on the coordinator's sink and announcement API, and by `unitTests/utility/logging/logFileIdentity.test.js`, which emulates such a volume.
+
+## `inspectForLog` bounds its whole render and masks credential-shaped keys (`utility/logging/harper_logger.ts`)
+
+One render is at most `MAX_LOG_RENDER_LENGTH` characters. Per-container and node limits multiply rather than add — 50k string leaves at the operation caller's `maxStringLength: 20000` rendered ~134M characters into one log entry — so the bound is cumulative, in two parts. The sanitize walk charges an estimated rendered length per entry and stops each open container with one "omitted" marker once it is spent: that is what bounds the work, because it runs before `util.inspect` builds anything. A final cut of the rendered string makes the length exact, because `util.inspect`'s layout and escaping are not predictable from the walk. For the estimate to bound work, nothing may render uncharged: a leaf whose size the walk cannot estimate (an Error's stack, an opaque built-in, a function) is rendered to text in the walk and charged exactly; a repeat reference to a walked container is charged again, since `util.inspect` prints a shared sub-object at every occurrence; and the custom inspect hooks the walk preserves run against the same budget (they are not called once it is spent). Tests: the `inspectForLog` block in `unitTests/utility/logging/harper_logger.test.js`.
+
+The walk masks the value of a string-keyed data property or Map entry whose key matches `CREDENTIAL_KEY_PATTERN`, the one list shared with the MCP audit log (`components/mcp/audit.ts`) — a new credential key shape goes there. Masking is structural: a custom inspect hook that returns a secret as a primitive renders it. `HdbError`'s report flattening (`messageText`) runs before `inspectForLog` and is not masked, because its values are validation reasons, often listed under a field named `password`.
