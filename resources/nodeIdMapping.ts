@@ -123,14 +123,14 @@ export function lastTimeInAuditStore(auditStore: Database) {
 		return timestamp;
 	}
 }
-// getIdMappingRecord() keeps this node's name at id 0, so a store confirmed for the current name skips the
-// read; the confirmation is per worker but the record is shared, so it expires (resources/DESIGN.md)
+// getIdMappingRecord() keeps this node's name at id 0; the confirmation is per worker but the record is shared,
+// so it expires (resources/DESIGN.md)
 const THIS_NODE_ID_CONFIRM_MS = 1000;
 const confirmedThisNode = new WeakMap<object, { name: string; confirmedAt: number }>();
 export function getThisNodeId(auditStore: any) {
 	const name = server.hostname;
 	const confirmed = confirmedThisNode.get(auditStore);
-	const now = Date.now();
+	const now = performance.now();
 	if (confirmed?.name === name && now - confirmed.confirmedAt < THIS_NODE_ID_CONFIRM_MS) return 0;
 	const id = exportIdMapping(auditStore)?.[name];
 	if (id === 0) confirmedThisNode.set(auditStore, { name, confirmedAt: now });
