@@ -492,7 +492,7 @@ async function main() {
 				let progress = -1;
 				let lastProgress = publishEnd;
 				let end = { harper: cpuTicks(harperPid), client: clientTicks(), publisher: publisherTicks() };
-				let drainTruncated = true;
+				let drainEnd: 'complete' | 'quiet' | 'deadline' = 'deadline';
 				while (performance.now() - publishEnd < 60_000) {
 					stats = await clientStats();
 					publisherTotals = await publisherStats();
@@ -503,11 +503,12 @@ async function main() {
 						end = { harper: cpuTicks(harperPid), client: clientTicks(), publisher: publisherTicks() };
 					}
 					const putsSettled = args.publish !== 'put' || settledPuts >= publisherTotals.published;
-					if (
-						(stats.received - before.received >= expected && putsSettled) ||
-						performance.now() - lastProgress > 3000
-					) {
-						drainTruncated = false;
+					if (stats.received - before.received >= expected && putsSettled) {
+						drainEnd = 'complete';
+						break;
+					}
+					if (performance.now() - lastProgress > 3000) {
+						drainEnd = 'quiet';
 						break;
 					}
 					await delay(250);
@@ -551,7 +552,7 @@ async function main() {
 					clientCores: clientCpu / seconds,
 					publisherCores: publisherCpu / seconds,
 					drainSeconds: seconds - durationMs / 1000,
-					drainTruncated,
+					drainEnd,
 					latencyMisses: stats.latencyMisses - before.latencyMisses,
 					p50ms: p50,
 					p99ms: p99,
