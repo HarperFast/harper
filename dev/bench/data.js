@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790753420001,
+  "lastUpdate": 1790753424005,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -15998,6 +15998,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 200.7,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kyle Bernhardy",
+            "username": "kylebernhardy",
+            "email": "kyle@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "2d81ebc7c359cd2e29be83e400f0624864e7e2b7",
+          "message": "Test documented full-text examples (#2915)\n\n* Test documented full-text examples\n\n* Stabilize documented full-text tests\n\n* Strengthen documented search coverage\n\n* Verify documented highlight limits\n\n* Complete documented full-text contracts\n\n* Verify full-text documentation corrections\n\n* Align documented search iterator examples",
+          "timestamp": "2026-09-30T03:57:37Z",
+          "url": "https://github.com/HarperFast/harper/commit/2d81ebc7c359cd2e29be83e400f0624864e7e2b7"
+        },
+        "date": 1790753422899,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 14.98,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 14.83,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 21.86,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 17.37,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 28.21,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 17.39,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 36.15,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 15.75,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 20.72,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 53.61,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 150.26,
             "unit": "ms"
           }
         ]
