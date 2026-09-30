@@ -282,20 +282,51 @@ describe('Resuming a subscription in a database generation', function () {
 			subscription.end();
 		});
 
-		it('checks a record with no versions after the position', async () => {
+		it('verifies a record with no versions after the position, whatever the floor', async () => {
 			const T = tableInOwnDatabase();
 			const positions = await writeEach(T, 2, () => 'A');
+			prune(T, positions[1] + 1);
 			const { subscription, events } = await resume(T, positions[1], { id: 'A', omitCurrent: true });
-			assert.strictEqual(await subscription.resumeVerified, true);
+			assert.strictEqual(await subscription.resumeVerified, true, 'nothing about the record changed after it');
 			assert.deepStrictEqual(events, []);
 			subscription.end();
-			prune(T, positions[1] + 1);
-			await assert.rejects(resume(T, positions[1], { id: 'A' }), ResumeHistoryUnavailableError);
 		});
 
-		it('checks again when it reads the record after the first check, with no history to walk', async () => {
+		it('verifies a walk that finds every version, though the floor passed the position', async () => {
 			const T = tableInOwnDatabase();
-			const positions = await writeEach(T, 2, () => 'A');
+			const positions = await writeEach(T, 300, () => 'A');
+			const pending = resume(T, positions[0], { id: 'A', includeSuperseded: true });
+			setImmediate(() => prune(T, positions[250]));
+			const { subscription, events } = await pending;
+			assert.strictEqual(await subscription.resumeVerified, true);
+			assert.ok(getAuditResumeFloor(T.auditStore) > positions[0], 'precondition: the floor passed the position');
+			assert.strictEqual(valuesOf(events).length, 299);
+			subscription.end();
+		});
+
+		it('sends none of the history when a version is missing from the walk', async () => {
+			const T = tableInOwnDatabase();
+			const positions = await writeEach(T, 300, () => 'A');
+			const getSync = T.auditStore.getSync;
+			T.auditStore.getSync = function (key, ...rest) {
+				return key === positions[150] ? undefined : getSync.call(this, key, ...rest);
+			};
+			try {
+				const { subscription, events } = await resume(T, positions[0], { id: 'A', includeSuperseded: true });
+				assert.strictEqual(await subscription.resumeVerified, false);
+				assert.strictEqual(events.length, 1, 'only the refusal');
+				assert.ok(events[0] instanceof ResumeHistoryUnavailableError);
+			} finally {
+				T.auditStore.getSync = getSync;
+			}
+		});
+
+		it('checks the floor for a record with no entry, which a pruned tombstone may have taken', async () => {
+			const T = tableInOwnDatabase();
+			const positions = await writeEach(T, 2);
+			const { subscription } = await resume(T, positions[1], { id: 'absent', omitCurrent: true });
+			assert.strictEqual(await subscription.resumeVerified, true);
+			subscription.end();
 			// an instance that is not preloaded reads its record inside subscribe, after the first check
 			class Unloaded extends T {
 				static loadAsInstance = false;
@@ -309,25 +340,14 @@ describe('Resuming a subscription in a database generation', function () {
 				return getEntry.apply(this, args);
 			};
 			try {
-				const { subscription, events } = await resume(Unloaded, positions[1], { id: 'A' });
+				const refused = await resume(Unloaded, positions[1], { id: 'absent' });
 				assert.ok(pruned, 'precondition: the prune landed after the first check');
-				assert.strictEqual(await subscription.resumeVerified, false);
-				assert.strictEqual(events.length, 1, 'not the current value');
-				assert.ok(events[0] instanceof ResumeHistoryUnavailableError);
+				assert.strictEqual(await refused.subscription.resumeVerified, false);
+				assert.strictEqual(refused.events.length, 1);
+				assert.ok(refused.events[0] instanceof ResumeHistoryUnavailableError);
 			} finally {
 				T.primaryStore.getEntry = getEntry;
 			}
-		});
-
-		it('sends none of the history when a prune lands during the walk', async () => {
-			const T = tableInOwnDatabase();
-			const positions = await writeEach(T, 300, () => 'A');
-			const pending = resume(T, positions[0], { id: 'A', includeSuperseded: true });
-			setImmediate(() => prune(T, positions[250]));
-			const { subscription, events } = await pending;
-			assert.strictEqual(await subscription.resumeVerified, false);
-			assert.strictEqual(events.length, 1, 'only the refusal');
-			assert.ok(events[0] instanceof ResumeHistoryUnavailableError);
 		});
 
 		it('refuses to certify a walk its version cap cut short', async () => {
@@ -350,10 +370,13 @@ describe('Resuming a subscription in a database generation', function () {
 			const T = tableInOwnDatabase(name);
 			const positions = await writeEach(T, 2);
 			const previous = getDatabaseGeneration(T.auditStore).id;
-			await assert.rejects(
-				resume(T, positions[0], { databaseGeneration: 'ab'.repeat(16) }),
-				(error) => error instanceof DatabaseGenerationChangedError && error.statusCode === 409
-			);
+			for (const id of [undefined, 'r0']) {
+				await assert.rejects(
+					resume(T, positions[0], { id, databaseGeneration: 'ab'.repeat(16) }),
+					(error) => error instanceof DatabaseGenerationChangedError && error.statusCode === 409,
+					`id ${id}`
+				);
+			}
 			const path = T.auditStore.rootStore.path;
 			assert.ok(await closeDatabase(`resume_${name}`));
 			await stampDatabaseDirectory(path, { carriesLog: true });

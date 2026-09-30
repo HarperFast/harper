@@ -6510,6 +6510,7 @@ export function makeTable(options): TableResourceClass {
 				if (!allowed) throw new AccessViolation(context?.user);
 			}
 			if (!auditStore) throw new Error('Can not subscribe to a table without an audit log');
+			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
 			const resumeGeneration = request.databaseGeneration;
 			const resuming = resumeGeneration !== undefined;
 			if (resuming) {
@@ -6519,7 +6520,13 @@ export function makeTable(options): TableResourceClass {
 				if (request.previousCount != null) {
 					throw new ClientError('previousCount can not be combined with a resume position');
 				}
-				const refusal = resumeRefusal(auditStore, resumeGeneration, request.startTime);
+				// a record's own history walk proves its replay complete, so only a collection needs the floor here
+				const refusal =
+					(request.isCollection ?? thisId == null)
+						? resumeRefusal(auditStore, resumeGeneration, request.startTime)
+						: getDatabaseGeneration(auditStore)?.id === resumeGeneration
+							? undefined
+							: new DatabaseGenerationChangedError();
 				if (refusal) throw refusal;
 			}
 			if (!audit) {
@@ -6543,7 +6550,6 @@ export function makeTable(options): TableResourceClass {
 			// Coalescing guards for the reload re-snapshot (harper-pro#495), driven from the listener below.
 			let reloadResnapshotRunning = false;
 			let reloadResnapshotPending = false;
-			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
 			const subContext = this.getContext() as any;
 			const rowFilter = typeof request.rowFilter === 'function' ? request.rowFilter : undefined;
 			const eventFilter = typeof request.eventFilter === 'function' ? request.eventFilter : undefined;
@@ -6826,6 +6832,7 @@ export function makeTable(options): TableResourceClass {
 						subscription!.startTime = localTime ?? entry?.version;
 						const history = [];
 						let inspected = 0;
+						let missingVersion = false;
 						let nextTime = localTime;
 						do {
 							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
@@ -6855,19 +6862,21 @@ export function makeTable(options): TableResourceClass {
 									: { txnLogKey: auditRecord.previousVersion, nodeId: auditRecord.previousNodeId };
 								nextTime = previousHead.txnLogKey;
 								nodeId = previousHead.nodeId;
-							} else break;
+							} else {
+								missingVersion = true;
+								break;
+							}
 						} while (nextTime > startTime && count !== 0);
-						// the walk reads newest-first, so the history nearest the cursor is checked only once it is read
 						const capped = inspected > MAX_PREVIOUS_COUNT_SCAN;
-						if (
-							checkResume &&
-							!checkResume(capped ? new ResumeHistoryUnavailableError(VERSION_CAP_REFUSAL) : undefined)
-						)
+						if (checkResume && (capped || missingVersion)) {
+							checkResume(new ResumeHistoryUnavailableError(capped ? VERSION_CAP_REFUSAL : undefined));
 							return;
+						}
 						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;
 						}
-					} else if (checkResume && !checkResume()) return;
+						// with no entry, a pruned tombstone may have taken the history with it
+					} else if (checkResume && !entry && !checkResume()) return;
 					if (!request.omitCurrent && entry?.value) {
 						// if retain and it exists, send the current value first
 						if (
