@@ -210,7 +210,7 @@ async function connectAll(cmd: ConnectCommand) {
 // graceful: MQTT DISCONNECT and a close frame; abrupt: drop the socket, as a client that loses its network does
 function disconnectAll(mode: 'graceful' | 'abrupt') {
 	return Promise.all(
-		sockets.splice(0).map(
+		[...sockets].map(
 			(ws) =>
 				new Promise<void>((resolve) => {
 					if (ws.readyState === WebSocket.CLOSED) return resolve();
