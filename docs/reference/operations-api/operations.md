@@ -1104,6 +1104,25 @@ The flag is evaluated per node. A peer applying the replicated deploy checks its
 
 Until the restart happens, a request to a route of a never-loaded component returns a 404 naming the component and saying a restart may be needed, instead of the generic 404. That fuller message is returned only to an authenticated `super_user`. The difference between the two responses would otherwise report which component directories exist on disk.
 
+#### Checking what each node installed
+
+<VersionBadge version="v5.3.1" />
+
+Each node of a replicated deploy resolves and installs the release itself. So a reference that moves between nodes' installs can leave them running different code: a branch or tag that moved, a `latest` published in between, or a dependency range that resolved to a newer version. Harper doesn't prevent this, but it reports it.
+
+After it installs, each node records an install fingerprint:
+
+- `source`: what the package resolved to, named the way its resolver already names it. That is `git:<commit>` for a git reference, the commit a branch or tag pointed at; `npm:<name>@<version>` for a registry package, where a tag resolves to one version; or npm's `integrity:<sri>` for a tarball URL. A `payload` deploy has no `source`, because every node extracts the same uploaded bytes.
+- `lockfiles`: the SHA-256 of each lockfile at the component's root (`package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock` or `bun.lockb`).
+
+Every node returns its fingerprint as `install` in its `deploy_component` response. The node that received the deploy compares each peer's fingerprint with its own, and when any differ:
+
+- the response's `message` ends with a sentence naming them, such as `Install fingerprints differ from this node's on 1 of 2 peer node(s): node-b (source npm:web@1.5.0, package-lock.json).`;
+- a `warning` event goes to a caller streaming Server-Sent Events, and the Harper CLI prints it;
+- each peer's entry in the deployment's `peer_results` carries `install_matches` and `install_differs`, the fields that differ. `install_matches` is `null` when a fingerprint is missing or unreadable, as from a peer on an earlier version.
+
+A difference never fails the deploy or changes the CLI's exit status. A match means the evidence is equal, not that the installed trees are: an `install_command` can install different dependencies and leave the same lockfile, and lockfiles written against different registry mirrors differ even when the code matches. A staged deploy reports at stage time, before you activate it.
+
 ### Deployment Operations
 
 Harper records every `deploy_component` call in the `system.hdb_deployment` table, capturing the full lifecycle of a deployment including phase transitions (prepare → load → replicate → restart → success/failed), per-node outcomes, and a bounded event log of install output.
@@ -1145,23 +1164,24 @@ Returns a single deployment record by `deployment_id`. When called on an in-prog
 
 The deployment record includes:
 
-| Field                | Description                                                             |
-| -------------------- | ----------------------------------------------------------------------- |
-| `deployment_id`      | Unique identifier (content hash)                                        |
-| `project`            | Component project name                                                  |
-| `package_identifier` | Package reference or `payload` for tar uploads                          |
-| `status`             | `pending`, `success`, `failed`, `staged` (v5.3.0), or `rolled_back`     |
-| `phase`              | Current lifecycle phase: `prepare`, `load`, `replicate`, `restart`      |
-| `event_log`          | Bounded log of install output and phase transitions (up to 200 entries) |
-| `peer_results`       | Per-node outcome map for replicated deployments                         |
-| `payload_hash`       | SHA-256 hash of the deployment tarball                                  |
-| `payload_size`       | Byte size of the deployment tarball                                     |
-| `started_at`         | Timestamp when deployment began                                         |
-| `completed_at`       | Timestamp when deployment finished                                      |
-| `user`               | User who initiated the deployment                                       |
-| `activated_from`     | (v5.3.0) On an activation, the id of the staged deployment it made live |
-| `rollback_of`        | `deployment_id` of the deployment this rolls back, if applicable        |
-| `error`              | Error message for failed deployments                                    |
+| Field                 | Description                                                                                                                                                                                                          |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deployment_id`       | Unique identifier (content hash)                                                                                                                                                                                     |
+| `project`             | Component project name                                                                                                                                                                                               |
+| `package_identifier`  | Package reference or `payload` for tar uploads                                                                                                                                                                       |
+| `status`              | `pending`, `success`, `failed`, `staged` (v5.3.0), or `rolled_back`                                                                                                                                                  |
+| `phase`               | Current lifecycle phase: `prepare`, `load`, `replicate`, `restart`                                                                                                                                                   |
+| `event_log`           | Bounded log of install output and phase transitions (up to 200 entries)                                                                                                                                              |
+| `peer_results`        | Per-node outcome map for replicated deployments; from v5.3.1 each peer also carries `install`, `install_matches` and `install_differs` (see [Checking what each node installed](#checking-what-each-node-installed)) |
+| `payload_hash`        | SHA-256 hash of the deployment tarball                                                                                                                                                                               |
+| `payload_size`        | Byte size of the deployment tarball                                                                                                                                                                                  |
+| `install_fingerprint` | (v5.3.1) This node's install fingerprint: its `source` and `lockfiles`                                                                                                                                               |
+| `started_at`          | Timestamp when deployment began                                                                                                                                                                                      |
+| `completed_at`        | Timestamp when deployment finished                                                                                                                                                                                   |
+| `user`                | User who initiated the deployment                                                                                                                                                                                    |
+| `activated_from`      | (v5.3.0) On an activation, the id of the staged deployment it made live                                                                                                                                              |
+| `rollback_of`         | `deployment_id` of the deployment this rolls back, if applicable                                                                                                                                                     |
+| `error`               | Error message for failed deployments                                                                                                                                                                                 |
 
 ### `get_deployment_payload`
 
