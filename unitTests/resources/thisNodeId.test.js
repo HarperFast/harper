@@ -62,14 +62,22 @@ describe('getThisNodeId', () => {
 		useNodeName('node-a');
 		const Node = freshTable();
 		const { auditStore } = Node;
-		assert.strictEqual(getThisNodeId(auditStore), 0);
-		const counter = countMappingReads(auditStore);
+		// a frozen clock keeps a slow run from outliving the confirmation mid-loop
+		const now = performance.now;
+		const frozen = now.call(performance);
+		performance.now = () => frozen;
 		try {
-			for (let i = 0; i < 20; i++) await Node.put(`write-${i}`, { value: i });
+			assert.strictEqual(getThisNodeId(auditStore), 0);
+			const counter = countMappingReads(auditStore);
+			try {
+				for (let i = 0; i < 20; i++) await Node.put(`write-${i}`, { value: i });
+			} finally {
+				counter.restore();
+			}
+			assert.strictEqual(counter.reads, 0);
 		} finally {
-			counter.restore();
+			performance.now = now;
 		}
-		assert.strictEqual(counter.reads, 0);
 	});
 
 	it('confirms each audit store separately', () => {
