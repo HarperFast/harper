@@ -1410,6 +1410,9 @@ const MAX_LOG_RENDER_LENGTH = 256 * 1024;
 // does not charge still fit, and a render the walk truncated normally ends whole instead of being cut
 // by the exact cap.
 const SANITIZE_RENDER_BUDGET = MAX_LOG_RENDER_LENGTH - 16 * 1024;
+// Work on properties an inherited inspect hook's output replaced, which never renders: bounded apart
+// from the render budget so one large such object does not starve the fields after it.
+const MAX_DISCARDED_RENDER = 4 * SANITIZE_RENDER_BUDGET;
 const OMITTED_LABEL = '[omitted (sanitize budget)]';
 const NOT_RENDERED_LABEL = '[below inspect depth]';
 const COLLAPSED_MARKER = Symbol('sanitize: collapsed at inspect depth');
@@ -1424,6 +1427,8 @@ interface SanitizeBudget {
 	maxKeys: number;
 	// Estimated render length still available.
 	chars: number;
+	// Charged for properties an inherited hook's output replaced, then refunded to `chars`.
+	discarded: number;
 	maxStringLength: number;
 	// util.inspect expands a container only at a level at or below this, so nothing below the next
 	// level is ever printed.
@@ -1446,7 +1451,7 @@ interface SeenEntry {
 }
 
 function isBudgetSpent(budget: SanitizeBudget): boolean {
-	return budget.chars <= 0 || budget.nodes >= MAX_SANITIZE_NODES;
+	return budget.chars <= 0 || budget.discarded >= MAX_DISCARDED_RENDER || budget.nodes >= MAX_SANITIZE_NODES;
 }
 
 function entryOverhead(depth: number): number {
@@ -1872,7 +1877,7 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, SeenEntry>, depth:
 	if (++budget.nodes > MAX_SANITIZE_NODES) return labelPlaceholder('[Unrenderable value: sanitize budget exceeded]');
 	const isPrimitive = value === null || (typeof value !== 'object' && typeof value !== 'function');
 	if (depth > budget.renderDepth + 1) return isPrimitive ? value : labelPlaceholder(NOT_RENDERED_LABEL);
-	if (budget.chars <= 0) return labelPlaceholder(OMITTED_LABEL);
+	if (budget.chars <= 0 || budget.discarded >= MAX_DISCARDED_RENDER) return labelPlaceholder(OMITTED_LABEL);
 	budget.chars -= entryOverhead(depth);
 	if (typeof value === 'string') {
 		return chargeText(value, budget, Math.min(value.length, budget.maxStringLength) + 2);
@@ -2195,10 +2200,10 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, SeenEntry>, depth:
 			labelPlaceholder(`[${symbols.length - symbolCount} more symbol properties omitted (sanitize budget)]`)
 		);
 	if (inheritedHook) {
-		// The properties stay charged even when the output replaces them: they were formatted all the
-		// same, and refunding them would let every such object format another budget's worth.
 		const output = callInspectHook(inheritedHook, result, depth, budget);
 		if (output !== result) {
+			budget.discarded += charsBefore - budget.chars;
+			budget.chars = charsBefore;
 			entry.clone =
 				typeof output === 'string' ? renderedLeaf(output, budget) : deepSanitizeErrors(output, seen, depth, budget);
 		}
@@ -2243,6 +2248,7 @@ export function inspectForLog(value: any, options?: any) {
 				maxKeys:
 					requestedEntries > 0 ? Math.min(requestedEntries, HARD_MAX_SANITIZE_ENTRIES) : DEFAULT_MAX_SANITIZE_ENTRIES,
 				chars: SANITIZE_RENDER_BUDGET,
+				discarded: 0,
 				maxStringLength: limit(renderOptions.maxStringLength),
 				renderDepth: limit(renderOptions.depth),
 				renderOptions,
