@@ -340,3 +340,34 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		second.session.disconnect(true);
 	});
 });
+
+describe('MQTT durable sessions on LMDB', function () {
+	if (isRocksDB) return;
+	this.timeout(60_000);
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		if (!Resources.resources) Resources.resetResources();
+	});
+
+	it('resume unchecked, as before, since LMDB has no generation', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const clientId = `lmdb-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+		await T.put('a', { value: 1 });
+		await waitFor(() => first.received.length >= 1);
+		await ackAll(first.session, first.received);
+		first.session.checkpoint();
+		await first.session.writes;
+		assert.strictEqual((await stored(clientId)).subscriptions[0].databaseGeneration, undefined);
+		first.session.disconnect(true);
+		await T.put('b', { value: 2 });
+		const second = await connect(clientId);
+		assert.strictEqual(second.session.sessionWasPresent, true);
+		await second.session.resume();
+		await waitFor(() => values(second.received).includes(2));
+		second.session.disconnect(true);
+	});
+});
