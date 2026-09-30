@@ -255,13 +255,17 @@ export function beginRestore(dbPath: string): RestoreLock {
  * Mark the restore successful: delete the marker (while still holding the lock), then release
  * the lock.
  */
+export function clearRestoringMarker(lock: RestoreLock): void {
+	unlinkSync(restoringMarkerPath(lock.dbPath));
+	// fsync the metadata directory so the marker's *removal* is durable — symmetric with the
+	// creation fsync in beginRestore. Without it, a power loss could resurrect the marker's
+	// directory entry and misclassify a fully-restored database as incomplete.
+	fsyncDirectory(restoreMetaDir(lock.dbPath));
+}
+
 export function completeRestore(lock: RestoreLock): void {
 	try {
-		unlinkSync(restoringMarkerPath(lock.dbPath));
-		// fsync the metadata directory so the marker's *removal* is durable — symmetric with the
-		// creation fsync in beginRestore. Without it, a power loss could resurrect the marker's
-		// directory entry and misclassify a fully-restored database as incomplete.
-		fsyncDirectory(restoreMetaDir(lock.dbPath));
+		clearRestoringMarker(lock);
 	} finally {
 		fileLockRelease(lock.token);
 	}

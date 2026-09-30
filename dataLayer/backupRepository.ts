@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileLockRelease, tryFileLock } from '@harperfast/rocksdb-js';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import logger from '../utility/logging/harper_logger.ts';
 import { restoreMarkerPresent } from './restoreMarker.ts';
 import { fsyncDirectory, removeFileDurably, writeFileDurably } from '../utility/durableFile.ts';
 
@@ -91,15 +92,25 @@ function assertRepositoryWritable(databaseName: string, error: any): never {
 export async function withBackupRepositoryLock<T>(
 	backupDir: string,
 	databaseName: string,
-	operation: () => Promise<T>
+	operation: () => Promise<T>,
+	createRepository = false
 ): Promise<T> {
 	const lockPath = managementLockPath(backupDir);
 	const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS;
-	// Checked up front, not inferred from whichever call failed first: the binding's lock error
-	// carries a message but no errno, so a read-only repository would otherwise surface as an opaque
-	// "open failed" rather than as the one thing the operator can act on.
+	if (!existsSync(backupDir)) {
+		// Only a create may bring a repository into existence. Creating it here for a delete or purge
+		// would leave an empty directory behind after the 404, and a later list_backups for that name
+		// would answer [] instead of the 404 a typo is owed. With nothing on disk there is also
+		// nothing to exclude, so the operation runs unlocked and refuses on its own.
+		if (!createRepository) return operation();
+		try {
+			mkdirSync(backupDir, { recursive: true });
+		} catch (error: any) {
+			assertRepositoryWritable(databaseName, error);
+		}
+	}
+	// The binding's lock error carries a message but no errno, so writability is checked here.
 	try {
-		mkdirSync(backupDir, { recursive: true });
 		accessSync(backupDir, W_OK);
 	} catch (error: any) {
 		assertRepositoryWritable(databaseName, error);
@@ -138,14 +149,11 @@ export function readBackupPins(backupDir: string): BackupPin[] {
 		let parsed: any;
 		try {
 			parsed = JSON.parse(readFileSync(join(pinsDir, entry.name), 'utf8'));
-			// JSON.parse happily returns null, a number or a string; reading a field off one of those
-			// would throw past this catch and fail the whole delete with a 500 instead of failing closed
 			if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
 				throw new Error('pin file is not an object');
 			}
-			// A parseable record is not a usable one. `{}`, `{"backup_id":"7"}` and `{"backup_id":null}`
-			// all survive JSON.parse and then match no requested id, so without this the claim would
-			// permit exactly the delete it exists to refuse.
+			// A parseable record is not a usable one: `{"backup_id":"7"}` matches no requested id, so
+			// without this the claim permits exactly the delete it exists to refuse.
 			if (!Number.isInteger(parsed.backup_id) || parsed.backup_id < 1) {
 				throw new Error('pin file has no usable backup id');
 			}
@@ -217,7 +225,15 @@ export function assertBackupsUnpinned(backupDir: string, backupIds: number[], da
 	const live: BackupPin[] = [];
 	for (const pin of pins) {
 		if (pinIsLive(pin)) live.push(pin);
-		else unpinBackup(backupDir, pin.pin_id);
+		else {
+			// Opportunistic: a lapsed claim we cannot unlink is debris, not a reason to refuse the
+			// removal it no longer protects.
+			try {
+				unpinBackup(backupDir, pin.pin_id);
+			} catch (error) {
+				logger.warn(`Could not sweep a lapsed backup claim in ${backupDir}`, error);
+			}
+		}
 	}
 	const blocking = live.filter((pin) => Number.isNaN(pin.backup_id) || requested.has(pin.backup_id));
 	if (blocking.length === 0) return;

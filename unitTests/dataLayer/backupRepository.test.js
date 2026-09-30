@@ -30,13 +30,22 @@ describe('backupRepository', function () {
 	});
 
 	describe('withBackupRepositoryLock', function () {
-		it('creates the repository directory and runs the operation', async function () {
-			const result = await withBackupRepositoryLock(backupDir, 'somedb', async () => 'done');
+		it('creates the repository only for a caller that is creating a backup', async function () {
+			const result = await withBackupRepositoryLock(backupDir, 'somedb', async () => 'done', true);
 			assert.strictEqual(result, 'done');
 			assert.ok(existsSync(managementLockPath(backupDir)));
 		});
 
+		it('runs unlocked on a repository that does not exist, leaving nothing behind', async function () {
+			// a delete or purge for a name with no repository must 404 on its own, not leave an empty
+			// directory that makes a later list_backups answer [] instead of that 404
+			const result = await withBackupRepositoryLock(backupDir, 'somedb', async () => 'done');
+			assert.strictEqual(result, 'done');
+			assert.ok(!existsSync(backupDir), 'no repository may be created by a non-creating caller');
+		});
+
 		it('serializes concurrent operations rather than interleaving them', async function () {
+			mkdirSync(backupDir, { recursive: true });
 			const events = [];
 			const operation = async (name) =>
 				withBackupRepositoryLock(backupDir, 'somedb', async () => {

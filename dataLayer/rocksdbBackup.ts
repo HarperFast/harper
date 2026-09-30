@@ -27,7 +27,15 @@ import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../utility/hdbTerms.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.js';
-import { beginRestore, completeRestore, abandonRestore, checkRestoreState, type RestoreLock } from './restoreMarker.ts';
+import {
+	beginRestore,
+	clearRestoringMarker,
+	completeRestore,
+	abandonRestore,
+	checkRestoreState,
+	releaseRestoreLock,
+	type RestoreLock,
+} from './restoreMarker.ts';
 import { assertBackupsUnpinned, pinBackup, unpinBackup, withBackupRepositoryLock } from './backupRepository.ts';
 import {
 	assertBlobSnapshotRestorable,
@@ -349,8 +357,8 @@ async function finalizeBackup(
 ): Promise<void> {
 	try {
 		if (blobs) await snapshotBlobs(backupDir, backupId, getBlobPathsForDatabaseName(databaseName));
-		// The engine backup was created outside this lock (db.backup takes only the binding's own) and
-		// the blob snapshot above can take a while, so a purge can have removed the engine files by now.
+		// Guards writers that do not take Harper's lock — an older binary, or a direct binding call.
+		// Harper's own purge cannot reach here: the whole create is one critical section.
 		// The manifest is what publishes a backup as usable, so writing one for engine files that are
 		// gone is the #2031 false-green shape: a backup that lists and verifies with nothing to restore.
 		if (!(await listBackupsInDir(backupDir)).some((backup) => backup.backupId === backupId)) {
@@ -408,20 +416,23 @@ export async function createBackup(request: any) {
 	const excludeBlobs = requireBooleanOption(request.exclude_blobs, 'exclude_blobs');
 	const rootStore = requireRocksRootStore(databaseName, OPERATIONS_ENUM.CREATE_BACKUP);
 	const backupDir = backupDirForDatabase(databaseName);
-	// The engine call is inside the lock, not before it: that is the order this module documents
-	// (management lock, then the engine call that takes `.backup.lock`), and it is what makes the
-	// whole create one critical section — a purge can no longer remove the engine backup between
-	// `backup()` and the manifest that publishes it, nor shift which ids it would remove.
-	const backupId = await withBackupRepositoryLock(backupDir, databaseName, async () => {
-		let id;
-		try {
-			id = await rootStore.backup(backupDir, { transactionLogs: true });
-		} catch (error) {
-			throw mapLockedError(error, databaseName);
-		}
-		await finalizeBackup(backupDir, id, databaseName, !excludeBlobs);
-		return id;
-	});
+	// One critical section, management lock before the engine call: a purge can neither remove the
+	// engine backup before the manifest publishes it nor shift which ids it would remove.
+	const backupId = await withBackupRepositoryLock(
+		backupDir,
+		databaseName,
+		async () => {
+			let id;
+			try {
+				id = await rootStore.backup(backupDir, { transactionLogs: true });
+			} catch (error) {
+				throw mapLockedError(error, databaseName);
+			}
+			await finalizeBackup(backupDir, id, databaseName, !excludeBlobs);
+			return id;
+		},
+		true
+	);
 	await writeBackupReadme(backupDir, databaseName);
 	return {
 		database: databaseName,
@@ -676,19 +687,26 @@ export async function restoreBackup(request: any) {
 }
 
 /**
- * Release a finished restore's claim on its source, then its hold on the destination. The pin goes
- * first: `completeRestore` releases the destination lock, and once that is gone another restore of
- * the same database can publish its own marker and pin — derived from the same destination
- * directory, so this unlink would remove the new attempt's claim instead of this one's. A failed
- * unpin is left to the lazy sweep rather than blocking the reload the caller still owes.
+ * Retire a finished restore: marker, then claim, then the destination lock. While the database is
+ * still marked a rerun is required and the rerun needs this backup, so the claim has to outlive the
+ * marker — a crash the other way round leaves an unloadable database whose source a purge may
+ * delete. Both happen under the restore lock, so no later attempt can have written a claim at this
+ * same id yet; one stranded after the marker is gone simply lapses and is swept.
  */
 function releaseRestoreClaim(backupDir: string, pinId: string, lock: RestoreLock, databaseName: string): void {
 	try {
-		unpinBackup(backupDir, pinId);
-	} catch (error) {
-		logger.error(`Could not release the backup pin after restoring '${databaseName}'; it will be swept later`, error);
+		clearRestoringMarker(lock);
+		try {
+			unpinBackup(backupDir, pinId);
+		} catch (error) {
+			logger.error(
+				`Could not release the backup claim after restoring '${databaseName}'; it lapses with the marker`,
+				error
+			);
+		}
+	} finally {
+		releaseRestoreLock(lock);
 	}
-	completeRestore(lock);
 }
 
 /**
@@ -1067,16 +1085,21 @@ export async function createBackupOffline(databaseName: string, excludeBlobs = f
 	const database = RocksDatabase.open(databaseDir);
 	try {
 		const backupDir = backupDirForDatabase(databaseName);
-		const backupId = await withBackupRepositoryLock(backupDir, databaseName, async () => {
-			let id;
-			try {
-				id = await database.backup(backupDir, { transactionLogs: true });
-			} catch (error) {
-				throw mapLockedError(error, databaseName);
-			}
-			await finalizeBackup(backupDir, id, databaseName, !excludeBlobs);
-			return id;
-		});
+		const backupId = await withBackupRepositoryLock(
+			backupDir,
+			databaseName,
+			async () => {
+				let id;
+				try {
+					id = await database.backup(backupDir, { transactionLogs: true });
+				} catch (error) {
+					throw mapLockedError(error, databaseName);
+				}
+				await finalizeBackup(backupDir, id, databaseName, !excludeBlobs);
+				return id;
+			},
+			true
+		);
 		await writeBackupReadme(backupDir, databaseName);
 		return {
 			database: databaseName,

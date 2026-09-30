@@ -678,16 +678,21 @@ describe('rocksdbBackup', function () {
 			const backupDir = backupDirForDatabase(PINNED);
 
 			let created;
-			await withBackupRepositoryLock(backupDir, PINNED, async () => {
-				created = createBackupOffline(PINNED);
-				created.catch(() => {}); // settled below; this only keeps an early failure unhandled-free
-				await new Promise((resolve) => setTimeout(resolve, 750));
-				assert.deepStrictEqual(
-					await listBackupsInDir(backupDir),
-					[],
-					'the engine backup must not be created while another operation holds the lock'
-				);
-			});
+			await withBackupRepositoryLock(
+				backupDir,
+				PINNED,
+				async () => {
+					created = createBackupOffline(PINNED);
+					created.catch(() => {}); // settled below; this only keeps an early failure unhandled-free
+					await new Promise((resolve) => setTimeout(resolve, 750));
+					assert.deepStrictEqual(
+						await listBackupsInDir(backupDir),
+						[],
+						'the engine backup must not be created while another operation holds the lock'
+					);
+				},
+				true
+			);
 
 			await created;
 			assert.strictEqual((await listBackupsInDir(backupDir)).length, 1, 'and it proceeds once the lock is free');
