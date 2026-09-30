@@ -326,10 +326,10 @@ describe('Resuming a subscription in a database generation', function () {
 			const [cursor] = await writeEach(T, 1, () => 'A');
 			await T.delete('A');
 			const deleteKey = [...T.auditStore.getRange({ start: cursor, exclusiveStart: true })].at(-1).txnLogKey;
-			const created = await resume(T, cursor, { id: 'B', includeSuperseded: true });
 			await T.put('B', { value: 'first' });
-			await waitFor(() => valuesOf(created.events).includes('first'));
+			const created = await resume(T, cursor, { id: 'B', includeSuperseded: true });
 			assert.strictEqual(await created.subscription.resumeVerified, true, 'a record first written after the cursor');
+			assert.deepStrictEqual(valuesOf(created.events), ['first'], 'replayed from its first version');
 			created.subscription.end();
 			// retention prunes the delete, and cleanup takes the tombstone with it
 			prune(T, deleteKey + 0.001);
