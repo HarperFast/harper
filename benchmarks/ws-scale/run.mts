@@ -344,10 +344,8 @@ async function main() {
 				const stranger = acked.find((id) => !workerIds!.has(id));
 				if (stranger) throw new Error(`thread ${stranger} joined after the first GC; a Harper worker restarted`);
 				if (acked.length === workerIds.size) return collectGarbageResult(request, workerIds);
-			} else if (acked.length >= threads) {
-				// let any extra worker that loads the preload (such as a job worker) acknowledge too
-				await delay(500);
-				workerIds = new Set(ackedIds(request));
+			} else if (acked.length === threads) {
+				workerIds = new Set(acked);
 				return collectGarbageResult(request, workerIds);
 			}
 			if (waited > 30_000) throw new Error(`only ${acked.length} Harper workers ran ${request}`);
