@@ -58,7 +58,7 @@ import {
 } from './recordLock.ts';
 import { getThisNodeName } from '../server/nodeName.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
-import { addSubscription } from './transactionBroadcast.ts';
+import { addSubscription, dispatchedThrough } from './transactionBroadcast.ts';
 import { databaseDropPrepared } from './databaseDropPreparation.ts';
 import {
 	DerivedIndexLagError,
@@ -6561,6 +6561,8 @@ export function makeTable(options): TableResourceClass {
 			// Coalescing guards for the reload re-snapshot (harper-pro#495), driven from the listener below.
 			let reloadResnapshotRunning = false;
 			let reloadResnapshotPending = false;
+			// set once registered: whether this subscription certifies its delivery progress (request.reportProgress)
+			let reportingProgress = false;
 			const subContext = this.getContext() as any;
 			const rowFilter = typeof request.rowFilter === 'function' ? request.rowFilter : undefined;
 			const eventFilter = typeof request.eventFilter === 'function' ? request.eventFilter : undefined;
@@ -6604,6 +6606,8 @@ export function makeTable(options): TableResourceClass {
 					try {
 						if (isLockControlType(auditRecord.type)) return;
 						if (auditRecord.type === 'reload' && !request.rawEvents && databaseName !== 'system') {
+							// back-filled rows have no history, so a progress certificate cannot pass the marker
+							if (reportingProgress) return void this.close(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
 							return scheduleReloadResnapshot();
 						}
 						const event = eventFromAudit(id, auditRecord, txnLogKey, beginTxn);
@@ -6620,12 +6624,46 @@ export function makeTable(options): TableResourceClass {
 						}
 					} catch (error) {
 						logger.error?.(error);
+						// a certificate cannot pass an event it failed to deliver
+						if (reportingProgress) this.close(error);
 					}
 				},
 				request.startTime || 0,
 				request
 			);
 			const isActive = () => !subscription.closed && Boolean(subscription.subscriptions);
+			let progressLive = false;
+			let progressFloor: number | undefined;
+			let goLive: (() => void) | undefined;
+			if (request.reportProgress && subscription.reportsProgress) {
+				reportingProgress = true;
+				subscription.sentCount = 0;
+				const queueSend = subscription.send;
+				subscription.send = function (event) {
+					this.sentCount++;
+					return queueSend.call(this, event);
+				};
+				const collection = request.isCollection ?? thisId == null;
+				const beforeLive = (): number | undefined =>
+					resuming
+						? collection
+							? subscription.startTime
+							: request.startTime
+						: request.startTime === undefined
+							? subscription.registeredThrough
+							: undefined;
+				subscription.progress = () => {
+					if (!isActive()) return;
+					if (!progressLive) return beforeLive();
+					const dispatched = dispatchedThrough(subscription);
+					if (progressFloor === undefined) return dispatched;
+					return dispatched === undefined || dispatched < progressFloor ? progressFloor : dispatched;
+				};
+				goLive = () => {
+					progressFloor = beforeLive();
+					progressLive = true;
+				};
+			}
 			let settleResume: ((verified: boolean) => void) | undefined;
 			if (resuming) subscription.resumeVerified = new Promise<boolean>((resolve) => (settleResume = resolve));
 			// Each check compares the floor with the position the replay had reached at the previous check: a
@@ -6812,17 +6850,21 @@ export function makeTable(options): TableResourceClass {
 							const t = localTime ?? version;
 							if (t > cursorMaxTime) cursorMaxTime = t;
 							if (!value) continue;
-							if (!send({ id, localTime, value, version, type: 'put', size })) return;
+							const scanned: any = { id, localTime, value, version, type: 'put', size };
+							if (reportingProgress) scanned.fromScan = true;
+							if (!send(scanned)) return;
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								// if we have too many messages, we need to pause and let the client catch up
 								if ((await subscription.waitForDrain()) === false) return;
 							}
 						}
-						if (cursorMaxTime) subscription!.startTime = cursorMaxTime;
 						// Filter the queue to drop in-flight pre-subscribe events the listener queued
 						// while subscription.startTime was still 0. Anything strictly newer than what
-						// the cursor saw is a real post-subscribe commit and is kept.
-						if (pendingRealTimeQueue && cursorMaxTime) {
+						// the cursor saw is a real post-subscribe commit and is kept. A progress
+						// certificate keeps every buffered event instead: the filter can drop ones the scan
+						// never covered (harper#2933), and duplicate state is safe where lost history is not.
+						if (cursorMaxTime && !reportingProgress) subscription!.startTime = cursorMaxTime;
+						if (pendingRealTimeQueue && cursorMaxTime && !reportingProgress) {
 							pendingRealTimeQueue = pendingRealTimeQueue.filter(
 								(event) => (event.localTime ?? event.version) > cursorMaxTime
 							);
@@ -6909,14 +6951,9 @@ export function makeTable(options): TableResourceClass {
 					} else if (checkResume && !entry && !checkResume()) return;
 					if (!request.omitCurrent && entry?.value) {
 						// if retain and it exists, send the current value first
-						if (
-							!send({
-								id: thisId,
-								...entry,
-								type: 'put',
-							})
-						)
-							return;
+						const current: any = { id: thisId, ...entry, type: 'put' };
+						if (reportingProgress) current.fromScan = true;
+						if (!send(current)) return;
 					}
 				}
 				// now send any queued messages
@@ -6927,6 +6964,7 @@ export function makeTable(options): TableResourceClass {
 					pendingRealTimeQueue = null;
 				}
 				settleResume?.(isActive());
+				goLive?.();
 			})();
 			result.catch(failSubscription);
 			if (settleResume) {

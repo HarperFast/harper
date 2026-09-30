@@ -258,6 +258,11 @@ export interface SubscriptionRequest extends RequestTarget {
 	 * finite `startTime`, where `0` is a position, and no `previousCount`.
 	 */
 	databaseGeneration?: string;
+	/**
+	 * Certify delivery progress (RocksDB): the subscription carries `progress()` and `sentCount`, a reload
+	 * marker or a failure to build a live event ends it, and its snapshot keeps every event buffered during the scan.
+	 */
+	reportProgress?: boolean;
 	/** The count of previously recorded events to return */
 	previousCount?: number;
 	/** If the current record state should be omitted as the first event */
@@ -321,6 +326,13 @@ export interface Subscription<Event extends object = any> extends IterableEventQ
 	 * that commits after the position was recorded with a key below it.
 	 */
 	resumeVerified?: Promise<boolean>;
+	/**
+	 * Present only when subscribed with `reportProgress`: the newest log key at or below which every history
+	 * event this subscription will deliver has already been sent to it, or undefined if none is certified.
+	 */
+	progress?: () => number | undefined;
+	/** Present only when subscribed with `reportProgress`: how many events have been sent to this subscription. */
+	sentCount?: number;
 
 	end(): void;
 	toJSON(): { name: 'subscription' };
