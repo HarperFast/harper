@@ -149,6 +149,9 @@ export class DeployRenderer {
 				this.output.write(`error: ${e.message ?? message.data}${e.code ? ` (${e.code})` : ''}\n`);
 				break;
 			}
+			case 'warning':
+				this.output.write(`warning: ${(parsed as { message?: string })?.message ?? message.data}\n`);
+				break;
 			case 'done':
 				// Caller picks up final result via the SSE iterator; nothing to render here.
 				break;
