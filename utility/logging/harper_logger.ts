@@ -1310,7 +1310,7 @@ function renderErrorLine(error: any, maxLength = Infinity): string {
 		const message = maxLength === Infinity ? undefined : error?.message;
 		const base =
 			typeof message === 'string' && message.length > maxLength
-				? `${error.constructor.name}: ${message.slice(0, maxLength)}`
+				? `${error.constructor.name}: ${message.slice(0, Math.max(0, maxLength))}`
 				: typeof error?.stack === 'string'
 					? error.stack
 					: errorToString(error);
@@ -1413,6 +1413,7 @@ const SANITIZE_RENDER_BUDGET = MAX_LOG_RENDER_LENGTH - 16 * 1024;
 const OMITTED_LABEL = '[omitted (sanitize budget)]';
 const NOT_RENDERED_LABEL = '[below inspect depth]';
 const COLLAPSED_MARKER = Symbol('sanitize: collapsed at inspect depth');
+const NATIVE_BUFFER_INSPECT = Object.getOwnPropertyDescriptor(Buffer.prototype, inspect.custom)?.value;
 const REDACTED_LABEL = '[redacted]';
 
 interface SanitizeBudget {
@@ -1478,7 +1479,9 @@ function renderedLeaf(text: string, budget: SanitizeBudget) {
  *  run: any other hook on the value would render unwalked output. */
 function leafText(value: object, budget: SanitizeBudget): string {
 	const bufferHookOnly =
-		Object.getPrototypeOf(value) === Buffer.prototype && !Object.getOwnPropertyDescriptor(value, inspect.custom);
+		Object.getPrototypeOf(value) === Buffer.prototype &&
+		!Object.getOwnPropertyDescriptor(value, inspect.custom) &&
+		Object.getOwnPropertyDescriptor(Buffer.prototype, inspect.custom)?.value === NATIVE_BUFFER_INSPECT;
 	return inspect(value, bufferHookOnly ? budget.renderOptions : budget.leafOptions);
 }
 
@@ -2192,13 +2195,10 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, SeenEntry>, depth:
 			labelPlaceholder(`[${symbols.length - symbolCount} more symbol properties omitted (sanitize budget)]`)
 		);
 	if (inheritedHook) {
-		const charsAfterProperties = budget.chars;
-		// The clone's properties render only if the hook returns it, so they are charged only then.
-		budget.chars = charsBefore;
+		// The properties stay charged even when the output replaces them: they were formatted all the
+		// same, and refunding them would let every such object format another budget's worth.
 		const output = callInspectHook(inheritedHook, result, depth, budget);
-		if (output === result) {
-			budget.chars = charsAfterProperties;
-		} else {
+		if (output !== result) {
 			entry.clone =
 				typeof output === 'string' ? renderedLeaf(output, budget) : deepSanitizeErrors(output, seen, depth, budget);
 		}
