@@ -68,8 +68,8 @@ describe('native derived-index query coverage', function () {
 		return (releaseHeldBarrier = release);
 	};
 	afterEach(() => releaseHeldBarrier());
-	// Tests that run their own runtime need the runner lock, so the table's attachment must stay detached:
-	// any resetDatabases() (the analytics timers declare their tables) would otherwise attach a rival runner.
+	// Tests running their own runtime need the runner lock; any resetDatabases() (the analytics timers
+	// declare their tables) re-attaches the table's runtime as a rival runner unless activation is suspended.
 	let releaseTableActivation;
 	const detachTableRuntime = async () => {
 		releaseTableActivation ??= suspendDerivedIndexActivation(Product.primaryStore.rootStore);
