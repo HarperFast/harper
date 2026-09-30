@@ -27,6 +27,8 @@ import { createApiClient } from '../apiTests/utils/client.mjs';
 import { waitForRouteReady } from '../apiTests/utils/lifecycle.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'durable-resume');
+// takeover closes an older connection on the same thread, so every connection lands on one
+const CONFIG = { threads: { count: 1 } };
 // mqtt.js's WebSocket transport doesn't complete CONNACK on Bun, the same skip the sibling suites carry
 const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 
@@ -174,7 +176,7 @@ suite(
 		}
 
 		before(async () => {
-			await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: {}, env: {} });
+			await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: CONFIG, env: {} });
 			await useHarper();
 			await put('Readings', 'seed', 0);
 		});
@@ -269,6 +271,37 @@ suite(
 			}
 		});
 
+		test('a newer connection for the client id takes the durable session over, a clean start too', async () => {
+			const clientId = `takeover-${randomUUID().slice(0, 6)}`;
+			const { mqttClient: fresh } = await connect({ clientId, clean: true });
+			await end(fresh);
+			const reasons: Record<string, number[]> = { first: [], second: [] };
+			const closed = { first: false, second: false };
+			const { mqttClient: first } = await connect({ clientId });
+			first.on('disconnect', (packet) => reasons.first.push(packet.reasonCode));
+			first.on('close', () => (closed.first = true));
+			await subscribe(first, 'Readings/#', 1);
+			const { mqttClient: second, sessionPresent } = await connect({ clientId });
+			second.on('disconnect', (packet) => reasons.second.push(packet.reasonCode));
+			second.on('close', () => (closed.second = true));
+			strictEqual(sessionPresent, true);
+			ok(await waitFor(() => closed.first), 'the older durable connection is closed');
+			deepStrictEqual(reasons.first, [0x8e]);
+			const { mqttClient: clean } = await connect({ clientId, clean: true });
+			try {
+				ok(await waitFor(() => closed.second), 'a clean start closes the durable connection too');
+				deepStrictEqual(reasons.second, [0x8e]);
+				ok(
+					await waitFor(async () => (await storedSession(clientId)) === undefined),
+					'the clean start deleted the session, and the closed connection did not write it back'
+				);
+			} finally {
+				first.end(true);
+				second.end(true);
+				await end(clean);
+			}
+		});
+
 		test(
 			'a session resumes across a hard kill and replays the delivery it never acknowledged',
 			{ timeout: 180_000 },
@@ -293,7 +326,7 @@ suite(
 				// SIGKILL: no disconnect save, so the session resumes from what its checkpoints wrote
 				await killHarper(ctx, { graceMs: 0 });
 				subscriber.end(true);
-				await startHarper(ctx, { config: {}, env: {} });
+				await startHarper(ctx, { config: CONFIG, env: {} });
 				await useHarper();
 				await put('Readings', `away-${randomUUID().slice(0, 6)}`, 4);
 				const received: number[] = [];

@@ -410,8 +410,9 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						} as any) as any;
 						session = await session;
 						session.closeConnection = closeConnection;
-						if (session instanceof DurableSubscriptionsSession) {
-							// a durable session has one owner: an older connection for this client on this thread gives way
+						if (session.sessionId) {
+							// a durable session has one owner: an older connection for this client on this thread gives
+							// way, to a clean start too, which deleted the record the older connection would write
 							for (const other of mqttSettings.sessions) {
 								if (other !== session && other.sessionId === session.sessionId) other.supersede?.();
 							}
