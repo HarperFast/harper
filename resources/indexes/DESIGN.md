@@ -508,13 +508,14 @@ checks or structured filters under-fill a page, Harper sizes the next request fr
 growing to at most 4,096 hits, bounded further by the native worst-case response envelope, and
 shrinking again when selectivity improves. A zero-yield page grows geometrically because it provides
 no finite selectivity estimate. Large pages preserve the initial page's yield cadence, up to 256 source
-reads, and check cancellation and the execution deadline at each yield. The total configured native result window remains the hard
-bound, and one reader lease keeps every page on one native snapshot. A short lower-bound page fails
-closed only when its reported total claims additional hits beyond the returned page. Exhausting that window because
-native versions are stale is retryable index lag; filter-
-only exhaustion remains a client error asking for a narrower query. During bounded lag a smaller
-result can still temporarily omit a recently changed record when the native result set ends before
-the search window is exhausted.
+reads, and check cancellation and the execution deadline at each yield. The total configured native
+result window remains the hard bound, and one reader lease keeps every page on one native snapshot.
+The native contract requires a lower-bound total to describe retrievable hits: while more hits remain
+within the window, a page must return its requested limit. Harper fails closed when a short lower-bound
+page claims additional hits beyond those returned. Exhausting the window because native versions are
+stale is retryable index lag; filter-only exhaustion remains a client error asking for a narrower query.
+During bounded lag a smaller result can still temporarily omit a recently changed record when the
+native result set ends before the search window is exhausted.
 REST exposes the index coverage header, and callers that require current coverage use
 `maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`.
 Full-text score descending is the only supported ordering in this release. Count requests return

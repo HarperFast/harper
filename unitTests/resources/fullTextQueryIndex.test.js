@@ -1071,39 +1071,99 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('rejects an incomplete injected query capability contract before opening a reader', async () => {
+	it('rejects incomplete injected query capability contracts before opening a reader', async () => {
 		const auditStore = sharedStore();
-		const readinessId = 'binding-capabilities';
-		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
-		let opens = 0;
-		const index = new FullTextQueryIndex({
-			Table: { tableId: 1, primaryStore: {}, _readTxnForContext: () => undefined },
-			definition: definition(),
-			auditStore,
-			readinessId,
-			indexId: readinessId,
-			storePath: '/unused',
-			storeName: 'unused',
-			sourceGeneration: 'generation',
-			limits: {},
-			binding: {
-				async runtimeInfo() {
-					const limits = queryLimits();
-					delete limits.maxAutocompleteResults;
-					return { queryClassIsolationMinimumSearchThreads: 1, limits };
+		for (const missing of [
+			'maxAutocompleteResults',
+			'maxRecordIdBytes',
+			'maxRecordVersionBytes',
+			'maxSearchResponseBytes',
+		]) {
+			const readinessId = `binding-capabilities-${missing}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			let opens = 0;
+			const index = new FullTextQueryIndex({
+				Table: { tableId: 1, primaryStore: {}, _readTxnForContext: () => undefined },
+				definition: definition(),
+				auditStore,
+				readinessId,
+				indexId: readinessId,
+				storePath: '/unused',
+				storeName: 'unused',
+				sourceGeneration: 'generation',
+				limits: {},
+				binding: {
+					async runtimeInfo() {
+						const limits = queryLimits();
+						delete limits[missing];
+						return { queryClassIsolationMinimumSearchThreads: 1, limits };
+					},
+					async openNativeFullTextReader() {
+						opens++;
+					},
 				},
-				async openNativeFullTextReader() {
-					opens++;
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			await assert.rejects(
+				index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}),
+				/Full-text search on 'catalogSearch' failed/
+			);
+			assert.strictEqual(opens, 0);
+			await index.close();
+		}
+	});
+
+	it('rejects native response envelopes that cannot hold advertised results', async () => {
+		const search = async (readinessId, overrides) => {
+			const auditStore = sharedStore();
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			let opens = 0;
+			const index = new FullTextQueryIndex({
+				Table: { tableId: 1, primaryStore: {}, _readTxnForContext: () => undefined },
+				definition: definition(),
+				auditStore,
+				readinessId,
+				indexId: readinessId,
+				storePath: '/unused',
+				storeName: 'unused',
+				sourceGeneration: 'generation',
+				limits: {},
+				binding: {
+					async runtimeInfo() {
+						return {
+							queryClassIsolationMinimumSearchThreads: 1,
+							limits: queryLimits({
+								maxRecordIdBytes: 1,
+								maxRecordVersionBytes: 1,
+								maxAutocompleteResults: 2,
+								...overrides,
+							}),
+						};
+					},
+					async openNativeFullTextReader() {
+						opens++;
+						return {
+							async search() {
+								return { total: 0, totalRelation: 'exact', hits: [] };
+							},
+							committedPayload: publicationPayload(),
+							async reload() {},
+							async close() {},
+						};
+					},
 				},
-			},
-		});
-		attachCurrentCoverage(index, auditStore, readinessId);
-		await assert.rejects(
-			index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}),
-			/Full-text search on 'catalogSearch' failed/
-		);
-		assert.strictEqual(opens, 0);
-		await index.close();
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			try {
+				return await index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {});
+			} finally {
+				await index.close();
+				assert.ok(opens <= 1);
+			}
+		};
+		await assert.rejects(search('response-cannot-hold-hit', { maxSearchResponseBytes: 27 }), /Full-text search/);
+		await assert.rejects(search('response-cannot-hold-autocomplete', { maxSearchResponseBytes: 42 }), /Full-text search/);
+		assert.deepStrictEqual(await search('response-autocomplete-boundary', { maxSearchResponseBytes: 43 }), []);
 	});
 
 	it('maps native query failures without exposing native details', async () => {

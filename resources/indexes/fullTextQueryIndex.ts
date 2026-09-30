@@ -864,17 +864,18 @@ export class FullTextQueryIndex {
 			this.#nativeOptions.limits.searchThreads
 		);
 		this.#maxSearchWindow = info.limits.maxSearchWindow;
+		const responseHitCapacity = Math.floor(
+			(info.limits.maxSearchResponseBytes - NATIVE_SEARCH_RESPONSE_HEADER_BYTES) /
+				(NATIVE_SEARCH_HIT_OVERHEAD_BYTES + info.limits.maxRecordIdBytes + info.limits.maxRecordVersionBytes)
+		);
 		this.#maxFilteredRawPageSize = Math.min(
 			MAX_FILTERED_RAW_PAGE_SIZE,
 			info.limits.maxSearchWindow,
-			Math.floor(
-				(info.limits.maxSearchResponseBytes - NATIVE_SEARCH_RESPONSE_HEADER_BYTES) /
-					(NATIVE_SEARCH_HIT_OVERHEAD_BYTES + info.limits.maxRecordIdBytes + info.limits.maxRecordVersionBytes)
-			)
+			responseHitCapacity
 		);
-		if (this.#maxFilteredRawPageSize < 1)
+		if (responseHitCapacity < 1)
 			throw new TypeError('@harperfast/fulltext/native search response limit cannot hold one maximum-size hit');
-		if (this.#maxFilteredRawPageSize < info.limits.maxAutocompleteResults)
+		if (responseHitCapacity < info.limits.maxAutocompleteResults)
 			throw new TypeError(
 				'@harperfast/fulltext/native autocomplete limit exceeds its worst-case search response capacity'
 			);
