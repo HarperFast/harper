@@ -607,19 +607,28 @@ export async function restoreBackup(request: any) {
 	// Once is enough: the decision reads the manifest and the opt-in, never the destination, so no
 	// concurrent writer can change the answer between here and the purge.
 	assertEngineOnlyRestoreAllowed(databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
-	// The restore lock first, so only the attempt that will actually run ever touches the pin.
-	const lock = beginRestoreForDatabase(databaseDir, databaseName);
 	const pinId = restorePinId(databaseDir);
 	const restoreToken = randomUUID();
 	let destructionStarted = false;
-	try {
-		// Claim the source, then re-check it survived: repository maintenance no longer needs a loaded
-		// database, so a delete_backup admitted between resolving this backup and claiming it would
-		// otherwise leave the destination purged with nothing to restore from.
-		await withBackupRepositoryLock(backupDir, databaseName, async () => {
+	// Marker, existence re-check and claim in one critical section. Publishing the marker first and
+	// then waiting for this lock would leave a window where a kill strands a marked — and so
+	// unloadable — database whose source nothing protects; confirming the backup before claiming it
+	// keeps a rerun for a since-deleted id from overwriting the previous attempt's live claim.
+	const lock = await withBackupRepositoryLock(backupDir, databaseName, async () => {
+		const acquired = beginRestoreForDatabase(databaseDir, databaseName);
+		try {
+			await findBackup(backupDir, backupId, databaseName);
 			pinBackup(backupDir, pinId, backupId, `restore of database '${databaseName}'`, databaseDir);
-		});
-		await findBackup(backupDir, backupId, databaseName);
+			return acquired;
+		} catch (error) {
+			// Nothing destructive has happened. A marker this attempt created must not outlive it; one
+			// it inherited means a rerun is still owed, so it stays.
+			if (acquired.preexisting) abandonRestore(acquired);
+			else completeRestore(acquired);
+			throw error;
+		}
+	});
+	try {
 		// Block new blob saves, drain in-flight saves, and close the database across all worker threads.
 		// Each thread also rescans, and the restoring marker keeps it from reloading mid-restore.
 		try {
@@ -1147,14 +1156,15 @@ export async function restoreBackupOffline(
 	const blobRoots = getBlobPathsForDatabaseName(targetDatabase ?? databaseName);
 	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
 	assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
-	// Take the restore lock + marker BEFORE probing so a server that starts after this point sees the
-	// marker and refuses to load the database (closing the window between the probe and the purge).
-	const lock = beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName);
 	const pinId = restorePinId(databaseDir);
 	let destructionStarted = false;
-	try {
-		// Claim the source, then re-check it survived the gap since it was resolved.
-		await withBackupRepositoryLock(backupDir, databaseName, async () => {
+	// The marker goes up before any probing, so a server starting after this point refuses to load the
+	// database — and it goes up in the same critical section as the existence re-check and the claim,
+	// so a kill between them cannot strand a marked database with an unprotected source.
+	const lock = await withBackupRepositoryLock(backupDir, databaseName, async () => {
+		const acquired = beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName);
+		try {
+			await findBackup(backupDir, backupId as number, databaseName);
 			pinBackup(
 				backupDir,
 				pinId,
@@ -1162,8 +1172,14 @@ export async function restoreBackupOffline(
 				`restore of database '${targetDatabase ?? databaseName}'`,
 				databaseDir
 			);
-		});
-		await findBackup(backupDir, backupId as number, databaseName);
+			return acquired;
+		} catch (error) {
+			if (acquired.preexisting) abandonRestore(acquired);
+			else completeRestore(acquired);
+			throw error;
+		}
+	});
+	try {
 		// The offline path is entered only when the CLI sees no running server (getHdbPid), but that is
 		// a heuristic: the PID file is briefly absent mid-`harper restart`, and backups.restore's
 		// purgeAllFiles never takes RocksDB's own lock. Probe that lock by opening the database — a live
