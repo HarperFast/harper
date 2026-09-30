@@ -348,6 +348,16 @@ The `@table(cacheControl:)` value is persisted on the primary-key attribute (lik
 
 ---
 
+## MQTT durable sessions resume through the checked subscription (`server/DurableSubscriptionsSession.ts`)
+
+A persisted QoS 1/2 entry is `{ qos, topic, startTime, databaseGeneration? }`, and the record carries the `incarnation` of the connection that owns it (harper#2448).
+
+- **Positions are certified, never clocks.** A new subscription starts at its registration watermark (`registeredThrough`), bound to the database generation when one exists, and otherwise at `getNextMonotonicTime()` unbound until the first certified position replaces it. A topic's position is `min(subscription.progress(), previousKey of its oldest unacknowledged delivery)`; a transaction's messages share a key, so one unacked message holds the position before its whole transaction. Scan deliveries (`fromScan`) stay out of this ordering: they are retained state, which a resumed session does not resend.
+- **Checkpoints:** coalesced after acknowledgements, on an unref'd timer (`min(auditRetention / 10, 1h)`), and at disconnect, where positions are taken before subscriptions end because `close()` clears a queue and would read as idle. Nothing past a resumed position is saved until that subscription's `resumeVerified` resolves true. Out-of-order acks are not persisted: a partly acked transaction is redelivered. Legacy `acks` lists are ignored.
+- **Before CONNACK,** a bound collection entry is checked against the floor and a record entry against the generation (its own walk decides the rest); a failure deletes the record and reports the session as not present. The connection then writes its incarnation (`takeOver`), and every later write first checks the stored incarnation: a connection that finds another's stops and closes (0x8E), and one resumed from a record never creates one.
+- **One terminal path** (`subscriptionFailed`): a refused resume subscribe, a final `Error` value (observed through the subscription's `close` as well as the consumer loop, which may be parked on socket back-pressure), or an iterator failure. A 409/410 discards the session — writers fenced, siblings ended, a v5 DISCONNECT (0x83, the client-error message when problem information is allowed) and a socket close that never waits on storage, then a deletion only if the record still carries this incarnation. Anything else saves positions and closes the connection so the client resumes.
+- **Not covered:** concurrent connections for one client id on different threads, together with crash replay of a failed conditional write (harper#2940); late commits below a saved position (harper#2928).
+
 ## "Where is X" cheat sheet
 
 | Question                                                                   | Where                                                                                                                                                                                                                                                                                                                                                                                                                  |
