@@ -267,6 +267,8 @@ A refusal found before the replay starts rejects `subscribe()`. A prune that lan
 
 The returned subscription's `resumeVerified` promise resolves `true` once the replay after the position is complete and checked, and `false` if it was refused or ended first. It never rejects. Do not record a new position from replayed events until it resolves `true`.
 
+The check covers retention and database replacement, not ordering. A transaction's `localTime` is assigned when the transaction starts, so a transaction that commits after you recorded a position can carry a `localTime` below it, and a resume from that position does not replay it.
+
 ---
 
 ### `connect(target: RequestTarget, incomingMessages?: AsyncIterable): AsyncIterable`
