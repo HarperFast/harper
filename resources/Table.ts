@@ -4454,7 +4454,8 @@ export function makeTable(options): TableResourceClass {
 			}
 			const reloadsCommitBase = options?.isCopyApply !== true;
 			const entry = entryBeforeWrite(this.#entry, id, transaction, reloadsCommitBase);
-			const baseReadTxn = writeKeyId(id) === writeKeyId(this.getId()) ? this.#baseReadTxn : undefined;
+			const baseReadTxn =
+				this.#baseReadTxn && writeKeyId(id) === writeKeyId(this.getId()) ? this.#baseReadTxn : undefined;
 			const writeToSource = () => {
 				if (!(this.constructor as any).source || (context as any)?.source) return;
 				if (fullUpdate) {
@@ -5376,7 +5377,8 @@ export function makeTable(options): TableResourceClass {
 			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
 			const entry = entryBeforeWrite(this.#entry, id, transaction, true);
-			const baseReadTxn = writeKeyId(id) === writeKeyId(this.getId()) ? this.#baseReadTxn : undefined;
+			const baseReadTxn =
+				this.#baseReadTxn && writeKeyId(id) === writeKeyId(this.getId()) ? this.#baseReadTxn : undefined;
 
 			const write: any = {
 				key: id,
