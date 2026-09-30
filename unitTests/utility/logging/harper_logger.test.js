@@ -1990,6 +1990,160 @@ describe('Test harper_logger module', () => {
 			assert.ok(!result.includes('super-secret-token'));
 			assert.ok(!result.includes('Authorization'));
 		});
+
+		// Mirrors MAX_LOG_RENDER_LENGTH in harper_logger.ts.
+		const MAX_LOG_RENDER_LENGTH = 256 * 1024;
+
+		it('bounds the total rendered length across the whole structure, not only per container', () => {
+			// Every per-container limit allows this: 199 objects x 249 fields x one shared 20KB string
+			// rendered to ~134M characters before the cumulative budget existed.
+			const long_string = 'x'.repeat(20_000);
+			const payload = {};
+			for (let i = 0; i < 199; i++) {
+				const child = {};
+				for (let j = 0; j < 249; j++) child[`f${j}`] = long_string;
+				payload[`child_${i}`] = child;
+			}
+			const start = process.hrtime.bigint();
+			const result = render(payload, { depth: 8, maxArrayLength: 250, maxStringLength: 20_000 });
+			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
+			assert.ok(elapsed_ms < 2000, `rendering took ${elapsed_ms}ms`);
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.includes('more properties omitted (sanitize budget)'));
+			// The sanitize walk stopped on its own estimate, so the output is still a whole structure.
+			assert.ok(result.endsWith('}'), result.slice(-200));
+		});
+
+		it('caps the rendered length exactly even when escaping makes the output larger than estimated', () => {
+			// util.inspect renders each control character as a 4-character escape.
+			const escaped_string = '\x01'.repeat(5_000);
+			const payload = Array.from({ length: 100 }, () => escaped_string);
+			const result = render(payload, { depth: 8, maxArrayLength: 250, maxStringLength: 20_000 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.match(result, /more characters omitted \(sanitize budget\)\]$/);
+		});
+
+		it('shares the render budget with custom inspect hooks instead of giving each hook a fresh one', () => {
+			// Each hook alone fits the budget; together they would not.
+			const hook_output = () => ({ lines: Array.from({ length: 200 }, (_, i) => `${i}:${'y'.repeat(1_000)}`) });
+			const payload = Array.from({ length: 200 }, () => ({ [util.inspect.custom]: hook_output }));
+			const result = render(payload, { depth: 8, maxArrayLength: 250 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.includes('more array entries omitted (sanitize budget)'));
+		});
+
+		it("shares the render budget with hooks nested in a hook's output", () => {
+			const inner_output = 'y'.repeat(100_000);
+			const outer_hook = () => ({ inner: { [util.inspect.custom]: () => inner_output } });
+			const payload = Array.from({ length: 50 }, () => ({ [util.inspect.custom]: outer_hook }));
+			const result = render(payload, { depth: 8, maxArrayLength: 250 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.includes('[omitted (sanitize budget)]'), result.slice(-500));
+		});
+
+		it('charges a sub-object again at each repeat reference, since inspect prints it at every occurrence', () => {
+			const shared = { lines: Array.from({ length: 200 }, (_, i) => `${i}:${'y'.repeat(1_000)}`) };
+			const result = render(Array(250).fill(shared), { depth: 8, maxArrayLength: 250 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.includes('more array entries omitted (sanitize budget)'));
+			assert.ok(result.endsWith(']'), result.slice(-200));
+		});
+
+		it('charges Errors and opaque built-ins at their rendered length', () => {
+			const secret_error = new Error('x'.repeat(1_000_000));
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const floats = new Float64Array(250).fill(Math.PI);
+			for (const payload of [Array(250).fill(secret_error), Array(250).fill(floats)]) {
+				const result = render(payload, { depth: 8, maxArrayLength: 250 });
+				assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+				assert.ok(result.includes('more array entries omitted (sanitize budget)'));
+				assert.ok(result.endsWith(']'), result.slice(-200));
+				assert.ok(!result.includes('super-secret-token'));
+			}
+		});
+
+		it('caps the failure text of a custom inspect hook that throws a huge error', () => {
+			const hostile = {
+				[util.inspect.custom]() {
+					throw new Error('z'.repeat(1_000_000));
+				},
+			};
+			const result = render(hostile);
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.startsWith('[Unrenderable value: Error: zzz'));
+			assert.match(result, /more characters omitted \(sanitize budget\)\]$/);
+		});
+
+		it('masks credential-shaped keys in the structure a custom inspect hook returns', () => {
+			const value = {
+				[util.inspect.custom]() {
+					return { password: 'hook-returned-secret', region: 'us-east-1' };
+				},
+			};
+			const result = render({ value }, { depth: 8 });
+			assert.ok(!result.includes('hook-returned-secret'), result);
+			assert.ok(result.includes('[redacted]'));
+			assert.ok(result.includes('us-east-1'));
+		});
+
+		it('masks values under credential-shaped keys at any depth, in plain objects, class instances, and Maps', () => {
+			class ClientConfig {
+				constructor() {
+					this.client_secret = 'class-instance-secret';
+					this.region = 'us-east-1';
+				}
+			}
+			const value = {
+				phase: 'prepare',
+				deployment_id: 'deployment-123',
+				level_1: {
+					level_2: {
+						level_3: {
+							level_4: {
+								level_5: {
+									password: 'hunter2',
+									Authorization: 'Bearer nested-bearer-token',
+									aws_secret_access_key: 'aws-secret-value',
+									refresh_token: 'refresh-token-value',
+									apiKey: 'api-key-value',
+									credentials: { username: 'admin', pass: 'nested-credential-object' },
+									otp_token: 424242,
+									client: new ClientConfig(),
+									headers: new Map([
+										['authorization', 'Bearer map-bearer-token'],
+										['accept', 'application/json'],
+									]),
+									token: undefined,
+									authorized: false,
+								},
+							},
+						},
+					},
+				},
+			};
+			const result = render(value, { depth: 8, maxArrayLength: 250, maxStringLength: 20_000 });
+			for (const secret of [
+				'hunter2',
+				'nested-bearer-token',
+				'aws-secret-value',
+				'refresh-token-value',
+				'api-key-value',
+				'nested-credential-object',
+				'424242',
+				'class-instance-secret',
+				'map-bearer-token',
+			]) {
+				assert.ok(!result.includes(secret), `leaked ${secret}: ${result}`);
+			}
+			assert.ok(result.includes('[redacted]'));
+			assert.ok(result.includes('ClientConfig'));
+			assert.ok(result.includes('us-east-1'));
+			assert.ok(result.includes('application/json'));
+			assert.ok(result.includes('deployment-123'));
+			assert.ok(result.includes('prepare'));
+			assert.ok(result.includes('token: undefined'));
+			assert.ok(result.includes('authorized: false'));
+		});
 	});
 
 	describe('Test isErrorLike function (harper#1982)', () => {
