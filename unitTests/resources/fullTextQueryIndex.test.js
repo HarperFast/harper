@@ -1453,7 +1453,7 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('fails closed when a lower-bound native page is shorter than requested', async () => {
+	it('fails closed when a short lower-bound native page claims more hits', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'short-lower-bound-page';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -1477,6 +1477,39 @@ describe('FullTextQueryIndex', () => {
 		await assert.rejects(
 			index.search({ attribute: readinessId, comparator: 'matches', value: 'pack' }, {}, { minResults: 1 }),
 			/incomplete result page/
+		);
+		await index.close();
+	});
+
+	it('accepts a short terminal lower-bound native page', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'terminal-lower-bound-page';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [],
+			maxSearchWindow: 100,
+			searchResult: () => ({
+				total: 3,
+				totalRelation: 'lower-bound',
+				hits: Array.from({ length: 3 }, (_value, id) => ({
+					id: nativeId(1, `record-${id}`),
+					version: '1',
+					score: 3 - id,
+				})),
+			}),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{ minResults: 5 }
+		);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			['record-0', 'record-1', 'record-2']
 		);
 		await index.close();
 	});

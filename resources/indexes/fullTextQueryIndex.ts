@@ -416,7 +416,11 @@ export class FullTextQueryIndex {
 				);
 				if (!bounded && !autocomplete && result.totalRelation === 'exact' && result.total > searchWindow)
 					throw new ClientError(`Full-text query exceeds the ${searchWindow}-result search window; add a limit`, 400);
-				if (result.totalRelation === 'lower-bound' && result.hits.length < limit)
+				if (
+					result.totalRelation === 'lower-bound' &&
+					result.hits.length < limit &&
+					offset + result.hits.length < result.total
+				)
 					throw new ServerError('Full-text index returned an incomplete result page', 500);
 				moreMayExist =
 					result.totalRelation === 'exact' ? offset + result.hits.length < result.total : result.hits.length === limit;
