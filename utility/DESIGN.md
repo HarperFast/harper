@@ -68,9 +68,10 @@ One render is at most `MAX_LOG_RENDER_LENGTH` characters. Per-container and node
 
 For the estimate to bound work, the walk must see exactly what `util.inspect` will print, in the order it prints it:
 
-- A leaf whose size the walk cannot estimate (an Error's stack, an opaque built-in, a function) is rendered to text in the walk and charged exactly.
-- Custom inspect hooks, own or inherited, are called in the walk, where `util.inspect` would call them; their output replaces the value and is walked like any other. No clone carries a hook for `util.inspect` to run at render time.
-- Nothing below the level where `util.inspect` collapses a container to `[Object]` (the caller's `depth` + 1) is walked, rendered or charged. A clone built at one depth stands in for its original only at that depth or deeper.
+- A leaf whose size the walk cannot estimate (an Error's stack, an opaque built-in, a function) is rendered to text in the walk and charged exactly, without running a hook the leaf carries (Buffer's built-in one aside). An Error whose message alone exceeds what is left is rendered from its message, without materializing its stack.
+- Custom inspect hooks on objects, own or inherited, are called in the walk, where `util.inspect` would call them; their output replaces the value and is walked like any other. No clone carries a hook for `util.inspect` to run at render time.
+- A container at the level where `util.inspect` collapses it to `[ClassName]` (the caller's `depth` + 1) is not enumerated, unless an inherited hook reads it; it prints `[ClassName]` even when empty. Nothing below that level is walked. A clone built at one depth stands in for its original only at that depth or deeper.
+- Arrays, Maps and Sets are walked to the `maxArrayLength` `util.inspect` prints.
 - A repeat reference to a walked container is charged again, since `util.inspect` prints a shared sub-object at every occurrence.
 
 The walk masks the value of a data property or Map entry whose key (a symbol by its description) matches `CREDENTIAL_KEY_PATTERN`, the one list shared with the MCP audit log (`components/mcp/audit.ts`) — a new credential key shape goes there. It is a substring match, so `author` is masked too. Masking is structural: a custom inspect hook that returns a secret as a primitive renders it. `HdbError`'s report flattening (`messageText`) runs before `inspectForLog` and is not masked, because its values are validation reasons, often listed under a field named `password`.

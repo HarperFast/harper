@@ -1995,8 +1995,7 @@ describe('Test harper_logger module', () => {
 		const MAX_LOG_RENDER_LENGTH = 256 * 1024;
 
 		it('bounds the total rendered length across the whole structure, not only per container', () => {
-			// Every per-container limit allows this: 199 objects x 249 fields x one shared 20KB string
-			// rendered to ~134M characters before the cumulative budget existed.
+			// Every per-container limit allows this: 199 objects x 249 fields x one shared 20KB string.
 			const long_string = 'x'.repeat(20_000);
 			const payload = {};
 			for (let i = 0; i < 199; i++) {
@@ -2083,6 +2082,58 @@ describe('Test harper_logger module', () => {
 			assert.ok(result.includes('[Object]'));
 			assert.ok(result.includes('deployment-123'));
 			assert.ok(!result.includes('sanitize budget'), result);
+		});
+
+		it('never runs a hook carried by a built-in or function leaf, whose output would skip the walk', () => {
+			const date = new Date(0);
+			Object.defineProperty(date, util.inspect.custom, { value: () => ({ password: 'date-hook-secret' }) });
+			class Client {
+				static [util.inspect.custom]() {
+					return { apiKey: 'static-hook-secret' };
+				}
+			}
+			const result = render({ date, Client, buffer: Buffer.from('hi') }, { depth: 8 });
+			assert.ok(!result.includes('date-hook-secret'), result);
+			assert.ok(!result.includes('static-hook-secret'), result);
+			assert.ok(result.includes('1970-01-01T00:00:00.000Z'));
+			assert.ok(result.includes('<Buffer 68 69>'));
+		});
+
+		it('does not walk the entries of a container util.inspect collapses at its depth', () => {
+			let deep = Array.from({ length: 200 }, () =>
+				Object.fromEntries(Array.from({ length: 250 }, (_, i) => [`f${i}`, i]))
+			);
+			// The array lands at depth 8, so each of its 200 objects is collapsed at depth 9.
+			for (let i = 0; i < 7; i++) deep = { deep };
+			const result = render({ detail: deep, deployment_id: 'deployment-123' }, { depth: 8, maxArrayLength: 250 });
+			assert.strictEqual(result.split('[Object]').length - 1, 200);
+			assert.ok(result.includes('deployment-123'), result.slice(-300));
+			assert.ok(!result.includes('sanitize budget'));
+		});
+
+		it('walks only as many array entries as util.inspect prints when the caller sets no maxArrayLength', () => {
+			const value = { rows: Array(1000).fill('x'.repeat(300)), deployment_id: 'deployment-123' };
+			const result = render(value, { breakLength: Infinity, depth: 4 });
+			assert.ok(result.includes('deployment-123'));
+			assert.ok(result.includes('901 more array entries omitted (sanitize budget)'));
+		});
+
+		it('never materializes the stack of an Error whose message alone exceeds the remaining budget', () => {
+			let stack_reads = 0;
+			const errors = Array.from({ length: 250 }, () => {
+				const error = new Error('m'.repeat(1_000_000));
+				Object.defineProperty(error, 'stack', {
+					get() {
+						stack_reads++;
+						return `Error: ${this.message}`;
+					},
+				});
+				return error;
+			});
+			const result = render(errors, { depth: 8, maxArrayLength: 250 });
+			assert.strictEqual(stack_reads, 0);
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.includes('249 more array entries omitted (sanitize budget)'));
 		});
 
 		it('renders a shared sub-object in full where it is shallower than where it was first reached', () => {
