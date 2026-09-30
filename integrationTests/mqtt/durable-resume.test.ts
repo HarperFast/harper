@@ -15,6 +15,8 @@ import mqtt, { type IClientOptions, type MqttClient } from 'mqtt';
 
 import {
 	setupHarperWithFixture,
+	startHarper,
+	killHarper,
 	teardownHarper,
 	sendOperation,
 	type ContextWithHarper,
@@ -167,12 +169,16 @@ suite(
 			return entry;
 		}
 
-		before(async () => {
-			await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: {}, env: {} });
+		async function useHarper() {
 			client = createApiClient(ctx.harper);
 			const httpURL = ctx.harper.httpURL;
 			mqttURL = `${httpURL.replace(/^https?/, httpURL.startsWith('https') ? 'wss' : 'ws')}/mqtt`;
 			await waitForRouteReady(client, '/Readings/', 120_000);
+		}
+
+		before(async () => {
+			await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: {}, env: {} });
+			await useHarper();
 			await put('Readings', 'seed', 0);
 		});
 
@@ -265,5 +271,48 @@ suite(
 				await end(again.mqttClient);
 			}
 		});
+
+		test(
+			'a session resumes across a hard kill and replays the delivery it never acknowledged',
+			{ timeout: 180_000 },
+			async () => {
+				const clientId = `restart-${randomUUID().slice(0, 6)}`;
+				const { mqttClient: fresh } = await connect({ clientId, clean: true });
+				await end(fresh);
+				const delivered: number[] = [];
+				const { mqttClient: subscriber } = await connect({
+					clientId,
+					customHandleAcks: (_topic, payload, _packet, done) => {
+						const { value } = JSON.parse(payload.toString());
+						delivered.push(value);
+						if (value !== 3) done(0);
+					},
+				});
+				await subscribe(subscriber, 'Readings/#', 1);
+				await put('Readings', `acked-${randomUUID().slice(0, 6)}`, 1);
+				ok(await waitFor(() => delivered.includes(1)), 'the acknowledged message arrives');
+				await put('Readings', `unacked-${randomUUID().slice(0, 6)}`, 3);
+				ok(await waitFor(() => delivered.includes(3)), 'the message left unacknowledged arrives');
+				// SIGKILL: no disconnect save, so the session resumes from what its checkpoints wrote
+				await killHarper(ctx, { graceMs: 0 });
+				subscriber.end(true);
+				await startHarper(ctx, { config: {}, env: {} });
+				await useHarper();
+				await put('Readings', `away-${randomUUID().slice(0, 6)}`, 4);
+				const received: number[] = [];
+				const { mqttClient, sessionPresent } = await connect({ clientId }, (_topic, payload) =>
+					received.push(JSON.parse(payload.toString()).value)
+				);
+				try {
+					strictEqual(sessionPresent, true, 'the saved session and its generation survive the restart');
+					ok(
+						await waitFor(() => received.includes(3) && received.includes(4)),
+						`the unacknowledged message and the one written after the restart arrive: ${received}`
+					);
+				} finally {
+					await end(mqttClient);
+				}
+			}
+		);
 	}
 );
