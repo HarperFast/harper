@@ -250,6 +250,8 @@ All properties are optional:
 
 #### Resuming from a position
 
+<VersionBadge version="v5.3.1" />
+
 As of v5.3.1, a subscription on a RocksDB database can resume from a position that Harper checks against the database's history, instead of replaying whatever history is left.
 
 - Every subscription reports `databaseGeneration`, the generation of the database it reads (undefined on LMDB). A database gets a new generation when it is restored, branched or migrated from a copy.
