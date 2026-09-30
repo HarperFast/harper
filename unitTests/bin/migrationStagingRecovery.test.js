@@ -92,6 +92,9 @@ describe('migration: staging directory recovery (#2012)', function () {
 				assert(entry.value instanceof RecordObject, `record ${id} lost its record prototype`);
 				assert(entry.version > 0, `record ${id} lost its version`);
 			}
+			const generation = root.getBinarySync(Symbol.for('database-generation'));
+			assert.strictEqual(generation?.byteLength, 24, 'the migrated store must carry a generation');
+			assert(Buffer.from(generation).readDoubleLE(16) > 0, 'a migrated generation is a copy, not genesis');
 		} finally {
 			cf.close();
 			root.close();

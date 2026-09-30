@@ -11,6 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { pack as tarPack, type Pack } from 'tar-stream';
 import { RocksDatabase, backups, registryStatus, type BackupInfo } from '@harperfast/rocksdb-js';
 import { getDatabases, resolveDatabasePath } from '../resources/databases.ts';
+import { stampDatabaseDirectory } from '../resources/auditStore.ts';
 import {
 	type BlobCaptureDisposition,
 	classifyBlobFileForCapture,
@@ -601,6 +602,7 @@ export async function restoreBackup(request: any) {
 		if (manifest.blobs) {
 			await restoreBlobSnapshot(backupDir, backupId, databaseName, getBlobPathsForDatabaseName(databaseName));
 		}
+		await stampDatabaseDirectory(databaseDir, { carriesLog: true });
 	} catch (error: any) {
 		// Leave the marker (so startup/rescan detection reports an incomplete restore until a rerun
 		// succeeds) when either the destructive purge has begun, OR this attempt was itself a recovery
@@ -1101,6 +1103,7 @@ export async function restoreBackupOffline(
 				getBlobPathsForDatabaseName(targetDatabase ?? databaseName)
 			);
 		}
+		await stampDatabaseDirectory(databaseDir, { carriesLog: true });
 	} catch (error: any) {
 		// Preserve the marker on a destructive failure or a recovery over a pre-existing marker (see
 		// the online restoreBackup for the rationale); otherwise clear the fresh marker so an intact,

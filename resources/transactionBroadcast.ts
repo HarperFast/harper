@@ -1,10 +1,33 @@
+import { basename } from 'node:path';
 import { warn } from '../utility/logging/harper_logger.js';
+import { DatabaseClosingError, DatabaseGenerationChangedError } from '../utility/errors/hdbError.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { keyArrayToString } from './Resources.ts';
 import type { Id } from './ResourceInterface.ts';
 
 const allSubscriptions = Object.create(null); // using it as a map that doesn't change much
 const allSameThreadSubscriptions = Object.create(null); // using it as a map that doesn't change much
+// The handle each database path was last opened with on this thread, kept as a token so a retired database's closed
+// store graph is not retained. A registration through any other handle would join the entry the current store's
+// commits drive while reading through that handle's closed stores.
+const HANDLE_TOKEN = Symbol('subscription-handle');
+const currentHandles = new Map<
+	string,
+	{ token: symbol; generationId: string | undefined; tracksGeneration: boolean }
+>();
+
+// A store with no generation (LMDB) is never replaced by a copy, so its reopen is only ever a close.
+function generationChanged(
+	generationId: string | null | undefined,
+	currentId: string | null | undefined,
+	tracksGeneration: boolean
+): boolean {
+	return tracksGeneration && !(generationId != null && generationId === currentId);
+}
+
+function closingError(auditStore: any, path: string): DatabaseClosingError {
+	return new DatabaseClosingError(auditStore?.rootStore?.databaseName ?? basename(path));
+}
 /**
  * This module/function is responsible for the main work of tracking subscriptions and listening for new transactions
  * that have occurred on any thread, and then reading through the transaction log to notify listeners. This is
@@ -23,6 +46,15 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	let databaseSubscriptions;
 	if (!path) {
 		throw new Error('No path for table primary store');
+	}
+	const generationId = table.auditStore?.databaseGeneration?.id ?? null;
+	const current = currentHandles.get(path);
+	const replaced = current !== undefined && table.auditStore?.[HANDLE_TOKEN] !== current.token;
+	if (replaced || table.auditStore?.rootStore?.status === 'closed') {
+		if (options?.scope === 'full-database') return;
+		throw replaced && generationChanged(generationId, current.generationId, current.tracksGeneration)
+			? new DatabaseGenerationChangedError()
+			: closingError(table.auditStore, path);
 	}
 	if (options?.crossThreads === false) {
 		// we are only listening for commits on our own thread, so we use a separate subscriber and sequencer tracker
@@ -60,6 +92,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		}
 	}
 	databaseSubscriptions.auditStore = table.auditStore;
+	databaseSubscriptions.generationId ??= generationId;
 	if (databaseSubscriptions.lastTxnTime == null) {
 		databaseSubscriptions.lastTxnTime = Date.now();
 	}
@@ -90,6 +123,49 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	subscription.subscriptions = subscriptions;
 	databaseSubscriptions.activeCount = (databaseSubscriptions.activeCount || 0) + 1;
 	return subscription;
+}
+
+/**
+ * End every subscription this thread registered on the database before `auditStore` reopened it: its commit
+ * listener and its table's stores belong to the closed handle, so it can never deliver again. On a store that
+ * tracks generations, another or an unknown one must resynchronize; otherwise the retryable
+ * `DatabaseClosingError`. `auditStore` becomes the only handle `addSubscription` accepts on the path before
+ * any listener runs.
+ */
+export function endSubscriptionsFromEarlierHandles(auditStore: any, tracksGeneration: boolean): void {
+	const path = auditStore.rootStore.path;
+	const generationId = auditStore.databaseGeneration?.id;
+	const token = Symbol(basename(path));
+	auditStore[HANDLE_TOKEN] = token;
+	currentHandles.set(path, { token, generationId, tracksGeneration });
+	for (const registry of [allSubscriptions, allSameThreadSubscriptions]) {
+		const databaseSubscriptions = registry[path];
+		if (!databaseSubscriptions) continue;
+		delete registry[path];
+		const changed = generationChanged(databaseSubscriptions.generationId, generationId, tracksGeneration);
+		for (const tableId in databaseSubscriptions) {
+			const tableSubscriptions = databaseSubscriptions[tableId];
+			if (!(tableSubscriptions instanceof Map)) continue;
+			for (const keySubscriptions of tableSubscriptions.values()) {
+				for (const subscription of [...keySubscriptions]) {
+					try {
+						subscription.close(changed ? new DatabaseGenerationChangedError() : closingError(auditStore, path));
+					} catch (error) {
+						try {
+							warn(error);
+						} catch {}
+					} finally {
+						// a listener that threw on the final event left the queue open; a bare close sends nothing
+						if (!subscription.closed) {
+							try {
+								subscription.close();
+							} catch {}
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 /**
