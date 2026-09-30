@@ -6561,7 +6561,6 @@ export function makeTable(options): TableResourceClass {
 			// Coalescing guards for the reload re-snapshot (harper-pro#495), driven from the listener below.
 			let reloadResnapshotRunning = false;
 			let reloadResnapshotPending = false;
-			// set once registered: whether this subscription certifies its delivery progress (request.reportProgress)
 			let reportingProgress = false;
 			const subContext = this.getContext() as any;
 			const rowFilter = typeof request.rowFilter === 'function' ? request.rowFilter : undefined;

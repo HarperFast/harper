@@ -233,7 +233,6 @@ class SubscriptionsSession {
 	}
 	consumed(_subscription) {}
 	subscribed(_subscription) {}
-	/** A subscription ended with an error or failed; its client cannot keep receiving through it. */
 	subscriptionFailed(subscription, error) {
 		if (this.terminated || subscription.failed) return;
 		subscription.failed = true;
@@ -589,7 +588,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	mayCreate: boolean;
 	discarded = false;
 	topics = new Map<string, TopicState>();
+	/** Settles once the latest save or deletion has, and never rejects. */
 	writes: Promise<void> = Promise.resolve();
+	saving: Promise<void> | undefined;
+	dirty = false;
 	checkpointScheduled = false;
 	checkpointTimer: any;
 	constructor(sessionId, user, record?) {
@@ -708,9 +710,12 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	nextPosition(state: TopicState): number | undefined {
 		const subscription = state.subscription;
 		if (!subscription || !state.verified) return;
-		const progress = subscription.progress?.();
-		if (progress === undefined) return;
 		const oldestUnacked = state.unacked.values().next();
+		const progress = subscription.progress?.();
+		if (progress === undefined) {
+			// nothing certifies what was sent, so only a transaction the client has taken and moved past counts
+			return !oldestUnacked.done ? oldestUnacked.value.previousKey : state.keyBefore;
+		}
 		const boundary = !oldestUnacked.done
 			? oldestUnacked.value.previousKey
 			: subscription.sentCount === state.consumed
@@ -744,7 +749,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	}
 	checkpoint() {
 		if (this.terminated) return;
-		if (this.advancePositions()) this.persist();
+		if (this.advancePositions() || this.dirty) this.persist().catch(() => {});
 	}
 	startCheckpoints() {
 		if (this.checkpointTimer) return;
@@ -761,20 +766,34 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		}
 		return { id: this.sessionId, incarnation: this.incarnation, subscriptions };
 	}
-	/** Writes this session's record, one write at a time, and only while this connection owns it. */
 	persist(): Promise<void> {
-		const write = this.writes.then(async () => {
-			if (this.discarded) return;
-			const record = this.recordToWrite();
-			const stored = await getDurableSession().get(this.sessionId);
-			if (stored ? stored.incarnation !== this.incarnation : !this.mayCreate) return this.supersede();
-			await getDurableSession().put(record, { source: true });
-			this.mayCreate = false;
-		});
-		this.writes = write.catch((error) => warn(`Failed to save MQTT session ${this.sessionId}`, error));
-		return this.writes;
+		this.dirty = true;
+		if (!this.saving) {
+			this.saving = this.saveWhileDirty().finally(() => (this.saving = undefined));
+			this.writes = this.saving.catch((error) => warn(`Failed to save MQTT session ${this.sessionId}`, error));
+		}
+		return this.saving;
 	}
-	/** Another connection took this session over: stop writing, and let the client go. */
+	async saveWhileDirty() {
+		while (this.dirty && !this.discarded) {
+			this.dirty = false;
+			try {
+				await this.saveOnce();
+			} catch (error) {
+				// the next checkpoint retries
+				this.dirty = true;
+				throw error;
+			}
+		}
+	}
+	async saveOnce() {
+		const record = this.recordToWrite();
+		const stored = await getDurableSession().get(this.sessionId);
+		// only a connection that owns the record writes it, and only one that found none creates it
+		if (stored ? stored.incarnation !== this.incarnation : !this.mayCreate) return this.supersede();
+		await getDurableSession().put(record, { source: true });
+		this.mayCreate = false;
+	}
 	supersede() {
 		if (this.terminated) return;
 		this.terminated = true;
@@ -788,10 +807,14 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (!RESUME_REFUSALS.has(error?.code)) {
 			// the client can reconnect and resume from what this session saves now
 			this.advancePositions();
-			this.persist();
+			this.persist().catch(() => {});
 			this.terminated = true;
 			warn(`Closing MQTT session ${this.sessionId}: its subscription to ${subscription.topic} failed`, error);
-			this.closeConnection?.(error);
+			try {
+				this.closeConnection?.(error);
+			} catch (closeError) {
+				warn(closeError);
+			}
 			return;
 		}
 		this.discarded = true;
@@ -804,10 +827,12 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		} catch (closeError) {
 			warn(closeError);
 		}
-		const deletion = this.writes.then(async () => {
-			const stored = await getDurableSession().get(this.sessionId);
-			if (stored?.incarnation === this.incarnation) await getDurableSession().delete(this.sessionId);
-		});
+		const deletion = (this.saving ?? Promise.resolve())
+			.catch(() => {})
+			.then(async () => {
+				const stored = await getDurableSession().get(this.sessionId);
+				if (stored?.incarnation === this.incarnation) await getDurableSession().delete(this.sessionId);
+			});
 		this.writes = deletion.catch((deleteError) =>
 			warn(`Failed to delete the reset MQTT session ${this.sessionId}`, deleteError)
 		);
@@ -818,7 +843,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const changed = !this.terminated && this.advancePositions();
 		this.terminated = true;
 		super.disconnect(clientTerminated);
-		if (changed && !this.discarded) this.persist();
+		if ((changed || this.dirty) && !this.discarded) this.persist().catch(() => {});
 	}
 }
 

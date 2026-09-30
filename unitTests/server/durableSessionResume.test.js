@@ -281,8 +281,8 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		session.disconnect(true);
 		await session.writes;
 		const after = (await stored(clientId)).subscriptions[0];
-		assert.ok(!(after.startTime > state.unacked.values().next().value?.previousKey ?? before.startTime));
 		assert.ok(!(after.startTime >= state.deliveredKey), 'the undelivered event is not passed');
+		assert.ok(after.startTime <= Math.max(before.startTime, state.keyBefore ?? before.startTime));
 	});
 
 	it('resets a durable session when its table is reloaded, whose rows have no history', async () => {
@@ -357,17 +357,21 @@ describe('MQTT durable sessions on LMDB', function () {
 		const first = await connect(clientId);
 		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
 		await T.put('a', { value: 1 });
-		await waitFor(() => first.received.length >= 1);
+		await T.put('a2', { value: 1.5 });
+		await waitFor(() => first.received.length >= 2);
 		await ackAll(first.session, first.received);
 		first.session.checkpoint();
 		await first.session.writes;
-		assert.strictEqual((await stored(clientId)).subscriptions[0].databaseGeneration, undefined);
+		const entry = (await stored(clientId)).subscriptions[0];
+		assert.strictEqual(entry.databaseGeneration, undefined, 'LMDB has no generation to bind');
+		assert.ok(entry.startTime >= first.session.topics.get(`${name}/#`).keyBefore, 'acks still advance it');
 		first.session.disconnect(true);
 		await T.put('b', { value: 2 });
 		const second = await connect(clientId);
 		assert.strictEqual(second.session.sessionWasPresent, true);
 		await second.session.resume();
 		await waitFor(() => values(second.received).includes(2));
+		assert.ok(!values(second.received).includes(1), 'an acknowledged transaction is not redelivered');
 		second.session.disconnect(true);
 	});
 });

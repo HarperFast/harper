@@ -212,14 +212,6 @@ suite(
 			await put('Readings', `after-${randomUUID().slice(0, 6)}`, 3);
 			// the floor passes the saved position but stays below the newer write, so nothing it needs is removed
 			await pruneBefore(saved.startTime + 1);
-			console.log(
-				'DEBUG saved',
-				JSON.stringify(saved),
-				'after prune',
-				JSON.stringify(await storedSession(clientId)),
-				'now',
-				Date.now()
-			);
 			const received: number[] = [];
 			const { mqttClient, sessionPresent } = await connect({ clientId }, (_topic, payload) =>
 				received.push(JSON.parse(payload.toString()).value)

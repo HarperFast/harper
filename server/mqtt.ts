@@ -275,10 +275,6 @@ function onSocket(socket, send, request, user, mqttSettings) {
 	};
 	liveConnections.add(connection);
 	let session: DurableSubscriptionsSession;
-	/**
-	 * Ends the connection from the server side: a v5 client is told why first (0x8E when another connection
-	 * took the session over, otherwise 0x83), and the transport closes whether or not that succeeds.
-	 */
 	function closeConnection(error?: Error) {
 		try {
 			if (mqttOptions.protocolVersion >= 5) {
