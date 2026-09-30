@@ -158,7 +158,16 @@ function notifyJobCleanupComplete() {
 
 const listenersByType = new Map();
 const messagesQueuedByType = new Map();
+const { promise: whenThreadsStarted, resolve: threadsHaveStarted } = Promise.withResolvers();
+const initialRestartNumber = workerData?.restartNumber || 1;
+// Identifies this process incarnation, where the PID cannot: a container reuses PID 1. Minted once
+// on the main thread and carried to workers, so live siblings agree on it — one derived per thread
+// would not. `undefined` on a worker started without it; consumers must fall back, not treat that
+// as a mismatch.
+const processIncarnation = workerData ? workerData.processIncarnation : randomBytes(8).toString('hex');
 
+// Every value in this literal is a bare identifier: Node's CommonJS export scan, which supplies the
+// named bindings an ES module import can use, stops reading the literal at the first value that is not.
 module.exports = {
 	startWorker,
 	restartWorkers,
@@ -206,17 +215,13 @@ module.exports = {
 	terminateProcessGroupsForThread,
 	isProcessGroupAlive,
 	isThreadRunning,
-	restartNumber: workerData?.restartNumber || 1,
-	// Identifies this process incarnation, where the PID cannot: a container reuses PID 1. Minted once
-	// on the main thread and carried to workers, so live siblings agree on it — one derived per thread
-	// would not. `undefined` on a worker started without it; consumers must fall back, not treat that
-	// as a mismatch.
-	processIncarnation: workerData ? workerData.processIncarnation : randomBytes(8).toString('hex'),
-	// Assigned further down once defined. Listed here because TypeScript 7 only treats keys of this
-	// literal as exports of the module, not later `module.exports.x =` assignments.
+	restartNumber: initialRestartNumber,
+	processIncarnation,
+	whenThreadsStarted,
+	threadsHaveStarted,
+	// Assigned further down once defined. TypeScript 7 only treats keys of this literal as exports and
+	// types them from it, so only a value that cannot be built before the literal belongs here.
 	sendToThread: undefined,
-	whenThreadsStarted: undefined,
-	threadsHaveStarted: undefined,
 	getThreadInfo: undefined,
 	getRunningIsolatedApplications: undefined,
 	watchDir: undefined,
@@ -241,9 +246,6 @@ connectedPorts.sendToThread = function (threadId, message) {
 // Direct thread-to-thread send, so a worker can reach a sibling (e.g. the record lock owner worker)
 // without a hop through main. Returns false when no port for the thread is connected.
 module.exports.sendToThread = connectedPorts.sendToThread;
-module.exports.whenThreadsStarted = new Promise((resolve) => {
-	module.exports.threadsHaveStarted = resolve;
-});
 
 // make sure this is set on all threads, including the main thread (this is no-op
 // if it was already with the execArgv below)
