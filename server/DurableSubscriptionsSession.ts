@@ -7,7 +7,6 @@ import { getWorkerIndex } from '../server/threads/manageThreads.js';
 import { whenComponentsLoaded } from '../server/threads/threadServer.js';
 import { server } from '../server/Server.ts';
 import { RequestTarget } from '../resources/RequestTarget';
-import { cloneDeep } from 'lodash';
 import { randomBytes } from 'node:crypto';
 import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../resources/auditStore.ts';
 
@@ -589,7 +588,6 @@ function sessionRecordResumable(record: any): boolean {
 
 export class DurableSubscriptionsSession extends SubscriptionsSession {
 	committed: Promise<void> | void;
-	sessionRecord: any;
 	incarnation = randomBytes(8).toString('hex');
 	/** Only a session that found no record may create one; any other updates only a record it owns. */
 	mayCreate: boolean;
@@ -603,9 +601,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	checkpointTimer: any;
 	constructor(sessionId, user, record?) {
 		super(sessionId, user);
-		this.sessionRecord = cloneDeep(record) || { id: sessionId, subscriptions: [] };
 		this.mayCreate = !record;
-		for (const { qos, topic, startTime, databaseGeneration } of this.sessionRecord.subscriptions || []) {
+		for (const { qos, topic, startTime, databaseGeneration } of record?.subscriptions || []) {
 			this.topics.set(topic, newTopicState(qos > 0 ? { qos, topic, startTime, databaseGeneration } : { qos, topic }));
 		}
 	}
