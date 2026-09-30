@@ -113,19 +113,29 @@ export function executeConditions(
 		return recordGuards ? transformToEntries(deduped, recordGuards) : deduped;
 	} else {
 		// AND: use the indexed query for the first condition and filter by all subsequent conditions.
-		if (isFilterablePushdown(firstSearch, table)) {
+		const pushdownIndex = filterablePushdownIndex(firstSearch, table);
+		if (pushdownIndex) {
 			// The lead is a filterable custom index (HNSW). It doesn't populate the join map (`filtered`)
 			// that sibling filters read, so — unlike the general case below — we can build the sibling
 			// filters BEFORE executing the lead and push them into the traversal, so filtering happens
 			// during the graph walk instead of post-filtering an under-filled candidate set (#1241). They
 			// also stay in the post-filter chain as a deterministic, harmless re-check.
-			const filters = mapConditionsToFilters(conditions.slice(1), true, firstSearch.estimated_count);
+			const siblings = conditions.slice(1);
+			const filters = mapConditionsToFilters(siblings, true, firstSearch.estimated_count);
 			const recordFilters = recordGuards ? filters.concat(recordGuards) : filters;
+			// The sibling conditions a secondary-index range scan answers exactly can seed an allow-set
+			// the index admits from, instead of loading and decoding a record at every visited node.
+			// The post-filter chain below stays whole, so the set only has to be a SUPERSET of the true
+			// matches — the index decides whether building it beats evaluating the predicate.
+			const candidateKeys =
+				pushdownIndex.candidateKeyFilter && siblings.length > 0
+					? planCandidateKeys(siblings, table, txn, !recordGuards)
+					: undefined;
 			// Execute a COPY carrying the pushed-down predicate, never mutating the caller's condition
 			// object (which may be reused across requests with different users / guards).
 			const lead =
 				recordFilters.length > 0
-					? { ...firstSearch, recordFilter: composeRecordFilter(recordFilters, table, context) }
+					? { ...firstSearch, recordFilter: composeRecordFilter(recordFilters, table, context), candidateKeys }
 					: firstSearch;
 			const results = executeCondition(lead);
 			return recordFilters.length > 0 ? transformToEntries(results, recordFilters) : results;
@@ -351,16 +361,15 @@ function mergeFullTextOption(name: string, current: number | undefined, next: nu
 	return next;
 }
 
-/** True when a condition's index is a custom index that participates in predicate-aware traversal (HNSW). */
-function isFilterablePushdown(condition, table): boolean {
+function filterablePushdownIndex(condition, table): any {
 	const attributeName = condition?.attribute ?? condition?.[0];
-	if (attributeName == null || table == null) return false;
+	if (attributeName == null || table == null) return undefined;
 	const fullTextMode = Boolean(fullTextComparatorMode(condition?.comparator));
 	const index =
 		attributeName === table.primaryKey && !fullTextMode
 			? table.primaryStore
 			: conditionIndex(table, attributeName, fullTextMode);
-	return Boolean(index?.customIndex?.filteredSearch);
+	return index?.customIndex?.filteredSearch ? index.customIndex : undefined;
 }
 
 /**
@@ -391,6 +400,279 @@ function composeRecordFilter(recordFilters, table, context): (primaryKey: Id, su
 		memo.set(primaryKey, verdict);
 		return verdict;
 	};
+}
+
+/**
+ * The candidate-key plan a filterable custom index receives alongside its pushed-down predicate:
+ * the sibling AND conditions this query can answer from secondary-index range scans alone.
+ * The index admits from the keys instead of re-deriving the condition per visited node, so a
+ * condition on an indexed attribute costs a key-only index-entry read per matching record rather
+ * than a record load and decode per node the traversal reaches.
+ */
+export interface CandidateKeyPlan {
+	/** Planner estimate of the matching record count; the index sizes its work budget from it. */
+	estimatedCount: number;
+	/**
+	 * The matching primary keys, with `complete` true when the set alone decides admission, so the
+	 * index may drop the traversal predicate. That needs every pushed-down condition covered, no
+	 * opaque record guard (`rowFilter` / `vectorFilter`), and every term actually scanned — a term
+	 * too wide for `maxKeys` is skipped rather than abandoning the whole set, leaving a narrower
+	 * superset that gates the predicate instead of replacing it. Null when even the narrowest term
+	 * overruns, which means the whole plan was not worth what it read.
+	 */
+	collect(maxKeys: number): { keys: CandidateKeySet; complete: boolean } | null;
+}
+
+/**
+ * Primary keys by storage identity. Strings and non-zero numbers are their own identity, which spares
+ * encoding the common key shapes, and the stores encode -0 and 0 apart where Set membership does not.
+ * The rest go by writeKeyId, the encoder the stores index by — flattenKey joins composite keys with
+ * NUL and collapses ['a', 'b\0c'] and ['a\0b', 'c'] — kept apart from the values because an encoded
+ * identity is a string that can equal a string key: writeKeyId(['a', 'b']) is 'a\0b'. An index scan
+ * decodes an int64 as the number it encodes as when that is exact, while a traversal may report the
+ * BigInt, so the two are the same key.
+ */
+export class CandidateKeySet {
+	#byValue = new Set<Id>();
+	#encoded = new Set<unknown>();
+	#zero = false;
+	#negativeZero = false;
+	#holdsBigInt = false;
+	add(primaryKey: Id): void {
+		if (typeof primaryKey === 'string' || (typeof primaryKey === 'number' && primaryKey !== 0))
+			this.#byValue.add(primaryKey);
+		else if (primaryKey === 0) {
+			if (Object.is(primaryKey, -0)) this.#negativeZero = true;
+			else this.#zero = true;
+		} else {
+			if (typeof primaryKey === 'bigint') this.#holdsBigInt = true;
+			this.#encoded.add(writeKeyId(primaryKey));
+		}
+	}
+	has(primaryKey: Id): boolean {
+		if (typeof primaryKey === 'string') return this.#byValue.has(primaryKey);
+		if (typeof primaryKey === 'number') {
+			if (primaryKey === 0) return Object.is(primaryKey, -0) ? this.#negativeZero : this.#zero;
+			return this.#byValue.has(primaryKey) || (this.#holdsBigInt && this.#encoded.has(writeKeyId(primaryKey)));
+		}
+		if (typeof primaryKey === 'bigint') {
+			const number = Number(primaryKey);
+			if (BigInt(number) === primaryKey && (number === 0 ? this.#zero : this.#byValue.has(number))) return true;
+		}
+		return this.#encoded.has(writeKeyId(primaryKey));
+	}
+	get size(): number {
+		return this.#byValue.size + this.#encoded.size + (this.#zero ? 1 : 0) + (this.#negativeZero ? 1 : 0);
+	}
+}
+
+interface CandidateKeyScan {
+	index: any;
+	range: any;
+	estimatedCount: number;
+}
+/** Scans whose UNION is one AND term; a single-element `scans` is a leaf condition. */
+interface CandidateKeyTerm {
+	scans: CandidateKeyScan[];
+	estimatedCount: number;
+}
+
+// Comparators whose secondary-index range is EXACTLY the condition over the values an index holds,
+// so scanning that range yields every indexed match and nothing else. `ne`, `in`, `contains`,
+// `ends_with` and any negated condition are excluded because searchByIndex answers them with a scan
+// plus a record filter.
+const CANDIDATE_KEY_COMPARATORS = new Set([
+	'equals',
+	'lt',
+	'le',
+	'gt',
+	'ge',
+	'between',
+	'gele',
+	'gelt',
+	'gtlt',
+	'gtle',
+]);
+
+/**
+ * Plan one leaf condition as an index range scan, or undefined when its matches cannot be read off
+ * an index exactly, or when the scan's size cannot be estimated.
+ */
+function planCandidateKeyScan(condition, table): CandidateKeyScan | undefined {
+	if (condition.negated) return undefined;
+	const attributeName = condition.attribute ?? condition[0];
+	if (typeof attributeName !== 'string' || attributeName === table.primaryKey) return undefined;
+	const index = usableIndex(table, attributeName);
+	if (!index || index.customIndex) return undefined;
+	const comparator = ALTERNATE_COMPARATOR_NAMES[condition.comparator] ?? condition.comparator ?? 'equals';
+	if (!CANDIDATE_KEY_COMPARATORS.has(comparator)) return undefined;
+	// The scan has to hold every key the record predicate admits, or results would depend on whether
+	// the plan was built. The index cannot supply a record lacking the attribute, a null one unless it
+	// indexes nulls, or one written as -0: ordered-binary encodes -0 past every number, and that entry's
+	// primary key decodes wrong. compareKeys ranks undefined below every scalar, so `rank < 100` admits
+	// a record with no rank at all; a condition admitting any of these is left to the predicate.
+	const predicate = filterByType(condition, table, undefined, null);
+	if (predicate({}) || predicate({ [attributeName]: 0 }) || (!index.indexNulls && predicate({ [attributeName]: null })))
+		return undefined;
+	let value = condition[1] ?? condition.value;
+	if (value instanceof Date) value = value.getTime();
+	let start;
+	let end;
+	let inclusiveEnd = false;
+	let exclusiveStart = false;
+	switch (comparator) {
+		case 'lt':
+			// null, not searchByIndex's `true`: `true` sorts ABOVE null and false, so starting there
+			// would drop indexed rows the record predicate's compareKeys admits — an omission the
+			// post-filter cannot undo.
+			start = null;
+			end = value;
+			break;
+		case 'le':
+			start = null;
+			end = value;
+			inclusiveEnd = true;
+			break;
+		case 'gt':
+			start = value;
+			exclusiveStart = true;
+			break;
+		case 'ge':
+			start = value;
+			break;
+		case 'between':
+		case 'gele':
+		case 'gelt':
+		case 'gtlt':
+		case 'gtle':
+			if (!Array.isArray(value)) return undefined;
+			start = value[0] instanceof Date ? value[0].getTime() : value[0];
+			end = value[1] instanceof Date ? value[1].getTime() : value[1];
+			inclusiveEnd = comparator === 'gele' || comparator === 'gtle' || comparator === 'between';
+			exclusiveStart = comparator === 'gtlt' || comparator === 'gtle';
+			break;
+		default:
+			start = value;
+			end = value;
+			inclusiveEnd = true;
+	}
+	// ordered-binary encodes -0 above every number, where the predicate's compareKeys calls it 0.
+	if (start === 0) start = 0;
+	if (end === 0) end = 0;
+	// An over-length string key is stored truncated behind an overflow marker, which makes the range
+	// wider than the condition and needs a record filter to narrow again.
+	if (
+		(typeof start === 'string' && start.length > MAX_SEARCH_KEY_LENGTH) ||
+		(typeof end === 'string' && end.length > MAX_SEARCH_KEY_LENGTH)
+	)
+		return undefined;
+	if (condition.estimated_count === undefined) estimateCondition(table)(condition);
+	let estimatedCount = condition.estimated_count;
+	if (!(estimatedCount >= 0) || !Number.isFinite(estimatedCount)) return undefined;
+	// estimateRangeCondition measures the range searchByIndex would run, which starts at `true`. Only
+	// lt/le widen below that, and the block they add is read FIRST and can dwarf the rest of the
+	// range, so it has to be counted or the scan overruns a budget sized without it. A statistical
+	// estimate, never getValuesCount: that one steps the whole block, which is the unbounded
+	// per-query cost this is here to avoid. The other comparators' own estimates already cover
+	// whatever they start at.
+	if (comparator === 'lt' || comparator === 'le') {
+		let belowTrue: number | undefined;
+		try {
+			belowTrue = index.estimateCount?.({ start: null, end: true })?.count;
+		} catch {
+			return undefined;
+		}
+		if (!(belowTrue >= 0)) return undefined;
+		estimatedCount += belowTrue;
+	}
+	return { index, range: { start, end, inclusiveEnd, exclusiveStart }, estimatedCount };
+}
+
+function planCandidateKeys(conditions, table, transaction, guardFree: boolean): CandidateKeyPlan | undefined {
+	const terms: CandidateKeyTerm[] = [];
+	const planned = collectCandidateKeyTerms(conditions, table, terms) && guardFree;
+	if (terms.length === 0) return undefined;
+	const estimatedCount = terms.reduce((narrowest, term) => Math.min(narrowest, term.estimatedCount), Infinity);
+	return {
+		estimatedCount,
+		collect: (maxKeys) => collectCandidateKeys(terms, transaction, maxKeys, planned),
+	};
+}
+
+/** Returns whether every condition was covered. */
+function collectCandidateKeyTerms(conditions, table, terms: CandidateKeyTerm[]): boolean {
+	let complete = true;
+	for (const condition of conditions) {
+		if (condition.conditions) {
+			if (condition.operator === 'or') {
+				// A union is only sound in full: dropping one branch would exclude the records only
+				// that branch matches, and admission may over-admit but never omit.
+				const scans: CandidateKeyScan[] = [];
+				for (const child of condition.conditions) {
+					const scan = child.conditions ? undefined : planCandidateKeyScan(child, table);
+					if (!scan) {
+						complete = false;
+						break;
+					}
+					scans.push(scan);
+				}
+				if (scans.length === condition.conditions.length) {
+					terms.push({ scans, estimatedCount: scans.reduce((total, scan) => total + scan.estimatedCount, 0) });
+				}
+			} else if (!collectCandidateKeyTerms(condition.conditions, table, terms)) complete = false;
+			continue;
+		}
+		const scan = planCandidateKeyScan(condition, table);
+		if (scan) terms.push({ scans: [scan], estimatedCount: scan.estimatedCount });
+		else complete = false;
+	}
+	return complete;
+}
+
+/**
+ * Run the planned scans narrowest-estimate first, intersecting on storage key identity. `maxKeys`
+ * bounds index entries READ, not keys retained — a wide later scan whose intersection is tiny still
+ * reads its whole range, and that is the cost the caller budgeted against. A term whose estimate
+ * exceeds what is left of that budget is dropped instead: fewer AND terms is a wider superset, which
+ * the predicate then narrows, and spending the budget on it only to abandon the set is pure loss.
+ */
+function collectCandidateKeys(
+	terms: CandidateKeyTerm[],
+	transaction,
+	maxKeys: number,
+	planned: boolean
+): { keys: CandidateKeySet; complete: boolean } | null {
+	const ordered = terms.length > 1 ? terms.slice().sort((a, b) => a.estimatedCount - b.estimatedCount) : terms;
+	let matched: CandidateKeySet | undefined;
+	let complete = planned;
+	let scanned = 0;
+	for (const term of ordered) {
+		if (matched && term.estimatedCount > maxKeys - scanned) {
+			complete = false;
+			continue;
+		}
+		const next = new CandidateKeySet();
+		let overran = false;
+		for (const scan of term.scans) {
+			for (const { value: primaryKey } of scan.index.getRange({ ...scan.range, values: true, transaction })) {
+				if (++scanned > maxKeys) {
+					overran = true;
+					break;
+				}
+				if (!matched || matched.has(primaryKey)) next.add(primaryKey);
+			}
+			if (overran) break;
+		}
+		// A half-scanned term is not a superset of its own matches, so it is dropped whole.
+		if (overran) {
+			if (!matched) return null;
+			complete = false;
+			break;
+		}
+		matched = next;
+		if (matched.size === 0) break;
+	}
+	return { keys: matched!, complete };
 }
 
 /**
@@ -730,6 +1012,7 @@ export function searchByIndex(
 			// exploring until it has enough MATCHING results, rather than post-filtering an under-filled
 			// candidate set. Only indexes that opt in (filteredSearch) receive it; others post-filter as before.
 			const recordFilter = index.customIndex.filteredSearch ? searchCondition.recordFilter : undefined;
+			const candidateKeys = index.customIndex.candidateKeyFilter ? (searchCondition as any).candidateKeys : undefined;
 			const waiting = index.customIndex.filePrimary && searchCondition.waitForIndexMilliseconds > 0;
 			const start = waiting ? Promise.withResolvers<void>() : undefined;
 			const controller = waiting ? new AbortController() : undefined;
@@ -759,6 +1042,7 @@ export function searchByIndex(
 				minResults,
 				resultOffset,
 				assertTransactionActive: checkActive,
+				candidateKeys,
 			});
 			const coverage = (searched as any).indexCoverage;
 			if (!waiting && coverage && context?.responseHeaders) {

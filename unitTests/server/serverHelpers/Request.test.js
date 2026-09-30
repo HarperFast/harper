@@ -5,14 +5,14 @@ const sinon = require('sinon');
 const { EventEmitter } = require('node:events');
 
 describe('Request class', function () {
-	let Request;
+	let Request, UwsRequest;
 	let ResponseHeaders;
 
 	before(function () {
 		// Clear the module from cache to ensure fresh load
 		const modulePath = require.resolve('../../../server/serverHelpers/Request.ts');
 		delete require.cache[modulePath];
-		Request = require('#src/server/serverHelpers/Request').Request;
+		({ Request, UwsRequest } = require('#src/server/serverHelpers/Request'));
 		ResponseHeaders = require('#src/server/serverHelpers/Headers').Headers;
 	});
 
@@ -293,7 +293,7 @@ describe('Request class', function () {
 	});
 
 	describe('signal (AbortSignal)', function () {
-		const { EventEmitter } = require('node:events');
+		const { EventEmitter, getMaxListeners } = require('node:events');
 
 		function makeNodeRequest() {
 			return {
@@ -319,6 +319,17 @@ describe('Request class', function () {
 			assert.ok(request.signal instanceof AbortSignal);
 			assert.strictEqual(request.signal.aborted, false);
 			assert.strictEqual(request.isAborted, false);
+		});
+
+		it('allows concurrent transactions to listen without warnings', function () {
+			assert.strictEqual(getMaxListeners(new Request(makeNodeRequest()).signal), 0);
+			assert.strictEqual(getMaxListeners(new Request(makeNodeRequest(), makeNodeResponse()).signal), 0);
+			const ac = new AbortController();
+			assert.strictEqual(
+				getMaxListeners(new UwsRequest({ method: 'GET', url: '/', headers: {}, signal: ac.signal }).signal),
+				0
+			);
+			assert.strictEqual(getMaxListeners(new UwsRequest({ method: 'GET', url: '/', headers: {} }).signal), 0);
 		});
 
 		it('aborts the signal on nodeResponse close before write is finished', function () {

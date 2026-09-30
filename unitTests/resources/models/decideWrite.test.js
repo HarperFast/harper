@@ -163,11 +163,17 @@ describe('@decide write path (real table)', () => {
 		});
 		try {
 			const context = { source: {}, signal: AbortSignal.abort(new Error('client gone')) };
-			await transaction(context, async () => {
-				const resource = await T.getResource('gone1', context);
-				return resource._writeUpdate('gone1', { id: 'gone1', body: 'anything' }, true);
-			});
+			// The deciders run before the write is staged, so they still see the signal; the write itself is
+			// then refused, because an aborted request stages no writes (resources/DESIGN.md).
+			await assert.rejects(
+				transaction(context, async () => {
+					const resource = await T.getResource('gone1', context);
+					return resource._writeUpdate('gone1', { id: 'gone1', body: 'anything' }, true);
+				}),
+				/client disconnected/
+			);
 			assert.equal(seenAborted, true, 'an already-aborted request signal is what the decider sees');
+			assert.equal(await T.get('gone1'), undefined, 'a write on an aborted request must not commit');
 		} finally {
 			T.userSetDeciders.delete('route');
 			T.updatedAttributes();

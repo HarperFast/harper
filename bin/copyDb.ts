@@ -15,7 +15,7 @@ import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
 import { CONFIG_PARAMS, DATABASES_DIR_NAME, MIGRATING_DIR_SUFFIX } from '../utility/hdbTerms.ts';
-import { AUDIT_STORE_OPTIONS, auditRetention } from '../resources/auditStore.ts';
+import { AUDIT_STORE_OPTIONS, auditRetention, stampDatabaseGeneration } from '../resources/auditStore.ts';
 import { blobsReadmeContent, copyBlobRootsByIndex } from '../dataLayer/blobBackup.ts';
 import { describeSchema } from '../dataLayer/schemaDescribe.ts';
 import { updateConfigValue } from '../config/configUtils.ts';
@@ -982,6 +982,10 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 		if (idMappingBytes) {
 			targetRootStore.putSync(REMOTE_NODE_IDS_KEY, asBinary(idMappingBytes));
 		}
+
+		// flushed so the stamp is durable before the caller publishes the staging directory
+		stampDatabaseGeneration(targetRootStore, { carriesLog: false });
+		await targetRootStore.flush({ allowWriteStall: true });
 
 		console.log('migrated database ' + sourceDatabase + ' to RocksDB');
 	} finally {

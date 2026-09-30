@@ -178,6 +178,33 @@ unit switch does not shift the estimate on its own. The ef term remains the conf
 not the runtime auto-scaled value, so the planner increasingly underestimates vector traversal cost
 as an automatically scaled graph grows.
 
+## A filtered vector search may admit from an index key set only if the set holds every predicate match
+
+`search.ts → planCandidateKeys` turns companion AND conditions a secondary index answers (equality,
+`gt`/`ge`/`lt`/`le`, the `between` family, nested AND/OR over those) into key-only range scans, and the
+HNSW index admits from the keys instead of loading a record per visited node (#2688). A set covering
+every pushed-down condition, with no `rowFilter`/`vectorFilter`, replaces the predicate; otherwise it
+gates the residual predicate. The post-filter re-checks every row, so the set may over-admit but must
+never omit: an omission is unrecoverable and makes results depend on whether the cost model built it.
+
+`planCandidateKeyScan` enforces that by running the condition's own `filterByType` predicate on the
+records an index cannot supply: one lacking the attribute, a null one when the index holds no nulls,
+and a `0`, because a number written as `-0` is indexed under an encoding that sorts past every number
+and decodes to a wrong primary key (ordered-binary; index-led queries miss that row too). A condition
+admitting any of them stays on the predicate path. `compareKeys` ranks undefined below every scalar, so
+this declines `lt`/`le` over a number, string or boolean bound, `ge null` and any range covering 0; the
+`lt`/`le` that remain (a BigInt bound) start at `null`, not `searchByIndex`'s `true`, so indexed nulls
+are read. Normalizing `-0` in the encoder or index writer would let zero-covering ranges plan again.
+
+Building the set is a cost decision: one index-entry read per match against a record load per visited
+node, where filling `ef` matches at selectivity `s` takes about `ef / s` visits. `KEYS_PER_PREDICATE_VISIT`
+is that ratio at the warm, regression-safe end of the measured range; `MAX_CANDIDATE_KEYS` and half the
+node count cap the synchronous scan. A complete set derives the visit budget from its selectivity,
+widening the `filterExpansion` budget by at most `ALLOW_SET_BUDGET_MAX_WIDENING` and never narrowing it;
+a configured `filterExpansion` stays authoritative. `CandidateKeySet` is the one identity rule for both
+the scan's intersection and admission. A node-id bitset for the native plane is not built: the
+pk → node-id lookup costs more than the record load it saves.
+
 ## Derived-index runtime: committed-log delivery to native index backends (`resources/derivedIndexRuntime.ts`)
 
 A derived index (the native HNSW or Tantivy full-text plane) is a materialized view
