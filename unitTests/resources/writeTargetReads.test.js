@@ -3,6 +3,7 @@ const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { Resource } = require('#src/resources/Resource');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -24,12 +25,12 @@ describe('Reads of a write target', () => {
 			],
 		});
 	}
-	async function readsOf(Table, ids, action) {
+	async function readsOf(Table, ids, action, onlySnapshotReads = false) {
 		const store = Table.primaryStore;
 		const getEntry = store.getEntry;
 		const reads = Object.fromEntries(ids.map((id) => [id, 0]));
 		store.getEntry = function (key, options) {
-			if (key in reads) reads[key]++;
+			if (key in reads && (!onlySnapshotReads || options?.uncachedRead)) reads[key]++;
 			return getEntry.call(this, key, options);
 		};
 		try {
@@ -111,6 +112,49 @@ describe('Reads of a write target', () => {
 		assert.strictEqual(record.created, created);
 		assert.deepStrictEqual(await idsWithValue(Target, 5), []);
 		assert.strictEqual(await Target.get('loaded'), null);
+	});
+
+	it('reloads the commit base after a snapshot-free read opened the transaction', async () => {
+		const Target = freshTable();
+		await Target.put('late', { value: 1 });
+		const reads = await readsOf(Target, ['late'], () =>
+			transaction({}, async (context) => {
+				for await (const _record of Target.search(
+					{ conditions: [{ attribute: 'value', value: 9 }], snapshot: false },
+					context
+				));
+				await Target.put('late', { value: 2 }, context);
+			})
+		);
+		if (!isLMDB) assert.ok(reads.late >= 2, 'a snapshot-free handle is never reused as the commit base');
+		assert.strictEqual((await Target.get('late')).value, 2);
+		assert.deepStrictEqual(await idsWithValue(Target, 1), []);
+	});
+
+	it('reloads the commit base once a source fill has replaced the loaded entry', async () => {
+		const Target = freshTable();
+		Target.sourcedFrom(
+			class extends Resource {
+				get() {
+					// no background cache fill, so the only snapshot reads of the key are the write's own
+					this.getContext().noCacheStore = true;
+					return { id: this.getId(), value: 7 };
+				}
+				put() {}
+			}
+		);
+		class FillsFromSource extends Target {
+			async put(data, target) {
+				await this.ensureLoaded();
+				return super.put(data, target);
+			}
+		}
+		const reads = await readsOf(Target, ['filled'], () => FillsFromSource.put('filled', { value: 8 }), true);
+		if (!isLMDB)
+			assert.strictEqual(reads.filled, 2, 'the pre-load and a commit-base reload, not a reused source entry');
+		assert.strictEqual((await Target.get('filled')).value, 8);
+		assert.deepStrictEqual(await idsWithValue(Target, 7), []);
+		assert.deepStrictEqual(await idsWithValue(Target, 8), ['filled']);
 	});
 
 	it('reloads the commit base after an earlier write to the key in the same transaction', async () => {

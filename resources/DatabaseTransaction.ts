@@ -614,7 +614,7 @@ export type TransactionWrite = {
 	// the commit derives stored state (folds, index diffs, residency) from its base entry, so
 	// save() must reload that base through the committing transaction's snapshot
 	reloadCommitBase?: boolean;
-	// the staging handle this write's entry was read uncached through; see save()
+	// the staging handle this write's entry was read uncached through (a snapshot read save() need not repeat)
 	baseReadTxn?: any;
 	writeGeneration?: WriteGeneration;
 	instanceClosed?: boolean;
@@ -1512,8 +1512,9 @@ export class DatabaseTransaction implements Transaction {
 		// the read-to-put span rather than closing it (open follow-up, tracked in the PR description).
 		// Replays keep their pre-read base — their convergence contract is the replay pass itself.
 		const reloadsCommitBase = operation.reloadCommitBase && !operation.saved && !this.isReplay;
-		// An entry read uncached through this same handle's pinned snapshot, before any write to the key in it, is
-		// already that base; a retry resets the snapshot and a staged prior write changes what a read would see.
+		// An entry read uncached through this same pinned-snapshot handle is already that base, until a retry resets
+		// the snapshot or an earlier staged write to the key changes what a read returns; locked, snapshot-free and
+		// replayed writes always reload.
 		const reusesBaseRead =
 			operation.baseReadTxn === transaction &&
 			this.retries === 0 &&
@@ -1521,6 +1522,7 @@ export class DatabaseTransaction implements Transaction {
 			!operation.priorWrite &&
 			!operation.lockHandle &&
 			!this.snapshotFree &&
+			!(transaction as any).snapshotDisabled &&
 			!this.isReplay;
 		if (!reusesBaseRead && (reloadEntry || operation.entry === undefined || reloadsCommitBase)) {
 			const uncachedRead = (!!operation.reloadCommitBase && !this.isReplay) || reloadEntry;

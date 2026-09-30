@@ -1629,7 +1629,8 @@ export function makeTable(options): TableResourceClass {
 		#version?: number; // version of the record
 		#entry?: Entry; // the entry from the database
 		#savingOperation?: any; // operation for the record is currently being saved
-		#baseReadTxn?: any; // staging handle the record was read uncached through, reusable as the commit base
+		// the entry this instance read uncached through the staging handle; reusable as the commit base while it is #entry
+		#baseRead?: { txn: any; entry: Entry | undefined };
 		#lockHandle?: RecordLockHandle; // the record lock acquired by lock() — scoped or hold
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
 		#writeGeneration?: WriteGeneration;
@@ -2405,7 +2406,6 @@ export function makeTable(options): TableResourceClass {
 				if (readTxn?.isDone) {
 					throw new Error('You can not read from a transaction that has already been committed/aborted');
 				}
-				// a write's pre-load read through the staging handle's snapshot is its harper#2259 commit base
 				const readsCommitBase =
 					isRocksDB &&
 					COMMIT_BASE_METHODS.has(resourceOptions?.method) &&
@@ -2425,7 +2425,7 @@ export function makeTable(options): TableResourceClass {
 						if (entry) {
 							TableResource._updateResource(this, entry);
 						} else this.#record = null;
-						if (readsCommitBase) this.#baseReadTxn = readTxn;
+						if (readsCommitBase) this.#baseRead = { txn: readTxn, entry: this.#entry };
 						if (request.onlyIfCached) {
 							// don't go into the loading from source condition, but HTTP spec says to
 							// return 504 (rather than 404) if there is no content and the cache-control header
@@ -2457,8 +2457,15 @@ export function makeTable(options): TableResourceClass {
 				throw error;
 			}
 		}
+		// The staging handle to reuse as a write's commit base: only for the key this instance read, and only while
+		// #entry is still the entry that read produced (a source fill or retry replaces it).
+		#commitBaseTxn(id: Id) {
+			const baseRead = this.#baseRead;
+			if (!baseRead || baseRead.entry !== this.#entry) return;
+			const receiverId = this.getId();
+			if (id === receiverId || writeKeyId(id) === writeKeyId(receiverId)) return baseRead.txn;
+		}
 		static _updateResource(resource, entry) {
-			resource.#baseReadTxn = undefined;
 			resource.#entry = entry;
 			resource.#record = entry?.value ?? null;
 			resource.#version = entry?.version;
@@ -4454,8 +4461,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			const reloadsCommitBase = options?.isCopyApply !== true;
 			const entry = entryBeforeWrite(this.#entry, id, transaction, reloadsCommitBase);
-			const baseReadTxn =
-				this.#baseReadTxn && writeKeyId(id) === writeKeyId(this.getId()) ? this.#baseReadTxn : undefined;
+			const baseReadTxn = this.#commitBaseTxn(id);
 			const writeToSource = () => {
 				if (!(this.constructor as any).source || (context as any)?.source) return;
 				if (fullUpdate) {
@@ -5377,8 +5383,7 @@ export function makeTable(options): TableResourceClass {
 			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
 			const entry = entryBeforeWrite(this.#entry, id, transaction, true);
-			const baseReadTxn =
-				this.#baseReadTxn && writeKeyId(id) === writeKeyId(this.getId()) ? this.#baseReadTxn : undefined;
+			const baseReadTxn = this.#commitBaseTxn(id);
 
 			const write: any = {
 				key: id,
