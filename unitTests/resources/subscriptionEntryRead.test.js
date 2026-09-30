@@ -49,8 +49,12 @@ describe('Subscription current-entry reads', () => {
 	}
 
 	it('reads the record once per update, however many subscribers share it', async () => {
-		await T.put('A', { value: 1 });
 		const first = await subscribe(1);
+		// Delivery of this write proves the database's notify cursor has passed every earlier record for A. Without it,
+		// the first measured pass can also replay an older one: LMDB seeds that cursor from Date.now() and holds it
+		// while no subscriber is active.
+		await T.put('A', { value: 1 });
+		await waitFor(() => first[0].some((event) => event.value?.value === 1));
 		const readsWithOne = await readsOfA(async () => {
 			await T.put('A', { value: 2 });
 			await waitFor(() => first[0].some((event) => event.value?.value === 2));
