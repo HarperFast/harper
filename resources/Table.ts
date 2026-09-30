@@ -1629,8 +1629,8 @@ export function makeTable(options): TableResourceClass {
 		#version?: number; // version of the record
 		#entry?: Entry; // the entry from the database
 		#savingOperation?: any; // operation for the record is currently being saved
-		// the entry this instance read uncached through the staging handle; reusable as the commit base while it is #entry
-		#baseRead?: { txn: any; entry: Entry | undefined };
+		#baseReadTxn?: any; // staging handle this instance's uncached pre-load read through
+		#baseReadEntry?: Entry; // what that read returned, reusable as the commit base only while it is still #entry
 		#lockHandle?: RecordLockHandle; // the record lock acquired by lock() — scoped or hold
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
 		#writeGeneration?: WriteGeneration;
@@ -2425,7 +2425,10 @@ export function makeTable(options): TableResourceClass {
 						if (entry) {
 							TableResource._updateResource(this, entry);
 						} else this.#record = null;
-						if (readsCommitBase) this.#baseRead = { txn: readTxn, entry: this.#entry };
+						if (readsCommitBase) {
+							this.#baseReadTxn = readTxn;
+							this.#baseReadEntry = entry;
+						}
 						if (request.onlyIfCached) {
 							// don't go into the loading from source condition, but HTTP spec says to
 							// return 504 (rather than 404) if there is no content and the cache-control header
@@ -2457,13 +2460,12 @@ export function makeTable(options): TableResourceClass {
 				throw error;
 			}
 		}
-		// The staging handle to reuse as a write's commit base: only for the key this instance read, and only while
-		// #entry is still the entry that read produced (a source fill or retry replaces it).
+		// (a source fill or retry replaces #entry, and ensureLoaded() can also evict it in place, so it drops the receipt)
 		#commitBaseTxn(id: Id) {
-			const baseRead = this.#baseRead;
-			if (!baseRead || baseRead.entry !== this.#entry) return;
+			const baseReadTxn = this.#baseReadTxn;
+			if (!baseReadTxn || this.#baseReadEntry !== this.#entry) return;
 			const receiverId = this.getId();
-			if (id === receiverId || writeKeyId(id) === writeKeyId(receiverId)) return baseRead.txn;
+			if (id === receiverId || writeKeyId(id) === writeKeyId(receiverId)) return baseReadTxn;
 		}
 		static _updateResource(resource, entry) {
 			resource.#entry = entry;
@@ -2476,6 +2478,7 @@ export function makeTable(options): TableResourceClass {
 		 * @returns
 		 */
 		ensureLoaded() {
+			this.#baseReadTxn = undefined;
 			const loadedFromSource = ensureLoadedFromSource(
 				(this.constructor as any).source,
 				this.getId(),

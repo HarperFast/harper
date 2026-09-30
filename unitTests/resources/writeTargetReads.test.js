@@ -136,7 +136,6 @@ describe('Reads of a write target', () => {
 		Target.sourcedFrom(
 			class extends Resource {
 				get() {
-					// no background cache fill, so the only snapshot reads of the key are the write's own
 					this.getContext().noCacheStore = true;
 					return { id: this.getId(), value: 7 };
 				}
@@ -155,6 +154,26 @@ describe('Reads of a write target', () => {
 		assert.strictEqual((await Target.get('filled')).value, 8);
 		assert.deepStrictEqual(await idsWithValue(Target, 7), []);
 		assert.deepStrictEqual(await idsWithValue(Target, 8), ['filled']);
+	});
+
+	it('reloads the commit base when ensureLoaded() evicted the loaded entry in place', async function () {
+		// LMDB diffs this write's index against the entry the eviction mutated (harper#2937)
+		if (isLMDB) this.skip();
+		const Target = freshTable();
+		Target.setTTLExpiration({ expiration: 0.005 });
+		Target.evict = () => Promise.resolve(); // keep the stored record, so only the write's base decides the index diff
+		await Target.put('expired', { value: 1 });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		class LoadsFirst extends Target {
+			async put(data, target) {
+				await this.ensureLoaded();
+				return super.put(data, target);
+			}
+		}
+		await LoadsFirst.put('expired', { value: 2 });
+		assert.strictEqual((await Target.get('expired'))?.value, 2);
+		assert.deepStrictEqual(await idsWithValue(Target, 1), []);
+		assert.deepStrictEqual(await idsWithValue(Target, 2), ['expired']);
 	});
 
 	it('reloads the commit base after an earlier write to the key in the same transaction', async () => {
