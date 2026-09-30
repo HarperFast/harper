@@ -326,6 +326,82 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		second.session.disconnect(true);
 	});
 
+	it('freezes, and never binds, a topic whose certificate is unavailable', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const clientId = `frozen-${name}`;
+		// a range that already recorded a failed read certifies nothing from the start
+		const attach = await T.subscribe({ omitCurrent: true });
+		T.auditStore.subscriptionLogRange.failedLogs.add('unreadable');
+		const { session, received } = await connect(clientId);
+		try {
+			await session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+			const before = (await stored(clientId)).subscriptions[0];
+			await T.put('a', { value: 1 });
+			await T.put('b', { value: 2 });
+			await waitFor(() => received.length >= 2);
+			await ackAll(session, received);
+			session.checkpoint();
+			await session.writes;
+			const after = (await stored(clientId)).subscriptions[0];
+			assert.strictEqual(after.startTime, before.startTime, 'no certificate, no progress');
+			assert.strictEqual(after.databaseGeneration, undefined);
+		} finally {
+			T.auditStore.subscriptionLogRange.failedLogs.delete('unreadable');
+			attach.end();
+			session.disconnect(true);
+		}
+	});
+
+	it('rolls back a SUBSCRIBE whose record could not be saved', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const clientId = `unsaved-${name}`;
+		const { session, received } = await connect(clientId);
+		const sessions = databases.system.hdb_durable_session;
+		const put = sessions.put;
+		sessions.put = function () {
+			sessions.put = put;
+			return Promise.reject(new Error('system table unavailable'));
+		};
+		try {
+			await assert.rejects(session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true), /unavailable/);
+		} finally {
+			sessions.put = put;
+		}
+		assert.strictEqual(session.topics.size, 0);
+		assert.strictEqual(session.subscriptions.length, 0);
+		await T.put('a', { value: 1 });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.deepStrictEqual(received, [], 'the refused subscription delivers nothing');
+		session.disconnect(true);
+	});
+
+	it('closes the connection, keeping the session, when a resume fails for another reason', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const clientId = `resume-error-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+		await T.put('a', { value: 1 });
+		await waitFor(() => first.received.length >= 1);
+		await ackAll(first.session, first.received);
+		const entry = await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
+		first.session.disconnect(true);
+		const second = await connect(clientId);
+		const subscribe = T.subscribe;
+		T.subscribe = () => Promise.reject(new Error('temporarily unavailable'));
+		try {
+			await second.session.resume();
+		} finally {
+			T.subscribe = subscribe;
+		}
+		assert.strictEqual(second.closed.length, 1);
+		assert.match(second.closed[0].message, /temporarily unavailable/);
+		const kept = (await stored(clientId)).subscriptions[0];
+		assert.strictEqual(kept.startTime, entry.startTime, 'the session is kept for the next connect');
+	});
+
 	it('stops writing when another connection takes the session over', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });

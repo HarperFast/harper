@@ -352,7 +352,6 @@ class SubscriptionsSession {
 			if (!subscription[Symbol.asyncIterator])
 				throw new Error(`Subscription is not (async) iterable for topic ${topic}`);
 			if (this.terminated) {
-				// the session ended while this subscribe was in flight
 				subscription.end?.();
 				return;
 			}
@@ -617,7 +616,6 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 					true
 				);
 			} catch (error) {
-				if (!RESUME_REFUSALS.has(error?.code)) throw error;
 				this.subscriptionFailed({ topic }, error);
 				return;
 			}
@@ -688,7 +686,18 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		await this.resumeSubscription(durable ? { ...subscription, reportProgress: true } : subscription, needsAck);
 		if (durable) {
 			this.startCheckpoints();
-			await this.persist();
+			try {
+				await this.persist();
+			} catch (error) {
+				// the client is told this SUBSCRIBE failed, so it must not keep receiving or come back saved
+				const started = this.subscriptions.find((existing) => existing.topic === subscription.topic);
+				if (started) {
+					started.end();
+					this.subscriptions.splice(this.subscriptions.indexOf(started), 1);
+				}
+				this.topics.delete(subscription.topic);
+				throw error;
+			}
 		}
 		return subscription;
 	}
@@ -711,11 +720,12 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const subscription = state.subscription;
 		if (!subscription || !state.verified) return;
 		const oldestUnacked = state.unacked.values().next();
-		const progress = subscription.progress?.();
-		if (progress === undefined) {
-			// nothing certifies what was sent, so only a transaction the client has taken and moved past counts
-			return !oldestUnacked.done ? oldestUnacked.value.previousKey : state.keyBefore;
+		if (subscription.progress === undefined) {
+			// a resource that certifies nothing (LMDB, or not a table) advances on acknowledgements alone
+			return !oldestUnacked.done ? oldestUnacked.value.previousKey : state.deliveredKey;
 		}
+		const progress = subscription.progress();
+		if (progress === undefined) return;
 		const boundary = !oldestUnacked.done
 			? oldestUnacked.value.previousKey
 			: subscription.sentCount === state.consumed
@@ -734,7 +744,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (bound && !(next > state.entry.startTime)) continue;
 			if (!bound && next === state.entry.startTime) continue;
 			state.entry.startTime = next;
-			state.entry.databaseGeneration = state.subscription.databaseGeneration;
+			// only a certified position may be checked on resume
+			state.entry.databaseGeneration =
+				state.subscription.progress === undefined ? undefined : state.subscription.databaseGeneration;
 			changed = true;
 		}
 		return changed;
@@ -768,28 +780,31 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	}
 	persist(): Promise<void> {
 		this.dirty = true;
+		if (this.discarded) return Promise.resolve();
 		if (!this.saving) {
-			this.saving = this.saveWhileDirty().finally(() => (this.saving = undefined));
+			this.saving = this.saveWhileDirty();
 			this.writes = this.saving.catch((error) => warn(`Failed to save MQTT session ${this.sessionId}`, error));
 		}
 		return this.saving;
 	}
 	async saveWhileDirty() {
-		while (this.dirty && !this.discarded) {
-			this.dirty = false;
-			try {
+		try {
+			while (this.dirty && !this.discarded) {
+				this.dirty = false;
 				await this.saveOnce();
-			} catch (error) {
-				// the next checkpoint retries
-				this.dirty = true;
-				throw error;
 			}
+		} catch (error) {
+			// the next checkpoint retries
+			this.dirty = true;
+			throw error;
+		} finally {
+			// cleared with the last dirty check, so a later persist() starts a new save rather than joining this one
+			this.saving = undefined;
 		}
 	}
 	async saveOnce() {
 		const record = this.recordToWrite();
 		const stored = await getDurableSession().get(this.sessionId);
-		// only a connection that owns the record writes it, and only one that found none creates it
 		if (stored ? stored.incarnation !== this.incarnation : !this.mayCreate) return this.supersede();
 		await getDurableSession().put(record, { source: true });
 		this.mayCreate = false;
