@@ -38,8 +38,10 @@ import {
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
 const RAW_PAGE_SIZE = 256;
+const MAX_FILTERED_RAW_PAGE_SIZE = 4_096;
 const MIN_RAW_PAGE_SIZE = 32;
 const RAW_PAGE_OVERFETCH_FACTOR = 2;
+const RAW_PAGE_YIELD_INTERVAL = 256;
 const MAX_RELOAD_FAILURES_BEFORE_REOPEN = 3;
 const HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS = 5_000;
 const READER_DRAIN_GRACE_MILLISECONDS = 1_000;
@@ -395,13 +397,14 @@ export class FullTextQueryIndex {
 			let moreMayExist = false;
 			let staleVersionHits = 0;
 			let expiredHits = 0;
+			let rawPageSize = bounded
+				? Math.min(RAW_PAGE_SIZE, Math.max(MIN_RAW_PAGE_SIZE, target * RAW_PAGE_OVERFETCH_FACTOR))
+				: RAW_PAGE_SIZE;
 			const transaction = context && this.#options.Table._readTxnForContext(context);
 			while (accepted.length < target && offset < searchWindow) {
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
-				const desiredPageSize = bounded
-					? Math.max(MIN_RAW_PAGE_SIZE, (target - accepted.length) * RAW_PAGE_OVERFETCH_FACTOR)
-					: RAW_PAGE_SIZE;
-				const limit = autocomplete ? searchWindow : Math.min(RAW_PAGE_SIZE, desiredPageSize, searchWindow - offset);
+				const limit = autocomplete ? searchWindow : Math.min(rawPageSize, searchWindow - offset);
+				const acceptedBeforePage = accepted.length;
 				const result = await reader.search(
 					{
 						query,
@@ -413,10 +416,17 @@ export class FullTextQueryIndex {
 				);
 				if (!bounded && !autocomplete && result.totalRelation === 'exact' && result.total > searchWindow)
 					throw new ClientError(`Full-text query exceeds the ${searchWindow}-result search window; add a limit`, 400);
+				if (result.totalRelation === 'lower-bound' && result.hits.length < limit)
+					throw new ServerError('Full-text index returned an incomplete result page', 500);
 				moreMayExist =
 					result.totalRelation === 'exact' ? offset + result.hits.length < result.total : result.hits.length === limit;
 				if (result.hits.length === 0) break;
-				for (const hit of result.hits) {
+				for (let hitIndex = 0; hitIndex < result.hits.length; hitIndex++) {
+					if (hitIndex > 0 && hitIndex % RAW_PAGE_YIELD_INTERVAL === 0) {
+						await new Promise((resolve) => setImmediate(resolve));
+						if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
+					}
+					const hit = result.hits[hitIndex];
 					const key = decodeNativeId(hit.id, this.#options.Table.tableId);
 					options.assertTransactionActive?.();
 					const entry = this.#options.Table.primaryStore.getEntry(key, { transaction });
@@ -441,7 +451,18 @@ export class FullTextQueryIndex {
 				offset += result.hits.length;
 				if (autocomplete) break;
 				if (!moreMayExist) break;
-				if (accepted.length < target) await new Promise((resolve) => setImmediate(resolve));
+				if (accepted.length < target) {
+					if (bounded) {
+						const acceptedThisPage = accepted.length - acceptedBeforePage;
+						rawPageSize = nextFilteredRawPageSize(
+							limit,
+							result.hits.length,
+							acceptedThisPage,
+							target - accepted.length
+						);
+					}
+					await new Promise((resolve) => setImmediate(resolve));
+				}
 			}
 			if (!bounded && moreMayExist)
 				throw new ClientError(`Full-text query exceeds the ${searchWindow}-result search window; add a limit`, 400);
@@ -856,6 +877,19 @@ export class FullTextQueryIndex {
 			maxLagMilliseconds
 		);
 	}
+}
+
+function nextFilteredRawPageSize(
+	currentPageSize: number,
+	rawHits: number,
+	acceptedHits: number,
+	remainingResults: number
+): number {
+	const projected =
+		acceptedHits === 0
+			? currentPageSize * 4
+			: Math.ceil((remainingResults * rawHits * RAW_PAGE_OVERFETCH_FACTOR) / acceptedHits);
+	return Math.min(MAX_FILTERED_RAW_PAGE_SIZE, Math.max(MIN_RAW_PAGE_SIZE, projected));
 }
 
 export async function pauseNativeFullTextQueryReaders(

@@ -136,10 +136,13 @@ function simpleQueryIndex({
 	onReload,
 	onClose,
 	onGetEntry,
+	onSearch,
 	entryForKey,
 	isEntryCurrent,
 	storeName = 'unused',
 	sourceGeneration = 'generation',
+	maxSearchWindow = 10,
+	searchResult,
 }) {
 	let committedPayload = payload;
 	let reloads = 0;
@@ -168,7 +171,7 @@ function simpleQueryIndex({
 			async runtimeInfo() {
 				return {
 					queryClassIsolationMinimumSearchThreads: 1,
-					limits: queryLimits({ maxSearchWindow: 10, maxTraceRecords: 10 }),
+					limits: queryLimits({ maxSearchWindow, maxTraceRecords: 10 }),
 				};
 			},
 			async openNativeFullTextReader() {
@@ -176,7 +179,10 @@ function simpleQueryIndex({
 					get committedPayload() {
 						return committedPayload;
 					},
-					async search({ offset = 0, limit }) {
+					async search(request) {
+						onSearch?.(request);
+						if (searchResult) return searchResult(request);
+						const { offset = 0, limit } = request;
 						const current = hits();
 						return { total: current.length, totalRelation: 'exact', hits: current.slice(offset, offset + limit) };
 					},
@@ -1400,6 +1406,121 @@ describe('FullTextQueryIndex', () => {
 				{ offset: 256, limit: 256, exactTotal: undefined },
 			]
 		);
+		await index.close();
+	});
+
+	it('sizes bounded native pages from observed filter yield', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'adaptive-filtered-paging';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 4_000 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 4_000 - index,
+		}));
+		const requests = [];
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			maxSearchWindow: 4_000,
+			onSearch: (request) => requests.push(request),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 20,
+				filter: (key) => Number(String(key).slice('record-'.length)) >= 3_381,
+			}
+		);
+		assert.deepStrictEqual(
+			requests.map(({ offset, limit }) => ({ offset, limit })),
+			[
+				{ offset: 0, limit: 40 },
+				{ offset: 40, limit: 160 },
+				{ offset: 200, limit: 640 },
+				{ offset: 840, limit: 2_560 },
+				{ offset: 3_400, limit: 270 },
+			]
+		);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			Array.from({ length: 20 }, (_value, index) => `record-${3_381 + index}`)
+		);
+		await index.close();
+	});
+
+	it('fails closed when a lower-bound native page is shorter than requested', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'short-lower-bound-page';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [],
+			maxSearchWindow: 100,
+			searchResult: ({ limit }) => ({
+				total: limit + 1,
+				totalRelation: 'lower-bound',
+				hits: Array.from({ length: limit - 1 }, (_value, id) => ({
+					id: nativeId(1, `record-${id}`),
+					version: '1',
+					score: limit - id,
+				})),
+			}),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search({ attribute: readinessId, comparator: 'matches', value: 'pack' }, {}, { minResults: 1 }),
+			/incomplete result page/
+		);
+		await index.close();
+	});
+
+	it('honors cancellation while validating a large native page', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'large-page-abort';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5_000 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5_000 - index,
+		}));
+		const controller = new AbortController();
+		const reason = new Error('request abandoned');
+		let reads = 0;
+		let abortScheduled = false;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			maxSearchWindow: 5_000,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{ signal: controller.signal },
+				{
+					minResults: 2_000,
+					filter: (key) => {
+						if (key === 'record-300' && !abortScheduled) {
+							abortScheduled = true;
+							setImmediate(() => controller.abort(reason));
+						}
+						return false;
+					},
+				}
+			),
+			(error) => error === reason
+		);
+		assert.strictEqual(reads, 512);
 		await index.close();
 	});
 

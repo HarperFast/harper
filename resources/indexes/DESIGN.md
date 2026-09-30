@@ -503,9 +503,12 @@ single record larger than the native trace limit is rejected before crossing the
 
 Search hits carry the source record version. Harper loads the authoritative record through its read
 transaction and omits a hit when that version no longer matches; it never attaches an old score or
-highlight to new content. Bounded searches over-fetch at least 32 and at most 256 native hits per
-page, growing through the native result window only when version checks or structured filters reject
-candidates. Exhausting that window because native versions are stale is retryable index lag; filter-
+highlight to new content. Bounded searches begin by over-fetching 32–256 native hits. When version
+checks or structured filters under-fill a page, Harper sizes the next request from observed yield,
+growing to at most 4,096 hits and shrinking again when selectivity improves. Large pages yield and
+check cancellation every 256 source reads. The total configured native result window remains the hard
+bound, and one reader lease keeps every page on one native snapshot. Exhausting that window because
+native versions are stale is retryable index lag; filter-
 only exhaustion remains a client error asking for a narrower query. During bounded lag a smaller
 result can still temporarily omit a recently changed record when the native result set ends before
 the search window is exhausted.
