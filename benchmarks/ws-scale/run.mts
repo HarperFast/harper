@@ -91,6 +91,7 @@ const { values: args } = parseArgs({
 	},
 });
 
+if (process.platform !== 'linux') throw new Error('ws-scale needs Linux: it reads /proc and pins CPUs with taskset');
 const threads = Number(args.threads);
 function parseCpuList(list: string) {
 	return list.split(',').flatMap((range) => {

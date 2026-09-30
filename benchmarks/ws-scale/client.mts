@@ -66,7 +66,7 @@ const stats = {
 	closeCodes: {} as Record<string, number>,
 };
 
-const sockets: WebSocket[] = [];
+const sockets = new Set<WebSocket>();
 // counts every connection this process opens, so source addresses fill in order across commands
 let connectionsOpenedHere = 0;
 
@@ -98,7 +98,7 @@ function openConnection(cmd: ConnectCommand, index: number): Promise<void> {
 	const globalIndex = cmd.startIndex + index;
 	const localAddress = cmd.sourceIps[Math.floor(connectionsOpenedHere++ / PORTS_PER_SOURCE_IP) % cmd.sourceIps.length];
 	const path = cmd.protocol === 'mqtt' ? '/mqtt' : `/Bench/${topicFor(globalIndex, 0, 1, cmd.topics)}`;
-	const slow = cmd.slowFraction ? globalIndex % Math.round(1 / cmd.slowFraction) === 0 : false;
+	const slow = cmd.slowFraction ? (globalIndex % 1000) / 1000 < cmd.slowFraction : false;
 	return new Promise((resolve) => {
 		const url = cmd.udsPaths?.length
 			? `ws+unix:${cmd.udsPaths[globalIndex % cmd.udsPaths.length]}:${path}`
@@ -123,6 +123,7 @@ function openConnection(cmd: ConnectCommand, index: number): Promise<void> {
 			done();
 		});
 		ws.on('close', (code) => {
+			sockets.delete(ws);
 			if (opened) {
 				stats.closed++;
 				stats.closeCodes[code] = (stats.closeCodes[code] ?? 0) + 1;
@@ -132,7 +133,7 @@ function openConnection(cmd: ConnectCommand, index: number): Promise<void> {
 		ws.on('open', () => {
 			opened = true;
 			stats.connected++;
-			sockets.push(ws);
+			sockets.add(ws);
 			if (cmd.protocol === 'ws') {
 				stats.subscribed++;
 				ws.on('message', (data: Buffer) => {
@@ -313,6 +314,13 @@ async function publish(cmd: PublishCommand) {
 		await new Promise((resolve) => setTimeout(resolve, TICK_MS));
 	}
 }
+
+// the coordinator exited without sending close (killed, or crashed): don't linger holding connections
+process.on('disconnect', () => {
+	for (const ws of sockets) ws.terminate();
+	publisherSocket?.terminate();
+	process.exit(0);
+});
 
 process.on('message', async (message: any) => {
 	try {
