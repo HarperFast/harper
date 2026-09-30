@@ -2129,7 +2129,7 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, SeenEntry>, depth:
 	if (inheritedHook && budget.discarded >= MAX_DISCARDED_RENDER) {
 		budget.chars -= OMITTED_LABEL.length;
 		entry.clone = labelPlaceholder(OMITTED_LABEL);
-		entry.cost = 0;
+		entry.cost = OMITTED_LABEL.length;
 		return entry.clone;
 	}
 	const keys = Object.keys(value);
