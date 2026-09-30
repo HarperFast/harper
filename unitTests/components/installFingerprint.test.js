@@ -148,25 +148,40 @@ describe('install fingerprints', () => {
 				differs: [],
 			});
 		});
+
+		it('never matches a source the resolver could not name, on either side', () => {
+			const withSource = (source) => ({ source, lockfiles: {} });
+			for (const [mine, theirs] of [
+				['unidentified', 'unidentified'],
+				['unidentified', 'npm:web@1.4.2'],
+				['npm:web@1.4.2', 'unidentified'],
+			]) {
+				assert.deepStrictEqual(compareInstallFingerprints(withSource(mine), withSource(theirs)), {
+					matches: null,
+					differs: [],
+				});
+			}
+		});
 	});
 
-	it('names a source the way its resolver already identified it', () => {
+	it('names a source the way its resolver already identified it, or says it could not', () => {
 		const commit = 'c'.repeat(40);
 		assert.strictEqual(gitSourceIdentity(`${commit}\n`), `git:${commit}`);
 		assert.strictEqual(gitSourceIdentity('d'.repeat(64)), `git:${'d'.repeat(64)}`);
 		for (const notACommit of [undefined, '', 'main', 'c'.repeat(39)]) {
-			assert.strictEqual(gitSourceIdentity(notACommit), undefined);
+			assert.strictEqual(gitSourceIdentity(notACommit), 'unidentified');
 		}
 		const packed = { name: '@scope/web', version: '1.4.2', integrity: 'sha512-abc' };
 		assert.strictEqual(packedSourceIdentity(true, packed), 'npm:@scope/web@1.4.2');
 		assert.strictEqual(packedSourceIdentity(false, packed), 'integrity:sha512-abc');
-		assert.strictEqual(packedSourceIdentity(true, { integrity: 'sha512-abc' }), undefined);
-		assert.strictEqual(packedSourceIdentity(false, { name: 'web', version: '1.4.2' }), undefined);
+		assert.strictEqual(packedSourceIdentity(true, { integrity: 'sha512-abc' }), 'unidentified');
+		assert.strictEqual(packedSourceIdentity(false, { name: 'web', version: '1.4.2' }), 'unidentified');
 	});
 
 	it('isInstallFingerprint accepts digests, unreadable markers and named sources only', () => {
 		assert.ok(isInstallFingerprint(lockfiles({ 'yarn.lock': DIGEST_A, 'bun.lock': { unreadable: 'EIO' } })));
 		assert.ok(isInstallFingerprint({ source: `git:${'c'.repeat(40)}`, lockfiles: {} }));
+		assert.ok(isInstallFingerprint({ source: 'unidentified', lockfiles: {} }));
 		assert.ok(!isInstallFingerprint(lockfiles({ 'yarn.lock': DIGEST_A.toUpperCase() })));
 		assert.ok(!isInstallFingerprint(lockfiles({ 'yarn.lock': { unreadable: 5 } })));
 		assert.ok(!isInstallFingerprint(lockfiles([DIGEST_A])));
@@ -357,6 +372,17 @@ describe('install fingerprints', () => {
 				assert.ifError(error);
 				assert.deepStrictEqual(response.install, { source: `git:${commit}`, lockfiles: {} });
 				assert.match(response.message, new RegExp(`moved \\(source ${elsewhere}\\)\\.$`));
+			});
+
+			it('lets npm name what it packed itself, once install scripts are allowed', async () => {
+				peers = () => [];
+				const { response, error } = await deploy({
+					payload: undefined,
+					package: packageIdentifier,
+					install_allow_scripts: true,
+				});
+				assert.ifError(error);
+				assert.match(response.install.source, /^integrity:sha512-/);
 			});
 		});
 	});
