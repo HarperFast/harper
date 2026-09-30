@@ -162,7 +162,7 @@ export async function getSession({
 		if (sessionId) {
 			// connecting with a clean session and session id is how durable sessions are deleted
 			const sessionResource = await getDurableSession().get(sessionId);
-			if (sessionResource) getDurableSession().delete(sessionId);
+			if (sessionResource) await getDurableSession().delete(sessionId);
 		}
 		session = new SubscriptionsSession(sessionId, user);
 	}
@@ -749,8 +749,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	removeSubscription(topic) {
 		return this.inOrder(async () => {
 			const result = await super.removeSubscription(topic);
-			if (this.topics.delete(topic)) await this.persist();
-			return result;
+			const saved = this.topics.delete(topic);
+			if (saved) await this.persist();
+			return result || saved;
 		});
 	}
 	saveSubscriptions() {
@@ -855,6 +856,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	async saveOnce() {
 		const record = this.recordToWrite();
 		const stored = await getDurableSession().get(this.sessionId);
+		if (this.discarded) return;
 		if (stored ? stored.incarnation !== this.incarnation : !this.mayCreate) return this.supersede();
 		await getDurableSession().put(record, { source: true });
 		this.mayCreate = false;

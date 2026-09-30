@@ -302,6 +302,25 @@ suite(
 			}
 		});
 
+		test('UNSUBACK reports each removal once it has happened', async () => {
+			const clientId = `unsubscribe-${randomUUID().slice(0, 6)}`;
+			const { mqttClient: fresh } = await connect({ clientId, clean: true });
+			await end(fresh);
+			const { mqttClient } = await connect({ clientId });
+			try {
+				await subscribe(mqttClient, 'Readings/#', 1);
+				const unsuback = await new Promise<any>((resolvePromise, reject) =>
+					mqttClient.unsubscribe(['Readings/#', 'Readings/never'], {}, (error, packet) =>
+						error ? reject(error) : resolvePromise(packet)
+					)
+				);
+				deepStrictEqual(unsuback.granted, [0, 0x11], 'the second topic had no subscription');
+				deepStrictEqual((await storedSession(clientId)).subscriptions, [], 'the removal is saved');
+			} finally {
+				await end(mqttClient);
+			}
+		});
+
 		test(
 			'a session resumes across a hard kill and replays the delivery it never acknowledged',
 			{ timeout: 180_000 },

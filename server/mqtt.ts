@@ -404,19 +404,19 @@ function onSocket(socket, send, request, user, mqttSettings) {
 								packet.will.payload?.length > 0 ? deserialize(packet.will.payload) : undefined;
 							delete packet.will.payload;
 						}
+						if (packet.clientId) {
+							// a durable session has one owner: an older connection for this client on this thread gives
+							// way, to a clean start too, and its save in flight lands before this one reads or deletes
+							const older = [...mqttSettings.sessions].filter((other) => other.sessionId === packet.clientId);
+							for (const other of older) other.supersede?.();
+							await Promise.all(older.map((other) => other.writes));
+						}
 						session = getSession({
 							user,
 							...packet,
 						} as any) as any;
 						session = await session;
 						session.closeConnection = closeConnection;
-						if (session.sessionId) {
-							// a durable session has one owner: an older connection for this client on this thread gives
-							// way, to a clean start too, which deleted the record the older connection would write
-							for (const other of mqttSettings.sessions) {
-								if (other !== session && other.sessionId === session.sessionId) other.supersede?.();
-							}
-						}
 						// the session is used in the context, and we want to make sure we can access this
 						session.socket = socket;
 						if (request) {
@@ -541,7 +541,12 @@ function onSocket(socket, send, request, user, mqttSettings) {
 				case 'unsubscribe': {
 					const granted = [];
 					for (const subscription of packet.unsubscriptions) {
-						granted.push(session.removeSubscription(subscription) ? 0 : 17);
+						try {
+							granted.push((await session.removeSubscription(subscription)) ? 0 : 0x11); // no subscription existed
+						} catch (error) {
+							mqttLog.warn?.(error);
+							granted.push(0x80); // unspecified error
+						}
 					}
 					generateAndSendPacket({
 						// Send a subscription acknowledgment
