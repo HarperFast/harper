@@ -63,7 +63,6 @@ describe('npm pack --ignore-scripts for git-reference deploys (#1818)', function
 
 	let root;
 	let packageIdentifier;
-	let commit;
 	let marker;
 
 	before(async function () {
@@ -74,7 +73,6 @@ describe('npm pack --ignore-scripts for git-reference deploys (#1818)', function
 		root = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-git-pack-'));
 		const bare = await createRepo(root, 'pack-scripted');
 		packageIdentifier = `git+file://${bare}`;
-		commit = execFileSync('git', ['--git-dir', bare, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 	});
 
 	after(async () => {
@@ -97,7 +95,6 @@ describe('npm pack --ignore-scripts for git-reference deploys (#1818)', function
 		await extractApplication(application);
 
 		assert.ok(!existsSync(marker), 'prepare script must not run during npm pack by default');
-		assert.strictEqual(application.sourceIdentity, `git:${commit}`, 'the clone names the commit it checked out');
 	});
 
 	it('runs the prepare script during npm pack when install_allow_scripts is explicitly true', async () => {
@@ -111,7 +108,6 @@ describe('npm pack --ignore-scripts for git-reference deploys (#1818)', function
 		await extractApplication(application);
 
 		assert.ok(existsSync(marker), 'prepare script should run once scripts are explicitly allowed');
-		assert.match(application.sourceIdentity ?? '', /^integrity:sha512-/, 'npm packed it, so npm names it');
 	});
 });
 

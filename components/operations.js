@@ -40,6 +40,7 @@ const {
 } = require('./Application.ts');
 const { COMPONENT_PREPARATION_LOCK_DIR, withComponentPreparationLock } = require('./componentPreparationLock.ts');
 const { DEPLOYMENT_PROVENANCE_FILE } = require('./deploymentProvenance.ts');
+const { compareInstallFingerprints, describeInstallDrift } = require('./installFingerprint.ts');
 const {
 	applyRootConfigEffect,
 	assertRootConfigEffectPublishable,
@@ -937,7 +938,7 @@ async function deployComponent(req) {
 		emit('phase', { phase: 'replicate', status: 'done' });
 		if (application.installFingerprint) response.install = application.installFingerprint;
 		// Marked on the aggregate, which the recorder re-records below, so a peer's per-peer entry is replaced
-		// rather than contradicted, and the warning fires once.
+		// rather than contradicted.
 		const installDrift = recorder
 			? markInstallComparisons(application.installFingerprint, response?.replicated)
 			: undefined;
@@ -1155,14 +1156,9 @@ function unconfirmedStagingPeers(replicated) {
 	return replicated.filter((peer) => peer && !confirmed(peer));
 }
 
-/**
- * Mark each peer's entry with how its install fingerprint compares with this node's, so the recorder keeps the
- * comparison, and return the sentence the deploy's messaging carries when any differ. A difference never fails
- * the deploy. The fingerprint is read flat or from a wrapped body, as `unconfirmedStagingPeers` reads its marker.
- */
+/** The fingerprint is read flat or from a wrapped body, as `unconfirmedStagingPeers` reads its marker. */
 function markInstallComparisons(ownFingerprint, replicated) {
 	if (!ownFingerprint || !Array.isArray(replicated)) return undefined;
-	const { compareInstallFingerprints, describeInstallDrift } = require('./installFingerprint.ts');
 	const peers = [];
 	for (const peer of replicated) {
 		if (!peer || typeof peer !== 'object') continue;

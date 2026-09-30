@@ -11,8 +11,10 @@ export const PACKAGE_LOCK_FILES = [
 	'bun.lockb',
 ];
 
-/** A lockfile that exists but could not be read, named by the read's error code. */
 export type UnreadableLockfile = { unreadable: string };
+
+/** A packed source the resolver could not name: evidence of nothing, so it never matches. */
+export const UNIDENTIFIED_SOURCE = 'unidentified';
 
 /**
  * What an install came from, as the resolver already identified it — `npm:<name>@<version>`, `git:<commit>`, or
@@ -21,7 +23,7 @@ export type UnreadableLockfile = { unreadable: string };
  */
 export type InstallFingerprint = { source?: string; lockfiles: Record<string, string | UnreadableLockfile> };
 
-/** `matches` is null when either side's evidence is missing or unreadable, and nothing is known to differ. */
+/** `matches` is false when anything differs, else null when any evidence is missing, unreadable or unidentified. */
 export type InstallComparison = { matches: boolean | null; differs: string[]; peerSource?: string };
 
 export async function fingerprintInstall(treePath: string, source?: string): Promise<InstallFingerprint> {
@@ -46,9 +48,9 @@ async function hashLockfile(filePath: string): Promise<string | UnreadableLockfi
 
 const COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
-export function gitSourceIdentity(commit: string | undefined): string | undefined {
+export function gitSourceIdentity(commit: string | undefined): string {
 	const trimmed = commit?.trim();
-	return trimmed && COMMIT.test(trimmed) ? `git:${trimmed}` : undefined;
+	return trimmed && COMMIT.test(trimmed) ? `git:${trimmed}` : UNIDENTIFIED_SOURCE;
 }
 
 /**
@@ -58,13 +60,14 @@ export function gitSourceIdentity(commit: string | undefined): string | undefine
 export function packedSourceIdentity(
 	fromRegistry: boolean,
 	packed: { name?: string; version?: string; integrity?: string }
-): string | undefined {
-	if (fromRegistry) return packed.name && packed.version ? `npm:${packed.name}@${packed.version}` : undefined;
-	return packed.integrity ? `integrity:${packed.integrity}` : undefined;
+): string {
+	if (fromRegistry) return packed.name && packed.version ? `npm:${packed.name}@${packed.version}` : UNIDENTIFIED_SOURCE;
+	return packed.integrity ? `integrity:${packed.integrity}` : UNIDENTIFIED_SOURCE;
 }
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
-const SOURCE = /^(?:npm|git|integrity):\S{1,512}$/;
+const SOURCE = /^(?:(?:npm|git|integrity):\S{1,512}|unidentified)$/;
+const identified = (source: string | undefined) => source !== undefined && source !== UNIDENTIFIED_SOURCE;
 
 export function isInstallFingerprint(value: unknown): value is InstallFingerprint {
 	const fingerprint = value as InstallFingerprint | undefined;
@@ -86,9 +89,9 @@ export function compareInstallFingerprints(own: InstallFingerprint | undefined, 
 	if (!isInstallFingerprint(own) || !isInstallFingerprint(peer)) return { matches: null, differs: [] };
 	const differs: string[] = [];
 	let unavailable = false;
-	if (own.source !== peer.source) {
-		if (own.source === undefined || peer.source === undefined) unavailable = true;
-		else differs.push('source');
+	if (own.source !== undefined || peer.source !== undefined) {
+		if (!identified(own.source) || !identified(peer.source)) unavailable = true;
+		else if (own.source !== peer.source) differs.push('source');
 	}
 	for (const name of PACKAGE_LOCK_FILES) {
 		const mine = own.lockfiles[name];

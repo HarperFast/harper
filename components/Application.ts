@@ -497,7 +497,8 @@ async function resolveCommittish(application: Application, committish: string, c
 async function packGitReferenceWithoutScripts(
 	application: Application,
 	gitRef: GitReference,
-	parentDirPath: string
+	parentDirPath: string,
+	identifySource: boolean
 ): Promise<{ path: string; commit?: string }> {
 	const cloneDir = await mkdtemp(join(tmpdir(), 'harper-git-clone-'));
 	try {
@@ -544,11 +545,21 @@ async function packGitReferenceWithoutScripts(
 			await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
 		}
 
-		const head = await nonInteractiveSpawn(application.name, 'git', ['rev-parse', 'HEAD'], cloneDir);
+		const commit = identifySource ? await checkedOutCommit(application, cloneDir) : undefined;
 		const packed = await runNpmPack(application, ['pack', '--json', '--ignore-scripts', cloneDir], parentDirPath);
-		return { path: packed.path, commit: head.code === 0 ? head.stdout : undefined };
+		return { path: packed.path, commit };
 	} finally {
 		await rm(cloneDir, { recursive: true, force: true });
+	}
+}
+
+/** Naming the source is only a report, so git failing to answer never fails the deploy. */
+async function checkedOutCommit(application: Application, cloneDir: string): Promise<string | undefined> {
+	try {
+		const { code, stdout } = await nonInteractiveSpawn(application.name, 'git', ['rev-parse', 'HEAD'], cloneDir);
+		return code === 0 ? stdout : undefined;
+	} catch {
+		return undefined;
 	}
 }
 
@@ -793,7 +804,10 @@ type ResolvedTarball =
 	| { kind: 'link'; sourceDirPath: string };
 
 /** Resolve `payload` or `package` into a tarball stream. Touches neither the live tree nor staging. */
-async function resolveApplicationTarball(application: Application): Promise<ResolvedTarball> {
+async function resolveApplicationTarball(
+	application: Application,
+	{ identifySource = false }: { identifySource?: boolean } = {}
+): Promise<ResolvedTarball> {
 	let tarballPath: string | undefined;
 	let tarball: Readable;
 	let shouldDeleteTarball = false;
@@ -890,9 +904,9 @@ async function resolveApplicationTarball(application: Application): Promise<Reso
 			}
 
 			if (gitRef) {
-				const packed = await packGitReferenceWithoutScripts(application, gitRef, parentDirPath);
+				const packed = await packGitReferenceWithoutScripts(application, gitRef, parentDirPath, identifySource);
 				tarballPath = packed.path;
-				application.sourceIdentity = gitSourceIdentity(packed.commit);
+				if (identifySource) application.sourceIdentity = gitSourceIdentity(packed.commit);
 			} else {
 				const packArgs = ['pack', '--json', packageIdentifierForPack];
 				if (!allowScripts) {
@@ -906,11 +920,13 @@ async function resolveApplicationTarball(application: Application): Promise<Reso
 				}
 				const packed = await runNpmPack(application, packArgs, parentDirPath, application.gitCredentialEnv);
 				tarballPath = packed.path;
-				const fromRegistry =
-					packageIdentifierForPack === application.packageIdentifier &&
-					!looksLikeGitReference(packageIdentifierForPack) &&
-					!/^https?:\/\//i.test(packageIdentifierForPack);
-				application.sourceIdentity = packedSourceIdentity(fromRegistry, packed);
+				if (identifySource) {
+					const fromRegistry =
+						packageIdentifierForPack === application.packageIdentifier &&
+						!looksLikeGitReference(packageIdentifierForPack) &&
+						!/^https?:\/\//i.test(packageIdentifierForPack);
+					application.sourceIdentity = packedSourceIdentity(fromRegistry, packed);
+				}
 			}
 			shouldDeleteTarball = true;
 			tarball = createReadStream(tarballPath);
@@ -3561,7 +3577,7 @@ export async function buildCandidateApplication(
 	try {
 		// Replaced, not extracted into: a prior attempt on this id may have left a partial tree.
 		await rm(candidateDirPath, { recursive: true, force: true });
-		const resolved = await resolveApplicationTarball(application);
+		const resolved = await resolveApplicationTarball(application, { identifySource: options.fingerprint });
 		if (resolved.kind === 'link' && options.rejectLinkSource) {
 			// What the operator asked for, not a server fault: the same component deploys immediately.
 			throw new ClientError(
@@ -4555,7 +4571,6 @@ export class Application {
 	packageMetadataChanged: boolean = false;
 	installationIsOpaque: boolean = false;
 	alreadyActive: boolean = false;
-	// What the resolver identified the package as, when it packed one: see `InstallFingerprint.source`.
 	sourceIdentity?: string;
 	installFingerprint?: InstallFingerprint;
 
@@ -4745,7 +4760,6 @@ export type PrepareApplicationOptions = {
 	describeArtifact?: () => { rootConfig: Record<string, unknown> | null; isolated: boolean };
 	/** `activate` only: admit the artifact's isolation intent under the preparation lock, before the swap. */
 	admitIsolation?: (descriptor: ArtifactDescriptor) => Promise<void>;
-	/** `deploy` and `stage`: record the built candidate's lockfiles as `application.installFingerprint`. */
 	fingerprintInstall?: boolean;
 };
 

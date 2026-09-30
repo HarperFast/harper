@@ -596,15 +596,18 @@ So each node records what it installed, and the origin reports a difference with
   install and before the swap (`fingerprintInstall`, a `prepareApplication` option). It has two parts:
   - `source` is the resolver's own name for what it packed, never a second hash. It is `git:<commit>` from
     Harper's clone, `npm:<name>@<version>` from `npm pack --json` for a registry spec (a tag resolves to one),
-    or npm's reported `integrity:<sri>` for a git spec npm packed itself, or a tarball URL. A payload has no
-    `source`: its peers read the origin's blob. Nor does a local `file:` path.
+    or npm's reported `integrity:<sri>` for a git spec npm packed itself, or a tarball URL. A source the
+    resolver could not name is `unidentified`, which never matches. A payload has no `source`: its peers read
+    the origin's blob. Nor does a local `file:` path. Only a fingerprinting build asks git for the commit, and a
+    git failure there leaves the source `unidentified` rather than failing the deploy.
   - `lockfiles` is the sha256 of each root lockfile in `PACKAGE_LOCK_FILES`, by name. An absent lockfile is
     not listed. One that can't be read is `{ unreadable: <code> }`, never absent.
 - **The comparison** runs once, on the origin, on the aggregate `response.replicated`, just before the
   recorder re-records it (`markInstallComparisons`, `components/operations.js`). So the per-peer callback's
   entries are replaced rather than contradicted.
-  - Each peer gets `install_matches` and `install_differs`. `install_matches` is `null` when either side's
-    evidence is missing or unreadable, as from an older Harper or a failed peer.
+  - Each peer gets `install_matches` and `install_differs`. `install_matches` is `false` when anything
+    compared differs. Otherwise it is `null` when any evidence is missing, unreadable or `unidentified`, as
+    from an older Harper or a failed peer, and `true` only when everything compared matches.
   - Only lockfile names this node recognizes are compared.
 - **Where it shows:**
   - one `warning` event, which the CLI prints;
