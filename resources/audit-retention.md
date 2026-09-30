@@ -89,6 +89,7 @@ Things that are easy to get wrong here:
   Which history the database is belongs to the generation.
 
 ---
+
 ## Audit-entry removal loops must track every `removeAuditEntry()`/`removeEntry()` promise
 
 `scheduleAuditCleanup` (`auditStore.ts`) and `Table.deleteHistory` (`Table.ts`, the LMDB path behind
