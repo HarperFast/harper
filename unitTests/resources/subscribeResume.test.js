@@ -236,6 +236,48 @@ describe('Resuming a subscription in a database generation', function () {
 			}
 		});
 
+		it('refuses a replay that crosses a reload, whose back-filled rows have no history', async () => {
+			const T = tableInOwnDatabase();
+			const positions = await writeEach(T, 2);
+			await T.writeReloadMarker();
+			await T.put('r2', { value: 2 });
+			const { subscription, events } = await resume(T, positions[0]);
+			assert.strictEqual(await subscription.resumeVerified, false);
+			assert.ok(events.at(-1) instanceof ResumeHistoryUnavailableError);
+			assert.match(events.at(-1).message, /bulk reload/);
+			const unchecked = [];
+			const plain = await T.subscribe({ startTime: positions[0], listener: (event) => unchecked.push(event) });
+			await waitFor(() => unchecked.some((event) => event.type === 'reload'));
+			assert.ok(
+				!unchecked.some((event) => event instanceof Error),
+				'a subscription without the field replays as before'
+			);
+			plain.end();
+		});
+
+		it('refuses a replay whose log range recorded a failed read', async () => {
+			const T = tableInOwnDatabase();
+			const positions = await writeEach(T, 3);
+			const getRange = T.auditStore.getRange;
+			T.auditStore.getRange = function (options) {
+				const range = getRange.call(this, options);
+				if (options?.snapshot === false && options.exclusiveStart) {
+					T.auditStore.getRange = getRange;
+					// what the log store records when it ends a failed log's iteration early
+					range.failedLogs.add('unreadable');
+				}
+				return range;
+			};
+			try {
+				const { subscription, events } = await resume(T, positions[0]);
+				assert.strictEqual(await subscription.resumeVerified, false);
+				assert.ok(events.at(-1) instanceof ResumeHistoryUnavailableError);
+				assert.match(events.at(-1).message, /could not be read/);
+			} finally {
+				T.auditStore.getRange = getRange;
+			}
+		});
+
 		it('delivers the refusal as the last iterated value', async () => {
 			const T = tableInOwnDatabase();
 			const positions = await writeEach(T, 250);

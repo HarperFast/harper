@@ -554,6 +554,10 @@ const MAX_OUT_OF_ORDER_AUDIT_DEPTH = 1000;
 // records the filter accepts.
 const MAX_PREVIOUS_COUNT_SCAN = 10_000;
 const VERSION_CAP_REFUSAL = `More than ${MAX_PREVIOUS_COUNT_SCAN} versions follow this resume position; resubscribe to resynchronize`;
+const RELOAD_REFUSAL =
+	'A bulk reload after this resume position left rows with no history; resubscribe to resynchronize';
+const UNREADABLE_LOG_REFUSAL =
+	'Part of the transaction log after this resume position could not be read; resubscribe to resynchronize';
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
 const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
@@ -1305,6 +1309,13 @@ function currentEntryForAudit(store: any, id: Id, auditRecord: any): Entry | und
 		memoizedEntryId = id;
 	}
 	return memoizedEntry;
+}
+
+// the log store ends a failed or corrupt log's iteration quietly and records it on the range
+function unreadableLogRefusal(range: any): Error | undefined {
+	if (range.failedLogs?.size || range.corruptFrameStop?.breaks) {
+		return new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL);
+	}
 }
 
 function resumeRefusal(auditStore: any, generationId: string, cursor: number): Error | undefined {
@@ -6664,24 +6675,30 @@ export function makeTable(options): TableResourceClass {
 						// transaction the same txnLogKey, so it only moves to a key once all of that key's records are
 						// handled; an early return leaves it before a partly delivered transaction.
 						let handledTxnLogKey: number | undefined;
+						const replayRange = auditStore.getRange({
+							start: startTime,
+							exclusiveStart: true,
+							snapshot: false, // no need for a snapshot, audits don't change
+						});
 						try {
-							for (const auditRecord of auditStore.getRange({
-								start: startTime,
-								exclusiveStart: true,
-								snapshot: false, // no need for a snapshot, audits don't change
-							})) {
+							for (const auditRecord of replayRange) {
 								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 									recordsSinceYield = 0;
 									await rest();
 									if (!isActive()) return;
 									if (checkResume) {
-										if (!checkResume()) return;
+										if (!checkResume(unreadableLogRefusal(replayRange))) return;
 										// every key below the record in hand has been read
 										resumeCheckedThrough = auditRecord.txnLogKey;
 									}
 								}
 								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								if (isLockControlType(auditRecord.type)) continue;
+								if (checkResume && auditRecord.type === 'reload') {
+									// the rows a reload back-filled have no history, so no replay can deliver them
+									checkResume(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
+									return;
+								}
 								if (handledTxnLogKey !== undefined && auditRecord.txnLogKey !== handledTxnLogKey) {
 									subscription!.startTime = handledTxnLogKey;
 								}
@@ -6698,7 +6715,7 @@ export function makeTable(options): TableResourceClass {
 								handledTxnLogKey = auditRecord.txnLogKey;
 							}
 							if (handledTxnLogKey !== undefined) subscription!.startTime = handledTxnLogKey;
-							if (checkResume && !checkResume()) return;
+							if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
 						} finally {
 							// replay is done, we can start sending real-time messages again
 							dropDuringReplay = false;
