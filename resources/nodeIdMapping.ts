@@ -123,8 +123,18 @@ export function lastTimeInAuditStore(auditStore: Database) {
 		return timestamp;
 	}
 }
+// getIdMappingRecord() keeps this node's name at id 0, so a store confirmed for the current name skips the
+// read; the confirmation is per worker but the record is shared, so it expires (resources/DESIGN.md)
+const THIS_NODE_ID_CONFIRM_MS = 1000;
+const confirmedThisNode = new WeakMap<object, { name: string; confirmedAt: number }>();
 export function getThisNodeId(auditStore: any) {
-	return exportIdMapping(auditStore)?.[server.hostname];
+	const name = server.hostname;
+	const confirmed = confirmedThisNode.get(auditStore);
+	const now = Date.now();
+	if (confirmed?.name === name && now - confirmed.confirmedAt < THIS_NODE_ID_CONFIRM_MS) return 0;
+	const id = exportIdMapping(auditStore)?.[name];
+	if (id === 0) confirmedThisNode.set(auditStore, { name, confirmedAt: now });
+	return id;
 }
 
 // Inverted id -> name map. exportIdMapping() re-reads and unpacks the mapping record on every call,
@@ -143,6 +153,7 @@ const NODE_NAME_REFRESH_MS = 50;
 const idToNodeName = new WeakMap<object, { names: Map<number, string>; refreshedAt: number; onMiss: boolean }>();
 function invalidateNodeNames(auditStore: any) {
 	idToNodeName.delete(auditStore);
+	confirmedThisNode.delete(auditStore);
 }
 
 /**
