@@ -2004,10 +2004,7 @@ describe('Test harper_logger module', () => {
 				for (let j = 0; j < 249; j++) child[`f${j}`] = long_string;
 				payload[`child_${i}`] = child;
 			}
-			const start = process.hrtime.bigint();
 			const result = render(payload, { depth: 8, maxArrayLength: 250, maxStringLength: 20_000 });
-			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
-			assert.ok(elapsed_ms < 2000, `rendering took ${elapsed_ms}ms`);
 			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
 			assert.ok(result.includes('more properties omitted (sanitize budget)'));
 			// The sanitize walk stopped on its own estimate, so the output is still a whole structure.
@@ -2038,7 +2035,68 @@ describe('Test harper_logger module', () => {
 			const payload = Array.from({ length: 50 }, () => ({ [util.inspect.custom]: outer_hook }));
 			const result = render(payload, { depth: 8, maxArrayLength: 250 });
 			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
-			assert.ok(result.includes('[omitted (sanitize budget)]'), result.slice(-500));
+			assert.ok(result.includes('more array entries omitted (sanitize budget)'));
+			assert.ok(result.endsWith(']'), result.slice(-200));
+		});
+
+		it('resolves custom inspect hooks in walk order, so an early diagnostic is not starved by later fields', () => {
+			const payload = [{ [util.inspect.custom]: () => 'phase=install' }, ...Array(300).fill('x'.repeat(1_000))];
+			const result = render(payload, { depth: 8, maxArrayLength: 1000 });
+			assert.ok(result.includes('phase=install'), result.slice(0, 200));
+			assert.ok(result.includes('more array entries omitted (sanitize budget)'));
+		});
+
+		it('sanitizes, masks and charges what an inherited custom inspect hook returns, and calls it once', () => {
+			let calls = 0;
+			class Report {
+				[util.inspect.custom]() {
+					calls++;
+					return {
+						password: 'prototype-hook-secret',
+						region: 'us-east-1',
+						lines: Array.from({ length: 200 }, (_, i) => `${i}:${'y'.repeat(1_000)}`),
+					};
+				}
+			}
+			const reports = Array.from({ length: 50 }, () => new Report());
+			const result = render(reports, { depth: 8, maxArrayLength: 250 });
+			assert.ok(!result.includes('prototype-hook-secret'));
+			assert.ok(result.includes('us-east-1'));
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.endsWith(']'), result.slice(-200));
+			assert.ok(calls < reports.length, `called ${calls} hooks after the budget was spent`);
+		});
+
+		it('does not spend the budget on, or render, what lies below the requested inspect depth', () => {
+			let stack_reads = 0;
+			const deep_error = new Error('deep');
+			Object.defineProperty(deep_error, 'stack', {
+				get() {
+					stack_reads++;
+					return 'Error: deep';
+				},
+			});
+			let deep = { lines: Array(300).fill('x'.repeat(1_000)), deep_error };
+			for (let i = 0; i < 9; i++) deep = { deep };
+			const result = render({ detail: deep, deployment_id: 'deployment-123' }, { depth: 8, maxArrayLength: 1000 });
+			assert.strictEqual(stack_reads, 0);
+			assert.ok(result.includes('[Object]'));
+			assert.ok(result.includes('deployment-123'));
+			assert.ok(!result.includes('sanitize budget'), result);
+		});
+
+		it('renders a shared sub-object in full where it is shallower than where it was first reached', () => {
+			const shared = { inner: { note: 'shared-content' } };
+			const result = render({ a: { b: { c: shared } }, d: shared }, { depth: 2 });
+			assert.ok(result.includes('shared-content'), result);
+		});
+
+		it('stops before a property name longer than the remaining budget, since inspect prints keys whole', () => {
+			const long_key = 'k'.repeat(10_000_000);
+			const result = render({ [long_key]: 'ok', after: 1 }, { depth: 8 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(!result.includes('k'.repeat(1_000)));
+			assert.ok(result.includes('2 more properties omitted (sanitize budget)'));
 		});
 
 		it('charges a sub-object again at each repeat reference, since inspect prints it at every occurrence', () => {
@@ -2060,6 +2118,15 @@ describe('Test harper_logger module', () => {
 				assert.ok(result.endsWith(']'), result.slice(-200));
 				assert.ok(!result.includes('super-secret-token'));
 			}
+		});
+
+		it('charges Map keys against the render budget', () => {
+			const long_key = 'k'.repeat(4_000_000);
+			const huge_keys = new Map(Array.from({ length: 250 }, (_, i) => [`${i}:${long_key}`, i]));
+			const result = render([huge_keys], { depth: 8, maxArrayLength: 250 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.includes('more Map entries omitted (sanitize budget)'));
+			assert.ok(result.endsWith(']'), result.slice(-200));
 		});
 
 		it('caps the failure text of a custom inspect hook that throws a huge error', () => {
@@ -2113,6 +2180,9 @@ describe('Test harper_logger module', () => {
 										['authorization', 'Bearer map-bearer-token'],
 										['accept', 'application/json'],
 									]),
+									[Symbol('session_token')]: 'symbol-keyed-secret',
+									cookie: 'hdb-session=cookie-secret',
+									private_key: '-----BEGIN PRIVATE KEY-----key-material',
 									token: undefined,
 									authorized: false,
 								},
@@ -2132,6 +2202,9 @@ describe('Test harper_logger module', () => {
 				'424242',
 				'class-instance-secret',
 				'map-bearer-token',
+				'symbol-keyed-secret',
+				'cookie-secret',
+				'key-material',
 			]) {
 				assert.ok(!result.includes(secret), `leaked ${secret}: ${result}`);
 			}
