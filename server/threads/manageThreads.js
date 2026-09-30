@@ -225,7 +225,7 @@ module.exports = {
 	getThreadInfo: undefined,
 	/** @type {any} */
 	getRunningIsolatedApplications: undefined,
-	/** @type {(dir: any, beforeRestartCallback: any) => Promise<void>} */
+	/** @type {((dir: any, beforeRestartCallback?: any) => Promise<void>) | undefined} */
 	watchDir: undefined,
 };
 
