@@ -1282,6 +1282,26 @@ setLockCoordinatorResolver(
 	}
 );
 
+// Valid for one synchronous notify pass, in which a key's subscribers on this thread all receive the same
+// freshly decoded audit record; cleared after it so it pins no store or record once delivery is done.
+let memoizedEntryAuditRecord: any;
+let memoizedEntryStore: any;
+let memoizedEntryId: Id;
+let memoizedEntry: Entry | undefined;
+function clearEntryMemo() {
+	memoizedEntryAuditRecord = memoizedEntryStore = memoizedEntryId = memoizedEntry = undefined;
+}
+function currentEntryForAudit(store: any, id: Id, auditRecord: any): Entry | undefined {
+	if (auditRecord !== memoizedEntryAuditRecord || store !== memoizedEntryStore || id !== memoizedEntryId) {
+		if (memoizedEntryAuditRecord === undefined) queueMicrotask(clearEntryMemo);
+		memoizedEntry = store.getEntry(id);
+		memoizedEntryAuditRecord = auditRecord;
+		memoizedEntryStore = store;
+		memoizedEntryId = id;
+	}
+	return memoizedEntry;
+}
+
 export function makeTable(options): TableResourceClass {
 	const {
 		primaryKey,
@@ -6825,7 +6845,7 @@ export function makeTable(options): TableResourceClass {
 					type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate';
 				if (isMutation && !includeSuperseded) {
 					if (id === undefined) return;
-					const entry: Entry = primaryStore.getEntry(id);
+					const entry = currentEntryForAudit(primaryStore, id, auditRecord);
 					if (!entry || entry.version !== auditRecord.version) return;
 					if (getFullRecord) {
 						value = entry?.value;
