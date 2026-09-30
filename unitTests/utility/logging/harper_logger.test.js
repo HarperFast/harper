@@ -2099,6 +2099,41 @@ describe('Test harper_logger module', () => {
 			assert.ok(result.includes('<Buffer 68 69>'));
 		});
 
+		it('keeps charging the properties an inherited hook replaces, so its siblings cannot each format another budget', () => {
+			let stack_reads = 0;
+			class Report {
+				constructor() {
+					this.detail = new Error('short message');
+					Object.defineProperty(this.detail, 'stack', {
+						get() {
+							stack_reads++;
+							return 'Error: short message\n' + '    at frame\n'.repeat(20_000);
+						},
+					});
+				}
+				[util.inspect.custom]() {
+					return 'Report';
+				}
+			}
+			const result = render(
+				Array.from({ length: 250 }, () => new Report()),
+				{ depth: 8, maxArrayLength: 250 }
+			);
+			assert.ok(stack_reads <= 2, `formatted ${stack_reads} stacks`);
+			assert.ok(result.includes('more array entries omitted (sanitize budget)'));
+		});
+
+		it('never runs a replaced Buffer inspect hook', () => {
+			const native_hook = Buffer.prototype[util.inspect.custom];
+			Buffer.prototype[util.inspect.custom] = () => ({ password: 'patched-buffer-secret' });
+			try {
+				const result = render({ buffer: Buffer.from('hi') }, { depth: 8 });
+				assert.ok(!result.includes('patched-buffer-secret'), result);
+			} finally {
+				Buffer.prototype[util.inspect.custom] = native_hook;
+			}
+		});
+
 		it('does not walk the entries of a container util.inspect collapses at its depth', () => {
 			let deep = Array.from({ length: 200 }, () =>
 				Object.fromEntries(Array.from({ length: 250 }, (_, i) => [`f${i}`, i]))
