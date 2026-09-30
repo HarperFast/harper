@@ -238,14 +238,34 @@ Called for MQTT subscribe commands. Returns a `Subscription` — an `AsyncIterab
 
 All properties are optional:
 
-| Property             | Description                                                                                    |
-| -------------------- | ---------------------------------------------------------------------------------------------- |
-| `includeDescendants` | Include all updates with an id prefixed by the subscribed id (e.g. `sub/*`)                    |
-| `startTime`          | Start from a past time (catch-up of historical messages). Cannot be used with `previousCount`. |
-| `previousCount`      | Return the last N updates/messages. Cannot be used with `startTime`.                           |
-| `omitCurrent`        | Do not send the current/retained record as the first update.                                   |
-| `rowFilter`          | Synchronous JavaScript predicate applied to authoritative row values.                          |
-| `eventFilter`        | Synchronous JavaScript predicate for events that may not carry an authoritative row.           |
+| Property             | Description                                                                                               |
+| -------------------- | --------------------------------------------------------------------------------------------------------- |
+| `includeDescendants` | Include all updates with an id prefixed by the subscribed id (e.g. `sub/*`)                               |
+| `startTime`          | Start from a past time (catch-up of historical messages). Cannot be used with `previousCount`.            |
+| `databaseGeneration` | Resume from `startTime` as a checked position. See [Resuming from a position](#resuming-from-a-position). |
+| `previousCount`      | Return the last N updates/messages. Cannot be used with `startTime`.                                      |
+| `omitCurrent`        | Do not send the current/retained record as the first update.                                              |
+| `rowFilter`          | Synchronous JavaScript predicate applied to authoritative row values.                                     |
+| `eventFilter`        | Synchronous JavaScript predicate for events that may not carry an authoritative row.                      |
+
+#### Resuming from a position
+
+As of v5.3.1, a subscription on a RocksDB database can resume from a position that Harper checks against the database's history, instead of replaying whatever history is left.
+
+- Every subscription reports `databaseGeneration`, the generation of the database it reads (undefined on LMDB). A database gets a new generation when it is restored, branched or migrated from a copy.
+- To resume, pass back the generation with the `localTime` of an event you processed: `subscribe({ databaseGeneration, startTime })`. `startTime` must be a finite number, and `0` is a position (the start of the log) rather than "no start time". `previousCount` cannot be combined with it.
+- A position is exclusive, and the events of one transaction share a `localTime`, so a position is safe to record only once every event with that `localTime` has been processed.
+
+Harper refuses a position it cannot replay completely:
+
+| Error                            | Status | Code                          | When                                                                                                     |
+| -------------------------------- | ------ | ----------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `DatabaseGenerationChangedError` | 409    | `DATABASE_GENERATION_CHANGED` | The database was replaced by a restored or copied state after the position was recorded, or it is LMDB.  |
+| `ResumeHistoryUnavailableError`  | 410    | `RESUME_HISTORY_UNAVAILABLE`  | Audit retention pruned history after the position, or one record has more than 10,000 versions after it. |
+
+A refusal found before the replay starts rejects `subscribe()`. A prune that lands while the replay runs ends the subscription instead, with the error as its last event. Either way, resynchronize by subscribing without a position.
+
+The returned subscription's `resumeVerified` promise resolves `true` once the replay after the position is complete and checked, and `false` if it was refused or ended first. It never rejects. Do not record a new position from replayed events until it resolves `true`.
 
 ---
 
