@@ -1112,14 +1112,14 @@ Each node of a replicated deploy resolves and installs the release itself. So a 
 
 After it installs, each node records an install fingerprint:
 
-- `source`: what the package resolved to, named the way its resolver already names it. That is `git:<commit>` for a git reference, the commit a branch or tag pointed at; `npm:<name>@<version>` for a registry package, where a tag resolves to one version; or npm's `integrity:<sri>` for a tarball URL. A `payload` deploy has no `source`, because every node extracts the same uploaded bytes.
+- `source`: what the package resolved to, named the way its resolver already names it. That is `git:<commit>` for a git reference, the commit a branch or tag pointed at; `npm:<name>@<version>` for a registry package, where a tag resolves to one version; or npm's `integrity:<sri>` for a tarball URL, or for a git reference npm packed itself because `install_allow_scripts` is set. A source that can't be identified is `unidentified`. A `payload` deploy has no `source`, because every node extracts the same uploaded bytes.
 - `lockfiles`: the SHA-256 of each lockfile at the component's root (`package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock` or `bun.lockb`).
 
 Every node returns its fingerprint as `install` in its `deploy_component` response. The node that received the deploy compares each peer's fingerprint with its own, and when any differ:
 
 - the response's `message` ends with a sentence naming them, such as `Install fingerprints differ from this node's on 1 of 2 peer node(s): node-b (source npm:web@1.5.0, package-lock.json).`;
 - a `warning` event goes to a caller streaming Server-Sent Events, and the Harper CLI prints it;
-- each peer's entry in the deployment's `peer_results` carries `install_matches` and `install_differs`, the fields that differ. `install_matches` is `null` when a fingerprint is missing or unreadable, as from a peer on an earlier version.
+- each peer's entry in the deployment's `peer_results` carries `install_matches` and `install_differs`, the fields that differ. `install_matches` is `false` when anything compared differs. Otherwise it is `null` when a fingerprint is missing or unreadable, or a source could not be identified (as from a peer on an earlier version), and `true` only when everything compared matches.
 
 A difference never fails the deploy or changes the CLI's exit status. A match means the evidence is equal, not that the installed trees are: an `install_command` can install different dependencies and leave the same lockfile, and lockfiles written against different registry mirrors differ even when the code matches. A staged deploy reports at stage time, before you activate it.
 
