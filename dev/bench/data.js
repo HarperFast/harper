@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790760028246,
+  "lastUpdate": 1790760033091,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -24744,6 +24744,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 711.8,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kyle Bernhardy",
+            "username": "kylebernhardy",
+            "email": "kyle@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "2d81ebc7c359cd2e29be83e400f0624864e7e2b7",
+          "message": "Test documented full-text examples (#2915)\n\n* Test documented full-text examples\n\n* Stabilize documented full-text tests\n\n* Strengthen documented search coverage\n\n* Verify documented highlight limits\n\n* Complete documented full-text contracts\n\n* Verify full-text documentation corrections\n\n* Align documented search iterator examples",
+          "timestamp": "2026-09-30T03:57:37Z",
+          "url": "https://github.com/HarperFast/harper/commit/2d81ebc7c359cd2e29be83e400f0624864e7e2b7"
+        },
+        "date": 1790760031599,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 3745.94,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 3745.94,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 611.1,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 1443.1,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 1727.7,
             "unit": "ms"
           }
         ]
