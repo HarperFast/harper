@@ -58,6 +58,20 @@ describe('getThisNodeId', () => {
 		assert.ok(counter.reads <= 1, `${counter.reads} mapping reads for 100 lookups`);
 	});
 
+	it('lets audited writes skip the mapping read once confirmed', async () => {
+		useNodeName('node-a');
+		const Node = freshTable();
+		const { auditStore } = Node;
+		assert.strictEqual(getThisNodeId(auditStore), 0);
+		const counter = countMappingReads(auditStore);
+		try {
+			for (let i = 0; i < 20; i++) await Node.put(`write-${i}`, { value: i });
+		} finally {
+			counter.restore();
+		}
+		assert.strictEqual(counter.reads, 0);
+	});
+
 	it('confirms each audit store separately', () => {
 		useNodeName('node-a');
 		const first = freshTable().auditStore;
@@ -85,6 +99,13 @@ describe('getThisNodeId', () => {
 			counter.restore();
 		}
 		assert.strictEqual(counter.reads, 1);
+		const reconfirmed = countMappingReads(auditStore);
+		try {
+			assert.strictEqual(getThisNodeId(auditStore), 0);
+		} finally {
+			reconfirmed.restore();
+		}
+		assert.strictEqual(reconfirmed.reads, 0);
 		const mapping = exportIdMapping(auditStore);
 		assert.strictEqual(mapping['node-b'], 0);
 		assert.ok(mapping['node-a'] > 0, `the previous name keeps a non-zero id, got ${mapping['node-a']}`);
@@ -125,13 +146,14 @@ describe('getThisNodeId', () => {
 		useNodeName('node-a');
 		const { auditStore } = freshTable();
 		assert.strictEqual(getThisNodeId(auditStore), 0);
-		const now = Date.now;
+		const now = performance.now;
 		const counter = countMappingReads(auditStore);
-		Date.now = () => now() + 2000;
+		performance.now = () => now.call(performance) + 2000;
 		try {
 			assert.strictEqual(getThisNodeId(auditStore), 0);
+			assert.strictEqual(getThisNodeId(auditStore), 0);
 		} finally {
-			Date.now = now;
+			performance.now = now;
 			counter.restore();
 		}
 		assert.strictEqual(counter.reads, 1);
