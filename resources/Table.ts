@@ -1600,12 +1600,15 @@ export function makeTable(options): TableResourceClass {
 			return;
 		return { key, descriptor };
 	}
-	// RocksDB's save() re-reads a reloadCommitBase write's base from the staging snapshot (harper#2259), so reading it
-	// here would be discarded; the read handle is still opened because it gives the write coordinated conflict retries
 	function entryBeforeWrite(loadedEntry: Entry | undefined, id: Id, transaction: any, reloadsCommitBase: boolean) {
 		if (loadedEntry != null) return loadedEntry;
-		const readTxn = transaction.getReadTxn();
-		return isRocksDB && reloadsCommitBase ? undefined : primaryStore.getEntry(id, { transaction: readTxn });
+		if (isRocksDB && reloadsCommitBase) {
+			// save() reads this write's base from the staging snapshot (harper#2259); the read handle is still opened
+			// here because it is what gives the staged write coordinated conflict retries
+			transaction.getReadTxn();
+			return undefined;
+		}
+		return primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
 	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)

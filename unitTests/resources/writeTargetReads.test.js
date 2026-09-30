@@ -52,6 +52,35 @@ describe('Reads of a write target', () => {
 		if (!isLMDB) assert.strictEqual(reads, 1);
 	});
 
+	it('updates an existing record written without an instance load against its stored state', async () => {
+		const Target = table({
+			database: 'writetargetreads',
+			table: `Target${++sequence}`,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'value', indexed: true },
+				{ name: 'label' },
+				{ name: 'created', assignCreatedTime: true, type: 'Float' },
+			],
+		});
+		class NoInstance extends Target {
+			static loadAsInstance = false;
+		}
+		await Target.put('stored', { value: 1, label: 'kept' });
+		const created = (await Target.get('stored')).created;
+		const reads = await readsOf(Target, 'stored', () => NoInstance.put('stored', { value: 2 }));
+		if (!isLMDB) assert.strictEqual(reads, 1);
+		assert.strictEqual((await Target.get('stored')).created, created);
+		await NoInstance.patch('stored', { label: 'patched' });
+		const record = await Target.get('stored');
+		assert.strictEqual(record.value, 2);
+		assert.strictEqual(record.label, 'patched');
+		assert.strictEqual(record.created, created);
+		const byValue = [];
+		for await (const found of Target.search({ conditions: [{ attribute: 'value', value: 1 }] })) byValue.push(found.id);
+		assert.deepStrictEqual(byValue, []);
+	});
+
 	it('keeps an existing record correct through update and delete', async () => {
 		const Target = freshTable();
 		await Target.put('kept', { value: 1 });
