@@ -146,7 +146,6 @@ suite(
 			strictEqual(job.status, 'COMPLETE', JSON.stringify(job));
 		}
 
-		/** Subscribes durably, lets one write through and acknowledges it, and returns the saved entry. */
 		async function establish(clientId: string, topic: string, qos: 1 | 2, protocolVersion: 4 | 5, table = 'Readings') {
 			const received: number[] = [];
 			const { mqttClient } = await connect({ clientId, clean: true, protocolVersion });
