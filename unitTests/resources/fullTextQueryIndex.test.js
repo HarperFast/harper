@@ -1162,7 +1162,10 @@ describe('FullTextQueryIndex', () => {
 			}
 		};
 		await assert.rejects(search('response-cannot-hold-hit', { maxSearchResponseBytes: 27 }), /Full-text search/);
-		await assert.rejects(search('response-cannot-hold-autocomplete', { maxSearchResponseBytes: 42 }), /Full-text search/);
+		await assert.rejects(
+			search('response-cannot-hold-autocomplete', { maxSearchResponseBytes: 42 }),
+			/Full-text search/
+		);
 		assert.deepStrictEqual(await search('response-autocomplete-boundary', { maxSearchResponseBytes: 43 }), []);
 	});
 
