@@ -1339,4 +1339,59 @@ describe('Subscription replay', () => {
 			assert.deepEqual(ids, ['put', 'delete', 'put']);
 		});
 	});
+
+	describe('a replay that fails', () => {
+		it('ends the subscription when the listener also throws on the failure', async () => {
+			const T = table({
+				table: 'SubReplayListenerThrows',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+				audit: true,
+			});
+			const startTime = Date.now() - 1;
+			await T.put(1, { name: 'replayed' });
+			const received = [];
+			const thrown = [];
+			const unhandled = [];
+			const onUnhandled = (reason) => unhandled.push(reason);
+			process.on('unhandledRejection', onUnhandled);
+			let subscription, later;
+			try {
+				subscription = await T.subscribe({
+					startTime,
+					isCollection: true,
+					listener(event) {
+						received.push(event);
+						const error = new Error(`listener throws on event ${received.length}`);
+						thrown.push(error);
+						throw error;
+					},
+				});
+				await waitFor(() => received.length >= 2);
+				assert.equal(received[0].id, 1);
+				assert.strictEqual(received[1], thrown[0], 'the final event is not the error that failed the replay');
+				assert.strictEqual(subscription.closed, true, 'the subscription stayed open');
+				assert.strictEqual(subscription.subscriptions, null, 'the subscription is still registered');
+				// a subscriber added later on the same key is notified after it, so its delivery bounds the wait
+				const laterEvents = [];
+				later = await T.subscribe({
+					isCollection: true,
+					omitCurrent: true,
+					listener: (event) => laterEvents.push(event),
+				});
+				await T.put(2, { name: 'after the failure' });
+				await waitFor(() => laterEvents.some((event) => event.id === 2));
+				assert.equal(received.length, 2, 'a write after the failure reached the listener');
+				assert.equal(
+					unhandled.filter((reason) => thrown.includes(reason)).length,
+					0,
+					"the listener's error escaped as an unhandled rejection"
+				);
+			} finally {
+				process.off('unhandledRejection', onUnhandled);
+				subscription?.end();
+				later?.end();
+			}
+		});
+	});
 });
