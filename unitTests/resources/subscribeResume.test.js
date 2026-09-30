@@ -5,6 +5,7 @@ const {
 	getAuditResumeFloor,
 	getDatabaseGeneration,
 	raiseAuditFloor,
+	readAuditEntry,
 	stampDatabaseDirectory,
 } = require('#src/resources/auditStore');
 const {
@@ -20,6 +21,9 @@ require('#src/server/serverHelpers/serverUtilities');
 const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
 const FLOOR_KEY = Symbol.for('audit-floor');
 const RESUME_FLOOR_KEY = Symbol.for('audit-resume-floor');
+
+// what the decoder returns for an entry it cannot read
+const corruptEntry = () => readAuditEntry(new Uint8Array(12).fill(0xff));
 
 function floorBytes(value) {
 	return new Uint8Array(new Float64Array([value]).buffer);
@@ -278,6 +282,40 @@ describe('Resuming a subscription in a database generation', function () {
 			}
 		});
 
+		for (const [name, damage] of [
+			['an entry that fails to decode', () => corruptEntry()],
+			['an entry whose record id fails to decode', (entry) => Object.create(entry, { recordId: { value: undefined } })],
+		]) {
+			it(`refuses a replay across ${name}`, async () => {
+				const T = tableInOwnDatabase();
+				const positions = await writeEach(T, 3);
+				assert.strictEqual(corruptEntry().type, undefined, 'precondition: the decoder returns its sentinel');
+				const getRange = T.auditStore.getRange;
+				T.auditStore.getRange = function (options) {
+					const range = getRange.call(this, options);
+					if (!(options?.snapshot === false && options.exclusiveStart)) return range;
+					T.auditStore.getRange = getRange;
+					return (function* () {
+						let damaged = false;
+						for (const entry of range) {
+							if (!damaged && entry.tableId === T.tableId) {
+								damaged = true;
+								yield damage(entry);
+							} else yield entry;
+						}
+					})();
+				};
+				try {
+					const { subscription, events } = await resume(T, positions[0]);
+					assert.strictEqual(await subscription.resumeVerified, false);
+					assert.ok(events.at(-1) instanceof ResumeHistoryUnavailableError);
+					assert.match(events.at(-1).message, /could not be read/);
+				} finally {
+					T.auditStore.getRange = getRange;
+				}
+			});
+		}
+
 		it('delivers the refusal as the last iterated value', async () => {
 			const T = tableInOwnDatabase();
 			const positions = await writeEach(T, 250);
@@ -383,6 +421,23 @@ describe('Resuming a subscription in a database generation', function () {
 			assert.strictEqual(await subscription.resumeVerified, false, 'the delete between is gone, and nothing says so');
 			assert.strictEqual(events.length, 1);
 			assert.ok(events[0] instanceof ResumeHistoryUnavailableError);
+		});
+
+		it('refuses a walk that reads a version it cannot decode', async () => {
+			const T = tableInOwnDatabase();
+			const positions = await writeEach(T, 5, () => 'A');
+			const getSync = T.auditStore.getSync;
+			T.auditStore.getSync = function (key, ...rest) {
+				return key === positions[2] ? corruptEntry() : getSync.call(this, key, ...rest);
+			};
+			try {
+				const { subscription, events } = await resume(T, positions[0], { id: 'A', includeSuperseded: true });
+				assert.strictEqual(await subscription.resumeVerified, false);
+				assert.strictEqual(events.length, 1, 'only the refusal');
+				assert.ok(events[0] instanceof ResumeHistoryUnavailableError);
+			} finally {
+				T.auditStore.getSync = getSync;
+			}
 		});
 
 		it('checks the floor for a record with no entry, which a pruned tombstone may have taken', async () => {

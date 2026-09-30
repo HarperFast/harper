@@ -6692,6 +6692,11 @@ export function makeTable(options): TableResourceClass {
 										resumeCheckedThrough = auditRecord.txnLogKey;
 									}
 								}
+								// an entry that failed to decode names no table, so a checked replay cannot rule it out
+								if (checkResume && auditRecord.type === undefined) {
+									checkResume(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
+									return;
+								}
 								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								if (isLockControlType(auditRecord.type)) continue;
 								if (checkResume && auditRecord.type === 'reload') {
@@ -6703,6 +6708,10 @@ export function makeTable(options): TableResourceClass {
 									subscription!.startTime = handledTxnLogKey;
 								}
 								const id = auditRecord.recordId;
+								if (checkResume && id === undefined) {
+									checkResume(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
+									return;
+								}
 								if (thisId == null || isDescendantId(thisId, id)) {
 									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
 									if (event) {
@@ -6859,7 +6868,7 @@ export function makeTable(options): TableResourceClass {
 							}
 							if (++inspected > MAX_PREVIOUS_COUNT_SCAN) break;
 							const auditRecord = auditStore.getSync(nextTime, tableId, thisId, nodeId);
-							if (auditRecord) {
+							if (auditRecord && !(checkResume && auditRecord.type === undefined)) {
 								if (startTime < nextTime) {
 									const event = eventFromAudit(thisId, auditRecord, nextTime);
 									const historyEntry = event && { ...auditRecord, ...event };
