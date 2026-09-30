@@ -1,6 +1,7 @@
 import type { IncomingMessage as NodeIncomingMessage, ServerResponse as NodeServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { TLSSocket } from 'node:tls';
+import { setMaxListeners } from 'node:events';
 import { Readable } from 'node:stream';
 import { Headers as ResponseHeaders } from './Headers.ts';
 import { NodeAdapterResponse, type AdaptedResponse } from './NodeAdapterResponse.ts';
@@ -72,6 +73,7 @@ export class Request {
 		this.url = url;
 		this.headers = new RequestHeaders(nodeRequest.headers);
 		this.__harperRequestUpgraded = false;
+		setMaxListeners(0, this.#abortController.signal);
 		// Abort the request's signal on premature client disconnect. nodeResponse 'close'
 		// also fires on clean completion; the writableFinished guard restricts to disconnect.
 		if (typeof nodeResponse?.on === 'function') {
@@ -399,6 +401,7 @@ export class UwsRequest {
 		this.#ip = source.ip;
 		this.#body = source.body;
 		this.#signal = source.signal;
+		if (this.#signal) setMaxListeners(0, this.#signal);
 		this.__harperRequestUpgraded = false;
 	}
 	get absoluteURL() {
@@ -466,10 +469,15 @@ export class UwsRequest {
 		return this.#signal?.aborted ?? false;
 	}
 	get signal(): AbortSignal {
-		return this.#signal ?? new AbortController().signal;
+		if (!this.#signal) {
+			this.#signal = new AbortController().signal;
+			setMaxListeners(0, this.#signal);
+		}
+		return this.#signal;
 	}
 	_abort(): void {
-		// Abort is driven by the uWS res.onAborted handler wired into the provided signal.
+		// Abort is driven externally, wired into the provided signal (uWS res.onAborted for plain HTTP,
+		// the ws adapter's 'close' event for WebSocket upgrades — see server/http.ts's wsHandler).
 	}
 	get nodeRequest() {
 		return null;

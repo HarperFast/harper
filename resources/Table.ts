@@ -5998,8 +5998,12 @@ export function makeTable(options): TableResourceClass {
 				if (target.offset || target.limit !== undefined) results = results.slice(offset, end);
 				results.onDone = () => {
 					results.onDone = null; // ensure that it isn't called twice
+					txn.unregisterReadIterator(results);
 					txn.doneReadTxn();
 				};
+				// Recorded ownership: if the request dies before anything consumes these results, the
+				// transaction closes them itself rather than leaving its read snapshot pinned.
+				txn.registerReadIterator(results);
 				results.selectApplied = true;
 				results.getColumns = getColumns;
 				return results;
@@ -8684,6 +8688,13 @@ export function makeTable(options): TableResourceClass {
 						// regardless of this state.
 						transaction.next.open = TRANSACTION_STATE.CLOSED;
 					}
+					// A poison flag must travel with `open`, or a link created after the poisoning (a
+					// handler touching this database for the first time post-poison) sees CLOSED but not
+					// the reason, takes save()'s immediateCommit path, and commits on behalf of a request
+					// that was supposed to have been cut off.
+					if (transaction.timedOut) transaction.next.timedOut = true;
+					if (transaction.disconnected) transaction.next.disconnected = true;
+					if (transaction.postSubmitPoisoned) transaction.next.postSubmitPoisoned = true;
 					transaction = transaction.next;
 					transaction.db = primaryStore;
 					return transaction;
@@ -8697,6 +8708,7 @@ export function makeTable(options): TableResourceClass {
 			if (context) {
 				context.transaction = transaction;
 				if (context.timestamp) transaction.timestamp = context.timestamp;
+				if (!context.sourceApply) transaction.requestSignal = context.signal;
 			}
 			return transaction;
 		}
