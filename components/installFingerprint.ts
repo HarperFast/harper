@@ -40,7 +40,7 @@ async function hashLockfile(filePath: string): Promise<string | UnreadableLockfi
 	try {
 		for await (const chunk of createReadStream(filePath)) hash.update(chunk);
 	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
+		const code = (error as NodeJS.ErrnoException | undefined)?.code;
 		return code === 'ENOENT' ? undefined : { unreadable: typeof code === 'string' ? code : 'EUNKNOWN' };
 	}
 	return hash.digest('hex');
@@ -102,7 +102,7 @@ export function compareInstallFingerprints(own: InstallFingerprint | undefined, 
 		else if (mine !== theirs) differs.push(name);
 	}
 	const comparison: InstallComparison = { matches: differs.length > 0 ? false : unavailable ? null : true, differs };
-	if (differs[0] === 'source') comparison.peerSource = peer.source;
+	if (differs.includes('source')) comparison.peerSource = peer.source;
 	return comparison;
 }
 
