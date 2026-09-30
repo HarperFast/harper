@@ -6516,7 +6516,9 @@ export function makeTable(options): TableResourceClass {
 				if (typeof request.startTime !== 'number' || !Number.isFinite(request.startTime)) {
 					throw new ClientError('Resuming in a database generation requires a finite startTime');
 				}
-				if (request.previousCount) throw new ClientError('previousCount can not be combined with a resume position');
+				if (request.previousCount != null) {
+					throw new ClientError('previousCount can not be combined with a resume position');
+				}
 				const refusal = resumeRefusal(auditStore, resumeGeneration, request.startTime);
 				if (refusal) throw refusal;
 			}
@@ -6656,26 +6658,20 @@ export function makeTable(options): TableResourceClass {
 						// transaction the same txnLogKey, so it only moves to a key once all of that key's records are
 						// handled; an early return leaves it before a partly delivered transaction.
 						let handledTxnLogKey: number | undefined;
-						// the newest key whose records the replay has passed, for every table in the log
-						let replayedThrough = startTime;
-						let replayKey: number | undefined;
 						try {
 							for (const auditRecord of auditStore.getRange({
 								start: startTime,
 								exclusiveStart: true,
 								snapshot: false, // no need for a snapshot, audits don't change
 							})) {
-								if (checkResume) {
-									if (replayKey !== undefined && auditRecord.txnLogKey !== replayKey) replayedThrough = replayKey;
-									replayKey = auditRecord.txnLogKey;
-								}
 								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 									recordsSinceYield = 0;
 									await rest();
 									if (!isActive()) return;
 									if (checkResume) {
 										if (!checkResume()) return;
-										resumeCheckedThrough = replayedThrough;
+										// every key below the record in hand has been read
+										resumeCheckedThrough = auditRecord.txnLogKey;
 									}
 								}
 								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;

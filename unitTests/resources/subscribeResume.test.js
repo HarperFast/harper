@@ -12,6 +12,7 @@ const {
 	DatabaseGenerationChangedError,
 	ResumeHistoryUnavailableError,
 } = require('#src/utility/errors/hdbError');
+const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
@@ -34,13 +35,11 @@ function tableInOwnDatabase(name = `Resume${++sequence}`) {
 	});
 }
 
-/** A RocksDB retention pass: the floor first, then the log files entirely below it. */
 function prune(T, before) {
 	raiseAuditFloor(T.auditStore, before);
 	T.auditStore.rootStore.purgeLogs({ before });
 }
 
-/** Write `count` records, one transaction each, and return each write's log position. */
 async function writeEach(T, count, id = (i) => `r${i}`) {
 	const positions = [];
 	const live = await T.subscribe({
@@ -72,7 +71,7 @@ async function resume(T, startTime, { onEvent, ...request } = {}) {
 const valuesOf = (events) => events.filter((event) => !(event instanceof Error)).map((event) => event.value?.value);
 
 describe('Resuming a subscription in a database generation', function () {
-	if (!isRocksDB) return; // RocksDB only; the LMDB behavior is below
+	if (!isRocksDB) return;
 	this.timeout(60_000);
 	before(() => {
 		setupTestDBPath();
@@ -183,6 +182,39 @@ describe('Resuming a subscription in a database generation', function () {
 			assert.strictEqual(getAuditResumeFloor(T.auditStore), positions[50], 'precondition: the prune ran mid-replay');
 			assert.strictEqual(valuesOf(events).length, 249);
 			subscription.end();
+		});
+
+		it('checks a yield inside one transaction against that transaction', async () => {
+			for (const [coversTransaction, verified] of [
+				[false, true],
+				[true, false],
+			]) {
+				const T = tableInOwnDatabase();
+				const [cursor] = await writeEach(T, 1);
+				await transaction({}, async (context) => {
+					for (let i = 0; i < 150; i++) await T.put(`t${i}`, { value: i }, context);
+				});
+				await T.put('after', { value: 150 });
+				const keys = [...T.auditStore.getRange({ start: cursor, exclusiveStart: true })].map(
+					(entry) => entry.txnLogKey
+				);
+				const [transactionKey, after] = [keys[0], keys.at(-1)];
+				assert.ok(keys.length === 151 && after > transactionKey, 'precondition: one shared key, then a later one');
+				const { subscription, events } = await resume(T, cursor, {
+					onEvent: (_event, events) => {
+						// past the replay's first yield, which falls inside the transaction
+						if (events.length === 120) prune(T, coversTransaction ? (transactionKey + after) / 2 : transactionKey);
+					},
+				});
+				assert.strictEqual(
+					await subscription.resumeVerified,
+					verified,
+					`a prune covering the transaction: ${coversTransaction}`
+				);
+				if (verified) assert.strictEqual(valuesOf(events).length, 151);
+				else assert.ok(events.at(-1) instanceof ResumeHistoryUnavailableError);
+				subscription.end();
+			}
 		});
 
 		it('catches a prune that lands after the first check with no yield in between', async () => {
@@ -343,7 +375,13 @@ describe('Resuming a subscription in a database generation', function () {
 					`startTime ${startTime}`
 				);
 			}
-			await assert.rejects(resume(T, positions[0], { id: 'r0', previousCount: 2 }), ClientError);
+			for (const previousCount of [0, 2]) {
+				await assert.rejects(
+					resume(T, positions[0], { id: 'r0', previousCount }),
+					ClientError,
+					`previousCount ${previousCount}`
+				);
+			}
 		});
 
 		it('leaves a subscription without a generation unchecked', async () => {
