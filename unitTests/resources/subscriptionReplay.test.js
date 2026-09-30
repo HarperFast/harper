@@ -1394,7 +1394,7 @@ describe('Subscription replay', () => {
 			}
 		});
 
-		it('keeps a close handler that throws during the fallback close from escaping', async () => {
+		it('keeps a close handler that throws as the subscription closes from escaping', async () => {
 			const T = table({
 				table: 'SubReplayCloseHandlerThrows',
 				database: 'test',

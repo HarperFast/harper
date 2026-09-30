@@ -154,13 +154,6 @@ export function endSubscriptionsFromEarlierHandles(auditStore: any, tracksGenera
 						try {
 							warn(error);
 						} catch {}
-					} finally {
-						// a listener that threw on the final event left the queue open; a bare close sends nothing
-						if (!subscription.closed) {
-							try {
-								subscription.close();
-							} catch {}
-						}
 					}
 				}
 			}
