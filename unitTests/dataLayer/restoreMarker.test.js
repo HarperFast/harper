@@ -3,6 +3,7 @@
 const assert = require('node:assert');
 const {
 	appendFileSync,
+	chmodSync,
 	existsSync,
 	mkdtempSync,
 	mkdirSync,
@@ -278,6 +279,31 @@ describe('restoreMarker', function () {
 			} finally {
 				completeRestore(lock);
 			}
+		});
+	});
+
+	describe('restoreMarkerPresent', function () {
+		it('propagates an undetermined answer instead of reporting the marker absent', function () {
+			// A caller that reads a permission failure as "no marker" drops a database mid-restore and
+			// expires a backup pin whose restore still needs its source.
+			if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+			const dbPath = join(tempDir, 'somedb');
+			const lock = beginRestore(dbPath);
+			const metaDir = restoreMetaDir(dbPath);
+			chmodSync(metaDir, 0o000);
+			try {
+				assert.throws(
+					() => restoreMarkerPresent(dbPath),
+					(error) => error.code === 'EACCES'
+				);
+			} finally {
+				chmodSync(metaDir, 0o700);
+				abandonRestore(lock);
+			}
+		});
+
+		it('reports a genuinely absent marker as absent', function () {
+			assert.ok(!restoreMarkerPresent(join(tempDir, 'never-restored')));
 		});
 	});
 

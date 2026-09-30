@@ -114,6 +114,12 @@ export function readBackupPins(backupDir: string): BackupPin[] {
 			if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
 				throw new Error('pin file is not an object');
 			}
+			// A parseable record is not a usable one. `{}`, `{"backup_id":"7"}` and `{"backup_id":null}`
+			// all survive JSON.parse and then match no requested id, so without this the claim would
+			// permit exactly the delete it exists to refuse.
+			if (!Number.isInteger(parsed.backup_id) || parsed.backup_id < 1) {
+				throw new Error('pin file has no usable backup id');
+			}
 		} catch (error: any) {
 			// A released claim, unlinked between the readdir and the read. Anything else still means
 			// something claimed a backup: fail closed against every id, because a torn pin file must not

@@ -111,6 +111,24 @@ describe('backupRepository', function () {
 			);
 		});
 
+		it('fails closed on a pin file that parses but carries no usable backup id', function () {
+			mkdirSync(backupPinsDir(backupDir), { recursive: true });
+			for (const [name, contents] of [
+				['empty.json', '{}'],
+				['stringy.json', '{"backup_id":"7"}'],
+				['nulled.json', '{"backup_id":null}'],
+				['fractional.json', '{"backup_id":7.5}'],
+			]) {
+				writeFileSync(join(backupPinsDir(backupDir), name), contents);
+				assert.throws(
+					() => assertBackupsUnpinned(backupDir, [7], 'somedb'),
+					(error) => error.statusCode === 409 && /unknown backup/.test(error.message),
+					`${name} must block the delete it cannot vouch for`
+				);
+				rmSync(join(backupPinsDir(backupDir), name));
+			}
+		});
+
 		it('rejects a pin id that would escape the pins directory', function () {
 			assert.throws(() => pinBackup(backupDir, '../escape', 1, 'nope'), /Invalid backup pin id/);
 			assert.throws(() => unpinBackup(backupDir, 'a/b'), /Invalid backup pin id/);

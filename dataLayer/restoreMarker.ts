@@ -1,6 +1,6 @@
 'use strict';
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
@@ -101,7 +101,16 @@ export type RestoreState = 'in-progress' | 'incomplete' | 'clear';
  * distinguish debris from a crashed restore.
  */
 export function restoreMarkerPresent(dbPath: string): boolean {
-	return existsSync(restoringMarkerPath(dbPath));
+	// Only an established absence answers false. `existsSync` reports every errno as "missing", and
+	// both callers act on false in the unsafe direction: a drop proceeds over an incomplete restore,
+	// and a backup pin expires while its restore still needs the source.
+	try {
+		statSync(restoringMarkerPath(dbPath));
+		return true;
+	} catch (error: any) {
+		if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return false;
+		throw error;
+	}
 }
 
 export function databaseDropMarkerPresent(dbPath: string): boolean {

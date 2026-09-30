@@ -653,16 +653,30 @@ export async function restoreBackup(request: any) {
 		}
 		// nothing destructive happened and the marker was fresh — clear it and let every thread reload
 		// the intact database
-		completeRestore(lock);
-		unpinBackup(backupDir, pinId);
+		releaseRestoreClaim(backupDir, pinId, lock, databaseName);
 		await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken, false));
 		throw error;
 	}
-	completeRestore(lock);
-	unpinBackup(backupDir, pinId);
+	releaseRestoreClaim(backupDir, pinId, lock, databaseName);
 	// signal again: with the marker gone, every thread's rescan reloads the restored database
 	await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'reload', restoreToken));
 	return { database: databaseName, backup_id: backupId, ...(allowEngineOnly ? { allow_engine_only: true } : {}) };
+}
+
+/**
+ * Release a finished restore's claim on its source, then its hold on the destination. The pin goes
+ * first: `completeRestore` releases the destination lock, and once that is gone another restore of
+ * the same database can publish its own marker and pin — derived from the same destination
+ * directory, so this unlink would remove the new attempt's claim instead of this one's. A failed
+ * unpin is left to the lazy sweep rather than blocking the reload the caller still owes.
+ */
+function releaseRestoreClaim(backupDir: string, pinId: string, lock: RestoreLock, databaseName: string): void {
+	try {
+		unpinBackup(backupDir, pinId);
+	} catch (error) {
+		logger.error(`Could not release the backup pin after restoring '${databaseName}'; it will be swept later`, error);
+	}
+	completeRestore(lock);
 }
 
 /**
@@ -1155,8 +1169,7 @@ export async function restoreBackupOffline(
 		// and the rerun needs this backup to still be there.
 		if (destructionStarted || lock.preexisting) abandonRestore(lock);
 		else {
-			completeRestore(lock);
-			unpinBackup(backupDir, pinId);
+			releaseRestoreClaim(backupDir, pinId, lock, databaseName);
 		}
 		// preserve typed client errors (e.g. the 409 lock probe) unwrapped; only wrap an opaque restore
 		// failure after destruction has begun
@@ -1168,8 +1181,7 @@ export async function restoreBackupOffline(
 		}
 		throw error;
 	}
-	completeRestore(lock);
-	unpinBackup(backupDir, pinId);
+	releaseRestoreClaim(backupDir, pinId, lock, databaseName);
 	return {
 		database: databaseName,
 		backup_id: backupId,
