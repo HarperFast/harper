@@ -20,6 +20,7 @@ import { EventEmitter } from 'events';
 import { verifyCertificate } from '../security/certificateVerification/index.ts';
 import { registerShutdownDrain } from '../components/shutdownDrain.ts';
 import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
+import { DatabaseGenerationChangedError, ResumeHistoryUnavailableError } from '../utility/errors/hdbError.ts';
 import {
 	assertNoDeferredCredentialRejection,
 	getAuthenticationRejectedInPlace,
@@ -281,8 +282,14 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		try {
 			if (mqttOptions.protocolVersion >= 5) {
 				const packet: any = { cmd: 'disconnect', reasonCode: error ? 0x83 : 0x8e };
+				// as for PUBACK: only failures this layer describes itself are safe to hand a client
+				const describable =
+					error instanceof DatabaseGenerationChangedError ||
+					error instanceof ResumeHistoryUnavailableError ||
+					(error as any)?.statusCode === 403 ||
+					(error as any)?.statusCode === 404;
 				const reasonString =
-					error?.message && sendProblemInformation && (error as any).statusCode < 500
+					describable && error.message && sendProblemInformation
 						? Buffer.from(String(error.message), 'utf8').subarray(0, REASON_STRING_LIMIT).toString('utf8')
 						: undefined;
 				if (

@@ -9,6 +9,8 @@ const { getSession } = require('#src/server/DurableSubscriptionsSession');
 const { handleApplication } = require('#src/server/mqtt');
 const { generate } = require('mqtt-packet');
 const { EventEmitter } = require('node:events');
+const mqttPacket = require('mqtt-packet');
+const { ResumeHistoryUnavailableError } = require('#src/utility/errors/hdbError');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
@@ -33,6 +35,35 @@ class Unavailable extends Resource {
 	static subscribe() {
 		return Promise.reject(new Error('temporarily unavailable'));
 	}
+}
+
+/** Opens connections through mqtt.ts's WebSocket listener, recording what each is sent. */
+function mqttListener() {
+	let listener;
+	const server = {
+		ws: (fn) => ((listener = fn), []),
+		socket: () => ({}),
+		mqtt: { sessions: new Set(), events: new EventEmitter() },
+	};
+	handleApplication({ options: { getAll: () => ({ webSocket: {} }) }, server });
+	return () => {
+		const socket = { closes: [], sends: [], handlers: {}, _socket: { remoteAddress: '127.0.0.1' } };
+		socket.close = () => socket.closes.push(true);
+		socket.send = (message) => socket.sends.push(message);
+		socket.on = (event, handler) => (socket.handlers[event] = handler);
+		const headers = { 'sec-websocket-protocol': 'mqtt' };
+		const request = { headers: { asObject: headers, get: (name) => headers[name.toLowerCase()] }, user };
+		listener(socket, request, Promise.resolve({ status: 200 }), () => {});
+		return socket;
+	};
+}
+
+function sentPackets(socket) {
+	const parser = mqttPacket.parser({ protocolVersion: 5 });
+	const packets = [];
+	parser.on('packet', (packet) => packets.push(packet));
+	for (const sent of socket.sends) parser.parse(sent);
+	return packets;
 }
 
 async function connect(clientId) {
@@ -566,23 +597,8 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 	});
 
 	it('takes the session over when two CONNECTs for one client id arrive together', async () => {
-		let listener;
-		const server = {
-			ws: (fn) => ((listener = fn), []),
-			socket: () => ({}),
-			mqtt: { sessions: new Set(), events: new EventEmitter() },
-		};
-		handleApplication({ options: { getAll: () => ({ webSocket: {} }) }, server });
-		const sockets = [0, 1].map(() => {
-			const socket = { closes: [], sends: [], handlers: {}, _socket: { remoteAddress: '127.0.0.1' } };
-			socket.close = () => socket.closes.push(true);
-			socket.send = (message) => socket.sends.push(message);
-			socket.on = (event, handler) => (socket.handlers[event] = handler);
-			const headers = { 'sec-websocket-protocol': 'mqtt' };
-			const request = { headers: { asObject: headers, get: (name) => headers[name.toLowerCase()] }, user };
-			listener(socket, request, Promise.resolve({ status: 200 }), () => {});
-			return socket;
-		});
+		const open = mqttListener();
+		const sockets = [open(), open()];
 		const packet = generate({
 			cmd: 'connect',
 			protocolId: 'MQTT',
@@ -600,6 +616,41 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 			'the later CONNECT takes over'
 		);
 		sockets[1].handlers.close();
+	});
+
+	it('describes a resume refusal in its DISCONNECT, but not another failure', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const clientId = `disconnect-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+		await storedEntry(clientId, () => true);
+		first.session.disconnect(true);
+		await first.session.writes;
+		const open = mqttListener();
+		const reasons = [];
+		// the session survives the first failure, which is not a refusal, and is discarded by the second
+		for (const failure of [
+			Object.assign(new Error('an internal detail'), { statusCode: 409 }),
+			new ResumeHistoryUnavailableError(),
+		]) {
+			class Failing extends Resource {
+				static subscribe() {
+					return Promise.reject(failure);
+				}
+			}
+			Resources.resources.set(name, Failing, { mqtt: true }, true);
+			const socket = open();
+			socket.handlers.message(
+				generate({ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 5, clientId, clean: false })
+			);
+			await waitFor(() => socket.closes.length > 0);
+			const disconnect = sentPackets(socket).find((packet) => packet.cmd === 'disconnect');
+			assert.strictEqual(disconnect?.reasonCode, 0x83);
+			reasons.push(disconnect.properties?.reasonString);
+			socket.handlers.close();
+		}
+		assert.deepStrictEqual(reasons, [undefined, new ResumeHistoryUnavailableError().message]);
 	});
 
 	it('stops writing when another connection takes the session over', async () => {
