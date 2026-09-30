@@ -219,8 +219,8 @@ module.exports = {
 	processIncarnation,
 	whenThreadsStarted,
 	threadsHaveStarted,
-	// Assigned further down once defined. Listed here because TypeScript 7 only treats keys of this
-	// literal as exports of the module, not later `module.exports.x =` assignments.
+	// Assigned further down once defined. TypeScript 7 only treats keys of this literal as exports and
+	// types them from it, so only a value that cannot be built before the literal belongs here.
 	sendToThread: undefined,
 	getThreadInfo: undefined,
 	getRunningIsolatedApplications: undefined,
