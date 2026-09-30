@@ -1612,6 +1612,7 @@ export function makeTable(options): TableResourceClass {
 			return;
 		return { key, descriptor };
 	}
+	const COMMIT_BASE_METHODS = new Set(['put', 'patch', 'delete']);
 	function entryBeforeWrite(loadedEntry: Entry | undefined, id: Id, transaction: any, reloadsCommitBase: boolean) {
 		if (loadedEntry != null) return loadedEntry;
 		if (isRocksDB && reloadsCommitBase) {
@@ -1628,6 +1629,7 @@ export function makeTable(options): TableResourceClass {
 		#version?: number; // version of the record
 		#entry?: Entry; // the entry from the database
 		#savingOperation?: any; // operation for the record is currently being saved
+		#baseReadTxn?: any; // staging handle the record was read uncached through, reusable as the commit base
 		#lockHandle?: RecordLockHandle; // the record lock acquired by lock() — scoped or hold
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
 		#writeGeneration?: WriteGeneration;
@@ -2403,15 +2405,27 @@ export function makeTable(options): TableResourceClass {
 				if (readTxn?.isDone) {
 					throw new Error('You can not read from a transaction that has already been committed/aborted');
 				}
+				// a write's pre-load read through the staging handle's snapshot is its harper#2259 commit base
+				const readsCommitBase =
+					isRocksDB &&
+					COMMIT_BASE_METHODS.has(resourceOptions?.method) &&
+					!resourceOptions?.ensureLoaded &&
+					readTxn &&
+					!(readTxn as any).snapshotDisabled;
 				return loadLocalRecord(
 					id,
 					request,
-					{ transaction: readTxn, ensureLoaded: resourceOptions?.ensureLoaded },
+					{
+						transaction: readTxn,
+						ensureLoaded: resourceOptions?.ensureLoaded,
+						uncachedRead: readsCommitBase || undefined,
+					},
 					sync,
 					(entry) => {
 						if (entry) {
 							TableResource._updateResource(this, entry);
 						} else this.#record = null;
+						if (readsCommitBase) this.#baseReadTxn = readTxn;
 						if (request.onlyIfCached) {
 							// don't go into the loading from source condition, but HTTP spec says to
 							// return 504 (rather than 404) if there is no content and the cache-control header
@@ -2444,6 +2458,7 @@ export function makeTable(options): TableResourceClass {
 			}
 		}
 		static _updateResource(resource, entry) {
+			resource.#baseReadTxn = undefined;
 			resource.#entry = entry;
 			resource.#record = entry?.value ?? null;
 			resource.#version = entry?.version;
@@ -4439,6 +4454,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			const reloadsCommitBase = options?.isCopyApply !== true;
 			const entry = entryBeforeWrite(this.#entry, id, transaction, reloadsCommitBase);
+			const baseReadTxn = writeKeyId(id) === writeKeyId(this.getId()) ? this.#baseReadTxn : undefined;
 			const writeToSource = () => {
 				if (!(this.constructor as any).source || (context as any)?.source) return;
 				if (fullUpdate) {
@@ -4466,6 +4482,7 @@ export function makeTable(options): TableResourceClass {
 				key: id,
 				store: primaryStore,
 				entry,
+				baseReadTxn,
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
 				chainsStagedState: true,
@@ -5359,11 +5376,13 @@ export function makeTable(options): TableResourceClass {
 			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
 			const entry = entryBeforeWrite(this.#entry, id, transaction, true);
+			const baseReadTxn = writeKeyId(id) === writeKeyId(this.getId()) ? this.#baseReadTxn : undefined;
 
 			const write: any = {
 				key: id,
 				store: primaryStore,
 				entry,
+				baseReadTxn,
 				chainsStagedState: true,
 				reloadCommitBase: true,
 				nodeName: (context as any)?.nodeName,
