@@ -207,7 +207,6 @@ async function connectAll(cmd: ConnectCommand) {
 	await Promise.all(Array.from({ length: cmd.concurrency }, worker));
 }
 
-// graceful: MQTT DISCONNECT and a close frame; abrupt: drop the socket, as a client that loses its network does
 function disconnectAll(mode: 'graceful' | 'abrupt') {
 	return Promise.all(
 		[...sockets].map(
@@ -216,6 +215,8 @@ function disconnectAll(mode: 'graceful' | 'abrupt') {
 					if (ws.readyState === WebSocket.CLOSED) return resolve();
 					ws.once('close', () => resolve());
 					if (mode === 'abrupt') return ws.terminate();
+					// a slow consumer's paused socket would never read the server's close frame
+					(ws as any)._socket?.resume();
 					if (ws.protocol === 'mqtt') ws.send(mqttPacket.generate({ cmd: 'disconnect' } as any));
 					ws.close(1000);
 				})
