@@ -6836,13 +6836,15 @@ export function makeTable(options): TableResourceClass {
 			function failSubscription(error: any) {
 				if (subscription.closed) return;
 				harperLogger.error?.('Error in real-time subscription:', error);
+				closeLoggingListenerErrors(error);
+				// a listener that throws on the final error left the queue open; a bare close sends nothing
+				if (!subscription.closed) closeLoggingListenerErrors();
+			}
+			function closeLoggingListenerErrors(finalMessage?: any) {
 				try {
-					subscription.close(error);
+					subscription.close(finalMessage);
 				} catch (listenerError) {
 					harperLogger.error?.('Error in real-time subscription listener:', listenerError);
-				} finally {
-					// a listener that throws on the final error left the queue open; a bare close sends nothing
-					if (!subscription.closed) subscription.close();
 				}
 			}
 			function eventFromAudit(id: Id, auditRecord: any, localTime: number, beginTxn?: boolean) {
