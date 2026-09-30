@@ -22,7 +22,6 @@ const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
 const FLOOR_KEY = Symbol.for('audit-floor');
 const RESUME_FLOOR_KEY = Symbol.for('audit-resume-floor');
 
-// what the decoder returns for an entry it cannot read
 const corruptEntry = () => readAuditEntry(new Uint8Array(12).fill(0xff));
 
 function floorBytes(value) {
@@ -267,7 +266,6 @@ describe('Resuming a subscription in a database generation', function () {
 				const range = getRange.call(this, options);
 				if (options?.snapshot === false && options.exclusiveStart) {
 					T.auditStore.getRange = getRange;
-					// what the log store records when it ends a failed log's iteration early
 					range.failedLogs.add('unreadable');
 				}
 				return range;
