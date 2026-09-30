@@ -114,7 +114,6 @@ suite(
 			ok(response.ok, `PUT /${table}/${id}: ${response.status}`);
 		}
 
-		/** The saved entry once the server's save at disconnect has landed. */
 		async function settledEntry(clientId: string) {
 			let previous;
 			let entry = (await storedSession(clientId)).subscriptions[0];
@@ -126,7 +125,6 @@ suite(
 			return entry;
 		}
 
-		/** Prunes through the operations API, which runs the prune as a job, and waits for the job to finish. */
 		async function pruneBefore(timestamp: number) {
 			const started = await sendOperation(ctx.harper, {
 				operation: 'delete_transaction_logs_before',
