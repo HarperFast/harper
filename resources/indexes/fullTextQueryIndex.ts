@@ -43,6 +43,7 @@ const MIN_RAW_PAGE_SIZE = 32;
 const RAW_PAGE_OVERFETCH_FACTOR = 2;
 const RAW_PAGE_ZERO_YIELD_GROWTH_FACTOR = 4;
 const RAW_PAGE_YIELD_INTERVAL = 256;
+// Query API v2 uses a 13-byte response header and 13 bytes per versioned hit before string data.
 const NATIVE_SEARCH_RESPONSE_HEADER_BYTES = 13;
 const NATIVE_SEARCH_HIT_OVERHEAD_BYTES = 13;
 const MAX_RELOAD_FAILURES_BEFORE_REOPEN = 3;
@@ -407,7 +408,8 @@ export class FullTextQueryIndex {
 						RAW_PAGE_SIZE,
 						Math.max(MIN_RAW_PAGE_SIZE, target * RAW_PAGE_OVERFETCH_FACTOR)
 					)
-				: RAW_PAGE_SIZE;
+				: Math.min(this.#maxFilteredRawPageSize!, RAW_PAGE_SIZE);
+			const sourceReadYieldInterval = Math.min(RAW_PAGE_YIELD_INTERVAL, rawPageSize);
 			const transaction = context && this.#options.Table._readTxnForContext(context);
 			while (accepted.length < target && offset < searchWindow) {
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
@@ -434,9 +436,10 @@ export class FullTextQueryIndex {
 					result.totalRelation === 'exact' ? offset + result.hits.length < result.total : result.hits.length === limit;
 				if (result.hits.length === 0) break;
 				for (let hitIndex = 0; hitIndex < result.hits.length; hitIndex++) {
-					if (hitIndex > 0 && hitIndex % RAW_PAGE_YIELD_INTERVAL === 0) {
+					if (hitIndex > 0 && hitIndex % sourceReadYieldInterval === 0) {
 						await new Promise((resolve) => setImmediate(resolve));
 						if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
+						remainingSearchBudget(deadline);
 					}
 					const hit = result.hits[hitIndex];
 					const key = decodeNativeId(hit.id, this.#options.Table.tableId);
@@ -871,6 +874,10 @@ export class FullTextQueryIndex {
 		);
 		if (this.#maxFilteredRawPageSize < 1)
 			throw new TypeError('@harperfast/fulltext/native search response limit cannot hold one maximum-size hit');
+		if (this.#maxFilteredRawPageSize < info.limits.maxAutocompleteResults)
+			throw new TypeError(
+				'@harperfast/fulltext/native autocomplete limit exceeds its worst-case search response capacity'
+			);
 		this.#maxAutocompleteResults = info.limits.maxAutocompleteResults;
 		this.#maxSearchBudgetMilliseconds = info.limits.maxSearchBudgetMilliseconds;
 		this.#maxTraceRecords = info.limits.maxTraceRecords;

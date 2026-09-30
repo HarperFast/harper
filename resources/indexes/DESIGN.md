@@ -506,8 +506,9 @@ transaction and omits a hit when that version no longer matches; it never attach
 highlight to new content. Bounded searches begin by over-fetching 32–256 native hits. When version
 checks or structured filters under-fill a page, Harper sizes the next request from observed yield,
 growing to at most 4,096 hits, bounded further by the native worst-case response envelope, and
-shrinking again when selectivity improves. Large pages yield and
-check cancellation every 256 source reads. The total configured native result window remains the hard
+shrinking again when selectivity improves. A zero-yield page grows geometrically because it provides
+no finite selectivity estimate. Large pages preserve the initial page's yield cadence, up to 256 source
+reads, and check cancellation and the execution deadline at each yield. The total configured native result window remains the hard
 bound, and one reader lease keeps every page on one native snapshot. A short lower-bound page fails
 closed only when its reported total claims additional hits beyond the returned page. Exhausting that window because
 native versions are stale is retryable index lag; filter-
