@@ -119,6 +119,7 @@ jobs:
             resources/PrimaryRocksDatabase.ts
             replication/**
             bin/copyDb.ts
+            dataLayer/backupRepository.ts
             dataLayer/harperBridge/ResourceBridge.ts
             dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbGetBackup.js
             dataLayer/restoreMarker.ts
