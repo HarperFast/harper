@@ -37,7 +37,7 @@ const { getBlobPathsForDatabaseName } = require('#src/resources/blob');
 // in the online-operation tests below must therefore carry a super_user role.
 const SU = { hdb_user: { role: { permission: { super_user: true } } } };
 const { beginRestore, completeRestore, checkRestoreState } = require('#src/dataLayer/restoreMarker');
-const { pinBackup, readBackupPins, unpinBackup } = require('#src/dataLayer/backupRepository');
+const { pinBackup, readBackupPins, unpinBackup, withBackupRepositoryLock } = require('#src/dataLayer/backupRepository');
 const { backups } = require('@harperfast/rocksdb-js');
 const { closeLoadedDatabases } = require('#src/resources/databases');
 
@@ -651,7 +651,7 @@ describe('rocksdbBackup', function () {
 			assert.strictEqual((await listBackupsInDir(backupDir)).length, 2, 'a refused purge must remove nothing');
 		});
 
-		it('deletes exactly the ids it admitted and reports that count', async function () {
+		it('keeps the newest keep_count by id, and reports what it actually removed', async function () {
 			this.timeout(30000);
 			const { first, second } = await seedTwoBackups();
 			const third = await createBackupOffline(PINNED);
@@ -659,12 +659,38 @@ describe('rocksdbBackup', function () {
 
 			const purged = await purgeBackupsOffline(PINNED, 1);
 
-			assert.deepStrictEqual(purged, { deleted: 2, remaining: 1 }, 'the count comes from the deletes themselves');
+			assert.deepStrictEqual(purged, { deleted: 2, remaining: 1 }, 'counted from what survives, under the lock');
 			assert.deepStrictEqual(
 				(await listBackupsInDir(backupDir)).map((backup) => backup.backupId),
 				[third.backup_id]
 			);
 			assert.ok(![first.backup_id, second.backup_id].some((id) => id === third.backup_id));
+		});
+
+		it('holds the management lock across the engine backup, not just the finalization', async function () {
+			this.timeout(30000);
+			const database = RocksDatabase.open(join(storageDir, PINNED));
+			try {
+				database.putSync('rec', { n: 1 });
+			} finally {
+				database.close();
+			}
+			const backupDir = backupDirForDatabase(PINNED);
+
+			let created;
+			await withBackupRepositoryLock(backupDir, PINNED, async () => {
+				created = createBackupOffline(PINNED);
+				created.catch(() => {}); // settled below; this only keeps an early failure unhandled-free
+				await new Promise((resolve) => setTimeout(resolve, 750));
+				assert.deepStrictEqual(
+					await listBackupsInDir(backupDir),
+					[],
+					'the engine backup must not be created while another operation holds the lock'
+				);
+			});
+
+			await created;
+			assert.strictEqual((await listBackupsInDir(backupDir)).length, 1, 'and it proceeds once the lock is free');
 		});
 
 		it('refuses to publish a backup the engine no longer has by the time it finalizes', async function () {

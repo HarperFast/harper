@@ -223,7 +223,16 @@ function mapLockedError(error: any, databaseName: string): any {
 export async function listBackupsInDir(backupDir: string): Promise<BackupInfo[]> {
 	// the backup dir doesn't exist until the first create_backup
 	if (!existsSync(backupDir)) return [];
-	return backups.list(backupDir);
+	try {
+		return await backups.list(backupDir);
+	} catch (error) {
+		// Taking the management lock creates the repository directory before anything has written
+		// engine metadata into it, so a directory with no metadata is an empty repository, not a
+		// failure — otherwise a purge on a database that never had a backup reports the binding's
+		// "meta is missing" instead of "no backups found".
+		if (!existsSync(join(backupDir, 'meta'))) return [];
+		throw error;
+	}
 }
 
 async function findBackup(backupDir: string, backupId: number, databaseName: string): Promise<BackupInfo> {
@@ -399,16 +408,19 @@ export async function createBackup(request: any) {
 	const excludeBlobs = requireBooleanOption(request.exclude_blobs, 'exclude_blobs');
 	const rootStore = requireRocksRootStore(databaseName, OPERATIONS_ENUM.CREATE_BACKUP);
 	const backupDir = backupDirForDatabase(databaseName);
-	let backupId;
-	try {
-		backupId = await rootStore.backup(backupDir, { transactionLogs: true });
-	} catch (error) {
-		throw mapLockedError(error, databaseName);
-	}
-	// snapshot blobs (unless excluded) then publish the completion manifest; rolls back on failure.
-	// Under the management lock so a concurrent delete/purge cannot remove what is being published.
-	await withBackupRepositoryLock(backupDir, databaseName, async () => {
-		await finalizeBackup(backupDir, backupId, databaseName, !excludeBlobs);
+	// The engine call is inside the lock, not before it: that is the order this module documents
+	// (management lock, then the engine call that takes `.backup.lock`), and it is what makes the
+	// whole create one critical section — a purge can no longer remove the engine backup between
+	// `backup()` and the manifest that publishes it, nor shift which ids it would remove.
+	const backupId = await withBackupRepositoryLock(backupDir, databaseName, async () => {
+		let id;
+		try {
+			id = await rootStore.backup(backupDir, { transactionLogs: true });
+		} catch (error) {
+			throw mapLockedError(error, databaseName);
+		}
+		await finalizeBackup(backupDir, id, databaseName, !excludeBlobs);
+		return id;
 	});
 	await writeBackupReadme(backupDir, databaseName);
 	return {
@@ -1055,14 +1067,15 @@ export async function createBackupOffline(databaseName: string, excludeBlobs = f
 	const database = RocksDatabase.open(databaseDir);
 	try {
 		const backupDir = backupDirForDatabase(databaseName);
-		let backupId;
-		try {
-			backupId = await database.backup(backupDir, { transactionLogs: true });
-		} catch (error) {
-			throw mapLockedError(error, databaseName);
-		}
-		await withBackupRepositoryLock(backupDir, databaseName, async () => {
-			await finalizeBackup(backupDir, backupId, databaseName, !excludeBlobs);
+		const backupId = await withBackupRepositoryLock(backupDir, databaseName, async () => {
+			let id;
+			try {
+				id = await database.backup(backupDir, { transactionLogs: true });
+			} catch (error) {
+				throw mapLockedError(error, databaseName);
+			}
+			await finalizeBackup(backupDir, id, databaseName, !excludeBlobs);
+			return id;
 		});
 		await writeBackupReadme(backupDir, databaseName);
 		return {
@@ -1262,33 +1275,28 @@ export async function purgeBackupsOffline(databaseName: string, keepCount: numbe
 		if (before.length === 0) {
 			throw new BackupNotFoundError(`No backups found for database '${databaseName}'`);
 		}
-		// Remove exactly the ids admitted here, rather than delegating "keep the newest N" to the
-		// binding: `db.backup()` does not take this lock, so a create landing in between would shift
-		// which ids `purge` keeps — and could drop one whose pin was just checked.
-		const byId = [...before].sort((first, second) => first.backupId - second.backupId);
-		const removing = byId.slice(0, Math.max(0, byId.length - keepCount)).map((backup) => backup.backupId);
+		// Every Harper writer is excluded by this lock, so `before` is exactly what the binding will
+		// see: `list` is ordered by id and `purge` keeps the newest `keepCount` by id, so the ids it
+		// will remove can be named here and checked against the pins before it runs. One bulk call
+		// then does the removal — a per-id loop would reopen the repository once per backup.
+		const removing = before.slice(0, Math.max(0, before.length - keepCount)).map((backup) => backup.backupId);
 		assertBackupsUnpinned(backupDir, removing, databaseName);
-		let deleted = 0;
 		try {
-			for (const backupId of removing) {
-				try {
-					await backups.delete(backupDir, backupId);
-				} catch (error) {
-					throw mapLockedError(error, databaseName);
-				}
-				deleted++;
-			}
+			await backups.purge(backupDir, keepCount);
+		} catch (error) {
+			throw mapLockedError(error, databaseName);
 		} finally {
-			// Reconciled from what actually survives, in a finally: an engine failure partway through still
-			// removed engine backups, and their blob snapshots would otherwise be orphaned on disk — invisible
-			// to list_backups and still charged to the tenant's quota.
+			// Reconciled from what actually survives, in a finally: a purge that failed partway through
+			// still removed engine backups, and their blob snapshots would otherwise be orphaned on disk
+			// — invisible to list_backups and still charged to the tenant's quota.
 			// A throw from here would replace the engine error, which is the one worth reporting.
 			await reconcileHarperManagedBackupFiles(backupDir).catch((error) =>
 				logger.warn(`Could not reconcile Harper-managed backup files in ${backupDir}`, error)
 			);
 		}
-		// Counted from the deletes themselves: a create landing mid-purge (its engine phase takes no
-		// lock) would make a before/after length comparison under-report, or report zero.
-		return { deleted, remaining: (await listBackupsInDir(backupDir)).length };
+		// Counted from what actually survives rather than from `removing`: no create can land inside
+		// this lock, so the difference is exactly what the purge removed.
+		const remaining = (await listBackupsInDir(backupDir)).length;
+		return { deleted: before.length - remaining, remaining };
 	});
 }
