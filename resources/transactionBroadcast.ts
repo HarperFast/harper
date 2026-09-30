@@ -110,6 +110,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	key = keyArrayToString(key);
 	const subscription = new Subscription(listener);
 	subscription.startTime = startTime;
+	subscription.databaseGeneration = table.auditStore?.databaseGeneration?.id;
 	let subscriptions: any = tableSubscriptions.get(key);
 
 	if (subscriptions) subscriptions.push(subscription);
@@ -176,6 +177,8 @@ class Subscription extends IterableEventQueue {
 	listener: (recordId: Id, auditEntry: any, txnLogKey: number, beginTxn: boolean) => void;
 	subscriptions: any;
 	startTime?: number;
+	databaseGeneration?: string;
+	resumeVerified?: Promise<boolean>;
 	includeDescendants?: boolean;
 	supportsTransactions?: boolean;
 	onlyChildren?: boolean;

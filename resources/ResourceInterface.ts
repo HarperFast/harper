@@ -251,6 +251,13 @@ export type Select = (string | SubSelect)[];
 export interface SubscriptionRequest extends RequestTarget {
 	/** The starting time of events to return (defaults to now) */
 	startTime?: number;
+	/**
+	 * Resume from `startTime` as a position in this database generation: the subscription is refused with
+	 * a 409 if the database was replaced (always on LMDB), or a 410 if the history after the position is
+	 * no longer retained or is too long to replay for one record, and exposes `resumeVerified`. Requires a
+	 * finite `startTime`, where `0` is a position, and no `previousCount`.
+	 */
+	databaseGeneration?: string;
 	/** The count of previously recorded events to return */
 	previousCount?: number;
 	/** If the current record state should be omitted as the first event */
@@ -305,6 +312,14 @@ export interface Subscription<Event extends object = any> extends IterableEventQ
 	listener: Listener<Event>;
 	subscriptions: Listener<Event>[];
 	startTime?: number;
+	/** The generation of the database this subscription reads; undefined on LMDB. */
+	databaseGeneration?: string;
+	/**
+	 * Present only when subscribed with `databaseGeneration`. Resolves `true` once the replay after the
+	 * position is complete and checked, or `false` if it was refused, cut short or closed first; never rejects.
+	 * Events delivered before it resolves `true` are not safe to checkpoint.
+	 */
+	resumeVerified?: Promise<boolean>;
 
 	end(): void;
 	toJSON(): { name: 'subscription' };
