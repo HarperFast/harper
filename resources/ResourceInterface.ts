@@ -143,7 +143,9 @@ export interface Context {
 	/**
 	 * Abort signal carried through ALS so generator bodies can forward cancellation to
 	 * external work (e.g. `scope.models.generateStream({ signal })`). Populated on the
-	 * Request that becomes the ALS-bound Context for HTTP/WS paths via #513.
+	 * Request that becomes the ALS-bound Context for HTTP/WS paths via #513. Also the request's
+	 * lifetime for its writes (harper#2001): once it aborts, no write for the request is admitted
+	 * and a write-bearing transaction is aborted at once (`DatabaseTransaction.admitRequestWrite`).
 	 */
 	signal?: AbortSignal;
 }

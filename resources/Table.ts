@@ -1282,6 +1282,26 @@ setLockCoordinatorResolver(
 	}
 );
 
+// Valid for one synchronous notify pass, in which a key's subscribers on this thread all receive the same
+// freshly decoded audit record; cleared after it so it pins no store or record once delivery is done.
+let memoizedEntryAuditRecord: any;
+let memoizedEntryStore: any;
+let memoizedEntryId: Id;
+let memoizedEntry: Entry | undefined;
+function clearEntryMemo() {
+	memoizedEntryAuditRecord = memoizedEntryStore = memoizedEntryId = memoizedEntry = undefined;
+}
+function currentEntryForAudit(store: any, id: Id, auditRecord: any): Entry | undefined {
+	if (auditRecord !== memoizedEntryAuditRecord || store !== memoizedEntryStore || id !== memoizedEntryId) {
+		if (memoizedEntryAuditRecord === undefined) queueMicrotask(clearEntryMemo);
+		memoizedEntry = store.getEntry(id);
+		memoizedEntryAuditRecord = auditRecord;
+		memoizedEntryStore = store;
+		memoizedEntryId = id;
+	}
+	return memoizedEntry;
+}
+
 export function makeTable(options): TableResourceClass {
 	const {
 		primaryKey,
@@ -6001,8 +6021,12 @@ export function makeTable(options): TableResourceClass {
 				if (target.offset || target.limit !== undefined) results = results.slice(offset, end);
 				results.onDone = () => {
 					results.onDone = null; // ensure that it isn't called twice
+					txn.unregisterReadIterator(results);
 					txn.doneReadTxn();
 				};
+				// Recorded ownership: if the request dies before anything consumes these results, the
+				// transaction closes them itself rather than leaving its read snapshot pinned.
+				txn.registerReadIterator(results);
 				results.selectApplied = true;
 				results.getColumns = getColumns;
 				return results;
@@ -6824,7 +6848,7 @@ export function makeTable(options): TableResourceClass {
 					type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate';
 				if (isMutation && !includeSuperseded) {
 					if (id === undefined) return;
-					const entry: Entry = primaryStore.getEntry(id);
+					const entry = currentEntryForAudit(primaryStore, id, auditRecord);
 					if (!entry || entry.version !== auditRecord.version) return;
 					if (getFullRecord) {
 						value = entry?.value;
@@ -8688,6 +8712,13 @@ export function makeTable(options): TableResourceClass {
 						// regardless of this state.
 						transaction.next.open = TRANSACTION_STATE.CLOSED;
 					}
+					// A poison flag must travel with `open`, or a link created after the poisoning (a
+					// handler touching this database for the first time post-poison) sees CLOSED but not
+					// the reason, takes save()'s immediateCommit path, and commits on behalf of a request
+					// that was supposed to have been cut off.
+					if (transaction.timedOut) transaction.next.timedOut = true;
+					if (transaction.disconnected) transaction.next.disconnected = true;
+					if (transaction.postSubmitPoisoned) transaction.next.postSubmitPoisoned = true;
 					transaction = transaction.next;
 					transaction.db = primaryStore;
 					return transaction;
@@ -8701,6 +8732,7 @@ export function makeTable(options): TableResourceClass {
 			if (context) {
 				context.transaction = transaction;
 				if (context.timestamp) transaction.timestamp = context.timestamp;
+				if (!context.sourceApply) transaction.requestSignal = context.signal;
 			}
 			return transaction;
 		}

@@ -508,7 +508,8 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 		assert.strictEqual(ingestContext.user, user);
 		assert.strictEqual(ingestContext.originatingOperation, 'deploy_component');
 		assert.strictEqual(ingestContext.session, session);
-		assert.strictEqual(ingestContext.signal, signal);
+		// Not forwarded: a disconnecting deploy client must not poison the tracking writes.
+		assert.strictEqual(ingestContext.signal, undefined);
 		assert.ok(ingestContext.transaction);
 		assert.notStrictEqual(ingestContext.transaction, ambientTransaction);
 		assert.strictEqual(ingestContext.transactionTimeoutBudget, ingestTransactionTimeoutMs(configuredBudget));
