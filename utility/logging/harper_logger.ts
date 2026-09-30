@@ -1466,6 +1466,7 @@ function chargeText(text: string, budget: SanitizeBudget, renderedLength = text.
 	budget.chars -= renderedLength;
 	if (budget.chars >= 0) return text;
 	const kept = Math.max(0, Math.min(text.length, renderedLength + budget.chars));
+	if (kept === text.length) return text;
 	return text.slice(0, kept) + omittedCharacters(text.length - kept);
 }
 
@@ -1937,7 +1938,7 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, SeenEntry>, depth:
 		if (isLeaf && hasEnumerableOwnProps(value)) {
 			// An expando-carrying function falls through to the object walk below. Only an opaque
 			// built-in that actually carries one pays for safeOpaqueBuiltinSummary.
-			if (!isFunction) return renderedLeaf(inspect(safeOpaqueBuiltinSummary(value), budget.renderOptions), budget);
+			if (!isFunction) return deepSanitizeErrors(safeOpaqueBuiltinSummary(value), seen, depth, budget);
 		} else if (isLeaf) {
 			// A hook other than Node's own Buffer one is resolved like an object's, so its output is walked.
 			const hook = leafInspectHook(value);
@@ -2126,6 +2127,7 @@ function deepSanitizeErrors(value: any, seen: WeakMap<object, SeenEntry>, depth:
 	// the original is empty is not checked, since that is the full key enumeration this avoids.
 	if (!expanded && !inheritedHook) return collapsedClone(entry, true);
 	if (inheritedHook && budget.discarded >= MAX_DISCARDED_RENDER) {
+		budget.chars -= OMITTED_LABEL.length;
 		entry.clone = labelPlaceholder(OMITTED_LABEL);
 		entry.cost = 0;
 		return entry.clone;
