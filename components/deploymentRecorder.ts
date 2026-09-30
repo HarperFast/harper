@@ -17,6 +17,7 @@ import { transaction, contextStorage } from '../resources/transaction.ts';
 import { createBlob, isSaving, deleteBlob, BLOB_UNAVAILABLE_STATUS } from '../resources/blob.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import type { CredentialReference } from './secretOperations.ts';
+import { isInstallFingerprint } from './installFingerprint.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { hostname } from 'node:os';
@@ -744,6 +745,20 @@ function normalizePeerResult(raw: unknown): Record<string, unknown> {
 			: null,
 		started_at: r.started_at ?? null,
 		completed_at: r.completed_at ?? null,
+		...installComparisonFields(r),
+	};
+}
+
+/** Present only once the origin compared this peer's install fingerprint with its own. */
+function installComparisonFields(r: Record<string, unknown>): Record<string, unknown> {
+	if (!('install_matches' in r)) return {};
+	const install = r.install ?? (r.value as any)?.install ?? (r.body as any)?.install;
+	return {
+		install: isInstallFingerprint(install) ? install : null,
+		install_matches: typeof r.install_matches === 'boolean' ? r.install_matches : null,
+		install_differs: Array.isArray(r.install_differs)
+			? r.install_differs.filter((name) => typeof name === 'string')
+			: [],
 	};
 }
 

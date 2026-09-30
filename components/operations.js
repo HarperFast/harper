@@ -888,9 +888,11 @@ async function deployComponent(req) {
 				emit('phase', { phase: 'prepare', status: 'done' });
 				await validateComponentLoads(candidateDirPath, emit);
 			},
+			fingerprintInstall: !isActivation,
 		});
 		// Nothing ran `validateCandidate`, which ends this phase.
 		if (application.alreadyActive) emit('phase', { phase: 'prepare', status: 'done' });
+		if (recorder && application.installFingerprint) recorder.row.install_fingerprint = application.installFingerprint;
 		// The build is certified on disk from here on, so every later failure — a peer result, or a rejection
 		// thrown by the replication layer itself — still leaves an artifact this id can activate.
 		if (mode === 'stage') stagedOnOrigin = true;
@@ -933,6 +935,13 @@ async function deployComponent(req) {
 			timeoutMs: peerDeployAnswerTimeoutMs(req),
 		});
 		emit('phase', { phase: 'replicate', status: 'done' });
+		if (application.installFingerprint) response.install = application.installFingerprint;
+		// Marked on the aggregate, which the recorder re-records below, so a peer's per-peer entry is replaced
+		// rather than contradicted, and the warning fires once.
+		const installDrift = recorder
+			? markInstallComparisons(application.installFingerprint, response?.replicated)
+			: undefined;
+		if (installDrift) emit('warning', { message: installDrift });
 		if (recorder && response?.replicated) {
 			// Fallback path for replicators that don't honor onPeerResult: re-record the
 			// aggregate. recordPeer's upsert-by-node-name semantics make this idempotent
@@ -1081,6 +1090,7 @@ async function deployComponent(req) {
 					`Staged: ${application.name}. Deploy it with deploy_component ` + `deployment_id=${recorder.deploymentId}`;
 			}
 		}
+		if (installDrift) response.message = `${response.message} ${installDrift}`;
 		return response;
 	} catch (err) {
 		// Pack phase, install output tail, and deployment_id into http_resp_msg so the
@@ -1143,6 +1153,28 @@ function unconfirmedStagingPeers(replicated) {
 	if (!Array.isArray(replicated)) return [];
 	const confirmed = (peer) => peer?.staged === true || peer?.value?.staged === true || peer?.body?.staged === true;
 	return replicated.filter((peer) => peer && !confirmed(peer));
+}
+
+/**
+ * Mark each peer's entry with how its install fingerprint compares with this node's, so the recorder keeps the
+ * comparison, and return the sentence the deploy's messaging carries when any differ. A difference never fails
+ * the deploy. The fingerprint is read flat or from a wrapped body, as `unconfirmedStagingPeers` reads its marker.
+ */
+function markInstallComparisons(ownFingerprint, replicated) {
+	if (!ownFingerprint || !Array.isArray(replicated)) return undefined;
+	const { compareInstallFingerprints, describeInstallDrift } = require('./installFingerprint.ts');
+	const peers = [];
+	for (const peer of replicated) {
+		if (!peer || typeof peer !== 'object') continue;
+		const comparison = compareInstallFingerprints(
+			ownFingerprint,
+			peer.install ?? peer.value?.install ?? peer.body?.install
+		);
+		peer.install_matches = comparison.matches;
+		peer.install_differs = comparison.differs;
+		peers.push({ node: peer.node ?? peer.name ?? peer.hostname ?? null, comparison });
+	}
+	return describeInstallDrift(peers);
 }
 
 // Ring buffer of install stdout/stderr lines, capped by both line count and bytes so
@@ -1634,6 +1666,7 @@ exports.dropCustomFunctionProject = dropCustomFunctionProject;
 exports.packageComponent = packageComponent;
 exports.deployComponent = deployComponent;
 exports.unconfirmedStagingPeers = unconfirmedStagingPeers;
+exports.markInstallComparisons = markInstallComparisons;
 exports.peerDeployAnswerTimeoutMs = peerDeployAnswerTimeoutMs;
 exports.getComponents = getComponents;
 exports.getComponentFile = getComponentFile;

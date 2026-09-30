@@ -585,6 +585,40 @@ the outcome there is unknown.
 It stays a `failed` peer result, because `getFailedPeers()` counts only that status, and a new one would
 read as success.
 
+## A replicated deploy reports each node's install fingerprint, and never acts on it
+
+Every node of a replicated `deploy_component` resolves and installs the release itself, so two nodes can end
+up with different code and nothing says so (#2295). Moving the release between nodes was ruled out: shipping
+the built tree (#2917, closed) was too heavy, and a strict tree check would refuse a mixed-platform cluster.
+So each node records what it installed, and the origin reports a difference without acting on it.
+
+- **The fingerprint** (`components/installFingerprint.ts`) is taken only for a deploy or a stage, after the
+  install and before the swap (`fingerprintInstall`, a `prepareApplication` option). It has two parts:
+  - `source` is the resolver's own name for what it packed, never a second hash. It is `git:<commit>` from
+    Harper's clone, `npm:<name>@<version>` from `npm pack --json` for a registry spec (a tag resolves to one),
+    or npm's reported `integrity:<sri>` for a git spec npm packed itself, or a tarball URL. A payload has no
+    `source`: its peers read the origin's blob. Nor does a local `file:` path.
+  - `lockfiles` is the sha256 of each root lockfile in `PACKAGE_LOCK_FILES`, by name. An absent lockfile is
+    not listed. One that can't be read is `{ unreadable: <code> }`, never absent.
+- **The comparison** runs once, on the origin, on the aggregate `response.replicated`, just before the
+  recorder re-records it (`markInstallComparisons`, `components/operations.js`). So the per-peer callback's
+  entries are replaced rather than contradicted.
+  - Each peer gets `install_matches` and `install_differs`. `install_matches` is `null` when either side's
+    evidence is missing or unreadable, as from an older Harper or a failed peer.
+  - Only lockfile names this node recognizes are compared.
+- **Where it shows:**
+  - one `warning` event, which the CLI prints;
+  - a sentence on the final message, added after staging replaces the message;
+  - the per-peer fields in `peer_results`, which `normalizePeerResult` keeps only once a comparison ran;
+  - the origin's own fingerprint, in the row's `install_fingerprint`.
+- **It never changes the outcome.** Drift alone keeps success. A real peer failure still fails the deploy,
+  after the warning has fired.
+
+A match means equal evidence, not identical trees. A custom `install_command` can install different
+dependencies and leave the same lockfile, or none. Lockfiles written against different registry mirrors
+differ while the code matches. This prevents nothing, and a restart can still re-resolve a package component
+(`installConfiguredApplication`) with no report.
+
 ## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
 
 Packaging uses `tar-fs.pack(dir, { dereference: true })` by default (`skip_symlinks` off).
