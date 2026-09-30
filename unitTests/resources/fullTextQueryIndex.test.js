@@ -108,8 +108,11 @@ function definition() {
 function queryLimits(overrides = {}) {
 	const maxSearchWindow = overrides.maxSearchWindow ?? 10_000;
 	return {
+		maxRecordIdBytes: 4_096,
+		maxRecordVersionBytes: 4_096,
 		maxSearchWindow,
 		maxAutocompleteResults: Math.min(100, maxSearchWindow),
+		maxSearchResponseBytes: 8 * 1024 * 1024,
 		maxSearchBudgetMilliseconds: 30_000,
 		maxTraceRecords: 10,
 		maxTraceSourceBytes: Number.MAX_SAFE_INTEGER,
@@ -1409,7 +1412,7 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('sizes bounded native pages from observed filter yield', async () => {
+	it('sizes bounded native pages from filter yield within the native response envelope', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'adaptive-filtered-paging';
 		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
@@ -1442,8 +1445,9 @@ describe('FullTextQueryIndex', () => {
 				{ offset: 0, limit: 40 },
 				{ offset: 40, limit: 160 },
 				{ offset: 200, limit: 640 },
-				{ offset: 840, limit: 2_560 },
-				{ offset: 3_400, limit: 270 },
+				{ offset: 840, limit: 1_022 },
+				{ offset: 1_862, limit: 1_022 },
+				{ offset: 2_884, limit: 1_022 },
 			]
 		);
 		assert.deepStrictEqual(

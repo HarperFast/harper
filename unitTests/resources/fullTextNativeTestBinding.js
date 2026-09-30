@@ -37,8 +37,11 @@ class FullTextNativeTestBinding {
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: 64 * 1024,
+				maxRecordIdBytes: 4_096,
+				maxRecordVersionBytes: 4_096,
 				maxSearchWindow: 10_000,
 				maxAutocompleteResults: 100,
+				maxSearchResponseBytes: 8 * 1024 * 1024,
 				maxSearchBudgetMilliseconds: 30_000,
 				maxTraceRecords: 128,
 				maxTraceSourceBytes: 1024 * 1024,

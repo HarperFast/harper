@@ -94,8 +94,11 @@ export type NativeFullTextRuntimeInfo = {
 	storageBackends: ReadonlyArray<'native'>;
 	limits: {
 		maxCommitPayloadBytes: number;
+		maxRecordIdBytes: number;
+		maxRecordVersionBytes: number;
 		maxSearchWindow: number;
 		maxAutocompleteResults: number;
+		maxSearchResponseBytes: number;
 		maxSearchBudgetMilliseconds: number;
 		maxTraceRecords: number;
 		maxTraceSourceBytes: number;
@@ -110,6 +113,9 @@ export type NativeFullTextQueryRuntimeInfo = Pick<
 		NativeFullTextRuntimeInfo['limits'],
 		| 'maxSearchWindow'
 		| 'maxAutocompleteResults'
+		| 'maxRecordIdBytes'
+		| 'maxRecordVersionBytes'
+		| 'maxSearchResponseBytes'
 		| 'maxSearchBudgetMilliseconds'
 		| 'maxTraceRecords'
 		| 'maxTraceSourceBytes'
@@ -259,11 +265,17 @@ export function validateFullTextQueryRuntimeInfo(info: unknown): NativeFullTextQ
 		!Number.isSafeInteger(runtime.queryClassIsolationMinimumSearchThreads) ||
 		runtime.queryClassIsolationMinimumSearchThreads <= 0 ||
 		!runtime.limits ||
+		!Number.isSafeInteger(runtime.limits.maxRecordIdBytes) ||
+		runtime.limits.maxRecordIdBytes <= 0 ||
+		!Number.isSafeInteger(runtime.limits.maxRecordVersionBytes) ||
+		runtime.limits.maxRecordVersionBytes <= 0 ||
 		!Number.isSafeInteger(runtime.limits.maxSearchWindow) ||
 		runtime.limits.maxSearchWindow <= 0 ||
 		!Number.isSafeInteger(runtime.limits.maxAutocompleteResults) ||
 		runtime.limits.maxAutocompleteResults <= 0 ||
 		runtime.limits.maxAutocompleteResults > runtime.limits.maxSearchWindow ||
+		!Number.isSafeInteger(runtime.limits.maxSearchResponseBytes) ||
+		runtime.limits.maxSearchResponseBytes <= 0 ||
 		!Number.isSafeInteger(runtime.limits.maxSearchBudgetMilliseconds) ||
 		runtime.limits.maxSearchBudgetMilliseconds <= 0 ||
 		!Number.isSafeInteger(runtime.limits.maxTraceRecords) ||

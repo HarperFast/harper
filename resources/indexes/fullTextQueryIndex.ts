@@ -41,7 +41,10 @@ const RAW_PAGE_SIZE = 256;
 const MAX_FILTERED_RAW_PAGE_SIZE = 4_096;
 const MIN_RAW_PAGE_SIZE = 32;
 const RAW_PAGE_OVERFETCH_FACTOR = 2;
+const RAW_PAGE_ZERO_YIELD_GROWTH_FACTOR = 4;
 const RAW_PAGE_YIELD_INTERVAL = 256;
+const NATIVE_SEARCH_RESPONSE_HEADER_BYTES = 13;
+const NATIVE_SEARCH_HIT_OVERHEAD_BYTES = 13;
 const MAX_RELOAD_FAILURES_BEFORE_REOPEN = 3;
 const HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS = 5_000;
 const READER_DRAIN_GRACE_MILLISECONDS = 1_000;
@@ -114,6 +117,7 @@ export class FullTextQueryIndex {
 	#readerOperation?: Promise<ReaderSlot>;
 	#retiredReaderSlots = new Set<ReaderSlot>();
 	#maxSearchWindow?: number;
+	#maxFilteredRawPageSize?: number;
 	#maxAutocompleteResults?: number;
 	#maxSearchBudgetMilliseconds?: number;
 	#maxTraceRecords?: number;
@@ -398,7 +402,11 @@ export class FullTextQueryIndex {
 			let staleVersionHits = 0;
 			let expiredHits = 0;
 			let rawPageSize = bounded
-				? Math.min(RAW_PAGE_SIZE, Math.max(MIN_RAW_PAGE_SIZE, target * RAW_PAGE_OVERFETCH_FACTOR))
+				? Math.min(
+						this.#maxFilteredRawPageSize!,
+						RAW_PAGE_SIZE,
+						Math.max(MIN_RAW_PAGE_SIZE, target * RAW_PAGE_OVERFETCH_FACTOR)
+					)
 				: RAW_PAGE_SIZE;
 			const transaction = context && this.#options.Table._readTxnForContext(context);
 			while (accepted.length < target && offset < searchWindow) {
@@ -462,7 +470,8 @@ export class FullTextQueryIndex {
 							limit,
 							result.hits.length,
 							acceptedThisPage,
-							target - accepted.length
+							target - accepted.length,
+							this.#maxFilteredRawPageSize!
 						);
 					}
 					await new Promise((resolve) => setImmediate(resolve));
@@ -852,6 +861,16 @@ export class FullTextQueryIndex {
 			this.#nativeOptions.limits.searchThreads
 		);
 		this.#maxSearchWindow = info.limits.maxSearchWindow;
+		this.#maxFilteredRawPageSize = Math.min(
+			MAX_FILTERED_RAW_PAGE_SIZE,
+			info.limits.maxSearchWindow,
+			Math.floor(
+				(info.limits.maxSearchResponseBytes - NATIVE_SEARCH_RESPONSE_HEADER_BYTES) /
+					(NATIVE_SEARCH_HIT_OVERHEAD_BYTES + info.limits.maxRecordIdBytes + info.limits.maxRecordVersionBytes)
+			)
+		);
+		if (this.#maxFilteredRawPageSize < 1)
+			throw new TypeError('@harperfast/fulltext/native search response limit cannot hold one maximum-size hit');
 		this.#maxAutocompleteResults = info.limits.maxAutocompleteResults;
 		this.#maxSearchBudgetMilliseconds = info.limits.maxSearchBudgetMilliseconds;
 		this.#maxTraceRecords = info.limits.maxTraceRecords;
@@ -887,13 +906,14 @@ function nextFilteredRawPageSize(
 	currentPageSize: number,
 	rawHits: number,
 	acceptedHits: number,
-	remainingResults: number
+	remainingResults: number,
+	maxPageSize: number
 ): number {
 	const projected =
 		acceptedHits === 0
-			? currentPageSize * 4
+			? currentPageSize * RAW_PAGE_ZERO_YIELD_GROWTH_FACTOR
 			: Math.ceil((remainingResults * rawHits * RAW_PAGE_OVERFETCH_FACTOR) / acceptedHits);
-	return Math.min(MAX_FILTERED_RAW_PAGE_SIZE, Math.max(MIN_RAW_PAGE_SIZE, projected));
+	return Math.min(maxPageSize, Math.max(MIN_RAW_PAGE_SIZE, projected));
 }
 
 export async function pauseNativeFullTextQueryReaders(
