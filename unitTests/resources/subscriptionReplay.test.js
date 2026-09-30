@@ -1404,6 +1404,7 @@ describe('Subscription replay', () => {
 			const startTime = Date.now() - 1;
 			await T.put(1, { name: 'replayed' });
 			const closeError = new Error('close handler throws');
+			let closeHandlerRuns = 0;
 			const unhandled = [];
 			const onUnhandled = (reason) => unhandled.push(reason);
 			process.on('unhandledRejection', onUnhandled);
@@ -1416,6 +1417,7 @@ describe('Subscription replay', () => {
 						// the listener runs with the subscription as `this`, so the handler is attached before the replay fails
 						if (!(event instanceof Error)) {
 							this.on('close', () => {
+								closeHandlerRuns++;
 								throw closeError;
 							});
 						}
@@ -1424,6 +1426,7 @@ describe('Subscription replay', () => {
 				});
 				await waitFor(() => subscription.closed, { message: 'the subscription stayed open' });
 				await delay(0); // a rejection is reported once the microtask queue drains
+				assert.equal(closeHandlerRuns, 1, 'the close handler did not run');
 				assert.strictEqual(subscription.subscriptions, null, 'the subscription is still registered');
 				assert.equal(
 					unhandled.filter((reason) => reason === closeError).length,
