@@ -550,11 +550,18 @@ type TopicState = {
 	verified: boolean;
 	deliveredKey?: number;
 	keyBefore?: number;
+	/** Each event has its own log key, as on LMDB; a RocksDB transaction's events share one. */
+	keysPerEntry?: boolean;
 	unacked: Map<number, { key: number; previousKey?: number }>;
 	consumed: number;
 };
 
 const RESUME_REFUSALS = new Set(['DATABASE_GENERATION_CHANGED', 'RESUME_HISTORY_UNAVAILABLE']);
+
+function logKeysPerEntry(topic: string): boolean {
+	const auditStore = resources.getMatch(topic.split('?')[0], 'mqtt')?.Resource?.auditStore;
+	return Boolean(auditStore) && !auditStore.reusableIterable;
+}
 
 function checkpointInterval(): number {
 	return Math.min(auditRetention / 10, 3_600_000);
@@ -645,6 +652,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			this.topics.set(subscription.topic, state);
 		}
 		state.subscription = subscription;
+		if (subscription.progress === undefined) state.keysPerEntry = logKeysPerEntry(subscription.topic);
 		if (subscription.resumeVerified) {
 			state.verified = false;
 			subscription.resumeVerified
@@ -751,7 +759,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const oldestUnacked = state.unacked.values().next();
 		if (subscription.progress === undefined) {
 			// a resource that certifies nothing (LMDB, or not a table) advances on acknowledgements alone
-			return !oldestUnacked.done ? oldestUnacked.value.previousKey : state.deliveredKey;
+			if (!oldestUnacked.done) return oldestUnacked.value.previousKey;
+			// a message still queued can share the last delivered key, unless every event has its own
+			return state.keysPerEntry ? state.deliveredKey : state.keyBefore;
 		}
 		const progress = subscription.progress();
 		if (progress === undefined) return;

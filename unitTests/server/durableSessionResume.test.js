@@ -51,7 +51,6 @@ async function ackAll(session, received) {
 	for (const { messageId } of received) session.acknowledge(messageId);
 }
 
-/** Wait until the stored record's first entry satisfies `condition`. */
 async function storedEntry(clientId, condition) {
 	let entry;
 	await waitFor(async () => {
@@ -441,6 +440,41 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		await waitFor(() => values(second.received).includes('back'));
 		assert.deepStrictEqual(values(second.received), ['back'], 'QoS 0 replays nothing from while it was away');
 		assert.strictEqual(second.session.awaitingAcks?.size ?? 0, 0, 'QoS 0 deliveries await no acknowledgement');
+		second.session.disconnect(true);
+	});
+
+	it('keeps an uncertified topic before a key a queued message may share', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		class Uncertified extends Resource {
+			static async subscribe(request) {
+				const inner = await T.subscribe({ startTime: request.startTime, omitCurrent: true });
+				return { [Symbol.asyncIterator]: () => inner[Symbol.asyncIterator](), end: () => inner.end() };
+			}
+		}
+		Resources.resources.set(`${name}Wrapped`, Uncertified, { mqtt: true });
+		const topic = `${name}Wrapped/#`;
+		const clientId = `uncertified-${name}`;
+		const first = await connect(clientId);
+		first.session.setListener((_topic, message, messageId) => {
+			first.received.push({ message, messageId });
+			if (message?.value === 'x') first.session.acknowledge(messageId);
+			return true;
+		});
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const subscribed = await storedEntry(clientId, () => true);
+		await transaction({}, async (context) => {
+			await T.put('x', { value: 'x' }, context);
+			await T.put('y', { value: 'y' }, context);
+		});
+		await waitFor(() => values(first.received).includes('y'));
+		await first.session.writes;
+		const saved = (await stored(clientId)).subscriptions[0];
+		assert.strictEqual(saved.startTime, subscribed.startTime, 'acking x cannot pass y, which shares its key');
+		first.session.disconnect(true);
+		const second = await connect(clientId);
+		await second.session.resume();
+		await waitFor(() => values(second.received).includes('y'));
 		second.session.disconnect(true);
 	});
 
