@@ -4,7 +4,7 @@
 	"extension": ["js", "mjs"],
 	"recursive": true,
 	"enable-source-maps": true,
-	"exclude": ["unitTests/security/jsLoader/fixtures/**"],
+	"exclude": ["unitTests/security/jsLoader/fixtures/**", "unitTests/components/fixtures/**"],
 	"node-option": ["expose-internals", "enable-source-maps", "experimental-vm-modules", "expose-gc"],
 	"require": ["unitTests/mocha.init.js"],
 	"exit": true
