@@ -1310,7 +1310,7 @@ function renderErrorLine(error: any, maxLength = Infinity): string {
 		const message = maxLength === Infinity ? undefined : error?.message;
 		const base =
 			typeof message === 'string' && message.length > maxLength
-				? `${error.constructor.name}: ${message.slice(0, Math.max(0, maxLength))}`
+				? `${error.constructor?.name ?? 'Error'}: ${message.slice(0, Math.max(0, maxLength))}`
 				: typeof error?.stack === 'string'
 					? error.stack
 					: errorToString(error);
