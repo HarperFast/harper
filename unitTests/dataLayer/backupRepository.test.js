@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
+const { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -61,6 +61,20 @@ describe('backupRepository', function () {
 				/boom/
 			);
 			assert.strictEqual(await withBackupRepositoryLock(backupDir, 'somedb', async () => 'reacquired'), 'reacquired');
+		});
+
+		it('refuses a repository it cannot write, by name rather than by errno', async function () {
+			if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+			mkdirSync(backupDir, { recursive: true });
+			chmodSync(backupDir, 0o500);
+			try {
+				await assert.rejects(
+					withBackupRepositoryLock(backupDir, 'somedb', async () => 'unreachable'),
+					(error) => error.statusCode === 409 && /is not writable \(E(ACCES|PERM|ROFS)\)/.test(error.message)
+				);
+			} finally {
+				chmodSync(backupDir, 0o700);
+			}
 		});
 	});
 

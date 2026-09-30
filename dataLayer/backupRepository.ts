@@ -1,6 +1,6 @@
 'use strict';
 
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileLockRelease, tryFileLock } from '@harperfast/rocksdb-js';
@@ -59,6 +59,27 @@ export interface BackupPin {
 	database_path?: string;
 }
 
+/** Codes that mean the repository cannot be written at all, not that this attempt lost a race. */
+const REPOSITORY_NOT_WRITABLE = new Set(['EROFS', 'EACCES', 'EPERM']);
+const { W_OK } = constants;
+
+/**
+ * A repository Harper cannot write is refused by name rather than by whatever errno surfaced first.
+ * Every managed operation — restore included, which only reads the backup itself — records a lock
+ * and a claim inside the repository, so read-only media (a `ro` snapshot mount, a read-only share)
+ * cannot be used in place. Inferring "immutable, so no claim needed" from a failed write would be
+ * wrong: a read-only *view* of a repository another writer can still purge looks identical.
+ */
+function assertRepositoryWritable(databaseName: string, error: any): never {
+	if (!REPOSITORY_NOT_WRITABLE.has(error?.code)) throw error;
+	throw new ClientError(
+		`Backup repository for database '${databaseName}' is not writable (${error.code}). Harper records a ` +
+			`management lock and a claim inside the repository for every backup operation, including restore, so ` +
+			`it cannot be used read-only. Remount it writable, or copy it to writable storage, and retry.`,
+		409
+	);
+}
+
 /**
  * Run `operation` holding the repository's management lock.
  *
@@ -72,9 +93,17 @@ export async function withBackupRepositoryLock<T>(
 	databaseName: string,
 	operation: () => Promise<T>
 ): Promise<T> {
-	mkdirSync(backupDir, { recursive: true });
 	const lockPath = managementLockPath(backupDir);
 	const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS;
+	// Checked up front, not inferred from whichever call failed first: the binding's lock error
+	// carries a message but no errno, so a read-only repository would otherwise surface as an opaque
+	// "open failed" rather than as the one thing the operator can act on.
+	try {
+		mkdirSync(backupDir, { recursive: true });
+		accessSync(backupDir, W_OK);
+	} catch (error: any) {
+		assertRepositoryWritable(databaseName, error);
+	}
 	let token = tryFileLock(lockPath);
 	while (token === 0) {
 		if (Date.now() >= deadline) {
