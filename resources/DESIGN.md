@@ -985,3 +985,7 @@ environment is a use-after-free (an intermittent segfault in the lmdb unit run).
 an LMDB root once, only while `open`, skips its dbis, and closes every alias sharing it. RocksDB
 column families are independently refcounted handles, so they are still closed one by one. Enforced by
 the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.
+
+## This node's short id is 0, confirmed per audit store (`nodeIdMapping.ts` `getThisNodeId`)
+
+Every audited write stamps the writing node's short id, so `getThisNodeId` sits on the write path. `getIdMappingRecord` leaves the current node name (`getThisNodeName()`, which `server.hostname` returns) at id `0` whenever it runs, remapping a previous local name to a fresh id on a rename, and no other mapping writer assigns `0`. `getThisNodeId` therefore reads and unpacks the mapping record only to confirm that, and caches the confirmation per audit store and node name; a different name (after `clearThisNodeName()`) takes the read path again, which performs the remap. The confirmation is per worker while the record is shared, and a worker that resolved a different name remaps the record under the others, so it expires after `THIS_NODE_ID_CONFIRM_MS` and `invalidateNodeNames` drops it wherever the record is written. Pinned by `unitTests/resources/thisNodeId.test.js`.
