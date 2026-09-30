@@ -2099,7 +2099,7 @@ describe('Test harper_logger module', () => {
 			assert.ok(result.includes('<Buffer 68 69>'));
 		});
 
-		it('keeps charging the properties an inherited hook replaces, so its siblings cannot each format another budget', () => {
+		it('bounds the properties walked for inherited hooks whose output replaces them, across all siblings', () => {
 			let stack_reads = 0;
 			class Report {
 				constructor() {
@@ -2119,8 +2119,26 @@ describe('Test harper_logger module', () => {
 				Array.from({ length: 250 }, () => new Report()),
 				{ depth: 8, maxArrayLength: 250 }
 			);
-			assert.ok(stack_reads <= 2, `formatted ${stack_reads} stacks`);
+			// Four budgets of replaced properties, each Error's stack read twice; 500 reads unbounded.
+			assert.ok(stack_reads <= 10, `formatted ${stack_reads} stacks`);
 			assert.ok(result.includes('more array entries omitted (sanitize budget)'));
+		});
+
+		it("prints an inherited hook's short summary, and the fields after it, even when the properties it replaces are large", () => {
+			class Report {
+				constructor() {
+					this.lines = Array(300).fill('x'.repeat(1_000));
+				}
+				[util.inspect.custom]() {
+					return 'phase=install';
+				}
+			}
+			const result = render(
+				{ report: new Report(), deployment_id: 'deployment-123' },
+				{ depth: 8, maxArrayLength: 1000 }
+			);
+			assert.ok(result.includes('phase=install'), result);
+			assert.ok(result.includes('deployment-123'), result);
 		});
 
 		it('never runs a replaced Buffer inspect hook', () => {
