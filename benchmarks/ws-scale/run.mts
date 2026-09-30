@@ -20,7 +20,16 @@
  */
 import { parseArgs } from 'node:util';
 import { fork, execFileSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statfsSync,
+	writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -131,6 +140,7 @@ const protocol = args.protocol as 'mqtt' | 'ws';
 const subs = protocol === 'ws' ? 1 : Number(args.subs);
 const topics = Number(args.topics);
 if (subs > topics) throw new Error(`--subs=${subs} needs at least as many --topics, or a connection repeats a topic`);
+if (args.insert && args.publish !== 'put') throw new Error('--insert applies only to --publish=put');
 if (args.uds) {
 	// Linux caps a Unix socket path at 107 bytes, and Harper skips (Node) or fails to start (uWS) a longer mirror
 	const longestPath = join(installParent, 'harper-integration-test-XXXXXX', 'sockets', `${threads - 1}-9927-h2.sock`);
@@ -304,7 +314,12 @@ async function main() {
 		env.WS_SCALE_PROFILE_DIR = profileDir;
 		(harperConfig.threads as any).preloadRequire = join(import.meta.dirname, 'profile-preload.cjs');
 	}
-	const startProfile = () => args.profile && writeFileSync(join(profileDir, 'start'), args.profile);
+	// renamed into place so a worker polling for it never reads it half-written
+	const startProfile = () => {
+		if (!args.profile) return;
+		writeFileSync(join(profileDir, 'start.tmp'), args.profile);
+		renameSync(join(profileDir, 'start.tmp'), join(profileDir, 'start'));
+	};
 	for (const pair of args['harper-env']!) {
 		const eq = pair.indexOf('=');
 		env[pair.slice(0, eq)] = pair.slice(eq + 1);
@@ -326,7 +341,7 @@ async function main() {
 		let udsPaths: string[] | undefined;
 		if (args.uds) {
 			for (let waited = 0; ; waited += 250) {
-				udsPaths = readdirSync(socketsDir)
+				udsPaths = (existsSync(socketsDir) ? readdirSync(socketsDir) : [])
 					.filter((file) => /^\d+-.*9927\.sock$/.test(file))
 					.map((file) => join(socketsDir, file));
 				if (udsPaths.length >= threads) break;
@@ -431,10 +446,13 @@ async function main() {
 			const subscribersPerTopic = stats.subscribed / topics;
 			for (let i = 0; i < Number(args.publishers); i++) publishers.push(new Client());
 			const publisherTicks = () => publishers.reduce((sum, p) => sum + cpuTicks(p.child.pid!), 0);
+			const publisherStats = async () =>
+				sumStats(await Promise.all(publishers.map((p) => p.request({ cmd: 'stats' }))));
 			const durationMs = Number(args.duration) * 1000;
 			// publisher stats are cumulative across rates
 			let publishedTotal = 0;
 			let completedTotal = 0;
+			let errorsTotal = 0;
 			let expectedTotal = 0;
 			for (const rate of args.rates!.split(',').map(Number)) {
 				const before = await clientStats();
@@ -466,31 +484,44 @@ async function main() {
 				);
 				const expected = published.expectedDeliveries - expectedTotal;
 				expectedTotal = published.expectedDeliveries;
-				// drain until every expected delivery has arrived, or deliveries stop for 3 s; rates run to the last one seen
-				let received = (await clientStats()).received;
-				let lastDelivery = performance.now();
+				// Drain until every expected delivery has arrived and every PUT has settled, nothing progresses for 3 s,
+				// or 60 s pass. The row's window and CPU end at the last progress, so a quiet tail is not charged.
+				const publishEnd = performance.now();
+				let publisherTotals = published;
+				let progress = -1;
+				let lastProgress = publishEnd;
+				let end = { harper: cpuTicks(harperPid), client: clientTicks(), publisher: publisherTicks() };
 				let drainTruncated = true;
-				while (performance.now() - lastDelivery < 60_000) {
+				while (performance.now() - publishEnd < 60_000) {
 					stats = await clientStats();
-					if (stats.received > received) {
-						received = stats.received;
-						lastDelivery = performance.now();
+					publisherTotals = await publisherStats();
+					const settledPuts = publisherTotals.publishCompleted + publisherTotals.publishErrors;
+					if (stats.received + settledPuts > progress) {
+						progress = stats.received + settledPuts;
+						lastProgress = performance.now();
+						end = { harper: cpuTicks(harperPid), client: clientTicks(), publisher: publisherTicks() };
 					}
-					if (stats.received - before.received >= expected || performance.now() - lastDelivery > 3000) {
+					const putsSettled = args.publish !== 'put' || settledPuts >= publisherTotals.published;
+					if (
+						(stats.received - before.received >= expected && putsSettled) ||
+						performance.now() - lastProgress > 3000
+					) {
 						drainTruncated = false;
 						break;
 					}
 					await delay(250);
 				}
-				const seconds = Math.max(durationMs, lastDelivery - start) / 1000;
-				const harperCpu = (cpuTicks(harperPid) - harper0) / CLK_TCK;
-				const clientCpu = (clientTicks() - client0) / CLK_TCK;
-				const publisherCpu = (publisherTicks() - publisher0) / CLK_TCK;
+				const seconds = Math.max(durationMs, lastProgress - start) / 1000;
+				const harperCpu = (end.harper - harper0) / CLK_TCK;
+				const clientCpu = (end.client - client0) / CLK_TCK;
+				const publisherCpu = (end.publisher - publisher0) / CLK_TCK;
 				const delivered = stats.received - before.received;
 				const publishedCount = published.published - publishedTotal;
 				publishedTotal = published.published;
-				const completedDelta = published.publishCompleted - completedTotal;
-				completedTotal = published.publishCompleted;
+				const completedDelta = publisherTotals.publishCompleted - completedTotal;
+				completedTotal = publisherTotals.publishCompleted;
+				const putErrors = publisherTotals.publishErrors - errorsTotal;
+				errorsTotal = publisherTotals.publishErrors;
 				const hist = stats.latencyHist.map((count: number, i: number) => count - (before.latencyHist[i] ?? 0));
 				const [p50, p99, p999] = percentiles(hist, [0.5, 0.99, 0.999]);
 				report({
@@ -508,12 +539,14 @@ async function main() {
 					...(args.publish === 'put' && {
 						putsCompletedPerSec: completedDelta / seconds,
 						cpuUsPerPut: (harperCpu * 1e6) / completedDelta,
-						putErrors: published.publishErrors,
+						putErrors,
 					}),
-					deliveredPerSec: delivered / seconds,
-					deliveryRatio: delivered / expected,
+					...(expected > 0 && {
+						deliveredPerSec: delivered / seconds,
+						deliveryRatio: delivered / expected,
+						cpuUsPerDelivery: (harperCpu * 1e6) / delivered,
+					}),
 					harperCores: harperCpu / seconds,
-					cpuUsPerDelivery: (harperCpu * 1e6) / delivered,
 					clientCores: clientCpu / seconds,
 					publisherCores: publisherCpu / seconds,
 					drainSeconds: seconds - durationMs / 1000,

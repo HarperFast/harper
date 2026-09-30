@@ -161,7 +161,7 @@ function openConnection(cmd: ConnectCommand, index: number): Promise<void> {
 						);
 						return;
 					case 'suback':
-						stats.subscribed += cmd.subsPerConn;
+						stats.subscribed += packet.granted.filter((code: number) => code < 0x80).length;
 						return done();
 					case 'publish':
 						stats.received++;
