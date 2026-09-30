@@ -651,11 +651,15 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			this.topics.set(subscription.topic, state);
 			return;
 		}
-		if (!state || state.subscription || !(state.entry.qos > 0)) {
+		if (!state || !(state.entry.qos > 0)) {
 			const startTime = subscription.registeredThrough ?? getNextMonotonicTime();
 			const databaseGeneration =
 				subscription.registeredThrough === undefined ? undefined : subscription.databaseGeneration;
 			state = newTopicState({ qos: subscription.qos, topic: subscription.topic, startTime, databaseGeneration });
+			this.topics.set(subscription.topic, state);
+		} else if (state.subscription) {
+			// a replacement starts from this entry's position (subscribeTopic), so it continues the entry
+			state = newTopicState({ ...state.entry, qos: subscription.qos });
 			this.topics.set(subscription.topic, state);
 		}
 		state.subscription = subscription;
@@ -712,13 +716,21 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	async subscribeTopic(subscription, needsAck) {
 		const { topic } = subscription;
 		const durable = subscription.qos > 0;
-		const replaced = this.topics.get(topic)?.subscription;
+		const existing = this.topics.get(topic);
+		const replaced = existing?.subscription;
+		let request = subscription;
+		if (durable) {
+			request = { ...subscription, reportProgress: true };
+			if (existing?.entry.qos > 0) {
+				// replacing a subscription must lose nothing, so the new one continues the topic's position
+				this.advancePositions();
+				request.startTime = existing.entry.startTime;
+				request.databaseGeneration = existing.entry.databaseGeneration;
+			}
+		}
 		let started;
 		try {
-			started = await this.resumeSubscription(
-				durable ? { ...subscription, reportProgress: true } : subscription,
-				needsAck
-			);
+			started = await this.resumeSubscription(request, needsAck);
 			if (durable) {
 				this.startCheckpoints();
 				await this.persist();
@@ -727,8 +739,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				this.persist().catch(() => {});
 			}
 		} catch (error) {
+			// a continued position that can no longer resume resets the session, as it would at reconnect
+			if (RESUME_REFUSALS.has(error?.code)) this.subscriptionFailed({ topic }, error);
 			// the client is told this SUBSCRIBE failed, so it must not keep receiving or come back saved
-			this.dropFailedSubscription(topic, started, replaced);
+			else this.dropFailedSubscription(topic, started, replaced);
 			throw error;
 		}
 		return subscription;

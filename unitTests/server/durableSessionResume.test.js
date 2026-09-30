@@ -419,6 +419,35 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		session.disconnect(true);
 	});
 
+	it('continues a durable topic from its position when the client subscribes to it again', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const topic = `${name}/#`;
+		const clientId = `resubscribe-${name}`;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		await T.put('a', { value: 1 });
+		await waitFor(() => first.received.length >= 1);
+		await ackAll(first.session, first.received);
+		await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
+		first.session.disconnect(true);
+		await first.session.writes;
+		const saved = (await stored(clientId)).subscriptions[0];
+		await T.put('missed', { value: 'missed' });
+		const second = await connect(clientId);
+		await second.session.resume();
+		await waitFor(() => values(second.received).includes('missed'));
+		// a live write moves the watermark past the delivery the client has not acknowledged
+		await T.put('later', { value: 'later' });
+		await waitFor(() => values(second.received).includes('later'));
+		await second.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		const resubscribed = (await stored(clientId)).subscriptions[0];
+		assert.strictEqual(resubscribed.startTime, saved.startTime, 'the unacknowledged delivery still holds the position');
+		assert.strictEqual(resubscribed.databaseGeneration, saved.databaseGeneration);
+		await waitFor(() => values(second.received).filter((value) => value === 'missed').length === 2);
+		second.session.disconnect(true);
+	});
+
 	it('drops a durable topic whose replacing SUBSCRIBE fails', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });

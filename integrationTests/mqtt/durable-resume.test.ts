@@ -208,6 +208,23 @@ suite(
 			});
 		}
 
+		test('a client that subscribes again as it reconnects still receives what it missed', async () => {
+			const clientId = `resubscribe-${randomUUID().slice(0, 6)}`;
+			await establish(clientId, 'Readings/#', 1, 5);
+			await put('Readings', `missed-${randomUUID().slice(0, 6)}`, 5);
+			const received: number[] = [];
+			const { mqttClient, sessionPresent } = await connect({ clientId }, (_topic, payload) =>
+				received.push(JSON.parse(payload.toString()).value)
+			);
+			try {
+				strictEqual(sessionPresent, true);
+				await subscribe(mqttClient, 'Readings/#', 1);
+				ok(await waitFor(() => received.includes(5)), `the message published while away arrives: ${received}`);
+			} finally {
+				await end(mqttClient);
+			}
+		});
+
 		test('a wildcard session whose position fell below the floor is not present, with no short replay', async () => {
 			const clientId = `pruned-${randomUUID().slice(0, 6)}`;
 			await establish(clientId, 'Readings/#', 1, 5);
