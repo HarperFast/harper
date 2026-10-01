@@ -458,6 +458,16 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		}
 	});
 
+	it('starts no checkpoint timer for a SUBSCRIBE that finishes after the session disconnected', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const { session } = await connect(`late-subscribe-${name}`);
+		const subscribing = session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
+		session.disconnect(true);
+		await subscribing;
+		assert.strictEqual(session.checkpointTimer, undefined);
+	});
+
 	it('reports an UNSUBSCRIBE whose save failed as failed again on a retry, until the removal is saved', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
@@ -471,6 +481,15 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		try {
 			await assert.rejects(session.removeSubscription(topic), /unavailable/);
 			await assert.rejects(session.removeSubscription(topic), /unavailable/);
+			let failHeld;
+			sessions.put = () =>
+				new Promise((_resolve, reject) => (failHeld = () => reject(new Error('system table unavailable'))));
+			session.checkpoint();
+			await waitFor(() => failHeld);
+			const retry = session.removeSubscription(topic);
+			await new Promise(setImmediate);
+			failHeld();
+			await assert.rejects(retry, /unavailable/, 'a retry waits for the save already in flight');
 		} finally {
 			sessions.put = put;
 		}
@@ -801,7 +820,6 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		} finally {
 			saves.release();
 		}
-		// gone without a DISCONNECT, like any lost connection
 		await waitFor(async () => (await T.get('left'))?.value === 'left');
 		assert.deepStrictEqual(newer.sends, [], 'nothing answers a client that is gone');
 		assert.deepStrictEqual(
@@ -840,6 +858,80 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		assert.deepStrictEqual(newer.closes, [], 'the older save landed first, so it never fenced the newer connection');
 		assert.strictEqual((await stored(clientId)).incarnation, newerSession.incarnation);
 		newer.handlers.close();
+	});
+
+	it('takes a session over from the last save that landed when an older save fails', async () => {
+		const { name } = topicTable();
+		const open = mqttListener();
+		const clientId = `failed-save-${name}`;
+		const older = open();
+		older.handlers.message(connectPacket(clientId));
+		await waitFor(() => older.sends.length > 0);
+		const olderSession = [...open.sessions].find((session) => session.sessionId === clientId);
+		await olderSession.persist();
+		const sessions = databases.system.hdb_durable_session;
+		const put = sessions.put;
+		const failing = [];
+		sessions.put = function (record, ...rest) {
+			if (record.incarnation !== olderSession.incarnation) return put.call(this, record, ...rest);
+			return new Promise((_resolve, reject) => failing.push(() => reject(new Error('system table unavailable'))));
+		};
+		let newer;
+		try {
+			olderSession.persist().catch(() => {});
+			await waitFor(() => failing.length > 0);
+			newer = open();
+			newer.handlers.message(connectPacket(clientId));
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			assert.deepStrictEqual(newer.sends, [], 'the CONNECT waits for the save in flight');
+			for (const fail of failing) fail();
+			await waitFor(() => newer.sends.length > 0);
+		} finally {
+			sessions.put = put;
+		}
+		const [connack] = sentPackets(newer);
+		assert.strictEqual(connack.sessionPresent, true, 'it resumes the record the earlier save left');
+		const newerSession = [...open.sessions].find(
+			(session) => session.sessionId === clientId && session !== olderSession
+		);
+		assert.strictEqual((await stored(clientId)).incarnation, newerSession.incarnation);
+		older.handlers.close();
+		newer.handlers.close();
+	});
+
+	it('keeps a CONNECT that gave up waiting in line until the one before it finishes', async () => {
+		const { name } = topicTable();
+		const open = mqttListener();
+		const clientId = `in-line-${name}`;
+		const sessions = databases.system.hdb_durable_session;
+		const get = sessions.get;
+		let releaseRead;
+		sessions.get = function (...args) {
+			sessions.get = get;
+			return new Promise((resolve) => (releaseRead = () => resolve(get.apply(this, args))));
+		};
+		const timeout = setTakeoverTimeoutForTests(50);
+		const [first, second, third] = [open(), open(), open()];
+		try {
+			first.handlers.message(connectPacket(clientId));
+			await waitFor(() => releaseRead);
+			second.handlers.message(connectPacket(clientId));
+			await waitFor(() => second.sends.length > 0);
+			third.handlers.message(connectPacket(clientId));
+			await waitFor(() => third.sends.length > 0);
+		} finally {
+			setTakeoverTimeoutForTests(timeout);
+			sessions.get = get;
+		}
+		assert.deepStrictEqual(
+			[second, third].map((socket) => sentPackets(socket)[0].reasonCode),
+			[0x88, 0x88],
+			'neither connects past the unfinished first'
+		);
+		releaseRead();
+		await waitFor(() => first.sends.length > 0);
+		assert.strictEqual(sentPackets(first)[0].reasonCode, 0);
+		for (const socket of [first, second, third]) socket.handlers.close();
 	});
 
 	it('refuses a CONNECT whose takeover waits too long for an older save', async () => {

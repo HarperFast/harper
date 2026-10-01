@@ -768,7 +768,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			const result = await super.removeSubscription(topic);
 			const saved = this.topics.delete(topic);
 			// a retry after a failed save reports that save, not a removal already made in memory
-			if (saved || this.dirty) await this.persist();
+			if (saved || this.dirty || this.saving) await this.persist();
 			return result || saved;
 		});
 	}
@@ -836,7 +836,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (this.advancePositions() || this.dirty) this.persist().catch(() => {});
 	}
 	startCheckpoints() {
-		if (this.checkpointTimer) return;
+		if (this.checkpointTimer || this.terminated) return;
 		this.checkpointTimer = setInterval(() => this.checkpoint(), checkpointInterval());
 		this.checkpointTimer.unref?.();
 	}
@@ -869,7 +869,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		} catch (error) {
 			// the next checkpoint retries
 			this.dirty = true;
-			if (!this.terminated) this.startCheckpoints();
+			this.startCheckpoints();
 			throw error;
 		} finally {
 			// cleared with the last dirty check, so a later persist() starts a new save rather than joining this one

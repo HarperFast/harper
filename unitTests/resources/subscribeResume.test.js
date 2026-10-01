@@ -194,7 +194,6 @@ describe('Resuming a subscription in a database generation', function () {
 				databaseGeneration: getDatabaseGeneration(T.auditStore).id,
 				startTime: positions[0],
 			});
-			// with nothing consuming, the replay parks waiting for the queue to drain
 			await waitFor(() => subscription.queue?.length > 100);
 			prune(T, positions[subscription.queue.length]);
 			const iterator = subscription[Symbol.asyncIterator]();

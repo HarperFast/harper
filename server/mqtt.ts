@@ -212,11 +212,10 @@ const ACK_PACKET_OVERHEAD = 16;
  * is indistinguishable to the client from a network failure.
  */
 const liveConnections = new Set<{ protocolVersion: () => number; send: (data: any) => void; close: () => void }>();
-/** The latest CONNECT still connecting for each client id on this thread. */
+/** Settles once every CONNECT so far for each client id on this thread has finished or given up its turn. */
 const connecting = new Map<string, Promise<void>>();
-/** Each client id's sessions on this thread, kept until their last save lands so a takeover can wait for it. */
+/** Each client id's sessions on this thread, kept until their last save settles so a takeover can wait for it. */
 const clientSessions = new Map<string, Set<DurableSubscriptionsSession>>();
-/** How long a CONNECT waits for an earlier connection of its client id to finish connecting or saving. */
 let takeoverTimeout = 10_000;
 
 export function setTakeoverTimeoutForTests(milliseconds: number): number {
@@ -244,7 +243,6 @@ function releaseClientSession(session: DurableSubscriptionsSession) {
 	});
 }
 
-/** Settles as `promise` does, unless `deadline` passes first. */
 function beforeDeadline<T>(promise: Promise<T>, deadline: number, protocolVersion: number): Promise<T> {
 	let timer: NodeJS.Timeout;
 	return Promise.race([
@@ -476,14 +474,13 @@ function onSocket(socket, send, request, user, mqttSettings) {
 								if (clientId) {
 									// simultaneous CONNECTs for one client id take the session over in turn
 									const previous = connecting.get(clientId);
-									const claim = new Promise<void>(
-										(resolve) =>
-											(releaseClaim = () => {
-												if (connecting.get(clientId) === claim) connecting.delete(clientId);
-												resolve();
-											})
-									);
-									connecting.set(clientId, claim);
+									const own = new Promise<void>((resolve) => (releaseClaim = resolve));
+									// one that gives up waiting keeps its place until the CONNECT before it finishes
+									const turn = previous ? Promise.all([previous, own]).then(() => {}) : own;
+									connecting.set(clientId, turn);
+									turn.then(() => {
+										if (connecting.get(clientId) === turn) connecting.delete(clientId);
+									});
 									const deadline = Date.now() + takeoverTimeout;
 									if (previous) await beforeDeadline(previous, deadline, packet.protocolVersion);
 									// a durable session has one owner: an older connection for this client on this thread gives

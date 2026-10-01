@@ -343,7 +343,6 @@ suite(
 					'the will of the older connection is published'
 				);
 				strictEqual(await stored('second-will'), 404, 'the newer connection is still connected');
-				// a lost connection: no DISCONNECT, so its will is published
 				second.stream.destroy();
 				ok(
 					await waitFor(async () => (await stored('second-will')) === 200),
