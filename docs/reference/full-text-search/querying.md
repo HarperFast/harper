@@ -132,11 +132,16 @@ const products = Product.search({
 	operator: 'and',
 	conditions: [
 		{ attribute: 'catalogSearch', comparator: 'matches', value: 'trail shoe' },
-		{ attribute: 'price', comparator: 'less_than', value: 150 },
+		{ attribute: 'category', comparator: 'equals', value: 'footwear' },
+		{ attribute: 'available', comparator: 'equals', value: true },
 	],
 	limit: 20,
 });
 ```
+
+When `category` and `available` are declared in the index's `filterFields`, Harper includes these conditions in the Tantivy query. Tantivy removes non-matching IDs before Harper loads records. The metadata is score-neutral, and Harper rechecks the original conditions against current records before returning them.
+
+The same query remains valid when an attribute is not declared in `filterFields`; Harper applies that condition after full-text search. Small, complete result sets from Harper secondary indexes can also be passed to Tantivy automatically as candidate IDs. This path does not require `filterFields`.
 
 An `or` group may combine conditions from the same full-text index:
 

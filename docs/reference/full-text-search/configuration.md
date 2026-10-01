@@ -14,7 +14,9 @@ type Product @table(database: "catalog", audit: true) {
 	name: String
 	description: String
 	tags: [String]
+	category: String @indexed
 	price: Float @indexed
+	available: Boolean
 	catalogSearch: FullText
 		@fullText(
 			fields: [
@@ -22,6 +24,7 @@ type Product @table(database: "catalog", audit: true) {
 				{ name: "description", weight: 1, highlight: true }
 				{ name: "tags", weight: 1 }
 			]
+			filterFields: ["category", "available"]
 			highlighting: { maxFragments: 2, fragmentLength: 120 }
 		)
 }
@@ -44,6 +47,7 @@ Earlier prerelease type-level `@fullText(name: ...)` declarations are not suppor
 | Option         | Default       | Description                                                                           |
 | -------------- | ------------- | ------------------------------------------------------------------------------------- |
 | `fields`       | required      | One or more source fields.                                                            |
+| `filterFields` | `[]`          | Stored attributes copied into Tantivy as typed, score-neutral filter metadata.        |
 | `analyzer`     | `"english@2"` | Versioned text analyzer. `english@2` is the only supported value.                     |
 | `stopWords`    | `true`        | Removes common English terms during analysis.                                         |
 | `positions`    | `true`        | Stores token positions. Required for phrase queries.                                  |
@@ -61,6 +65,22 @@ Each field entry supports:
 | `mediaType` | omitted  | Required as `"text/plain"` for a `Blob` source; invalid on other source types. |
 
 Source fields cannot use `@computed` or `@relationship`. Indexable source values are strings, arrays containing strings or nulls, or Blob values declared as plain text.
+
+## Filter metadata
+
+`filterFields` copies selected stored attributes into the Tantivy index. Tantivy can apply those conditions before returning ranked IDs, reducing record reads without changing BM25 scores. Harper still loads the returned records and checks the original conditions, permissions, and row filters before returning them.
+
+Schema configuration controls which conditions Tantivy can apply directly. It does not restrict Harper queries. A condition on an attribute omitted from `filterFields` still works, but Harper applies it after full-text search. Query syntax does not change; Harper pushes eligible conditions automatically.
+
+| Declaration                   | Purpose                                                                       |
+| ----------------------------- | ----------------------------------------------------------------------------- |
+| `fields` in `@fullText`       | Analyzed text that contributes to BM25 scoring                                |
+| `filterFields` in `@fullText` | Typed metadata that narrows one full-text index without changing scores       |
+| `@indexed` on an attribute    | Independent Harper secondary index; not required for a full-text filter field |
+
+Each full-text index has its own filter metadata. Configure attributes commonly combined with text search rather than every table attribute. Filter metadata increases index size and write work.
+
+Supported attributes are `String`, `Boolean`, `Int`, `Long`, `Float`, `Date`, and lists of those types. Equality and `in` can be pushed for every supported type. Lower-bounded and bounded ranges can be pushed for `Int`, `Long`, and `Date`. Harper retains other conditions as record filters. Lists match when any element matches. Null, missing, and empty-list values are not indexed. Filter strings are limited to 65,530 UTF-8 bytes. Computed fields and relationships are not supported.
 
 ## Phrase and prefix support
 
@@ -143,7 +163,7 @@ type Document @table(audit: true) {
 
 ## Schema changes and rebuilds
 
-Changes that affect indexed storage create a new local index generation and rebuild from source data. These include source membership, source order, media types, analyzer settings, stop-word handling, positions, surface terms, and synonyms. Keep the `fields` list in a stable order when its meaning has not changed.
+Changes that affect indexed storage create a new local index generation and rebuild from source data. These include source membership, source order, media types, filter fields, analyzer settings, stop-word handling, positions, surface terms, and synonyms. Keep the `fields` list in a stable order when its meaning has not changed.
 
 While a generation rebuilds, ordinary table reads and writes remain available, but full-text queries on that node return retryable `503` responses until the index is ready.
 
