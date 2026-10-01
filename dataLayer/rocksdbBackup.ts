@@ -36,7 +36,12 @@ import {
 	type RestoreLock,
 } from './restoreMarker.ts';
 import { assertBackupsUnpinned, pinBackup, unpinBackup, withBackupRepositoryLock } from './backupRepository.ts';
-import { ARCHIVE_MANIFEST_ENTRY, buildArchiveManifest, serializeArchiveManifest } from './backupArchiveManifest.ts';
+import {
+	ARCHIVE_MANIFEST_ENTRY,
+	assertArchiveRestorable,
+	buildArchiveManifest,
+	serializeArchiveManifest,
+} from './backupArchiveManifest.ts';
 import { pathPresent } from '../utility/durableFile.ts';
 import {
 	assertBlobSnapshotRestorable,
@@ -283,12 +288,14 @@ function toBackupResponse(
  * create) and is never listed or restored, so a blob snapshot that is mid-copy or absent-after-
  * failure can't be mistaken for a healthy or intentionally-engine-only backup.
  */
-async function listCompleteBackups(backupDir: string): Promise<Array<BackupInfo & { blobs: boolean }>> {
+async function listCompleteBackups(
+	backupDir: string
+): Promise<Array<BackupInfo & { blobs: boolean; manifest: BackupManifest }>> {
 	const [engineBackups, manifests] = await Promise.all([listBackupsInDir(backupDir), readAllManifests(backupDir)]);
-	const complete: Array<BackupInfo & { blobs: boolean }> = [];
+	const complete: Array<BackupInfo & { blobs: boolean; manifest: BackupManifest }> = [];
 	for (const info of engineBackups) {
 		const manifest = manifests.get(info.backupId);
-		if (manifest) complete.push({ ...info, blobs: manifest.blobs });
+		if (manifest) complete.push({ ...info, blobs: manifest.blobs, manifest });
 	}
 	return complete;
 }
@@ -321,6 +328,18 @@ async function resolveCompleteBackup(
 	requestedId: number | undefined,
 	databaseName: string
 ): Promise<{ backupId: number; manifest: BackupManifest }> {
+	const resolved = await resolveCompleteBackupManifest(backupDir, requestedId, databaseName);
+	// Both restore paths come through here, ahead of anything destructive. A manifest with no
+	// `producer` predates the field and is this instance's own lineage, so it is accepted.
+	if (resolved.manifest.producer) assertArchiveRestorable(resolved.manifest.producer);
+	return resolved;
+}
+
+async function resolveCompleteBackupManifest(
+	backupDir: string,
+	requestedId: number | undefined,
+	databaseName: string
+): Promise<{ backupId: number; manifest: BackupManifest }> {
 	if (requestedId !== undefined) {
 		await findBackup(backupDir, requestedId, databaseName); // validates id + engine presence
 		return { backupId: requestedId, manifest: await requireBackupComplete(backupDir, requestedId, databaseName) };
@@ -330,7 +349,7 @@ async function resolveCompleteBackup(
 		throw new BackupNotFoundError(`No complete backups found for database '${databaseName}'`);
 	}
 	const latest = complete.reduce((a, b) => (b.backupId > a.backupId ? b : a));
-	return { backupId: latest.backupId, manifest: { backupId: latest.backupId, blobs: latest.blobs, completedAt: 0 } };
+	return { backupId: latest.backupId, manifest: latest.manifest };
 }
 
 /**
@@ -846,9 +865,8 @@ export function createBackupStream(
 		['content-disposition', `attachment; filename="${filename}"`],
 	]);
 	stream.noCompression = true;
-	// Both engine-only and with-blobs archives go through the same assembly. The binding can produce
-	// (and gzip) a complete archive on its own, but only a plain tar can have an entry prepended, and
-	// every archive needs its manifest first.
+	// One assembly for both variants: only a plain tar can have the manifest entry placed ahead of
+	// it, so the binding's own complete-archive (and native gzip) path is unusable here.
 	streamBackupArchive(rootStore, databaseName, gzip, excludeBlobs, stream).catch((error) => {
 		// the consumer aborting (destroying the response) is the common case, not an error to re-raise
 		if (!stream.destroyed) stream.destroy(error);
@@ -863,9 +881,8 @@ export function createBackupStream(
 const TAR_TRAILER_BYTES = 1024;
 
 /**
- * Stream one archive: the manifest entry, then the database's live files, then (unless excluded) its
- * blob roots, then the READMEs. The binding is asked for a plain tar so entries can be placed on
- * both sides of it, and the combined tar is gzipped here when requested.
+ * Stream one archive: the manifest entry, the database's live files, then (unless excluded) its blob
+ * roots and the READMEs. See dataLayer/DESIGN.md for why the manifest must be first.
  */
 async function streamBackupArchive(
 	rootStore: RocksDatabase,
@@ -879,21 +896,17 @@ async function streamBackupArchive(
 	const nativeTar = new PassThrough(); // native (plain) tar, before its trailer is stripped
 	// consumer side: gzip the combined archive (or pass it through) into the response stream
 	const consumed = gzip ? pipeline(plain, createGzip(), out) : pipeline(plain, out);
-	// Producer side: native plain tar → nativeTar, copied into `plain` minus its trailer. Started
-	// before anything is awaited, so the snapshot is taken on the caller's tick — a caller that hands
-	// us a database and then closes it must not race the manifest lookup.
+	// Started before anything is awaited, so the snapshot is taken on the caller's tick: a caller that
+	// hands us a database and then closes it must not race the manifest lookup.
 	const nativeDone = rootStore.backup(Writable.toWeb(nativeTar) as any, { gzip: false, transactionLogs: true });
-	// A consumer that aborts (destroys `out`) rejects `consumed` from anywhere, including while this
-	// function is awaiting something that does not touch `plain` at all. Nothing would then drain
-	// `nativeTar`, and the native producer would wait on it forever — holding the snapshot open and
-	// its deferred file deletions with it. Tearing the producer down from the rejection itself is what
-	// bounds that, rather than relying on reaching the catch below.
+	// `consumed` can reject while this function is awaiting something that never touches `plain`, so
+	// the teardown has to hang off the rejection rather than the catch below: nothing else would drain
+	// `nativeTar`, and the binding would hold the snapshot open forever waiting on it.
 	consumed.catch(() => {
 		if (!nativeTar.destroyed) nativeTar.destroy(new Error('backup stream consumer aborted'));
 	});
 	nativeDone.catch(() => {});
 	try {
-		// the manifest is the archive's FIRST entry, so a reader can identify it after inflating a few KB
 		const manifest = buildArchiveManifest({
 			databaseName,
 			blobs: !excludeBlobs,
@@ -914,7 +927,6 @@ async function streamBackupArchive(
 			await appendBlobEntries(pack, blobRoots);
 			await addTextEntry(pack, 'blobs/README.md', blobsReadmeContent(blobRoots, { variant: 'archive' }));
 		}
-		// generate the same self-documenting README a managed backup writes to disk, on the fly
 		await addTextEntry(pack, 'README.md', streamedBackupReadme(databaseName, !excludeBlobs));
 		pack.finalize();
 		await packed;
@@ -930,10 +942,9 @@ async function streamBackupArchive(
 }
 
 /**
- * The roles that grant access to this database, for the archive manifest. Reads the already-loaded
- * `system` database rather than calling `getDatabases()`: the offline CLI runs with nothing loaded,
- * and a scan there would open — and lock — every database on the instance. Null means "not
- * recorded", which is not "no roles".
+ * Reads the already-loaded `system` database rather than calling `getDatabases()`: the offline CLI
+ * runs with nothing loaded, and a scan there would open — and lock — every database on the instance.
+ * Null means "not recorded", which is not "no roles".
  */
 async function collectDatabaseRoleNames(databaseName: string): Promise<string[] | null> {
 	const roleTable = (databases as any).system?.hdb_role;
@@ -941,7 +952,10 @@ async function collectDatabaseRoleNames(databaseName: string): Promise<string[] 
 	try {
 		const names: string[] = [];
 		for await (const role of roleTable.search([])) {
-			if (role?.permission && Object.hasOwn(role.permission, databaseName)) names.push(role.role ?? role.id);
+			// a super_user role reaches every database without a per-database key
+			if (role?.permission && (role.permission.super_user || Object.hasOwn(role.permission, databaseName))) {
+				names.push(role.role ?? role.id);
+			}
 		}
 		return names.sort();
 	} catch (error) {
@@ -950,10 +964,7 @@ async function collectDatabaseRoleNames(databaseName: string): Promise<string[] 
 	}
 }
 
-/**
- * A tar holding one text entry with its end-of-archive trailer removed, so it can be concatenated
- * ahead of the binding's own tar — a stream that cannot be inserted into.
- */
+/** A one-entry tar with its end-of-archive trailer removed, for concatenating ahead of another tar. */
 async function tarEntryPrefix(name: string, content: string): Promise<Buffer> {
 	const pack = tarPack();
 	const chunks: Buffer[] = [];
@@ -962,9 +973,7 @@ async function tarEntryPrefix(name: string, content: string): Promise<Buffer> {
 		pack.on('end', () => resolvePromise());
 		pack.on('error', reject);
 	});
-	// A pack error while the entry below is still being awaited rejects this before anything awaits
-	// it; the silent observer closes that unhandled-rejection window without swallowing the throw.
-	collected.catch(() => {});
+	collected.catch(() => {}); // closes the unhandled-rejection window without swallowing the throw
 	await addTextEntry(pack, name, content);
 	pack.finalize();
 	await collected;

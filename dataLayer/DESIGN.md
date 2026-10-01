@@ -217,14 +217,24 @@ engine-only backup):
   write-once. The snapshot is built in a `.tmp-<id>` sibling and atomically renamed so a failed create
   leaves no partial snapshot. `restore_backup` purges each blob root and rewrites it from the snapshot;
   `delete_backup` / `purge_backups` remove the corresponding snapshot directories.
-- **`get_backup`** appends the blob files to the same tar under `blobs/<rootIndex>/<relpath>`. The
-  binding's streaming backup finalizes its tar with exactly a 1024-byte (two-block) end-of-archive
-  marker; `createBackupStream` streams the native _plain_ tar while withholding that trailer
-  (verifying it is all-zero), appends the blob entries via `tar-stream` (whose `finalize` writes the
-  one real trailer), and gzips the combined stream itself when requested — so the binding is always
-  asked for a plain tar and compression happens after the append. No scratch disk. The same blob
+- **`get_backup`** appends the blob files to the same tar under `blobs/<rootIndex>/<relpath>`. Both
+  variants — engine-only and with blobs — go through one assembly (`streamBackupArchive`), because
+  only a plain tar can have an entry placed ahead of it and `harper-backup.json` must be first (see
+  below); the binding's own ability to emit a complete, natively gzipped archive is unusable for that
+  reason, and engine-only archives gave it up. The binding's streaming backup finalizes its tar with
+  exactly a 1024-byte (two-block) end-of-archive marker; `createBackupStream` writes the manifest
+  entry, streams the native _plain_ tar while withholding that trailer (verifying it is all-zero),
+  appends the blob entries and READMEs via `tar-stream` (whose `finalize` writes the one real
+  trailer), and gzips the combined stream itself when requested — so the binding is always asked for
+  a plain tar and compression happens after the append. No scratch disk. The same blob
   classification rule applies: complete blobs are streamed, incomplete or post-enumeration missing
   blobs become PENDING/ERROR marker entries, and repair temporaries are omitted.
+- **A consumer that aborts must tear the native producer down.** Destroying the response rejects the
+  gzip/passthrough pipeline from anywhere, including while `streamBackupArchive` is awaiting
+  something that never touches the combined stream. Nothing would then drain the native tar and the
+  binding would wait on it forever, holding the snapshot — and its deferred file deletions — open.
+  The rejection handler destroys the native stream itself rather than relying on control reaching the
+  `catch`.
 
 **Completion manifest (`dataLayer/backupManifest.ts`).** `create_backup` is two-phase: the engine
 backup (`rootStore.backup()`) resolves — and is immediately visible to `list_backups`/`verify_backup`/
@@ -242,3 +252,26 @@ backup leaves live blobs untouched, and a manifest that claims blobs but has no 
 corrupt by verify). This closes the "healthy-looking but incomplete" and concurrent-restore races;
 the remaining engine/blob point-in-time skew (a blob unlinked between the engine cut and the blob
 walk) is the documented best-effort limitation above.
+
+**Archive manifest (`dataLayer/backupArchiveManifest.ts`).** Every `get_backup` archive carries
+`harper-backup.json` as its **first** tar entry, and a managed backup's completion manifest carries
+the same document in an optional `producer` block. First is load-bearing, not tidy: a `.tar.gz` must
+be inflated from the start to reach a later entry, so a trailing manifest would cost a full pass over
+a multi-gigabyte archive just to decide whether to reject it.
+
+- **Compatibility is a capability list, not a version comparison.** The producer declares the tokens
+  a reader needs in `requires` (`rocksdb-stream-backup`, `blob-root-index`, `blob-deflate`) and a
+  reader refuses any token not in its own `SUPPORTED_ARCHIVE_CAPABILITIES`. Most releases change
+  nothing about the formats an archive carries, and the engine-level ones already fail closed on
+  their own, so a version table would be wrong in both directions. New tokens are additive, and an
+  older reader refusing an unknown one is the intended answer. `harper_version`,
+  `rocksdb_js_version` and the whole `source` block are provenance and are **never** gated on —
+  keeping them separate is what stops a description from becoming a compatibility check.
+- **`roles: null` means "not enumerated", which is not "no roles".** Enumeration reads the
+  already-loaded `system` database rather than calling `getDatabases()`: the offline CLI runs with
+  nothing loaded, and a scan there would open — and lock — every database on the instance. Names
+  only; the archive carries no role definitions and a restore never creates a role.
+- **A manifest that predates this is accepted, not refused.** A managed backup written without a
+  `producer` block came from this instance's own lineage, so it is reported as unidentified. A
+  manifest that is present but malformed is an error — that is a different situation, and only the
+  first is eligible for an operator's provenance override.

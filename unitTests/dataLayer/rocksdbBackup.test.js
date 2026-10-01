@@ -547,7 +547,7 @@ describe('rocksdbBackup', function () {
 		afterEach(async function () {
 			// The online operations reach getDatabases(), whose scan opens every database under
 			// STORAGE_PATH — including the fixtures other tests in this file expect to be closed.
-			closeLoadedDatabases();
+			await closeLoadedDatabases();
 			rmSync(join(storageDir, ORPHAN), { recursive: true, force: true });
 			rmSync(backupDirForDatabase(ORPHAN), { recursive: true, force: true });
 			for (const suffix of ['delete', 'purge']) {
@@ -972,6 +972,57 @@ describe('rocksdbBackup', function () {
 			assert.ok(manifest.producer.harper_version);
 			assertArchiveRestorable(manifest.producer);
 		});
+
+		// The capability list is only worth recording if something refuses on it, and the `latest` path
+		// is the half that can silently skip the check by rebuilding the manifest instead of reading it.
+		for (const [label, restoreArgs] of [
+			['an explicitly requested backup', (id) => [PROV_DB, id]],
+			['the latest backup', () => [PROV_DB, undefined]],
+		]) {
+			it(`refuses to restore ${label} whose producer requires a capability this build lacks`, async function () {
+				this.timeout(30000);
+				const database = RocksDatabase.open(join(storageDir, PROV_DB));
+				try {
+					database.putSync('rec', { n: 1 });
+				} finally {
+					database.close();
+				}
+				const created = await createBackupOffline(PROV_DB);
+				const backupDir = backupDirForDatabase(PROV_DB);
+
+				const manifestFile = join(backupDir, 'manifests', `${created.backup_id}.json`);
+				const stored = JSON.parse(readFileSync(manifestFile, 'utf8'));
+				stored.producer.requires = [...stored.producer.requires, 'blob-encryption-v2'];
+				writeFileSync(manifestFile, JSON.stringify(stored));
+
+				const sentinel = join(storageDir, PROV_DB, 'CURRENT');
+				assert.ok(existsSync(sentinel), 'precondition: the destination database is on disk');
+
+				await assert.rejects(
+					restoreBackupOffline(...restoreArgs(created.backup_id)),
+					(error) => error.statusCode === 400 && /blob-encryption-v2/.test(error.message)
+				);
+				assert.ok(existsSync(sentinel), 'the destination must not be purged by a refused restore');
+			});
+		}
+
+		it('still restores a backup whose completion manifest predates the producer field', async function () {
+			this.timeout(30000);
+			const database = RocksDatabase.open(join(storageDir, PROV_DB));
+			try {
+				database.putSync('rec', { n: 1 });
+			} finally {
+				database.close();
+			}
+			const created = await createBackupOffline(PROV_DB);
+
+			const manifestFile = join(backupDirForDatabase(PROV_DB), 'manifests', `${created.backup_id}.json`);
+			const stored = JSON.parse(readFileSync(manifestFile, 'utf8'));
+			delete stored.producer;
+			writeFileSync(manifestFile, JSON.stringify(stored));
+
+			await restoreBackupOffline(PROV_DB, created.backup_id);
+		});
 	});
 
 	describe('createBackupStream with blobs', function () {
@@ -1045,36 +1096,35 @@ describe('rocksdbBackup', function () {
 			}
 		});
 
+		// In-process this proves nothing: destroying the response stream emits 'close' on it whether or
+		// not the native producer was torn down, and the leaked producer is a native thread, so it is
+		// invisible to `process.getActiveResourcesInfo()` too. The observable is that a process with
+		// nothing left to do actually exits.
 		it('stops the engine-only producer when the consumer aborts', async function () {
-			this.timeout(30000);
-			const ABORT_DB = `${DB_NAME}-abort`;
-			const dir = join(storageDir, ABORT_DB);
-			const seed = RocksDatabase.open(dir);
+			this.timeout(60000);
+			const child = spawn(process.execPath, [join(__dirname, 'backupStreamAbort-fixture.cjs')], {
+				cwd: join(__dirname, '..', '..'),
+				stdio: ['ignore', 'pipe', 'pipe'],
+			});
+			let stderr = '';
+			child.stderr.on('data', (chunk) => (stderr += chunk));
+			const exited = new Promise((resolve, reject) => {
+				child.on('error', reject);
+				child.on('exit', (code, signal) => resolve({ code, signal }));
+			});
+			const timer = setTimeout(() => child.kill('SIGKILL'), 30000);
+			let result;
 			try {
-				for (let i = 0; i < 200; i++) seed.putSync(`k${i}`, { payload: 'x'.repeat(2048) });
+				result = await exited;
 			} finally {
-				seed.close();
+				clearTimeout(timer);
 			}
-
-			const store = RocksDatabase.open(dir);
-			try {
-				const stream = createBackupStream(store, ABORT_DB, false, true);
-				// what a client disconnecting mid-download does to the response stream
-				stream.destroy(new Error('client went away'));
-				// the producer must not be left waiting on a stream nobody will ever read again
-				await new Promise((resolve, reject) => {
-					const timer = setTimeout(() => reject(new Error('backup producer still pending after abort')), 5000);
-					const settle = () => {
-						clearTimeout(timer);
-						resolve();
-					};
-					stream.on('close', settle);
-					stream.on('error', settle);
-				});
-			} finally {
-				store.close();
-				rmSync(dir, { recursive: true, force: true });
-			}
+			assert.strictEqual(
+				result.signal,
+				null,
+				'the backup producer was left waiting on a stream nobody will ever read again'
+			);
+			assert.strictEqual(result.code, 0, `abort fixture failed: ${stderr}`);
 		});
 
 		it('makes the manifest the first entry of an engine-only archive too, and says so', async function () {
