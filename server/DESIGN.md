@@ -571,6 +571,35 @@ matching Node's upgrade-then-authorize order). No core component registers custo
 middleware; `onUpgrade()`/`installUwsWsHandler()` warn when one is registered for a uWS-served
 port so the gap is visible instead of silent.
 
+## A per-thread UDS mirror is bound at a temp name and renamed over its published path (`server/threads/threadServer.js`)
+
+libuv unlinks a pipe server's bound path when the handle closes (`uv__pipe_close` → `unlink`), with
+no check of who owns the path now. On Linux `restartWorkers()` pre-starts the replacement worker
+while the outgoing one still runs (#1417), and both publish the same `<worker>-<port>.sock`. Bound
+directly at that path, the replacement rebinds it and the outgoing worker's `closeServers()` then
+deletes the replacement's socket — Harper's own `cleanupUdsFiles()` is inode-ownership-aware
+(#2035) and skips it, but libuv's unlink ran after that and removed every mirror on every rolling
+restart (#2961). So `listenOnDomainSocket()` binds a mirror (`server.isPerThreadSocket`) at
+`.<threadId>.<seq>` in the sockets directory and `renameSync()`s it over the published path:
+`rename()` keeps the listening inode, so the close-time unlink only ever targets a temp name that
+no longer exists, and the published path is never absent between an unlink and a bind.
+
+- `recordUdsBindSuccess(publishedPath)` runs after the rename, so the identity it records is the
+  inode that is listening; `cleanupUdsFiles()`'s ownership guard is unchanged and is now the only
+  thing that removes a mirror's published file. The regression and the shutdown sequence are
+  covered by `unitTests/server/threads/threadServerListenOnPorts.test.js`; the real rolling restart
+  by `integrationTests/server/uds-mirror-overlapping-restart.test.ts`.
+- The temp name is unique per process (`threadId` never repeats; `seq` is per thread); both it and
+  the published path are checked with `isDomainSocketPathTooLong`, and an overlong one takes the
+  existing fail-soft branch rather than falling back to a direct bind; it never matches a proxy's
+  `*-<port>.yaml`/`.sock` discovery; a leftover from a crash is swept by `cleanupSocketsDirectory()`
+  before any worker binds.
+- The operations API's primary domain socket keeps the direct bind on purpose: `bin/cliOperations.ts`
+  reads that file's presence as "Harper is running", so its unlink on close is load-bearing.
+- The uWS mirror (`HARPER_UWS_UDS`) keeps its direct bind: measured on uWebSockets.js 20.68.0,
+  `app.close()` never unlinks a `listen_unix` path, so it is not exposed. Bun restarts are
+  non-overlapping, so the Bun mirror is not exposed either.
+
 ## A worker that misses an ITC ack gets its OS thread state logged (`server/threads/manageThreads.js`)
 
 `broadcastWithAcknowledgement` already times out (30 s) on a worker whose port stays open but never acks, and that shape is almost always a blocked event loop — a native lock, a runaway synchronous call — which nothing inside the worker can report (harper-pro#788: a restarted node's single http worker went byte-silent while main kept serving `cluster_status`, and the app log only said "not acknowledged by worker thread(s) 2"). So each worker posts its Linux thread id (`readlink /proc/thread-self`) to main once at startup, before anything else runs on it, and the timeout branch reads that thread's kernel state from `/proc/self/task/<tid>`: state, `wchan`, the syscall number (the first token only — the rest of that file is argument registers and stack/instruction pointers), CPU ticks, and context-switch counts, plus two cross-platform signals main already has, `worker.performance.eventLoopUtilization()` and the age of the last 1 s resource report. It samples again a second later and logs the deltas: no CPU ticks, no context switches and `event loop active +1000ms` is "parked on a lock"; ticks climbing with state `R` is "spinning". It is deliberately main-thread-only and best-effort: `workers` and the tid live on the main thread's `Worker` objects, every `/proc` field is reported individually (a hardened container may deny `wchan`/`syscall` while `stat` stays readable), a follow-up sample whose `starttime` differs from the first is discarded (the tid may have been recycled), one diagnostic runs per worker with a 30 s cooldown so concurrent timeouts on the same worker don't multiply reads, and nothing here runs when acks arrive on time. It does not name the lock owner; that still needs a native stack from the next occurrence.
