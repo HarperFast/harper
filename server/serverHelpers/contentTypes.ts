@@ -216,11 +216,12 @@ mediaTypes.set('application/x-www-form-urlencoded', {
 		const stringData = Buffer.isBuffer(data) ? data.toString('utf8') : data;
 		const object: Record<string, string | string[]> = {};
 		for (const [key, value] of new URLSearchParams(stringData)) {
-			if (object.hasOwnProperty(key)) {
+			// Object.hasOwn, not object.hasOwnProperty: a field named `hasOwnProperty` would shadow the method
+			if (Object.hasOwn(object, key)) {
 				// in case there are multiple query params with the same name, convert them to an array
 				const last = object[key];
 				if (Array.isArray(last)) last.push(value);
-				else object.key = [last, value];
+				else object[key] = [last, value];
 			} else object[key] = value;
 		}
 		return object;
@@ -228,7 +229,9 @@ mediaTypes.set('application/x-www-form-urlencoded', {
 	serialize(data) {
 		const usp = new URLSearchParams();
 		for (const key in data) {
-			usp.set(key, data);
+			const value = data[key];
+			if (Array.isArray(value)) for (const item of value) usp.append(key, item);
+			else usp.set(key, value);
 		}
 		return usp.toString();
 	},
