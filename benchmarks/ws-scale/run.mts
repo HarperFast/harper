@@ -316,6 +316,7 @@ async function main() {
 		(harperConfig.threads as any).preloadRequire = join(import.meta.dirname, 'profile-preload.cjs');
 	}
 	let profileStartedAt = Infinity;
+	let profileTimer: NodeJS.Timeout | undefined;
 	// renamed into place so a worker polling for it never reads it half-written
 	const startProfile = () => {
 		if (!args.profile) return;
@@ -327,7 +328,7 @@ async function main() {
 		if (profileStartedAt === Infinity) return false;
 		const files = readdirSync(profileDir);
 		const started = files.filter((file) => file.endsWith('.started')).length;
-		return started > 0 && files.filter((file) => file.endsWith('.cpuprofile')).length >= started;
+		return started >= threads && files.filter((file) => file.endsWith('.cpuprofile')).length >= started;
 	};
 	// a row whose window overlaps the profile carries the profiler's own CPU and memory
 	const profiled = (finishedAtRowStart: boolean, rowEnd: number) =>
@@ -464,6 +465,11 @@ async function main() {
 				`opened ${stats.open} (failed ${stats.failed}) subscribed ${stats.subscribed} in ${ramp.seconds.toFixed(1)}s; rss=${rssMB(harperPid).toFixed(0)}MB`
 			);
 			const subscribersPerTopic = stats.subscribed / topics;
+			const topicSubscribers: number[] = [];
+			for (const reply of await Promise.all(clients.map((client) => client.request({ cmd: 'topics' }))))
+				reply.topicSubscribers.forEach(
+					(count: number, topic: number) => (topicSubscribers[topic] = (topicSubscribers[topic] ?? 0) + count)
+				);
 			for (let i = 0; i < Number(args.publishers); i++) publishers.push(new Client());
 			const publisherTicks = () => publishers.reduce((sum, p) => sum + cpuTicks(p.child.pid!), 0);
 			const publisherStats = async () =>
@@ -482,7 +488,7 @@ async function main() {
 				const client0 = clientTicks();
 				const publisher0 = publisherTicks();
 				const start = performance.now();
-				if (publishedTotal === 0) setTimeout(startProfile, 5000);
+				if (publishedTotal === 0) profileTimer = setTimeout(startProfile, 5000);
 				const published = sumStats(
 					await Promise.all(
 						publishers.map((publisher, i) =>
@@ -492,7 +498,7 @@ async function main() {
 								port: Number(port),
 								mode: args.publish,
 								topics,
-								subscriptions: stats.subscribed,
+								topicSubscribers,
 								topicOffset: i,
 								insert: args.insert,
 								rate: rate / publishers.length,
@@ -590,9 +596,18 @@ async function main() {
 			}
 		}
 	} finally {
+		clearTimeout(profileTimer);
+		if (profileStartedAt < Infinity) {
+			const deadline = profileStartedAt + Number(args.profile) * 1000 + 10_000;
+			while (!profileFinished() && performance.now() < deadline) await delay(250);
+		}
+		if (args.profile && !profileFinished()) console.warn(`not every worker wrote its profile to ${profileDir}`);
 		await Promise.all([...clients, ...publishers].map((c) => c.request({ cmd: 'close' }).catch(() => {})));
-		if (args.out) writeFileSync(args.out, JSON.stringify(results, null, 2));
-		await teardownHarper(ctx);
+		try {
+			if (args.out) writeFileSync(args.out, JSON.stringify(results, null, 2));
+		} finally {
+			await teardownHarper(ctx);
+		}
 	}
 }
 

@@ -33,8 +33,8 @@ interface PublishCommand {
 	port: number;
 	mode: 'mqtt' | 'put';
 	topics: number;
-	/** subscriptions spread over the topics: topic t has floor(K/T) subscribers, plus one when t < K mod T */
-	subscriptions: number;
+	/** granted subscriptions per topic, summed over the load generators */
+	topicSubscribers: number[];
 	topicOffset: number;
 	/** each PUT creates a new record instead of updating an existing topic record */
 	insert?: boolean;
@@ -67,6 +67,7 @@ const stats = {
 };
 
 const sockets = new Set<WebSocket>();
+const topicSubscribers: number[] = [];
 // counts every connection this process opens, so source addresses fill in order across commands
 let connectionsOpenedHere = 0;
 
@@ -92,6 +93,11 @@ function recordLatency(buf: Buffer) {
 
 function topicFor(connIndex: number, sub: number, subsPerConn: number, topics: number) {
 	return (connIndex * Math.max(1, subsPerConn) + sub) % topics;
+}
+
+function subscribed(topic: number) {
+	stats.subscribed++;
+	topicSubscribers[topic] = (topicSubscribers[topic] ?? 0) + 1;
 }
 
 function openConnection(cmd: ConnectCommand, index: number): Promise<void> {
@@ -137,7 +143,7 @@ function openConnection(cmd: ConnectCommand, index: number): Promise<void> {
 			stats.connected++;
 			sockets.add(ws);
 			if (cmd.protocol === 'ws') {
-				stats.subscribed++;
+				subscribed(topicFor(globalIndex, 0, 1, cmd.topics));
 				ws.on('message', (data: Buffer) => {
 					stats.received++;
 					stats.receivedBytes += data.length;
@@ -164,7 +170,9 @@ function openConnection(cmd: ConnectCommand, index: number): Promise<void> {
 						);
 						return;
 					case 'suback':
-						stats.subscribed += packet.granted.filter((code: number) => code < 0x80).length;
+						packet.granted.forEach((code: number, sub: number) => {
+							if (code < 0x80) subscribed(topicFor(globalIndex, sub, cmd.subsPerConn, cmd.topics));
+						});
 						return done();
 					case 'publish':
 						stats.received++;
@@ -295,8 +303,6 @@ async function publish(cmd: PublishCommand) {
 			req.end(body);
 		};
 	}
-	const baseSubscribers = Math.floor(cmd.subscriptions / cmd.topics);
-	const extraSubscribers = cmd.subscriptions % cmd.topics;
 	const TICK_MS = 5;
 	const start = performance.now();
 	let sent = 0;
@@ -309,7 +315,7 @@ async function publish(cmd: PublishCommand) {
 			} else {
 				const topic = next++ % cmd.topics;
 				send(topic, sent++);
-				stats.expectedDeliveries += baseSubscribers + (topic < extraSubscribers ? 1 : 0);
+				stats.expectedDeliveries += cmd.topicSubscribers[topic] ?? 0;
 			}
 			stats.published++;
 		}
@@ -333,6 +339,9 @@ process.on('message', async (message: any) => {
 			case 'publish':
 				await publish(message);
 				break;
+			case 'topics':
+				process.send!({ reply: message.cmd, topicSubscribers: Array.from(topicSubscribers, (count) => count ?? 0) });
+				return;
 			case 'close':
 				for (const ws of sockets) ws.terminate();
 				publisherSocket?.terminate();
