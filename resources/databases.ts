@@ -763,6 +763,61 @@ export function onTableDropRecorded(listener: (databaseName: string, tableName: 
 		},
 	};
 }
+/** The primary catalog row of a live table, under either key layout. */
+function primaryCatalogRowFor(table: {
+	dbisDB: any;
+	tableName: string;
+	primaryKey?: string;
+}): { key: string; value: any } | undefined {
+	const bareKey = table.tableName + '/';
+	const bare = table.dbisDB?.getSync(bareKey);
+	if (bare) return { key: bareKey, value: bare };
+	if (!table.primaryKey) return;
+	const legacyKey = `${table.tableName}/${table.primaryKey}`;
+	const legacy = table.dbisDB?.getSync(legacyKey);
+	return legacy?.isPrimaryKey ? { key: legacyKey, value: legacy } : undefined;
+}
+/** The stamp on disk, which a class loaded on another thread may not carry yet. */
+export function catalogCreatedTime(table: { dbisDB: any; tableName: string; primaryKey?: string }): number | undefined {
+	const createdTime = primaryCatalogRowFor(table)?.value?.createdTime;
+	return Number.isFinite(createdTime) ? createdTime : undefined;
+}
+/**
+ * Backfills the stamp of a generation created on a build that stored none, once a peer's stamped definition
+ * proves which generation it is. Only an absent stamp is written; false when one exists or the table is gone.
+ */
+export function stampTableCreatedTime(
+	table: { dbisDB: any; tableName: string; primaryKey?: string; primaryStore: any; createdTime?: number },
+	createdTime: number
+): boolean {
+	if (!Number.isFinite(createdTime)) return false;
+	const rootStore = table.primaryStore?.rootStore;
+	const attributesDbi = table.dbisDB;
+	if (!rootStore || !attributesDbi) return false;
+	const write = () => {
+		const row = primaryCatalogRowFor(table);
+		if (!row || row.value.dropping || Number.isFinite(row.value.createdTime)) return false;
+		row.value.createdTime = createdTime;
+		attributesDbi.putSync(row.key, row.value);
+		return true;
+	};
+	const written: boolean =
+		rootStore instanceof RocksDatabase
+			? withUpdateAttributesLock(rootStore, `stamp '${table.tableName}'`, write)
+			: (rootStore as any).transactionSync(write);
+	if (written) table.createdTime = createdTime;
+	return written;
+}
+/** The time a drop of this name carries for peers: its marker, or the live tombstone of a drop still completing. */
+export function pendingOrRecordedDropTime(databaseName: string, tableName: string): number | undefined {
+	const store = dropMarkerStoreFor(databaseName);
+	if (!store) return;
+	const marker: TableDropMarker | undefined = store.attributesDbi.getSync(droppedRowKey(tableName));
+	const tombstone = store.attributesDbi.getSync(tableName + '/');
+	const pending = tombstone?.dropping ? tombstone.droppedTime : undefined;
+	const candidates = [marker?.droppedTime, pending].filter((time) => Number.isFinite(time)) as number[];
+	return candidates.length ? Math.max(...candidates) : undefined;
+}
 /** Right before a completion path removes the live tombstone at `tombstoneKey`; RocksDB callers hold the catalog lock. */
 export function promoteTombstoneToDropMarker(
 	rootStore: RootDatabaseKind,

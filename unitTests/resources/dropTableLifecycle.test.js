@@ -12,6 +12,9 @@ const {
 	getTableDrops,
 	recordTableDrop,
 	dropTableMeta,
+	catalogCreatedTime,
+	stampTableCreatedTime,
+	pendingOrRecordedDropTime,
 	onTableDropRecorded,
 	isDeadGeneration,
 } = require('#src/resources/databases');
@@ -247,6 +250,55 @@ describe('table lifecycle stamps (harper#1212)', () => {
 		);
 		await Bare.dropTable();
 		assert.ok(markerFor('LifecycleJoinLocalOnly'), 'the replicating drop leaves a marker');
+	});
+
+	it('backfills a missing stamp once, from the catalog outward', async () => {
+		const Old = defineTable('LifecycleUnstamped');
+		const row = dbisDb().getSync('LifecycleUnstamped/');
+		delete row.createdTime;
+		await dbisDb().put('LifecycleUnstamped/', row);
+		assert.equal(catalogCreatedTime(Old), undefined, 'the catalog has no stamp');
+		assert.equal(stampTableCreatedTime(Old, 777), true);
+		assert.equal(catalogCreatedTime(Old), 777);
+		assert.equal(Old.createdTime, 777, 'the loaded class carries it too');
+		assert.equal(stampTableCreatedTime(Old, 999), false, 'a present stamp is never rewritten');
+		assert.equal(catalogCreatedTime(Old), 777);
+		await Old.dropTable();
+	});
+
+	it('reports the drop time a forwarded drop should carry, from the marker or a tombstone still completing', async () => {
+		assert.equal(pendingOrRecordedDropTime(TEST_DB, 'LifecycleNeverDropped'), undefined);
+		const Pending = defineTable('LifecyclePendingDrop');
+		const original = { drop: Pending.primaryStore.drop, dropSync: Pending.primaryStore.dropSync };
+		Pending.primaryStore.dropSync = () => {
+			throw new Error('injected drop failure');
+		};
+		Pending.primaryStore.drop = () => Promise.reject(new Error('injected drop failure'));
+		try {
+			await assert.rejects(() => Pending.dropTable({ droppedTime: 4040 }), /injected drop failure/);
+		} finally {
+			Object.assign(Pending.primaryStore, original);
+		}
+		assert.equal(pendingOrRecordedDropTime(TEST_DB, 'LifecyclePendingDrop'), 4040, 'read from the live tombstone');
+		await Pending.dropTable({ droppedTime: 4040 });
+		assert.equal(pendingOrRecordedDropTime(TEST_DB, 'LifecyclePendingDrop'), 4040, 'read from the marker');
+	});
+
+	it('records the drop time of a forwarded drop whose table is already gone here', async () => {
+		const { dropTable } = require('#src/dataLayer/schema');
+		const result = await dropTable({
+			schema: TEST_DB,
+			table: 'LifecycleGoneHere',
+			replicated: false,
+			replicatedFrom: 'origin-node',
+			droppedTime: 5050,
+		});
+		assert.match(result.message, /already dropped/);
+		assert.equal(markerFor('LifecycleGoneHere').droppedTime, 5050);
+		await assert.rejects(
+			() => dropTable({ schema: TEST_DB, table: 'LifecycleGoneHere' }),
+			/does not exist|not exist|not found/i
+		);
 	});
 
 	it('promotes a tombstone that dropTableMeta would otherwise erase', async () => {
