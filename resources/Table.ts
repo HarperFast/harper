@@ -1259,6 +1259,18 @@ function scopeViolation(
 	);
 }
 
+function rescope(resolved: ResolvedRecordLockOptions, tableReplicates: boolean): ResolvedRecordLockOptions {
+	if (resolved.scopeRequested) return resolved;
+	const scope = tableReplicates ? 'cluster' : 'node';
+	return scope === resolved.scope ? resolved : { ...resolved, scope };
+}
+
+function transportUnavailable(databaseName: string): LockUnavailableError {
+	return new LockUnavailableError(
+		`Cluster-scoped record locks are not available on ${databaseName}: no record lock transport is registered`
+	);
+}
+
 /** Distinguishes bare lock options from a record target (id, URL, {id:...}). */
 function isPlainOptions(value: unknown): boolean {
 	return (
@@ -3930,7 +3942,7 @@ export function makeTable(options): TableResourceClass {
 			const id = target != null ? requestTargetToId(target as RequestTargetOrId) : this.getId();
 			checkValidId(id);
 			this.#assertLiveHandle(id);
-			const resolved = resolveLockOptions(options);
+			const resolved = resolveLockOptions(options, TableResource.replicate !== false);
 			const context = this.getContext();
 			const link = txnForContext(context);
 			const keyId = writeKeyId(id);
@@ -3942,11 +3954,7 @@ export function makeTable(options): TableResourceClass {
 				(resolved.scopeRequested || isClusterLockRequired(databaseName)) &&
 				!getClusterLockTransport(databaseName)
 			)
-				return Promise.reject(
-					new LockUnavailableError(
-						`Cluster-scoped record locks are not available on ${databaseName}: no record lock transport is registered`
-					)
-				);
+				return Promise.reject(transportUnavailable(databaseName));
 			const held = this.#lockHandle;
 			if (held && !held.isExpired() && held.keyId === keyId) {
 				// Re-entrant: upgrade to hold if requested, then preserve staged changes.
@@ -4037,7 +4045,11 @@ export function makeTable(options): TableResourceClass {
 						clearTimeout(followerTimer);
 						const acquired = link.recordLockFor(primaryStore, keyId);
 						if (acquired && !acquired.isExpired()) {
-							const violation = scopeViolation(acquired, resolved, databaseName);
+							const violation = scopeViolation(
+								acquired,
+								rescope(resolved, TableResource.replicate !== false),
+								databaseName
+							);
 							if (violation) throw violation;
 							if (resolved.hold && !acquired.hold) {
 								detachScopedUpgradeWrite(link, keyId, acquired);
@@ -4086,8 +4098,9 @@ export function makeTable(options): TableResourceClass {
 				// caller's whole timeout, long enough for harper-pro to register the transport on this
 				// worker. Using the snapshot would take the native key alone and hand back a node-scoped
 				// handle while a peer that already had the transport is granted the same key.
+				const current = rescope(resolved, TableResource.replicate !== false);
 				try {
-					if (resolved.scope !== 'node') coordinator = TableResource.lockCoordinator ?? coordinator;
+					coordinator = current.scope === 'cluster' ? (TableResource.lockCoordinator ?? coordinator) : undefined;
 				} catch (error) {
 					// The getter fails closed on an unusable node identity, and that has to reach the caller
 					// the same way it does before the wait. Swallowing it let an implicit cluster lock fall
@@ -4095,6 +4108,15 @@ export function makeTable(options): TableResourceClass {
 					// because `coordinator` is still whatever it was, including undefined.
 					handle.release();
 					throw error as Error;
+				}
+				// The entry check cannot cover this: the wait is where the call became cluster-scoped.
+				if (
+					current.scope === 'cluster' &&
+					!coordinator &&
+					(current.scopeRequested || isClusterLockRequired(databaseName))
+				) {
+					handle.release();
+					throw transportUnavailable(databaseName);
 				}
 				if (coordinator) {
 					try {
