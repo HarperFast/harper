@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790840111244,
+  "lastUpdate": 1790846438823,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -20787,6 +20787,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 312860,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "4c0fa388a578e97354ab264dc1fbbf18c11e3dba",
+          "message": "Merge pull request #2903 from HarperFast/fix/lock-default-scope-2716\n\nResolve a defaulted lock() scope from the table's replicate declaration, so enabling cluster record locks cannot re-scope a plugin's node-local lock",
+          "timestamp": "2026-10-01T05:13:00Z",
+          "url": "https://github.com/HarperFast/harper/commit/4c0fa388a578e97354ab264dc1fbbf18c11e3dba"
+        },
+        "date": 1790846435726,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 16984,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 13417,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 13030,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 19973568,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 3360,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 177251,
             "unit": "ops"
           }
         ]
