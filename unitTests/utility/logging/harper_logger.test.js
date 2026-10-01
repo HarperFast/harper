@@ -2231,6 +2231,16 @@ describe('Test harper_logger module', () => {
 		const MAX_VALUE_DEPTH = 6;
 		const HANG_BUDGET_MS = 2000;
 
+		// inspectForLog's own outer catch (harper_logger.ts) turns ANY escaping exception into
+		// `[Unrenderable value: ...]`, so plain doesNotThrow can't tell a real regression from that
+		// catch firing - it always "passes" either way. The wide/deep shapes above legitimately hit
+		// deepSanitizeErrors' own budget/depth caps, which render with that same prefix; strip just
+		// those two known-safe reasons and fail on anything else matching it.
+		const KNOWN_SANITIZE_LIMIT = /\[Unrenderable value: sanitize (?:budget|depth) exceeded\]/g;
+		function assertNoUnexpectedUnrenderable(result, message) {
+			assert.ok(!result.replace(KNOWN_SANITIZE_LIMIT, '').includes('[Unrenderable value:'), message);
+		}
+
 		it(`inspectForLog never throws or hangs past ${HANG_BUDGET_MS}ms across ${ITERATIONS} randomized hostile shapes (seed 0x${SEED.toString(16)})`, () => {
 			const rng = mulberry32(SEED);
 			for (let i = 0; i < ITERATIONS; i++) {
@@ -2247,6 +2257,7 @@ describe('Test harper_logger module', () => {
 					`iteration ${i} (seed 0x${SEED.toString(16)})`
 				);
 				assert.strictEqual(typeof result, 'string');
+				assertNoUnexpectedUnrenderable(result, `iteration ${i} (seed 0x${SEED.toString(16)}) degraded to: ${result}`);
 			}
 		});
 
@@ -2272,6 +2283,7 @@ describe('Test harper_logger module', () => {
 			for (let i = 0; i < 5000; i++) huge[`k${i}`] = i;
 			const result = withDeadline(() => inspectRender({ huge }, { depth: 8, maxArrayLength: 250 }), HANG_BUDGET_MS);
 			assert.ok(result.includes('sanitize budget'));
+			assertNoUnexpectedUnrenderable(result, `degraded to: ${result}`);
 		});
 
 		it('inspectForLog never throws or hangs on a cyclic, null-prototype, Symbol-keyed object that also holds a revoked Proxy', () => {
@@ -2281,9 +2293,11 @@ describe('Test harper_logger module', () => {
 			cyclic.self = cyclic;
 			cyclic.revoked = proxy;
 			cyclic[Symbol('tag')] = 'mixed-hostile';
-			assert.doesNotThrow(() =>
-				withDeadline(() => inspectRender({ cyclic }, { depth: 8, maxArrayLength: 250 }), HANG_BUDGET_MS)
-			);
+			let result;
+			assert.doesNotThrow(() => {
+				result = withDeadline(() => inspectRender({ cyclic }, { depth: 8, maxArrayLength: 250 }), HANG_BUDGET_MS);
+			});
+			assertNoUnexpectedUnrenderable(result, `degraded to: ${result}`);
 		});
 	});
 
