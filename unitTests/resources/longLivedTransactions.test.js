@@ -777,10 +777,6 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		});
 	});
 
-	// The abort branch (DatabaseTransaction.ts's "has been aborted" error, LMDBTransaction.ts's own copy)
-	// used to name only `txn.db` by itself; it now goes through describeCommitIdentity(), the same helper
-	// the stuck-commit log uses, so a reader gets the database name and native transaction id too, not
-	// just a bare table name that is silent about which of several tables in the chain it is.
 	describe('monitor abort attribution', () => {
 		it('names the aborted head under the describeCommitIdentity form for a transaction spanning two tables', async function () {
 			this.timeout(20000);
@@ -799,7 +795,12 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			const originalError = harperLogger.error;
 			const errorLines = [];
 			harperLogger.error = (...args) => errorLines.push(args);
-			const abortLine = () => errorLines.find(([message]) => String(message).includes('has been aborted'));
+			// Filtered on this fixture's own table, not just "has been aborted": this thread is never
+			// idle, and another suite's own timed-out transaction can log the same phrase first.
+			const abortLine = () =>
+				errorLines.find(
+					([message]) => String(message).includes('has been aborted') && String(message).includes('MonitorAbortPrimaryTable')
+				);
 			const trackedTxns = setTxnExpiration(20);
 			const context = {};
 			try {
@@ -810,9 +811,8 @@ describe('Long-lived transaction reporting (#2471)', () => {
 						const links = [];
 						for (let txn = context.transaction; txn; txn = txn.next) if (txn.db) links.push(txn);
 						assert.strictEqual(links.length, 2, 'the second table must be a chain link');
-						// Reachable only through the root's chain, like the warn-path chain-link-attribution
-						// tests above: an independently-tracked second link could itself be visited by the
-						// monitor and abort on its own terms, racing the assertion below on iteration order.
+						// Reachable only through the root's chain: an independently-tracked second link could
+						// otherwise be visited by the monitor and abort on its own terms too.
 						trackedTxns.delete(links[1]);
 						links[1].writeTimeout = 0; // decay chainStillActive() now rather than waiting on real ticks
 						const headId = links[0].transaction?.id;
@@ -821,9 +821,8 @@ describe('Long-lived transaction reporting (#2471)', () => {
 							timeout: 10000,
 							message: 'the monitor never logged the abort',
 						});
-						// The table name itself can carry a component-scoped `/@<uuid>` suffix (how `table()`
-						// names an ephemeral test table), so match the identity loosely around it rather than
-						// asserting the exact text butting up against "(transaction N)".
+						// `table()` names an ephemeral test table with a component-scoped `/@<uuid>` suffix, so
+						// match around it rather than requiring the table name to butt up against "(transaction N)".
 						assert.match(
 							String(abortLine()[0]),
 							new RegExp(`from table: test\\.MonitorAbortPrimaryTable\\S* \\(transaction ${headId}\\)`),

@@ -116,7 +116,14 @@ export function describeCommitIdentity(
 	nativeTransaction: any,
 	rootStore = store?.rootStore
 ): string {
-	const nativeTransactionId = nativeTransaction?.id;
+	// `.id` is a native accessor that can throw on an already-closed handle (rocksdb-js); this is a
+	// diagnostic on the failure path and must never itself become the failure.
+	let nativeTransactionId;
+	try {
+		nativeTransactionId = nativeTransaction?.id;
+	} catch {
+		// leave it undefined
+	}
 	return (
 		`from table: ${rootStore?.databaseName ?? '?'}.${store?.name ?? '?'}` +
 		(nativeTransactionId !== undefined ? ` (transaction ${nativeTransactionId})` : '') +
@@ -3098,7 +3105,8 @@ function startMonitoringTxns() {
 					// those, keep the prior force-commit behavior below.
 					harperLogger.error(
 						`Transaction was open too long and has been aborted after exceeding the open-transaction limit, ` +
-							describeCommitIdentity(txn.db, txn.startedFrom, txn.transaction),
+							describeCommitIdentity(txn.db, txn.startedFrom, txn.transaction) +
+							(url ? ` path: ${url}` : ''),
 						...(DEBUG_LONG_TXNS ? ['starting stack trace', txn.stackTraces] : [])
 					);
 					try {
