@@ -862,7 +862,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 			try {
 				const touchedAt = now();
 				await transaction(freshContext(), () =>
-					store.put({ ...head, lastFittedAt: touchedAt, expiresAt: touchedAt + policy.maxAgeMs })
+					store.put({ ...head, lastFittedAt: touchedAt, expiresAt: found.expiresAt ?? touchedAt + policy.maxAgeMs })
 				);
 			} catch {}
 			return 'failed';
@@ -870,7 +870,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 		const rowBytes = perKey.reduce((sum, key) => sum + EXAMPLE_OVERHEAD_BYTES + key.values.length * 8, 0);
 		const sample = Math.min(
 			config.maxExamplesPerKey,
-			Math.max(1, Math.floor((config.maxBytes - baseBytes) / rowBytes))
+			Math.max(1, Math.floor((configured.maxBytes - found.bytes) / rowBytes))
 		);
 		const limit = Math.min(sample, allowance + 1);
 		let rows: DecisionRow[];

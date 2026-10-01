@@ -493,12 +493,24 @@ describe('calibration store and facade (#2841)', function () {
 		assert.strictEqual(summary.report.calibrated, undefined);
 	});
 
-	it('samples the newest decisions that fit the byte budget, so a large population is still refit', async () => {
+	it('samples the newest decisions that fit the configured byte budget, so a large population is still refit', async () => {
+		configureCalibration({ ...CONFIG, maxBytes: 40_000 }, false);
 		await recordCases(models, 0, 300);
-		const run = await runCalibration({ maxBytes: 40_000 });
+		const run = await runCalibration();
 		assert.strictEqual(run.stoppedBy, undefined, JSON.stringify(run));
 		assert.ok(run.read < 300, `the sample is cut to the budget: ${run.read}`);
 		assert.strictEqual(run.written, 1, JSON.stringify(run));
+	});
+
+	it('never refits from a smaller sample because one run has a smaller byte budget', async () => {
+		await recordCases(models, 0, 300);
+		await models.calibrate();
+		assert.strictEqual((await warmDecide(models, 'case-8000')).calibrated, true);
+		const narrow = await runCalibration({ maxBytes: 40_000 });
+		assert.strictEqual(narrow.written, 0, JSON.stringify(narrow));
+		assert.strictEqual(narrow.stoppedBy, 'maxBytes');
+		resetCalibrationCache();
+		assert.strictEqual((await warmDecide(models, 'case-8001')).calibrated, true, 'the eligible fit still applies');
 	});
 
 	it('lets a population whose decisions are gone lapse instead of renewing it', async () => {
