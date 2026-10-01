@@ -3399,6 +3399,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 		customIndex.candidateKeyProbe = true;
 		const inspect = (keys) => (plan) => ({
 			complete: plan.probe?.complete,
+			maxReadsPerCandidate: plan.probe?.maxReadsPerCandidate,
 			matches: keys.map((key) => plan.probe?.has(key)),
 		});
 		try {
@@ -3411,7 +3412,11 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 				{ limit: 1 },
 				inspect([0, 1, 291])
 			);
-			assert.deepStrictEqual(and.probed, { complete: true, matches: [true, false, false] });
+			assert.deepStrictEqual(and.probed, {
+				complete: true,
+				maxReadsPerCandidate: 2,
+				matches: [true, false, false],
+			});
 
 			const or = await searchWithSpy(
 				[0, 0],
@@ -3427,7 +3432,11 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 				{ limit: 1 },
 				inspect([3, 7, 8])
 			);
-			assert.deepStrictEqual(or.probed, { complete: true, matches: [true, true, false] });
+			assert.deepStrictEqual(or.probed, {
+				complete: true,
+				maxReadsPerCandidate: 2,
+				matches: [true, true, false],
+			});
 
 			const residual = await searchWithSpy(
 				[0, 0],
@@ -3438,7 +3447,11 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 				{ limit: 1 },
 				inspect([0, 1])
 			);
-			assert.deepStrictEqual(residual.probed, { complete: false, matches: [true, false] });
+			assert.deepStrictEqual(residual.probed, {
+				complete: false,
+				maxReadsPerCandidate: 1,
+				matches: [true, false],
+			});
 		} finally {
 			delete customIndex.candidateKeyProbe;
 		}

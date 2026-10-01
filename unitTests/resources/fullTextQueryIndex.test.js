@@ -1116,7 +1116,7 @@ describe('FullTextQueryIndex', () => {
 	});
 
 	it('rejects native response envelopes that cannot hold a hit and clamps autocomplete', async () => {
-		const search = async (readinessId, overrides, comparator = 'matches') => {
+		const search = async (readinessId, overrides, comparator = 'matches', expectedOpens = 1) => {
 			const auditStore = sharedStore();
 			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
 			let opens = 0;
@@ -1163,10 +1163,13 @@ describe('FullTextQueryIndex', () => {
 				return { request, results };
 			} finally {
 				await index.close();
-				assert.ok(opens <= 1);
+				assert.strictEqual(opens, expectedOpens);
 			}
 		};
-		await assert.rejects(search('response-cannot-hold-hit', { maxSearchResponseBytes: 27 }), /Full-text search/);
+		await assert.rejects(
+			search('response-cannot-hold-hit', { maxSearchResponseBytes: 27 }, 'matches', 0),
+			(error) => error.statusCode === 500 && error.message === "Full-text search on 'catalogSearch' failed"
+		);
 		assert.deepStrictEqual((await search('response-clamps-autocomplete', { maxSearchResponseBytes: 42 })).results, []);
 		const autocomplete = await search(
 			'response-clamps-autocomplete-query',
@@ -1571,6 +1574,7 @@ describe('FullTextQueryIndex', () => {
 					},
 					probe: {
 						complete: true,
+						maxReadsPerCandidate: 1,
 						has: (key) => key === 'record-50',
 					},
 				},
@@ -1620,6 +1624,7 @@ describe('FullTextQueryIndex', () => {
 					collect: () => null,
 					probe: {
 						complete: false,
+						maxReadsPerCandidate: 1,
 						has: (key) => key === 'record-2' || key === 'record-3',
 					},
 				},
@@ -1631,6 +1636,67 @@ describe('FullTextQueryIndex', () => {
 		);
 		assert.deepStrictEqual(loaded, ['record-2', 'record-3']);
 		assert.deepStrictEqual(filtered, ['record-2', 'record-3']);
+		await index.close();
+	});
+
+	it('falls back from costly point probes without changing filtered results', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-probe-cost';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5 - index,
+		}));
+		let reads = 0;
+		let probes = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 5,
+			maxSearchWindow: 5,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const search = (maxReadsPerCandidate) =>
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{},
+				{
+					minResults: 1,
+					filter: (key) => key === 'record-3',
+					candidateKeys: {
+						estimatedCount: 5,
+						collect: () => null,
+						probe: {
+							complete: true,
+							maxReadsPerCandidate,
+							has: (key) => {
+								probes++;
+								return key === 'record-3';
+							},
+						},
+					},
+				}
+			);
+		const probed = await search(4);
+		assert.deepStrictEqual(
+			probed.map(({ key }) => key),
+			['record-3']
+		);
+		assert.strictEqual(probes, 4);
+		assert.strictEqual(reads, 1);
+		probes = 0;
+		reads = 0;
+		const fallback = await search(5);
+		assert.deepStrictEqual(
+			fallback.map(({ key }) => key),
+			['record-3']
+		);
+		assert.strictEqual(probes, 0);
+		assert.strictEqual(reads, 4);
 		await index.close();
 	});
 
@@ -1702,6 +1768,7 @@ describe('FullTextQueryIndex', () => {
 					collect: () => null,
 					probe: {
 						complete: true,
+						maxReadsPerCandidate: 1,
 						has: () => {
 							throw new Error('injected point-read failure');
 						},
@@ -1818,6 +1885,59 @@ describe('FullTextQueryIndex', () => {
 			(error) => error === reason
 		);
 		assert.strictEqual(reads, 512);
+		await index.close();
+	});
+
+	it('yields after bounded companion point-read work', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'point-probe-yield';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5_000 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5_000 - index,
+		}));
+		const controller = new AbortController();
+		const reason = new Error('request abandoned');
+		let probes = 0;
+		let abortScheduled = false;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 5_000,
+			maxSearchWindow: 5_000,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{ signal: controller.signal },
+				{
+					minResults: 2_000,
+					filter: () => false,
+					candidateKeys: {
+						estimatedCount: 5_000,
+						collect: () => null,
+						probe: {
+							complete: true,
+							maxReadsPerCandidate: 4,
+							has: () => {
+								probes++;
+								if (probes === 300 && !abortScheduled) {
+									abortScheduled = true;
+									setImmediate(() => controller.abort(reason));
+								}
+								return false;
+							},
+						},
+					},
+				}
+			),
+			(error) => error === reason
+		);
+		assert.strictEqual(probes, 320);
 		await index.close();
 	});
 
@@ -2059,12 +2179,53 @@ describe('FullTextQueryIndex', () => {
 					candidateKeys: {
 						estimatedCount: 1,
 						collect: () => null,
-						probe: { complete: true, has: () => true },
+						probe: { complete: true, maxReadsPerCandidate: 1, has: () => true },
 					},
 				}
 			),
 			(error) => error.name === 'DerivedIndexLagError' && error.statusCode === 503 && error.retryable === true
 		);
+		await index.close();
+	});
+
+	it('samples companion-gate rejections before classifying window exhaustion', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'stale-gate-window';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5 - index,
+		}));
+		let sourceReads = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			maxSearchWindow: 4,
+			estimatedRecordCount: 5,
+			onGetEntry: () => sourceReads++,
+			entryForKey: () => ({ version: 2, value: { title: 'shoe' } }),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
+				{},
+				{
+					minResults: 1,
+					filter: () => false,
+					candidateKeys: {
+						estimatedCount: 5,
+						collect: () => null,
+						probe: { complete: true, maxReadsPerCandidate: 1, has: () => false },
+					},
+				}
+			),
+			(error) => error.name === 'DerivedIndexLagError' && error.statusCode === 503 && error.retryable === true
+		);
+		assert.strictEqual(sourceReads, 1, 'only the exhaustion sample should load a rejected record');
 		await index.close();
 	});
 

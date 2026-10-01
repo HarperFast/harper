@@ -519,12 +519,15 @@ Search hits carry the source record version. Harper reads the authoritative reco
 version no longer matches; it never combines an old score or highlight with new content. Bounded searches begin by over-fetching
 32–256 native hits. When version checks or structured filters under-fill a page, Harper sizes the next request from observed yield.
 Pages grow within the native response envelope, with 4,096 as an absolute ceiling, then shrink as selectivity improves. A zero-yield
-page grows geometrically because it provides no selectivity estimate. Each page yields after at most 256 source reads to check
-cancellation and the execution deadline. The native result window remains the hard bound, and one reader lease keeps every page on
-one native snapshot. A lower-bound total must describe retrievable hits: while more hits remain, a page must return its requested
-limit. Harper fails closed on a short page claiming more hits. Stale-version exhaustion is retryable index lag; filter-only exhaustion
-asks the client to narrow the query. During bounded lag, results can temporarily omit a recent change when native hits end before the
-window. Harper clamps autocomplete to the maximum-size hits that fit one native response without reducing ordinary search.
+page grows geometrically because it provides no selectivity estimate. Each page yields after at most 256 source or companion-index
+point reads to check cancellation and the execution deadline. Equality point probes are limited to four index reads per candidate;
+wider equality plans fall back to the authoritative record predicate. The native result window remains the hard bound, and one reader
+lease keeps every page on one native snapshot. A lower-bound total must describe retrievable hits: while more hits remain, a page must
+return its requested limit. Harper fails closed on a short page claiming more hits. Stale-version exhaustion observed in loaded records
+or a bounded sample of companion-index rejections is retryable index lag; filter-only exhaustion asks the client to narrow the query.
+During bounded lag, results can temporarily omit a recent change when native hits end before the window. Harper clamps autocomplete
+to the maximum-size hits that fit one native response without reducing ordinary search. The response-capacity calculation is pinned to
+the Fulltext 0.4.0 Query API v2 framing; a later query API must advertise or version its framing overhead before Harper accepts it.
 REST exposes the index coverage header, and callers that require current coverage use
 `maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`.
 Full-text score descending is the only supported ordering in this release. Count requests return

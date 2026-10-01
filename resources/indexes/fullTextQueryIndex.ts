@@ -47,6 +47,9 @@ const RAW_PAGE_ZERO_YIELD_GROWTH_FACTOR = 4;
 const RAW_PAGE_YIELD_INTERVAL = 256;
 const CANDIDATE_KEYS_PER_SOURCE_READ = 8;
 const MAX_CANDIDATE_KEYS = 50_000;
+// Four key-only reads remain cheaper than loading and decoding the authoritative record they replace.
+const MAX_POINT_PROBE_READS_PER_CANDIDATE = 4;
+const REJECTED_GATE_SAMPLE_SIZE = 8;
 // Fulltext 0.4.0 Query API v2 uses a 13-byte response header and 13 bytes per versioned hit before string data.
 const NATIVE_SEARCH_RESPONSE_HEADER_BYTES = 13;
 const NATIVE_SEARCH_HIT_OVERHEAD_BYTES = 13;
@@ -240,11 +243,13 @@ export class FullTextQueryIndex {
 				context?.signal?.throwIfAborted();
 				const result = await this.#search(condition, context, options);
 				this.#unexpectedSearchFailureWarned = false;
+				this.#incompletePageFailureLogged = false;
 				return result;
 			}
 			coverage = this.#queryCoverage(maxIndexLagMilliseconds);
 			const result = await this.#search(condition, context, options);
 			this.#unexpectedSearchFailureWarned = false;
+			this.#incompletePageFailureLogged = false;
 			return result;
 		};
 		const operation = execute().catch((error) => {
@@ -411,6 +416,9 @@ export class FullTextQueryIndex {
 			let moreMayExist = false;
 			let staleVersionHits = 0;
 			let expiredHits = 0;
+			let rejectedGateSampleCount = 0;
+			let rejectedGateKeys: Id[] | undefined;
+			let rejectedGateVersions: string[] | undefined;
 			let rawPageSize = bounded
 				? Math.min(
 						this.#maxFilteredRawPageSize!,
@@ -426,7 +434,13 @@ export class FullTextQueryIndex {
 			while (accepted.length < target && offset < searchWindow) {
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
 				const limit = autocomplete ? searchWindow : Math.min(rawPageSize, searchWindow - offset);
-				const sourceReadYieldInterval = Math.min(RAW_PAGE_YIELD_INTERVAL, limit);
+				const pointReadsPerCandidate = candidateGate?.maxReadsPerCandidate ?? 0;
+				const workYieldInterval = Math.min(
+					limit,
+					pointReadsPerCandidate === 0
+						? RAW_PAGE_YIELD_INTERVAL
+						: Math.max(1, Math.floor(RAW_PAGE_YIELD_INTERVAL / pointReadsPerCandidate))
+				);
 				const acceptedBeforePage = accepted.length;
 				const result = await reader.search(
 					{
@@ -456,19 +470,30 @@ export class FullTextQueryIndex {
 				moreMayExist =
 					result.totalRelation === 'exact' ? offset + result.hits.length < result.total : result.hits.length === limit;
 				if (result.hits.length === 0) break;
+				let nextYieldIndex = workYieldInterval;
 				for (let hitIndex = 0; hitIndex < result.hits.length; hitIndex++) {
-					if (hitIndex > 0 && hitIndex % sourceReadYieldInterval === 0) {
+					if (hitIndex === nextYieldIndex) {
 						await new Promise((resolve) => setImmediate(resolve));
 						if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
 						remainingSearchBudget(deadline);
+						nextYieldIndex += workYieldInterval;
 					}
 					const hit = result.hits[hitIndex];
 					const key = decodeNativeId(hit.id, this.#options.Table.tableId) as Id;
+					if (typeof hit.version !== 'string')
+						throw new ServerError('Full-text index returned a hit without a source version', 500);
 					options.assertTransactionActive?.();
 					let candidateDecides = false;
 					if (candidateGate) {
 						try {
-							if (!candidateGate.has(key)) continue;
+							if (!candidateGate.has(key)) {
+								if (rejectedGateSampleCount < REJECTED_GATE_SAMPLE_SIZE) {
+									(rejectedGateKeys ??= [])[rejectedGateSampleCount] = key;
+									(rejectedGateVersions ??= [])[rejectedGateSampleCount] = hit.version;
+									rejectedGateSampleCount++;
+								}
+								continue;
+							}
 							candidateDecides = candidateGate.complete;
 						} catch (error) {
 							candidateGate = undefined;
@@ -476,8 +501,6 @@ export class FullTextQueryIndex {
 						}
 					}
 					const entry = this.#options.Table.primaryStore.getEntry(key, { transaction });
-					if (typeof hit.version !== 'string')
-						throw new ServerError('Full-text index returned a hit without a source version', 500);
 					if (!entry?.value || hit.version !== String(entry.version)) {
 						staleVersionHits++;
 						continue;
@@ -513,6 +536,26 @@ export class FullTextQueryIndex {
 			}
 			if (!bounded && moreMayExist)
 				throw new ClientError(`Full-text query exceeds the ${searchWindow}-result search window; add a limit`, 400);
+			if (
+				bounded &&
+				accepted.length < target &&
+				moreMayExist &&
+				staleVersionHits === 0 &&
+				rejectedGateSampleCount > 0
+			) {
+				options.assertTransactionActive?.();
+				for (let sampleIndex = 0; sampleIndex < rejectedGateSampleCount; sampleIndex++) {
+					const entry = this.#options.Table.primaryStore.getEntry(rejectedGateKeys![sampleIndex], { transaction });
+					if (
+						!entry?.value ||
+						rejectedGateVersions![sampleIndex] !== String(entry.version) ||
+						this.#options.Table.isFullTextSearchEntryCurrent?.(entry) === false
+					) {
+						staleVersionHits++;
+						break;
+					}
+				}
+			}
 			if (bounded && accepted.length < target && moreMayExist && staleVersionHits > 0)
 				throw new DerivedIndexLagError(
 					`Full-text index '${this.#definition.name}' changed while searching; retry this query`
@@ -547,7 +590,7 @@ export class FullTextQueryIndex {
 		plan: CandidateKeyPlan,
 		target: number,
 		searchWindow: number
-	): { complete: boolean; has(primaryKey: Id): boolean } | undefined {
+	): { complete: boolean; maxReadsPerCandidate: number; has(primaryKey: Id): boolean } | undefined {
 		const store = this.#options.Table.primaryStore;
 		const estimatedRecords =
 			typeof store.getEstimatedKeyCount === 'function' ? store.getEstimatedKeyCount() : store.getStats?.().entryCount;
@@ -559,7 +602,12 @@ export class FullTextQueryIndex {
 		if (plan.estimatedCount <= maxKeys) {
 			try {
 				const collected = plan.collect(maxKeys);
-				if (collected) return { complete: collected.complete, has: (primaryKey) => collected.keys.has(primaryKey) };
+				if (collected)
+					return {
+						complete: collected.complete,
+						maxReadsPerCandidate: 0,
+						has: (primaryKey) => collected.keys.has(primaryKey),
+					};
 			} catch (error) {
 				logger.warn?.(
 					'could not build the full-text candidate-key set; using point probes or the record predicate',
@@ -567,7 +615,9 @@ export class FullTextQueryIndex {
 				);
 			}
 		}
-		return plan.probe;
+		return plan.probe && plan.probe.maxReadsPerCandidate <= MAX_POINT_PROBE_READS_PER_CANDIDATE
+			? plan.probe
+			: undefined;
 	}
 
 	async #addHighlights(
