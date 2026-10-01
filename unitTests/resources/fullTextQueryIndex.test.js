@@ -1620,7 +1620,7 @@ describe('FullTextQueryIndex', () => {
 					return key === 'record-3';
 				},
 				candidateKeys: {
-					estimatedCount: 4,
+					estimatedCount: 1,
 					collect: () => null,
 					probe: {
 						complete: false,
@@ -1636,6 +1636,57 @@ describe('FullTextQueryIndex', () => {
 		);
 		assert.deepStrictEqual(loaded, ['record-2', 'record-3']);
 		assert.deepStrictEqual(filtered, ['record-2', 'record-3']);
+		await index.close();
+	});
+
+	it('skips point probes that are not expected to avoid source reads', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-unprofitable-probe';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5 - index,
+		}));
+		let reads = 0;
+		let probes = 0;
+		let filters = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 5,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 1,
+				filter: () => {
+					filters++;
+					return true;
+				},
+				candidateKeys: {
+					estimatedCount: 5,
+					collect: () => null,
+					probe: {
+						complete: true,
+						maxReadsPerCandidate: 1,
+						has: () => {
+							probes++;
+							return true;
+						},
+					},
+				},
+			}
+		);
+		assert.strictEqual(results.length, 1);
+		assert.strictEqual(probes, 0);
+		assert.strictEqual(reads, 1);
+		assert.strictEqual(filters, 1);
 		await index.close();
 	});
 
@@ -1668,7 +1719,7 @@ describe('FullTextQueryIndex', () => {
 					minResults: 1,
 					filter: (key) => key === 'record-3',
 					candidateKeys: {
-						estimatedCount: 5,
+						estimatedCount: 1,
 						collect: () => null,
 						probe: {
 							complete: true,
@@ -1697,6 +1748,46 @@ describe('FullTextQueryIndex', () => {
 		);
 		assert.strictEqual(probes, 0);
 		assert.strictEqual(reads, 4);
+		await index.close();
+	});
+
+	it('backs off a failing candidate-key collection between requests', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-collection-failure';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 2 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 2 - index,
+		}));
+		let collectionAttempts = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 100,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const search = () =>
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{},
+				{
+					minResults: 1,
+					filter: (key) => key === 'record-1',
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => {
+							collectionAttempts++;
+							throw new Error('injected collection failure');
+						},
+					},
+				}
+			);
+		assert.strictEqual((await search())[0].key, 'record-1');
+		assert.strictEqual((await search())[0].key, 'record-1');
+		assert.strictEqual(collectionAttempts, 1);
 		await index.close();
 	});
 
@@ -1745,6 +1836,41 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(reads, 1);
 		await fixture.index.close();
 
+		const boundedReadinessId = 'candidate-collection-bound';
+		publishDerivedIndexReadiness(auditStore, boundedReadinessId, 'ready');
+		let collectionBudget;
+		const bounded = simpleQueryIndex({
+			auditStore,
+			readinessId: boundedReadinessId,
+			payload: publicationPayload(),
+			hits: () =>
+				Array.from({ length: 100 }, (_value, index) => ({
+					id: nativeId(1, `record-${index}`),
+					version: '1',
+					score: 100 - index,
+				})),
+			estimatedRecordCount: 1_000_000,
+			maxSearchWindow: 5_000,
+		});
+		attachCurrentCoverage(bounded.index, auditStore, boundedReadinessId);
+		await bounded.index.search(
+			{ attribute: boundedReadinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 100,
+				filter: () => true,
+				candidateKeys: {
+					estimatedCount: 4_096,
+					collect: (maxKeys) => {
+						collectionBudget = maxKeys;
+						return null;
+					},
+				},
+			}
+		);
+		assert.strictEqual(collectionBudget, 4_096);
+		await bounded.index.close();
+
 		const fallbackReadinessId = 'candidate-probe-fallback';
 		publishDerivedIndexReadiness(auditStore, fallbackReadinessId, 'ready');
 		reads = 0;
@@ -1757,30 +1883,36 @@ describe('FullTextQueryIndex', () => {
 			onGetEntry: () => reads++,
 		});
 		attachCurrentCoverage(fallback.index, auditStore, fallbackReadinessId);
-		const fallbackResults = await fallback.index.search(
-			{ attribute: fallbackReadinessId, comparator: 'matches', value: 'pack' },
-			{},
-			{
-				minResults: 1,
-				filter: (key) => key === 'record-1',
-				candidateKeys: {
-					estimatedCount: 5,
-					collect: () => null,
-					probe: {
-						complete: true,
-						maxReadsPerCandidate: 1,
-						has: () => {
-							throw new Error('injected point-read failure');
+		let probeAttempts = 0;
+		const fallbackSearch = () =>
+			fallback.index.search(
+				{ attribute: fallbackReadinessId, comparator: 'matches', value: 'pack' },
+				{},
+				{
+					minResults: 1,
+					filter: (key) => key === 'record-1',
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => null,
+						probe: {
+							complete: true,
+							maxReadsPerCandidate: 1,
+							has: () => {
+								probeAttempts++;
+								throw new Error('injected point-read failure');
+							},
 						},
 					},
-				},
-			}
-		);
+				}
+			);
+		const fallbackResults = await fallbackSearch();
 		assert.deepStrictEqual(
 			fallbackResults.map(({ key }) => key),
 			['record-1']
 		);
 		assert.strictEqual(reads, 2, 'the established record predicate must resume after a probe failure');
+		assert.strictEqual((await fallbackSearch())[0].key, 'record-1');
+		assert.strictEqual(probeAttempts, 1);
 		await fallback.index.close();
 	});
 
@@ -1918,7 +2050,7 @@ describe('FullTextQueryIndex', () => {
 					minResults: 2_000,
 					filter: () => false,
 					candidateKeys: {
-						estimatedCount: 5_000,
+						estimatedCount: 1_000,
 						collect: () => null,
 						probe: {
 							complete: true,
@@ -1937,7 +2069,10 @@ describe('FullTextQueryIndex', () => {
 			),
 			(error) => error === reason
 		);
-		assert.strictEqual(probes, 320);
+		assert(
+			probes >= 300 && probes <= 307,
+			`cancellation should be observed within one bounded probe interval; performed ${probes} probes`
+		);
 		await index.close();
 	});
 
@@ -2217,7 +2352,7 @@ describe('FullTextQueryIndex', () => {
 					minResults: 1,
 					filter: () => false,
 					candidateKeys: {
-						estimatedCount: 5,
+						estimatedCount: 1,
 						collect: () => null,
 						probe: { complete: true, maxReadsPerCandidate: 1, has: () => false },
 					},

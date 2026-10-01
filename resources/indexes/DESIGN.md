@@ -195,13 +195,16 @@ Full-text search uses the same `planCandidateKeys` contract as HNSW, but chooses
 RocksDB access patterns. A selective range is materialized as a bounded key set. A broad equality
 condition is checked with one point read of the existing `[indexed value, primary key]` secondary-index
 entry for each Tantivy hit. The latter avoids scanning and retaining a large key set merely to reject
-non-matching full-text hits.
+non-matching full-text hits. Full-text materialization uses a 4,096-key synchronous scan budget.
+Point probes run only when their estimated index-read cost is no greater than the source loads they
+are expected to avoid, using the same eight-key-reads-per-source-read ratio as materialization.
 
 The planner marks a gate complete only when its indexed terms cover every companion condition and no
 opaque record guard remains. An incomplete gate may reject definite misses, but admitted records still
 run the residual predicate. Both paths retain the normal post-filter, source-version, expiry and current
 entry checks. If collection exceeds its budget or a point read fails, the query falls back to the record
-predicate. HNSW does not request point probes, so this adds no work to its traversal path.
+predicate and backs off the failing gate briefly before retrying it. One warning is emitted per failure
+episode. HNSW does not request point probes, so this adds no work to its traversal path.
 
 ## Derived-index runtime: committed-log delivery to native index backends (`resources/derivedIndexRuntime.ts`)
 
@@ -519,8 +522,8 @@ Search hits carry the source record version. Harper reads the authoritative reco
 version no longer matches; it never combines an old score or highlight with new content. Bounded searches begin by over-fetching
 32–256 native hits. When version checks or structured filters under-fill a page, Harper sizes the next request from observed yield.
 Pages grow within the native response envelope, with 4,096 as an absolute ceiling, then shrink as selectivity improves. A zero-yield
-page grows geometrically because it provides no selectivity estimate. Each page yields after at most 256 source or companion-index
-point reads to check cancellation and the execution deadline. Equality point probes are limited to four index reads per candidate;
+page grows geometrically because it provides no selectivity estimate. Each page yields after at most 256 estimated source and
+companion-index point reads to check cancellation and the execution deadline. Equality point probes are limited to four index reads per candidate;
 wider equality plans fall back to the authoritative record predicate. The native result window remains the hard bound, and one reader
 lease keeps every page on one native snapshot. A lower-bound total must describe retrievable hits: while more hits remain, a page must
 return its requested limit. Harper fails closed on a short page claiming more hits. Stale-version exhaustion observed in loaded records

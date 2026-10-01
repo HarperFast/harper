@@ -46,10 +46,11 @@ const RAW_PAGE_OVERFETCH_FACTOR = 2;
 const RAW_PAGE_ZERO_YIELD_GROWTH_FACTOR = 4;
 const RAW_PAGE_YIELD_INTERVAL = 256;
 const CANDIDATE_KEYS_PER_SOURCE_READ = 8;
-const MAX_CANDIDATE_KEYS = 50_000;
+const MAX_CANDIDATE_KEYS = 4_096;
 // Four key-only reads remain cheaper than loading and decoding the authoritative record they replace.
 const MAX_POINT_PROBE_READS_PER_CANDIDATE = 4;
 const REJECTED_GATE_SAMPLE_SIZE = 8;
+const CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS = 1_000;
 // Fulltext 0.4.0 Query API v2 uses a 13-byte response header and 13 bytes per versioned hit before string data.
 const NATIVE_SEARCH_RESPONSE_HEADER_BYTES = 13;
 const NATIVE_SEARCH_HIT_OVERHEAD_BYTES = 13;
@@ -142,6 +143,10 @@ export class FullTextQueryIndex {
 	#refreshFailureWarned = false;
 	#unexpectedSearchFailureWarned = false;
 	#incompletePageFailureLogged = false;
+	#candidateCollectionFailureWarned = false;
+	#candidateProbeFailureWarned = false;
+	#candidateCollectionRetryAfter = 0;
+	#candidateProbeRetryAfter = 0;
 
 	constructor(options: FullTextQueryIndexOptions) {
 		this.#options = options;
@@ -439,7 +444,7 @@ export class FullTextQueryIndex {
 					limit,
 					pointReadsPerCandidate === 0
 						? RAW_PAGE_YIELD_INTERVAL
-						: Math.max(1, Math.floor(RAW_PAGE_YIELD_INTERVAL / pointReadsPerCandidate))
+						: Math.max(1, Math.floor(RAW_PAGE_YIELD_INTERVAL / (pointReadsPerCandidate + 1)))
 				);
 				const acceptedBeforePage = accepted.length;
 				const result = await reader.search(
@@ -486,7 +491,12 @@ export class FullTextQueryIndex {
 					let candidateDecides = false;
 					if (candidateGate) {
 						try {
-							if (!candidateGate.has(key)) {
+							const admitted = candidateGate.has(key);
+							if (candidateGate.maxReadsPerCandidate > 0) {
+								this.#candidateProbeFailureWarned = false;
+								this.#candidateProbeRetryAfter = 0;
+							}
+							if (!admitted) {
 								if (rejectedGateSampleCount < REJECTED_GATE_SAMPLE_SIZE) {
 									(rejectedGateKeys ??= [])[rejectedGateSampleCount] = key;
 									(rejectedGateVersions ??= [])[rejectedGateSampleCount] = hit.version;
@@ -497,7 +507,11 @@ export class FullTextQueryIndex {
 							candidateDecides = candidateGate.complete;
 						} catch (error) {
 							candidateGate = undefined;
-							logger.warn?.('could not probe the full-text companion index; using the record predicate', error);
+							this.#candidateProbeRetryAfter = Date.now() + CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS;
+							if (!this.#candidateProbeFailureWarned) {
+								this.#candidateProbeFailureWarned = true;
+								logger.warn?.('could not probe the full-text companion index; using the record predicate', error);
+							}
 						}
 					}
 					const entry = this.#options.Table.primaryStore.getEntry(key, { transaction });
@@ -599,9 +613,12 @@ export class FullTextQueryIndex {
 		const expectedSourceReads = Math.min(searchWindow, Math.ceil(target / selectivity));
 		const expectedRejectedReads = Math.max(0, expectedSourceReads - target);
 		const maxKeys = Math.min(MAX_CANDIDATE_KEYS, Math.ceil(expectedRejectedReads * CANDIDATE_KEYS_PER_SOURCE_READ));
-		if (plan.estimatedCount <= maxKeys) {
+		const now = Date.now();
+		if (plan.estimatedCount <= maxKeys && now >= this.#candidateCollectionRetryAfter) {
 			try {
 				const collected = plan.collect(maxKeys);
+				this.#candidateCollectionFailureWarned = false;
+				this.#candidateCollectionRetryAfter = 0;
 				if (collected)
 					return {
 						complete: collected.complete,
@@ -609,14 +626,26 @@ export class FullTextQueryIndex {
 						has: (primaryKey) => collected.keys.has(primaryKey),
 					};
 			} catch (error) {
-				logger.warn?.(
-					'could not build the full-text candidate-key set; using point probes or the record predicate',
-					error
-				);
+				this.#candidateCollectionRetryAfter = now + CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS;
+				if (!this.#candidateCollectionFailureWarned) {
+					this.#candidateCollectionFailureWarned = true;
+					logger.warn?.(
+						'could not build the full-text candidate-key set; using point probes or the record predicate',
+						error
+					);
+				}
 			}
 		}
-		return plan.probe && plan.probe.maxReadsPerCandidate <= MAX_POINT_PROBE_READS_PER_CANDIDATE
-			? plan.probe
+		const probe = plan.probe;
+		if (
+			!probe ||
+			now < this.#candidateProbeRetryAfter ||
+			probe.maxReadsPerCandidate > MAX_POINT_PROBE_READS_PER_CANDIDATE
+		)
+			return;
+		const expectedAvoidedSourceReadsPerCandidate = 1 - selectivity;
+		return probe.maxReadsPerCandidate <= expectedAvoidedSourceReadsPerCandidate * CANDIDATE_KEYS_PER_SOURCE_READ
+			? probe
 			: undefined;
 	}
 
