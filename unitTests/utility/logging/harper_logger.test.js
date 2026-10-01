@@ -2002,9 +2002,13 @@ describe('Test harper_logger module', () => {
 		// A post-hoc elapsed-time check can't catch a genuine hang; vm's `timeout` can, since it
 		// preempts even a tight synchronous loop via a V8 execution interrupt. `fn` still runs in
 		// this file's own realm - only the call is routed through a vm context for that preemption.
+		// One context/script is reused across every call (cheap `fn` swap instead of a fresh V8
+		// context per iteration) - verified a reused context still enforces the timeout correctly.
+		const DEADLINE_CONTEXT = vm.createContext({ fn: undefined });
 		const DEADLINE_SCRIPT = new vm.Script('fn()');
 		function withDeadline(fn, timeoutMs) {
-			return DEADLINE_SCRIPT.runInNewContext({ fn }, { timeout: timeoutMs });
+			DEADLINE_CONTEXT.fn = fn;
+			return DEADLINE_SCRIPT.runInContext(DEADLINE_CONTEXT, { timeout: timeoutMs });
 		}
 
 		// Deterministic PRNG; SEED makes a failing iteration reproducible.
