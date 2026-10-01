@@ -184,6 +184,20 @@ export class ComponentStatusRegistry {
 	}
 
 	/**
+	 * Remove a component's status entry along with its sub-components' (`name.*`). For a component
+	 * that no longer exists, so its last status cannot outlive it. During a deploy validation the
+	 * removal lands in the validation's own sink, never the live map.
+	 */
+	public retire(componentName: string): void {
+		const map = deployValidationStatusSink() ?? this.statusMap;
+		map.delete(componentName);
+		const prefix = componentName + '.';
+		for (const key of [...map.keys()]) {
+			if (key.startsWith(prefix)) map.delete(key);
+		}
+	}
+
+	/**
 	 * Get all components with a specific status level
 	 */
 	public getComponentsByStatus(statusLevel: ComponentStatusLevel): Array<{ name: string; status: ComponentStatus }> {

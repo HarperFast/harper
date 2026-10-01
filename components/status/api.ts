@@ -132,6 +132,13 @@ export const lifecycle = {
 	failed(componentName: string, error: Error | string, message?: string): void {
 		componentStatusRegistry.markFailed(componentName, error, message);
 	},
+
+	/**
+	 * Remove a component's status entries once the component itself is removed
+	 */
+	retired(componentName: string): void {
+		componentStatusRegistry.retire(componentName);
+	},
 };
 
 /**

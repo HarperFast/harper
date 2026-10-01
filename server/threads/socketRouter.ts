@@ -190,7 +190,13 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 			).unref()
 		),
 	])
-		.then(() => true)
+		.then(() => {
+			// Clears a start failure a previous attempt recorded on this thread. The worker's own
+			// registry carries its component-load outcomes, and an error there wins in the
+			// cross-thread aggregate, so this cannot mask a load failure inside the worker.
+			componentLifecycle.loaded(application, `Dedicated worker for '${application}' is running`);
+			return true;
+		})
 		.catch(async (error) => {
 			harperLogger.error(`Dedicated worker for isolated application '${application}' failed to start`, error);
 			componentLifecycle.failed(application, error, `Component '${application}' failed to load`);
