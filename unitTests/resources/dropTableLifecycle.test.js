@@ -11,6 +11,7 @@ const {
 	resetDatabases,
 	getTableDrops,
 	recordTableDrop,
+	dropTableMeta,
 	onTableDropRecorded,
 	isDeadGeneration,
 } = require('#src/resources/databases');
@@ -120,6 +121,93 @@ describe('table lifecycle stamps (harper#1212)', () => {
 		assert.deepEqual(announced, [TEST_DB + '.LifecycleNeverHere']);
 		assert.deepEqual(markerFor('LifecycleNeverHere'), { table: 'LifecycleNeverHere', droppedTime: 777 });
 		assert.equal(databases[TEST_DB].LifecycleNeverHere, undefined, 'recording a marker creates no table');
+	});
+
+	it('stamps a recreate after the newest known drop, even when that drop is ahead of the local clock', async () => {
+		const Early = defineTable('LifecycleFutureDrop');
+		const future = Date.now() + 60_000;
+		await Early.dropTable({ droppedTime: future });
+		assert.equal(markerFor('LifecycleFutureDrop').droppedTime, future);
+		const Recreated = defineTable('LifecycleFutureDrop');
+		assert.ok(Recreated.createdTime > future, 'the recreate must read as newer than the drop it follows');
+		assert.ok(!isDeadGeneration(Recreated.createdTime, future));
+		await Recreated.dropTable();
+		assert.ok(
+			markerFor('LifecycleFutureDrop').droppedTime > Recreated.createdTime,
+			'the drop follows the creation it retires'
+		);
+	});
+
+	it('creating over an unstamped interrupted drop yields a generation newer than the promoted marker', async () => {
+		const Zombie = defineTable('LifecycleLegacyZombie');
+		await Zombie.put({ id: 1, str: 'alive' });
+		const meta = dbisDb().getSync('LifecycleLegacyZombie/');
+		meta.dropping = true;
+		await dbisDb().put('LifecycleLegacyZombie/', meta);
+		delete databases[TEST_DB].LifecycleLegacyZombie;
+
+		const Fresh = defineTable('LifecycleLegacyZombie');
+		const marker = markerFor('LifecycleLegacyZombie');
+		assert.ok(marker, 'the completed drop leaves a marker even without a stamped tombstone');
+		assert.ok(!isDeadGeneration(Fresh.createdTime, marker.droppedTime), 'the replacement must survive its own marker');
+		assert.equal(await Fresh.get(1), undefined);
+		await Fresh.dropTable();
+	});
+
+	it('drops a generation stamped by a faster clock with a drop time that still retires it', async () => {
+		const ahead = Date.now() + 60_000;
+		const Fast = defineTable('LifecycleFastPeerClock', ahead);
+		await Fast.dropTable();
+		assert.ok(isDeadGeneration(ahead, markerFor('LifecycleFastPeerClock').droppedTime));
+	});
+
+	it('keeps the newer of two drop times when a drop joins one already in flight', async () => {
+		const Twice = defineTable('LifecycleJoinedDrop');
+		await Twice.put({ id: 1, str: 'x' });
+		// A real interrupted drop: the tombstone (with its drop generation) is durable, the stores are not gone.
+		const original = { drop: Twice.primaryStore.drop, dropSync: Twice.primaryStore.dropSync };
+		Twice.primaryStore.dropSync = () => {
+			throw new Error('injected drop failure');
+		};
+		Twice.primaryStore.drop = () => Promise.reject(new Error('injected drop failure'));
+		try {
+			await assert.rejects(() => Twice.dropTable({ droppedTime: 200 }), /injected drop failure/);
+		} finally {
+			Object.assign(Twice.primaryStore, original);
+		}
+		assert.equal(dbisDb().getSync('LifecycleJoinedDrop/')?.droppedTime, 200, 'the tombstone carries the first time');
+		assert.equal(markerFor('LifecycleJoinedDrop'), undefined, 'nothing is promoted before the drop completes');
+
+		await Twice.dropTable({ droppedTime: 300 });
+		assert.equal(markerFor('LifecycleJoinedDrop').droppedTime, 300, 'the joining drop raises the tombstone time');
+	});
+
+	it('announces a recorded marker only once it is readable', async () => {
+		let seenInListener;
+		const listener = onTableDropRecorded((databaseName, tableName) => {
+			if (tableName === 'LifecycleAnnounced') seenInListener = markerFor(tableName)?.droppedTime;
+		});
+		try {
+			const Announced = defineTable('LifecycleAnnounced');
+			await Announced.dropTable({ droppedTime: 9999 });
+			await nextTick();
+		} finally {
+			listener.remove();
+		}
+		assert.equal(seenInListener, 9999, 'the listener must see the marker it was told about');
+	});
+
+	it('promotes a tombstone that dropTableMeta would otherwise erase', async () => {
+		const Lingering = defineTable('LifecycleLingeringTombstone');
+		const meta = dbisDb().getSync('LifecycleLingeringTombstone/');
+		meta.dropping = true;
+		meta.droppedTime = 5150;
+		await dbisDb().put('LifecycleLingeringTombstone/', meta);
+		delete databases[TEST_DB].LifecycleLingeringTombstone;
+		await dropTableMeta({ table: 'LifecycleLingeringTombstone', database: TEST_DB });
+		assert.equal(dbisDb().getSync('LifecycleLingeringTombstone/'), undefined, 'the rows are removed');
+		assert.equal(markerFor('LifecycleLingeringTombstone').droppedTime, 5150, 'the drop time outlives the row');
+		void Lingering;
 	});
 
 	it('promotes the tombstone of an interrupted drop to a marker when the load completes it', async () => {

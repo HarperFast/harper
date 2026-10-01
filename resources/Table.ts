@@ -732,7 +732,7 @@ interface TableResourceClass {
 	name: any;
 	primaryStore: any;
 	storageGeneration: any;
-	/** Lifecycle stamp of this generation (harper#1212); undefined for a table that predates the stamps. */
+	/** Undefined for a table that predates the stamps. */
 	createdTime: number | undefined;
 	auditStore: any;
 	primaryKey: any;
@@ -872,7 +872,6 @@ interface TableResourceClass {
 	 * branch owns a schema identity of its own.
 	 */
 	assertSchemaMutable(operation: string): void;
-	/** `droppedTime` carries a peer's drop time when this drop applies one learned from the cluster. */
 	dropTable(options?: { droppedTime?: number }): Promise<void>;
 	/**
 	 * Record the relocation of an entry (when a record is moved to a different node), return true if it is now located locally
@@ -2906,9 +2905,18 @@ export function makeTable(options): TableResourceClass {
 								409
 							);
 					}
-					if (primaryMeta.dropping) return true;
+					if (primaryMeta.dropping) {
+						// A concurrent drop carrying a newer peer time joins this one; the marker keeps the newest.
+						if (Number.isFinite(options?.droppedTime) && !(primaryMeta.droppedTime >= options.droppedTime)) {
+							primaryMeta.droppedTime = options.droppedTime;
+							tombstoneWrite = (dbisDb as any).put(primaryCatalogKey, primaryMeta);
+						}
+						return true;
+					}
 					primaryMeta.dropping = true;
-					primaryMeta.droppedTime = Number.isFinite(options?.droppedTime) ? options.droppedTime : tableLifecycleTime();
+					primaryMeta.droppedTime = Number.isFinite(options?.droppedTime)
+						? options.droppedTime
+						: tableLifecycleTime(createdTime);
 					// Stamps this drop's identity so the interrupted-drop retry budget in
 					// databases.ts can be scoped to THIS drop rather than the table name: a
 					// worker that exhausts the budget for a table can observe the catalog
@@ -3008,7 +3016,7 @@ export function makeTable(options): TableResourceClass {
 					for (const attribute of attributes) {
 						dbisDb.remove(TableResource.tableName + '/' + attribute.name);
 					}
-					promoteTombstoneToDropMarker(dbisDb, databaseName, TableResource.tableName, currentPrimary, false);
+					promoteTombstoneToDropMarker(rootStore, dbisDb, databaseName, TableResource.tableName, currentPrimary);
 					dbisDb.remove(primaryCatalogKey);
 					return true;
 				};
@@ -3132,7 +3140,7 @@ export function makeTable(options): TableResourceClass {
 						for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
 							if (key !== primaryCatalogKey) dbisDb.remove(key);
 						}
-						promoteTombstoneToDropMarker(dbisDb, databaseName, tableName, currentPrimary, false);
+						promoteTombstoneToDropMarker(rootStore, dbisDb, databaseName, tableName, currentPrimary);
 						dbisDb.remove(primaryCatalogKey);
 						return true;
 					});
