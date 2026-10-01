@@ -1339,4 +1339,104 @@ describe('Subscription replay', () => {
 			assert.deepEqual(ids, ['put', 'delete', 'put']);
 		});
 	});
+
+	describe('a replay that fails', () => {
+		it('ends the subscription when the listener also throws on the failure', async () => {
+			const T = table({
+				table: 'SubReplayListenerThrows',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+				audit: true,
+			});
+			const startTime = Date.now() - 1;
+			await T.put(1, { name: 'replayed' });
+			const received = [];
+			const thrown = [];
+			const unhandled = [];
+			const onUnhandled = (reason) => unhandled.push(reason);
+			process.on('unhandledRejection', onUnhandled);
+			let subscription, later;
+			try {
+				subscription = await T.subscribe({
+					startTime,
+					isCollection: true,
+					listener(event) {
+						received.push(event);
+						const error = new Error(`listener throws on event ${received.length}`);
+						thrown.push(error);
+						throw error;
+					},
+				});
+				await waitFor(() => received.length >= 2);
+				assert.equal(received[0].id, 1);
+				assert.strictEqual(received[1], thrown[0], 'the final event is not the error that failed the replay');
+				assert.strictEqual(subscription.closed, true, 'the subscription stayed open');
+				assert.strictEqual(subscription.subscriptions, null, 'the subscription is still registered');
+				// a subscriber added later on the same key is notified after it, so its delivery bounds the wait
+				const laterEvents = [];
+				later = await T.subscribe({
+					isCollection: true,
+					omitCurrent: true,
+					listener: (event) => laterEvents.push(event),
+				});
+				await T.put(2, { name: 'after the failure' });
+				await waitFor(() => laterEvents.some((event) => event.id === 2));
+				assert.equal(received.length, 2, 'a write after the failure reached the listener');
+				assert.equal(
+					unhandled.filter((reason) => thrown.includes(reason)).length,
+					0,
+					"the listener's error escaped as an unhandled rejection"
+				);
+			} finally {
+				process.off('unhandledRejection', onUnhandled);
+				subscription?.end();
+				later?.end();
+			}
+		});
+
+		it('keeps a close handler that throws as the subscription closes from escaping', async () => {
+			const T = table({
+				table: 'SubReplayCloseHandlerThrows',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+				audit: true,
+			});
+			const startTime = Date.now() - 1;
+			await T.put(1, { name: 'replayed' });
+			const closeError = new Error('close handler throws');
+			let closeHandlerRuns = 0;
+			const unhandled = [];
+			const onUnhandled = (reason) => unhandled.push(reason);
+			process.on('unhandledRejection', onUnhandled);
+			let subscription;
+			try {
+				subscription = await T.subscribe({
+					startTime,
+					isCollection: true,
+					listener(event) {
+						// the listener runs with the subscription as `this`, so the handler is attached before the replay fails
+						if (!(event instanceof Error)) {
+							this.on('close', () => {
+								closeHandlerRuns++;
+								throw closeError;
+							});
+						}
+						throw new Error('listener throws on every event');
+					},
+				});
+				await waitFor(() => subscription.closed, { message: 'the subscription stayed open' });
+				await delay(0); // a rejection is reported once the microtask queue drains
+				assert.equal(closeHandlerRuns, 1, 'the close handler did not run');
+				assert.strictEqual(subscription.subscriptions, null, 'the subscription is still registered');
+				assert.equal(
+					unhandled.filter((reason) => reason === closeError).length,
+					0,
+					"the close handler's error escaped as an unhandled rejection"
+				);
+			} finally {
+				process.off('unhandledRejection', onUnhandled);
+				subscription?.end();
+			}
+		});
+	});
 });

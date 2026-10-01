@@ -49,8 +49,10 @@ describe('Subscription current-entry reads', () => {
 	}
 
 	it('reads the record once per update, however many subscribers share it', async () => {
-		await T.put('A', { value: 1 });
 		const first = await subscribe(1);
+		// once this is delivered, the notify cursor is past every earlier record for A (resources/DESIGN.md, activeCount)
+		await T.put('A', { value: 1 });
+		await waitFor(() => first[0].some((event) => event.value?.value === 1));
 		const readsWithOne = await readsOfA(async () => {
 			await T.put('A', { value: 2 });
 			await waitFor(() => first[0].some((event) => event.value?.value === 2));

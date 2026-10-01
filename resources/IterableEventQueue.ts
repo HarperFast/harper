@@ -31,20 +31,27 @@ export class IterableEventQueue<Event extends object = any> extends EventEmitter
 		return true;
 	}
 	/**
-	 * Permanently close the queue. A final message is delivered before iteration ends when supplied.
+	 * Permanently close the queue. A final message is delivered before iteration ends when supplied. The queue
+	 * closes and emits 'close' once even if a listener throws on the final message; that error is then rethrown.
 	 */
 	close(finalMessage?: Event) {
 		if (this.closed) return;
 		// Closing is authoritative: buffered events must not leak after revocation or policy failure.
 		if (this.queue) this.queue.length = 0;
 		this.closedWith = finalMessage;
-		if (finalMessage !== undefined) this.send(finalMessage);
-		this.closed = true;
-		if (this.resolveNext) {
-			this.resolveNext({ value: undefined, done: true });
-			this.resolveNext = null;
+		try {
+			if (finalMessage !== undefined) this.send(finalMessage);
+		} finally {
+			// a listener handling the final message may already have closed the queue
+			if (!this.closed) {
+				this.closed = true;
+				if (this.resolveNext) {
+					this.resolveNext({ value: undefined, done: true });
+					this.resolveNext = null;
+				}
+				this.emit('close');
+			}
 		}
-		this.emit('close');
 	}
 	getNextMessage() {
 		const message = this.queue?.shift();
