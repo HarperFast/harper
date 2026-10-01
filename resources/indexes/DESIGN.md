@@ -62,10 +62,11 @@ necessarily a routing regression.
 The connection-building pass selects each node's stored edges from a candidate list of
 `efConstruction` entries. Held at a constant (100) while the corpus grows, edge quality erodes in a
 way no search-side setting can compensate: at 1M nodes, sweeping the search `ef` from 512 to 1536
-moved recall@10 only from 0.935 to 0.957 — the missing neighbours were not deep in the candidate
-list, they were unreachable. Rebuilding the identical corpus with `efConstruction` 200 restored
-recall and made queries _faster_ at the same `ef` (better-selected edges route more directly);
-quantization was a minor term beside construction quality. Full sweep in #2180.
+moved recall@10 only from 0.935 to 0.957 (0.967 set) at 4.7x the latency — the missing neighbours
+were not deep in the candidate list, they were unreachable. Rebuilding the identical corpus with
+`efConstruction` 200 restored recall and made queries _faster_ at the same `ef` (better-selected
+edges route more directly); quantization was a minor term beside construction quality. Full sweep in
+#2180.
 
 So when the schema does not configure `efConstruction`, it scales as `AUTO_EF_BASE * sqrt(nodes /
 AUTO_EFC_REF)`, capped at `AUTO_EFC_MAX`. The healthy write path reads the count directly from the
@@ -826,13 +827,13 @@ within ~0.5 pt of cap 128 at every ef ≥ 128 (at 1M and 4M nodes) while cutting
 448 B and the 768-d slot 1,344 → 1,088 B, which keeps a 4M-node plane resident under a 2 GB limit
 that makes the cap-128 plane thrash; a live plane's mean layer-0 degree is ~29
 ([hnsw#7](https://github.com/HarperFast/hnsw/issues/7)), so the reserved slot was mostly padding.
-Cap 32 halves the slot again but trails cap 128 by 1.3–2.2 pts below ef 1024 at 4M, so it is a
-declaration for narrow vectors on a plane that outgrows RAM, not a default. The cap is a create-time
-header field: `getPlane` compares it with the index's value on attach and invalidates a plane that
-disagrees rather than reusing or truncating it, so revising it is a rebuild, not a format change. A
-file-primary index builds no JS graph, so this is the only layer-0 maximum it has; the JS graph's
-own cap in `addConnection` governs non-`nativePlane` indexes only. A binary-code v2 slot reopens the
-question.
+Cap 32 halves the slot again but trails cap 128 by 1.3–2.2 pts below ef 1024 at 4M and by 1.7 pts at
+1M for 768-d vectors, so it is a declaration for narrow vectors on a plane that outgrows RAM, not a
+default. The cap is a create-time header field: `getPlane` compares it with the index's value on
+attach and invalidates a plane that disagrees rather than reusing or truncating it, so revising it
+is a rebuild, not a format change. A file-primary index builds no JS graph, so this is the only
+layer-0 maximum it has; the JS graph's own cap in `addConnection` governs non-`nativePlane` indexes
+only. A binary-code v2 slot reopens the question.
 
 Upgrading a plane built at 128 costs one rebuild per node, the first time a process opens it under
 the new default; no GA release line carries plane files, so this reaches 5.3 pre-releases only.
@@ -851,7 +852,10 @@ and rescores exactly, which rejects a wrong candidate; it is not a general stora
 is `msync`ed on a cadence, not per commit, so the graph has bounded-lag durability with
 deterministic catch-up while the source of truth (records, mappings, cursor) stays transactional.
 Backup treats the file as node-local derived state: include it after a barrier, or rebuild on
-restore. A file whose format or checksum does not validate is rebuilt from records.
+restore. A file whose format or checksum does not validate is rebuilt from records. macOS `msync` is a
+weaker barrier than Linux — the crate's `msync()` is a plain mapping flush with no `F_FULLFSYNC` pass —
+so on macOS a power loss can lose a barrier that reported complete, and the crash contract under
+Delivery holds only up to that barrier there.
 
 ### Search
 

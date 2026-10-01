@@ -365,9 +365,10 @@ declared `replicate: false` — it has no cluster to lock across, and the transp
 for the database must not re-scope it (harper#2716) — and `'cluster'` otherwise, which includes a table
 whose declaration omits `replicate`, since that is the replicating default. The default is read from
 `Table.replicate` by `resolveLockOptions` at the one call in `Table.lock()` and again after the native
-wait by `rescope()`, so neither registering a transport nor a redeclaration mid-wait can re-scope a call; for that,
-`Table.replicate` is refreshed on redeclaration and catalog reload, and a redeclaration is persisted against
-the durable primary row, not the possibly stale static. A hold already granted keeps the scope it was
+wait by `rescope()`, so a call follows the declaration current when it acquires — a redeclaration
+mid-wait re-scopes it ("re-reads the declaration after the native wait" tests) — while registering a
+transport never does. For that, `Table.replicate` is refreshed on redeclaration and catalog reload, and a
+redeclaration is persisted against the durable primary row, not the possibly stale static. A hold already granted keeps the scope it was
 granted at: a `replicate` change re-scopes later calls, not live handles — **not enforced**, so drain holds
 before changing a live table's `replicate` from `false` to `true`. Pinned by "a table that does not
 replicate" in `unitTests/resources/recordLockCluster.test.js`. An **explicit**
@@ -1362,8 +1363,11 @@ retained set (expiry or LRU eviction) receives the recovery marker. This design 
 resolve that marker by preferring a retained durable release when available, otherwise draining every
 reachable member to captured positions, and to coalesce concurrent recovery snapshots across keys.
 harper-pro's transport (`replication/recordLockFreshness.ts`) does neither yet: it drains every other
-home-map member to a `lockBarrier`, one barrier per wait. Either way it returns the established
-positions so the delegation can carry them onward. Bloom false positives
+home-map member to a `lockBarrier`, one barrier per wait, and a member that cannot produce one fails the
+lock closed with 503. So while any home-map member is down, every recovery-path `lock()` in that
+database returns 503 (the first access after a home restart or a generation change, or a key whose
+lineage the LRU evicted) — stricter than the reachable-member barrier §10 limitation (2) describes.
+Either way it returns the established positions so the delegation can carry them onward. Bloom false positives
 only select the slower safe path; there are no false negatives while absence is trusted.
 
 The recovery drain's fence is the `lockBarrier` control entry (harper#2625). Each reachable member
