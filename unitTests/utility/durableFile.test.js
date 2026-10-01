@@ -1,10 +1,12 @@
 'use strict';
 
 const assert = require('node:assert');
-const { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const fs = require('node:fs');
+const { syncBuiltinESMExports } = require('node:module');
+const { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } = fs;
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
-const { fsyncDirectory, removeFileDurably, writeFileDurably } = require('#src/utility/durableFile');
+const { fsyncDirectory, pathPresent, removeFileDurably, writeFileDurably } = require('#src/utility/durableFile');
 
 describe('durableFile', function () {
 	let tempDir;
@@ -81,12 +83,60 @@ describe('durableFile', function () {
 		});
 
 		it('tolerates a platform that rejects the flush rather than the open', function () {
-			// Windows opens a directory happily and fails the fsync with EPERM; a durable write must not
-			// throw there, so both limbs are tolerated
+			const originalFsyncSync = fs.fsyncSync;
+			let called = false;
+			fs.fsyncSync = () => {
+				called = true;
+				throw Object.assign(new Error('directory fsync unsupported'), { code: 'EPERM' });
+			};
+			syncBuiltinESMExports();
+			try {
+				fsyncDirectory(tempDir);
+				assert.ok(called, 'the test must reach the fsync failure');
+			} finally {
+				fs.fsyncSync = originalFsyncSync;
+				syncBuiltinESMExports();
+			}
+		});
+
+		it('propagates a flush failure that is not a platform limitation', function () {
+			const originalFsyncSync = fs.fsyncSync;
+			fs.fsyncSync = () => {
+				throw Object.assign(new Error('I/O failure'), { code: 'EIO' });
+			};
+			syncBuiltinESMExports();
+			try {
+				assert.throws(() => fsyncDirectory(tempDir), { code: 'EIO' });
+			} finally {
+				fs.fsyncSync = originalFsyncSync;
+				syncBuiltinESMExports();
+			}
+		});
+	});
+
+	describe('pathPresent', function () {
+		it('reports a present file and a genuinely absent one', function () {
 			const target = join(tempDir, 'state.json');
+			assert.ok(!pathPresent(target));
 			writeFileDurably(target, 'written', 'state.tmp');
-			removeFileDurably(target);
-			assert.ok(!existsSync(target));
+			assert.ok(pathPresent(target));
+		});
+
+		it('propagates an undetermined answer rather than reporting absence', function () {
+			// callers read false as "nothing to protect" — an unreadable directory answering false is
+			// how an intact repository becomes licence to delete what could not be checked
+			if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+			const closed = join(tempDir, 'closed');
+			mkdirSync(closed);
+			chmodSync(closed, 0o000);
+			try {
+				assert.throws(
+					() => pathPresent(join(closed, 'meta')),
+					(error) => error.code === 'EACCES'
+				);
+			} finally {
+				chmodSync(closed, 0o700);
+			}
 		});
 	});
 });

@@ -1,27 +1,17 @@
 'use strict';
 
+/**
+ * The machine-readable identification carried by a `get_backup` archive. Compatibility is a
+ * capability list rather than a version comparison; see dataLayer/DESIGN.md for why, and for the
+ * formats that do not already fail closed on their own.
+ */
+
 import { packageJson } from '../utility/packageUtils.js';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { get as getConfigValue } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 
-/**
- * The machine-readable identification carried by a `get_backup` archive.
- *
- * The manifest is the first entry in the tar because a `.tar.gz` must be inflated from the start to
- * reach a later entry: a trailing manifest would cost a full pass over a multi-gigabyte archive just
- * to decide whether to reject it.
- *
- * Compatibility is a capability list rather than a version comparison. What makes an archive
- * unreadable is a format the target cannot decode, and the engine-level ones already fail closed on
- * their own (RocksDB refuses a `format_version` it does not understand). The ones that do not are
- * record struct mode (DESIGN.md "Struct mode is gated to primary DBIs"), transaction-log framing,
- * and deflate-compressed blob bodies (harper#2443). So the producer declares what a reader needs and
- * the reader refuses any token it does not have; new tokens are additive, and an older reader
- * refusing an unknown one is the intended answer.
- */
-
-/** First entry in the archive. */
+/** Tar entry name of the manifest. First entry in the archive. */
 export const ARCHIVE_MANIFEST_ENTRY = 'harper-backup.json';
 
 /** Bumped only when the document shape changes incompatibly; a reader refuses a version above its own. */
@@ -40,26 +30,25 @@ export const SUPPORTED_ARCHIVE_CAPABILITIES: readonly string[] = [
 
 export interface BackupArchiveManifest {
 	archive_schema_version: number;
-	/** Never gated on; the capability list is. */
+	/** Harper release that produced the archive. Recorded for operators and logs, never gated on. */
 	harper_version: string;
-	/** What actually fixes the engine and transaction-log formats. */
+	/** Binding version, which is what actually fixes the engine and transaction-log formats. */
 	rocksdb_js_version: string;
 	database: string;
 	blobs: boolean;
 	blob_root_count: number;
+	/** Capability tokens a reader must support; see the module note. */
 	requires: string[];
 	/**
-	 * Names of the roles that granted access to this database, or null when the producer could not
-	 * enumerate them (the offline CLI has no loaded `system` database). The archive carries no role
+	 * Names of the roles that named this database in their permissions, plus any `super_user` role, or
+	 * null when the producer could not enumerate them (the offline CLI has no loaded `system`
+	 * database). A name hint for an operator, not an access calculation: a role that names the
+	 * database while granting nothing effective is still listed. The archive carries no role
 	 * definitions — a restore reports which of these names are absent locally, and never creates one.
 	 */
 	roles: string[] | null;
 	created_at: number;
-	/**
-	 * Provenance, never gated on — `requires` is the gate. This is what a support engineer needs
-	 * when an archive shows up months later and will not restore, and it is deliberately separate
-	 * so nobody is tempted to turn a description into a compatibility check.
-	 */
+	/** Provenance, never gated on — `requires` is the gate. Kept separate so it stays that way. */
 	source: BackupArchiveSource;
 }
 
@@ -100,9 +89,8 @@ const PROVENANCE_SETTINGS: readonly string[] = [
  * config at all. Never let describing the source fail the backup that produced it.
  */
 function collectSource(): BackupArchiveSource {
-	// Read directly rather than importing Application.ts's getEnvBuiltInComponents(): that module is
-	// ~5k lines and nothing in dataLayer depends on it, and this is a cold path. configUtils.ts:549
-	// reads the same variable the same way. Format is `name=packageIdentifier`, comma-separated.
+	// Read directly rather than importing Application.ts's getEnvBuiltInComponents(): nothing in
+	// dataLayer depends on that module. Format is `name=packageIdentifier`, comma-separated.
 	const builtInComponents = (process.env.HARPER_BUILTIN_COMPONENTS ?? '')
 		.split(',')
 		.map((definition) => definition.trim().split('=')[0])
@@ -116,8 +104,7 @@ function collectSource(): BackupArchiveSource {
 			/* config not loaded */
 		}
 	}
-	// A dictionary is an external file the data depends on, so record THAT one was configured
-	// without recording where it lives.
+	// a dictionary is an external file the data depends on: record that one was configured, not where
 	try {
 		if (getConfigValue(CONFIG_PARAMS.STORAGE_COMPRESSION_DICTIONARY)) settings.storage_compression_dictionary = true;
 	} catch {
@@ -133,10 +120,8 @@ function collectSource(): BackupArchiveSource {
 }
 
 /**
- * Read from Harper's own dependency pin rather than resolving the installed package: the binding
- * exports no version, and a `require` here is a ReferenceError under ESM while working under the
- * CommonJS build — so the value would silently differ by runtime. The pin is exact, so this is the
- * version that shipped.
+ * Read from Harper's own dependency pin: the binding exports no version, and a `require` here would
+ * work under the CommonJS build and throw under ESM, so the value would differ by runtime.
  */
 function rocksdbJsVersion(): string {
 	return packageJson.dependencies?.['@harperfast/rocksdb-js'] ?? '';
@@ -174,7 +159,7 @@ export function serializeArchiveManifest(manifest: BackupArchiveManifest): strin
 }
 
 /**
- * A malformed manifest is an error, not a silent "unidentified": only an archive that predates
+ * A malformed manifest is an error, not a silent "unidentified" — only an archive that predates
  * manifests is eligible for the operator's provenance override.
  */
 export function parseArchiveManifest(contents: string): BackupArchiveManifest {
@@ -186,6 +171,15 @@ export function parseArchiveManifest(contents: string): BackupArchiveManifest {
 		// its own failure mode, and the entry name is what identifies the problem
 		throw new ClientError(`Archive manifest ${ARCHIVE_MANIFEST_ENTRY} is not valid JSON`);
 	}
+	return assertArchiveManifestShape(parsed);
+}
+
+/**
+ * The fields {@link assertArchiveRestorable} reads. Checked wherever a manifest enters, including
+ * one already deserialized from a completion manifest: a hand-edited or truncated `producer` would
+ * otherwise reach the gate and fail with a TypeError instead of the manifest error.
+ */
+export function assertArchiveManifestShape(parsed: any): BackupArchiveManifest {
 	if (!parsed || typeof parsed !== 'object' || !Number.isInteger(parsed.archive_schema_version)) {
 		throw new ClientError(`Archive manifest ${ARCHIVE_MANIFEST_ENTRY} is missing 'archive_schema_version'`);
 	}
@@ -195,8 +189,9 @@ export function parseArchiveManifest(contents: string): BackupArchiveManifest {
 	return parsed as BackupArchiveManifest;
 }
 
-/** Both checks fail closed on the unknown. */
+/** Refuse an archive this build cannot read. Both checks fail closed on the unknown. */
 export function assertArchiveRestorable(manifest: BackupArchiveManifest): void {
+	assertArchiveManifestShape(manifest);
 	if (manifest.archive_schema_version > ARCHIVE_SCHEMA_VERSION) {
 		throw new ClientError(
 			`This archive uses manifest schema version ${manifest.archive_schema_version}, but this Harper understands up to ${ARCHIVE_SCHEMA_VERSION}. ` +
@@ -212,7 +207,7 @@ export function assertArchiveRestorable(manifest: BackupArchiveManifest): void {
 	}
 }
 
-/** How an archive's provenance is reported back to the operator. */
+/** How an archive's provenance should be reported back to the operator. */
 export function describeArchiveProvenance(manifest: BackupArchiveManifest | null): Record<string, unknown> {
 	if (!manifest) return { identified: false };
 	return {

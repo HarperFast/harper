@@ -2,6 +2,7 @@
 
 import * as search from './search.ts';
 import * as AWSConnector from '../utility/AWS/AWSConnector.js';
+import * as awsSdkLoader from '../utility/AWS/awsSdkLoader.ts';
 import * as stream from 'stream';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as fs from 'fs-extra';
@@ -13,7 +14,6 @@ import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 
 import { streamAsJSON } from '../server/serverHelpers/JSONStream.ts';
-let { Upload } = require('@aws-sdk/lib-storage');
 import { toCsvStream } from '../server/serverHelpers/contentTypes.ts';
 
 const VALID_SEARCH_OPERATIONS = ['search_by_value', 'search_by_hash', 'sql', 'search_by_conditions'];
@@ -24,6 +24,13 @@ const LOCAL_JSON_EXPORT_MSG = 'Successfully exported JSON locally.';
 const LOCAL_CSV_EXPORT_MSG = 'Successfully exported CSV locally.';
 // Size is number of records
 const S3_JSON_EXPORT_CHUNK_SIZE = 1000;
+
+let Upload: any;
+
+function loadUpload() {
+	if (!Upload) ({ Upload } = awsSdkLoader.requireAwsSdk('@aws-sdk/lib-storage'));
+	return Upload;
+}
 
 // Promisified function
 const pSearchByHash = search.searchByHash;
@@ -222,6 +229,13 @@ export async function export_to_s3(exportObject: any) {
 		`called export_to_s3 to bucket: ${exportObject.s3.bucket} and query ${exportObject.search_operation.sql}`
 	);
 
+	loadUpload();
+	let s3 = await AWSConnector.getS3AuthObj(
+		exportObject.s3.aws_access_key_id,
+		exportObject.s3.aws_secret_access_key,
+		exportObject.s3.region
+	);
+
 	let data;
 	try {
 		data = await getRecords(exportObject);
@@ -230,11 +244,6 @@ export async function export_to_s3(exportObject: any) {
 		throw err;
 	}
 
-	let s3 = await AWSConnector.getS3AuthObj(
-		exportObject.s3.aws_access_key_id,
-		exportObject.s3.aws_secret_access_key,
-		exportObject.s3.region
-	);
 	let s3Name;
 	let passThrough = new stream.PassThrough();
 
@@ -287,7 +296,8 @@ export async function export_to_s3(exportObject: any) {
 
 	// Multipart upload to S3
 	// https://github.com/aws/aws-sdk-js-v3/tree/main/lib/lib-storage
-	const parallelUpload = new Upload({
+	const UploadCtor = loadUpload();
+	const parallelUpload = new UploadCtor({
 		client: s3,
 		params: { Bucket: exportObject.s3.bucket, Key: s3Name, Body: passThrough },
 	});

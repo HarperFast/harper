@@ -26,6 +26,7 @@ import {
 	retakeBranchIdentity,
 } from './databases.ts';
 import { replayLogs, replayTimeBudgetMs } from './replayLogs.ts';
+import { stampDatabaseDirectory } from './auditStore.ts';
 
 /**
  * Private per-application forks of a database, for running several variants of an application against
@@ -345,6 +346,7 @@ async function materializeBranch(
 		await base.createCheckpoint(staging);
 		report.progress();
 		await cloneBlobRoots(baseName, baseRoots, blobRoots, report.progress);
+		await stampDatabaseDirectory(staging, { carriesLog: false });
 		await writeFile(join(staging, COMPLETION_MARKER), JSON.stringify({ blobRoots } satisfies BranchCompletion));
 		await rename(staging, branchPath);
 		return blobRoots;
@@ -504,7 +506,7 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 					// The branch is closed first — it holds the path and store identity a retry needs — and
 					// a close failure must not leave the claim wedged in CREATING for the whole deadline.
 					try {
-						branch?.close();
+						await branch?.close();
 					} catch (closeError) {
 						logger.warn(`Error closing branch at ${branchPath} after a failed open`, closeError);
 					}
@@ -575,7 +577,7 @@ export async function closeBranchAt(branchPath: string): Promise<void> {
 	const pending = branchesByPath.get(branchPath);
 	branchesByPath.delete(branchPath);
 	const opened = await pending?.catch(() => null);
-	opened?.branch.close();
+	await opened?.branch.close();
 }
 
 /**
@@ -737,7 +739,7 @@ async function removeBranchAt(branchPath: string): Promise<void> {
 	const pending = branchesByPath.get(branchPath);
 	branchesByPath.delete(branchPath);
 	const opened = (await pending?.catch(() => null)) ?? null;
-	opened?.branch.close();
+	await opened?.branch.close();
 	await destroyBranchStorage(branchPath, opened);
 }
 

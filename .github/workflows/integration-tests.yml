@@ -89,7 +89,7 @@ jobs:
         run: npm install --ignore-scripts
 
       - name: Build
-        run: npm run build || true # we currently have type errors so just ignore that
+        run: npm run build
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -148,16 +148,37 @@ jobs:
           mkdir -p /tmp/harper-legacy-51
           npm install --ignore-scripts --prefix /tmp/harper-legacy-51 harper@5.1.22
 
+      - name: Install harper@5.3.0-beta.2 for pre-release upgrade tests
+        timeout-minutes: 5
+        run: |
+          mkdir -p /tmp/harper-legacy-530-prerelease
+          npm install --ignore-scripts --prefix /tmp/harper-legacy-530-prerelease harper@5.3.0-beta.2
+
+      # The SSH deploy-key suite (security/qa581-ssh-deploy-key) starts its own unprivileged sshd with
+      # an isolated config on a free loopback port; it only needs the binary. The runner image ships
+      # openssh-server, so the install runs only if an image change drops it.
+      - name: Ensure sshd for SSH deploy-key tests
+        timeout-minutes: 3
+        run: |
+          if [ ! -x /usr/sbin/sshd ]; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q --no-install-recommends openssh-server
+          fi
+          dpkg-query -W openssh-server
+
       - name: Run Integration Test Shard ${{ matrix.shard }}
         timeout-minutes: 15
         env:
           HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
           HARPER_LEGACY_VERSION_PATH: /tmp/harperdb-legacy/node_modules/harperdb
           HARPER_LEGACY_51_PATH: /tmp/harper-legacy-51/node_modules/harper/dist/bin/harper.js
+          HARPER_LEGACY_530_PRERELEASE_PATH: /tmp/harper-legacy-530-prerelease/node_modules/harper/dist/bin/harper.js
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
           # Linux runners have working inotify, so the file-watch-dependent TLS regression
           # tests (cert-key-reload) must run rather than skip — this pipeline owns #2382.
           HARPER_TEST_REQUIRE_FILE_WATCHERS: '1'
+          # Same for the SSH deploy-key regression test (#1795): fail, don't skip, without sshd.
+          HARPER_TEST_REQUIRE_SSHD: '1'
         run: |
           npm run test:integration:all -- --shard=${{ matrix.shard }}/6
 
@@ -191,7 +212,6 @@ jobs:
 
       - name: Build
         run: npm run build
-        continue-on-error: true # we currently have type errors so just ignore that
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -255,6 +275,9 @@ jobs:
           if-no-files-found: ignore
 
   run-integration-tests-bun:
+    # No legacy-harper-version provisioning: every suite reading HARPER_LEGACY_VERSION_PATH
+    # skips under HARPER_RUNTIME=bun (integrationTests/upgrade/4.x-upgrade.test.ts,
+    # qa606-upgrade-structgrowth.test.ts).
     name: Integration Tests ${{matrix.shard}}/6 (Bun)
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -277,7 +300,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.4.0
+          bun-version: 1.4.2
 
       - name: Download build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

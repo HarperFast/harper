@@ -14,7 +14,7 @@ import { handleHDBError, ClientError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 
 import { SchemaEventMsg } from '../server/threads/itc.js';
-import { getDatabases, dropTableMeta, isBranchIdentity } from '../resources/databases.ts';
+import { databaseDropRecoveryPending, getDatabases, dropTableMeta, isBranchIdentity } from '../resources/databases.ts';
 import { transformReq } from '../utility/common_utils.ts';
 import { server } from '../server/Server.ts';
 import { cleanupOrphans } from '../resources/blob.ts';
@@ -184,7 +184,7 @@ export async function dropSchema(dropSchemaObject: any) {
 	transformReq(dropSchemaObject);
 
 	let invalidSchemaMsg = await schemaMetadataValidator.checkSchemaExists(dropSchemaObject.schema);
-	if (invalidSchemaMsg) {
+	if (invalidSchemaMsg && !databaseDropRecoveryPending(dropSchemaObject.schema)) {
 		throw handleHDBError(
 			new Error(),
 			invalidSchemaMsg,
@@ -196,11 +196,6 @@ export async function dropSchema(dropSchemaObject: any) {
 	}
 
 	await harperBridge.dropSchema(dropSchemaObject);
-	// Await cross-worker propagation before returning success so no worker keeps serving the
-	// dropped schema (#1497).
-	await signalling.signalSchemaChange(
-		new SchemaEventMsg(process.pid, dropSchemaObject.operation, dropSchemaObject.schema)
-	);
 
 	let response = await server.replication.replicateOperation(dropSchemaObject);
 	response.message = `successfully deleted '${dropSchemaObject.schema}'`;

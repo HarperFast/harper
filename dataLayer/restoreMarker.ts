@@ -1,10 +1,10 @@
 'use strict';
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
-import { fsyncDirectory, writeFileDurably } from '../utility/durableFile.ts';
+import { fsyncDirectory, pathPresent, writeFileDurably } from '../utility/durableFile.ts';
 
 /**
  * Restore lock + marker protocol for RocksDB database restores (online operation and offline CLI),
@@ -41,6 +41,11 @@ import { fsyncDirectory, writeFileDurably } from '../utility/durableFile.ts';
  *   content or the complete new content, so a torn write can never replace a valid marker with one
  *   the scan reads as empty (and therefore honors as no block). An intact marker is also never
  *   rewritten at all — see `beginRestore`.
+ * - `<meta-dir>/<key>.dropping` — durable database-drop intent for one physical root. Every root in
+ *   a logical database receives its marker before any root is destroyed. Startup scans block marked
+ *   roots, and retrying the same drop removes remaining roots and the blob directories recorded for
+ *   their physical store identities before clearing the markers. The recorded identity is covered by
+ *   a digest, so damaged marker content fails closed instead of redirecting blob deletion.
  */
 
 // The backtick makes this an illegal database name (schemaRegex rejects `/` and backtick only), so
@@ -48,6 +53,7 @@ import { fsyncDirectory, writeFileDurably } from '../utility/durableFile.ts';
 export const RESTORE_META_DIR = '`restore`';
 export const RESTORE_LOCK_SUFFIX = '.lock';
 export const RESTORING_MARKER_SUFFIX = '.restoring';
+export const DROPPING_MARKER_SUFFIX = '.dropping';
 // Deliberately not a `.restoring` suffix: `scanBlockedRestores` selects markers by that suffix, and
 // a half-written temp must never be mistaken for one.
 const MARKER_TEMP_SUFFIX = '.tmp';
@@ -81,6 +87,10 @@ export function restoringMarkerPath(dbPath: string): string {
 	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + RESTORING_MARKER_SUFFIX);
 }
 
+export function droppingMarkerPath(dbPath: string): string {
+	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + DROPPING_MARKER_SUFFIX);
+}
+
 export type RestoreState = 'in-progress' | 'incomplete' | 'clear';
 /** The states that mean "do not load" — what `withRestoreExclusion` reports to its caller. */
 export type BlockedRestoreState = Exclude<RestoreState, 'clear'>;
@@ -90,7 +100,11 @@ export type BlockedRestoreState = Exclude<RestoreState, 'clear'>;
  * where `checkRestoreState` would report 'in-progress' rather than "a leftover marker is present".
  */
 export function restoreMarkerPresent(dbPath: string): boolean {
-	return existsSync(restoringMarkerPath(dbPath));
+	return pathPresent(restoringMarkerPath(dbPath));
+}
+
+export function databaseDropMarkerPresent(dbPath: string): boolean {
+	return pathPresent(droppingMarkerPath(dbPath));
 }
 
 /** The lock and (optional) marker held by a begin/acquire call, threaded back to complete/abandon. */
@@ -125,9 +139,9 @@ export type RestoreLock = {
  * before any destructive step, so a database without a marker has nothing to protect yet.
  */
 export function checkRestoreState(dbPath: string): RestoreState {
-	if (!existsSync(restoringMarkerPath(dbPath))) return 'clear';
+	if (!pathPresent(restoringMarkerPath(dbPath))) return 'clear';
 	const lockPath = restoreLockPath(dbPath);
-	if (existsSync(lockPath)) {
+	if (pathPresent(lockPath)) {
 		// A SHARED probe answers exactly the question being asked — "is a restore holding this
 		// exclusively?" — and coexists with every other reader. An exclusive probe answered the same
 		// question by conflicting with all of them, so concurrent rescans, and now concurrent database
@@ -163,19 +177,19 @@ export function withRestoreExclusion<T>(dbPath: string, open: () => T, blocked: 
 		// to is not a reason to refuse to load anything from it — that is a strictly worse outcome than
 		// the check-then-open this replaces. Fall back to the marker check alone, which needs only a
 		// read, and which is what every caller did before.
-		return existsSync(restoringMarkerPath(dbPath)) ? blocked('incomplete') : open();
+		return pathPresent(restoringMarkerPath(dbPath)) ? blocked('incomplete') : open();
 	}
 	// A shared acquire fails only against an exclusive holder — a restore. If the lock file does not
 	// even exist, nothing can be holding it, so the failure is the filesystem's and the fallback
 	// applies rather than reporting every database under the root as being restored.
 	if (token === 0) {
-		if (!existsSync(restoreLockPath(dbPath))) {
-			return existsSync(restoringMarkerPath(dbPath)) ? blocked('incomplete') : open();
+		if (!pathPresent(restoreLockPath(dbPath))) {
+			return pathPresent(restoringMarkerPath(dbPath)) ? blocked('incomplete') : open();
 		}
 		return blocked('in-progress');
 	}
 	try {
-		if (existsSync(restoringMarkerPath(dbPath))) return blocked('incomplete');
+		if (pathPresent(restoringMarkerPath(dbPath))) return blocked('incomplete');
 		return open();
 	} finally {
 		fileLockRelease(token);
@@ -183,12 +197,14 @@ export function withRestoreExclusion<T>(dbPath: string, open: () => T, blocked: 
 }
 
 /**
- * Take the per-database restore lock without writing a marker. Used by `dropDatabase` so a drop and
- * a restore serialize on the same primitive: whichever takes the lock first runs to completion; the
- * other gets a 409. Throws (statusCode 409) if the lock is already held.
+ * Take the per-database restore lock without writing a marker. Restore and drop build their durable
+ * protocols on this shared exclusion primitive. Throws (statusCode 409) if the lock is already held.
  */
 export function acquireRestoreLock(dbPath: string): RestoreLock {
-	mkdirSync(restoreMetaDir(dbPath), { recursive: true });
+	const metaDir = restoreMetaDir(dbPath);
+	const createMetaDir = !existsSync(metaDir);
+	mkdirSync(metaDir, { recursive: true });
+	if (createMetaDir) fsyncDirectory(dirname(metaDir));
 	const token = tryFileLock(restoreLockPath(dbPath));
 	if (token === 0) {
 		const error: any = new Error(`Restore already in progress for database at ${dbPath}`);
@@ -220,15 +236,20 @@ function markerIsIntact(markerPath: string, dbPath: string): boolean {
 }
 
 /**
- * Publish the restoring marker atomically. The caller must already hold the restore lock, which is
+ * Publish a restore or drop marker atomically. The caller must already hold the restore lock, which is
  * what makes the fixed temp name safe: only one writer per database can exist at a time, so a temp
  * left by an earlier crash is this database's own debris and is simply overwritten.
  */
+function publishMarker(dbPath: string, markerPath: string, content: string): void {
+	writeFileDurably(markerPath, content, restoreMetaKey(dbPath) + MARKER_TEMP_SUFFIX);
+}
+
 function publishRestoringMarker(dbPath: string): void {
-	// first line is the database directory name so the startup scan can map this marker back to the
-	// database it blocks without reversing the hashed key
-	const contents = `${basename(dbPath)}\nrestore started ${new Date().toISOString()}\n`;
-	writeFileDurably(restoringMarkerPath(dbPath), contents, restoreMetaKey(dbPath) + MARKER_TEMP_SUFFIX);
+	publishMarker(
+		dbPath,
+		restoringMarkerPath(dbPath),
+		`${basename(dbPath)}\nrestore started ${new Date().toISOString()}\n`
+	);
 }
 
 /**
@@ -236,21 +257,29 @@ function publishRestoringMarker(dbPath: string): void {
  * destructive step. Returns the lock (with `preexisting` set when a marker was already present, so
  * a failed recovery attempt knows not to clear it). Throws (statusCode 409) if another restore
  * already holds the lock.
+ * `beforePublishMarker` runs synchronously under the lock, after admission but before publication,
+ * so a caller can durably claim its source before a crash can leave a restoring marker behind.
  *
  * An intact marker is left exactly as it is. A recovery attempt runs over a directory an earlier
  * restore may have half-purged, so the marker it finds is the only thing keeping that directory
  * from loading as healthy; rewriting it buys nothing (the content it would write is the content
  * already there) and risks everything.
  */
-export function beginRestore(dbPath: string): RestoreLock {
+export function beginRestore(dbPath: string, beforePublishMarker?: () => void): RestoreLock {
 	const markerPath = restoringMarkerPath(dbPath);
 	const lock = acquireRestoreLock(dbPath);
 	// Sampled while holding the lock, not before it: a restore that waited out an earlier one would
 	// otherwise carry the earlier run's "no marker" reading, and on its own pre-destruction failure
 	// clear the marker protecting a directory that run had already half-purged.
-	const preexisting = existsSync(markerPath);
 	try {
-		if (!preexisting || !markerIsIntact(markerPath, dbPath)) publishRestoringMarker(dbPath);
+		lock.preexisting = pathPresent(markerPath);
+		if (databaseDropMarkerPresent(dbPath)) {
+			const error: any = new Error(`Database at ${dbPath} has an incomplete drop; retry drop_database first`);
+			error.statusCode = 409;
+			throw error;
+		}
+		beforePublishMarker?.();
+		if (!lock.preexisting || !markerIsIntact(markerPath, dbPath)) publishRestoringMarker(dbPath);
 		// An intact marker is kept, but its durability is not assumed: the publisher that wrote it may
 		// have been interrupted between the rename and this flush, which would leave the directory
 		// entry — the thing the startup scan reads — still only in the page cache.
@@ -259,20 +288,24 @@ export function beginRestore(dbPath: string): RestoreLock {
 		fileLockRelease(lock.token);
 		throw error;
 	}
-	return { ...lock, preexisting };
+	return lock;
 }
 
 /**
  * Mark the restore successful: delete the marker (while still holding the lock), then release
  * the lock.
  */
+export function clearRestoringMarker(lock: RestoreLock): void {
+	unlinkSync(restoringMarkerPath(lock.dbPath));
+	// fsync the metadata directory so the marker's *removal* is durable — symmetric with the
+	// creation fsync in beginRestore. Without it, a power loss could resurrect the marker's
+	// directory entry and misclassify a fully-restored database as incomplete.
+	fsyncDirectory(restoreMetaDir(lock.dbPath));
+}
+
 export function completeRestore(lock: RestoreLock): void {
 	try {
-		unlinkSync(restoringMarkerPath(lock.dbPath));
-		// fsync the metadata directory so the marker's *removal* is durable — symmetric with the
-		// creation fsync in beginRestore. Without it, a power loss could resurrect the marker's
-		// directory entry and misclassify a fully-restored database as incomplete.
-		fsyncDirectory(restoreMetaDir(lock.dbPath));
+		clearRestoringMarker(lock);
 	} finally {
 		fileLockRelease(lock.token);
 	}
@@ -301,6 +334,214 @@ export function clearRestoreMarker(lock: RestoreLock): void {
 	} finally {
 		fileLockRelease(lock.token);
 	}
+}
+
+export type DatabaseDropLock = RestoreLock & {
+	databaseName: string;
+	blobDatabaseName: string;
+	blobPaths: string[];
+};
+
+function validDatabaseDropMarkerField(value: string | undefined): value is string {
+	if (!value) return false;
+	for (const character of value) {
+		const code = character.charCodeAt(0);
+		if (code <= 0x1f || code === 0x7f) return false;
+	}
+	return true;
+}
+
+function validBlobDatabaseName(databaseName: string | undefined): databaseName is string {
+	return (
+		validDatabaseDropMarkerField(databaseName) &&
+		databaseName.length <= 250 &&
+		databaseName !== '.' &&
+		databaseName !== '..' &&
+		!databaseName.includes('/') &&
+		!databaseName.includes('\\') &&
+		!databaseName.includes('`')
+	);
+}
+
+function encodeBlobPaths(blobPaths: string[]): string {
+	return Buffer.from(JSON.stringify(blobPaths)).toString('base64url');
+}
+
+function decodeBlobPaths(encoded: string | undefined): string[] | undefined {
+	try {
+		const blobPaths = JSON.parse(Buffer.from(encoded ?? '', 'base64url').toString());
+		if (
+			!Array.isArray(blobPaths) ||
+			!blobPaths.every((blobPath) => typeof blobPath === 'string' && isAbsolute(blobPath))
+		)
+			return undefined;
+		return blobPaths;
+	} catch {
+		return undefined;
+	}
+}
+
+function databaseDropMarkerDigest(
+	rootName: string,
+	databaseName: string,
+	blobDatabaseName: string,
+	encodedBlobPaths: string
+): string {
+	return createHash('sha256')
+		.update('database-drop\0')
+		.update(rootName)
+		.update('\0')
+		.update(databaseName)
+		.update('\0')
+		.update(blobDatabaseName)
+		.update('\0')
+		.update(encodedBlobPaths)
+		.digest('hex');
+}
+
+function readDatabaseDropMarker(
+	dbPath: string
+): { databaseName: string; blobDatabaseName: string; blobPaths: string[] } | undefined {
+	try {
+		const [rootName, databaseName, blobDatabaseName, encodedBlobPaths, digest] = readFileSync(
+			droppingMarkerPath(dbPath),
+			'utf8'
+		).split('\n', 5);
+		const blobPaths = decodeBlobPaths(encodedBlobPaths);
+		if (
+			rootName !== basename(dbPath) ||
+			!validDatabaseDropMarkerField(databaseName) ||
+			!validBlobDatabaseName(blobDatabaseName) ||
+			!blobPaths ||
+			digest !== databaseDropMarkerDigest(rootName, databaseName, blobDatabaseName, encodedBlobPaths)
+		)
+			return undefined;
+		return { databaseName, blobDatabaseName, blobPaths };
+	} catch {
+		return undefined;
+	}
+}
+
+export function beginDatabaseDrop(
+	dbPath: string,
+	databaseName: string,
+	blobDatabaseName = databaseName,
+	blobPaths: string[] = []
+): DatabaseDropLock {
+	const rootName = basename(dbPath);
+	blobPaths = [...new Set(blobPaths.map((blobPath) => resolve(blobPath)))];
+	if (!validDatabaseDropMarkerField(rootName) || !validDatabaseDropMarkerField(databaseName)) {
+		const error: any = new Error(`Database drop marker identity for '${databaseName}' is invalid`);
+		error.statusCode = 409;
+		throw error;
+	}
+	if (!validBlobDatabaseName(blobDatabaseName)) {
+		const error: any = new Error(`Database drop blob identity for '${databaseName}' is invalid`);
+		error.statusCode = 409;
+		throw error;
+	}
+	const markerPath = droppingMarkerPath(dbPath);
+	const lock = acquireRestoreLock(dbPath);
+	const preexisting = existsSync(markerPath);
+	try {
+		if (restoreMarkerPresent(dbPath)) {
+			const error: any = new Error(
+				`Database '${databaseName}' has an incomplete restore; rerun restore_backup before dropping it`
+			);
+			error.statusCode = 409;
+			throw error;
+		}
+		if (preexisting) {
+			const marker = readDatabaseDropMarker(dbPath);
+			if (marker?.databaseName !== databaseName) {
+				const error: any = new Error(`Database drop marker for '${databaseName}' is invalid at ${markerPath}`);
+				error.statusCode = 409;
+				throw error;
+			}
+			blobDatabaseName = marker.blobDatabaseName;
+			blobPaths = marker.blobPaths;
+			fsyncDirectory(restoreMetaDir(dbPath));
+		} else {
+			const encodedBlobPaths = encodeBlobPaths(blobPaths);
+			publishMarker(
+				dbPath,
+				markerPath,
+				`${rootName}\n${databaseName}\n${blobDatabaseName}\n${encodedBlobPaths}\n${databaseDropMarkerDigest(rootName, databaseName, blobDatabaseName, encodedBlobPaths)}\ndrop started ${new Date().toISOString()}\n`
+			);
+		}
+	} catch (error) {
+		fileLockRelease(lock.token);
+		throw error;
+	}
+	return { ...lock, preexisting, databaseName, blobDatabaseName, blobPaths };
+}
+
+function removeDatabaseDropMarker(lock: DatabaseDropLock): void {
+	const markerPath = droppingMarkerPath(lock.dbPath);
+	if (existsSync(markerPath)) {
+		unlinkSync(markerPath);
+		fsyncDirectory(restoreMetaDir(lock.dbPath));
+	}
+}
+
+export function completeDatabaseDrop(lock: DatabaseDropLock): void {
+	try {
+		fsyncDirectory(dirname(lock.dbPath));
+		for (const blobPath of lock.blobPaths) {
+			const parent = dirname(blobPath);
+			if (existsSync(parent)) fsyncDirectory(parent);
+		}
+		removeDatabaseDropMarker(lock);
+	} finally {
+		fileLockRelease(lock.token);
+	}
+}
+
+export function cancelDatabaseDrop(lock: DatabaseDropLock): void {
+	try {
+		if (!lock.preexisting) removeDatabaseDropMarker(lock);
+	} finally {
+		fileLockRelease(lock.token);
+	}
+}
+
+export function abandonDatabaseDrop(lock: DatabaseDropLock): void {
+	fileLockRelease(lock.token);
+}
+
+export type BlockedDatabaseDrop = {
+	rootPath: string;
+	databaseName?: string;
+	markerPath: string;
+};
+
+export function scanBlockedDatabaseDrops(databasesRoot: string): BlockedDatabaseDrop[] {
+	const metaDir = join(databasesRoot, RESTORE_META_DIR);
+	if (!existsSync(metaDir)) return [];
+	const rootsByMarker = new Map(
+		readdirSync(databasesRoot, { withFileTypes: true })
+			.filter((entry) => entry.name !== RESTORE_META_DIR)
+			.map((entry) => [restoreMetaKey(join(databasesRoot, entry.name)) + DROPPING_MARKER_SUFFIX, entry.name])
+	);
+	const blocked: BlockedDatabaseDrop[] = [];
+	for (const entry of readdirSync(metaDir, { withFileTypes: true })) {
+		if (!entry.isFile() || !entry.name.endsWith(DROPPING_MARKER_SUFFIX)) continue;
+		const markerPath = join(metaDir, entry.name);
+		let rootName = rootsByMarker.get(entry.name);
+		if (!rootName) {
+			try {
+				const [recordedRootName] = readFileSync(markerPath, 'utf8').split('\n', 1);
+				if (validDatabaseDropMarkerField(recordedRootName)) rootName = recordedRootName;
+			} catch {
+				continue;
+			}
+		}
+		if (!rootName) continue;
+		const rootPath = join(databasesRoot, rootName);
+		if (droppingMarkerPath(rootPath) !== markerPath) continue;
+		blocked.push({ rootPath, databaseName: readDatabaseDropMarker(rootPath)?.databaseName, markerPath });
+	}
+	return blocked;
 }
 
 /**

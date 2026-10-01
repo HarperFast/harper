@@ -5,8 +5,12 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const {
+	DatabaseTransaction,
 	getOutstandingCommits,
 	trackOutstandingCommit,
+	commitTrackedRocksTransaction,
+	databaseCommitsSuspended,
+	suspendDatabaseCommits,
 	setMaxOutstandingTxnDuration,
 } = require('#src/resources/DatabaseTransaction');
 const { waitFor } = require('../waitFor');
@@ -80,6 +84,127 @@ describe('Outstanding commit tracking', () => {
 		if (before === 0) {
 			assert.equal(typeof outstanding.oldestAgeMs, 'number', 'a tracked commit should report an age');
 			assert.ok(outstanding.oldestAgeMs >= 0, 'a tracked commit should report a non-negative age');
+		}
+	});
+
+	it('suspends a database root until its submitted commits drain', async function () {
+		if (isLMDB) return;
+		const rootStore = {};
+		const unrelatedRoot = {};
+		let settle;
+		const pending = new Promise((resolve) => (settle = resolve));
+		trackOutstandingCommit(pending, { rootStore });
+		const first = suspendDatabaseCommits([rootStore]);
+		const second = suspendDatabaseCommits([rootStore]);
+		let drained = false;
+		const drain = first.waitForDrain().then(() => (drained = true));
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(drained, false);
+		assert.strictEqual(databaseCommitsSuspended(rootStore), true);
+		assert.strictEqual(databaseCommitsSuspended(unrelatedRoot), false);
+		settle();
+		await drain;
+		first.release();
+		first.release();
+		assert.strictEqual(databaseCommitsSuspended(rootStore), true);
+		second.release();
+		assert.strictEqual(databaseCommitsSuspended(rootStore), false);
+		await assertAllUntracked('the drained per-database commit should be untracked');
+	});
+
+	it('tracks raw RocksDB commits and rejects submissions after suspension', async function () {
+		if (isLMDB) return;
+		const rootStore = { databaseName: 'raw-commit-test' };
+		const store = { rootStore, name: 'raw' };
+		let settle;
+		const pending = new Promise((resolve) => (settle = resolve));
+		const submitted = commitTrackedRocksTransaction({ commit: () => pending }, store);
+		const suspension = suspendDatabaseCommits([rootStore]);
+		let drained = false;
+		const drain = suspension.waitForDrain().then(() => (drained = true));
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(drained, false);
+
+		let aborted = false;
+		await assert.rejects(
+			commitTrackedRocksTransaction(
+				{
+					commit: () => assert.fail('a suspended commit must not be submitted'),
+					abort: () => (aborted = true),
+				},
+				store
+			),
+			(error) => error.code === 'DATABASE_CLOSING'
+		);
+		assert.strictEqual(aborted, true);
+
+		settle();
+		await Promise.all([submitted, drain]);
+		suspension.release();
+		await assertAllUntracked('raw commits should use the shared outstanding-commit queue');
+	});
+
+	it('bounds commit draining without releasing admission implicitly', async function () {
+		if (isLMDB) return;
+		const rootStore = { databaseName: 'drain-timeout-test' };
+		let settle;
+		const pending = new Promise((resolve) => (settle = resolve));
+		trackOutstandingCommit(pending, { rootStore });
+		const suspension = suspendDatabaseCommits([rootStore]);
+		await assert.rejects(
+			suspension.waitForDrain({ deadline: Date.now() + 10, databaseName: rootStore.databaseName }),
+			(error) => error.code === 'DATABASE_DRAIN_TIMEOUT' && error.retryable === true
+		);
+		assert.strictEqual(databaseCommitsSuspended(rootStore), true);
+		suspension.release();
+		assert.strictEqual(databaseCommitsSuspended(rootStore), false);
+		settle();
+		await pending;
+		await assertAllUntracked('a timed-out drain should still unlink a later-settled commit');
+	});
+
+	it('aborts a write staged before its database commit barrier', async function () {
+		if (isLMDB) return;
+		const rootStore = TrackA.primaryStore.rootStore;
+		let suspension;
+		try {
+			await assert.rejects(
+				transaction({}, async (context) => {
+					await TrackA.put(7, { name: 'staged-before-close' }, context);
+					suspension = suspendDatabaseCommits([rootStore]);
+				}),
+				(error) => {
+					assert.strictEqual(error.code, 'DATABASE_CLOSING');
+					assert.strictEqual(error.retryable, true);
+					return true;
+				}
+			);
+		} finally {
+			suspension?.release();
+		}
+		assert.strictEqual(await TrackA.get(7), null);
+		await assertAllUntracked('the rejected pre-barrier write should leave no submitted commit');
+	});
+
+	it('aborts a direct commit once when its database is suspended', function () {
+		if (isLMDB) return;
+		const rootStore = { databaseName: 'direct-commit-suspension' };
+		const txn = new DatabaseTransaction();
+		let aborted = 0;
+		txn.writes.push({ store: { rootStore } });
+		txn.transaction = {
+			commitSync: () => assert.fail('a suspended direct commit must not be submitted'),
+			abort: () => aborted++,
+		};
+		const suspension = suspendDatabaseCommits([rootStore]);
+		try {
+			assert.throws(
+				() => txn.directCommitSync(),
+				(error) => error.code === 'DATABASE_CLOSING'
+			);
+			assert.strictEqual(aborted, 1);
+		} finally {
+			suspension.release();
 		}
 	});
 

@@ -3,6 +3,7 @@ import { stat, readdir } from 'node:fs/promises';
 import { Readable, pipeline } from 'node:stream';
 import tar from 'tar-fs';
 import { createGzip } from 'node:zlib';
+import { DEPLOYMENT_PROVENANCE_FILE } from './deploymentProvenance.ts';
 
 interface PackageOptions {
 	skip_node_modules?: boolean;
@@ -42,9 +43,12 @@ const INSTALL_OWNED_PATH = join('node_modules', 'harper');
  * excluded the whole tree. Shared by the stream packer and the directory walk so they cannot diverge.
  */
 function isExcluded(directory: string, fullPath: string, options: PackageOptions): boolean {
+	const name = basename(fullPath);
 	// Unconditional, including under `skip_symlinks`: packed literally, the link ships an absolute path to
 	// the packaging host's install root, which arrives dangling.
-	if (basename(fullPath) === 'harper' && relative(directory, fullPath) === INSTALL_OWNED_PATH) return true;
+	if (name === 'harper' && relative(directory, fullPath) === INSTALL_OWNED_PATH) return true;
+	// A package made from a live tree would otherwise carry that release's deployment id into the next one.
+	if (name === DEPLOYMENT_PROVENANCE_FILE && relative(directory, fullPath) === DEPLOYMENT_PROVENANCE_FILE) return true;
 	if (!options.skip_node_modules) return false;
 	const rel = relative(directory, fullPath);
 	return rel.split(sep).includes('node_modules') || rel.includes(WEBPACK_CACHE_SEGMENT);

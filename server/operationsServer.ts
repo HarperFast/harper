@@ -59,7 +59,7 @@ async function operationsServer(options: ServerOptions & { resources?: Resources
 		global.clustering_on = false;
 		global.isMaster = cluster.isMaster;
 
-		await setUp();
+		setUp();
 		// if we have a secure port, need to use the secure HTTP server for fastify (it can be used for HTTP as well)
 		const isHttps = options.securePort > 0;
 
@@ -121,10 +121,9 @@ async function operationsServer(options: ServerOptions & { resources?: Resources
 /**
  * Makes sure global values are set and that clustering connections are set/ready before server starts.
  */
-async function setUp() {
+function setUp() {
 	harperLogger.trace('Configuring Harper process.');
 	globalSchema.setSchemaDataToGlobal();
-	return userSchema.setUsersWithRolesCache();
 }
 
 export interface ImpersonatePayload {

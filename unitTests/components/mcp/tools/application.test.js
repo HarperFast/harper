@@ -1197,3 +1197,214 @@ describe('mcp/tools/application — custom mcpResources opt-in (#1609)', () => {
 		assert.equal(matchCustomResource('application', 'docs:///index'), undefined);
 	});
 });
+
+describe('mcp/tools/application — structuredContent honors the ADVERTISED outputSchema', () => {
+	// Assert both contracts: the base CallToolResult record rule AND the per-tool outputSchema
+	// a client caches from tools/list.
+	const nodePath = require('node:path');
+	const { CallToolResultSchema } = require('@modelcontextprotocol/sdk/types.js');
+	// The SDK's `exports` map blocks this subpath, so resolve it relative to a public entry
+	// rather than off the process cwd.
+	const AJV_PROVIDER = nodePath.join(
+		nodePath.dirname(require.resolve('@modelcontextprotocol/sdk/types.js')),
+		'validation',
+		'ajv-provider.js'
+	);
+	const { AjvJsonSchemaValidator } = require(AJV_PROVIDER);
+
+	/** Assert a result is legal both as a CallToolResult and against the tool's own outputSchema. */
+	function assertHonorsContract(tool, res) {
+		const parsed = CallToolResultSchema.safeParse(res);
+		assert.ok(parsed.success, `CallToolResult: ${parsed.success ? '' : JSON.stringify(parsed.error?.issues)}`);
+		if (!tool.outputSchema || res.isError) return; // the SDK skips schema validation for error results
+		assert.ok(res.structuredContent, `${tool.name} advertises an outputSchema so it must return structuredContent`);
+		// The client validates what came off the wire, so round-trip before validating: a
+		// `toJSON` makes the in-process object and the transmitted one different values.
+		const onTheWire = JSON.parse(JSON.stringify(res.structuredContent));
+		const verdict = new AjvJsonSchemaValidator().getValidator(tool.outputSchema)(onTheWire);
+		assert.ok(
+			verdict.valid,
+			`${tool.name} structuredContent must match its advertised outputSchema: ${verdict.errorMessage}`
+		);
+	}
+
+	function productResource(staticHandlers, verbs) {
+		return makeTableResource({
+			databaseName: 'data',
+			tableName: 'product',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			...(verbs ? { verbs } : {}),
+			staticHandlers,
+		});
+	}
+
+	// `patch_` only registers when the Resource has no `put` (registration is an
+	// else-if), so the patch cases need a put-less Resource.
+	const PATCH_ONLY_VERBS = ['get', 'patch', 'delete', 'search', 'post'];
+
+	function register(Resource, name = 'Product') {
+		_setResourcesForTest(makeRegistry([[name, { Resource }]]));
+		registerApplicationTools();
+	}
+
+	const CTX = { user: SUPER, profile: 'application', sessionId: 's' };
+
+	beforeEach(() => {
+		_resetRegistryForTest();
+		_resetPromptRegistryForTest();
+		_setRequestTargetForTest(FakeRequestTarget);
+	});
+
+	afterEach(() => {
+		_resetRegistryForTest();
+		_resetPromptRegistryForTest();
+		_setResourcesForTest(undefined);
+		_setRequestTargetForTest(undefined);
+		_resetApplicationToolsRegisteredForTest();
+	});
+
+	it('get_ rejects an array as a contract error instead of advertising a schema it breaks', async () => {
+		register(productResource({ get: async () => [{ id: '1' }, { id: '2' }] }));
+		const tool = getTool('get_Product');
+		const res = await tool.handler({ id: '1' }, CTX);
+
+		assert.equal(res.isError, true, 'an array from a schema-bearing verb is a contract error');
+		assert.equal(res.structuredContent, undefined, 'no structuredContent we know violates our own schema');
+		const payload = JSON.parse(res.content[0].text);
+		assert.equal(payload.kind, 'harper_error');
+		assert.match(payload.message, /outputSchema/, 'the message names the real problem');
+		assert.match(payload.message, /static outputSchemas\.get/, 'and the remedy');
+		assertHonorsContract(tool, res);
+	});
+
+	it('every schema-bearing generated verb rejects an array the same way', async () => {
+		const cases = [
+			['get_Product', { get: async () => [] }, { id: '1' }, 'get'],
+			['create_Product', { post: async () => [] }, { name: 'x' }, 'create'],
+			['update_Product', { put: async () => [] }, { id: '1', name: 'x' }, 'update'],
+			['patch_Product', { patch: async () => [] }, { id: '1', name: 'x' }, 'patch', PATCH_ONLY_VERBS],
+			['delete_Product', { delete: async () => [] }, { id: '1' }, 'delete'],
+		];
+		for (const [toolName, handlers, args, verb, verbs] of cases) {
+			_resetRegistryForTest();
+			_resetApplicationToolsRegisteredForTest();
+			register(productResource(handlers, verbs));
+			const tool = getTool(toolName);
+			assert.ok(tool, `${toolName} should be registered`);
+			assert.ok(tool.outputSchema, `${toolName} should advertise an outputSchema`);
+			const res = await tool.handler(args, CTX);
+			assert.equal(res.isError, true, toolName);
+			assert.match(JSON.parse(res.content[0].text).message, new RegExp(`static outputSchemas\\.${verb}`), toolName);
+		}
+	});
+
+	it('the normal (non-array) results of every schema-bearing verb match their advertised schema', async () => {
+		const cases = [
+			['get_Product', {}, { id: '1' }],
+			['create_Product', { post: async () => 'new-1' }, { name: 'x' }],
+			['update_Product', { put: async () => undefined }, { id: '1', name: 'x' }],
+			['patch_Product', { patch: async () => undefined }, { id: '1', name: 'x' }, PATCH_ONLY_VERBS],
+			['delete_Product', { delete: async () => true }, { id: '1' }],
+		];
+		for (const [toolName, handlers, args, verbs] of cases) {
+			_resetRegistryForTest();
+			_resetApplicationToolsRegisteredForTest();
+			register(productResource(handlers, verbs));
+			const tool = getTool(toolName);
+			assert.ok(tool, `${toolName} should be registered`);
+			const res = await tool.handler(args, CTX);
+			assert.equal(res.isError, undefined, `${toolName}: ${res.content?.[0]?.text}`);
+			assertHonorsContract(tool, res);
+		}
+	});
+
+	it('classifies by the SERIALIZED form, so a toJSON returning an array is caught too', async () => {
+		// `Array.isArray` on the raw value misses this: the wrapper keys on what reaches the
+		// wire, and `{ results: [...] }` fails the derived record schema either way.
+		register(productResource({ get: async () => ({ toJSON: () => [{ id: 'a' }, { id: 'b' }] }) }));
+		const tool = getTool('get_Product');
+		const res = await tool.handler({ id: 'a' }, CTX);
+
+		assert.equal(res.isError, true, 'a toJSON-array is the same contract error as a bare array');
+		assert.equal(res.structuredContent, undefined);
+		assert.match(JSON.parse(res.content[0].text).message, /static outputSchemas\.get/);
+		assertHonorsContract(tool, res);
+	});
+
+	it('a toJSON returning an object is untouched by the guard', async () => {
+		// The mirror of the above: classification must not over-trigger on `toJSON` itself.
+		register(productResource({ get: async () => ({ toJSON: () => ({ id: 'a', name: 'x' }) }) }));
+		const tool = getTool('get_Product');
+		const res = await tool.handler({ id: 'a' }, CTX);
+
+		assert.equal(res.isError, undefined, res.content?.[0]?.text);
+		assert.deepEqual(JSON.parse(JSON.stringify(res.structuredContent)), { id: 'a', name: 'x' });
+		assertHonorsContract(tool, res);
+	});
+
+	it('an authored outputSchemas.<verb> owns the contract, so its array is wrapped, not rejected', async () => {
+		const Product = productResource({ get: async () => [{ id: '1' }] });
+		Product.outputSchemas = {
+			get: {
+				type: 'object',
+				properties: { results: { type: 'array' } },
+				required: ['results'],
+				additionalProperties: false,
+			},
+		};
+		register(Product);
+		const tool = getTool('get_Product');
+		const res = await tool.handler({ id: '1' }, CTX);
+
+		assert.equal(res.isError, undefined, `authored schema should govern: ${res.content?.[0]?.text}`);
+		assert.deepEqual(res.structuredContent, { results: [{ id: '1' }] });
+		assertHonorsContract(tool, res);
+	});
+
+	// `buildOutputSchemas` (defineResource.ts) keys by HTTP verb, so a code-first resource declares
+	// `post`, not `create`. Every other test here keys by the MCP verb and so only ever exercises the
+	// first half of `schemas?.[verb] ?? schemas?.[CONTRACT_VERB[verb]]`.
+	it('an authored outputSchemas keyed by HTTP verb owns the contract for its MCP verb', async () => {
+		const Product = productResource({ post: async () => [{ id: '1' }] });
+		Product.outputSchemas = {
+			post: {
+				type: 'object',
+				properties: { results: { type: 'array' } },
+				required: ['results'],
+				additionalProperties: false,
+			},
+		};
+		register(Product);
+		const tool = getTool('create_Product');
+		const res = await tool.handler({ name: 'x' }, CTX);
+
+		assert.equal(res.isError, undefined, `outputSchemas.post should govern create_: ${res.content?.[0]?.text}`);
+		assert.deepEqual(res.structuredContent, { results: [{ id: '1' }] });
+	});
+
+	it('search_ advertises no outputSchema and keeps its { rows } envelope', async () => {
+		register(productResource({}));
+		const tool = getTool('search_Product');
+		assert.equal(tool.outputSchema, undefined, 'search_ deliberately advertises no outputSchema');
+		const res = await tool.handler({}, CTX);
+		assert.deepEqual(res.structuredContent, { rows: [{ id: '1' }, { id: '2' }] });
+		assertHonorsContract(tool, res);
+	});
+
+	it('a custom author tool advertises no outputSchema, so an array still wraps as { results }', async () => {
+		class Recommendations {
+			async recommendSimilar() {
+				return [{ id: 'a' }, { id: 'b' }];
+			}
+		}
+		Recommendations.mcpTools = [{ name: 'recommend_similar', method: 'recommendSimilar' }];
+		register(Recommendations, 'Recommendations');
+		const tool = getTool('recommend_similar');
+		assert.equal(tool.outputSchema, undefined);
+		const res = await tool.handler({}, CTX);
+
+		assert.deepEqual(res.structuredContent, { results: [{ id: 'a' }, { id: 'b' }] });
+		assert.deepEqual(JSON.parse(res.content[0].text), [{ id: 'a' }, { id: 'b' }]);
+		assertHonorsContract(tool, res);
+	});
+});

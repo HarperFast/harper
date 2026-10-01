@@ -873,15 +873,14 @@ function transactional(
 		// opposite treatment:
 		//  - committed: the prior call ran to completion normally. Safe to silently start a fresh
 		//    transaction for this independent call (the case above).
-		//  - aborted due to exceeding storage.maxTransactionOpenTime (#1411, DatabaseTransaction.ts
-		//    abortDueToTimeout(), marked via the `timedOut` poison flag): the whole logical operation
+		//  - poisoned (`timedOut`, #1411; or `disconnected`, harper#2001): the whole logical operation
 		//    must fail atomically, not have this write quietly land on a brand-new transaction while
 		//    the earlier write(s) were rolled back. Joining the poisoned transaction here (instead of
-		//    starting fresh) makes the write throw transactionOpenTooLongError via addWrite()/commit()'s
-		//    poison check, correctly propagating the abort to the caller. See
+		//    starting fresh) makes the write throw transactionOpenTooLongError/requestAbortedError via
+		//    addWrite()/commit()'s poison check, correctly propagating the abort to the caller. See
 		//    integrationTests/resources/txn-overtime-atomicity.test.ts.
-		if (isJoinableScope(context?.transaction) || context?.transaction?.timedOut) {
-			// we are already in a transaction (or it was poisoned by a timeout abort and must fail), proceed
+		if (isJoinableScope(context?.transaction) || context?.transaction?.timedOut || context?.transaction?.disconnected) {
+			// we are already in a transaction (or it was poisoned and must fail), proceed
 			const resource = this.getResource(query, context, resourceOptions);
 			return resource.then
 				? resource.then(authorizeActionOnResource)
@@ -1054,7 +1053,7 @@ function registerLiveSubscriptionForContext(subscription: any, resource: any, ad
 				// created later). Expiry (authExpiresAt above) is its only revocation.
 				fresh = user;
 			} else {
-				// Re-fetch current user state — the user/role cache is rebuilt on mutations — so a dropped or
+				// Re-read current user state from hdb_user/hdb_role, so a dropped or
 				// role-stripped user no longer authorizes.
 				const { findAndValidateUser } = require('../security/user');
 				fresh = await findAndValidateUser(username, undefined, false);

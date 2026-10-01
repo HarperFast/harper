@@ -994,13 +994,33 @@ function cleanupRemovedEnvVar(
  * place (e.g., during clone / pre-install).
  */
 export function composeConfigFromEnv(base: ConfigObject = {}): ConfigObject {
+	return composeEnvLayers(['HARPER_DEFAULT_CONFIG'], base, ['HARPER_CONFIG', 'HARPER_SET_CONFIG']);
+}
+
+/**
+ * The config env vars that reassert every key they name, at each start and at each runtime config refresh, over
+ * the file and over edits to it. HARPER_DEFAULT_CONFIG is not one: at runtime it only fills in what is missing.
+ */
+export const REASSERTING_CONFIG_ENV_VARS = ['HARPER_CONFIG', 'HARPER_SET_CONFIG'] as const;
+
+/**
+ * `base` as the reasserting env vars leave it, or only the named ones: what the next start, or the next config
+ * refresh, makes of a document about to be written. Throws on malformed env-var JSON, as composeConfigFromEnv does.
+ */
+export function composeReassertedEnvConfig(
+	base: ConfigObject,
+	envVarNames: readonly (typeof REASSERTING_CONFIG_ENV_VARS)[number][] = REASSERTING_CONFIG_ENV_VARS
+): ConfigObject {
+	return composeEnvLayers([], base, envVarNames);
+}
+
+function composeEnvLayers(below: readonly string[], base: ConfigObject, above: readonly string[]): ConfigObject {
 	const result: ConfigObject = {};
 	const baseLayer = cloneDeep(base);
 	const layers: (ConfigObject | null)[] = [
-		parseConfigEnvVar(process.env.HARPER_DEFAULT_CONFIG, 'HARPER_DEFAULT_CONFIG'),
+		...below.map((name) => parseConfigEnvVar(process.env[name], name)),
 		baseLayer,
-		parseConfigEnvVar(process.env.HARPER_CONFIG, 'HARPER_CONFIG'),
-		parseConfigEnvVar(process.env.HARPER_SET_CONFIG, 'HARPER_SET_CONFIG'),
+		...above.map((name) => parseConfigEnvVar(process.env[name], name)),
 	];
 
 	for (const layer of layers) {

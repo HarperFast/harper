@@ -10,8 +10,10 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert';
+import { resolve } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 
-import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+import { startHarper, teardownHarper, targz, type ContextWithHarper } from '@harperfast/integration-testing';
 
 const DATABASE = 'test_db';
 const TABLE = 'dogs';
@@ -32,6 +34,12 @@ const COMBINED_PASS = 'Test1234!';
 const STANDARD_USER_ROLE = 'standard_user_ops_role';
 const STANDARD_USER_USER = 'standard_user_user';
 const STANDARD_USER_PASS = 'Test1234!';
+
+const DEPLOYER_ROLE = 'deploy_ops_role';
+const DEPLOYER_USER = 'deployer_user';
+const DEPLOYER_PASS = 'Test1234!';
+const DEPLOY_FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/operation-rbac-deploy');
+const DEPLOY_PROJECT = 'rbac-deploy-app';
 
 suite('operations RBAC', (ctx: ContextWithHarper) => {
 	before(async () => {
@@ -132,6 +140,13 @@ suite('operations RBAC', (ctx: ContextWithHarper) => {
 			},
 		});
 
+		const deployerRole = await op({
+			operation: 'add_role',
+			role: DEPLOYER_ROLE,
+			permission: { super_user: false, operations: ['deploy_component'] },
+		});
+		strictEqual(deployerRole.status, 200, `add_role ${DEPLOYER_ROLE}: ${await deployerRole.text()}`);
+
 		// Create test users
 		await op({
 			operation: 'add_user',
@@ -155,6 +170,14 @@ suite('operations RBAC', (ctx: ContextWithHarper) => {
 			password: STANDARD_USER_PASS,
 			active: true,
 		});
+		const deployerUser = await op({
+			operation: 'add_user',
+			role: DEPLOYER_ROLE,
+			username: DEPLOYER_USER,
+			password: DEPLOYER_PASS,
+			active: true,
+		});
+		strictEqual(deployerUser.status, 200, `add_user ${DEPLOYER_USER}: ${await deployerUser.text()}`);
 	});
 
 	after(async () => {
@@ -176,6 +199,11 @@ suite('operations RBAC', (ctx: ContextWithHarper) => {
 			},
 			body: JSON.stringify(body),
 		});
+	}
+
+	function assertNotInOperations(body: any, operation: string) {
+		const expected = `Operation '${operation}' is not permitted for this role's operations configuration`;
+		ok(body?.unauthorized_access?.includes(expected), `expected "${expected}", got ${JSON.stringify(body)}`);
 	}
 
 	// -- read_only_ops_role tests --
@@ -303,6 +331,68 @@ suite('operations RBAC', (ctx: ContextWithHarper) => {
 				get_attributes: ['*'],
 			});
 			strictEqual(res.status, 403);
+		});
+
+		test('deploy_component is denied (SU-only op not in operations list)', async () => {
+			const res = await callOp(SU_OPS_USER, SU_OPS_PASS, {
+				operation: 'deploy_component',
+				project: DEPLOY_PROJECT,
+				payload: await targz(DEPLOY_FIXTURE_PATH),
+				restart: false,
+			});
+			strictEqual(res.status, 403);
+			assertNotInOperations(await res.json(), 'deploy_component');
+		});
+	});
+
+	// -- deploy_ops_role tests --
+
+	suite('deploy_ops_role', () => {
+		test('deploy_component is allowed (SU-only op granted via operations)', async () => {
+			const res = await callOp(DEPLOYER_USER, DEPLOYER_PASS, {
+				operation: 'deploy_component',
+				project: DEPLOY_PROJECT,
+				payload: await targz(DEPLOY_FIXTURE_PATH),
+				restart: false,
+			});
+			const body = (await res.json()) as any;
+			strictEqual(res.status, 200, `deploy_component: ${JSON.stringify(body)}`);
+			strictEqual(body.message, `Successfully deployed: ${DEPLOY_PROJECT}`);
+
+			const deadline = Date.now() + 20_000;
+			let deployment: any;
+			while (Date.now() < deadline) {
+				const got = await callOp(ctx.harper.admin.username, ctx.harper.admin.password, {
+					operation: 'get_deployment',
+					deployment_id: body.deployment_id,
+				});
+				deployment = await got.json();
+				if (got.status === 200 && (deployment.status === 'success' || deployment.status === 'failed')) break;
+				await sleep(100);
+			}
+			strictEqual(deployment?.status, 'success', `get_deployment: ${JSON.stringify(deployment)}`);
+			strictEqual(deployment.user, DEPLOYER_USER);
+		});
+
+		test('deploy_custom_function_project is allowed (legacy alias of the granted deploy_component)', async () => {
+			const res = await callOp(DEPLOYER_USER, DEPLOYER_PASS, {
+				operation: 'deploy_custom_function_project',
+				project: DEPLOY_PROJECT,
+				payload: await targz(DEPLOY_FIXTURE_PATH),
+				restart: false,
+			});
+			const body = (await res.json()) as any;
+			strictEqual(res.status, 200, `deploy_custom_function_project: ${JSON.stringify(body)}`);
+			strictEqual(body.message, `Successfully deployed: ${DEPLOY_PROJECT}`);
+		});
+
+		test('drop_component is denied (the grant is deploy_component only)', async () => {
+			const res = await callOp(DEPLOYER_USER, DEPLOYER_PASS, {
+				operation: 'drop_component',
+				project: DEPLOY_PROJECT,
+			});
+			strictEqual(res.status, 403);
+			assertNotInOperations(await res.json(), 'drop_component');
 		});
 	});
 

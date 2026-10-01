@@ -9,7 +9,6 @@ const token_auth = rewire('#src/security/tokenAuthentication');
 const password_function = require('#src/utility/password');
 const user = require('#src/security/user');
 const insert = require('#src/dataLayer/insert');
-const signalling = require('#src/utility/signalling');
 
 const PASSPHRASE_VALUE = '6340b357-55b2-4fc8-b359-cae7d90c8c01';
 const PRIVATE_KEY_VALUE =
@@ -166,8 +165,10 @@ let invalid_other_user = {
 
 describe('Test authorize function', function () {
 	before(async () => {
-		await user.setUsersWithRolesCache(hdb_users_map);
+		await testUtils.seedUsers(hdb_users_map);
 	});
+
+	after(() => testUtils.seedUsers());
 
 	it('Cannot complete request Basic authorization: User not found ', function (done) {
 		auth.authorize(invalid_basic_user, null, function (err) {
@@ -196,9 +197,12 @@ describe('Test authorize function', function () {
 
 	it('Can authorize with correct username and password Basic authorization', function (done) {
 		auth.authorize(active_basic_request, null, function (err, user) {
-			let role_temp = testUtils.deepClone(VALID_ROLE);
-			assert.deepEqual(user, { username: 'nook', active: true, role: role_temp }, 'equal object');
 			assert.equal(err, null, 'no error');
+			assert.equal(user.username, 'nook');
+			assert.equal(user.active, true);
+			assert.equal(user.role.id, VALID_ROLE.id);
+			assert.equal(user.role.role, VALID_ROLE.role);
+			assert.equal(user.role.permission.super_user, true);
 			done();
 		});
 	});
@@ -231,9 +235,12 @@ describe('Test authorize function', function () {
 
 	it('Can authorize with correct username and password Other authorization', function (done) {
 		auth.authorize(active_other_request, null, function (err, user) {
-			let role_temp = testUtils.deepClone(VALID_ROLE);
-			assert.deepEqual(user, { username: 'nook', active: true, role: role_temp }, 'equal object');
 			assert.equal(err, null, 'no error');
+			assert.equal(user.username, 'nook');
+			assert.equal(user.active, true);
+			assert.equal(user.role.id, VALID_ROLE.id);
+			assert.equal(user.role.role, VALID_ROLE.role);
+			assert.equal(user.role.permission.super_user, true);
 			done();
 		});
 	});
@@ -260,7 +267,6 @@ describe('test authorize function for JWT', () => {
 		sandbox.stub(insert, 'update').callsFake(async (_update_object) => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
-		sandbox.stub(signalling, 'signalUserChange').callsFake((_obj) => {});
 
 		op_token_timeout = token_auth.__set__('OPERATION_TOKEN_TIMEOUT', '-1');
 		r_token_timeout = token_auth.__set__('REFRESH_TOKEN_TIMEOUT', '-1');
@@ -284,16 +290,17 @@ describe('test authorize function for JWT', () => {
 			],
 			['old_user', { username: 'old_user', active: false }],
 		]);
-		await user.setUsersWithRolesCache(user_map);
+		await testUtils.seedUsers(user_map);
 
 		sandbox.restore();
 	});
 
-	after(() => {
+	after(async () => {
 		rw_get_tokens();
 		rw_token_auth();
 		global.hdb_users = orig_hdb_users;
 		sandbox.restore();
+		await testUtils.seedUsers();
 	});
 
 	it('test hdb_admin operation token', (done) => {

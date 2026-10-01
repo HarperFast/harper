@@ -2257,11 +2257,6 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 	// env var to detect the Bun runtime.
 	const isBunRuntime = process.env.HARPER_RUNTIME === 'bun';
 
-	// Some HarperDB wildcard-string-search operations fail on Bun with
-	// "finishUtf8 is not defined" — a V8-internal API Bun does not expose.
-	// Skip those tests on Bun rather than failing CI.
-	const bunSkip = isBunRuntime ? 'finishUtf8 is not available in Bun' : false;
-
 	// A csv_data_load upsert that *introduces a new attribute* under a restricted
 	// (non-super-user) role stalls indefinitely on Bun: the job is created and
 	// flipped to IN_PROGRESS but never reaches a terminal status. In CI it polled
@@ -5418,11 +5413,10 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 		});
 
 		// pt2 is a prefix LIKE ('literal...%' -> starts_with), which the new SQL engine
-		// serves via an index range scan. On Bun that routes blob string-key decoding
-		// through ordered-binary's new Function reader, which hits the finishUtf8 scope
-		// bug (kriszyp/ordered-binary#8). Passes on all Node versions. The %...% patterns
-		// (pt1/3/4/5) fall back to the legacy engine and are unaffected.
-		test('select * dev.remarks_blob like w/ special chars pt2', { skip: bunSkip }, async () => {
+		// serves via an index range scan, routing blob string-key decoding through
+		// ordered-binary. Fixed by the 1.6.2 bump (harper#2750, kriszyp/ordered-binary#8).
+		// The %...% patterns (pt1/3/4/5) fall back to the legacy engine and are unaffected.
+		test('select * dev.remarks_blob like w/ special chars pt2', async () => {
 			await client
 				.req()
 				.send({
@@ -7052,7 +7046,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.expect(200);
 		});
 
-		test('NoSQL search by value - * at end', { skip: bunSkip }, async () => {
+		test('NoSQL search by value - * at end', async () => {
 			await client
 				.req()
 				.send({
@@ -7084,7 +7078,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.expect(200);
 		});
 
-		test('NoSQL search by value - * at start', { skip: bunSkip }, async () => {
+		test('NoSQL search by value - * at start', async () => {
 			await client
 				.req()
 				.send({
@@ -7117,7 +7111,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.expect(200);
 		});
 
-		test('NoSQL search by value - * at start and end', { skip: bunSkip }, async () => {
+		test('NoSQL search by value - * at start and end', async () => {
 			await client
 				.req()
 				.send({
@@ -7168,7 +7162,7 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 				.expect(200);
 		});
 
-		test('NoSQL search by value - *** at start', { skip: bunSkip }, async () => {
+		test('NoSQL search by value - *** at start', async () => {
 			await client
 				.req()
 				.send({

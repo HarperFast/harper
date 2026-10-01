@@ -29,6 +29,46 @@ describe('deployLifecycle', () => {
 		});
 	});
 
+	describe('loadsAwaitDeploy', () => {
+		it('releases only the deploys in flight when releaseLoads is called', () => {
+			deployLifecycle._handle({ name: 'foo', phase: 'start', deploymentId: 'left-behind' });
+			assert.equal(deployLifecycle.loadsAwaitDeploy('foo'), true);
+			deployLifecycle.releaseLoads('foo', 'left-behind');
+			assert.equal(deployLifecycle.loadsAwaitDeploy('foo'), false);
+			assert.equal(deployLifecycle.isDeployInFlight('foo'), true, 'watchers still see the deploy');
+
+			deployLifecycle._handle({ name: 'foo', phase: 'start', deploymentId: 'next' });
+			assert.equal(deployLifecycle.loadsAwaitDeploy('foo'), true, 'a later deploy is awaited again');
+			deployLifecycle._handle({ name: 'foo', phase: 'end', deploymentId: 'next' });
+			deployLifecycle._handle({ name: 'foo', phase: 'end', deploymentId: 'left-behind' });
+
+			deployLifecycle._handle({ name: 'foo', phase: 'start', deploymentId: 'left-behind' });
+			assert.equal(deployLifecycle.loadsAwaitDeploy('foo'), true, 'the release ended with its deploy');
+		});
+	});
+
+	describe('events around a released deploy', () => {
+		it('end at the release, start again for an overlapping deploy, and ignore the released one ending', () => {
+			const events = [];
+			const onStart = (name) => events.push(`start:${name}`);
+			const onEnd = (name) => events.push(`end:${name}`);
+			deployLifecycle.on('deploy:start', onStart);
+			deployLifecycle.on('deploy:end', onEnd);
+			try {
+				deployLifecycle._handle({ name: 'foo', phase: 'start', deploymentId: 'left-behind' });
+				deployLifecycle.releaseLoads('foo', 'left-behind');
+				deployLifecycle.releaseLoads('foo', 'left-behind');
+				deployLifecycle._handle({ name: 'foo', phase: 'start', deploymentId: 'overlapping' });
+				deployLifecycle._handle({ name: 'foo', phase: 'end', deploymentId: 'left-behind' });
+				deployLifecycle._handle({ name: 'foo', phase: 'end', deploymentId: 'overlapping' });
+			} finally {
+				deployLifecycle.off('deploy:start', onStart);
+				deployLifecycle.off('deploy:end', onEnd);
+			}
+			assert.deepStrictEqual(events, ['start:foo', 'end:foo', 'start:foo', 'end:foo']);
+		});
+	});
+
 	describe('event emission', () => {
 		it('emits deploy:start when a start event is processed', () => {
 			let received;

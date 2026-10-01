@@ -5,6 +5,7 @@ import { IterableEventQueue } from './IterableEventQueue.ts';
 import type { Entry, RecordObject } from './RecordEncoder.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import type { RecordLockOptions } from './recordLock.ts';
+import { FULL_TEXT_COMPARATORS } from './indexes/fullTextQueryProtocol.ts';
 
 export interface ResourceInterface<Record extends object = any>
 	extends Partial<RecordObject>, Pick<UpdatableRecord<Record>, 'addTo' | 'subtractFrom'> {
@@ -142,7 +143,9 @@ export interface Context {
 	/**
 	 * Abort signal carried through ALS so generator bodies can forward cancellation to
 	 * external work (e.g. `scope.models.generateStream({ signal })`). Populated on the
-	 * Request that becomes the ALS-bound Context for HTTP/WS paths via #513.
+	 * Request that becomes the ALS-bound Context for HTTP/WS paths via #513. Also the request's
+	 * lifetime for its writes (harper#2001): once it aborts, no write for the request is admitted
+	 * and a write-bearing transaction is aborted at once (`DatabaseTransaction.admitRequestWrite`).
 	 */
 	signal?: AbortSignal;
 }
@@ -185,6 +188,7 @@ export const COMPARATORS = [
 	'in',
 	'less_than',
 	'less_than_equal',
+	...FULL_TEXT_COMPARATORS,
 	'ne',
 	'not_equal',
 	'starts_with',
@@ -201,7 +205,11 @@ interface TypedDirectCondition<Record extends object, Property extends keyof Rec
 	search_type?: Comparator;
 	value?: Record[Property] | Record[Property][];
 	search_value?: Record[Property] | Record[Property][];
-	/** Native HNSW coverage tolerance in milliseconds; defaults to 3000, with 0 requiring current coverage. */
+	/** Optional source-field restriction for a named full-text index. */
+	fields?: string[];
+	/** Return configured full-text match spans and snippets; disabled by default. */
+	includeHighlights?: boolean;
+	/** Native derived-index coverage tolerance in milliseconds; defaults to 3000, with 0 requiring current coverage. */
 	maxIndexLagMilliseconds?: number;
 	/** Wait for coverage of prior committed writes, up to 30,000 ms; 0 (default) does not wait. */
 	waitForIndexMilliseconds?: number;
@@ -215,7 +223,7 @@ interface TypedDirectCondition<Record extends object, Property extends keyof Rec
 	 * companion conditions and caller `vectorFilter`/`rowFilter` predicates, pushed into a filterable
 	 * custom index (HNSW) so filtering happens during traversal. Not part of the public query surface.
 	 */
-	recordFilter?: (primaryKey: Id) => boolean;
+	recordFilter?: (primaryKey: Id, entry?: unknown) => boolean;
 }
 
 interface ConditionGroup<Record extends object = any> {
@@ -251,6 +259,8 @@ export interface SubscriptionRequest extends RequestTarget {
 	includeDescendants?: boolean;
 	supportsTransactions?: boolean;
 	rawEvents?: boolean;
+	/** Include superseded record versions in replay and live delivery. Defaults to rawEvents, otherwise false. */
+	includeSuperseded?: boolean;
 	listener?: Listener;
 	/**
 	 * Application-supplied predicate for subscription events, including tombstones and messages that

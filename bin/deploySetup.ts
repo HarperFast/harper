@@ -23,7 +23,7 @@
 // utility/componentNames.ts, the one module both this client and the server's deploy path use.
 
 import chalk from 'chalk';
-import inquirer from 'inquirer';
+import { prompts } from '../utility/interactivePrompts.ts';
 import { execFileSync } from 'node:child_process';
 import { cliOperations, transportContext } from './cliOperations.ts';
 import { encryptEnvelope } from '../utility/secretEnvelope.ts';
@@ -171,17 +171,13 @@ export async function deploySetup(req: any): Promise<void> {
 	// 2. Which private source?
 	const provider: string =
 		req.provider ??
-		(
-			await inquirer.prompt({
-				type: 'list',
-				name: 'provider',
-				message: 'What private source needs a credential?',
-				choices: [
-					{ name: 'GitHub repository (private git clone)', value: 'github' },
-					{ name: 'npm registry (private packages / dependencies)', value: 'npm' },
-				],
-			})
-		).provider;
+		(await prompts.select({
+			message: 'What private source needs a credential?',
+			choices: [
+				{ name: 'GitHub repository (private git clone)', value: 'github' },
+				{ name: 'npm registry (private packages / dependencies)', value: 'npm' },
+			],
+		}));
 
 	if (provider !== 'github' && provider !== 'npm') {
 		throw cliError(`Unsupported provider "${provider}" — supported providers are "github" and "npm".`);
@@ -191,14 +187,10 @@ export async function deploySetup(req: any): Promise<void> {
 	const component =
 		resolveComponentName(req) ??
 		canonicalProjectName(
-			(
-				await inquirer.prompt({
-					type: 'input',
-					name: 'project',
-					message: 'Component (project) name this credential is for:',
-					default: directoryProjectName(),
-				})
-			).project ?? ''
+			(await prompts.input({
+				message: 'Component (project) name this credential is for:',
+				default: directoryProjectName(),
+			})) ?? ''
 		);
 	assertUsableComponentName(component);
 
@@ -230,14 +222,10 @@ export async function deploySetup(req: any): Promise<void> {
 			const how =
 				choices.length === 1
 					? 'paste'
-					: (
-							await inquirer.prompt({
-								type: 'list',
-								name: 'how',
-								message: 'How should I get the GitHub token?',
-								choices,
-							})
-						).how;
+					: await prompts.select({
+							message: 'How should I get the GitHub token?',
+							choices,
+						});
 			if (how === 'gh') {
 				console.log(
 					chalk.yellow(
@@ -254,8 +242,7 @@ export async function deploySetup(req: any): Promise<void> {
 							'  Repository access → only your repo; Permissions → Contents: Read-only.'
 					)
 				);
-				token = (await inquirer.prompt({ type: 'password', name: 'token', message: 'Paste the token:', mask: '*' }))
-					.token;
+				token = await prompts.password({ message: 'Paste the token:', mask: '*' });
 			}
 		}
 		credentialEntry = { host };
@@ -264,8 +251,7 @@ export async function deploySetup(req: any): Promise<void> {
 		credentialKey = registry;
 		if (!token) {
 			console.log(chalk.gray('Tip: `npm token create --read-only` mints a granular npm token from the CLI.'));
-			token = (await inquirer.prompt({ type: 'password', name: 'token', message: 'Paste the npm token:', mask: '*' }))
-				.token;
+			token = await prompts.password({ message: 'Paste the npm token:', mask: '*' });
 		}
 		credentialEntry = req.scope ? { registry, scope: req.scope } : { registry };
 	}

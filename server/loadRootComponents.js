@@ -1,6 +1,11 @@
 const { isMainThread } = require('worker_threads');
 const { getTables } = require('../resources/databases.ts');
-const { loadComponentDirectories, loadComponent, readyComponentModules } = require('../components/componentLoader.ts');
+const {
+	loadComponentDirectories,
+	loadComponent,
+	readyComponentModules,
+	startSecretCustodyOnMainThread,
+} = require('../components/componentLoader.ts');
 const { resetResources } = require('../resources/Resources.ts');
 const configUtils = require('../config/configUtils.ts');
 const { dirname } = require('path');
@@ -58,7 +63,10 @@ async function loadRootComponents(isWorkerThread = false) {
 		interruptedActivationFailures = await failEveryComponentClosed(error);
 	}
 	try {
-		if (isMainThread && !process.env.HARPER_SAFE_MODE) await installApplications();
+		if (isMainThread && !process.env.HARPER_SAFE_MODE) {
+			await startSecretCustodyOnMainThread();
+			await installApplications();
+		}
 	} catch (error) {
 		console.error(errorForLog(error));
 	}
@@ -67,16 +75,15 @@ async function loadRootComponents(isWorkerThread = false) {
 	getTables();
 	resources.isWorker = isWorkerThread;
 
-	// Settle jobs whose owning process is gone, before anything can start a new one. Required on the
-	// main thread only, and deliberately not fatal: an unreconciled job row is misleading, but failing
-	// to reconcile it is no reason to refuse to boot. Loading the module here also mints the owner id
-	// before any worker is spawned, so every worker inherits it.
+	// Settle jobs whose owning process is gone. Main thread only, and deliberately neither awaited nor
+	// fatal: the sweep picks its rows before its first write, so nothing started below can fall into it,
+	// and an install carrying a long backlog of interrupted rows must not hold up boot while they settle.
+	// An unreconciled job row is misleading, but it is no reason to refuse to start. This function re-runs
+	// on every root component reload; the sweep itself holds the once-per-process guard.
 	if (isMainThread) {
-		try {
-			await require('./jobs/jobOwnership.ts').reconcileInterruptedJobs();
-		} catch (error) {
-			console.error(errorForLog(error));
-		}
+		require('./jobs/jobOwnership.ts')
+			.reconcileInterruptedJobsOnce()
+			.catch((error) => console.error(errorForLog(error)));
 	}
 
 	await loadCertificates();

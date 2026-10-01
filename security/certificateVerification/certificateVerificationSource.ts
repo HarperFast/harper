@@ -69,15 +69,14 @@ export class CertificateVerificationSource extends Resource {
 			throw new Error(`Unsupported verification method: ${method} for ID: ${id}`);
 		}
 
-		// Handle result consistently
-		const expiresAt = Date.now() + methodConfig.cacheTtl;
+		// without a cacheTtl, the table's expiration applies rather than none
+		if (Number.isFinite(methodConfig.cacheTtl)) context.expiresAt = Date.now() + methodConfig.cacheTtl;
 
 		return {
 			certificate_id: id,
 			status: result.status,
 			reason: result.reason,
 			checked_at: Date.now(),
-			expiresAt,
 			method,
 		};
 	}

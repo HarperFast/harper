@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { spawn } = require('node:child_process');
@@ -32,13 +32,14 @@ const {
 const blobBackupModule = require('#src/dataLayer/blobBackup');
 const { blobSnapshotDir } = blobBackupModule;
 const { deleteBackupManifest, isBackupComplete } = require('#src/dataLayer/backupManifest');
+const backupManifestModule = require('#src/dataLayer/backupManifest');
 const { getBlobPathsForDatabaseName } = require('#src/resources/blob');
 
 // managed-backup ops self-enforce super_user (see requireSuperUser in rocksdbBackup.ts); requests
 // in the online-operation tests below must therefore carry a super_user role.
 const SU = { hdb_user: { role: { permission: { super_user: true } } } };
 const { beginRestore, completeRestore, checkRestoreState } = require('#src/dataLayer/restoreMarker');
-const { pinBackup, readBackupPins, unpinBackup } = require('#src/dataLayer/backupRepository');
+const { pinBackup, readBackupPins, unpinBackup, withBackupRepositoryLock } = require('#src/dataLayer/backupRepository');
 const { backups } = require('@harperfast/rocksdb-js');
 const { closeLoadedDatabases } = require('#src/resources/databases');
 const {
@@ -471,17 +472,30 @@ describe('rocksdbBackup', function () {
 			assert.strictEqual(readBlobBody(join(getBlobPathsForDatabaseName(BLOB_DB)[0], BLOB_REL)), 'blob-payload');
 		});
 
-		it('allows an engine-only restore with no opt-in when the database has no blobs', async function () {
+		it('refuses an engine-only restore with no opt-in even when the database has no blobs', async function () {
 			this.timeout(30000);
 			writeBlobDbRecord();
 			const created = await createBackupOffline(BLOB_DB, true);
 
-			const restored = await restoreBackupOffline(BLOB_DB, created.backup_id);
-			assert.strictEqual(restored.backup_id, created.backup_id);
-			assert.strictEqual(restored.allow_engine_only, undefined);
+			// Empty roots do not make this safe: the id counter re-seeds from the roots, so it hands out
+			// 1 again and the next blob lands on a path the restored records already reference.
+			await assert.rejects(
+				restoreBackupOffline(BLOB_DB, created.backup_id),
+				(error) => error.statusCode === 400 && /allow_engine_only/.test(error.message)
+			);
 		});
 
-		it('allows an engine-only restore into a new database, which has no blobs to disagree with', async function () {
+		it('allows it once the operator opts in, and reports the opt-in back', async function () {
+			this.timeout(30000);
+			writeBlobDbRecord();
+			const created = await createBackupOffline(BLOB_DB, true);
+
+			const restored = await restoreBackupOffline(BLOB_DB, created.backup_id, undefined, true);
+			assert.strictEqual(restored.backup_id, created.backup_id);
+			assert.strictEqual(restored.allow_engine_only, true);
+		});
+
+		it('refuses an engine-only restore into a new database too', async function () {
 			this.timeout(30000);
 			writeBlobDbRecord();
 			writeBlobFile(BLOB_DB, BLOB_REL, 'blob-payload');
@@ -489,8 +503,12 @@ describe('rocksdbBackup', function () {
 			const target = `${BLOB_DB}-copy`;
 
 			try {
-				const restored = await restoreBackupOffline(BLOB_DB, created.backup_id, target);
-				assert.strictEqual(restored.restored_to, join(storageDir, target));
+				// A fresh target's roots are empty for the same reason, so it is exposed to the same
+				// id reissue -- naming a new database is not an escape hatch.
+				await assert.rejects(
+					restoreBackupOffline(BLOB_DB, created.backup_id, target),
+					(error) => error.statusCode === 400 && /allow_engine_only/.test(error.message)
+				);
 			} finally {
 				rmSync(join(storageDir, target), { recursive: true, force: true });
 				for (const root of getBlobPathsForDatabaseName(target)) rmSync(root, { recursive: true, force: true });
@@ -525,13 +543,17 @@ describe('rocksdbBackup', function () {
 		// These tests run with no database loaded into Harper at all, which is the state an operator is
 		// in after a failed restore (blocked by its marker) or before an import creates the database.
 		const ORPHAN = `${DB_NAME}-orphan`;
+		const MISSING = `${DB_NAME}-never-existed`;
 
 		afterEach(async function () {
 			// The online operations reach getDatabases(), whose scan opens every database under
 			// STORAGE_PATH — including the fixtures other tests in this file expect to be closed.
-			closeLoadedDatabases();
+			await closeLoadedDatabases();
 			rmSync(join(storageDir, ORPHAN), { recursive: true, force: true });
 			rmSync(backupDirForDatabase(ORPHAN), { recursive: true, force: true });
+			for (const suffix of ['delete', 'purge']) {
+				rmSync(backupDirForDatabase(`${MISSING}-${suffix}`), { recursive: true, force: true });
+			}
 		});
 
 		async function seedOrphanRepository() {
@@ -570,21 +592,26 @@ describe('rocksdbBackup', function () {
 
 		it('still 404s for a name that is neither a loaded database nor a repository', async function () {
 			await assert.rejects(
-				listBackups({ ...SU, database: `${DB_NAME}-never-existed` }),
+				listBackups({ ...SU, database: MISSING }),
 				(error) => error.statusCode === 404 && /no backup repository/.test(error.message)
 			);
 		});
 
-		it('a mistyped name does not leave a repository behind that later reads as one', async function () {
-			const typo = `${DB_NAME}-typo`;
-			await assert.rejects(deleteBackupOffline(typo, 1), (error) => error.statusCode === 404);
-			await assert.rejects(purgeBackupsOffline(typo, 0), (error) => error.statusCode === 404);
-			// the 404 must still be there the second time round
+		it('does not create a repository when offline delete or purge targets a missing one', async function () {
+			for (const [suffix, operation] of [
+				['delete', (name) => deleteBackupOffline(name, 1)],
+				['purge', (name) => purgeBackupsOffline(name, 0)],
+			]) {
+				const databaseName = `${MISSING}-${suffix}`;
+				const backupDir = backupDirForDatabase(databaseName);
+				await assert.rejects(operation(databaseName), (error) => error.statusCode === 404);
+				assert.ok(!existsSync(backupDir), `${suffix} must not create ${backupDir}`);
+			}
+			// the 404 must still be there the second time round, and still name a missing repository
 			await assert.rejects(
-				listBackups({ ...SU, database: typo }),
+				listBackups({ ...SU, database: `${MISSING}-delete` }),
 				(error) => error.statusCode === 404 && /no backup repository/.test(error.message)
 			);
-			assert.ok(!existsSync(backupDirForDatabase(typo)), 'a refused operation must not create a repository');
 		});
 	});
 
@@ -592,6 +619,9 @@ describe('rocksdbBackup', function () {
 		const PINNED = `${DB_NAME}-pinned`;
 
 		afterEach(async function () {
+			if (checkRestoreState(join(storageDir, PINNED)) !== 'clear') {
+				completeRestore(beginRestore(join(storageDir, PINNED)));
+			}
 			rmSync(join(storageDir, PINNED), { recursive: true, force: true });
 			rmSync(backupDirForDatabase(PINNED), { recursive: true, force: true });
 		});
@@ -606,6 +636,102 @@ describe('rocksdbBackup', function () {
 			const first = await createBackupOffline(PINNED);
 			const second = await createBackupOffline(PINNED);
 			return { first, second };
+		}
+
+		for (const mode of ['online', 'offline']) {
+			it(`protects the source after ${mode} restore dies immediately after publishing its marker`, async function () {
+				this.timeout(30000);
+				const { first } = await seedTwoBackups();
+				const child = spawn(
+					process.execPath,
+					[
+						'-e',
+						`
+					const fs = require('node:fs');
+					const { dirname } = require('node:path');
+					const env = require(${JSON.stringify(require.resolve('#src/utility/environment/environmentManager'))});
+					env.initSync();
+					env.setProperty('storage.backupPath', ${JSON.stringify(getBackupsRoot())});
+					const { fsyncDirectory } = require(${JSON.stringify(require.resolve('#src/utility/durableFile'))});
+					const rename = fs.renameSync;
+					fs.renameSync = (from, to) => {
+						rename(from, to);
+						if (to.endsWith('.restoring')) {
+							fsyncDirectory(dirname(to));
+							process.kill(process.pid, 'SIGKILL');
+						}
+					};
+					require('node:module').syncBuiltinESMExports();
+					const backup = require(${JSON.stringify(require.resolve('#src/dataLayer/rocksdbBackup'))});
+					const operation = ${JSON.stringify(mode)} === 'offline'
+						? backup.restoreBackupOffline(${JSON.stringify(PINNED)}, ${first.backup_id})
+						: backup.restoreBackup({ database: ${JSON.stringify(PINNED)}, backup_id: ${first.backup_id} });
+					operation.then(() => process.exit(2), error => { console.error(error); process.exit(3); });
+				`,
+					],
+					{ timeout: 15000 }
+				);
+				let stderr = '';
+				child.stderr.on('data', (data) => {
+					stderr += data;
+				});
+				try {
+					const signal = await new Promise((resolve, reject) => {
+						child.once('error', reject);
+						child.once('exit', (code, signal) =>
+							signal ? resolve(signal) : reject(new Error(`child exited ${code}: ${stderr}`))
+						);
+					});
+					assert.strictEqual(signal, 'SIGKILL');
+					assert.strictEqual(checkRestoreState(join(storageDir, PINNED)), 'incomplete');
+					await assert.rejects(deleteBackupOffline(PINNED, first.backup_id), (error) => error.statusCode === 409);
+					await assert.rejects(purgeBackupsOffline(PINNED, 0), (error) => error.statusCode === 409);
+				} finally {
+					child.kill('SIGKILL');
+				}
+			});
+		}
+
+		for (const operation of ['delete', 'purge']) {
+			for (const [module, method] of [
+				[blobBackupModule, 'purgeBlobSnapshots'],
+				[backupManifestModule, 'purgeBackupManifests'],
+			]) {
+				for (const engineFails of [false, true]) {
+					it(`${operation} propagates ${engineFails ? 'the engine error on dual failure' : method + ' failure after engine success'}`, async function () {
+						this.timeout(30000);
+						const { first } = await seedTwoBackups();
+						const cleanupError = new Error('injected cleanup failure');
+						const engineError = new Error('injected engine failure');
+						const originalCleanup = module[method];
+						const originalEngine = backups[operation];
+						let cleanupAttempted = false;
+						module[method] = async () => {
+							cleanupAttempted = true;
+							throw cleanupError;
+						};
+						if (engineFails)
+							backups[operation] = async () => {
+								throw engineError;
+							};
+						try {
+							await assert.rejects(
+								operation === 'delete' ? deleteBackupOffline(PINNED, first.backup_id) : purgeBackupsOffline(PINNED, 0),
+								(error) => error === (engineFails ? engineError : cleanupError)
+							);
+							assert.ok(cleanupAttempted);
+							const remaining = await listBackupsInDir(backupDirForDatabase(PINNED));
+							assert.strictEqual(
+								remaining.some((backup) => backup.backupId === first.backup_id),
+								engineFails
+							);
+						} finally {
+							module[method] = originalCleanup;
+							backups[operation] = originalEngine;
+						}
+					});
+				}
+			}
 		}
 
 		it('refuses to delete a backup something is depending on', async function () {
@@ -625,6 +751,22 @@ describe('rocksdbBackup', function () {
 			assert.deepStrictEqual(await deleteBackupOffline(PINNED, first.backup_id), { ok: true });
 		});
 
+		it('refuses to report an unreadable repository as empty', async function () {
+			// an empty listing is what reconcileHarperManagedBackupFiles reads as "keep nothing", so
+			// answering [] for a repository that is merely unreadable licenses deleting every manifest
+			// and blob snapshot in it
+			if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+			const { first } = await seedTwoBackups();
+			assert.ok(first.backup_id);
+			const backupDir = backupDirForDatabase(PINNED);
+			chmodSync(backupDir, 0o000);
+			try {
+				await assert.rejects(listBackupsInDir(backupDir), (error) => error.code === 'EACCES');
+			} finally {
+				chmodSync(backupDir, 0o700);
+			}
+		});
+
 		it('refuses a purge that would remove a pinned backup, and removes nothing', async function () {
 			this.timeout(30000);
 			const { first } = await seedTwoBackups();
@@ -638,7 +780,7 @@ describe('rocksdbBackup', function () {
 			assert.strictEqual((await listBackupsInDir(backupDir)).length, 2, 'a refused purge must remove nothing');
 		});
 
-		it('deletes exactly the ids it admitted and reports that count', async function () {
+		it('keeps the newest keep_count by id, and reports what it actually removed', async function () {
 			this.timeout(30000);
 			const { first, second } = await seedTwoBackups();
 			const third = await createBackupOffline(PINNED);
@@ -646,7 +788,7 @@ describe('rocksdbBackup', function () {
 
 			const purged = await purgeBackupsOffline(PINNED, 1);
 
-			assert.deepStrictEqual(purged, { deleted: 2, remaining: 1 }, 'the count comes from the deletes themselves');
+			assert.deepStrictEqual(purged, { deleted: 2, remaining: 1 }, 'counted from what survives, under the lock');
 			assert.deepStrictEqual(
 				(await listBackupsInDir(backupDir)).map((backup) => backup.backupId),
 				[third.backup_id]
@@ -654,7 +796,38 @@ describe('rocksdbBackup', function () {
 			assert.ok(![first.backup_id, second.backup_id].some((id) => id === third.backup_id));
 		});
 
-		it('refuses to publish a backup the engine no longer has', async function () {
+		it('holds the management lock across the engine backup, not just the finalization', async function () {
+			this.timeout(30000);
+			const database = RocksDatabase.open(join(storageDir, PINNED));
+			try {
+				database.putSync('rec', { n: 1 });
+			} finally {
+				database.close();
+			}
+			const backupDir = backupDirForDatabase(PINNED);
+
+			let created;
+			await withBackupRepositoryLock(
+				backupDir,
+				PINNED,
+				async () => {
+					created = createBackupOffline(PINNED);
+					created.catch(() => {}); // settled below; this only keeps an early failure unhandled-free
+					await new Promise((resolve) => setTimeout(resolve, 750));
+					assert.deepStrictEqual(
+						await listBackupsInDir(backupDir),
+						[],
+						'the engine backup must not be created while another operation holds the lock'
+					);
+				},
+				true
+			);
+
+			await created;
+			assert.strictEqual((await listBackupsInDir(backupDir)).length, 1, 'and it proceeds once the lock is free');
+		});
+
+		it('refuses to publish a backup the engine no longer has by the time it finalizes', async function () {
 			this.timeout(30000);
 			const { first } = await seedTwoBackups();
 			const backupDir = backupDirForDatabase(PINNED);
@@ -693,22 +866,6 @@ describe('rocksdbBackup', function () {
 
 			await restoreBackupOffline(PINNED, second.backup_id);
 			assert.deepStrictEqual(readBackupPins(backupDir), [], 'a finished restore must not hold the backup');
-		});
-
-		it('releases its claim when the restore is refused', async function () {
-			this.timeout(30000);
-			const { second } = await seedTwoBackups();
-			const backupDir = backupDirForDatabase(PINNED);
-			const occupied = `${PINNED}-occupied-target`;
-			mkdirSync(join(storageDir, occupied), { recursive: true });
-			writeFileSync(join(storageDir, occupied, 'CURRENT'), 'x');
-
-			try {
-				await assert.rejects(restoreBackupOffline(PINNED, second.backup_id, occupied), /already exists/);
-				assert.deepStrictEqual(readBackupPins(backupDir), [], 'a refused restore must not leak a pin');
-			} finally {
-				rmSync(join(storageDir, occupied), { recursive: true, force: true });
-			}
 		});
 
 		it('allows a purge that keeps every pinned backup', async function () {
@@ -808,6 +965,103 @@ describe('rocksdbBackup', function () {
 			assert.ok(manifest.producer.harper_version);
 			assertArchiveRestorable(manifest.producer);
 		});
+
+		// The capability list is only worth recording if something refuses on it, and the `latest` path
+		// is the half that can silently skip the check by rebuilding the manifest instead of reading it.
+		for (const [label, restoreArgs] of [
+			['an explicitly requested backup', (id) => [PROV_DB, id]],
+			['the latest backup', () => [PROV_DB, undefined]],
+		]) {
+			it(`refuses to restore ${label} whose producer requires a capability this build lacks`, async function () {
+				this.timeout(30000);
+				const database = RocksDatabase.open(join(storageDir, PROV_DB));
+				try {
+					database.putSync('rec', { n: 1 });
+				} finally {
+					database.close();
+				}
+				const created = await createBackupOffline(PROV_DB);
+				const backupDir = backupDirForDatabase(PROV_DB);
+
+				const manifestFile = join(backupDir, 'manifests', `${created.backup_id}.json`);
+				const stored = JSON.parse(readFileSync(manifestFile, 'utf8'));
+				stored.producer.requires = [...stored.producer.requires, 'blob-encryption-v2'];
+				writeFileSync(manifestFile, JSON.stringify(stored));
+
+				const sentinel = join(storageDir, PROV_DB, 'CURRENT');
+				assert.ok(existsSync(sentinel), 'precondition: the destination database is on disk');
+
+				await assert.rejects(
+					restoreBackupOffline(...restoreArgs(created.backup_id)),
+					(error) => error.statusCode === 400 && /blob-encryption-v2/.test(error.message)
+				);
+				assert.ok(existsSync(sentinel), 'the destination must not be purged by a refused restore');
+			});
+		}
+
+		// a hand-edited or truncated producer must surface the manifest error, not a TypeError from the
+		// capability check reading `requires` off it
+		it('reports a malformed producer as a manifest error rather than crashing the restore', async function () {
+			this.timeout(30000);
+			const database = RocksDatabase.open(join(storageDir, PROV_DB));
+			try {
+				database.putSync('rec', { n: 1 });
+			} finally {
+				database.close();
+			}
+			const created = await createBackupOffline(PROV_DB);
+
+			const manifestFile = join(backupDirForDatabase(PROV_DB), 'manifests', `${created.backup_id}.json`);
+			const stored = JSON.parse(readFileSync(manifestFile, 'utf8'));
+			delete stored.producer.requires;
+			writeFileSync(manifestFile, JSON.stringify(stored));
+
+			await assert.rejects(
+				restoreBackupOffline(PROV_DB, created.backup_id),
+				(error) => error.statusCode === 400 && /requires/.test(error.message)
+			);
+		});
+
+		// `producer: null` is present-but-unreadable, not absent. Harper only ever writes the key
+		// alongside a value, so this is the malformed case and must not take the legacy path.
+		it('refuses a producer key that is present but null rather than treating it as legacy', async function () {
+			this.timeout(30000);
+			const database = RocksDatabase.open(join(storageDir, PROV_DB));
+			try {
+				database.putSync('rec', { n: 1 });
+			} finally {
+				database.close();
+			}
+			const created = await createBackupOffline(PROV_DB);
+
+			const manifestFile = join(backupDirForDatabase(PROV_DB), 'manifests', `${created.backup_id}.json`);
+			const stored = JSON.parse(readFileSync(manifestFile, 'utf8'));
+			stored.producer = null;
+			writeFileSync(manifestFile, JSON.stringify(stored));
+
+			await assert.rejects(
+				restoreBackupOffline(PROV_DB, created.backup_id),
+				(error) => error.statusCode === 400 && /archive_schema_version/.test(error.message)
+			);
+		});
+
+		it('still restores a backup whose completion manifest predates the producer field', async function () {
+			this.timeout(30000);
+			const database = RocksDatabase.open(join(storageDir, PROV_DB));
+			try {
+				database.putSync('rec', { n: 1 });
+			} finally {
+				database.close();
+			}
+			const created = await createBackupOffline(PROV_DB);
+
+			const manifestFile = join(backupDirForDatabase(PROV_DB), 'manifests', `${created.backup_id}.json`);
+			const stored = JSON.parse(readFileSync(manifestFile, 'utf8'));
+			delete stored.producer;
+			writeFileSync(manifestFile, JSON.stringify(stored));
+
+			await restoreBackupOffline(PROV_DB, created.backup_id);
+		});
 	});
 
 	describe('createBackupStream with blobs', function () {
@@ -881,36 +1135,35 @@ describe('rocksdbBackup', function () {
 			}
 		});
 
+		// In-process this proves nothing: destroying the response stream emits 'close' on it whether or
+		// not the native producer was torn down, and the leaked producer is a native thread, so it is
+		// invisible to `process.getActiveResourcesInfo()` too. The observable is that a process with
+		// nothing left to do actually exits.
 		it('stops the engine-only producer when the consumer aborts', async function () {
-			this.timeout(30000);
-			const ABORT_DB = `${DB_NAME}-abort`;
-			const dir = join(storageDir, ABORT_DB);
-			const seed = RocksDatabase.open(dir);
+			this.timeout(60000);
+			const child = spawn(process.execPath, [join(__dirname, 'backupStreamAbort-fixture.cjs')], {
+				cwd: join(__dirname, '..', '..'),
+				stdio: ['ignore', 'pipe', 'pipe'],
+			});
+			let stderr = '';
+			child.stderr.on('data', (chunk) => (stderr += chunk));
+			const exited = new Promise((resolve, reject) => {
+				child.on('error', reject);
+				child.on('exit', (code, signal) => resolve({ code, signal }));
+			});
+			const timer = setTimeout(() => child.kill('SIGKILL'), 30000);
+			let result;
 			try {
-				for (let i = 0; i < 200; i++) seed.putSync(`k${i}`, { payload: 'x'.repeat(2048) });
+				result = await exited;
 			} finally {
-				seed.close();
+				clearTimeout(timer);
 			}
-
-			const store = RocksDatabase.open(dir);
-			try {
-				const stream = createBackupStream(store, ABORT_DB, false, true);
-				// what a client disconnecting mid-download does to the response stream
-				stream.destroy(new Error('client went away'));
-				// the producer must not be left waiting on a stream nobody will ever read again
-				await new Promise((resolve, reject) => {
-					const timer = setTimeout(() => reject(new Error('backup producer still pending after abort')), 5000);
-					const settle = () => {
-						clearTimeout(timer);
-						resolve();
-					};
-					stream.on('close', settle);
-					stream.on('error', settle);
-				});
-			} finally {
-				store.close();
-				rmSync(dir, { recursive: true, force: true });
-			}
+			assert.strictEqual(
+				result.signal,
+				null,
+				'the backup producer was left waiting on a stream nobody will ever read again'
+			);
+			assert.strictEqual(result.code, 0, `abort fixture failed: ${stderr}`);
 		});
 
 		it('makes the manifest the first entry of an engine-only archive too, and says so', async function () {
@@ -1049,6 +1302,7 @@ describe('rocksdbBackup', function () {
 			this.timeout(30000);
 			writeRecords([['alpha', { n: 1 }]]);
 			const created = await createBackupOffline(DB_NAME);
+			const backupDir = backupDirForDatabase(DB_NAME);
 
 			// hold the database open in a separate process, as a running Harper would
 			const bindingPath = require.resolve('@harperfast/rocksdb-js');
@@ -1073,6 +1327,7 @@ describe('rocksdbBackup', function () {
 					restoreBackupOffline(DB_NAME, created.backup_id),
 					(error) => error.statusCode === 409 && /open by a running Harper process/.test(error.message)
 				);
+				assert.deepStrictEqual(readBackupPins(backupDir), [], 'a refused restore must release its source pin');
 			} finally {
 				child.kill('SIGKILL');
 				await purgeBackupsOffline(DB_NAME, 0);

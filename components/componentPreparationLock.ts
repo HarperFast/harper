@@ -16,6 +16,7 @@ const DEFAULT_LOCK_WAIT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 // `.publishing` file surviving this long can only be a crash orphan (a write that was never
 // followed by its rename), never an in-flight publish.
 const STALE_PUBLISHING_SWEEP_AGE_MS = 60_000;
+const TRANSIENT_FILE_RETRY_DELAYS_MS = [10, 40, 160];
 
 export interface ComponentPreparationLockOwner {
 	pid: number;
@@ -66,11 +67,17 @@ function isProcessAlive(pid: number): boolean {
 }
 
 async function readOwner(claimPath: string): Promise<ComponentPreparationLockOwner | null> {
-	try {
-		return JSON.parse(await readFile(claimPath, 'utf8'));
-	} catch (error: any) {
-		if (error.code === 'ENOENT' || error instanceof SyntaxError) return null;
-		throw error;
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return JSON.parse(await readFile(claimPath, 'utf8'));
+		} catch (error: any) {
+			if (error.code === 'ENOENT' || error instanceof SyntaxError) return null;
+			// Windows refuses to open a file whose unlink is in progress (EPERM) until the unlinking handle
+			// closes and the name is gone. A claim that stays unreadable is not absent: dropping a live
+			// ticket would admit a second holder.
+			if (error.code !== 'EPERM' || attempt >= TRANSIENT_FILE_RETRY_DELAYS_MS.length) throw error;
+		}
+		await delay(TRANSIENT_FILE_RETRY_DELAYS_MS[attempt]);
 	}
 }
 
@@ -140,7 +147,13 @@ export async function scanLiveClaims(
 	await onEntriesListed?.();
 	const choosingPrefix = `${lockName}.choosing.`;
 	const ticketPrefix = `${lockName}.ticket.`;
-	const claimNames = entries.filter((name) => name.startsWith(choosingPrefix) || name.startsWith(ticketPrefix));
+	const releasedPrefix = `${lockName}.released.`;
+	const claimNames: string[] = [];
+	let releasedTokens: Set<string> | undefined;
+	for (const name of entries) {
+		if (name.startsWith(choosingPrefix) || name.startsWith(ticketPrefix)) claimNames.push(name);
+		else if (name.startsWith(releasedPrefix)) (releasedTokens ??= new Set()).add(name.slice(releasedPrefix.length));
+	}
 	const claims = await Promise.all(
 		claimNames.map(async (name) => {
 			let claimPath = join(lockRoot, name);
@@ -175,16 +188,31 @@ export async function scanLiveClaims(
 	);
 	const choosing: ComponentPreparationLockOwner[] = [];
 	const tickets: ComponentPreparationLockOwner[] = [];
+	// A marker is kept exactly as long as its ticket.
+	const unremovedTicketTokens = releasedTokens && new Set<string>();
 	for (const claim of claims) {
-		if (claim.owner?.token === ownToken) continue;
-		if (!claim.owner || !claim.alive) {
+		const released = Boolean(claim.owner && releasedTokens?.has(claim.owner.token));
+		if (!claim.owner || (claim.owner.token !== ownToken && (!claim.alive || released))) {
 			// Claim filenames contain a random owner token and are never reused. Removing this exact
 			// stale claim therefore cannot delete a fresh acquisition, unlike renaming a common lock path.
-			await rm(claim.claimPath, { force: true }).catch(() => {});
+			const removed = await rm(claim.claimPath, { force: true }).then(
+				() => true,
+				() => false
+			);
+			if (!removed && claim.isTicket && claim.owner) unremovedTicketTokens?.add(claim.owner.token);
 			continue;
 		}
-		if (claim.isTicket) tickets.push(claim.owner);
-		else choosing.push(claim.owner);
+		if (claim.isTicket && claim.owner) unremovedTicketTokens?.add(claim.owner.token);
+		if (claim.owner?.token === ownToken) continue;
+		if (claim.isTicket) tickets.push(claim.owner!);
+		else choosing.push(claim.owner!);
+	}
+	if (releasedTokens) {
+		for (const token of releasedTokens) {
+			if (!unremovedTicketTokens!.has(token)) {
+				await rm(join(lockRoot, `${releasedPrefix}${token}`), { force: true }).catch(() => {});
+			}
+		}
 	}
 	return { choosing, tickets };
 }
@@ -306,17 +334,57 @@ async function acquireComponentPreparationLock(
 			await delay(LOCK_POLL_INTERVAL_MS);
 		}
 	} catch (error) {
-		if (ticketPath) await rm(ticketPath, { force: true }).catch(() => {});
+		if (ticketPath) await releaseTicket(lockRoot, lockName, ticketPath, owner.token).catch(() => {});
 		throw error;
 	}
 
 	return async () => {
-		const currentOwner = await readOwner(ticketPath!);
+		// A record that is there but cannot be read is still this acquisition's own: only it publishes a ticket at a
+		// path its token names. That is how a Windows scanner holding the ticket without read sharing looks, and the
+		// release has to go ahead then, or the ticket outlives the holder as a live one once the scanner lets go.
+		const currentOwner = await readOwner(ticketPath!).catch((error) => {
+			if (HELD_RECORD_READ_CODES.has(error?.code)) return owner;
+			throw error;
+		});
 		if (currentOwner?.token !== owner.token) {
 			throw new Error(`Lost ownership of component preparation lock for ${canonicalPath}`);
 		}
-		await rm(ticketPath!, { force: true });
+		await releaseTicket(lockRoot, lockName, ticketPath!, owner.token);
 	};
+}
+
+const HELD_RECORD_READ_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
+
+function releasedMarkerPath(lockRoot: string, lockName: string, token: string): string {
+	return join(lockRoot, `${lockName}.released.${token}`);
+}
+
+/**
+ * A ticket that cannot be removed is retired by a marker `scanLiveClaims` honours instead. Only the ticket's owner
+ * writes one, and tokens are never reused, so a marker cannot retire a holder that has not finished. Exported for
+ * failure injection.
+ */
+export async function releaseTicket(
+	lockRoot: string,
+	lockName: string,
+	ticketPath: string,
+	token: string,
+	removeTicket: (path: string) => Promise<void> = (path) => rm(path, { force: true })
+): Promise<void> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			await removeTicket(ticketPath);
+			return;
+		} catch (error) {
+			if (attempt >= TRANSIENT_FILE_RETRY_DELAYS_MS.length) {
+				await writeFile(releasedMarkerPath(lockRoot, lockName, token), '', { mode: 0o600 }).catch(() => {
+					throw error;
+				});
+				return;
+			}
+		}
+		await delay(TRANSIENT_FILE_RETRY_DELAYS_MS[attempt]);
+	}
 }
 
 /** Serialize destructive preparation work for one component path across Harper worker threads. */

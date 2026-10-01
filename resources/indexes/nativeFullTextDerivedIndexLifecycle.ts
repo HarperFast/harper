@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { isAbsolute, join, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 import {
 	FullTextDerivedIndexBackend,
@@ -24,10 +25,17 @@ export type NativeFullTextDerivedIndexLifecycleOptions = NativeFullTextIndexConf
 	indexId: string;
 	sourceGeneration: string;
 	binding?: NativeFullTextModule | (() => Promise<NativeFullTextModule>);
+	beforeReset?: (ownerEpoch: bigint) => Promise<void>;
+	afterReset?: (ownerEpoch: bigint) => void | Promise<void>;
 };
 
 export type NativeFullTextDerivedIndexBackendOptions = Omit<FullTextDerivedIndexBackendOptions, 'lifecycle'> &
 	Omit<NativeFullTextDerivedIndexLifecycleOptions, 'indexId'>;
+
+export type RetireNativeFullTextDerivedIndexStorageOptions = Pick<
+	NativeFullTextDerivedIndexLifecycleOptions,
+	'storePath' | 'storeName' | 'indexId' | 'binding'
+>;
 
 export class NativeFullTextDerivedIndexLifecycle {
 	readonly #options: NativeFullTextDerivedIndexLifecycleOptions;
@@ -48,7 +56,7 @@ export class NativeFullTextDerivedIndexLifecycle {
 			limits: { ...options.limits },
 		};
 		// Hashing bounds filenames for arbitrary store names; the index id remains in native metadata and logs.
-		this.#path = join(resolve(options.storePath), `${digest(options.storeName)}.fulltext`);
+		this.#path = nativeFullTextIndexPath(options.storePath, options.storeName);
 		this.#generation = digest(options.sourceGeneration);
 	}
 
@@ -58,11 +66,12 @@ export class NativeFullTextDerivedIndexLifecycle {
 
 	async initialize(options: { reclaimRetired?: boolean } = {}): Promise<void> {
 		const binding = await this.#getBinding();
+		const runtimeInfo = getValidatedFullTextRuntimeInfo(binding);
 		binding.validateNativeFullTextIndexOptions({
 			...this.#nativeOptions(),
 			limits: this.#options.limits,
 		});
-		this.#maxCommitPayloadBytes = getValidatedFullTextRuntimeInfo(binding).limits.maxCommitPayloadBytes;
+		this.#maxCommitPayloadBytes = runtimeInfo.limits.maxCommitPayloadBytes;
 		if (options.reclaimRetired !== false) this.#queueReclaimRetired();
 	}
 
@@ -88,12 +97,25 @@ export class NativeFullTextDerivedIndexLifecycle {
 		});
 	}
 
-	async reset(): Promise<void> {
-		const result = await this.#requireBinding().resetNativeFullTextIndex({
-			path: this.#path,
-			indexId: this.#options.indexId,
-		});
-		this.#queueReclaimRetired(result.state === 'reset' ? result.retiredPath : undefined);
+	async reset(ownerEpoch: bigint): Promise<void> {
+		let resetError: unknown;
+		try {
+			await this.#options.beforeReset?.(ownerEpoch);
+			const result = await this.#requireBinding().resetNativeFullTextIndex({
+				path: this.#path,
+				indexId: this.#options.indexId,
+			});
+			this.#queueReclaimRetired(result.state === 'reset' ? result.retiredPath : undefined);
+		} catch (error) {
+			resetError = error;
+		}
+		try {
+			await this.#options.afterReset?.(ownerEpoch);
+		} catch (resumeError) {
+			if (resetError) throw new AggregateError([resetError, resumeError], 'Full-text reset and reader resume failed');
+			throw resumeError;
+		}
+		if (resetError) throw resetError;
 	}
 
 	#queueReclaimRetired(retiredPath?: string): void {
@@ -130,15 +152,16 @@ export class NativeFullTextDerivedIndexLifecycle {
 			stopWords: this.#options.stopWords,
 			positions: this.#options.positions,
 			surfaceTerms: this.#options.surfaceTerms,
+			synonyms: this.#options.synonyms?.map(({ source, replacements }) => ({
+				source,
+				replacements: [...replacements],
+			})),
 		};
 	}
 
 	async #getBinding(): Promise<NativeFullTextModule> {
 		if (this.#binding) return this.#binding;
-		const configured = this.#options.binding;
-		this.#binding = configured
-			? await validateFullTextNativeBinding(typeof configured === 'function' ? await configured() : configured)
-			: await loadFullTextNativeBinding();
+		this.#binding = await resolveNativeFullTextBinding(this.#options.binding);
 		return this.#binding;
 	}
 
@@ -148,16 +171,64 @@ export class NativeFullTextDerivedIndexLifecycle {
 	}
 }
 
+/** Retire one quiesced native directory after its Harper declaration or table is removed. */
+export async function retireNativeFullTextDerivedIndexStorage(
+	options: RetireNativeFullTextDerivedIndexStorageOptions
+): Promise<void> {
+	if (!isAbsolute(options.storePath)) throw new TypeError('Full-text storePath must be absolute');
+	if (!options.storeName) throw new TypeError('Full-text storeName is required');
+	if (!options.indexId) throw new TypeError('Full-text indexId is required');
+	const path = nativeFullTextIndexPath(options.storePath, options.storeName);
+	if (!existsSync(path)) {
+		if (existsSync(join(dirname(path), '.fulltext-retired'))) {
+			try {
+				const binding = await resolveNativeFullTextBinding(options.binding);
+				const reclaimed = await binding.reclaimRetiredNativeFullTextIndexes({ path });
+				if (reclaimed.failed > 0)
+					logWarning(`Could not remove ${reclaimed.failed} retired paths for full-text index '${options.indexId}'`);
+			} catch (error) {
+				logWarning(`Could not reclaim retired storage for full-text index '${options.indexId}'`, error);
+			}
+		}
+		return;
+	}
+	const binding = await resolveNativeFullTextBinding(options.binding);
+	// The wrapper owns the physical lifecycle fence: reset refuses an active/unproven writer and
+	// takes Tantivy's writer lock before renaming. Harper treats that refusal as best-effort cleanup,
+	// never as permission to remove a live directory itself.
+	const result = await binding.resetNativeFullTextIndex({ path, indexId: options.indexId });
+	void binding
+		.reclaimRetiredNativeFullTextIndexes({
+			path,
+			retiredPath: result.state === 'reset' ? result.retiredPath : undefined,
+		})
+		.then((reclaimed) => {
+			if (reclaimed.failed > 0)
+				logWarning(`Could not remove ${reclaimed.failed} retired paths for full-text index '${options.indexId}'`);
+		})
+		.catch((error) => logWarning(`Could not reclaim retired storage for full-text index '${options.indexId}'`, error));
+}
+
 export async function createNativeFullTextDerivedIndexBackend(
 	options: NativeFullTextDerivedIndexBackendOptions
 ): Promise<FullTextDerivedIndexBackend> {
-	const maxCursorPayloadBytes = options.maxCursorPayloadBytes ?? HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES;
-	if (maxCursorPayloadBytes > HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES)
+	const configuredMaxCursorPayloadBytes = options.maxCursorPayloadBytes;
+	if (
+		configuredMaxCursorPayloadBytes !== undefined &&
+		configuredMaxCursorPayloadBytes > HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES
+	)
 		throw new RangeError(`Full-text maxCursorPayloadBytes must not exceed ${HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES}`);
 	const lifecycle = new NativeFullTextDerivedIndexLifecycle({ ...options, indexId: options.id });
 	await lifecycle.initialize({ reclaimRetired: false });
-	if (maxCursorPayloadBytes > lifecycle.maxCommitPayloadBytes)
+	if (
+		configuredMaxCursorPayloadBytes !== undefined &&
+		configuredMaxCursorPayloadBytes > lifecycle.maxCommitPayloadBytes
+	)
 		throw new RangeError('Full-text maxCursorPayloadBytes exceeds the native commit payload capacity');
+	const maxCursorPayloadBytes = Math.min(
+		configuredMaxCursorPayloadBytes ?? HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES,
+		lifecycle.maxCommitPayloadBytes
+	);
 	const backend = new FullTextDerivedIndexBackend({
 		...options,
 		id: options.id,
@@ -166,6 +237,18 @@ export async function createNativeFullTextDerivedIndexBackend(
 	});
 	lifecycle.startRetiredStorageReclamation();
 	return backend;
+}
+
+export function nativeFullTextIndexPath(storePath: string, storeName: string): string {
+	return join(resolve(storePath), `${digest(storeName)}.fulltext`);
+}
+
+async function resolveNativeFullTextBinding(
+	configured?: NativeFullTextModule | (() => Promise<NativeFullTextModule>)
+): Promise<NativeFullTextModule> {
+	return configured
+		? validateFullTextNativeBinding(typeof configured === 'function' ? await configured() : configured)
+		: loadFullTextNativeBinding();
 }
 
 function digest(value: string): string {
