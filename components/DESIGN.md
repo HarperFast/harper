@@ -540,18 +540,22 @@ inputs retain their existing symlink behavior.
 ### The component load lock is keyed by application and plugin
 
 `sequentiallyHandleApplication` (`components/componentLoader.ts`) holds a cross-thread lock keyed by the
-application and the plugin type, `${appName}\0${pluginName}` (#2884): one application's load of one
+application and the plugin type, `${appName}\0${pluginName}` (#2884, for #3184): one application's load of one
 plugin is serialized across threads. Keyed by the plugin type alone, one application's hung
 `handleApplication` timed out every other application's load of that plugin; NUL separates the two
 because `appName` can contain dots and slashes.
 
-Before #2884 the plugin-wide key was also deliberate for a reason #2884 did not revisit: plugin modules
-are per-thread singletons carrying module-level state (`server/http.ts`'s `universalHeaders` ownership
-array, `resources/graphql.ts`'s `knownGraphQLDirectives`, the scheduler's register-inside-the-lock
-contract), and applications load _concurrently_ — `serializeComponentLoad` serializes per application
-name and all applications go into one `Promise.all` — so two applications' `handleApplication` for the
-same plugin can now interleave on a single thread. Whether each of those states tolerates that is
-unverified.
+Before #2884 the plugin-wide key was also deliberate for a reason #2884 did not revisit: plugin
+modules are per-thread singletons carrying module-level state (`server/http.ts`'s `universalHeaders`
+ownership array, `resources/graphql.ts`'s `knownGraphQLDirectives`, the scheduler's
+register-inside-the-lock contract), and applications load _concurrently_ — `serializeComponentLoad`
+serializes per application name and all applications go into one `Promise.all` — so two
+applications' `handleApplication` for the same plugin can now interleave on a single thread. Each of
+those three tolerates it: the http plugin's `handleApplication` is synchronous and only its first
+(root) invocation owns the security headers, `knownGraphQLDirectives` is filled at module load and
+only read in `handleApplication`, and the scheduler keys registration by application name behind an
+idempotent `startSchedulerEngine()`. A plugin that keeps per-thread state across an `await` inside
+`handleApplication` would not.
 
 The price of the lock is that whatever a plugin does inside it is paid by that application's load of
 the plugin on every other thread.

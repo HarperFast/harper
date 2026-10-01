@@ -145,7 +145,7 @@ events for lock/unlock, and lock() on LMDB remain out of scope.
 **Acquisition timestamp and mixed transactions.** In an `ImmediateTransaction` context (no explicit
 `transaction()` scope) every save — hold or scoped — is stamped by `handle.holderVersionCandidate()`, and
 the handle's version floor advances only once that write commits (`noteCommittedLockVersions()` →
-`noteHolderVersion()`), so sequential saves each get a distinct, monotonically-increasing version.
+`noteHolderVersion()`) or a scoped → hold upgrade primes it (`upgradeToHold`), so sequential saves each get a distinct, monotonically-increasing version.
 That stamp lives on the write
 (`TransactionWrite.lockStamp`) and is
 never assigned to the link clock: pinning `link.timestamp` would stamp every OTHER write staged on the
@@ -169,6 +169,10 @@ version and recreate the silent-drop bug.
 the acquiring transaction committed is fine (each write auto-commits as an ImmediateTransaction).
 Taking the lock again in a second `transaction()` scope issues a fresh `lock()` call rather than
 relying on the first hold still being re-entrant in that scope.
+
+An abort during the `acquireRecordKey` wait is covered single-threaded by "a transaction aborted while
+lock() waiters are parked leaves the key unlocked" (`unitTests/resources/recordLock.test.js`), which
+parks a leader there and a coalesced follower behind it.
 
 ### Phase 1: cluster-wide `lock()` over amortized per-record ownership (`recordLockCoordinator`)
 
@@ -360,8 +364,8 @@ design permits simultaneous holders on different nodes. A defaulted scope is `'n
 declared `replicate: false` — it has no cluster to lock across, and the transport an operator registers
 for the database must not re-scope it (harper#2716) — and `'cluster'` otherwise, which includes a table
 whose declaration omits `replicate`, since that is the replicating default. The default is read from
-`Table.replicate` in `resolveLockOptions` at the one call in `Table.lock()` and again after the native
-wait, so neither registering a transport nor a redeclaration mid-wait can re-scope a call; for that,
+`Table.replicate` by `resolveLockOptions` at the one call in `Table.lock()` and again after the native
+wait by `rescope()`, so neither registering a transport nor a redeclaration mid-wait can re-scope a call; for that,
 `Table.replicate` is refreshed on redeclaration and catalog reload, and a redeclaration is persisted against
 the durable primary row, not the possibly stale static. A hold already granted keeps the scope it was
 granted at: a `replicate` change re-scopes later calls, not live handles — **not enforced**, so drain holds
@@ -468,7 +472,7 @@ quorum-confirmed mode, they are describing that issue's scope, not this one's.
 
 They are separate, and expiry establishes neither on its own. Phase 0 enforces part of the first:
 expiry is checked synchronously on every staged write and again immediately before the native commit
-submits (the `hasLeaseProtectedWrite` fence in `DatabaseTransaction.commit()`). That fence is reused unchanged — only the thing
+submits (the `hasLeaseProtectedWrite` fence in `DatabaseTransaction.performCommit()`). That fence is reused unchanged — only the thing
 that issues the lease changes — but it neither settles an already-submitted commit nor makes an
 asynchronous replica fresh, which is what §6 and §7 are for.
 
@@ -740,7 +744,7 @@ So recall is defined as four steps, in order:
 2. **Revoke** every outstanding handle's write capability synchronously — the same state an expired
    lease produces, so a subsequent write through it fails 409 at staging _and_ at commit submission.
    Calling `release()` is _not_ revocation: `isLeaseExpired()` vs `isExpired()` in `resources/recordLock.ts` deliberately distinguishes a
-   handle handed back from a lapsed lease, and the `hasLeaseProtectedWrite` fence in `DatabaseTransaction.commit()` consults that
+   handle handed back from a lapsed lease, and the `hasLeaseProtectedWrite` fence in `DatabaseTransaction.performCommit()` consults that
    predicate immediately before native submission — so revocation must set the lapsed state, and must
    also reach handles a staged write still holds after `unlock()` removed them from the transaction's
    lock registry. A grace window (`min(remaining delegation, recallGraceMs)`) before revocation is a
@@ -1062,7 +1066,7 @@ feature that has not yet been measured.
 > **§2's exclusion invariant is wider than what (1) and (2) leave.** It requires a successor to
 > exclude every predecessor capability that can still admit _or commit_; what ships excludes
 > admission, and the commit half holds only up to the pre-submission expiry fence
-> (the `hasLeaseProtectedWrite` fence in `DatabaseTransaction.commit()`) — a native commit that clears that fence and settles
+> (the `hasLeaseProtectedWrite` fence in `DatabaseTransaction.performCommit()`) — a native commit that clears that fence and settles
 > afterwards is limitation (2)'s third route.
 >
 > **There is no caller-side mitigation for (2) — the obvious candidate is unreachable and, where it
@@ -1094,7 +1098,7 @@ feature that has not yet been measured.
 caller whose locked write loses gets a 200, no log line and no counter, so nothing distinguishes it
 from correct behavior. Making it observable is cheap and confined to the lock path — the handle
 already carries its floor and the commit path already fences per write on `write.lockHandle`
-(the `hasLeaseProtectedWrite` fence in `DatabaseTransaction.commit()`), so a lock-path-only check that a staged version exceeds
+(the `hasLeaseProtectedWrite` fence in `DatabaseTransaction.performCommit()`), so a lock-path-only check that a staged version exceeds
 wall-clock, and a counter when a barrier admits with no dependency set, cost nothing on ungated
 writes. It is not in scope here because it is detection rather than guarantee, but it belongs in
 harper#2541 rather than nowhere.

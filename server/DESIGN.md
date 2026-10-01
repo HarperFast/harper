@@ -16,7 +16,7 @@ This layer accepts inbound traffic on every supported protocol (HTTP/1.1, HTTP/2
 | **Operations API**            | `operationsServer.ts` | Fastify-based JSON operations API (`{operation: 'create_table', ...}`). Internal/admin surface — not on the hot path for application data.                                                      |
 | **Custom Functions (legacy)** | `fastifyRoutes.ts`    | Legacy custom functions only. Wraps Fastify with autoload. Don't add new code here.                                                                                                             |
 
-A request entering `http.ts` does **not** go through Fastify unless no Harper handler answers it (status `-1` cascades to a registered Fastify instance). Only `fastifyRoutes.ts` has a `handleApplication(scope)`; `operationsServer.ts` is the `operationsApi` component, started once on the main thread through `startOnMainThread`.
+A request entering `http.ts` does **not** go through Fastify unless no Harper handler answers it (status `-1` cascades to a registered Fastify instance). Of the two Fastify files only `fastifyRoutes.ts` has a `handleApplication(scope)`; `operationsServer.ts` is the `operationsApi` component, started once on the main thread through `startOnMainThread`.
 
 ---
 

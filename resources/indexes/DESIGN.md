@@ -61,11 +61,11 @@ necessarily a routing regression.
 
 The connection-building pass selects each node's stored edges from a candidate list of
 `efConstruction` entries. Held at a constant (100) while the corpus grows, edge quality erodes in a
-way no search-side setting can compensate: at 1M nodes, tripling the search `ef` barely moved
-recall — the missing neighbours were not deep in the candidate list, they were unreachable.
-Rebuilding the identical corpus with `efConstruction` 200 restored recall and made queries _faster_
-at the same `ef` (better-selected edges route more directly); quantization was a minor term beside
-construction quality. Full sweep in #2180.
+way no search-side setting can compensate: at 1M nodes, sweeping the search `ef` from 512 to 1536
+moved recall@10 only from 0.935 to 0.957 — the missing neighbours were not deep in the candidate
+list, they were unreachable. Rebuilding the identical corpus with `efConstruction` 200 restored
+recall and made queries _faster_ at the same `ef` (better-selected edges route more directly);
+quantization was a minor term beside construction quality. Full sweep in #2180.
 
 So when the schema does not configure `efConstruction`, it scales as `AUTO_EF_BASE * sqrt(nodes /
 AUTO_EFC_REF)`, capped at `AUTO_EFC_MAX`. The healthy write path reads the count directly from the
@@ -293,7 +293,10 @@ record values. Any other projection or primary-read failure is fail-closed.
 ### Backend contract
 
 The contract is `DerivedIndexBackend` and `DerivedIndexBatch` in `derivedIndexRuntime.ts`; their doc
-comments state each hook's obligation. What an ownership handoff has to fence is work
+comments state each hook's obligation. Three facts they do not: `records` and `bytes` are
+non-enumerable (a backend that spreads or clones the batch loses them), `bytes` is an estimate, and
+`through` is also absent while a transaction is still open (see Bounded delivery). What an ownership
+handoff has to fence is work
 that survives a method return — a queued apply, a barrier that completes later, a cursor that
 trails delivery — so every backend supplies the epoch fence, the barrier request and the quiescence
 handshake; one that completes inside `deliver()` implements them trivially. `deliver()` is not
@@ -819,13 +822,13 @@ batches return each hit's key with it, so no lookup by node id remains on the qu
 
 Degree cap is the per-index `nativePlaneLayer0Cap`, **default 64** (supersedes the fixed 128;
 measured in [hnsw#14](https://github.com/HarperFast/hnsw/pull/14) and #2701): cap 64 holds recall@10
-within ~0.5 pt of cap 128 at every ef ≥ 128 while cutting the 128-d slot 704 → 448 B and the 768-d
-slot 1,344 → 1,088 B, which keeps a 4M-node plane resident under a 2 GB limit that makes the cap-128
-plane thrash; a live plane's mean layer-0 degree is ~29
+within ~0.5 pt of cap 128 at every ef ≥ 128 (at 1M and 4M nodes) while cutting the 128-d slot 704 →
+448 B and the 768-d slot 1,344 → 1,088 B, which keeps a 4M-node plane resident under a 2 GB limit
+that makes the cap-128 plane thrash; a live plane's mean layer-0 degree is ~29
 ([hnsw#7](https://github.com/HarperFast/hnsw/issues/7)), so the reserved slot was mostly padding.
-Cap 32 halves the slot again but trails cap 128 by 1.3–2.2 pts below ef 1024, so it is a declaration
-for narrow vectors on a plane that outgrows RAM, not a default. The cap is a create-time header
-field: `getPlane` compares it with the index's value on attach and invalidates a plane that
+Cap 32 halves the slot again but trails cap 128 by 1.3–2.2 pts below ef 1024 at 4M, so it is a
+declaration for narrow vectors on a plane that outgrows RAM, not a default. The cap is a create-time
+header field: `getPlane` compares it with the index's value on attach and invalidates a plane that
 disagrees rather than reusing or truncating it, so revising it is a rebuild, not a format change. A
 file-primary index builds no JS graph, so this is the only layer-0 maximum it has; the JS graph's
 own cap in `addConnection` governs non-`nativePlane` indexes only. A binary-code v2 slot reopens the
@@ -852,10 +855,11 @@ restore. A file whose format or checksum does not validate is rebuilt from recor
 
 ### Search
 
-A search is one crossing per query, run off the event loop. Harper always filters through
-`plane.searchWithPredicate()` — the crate hands back batches of candidate keys for `admit()` while
-traversal keeps expanding — bounded by `filterState.maxVisits`, the same `filterExpansion` budget as
-the JS path; it never passes the crate's node-id bitset (see the filtered vector search note above).
+A search is one crossing per query, run off the event loop. An unfiltered search calls
+`plane.search()`; a filtered one always goes through `plane.searchWithPredicate()` — the crate hands
+back batches of candidate keys for `admit()` while traversal keeps expanding — bounded by
+`filterState.maxVisits`, the same `filterExpansion` budget as the JS path, and never passes the crate's
+node-id bitset (see the filtered vector search note above).
 A plane-backed `customIndex.search()` returns a promise-backed, async-only iterable
 (`resources/search.ts` wraps it); a synchronous consumer throws. Auto-ef reads the node count from
 the plane's `idHighWater()` (freed ids are reused, so it stays close to the live count; deletes leave
