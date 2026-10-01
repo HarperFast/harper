@@ -48,16 +48,18 @@ Neither hint is an authorization check — `verifyPerms` runs at dispatch.
 - When the role has no `permission.operations` allow list, `super_user` sees every operation on the exposed MCP surface (i.e. everything `mcp.operations.allow` permits).
 - `structure_user: true` sees all eight schema-structure operations: `create_table`, `drop_table`, `create_attribute`, `drop_attribute`, `create_schema`, `create_database`, `drop_schema`, `drop_database`.
 - `structure_user: ["db1", "db2"]` — a grant scoped to named databases — sees only the table-level four (`create_table`, `drop_table`, `create_attribute`, `drop_attribute`). Creating or dropping a whole database requires the unrestricted `structure_user: true`, so the other four are not listed. An empty array grants nothing.
-- <VersionBadge type="changed" version="v5.3.0" /> When the role **does** declare `permission.operations`, that list bounds the session for every user, `super_user` and `structure_user` included. A `structure_user` grant no longer adds the schema-structure operations on top of it — those appear only if they are themselves listed.
+- <VersionBadge type="changed" version="v5.3.0" /> When the role **does** declare `permission.operations`, that list bounds the session for every user, `super_user` and `structure_user` included. A `structure_user` grant does not add the schema-structure operations on top of it — those appear only if they are themselves listed.
 - Other users see only operations listed in `permission.operations`.
 - Group names in `permission.operations` (`read_only`, `standard_user`, …) expand to their member operations for filtering, so a role granted a group sees every operation that group actually allows.
 - Operations that share a handler are matched by that handler's canonical name, so listing one name of a pair grants both tools. Use the canonical name: `create_database` (also grants `create_schema`), `drop_database` (also `drop_schema`), `describe_schema` (also `describe_database`), `search_by_hash` (also `search_by_id`). Listing the non-canonical name of a pair — `operations: ["create_schema"]` — grants neither, because dispatch tests `create_database`.
 
-<VersionBadge type="changed" version="v5.3.0" />
-
 This mirrors dispatch. `verifyPerms` evaluates `permission.operations` first, ahead of the `super_user` and `structure_user` early returns. An operation outside that list is refused on call, whatever privilege flags the role carries. Filtering those operations out of `tools/list` keeps discovery from advertising tools that would fail closed. The same filter backs the [`harper://operations`](#harper-uris) catalog resource, so both surfaces agree.
 
-Before v5.3.0, the order was reversed. `verifyPerms` returned early for `super_user`, and for `structure_user` on the schema-structure operations, before it consulted `permission.operations`. On those versions those flags reach operations outside the list at dispatch, so an allowlist alone does not constrain them.
+:::warning Versions before 5.3.0
+
+In v5.1 and v5.2, `verifyPerms` checked `permission.operations` too late. It returned early for `super_user`, and for `structure_user` on the schema-structure operations, before it consulted the list. This was a bug, fixed in v5.3.0. On those versions an allowlist does not constrain a `super_user` or `structure_user` role, so those roles can call operations outside it. Upgrade to v5.3.0 or later to have the allowlist bound every privilege.
+
+:::
 
 The list is cached per session and recomputed when a `notifications/tools/list_changed` event would fire.
 
