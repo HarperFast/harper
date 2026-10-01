@@ -115,6 +115,9 @@ describe('dropTable racing a cross-worker source-fill commit', function () {
 		assert.deepStrictEqual(catalogRows(Main, name), [], 'catalog rows must be removed');
 	});
 
+	// Relies on @harperfast/rocksdb-js deferring physical column-family drops behind
+	// admitted commits (rocksdb-js#850); an older binding fails this as unexpected worker
+	// events or a putSync throw below, not with a named "bump the pin" message.
 	it('leaves the storage environment writable and the catalog clean', async function () {
 		let raced = 0;
 		for (let i = 0; i < ITERATIONS; i++) {
