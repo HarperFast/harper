@@ -1913,6 +1913,80 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	it('does not let an older successful probe clear a newer failure backoff', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-probe-failure-epoch';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 130 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 130 - index,
+		}));
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 1_000,
+			maxSearchWindow: 130,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const condition = { attribute: readinessId, comparator: 'matches', value: 'pack' };
+		const options = (has) => ({
+			minResults: 1,
+			filter: () => true,
+			candidateKeys: {
+				estimatedCount: 1,
+				collect: () => null,
+				probe: { complete: true, estimatedCount: 1, maxReadsPerCandidate: 1, has },
+			},
+		});
+		let olderProbeAttempts = 0;
+		let newerFailure;
+		let finalProbeAttempts = 0;
+		const realDateNow = Date.now;
+		try {
+			Date.now = () => 1_000;
+			const olderSearch = index.search(
+				condition,
+				{},
+				options(() => {
+					olderProbeAttempts++;
+					if (olderProbeAttempts === 128) {
+						newerFailure = index.search(
+							condition,
+							{},
+							options(() => {
+								throw new Error('injected newer point-probe failure');
+							})
+						);
+					}
+					return olderProbeAttempts > 128;
+				})
+			);
+			assert.strictEqual((await olderSearch)[0].key, 'record-128');
+			assert(newerFailure, 'the older query must overlap the newer failure');
+			assert.strictEqual((await newerFailure)[0].key, 'record-0');
+			assert.strictEqual(
+				(
+					await index.search(
+						condition,
+						{},
+						options(() => {
+							finalProbeAttempts++;
+							return true;
+						})
+					)
+				)[0].key,
+				'record-0'
+			);
+		} finally {
+			Date.now = realDateNow;
+		}
+		assert.strictEqual(finalProbeAttempts, 0, 'the newer failure cooldown must remain active');
+		await index.close();
+	});
+
 	it('caps candidate collection from the native hit count', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'candidate-native-hit-bound';

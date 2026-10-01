@@ -153,6 +153,7 @@ export class FullTextQueryIndex {
 	#candidateProbeFailureWarned = false;
 	#candidateCollectionRetryAfter = 0;
 	#candidateProbeRetryAfter = 0;
+	#candidateProbeFailureEpoch = 0;
 
 	constructor(options: FullTextQueryIndexOptions) {
 		this.#options = options;
@@ -441,6 +442,7 @@ export class FullTextQueryIndex {
 			const candidatePlan = options.filter ? options.candidateKeys : undefined;
 			let candidateGate: CandidateGate | undefined;
 			let candidateGatePlanned = false;
+			let candidateProbeFailureEpoch = 0;
 			while (accepted.length < target && offset < searchWindow) {
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
 				const limit = autocomplete ? searchWindow : Math.min(rawPageSize, searchWindow - offset);
@@ -480,6 +482,7 @@ export class FullTextQueryIndex {
 						remainingSearchBudget(deadline);
 						const nativeHitCount = Math.min(searchWindow, Math.max(result.hits.length, result.total));
 						candidateGate = this.#candidateGate(candidatePlan, target, nativeHitCount);
+						candidateProbeFailureEpoch = this.#candidateProbeFailureEpoch;
 					}
 				}
 				const pointReadsPerCandidate = candidateGate?.maxReadsPerCandidate ?? 0;
@@ -506,7 +509,10 @@ export class FullTextQueryIndex {
 					if (candidateGate) {
 						try {
 							const admitted = candidateGate.has(key);
-							if (candidateGate.maxReadsPerCandidate > 0) {
+							if (
+								candidateGate.maxReadsPerCandidate > 0 &&
+								candidateProbeFailureEpoch === this.#candidateProbeFailureEpoch
+							) {
 								this.#candidateProbeFailureWarned = false;
 								this.#candidateProbeRetryAfter = 0;
 							}
@@ -523,6 +529,7 @@ export class FullTextQueryIndex {
 							const usedPointProbe = candidateGate.maxReadsPerCandidate > 0;
 							candidateGate = undefined;
 							if (usedPointProbe) {
+								this.#candidateProbeFailureEpoch++;
 								this.#candidateProbeRetryAfter = Date.now() + CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS;
 								if (!this.#candidateProbeFailureWarned) {
 									this.#candidateProbeFailureWarned = true;
