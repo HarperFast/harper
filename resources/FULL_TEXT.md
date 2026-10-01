@@ -94,6 +94,6 @@ A format-incompatible native package upgrade causes each node to rebuild its loc
 
 Earlier beta declarations and indexes are unsupported. This field-only API does not provide a compatibility or upgrade path for them.
 
-Native queries have finite result windows and execution budgets. Reduce the requested offset/limit or narrow the query when a window is exceeded; filtering can also exhaust the window. Prefix modes use the native autocomplete window. Highlight tracing has separate record and source-byte bounds. These are functional constraints, not catalog-scale performance guarantees.
+Native queries have finite result windows and execution budgets. Reduce the requested offset/limit or narrow the query when a window is exceeded; filtering can also exhaust the window. Prefix modes use the native autocomplete window, clamped when necessary so its maximum result set fits in one native response. Highlight tracing has separate record and source-byte bounds. These are functional constraints, not catalog-scale performance guarantees.
 
 For implementation details, see the [full-text invariants in the Resource design guide](DESIGN.md#full-text-declarations-and-reader-snapshots). The schema contract lives in [schema.graphql](../schema.graphql); the compiler and generation rules are in [fullTextSchema.ts](fullTextSchema.ts).

@@ -515,7 +515,8 @@ return its requested limit. Harper fails closed when a short lower-bound page cl
 Exhausting the window because native versions are stale is retryable index lag; filter-only exhaustion
 remains a client error asking for a narrower query. During bounded lag a smaller result can still
 temporarily omit a recently changed record when the native result set ends before the search window
-is exhausted.
+is exhausted. Harper clamps an advertised autocomplete window to the number of maximum-size hits
+that fit in one native response, without reducing the ordinary search window.
 REST exposes the index coverage header, and callers that require current coverage use
 `maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`.
 Full-text score descending is the only supported ordering in this release. Count requests return

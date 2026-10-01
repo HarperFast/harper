@@ -132,6 +132,7 @@ export class FullTextQueryIndex {
 	#publicationRebuildRequested = false;
 	#refreshFailureWarned = false;
 	#unexpectedSearchFailureWarned = false;
+	#incompletePageFailureLogged = false;
 
 	constructor(options: FullTextQueryIndexOptions) {
 		this.#options = options;
@@ -431,8 +432,15 @@ export class FullTextQueryIndex {
 					result.totalRelation === 'lower-bound' &&
 					result.hits.length < limit &&
 					offset + result.hits.length < result.total
-				)
+				) {
+					if (!this.#incompletePageFailureLogged) {
+						this.#incompletePageFailureLogged = true;
+						logger.error?.(
+							`Full-text index '${this.#definition.name}' returned ${result.hits.length} of ${limit} hits at offset ${offset} with lower-bound total ${result.total}`
+						);
+					}
 					throw new ServerError('Full-text index returned an incomplete result page', 500);
+				}
 				moreMayExist =
 					result.totalRelation === 'exact' ? offset + result.hits.length < result.total : result.hits.length === limit;
 				if (result.hits.length === 0) break;
@@ -872,15 +880,15 @@ export class FullTextQueryIndex {
 		if (responseHitCapacity < 1)
 			throw new TypeError('@harperfast/fulltext/native search response limit cannot hold one maximum-size hit');
 		if (responseHitCapacity < info.limits.maxAutocompleteResults)
-			throw new TypeError(
-				'@harperfast/fulltext/native autocomplete limit exceeds its worst-case search response capacity'
+			logger.warn?.(
+				`Full-text index '${this.#definition.name}' limits autocomplete to ${responseHitCapacity} results because the native response envelope cannot hold its advertised maximum`
 			);
 		this.#maxFilteredRawPageSize = Math.min(
 			MAX_FILTERED_RAW_PAGE_SIZE,
 			info.limits.maxSearchWindow,
 			responseHitCapacity
 		);
-		this.#maxAutocompleteResults = info.limits.maxAutocompleteResults;
+		this.#maxAutocompleteResults = Math.min(info.limits.maxAutocompleteResults, responseHitCapacity);
 		this.#maxSearchBudgetMilliseconds = info.limits.maxSearchBudgetMilliseconds;
 		this.#maxTraceRecords = info.limits.maxTraceRecords;
 		this.#maxTraceSourceBytes = info.limits.maxTraceSourceBytes;
@@ -920,7 +928,8 @@ function nextFilteredRawPageSize(
 ): number {
 	const projected =
 		acceptedHits === 0
-			? currentPageSize * RAW_PAGE_ZERO_YIELD_GROWTH_FACTOR
+			? // With no selectivity signal, grow independently of the remaining target to minimize native round trips.
+				currentPageSize * RAW_PAGE_ZERO_YIELD_GROWTH_FACTOR
 			: Math.ceil((remainingResults * rawHits * RAW_PAGE_OVERFETCH_FACTOR) / acceptedHits);
 	return Math.min(maxPageSize, Math.max(MIN_RAW_PAGE_SIZE, projected));
 }

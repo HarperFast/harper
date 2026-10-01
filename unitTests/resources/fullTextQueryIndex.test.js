@@ -1113,11 +1113,12 @@ describe('FullTextQueryIndex', () => {
 		}
 	});
 
-	it('rejects native response envelopes that cannot hold advertised results', async () => {
-		const search = async (readinessId, overrides) => {
+	it('rejects native response envelopes that cannot hold a hit and clamps autocomplete', async () => {
+		const search = async (readinessId, overrides, comparator = 'matches') => {
 			const auditStore = sharedStore();
 			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
 			let opens = 0;
+			let request;
 			const index = new FullTextQueryIndex({
 				Table: { tableId: 1, primaryStore: {}, _readTxnForContext: () => undefined },
 				definition: definition(),
@@ -1143,7 +1144,8 @@ describe('FullTextQueryIndex', () => {
 					async openNativeFullTextReader() {
 						opens++;
 						return {
-							async search() {
+							async search(searchRequest) {
+								request = searchRequest;
 								return { total: 0, totalRelation: 'exact', hits: [] };
 							},
 							committedPayload: publicationPayload(),
@@ -1155,18 +1157,26 @@ describe('FullTextQueryIndex', () => {
 			});
 			attachCurrentCoverage(index, auditStore, readinessId);
 			try {
-				return await index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {});
+				const results = await index.search({ attribute: readinessId, comparator, value: 'shoe' }, {});
+				return { request, results };
 			} finally {
 				await index.close();
 				assert.ok(opens <= 1);
 			}
 		};
 		await assert.rejects(search('response-cannot-hold-hit', { maxSearchResponseBytes: 27 }), /Full-text search/);
-		await assert.rejects(
-			search('response-cannot-hold-autocomplete', { maxSearchResponseBytes: 42 }),
-			/Full-text search/
+		assert.deepStrictEqual((await search('response-clamps-autocomplete', { maxSearchResponseBytes: 42 })).results, []);
+		const autocomplete = await search(
+			'response-clamps-autocomplete-query',
+			{ maxSearchResponseBytes: 42 },
+			'matches_prefix'
 		);
-		assert.deepStrictEqual(await search('response-autocomplete-boundary', { maxSearchResponseBytes: 43 }), []);
+		assert.deepStrictEqual(autocomplete.results, []);
+		assert.strictEqual(autocomplete.request.limit, 1);
+		assert.deepStrictEqual(
+			(await search('response-autocomplete-boundary', { maxSearchResponseBytes: 43 })).results,
+			[]
+		);
 	});
 
 	it('maps native query failures without exposing native details', async () => {
