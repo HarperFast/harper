@@ -43,7 +43,7 @@ const MIN_RAW_PAGE_SIZE = 32;
 const RAW_PAGE_OVERFETCH_FACTOR = 2;
 const RAW_PAGE_ZERO_YIELD_GROWTH_FACTOR = 4;
 const RAW_PAGE_YIELD_INTERVAL = 256;
-// Query API v2 uses a 13-byte response header and 13 bytes per versioned hit before string data.
+// Fulltext 0.4.0 Query API v2 uses a 13-byte response header and 13 bytes per versioned hit before string data.
 const NATIVE_SEARCH_RESPONSE_HEADER_BYTES = 13;
 const NATIVE_SEARCH_HIT_OVERHEAD_BYTES = 13;
 const MAX_RELOAD_FAILURES_BEFORE_REOPEN = 3;
@@ -426,12 +426,12 @@ export class FullTextQueryIndex {
 				);
 				if (!bounded && !autocomplete && result.totalRelation === 'exact' && result.total > searchWindow)
 					throw new ClientError(`Full-text query exceeds the ${searchWindow}-result search window; add a limit`, 400);
+				// Fulltext 0.4.0 Query API v2 only reports lower-bound while a full requested page remains retrievable.
 				if (
 					result.totalRelation === 'lower-bound' &&
 					result.hits.length < limit &&
 					offset + result.hits.length < result.total
 				)
-					// Query API v2 only reports lower-bound while a full requested page remains retrievable.
 					throw new ServerError('Full-text index returned an incomplete result page', 500);
 				moreMayExist =
 					result.totalRelation === 'exact' ? offset + result.hits.length < result.total : result.hits.length === limit;
