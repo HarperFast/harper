@@ -57,12 +57,7 @@ import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts
 import * as httpComponent from '../server/http.ts';
 import * as mcpComponent from './mcp/index.ts';
 import { Status } from '../server/status/index.ts';
-import {
-	lifecycle as componentLifecycle,
-	statusForComponent,
-	STATUS,
-	internal as statusInternal,
-} from './status/index.ts';
+import { lifecycle as componentLifecycle, statusForComponent, STATUS } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { materializeGlobalSecrets, processComponentEnv } from './componentSecrets.ts';
 import { PluginModule } from './PluginModule.ts';
@@ -90,15 +85,36 @@ let resources;
 const componentLoadTails = new Map<string, Promise<void>>();
 let appsSeenLastCycle: Set<string> | undefined;
 
+// Status keys whose error was recorded by the loader itself, as opposed to runtime health a
+// component reports through the public statusForComponent API. Only these drive load retries and
+// stale-error retirement; runtime health entries are never loader state.
+const loaderFailedStatusKeys = new Set<string>();
+
+function loaderFailed(statusKey: string, error: Error | string, message?: string): void {
+	if (!isDeployValidating()) loaderFailedStatusKeys.add(statusKey);
+	componentLifecycle.failed(statusKey, error, message);
+}
+
+function takeLoaderFailures(appName: string): string[] {
+	if (isDeployValidating()) return [];
+	const prefix = appName + '.';
+	const taken: string[] = [];
+	for (const key of loaderFailedStatusKeys) {
+		if (key !== appName && !key.startsWith(prefix)) continue;
+		taken.push(key);
+		loaderFailedStatusKeys.delete(key);
+	}
+	return taken;
+}
+
 /**
  * `loadedPaths` survives reload cycles, so a load that failed on this thread would short-circuit
- * on the cache forever and its recorded error could never heal. Forget the failed application's
+ * on the cache forever and its recorded error could never heal. Forget a failed application's
  * paths so the next cycle loads it for real; a healthy application keeps its cache.
  */
 function retryFailedApplicationLoad(appName: string, appFolder: string): void {
 	const prefix = appName + '.';
-	for (const [key, status] of statusInternal.componentStatusRegistry.getAllStatuses()) {
-		if (status.status !== STATUS.ERROR) continue;
+	for (const key of loaderFailedStatusKeys) {
 		if (key !== appName && !key.startsWith(prefix)) continue;
 		forgetLoadedPath(appFolder);
 		return;
@@ -316,6 +332,7 @@ export async function loadComponentDirectories(
 			recoverInterruptedComponentExtraction(CF_ROUTES_DIR, appName)
 				.then(async () => {
 					if (!existsSync(appFolder)) {
+						takeLoaderFailures(appName);
 						componentLifecycle.retired(appName);
 						return;
 					}
@@ -337,10 +354,11 @@ export async function loadComponentDirectories(
 				.catch((error) => {
 					const recoveryError = error instanceof Error ? error : new Error(String(error));
 					if (!existsSync(appFolder)) {
+						takeLoaderFailures(appName);
 						componentLifecycle.retired(appName);
 						return;
 					}
-					componentLifecycle.failed(
+					loaderFailed(
 						appName,
 						recoveryError,
 						`Component '${appName}' failed to load after waiting for in-progress preparation`
@@ -366,7 +384,7 @@ export async function loadComponentDirectories(
 					continue;
 				}
 				unreportedFailedRecoveries.delete(appName);
-				componentLifecycle.failed(
+				loaderFailed(
 					appName,
 					recoveryError,
 					`Component '${appName}' failed to load because its interrupted deployment could not be recovered`
@@ -389,13 +407,13 @@ export async function loadComponentDirectories(
 					})
 				).catch((error) => {
 					const loadError = error instanceof Error ? error : new Error(String(error));
-					componentLifecycle.failed(appName, loadError, `Component '${appName}' failed to load`);
+					loaderFailed(appName, loadError, `Component '${appName}' failed to load`);
 				})
 			);
 		}
 	}
 	for (const [appName, recoveryError] of unreportedFailedRecoveries) {
-		componentLifecycle.failed(
+		loaderFailed(
 			appName,
 			recoveryError,
 			`Component '${appName}' failed to load because its interrupted deployment could not be recovered`
@@ -427,7 +445,10 @@ export async function loadComponentDirectories(
 	}
 	if (appsSeenLastCycle) {
 		for (const goneApp of appsSeenLastCycle) {
-			if (!presentApps.has(goneApp)) componentLifecycle.retired(goneApp);
+			if (!presentApps.has(goneApp)) {
+				takeLoaderFailures(goneApp);
+				componentLifecycle.retired(goneApp);
+			}
 		}
 	}
 	appsSeenLastCycle = presentApps;
@@ -867,6 +888,17 @@ export async function loadComponent(
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
 	const statusName = options.statusName ?? appName ?? basename(componentDirectory);
 	const isApplicationLoad = !isRoot && !options.applicationScope;
+	// Loader failures recorded for this application in earlier cycles. Ones not re-recorded by this
+	// load are stale (e.g. a component removed from the config) and are retired on success; on
+	// failure they are put back so the next cycle still retries.
+	const priorLoaderFailures = isApplicationLoad ? takeLoaderFailures(statusName) : [];
+	const settlePriorFailures = (loadSucceeded: boolean) => {
+		for (const key of priorLoaderFailures) {
+			if (loaderFailedStatusKeys.has(key)) continue;
+			if (!loadSucceeded) loaderFailedStatusKeys.add(key);
+			else if (statusForComponent(key).get()?.status === STATUS.ERROR) componentLifecycle.retired(key);
+		}
+	};
 	if (isApplicationLoad) componentLifecycle.loading(statusName, `Application '${statusName}' is loading`);
 	try {
 		let config;
@@ -921,8 +953,10 @@ export async function loadComponent(
 		if (isRoot) config ??= DEFAULT_CONFIG;
 		if (!config) {
 			// Empty/comment-only config file on a non-root component: nothing to load.
-			if (isApplicationLoad)
+			if (isApplicationLoad) {
+				settlePriorFailures(true);
 				componentLifecycle.loaded(statusName, `Application '${statusName}' has no components to load`);
+			}
 			return undefined;
 		}
 
@@ -959,7 +993,8 @@ export async function loadComponent(
 					error.message = `Could not load component '${statusName}' due to: ${error.message}`;
 					errorReporter?.(error);
 					(getWorkerIndex() === 0 ? console : harperLogger).error(error);
-					componentLifecycle.failed(statusName, error, `Could not load component '${statusName}'`);
+					loaderFailed(statusName, error, `Could not load component '${statusName}'`);
+					settlePriorFailures(false);
 					return undefined;
 				}
 			}
@@ -983,9 +1018,8 @@ export async function loadComponent(
 		// iterate through the app handlers so they can each do their own loading process
 		for (const componentName in config) {
 			if (componentName === 'env') continue; // handled above — not a plugin
-			// For root components, use just the component name
-			// For application components, scope under this load's own status name, so a nested
-			// component's sub-components stay inside the application's key space (app.pkg.sub)
+			// For root components, use just the component name; for application components, scope
+			// under this load's own status name (app.pkg.sub)
 			const componentStatusName = isRoot ? componentName : `${statusName}.${componentName}`;
 
 			compName = componentName;
@@ -1259,7 +1293,7 @@ export async function loadComponent(
 				errorReporter?.(error);
 				(getWorkerIndex() === 0 ? console : harperLogger).error(errorForLog(error));
 				resources.set(componentConfig.path || '/', new ErrorResource(error), null, true);
-				componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
+				loaderFailed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
 			}
 		}
 
@@ -1312,7 +1346,10 @@ export async function loadComponent(
 				applicationScope
 			);
 			loadedPaths.set(resolvedFolder, extensionModule);
-			if (isApplicationLoad) componentLifecycle.loaded(statusName, `Application '${statusName}' loaded`);
+			if (isApplicationLoad) {
+				settlePriorFailures(true);
+				componentLifecycle.loaded(statusName, `Application '${statusName}' loaded`);
+			}
 			return extensionModule;
 		}
 		const componentFunctionalityValues = Object.values(componentFunctionality);
@@ -1325,7 +1362,7 @@ export async function loadComponent(
 			const errorMessage = `${componentDirectory} did not load any modules, resources, or files, is this a valid component?`;
 			errorReporter?.(new Error(errorMessage));
 			(getWorkerIndex() === 0 ? console : harperLogger).error(errorMessage);
-			componentLifecycle.failed(statusName, errorMessage);
+			loaderFailed(statusName, errorMessage);
 			loadedNothing = true;
 		}
 
@@ -1335,13 +1372,18 @@ export async function loadComponent(
 					`Component ${componentName} from (${basename(componentDirectory)}) did not load any functionality.`
 				);
 		}
-		if (isApplicationLoad && !loadedNothing)
+		if (isApplicationLoad && !loadedNothing) {
+			settlePriorFailures(true);
 			componentLifecycle.loaded(statusName, `Application '${statusName}' loaded`);
+		} else if (isApplicationLoad) {
+			settlePriorFailures(false);
+		}
 	} catch (error) {
 		console.error(`Could not load application directory ${componentDirectory}`, errorForLog(error));
 		error.message = `Could not load application due to ${error.message}`;
 		errorReporter?.(error);
-		componentLifecycle.failed(statusName, error, `Application '${statusName}' failed to load`);
+		loaderFailed(statusName, error, `Application '${statusName}' failed to load`);
+		settlePriorFailures(false);
 		resources.set('', new ErrorResource(error));
 	}
 }

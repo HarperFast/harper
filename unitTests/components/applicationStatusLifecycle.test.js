@@ -8,7 +8,7 @@ const { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } = require('f
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { internal, STATUS } = require('#src/components/status/index');
+const { internal, statusForComponent, STATUS } = require('#src/components/status/index');
 const { loadComponent, loadComponentDirectories, forgetLoadedPath } = require('#src/components/componentLoader');
 const configUtils = require('#src/config/configUtils');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
@@ -101,6 +101,56 @@ describe('whole-application status lifecycle', () => {
 
 		registry.retire('deep-app');
 		assert.strictEqual(registry.getStatus('deep-app.midpkg.leafpkg'), undefined);
+	});
+
+	it('retires a stale child error once a clean load no longer declares that component', async function () {
+		this.timeout(20000);
+		const dir = makeApp(componentsRoot, 'shrink-probe', 'badpkg:\n  package: badpkg\n');
+		const nestedDir = path.join(dir, 'node_modules', 'badpkg');
+		mkdirSync(nestedDir, { recursive: true });
+		writeFileSync(path.join(nestedDir, 'config.yaml'), 'branchedDatabases: [data]\n');
+
+		try {
+			await loadComponentDirectories(new Map(), resources);
+			assert.strictEqual(
+				registry.getStatus('shrink-probe.badpkg')?.status,
+				STATUS.ERROR,
+				'precondition: the child failure is recorded'
+			);
+
+			writeFileSync(path.join(dir, 'config.yaml'), '# component removed\n');
+			await loadComponentDirectories(new Map(), resources);
+
+			assert.strictEqual(registry.getStatus('shrink-probe').status, STATUS.HEALTHY);
+			assert.strictEqual(
+				registry.getStatus('shrink-probe.badpkg'),
+				undefined,
+				'the stale child error is retired with the clean load'
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it('leaves runtime health reports alone when scans pass over a healthy application', async function () {
+		this.timeout(20000);
+		const dir = makeApp(componentsRoot, 'runtime-probe', '# nothing to load\n');
+
+		try {
+			await loadComponentDirectories(new Map(), resources);
+			assert.strictEqual(registry.getStatus('runtime-probe').status, STATUS.HEALTHY);
+
+			statusForComponent('runtime-probe.live-check').error('runtime dependency down');
+			await loadComponentDirectories(new Map(), resources);
+
+			assert.strictEqual(
+				registry.getStatus('runtime-probe.live-check').status,
+				STATUS.ERROR,
+				'a component-reported runtime error is not loader state and survives the scan'
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it('retires exact and scoped keys, leaving similarly prefixed names alone', () => {
