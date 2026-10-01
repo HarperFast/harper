@@ -953,3 +953,47 @@ test('a step-summary write failure does not change the coverage verdict', () => 
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test('a blocked adjudicator fails enforcement however many families ran', () => {
+	const footer = (extra) =>
+		`<sub>Review-Coverage: authored=claude; ran=cursor-composer,gemini,codex; ${extra}rounds=4; full=4 @ ${HEAD.slice(0, 12)}</sub>`;
+	const blocked = evaluateCiCoverage(
+		pr({ body: footer('blocked=domain(exit--1); declined=cursor-grok,cursor-kimi,cursor-muse; ') }),
+		{ mode: 'enforce' }
+	);
+	assert.strictEqual(blocked.count, 3);
+	assert.strictEqual(blocked.compliant, false);
+	assert.strictEqual(blocked.pass, false);
+	assert.match(blocked.summary, /adjudication blocked/);
+	assert.match(blocked.detail, /adjudicator \(`domain`\) is blocked \(exit--1\)/);
+	assert.strictEqual(evaluateCiCoverage(pr({ body: footer('blocked=domain(exit--1); ') })).pass, true, 'report mode');
+
+	const afterAnother = evaluateCiCoverage(pr({ body: footer('blocked=cursor-grok(auth),domain(timeout); ') }), {
+		mode: 'enforce',
+	});
+	assert.strictEqual(afterAnother.adjudicatorBlocked, 'timeout', 'domain listed after another blocked leg');
+
+	for (const extra of ['adjudicated=domain; ', 'declined=domain; ', 'blocked=gemini(timeout); ', '']) {
+		const r = evaluateCiCoverage(pr({ body: footer(extra) }), { mode: 'enforce' });
+		assert.strictEqual(r.pass, true, extra || 'no adjudicator segment');
+	}
+
+	const easy = evaluateCiCoverage(
+		pr({
+			body: `Complexity: easy\n\n<sub>Review-Coverage: authored=claude; ran=gemini; blocked=domain(exit--1); rounds=1 @ ${HEAD.slice(0, 12)}</sub>`,
+			additions: 10,
+			deletions: 2,
+		}),
+		{ mode: 'enforce' }
+	);
+	assert.strictEqual(easy.pass, false, 'the easy-diff waiver does not waive adjudication');
+});
+
+test('the CLI tells a blocked-adjudicator PR to rerun the review, not to report more families', () => {
+	const body = `<sub>Review-Coverage: authored=claude; ran=cursor-composer,gemini,codex; blocked=domain(exit--1); rounds=4; full=4 @ ${PIN}</sub>`;
+	const result = runResult({ pull_request: pr({ body }) }, '--mode', 'enforce');
+	assert.strictEqual(result.status, 1);
+	const error = result.stderr.split('\n').find((line) => line.startsWith('::error::'));
+	assert.strictEqual(error.match(/rerun the pre-push review/g)?.length, 1, error);
+	assert.doesNotMatch(result.stderr, /report the reviews in the PR description/);
+});

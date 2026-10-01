@@ -1259,6 +1259,18 @@ function scopeViolation(
 	);
 }
 
+function rescope(resolved: ResolvedRecordLockOptions, tableReplicates: boolean): ResolvedRecordLockOptions {
+	if (resolved.scopeRequested) return resolved;
+	const scope = tableReplicates ? 'cluster' : 'node';
+	return scope === resolved.scope ? resolved : { ...resolved, scope };
+}
+
+function transportUnavailable(databaseName: string): LockUnavailableError {
+	return new LockUnavailableError(
+		`Cluster-scoped record locks are not available on ${databaseName}: no record lock transport is registered`
+	);
+}
+
 /** Distinguishes bare lock options from a record target (id, URL, {id:...}). */
 function isPlainOptions(value: unknown): boolean {
 	return (
@@ -1599,6 +1611,16 @@ export function makeTable(options): TableResourceClass {
 		)
 			return;
 		return { key, descriptor };
+	}
+	function entryBeforeWrite(loadedEntry: Entry | undefined, id: Id, transaction: any, reloadsCommitBase: boolean) {
+		if (loadedEntry != null) return loadedEntry;
+		if (isRocksDB && reloadsCommitBase) {
+			// save() reads this write's base from the staging snapshot (harper#2259); the read handle is still opened
+			// here because it is what gives the staged write coordinated conflict retries
+			transaction.getReadTxn();
+			return undefined;
+		}
+		return primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
 	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
@@ -3920,7 +3942,7 @@ export function makeTable(options): TableResourceClass {
 			const id = target != null ? requestTargetToId(target as RequestTargetOrId) : this.getId();
 			checkValidId(id);
 			this.#assertLiveHandle(id);
-			const resolved = resolveLockOptions(options);
+			const resolved = resolveLockOptions(options, TableResource.replicate !== false);
 			const context = this.getContext();
 			const link = txnForContext(context);
 			const keyId = writeKeyId(id);
@@ -3932,11 +3954,7 @@ export function makeTable(options): TableResourceClass {
 				(resolved.scopeRequested || isClusterLockRequired(databaseName)) &&
 				!getClusterLockTransport(databaseName)
 			)
-				return Promise.reject(
-					new LockUnavailableError(
-						`Cluster-scoped record locks are not available on ${databaseName}: no record lock transport is registered`
-					)
-				);
+				return Promise.reject(transportUnavailable(databaseName));
 			const held = this.#lockHandle;
 			if (held && !held.isExpired() && held.keyId === keyId) {
 				// Re-entrant: upgrade to hold if requested, then preserve staged changes.
@@ -4027,7 +4045,11 @@ export function makeTable(options): TableResourceClass {
 						clearTimeout(followerTimer);
 						const acquired = link.recordLockFor(primaryStore, keyId);
 						if (acquired && !acquired.isExpired()) {
-							const violation = scopeViolation(acquired, resolved, databaseName);
+							const violation = scopeViolation(
+								acquired,
+								rescope(resolved, TableResource.replicate !== false),
+								databaseName
+							);
 							if (violation) throw violation;
 							if (resolved.hold && !acquired.hold) {
 								detachScopedUpgradeWrite(link, keyId, acquired);
@@ -4076,8 +4098,9 @@ export function makeTable(options): TableResourceClass {
 				// caller's whole timeout, long enough for harper-pro to register the transport on this
 				// worker. Using the snapshot would take the native key alone and hand back a node-scoped
 				// handle while a peer that already had the transport is granted the same key.
+				const current = rescope(resolved, TableResource.replicate !== false);
 				try {
-					if (resolved.scope !== 'node') coordinator = TableResource.lockCoordinator ?? coordinator;
+					coordinator = current.scope === 'cluster' ? (TableResource.lockCoordinator ?? coordinator) : undefined;
 				} catch (error) {
 					// The getter fails closed on an unusable node identity, and that has to reach the caller
 					// the same way it does before the wait. Swallowing it let an implicit cluster lock fall
@@ -4085,6 +4108,15 @@ export function makeTable(options): TableResourceClass {
 					// because `coordinator` is still whatever it was, including undefined.
 					handle.release();
 					throw error as Error;
+				}
+				// The entry check cannot cover this: the wait is where the call became cluster-scoped.
+				if (
+					current.scope === 'cluster' &&
+					!coordinator &&
+					(current.scopeRequested || isClusterLockRequired(databaseName))
+				) {
+					handle.release();
+					throw transportUnavailable(databaseName);
 				}
 				if (coordinator) {
 					try {
@@ -4403,7 +4435,8 @@ export function makeTable(options): TableResourceClass {
 					}
 				};
 			}
-			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
+			const reloadsCommitBase = options?.isCopyApply !== true;
+			const entry = entryBeforeWrite(this.#entry, id, transaction, reloadsCommitBase);
 			const writeToSource = () => {
 				if (!(this.constructor as any).source || (context as any)?.source) return;
 				if (fullUpdate) {
@@ -4435,7 +4468,7 @@ export function makeTable(options): TableResourceClass {
 				fullUpdate,
 				chainsStagedState: true,
 				// copy-apply rows keep their pre-read base: one read per row, healed by the post-copy replay
-				reloadCommitBase: options?.isCopyApply !== true,
+				reloadCommitBase: reloadsCommitBase,
 				deferSave: true,
 				// the origin's record version on an applied write; absent for a locally-originated one
 				recordVersion: options?.version,
@@ -5323,7 +5356,7 @@ export function makeTable(options): TableResourceClass {
 			const transaction = txnForContext(context);
 			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
-			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
+			const entry = entryBeforeWrite(this.#entry, id, transaction, true);
 
 			const write: any = {
 				key: id,
