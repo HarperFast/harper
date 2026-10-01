@@ -555,7 +555,8 @@ function startMonitoringTxns() {
 					// those, keep the prior force-commit behavior below.
 					harperLogger.error(
 						`Transaction was open too long and has been aborted after exceeding the open-transaction limit, ` +
-							describeCommitIdentity(txn.db, txn.startedFrom, txn.transaction)
+							describeCommitIdentity(txn.db, txn.startedFrom, txn.transaction) +
+							(url ? ` path: ${url}` : '')
 					);
 					try {
 						commitChainHead.abortDueToTimeout();
