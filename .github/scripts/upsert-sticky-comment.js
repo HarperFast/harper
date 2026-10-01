@@ -41,7 +41,9 @@ function gh(args, input) {
 }
 
 const comments = JSON.parse(gh(`api "repos/${repo}/issues/${prNumber}/comments" --paginate`));
-const existing = comments.find((c) => c.body && c.body.includes(marker));
+// Only the workflow's own comment counts: anyone can post the marker on a public repo, and a
+// forged recorded head would let a re-run reset over a hand resolution.
+const existing = comments.find((c) => c.user?.login === 'github-actions[bot]' && c.body && c.body.includes(marker));
 
 if (readHead) {
 	const head = existing ? extractRecordedHead(existing.body) : null;
