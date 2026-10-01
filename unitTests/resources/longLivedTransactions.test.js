@@ -802,10 +802,8 @@ describe('Long-lived transaction reporting (#2471)', () => {
 					([message]) =>
 						String(message).includes('has been aborted') && String(message).includes('MonitorAbortPrimaryTable')
 				);
-			// Stay on the slow ambient expiration while the two real writes land, so neither can be caught
-			// by a premature tick on a loaded CI runner; only once the chain is fully built do we switch to
-			// a fast interval and force the head's own timeout past zero, so the abort fires deterministically
-			// rather than racing how long the writes happened to take.
+			// Slow expiration during the two real writes: a loaded CI runner must not let a premature tick
+			// catch them mid-flight (the fast interval and forced head expiry below land only afterward).
 			const trackedTxns = setTxnExpiration(30000);
 			const context = {};
 			try {
