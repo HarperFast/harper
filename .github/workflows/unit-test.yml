@@ -70,6 +70,11 @@ jobs:
         timeout-minutes: 3
         run: node --test .github/actions/review-coverage/*.test.mjs
 
+      - name: Cherry-pick workflow script tests
+        if: matrix.node-version == 24
+        timeout-minutes: 3
+        run: node --test .github/scripts/*.test.mjs
+
       - name: Setup Harper
         id: setup-harper
         timeout-minutes: 3

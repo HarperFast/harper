@@ -33,6 +33,18 @@ name: Cherry-pick milestoned PRs to release branches
 #
 # Conflicts are pushed with markers and a sticky comment @-mentions Claude
 # asking for a suggested resolution patch (handled by claude-mention.yml).
+#
+# The workflow only ever force-overwrites (reset, force-push, or delete) a
+# cherry-pick branch head it pushed itself. Every push records its SHA in the
+# PR's sticky comment (sticky-head.js); before touching an existing branch,
+# check-branch-foreign.sh / branch-guard.js compares the branch's current head
+# against that record. A mismatch means someone else committed to the branch
+# (e.g. a human's conflict resolution) — the run leaves the branch alone and
+# reports a "held" status instead, naming the foreign head and how to proceed
+# (resolve by hand, or re-run `workflow_dispatch` with `reset: true` to
+# discard it on purpose). Branches with no recorded head (from before this
+# guard existed) are judged by whether their head commit's committer is the
+# workflow's own git identity (`noreply@harperdb.io`).
 
 on:
   workflow_dispatch:
@@ -41,6 +53,11 @@ on:
         description: 'PR number to cherry-pick onto its milestone release branches'
         required: true
         type: string
+      reset:
+        description: 'Discard commits a human pushed to an existing cherry-pick branch (normally held, never reset/deleted automatically)'
+        required: false
+        type: boolean
+        default: false
   # `pull_request_target` (not `pull_request`) so the workflow definition is
   # always loaded from `main` regardless of what's on the PR's head ref. With
   # `pull_request`, PRs branched off `main` before this workflow landed still
@@ -63,6 +80,9 @@ concurrency:
 
 env:
   PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+  # workflow_dispatch's boolean input arrives as the string 'true'/'false';
+  # every other trigger has no `inputs`, so this is 'false' for them.
+  RESET_REQUESTED: ${{ github.event.inputs.reset == 'true' }}
 
 jobs:
   # ── Resolve which release branches this PR's milestone targets ──────────
@@ -195,15 +215,28 @@ jobs:
           set -euo pipefail
           BRANCH="cherry-pick/${RELEASE}/pr-${PR_NUMBER}"
           MARKER="<!-- release-cherry-pick:${RELEASE} -->"
-          if git push origin --delete "$BRANCH" 2>/dev/null; then
-            OUTCOME=$(printf 'Cherry-pick branch `%s` was deleted' "$BRANCH")
-          else
-            OUTCOME=$(printf 'Cherry-pick branch `%s` is no longer targeted (nothing to delete)' "$BRANCH")
-          fi
           if [ "$ABANDONED" = "true" ]; then
             REASON="this PR was closed without merging"
           else
             REASON=$(printf 'this PR no longer targets `%s` (milestone is now `%s`)' "$RELEASE" "${MILESTONE:-<none>}")
+          fi
+
+          # Never delete over a head the workflow didn't push itself — a human
+          # may have committed a resolution here instead of merging it.
+          GUARD=$(.github/scripts/check-branch-foreign.sh "$BRANCH" "$MARKER" "$PR_NUMBER")
+          if [ "$(echo "$GUARD" | jq -r '.foreign')" = "true" ] && [ "$RESET_REQUESTED" != "true" ]; then
+            HEAD=$(echo "$GUARD" | jq -r '.head')
+            FOREIGN_REASON=$(echo "$GUARD" | jq -r '.reason')
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: held — not deleting\n\nThis branch would normally be torn down (%s), but its head `%s` has commits the workflow did not push: %s.\n\nNot deleting it. Resolve/merge the changes on `%s` by hand, or re-run `workflow_dispatch` for PR #%s with `reset: true` to discard them on purpose.\n' \
+              "$MARKER" "$RELEASE" "$REASON" "$HEAD" "$FOREIGN_REASON" "$BRANCH" "$PR_NUMBER")
+            node .github/scripts/upsert-sticky-comment.js "$PR_NUMBER" "$MARKER" "$BODY"
+            exit 0
+          fi
+
+          if git push origin --delete "$BRANCH" 2>/dev/null; then
+            OUTCOME=$(printf 'Cherry-pick branch `%s` was deleted' "$BRANCH")
+          else
+            OUTCOME=$(printf 'Cherry-pick branch `%s` is no longer targeted (nothing to delete)' "$BRANCH")
           fi
           BODY=$(printf '%s\n## Release cherry-pick `%s`: cancelled\n\n%s — %s.\n' \
             "$MARKER" "$RELEASE" "$OUTCOME" "$REASON")
@@ -243,6 +276,12 @@ jobs:
         run: |
           cp .github/scripts/upsert-sticky-comment.js "$RUNNER_TEMP/upsert-sticky-comment.js"
           cp .github/scripts/apply-picks.sh "$RUNNER_TEMP/apply-picks.sh"
+          # check-branch-foreign.sh and its two requires — co-located so its
+          # relative `require`/invocation paths still resolve from $RUNNER_TEMP.
+          cp .github/scripts/check-branch-foreign.sh "$RUNNER_TEMP/check-branch-foreign.sh"
+          cp .github/scripts/branch-guard.js "$RUNNER_TEMP/branch-guard.js"
+          cp .github/scripts/sticky-head.js "$RUNNER_TEMP/sticky-head.js"
+          chmod +x "$RUNNER_TEMP/check-branch-foreign.sh"
 
       - name: Configure git
         run: |
@@ -358,6 +397,21 @@ jobs:
           echo "excluded_merges=$EXCLUDED_MERGES" >> "$GITHUB_OUTPUT"
           echo "hold=$HOLD" >> "$GITHUB_OUTPUT"
 
+          # ── Guard: never reset/force-push over commits the workflow didn't
+          # push itself (e.g. a human's conflict resolution committed on top
+          # of this branch). See .github/scripts/branch-guard.js.
+          GUARD=$("$RUNNER_TEMP/check-branch-foreign.sh" "$BRANCH" "$STICKY_MARKER" "$PR_NUMBER")
+          FOREIGN=$(echo "$GUARD" | jq -r '.foreign')
+          EXPECTED_HEAD=$(echo "$GUARD" | jq -r '.head')
+          if [ "$FOREIGN" = "true" ] && [ "$RESET_REQUESTED" != "true" ]; then
+            FOREIGN_REASON=$(echo "$GUARD" | jq -r '.reason')
+            echo "$BRANCH has commits the workflow did not push ($FOREIGN_REASON) — not resetting"
+            echo "held_foreign=true" >> "$GITHUB_OUTPUT"
+            echo "foreign_head=$EXPECTED_HEAD" >> "$GITHUB_OUTPUT"
+            echo "foreign_reason=$FOREIGN_REASON" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # ── Create / reset cherry-pick branch off release branch ────────
           git checkout -B "$BRANCH" "origin/$RELEASE_BRANCH"
 
@@ -369,17 +423,71 @@ jobs:
             echo "Nothing to land on $RELEASE_BRANCH — every commit was already present"
             echo "no_op=true" >> "$GITHUB_OUTPUT"
             # An earlier run may have pushed a branch that is now redundant.
-            git push origin --delete "$BRANCH" 2>/dev/null || true
+            # $EXPECTED_HEAD was just confirmed ours (or absent) by the guard above.
+            git push --force-with-lease="refs/heads/${BRANCH}:${EXPECTED_HEAD}" origin --delete "$BRANCH" 2>/dev/null || true
             exit 0
           fi
 
-          # Force-push (we rewrite this branch on each push to the PR)
-          git push --force origin "$BRANCH"
+          # Force-with-lease, not bare --force: $EXPECTED_HEAD is the head the
+          # guard above just confirmed is either absent or the workflow's own,
+          # so this only clobbers that exact state — a concurrent push in
+          # between fails the lease loudly instead of being silently lost.
+          git push --force-with-lease="refs/heads/${BRANCH}:${EXPECTED_HEAD}" origin "$BRANCH"
           echo "pushed=true" >> "$GITHUB_OUTPUT"
+          echo "pushed_head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # ── Held: branch has commits the workflow itself never pushed ───────
+      #
+      # This is the invariant the whole guard exists for: a human (or any
+      # process other than this workflow) committed to the cherry-pick branch
+      # — most commonly a conflict resolution — and no re-run may reset or
+      # force-push over it. Only an explicit `reset: true` workflow_dispatch
+      # authorizes discarding it.
+      - name: 'Report held: branch has commits the workflow did not push'
+        if: steps.pick.outputs.held_foreign == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FOREIGN_HEAD: ${{ steps.pick.outputs.foreign_head }}
+          FOREIGN_REASON: ${{ steps.pick.outputs.foreign_reason }}
+        run: |
+          set -euo pipefail
+          BRANCH="cherry-pick/${RELEASE_BRANCH}/pr-${PR_NUMBER}"
+
+          # The branch's foreign head may already have been landed on the
+          # release branch by hand (e.g. the conflict-resolution PR this
+          # workflow opened earlier was merged) — in which case there's
+          # nothing left to hold on, just say so.
+          if git merge-base --is-ancestor "$FOREIGN_HEAD" "origin/${RELEASE_BRANCH}" 2>/dev/null; then
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: already landed\n\n`%s` already contains `%s` (the current head of `%s`) — the resolution on this branch was already merged. Nothing further to do.\n' \
+              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$FOREIGN_HEAD" "$BRANCH")
+            node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+            exit 0
+          fi
+
+          # Give the human a concrete, non-destructive landing path: a PR from
+          # this branch into the release branch, same as the normal conflict
+          # flow uses. Reuse one if it already exists (it may be exactly the
+          # PR that carries their resolution).
+          LANDING_PR_URL=$(gh pr list --repo "$GITHUB_REPOSITORY" \
+            --base "$RELEASE_BRANCH" --head "$BRANCH" --json url --jq '.[0].url' 2>/dev/null || true)
+          if [ -z "$LANDING_PR_URL" ] || [ "$LANDING_PR_URL" = "null" ]; then
+            LANDING_PR_URL=$(gh pr create --repo "$GITHUB_REPOSITORY" \
+              --base "$RELEASE_BRANCH" \
+              --head "$BRANCH" \
+              --title "cherry-pick: ${RELEASE_BRANCH} branch has commits the workflow did not push (pr-${PR_NUMBER})" \
+              --body "$(printf 'The workflow-managed cherry-pick branch for PR #%s has commits it never pushed: %s.\n\nThis is most likely a conflict resolution committed by hand. Review and merge this PR to land it on `%s`.\n' "$PR_NUMBER" "$FOREIGN_REASON" "$RELEASE_BRANCH")" 2>/dev/null || true)
+          fi
+          PR_NOTE=""
+          if [ -n "$LANDING_PR_URL" ] && [ "$LANDING_PR_URL" != "null" ]; then
+            PR_NOTE=$(printf ' Review and merge: %s.' "$LANDING_PR_URL")
+          fi
+          BODY=$(printf '%s\n## Release cherry-pick `%s`: held — branch has commits the workflow did not push\n\n`%s` head is `%s`, which %s. The workflow will **not** reset or force-push over it.%s\n\nOr re-run `workflow_dispatch` for PR #%s with `reset: true` to discard those commits on purpose and rebuild the branch from the original PR.\n' \
+            "$STICKY_MARKER" "$RELEASE_BRANCH" "$BRANCH" "$FOREIGN_HEAD" "$FOREIGN_REASON" "$PR_NOTE" "$PR_NUMBER")
+          node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
 
       # ── Already-present path: nothing to land, say so and stop ──────────
       - name: Report no-op
-        if: steps.pick.outputs.no_op == 'true' && steps.pick.outputs.hold == ''
+        if: steps.pick.outputs.no_op == 'true' && steps.pick.outputs.hold == '' && steps.pick.outputs.held_foreign != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -388,6 +496,20 @@ jobs:
           # describe commits this PR no longer produces — and that PR is still
           # mergeable into the release branch. Retire both.
           BRANCH="cherry-pick/${RELEASE_BRANCH}/pr-${PR_NUMBER}"
+
+          # This path can be reached before the pick step ever examined the
+          # branch (no replayable commits at all), so guard the delete here
+          # too — never clobber a head the workflow didn't push.
+          GUARD=$("$RUNNER_TEMP/check-branch-foreign.sh" "$BRANCH" "$STICKY_MARKER" "$PR_NUMBER")
+          if [ "$(echo "$GUARD" | jq -r '.foreign')" = "true" ] && [ "$RESET_REQUESTED" != "true" ]; then
+            HEAD=$(echo "$GUARD" | jq -r '.head')
+            FOREIGN_REASON=$(echo "$GUARD" | jq -r '.reason')
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: held — not deleting\n\nEvery commit from this PR is already on `%s`, so this branch would normally be retired, but its head `%s` has commits the workflow did not push: %s.\n\nNot deleting it. Resolve/merge the changes on `%s` by hand, or re-run `workflow_dispatch` for PR #%s with `reset: true` to discard them on purpose.\n' \
+              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$HEAD" "$FOREIGN_REASON" "$BRANCH" "$PR_NUMBER")
+            node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+            exit 0
+          fi
+
           STALE_PR=$(gh pr list --repo "$GITHUB_REPOSITORY" \
             --base "$RELEASE_BRANCH" --head "$BRANCH" --json number --jq '.[0].number' 2>/dev/null || true)
           if [ -n "$STALE_PR" ] && [ "$STALE_PR" != "null" ]; then
@@ -401,9 +523,10 @@ jobs:
 
       # ── Merged path: fast-forward release branch ────────────────────────
       - name: Merge into release branch
-        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.is_merged == 'true' && steps.pick.outputs.conflicts == '' && steps.pick.outputs.hold == ''
+        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.is_merged == 'true' && steps.pick.outputs.conflicts == '' && steps.pick.outputs.hold == '' && steps.pick.outputs.held_foreign != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWN_HEAD: ${{ steps.pick.outputs.pushed_head }}
         run: |
           set -euo pipefail
           BRANCH="${{ steps.pick.outputs.branch }}"
@@ -418,9 +541,21 @@ jobs:
           PICK_SHAS="${{ steps.pick.outputs.pick_shas }}"
           PUSHED=false
           REBUILD_CONFLICT=false
+          FOREIGN_MID_RUN=false
+          FOREIGN_REASON=""
           for ATTEMPT in 1 2 3; do
             git fetch origin "+refs/heads/${RELEASE_BRANCH}:refs/remotes/origin/${RELEASE_BRANCH}"
             if [ "$ATTEMPT" -gt 1 ]; then
+              # Re-confirm the branch is still the workflow's own before
+              # rebuilding it — a human could have pushed a resolution in the
+              # moments since this job's own earlier push, and that must not
+              # be reset over either.
+              GUARD=$("$RUNNER_TEMP/check-branch-foreign.sh" "$BRANCH" "$STICKY_MARKER" "$PR_NUMBER")
+              if [ "$(echo "$GUARD" | jq -r '.foreign')" = "true" ] && [ "$RESET_REQUESTED" != "true" ]; then
+                FOREIGN_MID_RUN=true
+                FOREIGN_REASON=$(echo "$GUARD" | jq -r '.reason')
+                break
+              fi
               git checkout -B "$BRANCH" "origin/$RELEASE_BRANCH"
               # Same classifier as the first pass: a commit the concurrent
               # landing already brought in is skipped, not called a conflict.
@@ -434,7 +569,8 @@ jobs:
                 REBUILD_CONFLICT=true
                 break
               fi
-              git push --force origin "$BRANCH"
+              git push --force-with-lease="refs/heads/${BRANCH}:${OWN_HEAD}" origin "$BRANCH"
+              OWN_HEAD=$(git rev-parse HEAD)
             fi
             git checkout -B "$RELEASE_BRANCH" "origin/$RELEASE_BRANCH"
             if ! git merge --ff-only "$BRANCH"; then continue; fi
@@ -442,8 +578,12 @@ jobs:
           done
 
           if [ "$PUSHED" = true ]; then
-            git push origin --delete "$BRANCH" || true
+            git push --force-with-lease="refs/heads/${BRANCH}:${OWN_HEAD}" origin --delete "$BRANCH" || true
             BODY=$(printf '%s\n## Release cherry-pick `%s`: merged\n\nCherry-picked onto `%s`.\n' "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH")
+            node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+          elif [ "$FOREIGN_MID_RUN" = true ]; then
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: held — branch has commits the workflow did not push\n\n`%s` head has commits the workflow did not push: %s. The workflow will **not** rebuild or reset it.\n\nResolve/merge the changes on `%s` by hand, or re-run `workflow_dispatch` for PR #%s with `reset: true` to discard them on purpose.\n' \
+              "$STICKY_MARKER" "$RELEASE_BRANCH" "$BRANCH" "$FOREIGN_REASON" "$BRANCH" "$PR_NUMBER")
             node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
           else
             if [ "$REBUILD_CONFLICT" = true ]; then
@@ -451,8 +591,11 @@ jobs:
             else
               WHY=$(printf '`%s` kept moving while this pick was in flight' "$RELEASE_BRANCH")
             fi
-            BODY=$(printf '%s\n## Release cherry-pick `%s`: NOT landed\n\n`%s` was **not** updated — %s.\n\nRe-run the cherry-pick workflow for this PR (`workflow_dispatch`, `pr_number=%s`) to rebuild [`%s`](../tree/%s) against the current `%s`.\n' \
-              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$WHY" "$PR_NUMBER" "$BRANCH" "$BRANCH" "$RELEASE_BRANCH")
+            # OWN_HEAD is still accurate here: a REBUILD_CONFLICT breaks out of
+            # the loop before pushing, and an exhausted attempt 1 never
+            # rebuilt at all — either way the remote branch is unchanged.
+            BODY=$(printf '%s\n<!-- release-cherry-pick-head:%s -->\n## Release cherry-pick `%s`: NOT landed\n\n`%s` was **not** updated — %s.\n\nRe-run the cherry-pick workflow for this PR (`workflow_dispatch`, `pr_number=%s`) to rebuild [`%s`](../tree/%s) against the current `%s`.\n' \
+              "$STICKY_MARKER" "$OWN_HEAD" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$WHY" "$PR_NUMBER" "$BRANCH" "$BRANCH" "$RELEASE_BRANCH")
             node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
             exit 1
           fi
@@ -466,12 +609,13 @@ jobs:
       # A hold outranks every other outcome: it means the branch is not
       # provably the whole change, which no clean pick or empty range disproves.
       - name: Report held for review
-        if: steps.pick.outputs.conflicts == '' && steps.pick.outputs.hold != ''
+        if: steps.pick.outputs.conflicts == '' && steps.pick.outputs.hold != '' && steps.pick.outputs.held_foreign != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_TITLE: ${{ steps.pick.outputs.pr_title }}
           HOLD: ${{ steps.pick.outputs.hold }}
           PUSHED: ${{ steps.pick.outputs.pushed }}
+          PUSHED_HEAD: ${{ steps.pick.outputs.pushed_head }}
         run: |
           set -euo pipefail
           BRANCH="${{ steps.pick.outputs.branch }}"
@@ -482,7 +626,17 @@ jobs:
           # branch left by an earlier run would otherwise be mistaken for it.
           if [ "$PUSHED" != true ]; then
             # Nothing was built this run, so anything left from an earlier one
-            # describes a revision that no longer exists. Close it out.
+            # describes a revision that no longer exists — but confirm it's
+            # still ours before closing/deleting it.
+            GUARD=$("$RUNNER_TEMP/check-branch-foreign.sh" "$BRANCH" "$STICKY_MARKER" "$PR_NUMBER")
+            if [ "$(echo "$GUARD" | jq -r '.foreign')" = "true" ] && [ "$RESET_REQUESTED" != "true" ]; then
+              HEAD=$(echo "$GUARD" | jq -r '.head')
+              FOREIGN_REASON=$(echo "$GUARD" | jq -r '.reason')
+              BODY=$(printf '%s\n## Release cherry-pick `%s`: held — not deleting\n\nNothing was cherry-picked onto `%s` this run, so this branch would normally be retired, but its head `%s` has commits the workflow did not push: %s.\n\nNot deleting it. Resolve/merge the changes on `%s` by hand, or re-run `workflow_dispatch` for PR #%s with `reset: true` to discard them on purpose.\n' \
+                "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$HEAD" "$FOREIGN_REASON" "$BRANCH" "$PR_NUMBER")
+              node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+              exit 0
+            fi
             STALE_PR=$(gh pr list --repo "$GITHUB_REPOSITORY" \
               --base "$RELEASE_BRANCH" --head "$BRANCH" --json number --jq '.[0].number' 2>/dev/null || true)
             if [ -n "$STALE_PR" ] && [ "$STALE_PR" != "null" ]; then
@@ -509,18 +663,19 @@ jobs:
             # earlier run may describe a different set of commits.
             gh pr edit "$HELD_PR_URL" --repo "$GITHUB_REPOSITORY" --body "$HELD_BODY" >/dev/null
           fi
-          BODY=$(printf '%s\n## Release cherry-pick `%s`: held for review\n\nThe picks applied cleanly, but the result is not provably the whole change: %s.\n\nA merge that resolved a conflict holds content found nowhere else, so `%s` was **not** updated automatically. Review and merge: %s\n' \
-            "$STICKY_MARKER" "$RELEASE_BRANCH" "$HOLD" "$RELEASE_BRANCH" "$HELD_PR_URL")
+          BODY=$(printf '%s\n<!-- release-cherry-pick-head:%s -->\n## Release cherry-pick `%s`: held for review\n\nThe picks applied cleanly, but the result is not provably the whole change: %s.\n\nA merge that resolved a conflict holds content found nowhere else, so `%s` was **not** updated automatically. Review and merge: %s\n' \
+            "$STICKY_MARKER" "$PUSHED_HEAD" "$RELEASE_BRANCH" "$HOLD" "$RELEASE_BRANCH" "$HELD_PR_URL")
           node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
 
       # ── Conflict path: post sticky comment, @-mention Claude ────────────
       - name: Report conflict
-        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.conflicts != ''
+        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.conflicts != '' && steps.pick.outputs.held_foreign != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IS_MERGED: ${{ steps.pick.outputs.is_merged }}
           PR_TITLE: ${{ steps.pick.outputs.pr_title }}
           HOLD: ${{ steps.pick.outputs.hold }}
+          PUSHED_HEAD: ${{ steps.pick.outputs.pushed_head }}
         run: |
           set -euo pipefail
           BRANCH="${{ steps.pick.outputs.branch }}"
@@ -553,11 +708,11 @@ jobs:
               # a different set of conflicting commits.
               gh pr edit "$PATCH_PR_URL" --repo "$GITHUB_REPOSITORY" --body "$CONFLICT_BODY" >/dev/null
             fi
-            BODY=$(printf '%s\n## Release cherry-pick `%s`: conflict\n\nCherry-pick onto `%s` produced conflicts on commit(s): `%s`%s\n\nThe conflict markers are committed on branch [`%s`](../tree/%s).\nA pull request has been opened to land this patch: %s\n' \
-              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$CONFLICTS" "$MERGE_WARN" "$BRANCH" "$BRANCH" "$PATCH_PR_URL")
+            BODY=$(printf '%s\n<!-- release-cherry-pick-head:%s -->\n## Release cherry-pick `%s`: conflict\n\nCherry-pick onto `%s` produced conflicts on commit(s): `%s`%s\n\nThe conflict markers are committed on branch [`%s`](../tree/%s).\nA pull request has been opened to land this patch: %s\n' \
+              "$STICKY_MARKER" "$PUSHED_HEAD" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$CONFLICTS" "$MERGE_WARN" "$BRANCH" "$BRANCH" "$PATCH_PR_URL")
           else
-            BODY=$(printf '%s\n## Release cherry-pick `%s`: conflict\n\nCherry-pick onto `%s` produced conflicts on commit(s): `%s`%s\n\nThe conflict markers are committed on branch [`%s`](../tree/%s).\nIntegration tests are **not** running until conflicts are resolved.\n\n@claude please review branch `%s` and suggest a patch that resolves the conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) introduced by cherry-picking PR #%s onto `%s`. Post the suggested patch as a comment on this PR — do not push.\n' \
-              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$CONFLICTS" "$MERGE_WARN" "$BRANCH" "$BRANCH" "$BRANCH" "$PR_NUMBER" "$RELEASE_BRANCH")
+            BODY=$(printf '%s\n<!-- release-cherry-pick-head:%s -->\n## Release cherry-pick `%s`: conflict\n\nCherry-pick onto `%s` produced conflicts on commit(s): `%s`%s\n\nThe conflict markers are committed on branch [`%s`](../tree/%s).\nIntegration tests are **not** running until conflicts are resolved.\n\n@claude please review branch `%s` and suggest a patch that resolves the conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) introduced by cherry-picking PR #%s onto `%s`. Post the suggested patch as a comment on this PR — do not push.\n' \
+              "$STICKY_MARKER" "$PUSHED_HEAD" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$CONFLICTS" "$MERGE_WARN" "$BRANCH" "$BRANCH" "$BRANCH" "$PR_NUMBER" "$RELEASE_BRANCH")
           fi
           node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
 
@@ -568,10 +723,11 @@ jobs:
       # fire for `workflow_dispatch`-triggered runs on non-default branches —
       # so a downstream reporter never sees the cherry-pick run finish.
       - name: Trigger tests and wait for completion
-        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.is_merged != 'true' && steps.pick.outputs.conflicts == '' && steps.pick.outputs.hold == ''
+        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.is_merged != 'true' && steps.pick.outputs.conflicts == '' && steps.pick.outputs.hold == '' && steps.pick.outputs.held_foreign != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EXCLUDED_MERGES: ${{ steps.pick.outputs.excluded_merges }}
+          PUSHED_HEAD: ${{ steps.pick.outputs.pushed_head }}
         run: |
           set -euo pipefail
           BRANCH="${{ steps.pick.outputs.branch }}"
@@ -589,8 +745,8 @@ jobs:
             local heading="$1"
             local run_line="$2"
             local body
-            body=$(printf '%s\n## Release cherry-pick `%s`: %s\n\nCherry-picked PR #%s onto `%s` at branch [`%s`](../tree/%s).\n%s%s\n\nOn merge of this PR the cherry-pick branch will be fast-forwarded into `%s`.\n' \
-              "$STICKY_MARKER" "$RELEASE_BRANCH" "$heading" "$PR_NUMBER" "$RELEASE_BRANCH" "$BRANCH" "$BRANCH" "$run_line" "$MERGE_NOTE" "$RELEASE_BRANCH")
+            body=$(printf '%s\n<!-- release-cherry-pick-head:%s -->\n## Release cherry-pick `%s`: %s\n\nCherry-picked PR #%s onto `%s` at branch [`%s`](../tree/%s).\n%s%s\n\nOn merge of this PR the cherry-pick branch will be fast-forwarded into `%s`.\n' \
+              "$STICKY_MARKER" "$PUSHED_HEAD" "$RELEASE_BRANCH" "$heading" "$PR_NUMBER" "$RELEASE_BRANCH" "$BRANCH" "$BRANCH" "$run_line" "$MERGE_NOTE" "$RELEASE_BRANCH")
             node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$body"
           }
 
