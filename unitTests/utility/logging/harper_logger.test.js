@@ -1999,17 +1999,15 @@ describe('Test harper_logger module', () => {
 		const inspectRender = (value, options) => util.inspect(inspectForLog(value, options));
 		const errorRender = (error) => util.inspect(errorForLog(error));
 
-		// Timing the call after it returns can't catch a genuine synchronous hang; vm's own
-		// `timeout` can, via a V8 execution interrupt that preempts even a tight synchronous loop.
-		// `fn` keeps running in this file's normal realm - only the call is routed through a vm
-		// context to get that preemption (verified: a `while (true) {}` fn is interrupted on time).
+		// A post-hoc elapsed-time check can't catch a genuine hang; vm's `timeout` can, since it
+		// preempts even a tight synchronous loop via a V8 execution interrupt. `fn` still runs in
+		// this file's own realm - only the call is routed through a vm context for that preemption.
 		const DEADLINE_SCRIPT = new vm.Script('fn()');
 		function withDeadline(fn, timeoutMs) {
 			return DEADLINE_SCRIPT.runInNewContext({ fn }, { timeout: timeoutMs });
 		}
 
-		// Deterministic PRNG (mulberry32, no fast-check dependency) - SEED makes a failing
-		// iteration reproducible.
+		// Deterministic PRNG; SEED makes a failing iteration reproducible.
 		function mulberry32(seed) {
 			let a = seed >>> 0;
 			return function () {
@@ -2033,10 +2031,8 @@ describe('Test harper_logger module', () => {
 			return out.join('');
 		}
 
-		// One hostile shape per call, seeded via `rng` so a fixed seed reproduces the exact same
-		// sequence. `ancestors` is the chain back to the root, so a `cycle` shape can target a real
-		// ancestor, not just its immediate parent. `deep-chain` exceeds the sanitizer's own depth cap
-		// (20); `wide-object`/`wide-array` may exceed this suite's maxArrayLength budget (see below).
+		// One hostile shape per call; `ancestors` lets a `cycle` shape target a real ancestor, not
+		// just its immediate parent.
 		function hostileValue(rng, depth, ancestors) {
 			if (depth <= 0) {
 				return pick(rng, [randomString(rng, 8), rng() * 1e9, null, undefined, true, Symbol('leaf')]);
@@ -2056,21 +2052,21 @@ describe('Test harper_logger module', () => {
 			]);
 			switch (kind) {
 				case 'throwing-getter': {
+					// Never actually invoked - the sanitizer always substitutes an accessor placeholder
+					// instead of calling a getter; this exercises that substitution.
 					const obj = {};
 					Object.defineProperty(obj, 'poison', {
 						enumerable: true,
 						get() {
-							throw new Error('getter boom: ' + randomString(rng, 5));
+							throw new Error('getter boom');
 						},
 					});
 					obj.fine = hostileValue(rng, depth - 1, [...ancestors, obj]);
 					return obj;
 				}
 				case 'throwing-proxy': {
-					// inspectForLog's sanitizer gates on types.isProxy before touching the target (see
-					// harper_logger.ts), so this trap never actually runs there - it still exercises that
-					// gate itself on an arbitrary trap-bearing Proxy; errorForLog's own chain generator
-					// below has no such gate and does invoke this trap.
+					// inspectForLog's sanitizer gates on types.isProxy before touching the target, so this
+					// trap never actually runs - this exercises that gate on an arbitrary trap-bearing Proxy.
 					const target = { real: hostileValue(rng, depth - 1, ancestors) };
 					const trap = pick(rng, ['get', 'ownKeys', 'getOwnPropertyDescriptor', 'has']);
 					return new Proxy(target, {
@@ -2116,7 +2112,6 @@ describe('Test harper_logger module', () => {
 					return head;
 				}
 				case 'wide-object': {
-					// 500-1499 keys: may exceed this suite's 250-entry maxArrayLength budget.
 					const obj = {};
 					const width = 500 + Math.floor(rng() * 1000);
 					for (let i = 0; i < width; i++) obj[`k${i}`] = i;
@@ -2138,12 +2133,13 @@ describe('Test harper_logger module', () => {
 			}
 		}
 
-		// Builds an Error (or occasionally a bare object) with a hostile `cause` chain - throwing
-		// getters, a revoked/throwing Proxy, or a cycle - exercising errorToLogString's own walk
-		// independent of deepSanitizeErrors, which errorForLog never calls.
+		// Builds an Error (or bare object) with a hostile `cause` chain - throwing getters, a
+		// hostile Proxy, or a cycle - exercising errorToLogString's walk independent of
+		// deepSanitizeErrors, which errorForLog never calls.
 		function hostileErrorChain(rng, length) {
-			const links = [];
+			const reachable = [];
 			let root;
+			let tip; // current end of the live chain; null once a cycle/refusal has closed it
 			for (let i = 0; i < length; i++) {
 				const kind = pick(rng, [
 					'plain',
@@ -2189,36 +2185,44 @@ describe('Test harper_logger module', () => {
 						link = proxy;
 						break;
 					}
-					case 'throwing-proxy': {
-						const trap = pick(rng, ['get', 'has', 'ownKeys']);
+					case 'throwing-proxy':
+						// errorForLog only ever reads properties (stack/cause/message/constructor/
+						// allowlist) - a 'get' trap is the only one it can ever reach.
 						link = new Proxy(
 							{},
 							{
-								[trap]() {
+								get() {
 									throw new Error('cause proxy boom');
 								},
 							}
 						);
 						break;
-					}
 					case 'plain':
 					default:
 						link = new Error(`link ${i}`);
 						link.code = pick(rng, ['ECONNRESET', 'ENOENT', undefined]);
 				}
+
 				if (i === 0) {
 					root = link;
-				} else {
-					const parent = links[i - 1];
-					try {
-						// Occasionally cycle back instead of extending the chain.
-						parent.cause = rng() < 0.15 && links.length > 1 ? pick(rng, links) : link;
-					} catch {
-						// A hostile parent (e.g. a revoked proxy) may refuse the assignment - the chain
-						// just ends there, itself a valid shape to render.
-					}
+					tip = link;
+					reachable.push(link);
+					continue;
 				}
-				links.push(link);
+				if (tip === null) break; // already closed into a cycle - nothing left to extend
+
+				try {
+					if (rng() < 0.15 && reachable.length > 1) {
+						tip.cause = pick(rng, reachable); // close a cycle instead of extending
+						tip = null;
+					} else {
+						tip.cause = link;
+						tip = link;
+						reachable.push(link);
+					}
+				} catch {
+					tip = null; // a hostile tip (e.g. a revoked proxy) refused the assignment
+				}
 			}
 			return root;
 		}
@@ -2265,7 +2269,7 @@ describe('Test harper_logger module', () => {
 
 		it('inspectForLog stays bounded on a 5000-key object, matching the sanitizer’s own breadth cap', () => {
 			const huge = {};
-			for (let i = 0; i < 5000; i++) huge[`k${i}`] = i; // well beyond this suite's 250-entry budget
+			for (let i = 0; i < 5000; i++) huge[`k${i}`] = i;
 			const result = withDeadline(() => inspectRender({ huge }, { depth: 8, maxArrayLength: 250 }), HANG_BUDGET_MS);
 			assert.ok(result.includes('sanitize budget'));
 		});
