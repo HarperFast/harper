@@ -260,16 +260,13 @@ function startServers() {
  * listen() because supported Node versions differ: some reject the path while others truncate and
  * bind it somewhere clients cannot reach using the configured path.
  *
- * A per-thread mirror binds at a temp name and is renamed over its published path. libuv unlinks a
- * pipe server's bound path when the handle closes, with no ownership check, so a mirror bound
- * directly at the published path is deleted by the outgoing worker of an overlapping restart (see
- * restartWorkers()) closing its own server after the replacement rebound that path. rename() keeps
- * the listening inode, so the close-time unlink only ever targets the temp name, which no longer
- * exists. The operations API's primary socket keeps the direct bind: the CLI reads that file's
- * presence as "Harper is running", so its unlink on close is load-bearing.
+ * A per-thread mirror binds at a temp name and is renamed over its published path, because libuv
+ * unlinks a pipe server's bound path when the handle closes, whoever owns that path by then (see
+ * server/DESIGN.md). Not the operations API's primary socket, whose presence the CLI reads as
+ * "Harper is running", and not on Windows, where named pipes have no directory entry.
  */
 function listenOnDomainSocket(port, server) {
-	const bindPath = server.isPerThreadSocket ? mirrorBindPath(port) : port;
+	const bindPath = server.isPerThreadSocket && !isWindows ? mirrorBindPath(port) : port;
 	const overlong = [port, bindPath].find(isDomainSocketPathTooLong);
 	if (overlong) {
 		httpComponent.markUdsBindFailed(port);
@@ -312,11 +309,7 @@ function listenOnDomainSocket(port, server) {
 }
 
 let mirrorBindSequence = 0;
-/**
- * Unique within the process: threadId never repeats and the sequence is per thread. A leftover from a
- * crashed process is removed by the main thread's startup sweep before any bind, and the name can
- * never match a proxy's `*-<port>.yaml`/`.sock` discovery.
- */
+// Unique within the process (threadId never repeats), never a `*-<port>.sock`/`.yaml` a proxy discovers.
 function mirrorBindPath(socketPath) {
 	return join(dirname(socketPath), `.${threadId}.${++mirrorBindSequence}`);
 }
