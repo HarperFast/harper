@@ -85,9 +85,8 @@ let resources;
 const componentLoadTails = new Map<string, Promise<void>>();
 let appsSeenLastCycle: Set<string> | undefined;
 
-// Status keys whose error was recorded by the loader itself, as opposed to runtime health a
-// component reports through the public statusForComponent API; only these drive load retries and
-// stale-error retirement
+// Failure keys the loader recorded itself, as opposed to runtime health reported through the
+// public statusForComponent API
 const loaderFailedStatusKeys = new Set<string>();
 // Applications whose most recent placement evaluation on this thread reported a refusal
 const placementRefusals = new Set<string>();
@@ -115,8 +114,7 @@ function takeLoaderFailures(appName: string): string[] {
 	return taken;
 }
 
-// loadedPaths survives reload cycles, so a failed load must forget its paths or it would
-// short-circuit on the cache forever and its recorded error could never heal
+// loadedPaths survives reload cycles, so a failed application must forget its paths to reload
 function retryFailedApplicationLoad(appName: string, appFolder: string): void {
 	const prefix = appName + '.';
 	for (const key of loaderFailedStatusKeys) {
@@ -1026,7 +1024,6 @@ export async function loadComponent(
 		for (const componentName in config) {
 			if (componentName === 'env') continue; // handled above — not a plugin
 			// For root components, use just the component name
-			// For application components, scope under this load's own status name (app.pkg.sub)
 			const componentStatusName = isRoot ? componentName : `${statusName}.${componentName}`;
 
 			compName = componentName;
