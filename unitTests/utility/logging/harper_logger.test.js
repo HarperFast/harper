@@ -1992,6 +1992,298 @@ describe('Test harper_logger module', () => {
 		});
 	});
 
+	describe('Property-style hostile-input fuzzing for inspectForLog/errorForLog (harper#1994 follow-up)', () => {
+		const util = require('util');
+		const { inspectForLog, errorForLog } = harperLoggerModule;
+		const inspectRender = (value, options) => util.inspect(inspectForLog(value, options));
+		const errorRender = (error) => util.inspect(errorForLog(error));
+
+		// Deterministic, dependency-free PRNG (mulberry32) - fast-check is not a dependency of this
+		// repo, so a fixed seed through this generator (rather than Math.random()) is what makes a
+		// failing iteration reproducible: re-running with the same SEED replays the exact same shapes.
+		function mulberry32(seed) {
+			let a = seed >>> 0;
+			return function () {
+				a |= 0;
+				a = (a + 0x6d2b79f5) | 0;
+				let t = Math.imul(a ^ (a >>> 15), 1 | a);
+				t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+				return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+			};
+		}
+		const SEED = 0xc0ffee;
+
+		function pick(rng, options) {
+			return options[Math.floor(rng() * options.length)];
+		}
+
+		function randomString(rng, length) {
+			const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFG0123456789 \t\n"\'\\<>{}[]';
+			let out = '';
+			for (let i = 0; i < length; i++) out += chars[Math.floor(rng() * chars.length)];
+			return out;
+		}
+
+		/**
+		 * Builds one hostile shape per call, fully driven off `rng` so a fixed seed reproduces the
+		 * exact same sequence of shapes across runs. `ancestors` is the chain back to the root, so a
+		 * cycle can point at a real ancestor (not just its immediate parent) the way a genuinely
+		 * hostile payload could. Covers: getters that throw, Proxy traps that throw, null/foreign
+		 * prototypes, cyclic graphs, Symbol keys, a chain deeper than the sanitizer's own depth cap
+		 * (MAX_SANITIZE_DEPTH = 20), an object/array wider than its default breadth budget
+		 * (DEFAULT_MAX_SANITIZE_ENTRIES = 1000), and a huge string.
+		 */
+		function hostileValue(rng, depth, ancestors) {
+			if (depth <= 0) {
+				return pick(rng, [randomString(rng, 8), rng() * 1e9, null, undefined, true, Symbol('leaf')]);
+			}
+			const kind = pick(rng, [
+				'throwing-getter',
+				'throwing-proxy',
+				'null-proto',
+				'foreign-proto',
+				'cycle',
+				'symbol-keys',
+				'deep-chain',
+				'wide-object',
+				'wide-array',
+				'huge-string',
+				'plain',
+			]);
+			switch (kind) {
+				case 'throwing-getter': {
+					const obj = {};
+					Object.defineProperty(obj, 'poison', {
+						enumerable: true,
+						get() {
+							throw new Error('getter boom: ' + randomString(rng, 5));
+						},
+					});
+					obj.fine = hostileValue(rng, depth - 1, [...ancestors, obj]);
+					return obj;
+				}
+				case 'throwing-proxy': {
+					const target = { real: hostileValue(rng, depth - 1, ancestors) };
+					const trap = pick(rng, ['get', 'ownKeys', 'getOwnPropertyDescriptor', 'has']);
+					return new Proxy(target, {
+						[trap]() {
+							throw new Error('proxy trap boom');
+						},
+					});
+				}
+				case 'null-proto': {
+					const obj = Object.create(null);
+					obj.a = hostileValue(rng, depth - 1, [...ancestors, obj]);
+					obj[Symbol('null-proto-tag')] = 'marker';
+					return obj;
+				}
+				case 'foreign-proto': {
+					const weird_proto = Object.create(null);
+					Object.defineProperty(weird_proto, 'weird', {
+						get() {
+							throw new Error('proto getter boom');
+						},
+					});
+					const obj = Object.create(weird_proto);
+					obj.inner = hostileValue(rng, depth - 1, [...ancestors, obj]);
+					return obj;
+				}
+				case 'cycle': {
+					const obj = {};
+					obj.self = ancestors.length > 0 ? pick(rng, ancestors) : obj;
+					obj.data = hostileValue(rng, depth - 1, [...ancestors, obj]);
+					return obj;
+				}
+				case 'symbol-keys': {
+					const obj = {};
+					for (let i = 0; i < 3; i++) {
+						obj[Symbol(`sym-${i}-${randomString(rng, 4)}`)] = hostileValue(rng, depth - 1, [...ancestors, obj]);
+					}
+					obj.normal = 'fine';
+					return obj;
+				}
+				case 'deep-chain': {
+					// Deliberately exceeds MAX_SANITIZE_DEPTH (20) so the walk's depth-cap placeholder
+					// path runs too, not just the shallower shapes the other branches build.
+					let head = { bottom: 'reached' };
+					for (let i = 0; i < 30; i++) head = { nested: head };
+					return head;
+				}
+				case 'wide-object': {
+					const obj = {};
+					const width = 500 + Math.floor(rng() * 1000); // exceeds the default 1000-entry budget
+					for (let i = 0; i < width; i++) obj[`k${i}`] = i;
+					return obj;
+				}
+				case 'wide-array': {
+					const width = 500 + Math.floor(rng() * 1000);
+					return Array.from({ length: width }, (_, i) => i);
+				}
+				case 'huge-string':
+					return randomString(rng, 20_000 + Math.floor(rng() * 20_000));
+				case 'plain':
+				default: {
+					const obj = {};
+					const n = 1 + Math.floor(rng() * 2);
+					for (let i = 0; i < n; i++) obj[`field${i}`] = hostileValue(rng, depth - 1, [...ancestors, obj]);
+					return obj;
+				}
+			}
+		}
+
+		/**
+		 * Builds an Error (or occasionally a bare non-Error object) whose `cause` chain is itself
+		 * hostile - a throwing stack/message/constructor getter, a revoked Proxy, a Proxy with a
+		 * throwing trap, or a cycle back to an earlier link - the shapes errorForLog's own walk
+		 * (renderErrorLine/errorToLogString) has to survive independent of deepSanitizeErrors, which
+		 * errorForLog never calls.
+		 */
+		function hostileErrorChain(rng, length) {
+			const links = [];
+			let root;
+			for (let i = 0; i < length; i++) {
+				const kind = pick(rng, [
+					'plain',
+					'throwing-stack',
+					'throwing-message',
+					'throwing-constructor',
+					'revoked-proxy',
+					'throwing-proxy',
+				]);
+				let link;
+				switch (kind) {
+					case 'throwing-stack':
+						link = new Error(`link ${i}`);
+						Object.defineProperty(link, 'stack', {
+							get() {
+								throw new Error('stack boom');
+							},
+						});
+						break;
+					case 'throwing-message':
+						// No usable stack, so errorToLogString falls through to errorToString, which reads
+						// `.message` directly - this is what actually exercises the throwing getter.
+						link = Object.create(Error.prototype);
+						Object.defineProperty(link, 'message', {
+							get() {
+								throw new Error('message boom');
+							},
+						});
+						break;
+					case 'throwing-constructor':
+						// Also no stack, with a real string `message` - errorToString's `${error.constructor
+						// .name}` branch is the only place in this file that reads `.constructor`.
+						link = { message: `link ${i}` };
+						Object.defineProperty(link, 'constructor', {
+							get() {
+								throw new Error('constructor boom');
+							},
+						});
+						break;
+					case 'revoked-proxy': {
+						const { proxy, revoke } = Proxy.revocable({}, {});
+						revoke();
+						link = proxy;
+						break;
+					}
+					case 'throwing-proxy': {
+						const trap = pick(rng, ['get', 'has', 'ownKeys']);
+						link = new Proxy(
+							{},
+							{
+								[trap]() {
+									throw new Error('cause proxy boom');
+								},
+							}
+						);
+						break;
+					}
+					case 'plain':
+					default:
+						link = new Error(`link ${i}`);
+						link.code = pick(rng, ['ECONNRESET', 'ENOENT', undefined]);
+				}
+				if (i === 0) {
+					root = link;
+				} else {
+					const parent = links[i - 1];
+					try {
+						// Occasionally cycle back to an earlier link instead of extending the chain.
+						parent.cause = rng() < 0.15 && links.length > 1 ? pick(rng, links) : link;
+					} catch {
+						// A hostile parent (e.g. a revoked proxy) may refuse the assignment - the chain
+						// just ends there, which is itself a valid hostile shape to render.
+					}
+				}
+				links.push(link);
+			}
+			return root;
+		}
+
+		const ITERATIONS = 60;
+		const MAX_VALUE_DEPTH = 6;
+		const HANG_BUDGET_MS = 2000;
+
+		it(`inspectForLog never throws and stays within budget across ${ITERATIONS} randomized hostile shapes (seed 0x${SEED.toString(16)})`, () => {
+			const rng = mulberry32(SEED);
+			for (let i = 0; i < ITERATIONS; i++) {
+				const value = hostileValue(rng, MAX_VALUE_DEPTH, []);
+				const start = process.hrtime.bigint();
+				let result;
+				assert.doesNotThrow(
+					() => {
+						result = inspectRender(value, { depth: 8, maxArrayLength: 250, maxStringLength: 20000 });
+					},
+					undefined,
+					`iteration ${i} (seed 0x${SEED.toString(16)}) must not throw`
+				);
+				const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
+				assert.ok(elapsed_ms < HANG_BUDGET_MS, `iteration ${i} took ${elapsed_ms}ms, exceeding the hang budget`);
+				assert.strictEqual(typeof result, 'string');
+			}
+		});
+
+		it(`errorForLog never throws and stays within budget across ${ITERATIONS} randomized hostile error chains (seed 0x${(SEED + 1).toString(16)})`, () => {
+			const rng = mulberry32(SEED + 1);
+			for (let i = 0; i < ITERATIONS; i++) {
+				const chain_length = 1 + Math.floor(rng() * 5);
+				const error = hostileErrorChain(rng, chain_length);
+				const start = process.hrtime.bigint();
+				let result;
+				assert.doesNotThrow(
+					() => {
+						result = errorRender(error);
+					},
+					undefined,
+					`iteration ${i} (seed 0x${(SEED + 1).toString(16)}) must not throw`
+				);
+				const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
+				assert.ok(elapsed_ms < HANG_BUDGET_MS, `iteration ${i} took ${elapsed_ms}ms, exceeding the hang budget`);
+				assert.strictEqual(typeof result, 'string');
+			}
+		});
+
+		it('inspectForLog stays bounded on a 5000-key object, matching the sanitizer’s own breadth cap', () => {
+			const huge = {};
+			for (let i = 0; i < 5000; i++) huge[`k${i}`] = i; // well beyond the default 1000-entry budget
+			const start = process.hrtime.bigint();
+			const result = inspectRender({ huge }, { depth: 8, maxArrayLength: 250 });
+			const elapsed_ms = Number(process.hrtime.bigint() - start) / 1e6;
+			assert.ok(elapsed_ms < HANG_BUDGET_MS, 'a 5000-key object must still be bounded by the breadth cap');
+			assert.ok(result.includes('sanitize budget'));
+		});
+
+		it('inspectForLog never throws on a cyclic, null-prototype, Symbol-keyed object that also holds a revoked Proxy', () => {
+			const { proxy, revoke } = Proxy.revocable({}, {});
+			revoke();
+			const cyclic = Object.create(null);
+			cyclic.self = cyclic;
+			cyclic.revoked = proxy;
+			cyclic[Symbol('tag')] = 'mixed-hostile';
+			assert.doesNotThrow(() => inspectRender({ cyclic }, { depth: 8, maxArrayLength: 250 }));
+		});
+	});
+
 	describe('Test isErrorLike function (harper#1982)', () => {
 		const { isErrorLike } = harperLoggerModule;
 
