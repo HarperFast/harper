@@ -216,7 +216,6 @@ mediaTypes.set('application/x-www-form-urlencoded', {
 		const stringData = Buffer.isBuffer(data) ? data.toString('utf8') : data;
 		const object: Record<string, string | string[]> = {};
 		for (const [key, value] of new URLSearchParams(stringData)) {
-			// Object.hasOwn, not object.hasOwnProperty: a field named `hasOwnProperty` would shadow the method
 			if (Object.hasOwn(object, key)) {
 				// in case there are multiple query params with the same name, convert them to an array
 				const last = object[key];
