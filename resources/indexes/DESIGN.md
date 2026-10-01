@@ -854,8 +854,9 @@ deterministic catch-up while the source of truth (records, mappings, cursor) sta
 Backup treats the file as node-local derived state: include it after a barrier, or rebuild on
 restore. A file whose format or checksum does not validate is rebuilt from records. macOS `msync` is a
 weaker barrier than Linux — the crate's `msync()` is a plain mapping flush with no `F_FULLFSYNC` pass —
-so on macOS a power loss can lose a barrier that reported complete, and the crash contract under
-Delivery holds only up to that barrier there.
+so on macOS a power loss after `flushAsync()` resolves and the cursor is written can leave the cursor
+past graph writes the file lost. Those vectors stay missing until a rebuild — nothing compares the
+plane's `getWatermark()` with the cursor on attach — so the Delivery crash contract does not hold there.
 
 ### Search
 
