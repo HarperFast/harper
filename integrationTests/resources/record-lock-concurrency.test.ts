@@ -147,4 +147,21 @@ suite(`record locks serialize across ${WORKERS} workers`, { skip: skipSuite }, (
 		const attempt = await post('LockedIncrement', { id, timeout: 300 });
 		strictEqual(attempt.status, 423, `locked: ${JSON.stringify(attempt.body)}`);
 	});
+
+	test('a lock taken after a write in the same transaction is refused when a write beat it there (409)', async () => {
+		// The 409 has to reach the client as the request status, not only as an internal throw.
+		const clean = 'mixed-clean';
+		await put(`${clean}-scratch`, { n: 0, holders: 0 });
+		await put(clean, { n: 0, holders: 0 });
+		const taken = await post('MixedTransactionLock', { id: clean });
+		strictEqual(taken.status, 200, `lock after a write still works: ${JSON.stringify(taken.body)}`);
+		strictEqual((await get(clean)).body?.n, 1, 'the increment made under that lock landed');
+
+		const contended = 'mixed-contended';
+		await put(`${contended}-scratch`, { n: 0, holders: 0 });
+		await put(contended, { n: 0, holders: 0 });
+		const refused = await post('MixedTransactionLock', { id: contended, interleave: true });
+		strictEqual(refused.status, 409, `refused: ${JSON.stringify(refused.body)}`);
+		strictEqual((await get(contended)).body?.n, 99, 'the write that beat the lock stands, unclobbered');
+	});
 });
