@@ -187,6 +187,26 @@ describe('Resuming a subscription in a database generation', function () {
 			subscription.end();
 		});
 
+		it('verifies a replay when a prune during back-pressure removes only history it has already sent', async () => {
+			const T = tableInOwnDatabase();
+			const positions = await writeEach(T, 250);
+			const subscription = await T.subscribe({
+				databaseGeneration: getDatabaseGeneration(T.auditStore).id,
+				startTime: positions[0],
+			});
+			// with nothing consuming, the replay parks waiting for the queue to drain
+			await waitFor(() => subscription.queue?.length > 100);
+			prune(T, positions[subscription.queue.length]);
+			const iterator = subscription[Symbol.asyncIterator]();
+			for (let i = 1; i < 250; i++) {
+				const { value: event } = await iterator.next();
+				assert.ok(!(event instanceof Error), `the replay ended with ${event}`);
+				assert.strictEqual(event.value?.value, i);
+			}
+			assert.strictEqual(await subscription.resumeVerified, true);
+			subscription.end();
+		});
+
 		it('checks a yield inside one transaction against that transaction', async () => {
 			for (const [coversTransaction, verified] of [
 				[false, true],

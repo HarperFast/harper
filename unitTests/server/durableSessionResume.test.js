@@ -6,7 +6,7 @@ const { Resource } = require('#src/resources/Resource');
 const { raiseAuditFloor, getDatabaseGeneration } = require('#src/resources/auditStore');
 const { transaction } = require('#src/resources/transaction');
 const { getSession } = require('#src/server/DurableSubscriptionsSession');
-const { handleApplication } = require('#src/server/mqtt');
+const { handleApplication, setTakeoverTimeoutForTests } = require('#src/server/mqtt');
 const { generate } = require('mqtt-packet');
 const { EventEmitter } = require('node:events');
 const mqttPacket = require('mqtt-packet');
@@ -37,7 +37,6 @@ class Unavailable extends Resource {
 	}
 }
 
-/** Opens connections through mqtt.ts's WebSocket listener, recording what each is sent. */
 function mqttListener() {
 	let listener;
 	const server = {
@@ -46,15 +45,38 @@ function mqttListener() {
 		mqtt: { sessions: new Set(), events: new EventEmitter() },
 	};
 	handleApplication({ options: { getAll: () => ({ webSocket: {} }) }, server });
-	return () => {
+	const open = () => {
 		const socket = { closes: [], sends: [], handlers: {}, _socket: { remoteAddress: '127.0.0.1' } };
 		socket.close = () => socket.closes.push(true);
+		socket.terminate = () => (socket.terminated = true);
 		socket.send = (message) => socket.sends.push(message);
 		socket.on = (event, handler) => (socket.handlers[event] = handler);
 		const headers = { 'sec-websocket-protocol': 'mqtt' };
 		const request = { headers: { asObject: headers, get: (name) => headers[name.toLowerCase()] }, user };
 		listener(socket, request, Promise.resolve({ status: 200 }), () => {});
 		return socket;
+	};
+	open.sessions = server.mqtt.sessions;
+	return open;
+}
+
+const connectPacket = (clientId, properties = {}) =>
+	generate({ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 5, clientId, clean: false, ...properties });
+
+function holdSaves(holds = () => true) {
+	const sessions = databases.system.hdb_durable_session;
+	const put = sessions.put;
+	const held = [];
+	sessions.put = function (...args) {
+		if (!holds(args[0])) return put.apply(this, args);
+		return new Promise((resolve, reject) => held.push(() => put.apply(this, args).then(resolve, reject)));
+	};
+	return {
+		held,
+		release() {
+			sessions.put = put;
+			for (const write of held.splice(0)) write();
+		},
 	};
 }
 
@@ -410,27 +432,50 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		}
 	});
 
-	it('rolls back a SUBSCRIBE whose record could not be saved', async () => {
+	it('rolls back a SUBSCRIBE whose record could not be saved, whatever its QoS', async () => {
+		for (const qos of [1, 0]) {
+			const { T, name } = topicTable();
+			await T.put('seed', { value: 0 });
+			const clientId = `unsaved-${qos}-${name}`;
+			const { session, received } = await connect(clientId);
+			const sessions = databases.system.hdb_durable_session;
+			const put = sessions.put;
+			sessions.put = function () {
+				sessions.put = put;
+				return Promise.reject(new Error('system table unavailable'));
+			};
+			try {
+				await assert.rejects(session.addSubscription({ topic: `${name}/#`, qos, rh: 2 }, qos > 0), /unavailable/);
+			} finally {
+				sessions.put = put;
+			}
+			assert.strictEqual(session.topics.size, 0, `QoS ${qos}`);
+			assert.strictEqual(session.subscriptions.length, 0, `QoS ${qos}`);
+			await T.put('a', { value: 1 });
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			assert.deepStrictEqual(received, [], `the refused QoS ${qos} subscription delivers nothing`);
+			session.disconnect(true);
+		}
+	});
+
+	it('reports an UNSUBSCRIBE whose save failed as failed again on a retry, until the removal is saved', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
-		const clientId = `unsaved-${name}`;
-		const { session, received } = await connect(clientId);
+		const topic = `${name}/#`;
+		const clientId = `unsubscribe-retry-${name}`;
+		const { session } = await connect(clientId);
+		await session.addSubscription({ topic, qos: 1, rh: 2 }, true);
 		const sessions = databases.system.hdb_durable_session;
 		const put = sessions.put;
-		sessions.put = function () {
-			sessions.put = put;
-			return Promise.reject(new Error('system table unavailable'));
-		};
+		sessions.put = () => Promise.reject(new Error('system table unavailable'));
 		try {
-			await assert.rejects(session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true), /unavailable/);
+			await assert.rejects(session.removeSubscription(topic), /unavailable/);
+			await assert.rejects(session.removeSubscription(topic), /unavailable/);
 		} finally {
 			sessions.put = put;
 		}
-		assert.strictEqual(session.topics.size, 0);
-		assert.strictEqual(session.subscriptions.length, 0);
-		await T.put('a', { value: 1 });
-		await new Promise((resolve) => setTimeout(resolve, 50));
-		assert.deepStrictEqual(received, [], 'the refused subscription delivers nothing');
+		assert.ok(!(await session.removeSubscription(topic)), 'no subscription is left to remove');
+		assert.deepStrictEqual((await stored(clientId)).subscriptions, [], 'the removal is saved');
 		session.disconnect(true);
 	});
 
@@ -665,6 +710,164 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		assert.deepStrictEqual(first.closed, ['superseded']);
 		assert.strictEqual((await stored(clientId)).incarnation, second.session.incarnation);
 		second.session.disconnect(true);
+	});
+
+	it('answers packets sent right behind a CONNECT, a takeover included', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const open = mqttListener();
+		const clientId = `pipelined-${name}`;
+		const sockets = [];
+		for (let i = 0; i < 2; i++) {
+			const socket = open();
+			sockets.push(socket);
+			socket.handlers.message(
+				Buffer.concat([
+					connectPacket(clientId),
+					generate(
+						{ cmd: 'subscribe', messageId: 1, subscriptions: [{ topic: `${name}/#`, qos: 1, rh: 2 }] },
+						{ protocolVersion: 5 }
+					),
+				])
+			);
+			await waitFor(() => sentPackets(socket).some((packet) => packet.cmd === 'suback'));
+			assert.deepStrictEqual(
+				sentPackets(socket).map((packet) => packet.cmd),
+				['connack', 'suback']
+			);
+			assert.ok(!socket.terminated);
+		}
+		assert.deepStrictEqual(
+			sockets.map((socket) => socket.closes.length),
+			[1, 0],
+			'the second CONNECT took the session over'
+		);
+		for (const socket of sockets) socket.handlers.close();
+	});
+
+	it('publishes the will of a connection that was taken over, and keeps the will of the newer one', async () => {
+		const { T, name } = topicTable();
+		const open = mqttListener();
+		const clientId = `will-${name}`;
+		const withWill = (id) =>
+			connectPacket(clientId, {
+				will: { topic: `${name}/${id}`, payload: Buffer.from(JSON.stringify({ value: id })), qos: 0, retain: true },
+			});
+		const older = open();
+		older.handlers.message(withWill('older'));
+		await waitFor(() => older.sends.length > 0);
+		const newer = open();
+		newer.handlers.message(withWill('newer'));
+		await waitFor(() => newer.sends.length > 0 && older.closes.length > 0);
+		// the older connection's socket closes only after the newer one has stored its will
+		older.handlers.close();
+		await waitFor(async () => (await T.get('older'))?.value === 'older');
+		assert.ok(!(await T.get('newer')), 'the newer connection is still connected');
+		const wills = [];
+		for await (const will of databases.system.hdb_session_will.search({})) {
+			if (will.id[0] === clientId) wills.push(will.topic);
+		}
+		assert.deepStrictEqual(wills, [`${name}/newer`]);
+		newer.handlers.close();
+		await waitFor(async () => (await T.get('newer'))?.value === 'newer');
+	});
+
+	it('ends the session of a client that left while its CONNECT waited for an older save', async () => {
+		const { T, name } = topicTable();
+		const open = mqttListener();
+		const clientId = `left-${name}`;
+		const older = open();
+		older.handlers.message(connectPacket(clientId));
+		await waitFor(() => older.sends.length > 0);
+		const olderSession = [...open.sessions].find((session) => session.sessionId === clientId);
+		const saves = holdSaves();
+		let newer;
+		try {
+			olderSession.persist();
+			await waitFor(() => saves.held.length > 0);
+			newer = open();
+			newer.handlers.message(
+				connectPacket(clientId, {
+					will: {
+						topic: `${name}/left`,
+						payload: Buffer.from(JSON.stringify({ value: 'left' })),
+						qos: 0,
+						retain: true,
+					},
+				})
+			);
+			await waitFor(() => older.closes.length > 0);
+			newer.handlers.close();
+		} finally {
+			saves.release();
+		}
+		// gone without a DISCONNECT, like any lost connection
+		await waitFor(async () => (await T.get('left'))?.value === 'left');
+		assert.deepStrictEqual(newer.sends, [], 'nothing answers a client that is gone');
+		assert.deepStrictEqual(
+			[...open.sessions].filter((session) => session.sessionId === clientId),
+			[olderSession],
+			'no session is left for it'
+		);
+		older.handlers.close();
+	});
+
+	it('waits for the save a closed connection still has in flight before a reconnect takes the session over', async () => {
+		const { name } = topicTable();
+		const open = mqttListener();
+		const clientId = `closing-${name}`;
+		const older = open();
+		older.handlers.message(connectPacket(clientId));
+		await waitFor(() => older.sends.length > 0);
+		const olderSession = [...open.sessions].find((session) => session.sessionId === clientId);
+		// a stored record makes the reconnect write its takeover as it connects
+		await olderSession.persist();
+		const saves = holdSaves((record) => record.incarnation === olderSession.incarnation);
+		let newer;
+		try {
+			olderSession.persist();
+			await waitFor(() => saves.held.length > 0);
+			older.handlers.close();
+			newer = open();
+			newer.handlers.message(connectPacket(clientId));
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		} finally {
+			saves.release();
+		}
+		await waitFor(() => newer.sends.length > 0);
+		const newerSession = [...open.sessions].find((session) => session.sessionId === clientId);
+		await newerSession.persist();
+		assert.deepStrictEqual(newer.closes, [], 'the older save landed first, so it never fenced the newer connection');
+		assert.strictEqual((await stored(clientId)).incarnation, newerSession.incarnation);
+		newer.handlers.close();
+	});
+
+	it('refuses a CONNECT whose takeover waits too long for an older save', async () => {
+		const { name } = topicTable();
+		const open = mqttListener();
+		const clientId = `stalled-${name}`;
+		const older = open();
+		older.handlers.message(connectPacket(clientId));
+		await waitFor(() => older.sends.length > 0);
+		const olderSession = [...open.sessions].find((session) => session.sessionId === clientId);
+		const saves = holdSaves();
+		const timeout = setTakeoverTimeoutForTests(50);
+		let newer;
+		try {
+			olderSession.persist();
+			await waitFor(() => saves.held.length > 0);
+			newer = open();
+			newer.handlers.message(connectPacket(clientId));
+			await waitFor(() => newer.sends.length > 0);
+			const [connack] = sentPackets(newer);
+			assert.strictEqual(connack.cmd, 'connack');
+			assert.strictEqual(connack.reasonCode, 0x88, 'server unavailable');
+		} finally {
+			setTakeoverTimeoutForTests(timeout);
+			saves.release();
+		}
+		older.handlers.close();
+		newer.handlers.close();
 	});
 });
 

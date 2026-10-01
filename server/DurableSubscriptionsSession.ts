@@ -167,7 +167,8 @@ export async function getSession({
 		session = new SubscriptionsSession(sessionId, user);
 	}
 	if (will) {
-		will.id = sessionId;
+		// keyed by connection, so a connection that is closing can never publish or delete a newer one's will
+		will.id = [sessionId, session.incarnation];
 		// A scoped-token bearer's will must carry the token's own role and expiry: its username is
 		// attribution only and cannot be rehydrated from hdb_user at replay time. Persist only the
 		// durable permission fields — not the runtime-only _expandedOperations Set, which is rebuilt
@@ -189,6 +190,7 @@ export async function getSession({
 		// (no DISCONNECT packet) can race ahead of this write: SubscriptionsSession.disconnect()
 		// reads this same record back to publish the will, finds nothing, and silently drops it.
 		await getLastWill().put(will);
+		session.willId = will.id;
 	}
 	if (keepalive) {
 		// keep alive is the interval in seconds that the client will send a ping to the server
@@ -224,6 +226,8 @@ class SubscriptionsSession {
 	keepalive: number;
 	keepaliveTimer: any;
 	terminated = false;
+	incarnation = randomBytes(8).toString('hex');
+	willId: [string, string] | undefined;
 	/** Closes the transport; mqtt.ts supplies it, and sends a v5 DISCONNECT carrying `error` first. */
 	closeConnection?: (error?: Error) => void;
 	constructor(sessionId, user) {
@@ -477,24 +481,28 @@ class SubscriptionsSession {
 	}
 	disconnect(clientTerminated) {
 		if (this.keepaliveTimer) clearTimeout(this.keepaliveTimer);
-		const context = this.createContext();
-		transaction(context, async () => {
-			try {
-				if (!clientTerminated) {
-					const will = await getLastWill().get(this.sessionId);
-					if (will && !isWillFromExpiredScopedToken(will)) {
-						// A scoped will authorizes under its own embedded role, never the disconnecting
-						// session's user (which may be a later same-clientId reconnect).
-						const willContext = will.user?._scopedToken ? { ...context, user: will.user } : context;
-						await publishMessage(will, will.data, willContext);
+		const willId = this.willId;
+		this.willId = undefined;
+		if (willId) {
+			const context = this.createContext();
+			transaction(context, async () => {
+				try {
+					if (!clientTerminated) {
+						const will = await getLastWill().get(willId);
+						if (will && !isWillFromExpiredScopedToken(will)) {
+							// A scoped will authorizes under its own embedded role, never the disconnecting
+							// session's user (which may be a later same-clientId reconnect).
+							const willContext = will.user?._scopedToken ? { ...context, user: will.user } : context;
+							await publishMessage(will, will.data, willContext);
+						}
 					}
+				} finally {
+					await getLastWill().delete(willId);
 				}
-			} finally {
-				await getLastWill().delete(this.sessionId);
-			}
-		}).catch((error) => {
-			warn(`Error publishing MQTT will for ${this.sessionId}`, error);
-		});
+			}).catch((error) => {
+				warn(`Error publishing MQTT will for ${this.sessionId}`, error);
+			});
+		}
 
 		for (const subscription of this.subscriptions) {
 			subscription.end();
@@ -551,6 +559,7 @@ type TopicState = {
 	keyBefore?: number;
 	/** Each event has its own log key, as on LMDB; a RocksDB transaction's events share one. */
 	keysPerEntry?: boolean;
+	/** In delivery order: `needsAcknowledge` is its only writer and runs as each message is sent. */
 	unacked: Map<number, { key: number; previousKey?: number }>;
 	consumed: number;
 };
@@ -588,7 +597,6 @@ function sessionRecordResumable(record: any): boolean {
 
 export class DurableSubscriptionsSession extends SubscriptionsSession {
 	committed: Promise<void> | void;
-	incarnation = randomBytes(8).toString('hex');
 	/** Only a session that found no record may create one; any other updates only a record it owns. */
 	mayCreate: boolean;
 	discarded = false;
@@ -731,13 +739,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		let started;
 		try {
 			started = await this.resumeSubscription(request, needsAck);
-			if (durable) {
-				this.startCheckpoints();
-				await this.persist();
-			} else if (started) {
-				// a QoS 0 subscription promises no delivery, so a failed save need not refuse it
-				this.persist().catch(() => {});
-			}
+			if (durable) this.startCheckpoints();
+			if (durable || started) await this.persist();
 		} catch (error) {
 			// a continued position that can no longer resume resets the session, as it would at reconnect
 			if (RESUME_REFUSALS.has(error?.code)) this.subscriptionFailed({ topic }, error);
@@ -764,7 +767,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		return this.inOrder(async () => {
 			const result = await super.removeSubscription(topic);
 			const saved = this.topics.delete(topic);
-			if (saved) await this.persist();
+			// a retry after a failed save reports that save, not a removal already made in memory
+			if (saved || this.dirty) await this.persist();
 			return result || saved;
 		});
 	}
@@ -865,6 +869,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		} catch (error) {
 			// the next checkpoint retries
 			this.dirty = true;
+			if (!this.terminated) this.startCheckpoints();
 			throw error;
 		} finally {
 			// cleared with the last dirty check, so a later persist() starts a new save rather than joining this one

@@ -6787,6 +6787,11 @@ export function makeTable(options): TableResourceClass {
 									if (event) {
 										if (!send(event)) return;
 										if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+											// a prune while the consumer drains may reach what was read before the wait
+											if (checkResume) {
+												if (!checkResume(unreadableLogRefusal(replayRange))) return;
+												resumeCheckedThrough = auditRecord.txnLogKey;
+											}
 											if ((await subscription.waitForDrain()) === false) return;
 										}
 									}

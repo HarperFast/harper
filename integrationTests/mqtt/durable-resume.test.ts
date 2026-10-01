@@ -12,6 +12,8 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import mqtt, { type IClientOptions, type MqttClient } from 'mqtt';
+import { generate, parser as packetParser } from 'mqtt-packet';
+import WebSocket from 'ws';
 
 import {
 	setupHarperWithFixture,
@@ -228,7 +230,6 @@ suite(
 		test('a wildcard session whose position fell below the floor is not present, with no short replay', async () => {
 			const clientId = `pruned-${randomUUID().slice(0, 6)}`;
 			await establish(clientId, 'Readings/#', 1, 5);
-			// disconnecting saved the position the database had reached
 			const saved = await settledEntry(clientId);
 			await sleep(20);
 			await put('Readings', `after-${randomUUID().slice(0, 6)}`, 3);
@@ -316,6 +317,85 @@ suite(
 				first.end(true);
 				second.end(true);
 				await end(clean);
+			}
+		});
+
+		test('a takeover publishes the will of the older connection and keeps the will of the newer one', async () => {
+			const clientId = `will-${randomUUID().slice(0, 6)}`;
+			const { mqttClient: fresh } = await connect({ clientId, clean: true });
+			await end(fresh);
+			const will = (name: string, value: number) => ({
+				topic: `Readings/${name}-${clientId}`,
+				payload: Buffer.from(JSON.stringify({ value })),
+				qos: 1 as const,
+				retain: true,
+			});
+			const stored = async (name: string) =>
+				(await fetch(`${ctx.harper.httpURL}/Readings/${name}-${clientId}`, { headers: client.headers })).status;
+			const closed = { first: false };
+			const { mqttClient: first } = await connect({ clientId, will: will('first-will', 101) });
+			first.on('close', () => (closed.first = true));
+			const { mqttClient: second } = await connect({ clientId, will: will('second-will', 102) });
+			try {
+				ok(await waitFor(() => closed.first), 'the older connection is closed');
+				ok(
+					await waitFor(async () => (await stored('first-will')) === 200),
+					'the will of the older connection is published'
+				);
+				strictEqual(await stored('second-will'), 404, 'the newer connection is still connected');
+				// a lost connection: no DISCONNECT, so its will is published
+				second.stream.destroy();
+				ok(
+					await waitFor(async () => (await stored('second-will')) === 200),
+					'the will of the newer connection is published'
+				);
+			} finally {
+				first.end(true);
+				second.end(true);
+			}
+		});
+
+		test('a SUBSCRIBE in the same frame as its CONNECT is answered', async () => {
+			const clientId = `pipelined-${randomUUID().slice(0, 6)}`;
+			// an older connection for the client id makes the CONNECT wait its turn before it reads the session
+			const { mqttClient: older } = await connect({ clientId });
+			const credentials = Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64');
+			const socket = new WebSocket(mqttURL, 'mqtt', { headers: { Authorization: `Basic ${credentials}` } });
+			const packets: any[] = [];
+			const parse = packetParser({ protocolVersion: 5 });
+			parse.on('packet', (packet) => packets.push(packet));
+			socket.on('message', (data) => parse.parse(data as Buffer));
+			let closed = false;
+			socket.on('close', () => (closed = true));
+			await new Promise((resolvePromise, reject) => {
+				socket.once('open', resolvePromise);
+				socket.once('error', reject);
+			});
+			try {
+				socket.send(
+					Buffer.concat([
+						generate({ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 5, clientId, clean: false } as any),
+						generate(
+							{ cmd: 'subscribe', messageId: 1, subscriptions: [{ topic: 'Readings/#', qos: 1, rh: 2 }] } as any,
+							{ protocolVersion: 5 }
+						),
+					])
+				);
+				ok(
+					await waitFor(() => packets.some((packet) => packet.cmd === 'suback')),
+					`CONNACK and SUBACK arrive: ${packets.map((packet) => packet.cmd)}`
+				);
+				deepStrictEqual(
+					packets.map((packet) => [packet.cmd, packet.reasonCode ?? packet.granted]),
+					[
+						['connack', 0],
+						['suback', [1]],
+					]
+				);
+				ok(!closed, 'the connection stays open');
+			} finally {
+				socket.close();
+				older.end(true);
 			}
 		});
 

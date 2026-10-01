@@ -214,6 +214,54 @@ const ACK_PACKET_OVERHEAD = 16;
 const liveConnections = new Set<{ protocolVersion: () => number; send: (data: any) => void; close: () => void }>();
 /** The latest CONNECT still connecting for each client id on this thread. */
 const connecting = new Map<string, Promise<void>>();
+/** Each client id's sessions on this thread, kept until their last save lands so a takeover can wait for it. */
+const clientSessions = new Map<string, Set<DurableSubscriptionsSession>>();
+/** How long a CONNECT waits for an earlier connection of its client id to finish connecting or saving. */
+let takeoverTimeout = 10_000;
+
+export function setTakeoverTimeoutForTests(milliseconds: number): number {
+	const previous = takeoverTimeout;
+	takeoverTimeout = milliseconds;
+	return previous;
+}
+
+function addClientSession(session: DurableSubscriptionsSession) {
+	if (!session.sessionId) return;
+	let sessions = clientSessions.get(session.sessionId);
+	if (!sessions) clientSessions.set(session.sessionId, (sessions = new Set()));
+	sessions.add(session);
+}
+
+function releaseClientSession(session: DurableSubscriptionsSession) {
+	const sessions = clientSessions.get(session?.sessionId);
+	if (!sessions?.has(session)) return;
+	const writes = session.writes;
+	Promise.resolve(writes).then(() => {
+		if (session.writes !== writes) return releaseClientSession(session);
+		sessions.delete(session);
+		if (sessions.size === 0 && clientSessions.get(session.sessionId) === sessions)
+			clientSessions.delete(session.sessionId);
+	});
+}
+
+/** Settles as `promise` does, unless `deadline` passes first. */
+function beforeDeadline<T>(promise: Promise<T>, deadline: number, protocolVersion: number): Promise<T> {
+	let timer: NodeJS.Timeout;
+	return Promise.race([
+		promise,
+		new Promise<never>((_resolve, reject) => {
+			timer = setTimeout(
+				() => {
+					const error: any = new Error('An earlier connection for this client id did not finish in time');
+					error.code = protocolVersion >= 5 ? 0x88 : 0x03; // server unavailable
+					reject(error);
+				},
+				Math.max(0, deadline - Date.now())
+			);
+			timer.unref?.();
+		}),
+	]).finally(() => clearTimeout(timer));
+}
 let shutdownDisconnectRegistered = false;
 
 /** v3.1.1 has no server-to-client DISCONNECT, so those connections are only closed. */
@@ -322,6 +370,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 			session?.disconnect?.(false);
 			emitEvent('disconnected', session, socket);
 			mqttSettings.sessions.delete(session);
+			releaseClientSession(session);
 			recordActionBinary(false, 'connection', 'mqtt', 'disconnect');
 			mqttLog.debug?.('MQTT connection was closed', socket.remoteAddress);
 		}
@@ -337,7 +386,13 @@ function onSocket(socket, send, request, user, mqttSettings) {
 		}
 		const command = packet.cmd;
 		if (session) {
-			if ((session as any).then) await session;
+			if ((session as any).then) {
+				try {
+					await session;
+				} catch {
+					return; // the CONNECT has answered its own failure
+				}
+			}
 		} else if (command !== 'connect') {
 			mqttLog.info?.('Received packet before connection was established, closing connection');
 			if (socket?.destroy) socket.destroy();
@@ -416,28 +471,38 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						const clientId = packet.clientId;
 						let releaseClaim: (() => void) | undefined;
 						try {
-							if (clientId) {
-								// simultaneous CONNECTs for one client id take the session over in turn
-								const previous = connecting.get(clientId);
-								const claim = new Promise<void>(
-									(resolve) =>
-										(releaseClaim = () => {
-											if (connecting.get(clientId) === claim) connecting.delete(clientId);
-											resolve();
-										})
-								);
-								connecting.set(clientId, claim);
-								await previous;
-								// a durable session has one owner: an older connection for this client on this thread gives
-								// way, to a clean start too, and its save in flight lands before this one reads or deletes
-								const older = [...mqttSettings.sessions].filter((other) => other.sessionId === clientId);
-								for (const other of older) other.supersede?.();
-								await Promise.all(older.map((other) => other.writes));
-							}
-							session = getSession({
-								user,
-								...packet,
-							} as any) as any;
+							// assigned before any wait, so packets sent right behind the CONNECT wait for it too
+							session = (async () => {
+								if (clientId) {
+									// simultaneous CONNECTs for one client id take the session over in turn
+									const previous = connecting.get(clientId);
+									const claim = new Promise<void>(
+										(resolve) =>
+											(releaseClaim = () => {
+												if (connecting.get(clientId) === claim) connecting.delete(clientId);
+												resolve();
+											})
+									);
+									connecting.set(clientId, claim);
+									const deadline = Date.now() + takeoverTimeout;
+									if (previous) await beforeDeadline(previous, deadline, packet.protocolVersion);
+									// a durable session has one owner: an older connection for this client on this thread gives
+									// way, to a clean start too, and its save in flight lands before this one reads or deletes
+									const older = [...(clientSessions.get(clientId) ?? [])];
+									for (const other of older) other.supersede?.();
+									if (older.length > 0) {
+										await beforeDeadline(
+											Promise.all(older.map((other) => other.writes)),
+											deadline,
+											packet.protocolVersion
+										);
+									}
+								}
+								return getSession({
+									user,
+									...packet,
+								} as any);
+							})() as any;
 							session = await session;
 							session.closeConnection = closeConnection;
 							// the session is used in the context, and we want to make sure we can access this
@@ -447,6 +512,14 @@ function onSocket(socket, send, request, user, mqttSettings) {
 								session.request = request;
 							}
 							mqttSettings.sessions.add(session);
+							addClientSession(session);
+							if (disconnected) {
+								// the client left while this CONNECT waited, and nothing else will end its session
+								session.disconnect(false);
+								mqttSettings.sessions.delete(session);
+								releaseClientSession(session);
+								return;
+							}
 						} finally {
 							releaseClaim?.();
 						}
@@ -522,6 +595,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							mqttLog.error?.(error);
 							session?.disconnect(false);
 							mqttSettings.sessions.delete(session);
+							releaseClientSession(session);
 							return false;
 						}
 					};
@@ -677,6 +751,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 					session?.disconnect(true);
 					emitEvent('disconnected', session, socket);
 					mqttSettings.sessions.delete(session);
+					releaseClientSession(session);
 					recordActionBinary(true, 'connection', 'mqtt', 'disconnect');
 					mqttLog.debug?.('Received disconnect command, closing MQTT session', socket.remoteAddress);
 					if (socket.close) socket.close();
