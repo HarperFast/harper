@@ -496,10 +496,11 @@ describe('calibration store and facade (#2841)', function () {
 	it('samples the newest decisions that fit the configured byte budget, so a large population is still refit', async () => {
 		configureCalibration({ ...CONFIG, maxBytes: 40_000 }, false);
 		await recordCases(models, 0, 300);
+		await recordCases(models, 300, 300, { instructions: 'second population' });
 		const run = await runCalibration();
 		assert.strictEqual(run.stoppedBy, undefined, JSON.stringify(run));
-		assert.ok(run.read < 300, `the sample is cut to the budget: ${run.read}`);
-		assert.strictEqual(run.written, 1, JSON.stringify(run));
+		assert.ok(run.read < 600, `each sample is cut to the budget: ${run.read}`);
+		assert.strictEqual(run.written, 2, `another population in the run does not crowd one out: ${JSON.stringify(run)}`);
 	});
 
 	it('never refits from a smaller sample because one run has a smaller byte budget', async () => {

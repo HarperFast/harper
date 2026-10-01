@@ -677,7 +677,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 			result.pending += order.length - i;
 			break;
 		}
-		const outcome = await processPopulation(order[i], bytes);
+		const outcome = await processPopulation(order[i]);
 		if (outcome === 'deferred') {
 			await rotate(order[i]);
 			result.stoppedBy ??= 'maxDecisions';
@@ -828,10 +828,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 		}
 	}
 
-	async function processPopulation(
-		found: Discovered,
-		baseBytes: number
-	): Promise<'done' | 'budget' | 'deadline' | 'failed' | 'deferred'> {
+	async function processPopulation(found: Discovered): Promise<'done' | 'budget' | 'deadline' | 'failed' | 'deferred'> {
 		const { head } = found;
 		const schema = head.schema;
 		let perKey: Array<{
@@ -874,7 +871,7 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 		);
 		const limit = Math.min(sample, allowance + 1);
 		let rows: DecisionRow[];
-		let used = baseBytes;
+		let used = found.bytes;
 		let newestExpiry = 0;
 		try {
 			rows = await transaction(freshContext(), async () => {
