@@ -20,6 +20,7 @@ const {
 	purgeBackupsOffline,
 	restoreBackup,
 	restoreBackupOffline,
+	restorePinId,
 	validateCreateBackup,
 	validateDatabaseName,
 	validateRestoreBackup,
@@ -38,7 +39,7 @@ const { getBlobPathsForDatabaseName } = require('#src/resources/blob');
 // managed-backup ops self-enforce super_user (see requireSuperUser in rocksdbBackup.ts); requests
 // in the online-operation tests below must therefore carry a super_user role.
 const SU = { hdb_user: { role: { permission: { super_user: true } } } };
-const { beginRestore, completeRestore, checkRestoreState } = require('#src/dataLayer/restoreMarker');
+const { abandonRestore, beginRestore, completeRestore, checkRestoreState } = require('#src/dataLayer/restoreMarker');
 const { pinBackup, readBackupPins, unpinBackup, withBackupRepositoryLock } = require('#src/dataLayer/backupRepository');
 const { backups } = require('@harperfast/rocksdb-js');
 const { closeLoadedDatabases } = require('#src/resources/databases');
@@ -243,6 +244,48 @@ describe('rocksdbBackup', function () {
 				(error) => error.statusCode === 400 && /already exists/.test(error.message)
 			);
 			await purgeBackupsOffline(DB_NAME, 0);
+		});
+
+		// The occupancy check runs under the restore lock but ahead of the claim: if it ran after, a
+		// rejected restore into an already-occupied target would have replaced the pin that the target's
+		// own unfinished restore still needs, leaving that source free to be purged.
+		it("leaves an incomplete restore's pin alone when a later restore into the same target is refused", async function () {
+			this.timeout(30000);
+			const TARGET = `${DB_NAME}-contested`;
+			writeRecords([['alpha', { n: 1 }]]);
+			const first = await createBackupOffline(DB_NAME);
+			await restoreBackupOffline(DB_NAME, first.backup_id, TARGET);
+
+			// leave the target looking like a half-finished restore: a marker, and a pin naming its source
+			const targetDir = join(storageDir, TARGET);
+			const backupDir = backupDirForDatabase(DB_NAME);
+			const heldPinId = restorePinId(targetDir);
+			await withBackupRepositoryLock(backupDir, DB_NAME, async () => {
+				pinBackup(backupDir, heldPinId, first.backup_id, 'an unfinished restore', targetDir);
+			});
+			// abandon, not hold: the lock must be free, or the next restore is refused before it ever
+			// reaches the claim and the test proves nothing
+			abandonRestore(beginRestore(targetDir));
+			const pinsBefore = readBackupPins(backupDir);
+			assert.strictEqual(pinsBefore.length, 1, 'precondition: the unfinished restore holds its source');
+
+			try {
+				const second = await createBackupOffline(DB_NAME);
+				await assert.rejects(
+					restoreBackupOffline(DB_NAME, second.backup_id, TARGET),
+					(error) => error.statusCode === 400 || error.statusCode === 409
+				);
+				assert.deepStrictEqual(
+					readBackupPins(backupDir),
+					pinsBefore,
+					'a refused restore must not replace the pin protecting the unfinished one'
+				);
+			} finally {
+				await withBackupRepositoryLock(backupDir, DB_NAME, async () => unpinBackup(backupDir, heldPinId));
+				rmSync(targetDir, { recursive: true, force: true });
+				rmSync(join(storageDir, `${DB_NAME}-occupied`), { recursive: true, force: true });
+				await purgeBackupsOffline(DB_NAME, 0).catch(() => {});
+			}
 		});
 
 		it('refuses to back up a database with an incomplete restore pending', async function () {
