@@ -79,6 +79,25 @@ describe('Ending a subscription during live delivery', () => {
 				assert.deepStrictEqual(values(failing), []);
 			});
 
+			it(`a throwing rowFilter ends the subscription even when its listener throws on the failure ${where}`, async () => {
+				const failing = await subscribe(
+					{ ...scope, crossThreads, rowFilter: (row) => throwOnFirstWrite(row.value) },
+					() => {
+						throw new Error('listener failed');
+					}
+				);
+				const sibling = await subscribe({ ...scope, crossThreads });
+				await writeTwice(
+					() => values(sibling).includes(1),
+					() => values(sibling).includes(2)
+				);
+				assert.strictEqual(failing.events[0]?.message, 'filter failed');
+				assert.strictEqual(failing.subscription.closed, true, 'the subscription stayed open');
+				assert.strictEqual(failing.subscription.subscriptions, null, 'the subscription is still registered');
+				assert.deepStrictEqual(values(failing), [], 'a write after the failure reached the listener');
+				assert.deepStrictEqual(values(sibling), [1, 2]);
+			});
+
 			it(`a listener ending its own subscription does not cost the next subscriber that write ${where}`, async () => {
 				const ending = await subscribe({ ...scope, crossThreads }, () => ending.subscription.end());
 				const sibling = await subscribe({ ...scope, crossThreads });

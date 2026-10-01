@@ -6869,7 +6869,11 @@ export function makeTable(options): TableResourceClass {
 			function failSubscription(error: any) {
 				if (subscription.closed) return;
 				harperLogger.error?.('Error in real-time subscription:', error);
-				subscription.close(error);
+				try {
+					subscription.close(error);
+				} catch (listenerError) {
+					harperLogger.error?.('Error in real-time subscription listener:', listenerError);
+				}
 			}
 			function eventFromAudit(id: Id, auditRecord: any, localTime: number, beginTxn?: boolean) {
 				let type = auditRecord.type;
