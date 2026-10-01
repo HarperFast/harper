@@ -40,8 +40,10 @@ export interface BackupArchiveManifest {
 	/** Capability tokens a reader must support; see the module note. */
 	requires: string[];
 	/**
-	 * Names of the roles that granted access to this database, or null when the producer could not
-	 * enumerate them (the offline CLI has no loaded `system` database). The archive carries no role
+	 * Names of the roles that named this database in their permissions, plus any `super_user` role, or
+	 * null when the producer could not enumerate them (the offline CLI has no loaded `system`
+	 * database). A name hint for an operator, not an access calculation: a role that names the
+	 * database while granting nothing effective is still listed. The archive carries no role
 	 * definitions — a restore reports which of these names are absent locally, and never creates one.
 	 */
 	roles: string[] | null;
@@ -169,6 +171,15 @@ export function parseArchiveManifest(contents: string): BackupArchiveManifest {
 		// its own failure mode, and the entry name is what identifies the problem
 		throw new ClientError(`Archive manifest ${ARCHIVE_MANIFEST_ENTRY} is not valid JSON`);
 	}
+	return assertArchiveManifestShape(parsed);
+}
+
+/**
+ * The fields {@link assertArchiveRestorable} reads. Checked wherever a manifest enters, including
+ * one already deserialized from a completion manifest: a hand-edited or truncated `producer` would
+ * otherwise reach the gate and fail with a TypeError instead of the manifest error.
+ */
+export function assertArchiveManifestShape(parsed: any): BackupArchiveManifest {
 	if (!parsed || typeof parsed !== 'object' || !Number.isInteger(parsed.archive_schema_version)) {
 		throw new ClientError(`Archive manifest ${ARCHIVE_MANIFEST_ENTRY} is missing 'archive_schema_version'`);
 	}
@@ -180,6 +191,7 @@ export function parseArchiveManifest(contents: string): BackupArchiveManifest {
 
 /** Refuse an archive this build cannot read. Both checks fail closed on the unknown. */
 export function assertArchiveRestorable(manifest: BackupArchiveManifest): void {
+	assertArchiveManifestShape(manifest);
 	if (manifest.archive_schema_version > ARCHIVE_SCHEMA_VERSION) {
 		throw new ClientError(
 			`This archive uses manifest schema version ${manifest.archive_schema_version}, but this Harper understands up to ${ARCHIVE_SCHEMA_VERSION}. ` +

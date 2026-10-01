@@ -1006,6 +1006,29 @@ describe('rocksdbBackup', function () {
 			});
 		}
 
+		// a hand-edited or truncated producer must surface the manifest error, not a TypeError from the
+		// capability check reading `requires` off it
+		it('reports a malformed producer as a manifest error rather than crashing the restore', async function () {
+			this.timeout(30000);
+			const database = RocksDatabase.open(join(storageDir, PROV_DB));
+			try {
+				database.putSync('rec', { n: 1 });
+			} finally {
+				database.close();
+			}
+			const created = await createBackupOffline(PROV_DB);
+
+			const manifestFile = join(backupDirForDatabase(PROV_DB), 'manifests', `${created.backup_id}.json`);
+			const stored = JSON.parse(readFileSync(manifestFile, 'utf8'));
+			delete stored.producer.requires;
+			writeFileSync(manifestFile, JSON.stringify(stored));
+
+			await assert.rejects(
+				restoreBackupOffline(PROV_DB, created.backup_id),
+				(error) => error.statusCode === 400 && /requires/.test(error.message)
+			);
+		});
+
 		it('still restores a backup whose completion manifest predates the producer field', async function () {
 			this.timeout(30000);
 			const database = RocksDatabase.open(join(storageDir, PROV_DB));
