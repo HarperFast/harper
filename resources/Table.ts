@@ -1600,6 +1600,16 @@ export function makeTable(options): TableResourceClass {
 			return;
 		return { key, descriptor };
 	}
+	function entryBeforeWrite(loadedEntry: Entry | undefined, id: Id, transaction: any, reloadsCommitBase: boolean) {
+		if (loadedEntry != null) return loadedEntry;
+		if (isRocksDB && reloadsCommitBase) {
+			// save() reads this write's base from the staging snapshot (harper#2259); the read handle is still opened
+			// here because it is what gives the staged write coordinated conflict retries
+			transaction.getReadTxn();
+			return undefined;
+		}
+		return primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
+	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
@@ -4403,7 +4413,8 @@ export function makeTable(options): TableResourceClass {
 					}
 				};
 			}
-			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
+			const reloadsCommitBase = options?.isCopyApply !== true;
+			const entry = entryBeforeWrite(this.#entry, id, transaction, reloadsCommitBase);
 			const writeToSource = () => {
 				if (!(this.constructor as any).source || (context as any)?.source) return;
 				if (fullUpdate) {
@@ -4435,7 +4446,7 @@ export function makeTable(options): TableResourceClass {
 				fullUpdate,
 				chainsStagedState: true,
 				// copy-apply rows keep their pre-read base: one read per row, healed by the post-copy replay
-				reloadCommitBase: options?.isCopyApply !== true,
+				reloadCommitBase: reloadsCommitBase,
 				deferSave: true,
 				// the origin's record version on an applied write; absent for a locally-originated one
 				recordVersion: options?.version,
@@ -5323,7 +5334,7 @@ export function makeTable(options): TableResourceClass {
 			const transaction = txnForContext(context);
 			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
-			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
+			const entry = entryBeforeWrite(this.#entry, id, transaction, true);
 
 			const write: any = {
 				key: id,
