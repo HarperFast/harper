@@ -595,13 +595,18 @@ async function main() {
 				});
 			}
 		}
-	} finally {
-		clearTimeout(profileTimer);
 		if (profileStartedAt < Infinity) {
 			const deadline = profileStartedAt + Number(args.profile) * 1000 + 10_000;
 			while (!profileFinished() && performance.now() < deadline) await delay(250);
 		}
-		if (args.profile && !profileFinished()) console.warn(`not every worker wrote its profile to ${profileDir}`);
+		if (args.profile && !profileFinished())
+			console.warn(
+				profileStartedAt < Infinity
+					? `not every worker wrote its profile to ${profileDir}`
+					: 'the run ended before profiling began'
+			);
+	} finally {
+		clearTimeout(profileTimer);
 		await Promise.all([...clients, ...publishers].map((c) => c.request({ cmd: 'close' }).catch(() => {})));
 		try {
 			if (args.out) writeFileSync(args.out, JSON.stringify(results, null, 2));
