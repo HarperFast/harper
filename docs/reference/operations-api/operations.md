@@ -913,7 +913,7 @@ Additional parameters:
 - `deployment_timeout` <VersionBadge version="v5.1.4" /> — how long, in milliseconds, a peer waits to receive the replicated deployment payload before failing (default: `120000`)
 - `ignore_replication_errors` <VersionBadge version="v5.1.4" /> — set to `true` to treat a peer that fails to receive the deploy as non-fatal instead of failing the whole operation. By default a failed peer causes `deploy_component` to return a non-2xx status; the component is still deployed (and, if requested, restarted) on the origin node.
 - `activate` <VersionBadge version="v5.3.0" /> — set to `false` to build and install the component without making it live. See [Staging a build and activating it later](#staging-a-build-and-activating-it-later).
-- `deployment_id` <VersionBadge version="v5.3.0" /> — make a previously staged build live. Takes no build inputs of its own.
+- `deployment_id` <VersionBadge version="v5.3.0" /> — make a staged build live, or return to a release a later deploy replaced. Takes no build inputs of its own. See [Going back to a previous release](#going-back-to-a-previous-release).
 
 `urlPath` and `host` both require `package` and are rejected on a payload-only deploy. To mount a payload-deployed component, add `host`/`urlPath` to its entry in the root `harper-config.yaml` instead.
 
@@ -975,21 +975,58 @@ That request takes no `package`, `payload`, `credentials`, install options, or `
 
 A few things worth knowing before you rely on it:
 
-- **Activation consumes the build.** The swap is a rename, so a deployment id can be activated once. Activating it again returns `404`.
-- **A staged build outlives later deploys, which is how you go back.** Staging a release keeps it available even if you deploy something else afterwards: stage v2, deploy v3, and activating v2's id later returns the component to v2. Only versions you staged can be returned to — an ordinary deploy leaves nothing behind to activate.
-- **Staged builds are bounded.** [`deployment.stagingRetention.maxCount`](../configuration/options.md#deployment) caps how many unactivated builds a component keeps (default `5`); the oldest are removed at the start of that component's next deploy and at startup. A build pruned before you activate it has to be staged again.
-- **A deployment id names one build.** Staging again with the same id is rejected rather than rebuilding over it, and the id stays bound to that build until it is activated or pruned.
+- **Activating the release that is already live succeeds and changes nothing.** A retry is therefore safe: see [Retrying an activation](#retrying-an-activation).
+- **A staged build outlives later deploys.** Stage v2, deploy v3, and activating v2's id later returns the component to v2.
+- **Builds that are not live are bounded.** [`deployment.stagingRetention.maxCount`](../configuration/options.md#deployment) caps how many a component keeps — staged builds and [replaced releases](#going-back-to-a-previous-release) together (default `5`). The oldest are removed at the start of that component's next deploy and at startup. A build pruned before you activate it has to be staged again.
+- **A deployment id names one release on a node for as long as the node holds it** — waiting, live, or kept after a later deploy replaced it. Staging again with the same id is rejected rather than rebuilding over it.
 - **`file:` directory sources cannot be staged.** A local-directory package is linked rather than copied, so the bytes could change between staging and activation. Deploy those normally.
 - **`restart` belongs on the activation, not the stage.** A stage changes nothing that is running, so `restart` is rejected alongside `activate: false`; pass it with `deployment_id` to restart as the new version goes live.
 - **Reclaiming the payload does not disable the artifact.** [`delete_deployment_payload`](#delete_deployment_payload) on a staged deployment frees the stored tarball; the build is already installed on disk, so its id still activates.
 
-A refused activation says which kind of refusal it is: `404` when nothing on that node answers to the id — it never existed, or it has already been activated or pruned — and `409` when the build is there but cannot be activated, such as one belonging to another component or one whose files changed after it was staged.
+A refused activation says which kind of refusal it is: `404` when nothing on that node answers to the id — it never existed there, it was pruned, or its release was replaced and not kept — and `409` when the build is there but cannot be activated, such as one belonging to another component or one whose files changed after it was staged.
 
 :::warning
 **Upgrade every node before staging.** A stage is replicated like any other deploy. A node still running a version before v5.3.0 does not recognize `activate: false`. It performs an ordinary deploy and serves the release immediately.
 
 The origin cannot detect this in advance, so it checks afterward. Any peer that does not confirm staging fails the operation with the node names. Check those nodes before activating. Pass `ignore_replication_errors: true` only if you have accepted that difference.
 :::
+
+#### Going back to a previous release
+
+<VersionBadge version="v5.3.0" />
+
+When a deploy replaces the release that is live, Harper keeps the replaced one under the `deployment_id` that deployed it. Activating that id puts it back, with no rebuild, resolve, or install:
+
+```json
+{
+	"operation": "deploy_component",
+	"project": "my-app",
+	"deployment_id": "<id of the deployment you want back>",
+	"restart": true
+}
+```
+
+[`list_deployments`](#list_deployments) shows each deployment's id. The activation publishes the root config entry published by that deployment, so a `package` release gets its `package` entry back and a `payload` release removes the one a later deploy added. The release it replaces is kept in turn, so you can go forward again the same way.
+
+- **Kept releases count against [`deployment.stagingRetention.maxCount`](../configuration/options.md#deployment)**, with staged builds. The most recently replaced ones are kept.
+- **Each kept release is a full installed copy of the component, `node_modules` included.** At the default of `5`, budget disk for up to five extra copies per component. `0` keeps no replaced release.
+- **A release is kept as it was when it was replaced**, including anything it wrote into its own directory while it was live.
+- **Not every release can be kept.** A release made live before v5.3.0, or deployed from a `file:` directory, is not kept. A release whose dependency links use absolute paths is kept but refused (`409`) when you try to activate it; on Windows, npm writes such links for `file:` and workspace dependencies.
+- **Each node answers for itself.** A node that never had the release, or no longer keeps it, answers `404`. `deploy_component` reports that as a failed peer.
+
+#### Retrying an activation
+
+<VersionBadge version="v5.3.0" />
+
+An activation of the id that is already live on a node succeeds there without a swap. If an activation fails partway — a peer was unreachable, or the component went live on the origin but its root config entry could not be written — retry the same `deployment_id`. During the retry:
+
+- A node that already switched answers success.
+- A node still holding the build switches now.
+- A node that holds neither answers `404`.
+
+The retry also finishes anything the failed attempt left half done on that node, such as writing the root config entry. A node that answers "already live" still restarts if you pass `restart` — every worker, including those of isolated applications, since it cannot tell which ones loaded the previous release. Without `restart`, it marks the component as needing a restart, because it cannot tell whether every worker has loaded that release.
+
+A plain deploy (without `activate: false`) that went live only on the origin leaves the peers nothing to activate. Their retry answers `404`, so deploy the release again instead.
 
 #### Deploy credentials (`credentials`)
 
@@ -1092,6 +1129,25 @@ The flag is evaluated per node. A peer applying the replicated deploy checks its
 
 Until the restart happens, a request to a route of a never-loaded component returns a 404 naming the component and saying a restart may be needed, instead of the generic 404. That fuller message is returned only to an authenticated `super_user`. The difference between the two responses would otherwise report which component directories exist on disk.
 
+#### Checking what each node installed
+
+<VersionBadge version="v5.3.1" />
+
+Each node of a replicated deploy resolves and installs the release itself. So a mutable reference can resolve differently between nodes' installs and leave them running different code: a branch or tag that was updated, a `latest` version published in between, or a dependency range that resolved to a newer version. Harper doesn't prevent this, but it reports it.
+
+A deploy or a stage records an install fingerprint on each node after it installs. An activation by `deployment_id` installs nothing, so it records none: its response has no `install`, its deployment record has no `install_fingerprint`, and its `peer_results` carry no comparison fields. The fingerprint has two parts:
+
+- `source`: what the package resolved to, named the way its resolver already names it. That is `git:<commit>` for a git reference, the commit a branch or tag pointed at; `npm:<name>@<version>` for a registry package, where a tag resolves to one version; or npm's `integrity:<sri>` for a tarball URL, or for a git reference npm packed itself because `install_allow_scripts` is set. A source that can't be identified is `unidentified`. A `payload` deploy has no `source`, because every node extracts the same uploaded bytes. A local `file:` path, a directory or a tarball, is `unidentified`, because each node reads its own copy, so a peer on one compares as unknown rather than matching.
+- `lockfiles`: the SHA-256 of each lockfile at the component's root (`package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock` or `bun.lockb`), keyed by file name. A lockfile that exists but can't be read is recorded as an object naming the error instead, such as `{"unreadable": "EISDIR"}`, which leaves the comparison unknown unless another field differs.
+
+Every node that recorded a fingerprint returns it as `install` in its `deploy_component` response. The node that received the deploy compares each peer's fingerprint with its own, and when any differ:
+
+- the response's `message` ends with a sentence naming them, such as `Install fingerprints differ from this node's on 1 of 2 peer node(s): node-b (source npm:web@1.5.0, package-lock.json).`;
+- a `warning` event goes to a caller streaming Server-Sent Events, and the Harper CLI prints it;
+- each peer's entry in the deployment's `peer_results` carries `install`, the peer's fingerprint; `install_matches`; and `install_differs`, the list of fields that differ. `install_matches` is `false` when anything compared differs. Otherwise it is `null` when a fingerprint is missing or unreadable, or a source could not be identified (as from a peer on an earlier version), and `true` only when everything compared matches.
+
+A difference never fails the deploy or changes the CLI's exit status. A match means the evidence is equal, not that the installed trees are: an `install_command` can install different dependencies and leave the same lockfile, and lockfiles written against different registry mirrors differ even when the code matches. A staged deploy reports at stage time, before you activate it.
+
 ### Deployment Operations
 
 Harper records every `deploy_component` call in the `system.hdb_deployment` table, capturing the full lifecycle of a deployment including phase transitions (prepare → load → replicate → restart → success/failed), per-node outcomes, and a bounded event log of install output.
@@ -1133,23 +1189,24 @@ Returns a single deployment record by `deployment_id`. When called on an in-prog
 
 The deployment record includes:
 
-| Field                | Description                                                             |
-| -------------------- | ----------------------------------------------------------------------- |
-| `deployment_id`      | Unique identifier (content hash)                                        |
-| `project`            | Component project name                                                  |
-| `package_identifier` | Package reference or `payload` for tar uploads                          |
-| `status`             | `pending`, `success`, `failed`, `staged` (v5.3.0), or `rolled_back`     |
-| `phase`              | Current lifecycle phase: `prepare`, `load`, `replicate`, `restart`      |
-| `event_log`          | Bounded log of install output and phase transitions (up to 200 entries) |
-| `peer_results`       | Per-node outcome map for replicated deployments                         |
-| `payload_hash`       | SHA-256 hash of the deployment tarball                                  |
-| `payload_size`       | Byte size of the deployment tarball                                     |
-| `started_at`         | Timestamp when deployment began                                         |
-| `completed_at`       | Timestamp when deployment finished                                      |
-| `user`               | User who initiated the deployment                                       |
-| `activated_from`     | (v5.3.0) On an activation, the id of the staged deployment it made live |
-| `rollback_of`        | `deployment_id` of the deployment this rolls back, if applicable        |
-| `error`              | Error message for failed deployments                                    |
+| Field                 | Description                                                                                                                                                                                                                                   |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deployment_id`       | Unique identifier (content hash)                                                                                                                                                                                                              |
+| `project`             | Component project name                                                                                                                                                                                                                        |
+| `package_identifier`  | Package reference or `payload` for tar uploads                                                                                                                                                                                                |
+| `status`              | `pending`, `success`, `failed`, `staged` (v5.3.0), or `rolled_back`                                                                                                                                                                           |
+| `phase`               | Current lifecycle phase: `prepare`, `load`, `replicate`, `restart`                                                                                                                                                                            |
+| `event_log`           | Bounded log of install output and phase transitions (up to 200 entries)                                                                                                                                                                       |
+| `peer_results`        | Per-node outcome map for replicated deployments; from v5.3.1, on a deploy or a stage, each peer also carries `install`, `install_matches` and `install_differs` (see [Checking what each node installed](#checking-what-each-node-installed)) |
+| `payload_hash`        | SHA-256 hash of the deployment tarball                                                                                                                                                                                                        |
+| `payload_size`        | Byte size of the deployment tarball                                                                                                                                                                                                           |
+| `install_fingerprint` | (v5.3.1) On a deploy or a stage, this node's install fingerprint: its `source` and `lockfiles`                                                                                                                                                |
+| `started_at`          | Timestamp when deployment began                                                                                                                                                                                                               |
+| `completed_at`        | Timestamp when deployment finished                                                                                                                                                                                                            |
+| `user`                | User who initiated the deployment                                                                                                                                                                                                             |
+| `activated_from`      | (v5.3.0) On an activation, the id of the staged deployment it made live                                                                                                                                                                       |
+| `rollback_of`         | `deployment_id` of the deployment this rolls back, if applicable                                                                                                                                                                              |
+| `error`               | Error message for failed deployments                                                                                                                                                                                                          |
 
 ### `get_deployment_payload`
 
@@ -1191,7 +1248,7 @@ The deployment must be in a terminal status (`success`, `failed`, or `rolled_bac
 
 ### `add_ssh_key`
 
-Adds an SSH key (must be ed25519) for authenticating deployments from private repositories. Supply the private key with `key`, or omit it and pass `generate: true` to have Harper mint the keypair itself.
+Adds an SSH key for authenticating deployments from private repositories. Supply the private key with `key`, or omit it and pass `generate: true` to have Harper mint the keypair itself.
 
 `list_ssh_keys` and the logs never return key material.
 
@@ -1214,6 +1271,54 @@ Adding an existing key:
 	"hostname": "github.com"
 }
 ```
+
+#### What `key`, `host` and `hostname` must be
+
+<VersionBadge type="changed" version="v5.3.0" />
+
+A key ssh can't use would otherwise go unnoticed until ssh loads it for a git deploy, where it fails as a generic authentication error. So `add_ssh_key` and `update_ssh_key` check a supplied key first, and refuse one ssh couldn't use with a `400` that names the problem.
+
+`key` must be an unencrypted **Ed25519**, **ECDSA** (P-256, P-384 or P-521) or **RSA** (at least 1024 bits) private key, in one of the formats ssh reads:
+
+- **OpenSSH** (`-----BEGIN OPENSSH PRIVATE KEY-----`, what `ssh-keygen` writes by default), with nothing before the `BEGIN` line
+- **PEM**: PKCS#1 (`RSA PRIVATE KEY`), SEC1 (`EC PRIVATE KEY`) or PKCS#8 (`PRIVATE KEY`)
+
+These are refused:
+
+- a public key — the `.pub` file, or a public key exported as PEM or RFC 4716 — in place of the private one
+- a PuTTY key (`.ppk`); export it from PuTTYgen with **Conversions → Export OpenSSH key**
+- a passphrase-protected key: Harper runs git without a terminal, so ssh has nowhere to ask for the passphrase
+- a DSA key, which OpenSSH 10 no longer supports
+- a FIDO security key (`sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com`), which signs only with its hardware authenticator attached
+- any other algorithm or curve ssh doesn't support, or an SSH certificate in place of a plain key
+- a key that is cut off, has lines missing or repeated, or is otherwise damaged — including one whose private half doesn't match its public half, which ssh may load but can never authenticate with
+
+Harper stores the key the way ssh needs it: each line trimmed, blank lines dropped, and a final newline added. An indented or CRLF paste therefore works. A value already sealed as `enc:v1:` for this cluster (for example one copied from another node's `get_ssh_key` in the same cluster) is stored as-is, since checking it would mean decrypting it. It must still be a well-formed envelope, and a node with secret custody refuses one sealed for another cluster's key.
+
+`host` and `hostname` are written into the ssh config that every key on the node shares, so a value that would break it is refused: any whitespace or control character, such as a space, tab or line break (`Host my key` matches two aliases, and `HostName my key` stops ssh for every key), a quote, an `=`, or a leading `#`. A leading `-` or any backslash is refused too, since no real host has either, and so is a pattern (`*`, `?`, `!`) in `host`, whose block would also apply to other keys' aliases. In `hostname`, a `%` must be `%h` (replaced by the alias) or `%%` (a literal `%`), the only expansions ssh makes there, so an IPv6 zone needs the doubled form: `fe80::1%%en0`. Surrounding whitespace is trimmed.
+
+#### The key's block in the ssh config
+
+<VersionBadge type="changed" version="v5.3.0" />
+
+Harper writes each key's settings to `<rootPath>/ssh/config`, in a block that starts and ends with lines Harper owns:
+
+```
+#my-key
+# BEGIN harper ssh key my-key
+Host my-key.github.com
+	HostName github.com
+	User git
+	IdentityFile <rootPath>/ssh/my-key.key
+	IdentitiesOnly yes
+# END harper ssh key my-key
+```
+
+`get_ssh_key`, `list_ssh_keys` and `delete_ssh_key` read and change only the lines from `#<name>` through `# END harper ssh key <name>`, so you can add your own sections and settings anywhere outside them. `delete_ssh_key` removes exactly those lines, including anything you put between them, and leaves every other line of the file as it was. ssh_config has no end-of-section marker, so ssh still reads a line placed just after a key's `END` line as part of that key's `Host` section. Put your own settings under a `Host` or `Match` line of your own.
+
+A config written by an earlier version gets these lines when the node starts, without changing what ssh resolves for any host. Only blocks whose `IdentityFile` is exactly `<rootPath>/ssh/<name>.key` get them, so a section of your own under a comment that looks like a key's name stays yours.
+
+If a key's `BEGIN` line has no matching `END` line, where its block ends is unknown. `delete_ssh_key` then refuses that key with a `400` naming the line, until the `END` line is restored or the block is removed by hand. Other keys are unaffected.
 
 #### Server-side key generation (`generate`)
 
