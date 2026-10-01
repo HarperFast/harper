@@ -12,6 +12,7 @@ const {
 const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNativeBinding');
 const { DERIVED_INDEX_ACCEPTED, DERIVED_INDEX_DEFERRED } = require('#src/resources/derivedIndexRuntime');
 const { waitFor } = require('../waitFor');
+const fullTextPackageVersion = require('../../package.json').optionalDependencies['@harperfast/fulltext'];
 
 const limits = {
 	indexingThreads: 2,
@@ -147,7 +148,12 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 
 		const binding = await loadFullTextNativeBinding();
 		const runtime = await binding.runtimeInfo();
-		assert.strictEqual(runtime.packageVersion, '0.3.0');
+		assert.strictEqual(runtime.packageVersion, fullTextPackageVersion);
+		assert.strictEqual(runtime.tantivyVersion, '0.26.2');
+		assert.strictEqual(runtime.nativeAbiVersion, 8);
+		assert.strictEqual(runtime.lifecycleApiVersion, 1);
+		assert.strictEqual(runtime.mutationBatchApiVersion, 4);
+		assert.strictEqual(runtime.queryApiVersion, 2);
 		assert.strictEqual(runtime.queryClassIsolationMinimumSearchThreads, 2);
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding, { surfaceTerms: true }));
 		await lifecycle.initialize();

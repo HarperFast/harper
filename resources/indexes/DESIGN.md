@@ -505,8 +505,8 @@ Search hits carry the source record version. Harper loads the authoritative reco
 when that version no longer matches; it never attaches an old score or highlight to new content. Bounded searches begin by
 over-fetching 32–256 native hits. When version checks or structured filters under-fill a page, Harper sizes the next request from
 observed yield, growing to at most 4,096 hits within the native worst-case response envelope, then shrinking as selectivity improves.
-A zero-yield page grows geometrically because it provides no finite selectivity estimate. Large pages preserve the initial page's
-yield cadence, up to 256 source reads, and check cancellation and the execution deadline at each yield. The native result window
+A zero-yield page grows geometrically because it provides no finite selectivity estimate. Each page yields after at most 256 source
+reads and checks cancellation and the execution deadline at each yield. The native result window
 remains the hard bound, and one reader lease keeps every page on one native snapshot. The native contract requires a lower-bound
 total to describe retrievable hits: while more hits remain within the window, a page must return its requested limit. Harper fails
 closed when a short lower-bound page claims additional hits. Exhausting the window because native versions are stale is retryable

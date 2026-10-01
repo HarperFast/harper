@@ -258,4 +258,52 @@ describe('published native full-text Table.search integration', () => {
 			/One query cannot combine conditions from different full-text indexes/
 		);
 	});
+
+	it('keeps tied BM25 results stable across native pages', async () => {
+		Product = table({
+			database: `fulltext-native-stable-pages-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1 }])],
+		});
+		const expected = Array.from({ length: 300 }, (_value, index) => `product-${String(index).padStart(3, '0')}`);
+		const insertionOrder = [...expected].reverse();
+		for (let start = 0; start < insertionOrder.length; start += 100)
+			await Product.put(
+				insertionOrder.slice(start, start + 100).map((id) => ({ id, title: 'identical catalog product' }))
+			);
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30_000);
+
+		const search = (limit) =>
+			collect(
+				Product.search({
+					conditions: [
+						{
+							attribute: 'catalogSearch',
+							comparator: 'matches',
+							value: 'identical catalog',
+							maxIndexLagMilliseconds: 0,
+							waitForIndexMilliseconds: 30_000,
+						},
+					],
+					limit,
+				})
+			);
+		const results = await search(270);
+		assert.deepStrictEqual(
+			results.map(({ id }) => id),
+			expected.slice(0, 270)
+		);
+
+		for (const id of expected.slice(-5)) await Product.delete(id);
+		const afterDeletes = await search(300);
+		assert.deepStrictEqual(
+			afterDeletes.map(({ id }) => id),
+			expected.slice(0, -5)
+		);
+	});
 });

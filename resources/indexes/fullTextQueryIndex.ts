@@ -409,11 +409,11 @@ export class FullTextQueryIndex {
 						Math.max(MIN_RAW_PAGE_SIZE, target * RAW_PAGE_OVERFETCH_FACTOR)
 					)
 				: Math.min(this.#maxFilteredRawPageSize!, RAW_PAGE_SIZE);
-			const sourceReadYieldInterval = Math.min(RAW_PAGE_YIELD_INTERVAL, rawPageSize);
 			const transaction = context && this.#options.Table._readTxnForContext(context);
 			while (accepted.length < target && offset < searchWindow) {
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
 				const limit = autocomplete ? searchWindow : Math.min(rawPageSize, searchWindow - offset);
+				const sourceReadYieldInterval = Math.min(RAW_PAGE_YIELD_INTERVAL, limit);
 				const acceptedBeforePage = accepted.length;
 				const result = await reader.search(
 					{
@@ -431,6 +431,7 @@ export class FullTextQueryIndex {
 					result.hits.length < limit &&
 					offset + result.hits.length < result.total
 				)
+					// Query API v2 only reports lower-bound while a full requested page remains retrievable.
 					throw new ServerError('Full-text index returned an incomplete result page', 500);
 				moreMayExist =
 					result.totalRelation === 'exact' ? offset + result.hits.length < result.total : result.hits.length === limit;
@@ -868,17 +869,17 @@ export class FullTextQueryIndex {
 			(info.limits.maxSearchResponseBytes - NATIVE_SEARCH_RESPONSE_HEADER_BYTES) /
 				(NATIVE_SEARCH_HIT_OVERHEAD_BYTES + info.limits.maxRecordIdBytes + info.limits.maxRecordVersionBytes)
 		);
-		this.#maxFilteredRawPageSize = Math.min(
-			MAX_FILTERED_RAW_PAGE_SIZE,
-			info.limits.maxSearchWindow,
-			responseHitCapacity
-		);
 		if (responseHitCapacity < 1)
 			throw new TypeError('@harperfast/fulltext/native search response limit cannot hold one maximum-size hit');
 		if (responseHitCapacity < info.limits.maxAutocompleteResults)
 			throw new TypeError(
 				'@harperfast/fulltext/native autocomplete limit exceeds its worst-case search response capacity'
 			);
+		this.#maxFilteredRawPageSize = Math.min(
+			MAX_FILTERED_RAW_PAGE_SIZE,
+			info.limits.maxSearchWindow,
+			responseHitCapacity
+		);
 		this.#maxAutocompleteResults = info.limits.maxAutocompleteResults;
 		this.#maxSearchBudgetMilliseconds = info.limits.maxSearchBudgetMilliseconds;
 		this.#maxTraceRecords = info.limits.maxTraceRecords;
