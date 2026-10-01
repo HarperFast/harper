@@ -802,7 +802,11 @@ describe('Long-lived transaction reporting (#2471)', () => {
 					([message]) =>
 						String(message).includes('has been aborted') && String(message).includes('MonitorAbortPrimaryTable')
 				);
-			const trackedTxns = setTxnExpiration(20);
+			// Stay on the slow ambient expiration while the two real writes land, so neither can be caught
+			// by a premature tick on a loaded CI runner; only once the chain is fully built do we switch to
+			// a fast interval and force the head's own timeout past zero, so the abort fires deterministically
+			// rather than racing how long the writes happened to take.
+			const trackedTxns = setTxnExpiration(30000);
 			const context = {};
 			try {
 				await assert.rejects(
@@ -815,9 +819,11 @@ describe('Long-lived transaction reporting (#2471)', () => {
 						// Reachable only through the root's chain: an independently-tracked second link could
 						// otherwise be visited by the monitor and abort on its own terms too.
 						trackedTxns.delete(links[1]);
-						links[1].writeTimeout = 0; // decay chainStillActive() now rather than waiting on real ticks
+						links[1].writeTimeout = 0; // decays chainStillActive() for the head's own visit below
 						const headId = links[0].transaction?.id;
 						assert.ok(headId !== undefined, 'the head must own a native handle');
+						setTxnExpiration(20);
+						links[0].timeout = 0; // force the very next fast tick to see the limit as already past
 						await waitFor(() => abortLine() !== undefined, {
 							timeout: 10000,
 							message: 'the monitor never logged the abort',
