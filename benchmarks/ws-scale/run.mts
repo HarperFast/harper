@@ -310,17 +310,28 @@ async function main() {
 	if (args.profile) {
 		mkdirSync(profileDir, { recursive: true });
 		for (const file of readdirSync(profileDir)) {
-			if (file === 'start' || /^thread-\d+\.cpuprofile$/.test(file)) rmSync(join(profileDir, file));
+			if (file === 'start' || /^thread-\d+\.(cpuprofile|started)$/.test(file)) rmSync(join(profileDir, file));
 		}
 		env.WS_SCALE_PROFILE_DIR = profileDir;
 		(harperConfig.threads as any).preloadRequire = join(import.meta.dirname, 'profile-preload.cjs');
 	}
+	let profileStartedAt = Infinity;
 	// renamed into place so a worker polling for it never reads it half-written
 	const startProfile = () => {
 		if (!args.profile) return;
 		writeFileSync(join(profileDir, 'start.tmp'), args.profile);
 		renameSync(join(profileDir, 'start.tmp'), join(profileDir, 'start'));
+		profileStartedAt = performance.now();
 	};
+	const profileFinished = () => {
+		if (profileStartedAt === Infinity) return false;
+		const files = readdirSync(profileDir);
+		const started = files.filter((file) => file.endsWith('.started')).length;
+		return started > 0 && files.filter((file) => file.endsWith('.cpuprofile')).length >= started;
+	};
+	// a row whose window overlaps the profile carries the profiler's own CPU and memory
+	const profiled = (finishedAtRowStart: boolean, rowEnd: number) =>
+		args.profile ? { profiled: !finishedAtRowStart && profileStartedAt < rowEnd } : {};
 	for (const pair of args['harper-env']!) {
 		const eq = pair.indexOf('=');
 		env[pair.slice(0, eq)] = pair.slice(eq + 1);
@@ -404,11 +415,13 @@ async function main() {
 			let prev = { open: 0, rss: baseRss, heap: baseHeap.used };
 			const steps = args.steps!.split(',').map(Number);
 			for (const step of steps) {
+				const profileDone = profileFinished();
 				const ramp = await openTo(step);
 				if (step === steps.at(-1)) startProfile();
 				const ticks0 = cpuTicks(harperPid);
 				await delay(Number(args.settle) * 1000);
 				const idleCores = (cpuTicks(harperPid) - ticks0) / CLK_TCK / Number(args.settle);
+				const settledAt = performance.now();
 				const rss = rssMB(harperPid);
 				const heap = await heapMB();
 				const stats = await clientStats();
@@ -417,6 +430,8 @@ async function main() {
 					scenario: 'conns',
 					protocol,
 					uws: args.uws,
+					uds: args.uds,
+					threads,
 					subs,
 					topics,
 					open: stats.open,
@@ -433,13 +448,17 @@ async function main() {
 					cpuUsPerConnect: (ramp.cpuSeconds * 1e6) / ramp.added,
 					idleCores,
 					clientRssMB: stats.rss / 2 ** 20,
+					...profiled(profileDone, settledAt),
 				});
 				prev = { open: stats.open, rss, heap: heap.used };
 				if (stats.lastError) console.log(`  last client error: ${stats.lastError}`);
 			}
 		} else if (args.scenario === 'fanout') {
 			const ramp = await openTo(Number(args.conns));
+			// Harper's CPU holding every connection with nothing published, which each row's CPU includes
+			const idleTicks0 = cpuTicks(harperPid);
 			await delay(Number(args.settle) * 1000);
+			const idleCores = (cpuTicks(harperPid) - idleTicks0) / CLK_TCK / Number(args.settle);
 			let stats = await clientStats();
 			console.log(
 				`opened ${stats.open} (failed ${stats.failed}) subscribed ${stats.subscribed} in ${ramp.seconds.toFixed(1)}s; rss=${rssMB(harperPid).toFixed(0)}MB`
@@ -456,6 +475,7 @@ async function main() {
 			let errorsTotal = 0;
 			let expectedTotal = 0;
 			for (const rate of args.rates!.split(',').map(Number)) {
+				const profileDone = profileFinished();
 				const before = await clientStats();
 				const harper0 = cpuTicks(harperPid);
 				const written0 = writeBytes(harperPid);
@@ -532,9 +552,12 @@ async function main() {
 					protocol,
 					uws: args.uws,
 					uds: args.uds,
+					threads,
 					publish: args.publish,
+					insert: args.insert,
 					conns: stats.open,
 					subsPerTopic: subscribersPerTopic,
+					slowFraction: Number(args['slow-fraction']),
 					payload: Number(args.payload),
 					rate,
 					publishedPerSec: publishedCount / (durationMs / 1000),
@@ -549,6 +572,7 @@ async function main() {
 						cpuUsPerDelivery: (harperCpu * 1e6) / delivered,
 					}),
 					harperCores: harperCpu / seconds,
+					idleCores,
 					clientCores: clientCpu / seconds,
 					publisherCores: publisherCpu / seconds,
 					drainSeconds: seconds - durationMs / 1000,
@@ -561,6 +585,7 @@ async function main() {
 					rssMB: rssMB(harperPid),
 					disconnected: stats.closed,
 					closeCodes: JSON.stringify(stats.closeCodes ?? {}),
+					...profiled(profileDone, lastProgress),
 				});
 			}
 		}

@@ -1,6 +1,7 @@
 // Loaded into every Harper worker via threads.preloadRequire when run.mts is given --profile. Waits
 // for run.mts to write <dir>/start (containing the duration in seconds), then CPU-profiles this
-// thread for that long and writes <dir>/thread-<id>.cpuprofile.
+// thread for that long and writes <dir>/thread-<id>.cpuprofile. <dir>/thread-<id>.started marks a
+// thread that began profiling, so run.mts can tell when every profile has been written.
 const { Session } = require('node:inspector');
 const { threadId } = require('node:worker_threads');
 const { existsSync, readFileSync, writeFileSync } = require('node:fs');
@@ -14,7 +15,8 @@ const poll = setInterval(() => {
 	session.connect();
 	session.post('Profiler.enable', () =>
 		session.post('Profiler.setSamplingInterval', { interval: 250 }, () =>
-			session.post('Profiler.start', () =>
+			session.post('Profiler.start', () => {
+				writeFileSync(`${dir}/thread-${threadId}.started`, '');
 				setTimeout(
 					() =>
 						session.post('Profiler.stop', (error, result) => {
@@ -22,8 +24,8 @@ const poll = setInterval(() => {
 							session.disconnect();
 						}),
 					seconds * 1000
-				)
-			)
+				);
+			})
 		)
 	);
 }, 250);

@@ -98,7 +98,9 @@ function openConnection(cmd: ConnectCommand, index: number): Promise<void> {
 	const globalIndex = cmd.startIndex + index;
 	const localAddress = cmd.sourceIps[Math.floor(connectionsOpenedHere++ / PORTS_PER_SOURCE_IP) % cmd.sourceIps.length];
 	const path = cmd.protocol === 'mqtt' ? '/mqtt' : `/Bench/${topicFor(globalIndex, 0, 1, cmd.topics)}`;
-	const slow = cmd.slowFraction ? (globalIndex % 1000) / 1000 < cmd.slowFraction : false;
+	// exactly floor(N × fraction) of global indexes 0…N-1 are slow, spread evenly, at any N
+	const fraction = cmd.slowFraction ?? 0;
+	const slow = Math.floor((globalIndex + 1) * fraction) > Math.floor(globalIndex * fraction);
 	return new Promise((resolve) => {
 		const url = cmd.udsPaths?.length
 			? `ws+unix:${cmd.udsPaths[globalIndex % cmd.udsPaths.length]}:${path}`
