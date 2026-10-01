@@ -93,6 +93,8 @@ Harper keeps a quiet topic's position current while the client is connected, and
 
 Harper supports the MQTT Last Will and Testament feature. If a client disconnects unexpectedly, the broker publishes the configured will message on its behalf. Will messages are persisted in the `hdb_session_will` system table at CONNECT time, so they survive a broker restart and fire reliably on unexpected disconnect.
 
+As of v5.3.1, each connection's will is kept separately, so a connection that closes after a newer one with the same client ID has connected publishes only its own will. When the newer connection takes a durable session over, the older connection is closed and publishes its will then, as MQTT v5 specifies.
+
 ## Content Negotiation
 
 Harper handles structured data natively. Messages can be published and received in any supported structured format — JSON, CBOR, or MessagePack — and Harper stores and delivers them as structured objects. Different clients can independently choose their preferred format: one client may publish in JSON while another subscribes and receives in CBOR.
