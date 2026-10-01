@@ -2,8 +2,8 @@
 
 const { isMainThread, parentPort, threadId, workerData } = require('node:worker_threads');
 const { createServer: createSocketServer } = require('node:net');
-const { unlinkSync, existsSync, mkdirSync } = require('fs');
-const { join } = require('path');
+const { unlinkSync, existsSync, mkdirSync, renameSync } = require('fs');
+const { join, dirname } = require('path');
 let componentsLoadedResolve;
 exports.whenComponentsLoaded = new Promise((resolve) => {
 	componentsLoadedResolve = resolve;
@@ -304,6 +304,14 @@ function startServers() {
  * An overlong path is the only condition that can skip a domain-socket listener. Check before
  * listen() because supported Node versions differ: some reject the path while others truncate and
  * bind it somewhere clients cannot reach using the configured path.
+ *
+ * A per-thread mirror binds at a temp name and is renamed over its published path. libuv unlinks a
+ * pipe server's bound path when the handle closes, with no ownership check, so a mirror bound
+ * directly at the published path is deleted by the outgoing worker of an overlapping restart (see
+ * restartWorkers()) closing its own server after the replacement rebound that path. rename() keeps
+ * the listening inode, so the close-time unlink only ever targets the temp name, which no longer
+ * exists. The operations API's primary socket keeps the direct bind: the CLI reads that file's
+ * presence as "Harper is running", so its unlink on close is load-bearing.
  */
 function listenOnDomainSocket(port, server) {
 	if (isDomainSocketPathTooLong(port)) {
@@ -313,13 +321,22 @@ function listenOnDomainSocket(port, server) {
 		);
 		return Promise.resolve({ port, failed: true });
 	}
-	if (existsSync(port)) unlinkSync(port);
+	const bindPath = server.isPerThreadSocket ? mirrorBindPath(port) : port;
+	if (bindPath === port && existsSync(port)) unlinkSync(port);
 	return new Promise((resolve, reject) => {
 		function onError(error) {
 			reject(error);
 		}
 		function onListening() {
 			server.removeListener('error', onError);
+			if (bindPath !== port) {
+				try {
+					renameSync(bindPath, port);
+				} catch (error) {
+					server.close(); // libuv unlinks the temp name, which still exists
+					return reject(error);
+				}
+			}
 			// Record ownership of the inode we just bound, so cleanupUdsFiles()/markUdsBindFailed()
 			// (see http.ts) can tell this worker's own file apart from a replacement's later rebind
 			// at the same path (see registerUdsCleanupPaths). A no-op for domain sockets that aren't
@@ -330,12 +347,23 @@ function listenOnDomainSocket(port, server) {
 		}
 		try {
 			server.once('error', onError);
-			server.listen({ path: port }, onListening);
+			server.listen({ path: bindPath }, onListening);
 		} catch (error) {
 			server.removeListener('error', onError);
 			reject(error);
 		}
 	});
+}
+
+let mirrorBindSequence = 0;
+/**
+ * Unique within the process (threadId never repeats, the sequence is per thread) and shorter than any
+ * published `<n>-<port>.sock`, so the published path's length check above already bounds it. A
+ * leftover from a crashed process is removed by the main thread's startup sweep before any bind, and
+ * the name can never match a proxy's `*-<port>.yaml`/`.sock` discovery.
+ */
+function mirrorBindPath(socketPath) {
+	return join(dirname(socketPath), `.${threadId}.${++mirrorBindSequence}`);
 }
 
 let listening;
