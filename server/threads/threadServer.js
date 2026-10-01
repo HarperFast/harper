@@ -314,14 +314,15 @@ function startServers() {
  * presence as "Harper is running", so its unlink on close is load-bearing.
  */
 function listenOnDomainSocket(port, server) {
-	if (isDomainSocketPathTooLong(port)) {
+	const bindPath = server.isPerThreadSocket ? mirrorBindPath(port) : port;
+	const overlong = [port, bindPath].find(isDomainSocketPathTooLong);
+	if (overlong) {
 		httpComponent.markUdsBindFailed(port);
 		harperLogger.error(
-			`Not binding domain socket listener${server.name ? ` for '${server.name}'` : ''} at ${port}: the ${Buffer.byteLength(port)}-byte path exceeds the platform limit of ${getDomainSocketPathMaxBytes()} bytes. Continuing without this domain socket.`
+			`Not binding domain socket listener${server.name ? ` for '${server.name}'` : ''} at ${port}: the ${Buffer.byteLength(overlong)}-byte path ${overlong} exceeds the platform limit of ${getDomainSocketPathMaxBytes()} bytes. Continuing without this domain socket.`
 		);
 		return Promise.resolve({ port, failed: true });
 	}
-	const bindPath = server.isPerThreadSocket ? mirrorBindPath(port) : port;
 	if (bindPath === port && existsSync(port)) unlinkSync(port);
 	return new Promise((resolve, reject) => {
 		function onError(error) {
@@ -357,10 +358,9 @@ function listenOnDomainSocket(port, server) {
 
 let mirrorBindSequence = 0;
 /**
- * Unique within the process (threadId never repeats, the sequence is per thread) and shorter than any
- * published `<n>-<port>.sock`, so the published path's length check above already bounds it. A
- * leftover from a crashed process is removed by the main thread's startup sweep before any bind, and
- * the name can never match a proxy's `*-<port>.yaml`/`.sock` discovery.
+ * Unique within the process: threadId never repeats and the sequence is per thread. A leftover from a
+ * crashed process is removed by the main thread's startup sweep before any bind, and the name can
+ * never match a proxy's `*-<port>.yaml`/`.sock` discovery.
  */
 function mirrorBindPath(socketPath) {
 	return join(dirname(socketPath), `.${threadId}.${++mirrorBindSequence}`);

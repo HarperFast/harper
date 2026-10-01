@@ -126,6 +126,7 @@ suite(
 				for (const name of expectedMirrors()) {
 					const info = await stat(join(socketsDir, name), { bigint: true });
 					beforeIdentity.set(name, `${info.dev}:${info.ino}`);
+					ok(await requestOverMirror(join(socketsDir, name), ctx), `${name} does not answer HTTP before the restart`);
 				}
 
 				// The operations request is served by a worker that is itself restarted, so its response is
