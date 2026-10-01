@@ -799,7 +799,8 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			// idle, and another suite's own timed-out transaction can log the same phrase first.
 			const abortLine = () =>
 				errorLines.find(
-					([message]) => String(message).includes('has been aborted') && String(message).includes('MonitorAbortPrimaryTable')
+					([message]) =>
+						String(message).includes('has been aborted') && String(message).includes('MonitorAbortPrimaryTable')
 				);
 			const trackedTxns = setTxnExpiration(20);
 			const context = {};

@@ -122,9 +122,7 @@ export function describeCommitIdentity(
 	let nativeTransactionId;
 	try {
 		nativeTransactionId = nativeTransaction?.id;
-	} catch {
-		// leave it undefined
-	}
+	} catch {}
 	return (
 		`from table: ${rootStore?.databaseName ?? '?'}.${store?.name ?? '?'}` +
 		(nativeTransactionId !== undefined ? ` (transaction ${nativeTransactionId})` : '') +

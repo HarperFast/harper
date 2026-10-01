@@ -425,11 +425,9 @@ suite(
 
 					// The monitor's decision is asynchronous to the request returning, so wait for the
 					// evidence itself rather than for a fixed settling delay.
-					// The line names the table and the route it was started from, so the match is evidence
-					// about THIS request rather than about any transaction that outran the 1 s limit. The
-					// identity now comes through describeCommitIdentity(), which prefixes the database name
-					// and may append a native transaction id and a "started from" resource/method — both
-					// optional here since neither is this assertion's point.
+					// The path is what makes this evidence about THIS request rather than about any
+					// transaction that outran the 1 s limit; the database prefix and the transaction id/
+					// started-from groups are optional since neither is this assertion's point.
 					const aborted = new RegExp(
 						`Transaction was open too long and has been aborted[^\\n]*from table: [^ .]+\\.${table}/(?:@[0-9a-f-]+)?(?: \\(transaction \\d+\\))?(?:, started from [^ ]+)? path: /SlowMixedHold/`
 					);
