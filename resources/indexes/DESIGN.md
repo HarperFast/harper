@@ -201,7 +201,8 @@ cooperative would require an asynchronous contract that HNSW does not otherwise 
 Point probes run only when their estimated index-read cost is no greater than the source loads they
 are expected to avoid, using the selectivity of the terms the probe covers and the same
 eight-key-reads-per-source-read ratio as materialization. Candidate-set budgets use the expected
-rejection fraction, including for unbounded queries where the requested target fills the native window.
+rejection fraction and the native query's reported hit count, including for unbounded queries where
+the requested target fills the native window.
 
 The planner marks a gate complete only when its indexed terms cover every companion condition and no
 opaque record guard remains. An incomplete gate may reject definite misses, but admitted records still

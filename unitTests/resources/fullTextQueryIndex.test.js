@@ -1842,6 +1842,42 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	it('caps candidate collection from the native hit count', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-native-hit-bound';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let collectionAttempts = 0;
+		let reads = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [{ id: nativeId(1, 'record-0'), version: '1', score: 1 }],
+			estimatedRecordCount: 1_000_000,
+			maxSearchWindow: 10_000,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				filter: () => true,
+				candidateKeys: {
+					estimatedCount: 4_096,
+					collect: () => {
+						collectionAttempts++;
+						return null;
+					},
+				},
+			}
+		);
+		assert.strictEqual(results[0].key, 'record-0');
+		assert.strictEqual(collectionAttempts, 0);
+		assert.strictEqual(reads, 1);
+		await index.close();
+	});
+
 	it('uses a selective collected set once and falls back when point probing fails', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'candidate-collected-set';
@@ -1895,10 +1931,10 @@ describe('FullTextQueryIndex', () => {
 			readinessId: boundedReadinessId,
 			payload: publicationPayload(),
 			hits: () =>
-				Array.from({ length: 100 }, (_value, index) => ({
+				Array.from({ length: 5_000 }, (_value, index) => ({
 					id: nativeId(1, `record-${index}`),
 					version: '1',
-					score: 100 - index,
+					score: 5_000 - index,
 				})),
 			estimatedRecordCount: 1_000_000,
 			maxSearchWindow: 5_000,

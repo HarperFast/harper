@@ -86,6 +86,12 @@ type ReaderSlot = {
 	reloadFailures: number;
 };
 
+type CandidateGate = {
+	complete: boolean;
+	maxReadsPerCandidate: number;
+	has(primaryKey: Id): boolean;
+};
+
 type FullTextQueryHost = Pick<DerivedNativeIndexHost, 'readiness' | 'waitForCoverage' | 'requestRebuild'>;
 
 class FullTextReaderPublicationError extends Error {}
@@ -432,20 +438,12 @@ export class FullTextQueryIndex {
 					)
 				: Math.min(this.#maxFilteredRawPageSize!, RAW_PAGE_SIZE);
 			const transaction = context && this.#options.Table._readTxnForContext(context);
-			let candidateGate =
-				options.filter && options.candidateKeys
-					? this.#candidateGate(options.candidateKeys, target, searchWindow)
-					: undefined;
+			const candidatePlan = options.filter ? options.candidateKeys : undefined;
+			let candidateGate: CandidateGate | undefined;
+			let candidateGatePlanned = false;
 			while (accepted.length < target && offset < searchWindow) {
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
 				const limit = autocomplete ? searchWindow : Math.min(rawPageSize, searchWindow - offset);
-				const pointReadsPerCandidate = candidateGate?.maxReadsPerCandidate ?? 0;
-				const workYieldInterval = Math.min(
-					limit,
-					pointReadsPerCandidate === 0
-						? RAW_PAGE_YIELD_INTERVAL
-						: Math.max(1, Math.floor(RAW_PAGE_YIELD_INTERVAL / (pointReadsPerCandidate + 1)))
-				);
 				const acceptedBeforePage = accepted.length;
 				const result = await reader.search(
 					{
@@ -475,6 +473,22 @@ export class FullTextQueryIndex {
 				moreMayExist =
 					result.totalRelation === 'exact' ? offset + result.hits.length < result.total : result.hits.length === limit;
 				if (result.hits.length === 0) break;
+				if (!candidateGatePlanned) {
+					candidateGatePlanned = true;
+					if (candidatePlan) {
+						if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
+						remainingSearchBudget(deadline);
+						const nativeHitCount = Math.min(searchWindow, Math.max(result.hits.length, result.total));
+						candidateGate = this.#candidateGate(candidatePlan, target, nativeHitCount);
+					}
+				}
+				const pointReadsPerCandidate = candidateGate?.maxReadsPerCandidate ?? 0;
+				const workYieldInterval = Math.min(
+					limit,
+					pointReadsPerCandidate === 0
+						? RAW_PAGE_YIELD_INTERVAL
+						: Math.max(1, Math.floor(RAW_PAGE_YIELD_INTERVAL / (pointReadsPerCandidate + 1)))
+				);
 				let nextYieldIndex = workYieldInterval;
 				for (let hitIndex = 0; hitIndex < result.hits.length; hitIndex++) {
 					if (hitIndex === nextYieldIndex) {
@@ -600,17 +614,13 @@ export class FullTextQueryIndex {
 		}
 	}
 
-	#candidateGate(
-		plan: CandidateKeyPlan,
-		target: number,
-		searchWindow: number
-	): { complete: boolean; maxReadsPerCandidate: number; has(primaryKey: Id): boolean } | undefined {
+	#candidateGate(plan: CandidateKeyPlan, target: number, maxSourceReads: number): CandidateGate | undefined {
 		const store = this.#options.Table.primaryStore;
 		const estimatedRecords =
 			typeof store.getEstimatedKeyCount === 'function' ? store.getEstimatedKeyCount() : store.getStats?.().entryCount;
 		const recordCount = Math.max(1, Number.isFinite(estimatedRecords) ? estimatedRecords : target);
 		const selectivity = Math.min(1, Math.max(1, plan.estimatedCount) / recordCount);
-		const expectedSourceReads = Math.min(searchWindow, Math.ceil(target / selectivity));
+		const expectedSourceReads = Math.min(maxSourceReads, Math.ceil(target / selectivity));
 		const expectedRejectedReads = Math.ceil(expectedSourceReads * (1 - selectivity));
 		const maxKeys = Math.min(MAX_CANDIDATE_KEYS, Math.ceil(expectedRejectedReads * CANDIDATE_KEYS_PER_SOURCE_READ));
 		const now = Date.now();
