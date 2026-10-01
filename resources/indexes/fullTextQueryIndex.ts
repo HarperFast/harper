@@ -611,7 +611,7 @@ export class FullTextQueryIndex {
 		const recordCount = Math.max(1, Number.isFinite(estimatedRecords) ? estimatedRecords : target);
 		const selectivity = Math.min(1, Math.max(1, plan.estimatedCount) / recordCount);
 		const expectedSourceReads = Math.min(searchWindow, Math.ceil(target / selectivity));
-		const expectedRejectedReads = Math.max(0, expectedSourceReads - target);
+		const expectedRejectedReads = Math.ceil(expectedSourceReads * (1 - selectivity));
 		const maxKeys = Math.min(MAX_CANDIDATE_KEYS, Math.ceil(expectedRejectedReads * CANDIDATE_KEYS_PER_SOURCE_READ));
 		const now = Date.now();
 		if (plan.estimatedCount <= maxKeys && now >= this.#candidateCollectionRetryAfter) {
@@ -643,7 +643,8 @@ export class FullTextQueryIndex {
 			probe.maxReadsPerCandidate > MAX_POINT_PROBE_READS_PER_CANDIDATE
 		)
 			return;
-		const expectedAvoidedSourceReadsPerCandidate = 1 - selectivity;
+		const probeSelectivity = Math.min(1, Math.max(1, probe.estimatedCount) / recordCount);
+		const expectedAvoidedSourceReadsPerCandidate = 1 - probeSelectivity;
 		return probe.maxReadsPerCandidate <= expectedAvoidedSourceReadsPerCandidate * CANDIDATE_KEYS_PER_SOURCE_READ
 			? probe
 			: undefined;

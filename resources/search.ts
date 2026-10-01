@@ -416,6 +416,8 @@ export interface CandidateKeyPlan {
 	probe?: {
 		/** Whether the probe covers every pushed-down condition and no opaque record guard remains. */
 		complete: boolean;
+		/** Planner estimate for the conditions this probe actually covers. */
+		estimatedCount: number;
 		/** Worst-case synchronous index reads performed by one call to `has`. */
 		maxReadsPerCandidate: number;
 		has(primaryKey: Id): boolean;
@@ -617,7 +619,12 @@ function planCandidateKeys(
 	if (terms.length === 0) return undefined;
 	const estimatedCount = terms.reduce((narrowest, term) => Math.min(narrowest, term.estimatedCount), Infinity);
 	const probeTerms = includePointProbe ? terms.filter((term) => term.scans.every((scan) => scan.canProbe)) : [];
+	const probeEstimatedCount = probeTerms.reduce(
+		(narrowest, term) => Math.min(narrowest, term.estimatedCount),
+		Infinity
+	);
 	const maxProbeReadsPerCandidate = probeTerms.reduce((total, term) => total + term.scans.length, 0);
+	const probeOptions = probeTerms.length > 0 ? { transaction } : undefined;
 	return {
 		estimatedCount,
 		probe:
@@ -625,12 +632,13 @@ function planCandidateKeys(
 				? undefined
 				: {
 						complete: planned && probeTerms.length === terms.length,
+						estimatedCount: probeEstimatedCount,
 						maxReadsPerCandidate: maxProbeReadsPerCandidate,
 						has(primaryKey) {
 							for (const term of probeTerms) {
 								let matched = false;
 								for (const scan of term.scans) {
-									if (scan.index.hasIndexEntry(scan.probeValue, primaryKey, { transaction })) {
+									if (scan.index.hasIndexEntry(scan.probeValue, primaryKey, probeOptions!)) {
 										matched = true;
 										break;
 									}

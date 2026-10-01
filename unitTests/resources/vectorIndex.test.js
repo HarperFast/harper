@@ -3399,6 +3399,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 		customIndex.candidateKeyProbe = true;
 		const inspect = (keys) => (plan) => ({
 			complete: plan.probe?.complete,
+			estimatedCount: plan.probe?.estimatedCount,
 			maxReadsPerCandidate: plan.probe?.maxReadsPerCandidate,
 			matches: keys.map((key) => plan.probe?.has(key)),
 		});
@@ -3414,6 +3415,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			);
 			assert.deepStrictEqual(and.probed, {
 				complete: true,
+				estimatedCount: 100,
 				maxReadsPerCandidate: 2,
 				matches: [true, false, false],
 			});
@@ -3434,6 +3436,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			);
 			assert.deepStrictEqual(or.probed, {
 				complete: true,
+				estimatedCount: 101,
 				maxReadsPerCandidate: 2,
 				matches: [true, true, false],
 			});
@@ -3449,6 +3452,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			);
 			assert.deepStrictEqual(residual.probed, {
 				complete: false,
+				estimatedCount: 100,
 				maxReadsPerCandidate: 1,
 				matches: [true, false],
 			});

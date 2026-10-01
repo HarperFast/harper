@@ -196,8 +196,12 @@ RocksDB access patterns. A selective range is materialized as a bounded key set.
 condition is checked with one point read of the existing `[indexed value, primary key]` secondary-index
 entry for each Tantivy hit. The latter avoids scanning and retaining a large key set merely to reject
 non-matching full-text hits. Full-text materialization uses a 4,096-key synchronous scan budget.
+Collection can consume that budget before cancellation is observed; making the shared planner
+cooperative would require an asynchronous contract that HNSW does not otherwise need.
 Point probes run only when their estimated index-read cost is no greater than the source loads they
-are expected to avoid, using the same eight-key-reads-per-source-read ratio as materialization.
+are expected to avoid, using the selectivity of the terms the probe covers and the same
+eight-key-reads-per-source-read ratio as materialization. Candidate-set budgets use the expected
+rejection fraction, including for unbounded queries where the requested target fills the native window.
 
 The planner marks a gate complete only when its indexed terms cover every companion condition and no
 opaque record guard remains. An incomplete gate may reject definite misses, but admitted records still
@@ -528,6 +532,7 @@ wider equality plans fall back to the authoritative record predicate. The native
 lease keeps every page on one native snapshot. A lower-bound total must describe retrievable hits: while more hits remain, a page must
 return its requested limit. Harper fails closed on a short page claiming more hits. Stale-version exhaustion observed in loaded records
 or a bounded sample of companion-index rejections is retryable index lag; filter-only exhaustion asks the client to narrow the query.
+Stale rejections outside that sample can still be classified as filter exhaustion; the bounded diagnostic avoids unbounded source reads.
 During bounded lag, results can temporarily omit a recent change when native hits end before the window. Harper clamps autocomplete
 to the maximum-size hits that fit one native response without reducing ordinary search. The response-capacity calculation is pinned to
 the Fulltext 0.4.0 Query API v2 framing; a later query API must advertise or version its framing overhead before Harper accepts it.

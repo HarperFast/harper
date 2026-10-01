@@ -1574,6 +1574,7 @@ describe('FullTextQueryIndex', () => {
 					},
 					probe: {
 						complete: true,
+						estimatedCount: 50,
 						maxReadsPerCandidate: 1,
 						has: (key) => key === 'record-50',
 					},
@@ -1624,6 +1625,7 @@ describe('FullTextQueryIndex', () => {
 					collect: () => null,
 					probe: {
 						complete: false,
+						estimatedCount: 1,
 						maxReadsPerCandidate: 1,
 						has: (key) => key === 'record-2' || key === 'record-3',
 					},
@@ -1674,6 +1676,7 @@ describe('FullTextQueryIndex', () => {
 					collect: () => null,
 					probe: {
 						complete: true,
+						estimatedCount: 5,
 						maxReadsPerCandidate: 1,
 						has: () => {
 							probes++;
@@ -1687,6 +1690,53 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(probes, 0);
 		assert.strictEqual(reads, 1);
 		assert.strictEqual(filters, 1);
+		await index.close();
+	});
+
+	it('prices an incomplete probe from the conditions it covers', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-probe-selectivity';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 2 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 2 - index,
+		}));
+		let probes = 0;
+		let reads = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 100,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 1,
+				filter: (key) => key === 'record-1',
+				candidateKeys: {
+					estimatedCount: 1,
+					collect: () => null,
+					probe: {
+						complete: false,
+						estimatedCount: 100,
+						maxReadsPerCandidate: 1,
+						has: () => {
+							probes++;
+							return true;
+						},
+					},
+				},
+			}
+		);
+		assert.strictEqual(results[0].key, 'record-1');
+		assert.strictEqual(probes, 0);
+		assert.strictEqual(reads, 2);
 		await index.close();
 	});
 
@@ -1723,6 +1773,7 @@ describe('FullTextQueryIndex', () => {
 						collect: () => null,
 						probe: {
 							complete: true,
+							estimatedCount: 1,
 							maxReadsPerCandidate,
 							has: (key) => {
 								probes++;
@@ -1871,6 +1922,41 @@ describe('FullTextQueryIndex', () => {
 		assert.strictEqual(collectionBudget, 4_096);
 		await bounded.index.close();
 
+		const unboundedReadinessId = 'candidate-unbounded-collection';
+		publishDerivedIndexReadiness(auditStore, unboundedReadinessId, 'ready');
+		let unboundedCollections = 0;
+		const unbounded = simpleQueryIndex({
+			auditStore,
+			readinessId: unboundedReadinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 1_000,
+			maxSearchWindow: 100,
+		});
+		attachCurrentCoverage(unbounded.index, auditStore, unboundedReadinessId);
+		const unboundedResults = await unbounded.index.search(
+			{ attribute: unboundedReadinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				filter: () => {
+					throw new Error('a complete unbounded candidate set must decide the filter');
+				},
+				candidateKeys: {
+					estimatedCount: 1,
+					collect: () => {
+						unboundedCollections++;
+						return { complete: true, keys: { has: (key) => key === 'record-4' } };
+					},
+				},
+			}
+		);
+		assert.deepStrictEqual(
+			unboundedResults.map(({ key }) => key),
+			['record-4']
+		);
+		assert.strictEqual(unboundedCollections, 1);
+		await unbounded.index.close();
+
 		const fallbackReadinessId = 'candidate-probe-fallback';
 		publishDerivedIndexReadiness(auditStore, fallbackReadinessId, 'ready');
 		reads = 0;
@@ -1896,6 +1982,7 @@ describe('FullTextQueryIndex', () => {
 						collect: () => null,
 						probe: {
 							complete: true,
+							estimatedCount: 1,
 							maxReadsPerCandidate: 1,
 							has: () => {
 								probeAttempts++;
@@ -2054,6 +2141,7 @@ describe('FullTextQueryIndex', () => {
 						collect: () => null,
 						probe: {
 							complete: true,
+							estimatedCount: 1_000,
 							maxReadsPerCandidate: 4,
 							has: () => {
 								probes++;
@@ -2314,7 +2402,7 @@ describe('FullTextQueryIndex', () => {
 					candidateKeys: {
 						estimatedCount: 1,
 						collect: () => null,
-						probe: { complete: true, maxReadsPerCandidate: 1, has: () => true },
+						probe: { complete: true, estimatedCount: 1, maxReadsPerCandidate: 1, has: () => true },
 					},
 				}
 			),
@@ -2354,7 +2442,7 @@ describe('FullTextQueryIndex', () => {
 					candidateKeys: {
 						estimatedCount: 1,
 						collect: () => null,
-						probe: { complete: true, maxReadsPerCandidate: 1, has: () => false },
+						probe: { complete: true, estimatedCount: 1, maxReadsPerCandidate: 1, has: () => false },
 					},
 				}
 			),
