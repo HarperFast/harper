@@ -1842,6 +1842,77 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	it('backs off a collected set that fails during admission', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-collected-set-failure';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 2 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 2 - index,
+		}));
+		let collections = 0;
+		let collectedAdmissions = 0;
+		let probes = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 100,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const search = () =>
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{},
+				{
+					minResults: 1,
+					filter: (key) => key === 'record-1',
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => {
+							collections++;
+							return {
+								complete: true,
+								keys: {
+									has: () => {
+										collectedAdmissions++;
+										throw new Error('injected collected-set admission failure');
+									},
+								},
+							};
+						},
+						probe: {
+							complete: true,
+							estimatedCount: 1,
+							maxReadsPerCandidate: 1,
+							has: (key) => {
+								probes++;
+								return key === 'record-1';
+							},
+						},
+					},
+				}
+			);
+		const realDateNow = Date.now;
+		let first;
+		let second;
+		try {
+			Date.now = () => 1_000;
+			first = await search();
+			second = await search();
+		} finally {
+			Date.now = realDateNow;
+		}
+		assert.strictEqual(first[0].key, 'record-1');
+		assert.strictEqual(second[0].key, 'record-1');
+		assert.strictEqual(collections, 1);
+		assert.strictEqual(collectedAdmissions, 1);
+		assert.strictEqual(probes, 2);
+		await index.close();
+	});
+
 	it('caps candidate collection from the native hit count', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'candidate-native-hit-bound';
@@ -2485,6 +2556,47 @@ describe('FullTextQueryIndex', () => {
 			(error) => error.name === 'DerivedIndexLagError' && error.statusCode === 503 && error.retryable === true
 		);
 		assert.strictEqual(sourceReads, 1, 'only the exhaustion sample should load a rejected record');
+		await index.close();
+	});
+
+	it('reports expired companion-gate rejections when they exhaust the search window', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'expired-gate-window';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5 - index,
+		}));
+		let sourceReads = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			maxSearchWindow: 4,
+			estimatedRecordCount: 5,
+			onGetEntry: () => sourceReads++,
+			entryForKey: () => ({ version: 1, expiresAt: 0, value: { title: 'shoe' } }),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
+				{},
+				{
+					minResults: 1,
+					filter: () => false,
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => null,
+						probe: { complete: true, estimatedCount: 1, maxReadsPerCandidate: 1, has: () => false },
+					},
+				}
+			),
+			/Expired full-text matches exhausted the 4-result search window/
+		);
+		assert.strictEqual(sourceReads, 4, 'only the bounded exhaustion sample should load rejected records');
 		await index.close();
 	});
 

@@ -520,11 +520,23 @@ export class FullTextQueryIndex {
 							}
 							candidateDecides = candidateGate.complete;
 						} catch (error) {
+							const usedPointProbe = candidateGate.maxReadsPerCandidate > 0;
 							candidateGate = undefined;
-							this.#candidateProbeRetryAfter = Date.now() + CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS;
-							if (!this.#candidateProbeFailureWarned) {
-								this.#candidateProbeFailureWarned = true;
-								logger.warn?.('could not probe the full-text companion index; using the record predicate', error);
+							if (usedPointProbe) {
+								this.#candidateProbeRetryAfter = Date.now() + CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS;
+								if (!this.#candidateProbeFailureWarned) {
+									this.#candidateProbeFailureWarned = true;
+									logger.warn?.('could not probe the full-text companion index; using the record predicate', error);
+								}
+							} else {
+								this.#candidateCollectionRetryAfter = Date.now() + CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS;
+								if (!this.#candidateCollectionFailureWarned) {
+									this.#candidateCollectionFailureWarned = true;
+									logger.warn?.(
+										'could not apply the full-text candidate-key set; using point probes or the record predicate',
+										error
+									);
+								}
 							}
 						}
 					}
@@ -582,6 +594,7 @@ export class FullTextQueryIndex {
 						staleVersionHits++;
 						break;
 					}
+					if (entry.expiresAt !== undefined && entry.expiresAt < Date.now()) expiredHits++;
 				}
 			}
 			if (bounded && accepted.length < target && moreMayExist && staleVersionHits > 0)

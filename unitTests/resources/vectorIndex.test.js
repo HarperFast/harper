@@ -3394,6 +3394,29 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 		);
 	});
 
+	it('does not inspect point-probe capabilities unless the lead index opts in', async () => {
+		const tenantIndex = A.indices.tenant;
+		const ownDescriptor = Object.getOwnPropertyDescriptor(tenantIndex, 'hasIndexEntry');
+		Object.defineProperty(tenantIndex, 'hasIndexEntry', {
+			configurable: true,
+			get() {
+				throw new Error('the HNSW planner must not inspect point-probe capabilities');
+			},
+		});
+		try {
+			const { results, options } = await searchWithSpy(
+				[0, 0],
+				[{ attribute: 'tenant', comparator: 'equals', value: 'a' }],
+				{ limit: 1 }
+			);
+			assert.strictEqual(options.candidateKeys.probe, undefined);
+			assert.strictEqual(results[0].id, 0);
+		} finally {
+			if (ownDescriptor) Object.defineProperty(tenantIndex, 'hasIndexEntry', ownDescriptor);
+			else delete tenantIndex.hasIndexEntry;
+		}
+	});
+
 	it('composes equality point probes across AND, OR, and residual conditions', async () => {
 		const customIndex = A.indices.vector.customIndex;
 		customIndex.candidateKeyProbe = true;

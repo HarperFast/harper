@@ -209,7 +209,8 @@ opaque record guard remains. An incomplete gate may reject definite misses, but 
 run the residual predicate. Both paths retain the normal post-filter, source-version, expiry and current
 entry checks. If collection exceeds its budget or a point read fails, the query falls back to the record
 predicate and backs off the failing gate briefly before retrying it. One warning is emitted per failure
-episode. HNSW does not request point probes, so this adds no work to its traversal path.
+episode. Unless the lead index requests point probes, the planner does not inspect probe capabilities
+or allocate probe state; the ordinary HNSW traversal path stays unchanged.
 
 ## Derived-index runtime: committed-log delivery to native index backends (`resources/derivedIndexRuntime.ts`)
 
@@ -531,7 +532,8 @@ page grows geometrically because it provides no selectivity estimate. Each page 
 companion-index point reads to check cancellation and the execution deadline. Equality point probes are limited to four index reads per candidate;
 wider equality plans fall back to the authoritative record predicate. The native result window remains the hard bound, and one reader
 lease keeps every page on one native snapshot. A lower-bound total must describe retrievable hits: while more hits remain, a page must
-return its requested limit. Harper fails closed on a short page claiming more hits. Stale-version exhaustion observed in loaded records
+return its requested limit. Fulltext 0.4.0 checks its deadline around the complete Tantivy collection and returns `E_TIMEOUT` instead
+of a partial page. Harper fails closed on a short page claiming more hits. Stale-version exhaustion observed in loaded records
 or a bounded sample of companion-index rejections is retryable index lag; filter-only exhaustion asks the client to narrow the query.
 Stale rejections outside that sample can still be classified as filter exhaustion; the bounded diagnostic avoids unbounded source reads.
 During bounded lag, results can temporarily omit a recent change when native hits end before the window. Harper clamps autocomplete
