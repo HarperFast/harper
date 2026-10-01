@@ -330,8 +330,10 @@ async function resolveCompleteBackup(
 ): Promise<{ backupId: number; manifest: BackupManifest }> {
 	const resolved = await resolveCompleteBackupManifest(backupDir, requestedId, databaseName);
 	// Both restore paths come through here, ahead of anything destructive. A manifest with no
-	// `producer` predates the field and is this instance's own lineage, so it is accepted.
-	if (resolved.manifest.producer) assertArchiveRestorable(resolved.manifest.producer);
+	// `producer` KEY predates the field and is this instance's own lineage, so it is accepted; a key
+	// that is present but unreadable is the malformed case and refuses, since Harper only ever writes
+	// the key alongside a value.
+	if (Object.hasOwn(resolved.manifest, 'producer')) assertArchiveRestorable(resolved.manifest.producer!);
 	return resolved;
 }
 

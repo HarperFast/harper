@@ -1029,6 +1029,29 @@ describe('rocksdbBackup', function () {
 			);
 		});
 
+		// `producer: null` is present-but-unreadable, not absent. Harper only ever writes the key
+		// alongside a value, so this is the malformed case and must not take the legacy path.
+		it('refuses a producer key that is present but null rather than treating it as legacy', async function () {
+			this.timeout(30000);
+			const database = RocksDatabase.open(join(storageDir, PROV_DB));
+			try {
+				database.putSync('rec', { n: 1 });
+			} finally {
+				database.close();
+			}
+			const created = await createBackupOffline(PROV_DB);
+
+			const manifestFile = join(backupDirForDatabase(PROV_DB), 'manifests', `${created.backup_id}.json`);
+			const stored = JSON.parse(readFileSync(manifestFile, 'utf8'));
+			stored.producer = null;
+			writeFileSync(manifestFile, JSON.stringify(stored));
+
+			await assert.rejects(
+				restoreBackupOffline(PROV_DB, created.backup_id),
+				(error) => error.statusCode === 400 && /archive_schema_version/.test(error.message)
+			);
+		});
+
 		it('still restores a backup whose completion manifest predates the producer field', async function () {
 			this.timeout(30000);
 			const database = RocksDatabase.open(join(storageDir, PROV_DB));
