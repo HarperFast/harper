@@ -1045,7 +1045,7 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 const PROXY_V1_MAX_HEADER = 108;
 const PROXY_V1_PREFIX = Buffer.from('PROXY ');
 
-export function enableProxyProtocol(httpServer) {
+export function enableProxyProtocol(httpServer, prehandoffTimeout = 10_000) {
 	// In Node.js v24+, the HTTP parser's data path goes through the C++ stream layer
 	// and does not call socket.emit('data') via JavaScript method dispatch.
 	// Overriding socket.emit or socket.push has no effect on the HTTP parser's data intake.
@@ -1069,6 +1069,12 @@ export function enableProxyProtocol(httpServer) {
 			// recover from a corrupted first packet, so we must not forward a partial header —
 			// the line can arrive across multiple data events.
 			let pending: Buffer | null = null;
+			// Bounds how long a stalled peer can hold the pending-header buffer: a peer that
+			// sends "PROXY " and never completes the line would otherwise buffer forever.
+			// Cleared (not just disabled) once the header resolves, so it can't fire on a
+			// later, unrelated keep-alive timeout.
+			const onPrehandoffTimeout = () => socket.destroy();
+			socket.setTimeout(prehandoffTimeout, onPrehandoffTimeout);
 			// Hand the socket back to its original listeners before forwarding. The wrapper
 			// must not outlive the header decision: protocol handoffs assume the listener
 			// they registered is the one attached (e.g. Node's HTTP upgrade path removes its
@@ -1077,6 +1083,8 @@ export function enableProxyProtocol(httpServer) {
 			// whichever connection it is issued to next).
 			const restoreListeners = () => {
 				pending = null;
+				socket.setTimeout(0);
+				socket.removeListener('timeout', onPrehandoffTimeout);
 				socket.removeListener('data', onData);
 				for (const listener of dataListeners) socket.on('data', listener);
 			};
