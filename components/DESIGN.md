@@ -41,7 +41,8 @@ The ordering is the design. Three things used to be wrong, the first two in a wa
 
 - **The live tree was moved aside first**, so the component was broken for the whole extract +
   `npm install`. Worse than unavailable — the live path held the _new_ code before its dependencies were
-  installed, so requests during a deploy hit an unrunnable tree. `stage-swap-availability.test.ts`
+  installed, so requests during a deploy hit an unrunnable tree.
+  `integrationTests/deploy/stage-swap-availability.test.ts`
   samples the live path through a deliberately blocked install and fails against the old ordering.
 - **Validation ran after the swap committed**, so a component that installed cleanly but threw at load
   went live anyway while the operation returned an error. Validation is now a callback preparation
@@ -248,8 +249,7 @@ boundary settles config to the same end state as the tree. `deploy_component` on
 (`describeArtifact`); `prepareApplication` turns the declaration into a `RootConfigEffect`
 (`components/rootConfigPublication.ts`) and `activateCandidateApplication` owns applying it:
 
-- `set` — a package build publishes the entry it was declared with, replacing the component's entry whole,
-  as `addConfig` did.
+- `set` — a package build publishes the entry it was declared with, replacing the component's entry whole.
 - `unset-package` — a payload build removes `package`, `install` and `credentials` and keeps the rest
   (`isolated`, `urlPath`, `host`, `branchedDatabases`), removing the entry if nothing remains. "No package"
   is an opinion: left in place, a cold install resolves the old package over the payload release that is
@@ -303,9 +303,9 @@ could never settle. The reverse direction is not covered: a build before this ch
 fails that component closed, so settle every interrupted activation (a clean start does) before downgrading.
 
 **One writer, one lock, durable.** `applyRootConfigEffect` is the only runtime read-modify-write of the root
-config document besides `set_configuration`, which takes the same lock around `updateConfigValue` — and that
-reads and writes the same file the lock is keyed by, the one boot reads. `addConfig` and `deleteConfigFromFile`
-are gone — the latter wrote to a path rebuilt from the document's `rootPath` rather than the file it parsed. The
+config document besides `set_configuration` and the deprecated `drop_custom_function_project`'s removal from
+the legacy `apps` list, both of which take the same lock around `updateConfigValue` — and that reads and writes
+the same file the lock is keyed by, the one boot reads, not a path rebuilt from the document's `rootPath`. The
 lock is the component preparation lock primitive keyed by `getRootConfigFilePath()`, which names the file boot
 reads whenever a boot source exists and so is fixed for the life of the process — not a configured path
 `set_configuration` could move under a concurrent writer. Lock order is always
@@ -372,7 +372,8 @@ removed — doing that for retained builds on every pass made a healthy componen
 sibling threads at boot and be deferred with nothing in progress. A lock a live deploy holds is still recorded as
 that same deferral: "do not delete" is not "safe to load". The deploy path prunes inside the settlement scan
 it already runs under the lock, before building, so a deploy pays one traversal of the staging root.
-`dropComponentDirectory` reclaims the dropped component's dormant builds, since no later deploy of that
+`drop_component` reclaims the dropped component's dormant builds (`retireComponentDirectory(...).discard()`),
+since no later deploy of that
 name will. Only ENOENT is absence; any other read error keeps the entry and moves on. Pruning is disk
 hygiene: it never fails a component closed and never replaces a deploy's own error, so the bound is
 best-effort under filesystem failure and is not a storage quota — journaled, unsettled and unowned
@@ -454,13 +455,13 @@ it. An older build reads a record as residue and removes it, and a kept release 
 can activate; the marker is an ignored file to it. The journal format is unchanged. A peer on an older build
 answers 404 to a consumed id, as before. `deployment_stagingRetention_maxCount` (default 5) now bounds kept
 releases with staged builds, and each is a whole installed tree, so at the default a component holds up to five
-extra copies of itself; `0` keeps no previous release, and the rest of this section still applies. Until #2315
-step 7, a package component reinstalls from its source on the first start after each package deploy; that
-reinstall keeps no record, but the certified tree it displaces is kept, which is the one worth keeping.
+extra copies of itself; `0` keeps no previous release, and the rest of this section still applies. A package
+component reinstalls from its source on the first start after each package deploy (#2315 step 7 shipped as
+reporting only, #2929); that reinstall keeps no record, but the certified tree it displaces is kept, which is the one worth keeping.
 
 ## Component preparation is serialized across worker threads
 
-`prepareApplication()` performs one transaction per component: build the replacement, validate it, then swap it in (see "A deploy builds off to the side" below). Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
+`prepareApplication()` performs one transaction per component: build the replacement, validate it, then swap it in (see "A deploy builds off to the side" above). Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
 
 The deploy lifecycle broadcast deliberately sits _outside_ the lock. Overlapping requests therefore increment the existing per-component lifecycle refcount before queueing; watchers remain suppressed continuously until the final queued preparation ends. The lock itself covers credential materialization, extraction, and installation. Its fully-written owner record is published with an atomic rename, so contenders never observe a partially initialized lock. A preparation caller never steals a lock from a known-live owner based on elapsed wall time: installs can be long-running and clocks can jump. Locks from a dead process are reclaimed, and a same-process contender asks the main thread whether the owning worker still exists so a worker crash does not wedge that component until Harper restarts. A ticket its owner could not remove — a Windows sharing violation, a scanner holding the file — would name a finished holder that is still alive, so a release whose unlink keeps failing publishes a `<lockName>.released.<token>` marker instead, which contenders honour by clearing both. Only the ticket's owner writes one, after confirming it still owns the ticket — or, when a scanner holding the ticket without read sharing hides its record, knowing it can only be its own, since the ticket's name carries its token — and tokens are never reused, so a marker cannot retire a holder that has not finished. A process running an older build ignores markers, so overlapping processes of mixed versions do not get this guarantee, and a ticket left live-looking before the upgrade stays until that process restarts. Windows refuses to open a claim whose unlink is in progress (`EPERM`) until the unlinking handle closes, so a contender retries that read until the claim reads or is gone; one that stays unreadable fails the scan instead of reading as absent, since dropping a live ticket would admit a second holder. An older build fails the acquire on that `EPERM`. The boot-time bulk-recovery probe is deliberately different: it never renews its 250 ms deadline, even behind another live recovery, so it can defer that component and let the worker bind its listener.
 
@@ -482,29 +483,11 @@ candidate tree is complete before validation starts and nothing else writes to i
 wait for. `unitTests/components/componentLoader.test.js` ("deploy validation loads never wait on a
 deploy") holds both routes and the plain timeout.
 
-### The component load lock is keyed by plugin type, so a plugin's promise is everyone's clock
-
-`sequentiallyHandleApplication` (`components/componentLoader.ts`) holds a cross-thread lock keyed by the
-plugin TYPE name — `graphqlSchema`, `rest`, … — not by the component. That is deliberate. Plugin modules
-are per-thread singletons carrying module-level state (`server/http.ts`'s `universalHeaders` ownership
-array, `resources/graphql.ts`'s `knownGraphQLDirectives`, the scheduler's register-inside-the-lock
-contract), and applications load _concurrently_: `serializeComponentLoad` serializes per application
-name and all applications go into one `Promise.all`. Without this key two applications' `handleApplication`
-for the same plugin would interleave on a single thread, not merely across threads.
-
-The price of that key is that whatever a plugin does inside the lock is paid by every other application.
-So a plugin must return a promise that settles with its real outcome: the `withDeployAwareTimeout`
-watchdog exists for a _hang_, never as the reporting path for a failure the plugin already diagnosed. A
-success-only wait is what turned one unparseable schema into 30s of instance-wide gating per broken
-component (#1917). `Scope.waitForInitialLoads()` is that promise — it resolves once the entry handler's
-initial scan and every operation that scan started have completed, and rejects with the first failure,
-after draining the rest so no sibling operation outlives the lock. The watchdog can still cut that drain
-short, so the serialization the lock buys is bounded by the timeout rather than absolute.
-
-Extraction renames an existing component aside before writing the replacement and keeps it until
-dependency installation and metadata verification complete. Any preparation failure atomically
-renames the partial tree into hidden staging before restoring the prior tree, so a live writer cannot
-wedge rollback with `ENOTEMPTY`; cleanup completes while the same-component lock is still held.
+Since #2345 no preparation extracts in place; the live tree moves aside only at activation. What
+remains is the legacy recovery pass (`recoverOrCleanupStaleExtractionPaths`), whose
+`rollbackExtractedDirectory` atomically renames whatever holds the live path into hidden staging before
+restoring the prior tree, so a live writer cannot wedge rollback with `ENOTEMPTY`; cleanup completes
+while the same-component lock is still held.
 On non-root POSIX systems, rollback uses a mode-`000` placeholder to keep that writer out between
 retries. Before moving or removing it, rollback verifies the placeholder's device/inode identity and
 restores owner permissions because a cross-parent directory move updates `..` and requires write
@@ -521,8 +504,9 @@ and configuration mutations under that lock, so cleanup residue cannot resurrect
 component and a concurrent deploy cannot interleave with the drop. Peer replication begins after
 the local lock is released, and each peer serializes its own drop independently. Full-component drops
 rename the live tree into staging before best-effort cleanup, avoiding an in-place recursive-delete
-race with the running worker. Recovery is durable across a process crash. It relies on rename/create
-ordering rather than `fsync`, so a host power loss can lose the marker.
+race with the running worker. Recovery is durable across a process crash. The legacy pass relies on
+rename/create ordering rather than `fsync`, so a host power loss can lose its marker; activation and drop
+flush theirs.
 
 A package-manager timeout must not release this lock while npm descendants are still mutating `node_modules`. POSIX spawns therefore run in a dedicated process group; timeout sends the group `SIGTERM`, escalates to `SIGKILL`, and waits for exit before rejecting. Windows uses `taskkill /T /F` for the equivalent process-tree termination. `manageThreads` tracks each spawned process tree by its owning Harper thread and force-terminates it if that worker exits, preventing detached installers from surviving a worker restart or Harper shutdown. `SIGKILL`/`taskkill` only queue termination, so a worker's dead-owner reclamation (above) waits for that thread's tracked process groups to be confirmed gone, not merely signaled—otherwise a replacement preparation could start while the old writer might still be alive. A process group a dead worker's own event loop spawned is never reaped from another thread, so it persists as a zombie rather than fully disappearing; since a zombie can no longer touch the filesystem, confirmation treats a zombie the same as a fully reaped exit.
 
@@ -552,6 +536,32 @@ package-protocol detection: a Windows drive letter's colon is path syntax, not a
 type detection remains asynchronous in extraction. Bare absolute Windows directory inputs retain
 npm's copy/pack behavior rather than becoming live links; explicit `file:` and relative directory
 inputs retain their existing symlink behavior.
+
+### The component load lock is keyed by application and plugin
+
+`sequentiallyHandleApplication` (`components/componentLoader.ts`) holds a cross-thread lock keyed by the
+application and the plugin type, `${appName}\0${pluginName}` (#2884): one application's load of one
+plugin is serialized across threads. Keyed by the plugin type alone, one application's hung
+`handleApplication` timed out every other application's load of that plugin; NUL separates the two
+because `appName` can contain dots and slashes.
+
+Before #2884 the plugin-wide key was also deliberate for a reason #2884 did not revisit: plugin modules
+are per-thread singletons carrying module-level state (`server/http.ts`'s `universalHeaders` ownership
+array, `resources/graphql.ts`'s `knownGraphQLDirectives`, the scheduler's register-inside-the-lock
+contract), and applications load _concurrently_ — `serializeComponentLoad` serializes per application
+name and all applications go into one `Promise.all` — so two applications' `handleApplication` for the
+same plugin can now interleave on a single thread. Whether each of those states tolerates that is
+unverified.
+
+The price of the lock is that whatever a plugin does inside it is paid by that application's load of
+the plugin on every other thread.
+So a plugin must return a promise that settles with its real outcome: the `withDeployAwareTimeout`
+watchdog exists for a _hang_, never as the reporting path for a failure the plugin already diagnosed. A
+success-only wait is what turned one unparseable schema into 30s of instance-wide gating per broken
+component (#1917). `Scope.waitForInitialLoads()` is that promise — it resolves once the entry handler's
+initial scan and every operation that scan started have completed, and rejects with the first failure,
+after draining the rest so no sibling operation outlives the lock. The watchdog can still cut that drain
+short, so the serialization the lock buys is bounded by the timeout rather than absolute.
 
 ## Peer-side deploy_component payload read: retryable blob stalls and `Readable.from()` cancellation
 
