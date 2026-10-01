@@ -177,15 +177,16 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 	// ─── enableProxyProtocol ──────────────────────────────────────────────────
 
 	describe('enableProxyProtocol', () => {
-		// Plain EventEmitter plus the net.Socket surface enableProxyProtocol depends on
-		// (setTimeout/destroy), matching net.Socket.setTimeout's real semantics closely enough
-		// for tests: registers the callback as a 'timeout' listener; a 0ms call just disarms it.
+		// EventEmitter plus the net.Socket surface enableProxyProtocol depends on.
 		function createSocket() {
 			const socket = new EventEmitter();
-			socket.setTimeout = sinon.stub().callsFake((ms, cb) => {
+			socket.setTimeout = (ms, cb) => {
 				if (cb) socket.on('timeout', cb);
-			});
-			socket.destroy = sinon.stub();
+			};
+			socket.destroyed = false;
+			socket.destroy = () => {
+				socket.destroyed = true;
+			};
 			return socket;
 		}
 
@@ -260,19 +261,19 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			const socket = createSocket();
 			const server = new EventEmitter();
 			enableProxyProtocol(server);
-			socket.on('data', () => {}); // stand-in for the HTTP parser's own listener
+			socket.on('data', () => {});
 			server.emit('connection', socket);
 			await new Promise((resolve) => process.nextTick(resolve));
-			socket.emit('data', Buffer.from('PROXY TCP4 1.2.3.4')); // no CRLF yet — still pending
+			socket.emit('data', Buffer.from('PROXY TCP4 1.2.3.4'));
 			socket.emit('timeout');
-			assert.strictEqual(socket.destroy.called, true);
+			assert.strictEqual(socket.destroyed, true);
 		});
 
 		it('clears the stall timeout once the header resolves', async () => {
 			const socket = createSocket();
 			await feed(socket, Buffer.from('PROXY TCP4 1.2.3.4 5.6.7.8 1111 2222\r\nHELLO'));
-			socket.emit('timeout'); // an unrelated later timeout must be a no-op post-handoff
-			assert.strictEqual(socket.destroy.called, false);
+			socket.emit('timeout');
+			assert.strictEqual(socket.destroyed, false);
 		});
 	});
 

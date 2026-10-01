@@ -1069,10 +1069,7 @@ export function enableProxyProtocol(httpServer, prehandoffTimeout = 10_000) {
 			// recover from a corrupted first packet, so we must not forward a partial header —
 			// the line can arrive across multiple data events.
 			let pending: Buffer | null = null;
-			// Bounds how long a stalled peer can hold the pending-header buffer: a peer that
-			// sends "PROXY " and never completes the line would otherwise buffer forever.
-			// Cleared (not just disabled) once the header resolves, so it can't fire on a
-			// later, unrelated keep-alive timeout.
+			// Bounds how long a stalled peer can hold the pending-header buffer.
 			const onPrehandoffTimeout = () => socket.destroy();
 			socket.setTimeout(prehandoffTimeout, onPrehandoffTimeout);
 			// Hand the socket back to its original listeners before forwarding. The wrapper
