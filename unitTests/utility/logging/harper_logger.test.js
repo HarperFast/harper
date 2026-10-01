@@ -2133,11 +2133,16 @@ describe('Test harper_logger module', () => {
 			}
 		}
 
-		// Builds an Error (or bare object) with a hostile `cause` chain - throwing getters, a
-		// hostile Proxy, or a cycle - exercising errorToLogString's walk independent of
-		// deepSanitizeErrors, which errorForLog never calls.
+		// Exercises errorToLogString's walk independent of deepSanitizeErrors, which errorForLog
+		// never calls.
+		// Kinds whose render can legitimately include renderErrorLine's own `[Unrenderable Error:
+		// ...]` fallback (accessing `.stack` throws by construction); every other kind should never
+		// produce that marker, so the caller can assert its absence when none of these were used.
+		const CAN_DEGRADE_KINDS = new Set(['throwing-stack', 'revoked-proxy', 'throwing-proxy']);
+
 		function hostileErrorChain(rng, length) {
 			const reachable = [];
+			const kinds = [];
 			let root;
 			let tip; // current end of the live chain; null once a cycle/refusal has closed it
 			for (let i = 0; i < length; i++) {
@@ -2207,9 +2212,10 @@ describe('Test harper_logger module', () => {
 					root = link;
 					tip = link;
 					reachable.push(link);
+					kinds.push(kind);
 					continue;
 				}
-				if (tip === null) break; // already closed into a cycle - nothing left to extend
+				if (tip === null) break; // chain already closed (cycle or refused assignment)
 
 				try {
 					if (rng() < 0.15 && reachable.length > 1) {
@@ -2219,23 +2225,21 @@ describe('Test harper_logger module', () => {
 						tip.cause = link;
 						tip = link;
 						reachable.push(link);
+						kinds.push(kind);
 					}
 				} catch {
 					tip = null; // a hostile tip (e.g. a revoked proxy) refused the assignment
 				}
 			}
-			return root;
+			return { error: root, kinds };
 		}
 
 		const ITERATIONS = 60;
 		const MAX_VALUE_DEPTH = 6;
 		const HANG_BUDGET_MS = 2000;
 
-		// inspectForLog's own outer catch (harper_logger.ts) turns ANY escaping exception into
-		// `[Unrenderable value: ...]`, so plain doesNotThrow can't tell a real regression from that
-		// catch firing - it always "passes" either way. The wide/deep shapes above legitimately hit
-		// deepSanitizeErrors' own budget/depth caps, which render with that same prefix; strip just
-		// those two known-safe reasons and fail on anything else matching it.
+		// inspectForLog's outer catch turns any escaping exception into this same wrapper, so
+		// without this, doesNotThrow alone could never catch a sanitizer regression.
 		const KNOWN_SANITIZE_LIMIT = /\[Unrenderable value: sanitize (?:budget|depth) exceeded\]/g;
 		function assertNoUnexpectedUnrenderable(result, message) {
 			assert.ok(!result.replace(KNOWN_SANITIZE_LIMIT, '').includes('[Unrenderable value:'), message);
@@ -2265,7 +2269,7 @@ describe('Test harper_logger module', () => {
 			const rng = mulberry32(SEED + 1);
 			for (let i = 0; i < ITERATIONS; i++) {
 				const chain_length = 1 + Math.floor(rng() * 5);
-				const error = hostileErrorChain(rng, chain_length);
+				const { error, kinds } = hostileErrorChain(rng, chain_length);
 				let result;
 				assert.doesNotThrow(
 					() => {
@@ -2275,6 +2279,11 @@ describe('Test harper_logger module', () => {
 					`iteration ${i} (seed 0x${(SEED + 1).toString(16)})`
 				);
 				assert.strictEqual(typeof result, 'string');
+				// renderErrorLine has its own `[Unrenderable Error: ...]` fallback; outside the kinds
+				// that legitimately trigger it, its presence would mean something else broke silently.
+				if (!kinds.some((k) => CAN_DEGRADE_KINDS.has(k))) {
+					assert.ok(!result.includes('[Unrenderable Error:'), `iteration ${i} unexpectedly degraded: ${result}`);
+				}
 			}
 		});
 
