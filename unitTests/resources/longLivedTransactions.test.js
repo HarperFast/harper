@@ -803,7 +803,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 						String(message).includes('has been aborted') && String(message).includes('MonitorAbortPrimaryTable')
 				);
 			// Slow expiration during the two real writes: a loaded CI runner must not let a premature tick
-			// catch them mid-flight (the fast interval and forced head expiry below land only afterward).
+			// catch them mid-flight.
 			const trackedTxns = setTxnExpiration(30000);
 			const context = {};
 			try {
@@ -821,7 +821,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 						const headId = links[0].transaction?.id;
 						assert.ok(headId !== undefined, 'the head must own a native handle');
 						setTxnExpiration(20);
-						links[0].timeout = 0; // force the very next fast tick to see the limit as already past
+						links[0].timeout = 0;
 						await waitFor(() => abortLine() !== undefined, {
 							timeout: 10000,
 							message: 'the monitor never logged the abort',
