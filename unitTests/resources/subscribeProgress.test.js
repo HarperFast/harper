@@ -71,6 +71,24 @@ describe('Certified subscription progress', function () {
 		assert.strictEqual(databaseRegistry.progressConsumers, 0, 'ending twice uncounts once');
 	});
 
+	it('does not register a new subscription at a watermark left from earlier tracking', async () => {
+		const T = tableInOwnDatabase();
+		await T.put('seed', { value: 0 });
+		const first = await T.subscribe({ omitCurrent: true, reportProgress: true });
+		await T.put('a', { value: 1 });
+		await waitFor(() => first.progress() !== undefined);
+		first.end();
+		// a plain subscription keeps the broadcaster dispatching while nothing tracks progress
+		const keys = [];
+		const plain = await T.subscribe({ omitCurrent: true, listener: (event) => keys.push(event.localTime) });
+		await T.put('b', { value: 2 });
+		await waitFor(() => keys.length === 1);
+		const next = await T.subscribe({ omitCurrent: true, reportProgress: true });
+		assert.ok(!(next.registeredThrough < keys[0]), 'the registration position covers the write dispatched before it');
+		next.end();
+		plain.end();
+	});
+
 	it('follows a checked replay, then the watermark', async () => {
 		const T = tableInOwnDatabase();
 		const positions = [];

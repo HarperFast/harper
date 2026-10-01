@@ -139,6 +139,8 @@ function rangeFailures(range: any): number {
 
 function startProgressTracking(databaseSubscriptions: any, auditStore: any) {
 	databaseSubscriptions.pendingProgressKey = undefined;
+	// a key left by an earlier stretch of tracking does not cover what was dispatched untracked since
+	databaseSubscriptions.dispatchedThrough = undefined;
 	// the log store ends a failed log's iteration quietly, and nothing after lost records can be certified
 	if (rangeFailures(auditStore.subscriptionLogRange) > 0) stopProgress(databaseSubscriptions);
 }
