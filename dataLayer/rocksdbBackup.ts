@@ -1008,13 +1008,22 @@ async function copyDroppingTarTrailer(src: PassThrough, dest: PassThrough): Prom
 	}
 }
 
-/** Write to a stream, awaiting `drain` on backpressure and rejecting (rather than hanging) on error. */
-function writeWithBackpressure(dest: PassThrough, chunk: Buffer): Promise<void> {
+/**
+ * Write to a stream, awaiting `drain` on backpressure. A destroyed stream emits neither `drain` nor a
+ * second `error`, so waiting on those alone never settles — which is the shape a consumer abort
+ * takes: the pipeline destroys `plain` before the producer's next write.
+ */
+export function writeWithBackpressure(dest: PassThrough, chunk: Buffer): Promise<void> {
 	return new Promise((resolvePromise, reject) => {
-		if (dest.write(chunk)) return resolvePromise();
+		if (dest.destroyed || dest.writableEnded) {
+			reject(dest.errored ?? new Error('backup archive stream closed before the write completed'));
+			return;
+		}
+		if (dest.write(chunk, (error) => error && reject(error))) return resolvePromise();
 		const cleanup = () => {
 			dest.off('drain', onDrain);
 			dest.off('error', onError);
+			dest.off('close', onClose);
 		};
 		const onDrain = () => {
 			cleanup();
@@ -1024,8 +1033,13 @@ function writeWithBackpressure(dest: PassThrough, chunk: Buffer): Promise<void> 
 			cleanup();
 			reject(error);
 		};
+		const onClose = () => {
+			cleanup();
+			reject(dest.errored ?? new Error('backup archive stream closed before the write drained'));
+		};
 		dest.once('drain', onDrain);
 		dest.once('error', onError);
+		dest.once('close', onClose);
 	});
 }
 
