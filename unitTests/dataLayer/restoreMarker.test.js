@@ -157,6 +157,40 @@ describe('restoreMarker', function () {
 	});
 
 	describe('beginRestore', function () {
+		it('runs the claim callback under the lock before publishing a fresh marker', function () {
+			let called = false;
+			const lock = beginRestore(dbPath, () => {
+				called = true;
+				assert.ok(!restoreMarkerPresent(dbPath));
+				assert.throws(
+					() => acquireRestoreLock(dbPath),
+					(error) => error.statusCode === 409
+				);
+			});
+			try {
+				assert.ok(called);
+				assert.ok(restoreMarkerPresent(dbPath));
+			} finally {
+				completeRestore(lock);
+			}
+		});
+
+		for (const preexisting of [false, true]) {
+			it(`releases the lock and preserves marker state after a failed claim (preexisting=${preexisting})`, function () {
+				if (preexisting) abandonRestore(beginRestore(dbPath));
+				const failure = new Error('claim failed');
+				assert.throws(
+					() =>
+						beginRestore(dbPath, () => {
+							throw failure;
+						}),
+					(error) => error === failure
+				);
+				assert.strictEqual(restoreMarkerPresent(dbPath), preexisting);
+				completeRestore(beginRestore(dbPath));
+			});
+		}
+
 		it('writes the marker while holding the lock', function () {
 			const lock = beginRestore(dbPath);
 			try {

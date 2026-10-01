@@ -211,26 +211,29 @@ function publishRestoringMarker(dbPath: string): void {
  * destructive step. Returns the lock (with `preexisting` set when a marker was already present, so
  * a failed recovery attempt knows not to clear it). Throws (statusCode 409) if another restore
  * already holds the lock.
+ * `beforePublishMarker` runs synchronously under the lock, after admission but before publication,
+ * so a caller can durably claim its source before a crash can leave a restoring marker behind.
  *
  * An intact marker is left exactly as it is. A recovery attempt runs over a directory an earlier
  * restore may have half-purged, so the marker it finds is the only thing keeping that directory
  * from loading as healthy; rewriting it buys nothing (the content it would write is the content
  * already there) and risks everything.
  */
-export function beginRestore(dbPath: string): RestoreLock {
+export function beginRestore(dbPath: string, beforePublishMarker?: () => void): RestoreLock {
 	const markerPath = restoringMarkerPath(dbPath);
 	const lock = acquireRestoreLock(dbPath);
 	// Sampled while holding the lock, not before it: a restore that waited out an earlier one would
 	// otherwise carry the earlier run's "no marker" reading, and on its own pre-destruction failure
 	// clear the marker protecting a directory that run had already half-purged.
-	const preexisting = existsSync(markerPath);
 	try {
+		lock.preexisting = pathPresent(markerPath);
 		if (databaseDropMarkerPresent(dbPath)) {
 			const error: any = new Error(`Database at ${dbPath} has an incomplete drop; retry drop_database first`);
 			error.statusCode = 409;
 			throw error;
 		}
-		if (!preexisting || !markerIsIntact(markerPath, dbPath)) publishRestoringMarker(dbPath);
+		beforePublishMarker?.();
+		if (!lock.preexisting || !markerIsIntact(markerPath, dbPath)) publishRestoringMarker(dbPath);
 		// An intact marker is kept, but its durability is not assumed: the publisher that wrote it may
 		// have been interrupted between the rename and this flush, which would leave the directory
 		// entry — the thing the startup scan reads — still only in the page cache.
@@ -239,7 +242,7 @@ export function beginRestore(dbPath: string): RestoreLock {
 		fileLockRelease(lock.token);
 		throw error;
 	}
-	return { ...lock, preexisting };
+	return lock;
 }
 
 /**

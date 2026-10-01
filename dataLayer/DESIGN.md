@@ -191,6 +191,14 @@ lock primitive is a rocksdb-js follow-on.
 
 ## RocksDB managed backups: blob snapshots (`dataLayer/blobBackup.ts`)
 
+Repository mutations hold the management lock before entering the engine. Restore admission
+rechecks the source under that lock, then `beginRestore` takes the destination lock and runs a
+synchronous callback that durably writes the source claim before publishing the restoring marker.
+A crash after publication therefore leaves both marker and claim; a crash before publication leaves
+only a claim that lapses when no marker exists. Failed claims preserve any preexisting marker.
+Delete and purge reconcile Harper-managed files even after engine failure: a cleanup failure must
+propagate when the engine succeeded, but remains secondary when the engine already failed.
+
 A database's file-backed blobs live in one or more roots _outside_ the RocksDB directory
 (`getBlobPathsForDatabaseName` in `resources/blob.ts` — one per configured `storage.blobPaths`, else
 `<hdb_root>/blobs/<database>`), so the engine's backup does not capture them. `create_backup`,

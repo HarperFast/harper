@@ -31,6 +31,7 @@ const {
 const blobBackupModule = require('#src/dataLayer/blobBackup');
 const { blobSnapshotDir } = blobBackupModule;
 const { deleteBackupManifest, isBackupComplete } = require('#src/dataLayer/backupManifest');
+const backupManifestModule = require('#src/dataLayer/backupManifest');
 const { getBlobPathsForDatabaseName } = require('#src/resources/blob');
 
 // managed-backup ops self-enforce super_user (see requireSuperUser in rocksdbBackup.ts); requests
@@ -605,6 +606,9 @@ describe('rocksdbBackup', function () {
 		const PINNED = `${DB_NAME}-pinned`;
 
 		afterEach(async function () {
+			if (checkRestoreState(join(storageDir, PINNED)) !== 'clear') {
+				completeRestore(beginRestore(join(storageDir, PINNED)));
+			}
 			rmSync(join(storageDir, PINNED), { recursive: true, force: true });
 			rmSync(backupDirForDatabase(PINNED), { recursive: true, force: true });
 		});
@@ -619,6 +623,102 @@ describe('rocksdbBackup', function () {
 			const first = await createBackupOffline(PINNED);
 			const second = await createBackupOffline(PINNED);
 			return { first, second };
+		}
+
+		for (const mode of ['online', 'offline']) {
+			it(`protects the source after ${mode} restore dies immediately after publishing its marker`, async function () {
+				this.timeout(30000);
+				const { first } = await seedTwoBackups();
+				const child = spawn(
+					process.execPath,
+					[
+						'-e',
+						`
+					const fs = require('node:fs');
+					const { dirname } = require('node:path');
+					const env = require(${JSON.stringify(require.resolve('#src/utility/environment/environmentManager'))});
+					env.initSync();
+					env.setProperty('storage.backupPath', ${JSON.stringify(getBackupsRoot())});
+					const { fsyncDirectory } = require(${JSON.stringify(require.resolve('#src/utility/durableFile'))});
+					const rename = fs.renameSync;
+					fs.renameSync = (from, to) => {
+						rename(from, to);
+						if (to.endsWith('.restoring')) {
+							fsyncDirectory(dirname(to));
+							process.kill(process.pid, 'SIGKILL');
+						}
+					};
+					require('node:module').syncBuiltinESMExports();
+					const backup = require(${JSON.stringify(require.resolve('#src/dataLayer/rocksdbBackup'))});
+					const operation = ${JSON.stringify(mode)} === 'offline'
+						? backup.restoreBackupOffline(${JSON.stringify(PINNED)}, ${first.backup_id})
+						: backup.restoreBackup({ database: ${JSON.stringify(PINNED)}, backup_id: ${first.backup_id} });
+					operation.then(() => process.exit(2), error => { console.error(error); process.exit(3); });
+				`,
+					],
+					{ timeout: 15000 }
+				);
+				let stderr = '';
+				child.stderr.on('data', (data) => {
+					stderr += data;
+				});
+				try {
+					const signal = await new Promise((resolve, reject) => {
+						child.once('error', reject);
+						child.once('exit', (code, signal) =>
+							signal ? resolve(signal) : reject(new Error(`child exited ${code}: ${stderr}`))
+						);
+					});
+					assert.strictEqual(signal, 'SIGKILL');
+					assert.strictEqual(checkRestoreState(join(storageDir, PINNED)), 'incomplete');
+					await assert.rejects(deleteBackupOffline(PINNED, first.backup_id), (error) => error.statusCode === 409);
+					await assert.rejects(purgeBackupsOffline(PINNED, 0), (error) => error.statusCode === 409);
+				} finally {
+					child.kill('SIGKILL');
+				}
+			});
+		}
+
+		for (const operation of ['delete', 'purge']) {
+			for (const [module, method] of [
+				[blobBackupModule, 'purgeBlobSnapshots'],
+				[backupManifestModule, 'purgeBackupManifests'],
+			]) {
+				for (const engineFails of [false, true]) {
+					it(`${operation} propagates ${engineFails ? 'the engine error on dual failure' : method + ' failure after engine success'}`, async function () {
+						this.timeout(30000);
+						const { first } = await seedTwoBackups();
+						const cleanupError = new Error('injected cleanup failure');
+						const engineError = new Error('injected engine failure');
+						const originalCleanup = module[method];
+						const originalEngine = backups[operation];
+						let cleanupAttempted = false;
+						module[method] = async () => {
+							cleanupAttempted = true;
+							throw cleanupError;
+						};
+						if (engineFails)
+							backups[operation] = async () => {
+								throw engineError;
+							};
+						try {
+							await assert.rejects(
+								operation === 'delete' ? deleteBackupOffline(PINNED, first.backup_id) : purgeBackupsOffline(PINNED, 0),
+								(error) => error === (engineFails ? engineError : cleanupError)
+							);
+							assert.ok(cleanupAttempted);
+							const remaining = await listBackupsInDir(backupDirForDatabase(PINNED));
+							assert.strictEqual(
+								remaining.some((backup) => backup.backupId === first.backup_id),
+								engineFails
+							);
+						} finally {
+							module[method] = originalCleanup;
+							backups[operation] = originalEngine;
+						}
+					});
+				}
+			}
 		}
 
 		it('refuses to delete a backup something is depending on', async function () {

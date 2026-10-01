@@ -30,7 +30,6 @@ import { SchemaEventMsg } from '../server/threads/itc.js';
 import {
 	beginRestore,
 	clearRestoringMarker,
-	completeRestore,
 	abandonRestore,
 	checkRestoreState,
 	releaseRestoreLock,
@@ -614,23 +613,13 @@ export async function restoreBackup(request: any) {
 	const pinId = restorePinId(databaseDir);
 	const restoreToken = randomUUID();
 	let destructionStarted = false;
-	// Marker, existence re-check and claim in one critical section. Publishing the marker first and
-	// then waiting for this lock would leave a window where a kill strands a marked — and so
-	// unloadable — database whose source nothing protects; confirming the backup before claiming it
-	// keeps a rerun for a since-deleted id from overwriting the previous attempt's live claim.
+	// Re-check before replacing a previous attempt's claim; publish the new claim before the marker
+	// under both locks, so a crash cannot leave a marked database with an unprotected source.
 	const lock = await withBackupRepositoryLock(backupDir, databaseName, async () => {
-		const acquired = beginRestoreForDatabase(databaseDir, databaseName);
-		try {
-			await findBackup(backupDir, backupId, databaseName);
-			pinBackup(backupDir, pinId, backupId, `restore of database '${databaseName}'`, databaseDir);
-			return acquired;
-		} catch (error) {
-			// Nothing destructive has happened. A marker this attempt created must not outlive it; one
-			// it inherited means a rerun is still owed, so it stays.
-			if (acquired.preexisting) abandonRestore(acquired);
-			else completeRestore(acquired);
-			throw error;
-		}
+		await findBackup(backupDir, backupId, databaseName);
+		return beginRestoreForDatabase(databaseDir, databaseName, () =>
+			pinBackup(backupDir, pinId, backupId, `restore of database '${databaseName}'`, databaseDir)
+		);
 	});
 	try {
 		// Block new blob saves, drain in-flight saves, and close the database across all worker threads.
@@ -788,9 +777,13 @@ function restorePinId(databaseDir: string): string {
 	return `restore-${createHash('sha256').update(resolve(databaseDir)).digest('hex').slice(0, 32)}`;
 }
 
-function beginRestoreForDatabase(databaseDir: string, databaseName: string): RestoreLock {
+function beginRestoreForDatabase(
+	databaseDir: string,
+	databaseName: string,
+	beforePublishMarker: () => void
+): RestoreLock {
 	try {
-		return beginRestore(databaseDir);
+		return beginRestore(databaseDir, beforePublishMarker);
 	} catch (error) {
 		if (error.statusCode === 409) {
 			throw new BackupInProgressError(`Restore already in progress for database '${databaseName}'`);
@@ -1162,26 +1155,18 @@ export async function restoreBackupOffline(
 	assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, { backupHasBlobs: manifest.blobs, allowEngineOnly });
 	const pinId = restorePinId(databaseDir);
 	let destructionStarted = false;
-	// The marker goes up before any probing, so a server starting after this point refuses to load the
-	// database — and it goes up in the same critical section as the existence re-check and the claim,
-	// so a kill between them cannot strand a marked database with an unprotected source.
+	// As online, claim before marking under both locks, and mark before probing the destination.
 	const lock = await withBackupRepositoryLock(backupDir, databaseName, async () => {
-		const acquired = beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName);
-		try {
-			await findBackup(backupDir, backupId as number, databaseName);
+		await findBackup(backupDir, backupId as number, databaseName);
+		return beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName, () =>
 			pinBackup(
 				backupDir,
 				pinId,
 				backupId as number,
 				`restore of database '${targetDatabase ?? databaseName}'`,
 				databaseDir
-			);
-			return acquired;
-		} catch (error) {
-			if (acquired.preexisting) abandonRestore(acquired);
-			else completeRestore(acquired);
-			throw error;
-		}
+			)
+		);
 	});
 	try {
 		// The offline path is entered only when the CLI sees no running server (getHdbPid), but that is
@@ -1290,18 +1275,21 @@ export async function deleteBackupOffline(databaseName: string, backupId: number
 	return withBackupRepositoryLock(backupDir, databaseName, async () => {
 		await findBackup(backupDir, backupId, databaseName);
 		assertBackupsUnpinned(backupDir, [backupId], databaseName);
+		let engineSucceeded = false;
 		try {
 			await backups.delete(backupDir, backupId);
+			engineSucceeded = true;
 		} catch (error) {
 			throw mapLockedError(error, databaseName);
 		} finally {
 			// The engine's delete leaves the Harper-managed blob snapshot + manifest behind, and it can
 			// fail after removing engine files — so reconcile against what survives rather than assuming
 			// this id was the only thing that changed.
-			// A throw from here would replace the engine error, which is the one worth reporting.
-			await reconcileHarperManagedBackupFiles(backupDir).catch((error) =>
-				logger.warn(`Could not reconcile Harper-managed backup files in ${backupDir}`, error)
-			);
+			// Preserve a primary engine error, but never report success when cleanup failed.
+			await reconcileHarperManagedBackupFiles(backupDir).catch((error) => {
+				if (engineSucceeded) throw error;
+				logger.warn(`Could not reconcile Harper-managed backup files in ${backupDir}`, error);
+			});
 		}
 		return { ok: true };
 	});
@@ -1328,18 +1316,21 @@ export async function purgeBackupsOffline(databaseName: string, keepCount: numbe
 			.slice(0, Math.max(0, before.length - keepCount))
 			.map((backup) => backup.backupId);
 		assertBackupsUnpinned(backupDir, removing, databaseName);
+		let engineSucceeded = false;
 		try {
 			await backups.purge(backupDir, keepCount);
+			engineSucceeded = true;
 		} catch (error) {
 			throw mapLockedError(error, databaseName);
 		} finally {
 			// Reconciled from what actually survives, in a finally: a purge that failed partway through
 			// still removed engine backups, and their blob snapshots would otherwise be orphaned on disk
 			// — invisible to list_backups and still charged to the tenant's quota.
-			// A throw from here would replace the engine error, which is the one worth reporting.
-			await reconcileHarperManagedBackupFiles(backupDir).catch((error) =>
-				logger.warn(`Could not reconcile Harper-managed backup files in ${backupDir}`, error)
-			);
+			// Preserve a primary engine error, but never report success when cleanup failed.
+			await reconcileHarperManagedBackupFiles(backupDir).catch((error) => {
+				if (engineSucceeded) throw error;
+				logger.warn(`Could not reconcile Harper-managed backup files in ${backupDir}`, error);
+			});
 		}
 		// Counted from what actually survives rather than from `removing`: no create can land inside
 		// this lock, so the difference is exactly what the purge removed.
