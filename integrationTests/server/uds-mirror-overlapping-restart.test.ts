@@ -1,11 +1,7 @@
 /**
- * Overlapping HTTP worker restart keeps every per-worker UDS mirror socket (#2961).
- *
- * On Linux `restartWorkers('http')` pre-starts each replacement worker before the worker it
- * replaces shuts down. The replacement rebinds the same `<workerIndex>-<port>.sock` path, then
- * the outgoing worker closes its own server — and libuv unlinks a pipe server's bound path on
- * close with no ownership check. Before the fix that deleted the replacement's socket, so after a
- * rolling restart no mirror existed and a fronting proxy got ENOENT on every connect.
+ * Overlapping HTTP worker restart keeps every per-worker UDS mirror socket (#2961): the replacement
+ * rebinds `<workerIndex>-<port>.sock` before the outgoing worker closes its own server, and libuv
+ * unlinks a pipe server's bound path on close whoever owns it by then.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/server/uds-mirror-overlapping-restart.test.ts"
@@ -24,7 +20,7 @@ const WORKERS = 4;
 // Windows or macOS, and not under Bun (see restartWorkers()'s platformCanPreStartReplacement).
 const skipSuite = process.platform !== 'linux' || process.env.HARPER_RUNTIME === 'bun';
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref());
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 type ThreadInfo = { threadId: number; name: string; application?: string };
 
@@ -145,10 +141,15 @@ suite(
 					'the pool never settled on a full set of replacement workers',
 					120_000
 				);
-				await sleep(1000); // the last outgoing worker's close() runs after its thread leaves the pool
+				// A worker leaves the pool on its 'exit', which follows its closeServers() in the SHUTDOWN
+				// chain, so by now every outgoing close (and libuv's unlink) has already run.
 
 				const present = (await mirrorsByPort(socketsDir)).get(mirrorPort) ?? [];
-				deepStrictEqual(present.sort(), expectedMirrors(), `mirror sockets missing after the restart: ${present}`);
+				deepStrictEqual(
+					present.sort(),
+					expectedMirrors().sort(),
+					`mirror sockets missing after the restart: ${present}`
+				);
 				for (const name of expectedMirrors()) {
 					const socketPath = join(socketsDir, name);
 					const info = await stat(socketPath, { bigint: true });

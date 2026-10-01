@@ -56,11 +56,8 @@ describe('threadServer listenOnPorts — domain socket fail-soft', () => {
 });
 
 /**
- * A per-thread mirror is bound at a temp name and renamed over its published path, so libuv's
- * close-time unlink of a pipe server's bound path (uv__pipe_close → unlink, no ownership check)
- * can never remove a path that a later bind — the replacement worker of an overlapping restart —
- * has since taken over (#2961). A non-mirror domain socket keeps the direct bind, so its file still
- * disappears on close.
+ * libuv unlinks a pipe server's bound path on close whoever owns it by then, so a per-thread mirror
+ * is bound at a temp name and renamed over its published path (#2961).
  */
 describe('threadServer listenOnDomainSocket — per-thread mirrors survive the previous owner closing', () => {
 	const socketsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-2961-'));
@@ -138,6 +135,44 @@ describe('threadServer listenOnDomainSocket — per-thread mirrors survive the p
 		await new Promise((resolve) => setImmediate(resolve)); // let the close-time unlink run
 		assert.deepStrictEqual(fs.readdirSync(socketsDir).sort(), ['1-9926.sock']);
 		fs.rmSync(blockedPath, { recursive: true });
+	});
+
+	it('the uWS mirror keeps its direct bind because uWS close() never unlinks a listen_unix path', async function () {
+		let uWS;
+		try {
+			uWS = require('uWebSockets.js');
+		} catch {
+			this.skip(); // optional, platform-specific dependency
+		}
+		const uwsPath = path.join(socketsDir, '2-9926.sock');
+		const listenUnix = (app) =>
+			new Promise((resolve, reject) =>
+				app.listen_unix(
+					(token) => (token ? resolve(token) : reject(new Error(`uWS could not bind ${uwsPath}`))),
+					uwsPath
+				)
+			);
+		const outgoing = uWS.App();
+		await listenUnix(outgoing);
+		fs.unlinkSync(uwsPath); // the direct-bind path's unlink-before-listen, as the uWS bind site does it
+		const replacement = uWS.App();
+		await listenUnix(replacement);
+		const replacementIdentity = identity(uwsPath);
+		outgoing.close();
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.strictEqual(
+			identity(uwsPath),
+			replacementIdentity,
+			'uWS close() unlinked the path: apply the temp+rename there too'
+		);
+		replacement.close();
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.strictEqual(
+			fs.existsSync(uwsPath),
+			true,
+			'uWS close() now unlinks its own path: apply the temp+rename there too'
+		);
+		fs.unlinkSync(uwsPath);
 	});
 
 	it('a non-mirror domain socket binds directly, so its file is removed on close', async () => {
