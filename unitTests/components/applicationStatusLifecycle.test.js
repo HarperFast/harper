@@ -13,32 +13,34 @@ const { loadComponent, loadComponentDirectories, forgetLoadedPath } = require('#
 const configUtils = require('#src/config/configUtils');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
-// The whole-application status entry must tell the truth across the application's life: a load
-// failure is recorded under the application's name, a later clean load heals it, a nested
-// component's failure is not papered over as processed, and a removed application's last status
-// does not outlive it. harperdb#3184 was the observable cost of these entries lying.
 describe('whole-application status lifecycle', () => {
 	const registry = internal.componentStatusRegistry;
 	const resources = { isWorker: true, set() {} };
 	let tempDir;
+	let componentsRoot;
+	let createdRoot;
 
 	before(() => {
 		tempDir = mkdtempSync(path.join(tmpdir(), 'harper-app-status-'));
+		componentsRoot = configUtils.getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+		createdRoot = !existsSync(componentsRoot);
+		mkdirSync(componentsRoot, { recursive: true });
 	});
 
 	after(() => {
 		if (tempDir && existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
+		if (createdRoot && existsSync(componentsRoot)) rmSync(componentsRoot, { recursive: true, force: true });
 	});
 
-	function makeApp(name, configText) {
-		const dir = path.join(tempDir, name);
+	function makeApp(baseDir, name, configText) {
+		const dir = path.join(baseDir, name);
 		mkdirSync(dir, { recursive: true });
 		writeFileSync(path.join(dir, 'config.yaml'), configText);
 		return dir;
 	}
 
 	it('records a whole-application load failure under the application name', async () => {
-		const dir = makeApp('broken-app', 'branchedDatabases: [data]\n');
+		const dir = makeApp(tempDir, 'broken-app', 'branchedDatabases: [data]\n');
 
 		await loadComponent(dir, resources, 'test-origin', { isRoot: false, appName: 'broken-app' });
 
@@ -48,18 +50,29 @@ describe('whole-application status lifecycle', () => {
 		assert.match(String(status.error?.message ?? status.error), /branchedDatabases/);
 	});
 
-	it('heals the entry when the next load cycle succeeds', async () => {
-		const dir = path.join(tempDir, 'broken-app');
-		writeFileSync(path.join(dir, 'config.yaml'), '# nothing to load\n');
-		forgetLoadedPath(dir);
+	it('heals a failed application on the next directory scan, with no manual cache reset', async function () {
+		this.timeout(20000);
+		const dir = makeApp(componentsRoot, 'heal-probe', 'branchedDatabases: [data]\n');
 
-		await loadComponent(dir, resources, 'test-origin', { isRoot: false, appName: 'broken-app' });
+		try {
+			await loadComponentDirectories(new Map(), resources);
+			assert.strictEqual(
+				registry.getStatus('heal-probe')?.status,
+				STATUS.ERROR,
+				'precondition: the scan recorded the load failure'
+			);
 
-		assert.strictEqual(registry.getStatus('broken-app').status, STATUS.HEALTHY);
+			writeFileSync(path.join(dir, 'config.yaml'), '# nothing to load\n');
+			await loadComponentDirectories(new Map(), resources);
+
+			assert.strictEqual(registry.getStatus('heal-probe').status, STATUS.HEALTHY);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it('keeps a nested package failure on its scoped key instead of reporting it processed', async () => {
-		const dir = makeApp('host-app', 'badpkg:\n  package: badpkg\n');
+		const dir = makeApp(tempDir, 'host-app', 'badpkg:\n  package: badpkg\n');
 		const nestedDir = path.join(dir, 'node_modules', 'badpkg');
 		mkdirSync(nestedDir, { recursive: true });
 		writeFileSync(path.join(nestedDir, 'config.yaml'), 'branchedDatabases: [data]\n');
@@ -69,9 +82,25 @@ describe('whole-application status lifecycle', () => {
 		const nested = registry.getStatus('host-app.badpkg');
 		assert.ok(nested, 'the nested component has a status entry');
 		assert.strictEqual(nested.status, STATUS.ERROR, 'the nested failure is recorded, not marked processed');
-		// The failure stays scoped to the component that failed; the application's own load cycle
-		// completed, which is what its entry reports.
 		assert.strictEqual(registry.getStatus('host-app').status, STATUS.HEALTHY);
+	});
+
+	it('scopes a doubly nested failure under the full application key path', async () => {
+		const dir = makeApp(tempDir, 'deep-app', 'midpkg:\n  package: midpkg\n');
+		const midDir = path.join(dir, 'node_modules', 'midpkg');
+		mkdirSync(midDir, { recursive: true });
+		writeFileSync(path.join(midDir, 'config.yaml'), 'leafpkg:\n  package: leafpkg\n');
+		const leafDir = path.join(midDir, 'node_modules', 'leafpkg');
+		mkdirSync(leafDir, { recursive: true });
+		writeFileSync(path.join(leafDir, 'config.yaml'), 'branchedDatabases: [data]\n');
+
+		await loadComponent(dir, resources, 'test-origin', { isRoot: false, appName: 'deep-app' });
+
+		assert.strictEqual(registry.getStatus('deep-app.midpkg.leafpkg')?.status, STATUS.ERROR);
+		assert.strictEqual(registry.getStatus('leafpkg'), undefined, 'no entry escapes to an unscoped key');
+
+		registry.retire('deep-app');
+		assert.strictEqual(registry.getStatus('deep-app.midpkg.leafpkg'), undefined);
 	});
 
 	it('retires exact and scoped keys, leaving similarly prefixed names alone', () => {
@@ -88,12 +117,7 @@ describe('whole-application status lifecycle', () => {
 
 	it('retires a removed application on the next directory scan', async function () {
 		this.timeout(20000);
-		const componentsRoot = configUtils.getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
-		const createdRoot = !existsSync(componentsRoot);
-		mkdirSync(componentsRoot, { recursive: true });
-		const doomedDir = path.join(componentsRoot, 'status-retire-probe');
-		mkdirSync(doomedDir, { recursive: true });
-		writeFileSync(path.join(doomedDir, 'config.yaml'), 'branchedDatabases: [data]\n');
+		const doomedDir = makeApp(componentsRoot, 'status-retire-probe', 'branchedDatabases: [data]\n');
 
 		try {
 			await loadComponentDirectories(new Map(), resources);
@@ -114,7 +138,6 @@ describe('whole-application status lifecycle', () => {
 			);
 		} finally {
 			if (existsSync(doomedDir)) rmSync(doomedDir, { recursive: true, force: true });
-			if (createdRoot) rmSync(componentsRoot, { recursive: true, force: true });
 		}
 	});
 });

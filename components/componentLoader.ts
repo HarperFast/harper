@@ -57,7 +57,12 @@ import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts
 import * as httpComponent from '../server/http.ts';
 import * as mcpComponent from './mcp/index.ts';
 import { Status } from '../server/status/index.ts';
-import { lifecycle as componentLifecycle, statusForComponent, STATUS } from './status/index.ts';
+import {
+	lifecycle as componentLifecycle,
+	statusForComponent,
+	STATUS,
+	internal as statusInternal,
+} from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { materializeGlobalSecrets, processComponentEnv } from './componentSecrets.ts';
 import { PluginModule } from './PluginModule.ts';
@@ -83,9 +88,22 @@ const VALIDATION_OWNED = Symbol('validationOwnedModule');
 let watchesSetup;
 let resources;
 const componentLoadTails = new Map<string, Promise<void>>();
-// Applications the previous scan of the components root saw, so a removed application's last
-// status can be retired instead of outliving the application itself.
 let appsSeenLastCycle: Set<string> | undefined;
+
+/**
+ * `loadedPaths` survives reload cycles, so a load that failed on this thread would short-circuit
+ * on the cache forever and its recorded error could never heal. Forget the failed application's
+ * paths so the next cycle loads it for real; a healthy application keeps its cache.
+ */
+function retryFailedApplicationLoad(appName: string, appFolder: string): void {
+	const prefix = appName + '.';
+	for (const [key, status] of statusInternal.componentStatusRegistry.getAllStatuses()) {
+		if (status.status !== STATUS.ERROR) continue;
+		if (key !== appName && !key.startsWith(prefix)) continue;
+		forgetLoadedPath(appFolder);
+		return;
+	}
+}
 type ComponentReadyPromises = WeakMap<object, Promise<void>>;
 
 function serializeComponentLoad<T>(appName: string, load: () => Promise<T>): Promise<T> {
@@ -298,14 +316,13 @@ export async function loadComponentDirectories(
 			recoverInterruptedComponentExtraction(CF_ROUTES_DIR, appName)
 				.then(async () => {
 					if (!existsSync(appFolder)) {
-						if (appWasVisible) {
-							statusForComponent(appName).unknown('Component directory no longer exists after preparation settled');
-						}
+						componentLifecycle.retired(appName);
 						return;
 					}
 					if (!placedOnThisThread(appName)) return;
 					const mountResult = tryRootConfigMount(appName);
 					if (!mountResult.ok) return;
+					retryFailedApplicationLoad(appName, appFolder);
 					const loadedModules = new Set<any>();
 					await loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
 						isRoot: false,
@@ -319,13 +336,15 @@ export async function loadComponentDirectories(
 				})
 				.catch((error) => {
 					const recoveryError = error instanceof Error ? error : new Error(String(error));
-					if (appWasVisible) {
-						componentLifecycle.failed(
-							appName,
-							recoveryError,
-							`Component '${appName}' failed to load after waiting for in-progress preparation`
-						);
+					if (!existsSync(appFolder)) {
+						componentLifecycle.retired(appName);
+						return;
 					}
+					componentLifecycle.failed(
+						appName,
+						recoveryError,
+						`Component '${appName}' failed to load after waiting for in-progress preparation`
+					);
 				})
 		);
 	};
@@ -358,6 +377,7 @@ export async function loadComponentDirectories(
 			const appFolder = join(CF_ROUTES_DIR, appName);
 			const mountResult = tryRootConfigMount(appName);
 			if (!mountResult.ok) continue;
+			retryFailedApplicationLoad(appName, appFolder);
 			cfsLoaded.push(
 				serializeComponentLoad(appName, () =>
 					loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
@@ -388,6 +408,7 @@ export async function loadComponentDirectories(
 		if (getWorkerIndex() === 0) harperLogger.info?.('Loading application from ' + hdbAppFolder);
 		const mountResult = tryRootConfigMount(basename(hdbAppFolder));
 		if (mountResult.ok && placedOnThisThread(basename(hdbAppFolder))) {
+			retryFailedApplicationLoad(basename(hdbAppFolder), hdbAppFolder);
 			cfsLoaded.push(
 				serializeComponentLoad(hdbAppFolder, () =>
 					loadComponent(hdbAppFolder, cycleResources, hdbAppFolder, {
@@ -404,9 +425,6 @@ export async function loadComponentDirectories(
 			);
 		}
 	}
-	// Retire the statuses of applications that were present last cycle and are gone now, so a
-	// dropped application's final status (including a failure) does not outlive it. Scoped to apps
-	// this scan has actually seen, so root plugins and component-reported keys are never touched.
 	if (appsSeenLastCycle) {
 		for (const goneApp of appsSeenLastCycle) {
 			if (!presentApps.has(goneApp)) componentLifecycle.retired(goneApp);
@@ -848,9 +866,6 @@ export async function loadComponent(
 	applicationScope.allowedPath ??= realpathSync(componentDirectory);
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
 	const statusName = options.statusName ?? appName ?? basename(componentDirectory);
-	// A top-level application load (not the root component, not a nested load sharing its parent's
-	// scope) owns the whole-application status entry: loading here, loaded on every successful exit,
-	// failed in the outer catch, so a failed cycle is visible and heals on the next clean one.
 	const isApplicationLoad = !isRoot && !options.applicationScope;
 	if (isApplicationLoad) componentLifecycle.loading(statusName, `Application '${statusName}' is loading`);
 	try {
@@ -969,8 +984,9 @@ export async function loadComponent(
 		for (const componentName in config) {
 			if (componentName === 'env') continue; // handled above — not a plugin
 			// For root components, use just the component name
-			// For application components, use applicationName.componentName format (directoryName.componentName)
-			const componentStatusName = isRoot ? componentName : `${basename(componentDirectory)}.${componentName}`;
+			// For application components, scope under this load's own status name, so a nested
+			// component's sub-components stay inside the application's key space (app.pkg.sub)
+			const componentStatusName = isRoot ? componentName : `${statusName}.${componentName}`;
 
 			compName = componentName;
 			const componentConfig = config[componentName];
@@ -1030,9 +1046,6 @@ export async function loadComponent(
 								applicationScope: subApplicationScope,
 								autoReload: false,
 								appName: appName || componentName,
-								// The nested load's failure must land on the key this loop tracks the
-								// component by, not on its directory basename (which can collide with an
-								// application name, or diverge for scoped packages).
 								statusName: componentStatusName,
 								collectScopes: options.collectScopes,
 								collectLoadedModules,
@@ -1061,8 +1074,7 @@ export async function loadComponent(
 
 				if (!extensionModule) {
 					// This is an application-only component (no extension module)
-					// Mark it as loaded since it exists in the config, unless the nested load just
-					// recorded a failure under this key, which a success write here would erase.
+					// Mark it as loaded since it exists in the config
 					if (statusForComponent(componentStatusName).get()?.status !== STATUS.ERROR)
 						componentLifecycle.loaded(componentStatusName, `Application component '${componentStatusName}' processed`);
 					continue;
@@ -1323,8 +1335,6 @@ export async function loadComponent(
 					`Component ${componentName} from (${basename(componentDirectory)}) did not load any functionality.`
 				);
 		}
-		// Per-plugin failures stay recorded under their own scoped keys; this entry says the
-		// application's load cycle itself completed.
 		if (isApplicationLoad && !loadedNothing)
 			componentLifecycle.loaded(statusName, `Application '${statusName}' loaded`);
 	} catch (error) {
