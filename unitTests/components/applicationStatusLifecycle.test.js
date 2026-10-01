@@ -153,6 +153,33 @@ describe('whole-application status lifecycle', () => {
 		}
 	});
 
+	it('heals a cached application after an invalid placement configuration is corrected', async function () {
+		this.timeout(20000);
+		const dir = makeApp(componentsRoot, 'place-probe', '# nothing to load\n');
+		const realGetConfigObj = configUtils.getConfigObj;
+
+		try {
+			await loadComponentDirectories(new Map(), resources);
+			assert.strictEqual(registry.getStatus('place-probe').status, STATUS.HEALTHY, 'precondition: cached healthy');
+
+			configUtils.getConfigObj = () => ({ 'place-probe': { isolated: 'banana' } });
+			await loadComponentDirectories(new Map(), resources);
+			assert.strictEqual(
+				registry.getStatus('place-probe')?.status,
+				STATUS.ERROR,
+				'precondition: the placement refusal is recorded'
+			);
+
+			configUtils.getConfigObj = realGetConfigObj;
+			await loadComponentDirectories(new Map(), resources);
+
+			assert.strictEqual(registry.getStatus('place-probe').status, STATUS.HEALTHY);
+		} finally {
+			configUtils.getConfigObj = realGetConfigObj;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it('retires exact and scoped keys, leaving similarly prefixed names alone', () => {
 		registry.setStatus('dead-app', STATUS.ERROR, 'load failed', 'boom');
 		registry.setStatus('dead-app.rest', STATUS.ERROR, 'plugin failed', 'boom');

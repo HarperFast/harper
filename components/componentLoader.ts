@@ -86,9 +86,17 @@ const componentLoadTails = new Map<string, Promise<void>>();
 let appsSeenLastCycle: Set<string> | undefined;
 
 // Status keys whose error was recorded by the loader itself, as opposed to runtime health a
-// component reports through the public statusForComponent API. Only these drive load retries and
-// stale-error retirement; runtime health entries are never loader state.
+// component reports through the public statusForComponent API; only these drive load retries and
+// stale-error retirement
 const loaderFailedStatusKeys = new Set<string>();
+// Applications whose most recent placement evaluation on this thread reported a refusal
+const placementRefusals = new Set<string>();
+
+function retireStaleLoaderFailures(appName: string): void {
+	for (const key of takeLoaderFailures(appName)) {
+		if (statusForComponent(key).get()?.status === STATUS.ERROR) componentLifecycle.retired(key);
+	}
+}
 
 function loaderFailed(statusKey: string, error: Error | string, message?: string): void {
 	if (!isDeployValidating()) loaderFailedStatusKeys.add(statusKey);
@@ -107,11 +115,8 @@ function takeLoaderFailures(appName: string): string[] {
 	return taken;
 }
 
-/**
- * `loadedPaths` survives reload cycles, so a load that failed on this thread would short-circuit
- * on the cache forever and its recorded error could never heal. Forget a failed application's
- * paths so the next cycle loads it for real; a healthy application keeps its cache.
- */
+// loadedPaths survives reload cycles, so a failed load must forget its paths or it would
+// short-circuit on the cache forever and its recorded error could never heal
 function retryFailedApplicationLoad(appName: string, appFolder: string): void {
 	const prefix = appName + '.';
 	for (const key of loaderFailedStatusKeys) {
@@ -216,17 +221,20 @@ function placedOnThisThread(appName: string): boolean {
 	try {
 		assertIsolationConfig(appName, (getConfigObj()?.[appName] as any)?.isolated);
 	} catch (error) {
-		componentLifecycle.failed(appName, error, `Component '${appName}' failed to load`);
+		placementRefusals.add(appName);
+		loaderFailed(appName, error, `Component '${appName}' failed to load`);
 		return false;
 	}
 	if (isIsolatedApplication(appName) && isMainThread && getWorkerIndex() === 0) {
-		componentLifecycle.failed(
+		placementRefusals.add(appName);
+		loaderFailed(
 			appName,
 			new Error(`Application '${appName}' is isolated, which needs a worker thread of its own, but threads.count is 0`),
 			`Component '${appName}' failed to load`
 		);
 		return false;
 	}
+	placementRefusals.delete(appName);
 	return shouldLoadApplicationHere(appName);
 }
 
@@ -245,11 +253,7 @@ function tryRootConfigMount(appName: string): { ok: true; mount: ScopeMount | un
 		(error as Error).message = `Not loading '${appName}': invalid routing configured: ${(error as Error).message}`;
 		errorReporter?.(error);
 		(getWorkerIndex() === 0 ? console : harperLogger).error(errorForLog(error as Error));
-		componentLifecycle.failed(
-			appName,
-			error as Error,
-			`Component '${appName}' failed to load due to invalid routing configuration`
-		);
+		loaderFailed(appName, error as Error, `Component '${appName}' failed to load due to invalid routing configuration`);
 		return { ok: false };
 	}
 }
@@ -336,7 +340,10 @@ export async function loadComponentDirectories(
 						componentLifecycle.retired(appName);
 						return;
 					}
-					if (!placedOnThisThread(appName)) return;
+					if (!placedOnThisThread(appName)) {
+						if (!placementRefusals.has(appName)) retireStaleLoaderFailures(appName);
+						return;
+					}
 					const mountResult = tryRootConfigMount(appName);
 					if (!mountResult.ok) return;
 					retryFailedApplicationLoad(appName, appFolder);
@@ -391,7 +398,10 @@ export async function loadComponentDirectories(
 				);
 				continue;
 			}
-			if (!placedOnThisThread(appName)) continue;
+			if (!placedOnThisThread(appName)) {
+				if (!placementRefusals.has(appName)) retireStaleLoaderFailures(appName);
+				continue;
+			}
 			const appFolder = join(CF_ROUTES_DIR, appName);
 			const mountResult = tryRootConfigMount(appName);
 			if (!mountResult.ok) continue;
@@ -888,9 +898,6 @@ export async function loadComponent(
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
 	const statusName = options.statusName ?? appName ?? basename(componentDirectory);
 	const isApplicationLoad = !isRoot && !options.applicationScope;
-	// Loader failures recorded for this application in earlier cycles. Ones not re-recorded by this
-	// load are stale (e.g. a component removed from the config) and are retired on success; on
-	// failure they are put back so the next cycle still retries.
 	const priorLoaderFailures = isApplicationLoad ? takeLoaderFailures(statusName) : [];
 	const settlePriorFailures = (loadSucceeded: boolean) => {
 		for (const key of priorLoaderFailures) {
@@ -1018,8 +1025,8 @@ export async function loadComponent(
 		// iterate through the app handlers so they can each do their own loading process
 		for (const componentName in config) {
 			if (componentName === 'env') continue; // handled above — not a plugin
-			// For root components, use just the component name; for application components, scope
-			// under this load's own status name (app.pkg.sub)
+			// For root components, use just the component name
+			// For application components, scope under this load's own status name (app.pkg.sub)
 			const componentStatusName = isRoot ? componentName : `${statusName}.${componentName}`;
 
 			compName = componentName;
