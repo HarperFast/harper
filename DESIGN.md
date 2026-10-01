@@ -40,32 +40,7 @@ Consequence: never replace `entry.value` with a copy of `updatedRecord` in this 
 
 The sharing cuts both ways: the caller's mutations are visible to the **commit**, which encodes whatever the object holds at commit time. A downstream consumer that mutates the resolved record before the deferred commit runs corrupts what gets persisted — `finalizeResponse` (`server/REST.ts`) did exactly this, overwriting `.headers` with a web `Headers` (no enumerable own keys → stored as `{}`) and stamping `.status` (#1702; LMDB-only because RocksDB commits encode synchronously). Consumers must copy before mutating; `finalizeResponse` now copies any `entryMap`-tracked record.
 
-<<<<<<< HEAD
 ## Blob orphan cleanup: pre-saved files outlive cancelled commits
-=======
-- [Three HTTP stacks coexist — know which one](server/DESIGN.md#three-http-stacks-coexist--know-which-one) — Node, Bun and uWS stacks and how a request lands on one.
-- [File overview](server/DESIGN.md#file-overview) — What each file in `server/` owns.
-- [`http.ts` — symbol map](server/DESIGN.md#httpts--symbol-map) — Symbol index for the native HTTP entry file.
-- [Operations authorization boundary](server/DESIGN.md#operations-authorization-boundary) — Where an operations request is authenticated and authorized.
-- [Resource ↔ HTTP boundary](server/DESIGN.md#resource--http-boundary) — How a request becomes a Resource call and a result becomes a response.
-- ["Where is X" cheat sheet](server/DESIGN.md#where-is-x-cheat-sheet) — Symbol lookup for middleware, content types and upgrades.
-- [Conventions](server/DESIGN.md#conventions) — Rules for adding protocol handling.
-- [Response compression dispatches on the serialized output, with one brotli policy (`server/serverHelpers/contentTypes.ts`)](server/DESIGN.md#response-compression-dispatches-on-the-serialized-output-with-one-brotli-policy-serverserverhelperscontenttypests) — Compression follows what the serializer returned (buffer, stream, or iterable), a source error propagates through `pipeline`, and both compressors share `brotliOptions`.
-- [A streamed response is completed only when its source ends cleanly (`server/http.ts`, `server/serverHelpers/uwsServer.ts`)](server/DESIGN.md#a-streamed-response-is-completed-only-when-its-source-ends-cleanly-serverhttpts-serverserverhelpersuwsserverts) — A source error or premature close aborts the connection on every transport; ending cleanly would frame a truncated body as a complete response.
-- [The dispatched API operation is carried on async context, never on the request (`server/serverHelpers/operationAuthorizationState.ts`)](server/DESIGN.md#the-dispatched-api-operation-is-carried-on-async-context-never-on-the-request-serverserverhelpersoperationauthorizationstatets) — The invoked operation is carried on async context, never read off the request object, because the direct-SQL body is client input.
-- [`universalHeaders` (`http.securityHeaders`): ownership, precedence, and per-thread scope](server/DESIGN.md#universalheaders-httpsecurityheaders-ownership-precedence-and-per-thread-scope) — `applySecurityHeaders` splices only the tuples it owns; config wins over component pushes; the array is per thread.
-- [Under Bun, the main HTTP port is served by `node:http`, not `Bun.serve`](server/DESIGN.md#under-bun-the-main-http-port-is-served-by-nodehttp-not-bunserve) — Under Bun the default port is a `node:http` server because WebSockets need it; no `Bun.serve` config is registered for it.
-- [Per-worker UDS mirrors are separate server instances — port-keyed wiring does not reach them (`server/http.ts`)](server/DESIGN.md#per-worker-uds-mirrors-are-separate-server-instances--port-keyed-wiring-does-not-reach-them-serverhttpts) — Per-worker UDS mirrors are separate `http.Server` instances; port-keyed wiring must be propagated through `server.udsMirror`.
-- [A per-thread UDS mirror is bound at a temp name and renamed over its published path (`server/threads/threadServer.js`)](server/DESIGN.md#a-per-thread-uds-mirror-is-bound-at-a-temp-name-and-renamed-over-its-published-path-serverthreadsthreadserverjs) — libuv unlinks a pipe server's path on close regardless of owner; rename keeps the listening inode under the published name so an overlapping restart's outgoing worker cannot delete the replacement's mirror.
-- [A worker that misses an ITC ack gets its OS thread state logged (`server/threads/manageThreads.js`)](server/DESIGN.md#a-worker-that-misses-an-itc-ack-gets-its-os-thread-state-logged-serverthreadsmanagethreadsjs) — A worker that misses a broadcast ack gets its OS thread state logged.
-- [A worker's `parentPort` close is not the main thread's exit (`server/threads/manageThreads.js`)](server/DESIGN.md#a-workers-parentport-close-is-not-the-main-threads-exit-serverthreadsmanagethreadsjs) — A worker's `parentPort` closing is never announced as the main thread's exit.
-- [`chooseOperation` authorizes the invoked operation against the authenticated principal (`server/serverHelpers/serverUtilities.ts`)](server/DESIGN.md#chooseoperation-authorizes-the-invoked-operation-against-the-authenticated-principal-serverserverhelpersserverutilitiests) — The principal comes only from top-level `hdb_user`; `search_operation` is the subject only for export ops; `parsed_sql_object` is never client input.
-- [`withNodeAdapter()`'s response is the body `PassThrough` it resolves with (`server/serverHelpers/NodeAdapterResponse.ts`)](server/DESIGN.md#withnodeadapters-response-is-the-body-passthrough-it-resolves-with-serverserverhelpersnodeadapterresponsets) — The adapter response is the `PassThrough` it resolves with; headers commit once through `writeHead`; Express is not a target.
-- [`manageThreads` has two different `workerCount`s (`server/threads/manageThreads.js`)](server/DESIGN.md#managethreads-has-two-different-workercounts-serverthreadsmanagethreadsjs) — The module-global `workerCount` sizes only the rolling-restart throttle; `getWorkerCount()` reads `workerData.workerCount`, frozen at spawn.
-- [A WebSocket close reason must be bounded to 123 bytes (`server/serverHelpers/webSocketCloseReason.ts`)](server/DESIGN.md#a-websocket-close-reason-must-be-bounded-to-123-bytes-serverserverhelperswebsocketclosereasonts) — `ws` throws past 123 bytes from a rejection handler; every dynamic reason goes through `toCloseReason()`, and all three terminal handlers render the error code alike.
-- [`serverErrorHandler` skips what `handlePostRequest` already logged (`server/serverHelpers/serverHandlers.js`)](server/DESIGN.md#servererrorhandler-skips-what-handlepostrequest-already-logged-serverserverhelpersserverhandlersjs) — One Error line per failure raised before an operation runs; an error thrown while it runs is also logged by `OperationFunctionCaller`.
-- [A request-queue shed is a 503 the server never logged (`server/throttle.ts`)](server/DESIGN.md#a-request-queue-shed-is-a-503-the-server-never-logged-serverthrottlets) — the HTTP request-queue throttle answers a literal 503 body without throwing, so no error-path log line exists; its per-instance warn names the queue.
->>>>>>> 8f786ae20 (Bind each per-thread UDS mirror at a temp name and rename it over the published path)
 
 Blobs flagged with `saveBeforeCommit` (or `saveInRecord`) are written to disk in the `beforeIntermediate` phase of a `TransactionWrite`, _before_ the LMDB/RocksDB write commits. The write's commit callback can still skip the actual record write — for older versions, supersedence by future updates, residency mismatches, or full transaction abort. In every such path the file is on disk but no record references it.
 
@@ -853,6 +828,35 @@ runs pre-handshake there (auth is unaffected — it runs in the WS connection ch
 matching Node's upgrade-then-authorize order). No core component registers custom upgrade
 middleware; `onUpgrade()`/`installUwsWsHandler()` warn when one is registered for a uWS-served
 port so the gap is visible instead of silent.
+
+## A per-thread UDS mirror is bound at a temp name and renamed over its published path (`server/threads/threadServer.js`)
+
+libuv unlinks a pipe server's bound path when the handle closes (`uv__pipe_close` → `unlink`), with
+no check of who owns the path now. On Linux `restartWorkers()` pre-starts the replacement worker
+while the outgoing one still runs (#1417), and both publish the same `<worker>-<port>.sock`. Bound
+directly at that path, the replacement rebinds it and the outgoing worker's `closeServers()` then
+deletes the replacement's socket — Harper's own `cleanupUdsFiles()` is inode-ownership-aware
+(#2035) and skips it, but libuv's unlink ran after that and removed every mirror on every rolling
+restart (#2961). So `listenOnDomainSocket()` binds a mirror (`server.isPerThreadSocket`) at
+`.<threadId>.<seq>` in the sockets directory and `renameSync()`s it over the published path:
+`rename()` keeps the listening inode, so the close-time unlink only ever targets a temp name that
+no longer exists, and the published path is never absent between an unlink and a bind.
+
+- `recordUdsBindSuccess(publishedPath)` runs after the rename, so the identity it records is the
+  inode that is listening; `cleanupUdsFiles()`'s ownership guard is unchanged and is now the only
+  thing that removes a mirror's published file. The regression and the shutdown sequence are
+  covered by `unitTests/server/threads/threadServerListenOnPorts.test.js`; the real rolling restart
+  by `integrationTests/server/uds-mirror-overlapping-restart.test.ts`.
+- The temp name is unique per process (`threadId` never repeats; `seq` is per thread); both it and
+  the published path are checked with `isDomainSocketPathTooLong`, and an overlong one takes the
+  existing fail-soft branch rather than falling back to a direct bind; it never matches a proxy's
+  `*-<port>.yaml`/`.sock` discovery; a leftover from a crash is swept by `cleanupSocketsDirectory()`
+  before any worker binds.
+- The operations API's primary domain socket keeps the direct bind on purpose: `bin/cliOperations.ts`
+  reads that file's presence as "Harper is running", so its unlink on close is load-bearing.
+- The uWS mirror (`HARPER_UWS_UDS`) keeps its direct bind: measured on uWebSockets.js 20.68.0,
+  `app.close()` never unlinks a `listen_unix` path, so it is not exposed. Bun restarts are
+  non-overlapping, so the Bun mirror is not exposed either.
 
 ## Deploy watcher generations preserve logical entry events
 
