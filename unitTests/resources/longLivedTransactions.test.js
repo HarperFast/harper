@@ -777,6 +777,69 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		});
 	});
 
+	// The abort branch (DatabaseTransaction.ts's "has been aborted" error, LMDBTransaction.ts's own copy)
+	// used to name only `txn.db` by itself; it now goes through describeCommitIdentity(), the same helper
+	// the stuck-commit log uses, so a reader gets the database name and native transaction id too, not
+	// just a bare table name that is silent about which of several tables in the chain it is.
+	describe('monitor abort attribution', () => {
+		it('names the aborted head under the describeCommitIdentity form for a transaction spanning two tables', async function () {
+			this.timeout(20000);
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			setMainIsWorker(true);
+			const Primary = table({
+				table: 'MonitorAbortPrimaryTable',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'v' }],
+			});
+			const Secondary = table({
+				table: 'MonitorAbortSecondaryTable',
+				database: 'monitor-abort-secondary',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'v' }],
+			});
+			const originalError = harperLogger.error;
+			const errorLines = [];
+			harperLogger.error = (...args) => errorLines.push(args);
+			const abortLine = () => errorLines.find(([message]) => String(message).includes('has been aborted'));
+			const trackedTxns = setTxnExpiration(20);
+			const context = {};
+			try {
+				await assert.rejects(
+					transaction(context, async () => {
+						await Primary.put(1, { v: 'root' }, context);
+						await Secondary.put(1, { v: 'second' }, context);
+						const links = [];
+						for (let txn = context.transaction; txn; txn = txn.next) if (txn.db) links.push(txn);
+						assert.strictEqual(links.length, 2, 'the second table must be a chain link');
+						// Reachable only through the root's chain, like the warn-path chain-link-attribution
+						// tests above: an independently-tracked second link could itself be visited by the
+						// monitor and abort on its own terms, racing the assertion below on iteration order.
+						trackedTxns.delete(links[1]);
+						links[1].writeTimeout = 0; // decay chainStillActive() now rather than waiting on real ticks
+						const headId = links[0].transaction?.id;
+						assert.ok(headId !== undefined, 'the head must own a native handle');
+						await waitFor(() => abortLine() !== undefined, {
+							timeout: 10000,
+							message: 'the monitor never logged the abort',
+						});
+						// The table name itself can carry a component-scoped `/@<uuid>` suffix (how `table()`
+						// names an ephemeral test table), so match the identity loosely around it rather than
+						// asserting the exact text butting up against "(transaction N)".
+						assert.match(
+							String(abortLine()[0]),
+							new RegExp(`from table: test\\.MonitorAbortPrimaryTable\\S* \\(transaction ${headId}\\)`),
+							`expected the describeCommitIdentity form naming the head's database.table and native id: ${abortLine()[0]}`
+						);
+					}),
+					/exceeding the maximum open-transaction time/,
+					'the poisoned commit must still surface as a rejection once the callback returns'
+				);
+			} finally {
+				harperLogger.error = originalError;
+				setTxnExpiration(30000);
+			}
+		});
+	});
+
 	describe('cross-thread visibility', () => {
 		it('reports a worker thread’s handle from the main thread, exactly once', async function () {
 			this.timeout(20000);
