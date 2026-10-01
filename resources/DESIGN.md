@@ -100,7 +100,7 @@ One giant `makeTable()` factory that returns a `TableResource extends Resource` 
 | Where does versioning / conflict resolution happen?                            | `Table.ts → _writeUpdate` (`#section: write-path-internals`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | How does `search()` choose an index?                                           | `Table.ts → search` (`#section: search-query`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | How are subscriptions replayed?                                                | `Table.ts → subscribe` (`#section: pub-sub`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| Can a saved audit cursor still catch up, or has its history been pruned?       | `auditStore.ts → getAuditFloor` — internal; there is deliberately no public accessor (harper#2458). **No resume path consumes it yet** — harper#2448 is to have `Table.subscribe` read it inside the resume, so the check and the replay cannot drift apart; until then a `startTime` below the floor is still silently truncated. One non-resume consumer does: `Table.commit`'s out-of-order reconciliation skips the audit walk for a write below the floor (harper#2642) — see "Audit retention floor" below. Returns the database-scoped floor: a cursor below it must resync, and `Infinity` means the floor is unknown (fails closed). `cursor >= floor` means only that no prune that ran _with a floor recorded_ removed history _after_ the cursor (nothing is promised below the FLOOR — that history is what a prune takes; `[floor, cursor)` is below the cursor but still covered). Two things it cannot see: history a legacy prune removed _before_ the floor existed, which a clock rollback can leave the stamped starting floor below; and a `restore_backup`/checkpoint rollback, since it is not a generation check (harper#2451). See "Audit retention floor" below.                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Can a saved audit cursor still catch up, or has its history been pruned?       | `auditStore.ts → getAuditFloor` — internal; there is deliberately no public accessor (harper#2458). **No resume path consumes it yet** — harper#2448 is to have `Table.subscribe` read it inside the resume, so the check and the replay cannot drift apart; until then a `startTime` below the floor is still silently truncated. One non-resume consumer does: `Table.commit`'s out-of-order reconciliation skips the audit walk for a write below the floor (harper#2642) — see ["Audit retention floor"](audit-retention.md#audit-retention-floor). Returns the database-scoped floor: a cursor below it must resync, and `Infinity` means the floor is unknown (fails closed). `cursor >= floor` means only that no prune that ran _with a floor recorded_ removed history _after_ the cursor (nothing is promised below the FLOOR — that history is what a prune takes; `[floor, cursor)` is below the cursor but still covered). Two things it cannot see: history a legacy prune removed _before_ the floor existed, which a clock rollback can leave the stamped starting floor below; and a `restore_backup`/checkpoint rollback, since it is not a generation check (harper#2451). See ["Audit retention floor"](audit-retention.md#audit-retention-floor).                                                                                                                                                                                                                                                                                                                                                                   |
 | How is the response body shaped (select clause)?                               | `Table.ts → transformEntryForSelect` (`#section: search-query`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Where is record-level TTL evaluated?                                           | `Table.ts → setTTLExpiration` (`#section: lifecycle-admin`); `Updatable.getExpiresAt` (`#section: setup-and-factory`). Stored expiry metadata is resolved in the `_writeUpdate` commit closure: `options.expiresAt ?? context.expiresAt ?? (record @expiresAt field, if finite &amp; ≥ 0) ?? table default`. This metadata drives read-hiding + the cleanup sweep. The `@expiresAt` attribute is authoritative for **direct** put/patch only; cache/source fills persist via `recordUpdater` and derive expiry from `sourceContext.expiresAt` (source freshness / table default), not the field.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Why does `search()` hide a row that's past its TTL but not yet swept?          | `Table.ts → transformEntryForSelect` unconditionally treats `entry.expiresAt < Date.now()` as gone (lazy eviction on read) — correct for a SELECT, but a mutation locating rows to overwrite needs the opposite: pass `target.includeExpired = true` (read by the SQL engine's `runUpdate`/`runDelete` via `SqlEngineContext.includeExpiredRows`) to treat such a row as a live match, matching the leniency a direct by-id `put`/`patch` already has (they skip this check entirely, since `Resource.patch`'s static options don't request `ensureLoaded`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -182,91 +182,6 @@ Index waits use the ordinary transaction timeout; they do not renew it. The adap
 **A malformed element fails the whole batch, and never abandons a sibling write.** The dispatch loop starts each element's write as it goes, so an element that throws _synchronously_ — `null`, or an id the store rejects — aborts the loop with earlier writes already in flight. Those are settled before the batch rejects: otherwise a sibling that rejects afterwards has no handler and surfaces as an unhandled rejection. Any element that is not an object — `null`, `undefined`, or a primitive — is rejected _before_ anything is dispatched, so a malformed body cannot race a sibling's write and nothing needs unwinding. The nullish case alone is not enough: only a `Table`'s own key validation rejects a primitive later, so a plain `Resource`, or any `put()` override that writes onto the record it is handed, would otherwise be given one. For a failure raised once dispatch is underway the batch reports the **earliest-index** one, uniformly — the same rule whether that element's `getResource` resolved synchronously or asynchronously, so the reported error does not move with cache residency — and the surrounding transaction rolls every element back — array PUT is all-or-nothing, not per-element reporting. The up-front rejection names the offending index as a `ClientError`, so a malformed body cannot land as a 500 carrying an engine-generated `TypeError`. A resource class that implements no `put` answers 405 through `missingMethod` here, matching the single-record path rather than throwing a bare `TypeError`.
 
 **The batch cannot settle while an element is outstanding.** `settleElements` — not `Promise.all` — closes the fan-out. `Promise.all` rejects the batch on the first failing element, which lets `transactional` unwind the transaction while a slower element is still resolving its resource; that element then stages its write against no live batch and commits on its own, leaving a _partially applied_ array PUT. It is only reachable once the async branch passes the target rather than the context — before that the late write failed for its own reasons and hid the hole — so the two fixes belong together. Every element has to stage or fail its write before the transaction may unwind. When several elements fail, the batch reports the **earliest-index** failure rather than whichever rejected first in wall-clock time, so the error a client sees does not move with scheduling. Only that one failure is reported: the framework does not attach a `cause` onto it, because the thrown value belongs to application code and may be a primitive, frozen, or a shared singleton that a per-request mutation would contaminate for every later request.
-
----
-
-## Audit retention floor
-
-`Table.subscribe`'s `startTime` replay just begins wherever the audit log now begins, so a consumer
-resuming below the retention horizon is silently handed a short replay. The floor records what
-pruning removed (harper#2447); it is internal, with deliberately no public accessor. **A resume is
-not checked against it** but against the database generation (next section): this floor also steers
-reconciliation, survives a restore, and absorbs at `Infinity`.
-
-**The one consumer today is not a resume**: `Table.commit`'s out-of-order reconciliation reads the
-floor before entering the audit walk (harper#2642). The walk terminates at the incoming write only by
-reaching an audit entry at or below its version, so below the floor it cannot — it runs the whole
-retained chain, one RocksDB end-of-log scan per step, to an outcome the floor already determines.
-Two things that consumer does differently from a cursor check, and both are deliberate: it compares
-the write's record version rather than a log key, because that is what the walk's own loop condition
-compares; and it treats the `Infinity` unknown floor as **walk anyway** rather than as "not safe",
-because here the conservative direction is to do the work, not to skip it. Below the floor a write
-contributes only its commutative operations — a plain field's survival depends on what newer writes
-did to that key, which is exactly what the pruned history no longer answers.
-
-**The invariant: every path that prunes audit history raises the floor BEFORE removing anything.**
-There are five, and the ordering is the whole guarantee — a floor written after the removal is lost
-if the process dies in between, and the surviving lower floor then certifies a cursor whose history
-is gone. Over-reporting (a floor covering more than the prune actually removed) costs a consumer one
-unnecessary resync; under-reporting loses its data with no signal. So `raiseAuditFloor` is called
-first and a throw from it is what stops the prune.
-
-| Prune path                                                                   | Engine                                                                      |
-| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `scheduleAuditCleanup` retention loop (`auditStore.ts`)                      | LMDB                                                                        |
-| `scheduleAuditCleanup` → `purgeLogs`                                         | RocksDB                                                                     |
-| `purgeAgedLogs` (boot/recovery, called from `replayLogs.ts`)                 | RocksDB                                                                     |
-| `Table.deleteHistory`                                                        | LMDB (`RocksTransactionLogStore.remove()` is a no-op, so it must NOT raise) |
-| `delete_transaction_logs_before` whole-database branch (`ResourceBridge.ts`) | RocksDB                                                                     |
-
-Things that are easy to get wrong here:
-
-- **The floor cannot be derived from the surviving log.** For four of the five paths the oldest
-  surviving entry would do, because they prune a database-wide time prefix. `Table.deleteHistory`
-  removes one table's entries from a database-scoped log, so a sibling's entry survives _below_ the
-  newest entry it removed, and a floor taken from that survivor certifies cursors over removed history.
-- **The record's presence is the trust marker.** `Symbol.for('audit-floor')` is not `last-removed`,
-  which the LMDB retention loop still maintains (#2338 — do not remove it): that one records where the
-  loop got to, after the fact, so a value there cannot be told apart from a write-ahead, verified floor.
-- **A store with no floor record is one whose retention history we cannot account for** (the empty
-  audit store a migration leaves, a table-scoped backup without `include_audit`), so `openAuditStore`
-  stamps `max(Date.now(), newest retained key)` as a one-time resync epoch. There is no
-  permissive-baseline case: creating the audit DBI proves only that it was absent.
-- **That epoch is a guess, and it is recorded as one.** Surviving state cannot see history a legacy
-  selective prune removed, so a rolled-back clock can stamp it below entries that are gone (#2458).
-  Refusing to stamp is worse — `AUDIT_FLOOR_UNKNOWN` is absorbing — so `establishAuditFloor` writes the
-  epoch under `Symbol.for('audit-floor-bootstrap')` first, then stamps the floor from that record.
-
-  **The record's presence is the signal; comparing it against the floor is not.** Worked example: a
-  v4-era `deleteHistory` removes tableA up to t=1000 while tableB's newest survivor is 900; a
-  rolled-back clock stamps bootstrap=floor=900; a later pass raises the floor to 950 — and a cursor at
-  970 still sits over tableA's missing 950–1000. No timestamp can close that window, which is why
-  resumable positions are bound to a generation instead: a position naming one postdates tracking.
-
-  **Ordering:** the record is written first, so a crash between the two writes leaves a record with no
-  floor, which the next open retries. **Undecodable bytes are overwritten** (unlike the floor, where a
-  present record may be a deliberate unknown): keeping them pinned the store to unknown forever.
-
-- **`getHistory` is not in the floor's time domain.** The floor is an audit-log key (`subscribe`'s
-  `localTime`); `getHistory` reports each entry's origin `version` under that name, which a backdated
-  or replicated write makes differ, so its cursors cannot be compared against the floor.
-- **On RocksDB the floor tracks the configured retention horizon, not retained reality.** Whole-log-file
-  purge granularity means the branch cannot know which entries a purge will drop, and the floor is
-  written first, so each pass advances it to `Date.now() - auditRetention/(1+priority²)` whether a
-  file was dropped or not. Entries below that horizon are often still on disk, and a cursor among
-  them is told to resync — conservative in the safe direction only. LMDB can see a single eligible
-  entry, so it raises off the first one it finds instead.
-- **A prune's clamped floor can sit past `Date.now() + 1`.** `boundedAuditPruneEnd` records `newest + 1`
-  when the newest log key is at or past the clock, and log keys are fractional `getNextMonotonicTime`
-  values, not `Date.now()`, so for the rest of that key's millisecond the floor exceeds the wall clock
-  by more than one. Bound it by the newest key, never the wall clock alone (`auditFloor.test.js`, the
-  far-future `deleteHistory` case — it failed twice on main that way).
-- **Untrustworthy metadata resolves to `Infinity`, not to a number.** A wrong-length record, or eight
-  bytes decoding to NaN/negative, must not become a floor: `cursor < NaN` is false, so a consumer
-  spelling the check that way would read corrupt metadata as safe.
-- **A copy keeps this floor honest for the log it carried.** A restore carries its log, so the floor
-  stands; a branch or migration carries none, so its stamp raises a finite floor to the copy's epoch.
-  Which history the database is belongs to the generation.
 
 ---
 
@@ -708,118 +623,6 @@ The cross-thread subscription path (default `crossThreads`) drives every `Table.
 - **Ending a subscription never reshapes a subscriber array a delivery loop is walking.** Listeners run synchronously inside the fan-out and can end their own or any other subscription there: a throwing `rowFilter`/`eventFilter` closes one through `failSubscription`, and a `'data'` listener can call `end()`. Splicing in place shifted the next subscriber past the loop, which then silently missed that record (harper#2771). `Subscription.end()` therefore marks the subscription ended at once — it nulls `subscriptions`, the liveness signal `Table.subscribe` also reads, and decrements `activeCount` — but when its key's array is being walked it only sets the array's `hasEnded`. Each array counts the loops walking it in `traversals`, and the loop that brings the count back to zero compacts the ended entries out, detaching an emptied key and table as `end()` would. Outside a walk, `end()` removes the subscription immediately. Each loop walks only the array's length at its start, so a subscription added to a key during that key's delivery starts with the next record. The `reload` walk visits at most as many keys as the table had when it started (a key added during the walk can take the place of one that left). Without both bounds, a listener that ends and re-subscribes extends the loop forever. The per-key, `reload` and `end_txn` loops all skip a subscription whose `subscriptions` is null. A new loop over these arrays needs the same count, bound and check (`unitTests/resources/transactionBroadcastEndDuringDelivery.test.js`).
 - **Closing with a final message always finishes, then rethrows.** `IterableEventQueue.close(finalMessage)` delivers the message while `closed` is still false. Then, in a `finally`, it sets `closed`, settles a waiting iteration and emits `'close'`, so `Subscription.end()` deregisters the subscription even when a `'data'` listener throws on the message. A waiting iterator gets the final message before it completes, and `'close'` fires once even if a listener closes the queue while handling the message. The listener's exception is rethrown. If a `'close'` listener also throws, its error replaces the first. A caller that must not throw catches it: `failSubscription` in `Table.subscribe` logs it, so nothing escapes into the replay's `.catch` or the fan-out, and `endSubscriptionsFromEarlierHandles` warns and goes on to the next subscription (`IterableEventQueue.test.js`; `subscriptionReplay.test.js`, "a replay that fails"; `transactionBroadcastEndDuringDelivery.test.js`).
 
-## Audit-entry removal loops must track every `removeAuditEntry()`/`removeEntry()` promise
-
-`scheduleAuditCleanup` (`auditStore.ts`) and `Table.deleteHistory` (`Table.ts`, the LMDB path behind
-`delete_transaction_logs_before`) both iterate a range of audit records and remove each one. Any loop
-that removes audit/primary-store entries in a batch must attach a rejection handler to every removal
-immediately and drain all tracked promises before returning — never stash a per-iteration promise in
-an outer variable to await only the last one: an overwritten promise's rejection is never awaited or
-caught, and surfaces later as an unhandled rejection with no log to explain it. `Table.deleteHistory`
-allows up to 1,000 LMDB removals in flight
-(ten for RocksDB) so storage writes batch without growing an unbounded pending
-set. Live removals are tracked in a `Set`, and each one removes itself and wakes at most one parked
-producer when it settles, so any completion releases the loop. In these removal loops, do not repeatedly
-race the live set: each race attaches another reaction to every long-pending removal. Both phases drain
-their tracked removals before settling, including when iteration throws. `scheduleAuditCleanup` remains
-sequential because it is an automatic background loop, and it ends a pass at its first failed removal
-rather than continuing past it: its `deleted` count (the backoff input) and the `last-removed` marker it
-writes then cover a contiguous removed prefix — nothing above that marker was removed by the pass — and
-the next pass retries the failed entry first. Past a failure there is no key the marker can truthfully
-record, and counting failures as progress re-armed an all-failing pass at 10 ms. The guarantee is
-pass-local: the marker is written after its removals, `deleteHistory` never writes it, and a marker an
-older build persisted past a failed entry is not repaired; completeness is the audit floor's question.
-Stopping costs liveness only for an entry that fails on every pass, which is why `removeAuditEntry` must
-fail only when `auditStore.remove()` does (below). Regression: `auditLog.test.js` "ends a pass at a failed
-removal".
-
-Individual removal failures are logged and excluded from the returned count, but a purge that attempted
-at least one removal and completed none rejects with the first error after both phases have drained.
-Without that, `delete_transaction_logs_before` reports a successful `entries_deleted: 0` whether nothing
-was eligible or the store rejected every write, and an operator pruning to bound disk growth has no signal
-that pruning did nothing. Drain first, then decide: a failing store should still get every removal it can
-accept, and a single success means the purge made progress and reports normally.
-
-The optional primary-store cleanup snapshots each tombstone's key and version before yielding and passes
-that version to `remove()`. LMDB enforces the condition natively. Harper's RocksDB adapter re-reads and
-removes inside one native transaction, retrying a conflict once, because rocksdb-js's `remove()` accepts
-an options object rather than an LMDB-style version argument. Never replace this with a separate live read
-followed by an unconditional remove: a record recreated between those operations would be deleted.
-
-`removeAuditEntry` has a second, nested version of the same hazard: for a `'delete'`-type audit record it
-also invokes a per-table delete callback (`addDeleteRemovalCallback`) that removes the corresponding
-primary-store tombstone. That callback's promise must be returned and joined with the audit-store
-removal (currently via `Promise.all`, with the callback's own rejection — and a throwing tombstone
-lookup, such as lmdb-js `getEntry(undefined)` for an undecodable recordId — caught and logged through
-`warnContained`, so neither a failed tombstone cleanup nor a throwing log sink gets misreported as a failed
-audit-entry removal) — otherwise the tombstone removal is fire-and-forget and the same detached-rejection
-hazard reappears one level down.
-A tombstone whose cleanup fails this way is not swept automatically — `scheduleAuditCleanup`'s automatic
-pass never retries it, since the audit entry that would have triggered a retry is already gone. It sits
-in the primary store until an operator runs `delete_transaction_logs_before` with `cleanup_deleted_records: true`.
-
-## Audit retention cleanup is a self-rearming, engine-independent lifecycle
-
-One call to `scheduleAuditCleanup` establishes a retention cadence that ends when the root store closes
-(or immediately in process-wide read-only mode). Storage-engine selection changes the work inside each pass, not whether the timer,
-serialization barrier, error containment, and re-arm exist. LMDB removes bounded batches of audit
-entries; RocksDB asks rocksdb-js to purge conservatively eligible log segments before the same time
-cutoff. Disk-pressure callbacks may accelerate the next pass and shorten the effective window, but
-ordinary retention progress must not depend on pressure.
-
-The two engines do not share a cadence rule, because their units of progress differ. LMDB's adaptive
-backoff reads a per-entry delete count: it speeds up while entries are being removed and doubles while
-idle. Rocks reclaims whole segments whose eligibility changes only on rotation/flush, so the same
-signal would only make it rescan the same files — its delay is instead a pure function of the
-pressure-adjusted retention window (a tenth of it, floored at `DEFAULT_AUDIT_CLEANUP_DELAY`).
-
-Exactly one Rocks purge loop exists per store, and that is owned by the **arming** sites, not the
-re-arm: `onStorageReclamation` registers its handler only on the last worker (it takes no
-`skipThreadCheck`), and the store-open arm gates on the same index. The last-worker conjunct on the
-re-arm is therefore unreachable through either of those paths; it is a backstop for a direct caller
-of the exported `scheduleAuditCleanup`, because a store-wide segment purge looping on every worker is
-duplicated work. If a future change passes `skipThreadCheck: true` at the registration site, that
-backstop — not the registration — becomes the thing keeping the loop single.
-
-Both re-arm guards are **Rocks-only**. The LMDB arm re-arms unconditionally, so it neither yields to
-an already-pending pass (a pressure-armed 100ms pass can be cancelled and replaced by the idle
-backoff) nor restricts itself to one worker — pre-existing LMDB behavior, not an invariant.
-
-Two things a purge does **not** need to coordinate, both load-bearing for the continuous cadence.
-Unlinking a segment a consumer has mapped is safe **on POSIX**: the inode outlives the unlink, and the
-mapping cache (`_logBuffers`) holds `WeakRef`s, with a strong ref only on the newest segment, which is
-never purge-eligible — so nothing pins a purged inode and no cross-worker cache invalidation is
-required. Windows does not share that property: deleting a mapped segment raises a sharing violation,
-so the purge throws, is warn-logged, re-arms, and makes no progress for as long as a consumer holds the
-mapping. The continuous cadence therefore turns a Windows retention stall into a steady state rather
-than a one-off, and nothing covers it — the Rocks retention integration test skips win32.
-What is _not_ covered is the segment a lagging consumer has not mapped yet: `TransactionLog.query()`'s
-iterator returns `done` when its next segment cannot be mapped, indistinguishable from being caught up
-(rocksdb-js `src/transaction-log-reader.ts`). A consumer that far behind needs a full copy rather than
-log replay, so the gap is a missing escalation signal in the reader, not a reason to hold retention —
-tracked as HarperFast/rocksdb-js#805. Continuous retention is what moves it from unreachable-in-steady-state
-to routine: a peer offline longer than `logging.auditRetention` now resumes into a purged prefix and is
-recorded as caught up, and `txnlogReplayGapBytes` observes the gap without escalating on it.
-
-Retirement is two things, and teardown needs both. `stopAuditCleanup()` latches the loop closed and
-cancels the pending timer, and it **returns a drain barrier** — a promise that settles once the pass
-already running has finished. The barrier is what makes closing stores safe: lmdb-js stamps the DBI
-number into its write instruction synchronously and the native writer consumes it later
-(`node_modules/lmdb/write.js`), so a pass suspended inside `await removeAuditEntry()` still has a
-delete pending against the primary and audit DBIs, and LMDB forbids closing a DBI an existing
-transaction has modified. `dropDatabase()` and the legacy arm of `Table.dropTable()` await it.
-`closeDatabase()` and branch `close()` close commit admission, then drain tracked Rocks transactions,
-table maintenance, audit cleanup, and derived-index work before closing stores. Every environment
-touch remaining in a resumed cleanup pass — cursor advance, cursor release, marker write, re-arm —
-also re-checks `rootStore.status`. `resetDatabases()` closes LMDB roots with no retirement call at all,
-so that re-check is a routine
-path rather than a defensive one.
-
-The last-removed marker is retained until it commits. A rejected write is logged and carried to the
-next pass rather than dropped: a pass that deletes nothing never reaches the write again, so one
-transient failure would otherwise leave the recorded boundary permanently behind the entries that
-were already removed.
-
 ## `createBlob(readable)` and `table.put()` don't synchronously drain the source
 
 When a blob attribute is created from a Node `Readable` (e.g. `createBlob(stream)` then `row.payload_blob = blob; await table.put(row)`), the put does **not** wait for the underlying stream to fully drain into the file before resolving. Internally `saveBlob` kicks off a `writeBlobWithStream` pipeline whose `storageInfo.saving` promise is tracked separately. The put resolves once encoding has captured the blob reference; the bytes finish writing concurrently.
@@ -990,3 +793,16 @@ the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.
 ## A defaulted `lock()` scope comes from the table's declaration, never from the transport registry (`recordLock.ts`, `Table.ts`)
 
 `resolveLockOptions` defaults `scope` to `'node'` on a `replicate: false` table and `'cluster'` otherwise, read from `Table.replicate` at the one call in `Table.lock()` and again after the native wait, so neither registering a transport nor a redeclaration mid-wait can re-scope a call (harper#2716). `Table.replicate` is therefore refreshed on redeclaration and catalog reload, and a redeclaration is persisted against the durable primary row, not the possibly stale static. **Not enforced:** a hold granted before a live `false → true` change keeps node scope for its lease, so drain holds before changing a live table's `replicate`. Pinned by "a table that does not replicate" in `recordLockCluster.test.js`.
+
+## A local-only write marks both the record and its audit entry, and replay preserves it (`Table.ts` internal writes, `replayLogs.ts`)
+
+`LOCAL_ONLY` rides both persisted forms — the audit entry's `extendedType` and the stored record's
+`metadataFlags` — so a replication sender skips it by a bitmask test without decoding the value.
+Record mutations set both from `options.localOnly`. A publish applies the option only to its message
+audit entry and preserves the existing row bit, because a message does not change the row's replication
+eligibility. The static protocol verbs never carry the option; of the instance verbs only
+`publish(target, message, options)` forwards one. Crash replay re-derives it from the entry, because
+replay re-encodes the record but never re-appends its audit entry (replay transactions are `isRetry`).
+The row bit reflects its latest mutation, so a caller needing a row to stay local re-asserts it on every
+mutation. Reload and derived-index `evict` markers are always local-only; lock control entries never are.
+Enforced by `unitTests/resources/localOnly.test.js` (both engines; crash + boot replay on RocksDB).
