@@ -155,6 +155,7 @@ suite('decide calibration end-to-end (#2841)', (ctx: any) => {
 		const [summary] = (await post({ action: 'calibrations' }).expect(200)).body;
 		strictEqual(summary.eligible, true);
 		strictEqual(summary.applied, true);
+		strictEqual(summary.population, decided.record.population, 'the summary names the population a decision carries');
 		ok(summary.report.calibrated.ece < summary.report.raw.ece, JSON.stringify(summary.report));
 		ok(summary.report.calibrated.conditional.every((point: any) => 'riskUpper' in point));
 	});

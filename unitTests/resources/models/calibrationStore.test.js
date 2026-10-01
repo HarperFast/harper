@@ -459,10 +459,15 @@ describe('calibration store and facade (#2841)', function () {
 	});
 
 	it('shows a population only to its own tenant, absent matching only absent', async () => {
-		await recordCases(models, 0, 300);
+		const ids = await recordCases(models, 0, 300);
 		await models.calibrate();
 		const mine = await models.getCalibrations();
 		assert.strictEqual(mine.length, 1);
+		assert.strictEqual(
+			mine[0].population,
+			(await models.getDecision(ids[0])).population,
+			'a summary names the population its decisions carry'
+		);
 		assert.strictEqual(mine[0].eligible, true);
 		assert.strictEqual(mine[0].applied, true);
 		assert.ok(mine[0].report.calibrated.ece < mine[0].report.raw.ece);

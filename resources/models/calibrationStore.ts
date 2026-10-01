@@ -169,6 +169,7 @@ export interface CalibrationRunResult {
 export interface CalibrationSummary {
 	model: string;
 	field?: string;
+	population: string;
 	signature: string;
 	instructionsHash?: string;
 	schemaHash: string;
@@ -1146,6 +1147,7 @@ export async function listCalibrations(
 			out.push({
 				model: row.model,
 				field: row.field,
+				population: row.population,
 				signature: row.signature,
 				instructionsHash: row.instructionsHash,
 				schemaHash: row.schemaHash,
