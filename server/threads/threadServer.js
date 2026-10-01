@@ -2,8 +2,8 @@
 
 const { isMainThread, parentPort, threadId, workerData } = require('node:worker_threads');
 const { createServer: createSocketServer } = require('node:net');
-const { unlinkSync, existsSync, mkdirSync, renameSync } = require('fs');
-const { join, dirname } = require('path');
+const { unlinkSync, existsSync, mkdirSync, renameSync } = require('node:fs');
+const { join, dirname } = require('node:path');
 let componentsLoadedResolve;
 exports.whenComponentsLoaded = new Promise((resolve) => {
 	componentsLoadedResolve = resolve;
