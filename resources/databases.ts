@@ -38,7 +38,7 @@ import {
 import { getConfigPath } from '../config/configUtils.ts';
 import { ClientError, DatabaseClosingError } from '../utility/errors/hdbError.ts';
 import { _assignPackageExport } from '../globals.js';
-import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
+import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.js';
 import { workerData } from 'worker_threads';
@@ -646,6 +646,86 @@ export function recordRetiredGeneration(
 		primaryStore,
 	});
 	return merged;
+}
+// Table lifecycle stamps (harper#1212). A generation created before a drop of its name is dead everywhere:
+// `createdTime` goes on the primary catalog row at create, `droppedTime` rides the durable `dropping`
+// tombstone and is promoted to a `/dropped/<table>` row before the tombstone is removed on every
+// completion path, so the two facts a peer compares never depend on a second write landing.
+const DROPPED_ROW_PREFIX = '/dropped/';
+const DROPPED_ROW_END = '/dropped0';
+export interface TableDropMarker {
+	table: string;
+	droppedTime: number;
+	tableId?: number;
+}
+/** Same clock as record versions, so table lifecycle orders exactly as replicated writes do. */
+export function tableLifecycleTime(): number {
+	return getNextMonotonicTime();
+}
+export function isDeadGeneration(createdTime: number | undefined, droppedTime: number): boolean {
+	return (Number.isFinite(createdTime) ? createdTime : 0) < droppedTime;
+}
+function droppedRowKey(tableName: string): string {
+	return DROPPED_ROW_PREFIX + tableName;
+}
+/** Newer wins; an equal or older drop never rolls a marker back. */
+function writeTableDropMarker(
+	attributesDbi,
+	databaseName: string,
+	tableName: string,
+	droppedTime: number | undefined,
+	tableId: number | undefined,
+	sync: boolean
+): boolean {
+	if (!Number.isFinite(droppedTime)) droppedTime = tableLifecycleTime();
+	const key = droppedRowKey(tableName);
+	const existing: TableDropMarker | undefined = attributesDbi.getSync(key);
+	if (existing && existing.droppedTime >= droppedTime) return false;
+	const marker: TableDropMarker = { table: tableName, droppedTime };
+	if (tableId != null) marker.tableId = tableId;
+	if (sync) attributesDbi.putSync(key, marker);
+	else attributesDbi.put(key, marker);
+	// Outside any catalog lock the caller holds: listeners re-send schemas, which read this catalog.
+	queueMicrotask(() => databaseEventsEmitter.emit('tableDropRecorded', databaseName, tableName));
+	return true;
+}
+/** Every drop marker of a database: one row per table name ever dropped here or learned from a peer. */
+export function getTableDrops(databaseName: string): TableDropMarker[] {
+	const attributesDbi = databases[databaseName] && database({ database: databaseName, table: null })?.dbisDb;
+	if (!attributesDbi) return [];
+	const markers: TableDropMarker[] = [];
+	for (const { value } of attributesDbi.getRange({ start: DROPPED_ROW_PREFIX, end: DROPPED_ROW_END })) {
+		if (value && typeof value.table === 'string' && Number.isFinite(value.droppedTime)) markers.push(value);
+	}
+	return markers;
+}
+/**
+ * Records a peer's drop of a table this node does not hold, so the fact relays to peers that
+ * reconnect here first. Returns false when the database is unknown here or the marker is not newer.
+ */
+export function recordTableDrop(databaseName: string, tableName: string, droppedTime: number): boolean {
+	if (!Number.isFinite(droppedTime)) return false;
+	const attributesDbi = databases[databaseName] && database({ database: databaseName, table: null })?.dbisDb;
+	if (!attributesDbi) return false;
+	return writeTableDropMarker(attributesDbi, databaseName, tableName, droppedTime, undefined, true);
+}
+export function onTableDropRecorded(listener: (databaseName: string, tableName: string) => void) {
+	databaseEventsEmitter.on('tableDropRecorded', listener);
+	return {
+		remove() {
+			databaseEventsEmitter.off('tableDropRecorded', listener);
+		},
+	};
+}
+/** Called with the live tombstone right before a completion path removes it. */
+export function promoteTombstoneToDropMarker(
+	attributesDbi,
+	databaseName: string,
+	tableName: string,
+	tombstone: { droppedTime?: number; tableId?: number } | undefined,
+	sync: boolean
+): void {
+	writeTableDropMarker(attributesDbi, databaseName, tableName, tombstone?.droppedTime, tombstone?.tableId, sync);
 }
 export function storeNamesFor(attributesDbi, tableName: string, generation: string | undefined): string[] {
 	const names: string[] = [];
@@ -1286,7 +1366,8 @@ function initStores(
 	for (const result of attributesDbi.getRange({ start: false })) {
 		const { key, value } = result as { key: string; value: any };
 		if (value == null) continue;
-		if (typeof key === 'string' && key.startsWith(GENERATION_ROW_PREFIX)) continue;
+		if (typeof key === 'string' && (key.startsWith(GENERATION_ROW_PREFIX) || key.startsWith(DROPPED_ROW_PREFIX)))
+			continue;
 		let [tableName, attribute_name] = key.toString().split('/');
 		if (attribute_name === '') {
 			// primary key
@@ -1615,6 +1696,7 @@ function initStores(
 					databasePath: isLegacy ? `${databaseName}/${tableName}` : databaseName,
 					databaseName,
 					storageGeneration: primaryAttribute.generation,
+					createdTime: primaryAttribute.createdTime,
 					indices,
 					attributes,
 					fullTextIndexes,
@@ -2157,6 +2239,8 @@ interface TableDefinition {
 	table: string;
 	database?: string;
 	path?: string;
+	/** Lifecycle stamp of the generation this definition describes; kept when a peer's definition creates the table here. */
+	createdTime?: number;
 	expiration?: number;
 	eviction?: number;
 	scanInterval?: number;
@@ -3369,6 +3453,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		isolatedApplicationOwner,
 		fullTextIndexes,
 		fullTextFields,
+		createdTime,
 	} = tableDefinition;
 	const auditExplicitlyEnabled = audit === true;
 	const auditExplicitlyDisabled = audit === false;
@@ -4002,6 +4087,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			primaryKeyAttribute.isPrimaryKey = true;
 			primaryKeyAttribute.is_hash_attribute = true; // backward-compat: harperdb@4.x reads this field to open the DBI with correct flags
 			primaryKeyAttribute.schemaDefined = schemaDefined;
+			primaryKeyAttribute.createdTime = Number.isFinite(createdTime) ? createdTime : tableLifecycleTime();
 			if (fullTextFieldsForPersistence.length > 0) primaryKeyAttribute.fullTextFields = fullTextFieldsForPersistence;
 			else delete primaryKeyAttribute.fullTextFields;
 			// Old readers treat every attribute row as live schema, so relationships stay on the ignored primary descriptor.
@@ -4149,6 +4235,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				databasePath: databaseName,
 				databaseName,
 				storageGeneration: generation,
+				createdTime: primaryKeyAttribute.createdTime,
 				indices: {},
 				attributes,
 				fullTextIndexes: activeFullTextIndexes ?? [],
@@ -5662,7 +5749,10 @@ function completeInterruptedDrop(
 		// catalog-removal failure would bypass the retry accounting entirely.
 		(attributesDbi as any).removeSync(key);
 	}
-	if (tombstoneEntry) (attributesDbi as any).removeSync(tombstoneEntry.key);
+	if (tombstoneEntry) {
+		promoteTombstoneToDropMarker(attributesDbi, databaseName, tableName, tombstoneEntry.value, true);
+		(attributesDbi as any).removeSync(tombstoneEntry.key);
+	}
 	return true;
 }
 

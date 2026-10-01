@@ -826,18 +826,25 @@ When a blob attribute is created from a Node `Readable` (e.g. `createBlob(stream
 
 Consequence for callers that wrap the source in a hashing `Transform`: calling `hash.digest('hex')` after `await table.put()` is unsafe — more `chunk.update()` calls can still fire as the stream drains, producing `Error [ERR_CRYPTO_HASH_FINALIZED]: Digest already called`. Finalize the hash only after the source has ended and the blob's `storageInfo.saving` has settled, as `components/deploymentRecorder.ts`'s streaming ingest does (`await Promise.all([putDone, tapDone, saving])` before `digest`). Its in-memory sources, and its capped fallback for a missing deployment table, buffer and hash before the put instead.
 
-## Table drops, the `dropping` tombstone, and ghost tables
+## Table drops, the `dropping` tombstone, ghost tables, and lifecycle stamps
 
-A table is a set of RocksDB column families (`T/` plus `T/<attr>`) and a set of catalog rows
-in the `__dbis__` store, with no transaction spanning the two. `Table.dropTable()` therefore
-persists a `dropping: true` flag on the table's primary catalog entry (`T/`) before any
-destructive work, then drops the column families (awaited - a failed drop must surface as the
-operation's error, never a swallowed rejection), then removes the catalog rows. If the process
-dies or a drop fails partway, the tombstone survives; both the boot-time schema load in
-`databases.ts` (`completeInterruptedDrop`) and a same-name `table()` create complete the
-interrupted drop instead of resurrecting the table. Without this, surviving catalog rows are
-silently re-opened with create-if-missing on the next start, which resurrects "deleted" tables
-(with their data, if the column families were never actually removed).
+A table is a set of RocksDB column families (`T/` plus `T/<attr>`) and a set of catalog rows in the
+`__dbis__` store, with no transaction spanning the two. `Table.dropTable()` therefore persists a
+`dropping: true` flag on the primary catalog entry (`T/`) before any destructive work, then drops the
+column families (awaited - a failed drop must surface as the operation's error), then removes the
+catalog rows. If the process dies or a drop fails partway, the tombstone survives; the boot-time schema
+load (`completeInterruptedDrop`) and a same-name `table()` create both complete the interrupted drop
+instead of re-opening the surviving rows with create-if-missing, which resurrected "deleted" tables.
+
+**Lifecycle stamps (harper#1212).** The tombstone is node-local, so a peer offline for a replicated
+`drop_table` would bring the table back through the schema handshake. Two durable facts give every node
+one rule: the primary row carries `createdTime` from create (`declareTable`, kept from a peer's propagated
+definition), and the tombstone carries `droppedTime` (`dropTable({ droppedTime })` applies a peer's), which
+every completion path promotes to a `/dropped/<table>` row (`promoteTombstoneToDropMarker`) before removing
+the tombstone — no second-write crash cut. Both come from `tableLifecycleTime()`, the record-version clock;
+`isDeadGeneration(createdTime, droppedTime)` is strict (equal survives, a missing stamp is 0). The marker
+outlives a same-name recreate, only a newer drop overwrites it, the load parser skips `/dropped/` rows, and
+`getTableDrops` / `recordTableDrop` / `onTableDropRecorded` serve replication. `unitTests/resources/dropTableLifecycle.test.js`.
 
 ## The exclusive `update-attributes` lock is a bounded synchronous wait, and drop-then-recreate needs the column-family eviction fix (`Table.ts`)
 

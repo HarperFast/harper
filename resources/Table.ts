@@ -83,6 +83,8 @@ import {
 	dropColumnFamily,
 	markDropInProgress,
 	recordRetiredGeneration,
+	promoteTombstoneToDropMarker,
+	tableLifecycleTime,
 	sweepDroppedTableBlobs,
 	storeNameFor,
 	storeNamesFor,
@@ -730,6 +732,8 @@ interface TableResourceClass {
 	name: any;
 	primaryStore: any;
 	storageGeneration: any;
+	/** Lifecycle stamp of this generation (harper#1212); undefined for a table that predates the stamps. */
+	createdTime: number | undefined;
 	auditStore: any;
 	primaryKey: any;
 	tableName: any;
@@ -868,7 +872,8 @@ interface TableResourceClass {
 	 * branch owns a schema identity of its own.
 	 */
 	assertSchemaMutable(operation: string): void;
-	dropTable(): Promise<void>;
+	/** `droppedTime` carries a peer's drop time when this drop applies one learned from the cluster. */
+	dropTable(options?: { droppedTime?: number }): Promise<void>;
 	/**
 	 * Record the relocation of an entry (when a record is moved to a different node), return true if it is now located locally
 	 */
@@ -1380,6 +1385,7 @@ export function makeTable(options): TableResourceClass {
 		if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
 	}
 	const tableGeneration = options.storageGeneration ?? (primaryKeyAttribute as any)?.generation;
+	const createdTime: number | undefined = options.createdTime ?? (primaryKeyAttribute as any)?.createdTime;
 	let deleteCallbackHandle: { remove: () => void };
 	let prefetchIds = [];
 	let prefetchCallbacks = [];
@@ -1664,6 +1670,7 @@ export function makeTable(options): TableResourceClass {
 		static name = tableName; // for display/debugging purposes
 		static primaryStore = primaryStore;
 		static storageGeneration = tableGeneration;
+		static createdTime = createdTime;
 		static auditStore = auditStore;
 		static primaryKey = primaryKey;
 		static tableName = tableName;
@@ -2790,7 +2797,7 @@ export function makeTable(options): TableResourceClass {
 			throw error;
 		}
 
-		static async dropTable() {
+		static async dropTable(options?: { droppedTime?: number }) {
 			TableResource.assertSchemaMutable('drop a table');
 			const rootStore = primaryStore.rootStore;
 			if (
@@ -2901,6 +2908,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (primaryMeta.dropping) return true;
 					primaryMeta.dropping = true;
+					primaryMeta.droppedTime = Number.isFinite(options?.droppedTime) ? options.droppedTime : tableLifecycleTime();
 					// Stamps this drop's identity so the interrupted-drop retry budget in
 					// databases.ts can be scoped to THIS drop rather than the table name: a
 					// worker that exhausts the budget for a table can observe the catalog
@@ -3000,6 +3008,7 @@ export function makeTable(options): TableResourceClass {
 					for (const attribute of attributes) {
 						dbisDb.remove(TableResource.tableName + '/' + attribute.name);
 					}
+					promoteTombstoneToDropMarker(dbisDb, databaseName, TableResource.tableName, currentPrimary, false);
 					dbisDb.remove(primaryCatalogKey);
 					return true;
 				};
@@ -3123,6 +3132,7 @@ export function makeTable(options): TableResourceClass {
 						for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
 							if (key !== primaryCatalogKey) dbisDb.remove(key);
 						}
+						promoteTombstoneToDropMarker(dbisDb, databaseName, tableName, currentPrimary, false);
 						dbisDb.remove(primaryCatalogKey);
 						return true;
 					});
