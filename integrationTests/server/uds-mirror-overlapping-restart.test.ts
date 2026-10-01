@@ -44,7 +44,6 @@ async function waitFor<T>(probe: () => Promise<T>, accept: (value: T) => boolean
 	throw new Error(`${what}: ${JSON.stringify(last)}`);
 }
 
-/** The pool workers' mirrors, `<workerIndex>-<host:port>.sock`, grouped by port. */
 async function mirrorsByPort(socketsDir: string): Promise<Map<string, string[]>> {
 	const byPort = new Map<string, string[]>();
 	for (const name of await readdir(socketsDir)) {
@@ -129,10 +128,9 @@ suite(
 				// best-effort; the pool's thread ids are the authoritative completion signal.
 				sendOperation(ctx.harper, { operation: 'restart_service', service: 'http_workers' }).catch(() => {});
 
-				// Every outgoing worker has exited and the pool is back to WORKERS, stable across checks.
 				let stable = 0;
 				await waitFor(
-					() => poolThreadIds(ctx),
+					() => poolThreadIds(ctx).catch(() => [] as number[]),
 					(ids) => {
 						const replaced = ids.length === WORKERS && ids.every((id) => !before.includes(id));
 						stable = replaced ? stable + 1 : 0;

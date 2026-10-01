@@ -589,10 +589,11 @@ no longer exists, and the published path is never absent between an unlink and a
   thing that removes a mirror's published file. The regression and the shutdown sequence are
   covered by `unitTests/server/threads/threadServerListenOnPorts.test.js`; the real rolling restart
   by `integrationTests/server/uds-mirror-overlapping-restart.test.ts`.
-- The temp name is unique per process (`threadId` never repeats; `seq` is per thread) and shorter
-  than any published mirror name, so the published path's `isDomainSocketPathTooLong` check bounds
-  it; it never matches a proxy's `*-<port>.yaml`/`.sock` discovery; a leftover from a crash is
-  swept by `cleanupSocketsDirectory()` before any worker binds.
+- The temp name is unique per process (`threadId` never repeats; `seq` is per thread); both it and
+  the published path are checked with `isDomainSocketPathTooLong`, and an overlong one takes the
+  existing fail-soft branch rather than falling back to a direct bind; it never matches a proxy's
+  `*-<port>.yaml`/`.sock` discovery; a leftover from a crash is swept by `cleanupSocketsDirectory()`
+  before any worker binds.
 - The operations API's primary domain socket keeps the direct bind on purpose: `bin/cliOperations.ts`
   reads that file's presence as "Harper is running", so its unlink on close is load-bearing.
 - The uWS mirror (`HARPER_UWS_UDS`) keeps its direct bind: measured on uWebSockets.js 20.68.0,

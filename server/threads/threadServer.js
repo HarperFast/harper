@@ -305,14 +305,12 @@ function startServers() {
  * listen() because supported Node versions differ: some reject the path while others truncate and
  * bind it somewhere clients cannot reach using the configured path.
  *
- * A per-thread mirror binds at a temp name and is renamed over its published path, because libuv
- * unlinks a pipe server's bound path when the handle closes, whoever owns that path by then (see
- * server/DESIGN.md). Not the operations API's primary socket, whose presence the CLI reads as
- * "Harper is running", and not on Windows, where named pipes have no directory entry.
+ * A per-thread mirror binds at a temp name and is renamed over its published path: libuv unlinks a
+ * pipe server's bound path on close whoever owns it by then (server/DESIGN.md).
  */
 function listenOnDomainSocket(port, server) {
 	const bindPath = server.isPerThreadSocket && !isWindows ? mirrorBindPath(port) : port;
-	const overlong = [port, bindPath].find(isDomainSocketPathTooLong);
+	const overlong = [port, bindPath].find((path) => isDomainSocketPathTooLong(path));
 	if (overlong) {
 		httpComponent.markUdsBindFailed(port);
 		harperLogger.error(
@@ -354,7 +352,6 @@ function listenOnDomainSocket(port, server) {
 }
 
 let mirrorBindSequence = 0;
-// Unique within the process (threadId never repeats), never a `*-<port>.sock`/`.yaml` a proxy discovers.
 function mirrorBindPath(socketPath) {
 	return join(dirname(socketPath), `.${threadId}.${++mirrorBindSequence}`);
 }

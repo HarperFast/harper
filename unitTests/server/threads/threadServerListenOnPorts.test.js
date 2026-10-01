@@ -97,8 +97,6 @@ describe('threadServer listenOnDomainSocket — per-thread mirrors survive the p
 		await listenOnDomainSocket(mirrorPath, server);
 		assert.deepStrictEqual(fs.readdirSync(socketsDir), ['0-9926.sock']);
 		assert.strictEqual(await servedBy(mirrorPath), 'served by first');
-		// The worker's SHUTDOWN handler runs this before closeServers(): the identity recorded after
-		// the rename must match the published file, or the worker would leak its own socket.
 		cleanupUdsFiles();
 		assert.strictEqual(fs.existsSync(mirrorPath), false, 'cleanupUdsFiles() did not recognize its own socket');
 		await close(server);
@@ -123,7 +121,7 @@ describe('threadServer listenOnDomainSocket — per-thread mirrors survive the p
 		assert.strictEqual(await servedBy(mirrorPath), 'served by replacement');
 		assert.deepStrictEqual(fs.readdirSync(socketsDir), ['0-9926.sock']);
 		await close(replacement);
-		fs.unlinkSync(mirrorPath); // what the replacement's own cleanupUdsFiles() does at its shutdown
+		fs.unlinkSync(mirrorPath);
 	});
 
 	it('a failed rename leaves no temp file and rejects the bind', async () => {
@@ -132,7 +130,6 @@ describe('threadServer listenOnDomainSocket — per-thread mirrors survive the p
 		fs.writeFileSync(path.join(blockedPath, 'occupant'), '');
 		const server = mirror();
 		await assert.rejects(listenOnDomainSocket(blockedPath, server), (error) => error.code !== undefined);
-		await new Promise((resolve) => setImmediate(resolve)); // let the close-time unlink run
 		assert.deepStrictEqual(fs.readdirSync(socketsDir).sort(), ['1-9926.sock']);
 		fs.rmSync(blockedPath, { recursive: true });
 	});
@@ -154,17 +151,14 @@ describe('threadServer listenOnDomainSocket — per-thread mirrors survive the p
 			);
 		const outgoing = uWS.App();
 		await listenUnix(outgoing);
-		fs.unlinkSync(uwsPath); // the direct-bind path's unlink-before-listen, as the uWS bind site does it
+		fs.unlinkSync(uwsPath);
 		const replacement = uWS.App();
 		await listenUnix(replacement);
 		const replacementIdentity = identity(uwsPath);
 		outgoing.close();
 		await new Promise((resolve) => setTimeout(resolve, 100));
-		assert.strictEqual(
-			identity(uwsPath),
-			replacementIdentity,
-			'uWS close() unlinked the path: apply the temp+rename there too'
-		);
+		assert.ok(fs.existsSync(uwsPath), 'uWS close() unlinked the path: apply the temp+rename there too');
+		assert.strictEqual(identity(uwsPath), replacementIdentity);
 		replacement.close();
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		assert.strictEqual(
