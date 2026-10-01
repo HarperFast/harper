@@ -51,7 +51,7 @@ jobs:
     # `ready_for_review` is admitted when the PR still carries the
     # opt-in label — mirrors claude-review.yml.
     if: ${{ (github.event.action == 'labeled' && github.event.label.name == 'gemini-review') || (github.event.action != 'labeled' && vars.GEMINI_ALWAYS_ON == 'true') || (github.event.action == 'ready_for_review' && contains(github.event.pull_request.labels.*.name, 'gemini-review')) }}
-    uses: HarperFast/ai-review-prompts/.github/workflows/_gemini-review.yml@28544a1a3c39b295401412b77f863c972bacdf6f # main 2026-09-14 (#93
+    uses: HarperFast/ai-review-prompts/.github/workflows/_gemini-review.yml@f811c3aca67c666a6a9410434b85aa1af02d4d20 # main 2026-09-14 (#93
     # Caller-side permissions at the calling-job level (NOT workflow-
     # level — that placement caps the reusable's per-job grants below
     # what they need and breaks the workflow at startup; see
@@ -69,7 +69,7 @@ jobs:
       # duplication is unavoidable: reusable workflows can't introspect
       # their own ref (`github.workflow_ref` resolves to the CALLER's
       # ref in workflow_call context), and `uses: …@<ref>` is literal.
-      ai-review-prompts-ref: 28544a1a3c39b295401412b77f863c972bacdf6f
+      ai-review-prompts-ref: f811c3aca67c666a6a9410434b85aa1af02d4d20
       review-layers: |
         universal
         harper/common

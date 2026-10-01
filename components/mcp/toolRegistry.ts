@@ -26,6 +26,7 @@
  */
 import { encodeCursor } from './pagination.ts';
 import type { McpProfile } from './transport.ts';
+export { canRoleInvokeOperation } from './operationVisibility.ts';
 
 export interface ToolAnnotations {
 	title?: string;
@@ -45,7 +46,8 @@ export interface ToolContent {
 export interface ToolResult {
 	content: ToolContent[];
 	isError?: boolean;
-	structuredContent?: unknown;
+	/** MCP requires an object here; build it with `tools/results.ts`'s `wrapToolResult`. */
+	structuredContent?: Record<string, unknown>;
 }
 
 /** Public shape sent to clients on `tools/list`. */
@@ -66,7 +68,7 @@ export interface AuthedUser {
 		role?: string;
 		permission?: {
 			super_user?: boolean;
-			structure_user?: boolean;
+			structure_user?: boolean | string[];
 			operations?: string[];
 			[database: string]:
 				| boolean
@@ -395,39 +397,3 @@ export function hasClassLevelVerbs(
 		delete: typeof prototype.delete === 'function' && prototype.delete !== resourcePrototype.delete,
 	};
 }
-
-/**
- * Role-level operations check for the operations profile. Returns true if
- * the user has the role-level privilege required to invoke `operation`,
- * regardless of any per-call schema/table predicate (those run at tool-call
- * time).
- *
- * The implementation here is intentionally conservative — only flags that
- * grant operations globally short-circuit. Per-operation per-target checks
- * are evaluated at call time by Harper's existing `verifyPerms`.
- */
-export function canRoleInvokeOperation(user: AuthedUser, operation: string): boolean {
-	if (isSuperUser(user)) return true;
-	const perm = user?.role?.permission;
-	if (!perm) return false;
-	if (perm.structure_user && SCHEMA_STRUCTURE_OPERATIONS.has(operation)) return true;
-	if (Array.isArray(perm.operations) && perm.operations.includes(operation)) return true;
-	return false;
-}
-
-/**
- * Operations that `structure_user` is permitted to invoke. Pre-seeded with
- * the canonical structure ops so the helper is functional and tests have
- * something to assert against. Adding entries here is the right shape;
- * removing them is not (would silently lock users out).
- */
-const SCHEMA_STRUCTURE_OPERATIONS = new Set([
-	'create_schema',
-	'create_database',
-	'drop_schema',
-	'drop_database',
-	'create_table',
-	'drop_table',
-	'create_attribute',
-	'drop_attribute',
-]);

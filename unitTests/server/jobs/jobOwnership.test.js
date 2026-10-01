@@ -4,15 +4,20 @@ const testUtils = require('../../testUtils.js');
 testUtils.preTestPrep();
 
 const assert = require('node:assert');
+const { execFileSync } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
+const { join } = require('node:path');
+const sinon = require('sinon');
 const { JOB_STATUS_ENUM, SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
 const { getDatabases } = require('#src/resources/databases');
 const {
 	JOB_OWNER_ATTRIBUTES,
 	JOB_OWNER_INSTANCE_ID,
 	reconcileInterruptedJobs,
+	reconcileInterruptedJobsOnce,
 	stampJobOwner,
 } = require('#src/server/jobs/jobOwnership');
+const manageThreads = require('#js/server/threads/manageThreads');
 const jobs = require('#src/server/jobs/jobs');
 
 function jobTable() {
@@ -66,9 +71,24 @@ describe('jobOwnership', function () {
 			assert.strictEqual(job.owner_pid, process.pid);
 		});
 
-		it('mints an instance id that is not the pid, so a reused pid cannot look alive', function () {
+		it('a separate Harper process mints a different id, which is what makes a restart detectable', function () {
+			const fixture = join(__dirname, 'fixtures', 'reportIncarnation.cjs');
+			const first = execFileSync(process.execPath, [fixture], { encoding: 'utf8' }).trim();
+			const second = execFileSync(process.execPath, [fixture], { encoding: 'utf8' }).trim();
+
+			assert.ok(first, 'a Harper process must mint an owner id');
+			assert.notStrictEqual(first, second, 'two processes must not share an owner id');
+			assert.notStrictEqual(first, JOB_OWNER_INSTANCE_ID, 'a child process must not share this one');
+		});
+
+		it('identifies the process by the thread fabric incarnation, not the pid', function () {
 			assert.strictEqual(typeof JOB_OWNER_INSTANCE_ID, 'string');
 			assert.notStrictEqual(JOB_OWNER_INSTANCE_ID, String(process.pid));
+			assert.strictEqual(
+				JOB_OWNER_INSTANCE_ID,
+				manageThreads.processIncarnation,
+				'job ownership and the thread fabric must share one definition of process identity'
+			);
 		});
 	});
 
@@ -83,6 +103,7 @@ describe('jobOwnership', function () {
 			assert.strictEqual(job.status, JOB_STATUS_ENUM.ERROR);
 			assert.match(job.message, /interrupted/i);
 			assert.match(job.message, /999999/);
+			assert.match(job.message, /outcome is unknown/i, 'the job may have applied some of its effects');
 			assert.ok(job.end_datetime, 'a settled job must carry an end time');
 		});
 
@@ -168,6 +189,60 @@ describe('jobOwnership', function () {
 			for (const attribute of JOB_OWNER_ATTRIBUTES) {
 				assert.ok(!(attribute in job), `${attribute} must not be returned to clients`);
 			}
+		});
+	});
+
+	// One ordered narrative, because these share the process-lifetime memo on purpose: a pass that
+	// left rows stuck must not count as done, and only a complete pass may be cached. The failure
+	// cases have to run before the success case that finally spends the guard.
+	describe('reconcileInterruptedJobsOnce', function () {
+		// One ordered narrative sharing the process-lifetime memo on purpose: a pass that left rows stuck
+		// must not count as done, and only a complete pass may be cached. These rows deliberately outlive
+		// the outer afterEach, because the straggler has to survive into the retry.
+		let stuck;
+		let settleable;
+		let later;
+
+		after(async function () {
+			await removeSeededJobs([settleable, stuck, later].filter(Boolean));
+		});
+
+		afterEach(function () {
+			sinon.restore();
+		});
+
+		it('a pass that cannot settle every row reports the shortfall instead of resolving', async function () {
+			settleable = await seedJob({ owner_instance: randomUUID() });
+			stuck = await seedJob({ owner_instance: randomUUID() });
+
+			const updateJob = jobs.updateJob;
+			sinon.stub(jobs, 'updateJob').callsFake(async (job) => {
+				if (job.id === stuck) throw new Error('simulated write failure');
+				return updateJob(job);
+			});
+
+			await assert.rejects(reconcileInterruptedJobsOnce(), /Could not settle 1 of 2/);
+
+			assert.strictEqual(
+				await statusOf(settleable),
+				JOB_STATUS_ENUM.ERROR,
+				'one unwritable row must not strand the rest'
+			);
+			assert.strictEqual(await statusOf(stuck), JOB_STATUS_ENUM.IN_PROGRESS);
+		});
+
+		it('retries the straggler on the next call rather than returning a cached result', async function () {
+			// The memo was cleared by the rejection above, so this is a real second sweep.
+			assert.strictEqual(await reconcileInterruptedJobsOnce(), 1);
+			assert.strictEqual(await statusOf(stuck), JOB_STATUS_ENUM.ERROR);
+		});
+
+		it('caches a complete pass, so a reload does not re-walk job history', async function () {
+			// Stands in for a root component reload after a new job has been created.
+			later = await seedJob({ owner_instance: randomUUID() });
+
+			assert.strictEqual(await reconcileInterruptedJobsOnce(), 1, 'the cached result, not a third sweep');
+			assert.strictEqual(await statusOf(later), JOB_STATUS_ENUM.IN_PROGRESS);
 		});
 	});
 });

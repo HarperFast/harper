@@ -11,6 +11,13 @@ const operationAuthorizationState = new AsyncLocalStorage<OperationAuthorization
 const BYPASSED: OperationAuthorizationState = Object.freeze({ bypassAuth: true });
 const ENFORCED: OperationAuthorizationState = Object.freeze({ bypassAuth: false });
 
+/**
+ * The bypass is carried by `AsyncLocalStorage`, so it follows any async resource (a timer,
+ * `setImmediate`, a promise chain) created while `callback` is on the stack, regardless of
+ * whether `callback`'s own returned promise has already settled. Detached, un-awaited work
+ * started inside `callback` still runs with the bypass active after `callback` returns -
+ * always await or otherwise chain work that must not outlive the bypass.
+ */
 export function runWithOperationAuthorizationBypass<T>(bypassAuth: boolean, callback: () => T): T {
 	// An existing carrier survives: the enforced branch is not a bypass, and a job handler dispatching
 	// a nested authorized operation must not lose its own operation identity.

@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import dotenv from 'dotenv';
 import fs from 'node:fs';
 import path from 'node:path';
-import inquirer from 'inquirer';
+import { prompts } from '../utility/interactivePrompts.ts';
 import { saveCredentials, normalizeTarget } from './cliCredentials.ts';
 import { cliOperations } from './cliOperations.ts';
 
@@ -22,10 +22,10 @@ export async function login(
 	dotenv.config();
 
 	// In --for-ci mode stdout is reserved for the credential block, so anything a human reads is
-	// written to stderr instead. inquirer defaults to stdout too, hence its own output stream —
-	// without it the user would be typing their password blind into the pipe.
+	// written to stderr instead. The prompt library defaults to stdout too, hence the explicit
+	// output override — without it the user would be typing their password blind into the pipe.
 	const say = forCi ? (message = '') => process.stderr.write(`${message}\n`) : (message = '') => console.log(message);
-	const ask = forCi ? inquirer.createPromptModule({ output: process.stderr }) : inquirer.prompt;
+	const ctx = forCi ? { output: process.stderr } : undefined;
 
 	say(chalk.cyan('\nHarper login'));
 	say(
@@ -53,14 +53,9 @@ export async function login(
 	let target = targetArg || defaultTarget;
 
 	if (!targetArg) {
-		const { target: input } = await ask({
-			type: 'input',
-			name: 'target',
-			message: 'Cluster Target URL:',
-			default: defaultTarget,
-		});
-		if (input?.trim()) {
-			target = input.trim();
+		const targetInput = await prompts.input({ message: 'Cluster Target URL:', default: defaultTarget }, ctx);
+		if (targetInput?.trim()) {
+			target = targetInput.trim();
 		}
 	}
 
@@ -87,11 +82,10 @@ export async function login(
 			targetUsername = envUsername;
 			say(chalk.gray(`Using username from ${envPrefix}_USERNAME environment variable: ${targetUsername}`));
 		} else {
-			({ username: targetUsername } = await ask({
-				type: 'input',
-				name: 'username',
-				message: forCi ? 'CI Username (a user dedicated to this consumer):' : 'Cluster Username:',
-			}));
+			targetUsername = await prompts.input(
+				{ message: forCi ? 'CI Username (a user dedicated to this consumer):' : 'Cluster Username:' },
+				ctx
+			);
 		}
 	}
 
@@ -99,12 +93,13 @@ export async function login(
 	// only refresh token silently: name the user and make someone say yes. Skipped when stdin is not
 	// a TTY — a runner has already committed to this and there is nobody to ask.
 	if (forCi && process.stdin.isTTY) {
-		const { confirmed } = await ask({
-			type: 'confirm',
-			name: 'confirmed',
-			message: `Mint a CI refresh token for '${targetUsername}'? This revokes any refresh token it already holds.`,
-			default: false,
-		});
+		const confirmed = await prompts.confirm(
+			{
+				message: `Mint a CI refresh token for '${targetUsername}'? This revokes any refresh token it already holds.`,
+				default: false,
+			},
+			ctx
+		);
 		if (!confirmed) {
 			console.error(chalk.red('Aborted. Create a user dedicated to this CI consumer and log in as that user.'));
 			process.exit(1);
@@ -116,12 +111,7 @@ export async function login(
 	if (targetPassword) {
 		say(chalk.gray(`Using password from ${envPrefix}_PASSWORD environment variable.`));
 	} else {
-		// `type: 'password'` with no `mask` hides input entirely — nothing is echoed until Enter.
-		({ password: targetPassword } = await ask({
-			type: 'password',
-			name: 'password',
-			message: 'Cluster Password:',
-		}));
+		targetPassword = await prompts.password({ message: 'Cluster Password:' }, ctx);
 	}
 
 	if (!targetUsername || !targetPassword) {

@@ -31,6 +31,7 @@ import { startHarper, teardownHarper } from '@harperfast/integration-testing';
 import { createApiClient } from './utils/client.mjs';
 import { restartHttpWorkers } from './utils/lifecycle.mjs';
 import { installAppComponent } from './utils/components.mjs';
+import { waitFor } from './utils/operations.mjs';
 
 const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
 
@@ -159,7 +160,13 @@ suite('Blob lifecycle', { skip: skipSuite }, (ctx) => {
 	});
 
 	test('blob record exists in DB with correct metadata', async () => {
-		const r = await client.req().send({ operation: 'sql', sql: 'SELECT * FROM blob.BlobCache' }).expect(200);
+		// A get() on a sourcedFrom table resolves to its caller before the resolved record's cache
+		// write has committed (Table.ts getFromSource), so the record the GET above created can land
+		// after that GET returned; poll until it is visible rather than assuming it already is.
+		const r = await waitFor(
+			() => client.req().send({ operation: 'sql', sql: 'SELECT * FROM blob.BlobCache' }).expect(200),
+			{ until: (res) => Array.isArray(res.body) && res.body.some((item) => item.cacheKey === blobId.toString()) }
+		);
 
 		assert.ok(Array.isArray(r.body), r.text);
 		const record = r.body.find((item) => item.cacheKey === blobId.toString());

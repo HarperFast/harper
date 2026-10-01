@@ -11,8 +11,19 @@ export interface Models {
 	embed(input: string | string[], opts?: EmbedOpts): Promise<Float32Array[]>;
 	generate(input: GenerateInput, opts?: GenerateOpts): Promise<GenerateResult>;
 	generateStream(input: GenerateInput, opts?: GenerateOpts): AsyncIterable<GenerateChunk>;
+	/** Choose from a closed, schema-defined set and return the distribution over it. See #2779. */
+	decide<T = unknown>(
+		state: DecideInput,
+		schema: DecisionSchema,
+		opts: RecordedDecideOpts
+	): Promise<RecordedDecision<T>>;
+	decide<T = unknown>(state: DecideInput, schema: DecisionSchema, opts?: DecideOpts): Promise<Decision<T>>;
+	/** The durable record of a decision made with `persist: true`, with its recorded outcome, or undefined. See #2840. */
+	getDecision<T = unknown>(id: string): Promise<DecisionRecord<T> | undefined>;
+	/** Record what actually happened for a decision: its truth, the action taken, or both. See #2840. */
+	recordOutcome<T = unknown>(id: string, outcome: OutcomeReport): Promise<DecisionRecord<T>>;
 	/** Register a custom backend under a logical id, selectable via `opts.model`. See #1325. */
-	registerBackend(kind: 'embedding' | 'generative', id: string, backend: ModelBackend): void;
+	registerBackend(kind: ModelKind, id: string, backend: ModelBackend): void;
 	/** Build a `ModelBackend` from a spec; pair with `registerBackend`. See #1325. */
 	defineBackend(spec: DefineBackendSpec): ModelBackend;
 	/** Replace the model selection policy with a custom router. See #1326. */
@@ -25,7 +36,27 @@ export interface ModelBackend {
 	embed?(input: string | string[], opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>>;
 	generate?(input: GenerateInput, opts: BackendOpts<GenerateOpts>): Promise<ModelCallResult<GenerateResult>>;
 	generateStream?(input: GenerateInput, opts: BackendOpts<GenerateOpts>): AsyncIterable<GenerateChunk>;
+	decide?(
+		state: DecideInput,
+		schema: DecisionSchema,
+		opts: BackendOpts<DecideOpts>
+	): Promise<ModelCallResult<DecisionOutput<unknown>>>;
+	/**
+	 * Score every entry of `choices` as the answer to `input` from the model's own likelihoods
+	 * (#2838): one finite, unnormalized log-likelihood per choice, in order. A call the backend
+	 * cannot score (too many choices for its alternatives list, a model that rejects
+	 * log-probabilities, a response with no scored label) throws `ChoiceScoringUnsupportedError`
+	 * so the caller can fall back; any other error is a failure.
+	 */
+	scoreChoices?(
+		input: GenerateInput,
+		choices: readonly string[],
+		opts: BackendOpts<ScoreChoicesOpts>
+	): Promise<ModelCallResult<ChoiceScores>>;
 }
+
+/** Registry kinds a backend is mapped under; a `decision` backend implements `decide` (#2779). */
+export type ModelKind = 'embedding' | 'generative' | 'decision';
 
 export interface ModelCapabilities {
 	embed: boolean;
@@ -33,14 +64,34 @@ export interface ModelCapabilities {
 	stream: boolean;
 	tools: boolean;
 	adapters: boolean;
+	/** Implements `decide`. Optional so pre-#2779 backends stay source-compatible; absent reads as false. */
+	decide?: boolean;
+	/** `decide` probabilities are calibrated as returned. Absent reads as false. */
+	calibrated?: boolean;
+	/** Implements `scoreChoices`. Absent reads as false. */
+	scoreChoices?: boolean;
+	/** `decide` returns a no-match score for leaves that opt in with `noMatch: true` (#2846). Absent reads as false. */
+	noMatch?: boolean;
+	/** That no-match score is calibrated as returned. Absent reads as false. */
+	calibratedNoMatch?: boolean;
+	/**
+	 * `generate` sends `responseFormat: { schema }` to the provider as a decoding constraint rather
+	 * than a hint. Says what Harper sends, not what a remote endpoint honors. Absent reads as false.
+	 */
+	structuredOutput?: boolean;
+	/**
+	 * The most choices one `scoreChoices` call accepts. Absent means no stated limit. A limit, not a
+	 * capability: it cannot be required, and a call above it is declined without a request.
+	 */
+	maxScoredChoices?: number;
 }
 
-/** A capability a call can require of its backend (a key of `ModelCapabilities`). */
-export type Capability = keyof ModelCapabilities;
+/** A capability a call can require of its backend (a boolean key of `ModelCapabilities`). */
+export type Capability = Exclude<keyof ModelCapabilities, 'maxScoredChoices'>;
 
 /** What the router is asked to resolve for a single call. See #1326. */
 export interface RouteRequest {
-	kind: 'embedding' | 'generative';
+	kind: ModelKind;
 	/** Logical name from `opts.model` (a role or a concrete backend id); defaults to `'default'`. */
 	logicalName: string;
 	/** Capabilities the chosen backend must satisfy — explicit `opts.requires` plus any auto-derived (e.g. tools present in the input). */
@@ -74,10 +125,22 @@ export interface DefineBackendSpec {
 	embed?: ModelBackend['embed'];
 	generate?: ModelBackend['generate'];
 	generateStream?: ModelBackend['generateStream'];
+	decide?: ModelBackend['decide'];
+	scoreChoices?: ModelBackend['scoreChoices'];
 	/** Backend supports tool calls in `generate` / `generateStream`. Default `false`. */
 	tools?: boolean;
 	/** Backend supports per-call LoRA / adapter selection. Default `false`. */
 	adapters?: boolean;
+	/** `decide` probabilities are calibrated as returned. Default `false`. */
+	calibrated?: boolean;
+	/** `decide` returns a no-match score for opted-in leaves. Default `false`. */
+	noMatch?: boolean;
+	/** That no-match score is calibrated as returned. Default `false`. */
+	calibratedNoMatch?: boolean;
+	/** `generate` sends `responseFormat: { schema }` as a decoding constraint. Default `false`. */
+	structuredOutput?: boolean;
+	/** The most choices one `scoreChoices` call accepts, a positive integer. Default: no limit. */
+	maxScoredChoices?: number;
 }
 
 export type EmbedOpts = {
@@ -88,6 +151,170 @@ export type EmbedOpts = {
 	inputType?: 'document' | 'query';
 	signal?: AbortSignal;
 };
+
+/** Text, or JSON-serializable program state, for `decide`. */
+export type DecideInput = string | object;
+
+/**
+ * One leaf of a decision schema: a closed set every backend family can score. `enum` holds
+ * 2..255 distinct values of one type; an integer range spans at most 255 values; booleans order
+ * as `[false, true]` for tie-breaking.
+ */
+export type DecisionLeaf = { description?: string; noMatch?: boolean } & (
+	| { enum: readonly string[] | readonly number[] | readonly boolean[] }
+	| { type: 'boolean' }
+	| { type: 'integer'; minimum: number; maximum: number }
+);
+
+/** A decision schema: one leaf, or one level of named leaves. Deeper nesting is deliberately unsupported. */
+export type DecisionSchema =
+	DecisionLeaf | { type: 'object'; description?: string; properties: Record<string, DecisionLeaf> };
+
+export type DecideOpts = {
+	model?: string;
+	/** Capabilities the chosen backend must satisfy, e.g. `['calibrated']`; the router filters candidates (#1326). */
+	requires?: Capability[];
+	/** Task framing beyond the schema's own descriptions. */
+	instructions?: string;
+	signal?: AbortSignal;
+	/**
+	 * `true` commits a durable record of the decision to `hdb_model_decisions` before returning, so its
+	 * outcome can be recorded later; the result then carries its `id`. Default `false`: nothing is stored
+	 * beyond the per-call analytics row, as with `embed` and `generate`.
+	 */
+	persist?: boolean;
+};
+
+/** Options that record the decision, so the result is a `RecordedDecision` with an `id`. */
+export type RecordedDecideOpts = DecideOpts & { persist: true };
+
+export interface DecisionOutcome {
+	value: unknown;
+	probability: number;
+}
+
+/**
+ * What a `decision` backend returns for one call. For a leaf schema `distribution` is required
+ * and complete (one entry per allowed value, summing to one); for an object schema `fields`
+ * carries one such entry per property. The facade derives `value` and `probability`, so a
+ * backend may omit them; a `value` it does supply must be a most-probable outcome, and on a
+ * tie it leads the distribution.
+ */
+export interface DecisionOutput<T = unknown> {
+	value?: T;
+	probability?: number;
+	distribution?: DecisionOutcome[];
+	fields?: Record<string, DecisionOutput<unknown>>;
+	/** For a leaf that opted in: the score in [0, 1] that the input matches none of the allowed values. */
+	noMatch?: number;
+	calibrated?: boolean;
+	/**
+	 * Opaque identity of the configuration that produced the scores (sampling, scoring method,
+	 * prompt revision), stored with the decision so calibration is keyed per configuration (#2841).
+	 */
+	signature?: string;
+}
+
+/**
+ * Result of `models.decide`. For a leaf schema `value` is the first entry of `distribution`,
+ * which is sorted descending with ties in schema order unless the backend chose one of the tied
+ * values; `probability` is its entry. For an object schema
+ * `value` is assembled from each field's marginal argmax — a combination no single sample may
+ * have produced — and the marginals live in `fields`.
+ */
+export interface Decision<T = unknown> {
+	/** Present only when the call passed `persist: true`: the cluster-unique id of the decision's record in `hdb_model_decisions`, committed before the decision is returned; pass it to `recordOutcome` (#2840). */
+	id?: string;
+	value: T;
+	probability?: number;
+	distribution?: DecisionOutcome[];
+	fields?: Record<string, FieldDecision>;
+	/** Leaf schemas that opted in: the score that the input matches none of the allowed values (#2846). */
+	noMatch?: number;
+	/** Whether the probabilities come from a calibrated source, as the backend reports it. */
+	calibrated: boolean;
+	usage?: TokenUsage;
+}
+
+/** A decision made with `persist: true`: its `id` is always present. */
+export type RecordedDecision<T = unknown> = Decision<T> & { id: string };
+
+/** One field's marginal in an object-schema `Decision`. */
+export interface FieldDecision {
+	value: unknown;
+	probability: number;
+	distribution: DecisionOutcome[];
+	/** Fields that opted in: the no-match score. */
+	noMatch?: number;
+}
+
+export type ScoreChoicesOpts = {
+	model?: string;
+	/** Capabilities the chosen backend must satisfy, beyond `scoreChoices` itself; the router filters candidates (#1326). */
+	requires?: Capability[];
+	signal?: AbortSignal;
+};
+
+/** Unnormalized; the caller normalizes. */
+export interface ChoiceScores {
+	logLikelihoods: number[];
+}
+
+/** What turned out to be true for a decision: an allowed value, none of them, or not known. Tagged, so no label is a sentinel. */
+export type OutcomeTruth = { kind: 'value'; value: unknown } | { kind: 'noMatch' } | { kind: 'unknown' };
+
+/** What the application did with a decision: acted on a value, routed it as no-match, abstained by policy, or not known. */
+export type OutcomeAction =
+	{ kind: 'value'; value: unknown } | { kind: 'noMatch' } | { kind: 'abstained' } | { kind: 'unknown' };
+
+/** The facts reported for one leaf: either, or both. Each is stored on its own, so reports never overwrite each other. */
+export interface LeafOutcomeReport {
+	truth?: OutcomeTruth;
+	action?: OutcomeAction;
+}
+
+/** A `recordOutcome` report: leaf facts for a leaf schema, or per-field facts for an object schema. */
+export type OutcomeReport = LeafOutcomeReport | { fields: Record<string, LeafOutcomeReport> };
+
+export interface RecordedLeafOutcome extends LeafOutcomeReport {
+	truthAt?: number;
+	actionAt?: number;
+}
+
+export type RecordedOutcome = RecordedLeafOutcome | { fields: Record<string, RecordedLeafOutcome> };
+
+/**
+ * The durable record of one decision (#2840): what was asked, what was answered, who answered,
+ * and what was recorded afterwards. Written once by `decide`; only `outcome` grows.
+ */
+export interface DecisionRecord<T = unknown> {
+	id: string;
+	/** The `hdb_model_calls` row of the call that produced it; correlation only. */
+	callId: number;
+	at: number;
+	/** When the record and its facts expire; a fact never extends it. */
+	expiresAt: number;
+	tenant?: string;
+	app?: string;
+	backend: string;
+	model: string;
+	signature?: string;
+	/** Identity of the `models` config block in force when the decision was made. */
+	configHash?: string;
+	/** sha256 of the per-call `instructions`, when any were given. */
+	instructionsHash?: string;
+	/** The schema's allowed values, without descriptions. */
+	schema: DecisionSchema;
+	/** Identity of the full schema, descriptions included. */
+	schemaHash: string;
+	value: T;
+	probability?: number;
+	distribution?: DecisionOutcome[];
+	fields?: Record<string, FieldDecision>;
+	noMatch?: number;
+	calibrated: boolean;
+	outcome: RecordedOutcome;
+}
 
 export type GenerateOpts = {
 	model?: string;

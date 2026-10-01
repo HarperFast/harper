@@ -16,7 +16,6 @@ const { addOidcTrust } = require('#src/security/authn/oidc/trustPolicyOperations
 const { clearJwksCache } = require('#src/security/authn/oidc/jwks');
 const { validateOperationToken, clearJWTRSAKeysCache, decodeJWT } = require('#src/security/tokenAuthentication');
 const { databases } = require('#src/resources/databases');
-const { setUsersWithRolesCache } = require('#src/security/user');
 const terms = require('#src/utility/hdbTerms');
 
 const TRUST_TABLE = terms.SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME;
@@ -34,13 +33,16 @@ let signingJwk;
 
 function installMockTable(name, primaryKey) {
 	const rows = new Map();
+	const expiries = new Map();
 	const mock = {
 		rows,
+		expiries,
 		async get(id) {
 			return rows.get(id);
 		},
-		async put(row) {
+		async put(row, context) {
 			rows.set(row[primaryKey], row);
+			if (context?.expiresAt !== undefined) expiries.set(row[primaryKey], context.expiresAt);
 		},
 		async delete(id) {
 			return rows.delete(id);
@@ -58,10 +60,8 @@ function installMockTable(name, primaryKey) {
 }
 
 /**
- * The replay table is reached through an unconditional `table()` call, not a lookup — it has to be,
- * because the systemSchema bootstrap declares only the primary key and `table()` is what layers the
- * expiresAt TTL on top. So intercept the factory rather than seeding `databases.system`, which that
- * call would otherwise sail straight past.
+ * The replay table is reached through its `table()` declaration (tokenUseTable.ts), not a lookup, so
+ * intercept the factory rather than seeding `databases.system`, which that call would sail straight past.
  */
 function installMockTableFactory(name, mock) {
 	const databasesModule = require('#src/resources/databases');
@@ -79,7 +79,7 @@ function seedUsers() {
 	});
 	users.set('admin', { username: 'admin', active: true, role: { role: 'su', permission: { super_user: true } } });
 	users.set('retired', { username: 'retired', active: false, role: { role: 'deployer', permission: {} } });
-	return setUsersWithRolesCache(users);
+	return testUtils.seedUsers(users);
 }
 
 const asAdmin = (body) => ({
@@ -147,9 +147,10 @@ describe('exchangeOidcToken', () => {
 		restoreTableFactory();
 	});
 
-	after(() => {
+	after(async () => {
 		removeJwtKeys();
 		clearJWTRSAKeysCache();
+		await testUtils.seedUsers();
 	});
 
 	function identityToken(overrides = {}) {
@@ -347,10 +348,11 @@ describe('exchangeOidcToken', () => {
 		const token = identityToken();
 		await exchangeOidcToken({ operation: 'exchange_oidc_token', token });
 
-		const [record] = [...useTable.mock.rows.values()];
+		const [[fingerprint, record]] = [...useTable.mock.rows.entries()];
 		assert.strictEqual(record.policy_id, 'my-app-prod');
-		const tokenExpiryMs = decodeJWT(token).exp * 1000;
-		assert.ok(record.expiresAt > tokenExpiryMs, 'record must outlive the token it guards');
+		assert.ok(!('expiresAt' in record), 'the expiry is record metadata, not a field');
+		// the token's expiry plus the padding that outlasts the verifier's clock tolerance
+		assert.strictEqual(useTable.mock.expiries.get(fingerprint), decodeJWT(token).exp * 1000 + 120_000);
 	});
 
 	it('rejects a token minted for a different audience', async () => {
@@ -405,7 +407,7 @@ describe('exchangeOidcToken', () => {
 
 	it('rejects a policy naming a user that no longer exists, without spending the token', async () => {
 		await addPolicy();
-		await setUsersWithRolesCache(new Map());
+		await testUtils.seedUsers();
 		const token = identityToken();
 		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token }));
 		assert.strictEqual(useTable.mock.rows.size, 0, 'a token the runner cannot re-mint must not be burned');
@@ -417,7 +419,7 @@ describe('exchangeOidcToken', () => {
 		await addPolicy();
 		const users = new Map();
 		users.set('ci-deploy', { username: 'ci-deploy', active: false, role: { role: 'deployer', permission: {} } });
-		await setUsersWithRolesCache(users);
+		await testUtils.seedUsers(users);
 
 		const token = identityToken();
 		await assertRejected(exchangeOidcToken({ operation: 'exchange_oidc_token', token }));

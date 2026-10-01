@@ -15,8 +15,20 @@ const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { databases } = require('#src/resources/databases');
 const password = require('#src/utility/password');
 let user = require('#src/security/user');
+const { server } = require('#src/server/Server');
 
 const TEST_PASSWORD = 'test1234!';
+// setHashFunction re-requires these modules; later suites must get back the instances the rest of the
+// process imported, and the server hooks those instances installed
+const originalModules = ['#src/security/user', '#src/utility/password'].map((id) => {
+	const key = require.resolve(id);
+	return [key, require.cache[key]];
+});
+const originalServerHooks = ['getUser', 'authenticateUser', 'invalidateUser', 'onInvalidatedUser'].map((name) => [
+	name,
+	server[name],
+]);
+const originalHashFunction = env_mgr.get(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION);
 
 async function dropTestUsers() {
 	await user.dropUser({ username: 'test_user' }).catch(() => {});
@@ -61,11 +73,16 @@ describe('user.ts Unit Tests', () => {
 				},
 			});
 		} catch {}
-		await user.setUsersWithRolesCache();
 	});
 
 	afterEach(async () => {
 		await dropTestUsers();
+	});
+
+	after(() => {
+		for (const [key, module] of originalModules) require.cache[key] = module;
+		for (const [name, hook] of originalServerHooks) server[name] = hook;
+		env_mgr.setProperty(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION, originalHashFunction);
 	});
 
 	describe('Test addUser', () => {
@@ -178,7 +195,6 @@ describe('user.ts Unit Tests', () => {
 				role: 'super_user',
 				active: true,
 			});
-			await user.setUsersWithRolesCache();
 			const result = await user.findAndValidateUser('test_user', TEST_PASSWORD);
 			expect(result.username).to.equal('test_user');
 		});

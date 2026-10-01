@@ -38,6 +38,8 @@ const {
 	watchInProgressFile,
 	blockBlobSavesForRestore,
 	resumeBlobSavesAfterRestore,
+	blobRestoreGeneration,
+	blobRestoreGenerationChanged,
 } = require('#src/resources/blob');
 const {
 	existsSync,
@@ -133,32 +135,6 @@ describe('Blob test', () => {
 		assert.equal(retrievedText, testString);
 		let slicedText = await record.blob.slice(0, 100).text();
 		assert.equal(slicedText, testString.slice(0, 100));
-	});
-	it('blocks new blob saves during restore and drains saves that already started', async () => {
-		const store = BlobTest.primaryStore.rootStore;
-		const databaseName = store.databaseName;
-		const source = new PassThrough();
-		const inFlightBlob = await createBlob(source);
-		const inFlight = decodeFromDatabase(() => saveBlob(inFlightBlob).saving, store);
-		let drained = false;
-		const barrier = blockBlobSavesForRestore(databaseName).then(() => {
-			drained = true;
-		});
-		try {
-			await new Promise(setImmediate);
-			assert.strictEqual(drained, false, 'the barrier must wait for an already-started file pipeline');
-
-			const blockedBlob = await createBlob(Buffer.alloc(20000, 'b'));
-			assert.throws(() => decodeFromDatabase(() => saveBlob(blockedBlob), store), /while it is being restored/);
-
-			source.end(Buffer.alloc(20000, 'a'));
-			await Promise.all([inFlight, barrier]);
-			assert.strictEqual(drained, true);
-		} finally {
-			resumeBlobSavesAfterRestore(databaseName);
-			source.destroy();
-		}
-		unlinkSync(getFilePathForBlob(inFlightBlob));
 	});
 	it('create a blob from a buffer and save it', async () => {
 		let random = randomBytes(25000);
@@ -1710,6 +1686,247 @@ describe('Blob test', () => {
 	});
 	after(function () {
 		setDeletionDelay(500); // restore original
+	});
+
+	// The restore-fence tests run last on purpose. Lifting a fence discards every queued reclamation for
+	// that database, which strands files an earlier test had superseded -- in production those are
+	// collected by the orphan sweep, but inside one process it would break the orphan assertions above.
+	// A blob saved outside a record is an orphan by definition, and the orphan sweep counts it. Only
+	// a blob big enough to be file-backed has a file at all, so the existence check is not incidental.
+	function removeBlobFile(blob) {
+		const path = getFilePathForBlob(blob);
+		if (path && existsSync(path)) unlinkSync(path);
+	}
+
+	it('stops orphan cleanup while a restore fence is held and excludes skipped files from the count', async () => {
+		const store = BlobTest.primaryStore.rootStore;
+		const databaseName = store.databaseName;
+		const orphans = await Promise.all([createBlob(Buffer.alloc(20000, 'o')), createBlob(Buffer.alloc(20000, 'p'))]);
+		const paths = [];
+		try {
+			for (const orphan of orphans) {
+				await decodeFromDatabase(() => saveBlob(orphan).saving, store);
+				paths.push(decodeFromDatabase(() => getFilePathForBlob(orphan), store));
+			}
+
+			await blockBlobSavesForRestore(databaseName, 'restore-orphan-cleanup');
+			assert.strictEqual(await cleanupOrphans(getDatabases().test), 0);
+			assert(paths.every(existsSync), 'the fenced orphan sweep must leave every skipped file in place');
+		} finally {
+			resumeBlobSavesAfterRestore(databaseName, 'restore-orphan-cleanup');
+			for (const path of paths) if (existsSync(path)) unlinkSync(path);
+		}
+	});
+
+	it('blocks new blob saves during restore and drains saves that already started', async () => {
+		const store = BlobTest.primaryStore.rootStore;
+		const databaseName = store.databaseName;
+		const source = new PassThrough();
+		const inFlightBlob = await createBlob(source);
+		const inFlight = decodeFromDatabase(() => saveBlob(inFlightBlob).saving, store);
+		let inFlightPath;
+		let drained = false;
+		const barrier = blockBlobSavesForRestore(databaseName, 'restore-drain').then(() => {
+			drained = true;
+		});
+		try {
+			await new Promise(setImmediate);
+			assert.strictEqual(drained, false, 'the barrier must wait for an already-started file pipeline');
+
+			const blockedBlob = await createBlob(Buffer.alloc(20000, 'b'));
+			assert.throws(() => decodeFromDatabase(() => saveBlob(blockedBlob), store), /while it is being restored/);
+
+			source.end(Buffer.alloc(20000, 'a'));
+			await Promise.all([inFlight, barrier]);
+			assert.strictEqual(drained, true);
+			// Resolved inside the store context: getFilePathForBlob reads the ambient store, so asking for
+			// it outside decodeFromDatabase yields a path that is not where the blob actually landed --
+			// which is how this test was silently leaving its file behind for the orphan sweep to find.
+			inFlightPath = decodeFromDatabase(() => getFilePathForBlob(inFlightBlob), store);
+		} finally {
+			resumeBlobSavesAfterRestore(databaseName, 'restore-drain');
+			source.destroy();
+			if (inFlightPath && existsSync(inFlightPath)) unlinkSync(inFlightPath);
+		}
+	});
+
+	it("a late reload from an earlier restore does not lift a later restore's fence", async () => {
+		// Restore A releases its lock before awaiting its reload broadcast, so B can take the database
+		// while A's reload is still in flight. With a database-wide flag, A's late reload cleared B's
+		// fence and saves were admitted during B's post-close check and purge.
+		const store = BlobTest.primaryStore.rootStore;
+		const databaseName = store.databaseName;
+		const blocked = await createBlob(Buffer.alloc(20000, 'b'));
+
+		await blockBlobSavesForRestore(databaseName, 'restore-A');
+		try {
+			await blockBlobSavesForRestore(databaseName, 'restore-B');
+			resumeBlobSavesAfterRestore(databaseName, 'restore-A');
+
+			assert.throws(
+				() => decodeFromDatabase(() => saveBlob(blocked), store),
+				/while it is being restored/,
+				"restore B's fence must survive restore A's reload"
+			);
+
+			// A token nobody owns releases nothing either.
+			resumeBlobSavesAfterRestore(databaseName, 'restore-unknown');
+			assert.throws(() => decodeFromDatabase(() => saveBlob(blocked), store), /while it is being restored/);
+		} finally {
+			resumeBlobSavesAfterRestore(databaseName, 'restore-B');
+		}
+
+		// The fence is lifted once its owner reloads: this save must be admitted rather than throw.
+		const allowed = await createBlob(Buffer.alloc(20000, 'c'));
+		await decodeFromDatabase(() => saveBlob(allowed).saving, store);
+		removeBlobFile(allowed);
+	});
+
+	it('a rerun after a restore dies mid-flight can clear the fence', async () => {
+		// The failure mode of tracking a *set* of tokens: a restore that dies after destruction never
+		// broadcasts reload, so its token stays forever and even a successful recovery restore leaves the
+		// database fenced for the life of the process -- contradicting the rerun the operator is told to
+		// perform. Ownership transfers instead, so the rerun's reload clears it.
+		const store = BlobTest.primaryStore.rootStore;
+		const databaseName = store.databaseName;
+
+		await blockBlobSavesForRestore(databaseName, 'restore-that-dies');
+		// ...which never broadcasts reload. The operator reruns the restore:
+		await blockBlobSavesForRestore(databaseName, 'restore-rerun');
+
+		const blob = await createBlob(Buffer.alloc(20000, 'd'));
+		assert.throws(
+			() => decodeFromDatabase(() => saveBlob(blob), store),
+			/while it is being restored/,
+			'the rerun still fences while it works'
+		);
+
+		resumeBlobSavesAfterRestore(databaseName, 'restore-rerun');
+		await decodeFromDatabase(() => saveBlob(blob).saving, store);
+		removeBlobFile(blob);
+	});
+
+	it('a restore that aborted before destroying anything keeps its queued reclamations', async () => {
+		// The generation was not replaced, so those entries still condemn the files they were queued
+		// against. Discarding them would strand every superseded blob the database happened to have
+		// pending at the moment an admission check failed.
+		const store = BlobTest.primaryStore.rootStore;
+		const databaseName = store.databaseName;
+		setDeletionDelay(200);
+		let condemnedPath;
+		let survivor;
+		try {
+			const first = await createBlob(Readable.from('aborted-restore-generation'.repeat(64)));
+			await BlobTest.put({ id: 92, blob: first });
+			condemnedPath = getFilePathForBlob(first);
+			const second = await createBlob(Readable.from('still-valid-generation'.repeat(64)));
+			await BlobTest.put({ id: 92, blob: second });
+			survivor = getFilePathForBlob(second);
+
+			await blockBlobSavesForRestore(databaseName, 'restore-aborted');
+			// Let the drain run and skip the entry while fenced -- that pass records no next deadline, so
+			// without a wakeup on release the entry is kept but never comes due again.
+			await new Promise((resolve) => setTimeout(resolve, 400));
+			assert.ok(existsSync(condemnedPath), 'fenced, so not yet drained');
+
+			// The restore failed its admission checks and destroyed nothing.
+			resumeBlobSavesAfterRestore(databaseName, 'restore-aborted', false);
+
+			await waitFor(() => !existsSync(condemnedPath), {
+				timeout: 2000,
+				message: 'a reclamation kept across an aborted restore must still run',
+			});
+		} finally {
+			await BlobTest.delete(92).catch(() => {});
+			for (const path of [condemnedPath, survivor]) if (path && existsSync(path)) unlinkSync(path);
+			setDeletionDelay(500);
+		}
+	});
+
+	it('reports a restore generation change to work that spans a whole restore', async () => {
+		// An orphan sweep can read the fence as clear, await an unlink while an entire restore happens,
+		// and resume deleting on a verdict reached against the generation that restore replaced. Asking
+		// "is it fenced now" cannot see that; the generation can.
+		const store = BlobTest.primaryStore.rootStore;
+		const databaseName = store.databaseName;
+
+		const before = blobRestoreGeneration(store);
+		assert.strictEqual(blobRestoreGenerationChanged(before), false, 'nothing has happened yet');
+
+		await blockBlobSavesForRestore(databaseName, 'restore-epoch');
+		assert.strictEqual(blobRestoreGenerationChanged(before), true, 'fenced right now');
+		resumeBlobSavesAfterRestore(databaseName, 'restore-epoch');
+
+		// The fence is clear again, and this is the case a fenced-right-now check misses.
+		assert.strictEqual(blobRestoreGenerationChanged(before), true, 'a restore completed since `before`');
+		assert.strictEqual(blobRestoreGenerationChanged(blobRestoreGeneration(store)), false);
+	});
+
+	it('a failed restore releases its fence, so the database is not left unwritable', async () => {
+		// A restore that fails after destruction leaves its marker, which keeps the database from
+		// loading and tells the operator to rerun. But an operator who gives up and drops/recreates the
+		// name instead has no marker -- and must not inherit a fence no restore owns any more. The
+		// release is deterministic (the restore broadcasts reload on its way out) rather than a lease,
+		// because a lease that expired during a slow restore would re-admit saves mid-purge.
+		const store = BlobTest.primaryStore.rootStore;
+		const databaseName = store.databaseName;
+
+		await blockBlobSavesForRestore(databaseName, 'restore-that-failed');
+		const blocked = await createBlob(Buffer.alloc(20000, 'f'));
+		assert.throws(() => decodeFromDatabase(() => saveBlob(blocked), store), /while it is being restored/);
+
+		// What the failure path now broadcasts on its way out.
+		resumeBlobSavesAfterRestore(databaseName, 'restore-that-failed');
+
+		const allowed = await createBlob(Buffer.alloc(20000, 'g'));
+		await decodeFromDatabase(() => saveBlob(allowed).saving, store);
+		removeBlobFile(allowed);
+	});
+
+	it('a reclamation queued before a restore does not unlink what the restore wrote', async () => {
+		// The fence has to cover deletions, not just writes: a pendingReclamation entry is a timer that
+		// never consults the database, so an entry queued against the pre-restore generation would unlink
+		// the bytes the restore just wrote at that same path.
+		const store = BlobTest.primaryStore.rootStore;
+		const databaseName = store.databaseName;
+		const PAST_DEADLINE = 600;
+		setDeletionDelay(200);
+		let condemnedPath;
+		let survivor;
+		try {
+			const first = await createBlob(Readable.from('condemned-generation'.repeat(64)));
+			await BlobTest.put({ id: 91, blob: first });
+			condemnedPath = getFilePathForBlob(first);
+			assert.ok(existsSync(condemnedPath));
+
+			// Supersede it while saves are still permitted -- this is what queues its file for reclamation.
+			const second = await createBlob(Readable.from('next-generation'.repeat(64)));
+			await BlobTest.put({ id: 91, blob: second });
+			survivor = getFilePathForBlob(second);
+
+			await blockBlobSavesForRestore(databaseName, 'restore-reclaim');
+
+			// Held well past the entry's 200ms deadline: a fenced database must not drain.
+			await new Promise((resolve) => setTimeout(resolve, PAST_DEADLINE));
+			assert.ok(existsSync(condemnedPath), 'reclamation must not run while the database is fenced');
+
+			// Stand in for the restore rewriting that same path with the backup's bytes, then reload.
+			writeFileSync(condemnedPath, Buffer.from('restored-bytes'));
+			resumeBlobSavesAfterRestore(databaseName, 'restore-reclaim');
+
+			// The entry is long overdue, so if the reload had merely resumed it rather than discarding it,
+			// it would fire immediately and delete what the restore wrote.
+			await new Promise((resolve) => setTimeout(resolve, PAST_DEADLINE));
+			assert.ok(
+				existsSync(condemnedPath),
+				'the queued reclamation belonged to the replaced generation and must not delete restored bytes'
+			);
+			assert.strictEqual(readFileSync(condemnedPath).toString(), 'restored-bytes');
+		} finally {
+			await BlobTest.delete(91).catch(() => {});
+			for (const path of [condemnedPath, survivor]) if (path && existsSync(path)) unlinkSync(path);
+			setDeletionDelay(500);
+		}
 	});
 });
 

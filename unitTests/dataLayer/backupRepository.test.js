@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
+const { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -30,13 +30,22 @@ describe('backupRepository', function () {
 	});
 
 	describe('withBackupRepositoryLock', function () {
-		it('creates the repository directory and runs the operation', async function () {
-			const result = await withBackupRepositoryLock(backupDir, 'somedb', async () => 'done');
+		it('creates the repository only for a caller that is creating a backup', async function () {
+			const result = await withBackupRepositoryLock(backupDir, 'somedb', async () => 'done', true);
 			assert.strictEqual(result, 'done');
 			assert.ok(existsSync(managementLockPath(backupDir)));
 		});
 
+		it('runs unlocked on a repository that does not exist, leaving nothing behind', async function () {
+			// a delete or purge for a name with no repository must 404 on its own, not leave an empty
+			// directory that makes a later list_backups answer [] instead of that 404
+			const result = await withBackupRepositoryLock(backupDir, 'somedb', async () => 'done');
+			assert.strictEqual(result, 'done');
+			assert.ok(!existsSync(backupDir), 'no repository may be created by a non-creating caller');
+		});
+
 		it('serializes concurrent operations rather than interleaving them', async function () {
+			mkdirSync(backupDir, { recursive: true });
 			const events = [];
 			const operation = async (name) =>
 				withBackupRepositoryLock(backupDir, 'somedb', async () => {
@@ -61,6 +70,20 @@ describe('backupRepository', function () {
 				/boom/
 			);
 			assert.strictEqual(await withBackupRepositoryLock(backupDir, 'somedb', async () => 'reacquired'), 'reacquired');
+		});
+
+		it('refuses a repository it cannot write, by name rather than by errno', async function () {
+			if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+			mkdirSync(backupDir, { recursive: true });
+			chmodSync(backupDir, 0o500);
+			try {
+				await assert.rejects(
+					withBackupRepositoryLock(backupDir, 'somedb', async () => 'unreachable'),
+					(error) => error.statusCode === 409 && /is not writable \(E(ACCES|PERM|ROFS)\)/.test(error.message)
+				);
+			} finally {
+				chmodSync(backupDir, 0o700);
+			}
 		});
 	});
 
@@ -109,6 +132,24 @@ describe('backupRepository', function () {
 				() => assertBackupsUnpinned(backupDir, [1], 'somedb'),
 				(error) => error.statusCode === 409 && /unknown backup/.test(error.message)
 			);
+		});
+
+		it('fails closed on a pin file that parses but carries no usable backup id', function () {
+			mkdirSync(backupPinsDir(backupDir), { recursive: true });
+			for (const [name, contents] of [
+				['empty.json', '{}'],
+				['stringy.json', '{"backup_id":"7"}'],
+				['nulled.json', '{"backup_id":null}'],
+				['fractional.json', '{"backup_id":7.5}'],
+			]) {
+				writeFileSync(join(backupPinsDir(backupDir), name), contents);
+				assert.throws(
+					() => assertBackupsUnpinned(backupDir, [7], 'somedb'),
+					(error) => error.statusCode === 409 && /unknown backup/.test(error.message),
+					`${name} must block the delete it cannot vouch for`
+				);
+				rmSync(join(backupPinsDir(backupDir), name));
+			}
 		});
 
 		it('rejects a pin id that would escape the pins directory', function () {

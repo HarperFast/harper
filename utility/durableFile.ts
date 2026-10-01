@@ -1,7 +1,8 @@
 'use strict';
 
-import { closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, fsyncSync, openSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { fsyncTolerantSync, isUnsupportedSyncError } from './fsync.ts';
 
 /**
  * Durable, atomic single-file writes for the small pieces of control-plane state Harper keeps on
@@ -17,27 +18,39 @@ import { dirname, join } from 'node:path';
  *   now names it.
  */
 
-/** Codes that mean "this platform does not support flushing a directory", not "the write failed". */
-const DIRECTORY_FSYNC_UNSUPPORTED = new Set(['EPERM', 'EISDIR', 'ENOTSUP', 'EINVAL']);
+/**
+ * Whether `path` is there, where only an established absence answers false. `existsSync` reports
+ * every errno as "missing", and the control-plane state this module writes is read to decide
+ * whether something may be destroyed — so a permission or I/O fault that reads as "absent" becomes
+ * permission to delete exactly what could not be checked.
+ */
+export function pathPresent(path: string): boolean {
+	try {
+		statSync(path);
+		return true;
+	} catch (error: any) {
+		if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return false;
+		throw error;
+	}
+}
 
 /**
- * fsync a directory so a create/unlink of an entry within it is durable. Best-effort: the flush is a
- * POSIX nicety, and Windows (and some filesystems) reject it — at the open on some, and at the fsync
- * on others, where opening a directory succeeds and only the flush fails. Both have to be tolerated,
- * or every durable write throws there.
+ * fsync a directory so a create/unlink of an entry within it is durable. Best-effort: Windows and
+ * some filesystems reject it — at the open on some, at the fsync on others — and both have to be
+ * tolerated or every durable write throws there. The codes that mean "unsupported" rather than
+ * "failed" live in `./fsync.ts`, so this cannot drift from the other callers making that same
+ * distinction; `restoreMarker.ts` used that set before this helper existed.
  */
 export function fsyncDirectory(directory: string): void {
 	let directoryFd: number;
 	try {
 		directoryFd = openSync(directory, 'r');
 	} catch (error: any) {
-		if (DIRECTORY_FSYNC_UNSUPPORTED.has(error?.code)) return;
+		if (isUnsupportedSyncError(error)) return;
 		throw error;
 	}
 	try {
-		fsyncSync(directoryFd);
-	} catch (error: any) {
-		if (!DIRECTORY_FSYNC_UNSUPPORTED.has(error?.code)) throw error;
+		fsyncTolerantSync(directoryFd);
 	} finally {
 		closeSync(directoryFd);
 	}

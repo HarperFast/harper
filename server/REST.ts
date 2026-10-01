@@ -620,7 +620,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 					let result;
 					while (!(result = await iterator.next()).done) {
 						const messageBinary = await serializeMessage(result.value, request);
-						ws.send(messageBinary);
+						ws.send(messageBinary as string | Buffer<ArrayBuffer>);
 						recordAction(messageBinary.length, 'bytes-sent', request.handlerPath, 'message', 'ws');
 						if ((ws as any)._socket.writableNeedDrain) {
 							await new Promise((resolve) => (ws as any)._socket.once('drain', resolve));

@@ -1,10 +1,11 @@
 'use strict';
 
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileLockRelease, tryFileLock } from '@harperfast/rocksdb-js';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import logger from '../utility/logging/harper_logger.ts';
 import { restoreMarkerPresent } from './restoreMarker.ts';
 import { fsyncDirectory, removeFileDurably, writeFileDurably } from '../utility/durableFile.ts';
 
@@ -59,6 +60,27 @@ export interface BackupPin {
 	database_path?: string;
 }
 
+/** Codes that mean the repository cannot be written at all, not that this attempt lost a race. */
+const REPOSITORY_NOT_WRITABLE = new Set(['EROFS', 'EACCES', 'EPERM']);
+const { W_OK } = constants;
+
+/**
+ * A repository Harper cannot write is refused by name rather than by whatever errno surfaced first.
+ * Every managed operation — restore included, which only reads the backup itself — records a lock
+ * and a claim inside the repository, so read-only media (a `ro` snapshot mount, a read-only share)
+ * cannot be used in place. Inferring "immutable, so no claim needed" from a failed write would be
+ * wrong: a read-only *view* of a repository another writer can still purge looks identical.
+ */
+function assertRepositoryWritable(databaseName: string, error: any): never {
+	if (!REPOSITORY_NOT_WRITABLE.has(error?.code)) throw error;
+	throw new ClientError(
+		`Backup repository for database '${databaseName}' is not writable (${error.code}). Harper records a ` +
+			`management lock and a claim inside the repository for every backup operation, including restore, so ` +
+			`it cannot be used read-only. Remount it writable, or copy it to writable storage, and retry.`,
+		409
+	);
+}
+
 /**
  * Run `operation` holding the repository's management lock.
  *
@@ -70,11 +92,29 @@ export interface BackupPin {
 export async function withBackupRepositoryLock<T>(
 	backupDir: string,
 	databaseName: string,
-	operation: () => Promise<T>
+	operation: () => Promise<T>,
+	createRepository = false
 ): Promise<T> {
-	mkdirSync(backupDir, { recursive: true });
 	const lockPath = managementLockPath(backupDir);
 	const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS;
+	if (!existsSync(backupDir)) {
+		// Only a create may bring a repository into existence. Creating it here for a delete or purge
+		// would leave an empty directory behind after the 404, and a later list_backups for that name
+		// would answer [] instead of the 404 a typo is owed. With nothing on disk there is also
+		// nothing to exclude, so the operation runs unlocked and refuses on its own.
+		if (!createRepository) return operation();
+		try {
+			mkdirSync(backupDir, { recursive: true });
+		} catch (error: any) {
+			assertRepositoryWritable(databaseName, error);
+		}
+	}
+	// The binding's lock error carries a message but no errno, so writability is checked here.
+	try {
+		accessSync(backupDir, W_OK);
+	} catch (error: any) {
+		assertRepositoryWritable(databaseName, error);
+	}
 	let token = tryFileLock(lockPath);
 	while (token === 0) {
 		if (Date.now() >= deadline) {
@@ -109,10 +149,13 @@ export function readBackupPins(backupDir: string): BackupPin[] {
 		let parsed: any;
 		try {
 			parsed = JSON.parse(readFileSync(join(pinsDir, entry.name), 'utf8'));
-			// JSON.parse happily returns null, a number or a string; reading a field off one of those
-			// would throw past this catch and fail the whole delete with a 500 instead of failing closed
 			if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
 				throw new Error('pin file is not an object');
+			}
+			// A parseable record is not a usable one: `{"backup_id":"7"}` matches no requested id, so
+			// without this the claim permits exactly the delete it exists to refuse.
+			if (!Number.isInteger(parsed.backup_id) || parsed.backup_id < 1) {
+				throw new Error('pin file has no usable backup id');
 			}
 		} catch (error: any) {
 			// A released claim, unlinked between the readdir and the read. Anything else still means
@@ -182,7 +225,15 @@ export function assertBackupsUnpinned(backupDir: string, backupIds: number[], da
 	const live: BackupPin[] = [];
 	for (const pin of pins) {
 		if (pinIsLive(pin)) live.push(pin);
-		else unpinBackup(backupDir, pin.pin_id);
+		else {
+			// Opportunistic: a lapsed claim we cannot unlink is debris, not a reason to refuse the
+			// removal it no longer protects.
+			try {
+				unpinBackup(backupDir, pin.pin_id);
+			} catch (error) {
+				logger.warn(`Could not sweep a lapsed backup claim in ${backupDir}`, error);
+			}
+		}
 	}
 	const blocking = live.filter((pin) => Number.isNaN(pin.backup_id) || requested.has(pin.backup_id));
 	if (blocking.length === 0) return;

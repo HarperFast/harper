@@ -336,48 +336,41 @@ export async function assertBlobSnapshotRestorable(
 	}
 }
 
-/** Whether any configured blob root holds at least one file. Stops at the first one it finds. */
-export async function blobRootsHaveFiles(blobRoots: string[]): Promise<boolean> {
-	for (const root of blobRoots) {
-		try {
-			for await (const _ of walkBlobFiles(root)) return true;
-		} catch (error: any) {
-			if (error.code === 'ENOTDIR') continue;
-			throw error;
-		}
-	}
-	return false;
-}
-
 /**
- * Refuse an engine-only restore when the destination database still has blobs.
+ * Refuse an engine-only restore unless the operator has accepted the mixed result.
  *
- * Restoring engine files while leaving the live blob roots alone produces a mixed generation:
- * rolled-back records addressing whichever blobs happen to be on disk now. The common outcome is a
- * dangling reference to a blob deleted since the backup point; the worse one is a blob id reissued
- * after the deletions plus a restart (ids are a per-database counter re-seeded from a directory scan
- * — `resources/blob.ts` `getNextFileId`), which resolves a restored record onto unrelated bytes.
+ * Restoring engine files without the matching blobs produces a mixed generation: records rolled back
+ * to the backup point, addressing whichever blobs the roots happen to hold. There are two ways that
+ * goes wrong, and the destination being empty rules out only the first:
  *
- * Purging the roots instead is not the answer — that strips blobs the restored records still
- * reference — so the operator has to choose, and the choice is recorded. This applies equally to
- * in-place and named-target restores; a genuinely new target passes because its roots are empty.
+ * 1. Blobs are present now, so a restored record can resolve onto a blob that no longer belongs to it,
+ *    or onto nothing at all if the blob it referenced was deleted since the backup point.
+ * 2. The roots are empty, so nothing collides today -- but blob ids are a per-database counter that
+ *    `getNextFileId` (`resources/blob.ts`) re-seeds by scanning the roots. Empty roots re-seed at 1,
+ *    which is exactly the id space the restored records already reference, so the *next* blob written
+ *    is placed at a path a restored record points at. A brand-new target database is not exempt: its
+ *    roots are empty for the same reason.
+ *
+ * Purging the roots instead is not the answer -- that strips blobs the restored records still
+ * reference -- so the operator has to choose, and the choice is recorded. Case 2 would stop being a
+ * hazard if the blob-id high-water mark were persisted with the engine and restored alongside it, so
+ * the counter could not fall behind the references it has already handed out.
  */
-export async function assertEngineOnlyRestoreAllowed(
+export function assertEngineOnlyRestoreAllowed(
 	databaseName: string,
-	blobRoots: string[],
 	{ backupHasBlobs, allowEngineOnly }: { backupHasBlobs: boolean; allowEngineOnly: boolean }
-): Promise<void> {
-	if (backupHasBlobs || allowEngineOnly) return;
-	// Deliberately no in-place/target distinction: what makes a restore unsafe is blob files at the
-	// destination, and a destination's blob roots live outside its database directory, so "this name
-	// has no database directory" does not establish "this name has no blobs" — a dropped database
-	// leaves reclaimable blobs behind for a retention window. Asking the roots answers it directly,
-	// and a genuinely new target passes because its roots are missing or empty.
-	if (!(await blobRootsHaveFiles(blobRoots))) return;
+): void {
+	// Strictly true, not merely truthy: a manifest is on-disk data, and a corrupt `blobs` value must not
+	// be read as "this backup has blobs" and waved past the guard.
+	if (backupHasBlobs === true || allowEngineOnly === true) return;
+	// Decided from the manifest alone. Walking the destination to tailor the message would turn a
+	// deterministic 400 into a traversal that can be slow or fail outright (EACCES on an unreadable
+	// root), for wording -- and both hazards are worth stating anyway, since the operator who passes
+	// the opt-in is accepting whichever one applies.
 	throw new ClientError(
-		`Cannot restore an engine-only backup over database '${databaseName}': the backup captured no blobs, but the database still has blob files. ` +
-			`Restoring would roll records back while leaving those blobs in place, so a record could resolve to a blob that no longer belongs to it. ` +
-			`Restore a backup that includes blobs, restore into a new database with 'target_database', or pass 'allow_engine_only' to accept the mixed result.`
+		`Cannot restore an engine-only backup over database '${databaseName}': the backup captured no blobs, so the restored records would address whichever blobs are on disk now. ` +
+			`If the database still has blob files, a record can resolve to a blob that no longer belongs to it; if it has none, blob ids restart at 1 and the next blob written lands on a path a restored record already references — so a new target database is not an escape. ` +
+			`Restore a backup that includes blobs, or pass 'allow_engine_only' to accept the mixed result.`
 	);
 }
 
@@ -389,8 +382,8 @@ export async function assertEngineOnlyRestoreAllowed(
  * A backup created with blobs excluded (or an older backup that predates blob snapshots) has no
  * snapshot directory: in that case the live blob roots are left untouched and a warning is logged,
  * since purging them would strip blobs the restored records may still reference. A restore only
- * reaches that state when the operator accepted it (`assertEngineOnlyRestoreAllowed`) or the
- * destination roots are already empty. Roots are restored by index into the *same* configured root;
+ * reaches that state when the operator accepted it with `allow_engine_only`
+ * (`assertEngineOnlyRestoreAllowed` refuses otherwise, whatever the destination roots hold). Roots are restored by index into the *same* configured root;
  * an incompatible root count is rejected up front (see `assertBlobSnapshotRestorable`) rather than
  * collapsed, so blobs are never mis-addressed.
  */

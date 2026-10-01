@@ -1,5 +1,6 @@
 'use strict';
 
+const assert = require('node:assert');
 const chai = require('chai');
 const sinon = require('sinon');
 const rewire = require('rewire');
@@ -51,25 +52,34 @@ describe('Test signalling module', () => {
 		expect(send_itc_event_stub).to.have.been.calledWith(sinon.match(expected_event));
 	});
 
-	it('Test signalSchemaChange sad path', () => {
+	it('Test signalSchemaChange sad path', async () => {
 		send_itc_event_stub.throws(TEST_ERROR);
-		signalling.signalSchemaChange('message');
+		await signalling.signalSchemaChange('message');
 		expect(log_error_stub.lastCall.args[0].name).to.equal(TEST_ERROR);
 	});
 
-	it('Test signalUserChange happy path', () => {
-		const message = 'user';
-		const expected_event = {
-			type: 'user',
-			message: 'user',
+	it('propagates a restore close barrier failure', async () => {
+		send_itc_event_stub.rejects(new Error('restore barrier timed out'));
+		await assert.rejects(
+			signalling.signalSchemaChange({ operation: 'restore_backup', restorePhase: 'close' }),
+			/restore barrier timed out/
+		);
+	});
+
+	it('broadcasts a peer-first schema completion twice when requested', async () => {
+		const message = {
+			operation: 'drop_schema',
+			schema: 'late_joining_worker_test',
+			dropPreparationId: 'late-join-test',
 		};
-		signalling.signalUserChange(message);
-		expect(send_itc_event_stub).to.have.been.calledWith(sinon.match(expected_event));
-	});
 
-	it('Test signalUserChange sad path', () => {
-		send_itc_event_stub.throws(TEST_ERROR);
-		signalling.signalUserChange('message');
-		expect(log_error_stub.lastCall.args[0].name).to.equal(TEST_ERROR);
+		await signalling.signalSchemaChange(message, {
+			peersFirst: true,
+			includeJobWorkers: true,
+			peerRounds: 2,
+		});
+
+		expect(send_itc_event_stub).to.have.been.calledTwice;
+		expect(send_itc_event_stub).to.always.have.been.calledWith(sinon.match({ message }), true);
 	});
 });

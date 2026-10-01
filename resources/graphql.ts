@@ -4,10 +4,15 @@ import { scopedTableFactory, table } from './databases.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.js';
 import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
 import { Resources } from './Resources.ts';
-import type { NamedTypeNode, StringValueNode, ValueNode } from 'graphql';
+import type { DirectiveNode, NamedTypeNode, StringValueNode, ValueNode } from 'graphql';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { attributeToFragment, type JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
+import { compileFullTextDefinitions, compileFullTextFields } from './fullTextSchema.ts';
+import { validateDecisionSchema } from './models/decision.ts';
+import { assertDerivedFieldOwnership } from './models/embedHook.ts';
+import type { DecideConfig } from './models/decideHook.ts';
+import type { DecisionLeaf } from './models/types.ts';
 
 const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt', 'Blob'];
 
@@ -26,9 +31,113 @@ function coerceDirectiveValue(node: ValueNode): any {
 			return null;
 		case 'ListValue':
 			return node.values.map(coerceDirectiveValue);
+		case 'ObjectValue': {
+			const value: Record<string, unknown> = Object.create(null);
+			for (const field of node.fields) {
+				if (Object.hasOwn(value, field.name.value))
+					throw new ClientError(`Directive object declares "${field.name.value}" more than once`, 400);
+				value[field.name.value] = coerceDirectiveValue(field.value);
+			}
+			return value;
+		}
 		default:
 			return (node as { value?: unknown }).value;
 	}
+}
+
+const DECIDE_STRING_ARGS = new Set(['source', 'model', 'confidence', 'decision', 'instructions']);
+const DECIDE_INT_ARGS = new Set(['minimum', 'maximum']);
+
+/**
+ * `@decide(source, values | minimum/maximum, model?, confidence?, decision?, instructions?)`: the attribute
+ * type selects the decision leaf (String → the `values` enum, Boolean, Int → a bounded range),
+ * and the leaf is validated here so a bad closed set fails the schema load, not the first write.
+ * Field references (source, confidence, decision) are checked once every field of the type is known.
+ */
+function parseDecideDirective(directive: DirectiveNode, property: any): DecideConfig {
+	const target = `@decide on "${property.name}"`;
+	const args: {
+		source?: string;
+		model?: string;
+		confidence?: string;
+		decision?: string;
+		instructions?: string;
+		values?: string[];
+		minimum?: number;
+		maximum?: number;
+	} = {};
+	for (const arg of directive.arguments || []) {
+		const name = arg.name.value;
+		if (Object.hasOwn(args, name)) throw new ClientError(`${target} declares "${name}" more than once`, 400);
+		const value = arg.value;
+		if (DECIDE_STRING_ARGS.has(name)) {
+			if (value.kind !== 'StringValue')
+				throw new ClientError(`@decide(${name}: ...) on "${property.name}" expects a string literal`, 400);
+			args[name] = value.value;
+		} else if (DECIDE_INT_ARGS.has(name)) {
+			if (value.kind !== 'IntValue')
+				throw new ClientError(`@decide(${name}: ...) on "${property.name}" expects an integer literal`, 400);
+			args[name] = Number(value.value);
+		} else if (name === 'values') {
+			if (value.kind !== 'ListValue' || value.values.some((item) => item.kind !== 'StringValue'))
+				throw new ClientError(`@decide(values: ...) on "${property.name}" expects a list of string literals`, 400);
+			args.values = value.values.map((item) => (item as StringValueNode).value);
+		} else throw new ClientError(`${target} has an unknown argument "${name}"`, 400);
+	}
+	if (!args.source) throw new ClientError(`${target} requires a "source" argument`, 400);
+	for (const name of ['confidence', 'decision'] as const)
+		if (args[name] === '') throw new ClientError(`${target}: "${name}" must name a field`, 400);
+	const hasRange = args.minimum !== undefined || args.maximum !== undefined;
+	let schema: DecisionLeaf;
+	switch (property.type) {
+		case 'String':
+			if (!args.values)
+				throw new ClientError(`${target} requires "values" (the allowed strings) on a String attribute`, 400);
+			if (hasRange) throw new ClientError(`${target} takes "minimum" and "maximum" only on an Int attribute`, 400);
+			schema = { enum: args.values };
+			break;
+		case 'Boolean':
+			if (args.values || hasRange)
+				throw new ClientError(`${target} takes no "values", "minimum" or "maximum" on a Boolean attribute`, 400);
+			schema = { type: 'boolean' };
+			break;
+		case 'Int':
+			if (args.values)
+				throw new ClientError(`${target} takes "minimum" and "maximum", not "values", on an Int attribute`, 400);
+			if (args.minimum === undefined || args.maximum === undefined)
+				throw new ClientError(`${target} requires both "minimum" and "maximum" on an Int attribute`, 400);
+			// Table validation holds an Int to 32 bits; a wider bound would load and then fail every write.
+			for (const [name, bound] of Object.entries({ minimum: args.minimum, maximum: args.maximum }))
+				if (bound >> 0 !== bound)
+					throw new ClientError(`${target}: "${name}" must be an integer from -2147483648 to 2147483647`, 400);
+			schema = { type: 'integer', minimum: args.minimum, maximum: args.maximum };
+			break;
+		default:
+			throw new ClientError(
+				`${target} requires a String, Boolean or Int attribute type; got "${property.type === 'array' ? '[...]' : property.type}"`,
+				400
+			);
+	}
+	try {
+		validateDecisionSchema(schema);
+	} catch (err) {
+		throw new ClientError(`${target}: ${(err as Error).message}`, 400);
+	}
+	if (property.nullable === false)
+		throw new ClientError(`${target} cannot be declared non-null: a null source clears the attribute`, 400);
+	if (property.isPrimaryKey || property.computed)
+		throw new ClientError(`${target} cannot combine with @primaryKey or @computed`, 400);
+	const fields = new Set([property.name, args.source, args.confidence, args.decision].filter(Boolean));
+	if (fields.size !== 2 + (args.confidence ? 1 : 0) + (args.decision ? 1 : 0))
+		throw new ClientError(
+			`${target}: the attribute, "source", "confidence" and "decision" must be different fields`,
+			400
+		);
+	const config: DecideConfig = { source: args.source, model: args.model ?? 'default', schema };
+	if (args.confidence) config.confidence = args.confidence;
+	if (args.decision) config.decision = args.decision;
+	if (args.instructions) config.instructions = args.instructions;
+	return config;
 }
 
 if (!server.knownGraphQLDirectives) {
@@ -42,6 +151,8 @@ server.knownGraphQLDirectives.push(
 	'indexed',
 	'computed',
 	'embed',
+	'decide',
+	'fullText',
 	'relationship',
 	'createdTime',
 	'updatedTime',
@@ -136,7 +247,14 @@ async function processGraphQLSchema(
 				// use type name as the default table
 				const attributes: any[] = [];
 				const typeProperties: Record<string, JsonSchemaFragment> = {};
-				const typeDef: any = { table: null, database: null, attributes, properties: typeProperties };
+				const typeDef: any = {
+					table: null,
+					database: null,
+					attributes,
+					properties: typeProperties,
+					fullTextIndexes: [],
+					fullTextFields: [],
+				};
 				if (definition.description?.value) typeDef.description = definition.description.value;
 				types.set(typeName, typeDef);
 				resources.allTypes.set(typeName, typeDef);
@@ -170,6 +288,8 @@ async function processGraphQLSchema(
 					if (directive.name.value === 'splitSegments') typeDef.splitSegments = true;
 					if (directive.name.value === 'replicate') typeDef.replicate = true;
 					if (directive.name.value === 'hidden') typeDef.hidden = true;
+					if (directive.name.value === 'fullText')
+						throw new ClientError('@fullText must be declared on a FullText field', 400);
 					if (directive.name.value === 'export') {
 						typeDef.export = true;
 						for (const arg of directive.arguments) {
@@ -192,12 +312,40 @@ async function processGraphQLSchema(
 						};
 					}
 					const typeName = (type as NamedTypeNode).name?.value;
+					if (typeName === 'FullText') throw new ClientError('FullText fields require @fullText', 400);
 					const property = { type: typeName };
 					Object.defineProperty(property, 'location', { value: type.loc.startToken });
 					return property;
 				}
 				const attributesObject = {};
 				for (const field of definition.fields) {
+					const name = field.name.value;
+					const fullTextDirectives = field.directives.filter(({ name }) => name.value === 'fullText');
+					if (fullTextDirectives.length > 0) {
+						if (fullTextDirectives.length !== 1)
+							throw new ClientError(`Full-text field "${name}" requires exactly one @fullText directive`, 400);
+						if (field.type.kind !== 'NamedType' || field.type.name.value !== 'FullText')
+							throw new ClientError(`@fullText field "${name}" requires the nullable FullText type`, 400);
+						for (const directive of field.directives) {
+							if (directive.name.value !== 'fullText')
+								throw new ClientError(
+									`Full-text field "${name}" cannot use @${directive.name.value}; configure permissions and record values on its source fields`,
+									400
+								);
+						}
+						const index: Record<string, unknown> = Object.create(null);
+						index.name = name;
+						for (const arg of fullTextDirectives[0].arguments || []) {
+							if (arg.name.value === 'name')
+								throw new ClientError(`@fullText uses the field name "${name}"; remove its name argument`, 400);
+							if (Object.hasOwn(index, arg.name.value))
+								throw new ClientError(`@fullText declares "${arg.name.value}" more than once`, 400);
+							index[arg.name.value] = coerceDirectiveValue(arg.value);
+						}
+						typeDef.fullTextIndexes.push(index);
+						typeDef.fullTextFields.push(name);
+						continue;
+					}
 					const property = getProperty(field.type);
 					property.name = field.name.value;
 					if (field.description?.value) property.description = field.description.value;
@@ -262,6 +410,10 @@ async function processGraphQLSchema(
 									property.version = `embed:${embedDefinition.model}`;
 								}
 							}
+						} else if (directiveName === 'decide') {
+							// Resolved after the field's other directives so @primaryKey / @computed in any
+							// order are seen; the ownership checks below need every field of the type.
+							property.decide = directive;
 						} else if (directiveName === 'relationship') {
 							const relationshipDefinition = {};
 							for (const arg of directive.arguments) {
@@ -309,18 +461,13 @@ async function processGraphQLSchema(
 								400
 							);
 					}
+					if (property.decide) property.decide = parseDecideDirective(property.decide, property);
 				}
-				// @embed source must reference a declared field; a typo would silently leave
-				// the vector column unpopulated (the source key never appears in write payloads).
-				for (const prop of attributes as any[]) {
-					// Object.hasOwn (not `in`): `attributesObject` is a plain object, so `in` would
-					// match inherited prototype keys (toString, constructor) and pass a bad source.
-					if (prop.embed && !Object.hasOwn(attributesObject, prop.embed.source))
-						throw new ClientError(
-							`@embed on "${prop.name}" references unknown source field "${prop.embed.source}"`,
-							400
-						);
-				}
+				assertDerivedFieldOwnership(attributes as any[]);
+				if (typeDef.fullTextIndexes.length > 0 && !typeDef.table)
+					throw new ClientError('@fullText is only supported on a @table type', 400);
+				typeDef.fullTextIndexes = compileFullTextDefinitions(typeDef.fullTextIndexes, attributes);
+				typeDef.fullTextFields = compileFullTextFields(typeDef.fullTextFields, typeDef.fullTextIndexes, attributes);
 				// Project the array form into the canonical `properties` Record (JSON-Schema-shaped,
 				// keyed by attribute name). Both shapes are co-populated in this single pass;
 				// downstream consumers (MCP, OpenAPI) read whichever form they prefer.

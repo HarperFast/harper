@@ -65,3 +65,29 @@ export class InProcProbe extends Resource {
 		};
 	}
 }
+
+export class ReplayProbe extends Resource {
+	static loadAsInstance = false;
+	async post(query, body) {
+		const { ids, sentinelId, includeSuperseded, rawEvents } = await body;
+		const subscription = await tables.Burst.subscribe({
+			startTime: 1,
+			isCollection: true,
+			includeSuperseded,
+			rawEvents,
+			eventFilter: (event) => event.id === sentinelId || ids.includes(event.id),
+		});
+		const timeout = setTimeout(() => subscription.close(new Error('Replay sentinel was not delivered')), 10_000);
+		const events = [];
+		try {
+			for await (const event of subscription) {
+				if (event.id === sentinelId) return events;
+				events.push({ id: event.id, type: event.type, value: event.value, version: event.version });
+			}
+			throw new Error('Subscription ended before the replay sentinel');
+		} finally {
+			clearTimeout(timeout);
+			subscription.end();
+		}
+	}
+}

@@ -152,6 +152,31 @@ describe('DeploymentRecorder.recordPeer', () => {
 		assert.strictEqual(persisted.peer_results[0].status, 'success');
 		assert.strictEqual(persisted.status, 'success');
 	});
+
+	it("keeps the origin's comparison of a peer's install fingerprint, and only once one was made", async () => {
+		const recorder = await DeploymentRecorder.create({ project: 'p' });
+		const install = { lockfiles: { 'package-lock.json': 'a'.repeat(64) } };
+		recorder.recordPeer({ node: 'compared', install, install_matches: false, install_differs: ['package-lock.json'] });
+		recorder.recordPeer({ node: 'wrapped', value: { install }, install_matches: true, install_differs: [] });
+		recorder.recordPeer({
+			node: 'malformed',
+			install: { lockfiles: 'x' },
+			install_matches: 'yes',
+			install_differs: [3],
+		});
+		recorder.recordPeer({ node: 'not-compared', install });
+		const byNode = Object.fromEntries(recorder.row.peer_results.map((peer) => [peer.node, peer]));
+		assert.deepStrictEqual(
+			[byNode.compared.install, byNode.compared.install_matches, byNode.compared.install_differs],
+			[install, false, ['package-lock.json']]
+		);
+		assert.deepStrictEqual(byNode.wrapped.install, install);
+		assert.deepStrictEqual(
+			[byNode.malformed.install, byNode.malformed.install_matches, byNode.malformed.install_differs],
+			[null, null, []]
+		);
+		assert.ok(!('install_matches' in byNode['not-compared']));
+	});
 });
 
 describe('DeploymentRecorder.recordPeers (bulk wrapper)', () => {
@@ -508,7 +533,8 @@ describe('DeploymentRecorder.ingestPayload transaction context', () => {
 		assert.strictEqual(ingestContext.user, user);
 		assert.strictEqual(ingestContext.originatingOperation, 'deploy_component');
 		assert.strictEqual(ingestContext.session, session);
-		assert.strictEqual(ingestContext.signal, signal);
+		// Not forwarded: a disconnecting deploy client must not poison the tracking writes.
+		assert.strictEqual(ingestContext.signal, undefined);
 		assert.ok(ingestContext.transaction);
 		assert.notStrictEqual(ingestContext.transaction, ambientTransaction);
 		assert.strictEqual(ingestContext.transactionTimeoutBudget, ingestTransactionTimeoutMs(configuredBudget));

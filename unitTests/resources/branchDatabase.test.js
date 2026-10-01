@@ -6,7 +6,8 @@ const { join } = require('node:path');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { setupTestDBPath } = require('../testUtils');
 const { table, databases, database, BRANCH_ROOT_DIR, resolveBranchPath } = require('#src/resources/databases');
-const { getOrCreateBranch, removeBranches } = require('#src/resources/branchDatabase');
+const { getOrCreateBranch, removeBranches, closeBranchAt } = require('#src/resources/branchDatabase');
+const { getAuditFloor, getDatabaseGeneration } = require('#src/resources/auditStore');
 const { replayLogs } = require('#src/resources/replayLogs');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
@@ -56,6 +57,20 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 		const expected = resolveBranchPath('lifebase', 'appA');
 		assert.ok(existsSync(expected), `expected the branch at ${expected}`);
 		assert.ok(expected.includes(BRANCH_ROOT_DIR), 'branches belong under the reserved root');
+	});
+
+	it('gives a new branch a generation of its own, and keeps it when the branch is adopted again', async function () {
+		const branch = await getOrCreateBranch('lifebase', 'appGeneration');
+		const forked = getDatabaseGeneration(branch.tables.LifecycleSource.auditStore);
+		assert.notStrictEqual(forked.id, getDatabaseGeneration(Source.auditStore).id);
+		assert.ok(forked.epoch > 0, 'a branch is a copy, not genesis');
+		assert.ok(
+			getAuditFloor(branch.tables.LifecycleSource.auditStore) >= forked.epoch,
+			'the checkpoint carried no log below the fork'
+		);
+		await closeBranchAt(resolveBranchPath('lifebase', 'appGeneration'));
+		const adopted = await getOrCreateBranch('lifebase', 'appGeneration');
+		assert.deepStrictEqual(getDatabaseGeneration(adopted.tables.LifecycleSource.auditStore), forked);
 	});
 
 	it('gives concurrent callers the same branch rather than racing two checkpoints', async function () {
@@ -1877,7 +1892,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
 		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
 		await branch.tables.Cycle.put({ id: 'held', kept: true });
-		branch.close();
+		await branch.close();
 		// A holder this thread's cache knows nothing about, standing in for another thread's handle.
 		const foreign = openBranchDatabase(branchPath, 'cyclebase', STORE);
 		try {
@@ -1888,7 +1903,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 				'and so are its blob roots'
 			);
 		} finally {
-			foreign.close();
+			await foreign.close();
 		}
 		const reopened = await getOrCreateBranch('cyclebase', 'cycleApp');
 		assert.ok(await reopened.tables.Cycle.get('held'), 'the refused branch is still fully usable');
@@ -1931,7 +1946,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
 		const removing = `${branchPath}\`removing\``;
 		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
-		branch.close();
+		await branch.close();
 		// Standing in for a crash part-way through: an entry the final delete cannot unlink. Removal must
 		// already have moved the directory to its tombstone by then -- deleting in place would leave a
 		// half-gone branch that reads as damaged, with no record of what was being removed.
@@ -2016,7 +2031,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
 		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
 		assert.strictEqual(applicationHasBranchStorage('cycleApp'), true);
-		branch.close();
+		await branch.close();
 		renameSync(branchPath, `${branchPath}\`removing\``);
 		assert.strictEqual(applicationHasBranchStorage('cycleApp'), true, 'a tombstone still owes storage');
 		await removeBranchesForApplication('cycleApp');
@@ -2030,7 +2045,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
 		const removing = `${branchPath}\`removing\``;
 		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
-		branch.close();
+		await branch.close();
 		renameSync(branchPath, removing);
 		// The final delete removed the marker and then died, leaving a marker-less tombstone. A same-named
 		// directory on a configured volume, from a restore say, is not this branch's to delete.
@@ -2052,7 +2067,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
 		const removing = `${branchPath}\`removing\``;
 		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
-		branch.close();
+		await branch.close();
 		// A crash after the tombstone rename and before the blob roots went.
 		renameSync(branchPath, removing);
 		assert.ok(
@@ -2076,7 +2091,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
 		const removing = `${branchPath}\`removing\``;
 		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
-		branch.close();
+		await branch.close();
 		renameSync(branchPath, removing);
 		// The blob roots the tombstone points at are still this branch's, so a database under the same
 		// name would mint its own file ids onto them.
@@ -2096,7 +2111,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
 		const removing = `${branchPath}\`removing\``;
 		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
-		branch.close();
+		await branch.close();
 		renameSync(branchPath, removing);
 		// A database directory under the identity's name (created outside this process's guard, say by a
 		// restore) owns the blob root the tombstone still points at.
@@ -2148,7 +2163,7 @@ describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
 		const { dirname } = require('node:path');
 		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
 		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
-		branch.close();
+		await branch.close();
 		const appDirectory = dirname(branchPath);
 		chmodSync(appDirectory, 0o000);
 		try {

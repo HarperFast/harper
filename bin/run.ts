@@ -26,6 +26,8 @@ import { startHTTPThreads } from '../server/threads/socketRouter.ts';
 import { beginProcessShutdown } from '../server/threads/manageThreads.js';
 import * as hdbInfoController from '../dataLayer/hdbInfoController.ts';
 import { isReadOnlyMode } from '../resources/databases.ts';
+import { declareTokenUseTable } from '../security/authn/oidc/tokenUseTable.ts';
+import { ensureCertificateVerificationTables } from '../security/certificateVerification/verificationTables.ts';
 import { getThisNodeName, getThisNodeHostname } from '../server/nodeName.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import { getHdbPid, isProcessRunning } from '../utility/processManagement/processManagement.js';
@@ -182,6 +184,22 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 			hdbLogger.error(err);
 		}
 		process.exit(1);
+	}
+
+	// Every boot: data already at a 5.3.0 pre-release never runs the 5.3.0 directive (compareVersions sorts
+	// those versions above 5.3.0). Before worker threads start, so they load the table with its expiration.
+	if (!isReadOnlyMode()) {
+		try {
+			declareTokenUseTable();
+		} catch (error) {
+			hdbLogger.error('Starting without the declared system.hdb_oidc_token_use; the next start retries', error);
+		}
+		// A node that never verifies a client certificate still holds the rows its peers replicate.
+		try {
+			await ensureCertificateVerificationTables();
+		} catch (error) {
+			hdbLogger.error('Starting without the declared certificate verification tables; the next start retries', error);
+		}
 	}
 
 	// A built-in component only activates when its config key is present. Fresh installs get these

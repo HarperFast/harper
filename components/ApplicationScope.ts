@@ -45,7 +45,7 @@ export class ApplicationScope {
 		this.resources = resources;
 		this.server = server;
 		this.#runtimeModules = new RuntimeModuleTracker(() => this.runtimeRoot);
-		if (deployLifecycle.isDeployInFlight(name)) this.#runtimeModules.beginDeploy();
+		if (deployLifecycle.loadsAwaitDeploy(name)) this.#runtimeModules.beginDeploy();
 
 		this.mode = env.get(CONFIG_PARAMS.APPLICATIONS_MODULELOADER) ?? 'vm-current-context';
 		this.dependencyLoader = env.get(CONFIG_PARAMS.APPLICATIONS_DEPENDENCYLOADER);
