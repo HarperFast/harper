@@ -872,7 +872,8 @@ interface TableResourceClass {
 	 * branch owns a schema identity of its own.
 	 */
 	assertSchemaMutable(operation: string): void;
-	dropTable(options?: { droppedTime?: number }): Promise<void>;
+	/** `localOnly`: a drop the caller asked not to replicate leaves no drop marker for peers. */
+	dropTable(options?: { droppedTime?: number; localOnly?: boolean }): Promise<void>;
 	/**
 	 * Record the relocation of an entry (when a record is moved to a different node), return true if it is now located locally
 	 */
@@ -2796,7 +2797,7 @@ export function makeTable(options): TableResourceClass {
 			throw error;
 		}
 
-		static async dropTable(options?: { droppedTime?: number }) {
+		static async dropTable(options?: { droppedTime?: number; localOnly?: boolean }) {
 			TableResource.assertSchemaMutable('drop a table');
 			const rootStore = primaryStore.rootStore;
 			if (
@@ -2906,7 +2907,6 @@ export function makeTable(options): TableResourceClass {
 							);
 					}
 					if (primaryMeta.dropping) {
-						// A concurrent drop carrying a newer peer time joins this one; the marker keeps the newest.
 						if (Number.isFinite(options?.droppedTime) && !(primaryMeta.droppedTime >= options.droppedTime)) {
 							primaryMeta.droppedTime = options.droppedTime;
 							tombstoneWrite = (dbisDb as any).put(primaryCatalogKey, primaryMeta);
@@ -2914,9 +2914,10 @@ export function makeTable(options): TableResourceClass {
 						return true;
 					}
 					primaryMeta.dropping = true;
-					primaryMeta.droppedTime = Number.isFinite(options?.droppedTime)
-						? options.droppedTime
-						: tableLifecycleTime(createdTime);
+					if (!options?.localOnly)
+						primaryMeta.droppedTime = Number.isFinite(options?.droppedTime)
+							? options.droppedTime
+							: tableLifecycleTime(createdTime);
 					// Stamps this drop's identity so the interrupted-drop retry budget in
 					// databases.ts can be scoped to THIS drop rather than the table name: a
 					// worker that exhausts the budget for a table can observe the catalog
@@ -3016,7 +3017,14 @@ export function makeTable(options): TableResourceClass {
 					for (const attribute of attributes) {
 						dbisDb.remove(TableResource.tableName + '/' + attribute.name);
 					}
-					promoteTombstoneToDropMarker(rootStore, dbisDb, databaseName, TableResource.tableName, currentPrimary);
+					promoteTombstoneToDropMarker(
+						rootStore,
+						dbisDb,
+						databaseName,
+						TableResource.tableName,
+						primaryCatalogKey,
+						currentPrimary
+					);
 					dbisDb.remove(primaryCatalogKey);
 					return true;
 				};
@@ -3140,7 +3148,7 @@ export function makeTable(options): TableResourceClass {
 						for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
 							if (key !== primaryCatalogKey) dbisDb.remove(key);
 						}
-						promoteTombstoneToDropMarker(rootStore, dbisDb, databaseName, tableName, currentPrimary);
+						promoteTombstoneToDropMarker(rootStore, dbisDb, databaseName, tableName, primaryCatalogKey, currentPrimary);
 						dbisDb.remove(primaryCatalogKey);
 						return true;
 					});

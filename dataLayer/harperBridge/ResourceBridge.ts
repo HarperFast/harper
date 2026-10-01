@@ -193,7 +193,10 @@ export class ResourceBridge extends BridgeMethods {
 	}
 
 	dropTable(dropTableObject) {
-		return getTable(dropTableObject).dropTable();
+		// `replicated: false` from a client is this node's business only; the replication layer stamps
+		// `replicatedFrom` on a peer's forwarded drop, which must leave its marker.
+		const localOnly = dropTableObject.replicated === false && !dropTableObject.replicatedFrom;
+		return getTable(dropTableObject).dropTable(localOnly ? { localOnly } : undefined);
 	}
 
 	createSchema(createSchemaObj) {

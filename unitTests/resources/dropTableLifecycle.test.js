@@ -138,7 +138,7 @@ describe('table lifecycle stamps (harper#1212)', () => {
 		);
 	});
 
-	it('creating over an unstamped interrupted drop yields a generation newer than the promoted marker', async () => {
+	it('completes a pre-stamp interrupted drop without inventing a drop time for it', async () => {
 		const Zombie = defineTable('LifecycleLegacyZombie');
 		await Zombie.put({ id: 1, str: 'alive' });
 		const meta = dbisDb().getSync('LifecycleLegacyZombie/');
@@ -147,11 +147,10 @@ describe('table lifecycle stamps (harper#1212)', () => {
 		delete databases[TEST_DB].LifecycleLegacyZombie;
 
 		const Fresh = defineTable('LifecycleLegacyZombie');
-		const marker = markerFor('LifecycleLegacyZombie');
-		assert.ok(marker, 'the completed drop leaves a marker even without a stamped tombstone');
-		assert.ok(!isDeadGeneration(Fresh.createdTime, marker.droppedTime), 'the replacement must survive its own marker');
+		assert.equal(markerFor('LifecycleLegacyZombie'), undefined, "a made-up time could postdate a peer's live recreate");
 		assert.equal(await Fresh.get(1), undefined);
 		await Fresh.dropTable();
+		assert.ok(markerFor('LifecycleLegacyZombie'), 'a stamped drop of the replacement still leaves its marker');
 	});
 
 	it('drops a generation stamped by a faster clock with a drop time that still retires it', async () => {
@@ -195,6 +194,13 @@ describe('table lifecycle stamps (harper#1212)', () => {
 			listener.remove();
 		}
 		assert.equal(seenInListener, 9999, 'the listener must see the marker it was told about');
+	});
+
+	it('leaves no marker for a drop the caller asked not to replicate', async () => {
+		const Local = defineTable('LifecycleLocalOnly');
+		await Local.dropTable({ localOnly: true });
+		assert.equal(markerFor('LifecycleLocalOnly'), undefined);
+		assert.equal(dbisDb().getSync('LifecycleLocalOnly/'), undefined, 'the drop itself completes');
 	});
 
 	it('promotes a tombstone that dropTableMeta would otherwise erase', async () => {

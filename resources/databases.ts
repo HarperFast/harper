@@ -679,7 +679,10 @@ function dropMarkerStoreFor(databaseName: string): { rootStore: RootDatabaseKind
 }
 /**
  * Read-compare-write of the newest drop time, serialized against every other writer: the catalog lock
- * on RocksDB (held by the caller when `exclusive` is false), a write transaction on LMDB.
+ * on RocksDB (held by the caller when `exclusive` is false), a write transaction on LMDB. A live
+ * tombstone is read again inside that section, so a drop that joined and raised its time cannot be
+ * promoted from a copy read earlier. A tombstone written before the stamps existed has no time, and no
+ * marker is synthesized for it: a time made up at completion could postdate a peer's live recreate.
  */
 function writeTableDropMarker(
 	rootStore: RootDatabaseKind,
@@ -688,11 +691,19 @@ function writeTableDropMarker(
 	tableName: string,
 	droppedTime: number | undefined,
 	tableId: number | undefined,
-	exclusive: boolean
+	exclusive: boolean,
+	tombstoneKey?: string
 ): boolean {
-	if (!Number.isFinite(droppedTime)) droppedTime = tableLifecycleTime();
 	const key = droppedRowKey(tableName);
 	const write = () => {
+		if (tombstoneKey) {
+			const live = attributesDbi.getSync(tombstoneKey);
+			if (live?.dropping && Number.isFinite(live.droppedTime) && !(droppedTime >= live.droppedTime)) {
+				droppedTime = live.droppedTime;
+				tableId = live.tableId ?? tableId;
+			}
+		}
+		if (!Number.isFinite(droppedTime)) return false;
 		const existing: TableDropMarker | undefined = attributesDbi.getSync(key);
 		if (existing && existing.droppedTime >= droppedTime) return false;
 		const marker: TableDropMarker = { table: tableName, droppedTime };
@@ -752,12 +763,13 @@ export function onTableDropRecorded(listener: (databaseName: string, tableName: 
 		},
 	};
 }
-/** Right before a completion path removes the live tombstone; RocksDB callers hold the catalog lock. */
+/** Right before a completion path removes the live tombstone at `tombstoneKey`; RocksDB callers hold the catalog lock. */
 export function promoteTombstoneToDropMarker(
 	rootStore: RootDatabaseKind,
 	attributesDbi,
 	databaseName: string,
 	tableName: string,
+	tombstoneKey: string,
 	tombstone: { droppedTime?: number; tableId?: number } | undefined
 ): void {
 	writeTableDropMarker(
@@ -767,7 +779,8 @@ export function promoteTombstoneToDropMarker(
 		tableName,
 		tombstone?.droppedTime,
 		tombstone?.tableId,
-		false
+		false,
+		tombstoneKey
 	);
 }
 export function storeNamesFor(attributesDbi, tableName: string, generation: string | undefined): string[] {
@@ -5797,7 +5810,14 @@ function completeInterruptedDrop(
 		(attributesDbi as any).removeSync(key);
 	}
 	if (tombstoneEntry) {
-		promoteTombstoneToDropMarker(rootStore, attributesDbi, databaseName, tableName, tombstoneEntry.value);
+		promoteTombstoneToDropMarker(
+			rootStore,
+			attributesDbi,
+			databaseName,
+			tableName,
+			tombstoneEntry.key,
+			tombstoneEntry.value
+		);
 		(attributesDbi as any).removeSync(tombstoneEntry.key);
 	}
 	return true;
@@ -5811,7 +5831,7 @@ export function dropTableMeta({ table: tableName, database: databaseName }) {
 		// A drop that returned with its tombstone still in place (full-text retirement pending) must not
 		// lose the drop time with the row.
 		if (value?.dropping)
-			writeTableDropMarker(rootStore, dbisDb, databaseName, tableName, value.droppedTime, value.tableId, true);
+			writeTableDropMarker(rootStore, dbisDb, databaseName, tableName, value.droppedTime, value.tableId, true, key);
 		removals.push(dbisDb.remove(key));
 	}
 	databaseEventsEmitter.emit('dropTable', tableName, databaseName);
