@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790840106998,
+  "lastUpdate": 1790840111244,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -16132,6 +16132,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 150.26,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Chris Barber",
+            "username": "cb1kenobi",
+            "email": "chris@harperdb.io"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "4c0fa388a578e97354ab264dc1fbbf18c11e3dba",
+          "message": "Merge pull request #2903 from HarperFast/fix/lock-default-scope-2716\n\nResolve a defaulted lock() scope from the table's replicate declaration, so enabling cluster record locks cannot re-scope a plugin's node-local lock",
+          "timestamp": "2026-10-01T05:13:00Z",
+          "url": "https://github.com/HarperFast/harper/commit/4c0fa388a578e97354ab264dc1fbbf18c11e3dba"
+        },
+        "date": 1790840110273,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 17.35,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 16.45,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 21.33,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 21.15,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 28.06,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 20.08,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 39.64,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 16.85,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 20.3,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 46.13,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 183.4,
             "unit": "ms"
           }
         ]
