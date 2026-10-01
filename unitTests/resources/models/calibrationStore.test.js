@@ -493,12 +493,40 @@ describe('calibration store and facade (#2841)', function () {
 		assert.strictEqual(summary.report.calibrated, undefined);
 	});
 
+	it('samples the newest decisions that fit the byte budget, so a large population is still refit', async () => {
+		await recordCases(models, 0, 300);
+		const run = await runCalibration({ maxBytes: 40_000 });
+		assert.strictEqual(run.stoppedBy, undefined, JSON.stringify(run));
+		assert.ok(run.read < 300, `the sample is cut to the budget: ${run.read}`);
+		assert.strictEqual(run.written, 1, JSON.stringify(run));
+	});
+
+	it('lets a population whose decisions are gone lapse instead of renewing it', async () => {
+		const ids = await recordCases(models, 0, 30);
+		await runCalibration();
+		const headExpiry = () =>
+			transaction({}, async () => {
+				for await (const row of getCalibrationsTable().search({
+					conditions: [{ attribute: 'kind', value: 'population' }],
+				}))
+					return row.expiresAt;
+			});
+		const before = await headExpiry();
+		const { decisions } = getDecisionTables();
+		await transaction({}, async () => {
+			for (const id of ids) await decisions.delete(id);
+		});
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		await runCalibration();
+		assert.strictEqual(await headExpiry(), before, 'a run that read no decisions does not extend the head');
+	});
+
 	it('stops at its budgets and says which one', async () => {
 		await recordCases(models, 0, 50);
 		await recordCases(models, 50, 50, { instructions: 'second population' });
 		const byPopulations = await runCalibration({ maxPopulations: 1 });
 		assert.strictEqual(byPopulations.stoppedBy, 'maxPopulations');
-		const byBytes = await runCalibration({ maxBytes: 5_000 });
+		const byBytes = await runCalibration({ maxBytes: 1_200 });
 		assert.strictEqual(byBytes.stoppedBy, 'maxBytes');
 		assert.strictEqual(byBytes.written, 0, 'a population cut off by the budget writes nothing');
 		assert.ok(byBytes.pending >= 1);

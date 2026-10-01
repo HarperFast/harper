@@ -427,7 +427,6 @@ export function sourceFingerprint(kind: string, logicalName: string | undefined,
 		.digest('hex');
 }
 
-/** Which backend serves after this one is routing, not what produces this one's scores. */
 /**
  * Only fields known to hold credentials. A setting that merely ends in `key` or `token` can change what a source
  * scores, so it stays in the fingerprint; rotating an unrecognized secret therefore starts calibration over.
@@ -445,6 +444,7 @@ function withoutNamedCredentials(value: unknown): unknown {
 	return kept;
 }
 
+/** Which backend serves after this one is routing, not what produces this one's scores. */
 function withoutFallback(config: unknown): unknown {
 	if (!config || typeof config !== 'object' || Array.isArray(config)) return config;
 	const { fallback: _fallback, ...rest } = config as Record<string, unknown>;

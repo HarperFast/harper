@@ -651,8 +651,8 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 				break;
 			}
 			bytes += size;
-			const { lastFittedAt, expiresAt: _expiresAt, ...rest } = head;
-			populations.set(head.population, { head: rest, lastFittedAt, bytes: size });
+			const { lastFittedAt, expiresAt, ...rest } = head;
+			populations.set(head.population, { head: rest, lastFittedAt, expiresAt, bytes: size });
 		}
 	} catch (err) {
 		fail('reading known populations', err);
@@ -867,9 +867,10 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 			} catch {}
 			return 'failed';
 		}
+		const rowBytes = perKey.reduce((sum, key) => sum + EXAMPLE_OVERHEAD_BYTES + key.values.length * 8, 0);
 		const sample = Math.min(
 			config.maxExamplesPerKey,
-			Math.max(1, Math.floor((config.maxBytes - baseBytes) / EXAMPLE_OVERHEAD_BYTES))
+			Math.max(1, Math.floor((config.maxBytes - baseBytes) / rowBytes))
 		);
 		const limit = Math.min(sample, allowance + 1);
 		let rows: DecisionRow[];
@@ -1046,7 +1047,9 @@ async function runOnce(budgets: CalibrationBudgets, deps: RunDeps): Promise<Cali
 				...head,
 				owner: ownerOf(head.tenant),
 				lastFittedAt: fittedAt,
-				expiresAt: Math.max(newestExpiry, fittedAt + policy.maxAgeMs),
+				expiresAt: rows.length
+					? Math.max(newestExpiry, fittedAt + policy.maxAgeMs)
+					: (found.expiresAt ?? fittedAt + policy.maxAgeMs),
 			};
 			await transaction(freshContext(), async () => {
 				for (const row of written) await store.put(row);
