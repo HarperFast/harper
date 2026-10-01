@@ -191,26 +191,11 @@ pk → node-id lookup costs more than the record load it saves.
 
 ## Filtered full-text search reuses companion secondary indexes before loading source records
 
-Full-text search uses the same `planCandidateKeys` contract as HNSW, but chooses between two existing
-RocksDB access patterns. A selective range is materialized as a bounded key set. A broad equality
-condition is checked with one point read of the existing `[indexed value, primary key]` secondary-index
-entry for each Tantivy hit. The latter avoids scanning and retaining a large key set merely to reject
-non-matching full-text hits. Full-text materialization uses a 4,096-key synchronous scan budget.
-Collection can consume that budget before cancellation is observed; making the shared planner
-cooperative would require an asynchronous contract that HNSW does not otherwise need.
-Point probes run only when their estimated index-read cost is no greater than the source loads they
-are expected to avoid, using the selectivity of the terms the probe covers and the same
-eight-key-reads-per-source-read ratio as materialization. Candidate-set budgets use the expected
-rejection fraction and the native query's reported hit count, including for unbounded queries where
-the requested target fills the native window.
+Full-text search uses the same `planCandidateKeys` contract as HNSW and chooses between two existing RocksDB access patterns. A selective range becomes a bounded key set; a broad equality condition uses one point read of the existing `[indexed value, primary key]` secondary-index entry per Tantivy hit. This avoids retaining a large set only to reject non-matching hits. Materialization has a 4,096-key synchronous budget and can consume it before observing cancellation; making the shared planner cooperative would add an asynchronous contract HNSW does not otherwise need.
 
-The planner marks a gate complete only when its indexed terms cover every companion condition and no
-opaque record guard remains. An incomplete gate may reject definite misses, but admitted records still
-run the residual predicate. Both paths retain the normal post-filter, source-version, expiry and current
-entry checks. If collection exceeds its budget or a point read fails, the query falls back to the record
-predicate and backs off the failing gate briefly before retrying it. One warning is emitted per failure
-episode. Unless the lead index requests point probes, the planner does not inspect probe capabilities
-or allocate probe state; the ordinary HNSW traversal path stays unchanged.
+Point probes run only when their estimated index-read cost does not exceed the source loads they should avoid. The estimate uses the covered terms' selectivity and the same eight-key-reads-per-source-read ratio as materialization. Candidate-set budgets use the expected rejection fraction and the native reported hit count, including unbounded queries whose target fills the native window.
+
+The planner marks a gate complete only when its indexed terms cover every companion condition and no opaque record guard remains. An incomplete gate rejects definite misses, but admitted records still run the residual predicate. Both paths retain the normal post-filter, source-version, expiry and current-entry checks. A budget overrun or point-read failure falls back to the record predicate, briefly backs off the failing gate and emits one warning per failure episode. Unless the lead index requests point probes, the planner does not inspect probe capabilities or allocate probe state; ordinary HNSW traversal stays unchanged.
 
 ## Derived-index runtime: committed-log delivery to native index backends (`resources/derivedIndexRuntime.ts`)
 
@@ -524,26 +509,13 @@ plaintext, so Harper authorizes every highlighted source field before search; se
 by both record count and encoded source bytes and sends only the fields used by that query leaf. A
 single record larger than the native trace limit is rejected before crossing the binding.
 
-Search hits carry the source record version. Harper reads the authoritative record in its transaction and omits a hit when that
-version no longer matches; it never combines an old score or highlight with new content. Bounded searches begin by over-fetching
-32–256 native hits. When version checks or structured filters under-fill a page, Harper sizes the next request from observed yield.
-Pages grow within the native response envelope, with 4,096 as an absolute ceiling, then shrink as selectivity improves. A zero-yield
-page grows geometrically because it provides no selectivity estimate. Each page yields after at most 256 estimated source and
-companion-index point reads to check cancellation and the execution deadline. Equality point probes are limited to four index reads per candidate;
-wider equality plans fall back to the authoritative record predicate. The native result window remains the hard bound, and one reader
-lease keeps every page on one native snapshot. A lower-bound total must describe retrievable hits: while more hits remain, a page must
-return its requested limit. Fulltext 0.4.0 checks its deadline around the complete Tantivy collection and returns `E_TIMEOUT` instead
-of a partial page. Harper fails closed on a short page claiming more hits. Stale-version exhaustion observed in loaded records
-or a bounded sample of companion-index rejections is retryable index lag; filter-only exhaustion asks the client to narrow the query.
-Stale rejections outside that sample can still be classified as filter exhaustion; the bounded diagnostic avoids unbounded source reads.
-During bounded lag, results can temporarily omit a recent change when native hits end before the window. Harper clamps autocomplete
-to the maximum-size hits that fit one native response without reducing ordinary search. The response-capacity calculation is pinned to
-the Fulltext 0.4.0 Query API v2 framing; a later query API must advertise or version its framing overhead before Harper accepts it.
-REST exposes the index coverage header, and callers that require current coverage use
-`maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`.
-Full-text score descending is the only supported ordering in this release. Count requests return
-`recordCount: null` and `recordCountExact: false`; the native candidate total cannot become an exact
-Harper count after authorization, structured filtering and source-version checks.
+Search hits carry the source record version. Harper reads the authoritative record in its transaction and omits a hit when the version no longer matches; it never combines an old score or highlight with new content. Bounded searches begin by over-fetching 32–256 native hits. When version checks or structured filters under-fill a page, Harper sizes the next request from observed yield. Pages grow within the native response envelope, with 4,096 as an absolute ceiling, then shrink as selectivity improves; a zero-yield page grows geometrically because it provides no selectivity estimate.
+
+Each page yields after at most 256 estimated source and companion-index point reads to check cancellation and the execution deadline. Equality point probes are limited to four index reads per candidate; wider equality plans use the authoritative record predicate. The native result window remains the hard bound, and one reader lease keeps every page on one native snapshot.
+
+A lower-bound total must describe retrievable hits: while more hits remain, a page must return its requested limit. Fulltext 0.4.0 checks its deadline around the complete Tantivy collection and returns `E_TIMEOUT` instead of a partial page. Harper fails closed on a short page claiming more hits. Stale-version exhaustion observed in loaded records or a bounded sample of companion-index rejections is retryable index lag; filter-only exhaustion asks the client to narrow the query. Stale rejections outside that sample can still be classified as filter exhaustion; the bounded diagnostic avoids unbounded source reads. During bounded lag, results can temporarily omit a recent change when native hits end before the window.
+
+Harper clamps autocomplete to the maximum-size hits that fit one native response without reducing ordinary search. The response-capacity calculation is pinned to the Fulltext 0.4.0 Query API v2 framing; a later query API must advertise or version its framing overhead before Harper accepts it. REST exposes the index coverage header; callers requiring current coverage use `maxIndexLagMilliseconds: 0` or `waitForIndexMilliseconds`. Full-text score descending is the only supported ordering in this release. Count requests return `recordCount: null` and `recordCountExact: false`; the native candidate total cannot become an exact Harper count after authorization, structured filtering and source-version checks.
 
 A declared Blob source is part of one index document. An oversized, invalid UTF-8 or otherwise
 permanently unusable Blob makes that whole document unindexable rather than publishing a partial
