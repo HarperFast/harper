@@ -2,8 +2,8 @@
 
 const { isMainThread, parentPort, threadId, workerData } = require('node:worker_threads');
 const { createServer: createSocketServer } = require('node:net');
-const { unlinkSync, existsSync, mkdirSync } = require('fs');
-const { join } = require('path');
+const { unlinkSync, existsSync, mkdirSync, renameSync } = require('node:fs');
+const { join, dirname } = require('node:path');
 let componentsLoadedResolve;
 exports.whenComponentsLoaded = new Promise((resolve) => {
 	componentsLoadedResolve = resolve;
@@ -304,22 +304,35 @@ function startServers() {
  * An overlong path is the only condition that can skip a domain-socket listener. Check before
  * listen() because supported Node versions differ: some reject the path while others truncate and
  * bind it somewhere clients cannot reach using the configured path.
+ *
+ * A per-thread mirror binds at a temp name and is renamed over its published path: libuv unlinks a
+ * pipe server's bound path on close whoever owns it by then (server/DESIGN.md).
  */
 function listenOnDomainSocket(port, server) {
-	if (isDomainSocketPathTooLong(port)) {
+	const bindPath = server.isPerThreadSocket && !isWindows ? mirrorBindPath(port) : port;
+	const overlong = [port, bindPath].find((path) => isDomainSocketPathTooLong(path));
+	if (overlong) {
 		httpComponent.markUdsBindFailed(port);
 		harperLogger.error(
-			`Not binding domain socket listener${server.name ? ` for '${server.name}'` : ''} at ${port}: the ${Buffer.byteLength(port)}-byte path exceeds the platform limit of ${getDomainSocketPathMaxBytes()} bytes. Continuing without this domain socket.`
+			`Not binding domain socket listener${server.name ? ` for '${server.name}'` : ''} at ${port}: the ${Buffer.byteLength(overlong)}-byte path ${overlong} exceeds the platform limit of ${getDomainSocketPathMaxBytes()} bytes. Continuing without this domain socket.`
 		);
 		return Promise.resolve({ port, failed: true });
 	}
-	if (existsSync(port)) unlinkSync(port);
+	if (bindPath === port && existsSync(port)) unlinkSync(port);
 	return new Promise((resolve, reject) => {
 		function onError(error) {
 			reject(error);
 		}
 		function onListening() {
 			server.removeListener('error', onError);
+			if (bindPath !== port) {
+				try {
+					renameSync(bindPath, port);
+				} catch (error) {
+					server.close(); // libuv unlinks the temp name, which still exists
+					return reject(error);
+				}
+			}
 			// Record ownership of the inode we just bound, so cleanupUdsFiles()/markUdsBindFailed()
 			// (see http.ts) can tell this worker's own file apart from a replacement's later rebind
 			// at the same path (see registerUdsCleanupPaths). A no-op for domain sockets that aren't
@@ -330,12 +343,17 @@ function listenOnDomainSocket(port, server) {
 		}
 		try {
 			server.once('error', onError);
-			server.listen({ path: port }, onListening);
+			server.listen({ path: bindPath }, onListening);
 		} catch (error) {
 			server.removeListener('error', onError);
 			reject(error);
 		}
 	});
+}
+
+let mirrorBindSequence = 0;
+function mirrorBindPath(socketPath) {
+	return join(dirname(socketPath), `.${threadId}.${++mirrorBindSequence}`);
 }
 
 let listening;
