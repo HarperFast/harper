@@ -2907,8 +2907,16 @@ export function makeTable(options): TableResourceClass {
 							);
 					}
 					if (primaryMeta.dropping) {
-						if (Number.isFinite(options?.droppedTime) && !(primaryMeta.droppedTime >= options.droppedTime)) {
-							primaryMeta.droppedTime = options.droppedTime;
+						// A joining drop that replicates stamps a tombstone a local-only drop left bare, or raises it.
+						const joinedTime = options?.localOnly
+							? undefined
+							: Number.isFinite(options?.droppedTime)
+								? options.droppedTime
+								: primaryMeta.droppedTime === undefined
+									? tableLifecycleTime(createdTime)
+									: undefined;
+						if (joinedTime !== undefined && !(primaryMeta.droppedTime >= joinedTime)) {
+							primaryMeta.droppedTime = joinedTime;
 							tombstoneWrite = (dbisDb as any).put(primaryCatalogKey, primaryMeta);
 						}
 						return true;

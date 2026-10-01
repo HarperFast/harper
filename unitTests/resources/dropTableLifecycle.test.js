@@ -16,6 +16,7 @@ const {
 	isDeadGeneration,
 } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default;
 
 const TEST_DB = 'test';
 
@@ -201,6 +202,51 @@ describe('table lifecycle stamps (harper#1212)', () => {
 		await Local.dropTable({ localOnly: true });
 		assert.equal(markerFor('LifecycleLocalOnly'), undefined);
 		assert.equal(dbisDb().getSync('LifecycleLocalOnly/'), undefined, 'the drop itself completes');
+	});
+
+	it('maps the operation flags onto the drop: local-only, forwarded with the origin time, or plain', async () => {
+		defineTable('LifecycleBridgeLocal');
+		await harperBridge.dropTable({ schema: TEST_DB, table: 'LifecycleBridgeLocal', replicated: false });
+		assert.equal(markerFor('LifecycleBridgeLocal'), undefined, "a client's replicated:false leaves no marker");
+
+		defineTable('LifecycleBridgeForwarded');
+		await harperBridge.dropTable({
+			schema: TEST_DB,
+			table: 'LifecycleBridgeForwarded',
+			replicated: false,
+			replicatedFrom: 'origin-node',
+			droppedTime: 31337,
+		});
+		assert.equal(
+			markerFor('LifecycleBridgeForwarded').droppedTime,
+			31337,
+			"a peer's forwarded drop keeps the origin's time"
+		);
+
+		defineTable('LifecycleBridgeClientTime');
+		await harperBridge.dropTable({ schema: TEST_DB, table: 'LifecycleBridgeClientTime', droppedTime: 31337 });
+		assert.notEqual(markerFor('LifecycleBridgeClientTime').droppedTime, 31337, "a client's time is not trusted");
+	});
+
+	it('a replicating drop that joins a local-only one stamps the bare tombstone', async () => {
+		const Bare = defineTable('LifecycleJoinLocalOnly');
+		const original = { drop: Bare.primaryStore.drop, dropSync: Bare.primaryStore.dropSync };
+		Bare.primaryStore.dropSync = () => {
+			throw new Error('injected drop failure');
+		};
+		Bare.primaryStore.drop = () => Promise.reject(new Error('injected drop failure'));
+		try {
+			await assert.rejects(() => Bare.dropTable({ localOnly: true }), /injected drop failure/);
+		} finally {
+			Object.assign(Bare.primaryStore, original);
+		}
+		assert.equal(
+			dbisDb().getSync('LifecycleJoinLocalOnly/')?.droppedTime,
+			undefined,
+			'the local-only tombstone is bare'
+		);
+		await Bare.dropTable();
+		assert.ok(markerFor('LifecycleJoinLocalOnly'), 'the replicating drop leaves a marker');
 	});
 
 	it('promotes a tombstone that dropTableMeta would otherwise erase', async () => {
