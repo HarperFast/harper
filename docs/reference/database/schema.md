@@ -348,8 +348,8 @@ type Document @table {
 }
 ```
 
-- `source` — the name of the field to embed. Must be a declared field on the same type, passed as a string literal.
-- `model` — the logical name of a configured embedding model, passed as a string literal.
+- `source`: the name of the field to embed. Must be a declared field on the same type, passed as a string literal.
+- `model`: the logical name of a configured embedding model, passed as a string literal.
 
 The attribute type must be `[Float]`. The attribute is automatically indexed with an [HNSW vector index](#vector-indexing), so it is immediately searchable by similarity; an explicit `@indexed` on the same attribute is allowed only if it is also HNSW.
 
@@ -359,8 +359,81 @@ Write semantics:
 - An update that does not touch the source field leaves the vector unchanged.
 - Setting the source field to `null` sets the vector to `null`.
 - Replicated writes and audit-log replays do not re-embed — the vector travels with the record, and only the node that accepted the original write calls the model.
+- <VersionBadge type="changed" version="v5.3.0" /> On a read-only node the embedding is not computed: writes cannot commit there, and a caching table serves a record filled from its source without computing the vector or caching the row.
 
 Multiple `@embed` attributes on one type are computed concurrently.
+
+### `@decide`
+
+<VersionBadge version="v5.3.0" />
+
+Automatically makes a typed decision about the source field whenever a write carries it, using a configured [decision model](../models/overview#configuration) ([Start here: typed decisions](../models/overview#start-here-typed-decisions) walks through a first one), and stores the chosen value on the attribute and, optionally, its probability on a second attribute:
+
+```graphql
+type Ticket @table {
+	id: Long @primaryKey
+	body: String
+	route: String @decide(source: "body", values: ["billing", "refund", "bug", "other"], confidence: "routeConfidence")
+	routeConfidence: Float @indexed
+	urgent: Boolean @decide(source: "body")
+	severity: Int @decide(source: "body", minimum: 1, maximum: 5)
+}
+```
+
+- `source`: the name of the field to decide about. Must be a declared field on the same type, passed as a string literal. A string is passed to the model as text; an object is passed as program state.
+- `values`: the allowed strings, for a `String` attribute: 2 to 255 distinct values, passed as a list of string literals.
+- `minimum`, `maximum`: the inclusive range, for an `Int` attribute: at most 255 values, passed as integer literals.
+- `model`: the logical name of a configured decision model, passed as a string literal. Defaults to `"default"`.
+- `confidence`: the name of a nullable `Float` field on the same type that receives the probability of the chosen value. Optional.
+- `decision`: the name of a nullable `String` field on the same type that receives the [id of the decision's durable record](../models/api#decide), so an outcome can later be [recorded](../models/api#recordoutcome) for the stored value. Optional; see [Recording outcomes for a decided attribute](#recording-outcomes-for-a-decided-attribute).
+- `instructions`: task framing sent to the model with every decision, passed as a string literal. Optional.
+
+The attribute type selects the [decision schema](../models/api#decision-schemas): `String` with `values` is an enum, `Boolean` takes no further arguments, and `Int` with `minimum` and `maximum` is a bounded integer. Other attribute types are rejected. The attribute and the confidence field must be nullable, because a `null` source clears them, and neither can be the primary key or `@computed`. The closed set is validated when the schema loads, so a bad `values` list fails deployment rather than the first write. The attribute is not indexed implicitly: add `@indexed` to query by the value, and index the confidence field to query by probability, as above.
+
+Write semantics match `@embed`:
+
+- Creating a record with the source field, or updating the source field, calls `models.decide` before the write commits and stores the value and the probability from that one decision. A failure to decide fails the write, so the two are never written separately. The hook sees the write payload before table validation, so a write that is later rejected has already paid for its decisions.
+- An update that does not touch the source field leaves both unchanged. The decided attribute and its confidence field are ordinary attributes: a write that carries them without the source stores them as given, so a stored probability records a model call rather than proving one. The `decision` field is not: see [Recording outcomes for a decided attribute](#recording-outcomes-for-a-decided-attribute). Three writes change the source without deciding again, as with `@embed`: a tracked-instance edit that assigns the source after `update()` and saves, a CRDT operation payload on the source, and a write sent with `x-replicate-from: none`. All three keep the previous pair, and the previous decision id, beside the new source, including when the new source is `null`.
+- Setting the source field to `null` sets both to `null`, and the `decision` field too when the directive names one.
+- Replicated writes and audit-log replays do not decide again — the value and probability travel with the record, and only the node that accepted the original write calls the model. Upgrade every node that accepts writes before adding `@decide` to a schema: a node that does not know the directive commits the source without the pair, and the other nodes store what it sent.
+- Changing `values`, the model or the instructions applies to writes from then on. Existing rows keep their values, and no index is rebuilt.
+- On a caching table (one populated from a `sourcedFrom` source), the decision runs when a record is filled from its source, after the reader's `GET` has already returned the source record. A failure there aborts only the cache write: the reader sees no error, the row is not cached, and the next read fetches from the source and decides again. The first read of an uncached row does not wait for the decision, so do not rely on it carrying the decided value or its decision id. On a node running in read-only mode no write can commit, so neither `@decide` nor `@embed` calls a model there, and a caching table serves the source record without storing it.
+
+Every `@decide` attribute on a type is decided concurrently, alongside any `@embed` attributes. When one of them fails, the others are signalled to stop and the write fails once they have settled. A derived field has exactly one writer: two directives cannot name the same attribute, confidence or decision field, and a directive cannot use another directive's output as its source.
+
+The probability is whatever the configured backend reports, or, from v5.3.1, its [calibrated](../models/calibration) form when a correction applies. With the built-in [generative adapter](../models/backends#generative-decision-adapter) under its default `scoring: auto`, an attribute the generative model can score ([OpenAI](../models/backends#openai) scores up to 20 allowed values from token log-probabilities) gets a normalized log-probability score from one scoring call; an attribute it cannot score, a model that exposes no log-probabilities, and a call that every scoring candidate declines are voted over `samples` completions instead; a decline after the scoring request was sent is billed before the vote, while a decline decided before any request, such as more allowed values than the backend can score, costs nothing. Without calibration neither number is a measured probability, so a threshold such as `routeConfidence < 0.7` is a review-queue rule rather than a guarantee. Cost follows the same split: the `Ticket` type above makes three decisions on every write that carries `body`, three scoring calls when every attribute scores or fifteen completions at the default `samples` when they vote, including a write that table validation later rejects. On a caching table the count is per fill rather than per write: every fill of an uncached or expired record decides again, even when the source has not changed, and a fill whose decision fails is not cached, so the next read pays again. Any reader of an uncached key spends a decision, so limit who can read a caching table that decides. A vote also needs a generative candidate with the `structuredOutput` capability unless the decision entry sets `requireStructuredOutput: false`; a group with none fails the write before any completion is requested. For a high write rate, route the directive's model name to a scoring-capable generative model or a single-call decision backend, or lower `samples`.
+
+A component can replace the default decider for an attribute with the table's static `setDecideAttribute(name, decider)`, for example `tables.Ticket.setDecideAttribute('route', decider)`. The decider receives the write payload and returns `{ value, probability }`, or `null` to clear the attribute and its confidence and decision fields; when the directive names a `decision` field the decider may also return the `id` of a `models.decide` call it made with `persist: true`, and a missing `id` stores `null`, meaning no recorded decision. An override for a directive without a `decision` field has no use for `persist: true`: nothing could reach the record. The value must be one the directive allows, the probability is required when the directive names a confidence field, and the override survives a schema reload. Its second argument carries a `signal` that aborts when another hook of the same write fails, so a decider that forwards it to its own model call lets the write fail promptly.
+
+#### Recording outcomes for a decided attribute
+
+A directive records its decision only when it names a `decision` field, the same choice [`persist: true`](../models/api#recording-decisions) makes for a direct `models.decide` call. Without one, nothing is stored beyond the model call's entry in `hdb_model_calls`. With one, the directive decides with `persist: true` and the field holds the decision's id, which [`models.getDecision()`](../models/api#getdecision) reads and [`models.recordOutcome()`](../models/api#recordoutcome) records what actually happened for:
+
+```graphql
+type Ticket @table {
+	id: Long @primaryKey
+	body: String
+	route: String @decide(source: "body", values: ["billing", "refund", "bug", "other"], decision: "routeDecision")
+	routeDecision: String
+}
+```
+
+```javascript
+import { models, tables } from 'harper';
+
+async function recordRoute(ticketId, route) {
+	const ticket = await tables.Ticket.get(ticketId);
+	if (!ticket?.routeDecision) return undefined;
+	return models.recordOutcome(ticket.routeDecision, { truth: { kind: 'value', value: route } });
+}
+```
+
+- The `decision` field is written by the directive only. A write that carries it is rejected with a `400` unless the same write carries the source, whose new decision then replaces it; a replicated write or an audit-log replay stores the id it carries. An `x-replicate-from: none` request is not exempt. The check sees the write payload only: code that assigns the field on a tracked instance after `update()` and saves is not checked, like the tracked-instance source edit above, so trusted code should leave the field to the directive.
+- The id is provenance, not authorization. `recordOutcome` checks only the request's tenant, and a request with no tenant can report on any decision, so the code that records an outcome must authorize the caller for the record and its tenant itself. Code in a resource runs in a trusted context and skips table permissions, so reading the record there authorizes nothing: check that the caller may report on this ticket before calling a function like `recordRoute`.
+- The field holds the latest decision only. A later write that carries the source replaces it, and a `null` source or a delete leaves the previous decision unreferenced; capture the id with the action you take if the outcome arrives later.
+- Association is best effort, not atomic: the decision is committed before the record, so a write that fails after its decision (validation, a conflict, an abort) leaves an unreferenced decision row. Unreferenced rows expire with the 365-day retention, and a record can outlive its decision, in which case `getDecision` returns nothing and `recordOutcome` returns `404`.
+- Decisions replicate separately from records, so on another node a freshly replicated record can name a decision that has not arrived yet; retry on `404`, or record the outcome on the node that made the decision.
+- Existing records gain a `decision` value only when a later write decides again. Deploy the new version to every node that accepts writes before adding `decision:` to a schema: an older node rejects the argument.
 
 ### `@createdTime`
 

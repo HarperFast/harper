@@ -31,10 +31,12 @@ A call to the `default` model tries `openai` first; if it fails, the call falls 
 
 ## Capability routing
 
+<VersionBadge type="changed" version="v5.3.0" />
+
 A call can require capabilities of the backend it lands on. The router keeps only the candidates whose `capabilities()` satisfy the requirement, in group order.
 
-- **`opts.requires`** — an explicit list of capabilities (`embed`, `generate`, `stream`, `tools`, `adapters`).
-- **Tools auto-require `tools`** — a `generate()` call whose input carries a `tools` array routes to a tools-capable candidate in the group instead of erroring on a backend that can't do tools.
+- **`opts.requires`**: an explicit list of capabilities (`embed`, `generate`, `stream`, `tools`, `adapters`, `decide`, `calibrated`, `scoreChoices`, `structuredOutput`, `noMatch`, `calibratedNoMatch`). For example, `models.decide(state, schema, { requires: ['calibrated'] })` routes to a decision backend that reports calibrated probabilities, and the [generative decision adapter](./backends#generative-decision-adapter) routes its scoring calls on `scoreChoices`.
+- **Tools auto-require `tools`**: a `generate()` call whose input carries a `tools` array routes to a tools-capable candidate in the group instead of erroring on a backend that can't do tools.
 
 ```javascript
 // Tools in the input auto-route to a tools-capable candidate in the group:
@@ -51,7 +53,7 @@ If no candidate in the group satisfies the required capabilities, the call throw
 
 ## Fallback on error
 
-When a candidate fails, `embed` / `generate` record the attempt and try the next candidate. Every attempt — success or failure — is written to [model-call analytics](./analytics), so a fallthrough is observable.
+When a candidate fails, `embed` / `generate` / `decide` record the attempt and try the next candidate. Every attempt — success or failure — is written to [model-call analytics](./analytics), so a fallthrough is observable.
 
 - **Any backend error falls through** to the next candidate — the facade's default is to fall back on any error. Candidates are heterogeneous (a limit or input error on one backend may succeed on another with different constraints), so _filtering_ which errors should skip the fallback is a router or caller policy, not something the facade decides.
 - **A caller abort short-circuits.** If the call's `signal` is already aborted, the loop stops and surfaces the abort rather than spending another backend call.
@@ -60,6 +62,8 @@ When a candidate fails, `embed` / `generate` record the attempt and try the next
 `generateStream` resolves to the **first** candidate only. There is no mid-stream fallback: once chunks have been yielded, switching backends would mean replaying already-delivered output.
 
 ## Custom routers
+
+<VersionBadge type="changed" version="v5.3.0" />
 
 Replace the default policy with `models.registerRouter()`. A router is a single **synchronous** `route()` method that returns the ordered candidate backends for a request; an empty array means "no candidate."
 
@@ -71,7 +75,7 @@ interface ModelRouter {
 }
 
 interface RouteRequest {
-	kind: 'embedding' | 'generative';
+	kind: 'embedding' | 'generative' | 'decision';
 	logicalName: string; // from opts.model; defaults to 'default'
 	requires: Capability[]; // capabilities the chosen backend must satisfy
 	hints?: Record<string, unknown>; // free-form (tenant, prompt size, …) for custom policies
@@ -97,4 +101,4 @@ models.registerRouter({
 });
 ```
 
-A custom router that returns no candidates when a backend _does_ satisfy the requirement surfaces a plain "no routing candidates available" error — not a misleading capability error against a backend that actually supports the call.
+A custom router that returns no candidates when a backend _does_ satisfy the requirement surfaces a plain "no routing candidates available" error — not a misleading capability error against a backend that actually supports the call. The list a router returns is advisory in the other direction too: immediately before each candidate is invoked, fallbacks included, Harper re-checks the call's required capabilities against that candidate, records a miss as `capability_unsupported`, and tries the next one, so a router cannot route a call to a backend that lacks what the call requires.
