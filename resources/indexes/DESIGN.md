@@ -189,6 +189,20 @@ a configured `filterExpansion` stays authoritative. `CandidateKeySet` is the one
 the scan's intersection and admission. A node-id bitset for the native plane is not built: the
 pk → node-id lookup costs more than the record load it saves.
 
+## Filtered full-text search reuses companion secondary indexes before loading source records
+
+Full-text search uses the same `planCandidateKeys` contract as HNSW, but chooses between two existing
+RocksDB access patterns. A selective range is materialized as a bounded key set. A broad equality
+condition is checked with one point read of the existing `[indexed value, primary key]` secondary-index
+entry for each Tantivy hit. The latter avoids scanning and retaining a large key set merely to reject
+non-matching full-text hits.
+
+The planner marks a gate complete only when its indexed terms cover every companion condition and no
+opaque record guard remains. An incomplete gate may reject definite misses, but admitted records still
+run the residual predicate. Both paths retain the normal post-filter, source-version, expiry and current
+entry checks. If collection exceeds its budget or a point read fails, the query falls back to the record
+predicate. HNSW does not request point probes, so this adds no work to its traversal path.
+
 ## Derived-index runtime: committed-log delivery to native index backends (`resources/derivedIndexRuntime.ts`)
 
 A derived index (the native HNSW or Tantivy full-text plane) is a materialized view

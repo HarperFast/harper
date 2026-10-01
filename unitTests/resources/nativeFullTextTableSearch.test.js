@@ -259,6 +259,57 @@ describe('published native full-text Table.search integration', () => {
 		);
 	});
 
+	it('probes a broad indexed equality before loading full-text source records', async () => {
+		Product = table({
+			database: `fulltext-native-companion-probe-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'category', type: 'String', indexed: true },
+			],
+			fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1 }])],
+		});
+		await Product.put(
+			Array.from({ length: 100 }, (_value, index) => ({
+				id: `product-${String(index).padStart(3, '0')}`,
+				title: 'identical catalog product',
+				category: index < 50 ? 'other' : 'target',
+			}))
+		);
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30_000);
+
+		const originalGetEntry = Product.primaryStore.getEntry;
+		let sourceReads = 0;
+		Product.primaryStore.getEntry = function (...args) {
+			sourceReads++;
+			return originalGetEntry.apply(this, args);
+		};
+		let records;
+		try {
+			records = await collect(
+				Product.search({
+					conditions: [
+						{
+							attribute: 'catalogSearch',
+							comparator: 'matches',
+							value: 'catalog',
+							waitForIndexMilliseconds: 30_000,
+						},
+						{ attribute: 'category', comparator: 'equals', value: 'target' },
+					],
+					enforceExecutionOrder: true,
+					limit: 1,
+				})
+			);
+		} finally {
+			Product.primaryStore.getEntry = originalGetEntry;
+		}
+		assert.deepStrictEqual(ids(records), ['product-050']);
+		assert.strictEqual(sourceReads, 1, 'secondary-index misses must not load authoritative records');
+	});
+
 	it('keeps tied BM25 results stable across native pages', async () => {
 		Product = table({
 			database: `fulltext-native-stable-pages-${Date.now()}`,

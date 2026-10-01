@@ -141,6 +141,7 @@ function simpleQueryIndex({
 	onGetEntry,
 	onSearch,
 	entryForKey,
+	estimatedRecordCount = 20,
 	isEntryCurrent,
 	storeName = 'unused',
 	sourceGeneration = 'generation',
@@ -155,6 +156,7 @@ function simpleQueryIndex({
 			...(isEntryCurrent ? { isFullTextSearchEntryCurrent: isEntryCurrent } : null),
 			primaryStore: {
 				rootStore: auditStore.rootStore,
+				getEstimatedKeyCount: () => estimatedRecordCount,
 				getEntry: (key) => {
 					onGetEntry?.(key);
 					return entryForKey?.(key) ?? { version: 1, value: { title: 'shoe' } };
@@ -1530,6 +1532,191 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	it('uses a complete point probe before loading authoritative records', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-point-probe';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 100 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 100 - index,
+		}));
+		let reads = 0;
+		let filters = 0;
+		let collections = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 100,
+			maxSearchWindow: 100,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 1,
+				filter: () => {
+					filters++;
+					return true;
+				},
+				candidateKeys: {
+					estimatedCount: 50,
+					collect: () => {
+						collections++;
+						return null;
+					},
+					probe: {
+						complete: true,
+						has: (key) => key === 'record-50',
+					},
+				},
+			}
+		);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			['record-50']
+		);
+		assert.strictEqual(collections, 0, 'the broad condition must not be materialized');
+		assert.strictEqual(reads, 1, 'probe misses must not load source records');
+		assert.strictEqual(filters, 0, 'a complete probe decides the companion predicate');
+		await index.close();
+	});
+
+	it('keeps the record predicate behind an incomplete point probe', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-residual-probe';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 4 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 4 - index,
+		}));
+		const loaded = [];
+		const filtered = [];
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 4,
+			onGetEntry: (key) => loaded.push(key),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 1,
+				filter: (key) => {
+					filtered.push(key);
+					return key === 'record-3';
+				},
+				candidateKeys: {
+					estimatedCount: 4,
+					collect: () => null,
+					probe: {
+						complete: false,
+						has: (key) => key === 'record-2' || key === 'record-3',
+					},
+				},
+			}
+		);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			['record-3']
+		);
+		assert.deepStrictEqual(loaded, ['record-2', 'record-3']);
+		assert.deepStrictEqual(filtered, ['record-2', 'record-3']);
+		await index.close();
+	});
+
+	it('uses a selective collected set once and falls back when point probing fails', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-collected-set';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5 - index,
+		}));
+		let collections = 0;
+		let reads = 0;
+		const fixture = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 1_000,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(fixture.index, auditStore, readinessId);
+		const results = await fixture.index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 1,
+				filter: () => {
+					throw new Error('a complete set must decide the filter');
+				},
+				candidateKeys: {
+					estimatedCount: 1,
+					collect: () => {
+						collections++;
+						return { complete: true, keys: { has: (key) => key === 'record-4' } };
+					},
+				},
+			}
+		);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			['record-4']
+		);
+		assert.strictEqual(collections, 1);
+		assert.strictEqual(reads, 1);
+		await fixture.index.close();
+
+		const fallbackReadinessId = 'candidate-probe-fallback';
+		publishDerivedIndexReadiness(auditStore, fallbackReadinessId, 'ready');
+		reads = 0;
+		const fallback = simpleQueryIndex({
+			auditStore,
+			readinessId: fallbackReadinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 5,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(fallback.index, auditStore, fallbackReadinessId);
+		const fallbackResults = await fallback.index.search(
+			{ attribute: fallbackReadinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 1,
+				filter: (key) => key === 'record-1',
+				candidateKeys: {
+					estimatedCount: 5,
+					collect: () => null,
+					probe: {
+						complete: true,
+						has: () => {
+							throw new Error('injected point-read failure');
+						},
+					},
+				},
+			}
+		);
+		assert.deepStrictEqual(
+			fallbackResults.map(({ key }) => key),
+			['record-1']
+		);
+		assert.strictEqual(reads, 2, 'the established record predicate must resume after a probe failure');
+		await fallback.index.close();
+	});
+
 	it('fails closed when a short lower-bound native page claims more hits', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'short-lower-bound-page';
@@ -1863,7 +2050,19 @@ describe('FullTextQueryIndex', () => {
 		});
 		attachCurrentCoverage(index, auditStore, 'stale-window');
 		await assert.rejects(
-			index.search({ attribute: 'stale-window', comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
+			index.search(
+				{ attribute: 'stale-window', comparator: 'matches', value: 'shoe' },
+				{},
+				{
+					minResults: 1,
+					filter: () => true,
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => null,
+						probe: { complete: true, has: () => true },
+					},
+				}
+			),
 			(error) => error.name === 'DerivedIndexLagError' && error.statusCode === 503 && error.retryable === true
 		);
 		await index.close();

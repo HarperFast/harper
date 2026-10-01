@@ -36,6 +36,8 @@ import {
 	type DerivedNativeIndexHost,
 } from './hnswDerivedIndex.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
+import type { CandidateKeyPlan } from '../search.ts';
+import type { Id } from '../ResourceInterface.ts';
 
 const RAW_PAGE_SIZE = 256;
 const MAX_FILTERED_RAW_PAGE_SIZE = 4_096;
@@ -43,6 +45,8 @@ const MIN_RAW_PAGE_SIZE = 32;
 const RAW_PAGE_OVERFETCH_FACTOR = 2;
 const RAW_PAGE_ZERO_YIELD_GROWTH_FACTOR = 4;
 const RAW_PAGE_YIELD_INTERVAL = 256;
+const CANDIDATE_KEYS_PER_SOURCE_READ = 8;
+const MAX_CANDIDATE_KEYS = 50_000;
 // Fulltext 0.4.0 Query API v2 uses a 13-byte response header and 13 bytes per versioned hit before string data.
 const NATIVE_SEARCH_RESPONSE_HEADER_BYTES = 13;
 const NATIVE_SEARCH_HIT_OVERHEAD_BYTES = 13;
@@ -103,6 +107,8 @@ export type FullTextQueryIndexOptions = {
 
 export class FullTextQueryIndex {
 	readonly filteredSearch = true;
+	readonly candidateKeyFilter = true;
+	readonly candidateKeyProbe = true;
 	readonly filePrimary = true;
 	readonly #options: FullTextQueryIndexOptions;
 	readonly #nativeOptions: NativeFullTextIndexConfiguration & {
@@ -192,6 +198,7 @@ export class FullTextQueryIndex {
 			minResults?: number;
 			resultOffset?: number;
 			assertTransactionActive?: () => void;
+			candidateKeys?: CandidateKeyPlan;
 		} = {}
 	): Promise<Array<{ key: unknown; $score: number; $highlights?: Record<string, unknown>; loadedEntry: any }>> {
 		const maxIndexLagMilliseconds = condition.maxIndexLagMilliseconds ?? DEFAULT_MAX_INDEX_LAG_MILLISECONDS;
@@ -341,6 +348,7 @@ export class FullTextQueryIndex {
 			minResults?: number;
 			resultOffset?: number;
 			assertTransactionActive?: () => void;
+			candidateKeys?: CandidateKeyPlan;
 		}
 	): Promise<Array<{ key: unknown; $score: number; $highlights?: Record<string, unknown>; loadedEntry: any }>> {
 		const readiness = readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId);
@@ -411,6 +419,10 @@ export class FullTextQueryIndex {
 					)
 				: Math.min(this.#maxFilteredRawPageSize!, RAW_PAGE_SIZE);
 			const transaction = context && this.#options.Table._readTxnForContext(context);
+			let candidateGate =
+				options.filter && options.candidateKeys
+					? this.#candidateGate(options.candidateKeys, target, searchWindow)
+					: undefined;
 			while (accepted.length < target && offset < searchWindow) {
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
 				const limit = autocomplete ? searchWindow : Math.min(rawPageSize, searchWindow - offset);
@@ -451,8 +463,18 @@ export class FullTextQueryIndex {
 						remainingSearchBudget(deadline);
 					}
 					const hit = result.hits[hitIndex];
-					const key = decodeNativeId(hit.id, this.#options.Table.tableId);
+					const key = decodeNativeId(hit.id, this.#options.Table.tableId) as Id;
 					options.assertTransactionActive?.();
+					let candidateDecides = false;
+					if (candidateGate) {
+						try {
+							if (!candidateGate.has(key)) continue;
+							candidateDecides = candidateGate.complete;
+						} catch (error) {
+							candidateGate = undefined;
+							logger.warn?.('could not probe the full-text companion index; using the record predicate', error);
+						}
+					}
 					const entry = this.#options.Table.primaryStore.getEntry(key, { transaction });
 					if (typeof hit.version !== 'string')
 						throw new ServerError('Full-text index returned a hit without a source version', 500);
@@ -468,7 +490,7 @@ export class FullTextQueryIndex {
 						expiredHits++;
 						continue;
 					}
-					if (options.filter && !options.filter(key, entry)) continue;
+					if (options.filter && !candidateDecides && !options.filter(key, entry)) continue;
 					accepted.push({ key, $score: hit.score, nativeId: hit.id, record: entry.value, recordEntry: entry });
 					if (accepted.length >= target) break;
 				}
@@ -519,6 +541,33 @@ export class FullTextQueryIndex {
 		} finally {
 			await lease.release();
 		}
+	}
+
+	#candidateGate(
+		plan: CandidateKeyPlan,
+		target: number,
+		searchWindow: number
+	): { complete: boolean; has(primaryKey: Id): boolean } | undefined {
+		const store = this.#options.Table.primaryStore;
+		const estimatedRecords =
+			typeof store.getEstimatedKeyCount === 'function' ? store.getEstimatedKeyCount() : store.getStats?.().entryCount;
+		const recordCount = Math.max(1, Number.isFinite(estimatedRecords) ? estimatedRecords : target);
+		const selectivity = Math.min(1, Math.max(1, plan.estimatedCount) / recordCount);
+		const expectedSourceReads = Math.min(searchWindow, Math.ceil(target / selectivity));
+		const expectedRejectedReads = Math.max(0, expectedSourceReads - target);
+		const maxKeys = Math.min(MAX_CANDIDATE_KEYS, Math.ceil(expectedRejectedReads * CANDIDATE_KEYS_PER_SOURCE_READ));
+		if (plan.estimatedCount <= maxKeys) {
+			try {
+				const collected = plan.collect(maxKeys);
+				if (collected) return { complete: collected.complete, has: (primaryKey) => collected.keys.has(primaryKey) };
+			} catch (error) {
+				logger.warn?.(
+					'could not build the full-text candidate-key set; using point probes or the record predicate',
+					error
+				);
+			}
+		}
+		return plan.probe;
 	}
 
 	async #addHighlights(

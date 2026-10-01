@@ -3394,6 +3394,56 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 		);
 	});
 
+	it('composes equality point probes across AND, OR, and residual conditions', async () => {
+		const customIndex = A.indices.vector.customIndex;
+		customIndex.candidateKeyProbe = true;
+		const inspect = (keys) => (plan) => ({
+			complete: plan.probe?.complete,
+			matches: keys.map((key) => plan.probe?.has(key)),
+		});
+		try {
+			const and = await searchWithSpy(
+				[0, 0],
+				[
+					{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+					{ attribute: 'shard', comparator: 'equals', value: 'wide' },
+				],
+				{ limit: 1 },
+				inspect([0, 1, 291])
+			);
+			assert.deepStrictEqual(and.probed, { complete: true, matches: [true, false, false] });
+
+			const or = await searchWithSpy(
+				[0, 0],
+				[
+					{
+						operator: 'or',
+						conditions: [
+							{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+							{ attribute: 'rank', comparator: 'equals', value: 7 },
+						],
+					},
+				],
+				{ limit: 1 },
+				inspect([3, 7, 8])
+			);
+			assert.deepStrictEqual(or.probed, { complete: true, matches: [true, true, false] });
+
+			const residual = await searchWithSpy(
+				[0, 0],
+				[
+					{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+					{ attribute: 'note', comparator: 'equals', value: 'keep' },
+				],
+				{ limit: 1 },
+				inspect([0, 1])
+			);
+			assert.deepStrictEqual(residual.probed, { complete: false, matches: [true, false] });
+		} finally {
+			delete customIndex.candidateKeyProbe;
+		}
+	});
+
 	it('builds the allow-set from each range comparator a missing value cannot satisfy', async () => {
 		for (const [comparator, value, target, expected] of [
 			['ge', 200, [200, 0], [200, 201, 202, 203, 204]],

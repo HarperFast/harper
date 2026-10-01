@@ -129,7 +129,7 @@ export function executeConditions(
 			// matches — the index decides whether building it beats evaluating the predicate.
 			const candidateKeys =
 				pushdownIndex.candidateKeyFilter && siblings.length > 0
-					? planCandidateKeys(siblings, table, txn, !recordGuards)
+					? planCandidateKeys(siblings, table, txn, !recordGuards, Boolean(pushdownIndex.candidateKeyProbe))
 					: undefined;
 			// Execute a COPY carrying the pushed-down predicate, never mutating the caller's condition
 			// object (which may be reused across requests with different users / guards).
@@ -412,6 +412,12 @@ function composeRecordFilter(recordFilters, table, context): (primaryKey: Id, su
 export interface CandidateKeyPlan {
 	/** Planner estimate of the matching record count; the index sizes its work budget from it. */
 	estimatedCount: number;
+	/** Optional point-membership gate for exact conditions an index store can probe directly. */
+	probe?: {
+		/** Whether the probe covers every pushed-down condition and no opaque record guard remains. */
+		complete: boolean;
+		has(primaryKey: Id): boolean;
+	};
 	/**
 	 * The matching primary keys, with `complete` true when the set alone decides admission, so the
 	 * index may drop the traversal predicate. That needs every pushed-down condition covered, no
@@ -470,6 +476,8 @@ interface CandidateKeyScan {
 	index: any;
 	range: any;
 	estimatedCount: number;
+	probeValue?: any;
+	canProbe: boolean;
 }
 /** Scans whose UNION is one AND term; a single-element `scans` is a leaf condition. */
 interface CandidateKeyTerm {
@@ -585,16 +593,49 @@ function planCandidateKeyScan(condition, table): CandidateKeyScan | undefined {
 		if (!(belowTrue >= 0)) return undefined;
 		estimatedCount += belowTrue;
 	}
-	return { index, range: { start, end, inclusiveEnd, exclusiveStart }, estimatedCount };
+	const canProbe = comparator === 'equals' && typeof index.hasIndexEntry === 'function';
+	return {
+		index,
+		range: { start, end, inclusiveEnd, exclusiveStart },
+		estimatedCount,
+		probeValue: canProbe ? value : undefined,
+		canProbe,
+	};
 }
 
-function planCandidateKeys(conditions, table, transaction, guardFree: boolean): CandidateKeyPlan | undefined {
+function planCandidateKeys(
+	conditions,
+	table,
+	transaction,
+	guardFree: boolean,
+	includePointProbe: boolean
+): CandidateKeyPlan | undefined {
 	const terms: CandidateKeyTerm[] = [];
 	const planned = collectCandidateKeyTerms(conditions, table, terms) && guardFree;
 	if (terms.length === 0) return undefined;
 	const estimatedCount = terms.reduce((narrowest, term) => Math.min(narrowest, term.estimatedCount), Infinity);
+	const probeTerms = includePointProbe ? terms.filter((term) => term.scans.every((scan) => scan.canProbe)) : [];
 	return {
 		estimatedCount,
+		probe:
+			probeTerms.length === 0
+				? undefined
+				: {
+						complete: planned && probeTerms.length === terms.length,
+						has(primaryKey) {
+							for (const term of probeTerms) {
+								let matched = false;
+								for (const scan of term.scans) {
+									if (scan.index.hasIndexEntry(scan.probeValue, primaryKey, { transaction })) {
+										matched = true;
+										break;
+									}
+								}
+								if (!matched) return false;
+							}
+							return true;
+						},
+					},
 		collect: (maxKeys) => collectCandidateKeys(terms, transaction, maxKeys, planned),
 	};
 }

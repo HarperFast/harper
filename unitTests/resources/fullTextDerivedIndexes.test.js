@@ -347,7 +347,7 @@ describe('@fullText derived-index activation', () => {
 				filtered.map(({ id }) => id),
 				['exact']
 			);
-			assert.strictEqual(primaryReads, 2);
+			assert.strictEqual(primaryReads, 1, 'the companion index must reject non-matches before source loading');
 		} finally {
 			Product.primaryStore.getEntry = originalGetEntry;
 		}
