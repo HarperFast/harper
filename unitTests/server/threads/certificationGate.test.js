@@ -565,6 +565,44 @@ describe('the release certification gate', function () {
 		assert.match(byComponent.api.reason, new RegExp(`release ${DEPLOYMENT} of ${COMPONENT}, which it also loaded`));
 	});
 
+	/** The rollout's first replacement waits out the other release's arming, so it starts as the canary of both. */
+	async function sharedCanary(other) {
+		const loading = Promise.withResolvers();
+		rootLoad = loading.promise;
+		releaseRootLoad = loading.resolve;
+		await arm();
+		await commit();
+		assert.deepStrictEqual(await certificationRequest('arm', { ...other, isolated: false, scope: undefined }), {
+			armed: true,
+		});
+		loading.resolve();
+		assert.equal(await certificationRequest('commit', other), true);
+		await waitFor(() => completions.length === 2, { timeout: 45000, message: 'a rollout never ended' });
+		assert.ok(
+			started.some((worker) => worker.certifyRequests[0]?.length === 2),
+			'one held start loaded both releases'
+		);
+		return Object.fromEntries(decisions.map((decision) => [decision.component, decision]));
+	}
+
+	it('decides each release a shared canary reported on by its own report, even once the other is refused', async () => {
+		const other = { component: 'api', deploymentId: '22222222-2222-2222-2222-222222222222' };
+		plan([{ outcomes: { [COMPONENT]: 'failed', api: 'loaded' } }]);
+		const byComponent = await sharedCanary(other);
+		assert.equal(byComponent[COMPONENT].status, 'rejected');
+		assert.equal(byComponent.api.status, 'certified', 'the canary loaded it');
+	});
+
+	it('rejects every release a shared canary went silent on for its silence, not for each other', async () => {
+		const other = { component: 'api', deploymentId: '22222222-2222-2222-2222-222222222222' };
+		plan([{ behavior: 'silent' }]);
+		const byComponent = await sharedCanary(other);
+		for (const decision of Object.values(byComponent)) {
+			assert.equal(decision.status, 'rejected');
+			assert.match(decision.reason, /did not report within/);
+		}
+	});
+
 	it('refuses to withdraw a release once it is committed', async () => {
 		plan([{ outcome: 'loaded', delayMs: 300 }]);
 		await arm();

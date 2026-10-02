@@ -826,6 +826,7 @@ function holdStart(worker, gated, startOptions) {
 	held.timer = setTimeout(() => {
 		if (held.components || held.settled) return;
 		const reason = `the canary did not report within ${canaryVerdictTimeoutMs()}ms`;
+		held.silence = reason;
 		let canaryFor = false;
 		for (const certification of held.gated) {
 			if (certification.decision || (certification.canary && certification.canary !== worker)) continue;
@@ -912,15 +913,10 @@ function stopHeldStart(held, refused) {
 	if (held.stopping) return held.stopping;
 	held.settled = true;
 	const stopping = (held.stopping = stopWorker(held.worker));
-	// Settled, its exit decides nothing: a release it is still the canary of is interrupted, not left undecided.
+	// Settled, its exit decides nothing, so a release it is still the canary of is decided here rather than left waiting.
 	for (const certification of held.gated) {
 		if (certification.canary !== held.worker || certification.decision || certification.deciding) continue;
-		void decideCertification(certification, {
-			status: 'interrupted',
-			reason: refused
-				? `its canary was stopped when release ${refused.deploymentId} of ${refused.component}, which it also loaded, was refused`
-				: 'its canary was stopped before it reported',
-		});
+		void decideCertification(certification, stoppedCanaryDecision(held, certification, refused));
 	}
 	// A restart keeps the worker a managed start would have replaced; nothing else restarts an unmanaged one. Its copy
 	// starts once the decision is made, so it loads whatever release that leaves live.
@@ -929,6 +925,20 @@ function stopHeldStart(held, refused) {
 		if (!deferStartBehindCertification(held.worker, start)) start();
 	}
 	return stopping;
+}
+
+/** What a canary that is being stopped says of a release: its report or its silence, and only failing both, nothing. */
+function stoppedCanaryDecision(held, certification, refused) {
+	if (held.silence) return { status: 'rejected', reason: held.silence };
+	if (held.components && !held.startedWhileArmed.has(certification)) {
+		return verdictDecision(certification, held.components);
+	}
+	return {
+		status: 'interrupted',
+		reason: refused
+			? `its canary was stopped when release ${refused.deploymentId} of ${refused.component}, which it also loaded, was refused`
+			: 'its canary was stopped before it reported',
+	};
 }
 
 function certificationDecision(component, deploymentId) {

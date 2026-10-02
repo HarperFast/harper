@@ -59,13 +59,15 @@ function report() {
 	if (step.behavior === 'silent') return;
 	parentPort.postMessage({
 		type: ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT,
-		components: workerData.certify.map(({ component, deploymentId }) => ({
-			component,
-			outcome: step.outcome,
-			failures:
-				step.outcome === 'failed' ? [{ key: `${component}.rest`, name: 'Error', message: 'threw at load' }] : [],
-			loadedDeploymentId: step.loadedDeploymentId ?? deploymentId,
-			reportedDeploymentId: step.loadedDeploymentId ?? deploymentId,
-		})),
+		components: workerData.certify.map(({ component, deploymentId }) => {
+			const outcome = step.outcomes?.[component] ?? step.outcome;
+			return {
+				component,
+				outcome,
+				failures: outcome === 'failed' ? [{ key: `${component}.rest`, name: 'Error', message: 'threw at load' }] : [],
+				loadedDeploymentId: step.loadedDeploymentId ?? deploymentId,
+				reportedDeploymentId: step.loadedDeploymentId ?? deploymentId,
+			};
+		}),
 	});
 }

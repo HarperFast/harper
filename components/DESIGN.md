@@ -116,8 +116,9 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    release instead.
 5. **Decide.** Before a release is refused, every held start loading it is stopped, the canary and any other, so a
    restore never races a worker still holding the release. One of them can be the undecided canary of another
-   release it also loaded, which it can no longer decide; that release is interrupted rather than left waiting on
-   a worker that is gone, which would also hold every later restart behind its rollout. `certified` is written durably. A rejection is written
+   release it also loaded. That release is decided from the canary's own report if it made one, rejected if it went
+   silent, and interrupted only if it was stopped before either, rather than left waiting on a worker that is gone,
+   which would also hold every later restart behind its rollout. `certified` is written durably. A rejection is written
    `rejected` before anything moves; then step 6 activates the predecessor, only while the rejected release is
    still the live one (`onlyIfLive`), and the record is removed once it is. With no predecessor (a first
    deploy), or a restore that did not land, the release stays live and FAILS CLOSED: every thread's loader
