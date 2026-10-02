@@ -907,7 +907,10 @@ async function streamBackupArchive(
 	consumed.catch(() => {
 		if (!nativeTar.destroyed) nativeTar.destroy(new Error('backup stream consumer aborted'));
 	});
-	nativeDone.catch(() => {});
+	nativeDone.catch((error) => {
+		if (!nativeTar.destroyed) nativeTar.destroy(error);
+		if (!plain.destroyed) plain.destroy(error);
+	});
 	try {
 		const manifest = buildArchiveManifest({
 			databaseName,

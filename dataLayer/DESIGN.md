@@ -237,6 +237,9 @@ engine-only backup):
   binding would wait on it forever, holding the snapshot — and its deferred file deletions — open.
   The rejection handler destroys the native stream itself rather than relying on control reaching the
   `catch`.
+- **A native producer rejection must terminate the archive streams.** The producer can reject
+  without closing its writable. Its rejection handler destroys both the native tar and the combined
+  stream with the original error, releasing an assembler waiting for EOF or downstream backpressure.
 
 **Completion manifest (`dataLayer/backupManifest.ts`).** `create_backup` is two-phase: the engine
 backup (`rootStore.backup()`) resolves — and is immediately visible to `list_backups`/`verify_backup`/
