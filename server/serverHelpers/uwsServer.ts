@@ -145,9 +145,8 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 			finishRejectedResponse = undefined;
 			ac.abort();
 		});
-		// Once a response has been committed (handler result, error, or a 413), writing again to the
-		// same uWS response is invalid and aborts the process — so every write site guards on this in
-		// addition to ac.signal.aborted (which only covers a client-side teardown, not our own writes).
+		// A second handler response is invalid in uWS. The deferred 413 end instead uses its
+		// own finisher, which native onAborted invalidates independently of handler cancellation.
 		let responseCompleted = false;
 
 		const dispatch = (body?: UwsRequestBody) => {
@@ -203,9 +202,10 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 					// (or streamed) without consuming the body, and writing to that completed response aborts.
 					if (!ac.signal.aborted && !responseCompleted) {
 						responseCompleted = true;
+						const connection = Array.isArray(headers.connection) ? headers.connection[0] : headers.connection;
 						res.cork(() => {
 							res.writeStatus('413 Payload Too Large');
-							if (!isLast && typeof headers.connection === 'string' && headers.connection.toLowerCase() === 'close') {
+							if (!isLast && typeof connection === 'string' && connection.toLowerCase() === 'close') {
 								res.writeHeader('Connection', 'close');
 								res.writeHeader('content-type', 'text/plain');
 								res.write(errorToString(error));
