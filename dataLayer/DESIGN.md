@@ -272,6 +272,8 @@ a multi-gigabyte archive just to decide whether to reject it.
   older reader refusing an unknown one is the intended answer. `harper_version`,
   `rocksdb_js_version` and the whole `source` block are provenance and are **never** gated on —
   keeping them separate is what stops a description from becoming a compatibility check.
+  Restore submission and execution share `resolveCompleteBackup`, so an incompatible producer
+  returns a 4xx before a job is queued and is checked again when the restore runs.
 - **`roles: null` means "not enumerated", which is not "no roles".** Enumeration reads the
   already-loaded `system` database rather than calling `getDatabases()`: the offline CLI runs with
   nothing loaded, and a scan there would open — and lock — every database on the instance. Names

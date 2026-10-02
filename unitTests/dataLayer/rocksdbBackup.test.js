@@ -949,7 +949,8 @@ describe('rocksdbBackup', function () {
 	describe('managed backup provenance', function () {
 		const PROV_DB = `${DB_NAME}-provenance`;
 
-		afterEach(function () {
+		afterEach(async function () {
+			await closeLoadedDatabases();
 			rmSync(join(storageDir, PROV_DB), { recursive: true, force: true });
 			rmSync(backupDirForDatabase(PROV_DB), { recursive: true, force: true });
 			for (const root of getBlobPathsForDatabaseName(PROV_DB)) rmSync(root, { recursive: true, force: true });
@@ -998,6 +999,11 @@ describe('rocksdbBackup', function () {
 				const sentinel = join(storageDir, PROV_DB, 'CURRENT');
 				assert.ok(existsSync(sentinel), 'precondition: the destination database is on disk');
 
+				await assert.rejects(
+					validateRestoreBackup({ ...SU, database: PROV_DB, backup_id: restoreArgs(created.backup_id)[1] }),
+					(error) => error.statusCode === 400 && /blob-encryption-v2/.test(error.message),
+					'incompatible backups must be refused before submitting a restore job'
+				);
 				await assert.rejects(
 					restoreBackupOffline(...restoreArgs(created.backup_id)),
 					(error) => error.statusCode === 400 && /blob-encryption-v2/.test(error.message)
@@ -1094,20 +1100,22 @@ describe('rocksdbBackup', function () {
 		}
 
 		async function extractTarOrder(stream) {
+			const chunks = [];
+			for await (const chunk of stream) chunks.push(chunk);
+			const archive = Buffer.concat(chunks);
 			const order = [];
-			const ex = extract();
-			const done = new Promise((resolve, reject) => {
-				ex.on('entry', (header, entryStream, next) => {
-					order.push(header.name);
-					entryStream.resume();
-					entryStream.on('end', next);
-				});
-				ex.on('finish', resolve);
-				ex.on('error', reject);
-			});
-			stream.pipe(ex);
-			await done;
-			return order;
+			for (let offset = 0; offset + 512 <= archive.length;) {
+				const header = archive.subarray(offset, offset + 512);
+				// Stop at the first end marker; tar-stream's extractor accepts intervening zero headers.
+				if (header.every((byte) => byte === 0)) return order;
+				order.push(header.toString('utf8', 0, 100).split('\0')[0]);
+				const sizeField = header.toString('ascii', 124, 136).replace(/\0.*$/, '').trim();
+				assert.match(sizeField, /^[0-7]+$/, 'tar entry size must be octal');
+				const size = Number.parseInt(sizeField, 8);
+				offset += 512 + Math.ceil(size / 512) * 512;
+				assert.ok(offset <= archive.length, 'tar entry must not extend past the archive');
+			}
+			assert.fail('tar archive must have an end marker');
 		}
 
 		it('makes the manifest the first entry of an archive with blobs', async function () {
@@ -1126,6 +1134,8 @@ describe('rocksdbBackup', function () {
 			try {
 				const order = await extractTarOrder(createBackupStream(store, MANIFEST_DB, false, false));
 				assert.strictEqual(order[0], ARCHIVE_MANIFEST_ENTRY, 'a reader must identify the archive after a few KB');
+				assert.ok(order.includes('blobs/0/111/222/333'), 'blob entries must precede the first end marker');
+				assert.strictEqual(order.at(-1), 'README.md', 'the final entry must precede the first end marker');
 
 				const entries = await extractTarNames(createBackupStream(store, MANIFEST_DB, false, false));
 				const manifest = parseArchiveManifest(entries.get(ARCHIVE_MANIFEST_ENTRY).toString('utf8'));
@@ -1188,6 +1198,7 @@ describe('rocksdbBackup', function () {
 			try {
 				const order = await extractTarOrder(createBackupStream(store, MANIFEST_DB, false, true));
 				assert.strictEqual(order[0], ARCHIVE_MANIFEST_ENTRY);
+				assert.strictEqual(order.at(-1), 'README.md', 'the final entry must precede the first end marker');
 
 				const entries = await extractTarNames(createBackupStream(store, MANIFEST_DB, false, true));
 				const manifest = parseArchiveManifest(entries.get(ARCHIVE_MANIFEST_ENTRY).toString('utf8'));

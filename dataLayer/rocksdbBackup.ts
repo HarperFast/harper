@@ -580,13 +580,11 @@ export async function validateRestoreBackup(request: any) {
 		);
 	}
 	const backupDir = backupDirForDatabase(databaseName);
-	if (request.backup_id !== undefined) {
-		const backupId = requireBackupId(request.backup_id);
-		await findBackup(backupDir, backupId, databaseName);
-		await requireBackupComplete(backupDir, backupId, databaseName);
-	} else if ((await listCompleteBackups(backupDir)).length === 0) {
-		throw new BackupNotFoundError(`No complete backups found for database '${databaseName}'`);
-	}
+	await resolveCompleteBackup(
+		backupDir,
+		request.backup_id === undefined ? undefined : requireBackupId(request.backup_id),
+		databaseName
+	);
 	// Only a loaded database that actually has tables can be validated as a single-root RocksDB
 	// store here (an empty/tableless database has no table to resolve a root store from, and an
 	// unloaded one recovering an interrupted restore isn't open yet); those cases are validated when
