@@ -130,6 +130,7 @@ describe('analytics aggregation cycle', () => {
 		await waitFor(() => aggregatedWritePaths().includes('AggWindowConcurrent'), {
 			message: 'the concurrent raw report is aggregated',
 		});
+		await databases.system.hdb_analytics.primaryStore.committed;
 		const aggregated = aggregatedWritePaths().filter((path) => path === 'AggWindowConcurrent');
 		assert.deepStrictEqual(aggregated, ['AggWindowConcurrent']);
 	});
