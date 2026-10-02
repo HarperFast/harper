@@ -89,6 +89,9 @@ describe('analytics aggregation cycle', () => {
 		await nextPeriod();
 		await runCycle();
 
+		await waitFor(() => aggregatedWritePaths().includes('AggWindowLate'), {
+			message: 'the late raw report is aggregated',
+		});
 		assert.ok(aggregatedWritePaths().includes('AggWindowLate'), 'a report older than the empty cycle is aggregated');
 	});
 
@@ -107,6 +110,12 @@ describe('analytics aggregation cycle', () => {
 		await nextPeriod();
 		for (let cycle = 0; cycle < 3; cycle++) await runCycle();
 
+		await waitFor(
+			() => ['AggWindow1', 'AggWindow2', 'AggWindow3'].every((path) => aggregatedWritePaths().includes(path)),
+			{
+				message: 'all backlog windows are aggregated',
+			}
+		);
 		for (const path of ['AggWindow1', 'AggWindow2', 'AggWindow3'])
 			assert.ok(aggregatedWritePaths().includes(path), `${path} was aggregated`);
 	});
@@ -118,6 +127,9 @@ describe('analytics aggregation cycle', () => {
 
 		await Promise.all([runCycle(), runCycle()]);
 
+		await waitFor(() => aggregatedWritePaths().includes('AggWindowConcurrent'), {
+			message: 'the concurrent raw report is aggregated',
+		});
 		const aggregated = aggregatedWritePaths().filter((path) => path === 'AggWindowConcurrent');
 		assert.deepStrictEqual(aggregated, ['AggWindowConcurrent']);
 	});
