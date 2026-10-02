@@ -478,10 +478,23 @@ export class FullTextQueryIndex {
 				if (!candidateGatePlanned) {
 					candidateGatePlanned = true;
 					if (candidatePlan) {
-						if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
-						remainingSearchBudget(deadline);
+						const assertSearchActive = () => {
+							if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
+							options.assertTransactionActive?.();
+							remainingSearchBudget(deadline);
+						};
+						assertSearchActive();
 						const nativeHitCount = Math.min(searchWindow, Math.max(result.hits.length, result.total));
-						candidateGate = this.#candidateGate(candidatePlan, target, nativeHitCount);
+						candidateGate = await this.#candidateGate(
+							candidatePlan,
+							target,
+							nativeHitCount,
+							async () => {
+								await new Promise((resolve) => setImmediate(resolve));
+								assertSearchActive();
+							},
+							assertSearchActive
+						);
 						candidateProbeFailureEpoch = this.#candidateProbeFailureEpoch;
 					}
 				}
@@ -540,7 +553,7 @@ export class FullTextQueryIndex {
 								if (!this.#candidateCollectionFailureWarned) {
 									this.#candidateCollectionFailureWarned = true;
 									logger.warn?.(
-										'could not apply the full-text candidate-key set; using point probes or the record predicate',
+										'could not apply the full-text candidate-key set; using the record predicate; point probes may resume on later requests',
 										error
 									);
 								}
@@ -634,7 +647,13 @@ export class FullTextQueryIndex {
 		}
 	}
 
-	#candidateGate(plan: CandidateKeyPlan, target: number, maxSourceReads: number): CandidateGate | undefined {
+	async #candidateGate(
+		plan: CandidateKeyPlan,
+		target: number,
+		maxSourceReads: number,
+		cooperate: () => Promise<void>,
+		assertActive: () => void
+	): Promise<CandidateGate | undefined> {
 		const store = this.#options.Table.primaryStore;
 		const estimatedRecords =
 			typeof store.getEstimatedKeyCount === 'function' ? store.getEstimatedKeyCount() : store.getStats?.().entryCount;
@@ -646,7 +665,8 @@ export class FullTextQueryIndex {
 		const now = Date.now();
 		if (plan.estimatedCount <= maxKeys && now >= this.#candidateCollectionRetryAfter) {
 			try {
-				const collected = plan.collect(maxKeys);
+				const collected = await plan.collect(maxKeys, cooperate);
+				assertActive();
 				this.#candidateCollectionFailureWarned = false;
 				this.#candidateCollectionRetryAfter = 0;
 				if (collected)
@@ -656,6 +676,7 @@ export class FullTextQueryIndex {
 						has: (primaryKey) => collected.keys.has(primaryKey),
 					};
 			} catch (error) {
+				assertActive();
 				this.#candidateCollectionRetryAfter = now + CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS;
 				if (!this.#candidateCollectionFailureWarned) {
 					this.#candidateCollectionFailureWarned = true;

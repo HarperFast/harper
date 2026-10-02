@@ -430,7 +430,13 @@ export interface CandidateKeyPlan {
 	 * superset that gates the predicate instead of replacing it. Null when even the narrowest term
 	 * overruns, which means the whole plan was not worth what it read.
 	 */
-	collect(maxKeys: number): { keys: CandidateKeySet; complete: boolean } | null;
+	collect(maxKeys: number): CandidateKeyCollection | null;
+	collect(maxKeys: number, cooperate: () => Promise<void>): Promise<CandidateKeyCollection | null>;
+}
+
+interface CandidateKeyCollection {
+	keys: CandidateKeySet;
+	complete: boolean;
 }
 
 /**
@@ -480,6 +486,7 @@ interface CandidateKeyScan {
 	index: any;
 	range: any;
 	estimatedCount: number;
+	predicateExact: boolean;
 	probeValue?: any;
 	canProbe?: boolean;
 }
@@ -528,6 +535,16 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 		return undefined;
 	let value = condition[1] ?? condition.value;
 	if (value instanceof Date) value = value.getTime();
+	const attributeType = findAttribute(table.attributes, attributeName)?.type;
+	const predicateExact =
+		comparator !== 'equals' ||
+		value === null ||
+		typeof value === 'string' ||
+		typeof value === 'boolean' ||
+		attributeType === 'Int' ||
+		attributeType === 'Long' ||
+		attributeType === 'Float' ||
+		attributeType === 'BigInt';
 	let start;
 	let end;
 	let inclusiveEnd = false;
@@ -602,6 +619,7 @@ function planCandidateKeyScan(condition, table, includePointProbe: boolean): Can
 		index,
 		range: { start, end, inclusiveEnd, exclusiveStart },
 		estimatedCount,
+		predicateExact,
 		...(includePointProbe ? { probeValue: canProbe ? value : undefined, canProbe } : null),
 	};
 }
@@ -617,10 +635,14 @@ function planCandidateKeys(
 	const planned = collectCandidateKeyTerms(conditions, table, terms, includePointProbe) && guardFree;
 	if (terms.length === 0) return undefined;
 	const estimatedCount = terms.reduce((narrowest, term) => Math.min(narrowest, term.estimatedCount), Infinity);
-	const plan: CandidateKeyPlan = {
-		estimatedCount,
-		collect: (maxKeys) => collectCandidateKeys(terms, transaction, maxKeys, planned),
-	};
+	function collect(maxKeys: number): CandidateKeyCollection | null;
+	function collect(maxKeys: number, cooperate: () => Promise<void>): Promise<CandidateKeyCollection | null>;
+	function collect(maxKeys: number, cooperate?: () => Promise<void>) {
+		return cooperate
+			? collectCandidateKeysCooperatively(terms, transaction, maxKeys, planned, cooperate)
+			: collectCandidateKeys(terms, transaction, maxKeys, planned);
+	}
+	const plan: CandidateKeyPlan = { estimatedCount, collect };
 	if (!includePointProbe) return plan;
 	const probeTerms = terms.filter((term) => term.scans.every((scan) => scan.canProbe));
 	if (probeTerms.length === 0) return plan;
@@ -670,13 +692,16 @@ function collectCandidateKeyTerms(conditions, table, terms: CandidateKeyTerm[], 
 				}
 				if (scans.length === condition.conditions.length) {
 					terms.push({ scans, estimatedCount: scans.reduce((total, scan) => total + scan.estimatedCount, 0) });
+					if (scans.some((scan) => !scan.predicateExact)) complete = false;
 				}
 			} else if (!collectCandidateKeyTerms(condition.conditions, table, terms, includePointProbe)) complete = false;
 			continue;
 		}
 		const scan = planCandidateKeyScan(condition, table, includePointProbe);
-		if (scan) terms.push({ scans: [scan], estimatedCount: scan.estimatedCount });
-		else complete = false;
+		if (scan) {
+			terms.push({ scans: [scan], estimatedCount: scan.estimatedCount });
+			if (!scan.predicateExact) complete = false;
+		} else complete = false;
 	}
 	return complete;
 }
@@ -688,12 +713,14 @@ function collectCandidateKeyTerms(conditions, table, terms: CandidateKeyTerm[], 
  * exceeds what is left of that budget is dropped instead: fewer AND terms is a wider superset, which
  * the predicate then narrows, and spending the budget on it only to abandon the set is pure loss.
  */
-function collectCandidateKeys(
+const CANDIDATE_KEY_COLLECTION_YIELD_INTERVAL = 256;
+
+function* candidateKeyCollectionSteps(
 	terms: CandidateKeyTerm[],
 	transaction,
 	maxKeys: number,
 	planned: boolean
-): { keys: CandidateKeySet; complete: boolean } | null {
+): Generator<void, CandidateKeyCollection | null> {
 	const ordered = terms.length > 1 ? terms.slice().sort((a, b) => a.estimatedCount - b.estimatedCount) : terms;
 	let matched: CandidateKeySet | undefined;
 	let complete = planned;
@@ -712,6 +739,7 @@ function collectCandidateKeys(
 					break;
 				}
 				if (!matched || matched.has(primaryKey)) next.add(primaryKey);
+				if (scanned % CANDIDATE_KEY_COLLECTION_YIELD_INTERVAL === 0) yield;
 			}
 			if (overran) break;
 		}
@@ -725,6 +753,34 @@ function collectCandidateKeys(
 		if (matched.size === 0) break;
 	}
 	return { keys: matched!, complete };
+}
+
+function collectCandidateKeys(
+	terms: CandidateKeyTerm[],
+	transaction,
+	maxKeys: number,
+	planned: boolean
+): CandidateKeyCollection | null {
+	const steps = candidateKeyCollectionSteps(terms, transaction, maxKeys, planned);
+	let next = steps.next();
+	while (!next.done) next = steps.next();
+	return next.value;
+}
+
+async function collectCandidateKeysCooperatively(
+	terms: CandidateKeyTerm[],
+	transaction,
+	maxKeys: number,
+	planned: boolean,
+	cooperate: () => Promise<void>
+): Promise<CandidateKeyCollection | null> {
+	const steps = candidateKeyCollectionSteps(terms, transaction, maxKeys, planned);
+	let next = steps.next();
+	while (!next.done) {
+		await cooperate();
+		next = steps.next();
+	}
+	return next.value;
 }
 
 /**
