@@ -608,8 +608,8 @@ function readBody(request) {
 					});
 					socket.on('close', () => {
 						clearTimeout(timer);
-						clearImmediate(nextWrite);
-						clearTimeout(nextWrite);
+						if (continueUpload) clearTimeout(nextWrite);
+						else clearImmediate(nextWrite);
 						resolve({ raw, sentAtHeaders, length });
 					});
 				});
