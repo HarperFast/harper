@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790932641326,
+  "lastUpdate": 1790932646085,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -25210,6 +25210,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 2010.7,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "778e3e9aee1db98d7716e26b348c9f84af5dbca1",
+          "message": "Prune the design notes for 2026 Q4, and correct the claims the code has moved past (#2960)\n\n* Prune the design notes for 2026 Q4, and correct the claims the code has moved past\n\nresources/DESIGN.md and resources/indexes/DESIGN.md, the two files over 80% of their budget, get\nthe full pass: measurement logs move to the PRs that hold them, the derived-index backend contract\nand the HNSW search-side calibration shrink to pointers at the type and comment that carry them,\ncrate-owned native-plane internals point at @harperfast/hnsw's own design note, the user-facing\npath-routing rules point at the documentation repo, and two duplicated notes merge into their\nowners. Every other note gets the stale-reference sweep: renamed symbols, moved files, and claims\nthe code now contradicts (the component load-lock key, the TLS key-rotation guard, the scheduler's\nworker gate, record-lock payloads and caps, the rocksdb-js#849 workaround condition).\n\nDocs only; no source changes.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QkTp7Vfjhm5D4g4kK1vcWd\nDispatch-Task: harper-prune-design-docs-2026q4\n\n* Address the pre-push review: name each fence and rescope site exactly, and keep the facts the shrinks dropped\n\nThe backend-contract pointer now carries the three batch facts the type comments lack, the plane\nsearch note says an unfiltered query uses plane.search(), the measured HNSW claims keep the sizes\nthey were measured at, the record-lock pointers name performCommit() and rescope(), the #2884 note\nstates with evidence that today's plugins tolerate per-application interleaving, and the token-scope\nnote keeps #2173's open question open. The deleted untested-abort note becomes a pointer at the test\nthat now covers it.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QkTp7Vfjhm5D4g4kK1vcWd\nDispatch-Task: harper-prune-design-docs-2026q4\n\n* Address the second review round: follow the declaration after a lock wait, and keep the macOS durability caveat\n\nThe merged lock-scope text now says a call follows a mid-wait redeclaration, as rescope() and the\n\"re-reads the declaration after the native wait\" tests show; the HNSW plane note keeps the macOS msync\ncaveat, since the crate's msync() has no F_FULLFSYNC pass; the measured ef sweep and cap-32 deficit keep\ntheir sizes and latency cost; and the successor-freshness note states that harper-pro's barrier fails\nclosed while any home-map member is down.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QkTp7Vfjhm5D4g4kK1vcWd\nDispatch-Task: harper-prune-design-docs-2026q4\n\n* State exactly what a macOS power loss can cost the native HNSW plane\n\nThe restored caveat said the crash contract \"holds only up to that barrier\", which reads as safety up\nto the last barrier — the state macOS can lose. Say instead that the cursor can land past graph writes\nthe file lost, that nothing compares the plane watermark with the cursor on attach, and so those\nvectors stay missing until a rebuild.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01QkTp7Vfjhm5D4g4kK1vcWd\nDispatch-Task: harper-prune-design-docs-2026q4\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-02T01:10:21Z",
+          "url": "https://github.com/HarperFast/harper/commit/778e3e9aee1db98d7716e26b348c9f84af5dbca1"
+        },
+        "date": 1790932644719,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 3826.64,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 3826.64,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 137.9,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 878.8,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 1048.3,
             "unit": "ms"
           }
         ]
