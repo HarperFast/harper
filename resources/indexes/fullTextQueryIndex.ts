@@ -550,6 +550,7 @@ export class FullTextQueryIndex {
 									logger.warn?.('could not probe the full-text companion index; using the record predicate', error);
 								}
 							} else {
+								this.#candidateCollectionFailureEpoch++;
 								this.#candidateCollectionRetryAfter = Date.now() + CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS;
 								if (!this.#candidateCollectionFailureWarned) {
 									this.#candidateCollectionFailureWarned = true;

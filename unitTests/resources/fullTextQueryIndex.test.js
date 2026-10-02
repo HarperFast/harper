@@ -1929,9 +1929,14 @@ describe('FullTextQueryIndex', () => {
 					await index.search(
 						condition,
 						{},
-						options(() => {
-							throw new Error('injected newer collection failure');
-						})
+						options(() => ({
+							complete: true,
+							keys: {
+								has() {
+									throw new Error('injected newer collected-set admission failure');
+								},
+							},
+						}))
 					)
 				)[0].key,
 				'record-0'
