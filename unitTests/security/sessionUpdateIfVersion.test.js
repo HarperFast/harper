@@ -1,0 +1,187 @@
+const assert = require('node:assert');
+const { Headers } = require('#src/server/serverHelpers/Headers');
+const testUtils = require('../testUtils.js');
+const { databases } = require('#src/resources/databases');
+const { transaction } = require('#src/resources/transaction');
+const { authentication } = require('#src/security/auth');
+const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
+const { waitFor } = require('../waitFor.js');
+
+testUtils.preTestPrep();
+
+describe('session.update ifVersion (HarperFast/harper#2983)', function () {
+	let Sessions;
+
+	before(async function () {
+		testUtils.setupTestDBPath();
+		await testUtils.ensureSystemTables();
+		Sessions = databases.system.hdb_session;
+	});
+
+	function newRequest(cookie) {
+		return {
+			headers: { asObject: { authorization: null, cookie, origin: null, host: 'localhost' } },
+			method: 'GET',
+			pathname: '/test',
+			ip: '192.0.2.1',
+			isOperationsServer: false,
+			mtlsConfig: null,
+			authorized: false,
+			peerCertificate: null,
+			protocol: 'https',
+		};
+	}
+
+	function newResponse() {
+		return { status: 200, headers: new Headers(), body: '{}' };
+	}
+
+	async function establishSession(greeting = 'hello') {
+		const response = newResponse();
+		await authentication(newRequest(null), async (request) => {
+			await request.session.update({ greeting });
+			return response;
+		});
+		const setCookie = response.headers.get('Set-Cookie');
+		assert.ok(setCookie, 'expected a session cookie');
+		return setCookie.split(';')[0];
+	}
+
+	const conflict = (error) => {
+		assert.strictEqual(error.code, 'VERSION_CONFLICT');
+		assert.strictEqual(error.statusCode, 409);
+		return true;
+	};
+
+	it('exposes the initially loaded version without persisting it in session data', async function () {
+		const cookie = await establishSession();
+		await authentication(newRequest(cookie), async (request) => {
+			assert.strictEqual(typeof request.session.version, 'number');
+			assert.ok(!('version' in { ...request.session }));
+			const version = request.session.version;
+			await request.session.update({ greeting: 'updated' }, { ifVersion: version });
+			assert.strictEqual(request.session.version, version, 'the getter describes the initial load');
+			return newResponse();
+		});
+		await authentication(newRequest(cookie), async (request) => {
+			assert.strictEqual(request.session.greeting, 'updated');
+			return newResponse();
+		});
+	});
+
+	for (const change of ['update', 'logout', 'delete', 'remove']) {
+		it(`rejects a refresh after a concurrent ${change}, bypassing the retained snapshot`, async function () {
+			const cookie = await establishSession();
+			const response = newResponse();
+			await transaction({}, async () => {
+				await authentication(newRequest(cookie), async (request) => {
+					const { id, version } = request.session;
+					assert.strictEqual((await Sessions.get(id)).greeting, 'hello');
+					if (change === 'delete') await Sessions.delete(id, {});
+					else if (change === 'remove') await Sessions.primaryStore.remove(id);
+					else
+						await authentication(newRequest(cookie), async (otherRequest) => {
+							await otherRequest.session.update(change === 'logout' ? { user: null } : { greeting: 'winner' });
+							return newResponse();
+						});
+					assert.strictEqual((await Sessions.get(id)).greeting, 'hello', 'the request snapshot is still old');
+					const attempted = { greeting: 'stale refresh' };
+					await assert.rejects(request.session.update(attempted, { ifVersion: version }), (error) => {
+						assert.ok(!error.message.includes(id), 'the error must not expose the bearer cookie');
+						assert.strictEqual(error.retryable, true);
+						return conflict(error);
+					});
+					assert.deepStrictEqual(attempted, { greeting: 'stale refresh' }, 'rejection does not mutate input');
+					return response;
+				});
+			});
+			assert.strictEqual(response.headers.get('X-Hdb-Session'), undefined);
+			await authentication(newRequest(cookie), async (request) => {
+				assert.strictEqual(request.session.greeting, change === 'update' ? 'winner' : undefined);
+				if (change === 'logout') assert.strictEqual(request.session.user, null);
+				return newResponse();
+			});
+		});
+	}
+
+	it('rejects an expired session without extending its lifetime', async function () {
+		const cookie = await establishSession();
+		const id = cookie.slice(cookie.indexOf('=') + 1);
+		const expiresAt = Date.now() + 1000;
+		await Sessions.put({ id, greeting: 'expiring' }, { expiresAt });
+		await authentication(newRequest(cookie), async (request) => {
+			const version = request.session.version;
+			await waitFor(() => Date.now() > expiresAt, 3000);
+			await assert.rejects(request.session.update({ greeting: 'revived' }, { ifVersion: version }), conflict);
+			assert.strictEqual(Sessions.primaryStore.getEntry(id)?.expiresAt, expiresAt);
+			return newResponse();
+		});
+	});
+
+	it('rejects a genuinely reused version even when its number matches', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+		const cookie = await establishSession();
+		const id = cookie.slice(cookie.indexOf('=') + 1);
+		const now = Date.now();
+		await Sessions.patch(id, { greeting: 'newer' }, { timestamp: now + 100 });
+		await Sessions.patch(id, { another: true }, { timestamp: now + 50 });
+		assert.ok(Sessions.primaryStore.getEntry(id).metadataFlags & VERSION_REUSED);
+		await authentication(newRequest(cookie), async (request) => {
+			await assert.rejects(
+				request.session.update({ greeting: 'lost' }, { ifVersion: request.session.version }),
+				(error) => {
+					assert.strictEqual(error.retryable, false);
+					return conflict(error);
+				}
+			);
+			return newResponse();
+		});
+	});
+
+	it('rejects a cookie-less conditional update without minting a cookie', async function () {
+		const response = newResponse();
+		await authentication(newRequest(null), async (request) => {
+			await assert.rejects(request.session.update({ greeting: 'x' }, { ifVersion: 1 }), conflict);
+			return response;
+		});
+		assert.strictEqual(response.headers.get('Set-Cookie'), undefined);
+		assert.strictEqual(response.headers.get('X-Hdb-Session'), undefined);
+	});
+
+	it('rejects unusable explicit conditions without falling back to an unconditional update', async function () {
+		const cookie = await establishSession();
+		await authentication(newRequest(cookie), async (request) => {
+			for (const options of [
+				null,
+				{},
+				1,
+				{ ifVersion: undefined },
+				{ ifVersion: null },
+				{ ifVersion: NaN },
+				{ ifVersion: Infinity },
+			])
+				assert.throws(() => request.session.update({ greeting: 'invalid' }, options), { statusCode: 400 });
+			return newResponse();
+		});
+	});
+
+	it('keeps updates without options unconditional and sends the success header', async function () {
+		const cookie = await establishSession();
+		const response = newResponse();
+		await authentication(newRequest(cookie), async (request) => {
+			await request.session.update({ greeting: 'unconditional' });
+			return response;
+		});
+		assert.strictEqual(response.headers.get('X-Hdb-Session'), 'Secure');
+	});
+
+	it('sets the success header for an awaited conditional update', async function () {
+		const cookie = await establishSession();
+		const response = newResponse();
+		await authentication(newRequest(cookie), async (request) => {
+			await request.session.update({ greeting: 'conditional' }, { ifVersion: request.session.version });
+			return response;
+		});
+		assert.strictEqual(response.headers.get('X-Hdb-Session'), 'Secure');
+	});
+});

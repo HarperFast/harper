@@ -306,6 +306,28 @@ export class LockUnavailableError extends ServerError {
 	}
 }
 
+/** A session's best-effort pre-write check failed. The message must never include its bearer cookie id. */
+export class VersionConflictError extends ClientError {
+	code: string;
+	retryable: boolean;
+	constructor(
+		tableName: string,
+		expectedVersion: number,
+		actualVersion: number | undefined,
+		retryable: boolean,
+		reason?: string
+	) {
+		super(
+			`Conditional write to ${tableName} rejected: expected version ${expectedVersion}, found ` +
+				`${actualVersion ?? 'no record'}${reason ? ` (${reason})` : ''}`,
+			409
+		);
+		this.name = 'VersionConflictError';
+		this.code = 'VERSION_CONFLICT';
+		this.retryable = retryable;
+	}
+}
+
 /** One structured validation failure. `path` is dot-scoped (`body.price`, `query.sort`, `params.id`). */
 export interface ValidationIssue {
 	/** Where the failure occurred, e.g. `body.price`, `query.expand`, `params.id`. */
