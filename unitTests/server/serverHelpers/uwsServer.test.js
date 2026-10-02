@@ -538,6 +538,7 @@ function readBody(request) {
 		disconnect = false,
 		duplicateConnection = false,
 		continueUpload = false,
+		consume = true,
 	} of [
 		{ name: 'completes a 413 after a fixed-length uploader stops at its headers' },
 		{ name: 'completes a 413 after a chunked uploader stops at its headers', chunked: true },
@@ -546,17 +547,26 @@ function readBody(request) {
 		{ name: 'cancels the drain deadline when the peer disconnects', disconnect: true },
 		{ name: 'delivers 413 with repeated Connection headers', duplicateConnection: true },
 		{ name: 'delivers 413 before bounding an uploader that ignores it', chunked: true, continueUpload: true },
+		{ name: 'releases a paused body before draining the upload', consume: false },
 	]) {
 		it(name, async function () {
 			const port = 36000 + (process.pid % 1500);
 			let request;
+			let bufferedBeforeReject = 0;
+			let delivered = 0;
 			const server = await createUwsServer({
 				host: '127.0.0.1',
 				port,
-				maxBodyBytes: 1024,
+				maxBodyBytes: consume ? 1024 : 128 * 1024,
 				handler: async (incoming) => {
 					if (incoming.method === 'GET') return { status: 200, body: 'alive' };
 					request = incoming;
+					if (!consume) {
+						incoming.body.on('data', () => delivered++);
+						incoming.body.pause();
+						await new Promise((resolve) => incoming.signal.addEventListener('abort', resolve, { once: true }));
+						return { status: 200 };
+					}
 					return { status: 200, body: await readBody(incoming) };
 				},
 			});
@@ -575,6 +585,7 @@ function readBody(request) {
 						upload();
 					});
 					function upload() {
+						bufferedBeforeReject = Math.max(bufferedBeforeReject, request?.body.readableLength ?? 0);
 						if (socket.destroyed || (!continueUpload && raw.includes('\r\n\r\n'))) return;
 						if (sent === length) {
 							if (chunked) socket.write('0\r\n\r\n');
@@ -628,7 +639,12 @@ function readBody(request) {
 				}
 				assert.ok(response.sentAtHeaders < response.length, '413 headers must arrive before the upload finishes');
 				assert.ok(request.signal.aborted, 'the rejected handler is cancelled');
-				assert.ok(request.body.destroyed, 'rejected body buffers are released');
+				assert.ok(request.body.destroyed, 'the rejected body is destroyed');
+				assert.strictEqual(request.body.readableLength, 0, 'rejected body buffers are released');
+				if (!consume) {
+					assert.ok(bufferedBeforeReject > 0, 'the paused body buffered upload bytes before rejection');
+					assert.strictEqual(delivered, 0, 'teardown never delivers buffered bytes to the paused consumer');
+				}
 				if (disconnect || finish) {
 					await new Promise((resolve) => setTimeout(resolve, 1100));
 					const status = await new Promise((resolve, reject) => {

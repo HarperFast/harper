@@ -188,6 +188,8 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 				if (ended || body.destroyed) return;
 				ended = true;
 				body.destroy(error && body.listenerCount('error') > 0 ? error : undefined);
+				body.removeAllListeners('data');
+				while (body.readableLength) body.read(Math.min(body.readableLength, body.readableHighWaterMark));
 			};
 			ac.signal.addEventListener('abort', () => tearDown(new Error('request aborted')), { once: true });
 			res.onData((chunk: ArrayBuffer, isLast: boolean) => {
