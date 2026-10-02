@@ -530,8 +530,14 @@ function readBody(request) {
 });
 
 (uwsAvailable ? describe : describe.skip)('uWS oversized TCP uploads', function () {
-	for (const chunked of [false, true]) {
-		it(`delivers a complete 413 during a paced ${chunked ? 'chunked' : 'fixed-length'} upload`, async function () {
+	for (const { name, chunked = false, connection = 'close', finish = false, disconnect = false } of [
+		{ name: 'completes a 413 after a fixed-length uploader stops at its headers' },
+		{ name: 'completes a 413 after a chunked uploader stops at its headers', chunked: true },
+		{ name: 'finishes draining when the remaining upload arrives', finish: true, connection: 'Close' },
+		{ name: 'preserves an immediate complete 413 on keep-alive', connection: 'keep-alive' },
+		{ name: 'cancels the drain deadline when the peer disconnects', disconnect: true },
+	]) {
+		it(name, async function () {
 			const port = 36000 + (process.pid % 1500);
 			let request;
 			const server = await createUwsServer({
@@ -539,6 +545,7 @@ function readBody(request) {
 				port,
 				maxBodyBytes: 1024,
 				handler: async (incoming) => {
+					if (incoming.method === 'GET') return { status: 200, body: 'alive' };
 					request = incoming;
 					return { status: 200, body: await readBody(incoming) };
 				},
@@ -546,13 +553,14 @@ function readBody(request) {
 			try {
 				const response = await new Promise((resolve, reject) => {
 					const chunk = Buffer.alloc(64 * 1024);
-					const length = 16 * 1024 * 1024;
+					const length = 1024 * 1024;
 					let sent = 0;
+					let sentAtHeaders;
 					let raw = '';
 					let nextWrite;
 					const socket = net.connect({ host: '127.0.0.1', port }, () => {
 						const framing = chunked ? 'Transfer-Encoding: chunked' : `Content-Length: ${length}`;
-						socket.write(`POST / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n${framing}\r\n\r\n`);
+						socket.write(`POST / HTTP/1.1\r\nHost: localhost\r\nConnection: ${connection}\r\n${framing}\r\n\r\n`);
 						upload();
 					});
 					function upload() {
@@ -566,24 +574,49 @@ function readBody(request) {
 						if (socket.write(data)) nextWrite = setImmediate(upload);
 						else socket.once('drain', () => (nextWrite = setImmediate(upload)));
 					}
-					const timer = setTimeout(() => socket.destroy(new Error('oversized upload did not receive 413')), 5000);
-					socket.on('data', (data) => (raw += data.toString('latin1')));
+					let timer = setTimeout(() => socket.destroy(new Error('oversized upload did not receive 413')), 5000);
+					socket.on('data', (data) => {
+						raw += data.toString('latin1');
+						if (sentAtHeaders !== undefined || !raw.includes('\r\n\r\n')) return;
+						sentAtHeaders = sent;
+						if (disconnect || connection === 'keep-alive') socket.destroy();
+						else if (finish) {
+							clearTimeout(timer);
+							timer = setTimeout(() => socket.destroy(new Error('finished upload waited for the drain deadline')), 500);
+							socket.write(Buffer.alloc(length - sent));
+							sent = length;
+						}
+					});
 					socket.on('error', reject);
 					socket.on('close', () => {
 						clearTimeout(timer);
 						clearImmediate(nextWrite);
-						resolve({ raw, sent, length });
+						resolve({ raw, sentAtHeaders, length });
 					});
 				});
 				assert.match(response.raw, /^HTTP\/1\.1 413 Payload Too Large\r\n/);
 				assert.match(response.raw, /\r\n\r\n/);
-				assert.ok(
-					/\r\ncontent-length: 0\r\n/i.test(response.raw) || response.raw.endsWith('\r\n0\r\n\r\n'),
-					'the 413 response body must be complete'
-				);
-				assert.ok(response.sent < response.length, '413 must arrive before the upload finishes');
+				if (!disconnect) {
+					assert.ok(
+						/\r\ncontent-length: 0\r\n/i.test(response.raw) || response.raw.endsWith('\r\n0\r\n\r\n'),
+						'the 413 response body must be complete'
+					);
+				}
+				assert.ok(response.sentAtHeaders < response.length, '413 headers must arrive before the upload finishes');
 				assert.ok(request.signal.aborted, 'the rejected handler is cancelled');
 				assert.ok(request.body.destroyed, 'rejected body buffers are released');
+				if (disconnect || finish) {
+					await new Promise((resolve) => setTimeout(resolve, 1100));
+					const status = await new Promise((resolve, reject) => {
+						http
+							.get({ host: '127.0.0.1', port, agent: false }, (res) => {
+								res.resume();
+								res.on('end', () => resolve(res.statusCode));
+							})
+							.on('error', reject);
+					});
+					assert.strictEqual(status, 200, 'the server survives past the cancelled drain deadline');
+				}
 			} finally {
 				server.close();
 			}
