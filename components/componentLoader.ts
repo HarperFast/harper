@@ -86,6 +86,59 @@ let resources;
 const componentLoadTails = new Map<string, Promise<void>>();
 type ComponentReadyPromises = WeakMap<object, Promise<void>>;
 
+export type BootLoadFailure = { key: string; name: string; message: string; stack?: string };
+export type BootOutcome = { executed: boolean; skipped: boolean; pending: number; failures: BootLoadFailure[] };
+
+// Allocated only on a worker held for certification. Public component status cannot serve: a status update
+// overwrites a load failure, and a skipped load reports itself loaded.
+let bootOutcomes: Map<string, BootOutcome> | undefined;
+
+export function trackBootOutcomes(applications: Iterable<string>): void {
+	bootOutcomes = new Map();
+	for (const application of applications) {
+		bootOutcomes.set(application, { executed: false, skipped: false, pending: 0, failures: [] });
+	}
+}
+
+export type BootVerdictOutcome = 'loaded' | 'failed' | 'skipped' | 'pending' | 'absent';
+
+/** `skipped` ran nothing (`dev-only`, `if-installed`, safe mode); `absent` means this thread did not load it. */
+export function bootVerdictOf(application: string): { outcome: BootVerdictOutcome; failures: BootLoadFailure[] } {
+	const outcome = bootOutcomes?.get(application);
+	if (!outcome) return { outcome: 'absent', failures: [] };
+	if (outcome.failures.length > 0) return { outcome: 'failed', failures: outcome.failures };
+	if (outcome.pending > 0) return { outcome: 'pending', failures: [] };
+	if (outcome.executed) return { outcome: 'loaded', failures: [] };
+	return { outcome: outcome.skipped ? 'skipped' : 'absent', failures: [] };
+}
+
+function flattenLoadFailure(key: string, error: unknown): BootLoadFailure {
+	if (error instanceof Error) return { key, name: error.name, message: error.message, stack: error.stack };
+	return { key, name: 'Error', message: String(error) };
+}
+
+function noteBootFailure(application: string | undefined, key: string, error: unknown): void {
+	const outcome = application === undefined ? undefined : bootOutcomes?.get(application);
+	outcome?.failures.push(flattenLoadFailure(key, error));
+}
+
+function noteBootExecuted(application: string | undefined): void {
+	const outcome = application === undefined ? undefined : bootOutcomes?.get(application);
+	if (outcome) outcome.executed = true;
+}
+
+function noteBootSkipped(application: string | undefined): void {
+	const outcome = application === undefined ? undefined : bootOutcomes?.get(application);
+	if (outcome) outcome.skipped = true;
+}
+
+function trackDeferredBootLoad(application: string, load: Promise<unknown>): void {
+	const outcome = bootOutcomes?.get(application);
+	if (!outcome) return;
+	outcome.pending++;
+	void load.finally(() => outcome.pending--);
+}
+
 function serializeComponentLoad<T>(appName: string, load: () => Promise<T>): Promise<T> {
 	const previousLoad = componentLoadTails.get(appName);
 	const currentLoad = previousLoad ? previousLoad.then(load) : load();
@@ -181,14 +234,15 @@ function placedOnThisThread(appName: string): boolean {
 		assertIsolationConfig(appName, (getConfigObj()?.[appName] as any)?.isolated);
 	} catch (error) {
 		componentLifecycle.failed(appName, error, `Component '${appName}' failed to load`);
+		noteBootFailure(appName, appName, error);
 		return false;
 	}
 	if (isIsolatedApplication(appName) && isMainThread && getWorkerIndex() === 0) {
-		componentLifecycle.failed(
-			appName,
-			new Error(`Application '${appName}' is isolated, which needs a worker thread of its own, but threads.count is 0`),
-			`Component '${appName}' failed to load`
+		const error = new Error(
+			`Application '${appName}' is isolated, which needs a worker thread of its own, but threads.count is 0`
 		);
+		componentLifecycle.failed(appName, error, `Component '${appName}' failed to load`);
+		noteBootFailure(appName, appName, error);
 		return false;
 	}
 	return shouldLoadApplicationHere(appName);
@@ -214,6 +268,7 @@ function tryRootConfigMount(appName: string): { ok: true; mount: ScopeMount | un
 			error as Error,
 			`Component '${appName}' failed to load due to invalid routing configuration`
 		);
+		noteBootFailure(appName, appName, error);
 		return { ok: false };
 	}
 }
@@ -225,7 +280,8 @@ export async function loadComponentDirectories(
 	// Settled by boot BEFORE installApplications(), because that installs from the root config and would
 	// otherwise reinstall the previous release over an already-live candidate. `undefined` on a worker,
 	// which never runs that pass — distinct from an empty map, which would claim nothing is unreconciled.
-	interruptedActivationFailures?: Map<string, Error>
+	interruptedActivationFailures?: Map<string, Error>,
+	failClosed?: Map<string, Error>
 ) {
 	if (loadedResources) resources = loadedResources;
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
@@ -292,7 +348,7 @@ export async function loadComponentDirectories(
 		if (appWasVisible) {
 			componentLifecycle.loading(appName, `Component '${appName}' is waiting for in-progress preparation to finish`);
 		}
-		void serializeComponentLoad(appName, () =>
+		const deferredLoad = serializeComponentLoad(appName, () =>
 			recoverInterruptedComponentExtraction(CF_ROUTES_DIR, appName)
 				.then(async () => {
 					if (!existsSync(appFolder)) {
@@ -317,6 +373,7 @@ export async function loadComponentDirectories(
 				})
 				.catch((error) => {
 					const recoveryError = error instanceof Error ? error : new Error(String(error));
+					noteBootFailure(appName, appName, recoveryError);
 					if (appWasVisible) {
 						componentLifecycle.failed(
 							appName,
@@ -326,6 +383,7 @@ export async function loadComponentDirectories(
 					}
 				})
 		);
+		trackDeferredBootLoad(appName, deferredLoad);
 	};
 	if (existsSync(CF_ROUTES_DIR)) {
 		const cfFolders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
@@ -335,6 +393,12 @@ export async function loadComponentDirectories(
 			// Harper's own staging dirs (e.g. deploy aside copies) from loading as components.
 			if (appEntry.name.startsWith('.')) continue;
 			const appName = appEntry.name;
+			const refusal = failClosed?.get(appName);
+			if (refusal) {
+				noteBootFailure(appName, appName, refusal);
+				componentLifecycle.failed(appName, refusal, refusal.message);
+				continue;
+			}
 			const recoveryError = failedRecoveries.get(appName);
 			if (recoveryError) {
 				if (recoveryError instanceof ComponentPreparationLockTimeoutError) {
@@ -343,6 +407,7 @@ export async function loadComponentDirectories(
 					continue;
 				}
 				unreportedFailedRecoveries.delete(appName);
+				noteBootFailure(appName, appName, recoveryError);
 				componentLifecycle.failed(
 					appName,
 					recoveryError,
@@ -365,12 +430,14 @@ export async function loadComponentDirectories(
 					})
 				).catch((error) => {
 					const loadError = error instanceof Error ? error : new Error(String(error));
+					noteBootFailure(appName, appName, loadError);
 					componentLifecycle.failed(appName, loadError, `Component '${appName}' failed to load`);
 				})
 			);
 		}
 	}
 	for (const [appName, recoveryError] of unreportedFailedRecoveries) {
+		noteBootFailure(appName, appName, recoveryError);
 		componentLifecycle.failed(
 			appName,
 			recoveryError,
@@ -798,6 +865,8 @@ export interface LoadComponentOptions {
 	// the application's entry). Applied to every plugin scope this load creates, and inherited by
 	// components the application itself declares, so the whole subtree moves together.
 	mount?: ScopeMount;
+	/** Root load only: applications whose live release must not load, by name. */
+	failClosed?: Map<string, Error>;
 }
 
 /**
@@ -827,6 +896,7 @@ export async function loadComponent(
 		mount,
 		collectLoadedModules,
 	} = options;
+	const loadingApplication = isRoot ? undefined : (appName ?? basename(componentDirectory));
 	applicationScope.runtimeRoot ??= resolvedFolder;
 	applicationScope.allowedPath ??= realpathSync(componentDirectory);
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
@@ -922,6 +992,7 @@ export async function loadComponent(
 					errorReporter?.(error);
 					(getWorkerIndex() === 0 ? console : harperLogger).error(error);
 					componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
+					noteBootFailure(loadingApplication, componentStatusName, error);
 					return undefined;
 				}
 			}
@@ -957,6 +1028,14 @@ export async function loadComponent(
 			// A root-config application (`package:`) is placed like a directory one: an isolated application
 			// loads only in its dedicated worker, and that worker loads no other application.
 			if (isRoot && componentConfig.package && !placedOnThisThread(componentName)) continue;
+			const entryApplication = isRoot ? (componentConfig.package ? componentName : undefined) : loadingApplication;
+			const refused = isRoot && componentConfig.package ? options.failClosed?.get(componentName) : undefined;
+			if (refused) {
+				harperLogger.error(refused.message);
+				componentLifecycle.failed(componentName, refused, refused.message);
+				noteBootFailure(componentName, componentName, refused);
+				continue;
+			}
 			componentLifecycle.loading(componentStatusName);
 
 			const subApplicationScope = isRoot
@@ -970,6 +1049,7 @@ export async function loadComponent(
 				if (pkg) {
 					if (loadComponentOption === 'dev-only' && !process.env.DEV_MODE) {
 						componentLifecycle.loaded(componentStatusName, `Component '${componentStatusName}' skipped (dev-only)`);
+						noteBootSkipped(entryApplication);
 						continue;
 					}
 					let componentPath: string | null = null;
@@ -1018,12 +1098,15 @@ export async function loadComponent(
 								mount: nestScopeMount(mount, toScopeMount(componentConfig)),
 							});
 							componentFunctionality[componentName] = true;
+						} else {
+							noteBootSkipped(entryApplication);
 						}
 					} else if (loadComponentOption === 'if-installed') {
 						componentLifecycle.loaded(
 							componentStatusName,
 							`Component '${componentStatusName}' skipped (not installed)`
 						);
+						noteBootSkipped(entryApplication);
 						continue;
 					} else {
 						throw new Error(`Unable to find package ${componentName}:${pkg}`);
@@ -1034,8 +1117,10 @@ export async function loadComponent(
 
 				if (!extensionModule) {
 					// This is an application-only component (no extension module)
-					// Mark it as loaded since it exists in the config
-					componentLifecycle.loaded(componentStatusName, `Application component '${componentStatusName}' processed`);
+					// Mark it as loaded since it exists in the config, unless loading its tree just failed it
+					if (statusForComponent(componentStatusName).get()?.status !== 'error') {
+						componentLifecycle.loaded(componentStatusName, `Application component '${componentStatusName}' processed`);
+					}
 					continue;
 				}
 
@@ -1108,6 +1193,7 @@ export async function loadComponent(
 
 					// Mark component as loaded after successful handleApplication call
 					componentLifecycle.loaded(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
+					noteBootExecuted(entryApplication);
 
 					continue;
 				}
@@ -1211,6 +1297,7 @@ export async function loadComponent(
 
 				// Mark component as healthy after successful loading
 				componentLifecycle.loaded(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
+				noteBootExecuted(entryApplication);
 			} catch (error) {
 				error.message = `Could not load component '${componentName}' for application '${basename(componentDirectory)}' due to: ${
 					error.message
@@ -1219,6 +1306,7 @@ export async function loadComponent(
 				(getWorkerIndex() === 0 ? console : harperLogger).error(errorForLog(error));
 				resources.set(componentConfig.path || '/', new ErrorResource(error), null, true);
 				componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
+				noteBootFailure(entryApplication, componentStatusName, error);
 			}
 		}
 
@@ -1283,6 +1371,7 @@ export async function loadComponent(
 			errorReporter?.(new Error(errorMessage));
 			(getWorkerIndex() === 0 ? console : harperLogger).error(errorMessage);
 			componentLifecycle.failed(basename(componentDirectory), errorMessage);
+			noteBootFailure(loadingApplication, basename(componentDirectory), errorMessage);
 		}
 
 		for (const [componentName, functionality] of Object.entries(componentFunctionality)) {
@@ -1296,5 +1385,9 @@ export async function loadComponent(
 		error.message = `Could not load application due to ${error.message}`;
 		errorReporter?.(error);
 		resources.set('', new ErrorResource(error));
+		if (!isRoot) {
+			componentLifecycle.failed(basename(componentDirectory), error, `Could not load ${basename(componentDirectory)}`);
+			noteBootFailure(loadingApplication, basename(componentDirectory), error);
+		}
 	}
 }

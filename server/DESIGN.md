@@ -100,6 +100,13 @@ replacement without being awaited. Each wait is bounded by a per-worker startup 
 resolution means "the restart finished", not "every worker is new". A caller that treats its own success as
 "the component is live" must await it (see `deployComponent` in `components/operations.js`).
 
+A restart can hold its replacements, for release certification (components/DESIGN.md, "A restarting deploy is
+certified by its canary worker"). A held worker runs its boot load, reports `CHILD_COMPONENT_VERDICT`, and binds
+nothing until main posts `CHILD_ADMITTED` (`threadServer.startServers`, `threads/heldStart.ts`); a refusal arrives
+as an ordinary `SHUTDOWN`. Since it binds nothing, it boots beside its predecessor even where the two cannot share
+a port, and the predecessor is retired at admission. Restarts that start replacements are serialized on main
+(`replacementRestarts`), and the worker that asked for a certifying restart is replaced last.
+
 > `index.ts` sets `workerData.noServerStart = true` when Harper is imported from a thread it did not spawn, so `threadServer.js` skips `startServers()` there; Harper's own HTTP workers start their servers.
 >
 > `threadServer.listenOnDomainSocket()` skips a listener only when its path exceeds the platform's

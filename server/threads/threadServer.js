@@ -203,9 +203,15 @@ function startServers() {
 	}
 	reportStartupPhase(startupPhase);
 	let listening;
-	const loaded = require('../loadRootComponents.js')
-		.loadRootComponents(true)
-		.then(() => {
+	const heldFor = workerData?.certify;
+	const heldStart = heldFor ? require('./heldStart.ts') : undefined;
+	const loaded = Promise.resolve(heldStart?.beginHeldStart(heldFor))
+		.then((loadedGenerations) =>
+			require('../loadRootComponents.js')
+				.loadRootComponents(true)
+				.then(() => loadedGenerations)
+		)
+		.then(async (loadedGenerations) => {
 			parentPort
 				?.on('message', (message) => {
 					if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
@@ -258,6 +264,10 @@ function startServers() {
 					}
 				})
 				.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
+			if (heldStart) {
+				reportStartupPhase('awaiting admission');
+				await heldStart.awaitAdmission(heldFor, loadedGenerations);
+			}
 			reportStartupPhase('binding listeners');
 			listening = listenOnPorts();
 		});

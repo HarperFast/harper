@@ -8,10 +8,12 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ---
 
-## A deploy builds off to the side, is validated, and only then goes live
+## A deploy builds off to the side, is certified, and only then goes live
 
-`deploy_component` builds the replacement at `.deploy-staging/<deploymentId>/<component>`, runs the
-load validation against _that_ tree, and only then activates it. Activation is one compensating
+`deploy_component` builds the replacement at `.deploy-staging/<deploymentId>/<component>`, certifies
+_that_ tree, and only then activates it; a deploy that restarts workers is then decided by its canary
+(below). Two things share the word: a build's certification (`.complete`) vouches for its bytes on disk, and
+a release's certification is its canary's verdict on its load. Activation is one compensating
 transaction over two effects: the live tree moves into `.deploy-aside`, then the candidate is renamed
 into the live path.
 
@@ -45,49 +47,98 @@ The ordering is the design. Three things used to be wrong, the first two in a wa
   `integrationTests/deploy/stage-swap-availability.test.ts`
   samples the live path through a deliberately blocked install and fails against the old ordering.
 - **Validation ran after the swap committed**, so a component that installed cleanly but threw at load
-  went live anyway while the operation returned an error. Validation is now a callback preparation
-  invokes between build and activation, so a rejected candidate is never published. Note this is a
-  load-error PROBE, not a safety guarantee: it executes the component's own top-level code with
-  incomplete side-effect isolation. It also remains a no-op on the main thread, and the operations API
-  deploys on the main thread — so operator deploys are still unvalidated, exactly as before. Fixing that
-  is separate work; this only fixed the order. Nor does it run on a worker under the default lockdown —
-  see the next section.
+  went live anyway while the operation returned an error. The in-process load probe that replaced it, which
+  ran between build and activation, is retired as well: it could not reproduce a boot load where it ran, and
+  did not run where most deploys do. A deploy that restarts workers is decided by a canary instead — see the
+  next section.
 - **Root config was written before the build and never rolled back**, so a build or validation that failed
   still left config naming the release, and `installApplications()` installed it at the next restart. The
   entry is now the transaction's third effect, published after the commit — see "Root config is an effect
   of the activation" below.
 
-### The load validation runs only where it can reproduce a boot load
+### A restarting deploy is certified by its canary worker
 
-`validateComponentLoads` (`components/operations.js`) loads the candidate in the thread running the deploy,
-so its verdict is only worth what that thread has in common with a freshly started worker. Two kinds of
-thread have too little, and it runs in neither:
+A deploy with `restart: true` or `'rolling'` (#2315 step 2) is decided by the first worker booted on its release:
+a normal boot, held before it binds a listener until it reports whether the deployed component loaded. That load
+is a boot load in a fresh realm, so under every lockdown mode it accepts exactly what a restarted worker would
+load and rejects what one would fail to. No load in the deploying thread could promise that: the main thread,
+where the operations API deploys, runs no application code, and a `freeze-after-load` worker's intrinsics are
+already frozen, so a dependency that extends one at load (reflect-metadata) throws there yet loads at every boot
+(#2881). The in-process probe that tried, `validateComponentLoads`, is gone in every mode, along with what it
+guarded (`laterLoadsMeetFrozenIntrinsics` has no production caller left). `restart: false` gets no verdict —
+nothing restarts, so nothing could certify it — and the response reports `certification: 'not-requested'`;
+a restarting deploy that could not be armed reports `'unavailable'`.
 
-- **The main thread**, where the operations API deploys: application code does not run there.
-- **A worker under `applications.lockdown: freeze-after-load`**, the default, which is where a replicated
-  peer runs the deploy. The lockdown freezes a worker's intrinsics once its boot load finishes, and a freeze
-  is per realm and cannot be undone. A dependency that extends an intrinsic as it loads (reflect-metadata
-  defines `Reflect.decorate`) then throws in the deploying worker, yet loads in every worker a restart
-  starts. 5.2 hid this by swapping before it validated, so a failed first deploy still landed and
-  `restart: true` loaded it. Once validation moved before the swap, every peer refused every retry of a
-  working component while the origin, which does not validate, ran it (#2881).
-  `laterLoadsMeetFrozenIntrinsics()` (`security/jsLoader.ts`) is the test. It holds in any thread that
-  runs the boot load, so a deploy racing that load is excluded as well.
+The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertification.ts`,
+`server/threads/manageThreads.js`, `server/threads/heldStart.ts`):
 
-Workers still validate under the other modes
-(`integrationTests/deploy/worker-deploy-frozen-intrinsics.test.ts`). `freeze` and `ses` freeze before the
-boot load, so a later load meets exactly the intrinsics it met. `none` freezes nothing, but an intrinsic the
-live version of a component changed, such as a property it made non-configurable, still differs from what a
-fresh worker's load of the candidate meets. That narrower mismatch predates this and is left alone.
+1. **Arm, before the swap.** `prepareApplication`'s activation asks main to register the release. Main
+   refuses a second release of a component in flight (409) and answers `unavailable` when no running worker
+   places it; an isolation flip, which moves the release to a worker no restart has started, is not armed
+   either, and neither is a tree that is a link to its source (`file:` of a directory), which has no bytes of
+   its own to restore. Those deploys proceed uncertified, as before. While armed, every HTTP start that places
+   the release is held back.
+2. **Record, then swap.** `.deploy-staging/<id>/.certification.json` is written `pending`, naming the
+   predecessor the swap displaces (`previous`, which step 5 keeps under its own id) and the process
+   incarnation. A pending or certified record of this incarnation fences every other preparation of the
+   component, `drop_component` included (409 "being certified"); an activation of the same id joins the
+   decision instead. A record a dead incarnation left fences nothing.
+3. **Commit, after the swap.** Main starts the rollout. Restarts that start replacements are serialized
+   (`replacementRestarts`), so no restart boots a worker on a release another's canary has not decided, and the
+   requesting worker is replaced last, once its operation has answered (`release`, bounded at 10 s). A withdraw
+   after commit is refused: the release is live, and dropping its registration would leave the rollout
+   replacing workers unchecked.
+4. **The canary.** The first held start boots normally with its loader tracking a private boot outcome per
+   component (`trackBootOutcomes`): executed, skipped (`dev-only`, `if-installed`, safe mode), failed (every
+   failure site of the load), or pending (a load deferred behind a preparation lock, which it waits out).
+   Public component status cannot serve: a later status write overwrites a failure, and a skipped load reports
+   itself loaded. The verdict names the release live when the load began and when it reported, and any other
+   generation than the one armed is a rejection. `loaded` certifies; `failed`, exiting, or no report within
+   `max(2 × threads termination timeout, 60 s)` rejects; `skipped` or `absent` leave it `uncertified`, and the
+   rollout goes on unchecked, as every restart did before.
+5. **Decide.** A rejected canary is stopped first. `certified` is written durably. A rejection is written
+   `rejected` before anything moves; then step 6 activates the predecessor, only while the rejected release is
+   still the live one (`onlyIfLive`), and the record is removed once it is. With no predecessor (a first
+   deploy), or a restore that did not land, the release stays live and FAILS CLOSED: every thread's loader
+   refuses it (`failClosedReleases`, plus an in-memory set when even the record write failed), boot does not
+   reinstall it, and only a deploy, an activation or a drop moves on. The origin's deploy fails with the
+   decision in `certification` (`status`, `reason`, `failures`, `restored`, `failed_closed`), and nothing was
+   replicated. An `interrupted` certification — the process shutting down, or a rollout that failed before any
+   canary decided — is restored exactly as a rejection is, which is also what the next boot does with a record
+   left pending: an undecided release never stays live. The `load` progress phase spans the wait for the
+   decision.
+6. **Roll out.** Every later replacement is held too, and admitted only once its own load of the release
+   reports `loaded`. A later failure keeps the old worker and every worker after it, stops the rollout, and
+   restores nothing: the canary proved the release can load. A rejection ends the rollout wherever it was
+   decided. A crash restart during an undecided canary waits for the decision; a held start the gate stopped
+   that no restart owns (a crash restart that became the canary) is started again once the decision is made,
+   on whichever release it left live.
 
-Under the default, no node load-validates a deploy. A candidate that throws at load goes live on every node
-alike, and each restarted worker fails that component closed and serves the rest. That was always the
-origin's behavior, and it replaces a cluster split between versions. A node on an earlier 5.3 build still
-validates in its frozen workers and keeps refusing a candidate whose dependency extends an intrinsic at load,
-so such a deploy converges only once every node is upgraded; retry it then. The `load` progress phase no
-longer fires on a worker either; the operations API, on the main thread, never emitted it. Validating there
-again needs a load in a fresh realm: #2315 step 2 plans it as a canary rollout, whose first replacement
-worker boots the candidate before it takes traffic.
+Where two workers cannot share a port (macOS, Windows, a dedicated worker), a held replacement still boots
+beside its predecessor, since it binds nothing until admitted, and the predecessor is retired at admission.
+
+**Boot.** Main resolves the records a dead incarnation left (`resolveInterruptedCertifications`, after
+interrupted activations settle and before `installApplications()`): pending becomes rejected and is restored
+("the process ended before its canary decided"); a rejection with a predecessor is restored again; certified, or
+no longer live, is removed; rejected with nothing to restore is kept, failed closed. An unreadable record is never
+permission to run: its component fails closed. Retention pins every predecessor a record names, and prunes nothing
+of a component one of whose records cannot be read. And a package deploy's tree is no longer reinstalled by the
+restart that follows it, or at a later start: a deploy never writes the application lock, so the root reload used to
+resolve the package again and swap a fresh install over the release the deploy had just activated. It now recognizes
+a live tree whose deployment declared the current root-config entry (`liveTreeInstallsEntry`) and keeps it, so the
+tree that runs is the tree certified.
+
+**Rolling.** `restart: 'rolling'` certifies on the origin exactly as `true` does, while the peers only stage the
+release. A `restart_service` job then activates it on each peer in turn (`activate_deployment`, `bin/restart.ts`)
+with `deploy_component { deployment_id, restart: true }`, which certifies it there with that peer's own canary.
+Verdicts are per node: a peer that refuses keeps its previous release, nothing is rolled back elsewhere, every peer
+is visited, and the job fails naming each one that did not take it. A rolling deploy whose release could not be
+armed on the origin restarts as it did before.
+
+**What it does not cover.** The release is live on disk before its canary boots, so a worker the rollout has not
+reached that first imports a module during the hold reads it from the new release
+(`integrationTests/deploy/canary-rollout.test.ts` pins this); taking a node out of rotation for the rollout is
+harper#2975.
 
 ### Staging a build now and activating it later
 
@@ -131,11 +182,10 @@ did not need it:
   Certification fsyncs the tree but follows no links, and the post-swap relocation repair leaves external
   targets alone — so a link out of the build is a hole in "activate exactly the bytes that were certified"
   that only a delay makes reachable. **`.complete` is a durability marker over the bytes, not a seal on
-  them:** nothing stops a dormant artifact being edited while it waits, so the link rule and the load
-  validation are both re-run at activation rather than trusted from the marker. Content tampering is still
-  not detected — that needs a manifest the marker is bound to, and the load validation that would catch a
-  broken entry point is a no-op on the main thread, and on a worker under the default lockdown, until
-  #2315 step 2.
+  them:** nothing stops a dormant artifact being edited while it waits, so the link rule is re-run at
+  activation rather than trusted from the marker. Content tampering is still not detected — that needs a
+  manifest the marker is bound to; a broken entry point is caught only by the canary of an activation that
+  restarts workers.
 
 Certification moved out of `activateCandidateApplication` and up into `prepareApplication` for the same
 reason: `markCandidateComplete` fsyncs the whole candidate tree, and a delayed activation must not re-walk
@@ -426,7 +476,7 @@ deploymentId }` — at the top of every candidate it extracts, after the install
   kept and pins it beside its own pin, so a refresh that failed cannot let that pass evict the release it just put
   back. A kept release is not re-certified: it is kept as
   it was when displaced, including what it wrote into its own directory while live, and activation re-runs the
-  link rule and the load validation. An absolute link `repairRelocatedDependencyLinks` wrote after its own swap (a
+  link rule; an activation that restarts workers has its canary check the load. An absolute link `repairRelocatedDependencyLinks` wrote after its own swap (a
   Windows `file:`/workspace junction) names the live path, so such a release's re-activation is refused 409.
 - **Activating the live id answers without a swap.** After the preamble, `prepareApplication` in `activate` mode
   compares the live marker with the id: equal means the release is already serving here — a retry whose earlier
@@ -461,7 +511,7 @@ reporting only, #2929); that reinstall keeps no record, but the certified tree i
 
 ## Component preparation is serialized across worker threads
 
-`prepareApplication()` performs one transaction per component: build the replacement, validate it, then swap it in (see "A deploy builds off to the side" above). Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
+`prepareApplication()` performs one transaction per component: build the replacement, certify the build, then swap it in (see "A deploy builds off to the side" above). Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
 
 The deploy lifecycle broadcast deliberately sits _outside_ the lock. Overlapping requests therefore increment the existing per-component lifecycle refcount before queueing; watchers remain suppressed continuously until the final queued preparation ends. The lock itself covers credential materialization, extraction, and installation. Its fully-written owner record is published with an atomic rename, so contenders never observe a partially initialized lock. A preparation caller never steals a lock from a known-live owner based on elapsed wall time: installs can be long-running and clocks can jump. Locks from a dead process are reclaimed, and a same-process contender asks the main thread whether the owning worker still exists so a worker crash does not wedge that component until Harper restarts. A ticket its owner could not remove — a Windows sharing violation, a scanner holding the file — would name a finished holder that is still alive, so a release whose unlink keeps failing publishes a `<lockName>.released.<token>` marker instead, which contenders honour by clearing both. Only the ticket's owner writes one, after confirming it still owns the ticket — or, when a scanner holding the ticket without read sharing hides its record, knowing it can only be its own, since the ticket's name carries its token — and tokens are never reused, so a marker cannot retire a holder that has not finished. A process running an older build ignores markers, so overlapping processes of mixed versions do not get this guarantee, and a ticket left live-looking before the upgrade stays until that process restarts. Windows refuses to open a claim whose unlink is in progress (`EPERM`) until the unlinking handle closes, so a contender retries that read until the claim reads or is gone; one that stays unreadable fails the scan instead of reading as absent, since dropping a live ticket would admit a second holder. An older build fails the acquire on that `EPERM`. The boot-time bulk-recovery probe is deliberately different: it never renews its 250 ms deadline, even behind another live recovery, so it can defer that component and let the worker bind its listener.
 
@@ -470,7 +520,8 @@ starting `handleApplication`; if a deploy begins during the load, the plugin tim
 unpaused load time. This prevents a long install from looking like a hung plugin while its entry handlers
 are deliberately paused against the intermediate tree.
 
-A deploy's own validation load is exempt: its Scopes (`isTransientValidation`, set at construction from
+A deploy's own validation load was exempt. None runs since the canary replaced it, and this holds only for the
+dormant `collectScopes` path that still implements it: its Scopes (`isTransientValidation`, set at construction from
 `collectScopes`) never read the deploy state, subscribe to `deploy:start`/`deploy:end`, pause their
 watchers, or suspend their plugin timeout. The load runs inside the deploy's lifecycle bracket, between
 build and swap, so any wait for a deploy to end can be a wait on itself. It was, for a component deployed

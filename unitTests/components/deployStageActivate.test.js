@@ -27,7 +27,7 @@ const {
 const { waitFor } = require('../waitFor.js');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { packageDirectory } = require('#src/components/packageComponent');
-const { unconfirmedStagingPeers } = require('#src/components/operations');
+const { unconfirmedStagingPeers, confirmedStagingPeers, certificationFailure } = require('#src/components/operations');
 const { getConfigFilePath } = require('#src/config/configUtils');
 const { preserveRootConfig, rootConfigEntry, setRootConfigEntry } = require('../rootConfigFixture.js');
 
@@ -1140,5 +1140,70 @@ describe('which peers confirmed a stage', () => {
 			assert.deepStrictEqual(unconfirmedStagingPeers(replicated), [], String(replicated));
 		}
 		assert.deepStrictEqual(unconfirmedStagingPeers([null, undefined]), [], 'holes are not peers');
+	});
+
+	it('activates exactly the peers that confirmed, in either shape', () => {
+		const peers = [
+			{ node: 'flat', staged: true },
+			{ node: 'wrapped', value: { staged: true } },
+			{ node: 'old', message: 'Successfully deployed: web' },
+			null,
+		];
+		assert.deepStrictEqual(
+			confirmedStagingPeers(peers).map((peer) => peer.node),
+			['flat', 'wrapped']
+		);
+		assert.deepStrictEqual(confirmedStagingPeers(undefined), []);
+	});
+});
+
+describe('a deploy whose canary refused its release', () => {
+	const ID = '11111111-1111-1111-1111-111111111111';
+	const failures = [{ key: 'web.rest', name: 'Error', message: 'threw at load' }];
+
+	it('says which release is live again, and that no other node received it', () => {
+		const error = certificationFailure(
+			'web',
+			ID,
+			{ status: 'rejected', reason: 'web.rest: threw at load', failures, restored: 'd1', failedClosed: false },
+			{ onOrigin: true }
+		);
+		assert.equal(error.statusCode, 400);
+		assert.match(error.message, /^web was not deployed: release 1{8}-.* failed to load in its canary worker/);
+		assert.match(error.message, /Deployment d1, the release it replaced, is live again\./);
+		assert.match(error.message, /No other node received it\./);
+		assert.deepStrictEqual(error.certification, {
+			status: 'rejected',
+			reason: 'web.rest: threw at load',
+			failures,
+			restored: 'd1',
+			failed_closed: false,
+		});
+	});
+
+	it('says a first deploy is failed closed, and speaks for this node alone on a peer', () => {
+		const error = certificationFailure(
+			'web',
+			ID,
+			{ status: 'rejected', reason: 'threw at load', restored: null, failedClosed: true },
+			{ onOrigin: false }
+		);
+		assert.match(error.message, /^web was not deployed on this node:/);
+		assert.match(error.message, /failed closed on this node until it is deployed again/);
+		assert.doesNotMatch(error.message, /No other node/);
+		assert.equal(error.certification.failed_closed, true);
+		assert.equal(error.certification.restored, null);
+	});
+
+	it('reports an interrupted certification as one that could not be made', () => {
+		const error = certificationFailure(
+			'web',
+			ID,
+			{ status: 'interrupted', reason: 'the process is shutting down' },
+			{ onOrigin: true }
+		);
+		assert.match(error.message, /could not be certified: the process is shutting down/);
+		assert.equal(error.certification.status, 'interrupted');
+		assert.equal(error.certification.failed_closed, false);
 	});
 });

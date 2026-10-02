@@ -425,6 +425,154 @@ describe('ComponentLoader Status Integration', function () {
 		});
 	});
 
+	describe('boot outcomes on a worker held for certification', function () {
+		const configUtils = require('#src/config/configUtils');
+		const apps = {
+			loads: ['boot-loads-probe', 'bootLoadsProbe'],
+			throws: ['boot-throws-probe', 'bootThrowsProbe'],
+			refused: ['boot-refused-probe', 'bootRefusedProbe'],
+			untracked: ['boot-untracked-probe', 'bootUntrackedProbe'],
+		};
+		let refusedStarts;
+
+		beforeEach(async () => {
+			refusedStarts = 0;
+			for (const [name, plugin] of Object.values(apps)) {
+				await fs.mkdir(path.join(tempDir, name), { recursive: true });
+				await fs.writeFile(path.join(tempDir, name, 'config.yaml'), `${plugin}: {}\n`);
+			}
+			componentLoader.TRUSTED_RESOURCE_PLUGINS.bootLoadsProbe = { start() {} };
+			componentLoader.TRUSTED_RESOURCE_PLUGINS.bootThrowsProbe = {
+				start() {
+					throw new Error('threw at load');
+				},
+			};
+			componentLoader.TRUSTED_RESOURCE_PLUGINS.bootRefusedProbe = { start: () => refusedStarts++ };
+			componentLoader.TRUSTED_RESOURCE_PLUGINS.bootUntrackedProbe = { start() {} };
+		});
+		afterEach(async () => {
+			for (const [name, plugin] of Object.values(apps)) {
+				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[plugin];
+				await fs.rm(path.join(tempDir, name), { recursive: true, force: true });
+			}
+			componentLoader.loadedPaths.clear();
+			componentLoader.trackBootOutcomes([]);
+			configUtils.getConfigObj.returns({});
+		});
+
+		it('reports what each tracked application did, and refuses one that failed closed', async function () {
+			componentLoader.trackBootOutcomes([apps.loads[0], apps.throws[0], apps.refused[0], 'boot-missing-probe']);
+			await componentLoader.loadComponentDirectories(
+				new Map(),
+				{ isWorker: true, set() {} },
+				new WeakMap(),
+				undefined,
+				new Map([[apps.refused[0], new Error('release d2 of boot-refused-probe was rejected')]])
+			);
+
+			assert.deepStrictEqual(componentLoader.bootVerdictOf(apps.loads[0]), { outcome: 'loaded', failures: [] });
+			const thrown = componentLoader.bootVerdictOf(apps.throws[0]);
+			assert.equal(thrown.outcome, 'failed');
+			assert.equal(thrown.failures.length, 1);
+			assert.match(thrown.failures[0].message, /threw at load/);
+			const refused = componentLoader.bootVerdictOf(apps.refused[0]);
+			assert.equal(refused.outcome, 'failed');
+			assert.match(refused.failures[0].message, /was rejected/);
+			assert.equal(refusedStarts, 0, 'a release that failed closed runs nothing');
+			const refusal = lifecycle.failed.getCalls().find((call) => call.args[0] === apps.refused[0]);
+			assert.match(refusal.args[1].message, /was rejected/);
+			assert.equal(
+				refusal.args[2],
+				'release d2 of boot-refused-probe was rejected',
+				'the status says why, not a failed recovery'
+			);
+			assert.equal(componentLoader.bootVerdictOf('boot-missing-probe').outcome, 'absent');
+			assert.equal(componentLoader.bootVerdictOf(apps.untracked[0]).outcome, 'absent');
+		});
+
+		it('reports a load still waiting on a preparation as pending, until it runs', async function () {
+			this.timeout(15000);
+			const name = 'boot-deferred-probe';
+			const componentDir = path.join(tempDir, name);
+			// An interrupted extraction its recovery can settle only under the preparation lock held below.
+			const asidePath = path.join(tempDir, '.deploy-aside', name, '.in-progress-123-previous');
+			await fs.mkdir(asidePath, { recursive: true });
+			await fs.writeFile(path.join(asidePath, 'config.yaml'), 'bootLoadsProbe: {}\n');
+			await fs.mkdir(componentDir, { recursive: true });
+			await fs.writeFile(path.join(componentDir, 'partial'), 'partial');
+			let releasePreparation;
+			let preparationHeld;
+			const preparationStarted = new Promise((resolve) => (preparationHeld = resolve));
+			const preparation = withComponentPreparationLock(componentDir, async () => {
+				preparationHeld();
+				await new Promise((resolve) => (releasePreparation = resolve));
+			});
+			try {
+				await preparationStarted;
+				componentLoader.trackBootOutcomes([name]);
+				await componentLoader.loadComponentDirectories(new Map(), { isWorker: true, set() {} }, new WeakMap());
+				assert.equal(componentLoader.bootVerdictOf(name).outcome, 'pending');
+				releasePreparation();
+				await preparation;
+				await waitFor(() => componentLoader.bootVerdictOf(name).outcome !== 'pending', { timeout: 5000 });
+				assert.equal(componentLoader.bootVerdictOf(name).outcome, 'loaded');
+			} finally {
+				releasePreparation?.();
+				await preparation;
+				await fs.rm(path.join(tempDir, '.deploy-aside', name), { recursive: true, force: true });
+				await fs.rm(componentDir, { recursive: true, force: true });
+			}
+		});
+
+		it('reports a root package entry that ran nothing as skipped, and refuses one that failed closed', async function () {
+			const rootDir = path.join(tempDir, 'boot-root-probe');
+			await fs.mkdir(path.join(rootDir, 'components', 'boot-safe-mode-probe'), { recursive: true });
+			await fs.writeFile(path.join(rootDir, 'harperdb-config.yaml'), '');
+			configUtils.getConfigObj.returns({
+				'boot-dev-only-probe': { package: 'npm:boot-dev-only-probe', loadComponent: 'dev-only' },
+				'boot-safe-mode-probe': { package: 'npm:boot-safe-mode-probe' },
+				'boot-refused-entry-probe': { package: 'npm:boot-refused-entry-probe' },
+			});
+			const { DEV_MODE, HARPER_SAFE_MODE } = process.env;
+			delete process.env.DEV_MODE;
+			process.env.HARPER_SAFE_MODE = '1';
+			try {
+				componentLoader.trackBootOutcomes(['boot-dev-only-probe', 'boot-safe-mode-probe', 'boot-refused-entry-probe']);
+				await componentLoader.loadComponent(rootDir, { isWorker: true, set() {} }, 'hdb', {
+					isRoot: true,
+					failClosed: new Map([['boot-refused-entry-probe', new Error('its release was rejected')]]),
+				});
+			} finally {
+				if (DEV_MODE === undefined) delete process.env.DEV_MODE;
+				else process.env.DEV_MODE = DEV_MODE;
+				if (HARPER_SAFE_MODE === undefined) delete process.env.HARPER_SAFE_MODE;
+				else process.env.HARPER_SAFE_MODE = HARPER_SAFE_MODE;
+				await fs.rm(rootDir, { recursive: true, force: true });
+			}
+			assert.equal(componentLoader.bootVerdictOf('boot-dev-only-probe').outcome, 'skipped');
+			assert.equal(componentLoader.bootVerdictOf('boot-safe-mode-probe').outcome, 'skipped');
+			const refused = componentLoader.bootVerdictOf('boot-refused-entry-probe');
+			assert.equal(refused.outcome, 'failed');
+			assert.match(refused.failures[0].message, /was rejected/);
+		});
+
+		it('reports an application whose only component is not installed as skipped', async function () {
+			const name = 'boot-if-installed-probe';
+			await fs.mkdir(path.join(tempDir, name), { recursive: true });
+			await fs.writeFile(
+				path.join(tempDir, name, 'config.yaml'),
+				'nestedProbe:\n  package: boot-nested-missing-probe\n  loadComponent: if-installed\n'
+			);
+			try {
+				componentLoader.trackBootOutcomes([name]);
+				await componentLoader.loadComponentDirectories(new Map(), { isWorker: true, set() {} }, new WeakMap());
+				assert.equal(componentLoader.bootVerdictOf(name).outcome, 'skipped');
+			} finally {
+				await fs.rm(path.join(tempDir, name), { recursive: true, force: true });
+			}
+		});
+	});
+
 	describe('deploy lifecycle listener lifecycle (#1462)', function () {
 		const { deployLifecycle } = require('#src/components/deployLifecycle');
 

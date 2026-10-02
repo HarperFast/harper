@@ -1,6 +1,10 @@
 /**
  * `deploy_component` executed on a worker thread, the way a replicated peer executes it, under each lockdown
  * mode. The deployer component calls `server.operation()` from a worker, so a single node reaches that path.
+ *
+ * Nothing loads a candidate in the deploying thread any more: a deploy that restarts workers is decided by its
+ * canary, a worker booted on the release, whose load is a boot load under every lockdown mode — so it accepts what
+ * a restarted worker would load, and rejects what a restarted worker would fail to (harper#2315 step 2).
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
@@ -24,13 +28,13 @@ async function buildDeployerPayload(): Promise<string> {
 				'export class WorkerDeploy extends Resource {\n' +
 				'\tstatic loadAsInstance = false;\n' +
 				'\tasync post(target, data) {\n' +
-				'\t\tconst { project, payload } = await data;\n' +
+				'\t\tconst { project, payload, restart = false } = await data;\n' +
 				'\t\tif (!project) return { ready: true };\n' +
 				'\t\ttry {\n' +
-				"\t\t\tconst result = await server.operation({ operation: 'deploy_component', project, payload, restart: false, replicated: false });\n" +
-				'\t\t\treturn { ok: true, isMainThread, message: result?.message };\n' +
+				"\t\t\tconst result = await server.operation({ operation: 'deploy_component', project, payload, restart, replicated: false });\n" +
+				'\t\t\treturn { ok: true, isMainThread, message: result?.message, certification: result?.certification };\n' +
 				'\t\t} catch (error) {\n' +
-				'\t\t\treturn { ok: false, isMainThread, error: String(error?.message ?? error) };\n' +
+				'\t\t\treturn { ok: false, isMainThread, error: String(error?.message ?? error), certification: error?.http_resp_msg?.certification };\n' +
 				'\t\t}\n' +
 				'\t}\n' +
 				'}\n'
@@ -110,15 +114,24 @@ function resourceName(project: string): string {
 	return project.replace(/(^|-)(\w)/g, (_match, _dash, letter: string) => letter.toUpperCase());
 }
 
+type WorkerDeployResult = {
+	ok: boolean;
+	isMainThread: boolean;
+	message?: string;
+	error?: string;
+	certification?: any;
+};
+
 async function deployFromWorker(
 	ctx: ContextWithHarper,
 	project: string,
-	payload: string
-): Promise<{ ok: boolean; isMainThread: boolean; message?: string; error?: string }> {
+	payload: string,
+	restart = false
+): Promise<WorkerDeployResult> {
 	const response = await fetch(`${ctx.harper.httpURL}/WorkerDeploy/`, {
 		method: 'POST',
 		headers: { 'Authorization': authHeader(ctx), 'Content-Type': 'application/json' },
-		body: JSON.stringify({ project, payload }),
+		body: JSON.stringify({ project, payload, restart }),
 	});
 	strictEqual(response.status, 200, `WorkerDeploy answered ${response.status}: ${await response.clone().text()}`);
 	return response.json();
@@ -223,7 +236,7 @@ suite('deploy_component on a worker thread under freeze-after-load (harper#2881)
 		ok(result.ok, `redeploy from a worker failed: ${result.error}`);
 	});
 
-	test('a frozen worker does not load-validate, like the main thread: a candidate that throws at load is activated', async () => {
+	test('a deploy that restarts nothing gets no verdict: a candidate that throws at load is activated', async () => {
 		const project = 'broken-at-load';
 		const result = await deployFromWorker(ctx, project, await buildThrowingPayload());
 		strictEqual(result.isMainThread, false);
@@ -239,6 +252,21 @@ suite('deploy_component on a worker thread under freeze-after-load (harper#2881)
 			await sleep(250);
 		}
 		strictEqual(status, 'error', `expected ${project} to report its load failure`);
+	});
+
+	test('a dependency that extends Reflect at load is certified by its canary, which loads it before freezing', async () => {
+		const project = 'reflect-certified';
+		const result = await deployFromWorker(
+			ctx,
+			project,
+			await buildReflectExtendingPayload(project, 'harperProbeCertified', 1),
+			true
+		);
+		strictEqual(result.isMainThread, false);
+		ok(result.ok, `the deploy was rejected: ${result.error}`);
+		strictEqual(result.certification, 'certified');
+		await waitForResource(ctx, resourceName(project), (body) => body.version === 1 && body.decorated === 'decorated');
+		await waitForDeployer(ctx);
 	});
 });
 
@@ -262,12 +290,15 @@ suite('deploy_component on a worker thread under lockdown: none', (ctx: ContextW
 		ok(result.ok, `deploy from a worker failed: ${result.error}`);
 	});
 
-	test('the worker still load-validates: a candidate that throws at load is rejected', async () => {
+	test('a candidate that throws at load is rejected by its canary, and fails closed with nothing to restore', async () => {
 		const project = 'broken-at-load';
-		const result = await deployFromWorker(ctx, project, await buildThrowingPayload());
+		const result = await deployFromWorker(ctx, project, await buildThrowingPayload(), true);
 		strictEqual(result.isMainThread, false);
-		strictEqual(result.ok, false, 'a candidate that cannot load must not be activated');
+		strictEqual(result.ok, false, 'a candidate that cannot load must not be certified');
 		ok(result.error?.includes('candidate is broken at load'), `unexpected rejection: ${result.error}`);
+		strictEqual(result.certification?.status, 'rejected');
+		strictEqual(result.certification?.failed_closed, true);
+		await waitForDeployer(ctx);
 	});
 });
 
@@ -280,15 +311,17 @@ suite('deploy_component on a worker thread under lockdown: freeze', (ctx: Contex
 		await teardownHarper(ctx);
 	});
 
-	test('the worker still load-validates: a dependency that extends Reflect at load is rejected, as it fails at boot here too', async () => {
+	test('a dependency that extends Reflect at load is rejected by its canary, as it fails at boot here', async () => {
 		const project = 'reflect-eager-freeze';
 		const result = await deployFromWorker(
 			ctx,
 			project,
-			await buildReflectExtendingPayload(project, 'harperProbeEagerFreeze', 1)
+			await buildReflectExtendingPayload(project, 'harperProbeEagerFreeze', 1),
+			true
 		);
 		strictEqual(result.isMainThread, false);
-		strictEqual(result.ok, false, 'a candidate that cannot load at boot must not be activated');
+		strictEqual(result.ok, false, 'a candidate that cannot load at boot must not be certified');
+		strictEqual(result.certification?.status, 'rejected');
 		// V8 and JavaScriptCore word the frozen-Reflect TypeError differently; both say "not extensible".
 		ok(
 			result.error?.includes(`application '${project}'`) && result.error.includes('not extensible'),
