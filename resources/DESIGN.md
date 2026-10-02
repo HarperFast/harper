@@ -802,23 +802,27 @@ transaction, before staging) is cheap today and harder to retrofit once a caller
 unenforced contract; deferred rather than done here because the only shipped caller cannot reach
 it and the fix needs its own verification against a real multi-write LMDB transaction.
 
-Two cases fail closed instead of comparing on an unproven or ambiguous base, and are
+Three cases fail closed instead of comparing on an unproven or ambiguous base, and are
 **not retryable** (`VersionConflictError`'s `retryable` argument, passed explicitly at each call
 site — never derived from the `reason` string, so rewording a reason can't silently flip it)
 because a fresh re-read cannot resolve them: a snapshot-free/disabled-snapshot transaction
-(`DatabaseTransaction.ts`'s own comment: narrows the read-to-put window, does not close it); and
+(`DatabaseTransaction.ts`'s own comment: narrows the read-to-put window, does not close it);
 `VERSION_REUSED` on the existing entry (a resequenced RocksDB write can keep its predecessor's
 version while changing the record, so version equality proves nothing — and the flag survives a
-plain re-read, so the row rejects every `ifVersion` write until an unconditional write lands). A
-third case — the version matches, but this write is the out-of-order side of a resequencing (clock
-skew, a replayed/replicated write) and would merge onto something newer, reporting success without
-ever landing the caller's value — is checked explicitly (`precedesExistingVersion(...) <= 0`)
-_before_ calling the literal's original commit function, for both `put()` and `patch()`;
-`write.skipped` afterward is defense in depth, not the only guard, because that flag is not set by
-every superseding path (a `patch()`'s audit-only fold, `writeCommit(false)`). This case is
-retryable: a fresh read picks up the superseding write's version. For a table with a `source`,
-`writeToSource()` runs in `save()` before this guard, so a version mismatch rejects the local write
-after the source already saw it; `hdb_session` has no source.
+plain re-read, so the row rejects every `ifVersion` write until an unconditional write lands); and
+the version matches but this write's own `txnTime` is not strictly after it — deliberately a
+plainer, stricter check than the general out-of-order resequencing order
+(`precedesExistingVersion`'s cross-node timestamp-tie break has no use for a conditional write,
+which only cares whether this write lands strictly after what it conditioned on). Without this
+third check, a matched write at or behind the existing version takes `plainCommit`'s normal
+out-of-order path, merges onto whatever is newer, and reports success while the caller's own value
+never lands; checking first means the (now unreachable) `write.skipped` flag that same path also
+sets never needs a second check here. Not retryable either: a replicated row whose origin's clock
+runs ahead holds the existing version in the future until local time catches up — there is no
+logical-clock bump — so a fresh read of the same row hits the same block, not a new version to
+retry with. For a table with a `source`, `writeToSource()` runs in `save()` before this guard, so
+a version mismatch rejects the local write after the source already saw it; `hdb_session` has no
+source.
 
 Every rejection is a returned `Promise.reject(new VersionConflictError(...))`, never a `throw` — a
 throw from inside a commit closure can escape its caller as a synchronous exception rather than a

@@ -5332,36 +5332,27 @@ export function makeTable(options): TableResourceClass {
 					if ((existingEntry?.version ?? null) !== ifVersion) {
 						return Promise.reject(new VersionConflictError(tableName, ifVersion, existingEntry?.version, true));
 					}
-					// The version matches, but this write can still be the out-of-order side of a
-					// resequencing (clock skew, a replayed/replicated write): `plainCommit` would merge it
-					// onto whatever is newer and keep the newer value, reporting success without the
-					// caller's write ever landing. Reject before calling it rather than relying solely on
-					// `write.skipped` after the fact, which this same condition does not always set.
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) {
+					// The version matches, but this write's own txnTime must still be strictly newer than
+					// it: at or below, `plainCommit` takes the out-of-order path, merges onto whatever is
+					// newer, and keeps that value — reporting success without the caller's write ever
+					// landing. Not retryable with the same `ifVersion`: a clock-skewed origin can hold the
+					// existing version in the future indefinitely (no logical-clock bump here), so a fresh
+					// read of the same row returns the same block. Deliberately simpler than the general
+					// resequencing order (`precedesExistingVersion`'s cross-node timestamp-tie break): a
+					// conditional write has no use for "the other node wins the tie", only for "strictly
+					// after what I conditioned on".
+					if (txnTime <= ifVersion) {
 						return Promise.reject(
 							new VersionConflictError(
 								tableName,
 								ifVersion,
 								existingEntry?.version,
-								true,
-								'write was superseded before landing'
+								false,
+								'existing version is not strictly behind this write'
 							)
 						);
 					}
-					const result = plainCommit(txnTime, existingEntry, retry, nativeTxn);
-					// Defense in depth for a superseding path this guard's own check above does not cover.
-					if (write.skipped) {
-						return Promise.reject(
-							new VersionConflictError(
-								tableName,
-								ifVersion,
-								existingEntry?.version,
-								true,
-								'write was superseded before landing'
-							)
-						);
-					}
-					return result;
+					return plainCommit(txnTime, existingEntry, retry, nativeTxn);
 				};
 			}
 			this.#savingOperation = write;

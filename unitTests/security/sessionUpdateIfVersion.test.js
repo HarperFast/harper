@@ -11,25 +11,25 @@ testUtils.preTestPrep();
 // maintenance writes use (read, await, write back).
 describe('session.update ifVersion (HarperFast/harper#2983)', function () {
 	let authModule;
-	let restoreEnvGet, restoreSerializeMessage;
+	let restoreSerializeMessage;
 
 	before(function () {
 		setupTestDBPath();
 		const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 		setMainIsWorker(true);
 
-		// AGENTS.md: no new sinon/rewire — plain reassignment, restored in after().
+		// The real config mechanism (env.setProperty), not a stub on env.get keyed by a hand-typed
+		// string: CONFIG_PARAMS gives the canonical key auth.ts actually reads
+		// (authentication_enableSessions, underscore — a dot-separated key silently misses and falls
+		// through to the default). Harmless either way here (the default is already `true`), but
+		// matching the real key is what makes this setup meaningful rather than coincidental.
 		const env = require('#src/utility/environment/environmentManager');
-		const originalEnvGet = env.get;
-		restoreEnvGet = () => {
-			env.get = originalEnvGet;
-		};
-		env.get = (key) => {
-			if (key === 'authentication.enableSessions') return true;
-			if (key === 'authentication.authorizeLocal') return false;
-			return undefined;
-		};
+		const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+		env.setProperty(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS, true);
+		env.setProperty(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL, false);
 
+		// AGENTS.md: no new sinon/rewire — plain reassignment, restored in after(). No config-system
+		// equivalent exists for stubbing a serializer function.
 		const contentTypes = require('#src/server/serverHelpers/contentTypes');
 		const originalSerializeMessage = contentTypes.serializeMessage;
 		restoreSerializeMessage = () => {
@@ -41,7 +41,6 @@ describe('session.update ifVersion (HarperFast/harper#2983)', function () {
 	});
 
 	after(function () {
-		restoreEnvGet();
 		restoreSerializeMessage();
 	});
 

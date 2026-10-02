@@ -101,12 +101,12 @@ describe('Table.put ifVersion', () => {
 		await Rows.patch('future', { name: 'newer' }, { timestamp: Date.now() + 60_000 });
 		const futureVersion = Rows.primaryStore.getEntry('future').version;
 
-		// A normal (current-time) put whose ifVersion matches that future version would, without the
-		// precedesExistingVersion guard, merge onto 'newer' and report success while 'attempted' never
-		// actually lands.
+		// A normal (current-time) put whose ifVersion matches that future version would, without this
+		// guard, merge onto 'newer' and report success while 'attempted' never actually lands. Not
+		// retryable: a fresh read sees the same future version until real time catches up to it.
 		await assert.rejects(
 			Rows.put({ id: 'future', name: 'attempted' }, { ifVersion: futureVersion }),
-			assertVersionConflict()
+			assertVersionConflict(false)
 		);
 		assert.strictEqual(Rows.primaryStore.getEntry('future').value.name, 'newer', "the caller's value never landed");
 	});
