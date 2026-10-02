@@ -734,7 +734,7 @@ async function decideCertification(certification, decision, canary) {
 function stopHeldStartsOf(certification, canary) {
 	const stopping = [...heldStarts].filter((held) => held.gated.includes(certification));
 	if (canary && heldStarts.has(canary) && !stopping.includes(canary)) stopping.push(canary);
-	return Promise.all(stopping.map(stopHeldStart));
+	return Promise.all(stopping.map((held) => stopHeldStart(held, certification)));
 }
 
 async function recordDecision(certification, decision) {
@@ -908,10 +908,20 @@ function loadFailure(entry, component = entry.component) {
 	}`;
 }
 
-function stopHeldStart(held) {
+function stopHeldStart(held, refused) {
 	if (held.stopping) return held.stopping;
 	held.settled = true;
 	const stopping = (held.stopping = stopWorker(held.worker));
+	// Settled, its exit decides nothing: a release it is still the canary of is interrupted, not left undecided.
+	for (const certification of held.gated) {
+		if (certification.canary !== held.worker || certification.decision || certification.deciding) continue;
+		void decideCertification(certification, {
+			status: 'interrupted',
+			reason: refused
+				? `its canary was stopped when release ${refused.deploymentId} of ${refused.component}, which it also loaded, was refused`
+				: 'its canary was stopped before it reported',
+		});
+	}
 	// A restart keeps the worker a managed start would have replaced; nothing else restarts an unmanaged one. Its copy
 	// starts once the decision is made, so it loads whatever release that leaves live.
 	if (!held.managed && !processShuttingDown) {

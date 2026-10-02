@@ -21,6 +21,7 @@ import * as envMgr from '../utility/environment/environmentManager.ts';
 import * as path from 'node:path';
 import { getConfigObj, getConfigPath } from '../config/configUtils.ts';
 import { withComponentPreparationLock } from '../components/componentPreparationLock.ts';
+import { awaitRestart } from '../components/awaitRestart.ts';
 import { rmSync } from 'node:fs';
 import { getThisNodeName } from '../server/nodeName.ts';
 import { armRestartExitWatchdog } from './restartExitWatchdog.ts';
@@ -60,21 +61,24 @@ if (isMainThread) {
  */
 async function restartThenRemoveBranches(service: string, project: string, scope: string | undefined): Promise<void> {
 	let restarted = false;
-	const restartHttpWorkers = async () => {
+	const restartHttpWorkers = () => {
 		restarted = true;
 		processMan.expectedRestartOfChildren();
 		hdbLogger.notify('Restarting http_workers');
-		return restartWorkers('http', undefined, true, null, decodeRestartScope({ scope }));
+		// Bounded: it queues behind other restarts, and one of them may be reloading a component that waits on this lock.
+		return awaitRestart((onProgress) =>
+			restartWorkers('http', undefined, true, onProgress, decodeRestartScope({ scope }))
+		);
 	};
 	try {
 		const componentPath = path.join(getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT) as string, project);
 		await withComponentPreparationLock(
 			componentPath,
 			async () => {
-				const outcome: any = await restartHttpWorkers();
-				if (!outcome || outcome.declined || outcome.workersKeptOnOldCode) {
+				const outcome = await restartHttpWorkers();
+				if (!outcome.completed || outcome.workersKeptOnOldCode) {
 					hdbLogger.warn(
-						`Branched database storage of ${project} was left in place: the restart did not replace every worker`
+						`Branched database storage of ${project} was left in place: the restart did not finish replacing every worker`
 					);
 					return;
 				}
