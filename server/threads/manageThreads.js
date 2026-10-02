@@ -1428,6 +1428,18 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 				for (const open of placed) await open.decided.promise;
 				const rejected = Boolean(certification?.decision && refusesRelease(certification.decision));
 				if (!started) {
+					// Stopped for another release's refusal, not for its own load: replace this worker again. That release is
+					// decided now, and a decided release is never placed again, so this repeats at most once for each.
+					if (
+						!retiredForAdmission &&
+						!rejected &&
+						workers.includes(worker) &&
+						placed.some((open) => open !== certification && open.decision && refusesRelease(open.decision))
+					) {
+						worker.wasShutdown = false;
+						index--;
+						continue;
+					}
 					if (retiredForAdmission) {
 						// Its predecessor is gone, and a held replacement boots with its auto-restart suppressed: start the
 						// slot again, on whichever release is live now.

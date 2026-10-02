@@ -138,8 +138,9 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    reports `loaded`, as is any start held while the canary was deciding: the canary's verdict certifies the
    release, not another worker's load of it. A held start that reports nothing within the verdict timeout is
    stopped, whatever it was waiting on. A later failure keeps the old worker and every worker after it, stops the rollout, and
-   restores nothing: the canary proved the release can load. A rejection ends the rollout wherever it was
-   decided. A crash restart during an undecided canary waits for the decision; a held start the gate stopped
+   restores nothing: the canary proved the release can load. A replacement stopped instead because another release
+   it loaded was refused failed nothing of this one, so its worker is replaced again, held only to this release. A
+   rejection ends the rollout wherever it was decided. A crash restart during an undecided canary waits for the decision; a held start the gate stopped
    that no restart owns (a crash restart that became the canary) is started again once the decision is made,
    on whichever release it left live.
 

@@ -24,6 +24,7 @@ const {
 const FIXTURE = path.join(__dirname, 'certificationGate-fixture.cjs');
 const COMPONENT = 'web';
 const DEPLOYMENT = '11111111-1111-1111-1111-111111111111';
+const OTHER = { component: 'api', deploymentId: '22222222-2222-2222-2222-222222222222' };
 
 describe('the release certification gate', function () {
 	this.timeout(60000);
@@ -515,13 +516,13 @@ describe('the release certification gate', function () {
 		}
 	});
 
-	it('starts no later replacement while another release is armed, so overlapping rollouts both end', async () => {
-		const other = { component: 'api', deploymentId: '22222222-2222-2222-2222-222222222222' };
-		plan([{ outcome: 'loaded', delayMs: 300 }]);
+	/**
+	 * The other release arms once this rollout's canary is booting, and stays armed past the moment this rollout reaches
+	 * its next worker: a replacement started then could not decide it, and its own rollout queues behind this one.
+	 */
+	async function overlappingRollouts(other) {
 		await arm();
 		await commit();
-		// The other release arms once this rollout's canary is booting, and stays armed past the moment this rollout
-		// reaches its next worker: a replacement started then could not decide it, and its own rollout queues behind.
 		await waitFor(() => started.some((worker) => !pool.includes(worker)), { message: 'no canary started' });
 		assert.deepStrictEqual(await certificationRequest('arm', { ...other, isolated: false, scope: undefined }), {
 			armed: true,
@@ -530,10 +531,26 @@ describe('the release certification gate', function () {
 		await sleep(500);
 		assert.equal(await certificationRequest('commit', other), true);
 		await waitFor(() => completions.length === 2, { timeout: 45000, message: 'an overlapping rollout never ended' });
-		assert.deepStrictEqual(decisions.map(({ component, status }) => `${component}:${status}`).sort(), [
-			'api:certified',
-			`${COMPONENT}:certified`,
+		return decisions.map(({ component, status }) => `${component}:${status}`).sort();
+	}
+
+	it('starts no later replacement while another release is armed, so overlapping rollouts both end', async () => {
+		plan([{ outcome: 'loaded', delayMs: 300 }]);
+		assert.deepStrictEqual(await overlappingRollouts(OTHER), ['api:certified', `${COMPONENT}:certified`]);
+	});
+
+	it('replaces a worker again when its replacement was stopped for another release, not for its own', async () => {
+		// This rollout's second replacement is the other release's canary, and fails only that one.
+		plan([
+			{ outcome: 'loaded', delayMs: 300 },
+			{ outcome: 'loaded', outcomes: { api: 'failed' } },
 		]);
+		assert.deepStrictEqual(await overlappingRollouts(OTHER), ['api:rejected', `${COMPONENT}:certified`]);
+		assert.deepStrictEqual(
+			pool.filter((worker) => httpWorkers().includes(worker)),
+			[],
+			'every worker was replaced on the certified release'
+		);
 	});
 
 	it('interrupts the release a stopped held start was the canary of, when another release it loaded is refused', async () => {
