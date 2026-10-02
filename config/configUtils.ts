@@ -31,7 +31,7 @@ import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as env from '../utility/environment/environmentManager.ts';
 import { prepareRuntimeEnvConfig, hasPersistedEnvConfigState, discardConfigState } from './harperConfigEnvVars.ts';
 import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
-import { ConfigParseError } from './parseConfigFile.ts';
+import { formatConfigParseErrorDetails } from './parseConfigFile.ts';
 import { isStartableThreadHeapMemory } from '../server/threads/threadHeapMemory.ts';
 import { fsyncTolerantSync, isUnsupportedSyncError } from '../utility/fsync.ts';
 
@@ -688,13 +688,9 @@ export function initConfig(force = false) {
 		}
 
 		if (configDoc.errors?.length > 0) {
-			const parseError = new ConfigParseError(configFilePath, configDoc.errors[0]);
-			const parseErrorName = configDoc.errors[0].name ?? 'YAMLParseError';
-			const parseErrorPrefix = `Unable to parse the Harper configuration file at ${configFilePath}: `;
-			const parseErrorDetails = parseError.message.slice(parseErrorPrefix.length);
 			throw handleHDBError(
 				new Error(),
-				`Error parsing ${configFilePath}: ${parseErrorName} ${parseErrorDetails}`,
+				`Error parsing ${configFilePath}: YAMLParseError ${formatConfigParseErrorDetails(configDoc.errors[0])}`,
 				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
 			);
 		}
