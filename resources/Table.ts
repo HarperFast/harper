@@ -2466,7 +2466,7 @@ export function makeTable(options): TableResourceClass {
 			const baseReadTxn = this.#baseReadTxn;
 			if (!baseReadTxn || this.#baseReadEntry !== this.#entry) return;
 			const receiverId = this.getId();
-			if (id === receiverId || writeKeyId(id) === writeKeyId(receiverId)) return baseReadTxn;
+			if (Object.is(id, receiverId) || writeKeyId(id) === writeKeyId(receiverId)) return baseReadTxn;
 		}
 		static _updateResource(resource, entry) {
 			resource.#entry = entry;
