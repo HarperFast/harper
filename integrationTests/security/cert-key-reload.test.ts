@@ -191,8 +191,8 @@ for (const readableKeyDirectory of [true, false])
 					const nextSerial = currentSerial + 1;
 					const keyPair = removed === 'certificate' ? currentKeyPair : await generateEd25519KeyPair();
 					await unlink(removed === 'certificate' ? certPath : keyPath);
-					// Exceed chokidar's 100ms atomic-write window so replacement emits add, not change.
-					await delay(250);
+					// Cross the atomic-write window, or a fallback poll tick, so the detector observes the absence.
+					await delay(readableKeyDirectory ? 250 : 1500);
 					await writeFile(certPath, await makeServerCertPem(keyPair, nextSerial));
 					if (removed === 'private key') await writeFile(keyPath, keyPair.privateKeyPem);
 					await expectRenewal(nextSerial);
@@ -201,6 +201,32 @@ for (const readableKeyDirectory of [true, false])
 			}
 
 			if (!readableKeyDirectory) return;
+			test('aborting an unmatched renewal restores the original inode and clears the pending alarm', async () => {
+				const logOffset = (await readFile(logPath(), 'utf8')).length;
+				const savedPath = certPath + '.saved';
+				await rename(certPath, savedPath);
+				const unusedKeyPair = await generateEd25519KeyPair();
+				await writeFile(certPath, await makeServerCertPem(unusedKeyPair, currentSerial + 1));
+				const noticeDeadline = Date.now() + 10000;
+				let pendingNotice = false;
+				while (Date.now() < noticeDeadline) {
+					pendingNotice = (await readFile(logPath(), 'utf8'))
+						.slice(logOffset)
+						.includes('Waiting for matching TLS certificate and private key');
+					if (pendingNotice) break;
+					await delay(100);
+				}
+				ok(pendingNotice, 'the publisher never observed the aborted pair');
+				await unlink(certPath);
+				await rename(savedPath, certPath);
+				// This asserts a non-event after the publisher's 30-second pending-pair alarm window.
+				await delay(31000);
+				equal((await servedGeneration(ctx.harper.hostname)).serial, currentSerial);
+				const log = (await readFile(logPath(), 'utf8')).slice(logOffset);
+				ok(!log.includes('still has no matching private key'), 'an aborted renewal left the pending alarm armed');
+				ok(!/key values mismatch|ERR_OSSL_X509_KEY_VALUES_MISMATCH/i.test(log));
+			});
+
 			test('renewal follows an atomically replaced Secret-volume data symlink', async () => {
 				const firstDir = join(certsDir, 'generation-a');
 				const secondDir = join(certsDir, 'generation-b');

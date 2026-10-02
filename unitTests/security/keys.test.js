@@ -1640,6 +1640,37 @@ describe('Test keys module', () => {
 			assert.strictEqual(attempts, 2);
 		});
 
+		it('rechecks a restored original inode after an unapplied renewal', () => {
+			const savedPath = watchPath + '.saved';
+			const loaded = [];
+			let acceptRestored = false;
+			try {
+				loadAndWatch(
+					watchPath,
+					(pem) => {
+						loaded.push(pem);
+						return pem === 'PEM-V1' && (loaded.length === 1 || acceptRestored);
+					},
+					'certificate'
+				);
+				fs.renameSync(watchPath, savedPath);
+				fs.writeFileSync(watchPath, 'PEM-V2');
+				watchPollers.get(watchPath)();
+				assert.deepStrictEqual(loaded, ['PEM-V1', 'PEM-V2']);
+				fs.removeSync(watchPath);
+				fs.renameSync(savedPath, watchPath);
+				watchPollers.get(watchPath)();
+				assert.deepStrictEqual(loaded, ['PEM-V1', 'PEM-V2', 'PEM-V1']);
+				acceptRestored = true;
+				watchPollers.get(watchPath)();
+				assert.deepStrictEqual(loaded, ['PEM-V1', 'PEM-V2', 'PEM-V1', 'PEM-V1']);
+				watchPollers.get(watchPath)();
+				assert.strictEqual(loaded.length, 4, 'a successfully restored pair should be deduplicated again');
+			} finally {
+				fs.removeSync(savedPath);
+			}
+		});
+
 		it('rechecks the certificate when only its related key changes', () => {
 			const keyPath = watchPath + '.key';
 			fs.writeFileSync(keyPath, 'KEY-A');

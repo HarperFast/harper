@@ -38,7 +38,7 @@ export const getPrivateKeys = () => {
 	return privateKeys;
 };
 
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, statSync, watchFile } from 'node:fs';
 import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.js';
 import { isMainThread } from 'worker_threads';
 import {
@@ -352,12 +352,13 @@ function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) {
 			const fileStats = stats ?? statSync(path);
 			const fingerprints = [fileStats, ...relatedPaths.map((relatedPath) => statSync(relatedPath))];
 			modified = JSON.stringify(fingerprints.map(({ mtimeMs, ino, size }) => [mtimeMs, ino, size]));
-			if (modified !== lastModified) {
+			// Restoring an applied fingerprint after a failed attempt must clear the loader's pending state.
+			if (modified !== lastModified || modified !== lastAttempted) {
 				if (lastModified && modified !== lastAttempted && isMainThread) logger.warn?.(`Reloading ${type}:`, path);
 				lastAttempted = modified;
 				lastModified = modified;
 				const rollback = () => {
-					if (lastModified === modified) lastModified = previousModified;
+					if (lastModified === modified) lastModified = previousModified === modified ? undefined : previousModified;
 				};
 				const applied = loadCert(readPEM(path), fileStats);
 				if (applied === false) rollback();
@@ -374,7 +375,8 @@ function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) {
 			}
 		} catch (error) {
 			logger.error?.(`Error loading ${type}:`, path, error);
-			if (modified !== undefined && lastModified === modified) lastModified = previousModified;
+			if (modified !== undefined && lastModified === modified)
+				lastModified = previousModified === modified ? undefined : previousModified;
 		}
 	};
 	if (fs.existsSync(path)) loadFile(path, statSync(path));
@@ -393,10 +395,10 @@ function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) {
 	}
 	for (const [directory, watched] of watchedDirectories) {
 		let usingPolling = watched.mustPoll;
-		let watchFiles = false;
+		let pollingFiles = false;
 		let liveWatcher;
 		const openWatcher = () => {
-			const opened = (liveWatcher = guardedWatch(watchFiles ? Array.from(watched.files) : directory, {
+			const opened = (liveWatcher = guardedWatch(directory, {
 				persistent: false,
 				depth: 0,
 				ignoreInitial: true,
@@ -418,15 +420,23 @@ function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) {
 				.on('change', reload)
 				.on('error', (error) => {
 					if (claimLostNativeWatchError(error)) return;
+					if (pollingFiles || liveWatcher !== opened) return;
 					const errorCode = (error as NodeJS.ErrnoException).code;
-					if (!watchFiles && liveWatcher === opened && (errorCode === 'EACCES' || errorCode === 'EPERM')) {
+					if (errorCode === 'EACCES' || errorCode === 'EPERM') {
 						forComponent('tls').conditional.warn?.(
 							`Cannot watch TLS directory ${directory}; polling its configured files instead`,
 							error
 						);
-						watchFiles = true;
-						usingPolling = true;
-						reopen();
+						pollingFiles = true;
+						Promise.resolve()
+							.then(() => opened.close())
+							.catch(() => {});
+						// watchFile stays armed across ENOENT without needing to list the unreadable parent.
+						for (const file of watched.files)
+							watchFile(file, { persistent: false, interval: POLLING_FALLBACK_OPTIONS.interval }, (stats) => {
+								if (stats.nlink) reload();
+							});
+						reload();
 						return;
 					}
 					if (isWatcherExhaustionError(error)) {
