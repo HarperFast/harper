@@ -796,11 +796,16 @@ land natively before the returned rejection is even joined (`LMDBTransaction.ts`
 that this write's guard rejects. `request.session.update()` never hits this on either engine: it
 builds a fresh `{ expiresAt, ifVersion }` context with no request transaction, so its `Table.put()`
 call is always alone. Do not advertise or use `Table.put(record, { ifVersion })` from a
-shared/joined transaction on LMDB until that engine enforces the same all-or-nothing outcome
-RocksDB already does — enforcing it (reject a guarded write that joins a multi-write LMDB
-transaction, before staging) is cheap today and harder to retrofit once a caller depends on the
-unenforced contract; deferred rather than done here because the only shipped caller cannot reach
-it and the fix needs its own verification against a real multi-write LMDB transaction.
+shared/joined transaction on **either engine** right now, for two different, unrelated reasons.
+On LMDB: until that engine enforces the same all-or-nothing outcome RocksDB already does —
+enforcing it (reject a guarded write that joins a multi-write LMDB transaction, before staging) is
+cheap today and harder to retrofit once a caller depends on the unenforced contract; deferred
+rather than done here because the only shipped caller cannot reach it and the fix needs its own
+verification against a real multi-write LMDB transaction. On RocksDB: the all-or-nothing abort
+described in the paragraph above is real, but a shared transaction built around this guard was
+also observed to leak a read snapshot past that abort into later, unrelated test files — see the
+"test-harness repros" paragraphs below. That leak's cause is not yet understood, so the RocksDB
+restriction stands until it is.
 
 Three cases fail closed instead of comparing on an unproven or ambiguous base, and are
 **not retryable** (`VersionConflictError`'s `retryable` argument, passed explicitly at each call
@@ -844,3 +849,38 @@ Session-table use (`security/auth.ts`, `request.session.update(data, { ifVersion
 caller today; nothing else threads `context.ifVersion`. Enforced by
 `unitTests/resources/tableIfVersion.test.js` (both engines, including a RocksDB-only
 `VERSION_REUSED` case) and `unitTests/security/sessionUpdateIfVersion.test.js`.
+
+Two attempts to exercise this guard's per-attempt re-read against a genuine concurrent writer,
+rather than `tableIfVersion.test.js`'s `getEntry` interception, both corrupted state outside their
+own test file when run in the same mocha process and were dropped (harper#2990, found writing
+that file's regression test). Recorded here rather than silently abandoned, because the first one
+bears directly on the RocksDB-aborts-the-sibling claim two paragraphs up.
+
+1. **Shared-transaction snapshot leak (RocksDB).** Staging the guarded `Table.put()` and a second,
+   unconditional `Table.put()` to the same key under one shared, explicit
+   `transaction(async (context) => {...})`, then letting the guard reject: the test passed in
+   isolation, but running it ahead of `unitTests/resources/localOnly.test.js` in the same process
+   broke that file with "an audit entry of type relocate was written" / "Cannot read properties of
+   undefined (reading 'extendedType')", confirmed by bisecting file combinations. The native commit
+   does abort along with the guarded write, as the paragraph above says — but something tied to
+   that shared transaction's read snapshot is not released with it, and the next test file to open
+   its own snapshot trips over what is left open. The mechanism is not understood.
+2. **Native retry-bookkeeping desync (RocksDB).** Interposing a concurrent `Table.put()` by
+   monkey-patching `Transaction.prototype.commit` — the same technique
+   `unitTests/resources/immediateTransactionConflictRetry.test.js` uses on itself — to land a write
+   between the guarded write's base read and its commit: this test also passed alone, and was
+   verified (by temporarily disabling the guard's own checks and confirming the test then failed
+   for the expected reason) to genuinely drive a conflict → retry → re-read → reject on a real
+   retry attempt, not attempt 0. But running it ahead of `immediateTransactionConflictRetry.test.js`
+   in the same process desynced that file's own conflict/retry bookkeeping on its next run ("the
+   retry re-staged the record, not a second audit entry: 0 !== 1"; "the later plain write wins by
+   LWW: 7 !== 100"), confirmed by bisection. `Transaction.prototype.commit` is patched in place on a
+   shared prototype; a second file patching it after this one leaves whatever that file's own
+   interposition assumed about transaction identity or attempt count out of sync.
+
+Neither is a bug in the guard itself or reachable in production — a real deployment does not
+monkey-patch `Transaction.prototype.commit` or share one transaction's snapshot across otherwise
+unrelated requests the way these repros do — and `tableIfVersion.test.js`'s own regression test
+uses `getEntry` interception instead, which reproduces neither failure mode. They are filed here as
+an open gap in the test harness's isolation between mocha files, found incidentally while building
+this guard's test coverage, not as something this PR fixes or fully explains.

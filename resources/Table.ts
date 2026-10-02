@@ -4435,8 +4435,17 @@ export function makeTable(options): TableResourceClass {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			// Read once: only `request.session.update(data, { ifVersion })` sets this today. See the
-			// `write.commit` guard below for how it stays free when unset.
-			const ifVersion: number | undefined = (context as any)?.ifVersion;
+			// `write.commit` guard below for how it stays free when unset. Checked and rejected here,
+			// not left to reach the guard below as-is: `context` is untyped, and `null` would pass
+			// `(existingEntry?.version ?? null) !== ifVersion` for a row that doesn't exist yet and
+			// create it — silently dropping the caller's condition rather than honoring or refusing
+			// it. `request.session.update()` already validates its own `ifVersion` before calling
+			// this, so this only guards a direct `Table.put()` caller.
+			const rawIfVersion = (context as any)?.ifVersion;
+			if (rawIfVersion !== undefined && typeof rawIfVersion !== 'number') {
+				throw new ClientError(`${tableName}.put ifVersion must be a number or undefined`, 400);
+			}
+			const ifVersion: number | undefined = rawIfVersion;
 			const transaction = txnForContext(context);
 			const replaying = transaction.isReplay === true;
 			assertDerivedIndexAdmission(options, transaction);

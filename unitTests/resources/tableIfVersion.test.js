@@ -113,6 +113,26 @@ describe('Table.put ifVersion', () => {
 		assert.strictEqual(Rows.primaryStore.getEntry('never-existed'), undefined);
 	});
 
+	it('throws on a non-number ifVersion rather than silently writing unconditionally or matching anything', async () => {
+		// A direct Table.put caller has no validation of its own (unlike request.session.update,
+		// which rejects a non-number ifVersion before it ever reaches here). Without this check,
+		// `null` would pass `(existingEntry?.version ?? null) !== ifVersion` for a row that doesn't
+		// exist yet (both sides are `null`) and silently create it — dropping the caller's condition
+		// instead of honoring or refusing it. A synchronous throw, like `#assertLiveHandle` above it
+		// in `_writeUpdate`, not a rejected promise: this check runs before anything is staged, so
+		// nothing async has started yet for a rejection to come from.
+		assert.throws(
+			() => Rows.put({ id: 'non-number-if-version', name: 'a' }, { ifVersion: null }),
+			(error) => error.statusCode === 400
+		);
+		assert.strictEqual(Rows.primaryStore.getEntry('non-number-if-version'), undefined, 'nothing was created');
+
+		assert.throws(
+			() => Rows.put({ id: 'non-number-if-version', name: 'a' }, { ifVersion: 'not-a-version' }),
+			(error) => error.statusCode === 400
+		);
+	});
+
 	it('rejects a conditional write against a row that was deleted after the caller read it', async () => {
 		await Rows.put({ id: 'deleted', name: 'a' });
 		const version = Rows.primaryStore.getEntry('deleted').version;
