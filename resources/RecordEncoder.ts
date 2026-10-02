@@ -967,10 +967,9 @@ export function recordUpdater(store, tableId, auditStore) {
 				extendedType |= HAS_ADDITIONAL_AUDIT_REFS_AUDIT;
 			}
 			if (options?.localOnly) {
-				// Mark this write as local-only: set the bit in BOTH the persisted record metadata
-				// (so the full-copy send loop, which reads entry.metadataFlags, skips it) AND the audit
-				// entry's extendedType (so the audit-forward send path skips it by bitmask without decode).
 				metadataInNextEncoding |= LOCAL_ONLY;
+			}
+			if (options?.localOnly || options?.auditLocalOnly) {
 				extendedType |= LOCAL_ONLY;
 			}
 			if (previousResidencyId !== residencyId) {

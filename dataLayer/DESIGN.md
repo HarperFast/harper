@@ -10,7 +10,7 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ## Version gate at startup: downgrades prompt, and only the minor direction is confirmable
 
-`getVersionUpdateInfo()` (`dataLayer/hdbInfoController.ts`) compares the store's `data_version_num` (latest `system.hdb_info` record) against the binary's `packageJson.version` on every start. Data newer than binary by a **major** version → hard refusal. Newer by a **minor** version → `forceDowngradePrompt()` asks for confirmation; answering yes records the data version back down to the binary's version and boots (upgrade directives are deliberately additive/downgrade-compatible — see the struct-mode section above and `patchHdbSecretIsHashAttribute` in `upgrade/directives/5-2-0.ts`).
+`getVersionUpdateInfo()` (`dataLayer/hdbInfoController.ts`) compares the store's `data_version_num` (latest `system.hdb_info` record) against the binary's `packageJson.version` on every start. Data newer than binary by a **major** version → hard refusal. Newer by a **minor** version → `forceDowngradePrompt()` asks for confirmation; answering yes records the data version back down to the binary's version and boots (upgrade directives are deliberately additive/downgrade-compatible — see [Struct mode is gated to primary DBIs](../resources/DESIGN.md#struct-mode-is-gated-to-primary-dbis-downgrade-compatibility) and `patchHdbSecretIsHashAttribute` in `upgrade/directives/5-2-0.ts`).
 
 - The prompt's answer can be supplied non-interactively via `CONFIRM_DOWNGRADE` — env var or `--CONFIRM_DOWNGRADE` CLI arg; argv wins (`assignCMDENVVariables`). With no override and no TTY on stdin, the prompt throws instead of blocking on stdin forever (#2046 — services/CI hung with nothing in the log; the mismatch is also logged to hdb.log now).
 - Upgrades never prompt (see the rationale comment in `bin/upgrade.js`); only the downgrade direction confirms. `upgradeCertsPrompt()` (4.x upgrade path; currently has no in-core caller) has the same no-TTY guard as `forceDowngradePrompt()` — a `GENERATE_CERTS` override is honored first, and with no TTY and no override it throws instead of blocking.
@@ -22,9 +22,9 @@ When `migrateOnStart` opens a source LMDB primary store to read records out for 
 
 Harper's normal `databases.ts` path already does this (search for `dbiInit.compression = primaryKeyAttribute.compression`); the migration path in `bin/copyDb.ts` has to match.
 
-The persisted `compression` value itself is LMDB-era and loosely shaped: `getDefaultCompression()` historically stored whatever falsy value the config resolved to (`''`, `false`, `null`) when `storage.compression` was disabled, and `{ startingOffset, threshold, dictionary? }` when enabled. lmdb-js interprets falsy as "no compression", but rocksdb-js >= 2.6 validates the option strictly (`''`/booleans throw `Unsupported compression algorithm`) and treats UNSET as "use the build default (lz4)" — the inverse default of lmdb. Every RocksDB open must therefore route through `toRocksCompression()` in `resources/databases.ts` (applied inside `openRocksDatabase`, the single chokepoint), which maps defined-falsy → `'none'` and enabled-without-an-algorithm → an explicit lz4 request when available. Don't pass persisted attribute compression to a RocksDB open directly.
+The persisted `compression` value itself is LMDB-era and loosely shaped: `getDefaultCompression()` historically stored whatever falsy value the config resolved to (`''`, `false`, `null`) when `storage.compression` was disabled, and `{ startingOffset, threshold, dictionary? }` when enabled. lmdb-js interprets falsy as "no compression", but rocksdb-js >= 2.6 validates the option strictly (`''`/booleans throw `Unsupported compression algorithm`) and treats UNSET as "keep the family's persisted codec, or the build default (lz4) for a new family" — the inverse default of lmdb. Every RocksDB open therefore takes one per-process deployment codec, `getRocksCompression()` (applied inside `openRocksDatabase`; see [The RocksDB codec is a deployment setting, resolved once per process](../resources/DESIGN.md#the-rocksdb-codec-is-a-deployment-setting-resolved-once-per-process)), derived through `toRocksCompression()` in `resources/databases.ts`, which maps defined-falsy → `'none'` and enabled-without-an-algorithm → an explicit lz4 request when available. Don't pass persisted attribute compression to a RocksDB open directly.
 
-`bin/copyDb.ts`'s `openRocksDb` is part of that chokepoint, not an exception to it. This is about the bytes migration writes, not about a later failure: `copyDbToRocks()` closes every target handle before the staging directory is renamed, and rocksdb-js permits an explicit codec change across a close/reopen, so the runtime would open the migrated database fine either way. But a migration that ignores the configured codec writes the entire dataset uncompressed, and those SST/blob files then keep their original codec until write traffic rewrites them — a full LMDB→RocksDB migration is the one moment the whole dataset is written at once, so it is exactly when the deployment's codec should apply.
+`bin/copyDb.ts`'s `openRocksDb` applies the same codec (`getRocksCompression() ?? toRocksCompression(...)`), not an exception to it. This is about the bytes migration writes, not about a later failure: `copyDbToRocks()` closes every target handle before the staging directory is renamed, and rocksdb-js permits an explicit codec change across a close/reopen, so the runtime would open the migrated database fine either way. But a migration that ignores the configured codec writes the entire dataset uncompressed, and those SST/blob files then keep their original codec until write traffic rewrites them — a full LMDB→RocksDB migration is the one moment the whole dataset is written at once, so it is exactly when the deployment's codec should apply.
 
 ## System table bootstrap: `systemSchema.json` + upgrade directive
 
@@ -32,13 +32,13 @@ Adding a new system table (e.g. `hdb_deployment` in #641 Slice A) requires three
 
 1. **`json/systemSchema.json`** — the table entry. Fresh installs auto-create it via `utility/mount_hdb.ts:createTables()`, which iterates `Object.keys(systemSchema)` on first boot.
 2. **`utility/hdbTerms.ts`** — add the table name to `SYSTEM_TABLE_NAMES`.
-3. **`upgrade/directives/<version>.ts`** — provisions the table on existing installs that already have a system schema. Registered in `upgrade/directives/directivesController.ts` (which is otherwise empty — its `versions` Map gets populated by these imports). The directive shape is `{ version, sync_functions, async_functions }`; copy `5-1-0.ts` for the canonical pattern (uses `bridge.createTable` to match what `mount_hdb` does on a fresh install).
+3. **`upgrade/directives/<version>.ts`** — provisions the table on existing installs that already have a system schema. Registered in `upgrade/directives/directivesController.ts` (which is otherwise empty — its `versions` Map gets populated by these imports). Each directive module default-exports an array of `{ version, sync_functions, async_functions }`; copy `5-1-0.ts` for the canonical pattern (uses `bridge.createTable` to match what `mount_hdb` does on a fresh install).
 
    **Version the directive to the first release that ships the dependent code, not a later one.** Directives only run when `current_version < directive_version <= upgrade_version` (`directivesController.getVersionsForUpgrade`). The `hdb_deployment` directive was originally mis-tagged `5.2.0` while the deployment-recorder code shipped in `5.1.0`, so on every `5.0.x -> 5.1.x` upgrade the directive was filtered out (`5.2.0 > 5.1.x`) and the table never got created — breaking replicated `deploy_component` on peer nodes for the entire existing customer base. Caveat: `utility/common_utils.ts:compareVersions` strips trailing `.0` and therefore sorts a pre-release (`5.1.0-beta.1`) _above_ its GA (`5.1.0`), so an install already on a `5.1.0-beta.x` data version will not pick up a `5.1.0` directive when upgrading to GA; those pre-release installs need the table created by other means.
 
 System tables replicate by default. To opt out, add the name to `NON_REPLICATING_SYSTEM_TABLES` in `resources/databases.ts`. The check happens after table init and sets `table.replicate = false` per-node.
 
-If the table needs `audit: true`, set it both in the schema (for fresh installs) **and** on the `CreateTableObject` instance in the directive (for upgrades) — otherwise the two paths diverge.
+Set `audit = true` on the directive's `CreateTableObject` (for upgrades): a fresh install audits every system table — `utility/mount_hdb.ts:createTables()` sets `createTable.audit = true` regardless of the schema entry — so a directive that leaves it off makes upgraded nodes diverge from fresh ones.
 
 **A replicated system table whose owner declares more than a name list** — a table-level `expiration`, an index — needs that declaration on every node, every boot. `hdb_oidc_token_use` is the case: `security/authn/oidc/tokenUseTable.ts` holds its one definition, and `bin/run.ts initialize()` applies it after the upgrade step and before worker threads start (skipped in read-only mode; a failure is logged and retried on the next start), as do the 5.3.0 directive and the exchange path. Each replay row carries its own expiry as record metadata, which replication applies on the receiving node; the table's stored `expiration` is what arms the cleanup scan that removes those rows once a node loads the table. Metadata rather than an `@expiresAt` attribute, because the attribute needs an index and a sweep of its own on every node, while reads and the cleanup scan already honor the metadata. `systemSchema.json` keeps only its primary key; the declaration completes the table on the first boot after install. Every other route to a copy leaves it partial, which is why the declaration cannot live only on the exchange path or in the directive:
 
@@ -76,7 +76,7 @@ Three non-obvious mechanics keep that safe:
   be exactly that database's directory). Because the startup scan opens any `CURRENT`+`MANIFEST-`
   directory without re-applying `schemaRegex`, it also explicitly skips the reserved `` `restore` ``
   entry so an out-of-band directory at that name is never loaded as a database. Startup/rescan
-  detection (`databasesBlockedByRestore` → `scanBlockedRestores` in `dataLayer/restoreMarker.ts`)
+  detection (`databasesBlockedByRestore` in `resources/databases.ts` → `scanBlockedRestores` in `dataLayer/restoreMarker.ts`)
   reads the metadata directory and checks the **marker first**, only probing the lock when the marker exists —
   probes take the flock and are mutually exclusive across threads, so probing the (persistent) lock
   file of every long-ago-restored database on every rescan would make concurrent rescans misclassify
@@ -127,15 +127,16 @@ Three non-obvious mechanics keep that safe:
 - **Online restore is impossible for a database a component holds open — and that failure is
   correct.** rocksdb-js's registry is process-global but records only a per-path refCount, with no
   attribution to a thread or component; Harper keeps no component→database ownership map. So when a
-  loaded component (or the `system` database, which Harper itself never stops while running) holds
-  its own handle on the target database, `registryStatus()` stays non-zero, Harper can neither
-  identify nor force-close that handle, and an in-place purge would corrupt a live instance.
+  loaded component holds its own handle on the target database, `registryStatus()` stays non-zero,
+  Harper can neither identify nor force-close that handle, and an in-place purge would corrupt a live
+  instance.
   `verifyDatabaseClosed` therefore waits only a short grace period (`DATABASE_CLOSE_WAIT_MS`, for a
   just-finished job worker's own close to drain) and then fails fast with a 409 that points at
   running the operation offline (`harper restore_backup` with the server stopped, where no
   components are loaded and nothing holds the database open). Offline restore is the supported path
   for component-held and `system` databases; online restore serves databases not actively held by a
-  component. The CLI exposes each backup operation under its operation name only (`create_backup`,
+  component. `system`, which Harper itself never stops while running, never reaches this check:
+  `validateRestoreBackup` refuses it up front with a 400 naming the offline command. The CLI exposes each backup operation under its operation name only (`create_backup`,
   `restore_backup`, …) — no hyphenated alias — and `bin/backup.ts` routes it to a reachable server
   or, when the local server is stopped, to the equivalent offline function.
 - **Job workers must release their RocksDB handles on exit, or the closure check can never pass.**
@@ -175,18 +176,19 @@ Three non-obvious mechanics keep that safe:
   `create_table`/`create_schema` must not resurrect a half-purged directory as a fresh empty DB), but
   the destructive drop path now uses the exclusive lock so the race is closed, not merely narrowed.
 - **The offline restore probes RocksDB's own `LOCK` file, and fails closed.** The offline path runs
-  only when the CLI sees no server (a PID heuristic; the PID file is briefly absent mid-`harper
-restart`), and `backups.restore`'s `purgeAllFiles` never takes RocksDB's lock — so before purging,
-  `restoreBackupOffline` opens the database to probe. It now takes the restore lock+marker _before_
-  probing (so a server that starts afterward sees the marker and refuses to load), and recognizes the
-  pinned rocksdb-js 2.5.0 lock error — a plain `Error` with no `code` and message
-  `IO error: While lock file: <db>/LOCK: Resource temporarily unavailable` (`isRocksDbLockError`) —
-  aborting with a 409 rather than purging a database another process holds open. Any _other_ open
-  failure (corrupt/half-restored) is exactly what restore recovers, so only a lock conflict aborts.
+  only when the CLI sees no server (a PID heuristic; the PID file is briefly absent
+  mid-`harper restart`), and `backups.restore`'s `purgeAllFiles` never takes RocksDB's lock — so
+  before purging, `restoreBackupOffline` opens the database to probe. It now takes the restore
+  lock+marker _before_ probing (so a server that starts afterward sees the marker and refuses to
+  load), and recognizes the rocksdb-js lock error by message (`isRocksDbLockError`; at 2.5.0, when
+  this was written, a plain `Error` with no `code`) —
+  `IO error: While lock file: <db>/LOCK: Resource temporarily unavailable` — aborting with a 409
+  rather than purging a database another process holds open. Any _other_ open failure
+  (corrupt/half-restored) is exactly what restore recovers, so only a lock conflict aborts.
 
 Known limitation: the flock is process-owned; if the restore job's worker _thread_ dies without
-the process exiting, the lock stays held (restores 409) until Harper restarts. There is no typed
-native lock signal in rocksdb-js 2.5.0, so the offline probe relies on message matching; a native
+the process exiting, the lock stays held (restores 409) until Harper restarts. rocksdb-js had no typed
+native lock signal at 2.5.0 (the pin is now 2.10.0), so the offline probe relies on message matching; a native
 lock primitive is a rocksdb-js follow-on.
 
 ## RocksDB managed backups: blob snapshots (`dataLayer/blobBackup.ts`)
@@ -214,7 +216,7 @@ engine-only backup):
   before capture, a terminal ERROR (`0xff`) marker preserves its file id. A file reclaimed before its
   parent directory is read is outside the snapshot. This keeps a snapshot inode from changing as a
   live write finishes, while complete blobs remain safe to hard-link because published blob paths are
-  write-once. The snapshot is built in a `.tmp-<id>` sibling and atomically renamed so a failed create
+  write-once. The snapshot is built in a `<backupId>.tmp` sibling and atomically renamed so a failed create
   leaves no partial snapshot. `restore_backup` purges each blob root and rewrites it from the snapshot;
   `delete_backup` / `purge_backups` remove the corresponding snapshot directories.
 - **`get_backup`** appends the blob files to the same tar under `blobs/<rootIndex>/<relpath>`. Both
@@ -251,7 +253,7 @@ flag — not the mere presence of a snapshot dir — to decide whether to restor
 backup leaves live blobs untouched, and a manifest that claims blobs but has no snapshot is flagged
 corrupt by verify). This closes the "healthy-looking but incomplete" and concurrent-restore races;
 the remaining engine/blob point-in-time skew (a blob unlinked between the engine cut and the blob
-walk) is the documented best-effort limitation above.
+walk) is best-effort: Harper does not freeze blob writes for a backup.
 
 **Archive manifest (`dataLayer/backupArchiveManifest.ts`).** Every `get_backup` archive carries
 `harper-backup.json` as its **first** tar entry, and a managed backup's completion manifest carries
