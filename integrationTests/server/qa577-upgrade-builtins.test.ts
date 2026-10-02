@@ -10,12 +10,11 @@
  *
  * The fix (config/configUtils.ts: ensureConfigKeysPresent / ensureBuiltInComponentConfigKeys,
  * called every boot from bin/run.ts initialize()) backfills a top-level config key for a
- * newly-introduced built-in component (currently only `secretCustody`, see
- * UPGRADE_BACKFILL_BUILTIN_KEYS) when it's absent, so the component activates on an
- * in-place-upgraded config that predates it. It is scoped to built-ins registered in THIS
- * runtime via the HARPER_BUILTIN_COMPONENTS env var (a comma-separated `name=packageIdentifier`
- * list an embedding distribution — e.g. harper-pro — sets before boot); on OSS core, where
- * nothing is registered, it is a no-op.
+ * newly-introduced built-in component (see UPGRADE_BACKFILL_BUILTIN_KEYS) when it's absent,
+ * so the component activates on an in-place-upgraded config that predates it. It applies only to
+ * built-ins registered in THIS runtime via HARPER_BUILTIN_COMPONENTS (a comma-separated list of
+ * `name=packageIdentifier` values from an embedding distribution — e.g. harper-pro — set before
+ * boot); on OSS core, where nothing is registered, it is a no-op.
  *
  * ## Honest scope note
  * This is OSS core (github.com/HarperFast/harper). `secretCustody` is Pro-only — its real
@@ -58,8 +57,7 @@ import { createApiClient } from '../apiTests/utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'qa577-upgrade-builtins');
 
-// Matches UPGRADE_BACKFILL_BUILTIN_KEYS in config/configUtils.ts — one of two backfilled keys today
-// (the other, 'waf', is exercised the same way this suite exercises 'secretCustody').
+// One of UPGRADE_BACKFILL_BUILTIN_KEYS in config/configUtils.ts.
 const BACKFILL_KEY = 'secretCustody';
 const ACTIVATION_LOG_SNIPPET = 'Activated built-in component(s) absent from an upgraded config';
 
@@ -211,7 +209,7 @@ suite(
 
 			await killHarper(ctx);
 			await startHarper(ctx, {
-				config: {},
+				config: { logging: { level: 'debug' } },
 				env: { HARPER_BUILTIN_COMPONENTS: BACKFILL_KEY_REGISTRATION },
 			});
 
@@ -232,6 +230,11 @@ suite(
 			// If HARPER_INTEGRATION_TEST_LOG_DIR is set, this boot got a fresh logDir (a distinct
 			// file), so there's nothing to diff against — take the whole thing.
 			const bootLog = bootLogPath(ctx.harper) === priorLogPath ? fullLog.slice(priorLogLen) : fullLog;
+			ok(
+				bootLog.includes(`Harper server process ${ctx.harper.process.pid} starting up.`),
+				`positive control: no startup line from pid ${ctx.harper.process.pid} in the 2nd boot's hdb.log slice ` +
+					`at ${bootLogPath(ctx.harper)}; the absence check below cannot observe this boot. Slice:\n${bootLog}`
+			);
 			ok(
 				!bootLog.includes(ACTIVATION_LOG_SNIPPET),
 				`expected NO activation log appended by the 2nd boot (key already present, must be idempotent); appended log:\n${bootLog}`

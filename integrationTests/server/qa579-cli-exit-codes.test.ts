@@ -55,7 +55,7 @@ const HARPER_BIN = resolve(import.meta.dirname, '../../dist/bin/harper.js');
 // Hard ceiling on any single CLI child-process invocation. Well above the CLI's own
 // configured operation timeout in every cell below, so if the CLI itself fails to exit
 // (the exact regression class this PR fixes), the test observes a "spawnSync timed out"
-// signal (`result.signal === 'SIGTERM'`, no exit code) rather than hanging the suite.
+// signal (`result.signal === 'SIGKILL'`, no exit code) rather than hanging the suite.
 const CHILD_PROCESS_TIMEOUT_MS = 15_000;
 
 interface CliResult {
@@ -99,9 +99,8 @@ function runCli(args: string[], env: NodeJS.ProcessEnv, homeDir: string): CliRes
 		stdout: result.stdout ?? '',
 		stderr: result.stderr ?? '',
 		durationMs,
-		// spawnSync sets signal (typically SIGTERM) and status=null when its own `timeout`
-		// option fires — that's our "the CLI never exited" signal, distinct from a clean
-		// non-zero exit.
+		// When its `timeout` fires, spawnSync reports the configured killSignal (SIGKILL) with
+		// status=null. This distinguishes termination by signal from a clean non-zero exit.
 		hung: result.status === null && result.signal !== null,
 	};
 }
