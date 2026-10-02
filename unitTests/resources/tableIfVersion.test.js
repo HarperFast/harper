@@ -93,6 +93,24 @@ describe('Table.put ifVersion', () => {
 		assert.strictEqual(Rows.primaryStore.getEntry('sequential').value.name, 'b');
 	});
 
+	it('rejects a matched put whose version came from a future-timestamped row, rather than silently merging', async function () {
+		// Only RocksDB's singular version/timestamp can be pushed ahead of real time by a timestamped write.
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+		await Rows.put({ id: 'future', name: 'old' });
+		// Advance the row to a version ahead of real time (as a resequenced/replicated write could).
+		await Rows.patch('future', { name: 'newer' }, { timestamp: Date.now() + 60_000 });
+		const futureVersion = Rows.primaryStore.getEntry('future').version;
+
+		// A normal (current-time) put whose ifVersion matches that future version would, without the
+		// precedesExistingVersion guard, merge onto 'newer' and report success while 'attempted' never
+		// actually lands.
+		await assert.rejects(
+			Rows.put({ id: 'future', name: 'attempted' }, { ifVersion: futureVersion }),
+			assertVersionConflict()
+		);
+		assert.strictEqual(Rows.primaryStore.getEntry('future').value.name, 'newer', "the caller's value never landed");
+	});
+
 	it('rejects a VERSION_REUSED row as not retryable, even when the version matches', async function () {
 		// Only RocksDB's singular version/timestamp can be reused by an out-of-order write.
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();

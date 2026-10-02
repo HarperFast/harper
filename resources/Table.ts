@@ -5295,27 +5295,25 @@ export function makeTable(options): TableResourceClass {
 				},
 			};
 			// Wrapping `write.commit` after the object literal (instead of hoisting its body out into
-			// a named function) keeps the literal's `commit:` property, and its blame, untouched when
-			// this branch is not taken — an ordinary write (the overwhelming majority) keeps the exact
-			// same function reference, on any retry.
+			// a named function) keeps the literal's `commit:` property untouched when this branch is
+			// not taken — an ordinary write keeps the exact same function reference, on any retry.
 			if (ifVersion !== undefined) {
 				const plainCommit = write.commit;
 				write.commit = (txnTime: number, existingEntry: Entry, retry: boolean, nativeTxn: any) => {
-					// Every rejection below is a returned `Promise.reject`, never a `throw`: thrown from
-					// inside a commit closure, it can escape as a synchronous exception instead of a
-					// promise rejection (DatabaseTransaction.ts's save() has no catch around this call) —
-					// `Promise.reject` is the same mechanism `stageCompletion` already relies on for an
-					// asynchronous commit failure.
+					// Every rejection below is a returned `Promise.reject`, never a `throw` (a throw here
+					// can surface as a synchronous exception instead of a rejection, depending on how much
+					// of the chain above resolves synchronously) — the same mechanism `stageCompletion`
+					// already relies on for an asynchronous commit failure.
 					//
 					// `existingEntry` is only as fresh as the retry loop that re-reads it on every attempt
 					// — true on both engines for a normal snapshot, but a snapshot-free scope (post
 					// mid-scope-commit rotation) or an explicitly disabled-snapshot read only narrows the
 					// read-to-put window rather than closing it. `transaction` is the outer
-					// DatabaseTransaction (`txnForContext(context)`, captured above); `nativeTxn` is the
-					// per-attempt native handle.
+					// DatabaseTransaction (`txnForContext(context)`); `nativeTxn` is the per-attempt native
+					// handle.
 					if ((nativeTxn as any)?.snapshotDisabled || (transaction as any).snapshotFree) {
 						return Promise.reject(
-							new VersionConflictError(tableName, ifVersion, existingEntry?.version, 'snapshot-free transaction')
+							new VersionConflictError(tableName, ifVersion, existingEntry?.version, false, 'snapshot-free transaction')
 						);
 					}
 					// A resequenced RocksDB write can keep its predecessor's version while changing the
@@ -5326,25 +5324,39 @@ export function makeTable(options): TableResourceClass {
 								tableName,
 								ifVersion,
 								existingEntry.version,
+								false,
 								'version reused by a resequenced write'
 							)
 						);
 					}
 					if ((existingEntry?.version ?? null) !== ifVersion) {
-						return Promise.reject(new VersionConflictError(tableName, ifVersion, existingEntry?.version));
+						return Promise.reject(new VersionConflictError(tableName, ifVersion, existingEntry?.version, true));
+					}
+					// The version matches, but this write can still be the out-of-order side of a
+					// resequencing (clock skew, a replayed/replicated write): `plainCommit` would merge it
+					// onto whatever is newer and keep the newer value, reporting success without the
+					// caller's write ever landing. Reject before calling it rather than relying solely on
+					// `write.skipped` after the fact, which this same condition does not always set.
+					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) {
+						return Promise.reject(
+							new VersionConflictError(
+								tableName,
+								ifVersion,
+								existingEntry?.version,
+								true,
+								'write was superseded before landing'
+							)
+						);
 					}
 					const result = plainCommit(txnTime, existingEntry, retry, nativeTxn);
-					// A matched write can still be superseded before it lands (out-of-order resequencing:
-					// clock skew, a replayed/replicated write) — `write.skipped` is the same signal every
-					// no-op path above this one in `plainCommit` already sets. Not exhaustive: a patch's
-					// fold can supersede without setting it (`rebuildUpdateBefore`'s audit-only path),
-					// unreachable from this table's full-replace `put()` but real for `patch()`.
+					// Defense in depth for a superseding path this guard's own check above does not cover.
 					if (write.skipped) {
 						return Promise.reject(
 							new VersionConflictError(
 								tableName,
 								ifVersion,
 								existingEntry?.version,
+								true,
 								'write was superseded before landing'
 							)
 						);

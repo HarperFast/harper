@@ -162,6 +162,15 @@ export async function authentication(request, nextHandler) {
 			) {
 				Object.defineProperty(request.session, 'version', {
 					get: () => session.getUpdatedTime?.(),
+					// An app assigning `request.session.version = x` on a session with no prior own
+					// `version` field must not throw (strict mode) or silently no-op (sloppy mode) against
+					// an accessor with no setter. Replace the accessor with a plain enumerable field, same
+					// as if the app had always owned this key — it now persists through `update()` like any
+					// other field, and no longer answers `getUpdatedTime()`.
+					set: (value) => {
+						delete (request.session as any).version;
+						(request.session as any).version = value;
+					},
 					enumerable: false,
 					configurable: true,
 				});

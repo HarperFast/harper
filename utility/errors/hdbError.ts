@@ -208,15 +208,23 @@ export class LockUnavailableError extends ServerError {
  * it and re-read rather than treat it as an infrastructure error. The message never includes the
  * record id: for `hdb_session` that id is the bearer cookie value, and this error is exactly the
  * case where the session is still live — logging it (an uncaught rejection is logged by the
- * server) must not hand out a replayable cookie. `retryable: false` marks the cases a fresh
- * re-read cannot resolve (`VERSION_REUSED`: the flag survives a plain read, so the same
+ * server) must not hand out a replayable cookie. `retryable` is a required constructor argument,
+ * not derived from `reason`: a caller's retry loop depends on it, and deriving it from freeform
+ * text would silently flip the flag if that text is ever reworded. `false` marks the cases a
+ * fresh re-read cannot resolve (`VERSION_REUSED`: the flag survives a plain read, so the same
  * `ifVersion` will keep failing until an unconditional write lands) — the code is the same for
  * every reason, so a caller that needs to tell them apart reads `retryable`, not `code`.
  */
 export class VersionConflictError extends ClientError {
 	code: string;
 	retryable: boolean;
-	constructor(tableName: string, expectedVersion: number, actualVersion?: number, reason?: string) {
+	constructor(
+		tableName: string,
+		expectedVersion: number,
+		actualVersion: number | undefined,
+		retryable: boolean,
+		reason?: string
+	) {
 		super(
 			`Conditional write to ${tableName} rejected: expected version ${expectedVersion}, found ` +
 				`${actualVersion ?? 'no record'}${reason ? ` (${reason})` : ''}`,
@@ -224,7 +232,7 @@ export class VersionConflictError extends ClientError {
 		);
 		this.name = 'VersionConflictError';
 		this.code = 'VERSION_CONFLICT';
-		this.retryable = reason !== 'version reused by a resequenced write';
+		this.retryable = retryable;
 	}
 }
 

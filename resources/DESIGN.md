@@ -786,28 +786,39 @@ file's most-edited closure. An ordinary write (`ifVersion` `undefined`) never re
 caller's expected version against `existingEntry.version`, the same value every retry of this
 write's commit already re-reads fresh on both engines (RocksDB via its native optimistic-
 transaction conflict detection, LMDB via `ifVersion`-chained conditional batching) — that shared
-re-read is what makes the compare atomic with the actual write, **for a single-write transaction**.
-It is not a multi-write compare-and-set: a rejection is a returned-but-not-yet-awaited commit
-*completion* (`DatabaseTransaction.ts`'s `stageCompletion`), not an abort of the whole native
-transaction, so a sibling `Table.put()` sharing the same `context`/`transaction` can land durably
-in the same native commit that this write's guard later rejects. `request.session.update()` never
-hits this: it builds a fresh `{ expiresAt, ifVersion }` context with no request transaction, so its
-`Table.put()` call is always alone in its transaction. Do not advertise or use
-`Table.put(record, { ifVersion })` from a shared/joined transaction until that is fixed.
+re-read is what makes the compare atomic with the actual write — **on RocksDB**. RocksDB drains
+staged completions (including a rejected `VersionConflictError`) before the native commit and
+aborts the whole transaction if one rejects (`DatabaseTransaction.ts`'s pre-commit completion
+drain), so a sibling `Table.put()` in the same transaction is aborted along with the guarded write.
+**LMDB does not**: `write.commit` runs inside the conditional batch, and the batch's own writes
+land natively before the returned rejection is even joined (`LMDBTransaction.ts`), so a sibling
+`Table.put()` sharing the same `context`/`transaction` can land durably in the same native commit
+that this write's guard rejects. `request.session.update()` never hits this on either engine: it
+builds a fresh `{ expiresAt, ifVersion }` context with no request transaction, so its `Table.put()`
+call is always alone. Do not advertise or use `Table.put(record, { ifVersion })` from a
+shared/joined transaction on LMDB until that engine enforces the same all-or-nothing outcome
+RocksDB already does — enforcing it (reject a guarded write that joins a multi-write LMDB
+transaction, before staging) is cheap today and harder to retrofit once a caller depends on the
+unenforced contract; deferred rather than done here because the only shipped caller cannot reach
+it and the fix needs its own verification against a real multi-write LMDB transaction.
 
-Three cases fail closed instead of comparing on an unproven or ambiguous base, and are
-**not retryable** (`VersionConflictError.retryable === false`) because a fresh re-read cannot
-resolve them: a snapshot-free/disabled-snapshot transaction (`DatabaseTransaction.ts`'s own
-comment: narrows the read-to-put window, does not close it); `VERSION_REUSED` on the existing entry
-(a resequenced RocksDB write can keep its predecessor's version while changing the record, so
-version equality proves nothing — and the flag survives a plain re-read, so the row rejects every
-`ifVersion` write until an unconditional write lands); and `write.skipped` after a matched write
-actually ran (out-of-order resequencing can still supersede it before landing; retryable, since a
-fresh read picks up the superseding write's version). `write.skipped` is not exhaustive — a
-`patch()`'s audit-only fold (`writeCommit(false)`) can supersede without setting it; unreachable
-from `put()`'s full-replace path, real for `patch(..., { ifVersion })`. For a table with a
-`source`, `writeToSource()` runs in `save()` before this guard, so a version mismatch rejects the
-local write after the source already saw it; `hdb_session` has no source.
+Two cases fail closed instead of comparing on an unproven or ambiguous base, and are
+**not retryable** (`VersionConflictError`'s `retryable` argument, passed explicitly at each call
+site — never derived from the `reason` string, so rewording a reason can't silently flip it)
+because a fresh re-read cannot resolve them: a snapshot-free/disabled-snapshot transaction
+(`DatabaseTransaction.ts`'s own comment: narrows the read-to-put window, does not close it); and
+`VERSION_REUSED` on the existing entry (a resequenced RocksDB write can keep its predecessor's
+version while changing the record, so version equality proves nothing — and the flag survives a
+plain re-read, so the row rejects every `ifVersion` write until an unconditional write lands). A
+third case — the version matches, but this write is the out-of-order side of a resequencing (clock
+skew, a replayed/replicated write) and would merge onto something newer, reporting success without
+ever landing the caller's value — is checked explicitly (`precedesExistingVersion(...) <= 0`)
+_before_ calling the literal's original commit function, for both `put()` and `patch()`;
+`write.skipped` afterward is defense in depth, not the only guard, because that flag is not set by
+every superseding path (a `patch()`'s audit-only fold, `writeCommit(false)`). This case is
+retryable: a fresh read picks up the superseding write's version. For a table with a `source`,
+`writeToSource()` runs in `save()` before this guard, so a version mismatch rejects the local write
+after the source already saw it; `hdb_session` has no source.
 
 Every rejection is a returned `Promise.reject(new VersionConflictError(...))`, never a `throw` — a
 throw from inside a commit closure can escape its caller as a synchronous exception rather than a
