@@ -5,7 +5,80 @@ const assert = require('node:assert');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
+<<<<<<< HEAD
 const { isSSHAuthFailure, assertApplicationConfig, parseGitReference } = require('#src/components/Application');
+=======
+const {
+	isSSHAuthFailure,
+	assertApplicationConfig,
+	splitAttributionOwners,
+	derivePackageIdentifier,
+	parseGitReference,
+	shouldPackLocalDirectory,
+	getEnvBuiltInComponents,
+	installApplications,
+} = require('#src/components/Application');
+
+async function withBuiltInComponents(value, run) {
+	const savedBuiltIns = process.env.HARPER_BUILTIN_COMPONENTS;
+	process.env.HARPER_BUILTIN_COMPONENTS = value;
+	try {
+		return await run();
+	} finally {
+		if (savedBuiltIns === undefined) delete process.env.HARPER_BUILTIN_COMPONENTS;
+		else process.env.HARPER_BUILTIN_COMPONENTS = savedBuiltIns;
+	}
+}
+
+describe('getEnvBuiltInComponents', () => {
+	it('skips incomplete declarations and preserves complete entries', async () => {
+		await withBuiltInComponents(
+			'first=@/first.js,secretCustody,=@/missing-name.js,empty=,  ,padded = @/padded.js?sig=a=b,last=@/last.js,',
+			() => {
+				assert.deepStrictEqual(getEnvBuiltInComponents(), [
+					{ name: 'first', packageIdentifier: '@/first.js' },
+					{ name: 'padded', packageIdentifier: '@/padded.js?sig=a=b' },
+					{ name: 'last', packageIdentifier: '@/last.js' },
+				]);
+			}
+		);
+	});
+
+	it('lets application installation continue past a bare declaration', async () => {
+		await withBuiltInComponents('secretCustody,valid=@/dist/utility/common_utils.js', async () => {
+			await assert.doesNotReject(installApplications());
+		});
+	});
+});
+
+describe('derivePackageIdentifier', () => {
+	it('classifies Windows drive and UNC archive paths as local files on every host', () => {
+		for (const packagePath of [
+			String.raw`D:\a\harper\fixture.tgz`,
+			String.raw`\\server\components\fixture.tgz`,
+			String.raw`D:\component fixtures\fixture & one.tgz`,
+		]) {
+			assert.equal(derivePackageIdentifier(packagePath), `file:${packagePath}`);
+		}
+	});
+
+	it('preserves explicit package protocols', () => {
+		for (const identifier of ['npm:@scope/component', 'github:owner/component', 'https://example.com/component.tgz']) {
+			assert.equal(derivePackageIdentifier(identifier), identifier);
+		}
+	});
+});
+
+describe('shouldPackLocalDirectory', () => {
+	it('packs only bare absolute directory identifiers on Windows', () => {
+		assert.equal(shouldPackLocalDirectory(String.raw`D:\components\app`, 'win32'), true);
+		assert.equal(shouldPackLocalDirectory(String.raw`\\server\components\app`, 'win32'), true);
+		assert.equal(shouldPackLocalDirectory(String.raw`file:D:\components\app`, 'win32'), false);
+		assert.equal(shouldPackLocalDirectory('./components/app', 'win32'), false);
+		assert.equal(shouldPackLocalDirectory(String.raw`D:\components\app`, 'linux'), false);
+	});
+});
+>>>>>>> 45a34b16d (Skip incomplete built-in component registrations)
 
 describe('isSSHAuthFailure', () => {
 	it('returns true for "Could not read from remote repository"', () => {

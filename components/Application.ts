@@ -1,6 +1,26 @@
 import { type Logger } from '../utility/logging/logger.ts';
+<<<<<<< HEAD
 import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+=======
+import {
+	getConfigObj,
+	getConfigValue,
+	getConfigPath,
+	getEnvBuiltInComponents,
+	isUnsupportedSyncError as isUnsupportedSync,
+} from '../config/configUtils.ts';
+export { getEnvBuiltInComponents };
+import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
+import {
+	applyRootConfigEffect,
+	assertRootConfigEffectPublishable,
+	isRootConfigEffect,
+	rootConfigEffectFromDeclaration,
+	type RootConfigEffect,
+} from './rootConfigPublication.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
+>>>>>>> 45a34b16d (Skip incomplete built-in component registrations)
 import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
 import { withComponentPreparationLock } from './componentPreparationLock.ts';
@@ -2057,18 +2077,6 @@ export async function terminateProcessTree(childProcess: ChildProcess, closeProm
 		await waitForConfirmedTermination(() => processGroupIsAlive(processGroupId));
 	}
 	await waitForProcessClose(childProcess, closePromise);
-}
-
-export function getEnvBuiltInComponents() {
-	const builtInComponents: { name: string; packageIdentifier: string }[] = [];
-	if (process.env.HARPER_BUILTIN_COMPONENTS) {
-		for (const componentDefinition of process.env.HARPER_BUILTIN_COMPONENTS.split(',')) {
-			const [name, packageIdentifier] = componentDefinition.trim().split('=');
-			if (!componentDefinition) continue;
-			builtInComponents.push({ name, packageIdentifier });
-		}
-	}
-	return builtInComponents;
 }
 
 function printStd(

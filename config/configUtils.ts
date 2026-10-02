@@ -369,6 +369,25 @@ export function ensureConfigKeysPresent(keys: string[]): string[] {
 	return added;
 }
 
+export function getEnvBuiltInComponents() {
+	const componentDefinitions = process.env.HARPER_BUILTIN_COMPONENTS;
+	if (!componentDefinitions) return [];
+	const builtInComponents: { name: string; packageIdentifier: string }[] = [];
+	for (const [index, componentDefinition] of componentDefinitions.split(',').entries()) {
+		const definition = componentDefinition.trim();
+		if (!definition) continue;
+		const separator = definition.indexOf('=');
+		const name = separator === -1 ? '' : definition.slice(0, separator).trim();
+		const packageIdentifier = separator === -1 ? '' : definition.slice(separator + 1).trim();
+		if (!name || !packageIdentifier) {
+			logger.warn?.(`Skipping HARPER_BUILTIN_COMPONENTS entry ${index + 1}: expected name=packageIdentifier.`);
+			continue;
+		}
+		builtInComponents.push({ name, packageIdentifier });
+	}
+	return builtInComponents;
+}
+
 /**
  * Built-in components introduced in a recent release whose config key must be backfilled onto
  * in-place-upgraded instances. Fresh installs get these from defaultConfig.yaml, but an upgrade
@@ -408,14 +427,8 @@ const UPGRADE_BACKFILL_BUILTIN_KEYS = ['secretCustody', 'waf'];
  * @returns the keys that were added (empty when none were missing)
  */
 export function ensureBuiltInComponentConfigKeys(): string[] {
-	const registeredBuiltIns = process.env.HARPER_BUILTIN_COMPONENTS;
-	if (!registeredBuiltIns) return [];
-	const registered = new Set(
-		registeredBuiltIns
-			.split(',')
-			.map((definition) => definition.split('=')[0].trim())
-			.filter(Boolean)
-	);
+	if (!process.env.HARPER_BUILTIN_COMPONENTS) return [];
+	const registered = new Set(getEnvBuiltInComponents().map(({ name }) => name));
 	const keys = UPGRADE_BACKFILL_BUILTIN_KEYS.filter((key) => registered.has(key));
 	if (keys.length === 0) return [];
 	try {
