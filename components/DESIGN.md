@@ -83,7 +83,10 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    incarnation. A pending or certified record of this incarnation fences every other preparation of the
    component, `drop_component` included (409 "being certified"); an activation of the same id joins the
    decision instead. A record a dead incarnation left fences nothing.
-3. **Commit, after the swap.** Main starts the rollout. Restarts that start replacements are serialized
+3. **Commit, after the swap.** Main starts the rollout, and drops any in-memory refusal of the component (below).
+   A requester that dies armed is resolved from the disk: committed when its release is live, withdrawn when it is
+   not, and committed when the disk cannot say, so that a canary decides — one that loads the previous release
+   rejects on its generation, and the restore finds that release already live. Restarts that start replacements are serialized
    (`replacementRestarts`), so no restart boots a worker on a release another's canary has not decided, and the
    requesting worker is replaced last, once its operation has answered (`release`, bounded at 10 s). A withdraw
    after commit is refused: the release is live, and dropping its registration would leave the rollout
@@ -95,13 +98,17 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    itself loaded. The verdict names the release live when the load began and when it reported, and any other
    generation than the one armed is a rejection. `loaded` certifies; `failed`, exiting, or no report within
    `max(2 × threads termination timeout, 60 s)` rejects; `skipped` or `absent` leave it `uncertified`, and the
-   rollout goes on unchecked, as every restart did before.
-5. **Decide.** A rejected canary is stopped first. `certified` is written durably. A rejection is written
+   rollout goes on unchecked, as every restart did before. Replacing nothing is not a verdict: a rollout that found no
+   worker to replace — the only one died between the swap and the commit — has the start it held back load the
+   release instead.
+5. **Decide.** A rejected or timed-out canary is stopped first, so a restore never races a worker still holding
+   the release. `certified` is written durably. A rejection is written
    `rejected` before anything moves; then step 6 activates the predecessor, only while the rejected release is
    still the live one (`onlyIfLive`), and the record is removed once it is. With no predecessor (a first
    deploy), or a restore that did not land, the release stays live and FAILS CLOSED: every thread's loader
-   refuses it (`failClosedReleases`, plus an in-memory set when even the record write failed), boot does not
-   reinstall it, and only a deploy, an activation or a drop moves on. The origin's deploy fails with the
+   refuses it (`failClosedReleases`), boot does not reinstall it, and only a deploy, an activation or a drop moves
+   on. When even the record write fails, main refuses it in memory, bound to that deployment id so a later release
+   loads, and the record stays `pending` for the next boot to settle. The origin's deploy fails with the
    decision in `certification` (`status`, `reason`, `failures`, `restored`, `failed_closed`), and nothing was
    replicated. An `interrupted` certification — the process shutting down, or a rollout that failed before any
    canary decided — is restored exactly as a rejection is, which is also what the next boot does with a record
@@ -121,7 +128,8 @@ beside its predecessor, since it binds nothing until admitted, and the predecess
 interrupted activations settle and before `installApplications()`): pending becomes rejected and is restored
 ("the process ended before its canary decided"); a rejection with a predecessor is restored again; certified, or
 no longer live, is removed; rejected with nothing to restore is kept, failed closed. An unreadable record is never
-permission to run: its component fails closed. Retention pins every predecessor a record names, and prunes nothing
+permission to run, and neither is one a dead process left pending that boot could not settle: either fails its
+component closed. Retention pins every predecessor a record names, and prunes nothing
 of a component one of whose records cannot be read. And a package deploy's tree is no longer reinstalled by the
 restart that follows it, or at a later start: a deploy never writes the application lock, so the root reload used to
 resolve the package again and swap a fresh install over the release the deploy had just activated. It now recognizes
@@ -132,8 +140,11 @@ tree that runs is the tree certified.
 release. A `restart_service` job then activates it on each peer in turn (`activate_deployment`, `bin/restart.ts`)
 with `deploy_component { deployment_id, restart: true }`, which certifies it there with that peer's own canary.
 Verdicts are per node: a peer that refuses keeps its previous release, nothing is rolled back elsewhere, every peer
-is visited, and the job fails naming each one that did not take it. A rolling deploy whose release could not be
-armed on the origin restarts as it did before.
+is visited, and the job fails naming each one that did not take it, with every peer's outcome in its message. A peer
+that activates the release uncertified (`uncertified`, `unavailable`) took it, as the origin would have. The field
+is caller-visible on `restart_service`, so `chooseOperation` lets a caller set it only when it may also deploy
+(`deploy_component`, token scope included); the deploy flow enqueues the job directly. A rolling deploy whose
+release could not be armed on the origin restarts as it did before.
 
 **What it does not cover.** The release is live on disk before its canary boots, so a worker the rollout has not
 reached that first imports a module during the hold reads it from the new release

@@ -5175,7 +5175,7 @@ async function recertifyLiveRelease(
 		application.certificationArmed = true;
 		return;
 	}
-	if (!rejectionReason(live)) return;
+	if (!rejectionReason(live, processIncarnation)) return;
 	const predecessor =
 		'record' in live
 			? { previous: live.record.previous, wasAbsent: live.record.wasAbsent }
@@ -5402,7 +5402,7 @@ async function installConfiguredApplication(
 		// Never replaced from its source while its release is undecided, or after it was refused: only a deploy,
 		// an activation or a drop moves on from either, and a reinstall would erase the evidence the refusal rests on.
 		const live = await liveCertification(dirname(dirPath), name);
-		const refusal = live && rejectionReason(live);
+		const refusal = live && rejectionReason(live, processIncarnation);
 		if (refusal) {
 			logger.error?.(`Not installing application ${name} over its live release ${live.deploymentId}: ${refusal}`);
 			return;

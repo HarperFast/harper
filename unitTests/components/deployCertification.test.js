@@ -74,7 +74,6 @@ async function readLive(root) {
 	return fs.readFile(path.join(root, 'web', 'index.js'), 'utf8');
 }
 
-/** Records every call, and what the disk held when the gate was armed. */
 function recordingCertification(root, { armed = true } = {}) {
 	const calls = [];
 	return {
@@ -377,6 +376,22 @@ describe('deciding a release', () => {
 		assert.equal((await readCertificationRecord(root, 'd2')).state, 'rejected');
 	});
 
+	it('keeps the record of a refused release whose rejection could not be written, for the next boot to settle', async function () {
+		this.timeout(30000);
+		await certifying();
+		await closeCertification({
+			...WEB,
+			decision: { status: 'rejected', reason: 'threw at load', recordError: 'ENOSPC' },
+		});
+		assert.equal((await readCertificationRecord(root, 'd2')).state, 'pending');
+		await closeCertification({ ...WEB, decision: { status: 'interrupted', reason: 'the process is shutting down' } });
+		assert.equal((await readCertificationRecord(root, 'd2')).state, 'pending');
+
+		await recordOf('d2', 'a-previous-process');
+		await resolveInterruptedCertifications(root);
+		assert.equal(await readLive(root), 'V1\n', 'the release nobody could refuse durably is put back at boot');
+	});
+
 	it('passes a decision through when there is no record to make it durable in', async function () {
 		this.timeout(30000);
 		await deploy(root, 'd2', 'V2\n');
@@ -501,6 +516,7 @@ describe('deciding a release', () => {
 });
 
 describe('whether the live tree installs an entry', () => {
+	preserveRootConfig();
 	let root;
 	beforeEach(async () => {
 		root = await fs.mkdtemp(path.join(os.tmpdir(), 'deploy-certification-install-'));

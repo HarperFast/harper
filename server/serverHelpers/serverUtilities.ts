@@ -465,6 +465,29 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 					);
 				}
 			}
+			// A rolling deploy's per-peer activation rides restart_service, but what it does is deploy: a caller
+			// asking for one must be allowed to deploy, not only to restart.
+			if (json.operation === terms.OPERATIONS_ENUM.RESTART_SERVICE && json.activate_deployment !== undefined) {
+				const deployRequest = { ...json, operation: terms.OPERATIONS_ENUM.DEPLOY_COMPONENT };
+				const deployPermsResult = opAuth.verifyPerms(
+					deployRequest,
+					getOperationFunction(deployRequest).operation_function,
+					{ apiOperation: terms.OPERATIONS_ENUM.DEPLOY_COMPONENT }
+				);
+				if (deployPermsResult) {
+					operationLog.warn(
+						`User '${json.hdb_user?.username}' is not permitted to activate a deployment through ${json.operation}`
+					);
+					throw handleHDBError(
+						new Error(),
+						deployPermsResult,
+						hdbErrors.HTTP_STATUS_CODES.FORBIDDEN,
+						undefined,
+						false,
+						true
+					);
+				}
+			}
 		}
 	} catch (err) {
 		throw handleHDBError(err, `There was an error when trying to choose an operation path`, 500);

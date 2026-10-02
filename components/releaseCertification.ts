@@ -171,9 +171,17 @@ export async function liveCertification(
 	}
 }
 
-export function rejectionReason(live: LiveCertification): string | undefined {
+/**
+ * Why the live release must not run, if it must not. `incarnation` is this process's: its own open decisions are in
+ * flight, while one a dead process left open is a release nobody decided, which recovery could not settle either.
+ */
+export function rejectionReason(live: LiveCertification, incarnation: string): string | undefined {
 	if ('unreadable' in live) return `its certification record cannot be read: ${live.unreadable.message}`;
-	return live.record.state === 'rejected' ? (live.record.reason ?? 'its canary rejected it') : undefined;
+	if (live.record.state === 'rejected') return live.record.reason ?? 'its canary rejected it';
+	if (live.record.state === 'pending' && live.record.incarnation !== incarnation) {
+		return 'its certification was never decided';
+	}
+	return undefined;
 }
 
 export class RejectedReleaseError extends Error {
@@ -184,10 +192,14 @@ export class RejectedReleaseError extends Error {
 }
 
 /**
- * Every component whose live release must not load: one its canary rejected, or whose record cannot be read —
- * an unreadable decision is never permission to run. Read-only, so any thread reaches the same answer.
+ * Every component whose live release must not load: one its canary rejected, one a dead process left undecided, or
+ * one whose record cannot be read — an unreadable decision is never permission to run. Read-only, so any thread
+ * reaches the same answer.
  */
-export async function failClosedReleases(componentsRootDirPath: string): Promise<Map<string, Error>> {
+export async function failClosedReleases(
+	componentsRootDirPath: string,
+	incarnation: string
+): Promise<Map<string, Error>> {
 	const failClosed = new Map<string, Error>();
 	let entries;
 	try {
@@ -217,7 +229,7 @@ export async function failClosedReleases(componentsRootDirPath: string): Promise
 			unreadable: error instanceof Error ? error : new Error(String(error)),
 		}));
 		if (!live || live.deploymentId !== entry.name) continue;
-		const reason = rejectionReason(live);
+		const reason = rejectionReason(live, incarnation);
 		if (reason) failClosed.set(owner, new RejectedReleaseError(owner, entry.name, reason));
 	}
 	return failClosed;

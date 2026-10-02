@@ -125,12 +125,21 @@ describe('release certification records', () => {
 		const live = await liveCertification(root, 'web');
 		assert.equal(live.deploymentId, LIVE);
 		assert.equal(live.record.state, 'pending');
-		assert.equal(rejectionReason(live), undefined, 'a pending release is not refused');
+		assert.equal(rejectionReason(live, 'this-process'), undefined, 'a release this process is deciding is not refused');
+		assert.match(
+			rejectionReason(live, 'a-later-process'),
+			/never decided/,
+			'one a dead process left undecided is refused'
+		);
 
 		await fs.writeFile(certificationRecordPath(root, LIVE), 'garbage');
 		const unreadable = await liveCertification(root, 'web');
 		assert.ok(unreadable.unreadable instanceof Error);
-		assert.match(rejectionReason(unreadable), /cannot be read/, 'an unreadable decision is never permission');
+		assert.match(
+			rejectionReason(unreadable, 'this-process'),
+			/cannot be read/,
+			'an unreadable decision is never permission'
+		);
 	});
 
 	it('fails closed exactly the components whose LIVE release was rejected or is unreadable', async () => {
@@ -152,14 +161,19 @@ describe('release certification records', () => {
 		await fs.writeFile(path.join(root, '.deploy-staging', displacedId, '.component'), 'restored');
 		await writeCertificationRecord(root, pending('restored', displacedId, { state: 'rejected' }));
 
-		const failClosed = await failClosedReleases(root);
-		assert.deepEqual([...failClosed.keys()].sort(), ['rejected', 'unreadable']);
+		const undecidedId = '66666666-6666-6666-6666-666666666666';
+		await deployed(root, 'undecided', undecidedId);
+		await writeCertificationRecord(root, pending('undecided', undecidedId, { incarnation: 'a-dead-process' }));
+
+		const failClosed = await failClosedReleases(root, 'this-process');
+		assert.deepEqual([...failClosed.keys()].sort(), ['rejected', 'undecided', 'unreadable']);
 		assert.match(failClosed.get('rejected').message, /threw at load/);
 		assert.match(failClosed.get('unreadable').message, /cannot be read/);
+		assert.match(failClosed.get('undecided').message, /never decided/);
 	});
 
 	it('answers an empty set when there is no staging root at all', async () => {
-		assert.equal((await failClosedReleases(root)).size, 0);
+		assert.equal((await failClosedReleases(root, 'this-process')).size, 0);
 	});
 
 	it('pins the predecessors a component records, and nothing when one record cannot be read', async () => {

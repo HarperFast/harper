@@ -11,14 +11,19 @@ const planPath = process.env.CERTIFICATION_GATE_PLAN;
 
 let step;
 parentPort.on('message', (message) => {
-	if (message?.type === ITC_EVENT_TYPES.SHUTDOWN) setTimeout(() => process.exit(0), 20);
+	if (message?.type === ITC_EVENT_TYPES.SHUTDOWN) setTimeout(() => process.exit(0), step?.shutdownDelayMs ?? 20);
 	else if (message?.type === ITC_EVENT_TYPES.CHILD_ADMITTED) {
 		if (step?.afterAdmission === 'exit') process.exit(4);
 		parentPort.postMessage({ type: ITC_EVENT_TYPES.CHILD_STARTED });
 	}
 });
 setInterval(() => {}, 10000);
-parentPort.postMessage({ type: 'fixture-booted', threadId, certify: workerData.certify ?? null });
+parentPort.postMessage({
+	type: 'fixture-booted',
+	threadId,
+	certify: workerData.certify ?? null,
+	failClosed: workerData.failClosed ?? null,
+});
 
 if (!workerData.certify) {
 	parentPort.postMessage({ type: ITC_EVENT_TYPES.CHILD_STARTED });

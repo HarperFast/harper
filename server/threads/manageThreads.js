@@ -219,6 +219,7 @@ module.exports = {
 	certificationRollout,
 	setCertificationHandler,
 	setCanaryVerdictTimeout,
+	setRootComponentsReload,
 	restartNumber: initialRestartNumber,
 	processIncarnation,
 	whenThreadsStarted,
@@ -540,6 +541,12 @@ function setCanaryVerdictTimeout(timeoutMs) {
 	canaryVerdictTimeoutOverride = timeoutMs;
 }
 
+let rootComponentsReload;
+/** Test seam: what a restart reloads on main before it replaces a worker, which a unit test has no tree for. */
+function setRootComponentsReload(reload) {
+	rootComponentsReload = reload;
+}
+
 /** components/canaryRollout.ts: durable decisions, the restore, and resolving a registration whose requester died. */
 function setCertificationHandler(handler) {
 	certificationHandler = handler;
@@ -592,6 +599,8 @@ function commitCertification(component, deploymentId) {
 	if (!certification || certification.phase !== 'armed') return false;
 	certification.phase = 'committed';
 	certification.unarmed.resolve();
+	// A release goes live in place of the refused one, or that release is being certified again.
+	failClosedInMemory.delete(component);
 	settleHeldStarts();
 	const onProgress = (untilMs) => {
 		for (const listener of certification.progress) listener(untilMs);
@@ -618,6 +627,11 @@ function withdrawCertification(component, deploymentId) {
 }
 
 async function completeCertification(certification, outcome) {
+	if (!certification.decision && !outcome?.declined) {
+		// Replacing nothing is not a verdict: a start held back for the release is its canary, as is one still loading.
+		if (!certification.canary && !processShuttingDown) startDeferredStarts(certification);
+		if (certification.canary) await certification.decided.promise;
+	}
 	if (!certification.decision) {
 		const decision =
 			outcome?.declined || outcome?.error
@@ -679,7 +693,12 @@ async function decideCertification(certification, decision, canary) {
 	} catch (error) {
 		harperLogger.error(`Could not record the certification decision for ${certification.component}`, error);
 		settled = { ...decision, recordError: errorMessageOf(error) };
-		if (refusesRelease(decision)) failClosedInMemory.set(certification.component, decision.reason);
+		if (refusesRelease(decision)) {
+			failClosedInMemory.set(certification.component, {
+				deploymentId: certification.deploymentId,
+				reason: decision.reason,
+			});
+		}
 	}
 	certification.decision = settled;
 	certification.decided.resolve(settled);
@@ -766,9 +785,9 @@ function holdStart(worker, gated, startOptions) {
 			if (certification.decision || (certification.canary && certification.canary !== worker)) continue;
 			certification.canary = worker;
 			canaryFor = true;
-			void decideCertification(certification, { status: 'rejected', reason });
+			void decideCertification(certification, { status: 'rejected', reason }, held);
 		}
-		if (canaryFor || held.checks.length) void stopHeldStart(held);
+		if (!canaryFor && held.checks.length) void stopHeldStart(held);
 	}, canaryVerdictTimeoutMs()).unref();
 	return held;
 }
@@ -836,8 +855,9 @@ function admissionRefusal(held) {
 }
 
 function stopHeldStart(held) {
+	if (held.stopping) return held.stopping;
 	held.settled = true;
-	const stopping = stopWorker(held.worker);
+	const stopping = (held.stopping = stopWorker(held.worker));
 	// A restart keeps the worker a managed start would have replaced; nothing else restarts an unmanaged one. Its copy
 	// starts once the decision is made, so it loads whatever release that leaves live.
 	if (!held.managed && !processShuttingDown) {
@@ -866,7 +886,7 @@ function releaseCertificationRequester(component, deploymentId) {
 function failClosedComponentsPlacedBy(options) {
 	if (!isMainThread || options.name !== hdbTerms.THREAD_TYPES.HTTP || failClosedInMemory.size === 0) return undefined;
 	const failClosed = {};
-	for (const [component, reason] of failClosedInMemory) failClosed[component] = reason;
+	for (const [component, refusal] of failClosedInMemory) failClosed[component] = refusal;
 	return failClosed;
 }
 
@@ -934,8 +954,10 @@ function registerCertificationRequests() {
 					else withdrawCertification(certification.component, certification.deploymentId);
 				})
 				.catch((error) => {
+					// Whether the swap happened is unknown, so the release is treated as live: a canary loading the
+					// previous release instead rejects on its generation, and the restore finds that one live.
 					harperLogger.error(`Could not resolve the certification of ${certification.component}`, error);
-					withdrawCertification(certification.component, certification.deploymentId);
+					commitCertification(certification.component, certification.deploymentId);
 				});
 		}
 	});
@@ -1172,7 +1194,7 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 		if (coversEveryWorker) resetRestartNeeded();
 		// This is here to prevent circular dependencies
 		if (startReplacementThreads) {
-			const { loadRootComponents } = require('../loadRootComponents.js');
+			const loadRootComponents = rootComponentsReload ?? require('../loadRootComponents.js').loadRootComponents;
 			// Installing and loading every root component reports nothing and can outlast a caller's idle
 			// window on its own (a cold npm cache, a large dependency graph), so beat while it runs. The
 			// caller's absolute ceiling is what bounds a load that never finishes.
@@ -1334,8 +1356,8 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 				const rejected = certification?.decision?.status === 'rejected';
 				if (!started) {
 					if (retiredForAdmission) {
-						// Its predecessor is already gone, and the auto-restart a replacement started after it would have
-						// had is suppressed on one booting held: start the slot again on whatever release is now live.
+						// Its predecessor is gone, and a held replacement boots with its auto-restart suppressed: start the
+						// slot again, on whichever release is live now.
 						heldReplacementsNotStarted++;
 						if (!processShuttingDown) worker.startCopy();
 					} else {

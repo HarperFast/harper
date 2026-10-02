@@ -8,16 +8,9 @@ const { setTimeout: sleep } = require('node:timers/promises');
 const { waitFor } = require('../../waitFor.js');
 
 // A certifying rollout reloads the root components on main before it replaces anything. This suite is about what it
-// does with the workers, so that load and the restart-required bit are stubbed out; a test can hold the load open.
+// does with the workers, so that reload does nothing, and a test can hold it open.
 let rootLoad = Promise.resolve();
 let releaseRootLoad = () => {};
-for (const [specifier, exports] of [
-	['#js/server/loadRootComponents', { loadRootComponents: () => rootLoad }],
-	['#src/components/requestRestart', { resetRestartNeeded() {}, requestRestart() {}, restartNeeded: () => false }],
-]) {
-	const resolved = require.resolve(specifier);
-	require.cache[resolved] = { id: resolved, filename: resolved, loaded: true, exports };
-}
 
 const {
 	startWorker,
@@ -25,6 +18,7 @@ const {
 	certificationRequest,
 	setCertificationHandler,
 	setCanaryVerdictTimeout,
+	setRootComponentsReload,
 } = require('#js/server/threads/manageThreads');
 
 const FIXTURE = path.join(__dirname, 'certificationGate-fixture.cjs');
@@ -56,8 +50,11 @@ describe('the release certification gate', function () {
 					started.push(worker);
 					worker.certifyRequests = [];
 					worker.on('message', (message) => {
-						if (message?.type === 'fixture-booted') worker.certifyRequests.push(message.certify);
+						if (message?.type !== 'fixture-booted') return;
+						worker.certifyRequests.push(message.certify);
+						worker.failClosed = message.failClosed;
 					});
+					worker.once('exit', () => (worker.exitedAt = Date.now()));
 					const onReady = (message) => {
 						if (message?.type !== 'child_started') return;
 						worker.off('message', onReady);
@@ -97,7 +94,14 @@ describe('the release certification gate', function () {
 		return waitFor(() => completions.length > 0, { timeout: 45000, message: 'the certifying rollout never ended' });
 	}
 
+	let safeMode;
+
 	before(() => {
+		// startWorker resolves the configured preload modules once per process, outside safe mode only; a later suite
+		// configures them, so these starts must not be the ones that resolve them.
+		safeMode = process.env.HARPER_SAFE_MODE;
+		process.env.HARPER_SAFE_MODE = '1';
+		setRootComponentsReload(() => rootLoad);
 		planDir = mkdtempSync(path.join(os.tmpdir(), 'certification-gate-'));
 		planPath = path.join(planDir, 'plan.json');
 		process.env.CERTIFICATION_GATE_PLAN = planPath;
@@ -105,23 +109,39 @@ describe('the release certification gate', function () {
 	});
 
 	after(() => {
+		if (safeMode === undefined) delete process.env.HARPER_SAFE_MODE;
+		else process.env.HARPER_SAFE_MODE = safeMode;
+		setRootComponentsReload(undefined);
 		setCanaryVerdictTimeout(undefined);
 		rmSync(planDir, { recursive: true, force: true });
 	});
 
-	beforeEach(async () => {
-		decisions = [];
-		completions = [];
-		setCertificationHandler({
+	function handler(overrides = {}) {
+		return {
 			decide: async (certification, decision) => {
-				decisions.push({ component: certification.component, ...decision });
+				decisions.push({ component: certification.component, at: Date.now(), ...decision });
 				return decision;
 			},
 			complete: async (certification) => {
 				completions.push(certification.component);
 			},
 			resolveArmed: async () => 'withdrawn',
-		});
+			...overrides,
+		};
+	}
+
+	async function stopOthers(keep) {
+		for (const worker of pool.filter((candidate) => candidate !== keep)) {
+			worker.wasShutdown = true;
+			await worker.terminate();
+		}
+		pool = [keep];
+	}
+
+	beforeEach(async () => {
+		decisions = [];
+		completions = [];
+		setCertificationHandler(handler());
 		plan([{ outcome: 'loaded' }]);
 		rootLoad = Promise.resolve();
 		committed = false;
@@ -277,6 +297,78 @@ describe('the release certification gate', function () {
 		loading.resolve();
 		await rolledOut();
 		assert.ok(!pool[0].wasShutdown && !pool[1].wasShutdown, 'a rejected rollout replaces nothing further');
+	});
+
+	for (const [label, resolveArmed] of [
+		['commits', async () => 'committed'],
+		['cannot be resolved', async () => Promise.reject(new Error('could not read the component'))],
+	]) {
+		it(`certifies through a held-back start when the requester's registration ${label} and nothing is left to replace`, async () => {
+			setCertificationHandler(handler({ resolveArmed }));
+			const original = [...pool];
+			await stopOthers(pool[0]);
+			plan([{ outcome: 'failed' }]);
+			await arm({ requesterThreadId: pool[0].threadId });
+			// The only worker dies between the swap and its commit: its crash restart is the only start left.
+			await pool[0].terminate();
+			await rolledOut();
+			assert.deepStrictEqual(
+				decisions.map(({ status }) => status),
+				['rejected']
+			);
+			const later = started.filter((worker) => !original.includes(worker));
+			assert.deepStrictEqual(later[0].certifyRequests, [[{ component: COMPONENT, deploymentId: DEPLOYMENT }]]);
+			await waitFor(() => later.length === 2 && later[1].certifyRequests.length === 1, {
+				message: 'the rejected canary was not started again',
+			});
+			assert.deepStrictEqual(later[1].certifyRequests, [null]);
+		});
+	}
+
+	it('decides a timed-out canary only once it has exited', async () => {
+		plan([{ behavior: 'silent', shutdownDelayMs: 800 }]);
+		await arm();
+		await commit();
+		const verdict = await decisionOf();
+		assert.match(verdict.reason, /did not report/);
+		const canary = started.find((worker) => worker.certifyRequests[0]);
+		assert.ok(canary.exitedAt, 'the canary has exited');
+		assert.ok(decisions[0].at >= canary.exitedAt, 'the decision, and with it the restore, came after the exit');
+	});
+
+	it('refuses, in memory, only the release whose rejection it could not record', async () => {
+		let recordFails = true;
+		setCertificationHandler(
+			handler({
+				decide: async (certification, decision) => {
+					decisions.push({ component: certification.component, at: Date.now(), ...decision });
+					if (decision.status === 'rejected' && recordFails) throw new Error('ENOSPC: no space left on device');
+					return decision;
+				},
+			})
+		);
+		plan([{ outcome: 'failed' }]);
+		await arm();
+		await commit();
+		assert.equal((await decisionOf()).recordError, 'ENOSPC: no space left on device');
+		await rolledOut();
+		const afterRefusal = await startFixture(3);
+		assert.deepStrictEqual(afterRefusal.failClosed?.[COMPONENT]?.deploymentId, DEPLOYMENT);
+		pool.push(afterRefusal);
+
+		recordFails = false;
+		completions = [];
+		plan([{ outcome: 'loaded' }]);
+		const next = '44444444-4444-4444-4444-444444444444';
+		await arm({ deploymentId: next });
+		await certificationRequest('commit', { component: COMPONENT, deploymentId: next });
+		committed = true;
+		assert.equal(
+			(await certificationRequest('decision', { component: COMPONENT, deploymentId: next })).status,
+			'certified'
+		);
+		const canary = started.find((worker) => worker.certifyRequests[0]?.[0]?.deploymentId === next);
+		assert.equal(canary.failClosed, null, 'the next release is not refused for the last one');
 	});
 
 	it('refuses to withdraw a release once it is committed', async () => {

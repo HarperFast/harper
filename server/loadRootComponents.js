@@ -11,7 +11,7 @@ const configUtils = require('../config/configUtils.ts');
 const { dirname } = require('path');
 const { loadCertificates } = require('../security/keys.ts');
 const { installApplications, recoverInterruptedActivations } = require('../components/Application.ts');
-const { failClosedReleases } = require('../components/releaseCertification.ts');
+const { failClosedReleases, liveDeploymentId, RejectedReleaseError } = require('../components/releaseCertification.ts');
 const { errorForLog } = require('../utility/logging/harper_logger.ts');
 const { CONFIG_PARAMS } = require('../utility/hdbTerms.ts');
 
@@ -126,15 +126,19 @@ async function loadRootComponents(isWorkerThread = false) {
  * handed to this worker instead. An unreadable answer fails every component closed rather than none.
  */
 async function componentsFailedClosed() {
+	const componentsRoot = configUtils.getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+	const { processIncarnation } = require('./threads/manageThreads.js');
 	let failClosed;
 	try {
-		failClosed = await failClosedReleases(configUtils.getConfigPath(CONFIG_PARAMS.COMPONENTSROOT));
+		failClosed = await failClosedReleases(componentsRoot, processIncarnation);
 	} catch (error) {
 		console.error(errorForLog(error));
 		failClosed = await failEveryComponentClosed(error);
 	}
-	for (const [component, reason] of Object.entries(workerData?.failClosed ?? {})) {
-		failClosed.set(component, new Error(`Not loading ${component}: ${reason}`));
+	// Each holds only while the release it refused is still the live one.
+	for (const [component, { deploymentId, reason }] of Object.entries(workerData?.failClosed ?? {})) {
+		if ((await liveDeploymentId(componentsRoot, component).catch(() => undefined)) !== deploymentId) continue;
+		failClosed.set(component, new RejectedReleaseError(component, deploymentId, reason));
 	}
 	return failClosed;
 }

@@ -110,8 +110,13 @@ describe('activating a staged release on each peer in turn', () => {
 		answers['peer-b'] = { value: { message: 'Successfully deployed: web', certification: 'certified' } };
 		await assert.rejects(activateDeploymentOnPeers(activation()), (error) => {
 			assert.match(error.message, /was not activated on 1 of 3 peer node\(s\): peer-a \(web was not deployed/);
+			assert.equal(error.http_resp_msg.error, error.message);
 			assert.deepStrictEqual(
-				error.replicated.map(({ node, certification, error: failure }) => ({ node, certification, failed: !!failure })),
+				error.http_resp_msg.activated.map(({ node, certification, error: failure }) => ({
+					node,
+					certification,
+					failed: !!failure,
+				})),
 				[
 					{ node: 'peer-a', certification: undefined, failed: true },
 					{ node: 'peer-b', certification: 'certified', failed: false },

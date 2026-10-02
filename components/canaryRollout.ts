@@ -31,7 +31,7 @@ export type CertificationDecision = {
 	recordError?: string;
 };
 
-type GateCertification = { component: string; deploymentId: string };
+type GateCertification = { component: string; deploymentId: string; decision?: CertificationDecision };
 
 function componentsRootDirPath(): string {
 	return getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
@@ -96,7 +96,6 @@ async function rejectRelease(
 	return restoreRejectedRelease(record.component, record.deploymentId, record.previous);
 }
 
-/** Main's gate made a decision: make it durable, and restore the predecessor of a rejected release. */
 export async function recordCertificationDecision(
 	certification: GateCertification,
 	decision: CertificationDecision
@@ -123,8 +122,13 @@ export async function recordCertificationDecision(
 	return decision;
 }
 
-/** The rollout ended: only a rejection outlives it, so the release stays refused. */
+/**
+ * The rollout ended. A refused release keeps whatever record its decision left: `rejected`, or still `pending` where
+ * even that could not be written, which the next boot settles.
+ */
 export async function closeCertification(certification: GateCertification): Promise<void> {
+	const status = certification.decision?.status;
+	if (status === 'rejected' || status === 'interrupted') return;
 	const record = await readCertificationRecord(componentsRootDirPath(), certification.deploymentId).catch(
 		() => undefined
 	);
@@ -211,7 +215,6 @@ export type DeployCertification = ActivationCertification & {
 	release(): Promise<void>;
 };
 
-/** What a deploy hands `prepareApplication`, and then waits on. */
 export function deployCertification(spec: {
 	component: string;
 	deploymentId: string;

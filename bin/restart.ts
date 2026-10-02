@@ -242,7 +242,8 @@ async function activateDeploymentOnPeers(activation: any) {
 			`Deployment ${deploymentId} of ${project} was not activated on ${failed.length} of ${results.length} peer ` +
 				`node(s): ${failed.map((result) => `${result.node} (${result.error})`).join('; ')}`
 		);
-		error.replicated = results;
+		// What a failed job records as its message, so get_job keeps every peer's outcome.
+		error.http_resp_msg = { error: error.message, activated: results };
 		throw error;
 	}
 	return { activated: results };

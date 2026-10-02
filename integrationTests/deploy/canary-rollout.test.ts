@@ -323,14 +323,19 @@ suite('a package deploy that restarts workers', { skip: skipSuite }, (ctx: Conte
 	let packageDir: string;
 	let tarballPath: string;
 
-	before(async () => {
-		// A tarball, which installs as a tree of its own; a `file:` directory installs as a link to its source.
-		packageDir = await mkdtemp(join(tmpdir(), 'canary-package-'));
-		const sourceRoot = join(packageDir, 'source');
+	/** A tarball, which installs as a tree of its own; a `file:` directory installs as a link to its source. */
+	async function packageTarball(name: string, release: Release): Promise<string> {
+		const sourceRoot = join(packageDir, `${name}-source`);
 		await mkdir(join(sourceRoot, 'package'), { recursive: true });
-		await writeRelease(join(sourceRoot, 'package'), project, { version: 1 });
-		tarballPath = join(packageDir, `${project}-1.0.0.tgz`);
-		await writeFile(tarballPath, Buffer.from(await targz(sourceRoot), 'base64'));
+		await writeRelease(join(sourceRoot, 'package'), name, release);
+		const tarball = join(packageDir, `${name}-${release.version}.0.0.tgz`);
+		await writeFile(tarball, Buffer.from(await targz(sourceRoot), 'base64'));
+		return tarball;
+	}
+
+	before(async () => {
+		packageDir = await mkdtemp(join(tmpdir(), 'canary-package-'));
+		tarballPath = await packageTarball(project, { version: 1 });
 		await startHarper(ctx, { config: HARPER_CONFIG, env: {} });
 	});
 
@@ -362,5 +367,30 @@ suite('a package deploy that restarts workers', { skip: skipSuite }, (ctx: Conte
 			'kept',
 			'the live tree is the one the canary certified'
 		);
+	});
+
+	test('a rejected first package deploy fails closed: the next start neither installs nor loads it', async () => {
+		const broken = 'canary-package-broken';
+		const { status, body } = await rawOperation(ctx, {
+			operation: 'deploy_component',
+			project: broken,
+			package: `file:${await packageTarball(broken, { version: 1, throwAtLoad: true })}`,
+			restart: true,
+		});
+		strictEqual(status, 400, JSON.stringify(body));
+		strictEqual(body.certification?.failed_closed, true);
+		await writeFile(join(componentsRoot(ctx), broken, 'refused-tree.txt'), 'kept');
+
+		await restartHarper(ctx);
+		const refused = await componentStatusOf(ctx, broken);
+		strictEqual(refused?.status, 'error', JSON.stringify(refused));
+		match(refused.latestMessage, /is not certified to run on this node, .*canary probe: broken at load/);
+		strictEqual(await answer(ctx, resourceName(broken)), 404, 'its resources are not served');
+		strictEqual(
+			await readFile(join(componentsRoot(ctx), broken, 'refused-tree.txt'), 'utf8').catch(() => undefined),
+			'kept',
+			'and its refused tree was not replaced by a fresh install'
+		);
+		await waitForServedVersion(ctx, project, 1);
 	});
 });
