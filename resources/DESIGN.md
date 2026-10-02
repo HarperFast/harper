@@ -778,7 +778,12 @@ Enforced by `unitTests/resources/localOnly.test.js` (both engines; crash + boot 
 
 ## `Table.put(record, { ifVersion })`: a per-write guarded commit, wrapped after the object literal (`Table.ts` `_writeUpdate`, harper#2983)
 
-`_writeUpdate` reads `context.ifVersion` once; when it is a number, `write.commit` is reassigned to
+`_writeUpdate` reads `context.ifVersion` once; when it is defined, it must be a finite number — a
+present-but-non-finite value (`null`, a string, `NaN`, `±Infinity`) throws synchronously rather
+than reaching the guard below, where `null` would otherwise pass `(existingEntry?.version ?? null)
+!== ifVersion` for a nonexistent row and silently create it, and `NaN`/`Infinity` would never equal
+a real stored version and reject every attempt forever. When it _is_ a finite number, `write.commit`
+is reassigned to
 a wrapper around the function the literal already built (`const plainCommit = write.commit;`) —
 not a named function hoisted out of the literal, which would reindent and lose blame on this
 file's most-edited closure. An ordinary write (`ifVersion` `undefined`) never reassigns
@@ -878,13 +883,17 @@ bears directly on the RocksDB-aborts-the-sibling claim two paragraphs up.
    shared prototype; a second file patching it after this one leaves whatever that file's own
    interposition assumed about transaction identity or attempt count out of sync.
 
-Neither reaches production today — `request.session.update()`, the only `ifVersion` caller, always
-opens a fresh, transaction-free context per call, so neither construction is reachable through it —
-but the two are not the same kind of problem, and only one of them is a harness artifact. Repro 2
-is: it patches a shared prototype (`Transaction.prototype.commit`) that a second test file also
-patches, and the fix is "don't do that across files", not a code change. Repro 1 is not a harness
-artifact: it patches nothing, runs a real `transaction()`, and the native commit really does abort
-along with the guard's rejection — but something tied to that transaction's read snapshot survives
-the abort regardless, and a later, unrelated snapshot trips over whatever that leaves open. The
-mechanism is unexplained; harper#2991 tracks it. `tableIfVersion.test.js`'s own regression test
-uses `getEntry` interception instead of either construction, which reproduces neither.
+Neither reaches production _through `request.session.update()`_ — the only shipped `ifVersion`
+caller, which always opens a fresh, transaction-free context per call — but that is not the same
+claim as "neither is reachable in production at all", and the two repros don't deserve the same
+answer here. Repro 2 (the monkey-patched `Transaction.prototype.commit`) is a pure harness
+artifact: no application code patches that prototype, so nothing resembling it can happen outside
+a test process. Repro 1 is different: `Table.put(record, { ifVersion })` is a general, any-caller
+option, not fenced to `request.session.update()`, so a direct caller building the exact shape this
+repro does — a guarded write and a sibling write sharing one explicit `transaction()` — reaches the
+same construction for real, in production, today. Whether it actually leaks there is the open
+question: the native commit does abort along with the guard's rejection, but something tied to
+that transaction's read snapshot survives the abort regardless, and a later, unrelated snapshot
+trips over whatever that leaves open. The mechanism is unexplained, not ruled out as a production
+risk; harper#2991 tracks it. `tableIfVersion.test.js`'s own regression test uses `getEntry`
+interception instead of either construction, which reproduces neither.

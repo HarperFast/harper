@@ -113,24 +113,42 @@ describe('Table.put ifVersion', () => {
 		assert.strictEqual(Rows.primaryStore.getEntry('never-existed'), undefined);
 	});
 
-	it('throws on a non-number ifVersion rather than silently writing unconditionally or matching anything', async () => {
+	it('rejects a non-number ifVersion rather than silently writing unconditionally or matching anything', async () => {
 		// A direct Table.put caller has no validation of its own (unlike request.session.update,
 		// which rejects a non-number ifVersion before it ever reaches here). Without this check,
 		// `null` would pass `(existingEntry?.version ?? null) !== ifVersion` for a row that doesn't
 		// exist yet (both sides are `null`) and silently create it — dropping the caller's condition
-		// instead of honoring or refusing it. A synchronous throw, like `#assertLiveHandle` above it
-		// in `_writeUpdate`, not a rejected promise: this check runs before anything is staged, so
-		// nothing async has started yet for a rejection to come from.
-		assert.throws(
-			() => Rows.put({ id: 'non-number-if-version', name: 'a' }, { ifVersion: null }),
+		// instead of honoring or refusing it. The check itself throws synchronously (like
+		// `#assertLiveHandle` above it in `_writeUpdate`), but whether a caller observes a throw or a
+		// rejection depends on how the id resolves above `_writeUpdate` (engine- and cache-state
+		// dependent, confirmed empirically to differ by engine for the same test id) — `async () =>`
+		// plus `assert.rejects` catches either, the same fix applied to the LMDB-only cases below.
+		await assert.rejects(
+			async () => Rows.put({ id: 'non-number-if-version', name: 'a' }, { ifVersion: null }),
 			(error) => error.statusCode === 400
 		);
 		assert.strictEqual(Rows.primaryStore.getEntry('non-number-if-version'), undefined, 'nothing was created');
 
-		assert.throws(
-			() => Rows.put({ id: 'non-number-if-version', name: 'a' }, { ifVersion: 'not-a-version' }),
+		await assert.rejects(
+			async () => Rows.put({ id: 'non-number-if-version', name: 'a' }, { ifVersion: 'not-a-version' }),
 			(error) => error.statusCode === 400
 		);
+	});
+
+	it('rejects NaN or Infinity rather than rejecting every attempt as an always-futile 409', async () => {
+		// typeof NaN === 'number' and typeof Infinity === 'number', so the check above this one
+		// (which only looked at typeof) would let both through — and neither ever equals a real
+		// stored version, so every attempt would reject as VERSION_CONFLICT forever, masking a bad
+		// caller input behind what looks like a legitimate, if unresolvable, conflict.
+		await assert.rejects(
+			async () => Rows.put({ id: 'nan-if-version', name: 'a' }, { ifVersion: NaN }),
+			(error) => error.statusCode === 400
+		);
+		await assert.rejects(
+			async () => Rows.put({ id: 'nan-if-version', name: 'a' }, { ifVersion: Infinity }),
+			(error) => error.statusCode === 400
+		);
+		assert.strictEqual(Rows.primaryStore.getEntry('nan-if-version'), undefined, 'nothing was created');
 	});
 
 	it('rejects a conditional write against a row that was deleted after the caller read it', async () => {
