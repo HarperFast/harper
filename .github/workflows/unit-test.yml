@@ -112,7 +112,7 @@ jobs:
       # core 4m50 -> 8m, indexes 2m50 -> 5m.
       - name: 'Unit tests: main'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
-        timeout-minutes: 4
+        timeout-minutes: 5
         run: npm run test:unit:main
 
       - name: 'Unit tests: apitests'
