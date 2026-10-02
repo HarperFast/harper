@@ -636,6 +636,34 @@ describe('the release certification gate', function () {
 		await rolledOut();
 	});
 
+	it('stops a silent start whose only release is already being decided, rather than leave it held', async () => {
+		plan([{ behavior: 'silent' }]);
+		const recording = Promise.withResolvers();
+		setCertificationHandler(
+			handler({
+				decide: async (certification, decision) => {
+					decisions.push({ component: certification.component, at: Date.now(), ...decision });
+					await recording.promise;
+					return decision;
+				},
+			})
+		);
+		const failing = Promise.reject(new Error('the reload failed'));
+		failing.catch(() => {});
+		rootLoad = failing;
+		await arm();
+		await commit();
+		// The rollout fails before any start is the release's canary, so it decides `interrupted`, whose record waits.
+		await waitFor(() => decisions.length === 1, { message: 'the rollout never decided' });
+		await pool[2].terminate();
+		const silent = await waitFor(() => started.find((worker) => !pool.includes(worker)), {
+			message: 'the crash restart never started',
+		});
+		await waitFor(() => silent.exitedAt, { timeout: 5000, message: 'the silent start was left held' });
+		recording.resolve();
+		await rolledOut();
+	});
+
 	it('refuses to withdraw a release once it is committed', async () => {
 		plan([{ outcome: 'loaded', delayMs: 300 }]);
 		await arm();

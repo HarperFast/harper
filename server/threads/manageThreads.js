@@ -833,6 +833,7 @@ function holdStart(worker, gated, startOptions) {
 		for (const certification of held.gated) {
 			if (
 				certification.decision ||
+				certification.deciding ||
 				held.startedWhileArmed.has(certification) ||
 				(certification.canary && certification.canary !== worker)
 			)
