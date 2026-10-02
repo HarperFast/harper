@@ -206,7 +206,10 @@ function startServers() {
 		.then((loadedGenerations) =>
 			require('../loadRootComponents.js')
 				.loadRootComponents(true)
-				.then(() => loadedGenerations)
+				.then(() => {
+					require('../../components/deployLifecycle.ts').deployLifecycle._componentsLoaded();
+					return loadedGenerations;
+				})
 		)
 		.then(async (loadedGenerations) => {
 			parentPort

@@ -13,7 +13,12 @@ let step;
 parentPort.on('message', (message) => {
 	// A deploy bracket pausing this worker's watchers: recorded for the suite, and acknowledged as a real worker does.
 	if (message?.type === 'harper:deploy:lifecycle') {
-		parentPort.postMessage({ type: 'fixture-lifecycle', phase: message.event?.phase, at: Date.now() });
+		parentPort.postMessage({
+			type: 'fixture-lifecycle',
+			phase: message.event?.phase,
+			watchersOnly: message.event?.watchersOnly,
+			at: Date.now(),
+		});
 		if (message.requestId) parentPort.postMessage({ type: 'ack', id: message.requestId });
 		return;
 	}

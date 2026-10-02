@@ -126,7 +126,7 @@ describe('the release certification gate', function () {
 				return decision;
 			},
 			complete: async (certification) => {
-				completions.push(certification.component);
+				completions.push({ component: certification.component, at: Date.now() });
 			},
 			resolveArmed: async () => 'withdrawn',
 			...overrides,
@@ -474,24 +474,27 @@ describe('the release certification gate', function () {
 	});
 
 	it("pauses the running workers' watchers from the commit until a certified rollout ends", async () => {
-		const { deployLifecycle } = require('#src/components/deployLifecycle');
 		plan([{ outcome: 'loaded', delayMs: 300 }]);
 		await arm();
 		await commit();
-		assert.ok(
-			pool.every((worker) => worker.lifecycle.map(({ phase }) => phase).join() === 'start'),
-			'every running worker paused before the commit answered'
-		);
-		assert.equal(deployLifecycle.loadsAwaitDeploy(COMPONENT), true);
-		await decisionOf();
-		assert.equal(deployLifecycle.loadsAwaitDeploy(COMPONENT), true, 'still paused once the canary decides');
+		for (const worker of pool) {
+			assert.deepStrictEqual(
+				worker.lifecycle.map(({ phase, watchersOnly }) => [phase, watchersOnly]),
+				[['start', true]],
+				'every running worker paused, holding no load, before the commit answered'
+			);
+		}
 		await rolledOut();
-		assert.equal(deployLifecycle.loadsAwaitDeploy(COMPONENT), false, 'and resumed once the rollout ends');
 		const replacements = started.filter((worker) => !pool.includes(worker));
-		assert.ok(
-			replacements.every((worker) => worker.lifecycle.every(({ phase }) => phase !== 'start')),
-			'a worker started on the release is never paused, and loads it'
-		);
+		await waitFor(() => replacements.some((worker) => worker.lifecycle.length > 0), {
+			message: 'the pause was never lifted',
+		});
+		for (const worker of replacements) {
+			assert.ok(
+				worker.lifecycle.every(({ phase, at }) => phase === 'end' && at >= completions[0].at),
+				'a worker started on the release is never paused, and hears the pause lifted only once the rollout ended'
+			);
+		}
 	});
 
 	it('resumes the watchers of the workers a refusal kept serving only after the predecessor is back', async () => {
@@ -508,7 +511,7 @@ describe('the release certification gate', function () {
 				worker.lifecycle.map(({ phase }) => phase),
 				['start', 'end']
 			);
-			assert.ok(worker.lifecycle[1].at >= decisions[0].at, 'resumed after the refusal was decided and restored');
+			assert.ok(worker.lifecycle[1].at >= completions[0].at, 'resumed once the refusal was decided and closed');
 		}
 	});
 

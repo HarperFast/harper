@@ -91,7 +91,10 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    before the commit answers, so before the requester's own bracket closes. It closes when the rollout completes,
    after any restore. The workers already running keep their watchers of the component paused through the hold:
    none reacts to a release its canary may refuse, and a refused one is back on disk before they resume. A worker
-   the rollout starts never saw the bracket, so it loads the release.
+   the rollout starts never saw the bracket, so it loads the release. The bracket holds watchers only
+   (`watchersOnly`): a thread still loading its components ignores it. Its load must not wait on a rollout that
+   can be waiting on it, which a canary still booting when another component's release commits would otherwise
+   do until its verdict timed out, since that other rollout queues behind the canary's.
    A requester that dies armed is resolved from the disk: committed when its release is live, withdrawn when it is
    not, and committed when the disk cannot say, so that a canary decides — one that loads the previous release
    rejects on its generation, and the restore finds that release already live. Restarts that start replacements are serialized
@@ -160,7 +163,9 @@ release could not be armed on the origin restarts as it did before.
 **What it does not cover.** The release is live on disk before its canary boots, so a worker the rollout has not
 reached that first imports a module during the hold reads it from the new release
 (`integrationTests/deploy/canary-rollout.test.ts` pins this). Its watchers are paused (step 3), so an import is
-the only way the release reaches it. Taking a node out of rotation for the rollout is harper#2975.
+the only way the release reaches it. Taking a node out of rotation for the rollout is harper#2975. A canary that
+takes worker index 0 also sets up that index's singletons (scheduled jobs, data loads, `sourcedFrom`
+subscriptions) while its predecessor still runs them, as any replacement that overlaps its predecessor does.
 
 ### Staging a build now and activating it later
 

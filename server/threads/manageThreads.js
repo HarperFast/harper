@@ -598,9 +598,9 @@ async function commitCertification(component, deploymentId) {
 	const certification = findCertification(component, deploymentId);
 	if (!certification || certification.phase !== 'armed') return false;
 	certification.phase = 'committed';
-	// Every thread already running stops watching the component until the rollout ends: the release on disk is not
-	// theirs to pick up while its canary decides, and a refused one is put back under them. Each has paused before this
-	// answers, so before the requester's own deploy bracket closes.
+	// Every thread that has loaded its components stops watching this one until the rollout ends: the release on disk
+	// is not theirs to pick up while its canary decides, and a refused one is put back under them. Each has paused
+	// before this answers, so before the requester's own deploy bracket closes.
 	certification.watchersPaused = await pauseWatchersOf(component);
 	certification.unarmed.resolve();
 	// A release goes live in place of the refused one, or that release is being certified again.
@@ -661,9 +661,9 @@ async function completeCertification(certification, outcome) {
 	startDeferredStarts(certification);
 }
 
-/** A deploy bracket of main's own (components/deployLifecycle.ts), which pauses every thread's watchers of a component. */
+/** A deploy bracket of main's own (components/deployLifecycle.ts) over a complete tree: it holds watchers, not loads. */
 function pauseWatchersOf(component) {
-	return require('../../components/deployLifecycle.ts').broadcastDeployStart(component);
+	return require('../../components/deployLifecycle.ts').broadcastDeployStart(component, { watchersOnly: true });
 }
 
 function resumeWatchersOf(component, bracket) {
