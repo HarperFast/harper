@@ -374,7 +374,7 @@ export async function authentication(request, nextHandler) {
 		}
 		if (ENABLE_SESSIONS) {
 			request.session.update = function (updatedSession, options?: { ifVersion: number }) {
-				let ifVersion: number;
+				let ifVersion: number | undefined;
 				if (options !== undefined) {
 					// A second argument always names `ifVersion` explicitly — there is no bare-number
 					// shorthand — so a present-but-unusable value (missing, undefined, non-finite) is a

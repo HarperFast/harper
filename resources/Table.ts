@@ -5318,7 +5318,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					// A resequenced RocksDB write can keep its predecessor's version while changing the
 					// record (VERSION_REUSED) — version equality then proves nothing about content.
-					if (existingEntry?.metadataFlags & VERSION_REUSED) {
+					if ((existingEntry?.metadataFlags ?? 0) & VERSION_REUSED) {
 						return Promise.reject(
 							new VersionConflictError(
 								tableName,
