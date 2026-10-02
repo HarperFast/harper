@@ -73,6 +73,7 @@ import {
 	UpdateAttributesLockTimeoutError,
 	LockUnavailableError,
 	VersionConflictError,
+	IF_VERSION,
 	appendErrorContext,
 	type ValidationIssue,
 } from '../utility/errors/hdbError.ts';
@@ -4434,17 +4435,18 @@ export function makeTable(options): TableResourceClass {
 		_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any) {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
-			// Read once: only `request.session.update(data, { ifVersion })` sets this today. See the
-			// `write.commit` guard below for how it stays free when unset. Checked and rejected here,
-			// not left to reach the guard below as-is: `context` is untyped, and `null` would pass
-			// `(existingEntry?.version ?? null) !== ifVersion` for a row that doesn't exist yet and
-			// create it — silently dropping the caller's condition rather than honoring or refusing
-			// it. `Number.isFinite`, not just `typeof === 'number'`: `NaN`/`Infinity` are typeof
-			// 'number' but would never equal a real stored version, turning every attempt into an
-			// always-fail 409 instead of a clear rejection of the bad input.
-			// `request.session.update()` already validates its own `ifVersion` before calling this,
-			// so this only guards a direct caller of `put`/`patch`/`update`.
-			const rawIfVersion = (context as any)?.ifVersion;
+			// Read once: only `request.session.update(data, { ifVersion })` sets this today, via
+			// `security/auth.ts` setting the module-private `IF_VERSION` symbol (see its definition
+			// in `hdbError.ts`) rather than a public string key — a plain `{ ifVersion }` object
+			// passed to `Table.put()` does not reach this at all. See the `write.commit` guard below
+			// for how it stays free when unset. Checked and rejected here, not left to reach the
+			// guard below as-is: `null` would pass `(existingEntry?.version ?? null) !== ifVersion`
+			// for a row that doesn't exist yet and create it — silently dropping the caller's
+			// condition rather than honoring or refusing it. `Number.isFinite`, not just
+			// `typeof === 'number'`: `NaN`/`Infinity` are typeof 'number' but would never equal a
+			// real stored version, turning every attempt into an always-fail 409 instead of a clear
+			// rejection of the bad input.
+			const rawIfVersion = (context as any)?.[IF_VERSION];
 			if (rawIfVersion !== undefined && !Number.isFinite(rawIfVersion)) {
 				throw new ClientError(`${tableName} ifVersion must be a finite number or undefined`, 400);
 			}

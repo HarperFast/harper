@@ -776,41 +776,48 @@ The row bit reflects its latest mutation, so a caller needing a row to stay loca
 mutation. Reload and derived-index `evict` markers are always local-only; lock control entries never are.
 Enforced by `unitTests/resources/localOnly.test.js` (both engines; crash + boot replay on RocksDB).
 
-## `Table.put(record, { ifVersion })`: a per-write guarded commit, wrapped after the object literal (`Table.ts` `_writeUpdate`, harper#2983)
+## `Table.put()`'s internal `IF_VERSION`-keyed guard: a per-write conditional commit, fenced to one caller (`Table.ts` `_writeUpdate`, harper#2983)
 
-`_writeUpdate` reads `context.ifVersion` once; when it is defined, it must be a finite number — a
-present-but-non-finite value (`null`, a string, `NaN`, `±Infinity`) throws synchronously rather
+`_writeUpdate` reads `context?.[IF_VERSION]` once — `IF_VERSION` is a module-private symbol
+(`utility/errors/hdbError.ts`, exported next to `VersionConflictError`), not a public `ifVersion`
+string option: a plain `Table.put(record, { ifVersion })` call does not reach this at all. Only
+`security/auth.ts` sets it (`putOptions[IF_VERSION] = ifVersion`, flowing through `applyContext`
+on the same object `request.session.update(data, { ifVersion })` built), fencing the guard to that
+one caller. Opening it to every `Table.put()` caller later — export the symbol, or add the public
+string key as an alias — is a one-line change; taking the capability back once a direct caller
+depends on it would not be, and the shared-transaction leak below is exactly the kind of risk a
+second caller shouldn't inherit silently. When the value is defined, it must be a finite number —
+a present-but-non-finite value (`null`, a string, `NaN`, `±Infinity`) throws synchronously rather
 than reaching the guard below, where `null` would otherwise pass `(existingEntry?.version ?? null)
 !== ifVersion` for a nonexistent row and silently create it, and `NaN`/`Infinity` would never equal
 a real stored version and reject every attempt forever. When it _is_ a finite number, `write.commit`
-is reassigned to
-a wrapper around the function the literal already built (`const plainCommit = write.commit;`) —
-not a named function hoisted out of the literal, which would reindent and lose blame on this
-file's most-edited closure. An ordinary write (`ifVersion` `undefined`) never reassigns
-`write.commit` at all: zero added branch, allocation, or retry cost. The guard compares the
-caller's expected version against `existingEntry.version`, the same value every retry of this
-write's commit already re-reads fresh on both engines (RocksDB via its native optimistic-
-transaction conflict detection, LMDB via `ifVersion`-chained conditional batching) — that shared
-re-read is what makes the compare atomic with the actual write — **on RocksDB**. RocksDB drains
-staged completions (including a rejected `VersionConflictError`) before the native commit and
-aborts the whole transaction if one rejects (`DatabaseTransaction.ts`'s pre-commit completion
-drain), so a sibling `Table.put()` in the same transaction is aborted along with the guarded write.
-**LMDB does not**: `write.commit` runs inside the conditional batch, and the batch's own writes
-land natively before the returned rejection is even joined (`LMDBTransaction.ts`), so a sibling
-`Table.put()` sharing the same `context`/`transaction` can land durably in the same native commit
-that this write's guard rejects. `request.session.update()` never hits this on either engine: it
-builds a fresh `{ expiresAt, ifVersion }` context with no request transaction, so its `Table.put()`
-call is always alone. Do not advertise or use `Table.put(record, { ifVersion })` from a
-shared/joined transaction on **either engine** right now, for two different, unrelated reasons.
-On LMDB: until that engine enforces the same all-or-nothing outcome RocksDB already does —
-enforcing it (reject a guarded write that joins a multi-write LMDB transaction, before staging) is
-cheap today and harder to retrofit once a caller depends on the unenforced contract; deferred
-rather than done here because the only shipped caller cannot reach it and the fix needs its own
-verification against a real multi-write LMDB transaction. On RocksDB: the all-or-nothing abort
-described in the paragraph above is real, but a shared transaction built around this guard was
-also observed to leak a read snapshot past that abort into later, unrelated test files — see the
-"test-harness repros" paragraphs below. That leak's cause is not yet understood, so the RocksDB
-restriction stands until it is.
+is reassigned to a wrapper around the function the literal already built
+(`const plainCommit = write.commit;`) — not a named function hoisted out of the literal, which
+would reindent and lose blame on this file's most-edited closure. An ordinary write (the symbol
+key unset) never reassigns `write.commit` at all: zero added branch, allocation, or retry cost.
+The guard compares the caller's expected version against `existingEntry.version`, the same value
+every retry of this write's commit already re-reads fresh on both engines (RocksDB via its native
+optimistic-transaction conflict detection, LMDB via `ifVersion`-chained conditional batching) —
+that shared re-read is what makes the compare atomic with the actual write — **on RocksDB**.
+RocksDB drains staged completions (including a rejected `VersionConflictError`) before the native
+commit and aborts the whole transaction if one rejects (`DatabaseTransaction.ts`'s pre-commit
+completion drain), so a sibling `Table.put()` in the same transaction is aborted along with the
+guarded write. **LMDB does not**: `write.commit` runs inside the conditional batch, and the
+batch's own writes land natively before the returned rejection is even joined
+(`LMDBTransaction.ts`), so a sibling `Table.put()` sharing the same `context`/`transaction` can
+land durably in the same native commit that this write's guard rejects. `request.session.update()`
+never hits this on either engine: it builds a fresh context with no request transaction, so its
+`Table.put()` call is always alone. Do not use this guard from a shared/joined transaction on
+**either engine** right now, for two different, unrelated reasons. On LMDB: until that engine
+enforces the same all-or-nothing outcome RocksDB already does — enforcing it (reject a guarded
+write that joins a multi-write LMDB transaction, before staging) is cheap today and harder to
+retrofit once a caller depends on the unenforced contract; deferred rather than done here because
+the only shipped caller cannot reach it and the fix needs its own verification against a real
+multi-write LMDB transaction. On RocksDB: the all-or-nothing abort described in the paragraph
+above is real, but a shared transaction built around this guard was also observed to leak a read
+snapshot past that abort into later, unrelated test files — see the "test-harness repros"
+paragraphs below. That leak's cause is not yet understood, so the RocksDB restriction stands until
+it is — and is the reason this guard stays symbol-fenced rather than becoming a public option.
 
 Three cases fail closed instead of comparing on an unproven or ambiguous base, and are
 **not retryable** (`VersionConflictError`'s `retryable` argument, passed explicitly at each call
@@ -842,18 +849,19 @@ promise rejection, depending on how much of the chain above resolved synchronous
 still live, so logging it (an uncaught rejection is logged by the server) would hand out a
 replayable cookie.
 
-`context.ifVersion` is a property of the shared write `context`, not a per-call argument scoped to
-one record — every write that reuses that `context` inherits the same expected version. Changing
+`context?.[IF_VERSION]` is a property of the shared write `context`, not a per-call argument scoped
+to one record — every write that reuses that `context` inherits the same expected version. Changing
 that later (to a per-write option independent of `context`) would be a breaking change for any
 caller depending on it; `request.session.update()`'s fresh-context-per-call usage does not depend
 on it, so this is free to revisit before a second caller exists. `request.session.version` is a
 snapshot from the request's own read and is not updated after a successful `update()` — a second
 conditional write in the same request needs its own re-read, not the first call's held version.
 
-Session-table use (`security/auth.ts`, `request.session.update(data, { ifVersion })`) is the only
-caller today; nothing else threads `context.ifVersion`. Enforced by
-`unitTests/resources/tableIfVersion.test.js` (both engines, including a RocksDB-only
-`VERSION_REUSED` case) and `unitTests/security/sessionUpdateIfVersion.test.js`.
+Session-table use (`security/auth.ts`, `request.session.update(data, { ifVersion })`, translating
+to `putOptions[IF_VERSION]`) is the only caller today; nothing else imports or sets `IF_VERSION`.
+Enforced by `unitTests/resources/tableIfVersion.test.js` (both engines, including a RocksDB-only
+`VERSION_REUSED` case, using the real `IF_VERSION` symbol imported the same way `Table.ts` does —
+see that file's own note on why) and `unitTests/security/sessionUpdateIfVersion.test.js`.
 
 Two attempts to exercise this guard's per-attempt re-read against a genuine concurrent writer,
 rather than `tableIfVersion.test.js`'s `getEntry` interception, both corrupted state outside their
@@ -883,17 +891,16 @@ bears directly on the RocksDB-aborts-the-sibling claim two paragraphs up.
    shared prototype; a second file patching it after this one leaves whatever that file's own
    interposition assumed about transaction identity or attempt count out of sync.
 
-Neither reaches production _through `request.session.update()`_ — the only shipped `ifVersion`
-caller, which always opens a fresh, transaction-free context per call — but that is not the same
-claim as "neither is reachable in production at all", and the two repros don't deserve the same
-answer here. Repro 2 (the monkey-patched `Transaction.prototype.commit`) is a pure harness
-artifact: no application code patches that prototype, so nothing resembling it can happen outside
-a test process. Repro 1 is different: `Table.put(record, { ifVersion })` is a general, any-caller
-option, not fenced to `request.session.update()`, so a direct caller building the exact shape this
-repro does — a guarded write and a sibling write sharing one explicit `transaction()` — reaches the
-same construction for real, in production, today. Whether it actually leaks there is the open
-question: the native commit does abort along with the guard's rejection, but something tied to
-that transaction's read snapshot survives the abort regardless, and a later, unrelated snapshot
-trips over whatever that leaves open. The mechanism is unexplained, not ruled out as a production
-risk; harper#2991 tracks it. `tableIfVersion.test.js`'s own regression test uses `getEntry`
-interception instead of either construction, which reproduces neither.
+Neither reaches production today. Repro 2 (the monkey-patched `Transaction.prototype.commit`) is a
+pure harness artifact regardless of who can set `IF_VERSION`: no application code patches that
+prototype, so nothing resembling it can happen outside a test process. Repro 1 is different in
+kind — it patches nothing and runs a real `transaction()` — but it's unreachable for a narrower
+reason: `IF_VERSION` is a module-private symbol (`utility/errors/hdbError.ts`), not a public
+`ifVersion` string option, so the only code that can set it is `security/auth.ts`, and that code
+never shares a transaction. A future caller that imports `IF_VERSION` directly and does share one
+would reach repro 1's exact shape, and whether it actually leaks there is still an open question:
+the native commit does abort along with the guard's rejection, but something tied to that
+transaction's read snapshot survives the abort regardless, and a later, unrelated snapshot trips
+over whatever that leaves open. The mechanism is unexplained, not ruled out as a risk for whatever
+reaches it next; harper#2991 tracks it. `tableIfVersion.test.js`'s own regression test uses
+`getEntry` interception instead of either construction, which reproduces neither.

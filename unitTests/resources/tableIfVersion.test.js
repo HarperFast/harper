@@ -3,10 +3,13 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-// Checked by `.code`/`.statusCode`, not `instanceof VersionConflictError`: `require('#src/...')`
-// resolves to the compiled `dist/` build outside the `typestrip` condition (see package.json
-// `imports`), a *different* module instance than `resources/Table.ts`'s own relative `.ts` import
-// of this class, so `instanceof` would never match the error it actually throws.
+// `#src/...` (not a relative `.ts` import) for both of these: resolves to the compiled `dist/`
+// build outside the `typestrip` condition (see package.json `imports`), the same module instance
+// `resources/Table.ts` itself loads through `#src/resources/databases` above. IF_VERSION must be
+// *this* instance's symbol — a relative import would construct a different `Symbol('ifVersion')`
+// that `context?.[IF_VERSION]` in Table.ts would never match. VersionConflictError is checked by
+// `.code`/`.statusCode` instead of `instanceof` for the same reason.
+const { IF_VERSION } = require('#src/utility/errors/hdbError');
 // Arrow function, not a `function` declaration: assert.rejects distinguishes a validation
 // function from a constructor by whether it has a `.prototype`, and only an arrow function lacks
 // one — a plain `function` here would be used as an (always-failing) `instanceof` check instead.
@@ -19,12 +22,14 @@ const assertVersionConflict =
 		return true;
 	};
 
-// HarperFast/harper#2983: `Table.put(record, { ifVersion })` guards a write on the record's current
-// version, matching every platform's primary-store engine (default run is RocksDB; the lmdb variant
-// of this suite runs the same assertions via HARPER_STORAGE_ENGINE=lmdb) rather than an LMDB-only
-// primitive. On a mismatch nothing is written and the caller gets a distinct, catchable
-// VersionConflictError rather than a storage failure. No `ifVersion` option keeps today's behavior.
-describe('Table.put ifVersion', () => {
+// HarperFast/harper#2983: `Table.put()`'s internal, `IF_VERSION`-symbol-keyed guard conditions a
+// write on the record's current version, matching every platform's primary-store engine (default
+// run is RocksDB; the lmdb variant of this suite runs the same assertions via
+// HARPER_STORAGE_ENGINE=lmdb) rather than an LMDB-only primitive. On a mismatch nothing is written
+// and the caller gets a distinct, catchable VersionConflictError rather than a storage failure. No
+// `IF_VERSION` key keeps today's behavior. The symbol — not a public `ifVersion` string option —
+// fences this to `request.session.update()`; see `IF_VERSION`'s definition in `hdbError.ts`.
+describe('Table.put ifVersion (internal IF_VERSION symbol)', () => {
 	let Rows;
 
 	before(function () {
@@ -50,7 +55,7 @@ describe('Table.put ifVersion', () => {
 		await Rows.put({ id: 'match', name: 'a' });
 		const version = Rows.primaryStore.getEntry('match').version;
 
-		await Rows.put({ id: 'match', name: 'b' }, { ifVersion: version });
+		await Rows.put({ id: 'match', name: 'b' }, { [IF_VERSION]: version });
 
 		const entry = Rows.primaryStore.getEntry('match');
 		assert.strictEqual(entry.value.name, 'b', 'the matched write landed');
@@ -61,7 +66,10 @@ describe('Table.put ifVersion', () => {
 		await Rows.put({ id: 'mismatch', name: 'a' });
 		const staleVersion = Rows.primaryStore.getEntry('mismatch').version - 1000;
 
-		await assert.rejects(Rows.put({ id: 'mismatch', name: 'b' }, { ifVersion: staleVersion }), assertVersionConflict());
+		await assert.rejects(
+			Rows.put({ id: 'mismatch', name: 'b' }, { [IF_VERSION]: staleVersion }),
+			assertVersionConflict()
+		);
 
 		const entry = Rows.primaryStore.getEntry('mismatch');
 		assert.strictEqual(entry.value.name, 'a', 'the rejected write left the record unchanged');
@@ -100,7 +108,7 @@ describe('Table.put ifVersion', () => {
 			return { ...real, version: real.version + 1000 };
 		};
 		try {
-			await assert.rejects(Rows.put({ id, name: 'guarded' }, { ifVersion: entry.version }), assertVersionConflict());
+			await assert.rejects(Rows.put({ id, name: 'guarded' }, { [IF_VERSION]: entry.version }), assertVersionConflict());
 		} finally {
 			Rows.primaryStore.getEntry = getEntry;
 		}
@@ -109,7 +117,10 @@ describe('Table.put ifVersion', () => {
 	});
 
 	it('rejects a conditional write against a row that does not exist', async () => {
-		await assert.rejects(Rows.put({ id: 'never-existed', name: 'a' }, { ifVersion: 12345 }), assertVersionConflict());
+		await assert.rejects(
+			Rows.put({ id: 'never-existed', name: 'a' }, { [IF_VERSION]: 12345 }),
+			assertVersionConflict()
+		);
 		assert.strictEqual(Rows.primaryStore.getEntry('never-existed'), undefined);
 	});
 
@@ -124,13 +135,13 @@ describe('Table.put ifVersion', () => {
 		// dependent, confirmed empirically to differ by engine for the same test id) — `async () =>`
 		// plus `assert.rejects` catches either, the same fix applied to the LMDB-only cases below.
 		await assert.rejects(
-			async () => Rows.put({ id: 'non-number-if-version', name: 'a' }, { ifVersion: null }),
+			async () => Rows.put({ id: 'non-number-if-version', name: 'a' }, { [IF_VERSION]: null }),
 			(error) => error.statusCode === 400
 		);
 		assert.strictEqual(Rows.primaryStore.getEntry('non-number-if-version'), undefined, 'nothing was created');
 
 		await assert.rejects(
-			async () => Rows.put({ id: 'non-number-if-version', name: 'a' }, { ifVersion: 'not-a-version' }),
+			async () => Rows.put({ id: 'non-number-if-version', name: 'a' }, { [IF_VERSION]: 'not-a-version' }),
 			(error) => error.statusCode === 400
 		);
 	});
@@ -141,11 +152,11 @@ describe('Table.put ifVersion', () => {
 		// stored version, so every attempt would reject as VERSION_CONFLICT forever, masking a bad
 		// caller input behind what looks like a legitimate, if unresolvable, conflict.
 		await assert.rejects(
-			async () => Rows.put({ id: 'nan-if-version', name: 'a' }, { ifVersion: NaN }),
+			async () => Rows.put({ id: 'nan-if-version', name: 'a' }, { [IF_VERSION]: NaN }),
 			(error) => error.statusCode === 400
 		);
 		await assert.rejects(
-			async () => Rows.put({ id: 'nan-if-version', name: 'a' }, { ifVersion: Infinity }),
+			async () => Rows.put({ id: 'nan-if-version', name: 'a' }, { [IF_VERSION]: Infinity }),
 			(error) => error.statusCode === 400
 		);
 		assert.strictEqual(Rows.primaryStore.getEntry('nan-if-version'), undefined, 'nothing was created');
@@ -156,7 +167,7 @@ describe('Table.put ifVersion', () => {
 		const version = Rows.primaryStore.getEntry('deleted').version;
 		await Rows.delete('deleted');
 
-		await assert.rejects(Rows.put({ id: 'deleted', name: 'b' }, { ifVersion: version }), assertVersionConflict());
+		await assert.rejects(Rows.put({ id: 'deleted', name: 'b' }, { [IF_VERSION]: version }), assertVersionConflict());
 		// A delete leaves a tombstone entry (value: null) rather than no entry at all.
 		assert.strictEqual(Rows.primaryStore.getEntry('deleted')?.value ?? null, null, 'the row stays deleted');
 	});
@@ -165,9 +176,9 @@ describe('Table.put ifVersion', () => {
 		await Rows.put({ id: 'sequential', name: 'a' });
 		const version = Rows.primaryStore.getEntry('sequential').version;
 
-		await Rows.put({ id: 'sequential', name: 'b' }, { ifVersion: version });
+		await Rows.put({ id: 'sequential', name: 'b' }, { [IF_VERSION]: version });
 		// Reusing the same (now stale) expected version a second time must reject, not silently re-apply.
-		await assert.rejects(Rows.put({ id: 'sequential', name: 'c' }, { ifVersion: version }), assertVersionConflict());
+		await assert.rejects(Rows.put({ id: 'sequential', name: 'c' }, { [IF_VERSION]: version }), assertVersionConflict());
 
 		assert.strictEqual(Rows.primaryStore.getEntry('sequential').value.name, 'b');
 	});
@@ -184,7 +195,7 @@ describe('Table.put ifVersion', () => {
 		// guard, merge onto 'newer' and report success while 'attempted' never actually lands. Not
 		// retryable: a fresh read sees the same future version until real time catches up to it.
 		await assert.rejects(
-			Rows.put({ id: 'future', name: 'attempted' }, { ifVersion: futureVersion }),
+			Rows.put({ id: 'future', name: 'attempted' }, { [IF_VERSION]: futureVersion }),
 			assertVersionConflict(false)
 		);
 		assert.strictEqual(Rows.primaryStore.getEntry('future').value.name, 'newer', "the caller's value never landed");
@@ -203,7 +214,7 @@ describe('Table.put ifVersion', () => {
 		assert.ok(entry.metadataFlags & VERSION_REUSED, 'the record carries a reused version');
 
 		await assert.rejects(
-			Rows.put({ id: 'reused', name: 'c' }, { ifVersion: entry.version }),
+			Rows.put({ id: 'reused', name: 'c' }, { [IF_VERSION]: entry.version }),
 			assertVersionConflict(false)
 		);
 		// A fresh re-read still sees the same (reused) version: retrying with it is futile, not transient.

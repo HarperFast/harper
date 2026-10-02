@@ -19,7 +19,7 @@ import {
 	markAuthenticationRejectedInPlace,
 } from './deferredAuthentication.ts';
 import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
-import { hdbErrors, ClientError } from '../utility/errors/hdbError.ts';
+import { hdbErrors, ClientError, IF_VERSION } from '../utility/errors/hdbError.ts';
 const { AUTHENTICATION_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 const authLogger = forComponent('authentication');
 const { debug } = authLogger;
@@ -444,10 +444,13 @@ export async function authentication(request, nextHandler) {
 					}
 				};
 				updatedSession.id = sessionId;
-				const putOptions: { expiresAt?: number; ifVersion?: number } = {
+				// Keyed by the module-private IF_VERSION symbol, not a public `ifVersion` string
+				// property: see its definition in `hdbError.ts` for why `Table.put(record, { ifVersion })`
+				// stays fenced to this one caller rather than becoming a general option.
+				const putOptions: { expiresAt?: number; [IF_VERSION]?: number } = {
 					expiresAt: expires ? Date.now() + convertToMS(expires) : undefined,
 				};
-				if (ifVersion !== undefined) putOptions.ifVersion = ifVersion;
+				if (ifVersion !== undefined) putOptions[IF_VERSION] = ifVersion;
 				const putResult = getSessionTable().put(updatedSession, putOptions);
 				if (ifVersion === undefined) {
 					markSessionUpdated();

@@ -200,6 +200,18 @@ export class LockUnavailableError extends ServerError {
 }
 
 /**
+ * Keys the conditional-write guard's context property (`Table.ts` `_writeUpdate` reads
+ * `context?.[IF_VERSION]`). A module-private symbol, not the public string `ifVersion` the
+ * `request.session.update(data, { ifVersion })` API takes: `security/auth.ts` is the only place
+ * that translates one into the other, so `Table.put(record, { ifVersion })` isn't a general,
+ * any-caller option yet — the only shipped caller doesn't need it to be, and the shared-transaction
+ * leak this guard can hit (harper#2991) is unexplained. Exporting the symbol instead of just the
+ * field name is a one-line change to open later; taking the string key back once a caller depends
+ * on it would not be.
+ */
+export const IF_VERSION: unique symbol = Symbol('ifVersion');
+
+/**
  * A conditional write (`Table.put()`'s internal `ifVersion` guard, used by
  * `request.session.update(data, { ifVersion })`) found the record's version did not match the
  * caller's expectation at commit time — the record changed, is missing, or the compare-and-write
