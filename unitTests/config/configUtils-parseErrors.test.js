@@ -14,7 +14,7 @@ const BACKFILLED_KEY_PATHS = [['storage', 'path'], ['logging', 'rotation', 'path
 function safeParseError(configFilePath) {
 	return (error) => {
 		assert.strictEqual(error.statusCode, 500);
-		assert.match(error.message, /Error parsing .*YAMLParseError/);
+		assert.match(error.message, /Error parsing .*: YAMLParseError [A-Z_]+ at line \d+, column \d+/);
 		assert.ok(error.message.includes(configFilePath), 'names the config file');
 		assert.match(error.message, /line \d+, column \d+/, 'locates the parse error');
 		assert.ok(!error.message.includes('config-secret-sentinel'), 'does not include config source text');
