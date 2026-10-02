@@ -31,21 +31,28 @@ if (!workerData.certify) {
 } else {
 	const plan = JSON.parse(readFileSync(planPath, 'utf8'));
 	appendFileSync(`${planPath}.starts`, `${threadId}\n`);
-	const turn = readFileSync(`${planPath}.starts`, 'utf8').trim().split('\n').length - 1;
-	step = plan.sequence[Math.min(turn, plan.sequence.length - 1)];
+	// Thread ids follow start order, which boot order need not: two starts released together boot in either order, so
+	// a turn is this worker's place among the ids recorded once a concurrent start has had time to record its own.
 	setTimeout(() => {
-		if (step.behavior === 'exit') process.exit(3);
-		if (step.behavior === 'silent') return;
-		parentPort.postMessage({
-			type: ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT,
-			components: workerData.certify.map(({ component, deploymentId }) => ({
-				component,
-				outcome: step.outcome,
-				failures:
-					step.outcome === 'failed' ? [{ key: `${component}.rest`, name: 'Error', message: 'threw at load' }] : [],
-				loadedDeploymentId: step.loadedDeploymentId ?? deploymentId,
-				reportedDeploymentId: step.loadedDeploymentId ?? deploymentId,
-			})),
-		});
-	}, step.delayMs ?? 0);
+		const started = readFileSync(`${planPath}.starts`, 'utf8').trim().split('\n').map(Number);
+		const turn = started.sort((a, b) => a - b).indexOf(threadId);
+		step = plan.sequence[Math.min(turn, plan.sequence.length - 1)];
+		setTimeout(report, step.delayMs ?? 0);
+	}, 250);
+}
+
+function report() {
+	if (step.behavior === 'exit') process.exit(3);
+	if (step.behavior === 'silent') return;
+	parentPort.postMessage({
+		type: ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT,
+		components: workerData.certify.map(({ component, deploymentId }) => ({
+			component,
+			outcome: step.outcome,
+			failures:
+				step.outcome === 'failed' ? [{ key: `${component}.rest`, name: 'Error', message: 'threw at load' }] : [],
+			loadedDeploymentId: step.loadedDeploymentId ?? deploymentId,
+			reportedDeploymentId: step.loadedDeploymentId ?? deploymentId,
+		})),
+	});
 }

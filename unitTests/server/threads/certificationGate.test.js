@@ -139,6 +139,17 @@ describe('the release certification gate', function () {
 		pool = [keep];
 	}
 
+	/** Two workers die while a release is armed, so both restarts are held back; the requester's death commits. */
+	async function holdBackTwoStarts() {
+		const [requester, other, spare] = pool;
+		spare.wasShutdown = true;
+		await spare.terminate();
+		pool = [requester, other];
+		await arm({ requesterThreadId: requester.threadId });
+		await other.terminate();
+		await requester.terminate();
+	}
+
 	beforeEach(async () => {
 		decisions = [];
 		completions = [];
@@ -328,15 +339,8 @@ describe('the release certification gate', function () {
 
 	it('admits a held start only on its own load, even once the canary certified the release', async () => {
 		setCertificationHandler(handler({ resolveArmed: async () => 'committed' }));
-		const [requester, other, spare] = pool;
-		spare.wasShutdown = true;
-		await spare.terminate();
-		pool = [requester, other];
 		plan([{ outcome: 'loaded' }, { outcome: 'failed' }]);
-		await arm({ requesterThreadId: requester.threadId });
-		// Both die while the release is armed, so both restarts are held back; the requester's death commits.
-		await other.terminate();
-		await requester.terminate();
+		await holdBackTwoStarts();
 		await rolledOut();
 		assert.deepStrictEqual(
 			decisions.map(({ status }) => status),
@@ -348,6 +352,49 @@ describe('the release certification gate', function () {
 		});
 		assert.equal(held[0].admitted, true, 'the canary is admitted');
 		assert.equal(held[1].admitted, undefined, 'a start whose own load failed is not');
+	});
+
+	it('stops a held start that never reports, whichever decision it was waiting on', async () => {
+		setCertificationHandler(handler({ resolveArmed: async () => 'committed' }));
+		plan([{ outcome: 'loaded' }, { behavior: 'silent' }]);
+		await holdBackTwoStarts();
+		await rolledOut();
+		assert.deepStrictEqual(
+			decisions.map(({ status }) => status),
+			['certified']
+		);
+		const held = started.filter((worker) => worker.certifyRequests[0]);
+		await waitFor(() => held[1]?.exitedAt, { timeout: 10000, message: 'the silent held start was never stopped' });
+		assert.equal(held[0].admitted, true);
+		await waitFor(() => started.some((worker) => worker.certifyRequests[0] === null && !pool.includes(worker)), {
+			message: 'its slot was not started again',
+		});
+	});
+
+	it('stops every held start before it restores for a certification it cannot record', async () => {
+		setCertificationHandler(
+			handler({
+				resolveArmed: async () => 'committed',
+				decide: async (certification, decision) => {
+					decisions.push({ component: certification.component, at: Date.now(), ...decision });
+					if (decision.status === 'certified') throw new Error('ENOSPC: no space left on device');
+					return decision;
+				},
+			})
+		);
+		plan([{ outcome: 'loaded' }, { behavior: 'silent', shutdownDelayMs: 300 }]);
+		await holdBackTwoStarts();
+		await rolledOut();
+		assert.deepStrictEqual(
+			decisions.map(({ status }) => status),
+			['certified', 'interrupted']
+		);
+		const held = started.filter((worker) => worker.certifyRequests[0]);
+		assert.equal(held.length, 2);
+		for (const worker of held) {
+			assert.ok(worker.exitedAt && worker.exitedAt <= decisions[1].at, 'it exited before the restore was decided');
+			assert.equal(worker.admitted, undefined);
+		}
 	});
 
 	it('interrupts a certification it cannot record, and restores instead of rolling out', async () => {

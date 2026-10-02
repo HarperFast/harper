@@ -83,7 +83,9 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    predecessor the swap displaces (`previous`, which step 5 keeps under its own id) and the process
    incarnation. A pending or certified record of this incarnation fences every other preparation of the
    component, `drop_component` included (409 "being certified"); an activation of the same id joins the
-   decision instead. A record a dead incarnation left fences nothing.
+   decision instead. A record a dead incarnation left fences nothing. Removing a record retries the transient
+   refusals a Windows scanner causes; one that still cannot be removed keeps fencing until Harper restarts, and
+   the log says so.
 3. **Commit, after the swap.** Main starts the rollout, and drops any in-memory refusal of the component (below).
    A requester that dies armed is resolved from the disk: committed when its release is live, withdrawn when it is
    not, and committed when the disk cannot say, so that a canary decides — one that loads the previous release
@@ -102,8 +104,8 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    rollout goes on unchecked, as every restart did before. Replacing nothing is not a verdict: a rollout that found no
    worker to replace — the only one died between the swap and the commit — has the start it held back load the
    release instead.
-5. **Decide.** A rejected or timed-out canary is stopped first, so a restore never races a worker still holding
-   the release. `certified` is written durably. A rejection is written
+5. **Decide.** Before a release is refused, every held start loading it is stopped, the canary and any other, so a
+   restore never races a worker still holding the release. `certified` is written durably. A rejection is written
    `rejected` before anything moves; then step 6 activates the predecessor, only while the rejected release is
    still the live one (`onlyIfLive`), and the record is removed once it is. With no predecessor (a first
    deploy), or a restore that did not land, the release stays live and FAILS CLOSED: every thread's loader
@@ -118,7 +120,8 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    decision.
 6. **Roll out.** Every later replacement is held too, and admitted only once its own load of the release
    reports `loaded`, as is any start held while the canary was deciding: the canary's verdict certifies the
-   release, not another worker's load of it. A later failure keeps the old worker and every worker after it, stops the rollout, and
+   release, not another worker's load of it. A held start that reports nothing within the verdict timeout is
+   stopped, whatever it was waiting on. A later failure keeps the old worker and every worker after it, stops the rollout, and
    restores nothing: the canary proved the release can load. A rejection ends the rollout wherever it was
    decided. A crash restart during an undecided canary waits for the decision; a held start the gate stopped
    that no restart owns (a crash restart that became the canary) is started again once the decision is made,

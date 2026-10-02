@@ -91,7 +91,8 @@ export async function writeCertificationRecord(
 
 export async function removeCertificationRecord(componentsRootDirPath: string, deploymentId: string): Promise<void> {
 	const recordPath = certificationRecordPath(componentsRootDirPath, deploymentId);
-	await rm(recordPath, { force: true });
+	// A record left behind fences its component, and a scanner holding the file briefly refuses its removal on Windows.
+	await rm(recordPath, { force: true, maxRetries: 5, retryDelay: 100 });
 	await syncDirectory(dirname(recordPath));
 }
 

@@ -645,7 +645,11 @@ async function completeCertification(certification, outcome) {
 	try {
 		await certificationHandler?.complete?.(certification);
 	} catch (error) {
-		harperLogger.error(`Could not close the certification of ${certification.component}`, error);
+		harperLogger.error(
+			`Could not close the certification of ${certification.component}; until its record in deployment ` +
+				`${certification.deploymentId} is removed, or Harper restarts, this node refuses other deploys of it`,
+			error
+		);
 	}
 	if (certifications.get(certification.component) === certification) certifications.delete(certification.component);
 	certification.rolledOut.resolve(outcome);
@@ -686,13 +690,12 @@ function verdictDecision(certification, components) {
 async function decideCertification(certification, decision, canary) {
 	if (certification.decision || certification.deciding) return;
 	certification.deciding = true;
-	if (canary) await stopHeldStart(canary);
+	if (refusesRelease(decision)) await stopHeldStartsOf(certification, canary);
 	let settled = await recordDecision(certification, decision);
 	if (settled.status === 'certified' && settled.recordError) {
 		// A certification this node could not make durable is none: its record still reads undecided, and the next boot
 		// would put the predecessor back under a release that had gone on serving.
-		const held = [...heldStarts].find((candidate) => candidate.worker === certification.canary);
-		if (held) await stopHeldStart(held);
+		await stopHeldStartsOf(certification);
 		settled = await recordDecision(certification, {
 			status: 'interrupted',
 			reason: `its certification could not be recorded: ${settled.recordError}`,
@@ -702,6 +705,13 @@ async function decideCertification(certification, decision, canary) {
 	certification.decided.resolve(settled);
 	settleHeldStarts();
 	startDeferredStarts(certification);
+}
+
+/** Every held start loading a release about to be refused stops first, so no restore runs under one still holding it. */
+function stopHeldStartsOf(certification, canary) {
+	const stopping = [...heldStarts].filter((held) => held.gated.includes(certification));
+	if (canary && heldStarts.has(canary) && !stopping.includes(canary)) stopping.push(canary);
+	return Promise.all(stopping.map(stopHeldStart));
 }
 
 async function recordDecision(certification, decision) {
@@ -800,7 +810,8 @@ function holdStart(worker, gated, startOptions) {
 			canaryFor = true;
 			void decideCertification(certification, { status: 'rejected', reason }, held);
 		}
-		if (!canaryFor && held.checks.length) void stopHeldStart(held);
+		// Not admitted without a report, whichever decision it waited on: nothing else would end it.
+		if (!canaryFor) void stopHeldStart(held);
 	}, canaryVerdictTimeoutMs()).unref();
 	return held;
 }
