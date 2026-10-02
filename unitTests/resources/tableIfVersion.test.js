@@ -4,11 +4,14 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 // `#src/...` (not a relative `.ts` import) for both of these: resolves to the compiled `dist/`
-// build outside the `typestrip` condition (see package.json `imports`), the same module instance
-// `resources/Table.ts` itself loads through `#src/resources/databases` above. IF_VERSION must be
-// *this* instance's symbol — a relative import would construct a different `Symbol('ifVersion')`
-// that `context?.[IF_VERSION]` in Table.ts would never match. VersionConflictError is checked by
-// `.code`/`.statusCode` instead of `instanceof` for the same reason.
+// build outside the `typestrip` condition (see package.json `imports`) — the same module graph
+// `resources/Table.ts` loads through when IT requires `#src/...`, via `#src/resources/databases`
+// above. Getting `IF_VERSION` through that same graph matters because a symbol is only equal to
+// itself: a relative `.ts` import here would construct a *different* `Symbol('ifVersion')` that
+// `context?.[IF_VERSION]` in Table.ts would never match. `VersionConflictError`, by contrast, is
+// never compared for equality — it's checked by `.code`/`.statusCode`, not `instanceof`, because
+// its *constructor* could still differ by module instance even via this same `#src/` path (see
+// that check's own comment below for why that's a real risk `instanceof` can't tolerate).
 const { IF_VERSION } = require('#src/utility/errors/hdbError');
 // Arrow function, not a `function` declaration: assert.rejects distinguishes a validation
 // function from a constructor by whether it has a `.prototype`, and only an arrow function lacks
