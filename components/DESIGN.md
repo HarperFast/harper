@@ -111,12 +111,14 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    on. When even the record write fails, main refuses it in memory, bound to that deployment id so a later release
    loads, and the record stays `pending` for the next boot to settle. The origin's deploy fails with the
    decision in `certification` (`status`, `reason`, `failures`, `restored`, `failed_closed`), and nothing was
-   replicated. An `interrupted` certification — the process shutting down, or a rollout that failed before any
-   canary decided — is restored exactly as a rejection is, which is also what the next boot does with a record
-   left pending: an undecided release never stays live. The `load` progress phase spans the wait for the
+   replicated. An `interrupted` certification — the process shutting down, a rollout that failed before any
+   canary decided, or a `certified` decision whose record could not be written — is restored exactly as a
+   rejection is, which is also what the next boot does with a record left pending: an undecided release never
+   stays live. The `load` progress phase spans the wait for the
    decision.
 6. **Roll out.** Every later replacement is held too, and admitted only once its own load of the release
-   reports `loaded`. A later failure keeps the old worker and every worker after it, stops the rollout, and
+   reports `loaded`, as is any start held while the canary was deciding: the canary's verdict certifies the
+   release, not another worker's load of it. A later failure keeps the old worker and every worker after it, stops the rollout, and
    restores nothing: the canary proved the release can load. A rejection ends the rollout wherever it was
    decided. A crash restart during an undecided canary waits for the decision; a held start the gate stopped
    that no restart owns (a crash restart that became the canary) is started again once the decision is made,

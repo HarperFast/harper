@@ -14,6 +14,7 @@ parentPort.on('message', (message) => {
 	if (message?.type === ITC_EVENT_TYPES.SHUTDOWN) setTimeout(() => process.exit(0), step?.shutdownDelayMs ?? 20);
 	else if (message?.type === ITC_EVENT_TYPES.CHILD_ADMITTED) {
 		if (step?.afterAdmission === 'exit') process.exit(4);
+		parentPort.postMessage({ type: 'fixture-admitted' });
 		parentPort.postMessage({ type: ITC_EVENT_TYPES.CHILD_STARTED });
 	}
 });

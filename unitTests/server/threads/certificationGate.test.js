@@ -50,6 +50,7 @@ describe('the release certification gate', function () {
 					started.push(worker);
 					worker.certifyRequests = [];
 					worker.on('message', (message) => {
+						if (message?.type === 'fixture-admitted') worker.admitted = true;
 						if (message?.type !== 'fixture-booted') return;
 						worker.certifyRequests.push(message.certify);
 						worker.failClosed = message.failClosed;
@@ -324,6 +325,58 @@ describe('the release certification gate', function () {
 			assert.deepStrictEqual(later[1].certifyRequests, [null]);
 		});
 	}
+
+	it('admits a held start only on its own load, even once the canary certified the release', async () => {
+		setCertificationHandler(handler({ resolveArmed: async () => 'committed' }));
+		const [requester, other, spare] = pool;
+		spare.wasShutdown = true;
+		await spare.terminate();
+		pool = [requester, other];
+		plan([{ outcome: 'loaded' }, { outcome: 'failed' }]);
+		await arm({ requesterThreadId: requester.threadId });
+		// Both die while the release is armed, so both restarts are held back; the requester's death commits.
+		await other.terminate();
+		await requester.terminate();
+		await rolledOut();
+		assert.deepStrictEqual(
+			decisions.map(({ status }) => status),
+			['certified']
+		);
+		const held = started.filter((worker) => worker.certifyRequests[0]);
+		await waitFor(() => held.length === 2 && held.every((worker) => worker.exitedAt || worker.admitted), {
+			message: 'the held starts never settled',
+		});
+		assert.equal(held[0].admitted, true, 'the canary is admitted');
+		assert.equal(held[1].admitted, undefined, 'a start whose own load failed is not');
+	});
+
+	it('interrupts a certification it cannot record, and restores instead of rolling out', async () => {
+		setCertificationHandler(
+			handler({
+				decide: async (certification, decision) => {
+					decisions.push({ component: certification.component, at: Date.now(), ...decision });
+					if (decision.status === 'certified') throw new Error('ENOSPC: no space left on device');
+					return decision;
+				},
+			})
+		);
+		await arm();
+		await commit();
+		const verdict = await decisionOf();
+		assert.equal(verdict.status, 'interrupted');
+		assert.match(verdict.reason, /could not be recorded: ENOSPC/);
+		assert.deepStrictEqual(
+			decisions.map(({ status }) => status),
+			['certified', 'interrupted']
+		);
+		await rolledOut();
+		const canary = started.find((worker) => worker.certifyRequests[0]);
+		assert.equal(canary.admitted, undefined, 'the canary of an unrecorded certification is not admitted');
+		assert.ok(
+			pool.every((worker) => !worker.wasShutdown),
+			'and nothing it would have replaced was'
+		);
+	});
 
 	it('decides a timed-out canary only once it has exited', async () => {
 		plan([{ behavior: 'silent', shutdownDelayMs: 800 }]);

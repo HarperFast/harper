@@ -798,8 +798,7 @@ async function deployComponent(req) {
 		// source, or it was already live and decided.
 		let certificationOutcome = certification ? 'unavailable' : 'not-requested';
 		if (certification && application.certificationArmed) {
-			// The canary is the first worker started on the release; its verdict is this deploy's load, so nothing is
-			// replicated before it, and a rejection stops the deploy on the origin.
+			// Nothing replicates before the canary decides, so a rejection stops the deploy on the origin.
 			emit('phase', { phase: 'load', status: 'start' });
 			const decision = (await certification.decision()) ?? {
 				status: 'uncertified',
@@ -820,8 +819,7 @@ async function deployComponent(req) {
 		const rollingRestart = req.restart === 'rolling';
 		// if doing a rolling restart set restart to false so that other nodes don't also restart.
 		req.restart = rollingRestart ? false : req.restart;
-		// Certified rolling: peers stage the release, and a job then activates it on one peer at a time, so a peer's
-		// release goes live only at its turn — and is certified there by that turn's own restart.
+		// Peers only stage a certified rolling release, so none goes live before its turn in the activation job.
 		const rollingActivation = rollingRestart && application.certificationArmed;
 		if (rollingActivation) {
 			delete req.restart;
@@ -886,7 +884,7 @@ async function deployComponent(req) {
 		// which workers loaded the previous release, so it restarts them all.
 		const restartScope = application.alreadyActive ? '*' : wasIsolated && nowIsolated ? application.name : undefined;
 		const { awaitRestart } = require('./awaitRestart.ts');
-		// Main started this release's restart the moment it went live; the origin waits for that rollout to finish.
+		// Main started this release's rollout at its commit; the origin only waits for it.
 		const awaitCertifiedRollout = async () => {
 			if (!isMainThread) return;
 			const restart = await awaitRestart((onProgress) => certification.rollout(onProgress));

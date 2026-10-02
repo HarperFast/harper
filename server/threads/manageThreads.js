@@ -687,23 +687,36 @@ async function decideCertification(certification, decision, canary) {
 	if (certification.decision || certification.deciding) return;
 	certification.deciding = true;
 	if (canary) await stopHeldStart(canary);
-	let settled = decision;
+	let settled = await recordDecision(certification, decision);
+	if (settled.status === 'certified' && settled.recordError) {
+		// A certification this node could not make durable is none: its record still reads undecided, and the next boot
+		// would put the predecessor back under a release that had gone on serving.
+		const held = [...heldStarts].find((candidate) => candidate.worker === certification.canary);
+		if (held) await stopHeldStart(held);
+		settled = await recordDecision(certification, {
+			status: 'interrupted',
+			reason: `its certification could not be recorded: ${settled.recordError}`,
+		});
+	}
+	certification.decision = settled;
+	certification.decided.resolve(settled);
+	settleHeldStarts();
+	startDeferredStarts(certification);
+}
+
+async function recordDecision(certification, decision) {
 	try {
-		settled = (await certificationHandler?.decide?.(certification, decision)) ?? decision;
+		return (await certificationHandler?.decide?.(certification, decision)) ?? decision;
 	} catch (error) {
 		harperLogger.error(`Could not record the certification decision for ${certification.component}`, error);
-		settled = { ...decision, recordError: errorMessageOf(error) };
 		if (refusesRelease(decision)) {
 			failClosedInMemory.set(certification.component, {
 				deploymentId: certification.deploymentId,
 				reason: decision.reason,
 			});
 		}
+		return { ...decision, recordError: errorMessageOf(error) };
 	}
-	certification.decision = settled;
-	certification.decided.resolve(settled);
-	settleHeldStarts();
-	startDeferredStarts(certification);
 }
 
 function deferStartBehindCertification(options, start) {
@@ -839,19 +852,26 @@ function admissionRefusal(held) {
 		if (refusesRelease(certification.decision)) {
 			return `it loaded ${certification.component}, whose release was not certified`;
 		}
-		if (entryFor(certification.component)?.loadedDeploymentId !== certification.deploymentId) {
+		const entry = entryFor(certification.component);
+		if (entry?.loadedDeploymentId !== certification.deploymentId) {
 			return `it loaded a different release of ${certification.component} than the one certified`;
 		}
+		// The canary's load certified the release, not this worker's own load of it.
+		if (certification.decision.status === 'certified' && entry.outcome !== 'loaded') return loadFailure(entry);
 	}
 	for (const check of held.checks) {
 		const entry = entryFor(check.component);
 		if (entry?.outcome !== 'loaded' || entry.loadedDeploymentId !== check.deploymentId) {
-			return `${check.component} did not load: ${
-				entry?.failures?.map((failure) => failure.message).join('; ') || entry?.outcome || 'no verdict'
-			}`;
+			return loadFailure(entry, check.component);
 		}
 	}
 	return undefined;
+}
+
+function loadFailure(entry, component = entry.component) {
+	return `${component} did not load: ${
+		entry?.failures?.map((failure) => failure.message).join('; ') || entry?.outcome || 'no verdict'
+	}`;
 }
 
 function stopHeldStart(held) {
@@ -1267,8 +1287,8 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 			const worker = restarting[index];
 			// Terminal shutdown: stop replacing workers mid-loop — the guard for every replacement start below.
 			if (processShuttingDown && startReplacementThreads) break;
-			// A rejection ends the rollout wherever it was decided, including by a crash restart's canary.
-			if (certification?.decision?.status === 'rejected') break;
+			// A refusal ends the rollout wherever it was decided, including by a crash restart's canary.
+			if (certification?.decision && refusesRelease(certification.decision)) break;
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
 			// exited on its own since the snapshot; its exit handler restarts it (or holds that start for a decision)
 			if (!workers.includes(worker)) continue;
@@ -1353,7 +1373,7 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 					newWorker.on('exit', exitListener);
 				});
 				for (const open of placed) await open.decided.promise;
-				const rejected = certification?.decision?.status === 'rejected';
+				const rejected = Boolean(certification?.decision && refusesRelease(certification.decision));
 				if (!started) {
 					if (retiredForAdmission) {
 						// Its predecessor is gone, and a held replacement boots with its auto-restart suppressed: start the
@@ -1364,7 +1384,7 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 						// Replacement didn't come up — keep the existing worker serving. Restore its auto-restart
 						// protection if it is still alive (it may have exited on its own during the wait).
 						if (workers.includes(worker)) worker.wasShutdown = false;
-						// A rejected release leaves every worker on the release it was serving, which is the point.
+						// A refused release leaves every worker on the release it was serving, which is the point.
 						if (!rejected) workersKeptOnOldCode++;
 					}
 					onProgress?.();
