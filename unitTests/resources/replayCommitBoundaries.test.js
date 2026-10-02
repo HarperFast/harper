@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { readFileSync, rmSync } = require('node:fs');
+const { copyFileSync, readFileSync, rmSync } = require('node:fs');
 const { setupTestDBPath } = require('../testUtils');
 const { table, databases, database } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
@@ -103,10 +103,14 @@ async function replayStream(entries, { truncatedVersions = new Set(), elected = 
 	return { groups: groups.map(({ ids, outcome }) => ({ ids, outcome })), failure, unlocked };
 }
 
-async function runCrashChild(args) {
-	const child = spawn(process.execPath, [path.join(__dirname, 'replayCommitBoundaries-crash.js'), ...args], {
-		stdio: ['ignore', 'ignore', 'pipe'],
-	});
+async function runCrashChild(args, nodeArgs = []) {
+	const child = spawn(
+		process.execPath,
+		[...nodeArgs, path.join(__dirname, 'replayCommitBoundaries-crash.js'), ...args],
+		{
+			stdio: ['ignore', 'ignore', 'pipe'],
+		}
+	);
 	let stderr = '';
 	child.stderr.on('data', (chunk) => (stderr += chunk));
 	const timer = setTimeout(() => child.kill('SIGTERM'), 60000);
@@ -125,6 +129,52 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 	before(function () {
 		dbPath = setupTestDBPath();
 		setMainIsWorker(true);
+	});
+
+	it('reads replay commit bases from storage without consulting or populating the record cache', async function () {
+		const Rows = table({
+			table: 'ReplayCacheReads',
+			database: 'replaycachereads',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+		});
+		await Rows.put({ id: 'cached', n: 1 });
+		const store = Rows.primaryStore;
+		const cached = store.getEntry('cached');
+		assert.strictEqual(store.getEntry('cached').value, cached.value);
+		const replay = new DatabaseTransaction();
+		replay.db = store;
+		replay.isReplay = true;
+		let read;
+		try {
+			replay.addWrite({ key: 'cached', store, commit: (_time, entry) => (read = entry) });
+			assert.notStrictEqual(read.value, cached.value, 'replay must decode its snapshot rather than use the cache');
+			assert.deepStrictEqual(read.value, cached.value);
+			assert.strictEqual(store.getEntry('cached').value, cached.value, 'replay must not replace the cached record');
+		} finally {
+			replay.abort();
+		}
+	});
+
+	it('keeps heap growth bounded when boot replays an already durable backlog behind a stale watermark', async function () {
+		const crashDir = path.join(dbPath, 'replay-stale-watermark');
+		rmSync(crashDir, { recursive: true, force: true });
+		const sharedPath = path.join(crashDir, 'shared');
+		const markerPath = path.join(crashDir, 'marker');
+		const childArgs = [path.join(crashDir, 'writer-root'), sharedPath, 'stalereplay', 'Rows', markerPath];
+		const written = await runCrashChild([...childArgs, 'write-stale']);
+		assert.strictEqual(written.signal, 'SIGKILL', written.stderr);
+		copyFileSync(markerPath + '.state', path.join(sharedPath, 'stalereplay', 'transaction_logs', 'local', 'txn.state'));
+		childArgs[0] = path.join(crashDir, 'replayer-root');
+		const replayed = await runCrashChild([...childArgs, 'replay-stale'], ['--expose-gc']);
+		assert.strictEqual(replayed.code, 0, replayed.stderr);
+		const { commits, heapSamples, rowCount } = JSON.parse(readFileSync(markerPath, 'utf8'));
+		assert.strictEqual(commits, 10001, 'replay must scan the durable backlog and the unflushed tail');
+		assert.strictEqual(rowCount, 10002, 'all durable records and the recovered tail must remain readable');
+		assert.strictEqual(heapSamples.length, 2);
+		assert(
+			heapSamples[1] - heapSamples[0] < 16 * 1024 * 1024,
+			`replay retained records across commits: heap grew from ${heapSamples[0]} to ${heapSamples[1]} bytes`
+		);
 	});
 
 	it('replays native commits that share a log key as separate transactions, never splitting one', async function () {

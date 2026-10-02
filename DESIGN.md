@@ -12,6 +12,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 
 ## resources/ — records, transactions, tables, blobs, audit
 
+- [Boot replay reads bypass the primary-record cache](resources/DESIGN.md#boot-replay-reads-bypass-the-primary-record-cache) — Snapshot reads avoid retaining the durable backlog through WeakRefs during synchronous boot replay.
 - [File overview](resources/DESIGN.md#file-overview) — What each file in `resources/` owns.
 - [`Resource.ts` — base class](resources/DESIGN.md#resourcets--base-class) — Static entry points versus instance methods, and the `transactional()` wrapper.
 - [`Table.ts` — section map](resources/DESIGN.md#tablets--section-map) — Section markers for the `makeTable()` factory.
