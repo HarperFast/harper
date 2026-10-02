@@ -118,7 +118,10 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    still the live one (`onlyIfLive`), and the record is removed once it is. With no predecessor (a first
    deploy), or a restore that did not land, the release stays live and FAILS CLOSED: every thread's loader
    refuses it (`failClosedReleases`), boot does not reinstall it, and only a deploy, an activation or a drop moves
-   on. When even the record write fails, main refuses it in memory, bound to that deployment id so a later release
+   on. A record belongs to the component the deployment's ownership sidecar names, else its own `component`, else
+   the component it is live for, so an unreadable sidecar never lets a refused release load; retention pins its
+   predecessor the same way, and pins everything when a record can be attributed to no one. When even the record
+   write fails, main refuses it in memory, bound to that deployment id so a later release
    loads, and the record stays `pending` for the next boot to settle. The origin's deploy fails with the
    decision in `certification` (`status`, `reason`, `failures`, `restored`, `failed_closed`), and nothing was
    replicated. An `interrupted` certification — the process shutting down, a rollout that failed before any

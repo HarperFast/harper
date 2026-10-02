@@ -37,6 +37,13 @@ async function deployed(root, component, deploymentId) {
 	await fs.writeFile(path.join(root, '.deploy-staging', deploymentId, '.component'), component);
 }
 
+/** A sidecar that exists but cannot be read as a file. */
+async function unreadableOwnerFile(root, deploymentId) {
+	const ownerPath = path.join(root, '.deploy-staging', deploymentId, '.component');
+	await fs.rm(ownerPath, { force: true });
+	await fs.mkdir(ownerPath);
+}
+
 function pending(component, deploymentId, overrides = {}) {
 	return {
 		component,
@@ -184,6 +191,22 @@ describe('release certification records', () => {
 		assert.match(failClosed.get('undecided').message, /never decided/);
 	});
 
+	it('fails closed a refused live release whose owner file cannot be read', async () => {
+		await deployed(root, 'named-by-record', LIVE);
+		await writeCertificationRecord(root, pending('named-by-record', LIVE, { state: 'rejected', reason: 'threw' }));
+		await unreadableOwnerFile(root, LIVE);
+
+		const unnamedId = '77777777-7777-7777-7777-777777777777';
+		await deployed(root, 'named-by-its-tree', unnamedId);
+		await fs.writeFile(certificationRecordPath(root, unnamedId), 'garbage');
+		await unreadableOwnerFile(root, unnamedId);
+
+		const failClosed = await failClosedReleases(root, 'this-process');
+		assert.deepEqual([...failClosed.keys()].sort(), ['named-by-its-tree', 'named-by-record']);
+		assert.match(failClosed.get('named-by-record').message, /threw/);
+		assert.match(failClosed.get('named-by-its-tree').message, /cannot be read/);
+	});
+
 	it('answers an empty set when there is no staging root at all', async () => {
 		assert.equal((await failClosedReleases(root, 'this-process')).size, 0);
 	});
@@ -201,6 +224,17 @@ describe('release certification records', () => {
 		await fs.writeFile(certificationRecordPath(root, LIVE), 'garbage');
 		assert.equal(await certificationPinsOf(root, 'web'), undefined);
 		assert.deepEqual(await certificationPinsOf(root, 'other'), ['77777777-7777-7777-7777-777777777777']);
+	});
+
+	it('pins the predecessor of a record whose owner file cannot be read, and nothing if the record cannot be read', async () => {
+		await deployed(root, 'web', LIVE);
+		await writeCertificationRecord(root, pending('web', LIVE, { state: 'rejected' }));
+		await unreadableOwnerFile(root, LIVE);
+		assert.deepEqual(await certificationPinsOf(root, 'web'), [PREVIOUS], 'the record names its component');
+		assert.deepEqual(await certificationPinsOf(root, 'other'), []);
+
+		await fs.writeFile(certificationRecordPath(root, LIVE), 'garbage');
+		assert.equal(await certificationPinsOf(root, 'web'), undefined, 'a record nobody can attribute may be anyone');
 	});
 
 	it('keeps the record beside its deployment', () => {

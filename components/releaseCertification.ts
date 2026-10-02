@@ -220,10 +220,7 @@ export async function failClosedReleases(
 			}
 		);
 		if (!present) continue;
-		const owner = await readFile(join(deploymentDirPath, CANDIDATE_COMPONENT_FILE), 'utf8').then(
-			(named) => named.trim(),
-			() => undefined
-		);
+		const owner = await ownerOf(componentsRootDirPath, entry.name);
 		if (!isPathSegment(owner) || failClosed.has(owner)) continue;
 		const live = await liveCertification(componentsRootDirPath, owner).catch((error) => ({
 			deploymentId: entry.name,
@@ -234,6 +231,28 @@ export async function failClosedReleases(
 		if (reason) failClosed.set(owner, new RejectedReleaseError(owner, entry.name, reason));
 	}
 	return failClosed;
+}
+
+/**
+ * The component a staged deployment belongs to: the one its sidecar names, else its record, else the one it is live
+ * for. A refused release must not load only because the file naming its owner could not be read.
+ */
+async function ownerOf(componentsRootDirPath: string, deploymentId: string): Promise<string | undefined> {
+	const named = await readFile(join(stagingRoot(componentsRootDirPath), deploymentId, CANDIDATE_COMPONENT_FILE), 'utf8')
+		.then((contents) => contents.trim())
+		.catch(() => undefined);
+	if (isPathSegment(named)) return named;
+	const recorded = await readCertificationRecord(componentsRootDirPath, deploymentId)
+		.then((record) => record?.component)
+		.catch(() => undefined);
+	if (isPathSegment(recorded)) return recorded;
+	for (const entry of await readdir(componentsRootDirPath, { withFileTypes: true })) {
+		if (!entry.isDirectory() || !isPathSegment(entry.name)) continue;
+		if ((await liveDeploymentId(componentsRootDirPath, entry.name).catch(() => undefined)) === deploymentId) {
+			return entry.name;
+		}
+	}
+	return undefined;
 }
 
 /**
@@ -260,10 +279,11 @@ export async function certificationPinsOf(
 			(named) => named.trim(),
 			() => undefined
 		);
-		if (owner !== component) continue;
+		// An unreadable sidecar leaves the record to say whose it is.
+		if (owner !== undefined && owner !== component) continue;
 		try {
 			const record = await readCertificationRecord(componentsRootDirPath, entry.name);
-			if (record?.previous) pins.push(record.previous);
+			if ((owner ?? record?.component) === component && record?.previous) pins.push(record.previous);
 		} catch {
 			return undefined;
 		}
