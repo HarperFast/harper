@@ -842,7 +842,12 @@ function holdStart(worker, gated, startOptions) {
 			void decideCertification(certification, { status: 'rejected', reason }, held);
 		}
 		// Not admitted without a report, whichever decision it waited on: nothing else would end it.
-		if (!canaryFor) void stopHeldStart(held);
+		if (!canaryFor) {
+			harperLogger.warn(
+				`Not admitting worker ${worker.threadId}: it did not report its load within ${canaryVerdictTimeoutMs()}ms`
+			);
+			void stopHeldStart(held);
+		}
 	}, canaryVerdictTimeoutMs()).unref();
 	return held;
 }
