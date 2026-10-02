@@ -29,7 +29,7 @@ Four constraints that look like choices but are not:
 3. **`createOperationToken`, not `createTokens`.** `createTokens` overwrites `hdb_user.refresh_token` as a side effect, so minting for CI would silently revoke whatever credential that user already held (#2018) — the exact problem this feature removes.
 4. **The role is the boundary; the per-policy `operations` allowlist only narrows it.** Least privilege is primarily the role of the user the policy names. A policy may _optionally_ carry an `operations` scope, which can only subtract from that role — never add to it. It is deliberately not merged into `permission.operations`: gate 2 in `operation_authorization.ts` treats an explicit listing of an SU-only operation as a deliberate grant, so reusing that field would _widen_ where this must only narrow. The scope is carried as a separate `tokenOperations` claim and intersected ahead of every early return, including the super_user bypass.
 
-   Its enforcement surface is the operations API and SQL (`verifyPerms` / `verifyPermsAST`) — **not** the application REST/GraphQL resource path, which authorizes through table-level `checkPermission` and does not consult the scope. A scoped token therefore still carries its role's full CRUD there, which is why the role has to be least-privilege on its own; the scope is defense in depth, not a substitute. Closing that gap is a follow-up on the same surface as CORE-3061. Because a second authorization mechanism beside roles is one more place for the two to disagree, whether to keep this at all is an open design question on #2173 rather than a settled constraint.
+   Its enforcement surface is the operations API and SQL (`verifyPerms` / `verifyPermsAST`) — **not** the application REST/GraphQL resource path, which authorizes through table-level `checkPermission` and does not consult the scope. A scoped token therefore still carries its role's full CRUD there, which is why the role has to be least-privilege on its own; the scope is defense in depth, not a substitute. Closing that gap is tracked in #2201. The scope shipped with #2173 and is documented in the operations API reference; whether to keep a second authorization mechanism beside roles at all — one more place for the two to disagree — was left open there.
 
    Naming `sql` in a scope grants the SQL interface, not unrestricted DML through it: a write statement additionally requires its matching data operation (`insert`/`update`/`delete`) in scope. That is what keeps `read_only` — which expands to include `sql` — from admitting a DELETE, given that `verifyPermsAST` returns early for a super_user before any table check runs.
 
@@ -118,8 +118,9 @@ context that pairs the new cert with the old key — every handshake on it then 
 rebuilds it until the _next_ cert-table change. The fix: a private-key reload (`handlePrivateKeyReload`,
 the single sink for both the chokidar watcher and PR #1394's periodic poll) triggers a debounced
 rebuild of every live selector via the module-level `liveTLSRebuilders` set, so the worker reconverges
-on its own. Subtleties to preserve: the rotation guard (`previous !== undefined && previous !== key`)
-must skip both the initial load and identical-content reloads or watchers thrash; transient one-shot
+on its own. Subtleties to preserve: the rotation guard (`previous !== private_key` in `handlePrivateKeyReload`)
+skips identical-content reloads or watchers thrash, yet still rebuilds when a key first appears or is
+restored after boot (a no-op at startup, before any selector registers); transient one-shot
 selectors (`getReplicationCert`) pass `liveReload=false` so they don't accumulate in the never-pruned
 set; and the cert subscription shares the same debounced `scheduleRebuild` (same 1500ms cadence), so
 its coalescing must stay a superset-safe no-op for the single-swap #586 case. Regression coverage:

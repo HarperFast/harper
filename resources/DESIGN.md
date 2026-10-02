@@ -21,7 +21,7 @@ The Resource layer is Harper's universal abstraction: all queryable/mutable thin
 | `IterableEventQueue.ts`   | Async iterable used for subscriptions and streaming responses                                                                                                                                                                                     |
 | `transaction.ts`          | Per-request transaction object stored in `contextStorage`                                                                                                                                                                                         |
 | `auditStore.ts`           | Append-only audit log records                                                                                                                                                                                                                     |
-| `derivedIndexRuntime.ts`  | Lock-elected, exact-cursor delivery of committed RocksDB log mutations to derived-index backends; chunked collection, flush cadence, rebuild phase, epoch fencing, shared readiness, lag policy. Design: root `DESIGN.md` § Derived-index runtime |
+| `derivedIndexRuntime.ts`  | Lock-elected, exact-cursor delivery of committed RocksDB log mutations to derived-index backends; chunked collection, flush cadence, rebuild phase, epoch fencing, shared readiness, lag policy. See `indexes/DESIGN.md` § Derived-index runtime. |
 | `derivedIndexRegistry.ts` | Worker-local registration counts (which tables emit cache-eviction markers) and per-table write-admission checks for the lag policy                                                                                                               |
 | `indexes/fullText*`       | Bounded native Fulltext adapter, lazy capability-checked binding, and wrapper-owned inspection/open/reset/reclamation lifecycle                                                                                                                   |
 | `recordLock.ts`           | Exclusive record locks (harper#483): option contract, native key lock primitives (`lockAttemptKey`, `makeKeyLockHandle`, `acquireRecordKey`)                                                                                                      |
@@ -171,10 +171,6 @@ Consequences worth knowing:
 
 **Async false-mode read gates preserve the streaming contract.** `Table.search` returns an `ExtendedIterable` carrying the internal `SEARCH_AUTHORIZATION` promise. Static `Resource.search` and `query` await that verdict before returning a response; on success the wrapper initializes the real search before the transaction settles so its normal read snapshot stays reserved until iteration completes. The marker follows supported iterable transforms and retains `selectApplied`/`getColumns`, so async or mapped delegation cannot turn a denial into a truncated successful response.
 
-**Native query waits start on consumption.** A positive native `waitForIndexMilliseconds` preserves instance `Table.search`'s synchronous iterable result and normal `.map()`/`.concat()` composition. The custom-index adapter supplies a start gate: HNSW validates options and generation readiness synchronously, then waits for the first async pull before capturing its fixed coverage target. Zero-size pages start no native work. Count pages still materialize before returning.
-
-Index waits use the ordinary transaction timeout; they do not renew it. The adapter reuses the range-scan snapshot guard, loads through the captured read handle, and checks predicate reads so expiration cannot silently switch to latest-state reads. Iterator closure aborts pending waits and skips late result materialization. OR/concatenated prefixes may stream before a later branch fails. Waiting queries do not publish a coverage header; clients must consume the stream and check its error records. HTTP first-item status deferral is tracked separately in Harper #2670.
-
 **False-mode collection write gates stay per dispatch.** Built-in array PUT, query DELETE, and publish perform one request-scoped `allowUpdate`, `allowDelete`, or `allowCreate` verdict respectively. After query DELETE authorizes, it scans with a private cloned target whose permission check is disabled; the caller target stays untouched, and concurrent reads using it still run `allowRead`. Static publish overload routing marks the fresh per-dispatch resource receiver in `staticResourceDispatch.ts`, so copied targets and delayed delegation retain the `(target, message)` signature without putting reusable state on caller objects.
 
 **Array PUT is a collection dispatch in both modes.** `Class.put(batch, context)` arrives with no target, so `transactional` synthesizes one — and the collection it inferred from the null id has to carry over onto it, or the resource resolves as a single record with a null primary key and the batch never fans out. Default (instance) mode then dispatches per element through `getResource`, and each element call must carry its own normalized target in the second position — minted by `elementTargetFactory` so the element's id and `isCollection === false` sit on top of the request's query and route metadata, with `checkPermission` deliberately omitted so a per-element dispatch cannot re-arm the verdict the collection receiver already gave. Each element gets its own object, because its id must not be visible to a sibling whose dispatch resolves later; the request's contribution is resolved once for the batch rather than deep-cloned per element, and nested metadata is shared rather than copied — not the outer collection target and not the context: `Table`'s back-compat `put(target, record)` shift only recognizes a target that is a `RequestTarget`, so a context there is taken for the record and staged as record data (harper#2000). A default-mode `put()` override consequently sees one call per element with that element's id and `isCollection === false`; a component that needs the whole array in one call belongs in `loadAsInstance === false` mode.
@@ -200,34 +196,15 @@ Every copy path gives the copy a generation of its own before anything can read 
 
 ## Path routing & parameterised routes
 
-`Resources.ts` is the registry that maps URL paths to `Resource` classes. Resources are registered (`jsResource.ts`) from a component's exports:
-
-- **Default path (convention):** the export name, resolved relative to the component's directory — `export class Widget` → `<dir>/Widget`.
-- **Declared path (`static path`):** a `static path` field overrides the convention. A leading `/` makes it root-relative (top-level); `./` or a bare name is relative to the component directory.
-- **Export-name-as-path:** `export { Widget as '/widget/:id' }` — the export name is the path (also honors the leading-slash root rule).
-
-A path is **parameterised** if any segment begins with `:` (named param) or `*` (wildcard/catch-all):
-
-```ts
-export class Widget extends Resource {
-	static path = '/widget/:id/action/:action';
-	get(target) {
-		// GET /widget/10/action/jump → target.id === '10', target.action === 'jump'
-	}
-}
-
-export class Files extends Resource {
-	static path = '/files/*rest'; // GET /files/a/b/c.txt → target.rest === 'a/b/c.txt'
-}
-```
+`Resources.ts` is the registry that maps URL paths to `Resource` classes; `jsResource.ts` registers a component's exports. The user-facing rules — the default export-name path, `static path`, export-name-as-path, the root-relative leading `/`, `:name`/`*name` parameters and precedence — are documented in [Resources → Path Parameters](https://github.com/HarperFast/documentation/blob/main/reference/resources/overview.md#path-parameters).
 
 Mechanics:
 
-- **Registration** (`Resources.set`): parameterised paths are compiled into `paramRoutes` (kept _out_ of the base `Map`) so the exact/prefix matching fast path is untouched. Routes are ordered most-specific-first (more leading static segments, then longer patterns; wildcards rank last).
+- **Registration** (`Resources.set`): parameterised paths are compiled into `paramRoutes` (kept _out_ of the base `Map`) so the exact/prefix matching fast path is untouched. Routes are ordered most-specific-first: compared segment by segment from the left, a literal beats a `:param`, which beats a `*` wildcard (`SEGMENT_SPECIFICITY`); on a tie the longer pattern wins.
 - **Matching** (`Resources.getMatch`): exact and prefix matches are tried first and win ("static wins"); only when no static resource matches — and only if `paramRoutes` is non-empty — does `matchParamRoute` run. Matched segment values are decoded and stored on `entry.params`.
 - **Binding to the target:** request handlers (`server/REST.ts`, `server/DurableSubscriptionsSession.ts`) `Object.assign(target, entry.params)` after building the `RequestTarget`, so `:id` lands on `target.id`, `*rest` on `target.rest`, etc.
 - Named params match exactly one segment; a wildcard captures the remainder (zero or more segments) and must be the final segment.
-- **Discovery surfaces:** because parameterised routes live outside the base Map, the enumerators read `resources.paramRoutes` explicitly — `openApi.ts` emits them as templated paths (`:id` → `{id}`) with path parameters, and `components/mcp/resources.ts` lists them via `resources/templates/list` as `{param}` URI templates. `routePatternToTemplate` (exported from `Resources.ts`) is the shared `:param`/`*wildcard` → `{param}` converter.
+- **Discovery surfaces:** because parameterised routes live outside the base Map, the enumerators read `resources.paramRoutes` explicitly — `openApi.ts` emits them as templated paths (`:id` → `{id}`) with path parameters, and `components/mcp/resources.ts` lists them via `resources/templates/list` as `{param}` URI templates. The converter is not shared: `openApi.ts` uses `routePatternToTemplate` (`Resources.ts`), and `components/mcp/resources.ts` mirrors it in `paramPatternToUriTemplate` from the pattern string to stay free of a `Resources` import, so a change to the template syntax touches both.
 
 Tests: `../unitTests/resources/paramRoutes.test.js` (unit) and `../integrationTests/apiTests/param-routes.test.mjs` (end-to-end); enumeration coverage in `../unitTests/resources/openApi.test.js` and `../unitTests/components/mcp/resources.test.js`.
 
@@ -457,7 +434,7 @@ A failed transaction on a tagged stream (a non-retryable commit failure, includi
 
 A transaction can hold more than one write to the same record key — two `patch()` calls inside one `transaction()`, or a replicated transaction carrying two updates to a record. Each write captures `operation.entry` (its idea of the current record) when it is staged, and **neither engine can refresh that from a read**: LMDB queues staged puts and applies them only in the commit batch, so a `getEntry` inside that loop still returns the pre-transaction record (the exclusive `store.transaction()` fallback is no better), and RocksDB read-your-writes only sees writes already staged into the native transaction — which the source-apply path, staging its whole batch before `commit()`, hasn't done yet.
 
-So the writes carry the state forward themselves: `addWrite` chains each write to the preceding write to the same store and key (`linkWrite` → `operation.priorWrite`), a commit handler publishes what it stored on `operation.stagedEntry`, and the next write reads it back through `priorStagedEntry()` and uses it as `existingRecord`. Consequences worth knowing:
+So the writes carry the state forward themselves: `addWrite` chains each write to the preceding write to the same store and key (`linkWrite` → `operation.priorWrite`), a commit handler publishes what it stored on `operation.stagedEntry`, and the next write finds it through `priorStagedWrite()` (the nearest earlier write to the key that published a `stagedEntry`) and uses that entry as `existingRecord`. Consequences worth knowing:
 
 - Only the **record** comes from the earlier write. The rest of the entry (version, `localTime`/audit chain, blob metadata) stays the pre-transaction one — that is what this write's audit entry and optimistic version check are relative to.
 - Program order breaks **ties only** (`if (priorStaged && precedesExisting >= 0) precedesExisting = 1`). Every write in a transaction carries the transaction's single timestamp, so a version comparison against what the earlier write landed (e.g. on a retry round after a partial apply) is a tie that the out-of-order machinery would otherwise drop as a re-delivered duplicate. A _strictly newer_ existing version can only be a concurrent transaction's write observed on a retry round; a chained write still goes through the out-of-order merge for it (and a chained delete still yields to it) rather than silently overwriting it.
@@ -495,17 +472,13 @@ old value. The gap is general to `Table.save()`, not lock-specific. Exercised by
 
 ## A commit retry re-saves into the transaction it is retrying; `ImmediateTransaction.save()` must forward it
 
-Every retry and replay round of `commit()` (`ERR_BUSY`/`ERR_TRY_AGAIN`, `RETRY_NOW`, the
-retained-iterator replay) passes its native transaction into the save loop so each re-save re-stages
-into the handle being retried. `ImmediateTransaction.save()`'s `isCommitting` branch is the one
-`save` that could drop that argument: with none, `DatabaseTransaction.save()` opens a fresh handle and,
-the wrapper being `CLOSED` by then, commits it through a nested `commit()` whose own retry loop
-(`retries > 0` skips nothing) re-enters the override — unbounded, synchronously (`RangeError` on the
-first conflicting hold-lock save of a request). The override forwards the handle; the named test
-`immediateTransactionConflictRetry.test.js` asserts two commit attempts on one native transaction id.
-A retry round's handle is not `this.transaction` (detached before the first submission), so a throw
-from the re-save loop — a lapsed lease refusing the re-save — releases it explicitly before `abort()`,
-or its write intents park other writers until GC.
+Every retry and replay round of `commit()` re-stages into the native handle being retried, and
+`ImmediateTransaction.save()`'s `isCommitting` branch forwards that handle: without it,
+`DatabaseTransaction.save()` opens a fresh handle and nests a `commit()` whose retry loop re-enters
+the override without bound (`RangeError`, harper#2825). A retry round's handle is detached, so a
+re-save that throws releases it before `abort()`, or its write intents park other writers until GC.
+Pinned by `immediateTransactionConflictRetry.test.js` ("…not a nested commit", "releases the replay
+transaction when a lapsed lease refuses a re-save…").
 
 ## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
 
@@ -565,7 +538,7 @@ It has to be one codec, decided before the first open, because RocksDB opens **e
 
 Opens pass `compressionForAllColumnFamilies` (rocksdb-js) alongside the codec. Without it the binding gives every family the caller did not name its _persisted_ algorithm and applies the request only to the target, so families this process never names individually would keep their original codec forever — which is why a database created before the prebuild carried any codecs (every 5.1 instance) stayed uncompressed no matter how new the binary was, and why reconciling a table afterwards failed with `already open with compression ...; cannot reopen it with ...`.
 
-The ordering that still has to hold is a fresh install: `install()` calls `mountHdb()` — which creates the system families — several steps before `createConfigFile()` writes the config file, so `installer.ts` stages the value into the in-memory config (`stageRocksCompression()`, mirroring the `STORAGE_ENGINE` line beside it) before `mountHdb()` runs. Measured without it, same pid: `thread=0 resolved=undefined`, `thread=1/2 resolved=zstd`, and the boot dies with "The system database failed to load".
+The ordering that still has to hold is a fresh install: `install()` calls `mountHdb()` — which creates the system families — several steps before `createConfigFile()` writes the config file, so `installer.ts` stages the value into the in-memory config (`stageRocksCompression()`, mirroring the `STORAGE_ENGINE` line beside it) before `mountHdb()` runs. Without it the main thread resolves no codec while workers resolve the configured one, and the boot dies with "The system database failed to load".
 
 Changing the codec governs newly written files. Existing SST/blob files keep theirs until rewritten; ordinary compaction will not do it (RocksDB skips the bottommost level without a compaction filter), so converting an existing database in place needs `compact({ bottommost: true })`.
 
@@ -699,8 +672,8 @@ degrades to the historical behavior rather than replacing it. Invariants that ar
   execution truncates + filters (wider range than the estimable one). Two ways this has already
   been got wrong: `lt`/`le` need `searchByIndex`'s `start: true` lower bound, or the estimate
   counts the `[null, primaryKey]` entries an `indexNulls` index holds and execution skips (`true`
-  sorts above `null`) — measured at 21× inflation on an index that is 99% nulls, which is worse
-  than the flat heuristic it replaces; and `RocksIndexStore` must widen value-space bounds to
+  sorts above `null`), which on a mostly-null index is worse than the flat heuristic it
+  replaces; and `RocksIndexStore` must widen value-space bounds to
   `[value, MAXIMUM_KEY]` composite bounds, because the base implementation's byte-successor
   semantics exclude the wrong entries on composite `[value, primaryKey]` keys. `getRange` and
   `estimateCount` therefore share one `translateIndexBounds` helper rather than two copies.
@@ -789,10 +762,6 @@ environment is a use-after-free (an intermittent segfault in the lmdb unit run).
 an LMDB root once, only while `open`, skips its dbis, and closes every alias sharing it. RocksDB
 column families are independently refcounted handles, so they are still closed one by one. Enforced by
 the shared-store close cases in `unitTests/resources/databaseAliasIdentity.test.js`.
-
-## A defaulted `lock()` scope comes from the table's declaration, never from the transport registry (`recordLock.ts`, `Table.ts`)
-
-`resolveLockOptions` defaults `scope` to `'node'` on a `replicate: false` table and `'cluster'` otherwise, read from `Table.replicate` at the one call in `Table.lock()` and again after the native wait, so neither registering a transport nor a redeclaration mid-wait can re-scope a call (harper#2716). `Table.replicate` is therefore refreshed on redeclaration and catalog reload, and a redeclaration is persisted against the durable primary row, not the possibly stale static. **Not enforced:** a hold granted before a live `false → true` change keeps node scope for its lease, so drain holds before changing a live table's `replicate`. Pinned by "a table that does not replicate" in `recordLockCluster.test.js`.
 
 ## A local-only write marks both the record and its audit entry, and replay preserves it (`Table.ts` internal writes, `replayLogs.ts`)
 
