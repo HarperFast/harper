@@ -491,9 +491,11 @@ export function initConfig(force = false) {
 		if (configDoc.errors?.length > 0) {
 			const parseError = new ConfigParseError(configFilePath, configDoc.errors[0]);
 			const parseErrorName = configDoc.errors[0].name ?? 'YAMLParseError';
+			const parseErrorPrefix = `Unable to parse the Harper configuration file at ${configFilePath}: `;
+			const parseErrorDetails = parseError.message.slice(parseErrorPrefix.length);
 			throw handleHDBError(
 				new Error(),
-				`Error parsing ${configFilePath}: ${parseErrorName}. ${parseError.message}`,
+				`Error parsing ${configFilePath}: ${parseErrorName} ${parseErrorDetails}`,
 				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
 			);
 		}
