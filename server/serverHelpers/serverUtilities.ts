@@ -463,7 +463,11 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 			// A rolling deploy's per-peer activation rides restart_service, but what it does is deploy: a caller
 			// asking for one must be allowed to deploy, not only to restart.
 			if (json.operation === terms.OPERATIONS_ENUM.RESTART_SERVICE && json.activate_deployment !== undefined) {
-				const deployRequest = { ...json, operation: terms.OPERATIONS_ENUM.DEPLOY_COMPONENT };
+				const deployRequest = {
+					...json,
+					operation: terms.OPERATIONS_ENUM.DEPLOY_COMPONENT,
+					project: (json.activate_deployment as { project?: unknown } | undefined)?.project,
+				};
 				const deployPermsResult = opAuth.verifyPerms(
 					deployRequest,
 					getOperationFunction(deployRequest).operation_function,
