@@ -831,7 +831,12 @@ function holdStart(worker, gated, startOptions) {
 		held.silence = reason;
 		let canaryFor = false;
 		for (const certification of held.gated) {
-			if (certification.decision || (certification.canary && certification.canary !== worker)) continue;
+			if (
+				certification.decision ||
+				held.startedWhileArmed.has(certification) ||
+				(certification.canary && certification.canary !== worker)
+			)
+				continue;
 			certification.canary = worker;
 			canaryFor = true;
 			void decideCertification(certification, { status: 'rejected', reason }, held);

@@ -118,7 +118,8 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    restore never races a worker still holding the release. One of them can be the undecided canary of another
    release it also loaded. That release is decided from the canary's own report if it made one, rejected if it went
    silent, and interrupted only if it was stopped before either, rather than left waiting on a worker that is gone,
-   which would also hold every later restart behind its rollout. `certified` is written durably. A rejection is written
+   which would also hold every later restart behind its rollout. A rollout declined at shutdown still waits for a
+   decision under way before it closes, or the close would remove the record that decision is about to write. `certified` is written durably. A rejection is written
    `rejected` before anything moves; then step 6 activates the predecessor, only while the rejected release is
    still the live one (`onlyIfLive`), and the record is removed once it is. With no predecessor (a first
    deploy), or a restore that did not land, the release stays live and FAILS CLOSED: every thread's loader
@@ -137,7 +138,8 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
 6. **Roll out.** Every later replacement is held too, and admitted only once its own load of the release
    reports `loaded`, as is any start held while the canary was deciding: the canary's verdict certifies the
    release, not another worker's load of it. A held start that reports nothing within the verdict timeout is
-   stopped, whatever it was waiting on. A later failure keeps the old worker and every worker after it, stops the rollout, and
+   stopped, whatever it was waiting on, and rejects only what it could have spoken for: never a release it booted
+   while that release was armed. A later failure keeps the old worker and every worker after it, stops the rollout, and
    restores nothing: the canary proved the release can load. A replacement stopped instead because another release
    it loaded was refused failed nothing of this one, so its worker is replaced again, held only to this release. A
    rejection ends the rollout wherever it was decided. A crash restart during an undecided canary waits for the decision; a held start the gate stopped

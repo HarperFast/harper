@@ -620,6 +620,22 @@ describe('the release certification gate', function () {
 		}
 	});
 
+	it('makes no start booted while a release was armed its canary, even once that start goes silent', async () => {
+		// The start made while the release is armed goes silent; its copy, made once the release is live, loads it.
+		plan([{ behavior: 'silent' }, { outcome: 'loaded' }]);
+		const loading = Promise.withResolvers();
+		rootLoad = loading.promise;
+		releaseRootLoad = loading.resolve;
+		await arm();
+		const before = started.length;
+		void startFixture(3).catch(() => {});
+		await waitFor(() => started.length > before, { message: 'the start never began' });
+		await commit();
+		assert.equal((await decisionOf()).status, 'certified', 'the start that said nothing about it did not reject it');
+		loading.resolve();
+		await rolledOut();
+	});
+
 	it('refuses to withdraw a release once it is committed', async () => {
 		plan([{ outcome: 'loaded', delayMs: 300 }]);
 		await arm();
