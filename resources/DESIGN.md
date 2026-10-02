@@ -878,9 +878,13 @@ bears directly on the RocksDB-aborts-the-sibling claim two paragraphs up.
    shared prototype; a second file patching it after this one leaves whatever that file's own
    interposition assumed about transaction identity or attempt count out of sync.
 
-Neither is a bug in the guard itself or reachable in production — a real deployment does not
-monkey-patch `Transaction.prototype.commit` or share one transaction's snapshot across otherwise
-unrelated requests the way these repros do — and `tableIfVersion.test.js`'s own regression test
-uses `getEntry` interception instead, which reproduces neither failure mode. They are filed here as
-an open gap in the test harness's isolation between mocha files, found incidentally while building
-this guard's test coverage, not as something this PR fixes or fully explains.
+Neither reaches production today — `request.session.update()`, the only `ifVersion` caller, always
+opens a fresh, transaction-free context per call, so neither construction is reachable through it —
+but the two are not the same kind of problem, and only one of them is a harness artifact. Repro 2
+is: it patches a shared prototype (`Transaction.prototype.commit`) that a second test file also
+patches, and the fix is "don't do that across files", not a code change. Repro 1 is not a harness
+artifact: it patches nothing, runs a real `transaction()`, and the native commit really does abort
+along with the guard's rejection — but something tied to that transaction's read snapshot survives
+the abort regardless, and a later, unrelated snapshot trips over whatever that leaves open. The
+mechanism is unexplained; harper#2991 tracks it. `tableIfVersion.test.js`'s own regression test
+uses `getEntry` interception instead of either construction, which reproduces neither.
