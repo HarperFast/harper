@@ -25,6 +25,14 @@ import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as env from '../utility/environment/environmentManager.ts';
 import { applyRuntimeEnvConfig, hasPersistedEnvConfigState } from './harperConfigEnvVars.ts';
 import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
+<<<<<<< HEAD
+=======
+import { ConfigParseError } from './parseConfigFile.ts';
+import { isStartableThreadHeapMemory } from '../server/threads/threadHeapMemory.ts';
+import { fsyncTolerantSync, isUnsupportedSyncError } from '../utility/fsync.ts';
+
+export { isUnsupportedSyncError } from '../utility/fsync.ts';
+>>>>>>> fca9671cf (Reject malformed YAML before adopting root config)
 
 const { DATABASES_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdbTerms;
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
@@ -480,6 +488,16 @@ export function initConfig(force = false) {
 			}
 		}
 
+		if (configDoc.errors?.length > 0) {
+			const parseError = new ConfigParseError(configFilePath, configDoc.errors[0]);
+			const parseErrorName = configDoc.errors[0].name ?? 'YAMLParseError';
+			throw handleHDBError(
+				new Error(),
+				`Error parsing ${configFilePath}: ${parseErrorName}. ${parseError.message}`,
+				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
+			);
+		}
+
 		checkForUpdatedConfig(configDoc, configFilePath);
 
 		// Config-shaping env vars delivered via component .env files (loadEnv) cannot take effect —
@@ -565,6 +583,7 @@ function checkForUpdatedConfig(configDoc, configFilePath) {
 
 	if (updateFile) {
 		logger.trace('Updating config file with missing config params');
+<<<<<<< HEAD
 		if (configDoc.errors?.length > 0) {
 			throw handleHDBError(
 				new Error(),
@@ -573,6 +592,9 @@ function checkForUpdatedConfig(configDoc, configFilePath) {
 			);
 		}
 		atomicWriteFile(configFilePath, String(configDoc));
+=======
+		persistConfigDuringBoot(configFilePath, () => atomicWriteFile(configFilePath, String(configDoc)));
+>>>>>>> fca9671cf (Reject malformed YAML before adopting root config)
 	}
 }
 
