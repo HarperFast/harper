@@ -1509,7 +1509,7 @@ export class DatabaseTransaction implements Transaction {
 		// against; a snapshot-free transaction (this.snapshotFree, after a mid-scope-commit rotation)
 		// has no snapshot for rocksdb-js to validate the Put against, so it only narrows the window to
 		// the read-to-put span rather than closing it (open follow-up, tracked in the PR description).
-		// Replays keep their pre-read base — their convergence contract is the replay pass itself.
+		// Replay bypasses the cache: WeakRef targets survive the entire synchronous job, even after eviction.
 		const reloadsCommitBase = operation.reloadCommitBase && !operation.saved && !this.isReplay;
 		// An entry read uncached through this same pinned-snapshot handle is already that base, until a retry resets
 		// the snapshot or an earlier staged write to the key changes what a read returns; the resource withholds the
@@ -1524,7 +1524,7 @@ export class DatabaseTransaction implements Transaction {
 			!(transaction as any).snapshotDisabled &&
 			!this.isReplay;
 		if (!reusesBaseRead && (reloadEntry || operation.entry === undefined || reloadsCommitBase)) {
-			const uncachedRead = (!!operation.reloadCommitBase && !this.isReplay) || reloadEntry;
+			const uncachedRead = !!operation.reloadCommitBase || reloadEntry || this.isReplay;
 			operation.entry = operation.store.getEntry(operation.key, { transaction, uncachedRead });
 		}
 		if (!operation.saved) {
