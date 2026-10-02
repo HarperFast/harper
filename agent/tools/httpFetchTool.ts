@@ -81,8 +81,10 @@ function parseAllowEntry(entry: unknown): HostRule {
 	const port = portText === undefined ? undefined : Number(portText);
 	if (port !== undefined && (port < 1 || port > 65535)) throw invalid('port must be 1-65535');
 	if (ipv6 !== undefined) {
-		if (isIP(ipv6) !== 6) throw invalid('bracketed host is not an IPv6 address');
-		return { host: new URL(`http://[${ipv6}]`).hostname, wildcard: false, port };
+		// `isIP` accepts a zone ID (`fe80::1%eth0`) that `URL` cannot parse.
+		const parsed = isIP(ipv6) === 6 ? URL.parse(`http://[${ipv6}]`) : null;
+		if (!parsed) throw invalid('bracketed host is not an IPv6 address');
+		return { host: parsed.hostname, wildcard: false, port };
 	}
 	const wildcard = name.startsWith('*.');
 	const domain = wildcard ? name.slice(2) : name;
@@ -136,9 +138,6 @@ function effectivePort(url: URL): number {
 	return url.protocol === 'https:' ? 443 : 80;
 }
 
-/**
- * Build `http_fetch` for a resolved `agent.httpFetch` policy; `undefined` when the policy disables it.
- */
 export function buildHttpFetchTool(config: HttpFetchConfig = true): AgentTool | undefined {
 	if (config === false) return undefined;
 	const allowEntries = config === true ? undefined : config.allow;

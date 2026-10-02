@@ -103,6 +103,7 @@ describe('agent/httpFetchTool resolveHttpFetchConfig', () => {
 		[{ allow: ['example.com:0'] }, /port must be 1-65535/],
 		[{ allow: ['example.com:65536'] }, /port must be 1-65535/],
 		[{ allow: ['[not-ipv6]'] }, /not an IPv6 address/],
+		[{ allow: ['[fe80::1%eth0]'] }, /not an IPv6 address/],
 		[{ allow: ['*'] }, /leading "\*\." label/],
 		[{ allow: ['*.'] }, /leading "\*\." label/],
 		[{ allow: ['a.*.com'] }, /leading "\*\." label/],
