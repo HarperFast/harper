@@ -129,7 +129,7 @@ export function executeConditions(
 			// matches — the index decides whether building it beats evaluating the predicate.
 			const candidateKeys =
 				pushdownIndex.candidateKeyFilter && siblings.length > 0
-					? planCandidateKeys(siblings, table, txn, !recordGuards)
+					? planCandidateKeys(siblings, table, txn, !recordGuards, Boolean(pushdownIndex.candidateKeyProbe))
 					: undefined;
 			// Execute a COPY carrying the pushed-down predicate, never mutating the caller's condition
 			// object (which may be reused across requests with different users / guards).
@@ -412,6 +412,16 @@ function composeRecordFilter(recordFilters, table, context): (primaryKey: Id, su
 export interface CandidateKeyPlan {
 	/** Planner estimate of the matching record count; the index sizes its work budget from it. */
 	estimatedCount: number;
+	/** Optional point-membership gate for exact conditions an index store can probe directly. */
+	probe?: {
+		/** Whether the probe covers every pushed-down condition and no opaque record guard remains. */
+		complete: boolean;
+		/** Planner estimate for the conditions this probe actually covers. */
+		estimatedCount: number;
+		/** Worst-case synchronous index reads performed by one call to `has`. */
+		maxReadsPerCandidate: number;
+		has(primaryKey: Id): boolean;
+	};
 	/**
 	 * The matching primary keys, with `complete` true when the set alone decides admission, so the
 	 * index may drop the traversal predicate. That needs every pushed-down condition covered, no
@@ -420,7 +430,13 @@ export interface CandidateKeyPlan {
 	 * superset that gates the predicate instead of replacing it. Null when even the narrowest term
 	 * overruns, which means the whole plan was not worth what it read.
 	 */
-	collect(maxKeys: number): { keys: CandidateKeySet; complete: boolean } | null;
+	collect(maxKeys: number): CandidateKeyCollection | null;
+	collect(maxKeys: number, cooperate: () => Promise<void>): Promise<CandidateKeyCollection | null>;
+}
+
+interface CandidateKeyCollection {
+	keys: CandidateKeySet;
+	complete: boolean;
 }
 
 /**
@@ -470,6 +486,9 @@ interface CandidateKeyScan {
 	index: any;
 	range: any;
 	estimatedCount: number;
+	predicateExact: boolean;
+	probeValue?: any;
+	canProbe?: boolean;
 }
 /** Scans whose UNION is one AND term; a single-element `scans` is a leaf condition. */
 interface CandidateKeyTerm {
@@ -498,7 +517,7 @@ const CANDIDATE_KEY_COMPARATORS = new Set([
  * Plan one leaf condition as an index range scan, or undefined when its matches cannot be read off
  * an index exactly, or when the scan's size cannot be estimated.
  */
-function planCandidateKeyScan(condition, table): CandidateKeyScan | undefined {
+function planCandidateKeyScan(condition, table, includePointProbe: boolean): CandidateKeyScan | undefined {
 	if (condition.negated) return undefined;
 	const attributeName = condition.attribute ?? condition[0];
 	if (typeof attributeName !== 'string' || attributeName === table.primaryKey) return undefined;
@@ -516,6 +535,16 @@ function planCandidateKeyScan(condition, table): CandidateKeyScan | undefined {
 		return undefined;
 	let value = condition[1] ?? condition.value;
 	if (value instanceof Date) value = value.getTime();
+	const attributeType = findAttribute(table.attributes, attributeName)?.type;
+	const predicateExact =
+		comparator !== 'equals' ||
+		value === null ||
+		typeof value === 'string' ||
+		typeof value === 'boolean' ||
+		attributeType === 'Int' ||
+		attributeType === 'Long' ||
+		attributeType === 'Float' ||
+		attributeType === 'BigInt';
 	let start;
 	let end;
 	let inclusiveEnd = false;
@@ -585,22 +614,67 @@ function planCandidateKeyScan(condition, table): CandidateKeyScan | undefined {
 		if (!(belowTrue >= 0)) return undefined;
 		estimatedCount += belowTrue;
 	}
-	return { index, range: { start, end, inclusiveEnd, exclusiveStart }, estimatedCount };
-}
-
-function planCandidateKeys(conditions, table, transaction, guardFree: boolean): CandidateKeyPlan | undefined {
-	const terms: CandidateKeyTerm[] = [];
-	const planned = collectCandidateKeyTerms(conditions, table, terms) && guardFree;
-	if (terms.length === 0) return undefined;
-	const estimatedCount = terms.reduce((narrowest, term) => Math.min(narrowest, term.estimatedCount), Infinity);
+	const canProbe = includePointProbe && comparator === 'equals' && typeof index.hasIndexEntry === 'function';
 	return {
+		index,
+		range: { start, end, inclusiveEnd, exclusiveStart },
 		estimatedCount,
-		collect: (maxKeys) => collectCandidateKeys(terms, transaction, maxKeys, planned),
+		predicateExact,
+		...(includePointProbe ? { probeValue: canProbe ? value : undefined, canProbe } : null),
 	};
 }
 
+function planCandidateKeys(
+	conditions,
+	table,
+	transaction,
+	guardFree: boolean,
+	includePointProbe: boolean
+): CandidateKeyPlan | undefined {
+	const terms: CandidateKeyTerm[] = [];
+	const planned = collectCandidateKeyTerms(conditions, table, terms, includePointProbe) && guardFree;
+	if (terms.length === 0) return undefined;
+	const estimatedCount = terms.reduce((narrowest, term) => Math.min(narrowest, term.estimatedCount), Infinity);
+	function collect(maxKeys: number): CandidateKeyCollection | null;
+	function collect(maxKeys: number, cooperate: () => Promise<void>): Promise<CandidateKeyCollection | null>;
+	function collect(maxKeys: number, cooperate?: () => Promise<void>) {
+		return cooperate
+			? collectCandidateKeysCooperatively(terms, transaction, maxKeys, planned, cooperate)
+			: collectCandidateKeys(terms, transaction, maxKeys, planned);
+	}
+	const plan: CandidateKeyPlan = { estimatedCount, collect };
+	if (!includePointProbe) return plan;
+	const probeTerms = terms.filter((term) => term.scans.every((scan) => scan.canProbe));
+	if (probeTerms.length === 0) return plan;
+	const probeEstimatedCount = probeTerms.reduce(
+		(narrowest, term) => Math.min(narrowest, term.estimatedCount),
+		Infinity
+	);
+	const maxProbeReadsPerCandidate = probeTerms.reduce((total, term) => total + term.scans.length, 0);
+	const probeOptions = { transaction };
+	plan.probe = {
+		complete: planned && probeTerms.length === terms.length,
+		estimatedCount: probeEstimatedCount,
+		maxReadsPerCandidate: maxProbeReadsPerCandidate,
+		has(primaryKey) {
+			for (const term of probeTerms) {
+				let matched = false;
+				for (const scan of term.scans) {
+					if (scan.index.hasIndexEntry(scan.probeValue, primaryKey, probeOptions)) {
+						matched = true;
+						break;
+					}
+				}
+				if (!matched) return false;
+			}
+			return true;
+		},
+	};
+	return plan;
+}
+
 /** Returns whether every condition was covered. */
-function collectCandidateKeyTerms(conditions, table, terms: CandidateKeyTerm[]): boolean {
+function collectCandidateKeyTerms(conditions, table, terms: CandidateKeyTerm[], includePointProbe: boolean): boolean {
 	let complete = true;
 	for (const condition of conditions) {
 		if (condition.conditions) {
@@ -609,7 +683,7 @@ function collectCandidateKeyTerms(conditions, table, terms: CandidateKeyTerm[]):
 				// that branch matches, and admission may over-admit but never omit.
 				const scans: CandidateKeyScan[] = [];
 				for (const child of condition.conditions) {
-					const scan = child.conditions ? undefined : planCandidateKeyScan(child, table);
+					const scan = child.conditions ? undefined : planCandidateKeyScan(child, table, includePointProbe);
 					if (!scan) {
 						complete = false;
 						break;
@@ -618,16 +692,21 @@ function collectCandidateKeyTerms(conditions, table, terms: CandidateKeyTerm[]):
 				}
 				if (scans.length === condition.conditions.length) {
 					terms.push({ scans, estimatedCount: scans.reduce((total, scan) => total + scan.estimatedCount, 0) });
+					if (scans.some((scan) => !scan.predicateExact)) complete = false;
 				}
-			} else if (!collectCandidateKeyTerms(condition.conditions, table, terms)) complete = false;
+			} else if (!collectCandidateKeyTerms(condition.conditions, table, terms, includePointProbe)) complete = false;
 			continue;
 		}
-		const scan = planCandidateKeyScan(condition, table);
-		if (scan) terms.push({ scans: [scan], estimatedCount: scan.estimatedCount });
-		else complete = false;
+		const scan = planCandidateKeyScan(condition, table, includePointProbe);
+		if (scan) {
+			terms.push({ scans: [scan], estimatedCount: scan.estimatedCount });
+			if (!scan.predicateExact) complete = false;
+		} else complete = false;
 	}
 	return complete;
 }
+
+const CANDIDATE_KEY_COLLECTION_YIELD_INTERVAL = 256;
 
 /**
  * Run the planned scans narrowest-estimate first, intersecting on storage key identity. `maxKeys`
@@ -641,7 +720,7 @@ function collectCandidateKeys(
 	transaction,
 	maxKeys: number,
 	planned: boolean
-): { keys: CandidateKeySet; complete: boolean } | null {
+): CandidateKeyCollection | null {
 	const ordered = terms.length > 1 ? terms.slice().sort((a, b) => a.estimatedCount - b.estimatedCount) : terms;
 	let matched: CandidateKeySet | undefined;
 	let complete = planned;
@@ -673,6 +752,65 @@ function collectCandidateKeys(
 		if (matched.size === 0) break;
 	}
 	return { keys: matched!, complete };
+}
+
+function* cooperativeCandidateKeyCollectionSteps(
+	terms: CandidateKeyTerm[],
+	transaction,
+	maxKeys: number,
+	planned: boolean
+): Generator<void, CandidateKeyCollection | null> {
+	const ordered = terms.length > 1 ? terms.slice().sort((a, b) => a.estimatedCount - b.estimatedCount) : terms;
+	let matched: CandidateKeySet | undefined;
+	let complete = planned;
+	let scanned = 0;
+	for (const term of ordered) {
+		if (matched && term.estimatedCount > maxKeys - scanned) {
+			complete = false;
+			continue;
+		}
+		const next = new CandidateKeySet();
+		let overran = false;
+		for (const scan of term.scans) {
+			for (const { value: primaryKey } of scan.index.getRange({ ...scan.range, values: true, transaction })) {
+				if (++scanned > maxKeys) {
+					overran = true;
+					break;
+				}
+				if (!matched || matched.has(primaryKey)) next.add(primaryKey);
+				if (scanned % CANDIDATE_KEY_COLLECTION_YIELD_INTERVAL === 0) yield;
+			}
+			if (overran) break;
+		}
+		if (overran) {
+			if (!matched) return null;
+			complete = false;
+			break;
+		}
+		matched = next;
+		if (matched.size === 0) break;
+	}
+	return { keys: matched!, complete };
+}
+
+async function collectCandidateKeysCooperatively(
+	terms: CandidateKeyTerm[],
+	transaction,
+	maxKeys: number,
+	planned: boolean,
+	cooperate: () => Promise<void>
+): Promise<CandidateKeyCollection | null> {
+	const steps = cooperativeCandidateKeyCollectionSteps(terms, transaction, maxKeys, planned);
+	try {
+		let next = steps.next();
+		while (!next.done) {
+			await cooperate();
+			next = steps.next();
+		}
+		return next.value;
+	} finally {
+		steps.return(null);
+	}
 }
 
 /**

@@ -258,4 +258,103 @@ describe('published native full-text Table.search integration', () => {
 			/One query cannot combine conditions from different full-text indexes/
 		);
 	});
+
+	it('probes a broad indexed equality before loading full-text source records', async () => {
+		Product = table({
+			database: `fulltext-native-companion-probe-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'category', type: 'String', indexed: true },
+			],
+			fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1 }])],
+		});
+		await Product.put(
+			Array.from({ length: 100 }, (_value, index) => ({
+				id: `product-${String(index).padStart(3, '0')}`,
+				title: 'identical catalog product',
+				category: index < 50 ? 'other' : 'target',
+			}))
+		);
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30_000);
+
+		const originalGetEntry = Product.primaryStore.getEntry;
+		let sourceReads = 0;
+		Product.primaryStore.getEntry = function (...args) {
+			sourceReads++;
+			return originalGetEntry.apply(this, args);
+		};
+		let records;
+		try {
+			records = await collect(
+				Product.search({
+					conditions: [
+						{
+							attribute: 'catalogSearch',
+							comparator: 'matches',
+							value: 'catalog',
+							waitForIndexMilliseconds: 30_000,
+						},
+						{ attribute: 'category', comparator: 'equals', value: 'target' },
+					],
+					enforceExecutionOrder: true,
+					limit: 1,
+				})
+			);
+		} finally {
+			Product.primaryStore.getEntry = originalGetEntry;
+		}
+		assert.deepStrictEqual(ids(records), ['product-050']);
+		assert.strictEqual(sourceReads, 1, 'secondary-index misses must not load authoritative records');
+	});
+
+	it('keeps tied BM25 results stable across native pages', async () => {
+		Product = table({
+			database: `fulltext-native-stable-pages-${Date.now()}`,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [definition('catalogSearch', [{ name: 'title', weight: 1 }])],
+		});
+		const expected = Array.from({ length: 300 }, (_value, index) => `product-${String(index).padStart(3, '0')}`);
+		const insertionOrder = [...expected].reverse();
+		for (let start = 0; start < insertionOrder.length; start += 100)
+			await Product.put(
+				insertionOrder.slice(start, start + 100).map((id) => ({ id, title: 'identical catalog product' }))
+			);
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'catalogSearch').state === 'ready', 30_000);
+
+		const search = (limit) =>
+			collect(
+				Product.search({
+					conditions: [
+						{
+							attribute: 'catalogSearch',
+							comparator: 'matches',
+							value: 'identical catalog',
+							maxIndexLagMilliseconds: 0,
+							waitForIndexMilliseconds: 30_000,
+						},
+					],
+					limit,
+				})
+			);
+		const results = await search(270);
+		assert.deepStrictEqual(
+			results.map(({ id }) => id),
+			expected.slice(0, 270)
+		);
+
+		for (const id of expected.slice(-5)) await Product.delete(id);
+		const afterDeletes = await search(300);
+		assert.deepStrictEqual(
+			afterDeletes.map(({ id }) => id),
+			expected.slice(0, -5)
+		);
+	});
 });

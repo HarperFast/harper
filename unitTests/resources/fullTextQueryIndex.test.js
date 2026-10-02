@@ -108,8 +108,13 @@ function definition() {
 function queryLimits(overrides = {}) {
 	const maxSearchWindow = overrides.maxSearchWindow ?? 10_000;
 	return {
+		maxRecordIdBytes: 4_096,
+		maxRecordVersionBytes: 4_096,
+		maxCandidateIds: 1_024,
+		maxCandidateBytes: 1024 * 1024,
 		maxSearchWindow,
 		maxAutocompleteResults: Math.min(100, maxSearchWindow),
+		maxSearchResponseBytes: 8 * 1024 * 1024,
 		maxSearchBudgetMilliseconds: 30_000,
 		maxTraceRecords: 10,
 		maxTraceSourceBytes: Number.MAX_SAFE_INTEGER,
@@ -136,10 +141,14 @@ function simpleQueryIndex({
 	onReload,
 	onClose,
 	onGetEntry,
+	onSearch,
 	entryForKey,
+	estimatedRecordCount = 20,
 	isEntryCurrent,
 	storeName = 'unused',
 	sourceGeneration = 'generation',
+	maxSearchWindow = 10,
+	searchResult,
 }) {
 	let committedPayload = payload;
 	let reloads = 0;
@@ -149,6 +158,7 @@ function simpleQueryIndex({
 			...(isEntryCurrent ? { isFullTextSearchEntryCurrent: isEntryCurrent } : null),
 			primaryStore: {
 				rootStore: auditStore.rootStore,
+				getEstimatedKeyCount: () => estimatedRecordCount,
 				getEntry: (key) => {
 					onGetEntry?.(key);
 					return entryForKey?.(key) ?? { version: 1, value: { title: 'shoe' } };
@@ -168,7 +178,7 @@ function simpleQueryIndex({
 			async runtimeInfo() {
 				return {
 					queryClassIsolationMinimumSearchThreads: 1,
-					limits: queryLimits({ maxSearchWindow: 10, maxTraceRecords: 10 }),
+					limits: queryLimits({ maxSearchWindow, maxTraceRecords: 10 }),
 				};
 			},
 			async openNativeFullTextReader() {
@@ -176,7 +186,10 @@ function simpleQueryIndex({
 					get committedPayload() {
 						return committedPayload;
 					},
-					async search({ offset = 0, limit }) {
+					async search(request) {
+						onSearch?.(request);
+						if (searchResult) return searchResult(request);
+						const { offset = 0, limit } = request;
 						const current = hits();
 						return { total: current.length, totalRelation: 'exact', hits: current.slice(offset, offset + limit) };
 					},
@@ -1062,39 +1075,117 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
-	it('rejects an incomplete injected query capability contract before opening a reader', async () => {
+	it('rejects incomplete injected query capability contracts before opening a reader', async () => {
 		const auditStore = sharedStore();
-		const readinessId = 'binding-capabilities';
-		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
-		let opens = 0;
-		const index = new FullTextQueryIndex({
-			Table: { tableId: 1, primaryStore: {}, _readTxnForContext: () => undefined },
-			definition: definition(),
-			auditStore,
-			readinessId,
-			indexId: readinessId,
-			storePath: '/unused',
-			storeName: 'unused',
-			sourceGeneration: 'generation',
-			limits: {},
-			binding: {
-				async runtimeInfo() {
-					const limits = queryLimits();
-					delete limits.maxAutocompleteResults;
-					return { queryClassIsolationMinimumSearchThreads: 1, limits };
+		for (const missing of [
+			'maxAutocompleteResults',
+			'maxRecordIdBytes',
+			'maxRecordVersionBytes',
+			'maxCandidateIds',
+			'maxCandidateBytes',
+			'maxSearchResponseBytes',
+		]) {
+			const readinessId = `binding-capabilities-${missing}`;
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			let opens = 0;
+			const index = new FullTextQueryIndex({
+				Table: { tableId: 1, primaryStore: {}, _readTxnForContext: () => undefined },
+				definition: definition(),
+				auditStore,
+				readinessId,
+				indexId: readinessId,
+				storePath: '/unused',
+				storeName: 'unused',
+				sourceGeneration: 'generation',
+				limits: {},
+				binding: {
+					async runtimeInfo() {
+						const limits = queryLimits();
+						delete limits[missing];
+						return { queryClassIsolationMinimumSearchThreads: 1, limits };
+					},
+					async openNativeFullTextReader() {
+						opens++;
+					},
 				},
-				async openNativeFullTextReader() {
-					opens++;
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			await assert.rejects(
+				index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}),
+				/Full-text search on 'catalogSearch' failed/
+			);
+			assert.strictEqual(opens, 0);
+			await index.close();
+		}
+	});
+
+	it('rejects native response envelopes that cannot hold a hit and clamps autocomplete', async () => {
+		const search = async (readinessId, overrides, comparator = 'matches', expectedOpens = 1) => {
+			const auditStore = sharedStore();
+			publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+			let opens = 0;
+			let request;
+			const index = new FullTextQueryIndex({
+				Table: { tableId: 1, primaryStore: {}, _readTxnForContext: () => undefined },
+				definition: definition(),
+				auditStore,
+				readinessId,
+				indexId: readinessId,
+				storePath: '/unused',
+				storeName: 'unused',
+				sourceGeneration: 'generation',
+				limits: {},
+				binding: {
+					async runtimeInfo() {
+						return {
+							queryClassIsolationMinimumSearchThreads: 1,
+							limits: queryLimits({
+								maxRecordIdBytes: 1,
+								maxRecordVersionBytes: 1,
+								maxAutocompleteResults: 2,
+								...overrides,
+							}),
+						};
+					},
+					async openNativeFullTextReader() {
+						opens++;
+						return {
+							async search(searchRequest) {
+								request = searchRequest;
+								return { total: 0, totalRelation: 'exact', hits: [] };
+							},
+							committedPayload: publicationPayload(),
+							async reload() {},
+							async close() {},
+						};
+					},
 				},
-			},
-		});
-		attachCurrentCoverage(index, auditStore, readinessId);
+			});
+			attachCurrentCoverage(index, auditStore, readinessId);
+			try {
+				const results = await index.search({ attribute: readinessId, comparator, value: 'shoe' }, {});
+				return { request, results };
+			} finally {
+				await index.close();
+				assert.strictEqual(opens, expectedOpens);
+			}
+		};
 		await assert.rejects(
-			index.search({ attribute: readinessId, comparator: 'matches', value: 'shoe' }, {}),
-			/Full-text search on 'catalogSearch' failed/
+			search('response-cannot-hold-hit', { maxSearchResponseBytes: 27 }, 'matches', 0),
+			(error) => error.statusCode === 500 && error.message === "Full-text search on 'catalogSearch' failed"
 		);
-		assert.strictEqual(opens, 0);
-		await index.close();
+		assert.deepStrictEqual((await search('response-clamps-autocomplete', { maxSearchResponseBytes: 42 })).results, []);
+		const autocomplete = await search(
+			'response-clamps-autocomplete-query',
+			{ maxSearchResponseBytes: 42 },
+			'matches_prefix'
+		);
+		assert.deepStrictEqual(autocomplete.results, []);
+		assert.strictEqual(autocomplete.request.limit, 1);
+		assert.deepStrictEqual(
+			(await search('response-autocomplete-boundary', { maxSearchResponseBytes: 43 })).results,
+			[]
+		);
 	});
 
 	it('maps native query failures without exposing native details', async () => {
@@ -1403,6 +1494,1021 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	it('grows zero-yield native pages within the response envelope', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'adaptive-filtered-paging';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 4_000 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 4_000 - index,
+		}));
+		const requests = [];
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			maxSearchWindow: 4_000,
+			onSearch: (request) => requests.push(request),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 20,
+				filter: (key) => Number(String(key).slice('record-'.length)) >= 3_381,
+			}
+		);
+		assert.deepStrictEqual(
+			requests.map(({ offset, limit }) => ({ offset, limit })),
+			[
+				{ offset: 0, limit: 40 },
+				{ offset: 40, limit: 160 },
+				{ offset: 200, limit: 640 },
+				{ offset: 840, limit: 1_022 },
+				{ offset: 1_862, limit: 1_022 },
+				{ offset: 2_884, limit: 1_022 },
+			]
+		);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			Array.from({ length: 20 }, (_value, index) => `record-${3_381 + index}`)
+		);
+		await index.close();
+	});
+
+	it('sizes the next bounded native page from observed filter yield', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'adaptive-positive-yield';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 1_000 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 1_000 - index,
+		}));
+		const requests = [];
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			maxSearchWindow: 1_000,
+			onSearch: (request) => requests.push(request),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
+			{},
+			{
+				minResults: 20,
+				filter: (key) => key === 'record-0' || key === 'record-20' || Number(key.slice('record-'.length)) >= 700,
+			}
+		);
+		assert.deepStrictEqual(
+			requests.map(({ offset, limit }) => ({ offset, limit })),
+			[
+				{ offset: 0, limit: 40 },
+				{ offset: 40, limit: 720 },
+			]
+		);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			['record-0', 'record-20', ...Array.from({ length: 18 }, (_value, offset) => `record-${700 + offset}`)]
+		);
+		await index.close();
+	});
+
+	it('uses a complete point probe before loading authoritative records', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-point-probe';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 100 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 100 - index,
+		}));
+		let reads = 0;
+		let filters = 0;
+		let collections = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 100,
+			maxSearchWindow: 100,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 1,
+				filter: () => {
+					filters++;
+					return true;
+				},
+				candidateKeys: {
+					estimatedCount: 50,
+					collect: () => {
+						collections++;
+						return null;
+					},
+					probe: {
+						complete: true,
+						estimatedCount: 50,
+						maxReadsPerCandidate: 1,
+						has: (key) => key === 'record-50',
+					},
+				},
+			}
+		);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			['record-50']
+		);
+		assert.strictEqual(collections, 0, 'the broad condition must not be materialized');
+		assert.strictEqual(reads, 1, 'probe misses must not load source records');
+		assert.strictEqual(filters, 0, 'a complete probe decides the companion predicate');
+		await index.close();
+	});
+
+	it('keeps the record predicate behind an incomplete point probe', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-residual-probe';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 4 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 4 - index,
+		}));
+		const loaded = [];
+		const filtered = [];
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 4,
+			onGetEntry: (key) => loaded.push(key),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 1,
+				filter: (key) => {
+					filtered.push(key);
+					return key === 'record-3';
+				},
+				candidateKeys: {
+					estimatedCount: 1,
+					collect: () => null,
+					probe: {
+						complete: false,
+						estimatedCount: 1,
+						maxReadsPerCandidate: 1,
+						has: (key) => key === 'record-2' || key === 'record-3',
+					},
+				},
+			}
+		);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			['record-3']
+		);
+		assert.deepStrictEqual(loaded, ['record-2', 'record-3']);
+		assert.deepStrictEqual(filtered, ['record-2', 'record-3']);
+		await index.close();
+	});
+
+	it('skips point probes that are not expected to avoid source reads', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-unprofitable-probe';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5 - index,
+		}));
+		let reads = 0;
+		let probes = 0;
+		let filters = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 5,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 1,
+				filter: () => {
+					filters++;
+					return true;
+				},
+				candidateKeys: {
+					estimatedCount: 5,
+					collect: () => null,
+					probe: {
+						complete: true,
+						estimatedCount: 5,
+						maxReadsPerCandidate: 1,
+						has: () => {
+							probes++;
+							return true;
+						},
+					},
+				},
+			}
+		);
+		assert.strictEqual(results.length, 1);
+		assert.strictEqual(probes, 0);
+		assert.strictEqual(reads, 1);
+		assert.strictEqual(filters, 1);
+		await index.close();
+	});
+
+	it('prices an incomplete probe from the conditions it covers', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-probe-selectivity';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 2 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 2 - index,
+		}));
+		let probes = 0;
+		let reads = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 100,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 1,
+				filter: (key) => key === 'record-1',
+				candidateKeys: {
+					estimatedCount: 1,
+					collect: () => null,
+					probe: {
+						complete: false,
+						estimatedCount: 100,
+						maxReadsPerCandidate: 1,
+						has: () => {
+							probes++;
+							return true;
+						},
+					},
+				},
+			}
+		);
+		assert.strictEqual(results[0].key, 'record-1');
+		assert.strictEqual(probes, 0);
+		assert.strictEqual(reads, 2);
+		await index.close();
+	});
+
+	it('falls back from costly point probes without changing filtered results', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-probe-cost';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5 - index,
+		}));
+		let reads = 0;
+		let probes = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 5,
+			maxSearchWindow: 5,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const search = (maxReadsPerCandidate) =>
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{},
+				{
+					minResults: 1,
+					filter: (key) => key === 'record-3',
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => null,
+						probe: {
+							complete: true,
+							estimatedCount: 1,
+							maxReadsPerCandidate,
+							has: (key) => {
+								probes++;
+								return key === 'record-3';
+							},
+						},
+					},
+				}
+			);
+		const probed = await search(4);
+		assert.deepStrictEqual(
+			probed.map(({ key }) => key),
+			['record-3']
+		);
+		assert.strictEqual(probes, 4);
+		assert.strictEqual(reads, 1);
+		probes = 0;
+		reads = 0;
+		const fallback = await search(5);
+		assert.deepStrictEqual(
+			fallback.map(({ key }) => key),
+			['record-3']
+		);
+		assert.strictEqual(probes, 0);
+		assert.strictEqual(reads, 4);
+		await index.close();
+	});
+
+	it('backs off a failing candidate-key collection between requests', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-collection-failure';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 2 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 2 - index,
+		}));
+		let collectionAttempts = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 100,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const search = () =>
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{},
+				{
+					minResults: 1,
+					filter: (key) => key === 'record-1',
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => {
+							collectionAttempts++;
+							throw new Error('injected collection failure');
+						},
+					},
+				}
+			);
+		assert.strictEqual((await search())[0].key, 'record-1');
+		assert.strictEqual((await search())[0].key, 'record-1');
+		assert.strictEqual(collectionAttempts, 1);
+		await index.close();
+	});
+
+	it('does not let an older collection success clear a newer failure backoff', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-collection-failure-epoch';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const collectionStarted = Promise.withResolvers();
+		const finishCollection = Promise.withResolvers();
+		let finalCollectionAttempts = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [
+				{ id: nativeId(1, 'record-0'), version: '1', score: 2 },
+				{ id: nativeId(1, 'record-1'), version: '1', score: 1 },
+			],
+			estimatedRecordCount: 100,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const condition = { attribute: readinessId, comparator: 'matches', value: 'pack' };
+		const options = (collect) => ({
+			minResults: 1,
+			filter: () => true,
+			candidateKeys: { estimatedCount: 1, collect },
+		});
+		const realDateNow = Date.now;
+		try {
+			Date.now = () => 1_000;
+			const olderSearch = index.search(
+				condition,
+				{},
+				options(async () => {
+					collectionStarted.resolve();
+					await finishCollection.promise;
+					return null;
+				})
+			);
+			await collectionStarted.promise;
+			assert.strictEqual(
+				(
+					await index.search(
+						condition,
+						{},
+						options(() => ({
+							complete: true,
+							keys: {
+								has() {
+									throw new Error('injected newer collected-set admission failure');
+								},
+							},
+						}))
+					)
+				)[0].key,
+				'record-0'
+			);
+			finishCollection.resolve();
+			assert.strictEqual((await olderSearch)[0].key, 'record-0');
+			assert.strictEqual(
+				(
+					await index.search(
+						condition,
+						{},
+						options(() => {
+							finalCollectionAttempts++;
+							return null;
+						})
+					)
+				)[0].key,
+				'record-0'
+			);
+		} finally {
+			Date.now = realDateNow;
+			finishCollection.resolve();
+		}
+		assert.strictEqual(finalCollectionAttempts, 0);
+		await index.close();
+	});
+
+	it('observes cancellation while collecting candidate keys', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-collection-cancellation';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const cancellation = new Error('cancel candidate collection');
+		const controller = new AbortController();
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () =>
+				Array.from({ length: 100 }, (_value, position) => ({
+					id: nativeId(1, `record-${position}`),
+					version: '1',
+					score: 100 - position,
+				})),
+			estimatedRecordCount: 100,
+			maxSearchWindow: 100,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{ signal: controller.signal },
+				{
+					minResults: 1,
+					filter: () => true,
+					candidateKeys: {
+						estimatedCount: 1,
+						async collect(_maxKeys, cooperate) {
+							controller.abort(cancellation);
+							await cooperate();
+							return null;
+						},
+					},
+				}
+			),
+			(error) => error === cancellation
+		);
+		await index.close();
+	});
+
+	it('backs off a collected set that fails during admission', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-collected-set-failure';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 2 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 2 - index,
+		}));
+		let collections = 0;
+		let collectedAdmissions = 0;
+		let probes = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 100,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const search = () =>
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{},
+				{
+					minResults: 1,
+					filter: (key) => key === 'record-1',
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => {
+							collections++;
+							return {
+								complete: true,
+								keys: {
+									has: () => {
+										collectedAdmissions++;
+										throw new Error('injected collected-set admission failure');
+									},
+								},
+							};
+						},
+						probe: {
+							complete: true,
+							estimatedCount: 1,
+							maxReadsPerCandidate: 1,
+							has: (key) => {
+								probes++;
+								return key === 'record-1';
+							},
+						},
+					},
+				}
+			);
+		const realDateNow = Date.now;
+		let first;
+		let second;
+		try {
+			Date.now = () => 1_000;
+			first = await search();
+			second = await search();
+		} finally {
+			Date.now = realDateNow;
+		}
+		assert.strictEqual(first[0].key, 'record-1');
+		assert.strictEqual(second[0].key, 'record-1');
+		assert.strictEqual(collections, 1);
+		assert.strictEqual(collectedAdmissions, 1);
+		assert.strictEqual(probes, 2);
+		await index.close();
+	});
+
+	it('does not let an older successful probe clear a newer failure backoff', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-probe-failure-epoch';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 130 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 130 - index,
+		}));
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 1_000,
+			maxSearchWindow: 130,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const condition = { attribute: readinessId, comparator: 'matches', value: 'pack' };
+		const options = (has) => ({
+			minResults: 1,
+			filter: () => true,
+			candidateKeys: {
+				estimatedCount: 1,
+				collect: () => null,
+				probe: { complete: true, estimatedCount: 1, maxReadsPerCandidate: 1, has },
+			},
+		});
+		let olderProbeAttempts = 0;
+		let newerFailure;
+		let finalProbeAttempts = 0;
+		const realDateNow = Date.now;
+		try {
+			Date.now = () => 1_000;
+			const olderSearch = index.search(
+				condition,
+				{},
+				options(() => {
+					olderProbeAttempts++;
+					if (olderProbeAttempts === 128) {
+						newerFailure = index.search(
+							condition,
+							{},
+							options(() => {
+								throw new Error('injected newer point-probe failure');
+							})
+						);
+					}
+					return olderProbeAttempts > 128;
+				})
+			);
+			assert.strictEqual((await olderSearch)[0].key, 'record-128');
+			assert(newerFailure, 'the older query must overlap the newer failure');
+			assert.strictEqual((await newerFailure)[0].key, 'record-0');
+			assert.strictEqual(
+				(
+					await index.search(
+						condition,
+						{},
+						options(() => {
+							finalProbeAttempts++;
+							return true;
+						})
+					)
+				)[0].key,
+				'record-0'
+			);
+		} finally {
+			Date.now = realDateNow;
+		}
+		assert.strictEqual(finalProbeAttempts, 0, 'the newer failure cooldown must remain active');
+		await index.close();
+	});
+
+	it('caps candidate collection from the native hit count', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-native-hit-bound';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		let collectionAttempts = 0;
+		let reads = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [{ id: nativeId(1, 'record-0'), version: '1', score: 1 }],
+			estimatedRecordCount: 1_000_000,
+			maxSearchWindow: 10_000,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				filter: () => true,
+				candidateKeys: {
+					estimatedCount: 4_096,
+					collect: () => {
+						collectionAttempts++;
+						return null;
+					},
+				},
+			}
+		);
+		assert.strictEqual(results[0].key, 'record-0');
+		assert.strictEqual(collectionAttempts, 0);
+		assert.strictEqual(reads, 1);
+		await index.close();
+	});
+
+	it('uses a selective collected set once and falls back when point probing fails', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-collected-set';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5 - index,
+		}));
+		let collections = 0;
+		let reads = 0;
+		const fixture = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 1_000,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(fixture.index, auditStore, readinessId);
+		const results = await fixture.index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 1,
+				filter: () => {
+					throw new Error('a complete set must decide the filter');
+				},
+				candidateKeys: {
+					estimatedCount: 1,
+					collect: () => {
+						collections++;
+						return { complete: true, keys: { has: (key) => key === 'record-4' } };
+					},
+				},
+			}
+		);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			['record-4']
+		);
+		assert.strictEqual(collections, 1);
+		assert.strictEqual(reads, 1);
+		await fixture.index.close();
+
+		const boundedReadinessId = 'candidate-collection-bound';
+		publishDerivedIndexReadiness(auditStore, boundedReadinessId, 'ready');
+		let collectionBudget;
+		const bounded = simpleQueryIndex({
+			auditStore,
+			readinessId: boundedReadinessId,
+			payload: publicationPayload(),
+			hits: () =>
+				Array.from({ length: 5_000 }, (_value, index) => ({
+					id: nativeId(1, `record-${index}`),
+					version: '1',
+					score: 5_000 - index,
+				})),
+			estimatedRecordCount: 1_000_000,
+			maxSearchWindow: 5_000,
+		});
+		attachCurrentCoverage(bounded.index, auditStore, boundedReadinessId);
+		await bounded.index.search(
+			{ attribute: boundedReadinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				minResults: 100,
+				filter: () => true,
+				candidateKeys: {
+					estimatedCount: 4_096,
+					collect: (maxKeys) => {
+						collectionBudget = maxKeys;
+						return null;
+					},
+				},
+			}
+		);
+		assert.strictEqual(collectionBudget, 4_096);
+		await bounded.index.close();
+
+		const unboundedReadinessId = 'candidate-unbounded-collection';
+		publishDerivedIndexReadiness(auditStore, unboundedReadinessId, 'ready');
+		let unboundedCollections = 0;
+		const unbounded = simpleQueryIndex({
+			auditStore,
+			readinessId: unboundedReadinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 1_000,
+			maxSearchWindow: 100,
+		});
+		attachCurrentCoverage(unbounded.index, auditStore, unboundedReadinessId);
+		const unboundedResults = await unbounded.index.search(
+			{ attribute: unboundedReadinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{
+				filter: () => {
+					throw new Error('a complete unbounded candidate set must decide the filter');
+				},
+				candidateKeys: {
+					estimatedCount: 1,
+					collect: () => {
+						unboundedCollections++;
+						return { complete: true, keys: { has: (key) => key === 'record-4' } };
+					},
+				},
+			}
+		);
+		assert.deepStrictEqual(
+			unboundedResults.map(({ key }) => key),
+			['record-4']
+		);
+		assert.strictEqual(unboundedCollections, 1);
+		await unbounded.index.close();
+
+		const fallbackReadinessId = 'candidate-probe-fallback';
+		publishDerivedIndexReadiness(auditStore, fallbackReadinessId, 'ready');
+		reads = 0;
+		const fallback = simpleQueryIndex({
+			auditStore,
+			readinessId: fallbackReadinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 5,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(fallback.index, auditStore, fallbackReadinessId);
+		let probeAttempts = 0;
+		const fallbackSearch = () =>
+			fallback.index.search(
+				{ attribute: fallbackReadinessId, comparator: 'matches', value: 'pack' },
+				{},
+				{
+					minResults: 1,
+					filter: (key) => key === 'record-1',
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => null,
+						probe: {
+							complete: true,
+							estimatedCount: 1,
+							maxReadsPerCandidate: 1,
+							has: () => {
+								probeAttempts++;
+								throw new Error('injected point-read failure');
+							},
+						},
+					},
+				}
+			);
+		const fallbackResults = await fallbackSearch();
+		assert.deepStrictEqual(
+			fallbackResults.map(({ key }) => key),
+			['record-1']
+		);
+		assert.strictEqual(reads, 2, 'the established record predicate must resume after a probe failure');
+		assert.strictEqual((await fallbackSearch())[0].key, 'record-1');
+		assert.strictEqual(probeAttempts, 1);
+		await fallback.index.close();
+	});
+
+	it('fails closed when a short lower-bound native page claims more hits', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'short-lower-bound-page';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [],
+			maxSearchWindow: 100,
+			searchResult: ({ limit }) => ({
+				total: limit + 1,
+				totalRelation: 'lower-bound',
+				hits: Array.from({ length: limit - 1 }, (_value, id) => ({
+					id: nativeId(1, `record-${id}`),
+					version: '1',
+					score: limit - id,
+				})),
+			}),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search({ attribute: readinessId, comparator: 'matches', value: 'pack' }, {}, { minResults: 1 }),
+			/incomplete result page/
+		);
+		await index.close();
+	});
+
+	it('accepts a short terminal lower-bound native page', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'terminal-lower-bound-page';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [],
+			maxSearchWindow: 100,
+			searchResult: () => ({
+				total: 3,
+				totalRelation: 'lower-bound',
+				hits: Array.from({ length: 3 }, (_value, id) => ({
+					id: nativeId(1, `record-${id}`),
+					version: '1',
+					score: 3 - id,
+				})),
+			}),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const results = await index.search(
+			{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+			{},
+			{ minResults: 5 }
+		);
+		assert.deepStrictEqual(
+			results.map(({ key }) => key),
+			['record-0', 'record-1', 'record-2']
+		);
+		await index.close();
+	});
+
+	it('honors cancellation while validating a large native page', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'large-page-abort';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5_000 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5_000 - index,
+		}));
+		const controller = new AbortController();
+		const reason = new Error('request abandoned');
+		let reads = 0;
+		let abortScheduled = false;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			maxSearchWindow: 5_000,
+			onGetEntry: () => reads++,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{ signal: controller.signal },
+				{
+					minResults: 2_000,
+					filter: (key) => {
+						if (key === 'record-300' && !abortScheduled) {
+							abortScheduled = true;
+							setImmediate(() => controller.abort(reason));
+						}
+						return false;
+					},
+				}
+			),
+			(error) => error === reason
+		);
+		assert.strictEqual(reads, 512);
+		await index.close();
+	});
+
+	it('yields after bounded companion point-read work', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'point-probe-yield';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5_000 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5_000 - index,
+		}));
+		const controller = new AbortController();
+		const reason = new Error('request abandoned');
+		let probes = 0;
+		let abortScheduled = false;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			estimatedRecordCount: 5_000,
+			maxSearchWindow: 5_000,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'pack' },
+				{ signal: controller.signal },
+				{
+					minResults: 2_000,
+					filter: () => false,
+					candidateKeys: {
+						estimatedCount: 1_000,
+						collect: () => null,
+						probe: {
+							complete: true,
+							estimatedCount: 1_000,
+							maxReadsPerCandidate: 4,
+							has: () => {
+								probes++;
+								if (probes === 300 && !abortScheduled) {
+									abortScheduled = true;
+									setImmediate(() => controller.abort(reason));
+								}
+								return false;
+							},
+						},
+					},
+				}
+			),
+			(error) => error === reason
+		);
+		assert(
+			probes >= 300 && probes <= 307,
+			`cancellation should be observed within one bounded probe interval; performed ${probes} probes`
+		);
+		await index.close();
+	});
+
 	it('uses the native autocomplete window for prefix expressions', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'autocomplete-window';
@@ -1632,9 +2738,103 @@ describe('FullTextQueryIndex', () => {
 		});
 		attachCurrentCoverage(index, auditStore, 'stale-window');
 		await assert.rejects(
-			index.search({ attribute: 'stale-window', comparator: 'matches', value: 'shoe' }, {}, { minResults: 1 }),
+			index.search(
+				{ attribute: 'stale-window', comparator: 'matches', value: 'shoe' },
+				{},
+				{
+					minResults: 1,
+					filter: () => true,
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => null,
+						probe: { complete: true, estimatedCount: 1, maxReadsPerCandidate: 1, has: () => true },
+					},
+				}
+			),
 			(error) => error.name === 'DerivedIndexLagError' && error.statusCode === 503 && error.retryable === true
 		);
+		await index.close();
+	});
+
+	it('samples companion-gate rejections before classifying window exhaustion', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'stale-gate-window';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5 - index,
+		}));
+		let sourceReads = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			maxSearchWindow: 4,
+			estimatedRecordCount: 5,
+			onGetEntry: () => sourceReads++,
+			entryForKey: () => ({ version: 2, value: { title: 'shoe' } }),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
+				{},
+				{
+					minResults: 1,
+					filter: () => false,
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => null,
+						probe: { complete: true, estimatedCount: 1, maxReadsPerCandidate: 1, has: () => false },
+					},
+				}
+			),
+			(error) => error.name === 'DerivedIndexLagError' && error.statusCode === 503 && error.retryable === true
+		);
+		assert.strictEqual(sourceReads, 1, 'only the exhaustion sample should load a rejected record');
+		await index.close();
+	});
+
+	it('reports expired companion-gate rejections when they exhaust the search window', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'expired-gate-window';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const hits = Array.from({ length: 5 }, (_value, index) => ({
+			id: nativeId(1, `record-${index}`),
+			version: '1',
+			score: 5 - index,
+		}));
+		let sourceReads = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => hits,
+			maxSearchWindow: 4,
+			estimatedRecordCount: 5,
+			onGetEntry: () => sourceReads++,
+			entryForKey: () => ({ version: 1, expiresAt: 0, value: { title: 'shoe' } }),
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		await assert.rejects(
+			index.search(
+				{ attribute: readinessId, comparator: 'matches', value: 'shoe' },
+				{},
+				{
+					minResults: 1,
+					filter: () => false,
+					candidateKeys: {
+						estimatedCount: 1,
+						collect: () => null,
+						probe: { complete: true, estimatedCount: 1, maxReadsPerCandidate: 1, has: () => false },
+					},
+				}
+			),
+			/Expired full-text matches exhausted the 4-result search window/
+		);
+		assert.strictEqual(sourceReads, 4, 'only the bounded exhaustion sample should load rejected records');
 		await index.close();
 	});
 

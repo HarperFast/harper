@@ -36,10 +36,24 @@ import {
 	type DerivedNativeIndexHost,
 } from './hnswDerivedIndex.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
+import type { CandidateKeyPlan } from '../search.ts';
+import type { Id } from '../ResourceInterface.ts';
 
 const RAW_PAGE_SIZE = 256;
+const MAX_FILTERED_RAW_PAGE_SIZE = 4_096;
 const MIN_RAW_PAGE_SIZE = 32;
 const RAW_PAGE_OVERFETCH_FACTOR = 2;
+const RAW_PAGE_ZERO_YIELD_GROWTH_FACTOR = 4;
+const RAW_PAGE_YIELD_INTERVAL = 256;
+const CANDIDATE_KEYS_PER_SOURCE_READ = 8;
+const MAX_CANDIDATE_KEYS = 4_096;
+// Four key-only reads remain cheaper than loading and decoding the authoritative record they replace.
+const MAX_POINT_PROBE_READS_PER_CANDIDATE = 4;
+const REJECTED_GATE_SAMPLE_SIZE = 8;
+const CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS = 1_000;
+// Fulltext 0.5.0 Query API v3 uses a 13-byte response header and 13 bytes per versioned hit before string data.
+const NATIVE_SEARCH_RESPONSE_HEADER_BYTES = 13;
+const NATIVE_SEARCH_HIT_OVERHEAD_BYTES = 13;
 const MAX_RELOAD_FAILURES_BEFORE_REOPEN = 3;
 const HIGHLIGHT_BLOB_READ_TIMEOUT_MILLISECONDS = 5_000;
 const READER_DRAIN_GRACE_MILLISECONDS = 1_000;
@@ -72,6 +86,12 @@ type ReaderSlot = {
 	reloadFailures: number;
 };
 
+type CandidateGate = {
+	complete: boolean;
+	maxReadsPerCandidate: number;
+	has(primaryKey: Id): boolean;
+};
+
 type FullTextQueryHost = Pick<DerivedNativeIndexHost, 'readiness' | 'waitForCoverage' | 'requestRebuild'>;
 
 class FullTextReaderPublicationError extends Error {}
@@ -97,6 +117,8 @@ export type FullTextQueryIndexOptions = {
 
 export class FullTextQueryIndex {
 	readonly filteredSearch = true;
+	readonly candidateKeyFilter = true;
+	readonly candidateKeyProbe = true;
 	readonly filePrimary = true;
 	readonly #options: FullTextQueryIndexOptions;
 	readonly #nativeOptions: NativeFullTextIndexConfiguration & {
@@ -112,6 +134,7 @@ export class FullTextQueryIndex {
 	#readerOperation?: Promise<ReaderSlot>;
 	#retiredReaderSlots = new Set<ReaderSlot>();
 	#maxSearchWindow?: number;
+	#maxFilteredRawPageSize?: number;
 	#maxAutocompleteResults?: number;
 	#maxSearchBudgetMilliseconds?: number;
 	#maxTraceRecords?: number;
@@ -125,6 +148,13 @@ export class FullTextQueryIndex {
 	#publicationRebuildRequested = false;
 	#refreshFailureWarned = false;
 	#unexpectedSearchFailureWarned = false;
+	#incompletePageFailureLogged = false;
+	#candidateCollectionFailureWarned = false;
+	#candidateProbeFailureWarned = false;
+	#candidateCollectionRetryAfter = 0;
+	#candidateProbeRetryAfter = 0;
+	#candidateCollectionFailureEpoch = 0;
+	#candidateProbeFailureEpoch = 0;
 
 	constructor(options: FullTextQueryIndexOptions) {
 		this.#options = options;
@@ -184,6 +214,7 @@ export class FullTextQueryIndex {
 			minResults?: number;
 			resultOffset?: number;
 			assertTransactionActive?: () => void;
+			candidateKeys?: CandidateKeyPlan;
 		} = {}
 	): Promise<Array<{ key: unknown; $score: number; $highlights?: Record<string, unknown>; loadedEntry: any }>> {
 		const maxIndexLagMilliseconds = condition.maxIndexLagMilliseconds ?? DEFAULT_MAX_INDEX_LAG_MILLISECONDS;
@@ -225,11 +256,13 @@ export class FullTextQueryIndex {
 				context?.signal?.throwIfAborted();
 				const result = await this.#search(condition, context, options);
 				this.#unexpectedSearchFailureWarned = false;
+				this.#incompletePageFailureLogged = false;
 				return result;
 			}
 			coverage = this.#queryCoverage(maxIndexLagMilliseconds);
 			const result = await this.#search(condition, context, options);
 			this.#unexpectedSearchFailureWarned = false;
+			this.#incompletePageFailureLogged = false;
 			return result;
 		};
 		const operation = execute().catch((error) => {
@@ -333,6 +366,7 @@ export class FullTextQueryIndex {
 			minResults?: number;
 			resultOffset?: number;
 			assertTransactionActive?: () => void;
+			candidateKeys?: CandidateKeyPlan;
 		}
 	): Promise<Array<{ key: unknown; $score: number; $highlights?: Record<string, unknown>; loadedEntry: any }>> {
 		const readiness = readDerivedIndexReadiness(this.#options.auditStore, this.#options.readinessId);
@@ -395,13 +429,25 @@ export class FullTextQueryIndex {
 			let moreMayExist = false;
 			let staleVersionHits = 0;
 			let expiredHits = 0;
+			let rejectedGateSampleCount = 0;
+			let rejectedGateKeys: Id[] | undefined;
+			let rejectedGateVersions: string[] | undefined;
+			let rawPageSize = bounded
+				? Math.min(
+						this.#maxFilteredRawPageSize!,
+						RAW_PAGE_SIZE,
+						Math.max(MIN_RAW_PAGE_SIZE, target * RAW_PAGE_OVERFETCH_FACTOR)
+					)
+				: Math.min(this.#maxFilteredRawPageSize!, RAW_PAGE_SIZE);
 			const transaction = context && this.#options.Table._readTxnForContext(context);
+			const candidatePlan = options.filter ? options.candidateKeys : undefined;
+			let candidateGate: CandidateGate | undefined;
+			let candidateGatePlanned = false;
+			let candidateProbeFailureEpoch = 0;
 			while (accepted.length < target && offset < searchWindow) {
 				if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
-				const desiredPageSize = bounded
-					? Math.max(MIN_RAW_PAGE_SIZE, (target - accepted.length) * RAW_PAGE_OVERFETCH_FACTOR)
-					: RAW_PAGE_SIZE;
-				const limit = autocomplete ? searchWindow : Math.min(RAW_PAGE_SIZE, desiredPageSize, searchWindow - offset);
+				const limit = autocomplete ? searchWindow : Math.min(rawPageSize, searchWindow - offset);
+				const acceptedBeforePage = accepted.length;
 				const result = await reader.search(
 					{
 						query,
@@ -413,15 +459,111 @@ export class FullTextQueryIndex {
 				);
 				if (!bounded && !autocomplete && result.totalRelation === 'exact' && result.total > searchWindow)
 					throw new ClientError(`Full-text query exceeds the ${searchWindow}-result search window; add a limit`, 400);
+				// Fulltext 0.5.0 Query API v3 only reports lower-bound while a full requested page remains retrievable.
+				if (
+					result.totalRelation === 'lower-bound' &&
+					result.hits.length < limit &&
+					offset + result.hits.length < result.total
+				) {
+					if (!this.#incompletePageFailureLogged) {
+						this.#incompletePageFailureLogged = true;
+						logger.error?.(
+							`Full-text index '${this.#definition.name}' returned ${result.hits.length} of ${limit} hits at offset ${offset} with lower-bound total ${result.total}`
+						);
+					}
+					throw new ServerError('Full-text index returned an incomplete result page', 500);
+				}
+				// An exact total can safely continue from the returned offset; only a short lower-bound page breaks the v3 contract.
 				moreMayExist =
 					result.totalRelation === 'exact' ? offset + result.hits.length < result.total : result.hits.length === limit;
 				if (result.hits.length === 0) break;
-				for (const hit of result.hits) {
-					const key = decodeNativeId(hit.id, this.#options.Table.tableId);
-					options.assertTransactionActive?.();
-					const entry = this.#options.Table.primaryStore.getEntry(key, { transaction });
+				if (!candidateGatePlanned) {
+					candidateGatePlanned = true;
+					if (candidatePlan) {
+						const assertSearchActive = () => {
+							if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
+							options.assertTransactionActive?.();
+							remainingSearchBudget(deadline);
+						};
+						assertSearchActive();
+						const nativeHitCount = Math.min(searchWindow, Math.max(result.hits.length, result.total));
+						candidateGate = await this.#candidateGate(
+							candidatePlan,
+							target,
+							nativeHitCount,
+							async () => {
+								await new Promise((resolve) => setImmediate(resolve));
+								assertSearchActive();
+							},
+							assertSearchActive
+						);
+						candidateProbeFailureEpoch = this.#candidateProbeFailureEpoch;
+					}
+				}
+				const pointReadsPerCandidate = candidateGate?.maxReadsPerCandidate ?? 0;
+				const workYieldInterval = Math.min(
+					limit,
+					pointReadsPerCandidate === 0
+						? RAW_PAGE_YIELD_INTERVAL
+						: Math.max(1, Math.floor(RAW_PAGE_YIELD_INTERVAL / (pointReadsPerCandidate + 1)))
+				);
+				let nextYieldIndex = workYieldInterval;
+				for (let hitIndex = 0; hitIndex < result.hits.length; hitIndex++) {
+					if (hitIndex === nextYieldIndex) {
+						await new Promise((resolve) => setImmediate(resolve));
+						if (context?.signal?.aborted) throw context.signal.reason ?? new Error('Full-text search aborted');
+						remainingSearchBudget(deadline);
+						nextYieldIndex += workYieldInterval;
+					}
+					const hit = result.hits[hitIndex];
+					const key = decodeNativeId(hit.id, this.#options.Table.tableId) as Id;
 					if (typeof hit.version !== 'string')
 						throw new ServerError('Full-text index returned a hit without a source version', 500);
+					options.assertTransactionActive?.();
+					let candidateDecides = false;
+					if (candidateGate) {
+						try {
+							const admitted = candidateGate.has(key);
+							if (
+								candidateGate.maxReadsPerCandidate > 0 &&
+								candidateProbeFailureEpoch === this.#candidateProbeFailureEpoch
+							) {
+								this.#candidateProbeFailureWarned = false;
+								this.#candidateProbeRetryAfter = 0;
+							}
+							if (!admitted) {
+								if (rejectedGateSampleCount < REJECTED_GATE_SAMPLE_SIZE) {
+									(rejectedGateKeys ??= [])[rejectedGateSampleCount] = key;
+									(rejectedGateVersions ??= [])[rejectedGateSampleCount] = hit.version;
+									rejectedGateSampleCount++;
+								}
+								continue;
+							}
+							candidateDecides = candidateGate.complete;
+						} catch (error) {
+							const usedPointProbe = candidateGate.maxReadsPerCandidate > 0;
+							candidateGate = undefined;
+							if (usedPointProbe) {
+								this.#candidateProbeFailureEpoch++;
+								this.#candidateProbeRetryAfter = Date.now() + CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS;
+								if (!this.#candidateProbeFailureWarned) {
+									this.#candidateProbeFailureWarned = true;
+									logger.warn?.('could not probe the full-text companion index; using the record predicate', error);
+								}
+							} else {
+								this.#candidateCollectionFailureEpoch++;
+								this.#candidateCollectionRetryAfter = Date.now() + CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS;
+								if (!this.#candidateCollectionFailureWarned) {
+									this.#candidateCollectionFailureWarned = true;
+									logger.warn?.(
+										'could not apply the full-text candidate-key set; using the record predicate; point probes may resume on later requests',
+										error
+									);
+								}
+							}
+						}
+					}
+					const entry = this.#options.Table.primaryStore.getEntry(key, { transaction });
 					if (!entry?.value || hit.version !== String(entry.version)) {
 						staleVersionHits++;
 						continue;
@@ -434,17 +576,50 @@ export class FullTextQueryIndex {
 						expiredHits++;
 						continue;
 					}
-					if (options.filter && !options.filter(key, entry)) continue;
+					if (options.filter && !candidateDecides && !options.filter(key, entry)) continue;
 					accepted.push({ key, $score: hit.score, nativeId: hit.id, record: entry.value, recordEntry: entry });
 					if (accepted.length >= target) break;
 				}
 				offset += result.hits.length;
 				if (autocomplete) break;
 				if (!moreMayExist) break;
-				if (accepted.length < target) await new Promise((resolve) => setImmediate(resolve));
+				if (accepted.length < target) {
+					if (bounded) {
+						const acceptedThisPage = accepted.length - acceptedBeforePage;
+						rawPageSize = nextFilteredRawPageSize(
+							limit,
+							result.hits.length,
+							acceptedThisPage,
+							target - accepted.length,
+							this.#maxFilteredRawPageSize!
+						);
+					}
+					await new Promise((resolve) => setImmediate(resolve));
+				}
 			}
 			if (!bounded && moreMayExist)
 				throw new ClientError(`Full-text query exceeds the ${searchWindow}-result search window; add a limit`, 400);
+			if (
+				bounded &&
+				accepted.length < target &&
+				moreMayExist &&
+				staleVersionHits === 0 &&
+				rejectedGateSampleCount > 0
+			) {
+				options.assertTransactionActive?.();
+				for (let sampleIndex = 0; sampleIndex < rejectedGateSampleCount; sampleIndex++) {
+					const entry = this.#options.Table.primaryStore.getEntry(rejectedGateKeys![sampleIndex], { transaction });
+					if (
+						!entry?.value ||
+						rejectedGateVersions![sampleIndex] !== String(entry.version) ||
+						this.#options.Table.isFullTextSearchEntryCurrent?.(entry) === false
+					) {
+						staleVersionHits++;
+						break;
+					}
+					if (entry.expiresAt !== undefined && entry.expiresAt < Date.now()) expiredHits++;
+				}
+			}
 			if (bounded && accepted.length < target && moreMayExist && staleVersionHits > 0)
 				throw new DerivedIndexLagError(
 					`Full-text index '${this.#definition.name}' changed while searching; retry this query`
@@ -473,6 +648,64 @@ export class FullTextQueryIndex {
 		} finally {
 			await lease.release();
 		}
+	}
+
+	async #candidateGate(
+		plan: CandidateKeyPlan,
+		target: number,
+		maxSourceReads: number,
+		cooperate: () => Promise<void>,
+		assertActive: () => void
+	): Promise<CandidateGate | undefined> {
+		const store = this.#options.Table.primaryStore;
+		const estimatedRecords =
+			typeof store.getEstimatedKeyCount === 'function' ? store.getEstimatedKeyCount() : store.getStats?.().entryCount;
+		const recordCount = Math.max(1, Number.isFinite(estimatedRecords) ? estimatedRecords : target);
+		const selectivity = Math.min(1, Math.max(1, plan.estimatedCount) / recordCount);
+		const expectedSourceReads = Math.min(maxSourceReads, Math.ceil(target / selectivity));
+		const expectedRejectedReads = Math.ceil(expectedSourceReads * (1 - selectivity));
+		const maxKeys = Math.min(MAX_CANDIDATE_KEYS, Math.ceil(expectedRejectedReads * CANDIDATE_KEYS_PER_SOURCE_READ));
+		const now = Date.now();
+		if (plan.estimatedCount <= maxKeys && now >= this.#candidateCollectionRetryAfter) {
+			const collectionFailureEpoch = this.#candidateCollectionFailureEpoch;
+			try {
+				const collected = await plan.collect(maxKeys, cooperate);
+				assertActive();
+				if (collectionFailureEpoch === this.#candidateCollectionFailureEpoch) {
+					this.#candidateCollectionFailureWarned = false;
+					this.#candidateCollectionRetryAfter = 0;
+				}
+				if (collected)
+					return {
+						complete: collected.complete,
+						maxReadsPerCandidate: 0,
+						has: (primaryKey) => collected.keys.has(primaryKey),
+					};
+			} catch (error) {
+				assertActive();
+				this.#candidateCollectionFailureEpoch++;
+				this.#candidateCollectionRetryAfter = Date.now() + CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS;
+				if (!this.#candidateCollectionFailureWarned) {
+					this.#candidateCollectionFailureWarned = true;
+					logger.warn?.(
+						'could not build the full-text candidate-key set; using point probes or the record predicate',
+						error
+					);
+				}
+			}
+		}
+		const probe = plan.probe;
+		if (
+			!probe ||
+			now < this.#candidateProbeRetryAfter ||
+			probe.maxReadsPerCandidate > MAX_POINT_PROBE_READS_PER_CANDIDATE
+		)
+			return;
+		const probeSelectivity = Math.min(1, Math.max(1, probe.estimatedCount) / recordCount);
+		const expectedAvoidedSourceReadsPerCandidate = 1 - probeSelectivity;
+		return probe.maxReadsPerCandidate <= expectedAvoidedSourceReadsPerCandidate * CANDIDATE_KEYS_PER_SOURCE_READ
+			? probe
+			: undefined;
 	}
 
 	async #addHighlights(
@@ -827,7 +1060,22 @@ export class FullTextQueryIndex {
 			this.#nativeOptions.limits.searchThreads
 		);
 		this.#maxSearchWindow = info.limits.maxSearchWindow;
-		this.#maxAutocompleteResults = info.limits.maxAutocompleteResults;
+		const responseHitCapacity = Math.floor(
+			(info.limits.maxSearchResponseBytes - NATIVE_SEARCH_RESPONSE_HEADER_BYTES) /
+				(NATIVE_SEARCH_HIT_OVERHEAD_BYTES + info.limits.maxRecordIdBytes + info.limits.maxRecordVersionBytes)
+		);
+		if (responseHitCapacity < 1)
+			throw new TypeError('@harperfast/fulltext/native search response limit cannot hold one maximum-size hit');
+		if (responseHitCapacity < info.limits.maxAutocompleteResults)
+			logger.warn?.(
+				`Full-text index '${this.#definition.name}' limits autocomplete to ${responseHitCapacity} results because the native response envelope cannot hold its advertised maximum`
+			);
+		this.#maxFilteredRawPageSize = Math.min(
+			MAX_FILTERED_RAW_PAGE_SIZE,
+			info.limits.maxSearchWindow,
+			responseHitCapacity
+		);
+		this.#maxAutocompleteResults = Math.min(info.limits.maxAutocompleteResults, responseHitCapacity);
 		this.#maxSearchBudgetMilliseconds = info.limits.maxSearchBudgetMilliseconds;
 		this.#maxTraceRecords = info.limits.maxTraceRecords;
 		this.#maxTraceSourceBytes = info.limits.maxTraceSourceBytes;
@@ -856,6 +1104,21 @@ export class FullTextQueryIndex {
 			maxLagMilliseconds
 		);
 	}
+}
+
+function nextFilteredRawPageSize(
+	currentPageSize: number,
+	rawHits: number,
+	acceptedHits: number,
+	remainingResults: number,
+	maxPageSize: number
+): number {
+	const projected =
+		acceptedHits === 0
+			? // With no selectivity signal, grow independently of the remaining target to minimize native round trips.
+				currentPageSize * RAW_PAGE_ZERO_YIELD_GROWTH_FACTOR
+			: Math.ceil((remainingResults * rawHits * RAW_PAGE_OVERFETCH_FACTOR) / acceptedHits);
+	return Math.min(maxPageSize, Math.max(MIN_RAW_PAGE_SIZE, projected));
 }
 
 export async function pauseNativeFullTextQueryReaders(
