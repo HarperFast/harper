@@ -49,7 +49,9 @@ describe('the release certification gate', function () {
 				onStarted(worker) {
 					started.push(worker);
 					worker.certifyRequests = [];
+					worker.lifecycle = [];
 					worker.on('message', (message) => {
+						if (message?.type === 'fixture-lifecycle') worker.lifecycle.push(message);
 						if (message?.type === 'fixture-admitted') worker.admitted = true;
 						if (message?.type !== 'fixture-booted') return;
 						worker.certifyRequests.push(message.certify);
@@ -469,6 +471,45 @@ describe('the release certification gate', function () {
 		);
 		const canary = started.find((worker) => worker.certifyRequests[0]?.[0]?.deploymentId === next);
 		assert.equal(canary.failClosed, null, 'the next release is not refused for the last one');
+	});
+
+	it("pauses the running workers' watchers from the commit until a certified rollout ends", async () => {
+		const { deployLifecycle } = require('#src/components/deployLifecycle');
+		plan([{ outcome: 'loaded', delayMs: 300 }]);
+		await arm();
+		await commit();
+		assert.ok(
+			pool.every((worker) => worker.lifecycle.map(({ phase }) => phase).join() === 'start'),
+			'every running worker paused before the commit answered'
+		);
+		assert.equal(deployLifecycle.loadsAwaitDeploy(COMPONENT), true);
+		await decisionOf();
+		assert.equal(deployLifecycle.loadsAwaitDeploy(COMPONENT), true, 'still paused once the canary decides');
+		await rolledOut();
+		assert.equal(deployLifecycle.loadsAwaitDeploy(COMPONENT), false, 'and resumed once the rollout ends');
+		const replacements = started.filter((worker) => !pool.includes(worker));
+		assert.ok(
+			replacements.every((worker) => worker.lifecycle.every(({ phase }) => phase !== 'start')),
+			'a worker started on the release is never paused, and loads it'
+		);
+	});
+
+	it('resumes the watchers of the workers a refusal kept serving only after the predecessor is back', async () => {
+		plan([{ outcome: 'failed' }]);
+		await arm();
+		await commit();
+		assert.equal((await decisionOf()).status, 'rejected');
+		await rolledOut();
+		await waitFor(() => pool.every((worker) => worker.lifecycle.length === 2), {
+			message: 'the kept workers were not resumed',
+		});
+		for (const worker of pool) {
+			assert.deepStrictEqual(
+				worker.lifecycle.map(({ phase }) => phase),
+				['start', 'end']
+			);
+			assert.ok(worker.lifecycle[1].at >= decisions[0].at, 'resumed after the refusal was decided and restored');
+		}
 	});
 
 	it('refuses to withdraw a release once it is committed', async () => {

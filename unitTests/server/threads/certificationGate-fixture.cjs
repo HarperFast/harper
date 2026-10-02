@@ -11,6 +11,12 @@ const planPath = process.env.CERTIFICATION_GATE_PLAN;
 
 let step;
 parentPort.on('message', (message) => {
+	// A deploy bracket pausing this worker's watchers: recorded for the suite, and acknowledged as a real worker does.
+	if (message?.type === 'harper:deploy:lifecycle') {
+		parentPort.postMessage({ type: 'fixture-lifecycle', phase: message.event?.phase, at: Date.now() });
+		if (message.requestId) parentPort.postMessage({ type: 'ack', id: message.requestId });
+		return;
+	}
 	if (message?.type === ITC_EVENT_TYPES.SHUTDOWN) setTimeout(() => process.exit(0), step?.shutdownDelayMs ?? 20);
 	else if (message?.type === ITC_EVENT_TYPES.CHILD_ADMITTED) {
 		if (step?.afterAdmission === 'exit') process.exit(4);

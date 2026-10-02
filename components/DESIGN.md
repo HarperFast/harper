@@ -87,6 +87,11 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    refusals a Windows scanner causes; one that still cannot be removed keeps fencing until Harper restarts, and
    the log says so.
 3. **Commit, after the swap.** Main starts the rollout, and drops any in-memory refusal of the component (below).
+   First it opens a deploy bracket of its own (`broadcastDeployStart`), which every running thread acknowledges
+   before the commit answers, so before the requester's own bracket closes. It closes when the rollout completes,
+   after any restore. The workers already running keep their watchers of the component paused through the hold:
+   none reacts to a release its canary may refuse, and a refused one is back on disk before they resume. A worker
+   the rollout starts never saw the bracket, so it loads the release.
    A requester that dies armed is resolved from the disk: committed when its release is live, withdrawn when it is
    not, and committed when the disk cannot say, so that a canary decides — one that loads the previous release
    rejects on its generation, and the restore finds that release already live. Restarts that start replacements are serialized
@@ -154,8 +159,8 @@ release could not be armed on the origin restarts as it did before.
 
 **What it does not cover.** The release is live on disk before its canary boots, so a worker the rollout has not
 reached that first imports a module during the hold reads it from the new release
-(`integrationTests/deploy/canary-rollout.test.ts` pins this); taking a node out of rotation for the rollout is
-harper#2975.
+(`integrationTests/deploy/canary-rollout.test.ts` pins this). Its watchers are paused (step 3), so an import is
+the only way the release reaches it. Taking a node out of rotation for the rollout is harper#2975.
 
 ### Staging a build now and activating it later
 

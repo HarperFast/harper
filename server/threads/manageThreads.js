@@ -594,10 +594,14 @@ function armCertification({ component, deploymentId, isolated, scope, requesterT
 	return { armed: true };
 }
 
-function commitCertification(component, deploymentId) {
+async function commitCertification(component, deploymentId) {
 	const certification = findCertification(component, deploymentId);
 	if (!certification || certification.phase !== 'armed') return false;
 	certification.phase = 'committed';
+	// Every thread already running stops watching the component until the rollout ends: the release on disk is not
+	// theirs to pick up while its canary decides, and a refused one is put back under them. Each has paused before this
+	// answers, so before the requester's own deploy bracket closes.
+	certification.watchersPaused = await pauseWatchersOf(component);
 	certification.unarmed.resolve();
 	// A release goes live in place of the refused one, or that release is being certified again.
 	failClosedInMemory.delete(component);
@@ -652,8 +656,18 @@ async function completeCertification(certification, outcome) {
 		);
 	}
 	if (certifications.get(certification.component) === certification) certifications.delete(certification.component);
+	if (certification.watchersPaused) resumeWatchersOf(certification.component, certification.watchersPaused);
 	certification.rolledOut.resolve(outcome);
 	startDeferredStarts(certification);
+}
+
+/** A deploy bracket of main's own (components/deployLifecycle.ts), which pauses every thread's watchers of a component. */
+function pauseWatchersOf(component) {
+	return require('../../components/deployLifecycle.ts').broadcastDeployStart(component);
+}
+
+function resumeWatchersOf(component, bracket) {
+	require('../../components/deployLifecycle.ts').broadcastDeployEnd(component, bracket);
 }
 
 function errorMessageOf(error) {
@@ -981,14 +995,14 @@ function registerCertificationRequests() {
 			if (certification.phase !== 'armed' || certification.requesterThreadId !== threadId) continue;
 			Promise.resolve(certificationHandler?.resolveArmed?.(certification))
 				.then((resolution) => {
-					if (resolution === 'committed') commitCertification(certification.component, certification.deploymentId);
+					if (resolution === 'committed') void commitCertification(certification.component, certification.deploymentId);
 					else withdrawCertification(certification.component, certification.deploymentId);
 				})
 				.catch((error) => {
 					// Whether the swap happened is unknown, so the release is treated as live: a canary loading the
 					// previous release instead rejects on its generation, and the restore finds that one live.
 					harperLogger.error(`Could not resolve the certification of ${certification.component}`, error);
-					commitCertification(certification.component, certification.deploymentId);
+					void commitCertification(certification.component, certification.deploymentId);
 				});
 		}
 	});

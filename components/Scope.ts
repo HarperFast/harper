@@ -38,7 +38,9 @@ export type ScopeEventsMap = {
 	// (extract + npm install). Plugins observing these can pause their own
 	// file-driven work to avoid acting on intermediate states.
 	'deploy:start': [componentName: string];
-	// Fired after deploy I/O completes (success or failure). The scope's
+	// Fired after deploy I/O completes (success or failure), or, for a deploy
+	// a canary certifies, once its rollout ends, so a worker the rollout
+	// replaces may never see it. The scope's
 	// EntryHandlers have been resumed by this point; their replacement watcher
 	// generation compares the post-deploy scan with the retained pre-deploy
 	// snapshot, so subsequent events are the logical differences of that tree,

@@ -222,6 +222,8 @@ suite(
 			for (let index = 0; index < 10; index++) {
 				strictEqual(await servedVersion(ctx, PROJECT), 2, 'the deploy answers once every worker serves the release');
 			}
+			// A worker reacting to the release while its canary was held would have asked for a restart nobody needs.
+			strictEqual((await operation(ctx, { operation: 'get_status' })).restartRequired, false);
 		});
 
 		test('a release that throws at load is rejected, the release it replaced is put back, and it never serves', async () => {
@@ -241,6 +243,8 @@ suite(
 			deepStrictEqual([...new Set(seen)], [2], 'the release it replaced answered throughout');
 			strictEqual(await liveVersion(ctx, PROJECT), '2', 'and is the live tree again');
 			deepStrictEqual(await certificationRecords(ctx, PROJECT), [], 'a restored rejection keeps no record');
+			// The workers that kept serving never saw the rejected release's files come and go.
+			strictEqual((await operation(ctx, { operation: 'get_status' })).restartRequired, false);
 		});
 
 		test('a rejected first deploy fails closed, stays refused across a restart, and a fixed deploy replaces it', async () => {
