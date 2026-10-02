@@ -105,7 +105,8 @@ certified by its canary worker"). A held worker runs its boot load, reports `CHI
 nothing until main posts `CHILD_ADMITTED` (`threadServer.startServers`, `threads/heldStart.ts`); a refusal arrives
 as an ordinary `SHUTDOWN`. Since it binds nothing, it boots beside its predecessor even where the two cannot share
 a port, and the predecessor is retired at admission. Restarts that start replacements are serialized on main
-(`replacementRestarts`), and the worker that asked for a certifying restart is replaced last.
+(`replacementRestarts`), none starts one while a release is armed (`untilNoCertificationArmed`), and the worker
+that asked for a certifying restart is replaced last.
 
 > `index.ts` sets `workerData.noServerStart = true` when Harper is imported from a thread it did not spawn, so `threadServer.js` skips `startServers()` there; Harper's own HTTP workers start their servers.
 >

@@ -661,6 +661,15 @@ async function completeCertification(certification, outcome) {
 	startDeferredStarts(certification);
 }
 
+/** A start made while a release is armed loaded a tree that release's verdict cannot rest on. */
+async function untilNoCertificationArmed() {
+	for (;;) {
+		const armed = [...certifications.values()].find((pending) => pending.phase === 'armed');
+		if (!armed) return;
+		await armed.unarmed.promise;
+	}
+}
+
 /** A deploy bracket of main's own (components/deployLifecycle.ts) over a complete tree: it holds watchers, not loads. */
 function pauseWatchersOf(component) {
 	return require('../../components/deployLifecycle.ts').broadcastDeployStart(component, { watchersOnly: true });
@@ -1292,11 +1301,7 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 		// thread keeps serving the HTTP ports throughout. This ordering is also what lets
 		// listenOnPorts() treat a dedicated listener's EADDRINUSE as an external conflict.
 		const platformCanPreStartReplacement = process.platform !== 'win32' && process.platform !== 'darwin' && !isBun;
-		if (startReplacementThreads) {
-			for (const pending of [...certifications.values()]) {
-				if (pending.phase === 'armed') await pending.unarmed.promise;
-			}
-		}
+		if (startReplacementThreads) await untilNoCertificationArmed();
 		const restarting = workers.slice(0);
 		if (certification?.requesterThreadId !== undefined) {
 			const requesterAt = restarting.findIndex((worker) => worker.threadId === certification.requesterThreadId);
@@ -1310,6 +1315,9 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 				.filter((other) => (!name || other.name === name) && !other.wasShutdown && workers.includes(other)).length;
 		for (let index = 0; index < restarting.length; index++) {
 			const worker = restarting[index];
+			// Before every replacement, not just the first: one booted while another release is armed cannot decide it,
+			// and that release's own rollout waits behind this one.
+			if (startReplacementThreads) await untilNoCertificationArmed();
 			// Terminal shutdown: stop replacing workers mid-loop — the guard for every replacement start below.
 			if (processShuttingDown && startReplacementThreads) break;
 			// A refusal ends the rollout wherever it was decided, including by a crash restart's canary.
@@ -1426,6 +1434,7 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 				}
 			}
 			if (certification && worker.threadId === certification.requesterThreadId) await requesterRelease(certification);
+			if (startReplacementThreads) await untilNoCertificationArmed();
 			harperLogger.trace('sending shutdown request to ', worker.threadId);
 			// the worker exited on its own while we were starting its replacement — nothing left to
 			// shut down (its overlapping replacement, if any, is already up). Skip to the next worker.

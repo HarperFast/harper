@@ -98,7 +98,9 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    A requester that dies armed is resolved from the disk: committed when its release is live, withdrawn when it is
    not, and committed when the disk cannot say, so that a canary decides — one that loads the previous release
    rejects on its generation, and the restore finds that release already live. Restarts that start replacements are serialized
-   (`replacementRestarts`), so no restart boots a worker on a release another's canary has not decided, and the
+   (`replacementRestarts`), so no restart boots a worker on a release another's canary has not decided. None starts
+   a replacement while another release is armed, either, before each replacement and not only the first: that
+   replacement could not decide the armed release, whose own rollout would queue behind this one for good. The
    requesting worker is replaced last, once its operation has answered (`release`, bounded at 10 s). A withdraw
    after commit is refused: the release is live, and dropping its registration would leave the rollout
    replacing workers unchecked.
