@@ -1,5 +1,4 @@
 const assert = require('node:assert');
-const sinon = require('sinon');
 const { Headers } = require('#src/server/serverHelpers/Headers');
 
 const testUtils = require('../testUtils.js');
@@ -11,27 +10,39 @@ testUtils.preTestPrep();
 // of `authentication()` sharing one session cookie, the same path HarperFast/oauth#212's
 // maintenance writes use (read, await, write back).
 describe('session.update ifVersion (HarperFast/harper#2983)', function () {
-	let sandbox, authModule;
+	let authModule;
+	let restoreEnvGet, restoreSerializeMessage;
 
 	before(function () {
 		setupTestDBPath();
 		const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 		setMainIsWorker(true);
-		sandbox = sinon.createSandbox();
+
+		// AGENTS.md: no new sinon/rewire — plain reassignment, restored in after().
 		const env = require('#src/utility/environment/environmentManager');
-		const envStub = sandbox.stub(env, 'get');
-		envStub.withArgs('authentication.enableSessions').returns(true);
-		envStub.withArgs('authentication.authorizeLocal').returns(false);
-		envStub.returns(undefined);
+		const originalEnvGet = env.get;
+		restoreEnvGet = () => {
+			env.get = originalEnvGet;
+		};
+		env.get = (key) => {
+			if (key === 'authentication.enableSessions') return true;
+			if (key === 'authentication.authorizeLocal') return false;
+			return undefined;
+		};
 
 		const contentTypes = require('#src/server/serverHelpers/contentTypes');
-		sandbox.stub(contentTypes, 'serializeMessage').returnsArg(0);
+		const originalSerializeMessage = contentTypes.serializeMessage;
+		restoreSerializeMessage = () => {
+			contentTypes.serializeMessage = originalSerializeMessage;
+		};
+		contentTypes.serializeMessage = (message) => message;
 
 		authModule = require('#src/security/auth');
 	});
 
 	after(function () {
-		sandbox.restore();
+		restoreEnvGet();
+		restoreSerializeMessage();
 	});
 
 	function newRequest(cookie) {
@@ -133,6 +144,7 @@ describe('session.update ifVersion (HarperFast/harper#2983)', function () {
 		assert.ok(rejection, 'the conditional write was rejected');
 		assert.strictEqual(rejection.code, 'VERSION_CONFLICT');
 		assert.strictEqual(rejection.statusCode, 409);
+		assert.strictEqual(rejection.retryable, true, 'an ordinary mismatch is retryable with a fresh read');
 
 		await authModule.authentication(newRequest(cookie), async (request) => {
 			assert.strictEqual(request.session.greeting, 'concurrent winner', 'the rejected write left no trace');

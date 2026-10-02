@@ -10,11 +10,14 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 // Arrow function, not a `function` declaration: assert.rejects distinguishes a validation
 // function from a constructor by whether it has a `.prototype`, and only an arrow function lacks
 // one — a plain `function` here would be used as an (always-failing) `instanceof` check instead.
-const assertVersionConflict = (error) => {
-	assert.strictEqual(error.code, 'VERSION_CONFLICT');
-	assert.strictEqual(error.statusCode, 409);
-	return true;
-};
+const assertVersionConflict =
+	(expectedRetryable = true) =>
+	(error) => {
+		assert.strictEqual(error.code, 'VERSION_CONFLICT');
+		assert.strictEqual(error.statusCode, 409);
+		assert.strictEqual(error.retryable, expectedRetryable);
+		return true;
+	};
 
 // HarperFast/harper#2983: `Table.put(record, { ifVersion })` guards a write on the record's current
 // version, matching every platform's primary-store engine (default run is RocksDB; the lmdb variant
@@ -30,7 +33,7 @@ describe('Table.put ifVersion', () => {
 		Rows = table({
 			table: 'IfVersionRows',
 			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }, { name: 'count' }],
 		});
 	});
 
@@ -58,14 +61,14 @@ describe('Table.put ifVersion', () => {
 		await Rows.put({ id: 'mismatch', name: 'a' });
 		const staleVersion = Rows.primaryStore.getEntry('mismatch').version - 1000;
 
-		await assert.rejects(Rows.put({ id: 'mismatch', name: 'b' }, { ifVersion: staleVersion }), assertVersionConflict);
+		await assert.rejects(Rows.put({ id: 'mismatch', name: 'b' }, { ifVersion: staleVersion }), assertVersionConflict());
 
 		const entry = Rows.primaryStore.getEntry('mismatch');
 		assert.strictEqual(entry.value.name, 'a', 'the rejected write left the record unchanged');
 	});
 
 	it('rejects a conditional write against a row that does not exist', async () => {
-		await assert.rejects(Rows.put({ id: 'never-existed', name: 'a' }, { ifVersion: 12345 }), assertVersionConflict);
+		await assert.rejects(Rows.put({ id: 'never-existed', name: 'a' }, { ifVersion: 12345 }), assertVersionConflict());
 		assert.strictEqual(Rows.primaryStore.getEntry('never-existed'), undefined);
 	});
 
@@ -74,7 +77,7 @@ describe('Table.put ifVersion', () => {
 		const version = Rows.primaryStore.getEntry('deleted').version;
 		await Rows.delete('deleted');
 
-		await assert.rejects(Rows.put({ id: 'deleted', name: 'b' }, { ifVersion: version }), assertVersionConflict);
+		await assert.rejects(Rows.put({ id: 'deleted', name: 'b' }, { ifVersion: version }), assertVersionConflict());
 		// A delete leaves a tombstone entry (value: null) rather than no entry at all.
 		assert.strictEqual(Rows.primaryStore.getEntry('deleted')?.value ?? null, null, 'the row stays deleted');
 	});
@@ -85,8 +88,28 @@ describe('Table.put ifVersion', () => {
 
 		await Rows.put({ id: 'sequential', name: 'b' }, { ifVersion: version });
 		// Reusing the same (now stale) expected version a second time must reject, not silently re-apply.
-		await assert.rejects(Rows.put({ id: 'sequential', name: 'c' }, { ifVersion: version }), assertVersionConflict);
+		await assert.rejects(Rows.put({ id: 'sequential', name: 'c' }, { ifVersion: version }), assertVersionConflict());
 
 		assert.strictEqual(Rows.primaryStore.getEntry('sequential').value.name, 'b');
+	});
+
+	it('rejects a VERSION_REUSED row as not retryable, even when the version matches', async function () {
+		// Only RocksDB's singular version/timestamp can be reused by an out-of-order write.
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+		const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
+		const now = Date.now();
+		await Rows.put({ id: 'reused', name: 'base', count: 0 });
+		await Rows.patch('reused', { count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
+		// Out-of-order: merges onto the newer record and stores under its (reused) version.
+		await Rows.patch('reused', { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
+		const entry = Rows.primaryStore.getEntry('reused');
+		assert.ok(entry.metadataFlags & VERSION_REUSED, 'the record carries a reused version');
+
+		await assert.rejects(
+			Rows.put({ id: 'reused', name: 'c' }, { ifVersion: entry.version }),
+			assertVersionConflict(false)
+		);
+		// A fresh re-read still sees the same (reused) version: retrying with it is futile, not transient.
+		assert.strictEqual(Rows.primaryStore.getEntry('reused').version, entry.version);
 	});
 });

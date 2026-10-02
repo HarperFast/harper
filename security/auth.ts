@@ -147,21 +147,21 @@ export async function authentication(request, nextHandler) {
 					break;
 				}
 			}
-			// Captured before the ternary below reassigns `session` to `{}` on a miss — `getUpdatedTime()`
-			// (present only on a real decoded record) is the record's version, already read as part of
-			// this `.get()`, so exposing it costs no new lookup.
-			const sessionVersion = session?.getUpdatedTime?.();
 			request.session = session ? { ...session } : (session = {});
-			if (sessionVersion !== undefined) {
-				// Non-enumerable: `request.session` is a free-form clone of stored fields, and an app is
-				// free to have its own `version` attribute in session data. A plain assignment would both
-				// shadow that field here and (worse) get picked up if the app later persists the whole
-				// object back through `update()`. Non-enumerable keeps it out of a `{...session}` spread,
-				// `Object.keys`, and the record encoder, at the cost of shadowing an app's own same-named
-				// field for the lifetime of this request object (accepted; `version` is a reserved name on
-				// this surface).
+			// Non-enumerable getter, not a plain value: `request.session` is a free-form clone of
+			// stored fields, and an app may already have its own enumerable `version` field in
+			// session data. `defineProperty` only replaces that key's descriptor when one is skipped
+			// here (`hasOwnProperty`) — an app field survives, at the cost of no `ifVersion` support
+			// for that one session; the alternative silently drops the app's data the next time it
+			// spreads `request.session` back through `update()`. A getter also means `getUpdatedTime()`
+			// (a WeakMap lookup) only runs for a caller that actually reads `.version`, not on every
+			// session-bearing request.
+			if (
+				typeof session.getUpdatedTime === 'function' &&
+				!Object.prototype.hasOwnProperty.call(request.session, 'version')
+			) {
 				Object.defineProperty(request.session, 'version', {
-					value: sessionVersion,
+					get: () => session.getUpdatedTime?.(),
 					enumerable: false,
 					configurable: true,
 				});
@@ -441,8 +441,6 @@ export async function authentication(request, nextHandler) {
 				if (ifVersion !== undefined) putOptions.ifVersion = ifVersion;
 				const putResult = getSessionTable().put(updatedSession, putOptions);
 				if (ifVersion === undefined) {
-					// Unconditional path, unchanged: the header is set unconditionally up front, exactly as
-					// before this change.
 					markSessionUpdated();
 					return putResult;
 				}

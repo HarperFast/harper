@@ -776,24 +776,56 @@ The row bit reflects its latest mutation, so a caller needing a row to stay loca
 mutation. Reload and derived-index `evict` markers are always local-only; lock control entries never are.
 Enforced by `unitTests/resources/localOnly.test.js` (both engines; crash + boot replay on RocksDB).
 
-## `Table.put(record, { ifVersion })`: a per-write guarded commit, selected before the retry loop, never inside it (`Table.ts` `_writeUpdate`, harper#2983)
+## `Table.put(record, { ifVersion })`: a per-write guarded commit, wrapped after the object literal (`Table.ts` `_writeUpdate`, harper#2983)
 
-`_writeUpdate` reads `context.ifVersion` once and picks between two function references for
-`write.commit` — the untouched original (`plainCommit`) when it is `undefined`, or a wrapping guard
-when it is a number — so an ordinary write never evaluates the comparison, on any retry. The guard
-compares the caller's expected version against `existingEntry.version`, the same value every retry
-of this write's commit already re-reads fresh on both engines (RocksDB via its native optimistic-
+`_writeUpdate` reads `context.ifVersion` once; when it is a number, `write.commit` is reassigned to
+a wrapper around the function the literal already built (`const plainCommit = write.commit;`) —
+not a named function hoisted out of the literal, which would reindent and lose blame on this
+file's most-edited closure. An ordinary write (`ifVersion` `undefined`) never reassigns
+`write.commit` at all: zero added branch, allocation, or retry cost. The guard compares the
+caller's expected version against `existingEntry.version`, the same value every retry of this
+write's commit already re-reads fresh on both engines (RocksDB via its native optimistic-
 transaction conflict detection, LMDB via `ifVersion`-chained conditional batching) — that shared
-re-read is what makes the compare atomic with the actual write, not a separate storage-engine
-primitive. Three cases fail closed instead of comparing on an unproven or ambiguous base: a
-snapshot-free/disabled-snapshot transaction (`DatabaseTransaction.ts`'s own comment: narrows the
-read-to-put window, does not close it); `VERSION_REUSED` on the existing entry (a resequenced RocksDB
-write can keep its predecessor's version while changing the record, so version equality proves
-nothing); and `write.skipped` after a matched write actually ran (out-of-order resequencing can still
-supersede it before landing). Every rejection is a returned `Promise.reject(new
-VersionConflictError(...))`, never a `throw` — a throw from inside a commit closure can escape its
-caller as a synchronous exception rather than a promise rejection, depending on how much of the
-chain above happened to resolve synchronously. Session-table use (`security/auth.ts`,
-`request.session.update(data, { ifVersion })`) is the only caller today; nothing else threads
-`context.ifVersion`. Enforced by `unitTests/resources/tableIfVersion.test.js` (both engines) and
-`unitTests/security/sessionUpdateIfVersion.test.js`.
+re-read is what makes the compare atomic with the actual write, **for a single-write transaction**.
+It is not a multi-write compare-and-set: a rejection is a returned-but-not-yet-awaited commit
+*completion* (`DatabaseTransaction.ts`'s `stageCompletion`), not an abort of the whole native
+transaction, so a sibling `Table.put()` sharing the same `context`/`transaction` can land durably
+in the same native commit that this write's guard later rejects. `request.session.update()` never
+hits this: it builds a fresh `{ expiresAt, ifVersion }` context with no request transaction, so its
+`Table.put()` call is always alone in its transaction. Do not advertise or use
+`Table.put(record, { ifVersion })` from a shared/joined transaction until that is fixed.
+
+Three cases fail closed instead of comparing on an unproven or ambiguous base, and are
+**not retryable** (`VersionConflictError.retryable === false`) because a fresh re-read cannot
+resolve them: a snapshot-free/disabled-snapshot transaction (`DatabaseTransaction.ts`'s own
+comment: narrows the read-to-put window, does not close it); `VERSION_REUSED` on the existing entry
+(a resequenced RocksDB write can keep its predecessor's version while changing the record, so
+version equality proves nothing — and the flag survives a plain re-read, so the row rejects every
+`ifVersion` write until an unconditional write lands); and `write.skipped` after a matched write
+actually ran (out-of-order resequencing can still supersede it before landing; retryable, since a
+fresh read picks up the superseding write's version). `write.skipped` is not exhaustive — a
+`patch()`'s audit-only fold (`writeCommit(false)`) can supersede without setting it; unreachable
+from `put()`'s full-replace path, real for `patch(..., { ifVersion })`. For a table with a
+`source`, `writeToSource()` runs in `save()` before this guard, so a version mismatch rejects the
+local write after the source already saw it; `hdb_session` has no source.
+
+Every rejection is a returned `Promise.reject(new VersionConflictError(...))`, never a `throw` — a
+throw from inside a commit closure can escape its caller as a synchronous exception rather than a
+promise rejection, depending on how much of the chain above resolved synchronously.
+`VersionConflictError`'s message never includes the record id (`utility/errors/hdbError.ts`): for
+`hdb_session` the id is the bearer cookie value, and this is exactly the case where the session is
+still live, so logging it (an uncaught rejection is logged by the server) would hand out a
+replayable cookie.
+
+`context.ifVersion` is a property of the shared write `context`, not a per-call argument scoped to
+one record — every write that reuses that `context` inherits the same expected version. Changing
+that later (to a per-write option independent of `context`) would be a breaking change for any
+caller depending on it; `request.session.update()`'s fresh-context-per-call usage does not depend
+on it, so this is free to revisit before a second caller exists. `request.session.version` is a
+snapshot from the request's own read and is not updated after a successful `update()` — a second
+conditional write in the same request needs its own re-read, not the first call's held version.
+
+Session-table use (`security/auth.ts`, `request.session.update(data, { ifVersion })`) is the only
+caller today; nothing else threads `context.ifVersion`. Enforced by
+`unitTests/resources/tableIfVersion.test.js` (both engines, including a RocksDB-only
+`VERSION_REUSED` case) and `unitTests/security/sessionUpdateIfVersion.test.js`.

@@ -204,19 +204,27 @@ export class LockUnavailableError extends ServerError {
  * `request.session.update(data, { ifVersion })`) found the record's version did not match the
  * caller's expectation at commit time — the record changed, is missing, or the compare-and-write
  * could not be proven atomic (a snapshot-free RocksDB transaction, or a resequenced write that
- * reused its version). Nothing was written. Distinct from a storage failure so callers can
- * catch it and re-read rather than treat it as an infrastructure error.
+ * reused its version). Nothing was written. Distinct from a storage failure so callers can catch
+ * it and re-read rather than treat it as an infrastructure error. The message never includes the
+ * record id: for `hdb_session` that id is the bearer cookie value, and this error is exactly the
+ * case where the session is still live — logging it (an uncaught rejection is logged by the
+ * server) must not hand out a replayable cookie. `retryable: false` marks the cases a fresh
+ * re-read cannot resolve (`VERSION_REUSED`: the flag survives a plain read, so the same
+ * `ifVersion` will keep failing until an unconditional write lands) — the code is the same for
+ * every reason, so a caller that needs to tell them apart reads `retryable`, not `code`.
  */
 export class VersionConflictError extends ClientError {
 	code: string;
-	constructor(tableName: string, id: any, expectedVersion: number, actualVersion?: number, reason?: string) {
+	retryable: boolean;
+	constructor(tableName: string, expectedVersion: number, actualVersion?: number, reason?: string) {
 		super(
-			`Conditional write to ${tableName} record ${JSON.stringify(id)} rejected: expected version ` +
-				`${expectedVersion}, found ${actualVersion ?? 'no record'}${reason ? ` (${reason})` : ''}`,
+			`Conditional write to ${tableName} rejected: expected version ${expectedVersion}, found ` +
+				`${actualVersion ?? 'no record'}${reason ? ` (${reason})` : ''}`,
 			409
 		);
 		this.name = 'VersionConflictError';
 		this.code = 'VERSION_CONFLICT';
+		this.retryable = reason !== 'version reused by a resequenced write';
 	}
 }
 

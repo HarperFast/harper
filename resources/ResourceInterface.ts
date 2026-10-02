@@ -63,7 +63,9 @@ export interface ResourceInterface<Record extends object = any>
 export interface Session {
 	id?: any;
 	user?: User;
-	update: (updatedSession: any) => unknown;
+	/** The stored record's version, read alongside `id`; pass it back as `update()`'s `ifVersion`. */
+	version?: number;
+	update: (updatedSession: any, options?: { ifVersion: number }) => unknown;
 	delete: (id: any) => Promise<void>;
 }
 
