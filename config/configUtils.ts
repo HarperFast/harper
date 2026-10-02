@@ -369,7 +369,7 @@ export function ensureConfigKeysPresent(keys: string[]): string[] {
 	return added;
 }
 
-export function getEnvBuiltInComponents() {
+export function getEnvBuiltInComponents(): { name: string; packageIdentifier: string }[] {
 	const componentDefinitions = process.env.HARPER_BUILTIN_COMPONENTS;
 	if (!componentDefinitions) return [];
 	const builtInComponents: { name: string; packageIdentifier: string }[] = [];
@@ -380,7 +380,7 @@ export function getEnvBuiltInComponents() {
 		const name = separator === -1 ? '' : definition.slice(0, separator).trim();
 		const packageIdentifier = separator === -1 ? '' : definition.slice(separator + 1).trim();
 		if (!name || !packageIdentifier) {
-			logger.warn?.(`Skipping HARPER_BUILTIN_COMPONENTS entry ${index + 1}: expected name=packageIdentifier.`);
+			logger.warn(`Skipping HARPER_BUILTIN_COMPONENTS entry ${index + 1}: expected name=packageIdentifier.`);
 			continue;
 		}
 		builtInComponents.push({ name, packageIdentifier });
