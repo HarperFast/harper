@@ -118,7 +118,6 @@ function udsRequest(socketPath, { method = 'GET', pathName = '/', headers = {}, 
 					}
 					return;
 				}
-				if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
 				settleReject(err);
 			});
 		});
@@ -528,6 +527,68 @@ function readBody(request) {
 		assert.strictEqual(res.status, 429);
 		assert.strictEqual(res.statusMessage, 'Too Many Requests');
 	});
+});
+
+(uwsAvailable ? describe : describe.skip)('uWS oversized TCP uploads', function () {
+	for (const chunked of [false, true]) {
+		it(`delivers a complete 413 during a paced ${chunked ? 'chunked' : 'fixed-length'} upload`, async function () {
+			const port = 36000 + (process.pid % 1500);
+			let request;
+			const server = await createUwsServer({
+				host: '127.0.0.1',
+				port,
+				maxBodyBytes: 1024,
+				handler: async (incoming) => {
+					request = incoming;
+					return { status: 200, body: await readBody(incoming) };
+				},
+			});
+			try {
+				const response = await new Promise((resolve, reject) => {
+					const chunk = Buffer.alloc(64 * 1024);
+					const length = 16 * 1024 * 1024;
+					let sent = 0;
+					let raw = '';
+					let nextWrite;
+					const socket = net.connect({ host: '127.0.0.1', port }, () => {
+						const framing = chunked ? 'Transfer-Encoding: chunked' : `Content-Length: ${length}`;
+						socket.write(`POST / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n${framing}\r\n\r\n`);
+						upload();
+					});
+					function upload() {
+						if (socket.destroyed || raw.includes('\r\n\r\n')) return;
+						if (sent === length) {
+							if (chunked) socket.write('0\r\n\r\n');
+							return;
+						}
+						sent += chunk.length;
+						const data = chunked ? Buffer.concat([Buffer.from('10000\r\n'), chunk, Buffer.from('\r\n')]) : chunk;
+						if (socket.write(data)) nextWrite = setImmediate(upload);
+						else socket.once('drain', () => (nextWrite = setImmediate(upload)));
+					}
+					const timer = setTimeout(() => socket.destroy(new Error('oversized upload did not receive 413')), 5000);
+					socket.on('data', (data) => (raw += data.toString('latin1')));
+					socket.on('error', reject);
+					socket.on('close', () => {
+						clearTimeout(timer);
+						clearImmediate(nextWrite);
+						resolve({ raw, sent, length });
+					});
+				});
+				assert.match(response.raw, /^HTTP\/1\.1 413 Payload Too Large\r\n/);
+				assert.match(response.raw, /\r\n\r\n/);
+				assert.ok(
+					/\r\ncontent-length: 0\r\n/i.test(response.raw) || response.raw.endsWith('\r\n0\r\n\r\n'),
+					'the 413 response body must be complete'
+				);
+				assert.ok(response.sent < response.length, '413 must arrive before the upload finishes');
+				assert.ok(request.signal.aborted, 'the rejected handler is cancelled');
+				assert.ok(request.body.destroyed, 'rejected body buffers are released');
+			} finally {
+				server.close();
+			}
+		});
+	}
 });
 
 let WebSocket;
