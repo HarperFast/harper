@@ -297,6 +297,20 @@ A package-manager timeout must not release this lock while npm descendants are s
 
 Boot's `harper-application-lock.json` records an application configuration only after preparation fulfills. Recording at queue time would make a failed install look complete and suppress its retry on the next boot.
 
+Custom `install_command` spawns receive `npm_config_ignore_scripts=true` unless
+`install_allow_scripts` (or `install.allowInstallScripts` in root config) is true. The child-only
+environment setting reaches npm nested in shell commands without changing the command's arguments;
+other package managers must honor npm's configuration namespace for it to apply. An explicit opt-in
+does not clear an inherited host restriction. Omitted policy emits a warning naming the opt-ins,
+because existing custom commands can rely on lifecycle scripts, including `npm run` pre/post hooks.
+This is best-effort enforcement for arbitrary commands: an explicit override in the command or a
+package manager that ignores npm configuration can bypass it.
+
+The deprecated `install_node_modules` operation defaults to scripts enabled for compatibility.
+`installModules()` consumes Joi's converted `allowInstallScripts` value (also accepted as
+`install_allow_scripts`), so a string `'false'` suppresses lifecycle scripts. Both spellings together
+are rejected. Only camelCase `dryRun` controls dry-run invocation.
+
 ## Peer-side deploy_component payload read: retryable blob stalls and `Readable.from()` cancellation
 
 `readPayloadBlobWithRetry` (`components/deploymentRecorder.ts`) wraps the peer's read of a replicated `hdb_deployment` row's `payload_blob` so a transient 503 `BlobReadError` (`BLOB_UNAVAILABLE_STATUS`, `resources/blob.ts`) — content bytes not arriving within `blobReadTimeout`, e.g. a parked blob send on the origin — retries instead of failing the whole deploy. Two non-obvious constraints shaped the design:
