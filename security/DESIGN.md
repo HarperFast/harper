@@ -237,6 +237,15 @@ every cookie-session request.
 this feature (HarperFast/oauth#212's plan) must not run against a mixed-version cluster where an
 older node could still serve the request; that gate is the component's responsibility, not core's.
 
+**Cross-node scope**: the guard is atomic against writes already applied on the local node, not
+against the cluster. `hdb_session` replicates (it is not in `NON_REPLICATING_SYSTEM_TABLES`,
+`resources/databases.ts`), so a logout committed on node A is invisible to node B's conditional
+write until it replicates — a maintenance write on B can pass `ifVersion` and commit locally before
+A's logout arrives, and replication's version-based resequencing then applies the logout on top,
+reverting it cluster-wide, or applies B's write on top of the logout depending on arrival order. A
+successful conditional write proves only "nothing else committed on this node since I read", never
+"nothing happened anywhere". No cross-node compare-and-set exists here or in this PR.
+
 ## User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)
 
 There is no per-thread copy of `hdb_user`/`hdb_role`: every lookup point-reads the user by name and its role by id through the primary store's record cache, so no writer (an operation, a replicated commit) has to announce a change for lookups to see it. Three rules keep that true:

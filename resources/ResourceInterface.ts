@@ -65,6 +65,15 @@ export interface Session {
 	user?: User;
 	/** The stored record's version, read alongside `id`; pass it back as `update()`'s `ifVersion`. */
 	version?: number;
+	/**
+	 * `ifVersion` guards against another write on *this node* since `version` was read; it rejects
+	 * (`VersionConflictError`, catchable via `.code === 'VERSION_CONFLICT'`) rather than overwrite a
+	 * more recent local write. `hdb_session` replicates, so this is not a cluster-wide
+	 * compare-and-set: a concurrent write on another node (e.g. a logout) that hasn't replicated
+	 * here yet is invisible to this check, and the two writes still resolve by last-write-wins once
+	 * replication catches up. A successful conditional write means nothing else committed on this
+	 * node since the read — it does not mean nothing happened anywhere.
+	 */
 	update: (updatedSession: any, options?: { ifVersion: number }) => unknown;
 	delete: (id: any) => Promise<void>;
 }

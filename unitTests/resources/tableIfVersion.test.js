@@ -67,6 +67,40 @@ describe('Table.put ifVersion', () => {
 		assert.strictEqual(entry.value.name, 'a', 'the rejected write left the record unchanged');
 	});
 
+	it('rejects when a concurrent write lands after the guarded put reads its base but before it commits', async () => {
+		// Regression guard: the commit must reject against the per-attempt `existingEntry` the retry
+		// loop (re)reads at commit time, not just the version the caller happened to pass as
+		// `ifVersion` — a refactor that short-circuited on the caller's value without checking the
+		// live read would miss a write that landed since. Simulated via `getEntry` (same technique as
+		// unitTests/security/userRecordLookups.test.js) rather than a real two-writer race: staging
+		// both writes under one shared, explicit transaction (so a real concurrent write has
+		// somewhere to land before the guarded one's commit) leaks a RocksDB read snapshot when the
+		// guard rejects — a separate, pre-existing issue outside this change's scope, see the
+		// single-write-transaction note in resources/DESIGN.md — and two fully independent `put()`
+		// calls race non-deterministically with no reliable window to land one inside the other.
+		const id = 'race';
+		await Rows.put({ id, name: 'a' });
+		const entry = Rows.primaryStore.getEntry(id);
+
+		const getEntry = Rows.primaryStore.getEntry;
+		let intercepted = false;
+		Rows.primaryStore.getEntry = function (key, options) {
+			const real = getEntry.call(this, key, options);
+			if (intercepted || key !== id) return real;
+			intercepted = true;
+			// What the guard's per-attempt read sees: a version this write never staged against,
+			// as if a concurrent write had landed since.
+			return { ...real, version: real.version + 1000 };
+		};
+		try {
+			await assert.rejects(Rows.put({ id, name: 'guarded' }, { ifVersion: entry.version }), assertVersionConflict());
+		} finally {
+			Rows.primaryStore.getEntry = getEntry;
+		}
+
+		assert.strictEqual(Rows.primaryStore.getEntry(id).value.name, 'a', 'the rejected write left nothing behind');
+	});
+
 	it('rejects a conditional write against a row that does not exist', async () => {
 		await assert.rejects(Rows.put({ id: 'never-existed', name: 'a' }, { ifVersion: 12345 }), assertVersionConflict());
 		assert.strictEqual(Rows.primaryStore.getEntry('never-existed'), undefined);
