@@ -27,7 +27,16 @@ const { CONFIG_PARAMS } = hdbTerms;
 const { CERTIFICATE_VALUES } = certificatesTerms;
 import { getThisNodeName, getThisNodeUrl, urlToNodeName, clearThisNodeName } from '../server/nodeName.ts';
 
-export const getPrivateKeys = () => privateKeys;
+export const getPrivateKeys = () => {
+	for (const name of configuredPrivateKeyPaths.keys()) {
+		try {
+			getPrivateKeyByName(name);
+		} catch (error) {
+			forComponent('tls').conditional.trace?.('Could not refresh configured private key:', name, error);
+		}
+	}
+	return privateKeys;
+};
 
 import { readFileSync, statSync } from 'node:fs';
 import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.js';
@@ -153,6 +162,7 @@ export async function getReplicationCertAuth() {
 let configuredCertsLoaded;
 const privateKeys = new Map();
 const configuredPrivateKeyPaths = new Map<string, string>();
+const filePrivateKeys = new Map<string, string>();
 
 const TLS_REBUILD_DEBOUNCE_MS = 1500;
 
@@ -187,7 +197,14 @@ export function loadCertificates() {
 				const privateKeyPath = config.privateKey;
 				// need to relativize the paths so they aren't exposed
 				let private_key_name = privateKeyPath && relative(join(rootPath, 'keys'), privateKeyPath);
-				if (private_key_name) configuredPrivateKeyPaths.set(private_key_name, privateKeyPath);
+				if (private_key_name) {
+					configuredPrivateKeyPaths.set(private_key_name, privateKeyPath);
+					try {
+						cacheFilePrivateKey(private_key_name, readPEM(privateKeyPath));
+					} catch (error) {
+						forComponent('tls').conditional.error?.('Error loading private key:', privateKeyPath, error);
+					}
+				}
 				for (let ca of [false, true]) {
 					let path = config[ca ? 'certificateAuthority' : 'certificate'];
 					if (path && isMainThread) {
@@ -226,9 +243,11 @@ export function loadCertificates() {
 								// Check if cert issued by compromised Harper certificate authority, if it is, do not load it
 								if (x509Cert.checkIssued(new X509Certificate(CERTIFICATE_VALUES.cert))) return;
 
+								// The synchronous timestamp guard must not treat a cold RocksDB read Promise as a record.
 								const certRecord = certificateTable.primaryStore.getSync(certCn);
 								if (!ca && privateKeyPath) {
-									if (!x509Cert.checkPrivateKey(createPrivateKey(readPEM(privateKeyPath)))) {
+									const privateKey = readPEM(privateKeyPath);
+									if (!x509Cert.checkPrivateKey(createPrivateKey(privateKey))) {
 										if (!pendingPairTimer) {
 											forComponent('tls').conditional.warn?.(
 												`Waiting for matching TLS certificate and private key: ${path}, ${privateKeyPath}`
@@ -238,6 +257,7 @@ export function loadCertificates() {
 										}
 										return false;
 									}
+									cacheFilePrivateKey(private_key_name, privateKey);
 									clearTimeout(pendingPairTimer);
 									pendingPairTimer = undefined;
 								}
@@ -258,7 +278,7 @@ export function loadCertificates() {
 									return;
 								}
 
-								// Returned so loadAndWatch can roll back its mtime latch if the write fails —
+								// Returned so loadAndWatch can roll back its fingerprint latch if the write fails —
 								// assigned as well to preserve loadCertificates()'s awaited-return contract.
 								return (promise = certificateTable.put({
 									name: certCn,
@@ -316,20 +336,12 @@ const certificateWatchTimers = new Map<string, NodeJS.Timeout>();
 const certificateWatchPollers = new Map<string, () => void>();
 
 /**
- * Load the certificate file and watch for changes and reload with any changes.
- *
- * Two detection mechanisms feed the same reload path (and share the `lastModified` fingerprint,
- * so they never double-reload for the same change):
- *   1. chokidar inotify watcher — the fast path, reacts immediately to fs events.
- *   2. A periodic re-read (main thread only) — a safety net for filesystems where inotify is
- *      unreliable (overlayfs/containers/network mounts), where a real renewal can otherwise be
- *      silently missed. Interval is tls.certificateWatchInterval (default 5m); 0 disables it.
- * @param path
- * @param loadCert
- * @param type
+ * Watch the certificate and related files through filtered parent directories and the main-thread safety poll.
+ * A false loader result remains unapplied so an unchanged fingerprint can be retried.
  */
 function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) {
 	let lastModified;
+	let lastAttempted;
 	const loadFile = (path, stats?) => {
 		// The latch dedupes chokidar/poll but must mean "last successfully APPLIED", or a failed
 		// apply is deduplicated forever (#2382). Rollbacks are equality-guarded so an old failure
@@ -341,7 +353,8 @@ function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) {
 			const fingerprints = [fileStats, ...relatedPaths.map((relatedPath) => statSync(relatedPath))];
 			modified = JSON.stringify(fingerprints.map(({ mtimeMs, ino, size }) => [mtimeMs, ino, size]));
 			if (modified !== lastModified) {
-				if (lastModified && isMainThread) logger.warn?.(`Reloading ${type}:`, path);
+				if (lastModified && modified !== lastAttempted && isMainThread) logger.warn?.(`Reloading ${type}:`, path);
+				lastAttempted = modified;
 				lastModified = modified;
 				const rollback = () => {
 					if (lastModified === modified) lastModified = previousModified;
@@ -380,9 +393,10 @@ function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) {
 	}
 	for (const [directory, watched] of watchedDirectories) {
 		let usingPolling = watched.mustPoll;
+		let watchFiles = false;
 		let liveWatcher;
 		const openWatcher = () => {
-			const opened = (liveWatcher = guardedWatch(directory, {
+			const opened = (liveWatcher = guardedWatch(watchFiles ? Array.from(watched.files) : directory, {
 				persistent: false,
 				depth: 0,
 				ignoreInitial: true,
@@ -393,20 +407,32 @@ function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) {
 				...(usingPolling ? POLLING_FALLBACK_OPTIONS : {}),
 			}));
 			const reload = () => loadFile(path);
+			const reopen = () =>
+				Promise.resolve()
+					.then(() => opened.close())
+					.catch(() => {})
+					.then(openWatcher)
+					.catch((error) => logger.error?.(`Could not reopen the ${type} watch on polling:`, directory, error));
 			opened
 				.on('add', reload)
 				.on('change', reload)
 				.on('error', (error) => {
 					if (claimLostNativeWatchError(error)) return;
+					if (!watchFiles && liveWatcher === opened && (error.code === 'EACCES' || error.code === 'EPERM')) {
+						forComponent('tls').conditional.warn?.(
+							`Cannot watch TLS directory ${directory}; polling its configured files instead`,
+							error
+						);
+						watchFiles = true;
+						usingPolling = true;
+						reopen();
+						return;
+					}
 					if (isWatcherExhaustionError(error)) {
 						if (usingPolling || liveWatcher !== opened) return;
 						warnWatcherFallback(directory);
 						usingPolling = true;
-						Promise.resolve()
-							.then(() => opened.close())
-							.catch(() => {})
-							.then(openWatcher)
-							.catch((error) => logger.error?.(`Could not reopen the ${type} watch on polling:`, path, error));
+						reopen();
 						return;
 					}
 					logger.error?.(`Error watching ${type}:`, path, error);
@@ -415,8 +441,7 @@ function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) {
 		openWatcher();
 	}
 
-	const pollsOnThisThread = isMainThread;
-	if (pollsOnThisThread) {
+	if (isMainThread) {
 		const poll = () => {
 			let stats;
 			try {
@@ -1031,7 +1056,7 @@ export function getEffectiveTlsCiphers(type, mtlsOptions?): string | undefined {
  * Create a TLS selector that will choose the best TLS configuration/context for a given hostname
  * @param type
  * @param mtlsOptions
- * @param liveReload when true (default) the selector registers for private-key hot-reload rebuilds.
+ * @param liveReload when true (default) the selector subscribes to certificate-table updates.
  *   Pass false for transient, single-use selectors (e.g. getReplicationCert) so they don't accumulate.
  * @return {(function(*, *): (*|undefined))|*}
  */
@@ -1446,7 +1471,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						// derive it from more than the selector's mtlsOptions) so this compares like with like
 						const effectiveCiphers =
 							getEffectiveTlsCiphers(type, server.verifiesClientCerts ?? Boolean(mtlsOptions)) ?? null;
-						// latch per distinct value: rebuilds recur (cert-table changes, key reloads) and the
+						// latch per distinct value: rebuilds recur (cert-table changes, failure retries) and the
 						// pending change shouldn't re-warn on every cycle until the restart happens
 						if (effectiveCiphers !== server.appliedCiphers && server.lastWarnedCiphers !== effectiveCiphers) {
 							server.lastWarnedCiphers = effectiveCiphers;
@@ -1509,12 +1534,21 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 	}
 }
 
+function cacheFilePrivateKey(name: string, key: string) {
+	if (!privateKeys.has(name) || privateKeys.get(name) === filePrivateKeys.get(name)) privateKeys.set(name, key);
+	filePrivateKeys.set(name, key);
+	return privateKeys.get(name);
+}
+
 function getPrivateKeyByName(private_key_name) {
 	const private_key = privateKeys.get(private_key_name);
+	const configuredPath = configuredPrivateKeyPaths.get(private_key_name);
+	if (configuredPath && (!private_key || private_key === filePrivateKeys.get(private_key_name))) {
+		return cacheFilePrivateKey(private_key_name, readPEM(configuredPath));
+	}
 	if (!private_key && private_key_name) {
 		return fs.readFileSync(
-			configuredPrivateKeyPaths.get(private_key_name) ??
-				path.join(envManager.get(CONFIG_PARAMS.ROOTPATH), hdbTerms.LICENSE_KEY_DIR_NAME, private_key_name),
+			path.join(envManager.get(CONFIG_PARAMS.ROOTPATH), hdbTerms.LICENSE_KEY_DIR_NAME, private_key_name),
 			'utf8'
 		);
 	}

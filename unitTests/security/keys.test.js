@@ -140,6 +140,10 @@ describe('Test keys module', () => {
 	});
 
 	it('Test loadCertificates loads certs from config file', async () => {
+		assert.ok(
+			keys.getPrivateKeys().get(actual_cert.private_key_name) === test_private_key,
+			'configured keys remain available through getPrivateKeys'
+		);
 		const all_certs = await keys.listCertificates();
 		let private_key_pass = true;
 		let cert_pass = false;
@@ -201,7 +205,7 @@ describe('Test keys module', () => {
 		keys.getPrivateKeys().delete(actual_ca.private_key_name);
 	});
 
-	it('reads a configured key file again when the certificate table triggers a rebuild', async function () {
+	it('refreshes configured keys for retrieval and when the certificate table triggers a rebuild', async function () {
 		this.timeout(15000);
 		const { databases } = require('#src/resources/databases');
 		const recordName = `configured-file-reload-${Date.now()}`;
@@ -224,6 +228,10 @@ describe('Test keys module', () => {
 			await keys.createTLSSelector('mqtt').initialize(server);
 			assert.strictEqual(server.secureContexts.get(hostname).options.key, test_private_key);
 			await fs.writeFile(test_private_key_path, rotated.key);
+			assert.ok(
+				keys.getPrivateKeys().get(actual_cert.private_key_name) === rotated.key,
+				'key retrieval must refresh file-derived entries before a certificate-table update'
+			);
 			await databases.system.hdb_certificate.put({ ...record, certificate: rotated.cert });
 			await waitFor(() => server.secureContexts.get(hostname)?.options.key === rotated.key, {
 				timeout: 6000,
@@ -649,8 +657,6 @@ describe('Test keys module', () => {
 			// completes. This uses the real (debounced, ~1.5s) retry and real timers — no Sinon fake
 			// timers, no rewire access to internal state — condition-waiting on the actual observable
 			// transition instead. liveReload=false avoids leaving a subscription behind.
-			// here would leak scheduleRebuild (and this test's pseudoServer/caCerts interaction) into
-			// every later test's private-key-reload rebuilds for the rest of the suite.
 			this.timeout(5000);
 			delete databases.system; // as on a worker thread before the system db has loaded
 			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
@@ -849,7 +855,7 @@ describe('Test keys module', () => {
 		// updateTLS and re-subscribes when it changes. This test drives that path end-to-end through
 		// real module surfaces: the swap-detection can only run when something re-enters updateTLS,
 		// and here that trigger is the selector's still-live subscription on the OLD table firing on
-		// a write — the same trigger class (any scheduled rebuild) that a private-key reload or the
+		// a write — the same trigger class (any scheduled rebuild) that the
 		// zero-certs retry supplies in production.
 		let databases;
 		let realTable;
