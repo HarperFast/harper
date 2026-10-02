@@ -209,6 +209,21 @@ Two consequences that are easy to miss:
   resolving a principal from a different credential is a contradiction. Hence a rejected certificate
   identity stops resolution outright instead of falling through to Basic, the session, or the local bypass.
 
+## `session.update(data, { ifVersion })` guards a maintenance write, not the hot path (`security/auth.ts`, harper#2983)
+
+`request.session.update(data)` is an unconditional full-replace `put` on `hdb_session`. The optional
+second argument conditions it on the version `request.session.version` (non-enumerable, exposed
+alongside `id` when the session loads) was read at. A mismatch writes nothing and rejects with
+`VersionConflictError` (`.code === 'VERSION_CONFLICT'`, 409) — distinct from a storage failure, so a
+maintenance writer that reads-then-awaits-then-writes-back (HarperFast/oauth#212: a refreshed token,
+a detected-invalid-session logout) can tell whether something else won the race, instead of blindly
+overwriting a more authoritative concurrent write. `options.ifVersion` present but not a finite
+number throws rather than falling back to unconditional — a caller building it from `.version` on a
+session that turned out missing/deleted must not silently recreate what it meant to guard. The guard
+lives in `Table.ts`'s own write-commit path (see its `DESIGN.md` entry), not here; `auth.ts` only
+validates the option shape and defers the `X-Hdb-Session: Secure` response header until the
+conditional write actually confirms (the unconditional path sets it synchronously, unchanged).
+
 ## User and role lookups read the records, and nothing derived from them outlives them (`security/user.ts`)
 
 There is no per-thread copy of `hdb_user`/`hdb_role`: every lookup point-reads the user by name and its role by id through the primary store's record cache, so no writer (an operation, a replicated commit) has to announce a change for lookups to see it. Three rules keep that true:

@@ -775,3 +775,25 @@ replay re-encodes the record but never re-appends its audit entry (replay transa
 The row bit reflects its latest mutation, so a caller needing a row to stay local re-asserts it on every
 mutation. Reload and derived-index `evict` markers are always local-only; lock control entries never are.
 Enforced by `unitTests/resources/localOnly.test.js` (both engines; crash + boot replay on RocksDB).
+
+## `Table.put(record, { ifVersion })`: a per-write guarded commit, selected before the retry loop, never inside it (`Table.ts` `_writeUpdate`, harper#2983)
+
+`_writeUpdate` reads `context.ifVersion` once and picks between two function references for
+`write.commit` — the untouched original (`plainCommit`) when it is `undefined`, or a wrapping guard
+when it is a number — so an ordinary write never evaluates the comparison, on any retry. The guard
+compares the caller's expected version against `existingEntry.version`, the same value every retry
+of this write's commit already re-reads fresh on both engines (RocksDB via its native optimistic-
+transaction conflict detection, LMDB via `ifVersion`-chained conditional batching) — that shared
+re-read is what makes the compare atomic with the actual write, not a separate storage-engine
+primitive. Three cases fail closed instead of comparing on an unproven or ambiguous base: a
+snapshot-free/disabled-snapshot transaction (`DatabaseTransaction.ts`'s own comment: narrows the
+read-to-put window, does not close it); `VERSION_REUSED` on the existing entry (a resequenced RocksDB
+write can keep its predecessor's version while changing the record, so version equality proves
+nothing); and `write.skipped` after a matched write actually ran (out-of-order resequencing can still
+supersede it before landing). Every rejection is a returned `Promise.reject(new
+VersionConflictError(...))`, never a `throw` — a throw from inside a commit closure can escape its
+caller as a synchronous exception rather than a promise rejection, depending on how much of the
+chain above happened to resolve synchronously. Session-table use (`security/auth.ts`,
+`request.session.update(data, { ifVersion })`) is the only caller today; nothing else threads
+`context.ifVersion`. Enforced by `unitTests/resources/tableIfVersion.test.js` (both engines) and
+`unitTests/security/sessionUpdateIfVersion.test.js`.

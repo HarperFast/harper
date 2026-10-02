@@ -199,6 +199,27 @@ export class LockUnavailableError extends ServerError {
 	}
 }
 
+/**
+ * A conditional write (`Table.put()`'s internal `ifVersion` guard, used by
+ * `request.session.update(data, { ifVersion })`) found the record's version did not match the
+ * caller's expectation at commit time — the record changed, is missing, or the compare-and-write
+ * could not be proven atomic (a snapshot-free RocksDB transaction, or a resequenced write that
+ * reused its version). Nothing was written. Distinct from a storage failure so callers can
+ * catch it and re-read rather than treat it as an infrastructure error.
+ */
+export class VersionConflictError extends ClientError {
+	code: string;
+	constructor(tableName: string, id: any, expectedVersion: number, actualVersion?: number, reason?: string) {
+		super(
+			`Conditional write to ${tableName} record ${JSON.stringify(id)} rejected: expected version ` +
+				`${expectedVersion}, found ${actualVersion ?? 'no record'}${reason ? ` (${reason})` : ''}`,
+			409
+		);
+		this.name = 'VersionConflictError';
+		this.code = 'VERSION_CONFLICT';
+	}
+}
+
 /** One structured validation failure. `path` is dot-scoped (`body.price`, `query.sort`, `params.id`). */
 export interface ValidationIssue {
 	/** Where the failure occurred, e.g. `body.price`, `query.expand`, `params.id`. */

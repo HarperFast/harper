@@ -19,7 +19,7 @@ import {
 	markAuthenticationRejectedInPlace,
 } from './deferredAuthentication.ts';
 import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
-import { hdbErrors } from '../utility/errors/hdbError.ts';
+import { hdbErrors, ClientError } from '../utility/errors/hdbError.ts';
 const { AUTHENTICATION_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 const authLogger = forComponent('authentication');
 const { debug } = authLogger;
@@ -147,7 +147,25 @@ export async function authentication(request, nextHandler) {
 					break;
 				}
 			}
+			// Captured before the ternary below reassigns `session` to `{}` on a miss — `getUpdatedTime()`
+			// (present only on a real decoded record) is the record's version, already read as part of
+			// this `.get()`, so exposing it costs no new lookup.
+			const sessionVersion = session?.getUpdatedTime?.();
 			request.session = session ? { ...session } : (session = {});
+			if (sessionVersion !== undefined) {
+				// Non-enumerable: `request.session` is a free-form clone of stored fields, and an app is
+				// free to have its own `version` attribute in session data. A plain assignment would both
+				// shadow that field here and (worse) get picked up if the app later persists the whole
+				// object back through `update()`. Non-enumerable keeps it out of a `{...session}` spread,
+				// `Object.keys`, and the record encoder, at the cost of shadowing an app's own same-named
+				// field for the lifetime of this request object (accepted; `version` is a reserved name on
+				// this surface).
+				Object.defineProperty(request.session, 'version', {
+					value: sessionVersion,
+					enumerable: false,
+					configurable: true,
+				});
+			}
 		}
 
 		const authAuditLog = (username, status, strategy) => {
@@ -346,7 +364,22 @@ export async function authentication(request, nextHandler) {
 			request.user = bypassUser ?? (await getSuperUser());
 		}
 		if (ENABLE_SESSIONS) {
-			request.session.update = function (updatedSession) {
+			request.session.update = function (updatedSession, options?: { ifVersion: number }) {
+				let ifVersion: number;
+				if (options !== undefined) {
+					// A second argument always names `ifVersion` explicitly — there is no bare-number
+					// shorthand — so a present-but-unusable value (missing, undefined, non-finite) is a
+					// caller mistake to reject, not a reason to fall back to an unconditional write. A
+					// caller building `options` from `request.session.version` on a session that turned out
+					// missing/deleted would otherwise silently recreate the very session it meant to guard.
+					if (options === null || typeof options !== 'object' || !('ifVersion' in options)) {
+						throw new ClientError('session.update(data, options) requires options.ifVersion', 400);
+					}
+					ifVersion = options.ifVersion;
+					if (typeof ifVersion !== 'number' || !Number.isFinite(ifVersion)) {
+						throw new ClientError('session.update ifVersion must be a finite number', 400);
+					}
+				}
 				const expires = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_EXPIRES);
 				const useSecure =
 					request.protocol === 'https' ||
@@ -388,10 +421,11 @@ export async function authentication(request, nextHandler) {
 						response.headers.set('Set-Cookie', cookie);
 					}
 				}
-				if (useSecure) {
+				const markSessionUpdated = () => {
 					// Indicate that we have successfully updated a session
 					// We make sure this is allowed by CORS so that a client can determine if it has
 					// a valid cookie-authenticated session (studio needs this)
+					if (!useSecure) return;
 					if (responseHeaders) {
 						if (origin) responseHeaders.push('Access-Control-Expose-Headers', 'X-Hdb-Session');
 						responseHeaders.push('X-Hdb-Session', 'Secure');
@@ -399,10 +433,24 @@ export async function authentication(request, nextHandler) {
 						if (origin) response.headers.set('Access-Control-Expose-Headers', 'X-Hdb-Session');
 						response.headers.set('X-Hdb-Session', 'Secure');
 					}
-				}
+				};
 				updatedSession.id = sessionId;
-				return getSessionTable().put(updatedSession, {
+				const putOptions: { expiresAt?: number; ifVersion?: number } = {
 					expiresAt: expires ? Date.now() + convertToMS(expires) : undefined,
+				};
+				if (ifVersion !== undefined) putOptions.ifVersion = ifVersion;
+				const putResult = getSessionTable().put(updatedSession, putOptions);
+				if (ifVersion === undefined) {
+					// Unconditional path, unchanged: the header is set unconditionally up front, exactly as
+					// before this change.
+					markSessionUpdated();
+					return putResult;
+				}
+				// Conditional path: a version conflict means nothing was written, so the header claiming a
+				// successful update must wait for that confirmation rather than being sent speculatively.
+				return Promise.resolve(putResult).then((result) => {
+					markSessionUpdated();
+					return result;
 				});
 			};
 			request.login = async function (username: string, password?: string, token?: string) {
