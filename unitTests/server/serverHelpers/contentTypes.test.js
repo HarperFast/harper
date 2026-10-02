@@ -533,3 +533,37 @@ describe('brotliOptions', function () {
 		assert.strictEqual(mode('application/octet-stream'), constants.BROTLI_MODE_GENERIC);
 	});
 });
+
+describe('contentTypes – application/x-www-form-urlencoded', function () {
+	const handler = contentTypes.get('application/x-www-form-urlencoded');
+
+	it('deserializes single fields as strings', function () {
+		assert.deepStrictEqual(handler.deserialize('a=1&b=two'), { a: '1', b: 'two' });
+	});
+
+	it('collects a repeated field into an array under its own name', function () {
+		const result = handler.deserialize(Buffer.from('a=1&a=2&b=x'));
+		assert.deepStrictEqual(result, { a: ['1', '2'], b: 'x' });
+	});
+
+	it('keeps every value of a field repeated three or more times', function () {
+		assert.deepStrictEqual(handler.deserialize('a=1&a=2&a=3').a, ['1', '2', '3']);
+	});
+
+	it('does not clobber a real field named "key"', function () {
+		assert.deepStrictEqual(handler.deserialize('key=k&a=1&a=2'), { key: 'k', a: ['1', '2'] });
+	});
+
+	it('accepts a field named "hasOwnProperty"', function () {
+		assert.deepStrictEqual(handler.deserialize('hasOwnProperty=x&b=1&b=2'), { hasOwnProperty: 'x', b: ['1', '2'] });
+	});
+
+	it('serializes field values, appending array elements', function () {
+		assert.strictEqual(handler.serialize({ a: '1', b: ['x', 'y'] }), 'a=1&b=x&b=y');
+	});
+
+	it('round-trips repeated fields', function () {
+		const body = 'a=1&a=2&b=x';
+		assert.strictEqual(handler.serialize(handler.deserialize(body)), body);
+	});
+});

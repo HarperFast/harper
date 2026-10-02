@@ -3697,6 +3697,7 @@ export function makeTable(options): TableResourceClass {
 								isRocksDB && audit && txnLogKey !== txnTime
 									? [{ version: txnLogKey, nodeId: options?.nodeId }]
 									: undefined,
+							localOnly: options?.localOnly,
 						},
 						'invalidate'
 					);
@@ -3765,6 +3766,7 @@ export function makeTable(options): TableResourceClass {
 								isRocksDB && audit && txnLogKey !== txnTime
 									? [{ version: txnLogKey, nodeId: options?.nodeId }]
 									: undefined,
+							localOnly: options?.localOnly,
 						},
 						'relocate',
 						false,
@@ -5424,6 +5426,7 @@ export function makeTable(options): TableResourceClass {
 									isRocksDB && audit && txnLogKey !== txnTime
 										? [{ version: txnLogKey, nodeId: options?.nodeId }]
 										: undefined,
+								localOnly: options?.localOnly,
 							},
 							'delete'
 						);
@@ -7068,7 +7071,7 @@ export function makeTable(options): TableResourceClass {
 						existingEntry?.value ?? null,
 						existingEntry,
 						txnTime,
-						0,
+						(existingEntry?.metadataFlags ?? 0) & LOCAL_ONLY,
 						true,
 						{
 							user: (context as any)?.user,
@@ -7078,6 +7081,7 @@ export function makeTable(options): TableResourceClass {
 							viaNodeId: options?.viaNodeId,
 							transaction,
 							tableToTrack: tableName,
+							auditLocalOnly: options?.localOnly,
 						},
 						'message',
 						false,
