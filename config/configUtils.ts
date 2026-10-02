@@ -31,6 +31,7 @@ import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as env from '../utility/environment/environmentManager.ts';
 import { prepareRuntimeEnvConfig, hasPersistedEnvConfigState, discardConfigState } from './harperConfigEnvVars.ts';
 import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
+import { ConfigParseError } from './parseConfigFile.ts';
 import { isStartableThreadHeapMemory } from '../server/threads/threadHeapMemory.ts';
 import { fsyncTolerantSync, isUnsupportedSyncError } from '../utility/fsync.ts';
 
@@ -686,6 +687,16 @@ export function initConfig(force = false) {
 			}
 		}
 
+		if (configDoc.errors?.length > 0) {
+			const parseError = new ConfigParseError(configFilePath, configDoc.errors[0]);
+			const parseErrorName = configDoc.errors[0].name ?? 'YAMLParseError';
+			throw handleHDBError(
+				new Error(),
+				`Error parsing ${configFilePath}: ${parseErrorName}. ${parseError.message}`,
+				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
+			);
+		}
+
 		checkForUpdatedConfig(configDoc, configFilePath);
 
 		// Config-shaping env vars delivered via component .env files (loadEnv) cannot take effect —
@@ -771,13 +782,6 @@ function checkForUpdatedConfig(configDoc, configFilePath) {
 
 	if (updateFile) {
 		logger.trace('Updating config file with missing config params');
-		if (configDoc.errors?.length > 0) {
-			throw handleHDBError(
-				new Error(),
-				`Error parsing harperdb-config.yaml ${configDoc.errors}`,
-				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
-			);
-		}
 		persistConfigDuringBoot(configFilePath, () => atomicWriteFile(configFilePath, String(configDoc)));
 	}
 }

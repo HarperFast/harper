@@ -8,6 +8,10 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ---
 
+## Boot adopts only parseable root config (`config/configUtils.ts`)
+
+`initConfig()` rejects `Document.errors` before upgrade backfill or active-config replacement; `unitTests/config/configUtils-parseErrors.test.js` enforces that ordering.
+
 ## `set_configuration` replication is opt-in; `replicateOperation` is default-on (`config/configUtils.ts`)
 
 `server.replication.replicateOperation` (installed by harper-pro's replicator) fans out whenever
