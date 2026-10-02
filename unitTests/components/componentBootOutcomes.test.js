@@ -110,6 +110,33 @@ describe("a held worker's boot outcomes", function () {
 		assert.equal(componentLoader.bootVerdictOf('boot-untracked-probe').outcome, 'absent');
 	});
 
+	it('reports a load that threw a primitive or a frozen error by what it threw', async () => {
+		plugin('bootThrowsStringProbe', {
+			start() {
+				throw 'threw a string';
+			},
+		});
+		plugin('bootThrowsFrozenProbe', {
+			start() {
+				throw Object.freeze(new Error('threw a frozen error'));
+			},
+		});
+		await component('boot-string-probe', 'bootThrowsStringProbe: {}\n');
+		await component('boot-frozen-probe', 'bootThrowsFrozenProbe: {}\n');
+		componentLoader.trackBootOutcomes(['boot-string-probe', 'boot-frozen-probe']);
+
+		await loadAll();
+
+		for (const [name, message] of [
+			['boot-string-probe', /due to: threw a string$/],
+			['boot-frozen-probe', /due to: threw a frozen error$/],
+		]) {
+			const verdict = componentLoader.bootVerdictOf(name);
+			assert.equal(verdict.outcome, 'failed');
+			assert.match(verdict.failures[0].message, message);
+		}
+	});
+
 	it('reports a load still waiting on a preparation as pending, until it runs', async () => {
 		const name = 'boot-deferred-probe';
 		const componentDir = path.join(componentsRoot, name);

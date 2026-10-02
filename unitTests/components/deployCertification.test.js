@@ -353,6 +353,13 @@ describe('deciding a release', () => {
 		assert.equal(await readCertificationRecord(root, 'd2'), undefined);
 	});
 
+	it('records a refusal that came without a reason under one its status gives', async function () {
+		this.timeout(30000);
+		await deploy(root, 'd2', 'V2\n', { certification: recordingCertification(root) });
+		await recordCertificationDecision(WEB, { status: 'interrupted' });
+		assert.equal((await readCertificationRecord(root, 'd2')).reason, 'it was interrupted before its canary decided');
+	});
+
 	it('keeps a rejected first deploy live and refused, through the end of its rollout', async function () {
 		this.timeout(30000);
 		await deploy(root, 'd2', 'V2\n', { certification: recordingCertification(root) });

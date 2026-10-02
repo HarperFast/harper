@@ -113,11 +113,14 @@ export async function recordCertificationDecision(
 	// An undecided release does not stay live: an interrupted certification restores as a rejection does, which is
 	// also what the next boot would do with the record it left pending.
 	if (decision.status === 'rejected' || decision.status === 'interrupted') {
+		const reason =
+			decision.reason ??
+			(decision.status === 'rejected' ? 'its canary rejected it' : 'it was interrupted before its canary decided');
 		logger.error(
 			`Release ${certification.deploymentId} of ${certification.component} was ` +
-				`${decision.status === 'rejected' ? 'rejected' : 'not certified'}: ${decision.reason}`
+				`${decision.status === 'rejected' ? 'rejected' : 'not certified'}: ${reason}`
 		);
-		return { ...decision, ...(await rejectRelease(record, decision.reason ?? 'its canary rejected it')) };
+		return { ...decision, ...(await rejectRelease(record, reason)) };
 	}
 	return decision;
 }

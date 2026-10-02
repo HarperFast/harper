@@ -111,6 +111,22 @@ function flattenLoadFailure(key: string, error: unknown): BootLoadFailure {
 	return { key, name: 'Error', message: String(error) };
 }
 
+/**
+ * What a failed load reports, under `describe`'s message: the error thrown, when it can take that message, or one that
+ * carries it, since a component can throw a primitive or a frozen error.
+ */
+function loadFailure(thrown: unknown, describe: (message: string) => string): Error {
+	if (thrown instanceof Error) {
+		try {
+			thrown.message = describe(thrown.message);
+			return thrown;
+		} catch {
+			// frozen: carried as the cause below
+		}
+	}
+	return new Error(describe(thrown instanceof Error ? thrown.message : String(thrown)), { cause: thrown });
+}
+
 function noteBootFailure(application: string | undefined, key: string, error: unknown): void {
 	const outcome = application === undefined ? undefined : bootOutcomes?.get(application);
 	outcome?.failures.push(flattenLoadFailure(key, error));
@@ -1211,10 +1227,12 @@ export async function loadComponent(
 				// Mark component as healthy after successful loading
 				componentLifecycle.loaded(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
 				noteBootExecuted(entryApplication);
-			} catch (error) {
-				error.message = `Could not load component '${componentName}' for application '${basename(componentDirectory)}' due to: ${
-					error.message
-				}`;
+			} catch (thrown) {
+				const error = loadFailure(
+					thrown,
+					(message) =>
+						`Could not load component '${componentName}' for application '${basename(componentDirectory)}' due to: ${message}`
+				);
 				(getWorkerIndex() === 0 ? console : harperLogger).error(errorForLog(error));
 				resources.set(componentConfig.path || '/', new ErrorResource(error), null, true);
 				componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
@@ -1291,9 +1309,9 @@ export async function loadComponent(
 					`Component ${componentName} from (${basename(componentDirectory)}) did not load any functionality.`
 				);
 		}
-	} catch (error) {
-		console.error(`Could not load application directory ${componentDirectory}`, errorForLog(error));
-		error.message = `Could not load application due to ${error.message}`;
+	} catch (thrown) {
+		console.error(`Could not load application directory ${componentDirectory}`, errorForLog(thrown));
+		const error = loadFailure(thrown, (message) => `Could not load application due to ${message}`);
 		resources.set('', new ErrorResource(error));
 		if (!isRoot) {
 			componentLifecycle.failed(basename(componentDirectory), error, `Could not load ${basename(componentDirectory)}`);
