@@ -10,17 +10,35 @@ const fs = require('node:fs/promises');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const componentLoader = require('#src/components/componentLoader');
 const { withComponentPreparationLock } = require('#src/components/componentPreparationLock');
 const { internal: statusInternal } = require('#src/components/status/index');
 const { getConfigPath } = require('#src/config/configUtils');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { waitFor } = require('../waitFor.js');
 
+const LOADER = require.resolve('#src/components/componentLoader');
+
 describe("a held worker's boot outcomes", function () {
 	this.timeout(20000);
-	const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+	let componentLoader;
+	let componentsRoot;
+	let sharedLoader;
 	const created = [];
+
+	// The loader resolves its components root once, as it loads, and a suite before this one may have moved the root
+	// since: this suite loads an instance of its own, so the root it writes is the root that instance reads.
+	before(async () => {
+		componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+		await fs.mkdir(componentsRoot, { recursive: true });
+		sharedLoader = require.cache[LOADER];
+		delete require.cache[LOADER];
+		componentLoader = require('#src/components/componentLoader');
+	});
+
+	after(() => {
+		if (sharedLoader) require.cache[LOADER] = sharedLoader;
+		else delete require.cache[LOADER];
+	});
 	const plugins = [];
 	let refusedStarts;
 

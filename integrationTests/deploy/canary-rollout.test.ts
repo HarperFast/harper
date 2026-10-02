@@ -162,6 +162,16 @@ async function componentStatusOf(ctx: ContextWithHarper, name: string) {
 	return componentStatus.find((entry: { name: string }) => entry.name === name);
 }
 
+async function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+	let timer: NodeJS.Timeout | undefined;
+	return Promise.race([
+		promise,
+		new Promise<never>((_resolve, reject) => {
+			timer = setTimeout(() => reject(new Error(`${what} did not happen within ${ms}ms`)), ms);
+		}),
+	]).finally(() => clearTimeout(timer));
+}
+
 async function restartHarper(ctx: ContextWithHarper) {
 	await killHarper(ctx);
 	await startHarper(ctx, { config: HARPER_CONFIG, env: {} });
@@ -275,7 +285,7 @@ suite(
 			// Abruptly, so nothing decides on the way down: the next boot finds the release live and undecided.
 			const exited = once(ctx.harper.process, 'exit');
 			process.kill(-ctx.harper.process.pid!, 'SIGKILL');
-			await exited;
+			await within(exited, 30_000, 'Harper exiting after SIGKILL');
 			await deploying;
 			await startHarper(ctx, { config: HARPER_CONFIG, env: {} });
 
