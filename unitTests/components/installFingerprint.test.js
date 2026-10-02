@@ -385,6 +385,32 @@ describe('install fingerprints', () => {
 				assert.match(response.install.source, /^integrity:sha512-/);
 			});
 		});
+
+		describe('from a local path', function () {
+			// A package deploy publishes the component's root-config entry.
+			preserveRootConfig();
+			let directory;
+			let tarball;
+
+			before(async () => {
+				directory = await temporaryDirectory('fp-local-dir-');
+				await fs.writeFile(path.join(directory, 'resources.js'), 'export {};\n');
+				await fs.writeFile(path.join(directory, 'package.json'), JSON.stringify({ name: PROJECT, version: '1.0.0' }));
+				tarball = path.join(await temporaryDirectory('fp-local-tgz-'), 'component.tgz');
+				await fs.writeFile(tarball, await packageDirectory(directory, { skip_node_modules: true }));
+			});
+
+			it('never matches a peer on a local file: path, which each node reads its own copy of', async () => {
+				peers = () => [{ node: 'local', install: { source: 'unidentified', lockfiles: {} } }];
+				for (const local of [directory, tarball]) {
+					const { response, error } = await deploy({ payload: undefined, package: `file:${local}` });
+					assert.ifError(error);
+					assert.deepStrictEqual(response.install, { source: 'unidentified', lockfiles: {} }, local);
+					assert.strictEqual(response.replicated[0].install_matches, null, local);
+					assert.strictEqual(response.message, `Successfully deployed: ${PROJECT}`, local);
+				}
+			});
+		});
 	});
 });
 

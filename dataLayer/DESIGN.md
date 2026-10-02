@@ -249,6 +249,9 @@ engine-only backup):
   binding would wait on it forever, holding the snapshot — and its deferred file deletions — open.
   The rejection handler destroys the native stream itself rather than relying on control reaching the
   `catch`.
+- **A native producer rejection must terminate the archive streams.** The producer can reject
+  without closing its writable. Its rejection handler destroys both the native tar and the combined
+  stream with the original error, releasing an assembler waiting for EOF or downstream backpressure.
 
 **Completion manifest (`dataLayer/backupManifest.ts`).** `create_backup` is two-phase: the engine
 backup (`rootStore.backup()`) resolves — and is immediately visible to `list_backups`/`verify_backup`/
@@ -281,6 +284,8 @@ a multi-gigabyte archive just to decide whether to reject it.
   older reader refusing an unknown one is the intended answer. `harper_version`,
   `rocksdb_js_version` and the whole `source` block are provenance and are **never** gated on —
   keeping them separate is what stops a description from becoming a compatibility check.
+  Restore submission and execution share `resolveCompleteBackup`, so an incompatible producer
+  returns a 4xx before a job is queued and is checked again when the restore runs.
 - **`roles: null` means "not enumerated", which is not "no roles".** Enumeration reads the
   already-loaded `system` database rather than calling `getDatabases()`: the offline CLI runs with
   nothing loaded, and a scan there would open — and lock — every database on the instance. Names
