@@ -58,7 +58,7 @@ import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts
 import * as httpComponent from '../server/http.ts';
 import * as mcpComponent from './mcp/index.ts';
 import { Status } from '../server/status/index.ts';
-import { lifecycle as componentLifecycle, statusForComponent } from './status/index.ts';
+import { lifecycle as componentLifecycle, statusForComponent, STATUS } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { materializeGlobalSecrets, processComponentEnv } from './componentSecrets.ts';
 import { PluginModule } from './PluginModule.ts';
@@ -84,6 +84,46 @@ const VALIDATION_OWNED = Symbol('validationOwnedModule');
 let watchesSetup;
 let resources;
 const componentLoadTails = new Map<string, Promise<void>>();
+let appsSeenLastCycle: Set<string> | undefined;
+
+// Failure keys the loader recorded itself, as opposed to runtime health reported through the
+// public statusForComponent API
+const loaderFailedStatusKeys = new Set<string>();
+// Applications whose most recent placement evaluation on this thread reported a refusal
+const placementRefusals = new Set<string>();
+
+function retireStaleLoaderFailures(appName: string): void {
+	for (const key of takeLoaderFailures(appName)) {
+		if (statusForComponent(key).get()?.status === STATUS.ERROR) componentLifecycle.retired(key);
+	}
+}
+
+function loaderFailed(statusKey: string, error: Error | string, message?: string): void {
+	if (!isDeployValidating()) loaderFailedStatusKeys.add(statusKey);
+	componentLifecycle.failed(statusKey, error, message);
+}
+
+function takeLoaderFailures(appName: string): string[] {
+	if (isDeployValidating()) return [];
+	const prefix = appName + '.';
+	const taken: string[] = [];
+	for (const key of loaderFailedStatusKeys) {
+		if (key !== appName && !key.startsWith(prefix)) continue;
+		taken.push(key);
+		loaderFailedStatusKeys.delete(key);
+	}
+	return taken;
+}
+
+// loadedPaths survives reload cycles, so a failed application must forget its paths to reload
+function retryFailedApplicationLoad(appName: string, appFolder: string): void {
+	const prefix = appName + '.';
+	for (const key of loaderFailedStatusKeys) {
+		if (key !== appName && !key.startsWith(prefix)) continue;
+		forgetLoadedPath(appFolder);
+		return;
+	}
+}
 type ComponentReadyPromises = WeakMap<object, Promise<void>>;
 
 function serializeComponentLoad<T>(appName: string, load: () => Promise<T>): Promise<T> {
@@ -180,17 +220,20 @@ function placedOnThisThread(appName: string): boolean {
 	try {
 		assertIsolationConfig(appName, (getConfigObj()?.[appName] as any)?.isolated);
 	} catch (error) {
-		componentLifecycle.failed(appName, error, `Component '${appName}' failed to load`);
+		placementRefusals.add(appName);
+		loaderFailed(appName, error, `Component '${appName}' failed to load`);
 		return false;
 	}
 	if (isIsolatedApplication(appName) && isMainThread && getWorkerIndex() === 0) {
-		componentLifecycle.failed(
+		placementRefusals.add(appName);
+		loaderFailed(
 			appName,
 			new Error(`Application '${appName}' is isolated, which needs a worker thread of its own, but threads.count is 0`),
 			`Component '${appName}' failed to load`
 		);
 		return false;
 	}
+	placementRefusals.delete(appName);
 	return shouldLoadApplicationHere(appName);
 }
 
@@ -209,11 +252,7 @@ function tryRootConfigMount(appName: string): { ok: true; mount: ScopeMount | un
 		(error as Error).message = `Not loading '${appName}': invalid routing configured: ${(error as Error).message}`;
 		errorReporter?.(error);
 		(getWorkerIndex() === 0 ? console : harperLogger).error(errorForLog(error as Error));
-		componentLifecycle.failed(
-			appName,
-			error as Error,
-			`Component '${appName}' failed to load due to invalid routing configuration`
-		);
+		loaderFailed(appName, error as Error, `Component '${appName}' failed to load due to invalid routing configuration`);
 		return { ok: false };
 	}
 }
@@ -296,14 +335,17 @@ export async function loadComponentDirectories(
 			recoverInterruptedComponentExtraction(CF_ROUTES_DIR, appName)
 				.then(async () => {
 					if (!existsSync(appFolder)) {
-						if (appWasVisible) {
-							statusForComponent(appName).unknown('Component directory no longer exists after preparation settled');
-						}
+						takeLoaderFailures(appName);
+						componentLifecycle.retired(appName);
 						return;
 					}
-					if (!placedOnThisThread(appName)) return;
+					if (!placedOnThisThread(appName)) {
+						if (!placementRefusals.has(appName)) retireStaleLoaderFailures(appName);
+						return;
+					}
 					const mountResult = tryRootConfigMount(appName);
 					if (!mountResult.ok) return;
+					retryFailedApplicationLoad(appName, appFolder);
 					const loadedModules = new Set<any>();
 					await loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
 						isRoot: false,
@@ -317,16 +359,20 @@ export async function loadComponentDirectories(
 				})
 				.catch((error) => {
 					const recoveryError = error instanceof Error ? error : new Error(String(error));
-					if (appWasVisible) {
-						componentLifecycle.failed(
-							appName,
-							recoveryError,
-							`Component '${appName}' failed to load after waiting for in-progress preparation`
-						);
+					if (!existsSync(appFolder)) {
+						takeLoaderFailures(appName);
+						componentLifecycle.retired(appName);
+						return;
 					}
+					loaderFailed(
+						appName,
+						recoveryError,
+						`Component '${appName}' failed to load after waiting for in-progress preparation`
+					);
 				})
 		);
 	};
+	const presentApps = new Set<string>();
 	if (existsSync(CF_ROUTES_DIR)) {
 		const cfFolders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
 		for (const appEntry of cfFolders) {
@@ -335,6 +381,7 @@ export async function loadComponentDirectories(
 			// Harper's own staging dirs (e.g. deploy aside copies) from loading as components.
 			if (appEntry.name.startsWith('.')) continue;
 			const appName = appEntry.name;
+			presentApps.add(appName);
 			const recoveryError = failedRecoveries.get(appName);
 			if (recoveryError) {
 				if (recoveryError instanceof ComponentPreparationLockTimeoutError) {
@@ -343,17 +390,21 @@ export async function loadComponentDirectories(
 					continue;
 				}
 				unreportedFailedRecoveries.delete(appName);
-				componentLifecycle.failed(
+				loaderFailed(
 					appName,
 					recoveryError,
 					`Component '${appName}' failed to load because its interrupted deployment could not be recovered`
 				);
 				continue;
 			}
-			if (!placedOnThisThread(appName)) continue;
+			if (!placedOnThisThread(appName)) {
+				if (!placementRefusals.has(appName)) retireStaleLoaderFailures(appName);
+				continue;
+			}
 			const appFolder = join(CF_ROUTES_DIR, appName);
 			const mountResult = tryRootConfigMount(appName);
 			if (!mountResult.ok) continue;
+			retryFailedApplicationLoad(appName, appFolder);
 			cfsLoaded.push(
 				serializeComponentLoad(appName, () =>
 					loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
@@ -365,13 +416,13 @@ export async function loadComponentDirectories(
 					})
 				).catch((error) => {
 					const loadError = error instanceof Error ? error : new Error(String(error));
-					componentLifecycle.failed(appName, loadError, `Component '${appName}' failed to load`);
+					loaderFailed(appName, loadError, `Component '${appName}' failed to load`);
 				})
 			);
 		}
 	}
 	for (const [appName, recoveryError] of unreportedFailedRecoveries) {
-		componentLifecycle.failed(
+		loaderFailed(
 			appName,
 			recoveryError,
 			`Component '${appName}' failed to load because its interrupted deployment could not be recovered`
@@ -380,9 +431,11 @@ export async function loadComponentDirectories(
 	for (const appName of deferredRecoveries.keys()) deferComponentLoad(appName);
 	const hdbAppFolder = process.env.RUN_HDB_APP;
 	if (hdbAppFolder) {
+		presentApps.add(basename(hdbAppFolder));
 		if (getWorkerIndex() === 0) harperLogger.info?.('Loading application from ' + hdbAppFolder);
 		const mountResult = tryRootConfigMount(basename(hdbAppFolder));
 		if (mountResult.ok && placedOnThisThread(basename(hdbAppFolder))) {
+			retryFailedApplicationLoad(basename(hdbAppFolder), hdbAppFolder);
 			cfsLoaded.push(
 				serializeComponentLoad(hdbAppFolder, () =>
 					loadComponent(hdbAppFolder, cycleResources, hdbAppFolder, {
@@ -399,6 +452,15 @@ export async function loadComponentDirectories(
 			);
 		}
 	}
+	if (appsSeenLastCycle) {
+		for (const goneApp of appsSeenLastCycle) {
+			if (!presentApps.has(goneApp)) {
+				takeLoaderFailures(goneApp);
+				componentLifecycle.retired(goneApp);
+			}
+		}
+	}
+	appsSeenLastCycle = presentApps;
 	return await Promise.all(cfsLoaded).then(() => {
 		watchesSetup = true;
 	});
@@ -786,6 +848,9 @@ export interface LoadComponentOptions {
 	autoReload?: boolean;
 	providedLoadedComponents?: Map<any, any>;
 	appName?: string;
+	/** Registry key this load reports whole-application status under. A nested component load passes
+	 * the parent-scoped name its failure is tracked by; defaults to `appName` or the directory basename. */
+	statusName?: string;
 	/** Databases this application forks, from its root-config entry (see `rootConfigBranchedDatabases`). */
 	branchedDatabases?: string[] | true;
 	// When provided, every Scope created during this load is added to this set instead of being
@@ -830,6 +895,17 @@ export async function loadComponent(
 	applicationScope.runtimeRoot ??= resolvedFolder;
 	applicationScope.allowedPath ??= realpathSync(componentDirectory);
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
+	const statusName = options.statusName ?? appName ?? basename(componentDirectory);
+	const isApplicationLoad = !isRoot && !options.applicationScope;
+	const priorLoaderFailures = isApplicationLoad ? takeLoaderFailures(statusName) : [];
+	const settlePriorFailures = (loadSucceeded: boolean) => {
+		for (const key of priorLoaderFailures) {
+			if (loaderFailedStatusKeys.has(key)) continue;
+			if (!loadSucceeded) loaderFailedStatusKeys.add(key);
+			else if (statusForComponent(key).get()?.status === STATUS.ERROR) componentLifecycle.retired(key);
+		}
+	};
+	if (isApplicationLoad) componentLifecycle.loading(statusName, `Application '${statusName}' is loading`);
 	try {
 		let config;
 		let configPath = join(componentDirectory, 'harper-config.yaml'); // look for the specific harperdb-config.yaml first
@@ -883,6 +959,10 @@ export async function loadComponent(
 		if (isRoot) config ??= DEFAULT_CONFIG;
 		if (!config) {
 			// Empty/comment-only config file on a non-root component: nothing to load.
+			if (isApplicationLoad) {
+				settlePriorFailures(true);
+				componentLifecycle.loaded(statusName, `Application '${statusName}' has no components to load`);
+			}
 			return undefined;
 		}
 
@@ -910,18 +990,18 @@ export async function loadComponent(
 					`The 'env' config block is not supported in the root config; declare env expectations in each component's config`
 				);
 			} else {
-				const componentStatusName = basename(componentDirectory);
 				try {
 					// Refresh the store snapshot so out-of-cycle loads (e.g. deploy validation in a
 					// long-lived worker, after a set_secret/grant_secret since boot) gate against
 					// current data. Cheap (one small system-table scan per env-declaring component).
 					await materializeGlobalSecrets();
-					processComponentEnv(componentStatusName, config.env);
+					processComponentEnv(statusName, config.env);
 				} catch (error) {
-					error.message = `Could not load component '${componentStatusName}' due to: ${error.message}`;
+					error.message = `Could not load component '${statusName}' due to: ${error.message}`;
 					errorReporter?.(error);
 					(getWorkerIndex() === 0 ? console : harperLogger).error(error);
-					componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
+					loaderFailed(statusName, error, `Could not load component '${statusName}'`);
+					settlePriorFailures(false);
 					return undefined;
 				}
 			}
@@ -946,8 +1026,7 @@ export async function loadComponent(
 		for (const componentName in config) {
 			if (componentName === 'env') continue; // handled above — not a plugin
 			// For root components, use just the component name
-			// For application components, use applicationName.componentName format (directoryName.componentName)
-			const componentStatusName = isRoot ? componentName : `${basename(componentDirectory)}.${componentName}`;
+			const componentStatusName = isRoot ? componentName : `${statusName}.${componentName}`;
 
 			compName = componentName;
 			const componentConfig = config[componentName];
@@ -1007,6 +1086,7 @@ export async function loadComponent(
 								applicationScope: subApplicationScope,
 								autoReload: false,
 								appName: appName || componentName,
+								statusName: componentStatusName,
 								collectScopes: options.collectScopes,
 								collectLoadedModules,
 								// `host`/`urlPath` on this entry route the component being loaded. For an
@@ -1035,7 +1115,8 @@ export async function loadComponent(
 				if (!extensionModule) {
 					// This is an application-only component (no extension module)
 					// Mark it as loaded since it exists in the config
-					componentLifecycle.loaded(componentStatusName, `Application component '${componentStatusName}' processed`);
+					if (statusForComponent(componentStatusName).get()?.status !== STATUS.ERROR)
+						componentLifecycle.loaded(componentStatusName, `Application component '${componentStatusName}' processed`);
 					continue;
 				}
 
@@ -1218,7 +1299,7 @@ export async function loadComponent(
 				errorReporter?.(error);
 				(getWorkerIndex() === 0 ? console : harperLogger).error(errorForLog(error));
 				resources.set(componentConfig.path || '/', new ErrorResource(error), null, true);
-				componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
+				loaderFailed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
 			}
 		}
 
@@ -1271,9 +1352,14 @@ export async function loadComponent(
 				applicationScope
 			);
 			loadedPaths.set(resolvedFolder, extensionModule);
+			if (isApplicationLoad) {
+				settlePriorFailures(true);
+				componentLifecycle.loaded(statusName, `Application '${statusName}' loaded`);
+			}
 			return extensionModule;
 		}
 		const componentFunctionalityValues = Object.values(componentFunctionality);
+		let loadedNothing = false;
 		if (
 			componentFunctionalityValues.length > 0 &&
 			componentFunctionalityValues.every((functionality) => !functionality) &&
@@ -1282,7 +1368,8 @@ export async function loadComponent(
 			const errorMessage = `${componentDirectory} did not load any modules, resources, or files, is this a valid component?`;
 			errorReporter?.(new Error(errorMessage));
 			(getWorkerIndex() === 0 ? console : harperLogger).error(errorMessage);
-			componentLifecycle.failed(basename(componentDirectory), errorMessage);
+			loaderFailed(statusName, errorMessage);
+			loadedNothing = true;
 		}
 
 		for (const [componentName, functionality] of Object.entries(componentFunctionality)) {
@@ -1291,10 +1378,18 @@ export async function loadComponent(
 					`Component ${componentName} from (${basename(componentDirectory)}) did not load any functionality.`
 				);
 		}
+		if (isApplicationLoad && !loadedNothing) {
+			settlePriorFailures(true);
+			componentLifecycle.loaded(statusName, `Application '${statusName}' loaded`);
+		} else if (isApplicationLoad) {
+			settlePriorFailures(false);
+		}
 	} catch (error) {
 		console.error(`Could not load application directory ${componentDirectory}`, errorForLog(error));
 		error.message = `Could not load application due to ${error.message}`;
 		errorReporter?.(error);
+		loaderFailed(statusName, error, `Application '${statusName}' failed to load`);
+		settlePriorFailures(false);
 		resources.set('', new ErrorResource(error));
 	}
 }
