@@ -67,17 +67,25 @@ describe('Table.put ifVersion', () => {
 		assert.strictEqual(entry.value.name, 'a', 'the rejected write left the record unchanged');
 	});
 
-	it('rejects when a concurrent write lands after the guarded put reads its base but before it commits', async () => {
-		// Regression guard: the commit must reject against the per-attempt `existingEntry` the retry
-		// loop (re)reads at commit time, not just the version the caller happened to pass as
-		// `ifVersion` — a refactor that short-circuited on the caller's value without checking the
-		// live read would miss a write that landed since. Simulated via `getEntry` (same technique as
-		// unitTests/security/userRecordLookups.test.js) rather than a real two-writer race: staging
-		// both writes under one shared, explicit transaction (so a real concurrent write has
-		// somewhere to land before the guarded one's commit) leaks a RocksDB read snapshot when the
-		// guard rejects — a separate, pre-existing issue outside this change's scope, see the
-		// single-write-transaction note in resources/DESIGN.md — and two fully independent `put()`
-		// calls race non-deterministically with no reliable window to land one inside the other.
+	it('rejects on whatever existingEntry the commit actually receives, not a value cached before it', async () => {
+		// Regression guard: the comparison must read `existingEntry` — the parameter `write.commit`
+		// is actually invoked with — not a version captured separately before or outside that call.
+		// A refactor that captured the "current" version some other way (e.g. once, before staging)
+		// and compared against that instead would still pass every other test in this file, since
+		// none of them give the base read and the commit-time read a reason to disagree.
+		//
+		// A real two-writer race was tried twice here and dropped both times: staging the guarded
+		// and a concurrent write under one shared, explicit transaction leaked a RocksDB read
+		// snapshot into later, unrelated test files once the guard rejected; interposing a genuine
+		// concurrent `put()` via `Transaction.prototype.commit` (the technique
+		// unitTests/resources/immediateTransactionConflictRetry.test.js uses) left RocksDB's native
+		// conflict/retry bookkeeping desynced for that same file's own tests, run afterward in the
+		// same process. Both are real, pre-existing issues outside this change's scope (noted
+		// alongside the single-write-transaction limit in resources/DESIGN.md), not something to
+		// paper over by shipping a test that reproduces them. This uses the same `getEntry`
+		// interception technique as unitTests/security/userRecordLookups.test.js instead: no real
+		// transaction, no leak, and it drives `write.commit`'s actual `existingEntry` argument
+		// directly rather than hoping a race lands in the right window.
 		const id = 'race';
 		await Rows.put({ id, name: 'a' });
 		const entry = Rows.primaryStore.getEntry(id);
@@ -88,8 +96,7 @@ describe('Table.put ifVersion', () => {
 			const real = getEntry.call(this, key, options);
 			if (intercepted || key !== id) return real;
 			intercepted = true;
-			// What the guard's per-attempt read sees: a version this write never staged against,
-			// as if a concurrent write had landed since.
+			// A version this write never staged against, as if a concurrent write had landed since.
 			return { ...real, version: real.version + 1000 };
 		};
 		try {
