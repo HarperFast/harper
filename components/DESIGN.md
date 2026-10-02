@@ -64,8 +64,9 @@ is a boot load in a fresh realm, so under every lockdown mode it accepts exactly
 load and rejects what one would fail to. No load in the deploying thread could promise that: the main thread,
 where the operations API deploys, runs no application code, and a `freeze-after-load` worker's intrinsics are
 already frozen, so a dependency that extends one at load (reflect-metadata) throws there yet loads at every boot
-(#2881). The in-process probe that tried, `validateComponentLoads`, is gone in every mode, along with what it
-guarded (`laterLoadsMeetFrozenIntrinsics` has no production caller left). `restart: false` gets no verdict —
+(#2881). The in-process probe that tried, `validateComponentLoads`, is gone in every mode, along with what kept its
+throwaway load off the live worker: the guard that dropped its registrations and diverted its status writes, the
+transient Scope flag, and the frozen-intrinsics check. `restart: false` gets no verdict —
 nothing restarts, so nothing could certify it — and the response reports `certification: 'not-requested'`;
 a restarting deploy that could not be armed reports `'unavailable'`.
 
@@ -229,8 +230,8 @@ best-effort sweep fails. Both the deploy path and boot recovery pass over one ra
 because a verdict written there would outlive the deployment and, once its sidecar became readable again, be
 attributed to a live component that never held an unsettled activation.
 
-An `.activation.json` journal is written beside the candidate — with a `.complete` marker recording that
-build _and_ validation both succeeded — before the first rename, so `recoverInterruptedActivations()` can
+An `.activation.json` journal is written beside the candidate — with a `.complete` marker recording that the
+build succeeded — before the first rename, so `recoverInterruptedActivations()` can
 settle a crash at any boundary. Both go to a temp name, are fsynced, then linked into place, so the final
 name never exists with partial contents; the candidate's own contents are fsynced before `.complete` is
 written, since `.complete` is what vouches for them. Recovery runs before `installApplications()`, which
@@ -299,8 +300,8 @@ and the journal removal: the journal is what would carry the activation forward 
 
 Two limits are deliberate and tracked separately: activation is two renames, so the live _pathname_ is
 briefly absent (in-memory resources are unaffected, but a component that opens its own files during a
-request can still see a gap); and validation does not run on the main-thread deploy path, nor on a worker
-under the default lockdown.
+request can still see a gap); and nothing loads a release before it is live: a restarting deploy's canary loads
+it from the live path, so a deploy that restarts nothing goes live unchecked.
 
 ### Root config is an effect of the activation
 
@@ -531,20 +532,6 @@ starting `handleApplication`; if a deploy begins during the load, the plugin tim
 unpaused load time. This prevents a long install from looking like a hung plugin while its entry handlers
 are deliberately paused against the intermediate tree.
 
-A deploy's own validation load was exempt. None runs since the canary replaced it, and this holds only for the
-dormant `collectScopes` path that still implements it: its Scopes (`isTransientValidation`, set at construction from
-`collectScopes`) never read the deploy state, subscribe to `deploy:start`/`deploy:end`, pause their
-watchers, or suspend their plugin timeout. The load runs inside the deploy's lifecycle bracket, between
-build and swap, so any wait for a deploy to end can be a wait on itself. It was, for a component deployed
-as `harper`: the validation load passes no `appName`, so its Scopes take the loader's default name
-`harper`, matched the deploy in flight, and waited for its end while the deploy waited for them. A
-replicated deploy of that component hung on every peer, since only worker threads validate. The same
-cycle formed when a `harper` deploy started on a worker while another component's validation was running
-there, because that deploy's own validation queues behind the running one (`validationChain`). The
-candidate tree is complete before validation starts and nothing else writes to it, so there is nothing to
-wait for. `unitTests/components/componentLoader.test.js` ("deploy validation loads never wait on a
-deploy") holds both routes and the plain timeout.
-
 Since #2345 no preparation extracts in place; the live tree moves aside only at activation. What
 remains is the legacy recovery pass (`recoverOrCleanupStaleExtractionPaths`), whose
 `rollbackExtractedDirectory` atomically renames whatever holds the live path into hidden staging before
@@ -642,7 +629,7 @@ The origin of a replicated `deploy_component` hands `server.replication.replicat
 from `peerDeployAnswerTimeoutMs(req)` (`components/operations.js`). It is the sum of what the peer is
 allowed for that request: its payload wait (`deployment_timeout`, counted twice when credential references
 must also replicate in), two full preparation budgets (`componentPreparationBudgetMs`: every extraction
-command and both install commands at their allowances), a margin for validation and the swap, and the
+command and both install commands at their allowances), a margin for the swap and the canary's decision, and the
 restart ceiling when the peer restarts before answering. It is clamped to the longest delay a timer holds.
 One budget is the peer's own preparation. The other is the preparation lock's wait: a peer already preparing
 the same component for another deploy holds this one at the lock for a budget before the lock re-checks the
@@ -654,7 +641,7 @@ default is hours, and its job is only that the origin eventually settles, rather
 operation, the deployment row and its own restart for as long as a wedged peer stays wedged. Two things are
 not budgeted. The lock keeps waiting while its holder is alive, so queueing behind a preparation that
 outlasts the lock's wait, or behind several, can run past the deadline. So can plugin `timeout`s a component
-configures beyond the validation margin, which live in the payload the origin does not parse. Covering the
+configures beyond that margin, which live in the payload the origin does not parse. Covering the
 first would take a deadline that follows the peer's progress rather than a sum of its allowances. The
 deadline is not cancellation: a peer past it may still finish, so the failure the replicator records says
 the outcome there is unknown.

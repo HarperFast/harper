@@ -78,13 +78,6 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	ready: Promise<any[]>;
 	databaseEvents: typeof databaseEventsEmitter;
 	models: Models;
-	// Set by the loader on deploy pre-flight validation loads (collectScopes):
-	// the scope exists to validate a component, not to run it. Plugins with
-	// process-global side effects should validate fully but skip activation.
-	// Such a scope never follows a deploy: it loads a finished candidate from inside
-	// its own deploy's lifecycle, so waiting or pausing for a deploy waits on itself.
-	isTransientValidation?: boolean;
-
 	/**
 	 * Routing the operator declared for this application in the root config. Applied automatically
 	 * to handlers registered through `scope.server`, so plugins normally don't touch it — the
@@ -105,25 +98,23 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		applicationScope: ApplicationScope,
 		origin: string = appName,
 		isRootConfig?: boolean,
-		mount?: ScopeMount,
-		isTransientValidation?: boolean
+		mount?: ScopeMount
 	) {
 		super();
 
 		this.mount = mount;
-		this.isTransientValidation = isTransientValidation;
 		this.#appName = appName;
 		this.#pluginName = pluginName;
 		this.#origin = typeof origin === 'string' ? origin : appName;
 		this.#directory = directory;
 		this.#configFilePath = configFilePath;
 		this.#logger = loggerWithTag(this.#appName);
-		this.#deployInFlight = !isTransientValidation && deployLifecycle.loadsAwaitDeploy(this.#appName);
+		this.#deployInFlight = deployLifecycle.loadsAwaitDeploy(this.#appName);
 
 		this.databaseEvents = databaseEventsEmitter;
 		this.applicationScope = applicationScope;
-		// Hold this identity's live secret subscriptions (#1776) for as long as this Scope is open, so a
-		// throwaway deploy-validation Scope closing can't tear down a sibling/running Scope's streams.
+		// Hold this identity's live secret subscriptions (#1776) for as long as this Scope is open, so one
+		// Scope of the identity closing can't tear down the streams of another that is still running.
 		retainComponentSubscriptions(applicationScope?.name ?? appName);
 		this.resources = applicationScope?.resources ?? resources;
 		this.models = modelsSingleton;
@@ -174,10 +165,8 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		this.#deployEndHandler = (name) => {
 			if (name === this.#appName) this.#onDeployEnd(name);
 		};
-		if (!isTransientValidation) {
-			deployLifecycle.on('deploy:start', this.#deployStartHandler);
-			deployLifecycle.on('deploy:end', this.#deployEndHandler);
-		}
+		deployLifecycle.on('deploy:start', this.#deployStartHandler);
+		deployLifecycle.on('deploy:end', this.#deployEndHandler);
 	}
 
 	get logger(): Logger {

@@ -476,8 +476,8 @@ function logRestartOutcome(restart, what) {
 		);
 }
 
-// A peer's validation load and swap, which have no allowance of their own to sum.
-const PEER_DEPLOY_VALIDATION_MARGIN_MS = 10 * 60 * 1000;
+// A peer's swap, and its canary's decision when it restarts, which have no allowance of their own to sum.
+const PEER_DEPLOY_ACTIVATION_MARGIN_MS = 10 * 60 * 1000;
 
 /**
  * How long the origin waits for each peer to answer a replicated deploy: every wait and command the peer is
@@ -495,7 +495,7 @@ function peerDeployAnswerTimeoutMs(req) {
 		payloadWaitMs * (req.credentials?.length ? 2 : 1) +
 			// the lock's wait on another deploy's preparation, then this deploy's own
 			2 * componentPreparationBudgetMs(installTimeoutMs) +
-			PEER_DEPLOY_VALIDATION_MARGIN_MS +
+			PEER_DEPLOY_ACTIVATION_MARGIN_MS +
 			(req.restart === true ? RESTART_WAIT_CEILING_MS : 0),
 		hdbTerms.MAX_SET_TIMEOUT_MS
 	);
