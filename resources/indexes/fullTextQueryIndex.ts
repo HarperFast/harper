@@ -153,6 +153,7 @@ export class FullTextQueryIndex {
 	#candidateProbeFailureWarned = false;
 	#candidateCollectionRetryAfter = 0;
 	#candidateProbeRetryAfter = 0;
+	#candidateCollectionFailureEpoch = 0;
 	#candidateProbeFailureEpoch = 0;
 
 	constructor(options: FullTextQueryIndexOptions) {
@@ -664,11 +665,14 @@ export class FullTextQueryIndex {
 		const maxKeys = Math.min(MAX_CANDIDATE_KEYS, Math.ceil(expectedRejectedReads * CANDIDATE_KEYS_PER_SOURCE_READ));
 		const now = Date.now();
 		if (plan.estimatedCount <= maxKeys && now >= this.#candidateCollectionRetryAfter) {
+			const collectionFailureEpoch = this.#candidateCollectionFailureEpoch;
 			try {
 				const collected = await plan.collect(maxKeys, cooperate);
 				assertActive();
-				this.#candidateCollectionFailureWarned = false;
-				this.#candidateCollectionRetryAfter = 0;
+				if (collectionFailureEpoch === this.#candidateCollectionFailureEpoch) {
+					this.#candidateCollectionFailureWarned = false;
+					this.#candidateCollectionRetryAfter = 0;
+				}
 				if (collected)
 					return {
 						complete: collected.complete,
@@ -677,7 +681,8 @@ export class FullTextQueryIndex {
 					};
 			} catch (error) {
 				assertActive();
-				this.#candidateCollectionRetryAfter = now + CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS;
+				this.#candidateCollectionFailureEpoch++;
+				this.#candidateCollectionRetryAfter = Date.now() + CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS;
 				if (!this.#candidateCollectionFailureWarned) {
 					this.#candidateCollectionFailureWarned = true;
 					logger.warn?.(

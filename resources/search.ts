@@ -706,6 +706,8 @@ function collectCandidateKeyTerms(conditions, table, terms: CandidateKeyTerm[], 
 	return complete;
 }
 
+const CANDIDATE_KEY_COLLECTION_YIELD_INTERVAL = 256;
+
 /**
  * Run the planned scans narrowest-estimate first, intersecting on storage key identity. `maxKeys`
  * bounds index entries READ, not keys retained — a wide later scan whose intersection is tiny still
@@ -713,9 +715,46 @@ function collectCandidateKeyTerms(conditions, table, terms: CandidateKeyTerm[], 
  * exceeds what is left of that budget is dropped instead: fewer AND terms is a wider superset, which
  * the predicate then narrows, and spending the budget on it only to abandon the set is pure loss.
  */
-const CANDIDATE_KEY_COLLECTION_YIELD_INTERVAL = 256;
+function collectCandidateKeys(
+	terms: CandidateKeyTerm[],
+	transaction,
+	maxKeys: number,
+	planned: boolean
+): CandidateKeyCollection | null {
+	const ordered = terms.length > 1 ? terms.slice().sort((a, b) => a.estimatedCount - b.estimatedCount) : terms;
+	let matched: CandidateKeySet | undefined;
+	let complete = planned;
+	let scanned = 0;
+	for (const term of ordered) {
+		if (matched && term.estimatedCount > maxKeys - scanned) {
+			complete = false;
+			continue;
+		}
+		const next = new CandidateKeySet();
+		let overran = false;
+		for (const scan of term.scans) {
+			for (const { value: primaryKey } of scan.index.getRange({ ...scan.range, values: true, transaction })) {
+				if (++scanned > maxKeys) {
+					overran = true;
+					break;
+				}
+				if (!matched || matched.has(primaryKey)) next.add(primaryKey);
+			}
+			if (overran) break;
+		}
+		// A half-scanned term is not a superset of its own matches, so it is dropped whole.
+		if (overran) {
+			if (!matched) return null;
+			complete = false;
+			break;
+		}
+		matched = next;
+		if (matched.size === 0) break;
+	}
+	return { keys: matched!, complete };
+}
 
-function* candidateKeyCollectionSteps(
+function* cooperativeCandidateKeyCollectionSteps(
 	terms: CandidateKeyTerm[],
 	transaction,
 	maxKeys: number,
@@ -743,7 +782,6 @@ function* candidateKeyCollectionSteps(
 			}
 			if (overran) break;
 		}
-		// A half-scanned term is not a superset of its own matches, so it is dropped whole.
 		if (overran) {
 			if (!matched) return null;
 			complete = false;
@@ -755,18 +793,6 @@ function* candidateKeyCollectionSteps(
 	return { keys: matched!, complete };
 }
 
-function collectCandidateKeys(
-	terms: CandidateKeyTerm[],
-	transaction,
-	maxKeys: number,
-	planned: boolean
-): CandidateKeyCollection | null {
-	const steps = candidateKeyCollectionSteps(terms, transaction, maxKeys, planned);
-	let next = steps.next();
-	while (!next.done) next = steps.next();
-	return next.value;
-}
-
 async function collectCandidateKeysCooperatively(
 	terms: CandidateKeyTerm[],
 	transaction,
@@ -774,13 +800,17 @@ async function collectCandidateKeysCooperatively(
 	planned: boolean,
 	cooperate: () => Promise<void>
 ): Promise<CandidateKeyCollection | null> {
-	const steps = candidateKeyCollectionSteps(terms, transaction, maxKeys, planned);
-	let next = steps.next();
-	while (!next.done) {
-		await cooperate();
-		next = steps.next();
+	const steps = cooperativeCandidateKeyCollectionSteps(terms, transaction, maxKeys, planned);
+	try {
+		let next = steps.next();
+		while (!next.done) {
+			await cooperate();
+			next = steps.next();
+		}
+		return next.value;
+	} finally {
+		steps.return(null);
 	}
-	return next.value;
 }
 
 /**

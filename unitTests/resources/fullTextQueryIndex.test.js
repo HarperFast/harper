@@ -1887,6 +1887,78 @@ describe('FullTextQueryIndex', () => {
 		await index.close();
 	});
 
+	it('does not let an older collection success clear a newer failure backoff', async () => {
+		const auditStore = sharedStore();
+		const readinessId = 'candidate-collection-failure-epoch';
+		publishDerivedIndexReadiness(auditStore, readinessId, 'ready');
+		const collectionStarted = Promise.withResolvers();
+		const finishCollection = Promise.withResolvers();
+		let finalCollectionAttempts = 0;
+		const { index } = simpleQueryIndex({
+			auditStore,
+			readinessId,
+			payload: publicationPayload(),
+			hits: () => [
+				{ id: nativeId(1, 'record-0'), version: '1', score: 2 },
+				{ id: nativeId(1, 'record-1'), version: '1', score: 1 },
+			],
+			estimatedRecordCount: 100,
+		});
+		attachCurrentCoverage(index, auditStore, readinessId);
+		const condition = { attribute: readinessId, comparator: 'matches', value: 'pack' };
+		const options = (collect) => ({
+			minResults: 1,
+			filter: () => true,
+			candidateKeys: { estimatedCount: 1, collect },
+		});
+		const realDateNow = Date.now;
+		try {
+			Date.now = () => 1_000;
+			const olderSearch = index.search(
+				condition,
+				{},
+				options(async () => {
+					collectionStarted.resolve();
+					await finishCollection.promise;
+					return null;
+				})
+			);
+			await collectionStarted.promise;
+			assert.strictEqual(
+				(
+					await index.search(
+						condition,
+						{},
+						options(() => {
+							throw new Error('injected newer collection failure');
+						})
+					)
+				)[0].key,
+				'record-0'
+			);
+			finishCollection.resolve();
+			assert.strictEqual((await olderSearch)[0].key, 'record-0');
+			assert.strictEqual(
+				(
+					await index.search(
+						condition,
+						{},
+						options(() => {
+							finalCollectionAttempts++;
+							return null;
+						})
+					)
+				)[0].key,
+				'record-0'
+			);
+		} finally {
+			Date.now = realDateNow;
+			finishCollection.resolve();
+		}
+		assert.strictEqual(finalCollectionAttempts, 0);
+		await index.close();
+	});
+
 	it('observes cancellation while collecting candidate keys', async () => {
 		const auditStore = sharedStore();
 		const readinessId = 'candidate-collection-cancellation';
