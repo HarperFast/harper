@@ -76,7 +76,17 @@ export interface ResourceInterface<Record extends object = any>
 export interface Session {
 	id?: any;
 	user?: User;
-	update: (updatedSession: any) => unknown;
+	/** The stored record's version, read alongside `id`; pass it back as `update()`'s `ifVersion`. */
+	version?: number;
+	/**
+	 * `ifVersion` rechecks the latest committed local session before writing. Missing, deleted,
+	 * expired, changed, or version-reused sessions reject with `.code === 'VERSION_CONFLICT'`.
+	 * This is best effort, not compare-and-set: writes in flight at the check, later writes,
+	 * and remote writes not yet replicated can still race. The ordinary put uses last-write-wins,
+	 * including when the stored version is ahead of the local clock. Capture `version` before
+	 * awaiting external work; it describes the initially loaded session and is not refreshed.
+	 */
+	update: (updatedSession: any, options?: { ifVersion: number }) => unknown;
 	delete: (id: any) => Promise<void>;
 }
 

@@ -240,6 +240,38 @@ suite(
 			return setCookie.split(';')[0];
 		}
 
+		test('a session refresh rejects the version captured before logout over HTTP', async () => {
+			const username = ctx.harper.admin.username;
+			const cookie = await mintSessionCookie(username);
+			const before = await get('/conditional-session', undefined, { Cookie: cookie });
+			equal(before.status, 200);
+			equal(typeof before.body.version, 'number');
+			equal(before.body.user, username);
+			const matching = await get(
+				`/conditional-session?ifVersion=${before.body.version}&user=${encodeURIComponent(username)}`,
+				undefined,
+				{ Cookie: cookie }
+			);
+			equal(matching.status, 200, matching.text);
+			const held = await get('/conditional-session', undefined, { Cookie: cookie });
+			const logout = await get('/mint-session', undefined, { Cookie: cookie });
+			equal(logout.status, 200, logout.text);
+			const rejected = await get(
+				`/conditional-session?ifVersion=${held.body.version}&user=${encodeURIComponent(username)}`,
+				undefined,
+				{ Cookie: cookie }
+			);
+			equal(rejected.status, 409, rejected.text);
+			equal(rejected.body.code, 'VERSION_CONFLICT');
+			equal(rejected.headers.get('x-hdb-session'), null);
+			equal(rejected.headers.get('set-cookie'), null);
+			const after = await get('/conditional-session', undefined, { Cookie: cookie });
+			equal(after.status, 200);
+			equal(after.body.user, null);
+			const protectedResponse = await get(PROTECTED_ROUTE, undefined, { Cookie: cookie });
+			equal(protectedResponse.status, 401, protectedResponse.text);
+		});
+
 		test('a rejected cookie session reaches an application-owned route instead of a raw error page', async () => {
 			const cookie = await mintSessionCookie(REJECTED_SESSION_USER);
 
