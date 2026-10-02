@@ -74,15 +74,15 @@ export async function writeCertificationRecord(
 	const tempPath = `${recordPath}.partial-${process.pid}-${randomUUID()}`;
 	const handle = await open(tempPath, 'wx', 0o600);
 	try {
-		await handle.writeFile(JSON.stringify(complete), 'utf8');
-		await handle.sync();
-	} finally {
-		await handle.close();
-	}
-	try {
+		try {
+			await handle.writeFile(JSON.stringify(complete), 'utf8');
+			await handle.sync();
+		} finally {
+			await handle.close();
+		}
 		await rename(tempPath, recordPath);
 	} catch (error) {
-		await rm(tempPath, { force: true });
+		await rm(tempPath, { force: true }).catch(() => {});
 		throw error;
 	}
 	await syncDirectory(dirname(recordPath));

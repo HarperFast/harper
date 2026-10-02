@@ -76,6 +76,18 @@ describe('release certification records', () => {
 		assert.deepEqual(leftovers, [], 'no temp file is left beside the record');
 	});
 
+	it('leaves neither a record nor a temp file behind when the record cannot be written', async () => {
+		await deployed(root, 'web', LIVE);
+		const unwritable = {};
+		unwritable.self = unwritable;
+		await assert.rejects(writeCertificationRecord(root, pending('web', LIVE, { reason: unwritable })));
+		const leftovers = (await fs.readdir(path.join(root, '.deploy-staging', LIVE))).filter((name) =>
+			name.includes('.partial-')
+		);
+		assert.deepEqual(leftovers, []);
+		assert.equal(await readCertificationRecord(root, LIVE), undefined);
+	});
+
 	it('reads absent as undefined and refuses a record it cannot trust', async () => {
 		await deployed(root, 'web', LIVE);
 		assert.equal(await readCertificationRecord(root, LIVE), undefined);
