@@ -1437,6 +1437,7 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 						placed.some((open) => open !== certification && open.decision && refusesRelease(open.decision))
 					) {
 						worker.wasShutdown = false;
+						onProgress?.();
 						index--;
 						continue;
 					}
