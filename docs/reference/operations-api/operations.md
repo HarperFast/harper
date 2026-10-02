@@ -893,7 +893,7 @@ Additional parameters:
 `urlPath` and `host` both require `package` and are rejected on a payload-only deploy. To mount a payload-deployed component, add `host`/`urlPath` to its entry in the root `harper-config.yaml` instead.
 
 :::warning
-Only a deploy that restarts workers is checked before it serves. With `"restart": true` or `"restart": "rolling"`, the release is [certified in a canary worker](#certifying-a-release-in-a-canary-worker) first, and a release that fails to load is rejected and the previous one put back. A deploy without `restart` is not test-loaded: a release that installs but throws when it loads is deployed, and it reports the failure in the `componentStatus` of [`get_status`](#set_status--get_status--clear_status) once workers load it. The rest of the instance keeps serving.
+Only a deploy that restarts workers is checked before it serves. With `"restart": true` or `"restart": "rolling"`, the release is [certified in a canary worker](#certifying-a-release-in-a-canary-worker) first, and a release that fails to load is rejected and the previous one is put back. A deploy without `restart` is not test-loaded: a release that installs but throws when it loads is deployed, and it reports the failure in the `componentStatus` of [`get_status`](#set_status--get_status--clear_status) once workers load it. The rest of the instance keeps serving.
 :::
 
 #### How a deploy updates the root config
@@ -1103,7 +1103,7 @@ The response of every deploy that is not staged says how this went, in `certific
 | `unavailable`   | The deploy restarted unchecked: no worker on this node loads the component, its `isolated` setting changed with this deploy, it was already live, or it was deployed from a local directory (`package: file:<dir>`), which is linked rather than copied. |
 | `not-requested` | The deploy did not restart.                                                                                                                                                                                                                              |
 
-A release whose canary throws while loading the component, exits, or does not report within a minute is rejected, and the deploy fails with `400`. The release the deploy replaced is made live again first, as in [going back to a previous release](#going-back-to-a-previous-release), so the workers that never stopped serving it go on doing so. Nothing is replicated to other nodes. The error carries the decision:
+A release whose canary throws while loading the component, exits, or does not report within a minute is rejected, and the deploy fails with `400`. The release the deploy replaced is made live again first, as in [going back to a previous release](#going-back-to-a-previous-release), so the workers that never stopped serving it continue to do so. Nothing is replicated to other nodes. The error carries the decision:
 
 ```json
 {
@@ -1121,10 +1121,10 @@ A release whose canary throws while loading the component, exits, or does not re
 
 - **A release with nothing to go back to fails closed.** A rejected first deploy, or one whose previous release was not kept, stays on disk, but no worker on that node loads it, including after Harper restarts. `get_status` reports the component as failed and says why. Deploy a fixed release, or once the cause is fixed, activate the same `deployment_id` again with `restart`, which certifies it again.
 - **Nothing else changes the component while its release rolls out.** Another deploy or a `drop_component` of it on that node is refused with `409` until the canary has decided and the rollout that follows has finished.
-- **A restart that stops before the canary decides puts the previous release back.** The decision is reported with `status: "interrupted"`. If the process dies first, the next start rejects the undecided release and restores the one it replaced before it loads anything.
+- **A restart that stops before the canary decides restores the previous release.** The decision is reported with `status: "interrupted"`. If the process dies first, the next start rejects the undecided release and restores the one it replaced before it loads anything.
 - **It checks what a worker loads when it starts.** The release is on disk before the canary starts. Workers that have not been replaced yet keep running the previous release and do not react to the new files until the rollout ends, but one that first imports one of the component's modules while the canary is held gets the new release's copy of it.
 
-With `"restart": "rolling"`, the node that received the deploy certifies the release itself, the other nodes only stage it, and the job then activates it on each of them in turn with `deployment_id` and `"restart": true`, so every node certifies it with a canary of its own. Each node decides for itself: a node whose canary rejects the release keeps the previous one, nothing is rolled back on the others, and the job fails naming every node that did not take it. A node running a version before v5.3.1 activates the release without a canary.
+With `"restart": "rolling"`, the node that received the deploy certifies the release itself, the other nodes only stage it, and the job then activates it on each of them in turn with `deployment_id` and `"restart": true`, so every node certifies it with a canary of its own. Each node decides for itself: a node whose canary rejects the release keeps the previous one, nothing is rolled back on the others, and the job fails naming each node that did not activate it. A node running a version before v5.3.1 activates the release without a canary.
 
 #### Deploying without a restart
 
