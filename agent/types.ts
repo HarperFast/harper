@@ -72,6 +72,9 @@ export interface AgentScopes {
 	configDir: string;
 }
 
+/** Resolved `agent.httpFetch`: on, off, or limited to the listed hosts. Fixed at boot. */
+export type HttpFetchConfig = boolean | { allow: string[] };
+
 export interface AgentConfig {
 	enabled: boolean;
 	provider?: string;
@@ -82,6 +85,7 @@ export interface AgentConfig {
 	allowDestructive: boolean;
 	user: string;
 	componentsScope?: string;
+	httpFetch: HttpFetchConfig;
 	/** Operator text appended to the agent's system prompt (after the built-in grounding + best practices). */
 	systemPromptAppend?: string;
 }

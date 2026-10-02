@@ -23,13 +23,14 @@ import type { AuthedUser } from '../components/mcp/toolRegistry.ts';
 import { workers } from '../server/threads/manageThreads.js';
 import { composeToolset } from './toolset.ts';
 import { buildInspectorTools } from './tools/inspectorTool.ts';
+import { buildHttpFetchTool, resolveHttpFetchConfig } from './tools/httpFetchTool.ts';
 import { buildBestPracticeTool, loadBestPracticesOverview } from './bestPractices.ts';
 import { composeRegistryTools, ensureOperationsToolsRegistered } from './registryTools.ts';
 import { buildOperations } from './operations.ts';
 import { registerAgentMcpTools } from './mcpTools.ts';
 import { runAgent, _resetInFlightForTests } from './loop.ts';
 import { appendMessage, getSession } from './session.ts';
-import type { AgentConfig, AgentScopes, AgentTool } from './types.ts';
+import type { AgentConfig, AgentScopes, AgentTool, HttpFetchConfig } from './types.ts';
 
 const log = harperLogger.loggerWithTag('agent');
 
@@ -40,6 +41,7 @@ const DEFAULT_CONFIG: AgentConfig = {
 	autoApprove: false,
 	allowDestructive: false,
 	user: 'hdb_agent',
+	httpFetch: true,
 };
 
 interface StartOpts {
@@ -58,6 +60,7 @@ interface StartOpts {
 	allowDestructive?: boolean;
 	user?: string;
 	componentsScope?: string;
+	httpFetch?: unknown;
 	systemPromptAppend?: string;
 }
 
@@ -100,14 +103,18 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	const bestPracticeTool = buildBestPracticeTool();
 	const extraTools: AgentTool[] = bestPracticeTool ? [bestPracticeTool] : [];
 
+	// Built from the boot config, never `liveConfig`: no runtime config change can widen what it reaches.
+	const httpFetchTool = buildHttpFetchTool(config.httpFetch);
+
 	// The grounding + best-practices portion of the system prompt is static for the component's
 	// lifetime (scopes don't change), so build it once here; only the operator's per-run
 	// `systemPromptAppend` is folded on at run time in `startRun`.
-	const staticSystemPrompt = buildStaticSystemPrompt(scopes, bestPracticesOverview);
+	const staticSystemPrompt = buildStaticSystemPrompt(scopes, httpFetchTool !== undefined, bestPracticesOverview);
 
 	function compose(): ReturnType<typeof composeToolset> {
 		return composeToolset({
 			allowDestructive: liveConfig.allowDestructive,
+			httpFetchTool,
 			onFollowup: handleFollowup,
 			inspectorTools,
 			registryTools,
@@ -224,7 +231,9 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
 	// surface them — see mcpTools.ts.) They only reach clients when the MCP surface is enabled.
 	registerAgentMcpTools(operations);
 
-	log.info?.(`Agent component initialized with ${composed.tools.length} tools`);
+	log.info?.(
+		`Agent component initialized with ${composed.tools.length} tools (http_fetch: ${describeHttpFetch(config.httpFetch)})`
+	);
 }
 
 /**
@@ -241,17 +250,25 @@ export async function startOnMainThread(opts: StartOpts): Promise<void> {
  * `agent.systemPromptAppend` — which can change via `set_agent_config` without a restart — is folded
  * in per run by `composeSystemPrompt`.
  */
-function buildStaticSystemPrompt(scopes: AgentScopes, bestPracticesOverview?: string): string {
+function buildStaticSystemPrompt(
+	scopes: AgentScopes,
+	httpFetchAvailable: boolean,
+	bestPracticesOverview?: string
+): string {
+	const fetchSurface = httpFetchAvailable ? 'HTTP fetch against this server, ' : '';
+	const verifyStep = httpFetchAvailable
+		? 'verify by querying the REST endpoint via an HTTP fetch against this server'
+		: 'verify the result through the operations tools';
 	const parts = [
 		'You are the built-in Harper agent, running on the main thread inside a live Harper server.',
-		'You operate this instance for an operator through the tools provided to you: Harper database/cluster operations, scoped filesystem tools, HTTP fetch against this server, followup scheduling, and (when available) V8 inspector tools for debugging worker threads plus a Harper best-practices lookup. Consult the provided tool schemas for the exact set and their parameters.',
+		`You operate this instance for an operator through the tools provided to you: Harper database/cluster operations, scoped filesystem tools, ${fetchSurface}followup scheduling, and (when available) V8 inspector tools for debugging worker threads plus a Harper best-practices lookup. Consult the provided tool schemas for the exact set and their parameters.`,
 		'',
 		'Filesystem scopes (the fs tools take a `root` naming one of these; paths are relative to it):',
 		`- components — the app source directory, your only WRITE scope: ${scopes.componentsRoot}`,
 		`- logs — read-only: ${scopes.logDir}`,
 		`- config — read-only: ${scopes.configDir}`,
 		'',
-		'A Harper app is a component directory under the components dir. Define tables/resources in a schema (GraphQL `.graphql` with `@table`/`@export`, or `config.yaml` + resource files). After writing or changing component files, deploy/restart as needed for them to load, then verify by querying the REST endpoint via an HTTP fetch against this server.',
+		`A Harper app is a component directory under the components dir. Define tables/resources in a schema (GraphQL \`.graphql\` with \`@table\`/\`@export\`, or \`config.yaml\` + resource files). After writing or changing component files, deploy/restart as needed for them to load, then ${verifyStep}.`,
 		'Prefer the operations tools for database/cluster actions; use the filesystem tools for app source. When designing schemas or building app logic, consult the Harper best practices below and read the relevant rule via the best-practice tool. Be concise and verify your work.',
 	];
 	if (bestPracticesOverview) {
@@ -335,8 +352,25 @@ function mergeConfig(opts: StartOpts): AgentConfig {
 		...(opts.allowDestructive !== undefined && { allowDestructive: !!opts.allowDestructive }),
 		...(opts.user !== undefined && { user: String(opts.user) }),
 		...(opts.componentsScope !== undefined && { componentsScope: String(opts.componentsScope) }),
+		...(opts.httpFetch !== undefined && { httpFetch: resolveHttpFetchOrDisable(opts.httpFetch) }),
 		...(opts.systemPromptAppend !== undefined && { systemPromptAppend: String(opts.systemPromptAppend) }),
 	};
+}
+
+/** A malformed policy disables the tool rather than the agent: the egress stays closed, the rest stays usable. */
+function resolveHttpFetchOrDisable(raw: unknown): HttpFetchConfig {
+	try {
+		return resolveHttpFetchConfig(raw);
+	} catch (err) {
+		log.error?.(`${(err as Error).message}; http_fetch is disabled until agent.httpFetch is corrected`);
+		return false;
+	}
+}
+
+function describeHttpFetch(config: HttpFetchConfig): string {
+	if (config === true) return 'enabled';
+	if (config === false) return 'disabled';
+	return `allow-list ${config.allow.join(', ')}`;
 }
 
 /** Test-only: reset module state between specs. */
