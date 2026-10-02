@@ -636,6 +636,8 @@ async function completeCertification(certification, outcome) {
 		if (!certification.canary && !processShuttingDown) startDeferredStarts(certification);
 		if (certification.canary) await certification.decided.promise;
 	}
+	// A decision already under way stands, even at shutdown: closing before it records would remove its record.
+	if (certification.deciding && !certification.decision) await certification.decided.promise;
 	if (!certification.decision) {
 		const decision =
 			outcome?.declined || outcome?.error
