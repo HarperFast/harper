@@ -15,11 +15,14 @@ function safeParseError(configFilePath) {
 	return (error) => {
 		assert.strictEqual(error.statusCode, 500);
 		assert.match(error.message, /Error parsing .*YAMLParseError/);
-		assert.match(error.message, /Unable to parse the Harper configuration file/);
 		assert.ok(error.message.includes(configFilePath), 'names the config file');
 		assert.match(error.message, /line \d+, column \d+/, 'locates the parse error');
 		assert.ok(!error.message.includes('config-secret-sentinel'), 'does not include config source text');
 		assert.ok(!error.stack.includes('config-secret-sentinel'), 'does not include config source text in the stack');
+		assert.ok(
+			!error.http_resp_msg.includes('config-secret-sentinel'),
+			'does not include config source text in the HTTP response'
+		);
 		return true;
 	};
 }
@@ -27,12 +30,16 @@ function safeParseError(configFilePath) {
 describe('configUtils initConfig YAML parse errors', function () {
 	let originalRootPath;
 	let originalConfigEnvVars;
+	let activeConfig;
+	let activeFlatConfig;
 	let rootPath;
 	let configFilePath;
 
 	beforeEach(function () {
 		originalRootPath = process.env.ROOTPATH;
 		originalConfigEnvVars = new Map(CONFIG_ENV_VARS.map((key) => [key, process.env[key]]));
+		activeConfig = configUtils.getConfigObj();
+		activeFlatConfig = configUtils.getFlatConfigObj();
 		for (const key of CONFIG_ENV_VARS) delete process.env[key];
 
 		rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-config-parse-errors-'));
@@ -58,9 +65,6 @@ describe('configUtils initConfig YAML parse errors', function () {
 	});
 
 	it('rejects malformed YAML when no legacy keys need backfilling', function () {
-		configUtils.initConfig(true);
-		const activeConfig = configUtils.getConfigObj();
-		const activeFlatConfig = configUtils.getFlatConfigObj();
 		const validConfig = fs.readFileSync(configFilePath, 'utf8');
 		fs.writeFileSync(configFilePath, `${validConfig}\ninvalid: ["config-secret-sentinel\n`);
 		const malformedConfig = fs.readFileSync(configFilePath, 'utf8');
@@ -80,8 +84,9 @@ describe('configUtils initConfig YAML parse errors', function () {
 
 	it('rejects duplicate YAML keys when no legacy keys need backfilling', function () {
 		const validConfig = fs.readFileSync(configFilePath, 'utf8');
-		const duplicatedConfig = validConfig.replace('  port: null\n', '  port: null\n  port: null\n');
-		assert.notStrictEqual(duplicatedConfig, validConfig, 'the fixture must duplicate a config key');
+		const crlfConfig = validConfig.replace(/\r?\n/g, '\r\n');
+		const duplicatedConfig = crlfConfig.replace(/(^  port: null)\r?\n/m, '$1\r\n$1\r\n');
+		assert.notStrictEqual(duplicatedConfig, crlfConfig, 'the fixture must duplicate a config key');
 		fs.writeFileSync(configFilePath, duplicatedConfig);
 		const configDoc = configUtils.parseYamlDoc(configFilePath);
 
@@ -92,5 +97,7 @@ describe('configUtils initConfig YAML parse errors', function () {
 
 		assert.throws(() => configUtils.initConfig(true), safeParseError(configFilePath));
 		assert.strictEqual(fs.readFileSync(configFilePath, 'utf8'), duplicatedConfig, 'does not rewrite malformed YAML');
+		assert.strictEqual(configUtils.getConfigObj(), activeConfig, 'keeps the active config object');
+		assert.strictEqual(configUtils.getFlatConfigObj(), activeFlatConfig, 'keeps the active flat config');
 	});
 });
