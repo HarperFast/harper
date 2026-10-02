@@ -914,6 +914,52 @@ describe('an activation that fails before it commits', () => {
 describe('an activation that fails after it commits', () => {
 	preserveRootConfig();
 
+	it('reports the publication failure, not a commit of its certification that failed after it', async function () {
+		this.timeout(30000);
+		if (process.platform === 'win32' || !(await readOnlyDirectoryDeniesWrites())) return this.skip();
+		const root = await newRoot('post-commit-certification');
+		await writeLive(root, 'web', 'LIVE v1\n');
+		const app = applicationAt(
+			root,
+			'web',
+			await makeTarball({ 'package.json': '{"name":"web","version":"2.0.0"}\n', 'index.js': 'DEPLOYED v2\n' })
+		);
+		const intact = readFileSync(getConfigFilePath(), 'utf8');
+		// As below: a read-only root parks the activation past its journal, where the publication is what fails.
+		for (const dir of ['.deploy-staging', path.join('.deploy-aside', 'web'), '.component-preparation-locks']) {
+			await fs.mkdir(path.join(root, dir), { recursive: true, mode: 0o700 });
+		}
+		await fs.chmod(root, 0o500);
+		const deploying = prepareApplication(app, {
+			artifactId: 'd1',
+			describeArtifact: () => ({ rootConfig: { package: 'npm:web@2', isolated: true }, isolated: true }),
+			certification: {
+				arm: async () => true,
+				commit: async () => {
+					throw new Error('could not reach main');
+				},
+				withdraw: async () => {},
+			},
+		});
+		deploying.catch(() => {});
+		try {
+			await waitFor(
+				async () => {
+					const entries = await fs.readdir(deploymentDir(root, 'd1')).catch(() => []);
+					return entries.includes('.activation.json') && !entries.some((entry) => entry.includes('.partial-'));
+				},
+				20000,
+				5
+			);
+			writeFileSync(getConfigFilePath(), intact + '\nunparseable: [unterminated\n');
+			await fs.chmod(root, 0o700);
+			await assert.rejects(deploying, /Deployed web on this node, but could not publish its root configuration/);
+		} finally {
+			await fs.chmod(root, 0o700).catch(() => {});
+			writeFileSync(getConfigFilePath(), intact);
+		}
+	});
+
 	it('keeps the journal when the entry cannot be published, and recovery publishes it once it can', async function () {
 		this.timeout(30000);
 		if (process.platform === 'win32' || !(await readOnlyDirectoryDeniesWrites())) return this.skip();

@@ -4878,14 +4878,18 @@ async function activateCertifying(
 		await activateCandidateApplication(application, deploymentId, { rootConfig });
 	} catch (error) {
 		if (armed) {
+			// Either way, the caller is owed the activation's failure, not a failure to tell main about it.
 			if (activationCommitted(error) || compensationIncomplete(error)) {
-				await certification!.commit();
+				await certification!
+					.commit()
+					.catch((commitError) =>
+						application.logger.error(`Could not commit the certification of ${deploymentId}:`, commitError)
+					);
 			} else {
 				application.certificationArmed = false;
 				await removeCertificationRecord(dirname(application.dirPath), deploymentId).catch((removeError) =>
 					application.logger.warn(`Could not remove the certification record of ${deploymentId}:`, removeError)
 				);
-				// The caller is owed the activation's failure, not this one, which leaves main's registration armed.
 				await certification!
 					.withdraw()
 					.catch((withdrawError) =>

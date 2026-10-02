@@ -538,12 +538,9 @@ describe('the release certification gate', function () {
 
 	it('interrupts the release a stopped held start was the canary of, when another release it loaded is refused', async () => {
 		const other = { component: 'api', deploymentId: '22222222-2222-2222-2222-222222222222' };
-		// The crash restart refuses this release only after the rollout's first replacement, the other release's canary,
-		// has started, and long before that replacement reports.
-		plan([
-			{ outcome: 'failed', delayMs: 800 },
-			{ outcome: 'loaded', delayMs: 5000 },
-		]);
+		// The crash restart refuses this release only once the rollout's first replacement, the other release's canary,
+		// has started too, and long before that replacement reports.
+		plan([{ outcome: 'failed' }, { outcome: 'loaded', delayMs: 5000 }], { concurrentStarts: 2 });
 		const loading = Promise.withResolvers();
 		rootLoad = loading.promise;
 		releaseRootLoad = loading.resolve;
@@ -556,9 +553,12 @@ describe('the release certification gate', function () {
 			armed: true,
 		});
 		loading.resolve();
-		await sleep(50);
 		assert.equal(await certificationRequest('commit', other), true);
 		await waitFor(() => completions.length === 2, { timeout: 45000, message: 'a rollout never ended' });
+		assert.ok(
+			started.some((worker) => worker.certifyRequests[0]?.length === 2),
+			'a held start loaded both releases'
+		);
 		const byComponent = Object.fromEntries(decisions.map((decision) => [decision.component, decision]));
 		assert.equal(byComponent[COMPONENT].status, 'rejected');
 		assert.equal(byComponent.api.status, 'interrupted');
