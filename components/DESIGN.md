@@ -611,9 +611,11 @@ So each node records what it installed, and the origin reports a difference with
   - `source` is the resolver's own name for what it packed, never a second hash. It is `git:<commit>` from
     Harper's clone, `npm:<name>@<version>` from `npm pack --json` for a registry spec (a tag resolves to one),
     or npm's reported `integrity:<sri>` for a git spec npm packed itself, or a tarball URL. A source the
-    resolver could not name is `unidentified`, which never matches. A payload has no `source`: its peers read
-    the origin's blob. Nor does a local `file:` path. Only a fingerprinting build asks git for the commit, and a
-    git failure there leaves the source `unidentified` rather than failing the deploy.
+    resolver could not name is `unidentified`, which never matches. So is a local `file:` path, because each
+    node reads its own copy. The one exception is an absolute directory path given without `file:` on Windows:
+    Harper copies it through `npm pack` instead of linking it, so npm's reported integrity for that copy names
+    it. A payload has no `source`: its peers read the origin's blob. Only a fingerprinting build asks git for the
+    commit, and a git failure there leaves the source `unidentified` rather than failing the deploy.
   - `lockfiles` is the sha256 of each root lockfile in `PACKAGE_LOCK_FILES`, by name. An absent lockfile is
     not listed. One that can't be read is `{ unreadable: <code> }`, never absent.
 - **The comparison** runs once, on the origin, on the aggregate `response.replicated`, just before the

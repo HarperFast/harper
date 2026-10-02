@@ -19,7 +19,7 @@ export const UNIDENTIFIED_SOURCE = 'unidentified';
 /**
  * What an install came from, as the resolver already identified it — `npm:<name>@<version>`, `git:<commit>`, or
  * npm's `integrity:<sri>` for a source that has neither — and each root lockfile it left, by file name: its sha256,
- * or why it could not be read. An absent lockfile is not listed; a payload or a local path has no `source`.
+ * or why it could not be read. An absent lockfile is not listed; a payload has no `source`.
  */
 export type InstallFingerprint = { source?: string; lockfiles: Record<string, string | UnreadableLockfile> };
 

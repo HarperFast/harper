@@ -42,6 +42,7 @@ import {
 	gitSourceIdentity,
 	packedSourceIdentity,
 	PACKAGE_LOCK_FILES,
+	UNIDENTIFIED_SOURCE,
 	type InstallFingerprint,
 } from './installFingerprint.ts';
 
@@ -833,6 +834,8 @@ async function resolveApplicationTarball(
 		// If the package identifier is a file path we need to check if its a tarball or a directory
 		if (application.packageIdentifier.startsWith('file:')) {
 			const packagePath = application.packageIdentifier.slice(5);
+			// Each node reads its own copy of a local path, so nothing here names what it holds.
+			if (identifySource) application.sourceIdentity = UNIDENTIFIED_SOURCE;
 			try {
 				// Have to remove the 'file:' prefix in order to use fs methods
 				const stats = await stat(packagePath);
