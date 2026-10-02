@@ -110,6 +110,8 @@ function queryLimits(overrides = {}) {
 	return {
 		maxRecordIdBytes: 4_096,
 		maxRecordVersionBytes: 4_096,
+		maxCandidateIds: 1_024,
+		maxCandidateBytes: 1024 * 1024,
 		maxSearchWindow,
 		maxAutocompleteResults: Math.min(100, maxSearchWindow),
 		maxSearchResponseBytes: 8 * 1024 * 1024,
@@ -1079,6 +1081,8 @@ describe('FullTextQueryIndex', () => {
 			'maxAutocompleteResults',
 			'maxRecordIdBytes',
 			'maxRecordVersionBytes',
+			'maxCandidateIds',
+			'maxCandidateBytes',
 			'maxSearchResponseBytes',
 		]) {
 			const readinessId = `binding-capabilities-${missing}`;

@@ -51,7 +51,7 @@ const MAX_CANDIDATE_KEYS = 4_096;
 const MAX_POINT_PROBE_READS_PER_CANDIDATE = 4;
 const REJECTED_GATE_SAMPLE_SIZE = 8;
 const CANDIDATE_GATE_FAILURE_RETRY_MILLISECONDS = 1_000;
-// Fulltext 0.4.0 Query API v2 uses a 13-byte response header and 13 bytes per versioned hit before string data.
+// Fulltext 0.5.0 Query API v3 uses a 13-byte response header and 13 bytes per versioned hit before string data.
 const NATIVE_SEARCH_RESPONSE_HEADER_BYTES = 13;
 const NATIVE_SEARCH_HIT_OVERHEAD_BYTES = 13;
 const MAX_RELOAD_FAILURES_BEFORE_REOPEN = 3;
@@ -458,7 +458,7 @@ export class FullTextQueryIndex {
 				);
 				if (!bounded && !autocomplete && result.totalRelation === 'exact' && result.total > searchWindow)
 					throw new ClientError(`Full-text query exceeds the ${searchWindow}-result search window; add a limit`, 400);
-				// Fulltext 0.4.0 Query API v2 only reports lower-bound while a full requested page remains retrievable.
+				// Fulltext 0.5.0 Query API v3 only reports lower-bound while a full requested page remains retrievable.
 				if (
 					result.totalRelation === 'lower-bound' &&
 					result.hits.length < limit &&

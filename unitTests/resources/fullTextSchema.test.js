@@ -105,6 +105,11 @@ describe('@fullText declaration compiler', () => {
 			},
 			/requires surfaceTerms: true/,
 		],
+		[
+			'native filter metadata',
+			{ name: 'search', fields: [{ name: 'title' }], filterFields: ['tags'] },
+			/does not support the "filterFields" option/,
+		],
 	]) {
 		it(`rejects ${label}`, () => {
 			assert.throws(() => compileFullTextDefinitions([definition], productAttributes()), pattern);

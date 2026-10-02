@@ -2,8 +2,8 @@ import type { FullTextDerivedIndexEngine } from './fullTextDerivedIndex.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
 const FULLTEXT_LIFECYCLE_API_VERSION = 1;
-const FULLTEXT_MUTATION_BATCH_API_VERSION = 4;
-const FULLTEXT_QUERY_API_VERSION = 2;
+const FULLTEXT_MUTATION_BATCH_API_VERSION = 5;
+const FULLTEXT_QUERY_API_VERSION = 3;
 const logger = loggerWithTag('fulltext-derived-index');
 
 export interface NativeFullTextIndexConfiguration {
@@ -38,7 +38,6 @@ export type NativeFullTextSearchRequest = {
 	mode?: NativeFullTextSearchMode;
 	operator?: 'any' | 'all';
 	fields?: string[];
-	candidateIds?: string[];
 	offset?: number;
 	limit?: number;
 	exactTotal?: boolean;
@@ -96,6 +95,8 @@ export type NativeFullTextRuntimeInfo = {
 		maxCommitPayloadBytes: number;
 		maxRecordIdBytes: number;
 		maxRecordVersionBytes: number;
+		maxCandidateIds: number;
+		maxCandidateBytes: number;
 		maxSearchWindow: number;
 		maxAutocompleteResults: number;
 		maxSearchResponseBytes: number;
@@ -115,6 +116,8 @@ export type NativeFullTextQueryRuntimeInfo = Pick<
 		| 'maxAutocompleteResults'
 		| 'maxRecordIdBytes'
 		| 'maxRecordVersionBytes'
+		| 'maxCandidateIds'
+		| 'maxCandidateBytes'
 		| 'maxSearchResponseBytes'
 		| 'maxSearchBudgetMilliseconds'
 		| 'maxTraceRecords'
@@ -269,6 +272,10 @@ export function validateFullTextQueryRuntimeInfo(info: unknown): NativeFullTextQ
 		runtime.limits.maxRecordIdBytes <= 0 ||
 		!Number.isSafeInteger(runtime.limits.maxRecordVersionBytes) ||
 		runtime.limits.maxRecordVersionBytes <= 0 ||
+		!Number.isSafeInteger(runtime.limits.maxCandidateIds) ||
+		runtime.limits.maxCandidateIds <= 0 ||
+		!Number.isSafeInteger(runtime.limits.maxCandidateBytes) ||
+		runtime.limits.maxCandidateBytes <= 0 ||
 		!Number.isSafeInteger(runtime.limits.maxSearchWindow) ||
 		runtime.limits.maxSearchWindow <= 0 ||
 		!Number.isSafeInteger(runtime.limits.maxAutocompleteResults) ||
