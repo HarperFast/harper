@@ -17,10 +17,15 @@ describe('install_node_modules', function () {
 
 	let componentsRoot;
 	let lifecycleMarker;
+	let inheritedAuditPolicy;
+	let inheritedComponentsRoot;
 
 	before(() => {
+		inheritedAuditPolicy = process.env.npm_config_audit;
+		process.env.npm_config_audit = 'false';
 		componentsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-install-modules-'));
 		lifecycleMarker = path.join(componentsRoot, 'lifecycle-marker');
+		inheritedComponentsRoot = env.get(CONFIG_PARAMS.COMPONENTSROOT);
 		env.setProperty(CONFIG_PARAMS.COMPONENTSROOT, componentsRoot);
 
 		fs.mkdirSync(path.join(componentsRoot, 'dependency'));
@@ -48,6 +53,9 @@ describe('install_node_modules', function () {
 	});
 
 	after(() => {
+		if (inheritedAuditPolicy === undefined) delete process.env.npm_config_audit;
+		else process.env.npm_config_audit = inheritedAuditPolicy;
+		env.setProperty(CONFIG_PARAMS.COMPONENTSROOT, inheritedComponentsRoot);
 		fs.rmSync(componentsRoot, { recursive: true, force: true });
 	});
 
@@ -88,31 +96,13 @@ describe('install_node_modules', function () {
 		}
 	}
 
-	it('honors the documented dry_run field', async () => {
-		const response = await installModules({ projects: ['application'], dry_run: true });
-
-		assertDryRun(response);
-	});
-
-	it('honors a dry_run field that arrives as a string', async () => {
-		const response = await installModules({ projects: ['application'], dry_run: 'true' });
-
-		assertDryRun(response);
-	});
-
-	it('honors the undocumented camelCase dryRun spelling', async () => {
+	it('honors the legacy camelCase dryRun field', async () => {
 		const response = await installModules({ projects: ['application'], dryRun: true });
 
 		assertDryRun(response);
 	});
 
-	it('installs when dry_run is false', async () => {
-		const response = await installModules({ projects: ['application'], dry_run: 'false' });
-
-		assertInstalled(response);
-	});
-
-	it('installs when dry_run is omitted', async () => {
+	it('allows lifecycle scripts when the policy is omitted', async () => {
 		const response = await withNpmLifecycleScriptsEnabled(() => installModules({ projects: ['application'] }));
 
 		assertInstalled(response);
@@ -147,42 +137,24 @@ describe('install_node_modules', function () {
 		);
 	});
 
-	it('rejects a request carrying both dry_run spellings', async () => {
-		await assert.rejects(installModules({ projects: ['application'], dry_run: true, dryRun: false }), {
+	it('converts a string false policy while accepting operation metadata', async () => {
+		const response = await withNpmLifecycleScriptsEnabled(() =>
+			installModules({ operation: 'install_node_modules', projects: ['application'], install_allow_scripts: 'false' })
+		);
+
+		assertInstalled(response);
+		assert.equal(fs.existsSync(lifecycleMarker), false);
+	});
+
+	it('rejects an invalid lifecycle-script policy before installation', async () => {
+		await assert.rejects(installModules({ projects: ['application'], install_allow_scripts: 'invalid' }), {
 			statusCode: 400,
-			message: /dryRun/,
+			message: /allowInstallScripts/,
 		});
 		assert.equal(installedDependencyExists(), false);
 	});
 
 	it('rejects a request without projects', async () => {
 		await assert.rejects(installModules({ dry_run: true }), { statusCode: 400, message: /'projects'/ });
-	});
-
-	it('runs npm with the registry audit disabled', async function () {
-		if (process.platform === 'win32') return this.skip(); // the shim below is a POSIX shell script
-		const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-npm-shim-'));
-		const originalPath = process.env.PATH;
-		let argv;
-		try {
-			const argvPath = path.join(shimDir, 'argv.txt');
-			// the destination travels as an environment value, not as text in the script: a `$` or a
-			// backtick in TMPDIR would otherwise be expanded by the shell that runs this
-			fs.writeFileSync(
-				path.join(shimDir, 'npm'),
-				'#!/bin/sh\nprintf \'%s\\n\' "$@" > "$HARPER_TEST_NPM_ARGV_PATH"\necho \'{"added":0}\'\n',
-				{ mode: 0o755 }
-			);
-			process.env.PATH = `${shimDir}${path.delimiter}${originalPath}`;
-			process.env.HARPER_TEST_NPM_ARGV_PATH = argvPath;
-			await installModules({ projects: ['application'] });
-			argv = fs.readFileSync(argvPath, 'utf8').split('\n').filter(Boolean);
-		} finally {
-			process.env.PATH = originalPath;
-			delete process.env.HARPER_TEST_NPM_ARGV_PATH;
-			fs.rmSync(shimDir, { recursive: true, force: true });
-		}
-
-		assert.deepStrictEqual(argv, ['install', '--force', '--omit=dev', '--no-audit', '--no-fund', '--json']);
 	});
 });

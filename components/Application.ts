@@ -930,23 +930,6 @@ export async function installApplication(application: Application) {
 		);
 	}
 
-<<<<<<< HEAD
-=======
-	const { packageManager } = packageJSON.devEngines || {};
-	if (dependencyFieldHasWork(packageJSON, 'devDependencies')) {
-		application.logger.warn(
-			`Application ${application.name} declares devDependencies; automatic npm installation omits them, while explicitly selected non-npm package managers retain their own install defaults. Use install_command when deployment requires custom behavior`
-		);
-	}
-	if (
-		!packageHasAutomaticInstallWork(packageJSON) &&
-		!(allowInstallScripts && packageHasAllowedInstallLifecycleWork(packageJSON))
-	) {
-		application.logger.info(`Application ${application.name} has no production package work; skipping install`);
-		return;
-	}
-
->>>>>>> 7f0d5a08c (Honor install script policy in every install path)
 	// Next, try package.json devEngines field
 	const { packageManager } = packageJSON.devEngines || {};
 

@@ -7,7 +7,6 @@ import { handleHDBError, hdbErrors } from './errors/hdbError.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
 
-import * as validator from '../validation/validationWrapper.ts';
 import harperLogger from './logging/harper_logger.ts';
 
 import { CONFIG_PARAMS } from './hdbTerms.ts';
@@ -26,26 +25,19 @@ export async function installModules(req: any) {
 		'install_node_modules is deprecated. Dependencies are automatically installed on' +
 		' deploy, and install_node_modules can lead to inconsistent behavior';
 	harperLogger.warn(deprecationWarning, req.projects);
-	const validation = modulesValidator(req);
+	const { error: validation, value: validatedRequest } = modulesValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-<<<<<<< HEAD
-	let { projects, dryRun } = req;
-=======
-	const { projects, dry_run: dryRun, allowInstallScripts } = validatedRequest;
->>>>>>> 7f0d5a08c (Honor install script policy in every install path)
+	const { projects, dryRun, allowInstallScripts } = validatedRequest;
 
 	const componentsRootDirPath = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 
 	const responseObject: any = {};
 
-<<<<<<< HEAD
 	const args = ['install', '--force', '--omit=dev', '--json'];
-=======
-	const args = [...packageManagerInstallArguments('npm', allowInstallScripts, true), '--json'];
->>>>>>> 7f0d5a08c (Honor install script policy in every install path)
+	if (!allowInstallScripts) args.push('--ignore-scripts');
 	if (dryRun) args.push('--dry-run');
 
 	for (const project of projects) {
@@ -107,14 +99,8 @@ function modulesValidator(req: any) {
 	const funcSchema = Joi.object({
 		projects: Joi.array().min(1).items(Joi.string()).required(),
 		dry_run: Joi.boolean().default(false),
-<<<<<<< HEAD
-	});
-=======
 		allowInstallScripts: Joi.boolean().default(true),
-	})
-		.rename('dryRun', 'dry_run', { ignoreUndefined: true })
-		.rename('install_allow_scripts', 'allowInstallScripts', { ignoreUndefined: true });
->>>>>>> 7f0d5a08c (Honor install script policy in every install path)
+	}).rename('install_allow_scripts', 'allowInstallScripts', { ignoreUndefined: true });
 
-	return validator.validateBySchema(req, funcSchema);
+	return funcSchema.validate(req, { allowUnknown: true, abortEarly: false, errors: { wrap: { label: "'" } } });
 }

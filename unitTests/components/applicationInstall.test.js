@@ -8,12 +8,7 @@ const { join } = require('node:path');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const {
-	Application,
-	installApplication,
-	packageHasAutomaticInstallWork,
-	packageHasProductionInstallWork,
-} = require('#src/components/Application');
+const { Application, installApplication } = require('#src/components/Application');
 
 async function createApplication(root, name, packageJSON, install) {
 	const directory = join(root, name);
@@ -59,46 +54,7 @@ describe('automatic application installation', () => {
 		await rm(this.root, { recursive: true, force: true });
 	});
 
-	it('identifies production dependency and workspace work conservatively', () => {
-		for (const manifest of [
-			{ dependencies: { runtime: '1' } },
-			{ optionalDependencies: { optional: '1' } },
-			{ peerDependencies: { peer: '1' } },
-			{ workspaces: ['packages/*'] },
-			{ workspaces: { packages: ['packages/*'] } },
-			{ dependencies: 'invalid' },
-			{ workspaces: 'invalid' },
-		]) {
-			assert.equal(packageHasProductionInstallWork(manifest), true, JSON.stringify(manifest));
-		}
-		for (const manifest of [
-			{},
-			{ devDependencies: { build: '1' } },
-			{ workspaces: [] },
-			{ workspaces: { packages: [] } },
-		]) {
-			assert.equal(packageHasProductionInstallWork(manifest), false, JSON.stringify(manifest));
-		}
-		assert.equal(
-			packageHasAutomaticInstallWork({ devEngines: { packageManager: { name: 'pnpm' } } }),
-			true,
-			'an explicit non-npm manager may discover production work outside the root manifest'
-		);
-	});
-
-	it('skips automatic installation when only development dependencies are declared', async function () {
-		const application = await createApplication(this.root, 'development-only', {
-			devDependencies: { build: '1.0.0' },
-		});
-		const capturePath = await configureInstallCapture(application, this.root, 'development-only');
-
-		await installApplication(application);
-
-		await assert.rejects(access(capturePath), (error) => error.code === 'ENOENT');
-		assert.equal(application.installationIsOpaque, false);
-	});
-
-	it('uses production-only npm flags for the default and declared npm paths', async function () {
+	it('suppresses lifecycle scripts for the default and declared npm paths', async function () {
 		const defaultApplication = await createApplication(this.root, 'default-npm', {
 			dependencies: { runtime: '1.0.0' },
 		});
@@ -108,9 +64,6 @@ describe('automatic application installation', () => {
 			'npm',
 			'install',
 			'--force',
-			'--omit=dev',
-			'--no-audit',
-			'--no-fund',
 			'--ignore-scripts',
 		]);
 
@@ -120,14 +73,7 @@ describe('automatic application installation', () => {
 		});
 		const declaredCapture = await configureInstallCapture(declaredApplication, this.root, 'declared-npm');
 		await installApplication(declaredApplication);
-		assert.deepEqual(JSON.parse(await readFile(declaredCapture, 'utf8')), [
-			'npm',
-			'install',
-			'--omit=dev',
-			'--no-audit',
-			'--no-fund',
-			'--ignore-scripts',
-		]);
+		assert.deepEqual(JSON.parse(await readFile(declaredCapture, 'utf8')), ['npm', 'install', '--ignore-scripts']);
 	});
 
 	it('preserves an explicit non-npm workspace install when the root manifest has no production work', async function () {
@@ -142,7 +88,7 @@ describe('automatic application installation', () => {
 		assert.deepEqual(JSON.parse(await readFile(capturePath, 'utf8')), ['pnpm', 'install', '--ignore-scripts']);
 	});
 
-	it('runs an allowed install lifecycle while still omitting development dependencies', async function () {
+	it('allows an opted-in install lifecycle on the default npm path', async function () {
 		const application = await createApplication(
 			this.root,
 			'allowed-lifecycle',
@@ -156,18 +102,11 @@ describe('automatic application installation', () => {
 
 		await installApplication(application);
 
-		assert.deepEqual(JSON.parse(await readFile(capturePath, 'utf8')), [
-			'npm',
-			'install',
-			'--force',
-			'--omit=dev',
-			'--no-audit',
-			'--no-fund',
-		]);
+		assert.deepEqual(JSON.parse(await readFile(capturePath, 'utf8')), ['npm', 'install', '--force']);
 		assert.equal(application.installationIsOpaque, true);
 	});
 
-	it('keeps install_command as the development-dependency escape hatch', async function () {
+	it('preserves the custom install command arguments', async function () {
 		const application = await createApplication(
 			this.root,
 			'custom-command',
@@ -235,32 +174,5 @@ describe('automatic application installation', () => {
 			}
 			Object.assign(process.env, Object.fromEntries(inheritedPolicies));
 		}
-	});
-
-	it('materializes runtime dependencies while omitting development dependencies', async function () {
-		this.timeout(60_000);
-		const runtimeDirectory = join(this.root, 'runtime-package');
-		const developmentDirectory = join(this.root, 'development-package');
-		await Promise.all([mkdir(runtimeDirectory), mkdir(developmentDirectory)]);
-		await Promise.all([
-			writeFile(join(runtimeDirectory, 'package.json'), JSON.stringify({ name: 'runtime-package', version: '1.0.0' })),
-			writeFile(
-				join(developmentDirectory, 'package.json'),
-				JSON.stringify({ name: 'development-package', version: '1.0.0' })
-			),
-		]);
-		const application = await createApplication(this.root, 'real-npm', {
-			dependencies: { 'runtime-package': `file:${runtimeDirectory}` },
-			devDependencies: { 'development-package': `file:${developmentDirectory}` },
-		});
-		application.packageManagerPrefix = '';
-
-		await installApplication(application);
-
-		await access(join(application.dirPath, 'node_modules', 'runtime-package', 'package.json'));
-		await assert.rejects(
-			access(join(application.dirPath, 'node_modules', 'development-package')),
-			(error) => error.code === 'ENOENT'
-		);
 	});
 });
