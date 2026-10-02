@@ -99,33 +99,11 @@ early-returns (super_user, structure_user, system-table allowances): persisted r
 `super_user` with other permission keys, but inline roles can combine `structure_user` with an
 allowlist, and the gate ordering is what keeps unlisted schema ops unreachable.
 
-## TLS hot-reload: cert vs. private key follow two different propagation paths (`security/keys.ts`)
+## TLS hot-reload publishes matching configured pairs (`security/keys.ts`)
 
-A renewed **certificate** and a renewed **private key** reach a worker's live TLS secure context
-by completely separate routes, and the two must reconverge or HTTPS breaks on that worker.
-Certificates propagate through data: only the main thread watches the cert file (`isMainThread`
-guard in `loadCertificates`) and writes the new PEM into the `system.hdb_certificate` table; every
-worker is subscribed to that table and rebuilds its secure contexts (`updateTLS` inside
-`createTLSSelector`) on the notification. Private keys never touch the table — each worker watches
-its own key file (the private-key `loadAndWatch` has no `isMainThread` guard) and loads the PEM
-straight into its in-thread `privateKeys` map. `getPrivateKeyByName` reads that map first, so an
-already-built secure context has the key bytes baked in (`setCert`/`setKey` at build time); a later
-map update does not touch contexts already built.
+`loadCertificates` publishes a configured leaf only after `X509Certificate.checkPrivateKey` validates the exact PEM being stored. Only the main thread watches the certificate and key directories; its filename-filtered, shallow watches and five-minute safety poll share a cert/key fingerprint. An incomplete pair returns `false` so it is retried, with a pending-pair warning and an error after 30 seconds (immediate when the new certificate name has no non-self-signed record, then hourly). Restoring the last applied files after an aborted renewal re-enters the loader to clear the pending alarm. CA-only records remain independent of the leaf key. Workers use the `hdb_certificate` subscription as their reload trigger and read configured key files when building contexts; no worker key watcher or poll races that notification. Configured keys remain in `getPrivateKeys()` for key retrieval, but entries populated from files are refreshed for retrieval and rebuilds, retaining their cached value while the file is temporarily unreadable; explicit values that differ from the last file-derived key still take precedence. A directory that cannot be watched because it is not readable falls back to Node file polling, which remains armed while configured files are absent, independently of the optional five-minute safety poll. Enforced by the rename-order, per-worker, poll-disabled cases in `integrationTests/security/cert-key-reload.test.ts` and loader tests in `unitTests/security/keys.test.js`.
 
-The hazard when a rotation changes **both**: the cert can win the race to a worker (table write +
-subscription) and trigger `updateTLS` before that worker has reloaded the matching key, producing a
-context that pairs the new cert with the old key — every handshake on it then fails, and nothing
-rebuilds it until the _next_ cert-table change. The fix: a private-key reload (`handlePrivateKeyReload`,
-the single sink for both the chokidar watcher and PR #1394's periodic poll) triggers a debounced
-rebuild of every live selector via the module-level `liveTLSRebuilders` set, so the worker reconverges
-on its own. Subtleties to preserve: the rotation guard (`previous !== private_key` in `handlePrivateKeyReload`)
-skips identical-content reloads or watchers thrash, yet still rebuilds when a key first appears or is
-restored after boot (a no-op at startup, before any selector registers); transient one-shot
-selectors (`getReplicationCert`) pass `liveReload=false` so they don't accumulate in the never-pruned
-set; and the cert subscription shares the same debounced `scheduleRebuild` (same 1500ms cadence), so
-its coalescing must stay a superset-safe no-op for the single-swap #586 case. Regression coverage:
-`integrationTests/security/cert-key-reload.test.ts` deterministically pins the cert-before-key ordering
-(it fails by design without the rebuild trigger); `cert-reload.test.ts` guards the cert-only #586 path.
+An unrelated table notification during a key-first installation gap, or a second rotation between publication and a worker's key read, can still produce a transient mismatch; the trust-aware last-good retention below protects serving while the next complete pair propagates. The older-file guard still prevents disk from replacing a newer replicated certificate.
 
 **Publication is transactional (#2382).** `updateTLS` builds the entire replacement state —
 hostname→context map, CA map, and default candidate — into pass-local candidates and reconciles the
@@ -145,9 +123,9 @@ the old state (availability outranks the drop in that corner) while the failure 
 row is a pass failure like any other (reported through the signature throttle, armed for retry) and
 its trust drops until it heals. A failed pass arms a
 self-retry on the shared debounce with a per-signature backoff (1.5s doubling to 5min) and
-signature-throttled logging; external triggers (table subscription, key reload) stay at the plain
-debounce. `loadAndWatch` latches its mtime before the callback for chokidar/poll dedupe, but rolls
-the latch back on a synchronous throw or a rejected callback promise (equality-guarded so a stale
+signature-throttled logging; external triggers (table subscription) stay at the plain
+debounce. `loadAndWatch` latches its cert/key fingerprint before the callback for chokidar/poll dedupe, but rolls
+the latch back on a false result, synchronous throw, or rejected callback promise (equality-guarded so a stale
 rejection cannot unlatch a newer reload) — the latch means "last successfully applied", so the
 periodic poll can heal a lost `hdb_certificate` write instead of deduplicating it forever.
 

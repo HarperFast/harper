@@ -140,6 +140,10 @@ describe('Test keys module', () => {
 	});
 
 	it('Test loadCertificates loads certs from config file', async () => {
+		assert.ok(
+			keys.getPrivateKeys().get(actual_cert.private_key_name) === test_private_key,
+			'configured keys remain available through getPrivateKeys'
+		);
 		const all_certs = await keys.listCertificates();
 		let private_key_pass = true;
 		let cert_pass = false;
@@ -198,7 +202,59 @@ describe('Test keys module', () => {
 		const key_and_cert = await getCertAuthority();
 		expect(key_and_cert).to.exist;
 		expect(key_and_cert.ca).to.exist;
-		keys.__get__('privateKeys').set(actual_ca.private_key_name, test_private_key);
+		keys.getPrivateKeys().delete(actual_ca.private_key_name);
+	});
+
+	it('retains the cached configured authority key while its file is temporarily missing', async () => {
+		try {
+			await fs.writeFile(test_private_key_path, ca_key);
+			keys.getPrivateKeys();
+			await fs.remove(test_private_key_path);
+			const authority = await keys.getCertAuthority();
+			assert.ok(authority?.ca.name === actual_ca.name, 'the missing-file window must not lose the authority');
+			assert.ok(authority.private_key === ca_key, 'authority lookup must retain its last file-derived key');
+		} finally {
+			await fs.writeFile(test_private_key_path, test_private_key);
+			keys.getPrivateKeys();
+		}
+	});
+
+	it('refreshes configured keys for retrieval and when the certificate table triggers a rebuild', async function () {
+		this.timeout(15000);
+		const { databases } = require('#src/resources/databases');
+		const recordName = `configured-file-reload-${Date.now()}`;
+		const hostname = `${recordName}.harper.test`;
+		const rotated = await mkcert.createCert({
+			domains: [hostname],
+			validityDays: 1,
+			ca: { key: ca_key, cert: test_ca },
+		});
+		const record = {
+			name: recordName,
+			certificate: test_cert,
+			private_key_name: actual_cert.private_key_name,
+			hostnames: [hostname],
+			uses: ['mqtt'],
+		};
+		try {
+			await databases.system.hdb_certificate.put(record);
+			const server = { secureContexts: null, secureContextsListeners: [] };
+			await keys.createTLSSelector('mqtt').initialize(server);
+			assert.strictEqual(server.secureContexts.get(hostname).options.key, test_private_key);
+			await fs.writeFile(test_private_key_path, rotated.key);
+			assert.ok(
+				keys.getPrivateKeys().get(actual_cert.private_key_name) === rotated.key,
+				'key retrieval must refresh file-derived entries before a certificate-table update'
+			);
+			await databases.system.hdb_certificate.put({ ...record, certificate: rotated.cert });
+			await waitFor(() => server.secureContexts.get(hostname)?.options.key === rotated.key, {
+				timeout: 6000,
+				message: 'the table-triggered rebuild used a stale configured key',
+			});
+		} finally {
+			await fs.writeFile(test_private_key_path, test_private_key);
+			await databases.system.hdb_certificate.delete(recordName);
+		}
 	});
 
 	it('Test reviewSelfSignedCert create a new cert', async () => {
@@ -438,10 +494,6 @@ describe('Test keys module', () => {
 					decoy('sel-decoy-' + Date.now()),
 				],
 				async () => {
-					// liveReload: false keeps these out of liveTLSRebuilders (the default would leak a
-					// rebuild registration per test); the hdb_certificate subscription itself is retained
-					// regardless — that's a pre-existing createTLSSelector characteristic, not something
-					// this arg controls.
 					const selector = keys.createTLSSelector('mqtt', undefined, false);
 					await selector.initialize(null);
 					const chosen = await chosenCert(selector, hostname);
@@ -468,10 +520,6 @@ describe('Test keys module', () => {
 					decoy('sel-decoy-2-' + Date.now()),
 				],
 				async () => {
-					// liveReload: false keeps these out of liveTLSRebuilders (the default would leak a
-					// rebuild registration per test); the hdb_certificate subscription itself is retained
-					// regardless — that's a pre-existing createTLSSelector characteristic, not something
-					// this arg controls.
 					const selector = keys.createTLSSelector('mqtt', undefined, false);
 					await selector.initialize(null);
 					const chosen = await chosenCert(selector, hostname);
@@ -590,79 +638,6 @@ describe('Test keys module', () => {
 		});
 	});
 
-	describe('private-key hot-reload triggers a TLS context rebuild', () => {
-		// handlePrivateKeyReload is the single chokepoint for both the chokidar watcher and the
-		// periodic poll. On a worker, the new cert arrives via the hdb_certificate subscription, but
-		// the key only lands in the in-thread privateKeys map — without a rebuild the worker keeps a
-		// secure context pairing the new cert with the old key. These tests pin the rotation guard
-		// (the part that decides whether a reload triggers a rebuild) directly.
-		let privateKeysMap;
-		let liveTLSRebuilders;
-		let handlePrivateKeyReload;
-		let spy;
-		let keyName;
-
-		beforeEach(() => {
-			privateKeysMap = keys.__get__('privateKeys');
-			liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
-			handlePrivateKeyReload = keys.__get__('handlePrivateKeyReload');
-			keyName = 'unit-key-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.pem';
-			spy = sinon.spy();
-			liveTLSRebuilders.add(spy);
-		});
-
-		afterEach(() => {
-			liveTLSRebuilders.delete(spy);
-			privateKeysMap.delete(keyName);
-		});
-
-		it('rebuilds on the initial load of a key (recovery: key appears/restored after boot)', () => {
-			// At normal startup liveTLSRebuilders is empty so this is a no-op; once selectors are
-			// registered (modeled here by the spy), a key that first appears must rebuild or the
-			// worker would stay stranded on a context built without it.
-			handlePrivateKeyReload(keyName, 'KEY-A');
-			expect(privateKeysMap.get(keyName)).to.equal('KEY-A');
-			expect(spy.calledOnce, 'first appearance of a key must trigger a rebuild when rebuilders exist').to.be.true;
-		});
-
-		it('rebuilds when the key rotates to a new value', () => {
-			privateKeysMap.set(keyName, 'KEY-A');
-			handlePrivateKeyReload(keyName, 'KEY-B');
-			expect(privateKeysMap.get(keyName)).to.equal('KEY-B');
-			expect(spy.calledOnce, 'a rotated key must trigger exactly one rebuild fan-out').to.be.true;
-		});
-
-		it('does not rebuild when the reloaded key is unchanged', () => {
-			privateKeysMap.set(keyName, 'KEY-A');
-			handlePrivateKeyReload(keyName, 'KEY-A');
-			expect(spy.called, 'an identical-content reload must not trigger a rebuild').to.be.false;
-		});
-	});
-
-	describe('createTLSSelector live-reload registration', () => {
-		// Live server selectors must register for key-rotation rebuilds; transient single-use
-		// selectors (getReplicationCert) must not, or they would accumulate in the registry.
-		it('registers a rebuilder for a live selector but not for a transient one', async () => {
-			const liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
-			const snapshot = [...liveTLSRebuilders];
-			try {
-				const transient = keys.createTLSSelector('https', undefined, false);
-				await transient.initialize(null);
-				expect(liveTLSRebuilders.size, 'transient selector must not register').to.equal(snapshot.length);
-
-				const live = keys.createTLSSelector('https');
-				await live.initialize(null);
-				expect(liveTLSRebuilders.size, 'live selector must register exactly one rebuilder').to.equal(
-					snapshot.length + 1
-				);
-			} finally {
-				// Drop any rebuilders added by this test so later tests aren't perturbed.
-				liveTLSRebuilders.clear();
-				snapshot.forEach((r) => liveTLSRebuilders.add(r));
-			}
-		});
-	});
-
 	describe('createTLSSelector when the system database is not yet loaded on this thread', () => {
 		// A raw-socket listener (e.g. MQTT's securePort) can initialize its own TLS selector before
 		// this thread has loaded the system database — selector creation doesn't control
@@ -695,11 +670,7 @@ describe('Test keys module', () => {
 			// while the race is unresolved, only settling once a real pass (with the table loaded)
 			// completes. This uses the real (debounced, ~1.5s) retry and real timers — no Sinon fake
 			// timers, no rewire access to internal state — condition-waiting on the actual observable
-			// transition instead. liveReload=false so this test's selector never registers with the
-			// module-level liveTLSRebuilders registry — a real selector (e.g. MQTT's) always defaults
-			// to true, but that registration isn't part of what this race is about, and leaving it true
-			// here would leak scheduleRebuild (and this test's pseudoServer/caCerts interaction) into
-			// every later test's private-key-reload rebuilds for the rest of the suite.
+			// transition instead. liveReload=false avoids leaving a subscription behind.
 			this.timeout(5000);
 			delete databases.system; // as on a worker thread before the system db has loaded
 			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
@@ -781,21 +752,15 @@ describe('Test keys module', () => {
 		// yet). Before this fix, that resolved `.ready` with an empty cert list — the exact
 		// customer-visible symptom this PR exists to fix.
 		let databases;
-		let liveTLSRebuilders;
-		let rebuildersSnapshot;
 		let searchStub;
 
 		beforeEach(() => {
 			databases = require('#src/resources/databases').databases;
-			liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
-			rebuildersSnapshot = [...liveTLSRebuilders];
 			searchStub = sandbox.stub(databases.system.hdb_certificate, 'search').returns([]);
 		});
 
 		afterEach(() => {
 			searchStub.restore();
-			liveTLSRebuilders.clear();
-			rebuildersSnapshot.forEach((r) => liveTLSRebuilders.add(r));
 		});
 
 		it('retries (does not resolve) for a live selector, then resolves with real certs once a rebuild sees them', async function () {
@@ -904,26 +869,20 @@ describe('Test keys module', () => {
 		// updateTLS and re-subscribes when it changes. This test drives that path end-to-end through
 		// real module surfaces: the swap-detection can only run when something re-enters updateTLS,
 		// and here that trigger is the selector's still-live subscription on the OLD table firing on
-		// a write — the same trigger class (any scheduled rebuild) that a private-key reload or the
+		// a write — the same trigger class (any scheduled rebuild) that the
 		// zero-certs retry supplies in production.
 		let databases;
-		let liveTLSRebuilders;
-		let rebuildersSnapshot;
 		let realTable;
 		const swapTestCertName = 'swap-test-cert-' + Date.now();
 
 		beforeEach(() => {
 			databases = require('#src/resources/databases').databases;
 			realTable = databases.system.hdb_certificate;
-			liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
-			rebuildersSnapshot = [...liveTLSRebuilders];
 		});
 
 		afterEach(async () => {
 			databases.system.hdb_certificate = realTable;
 			await realTable.delete(swapTestCertName).catch(() => {});
-			liveTLSRebuilders.clear();
-			rebuildersSnapshot.forEach((r) => liveTLSRebuilders.add(r));
 		});
 
 		it('re-subscribes to the new table instance and rebuilds contexts on the next rebuild after a swap', async function () {
@@ -983,8 +942,6 @@ describe('Test keys module', () => {
 		// state worse than the one being served (clear-first used to drop a mismatched record's
 		// hostnames to the self-signed default for days).
 		let databases;
-		let liveTLSRebuilders;
-		let rebuildersSnapshot;
 		let keyPairA;
 		let keyPairB;
 
@@ -1004,13 +961,6 @@ describe('Test keys module', () => {
 
 		beforeEach(() => {
 			databases = require('#src/resources/databases').databases;
-			liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
-			rebuildersSnapshot = [...liveTLSRebuilders];
-		});
-
-		afterEach(() => {
-			liveTLSRebuilders.clear();
-			rebuildersSnapshot.forEach((r) => liveTLSRebuilders.add(r));
 		});
 
 		const uniqueName = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -1388,9 +1338,9 @@ describe('Test keys module', () => {
 				searchStub = sandbox
 					.stub(databases.system.hdb_certificate, 'search')
 					.throws(new Error('injected pass failure'));
-				// Trigger a rebuild through the key-reload path; the throwing stub itself is the
+				// Trigger a rebuild through the table subscription; the throwing stub itself is the
 				// observable that the pass ran (a failed pass never publishes).
-				keys.__get__('rebuildLiveTLSContexts')();
+				await databases.system.hdb_certificate.put({ ...(await databases.system.hdb_certificate.get(recordName)) });
 				await waitFor(() => searchStub.called, {
 					timeout: 6000,
 					message: 'the failing pass never ran',
@@ -1671,6 +1621,75 @@ describe('Test keys module', () => {
 			expect(loaded).to.eql(['PEM-V1']);
 		});
 
+		it('retries an unapplied pair even when neither file changed again', () => {
+			let accept = false;
+			let attempts = 0;
+			loadAndWatch(
+				watchPath,
+				() => {
+					attempts++;
+					return accept;
+				},
+				'certificate'
+			);
+			assert.strictEqual(attempts, 1);
+			accept = true;
+			watchPollers.get(watchPath)();
+			assert.strictEqual(attempts, 2);
+			watchPollers.get(watchPath)();
+			assert.strictEqual(attempts, 2);
+		});
+
+		it('rechecks a restored original inode after an unapplied renewal', () => {
+			const savedPath = watchPath + '.saved';
+			const loaded = [];
+			let acceptRestored = false;
+			try {
+				loadAndWatch(
+					watchPath,
+					(pem) => {
+						loaded.push(pem);
+						return pem === 'PEM-V1' && (loaded.length === 1 || acceptRestored);
+					},
+					'certificate'
+				);
+				fs.renameSync(watchPath, savedPath);
+				fs.writeFileSync(watchPath, 'PEM-V2');
+				watchPollers.get(watchPath)();
+				assert.deepStrictEqual(loaded, ['PEM-V1', 'PEM-V2']);
+				fs.removeSync(watchPath);
+				fs.renameSync(savedPath, watchPath);
+				watchPollers.get(watchPath)();
+				assert.deepStrictEqual(loaded, ['PEM-V1', 'PEM-V2', 'PEM-V1']);
+				acceptRestored = true;
+				watchPollers.get(watchPath)();
+				assert.deepStrictEqual(loaded, ['PEM-V1', 'PEM-V2', 'PEM-V1', 'PEM-V1']);
+				watchPollers.get(watchPath)();
+				assert.strictEqual(loaded.length, 4, 'a successfully restored pair should be deduplicated again');
+			} finally {
+				fs.removeSync(savedPath);
+			}
+		});
+
+		it('rechecks the certificate when only its related key changes', () => {
+			const keyPath = watchPath + '.key';
+			fs.writeFileSync(keyPath, 'KEY-A');
+			const loaded = [];
+			try {
+				loadAndWatch(watchPath, (pem) => loaded.push(pem), 'certificate', [keyPath]);
+				assert.deepStrictEqual(loaded, ['PEM-V1']);
+				fs.writeFileSync(keyPath, 'KEY-B');
+				const future = (Date.now() + 5000) / 1000;
+				fs.utimesSync(keyPath, future, future);
+				watchPollers.get(watchPath)();
+				assert.deepStrictEqual(loaded, ['PEM-V1', 'PEM-V1']);
+				watchPollers.get(watchPath)();
+				assert.strictEqual(loaded.length, 2);
+			} finally {
+				fs.removeSync(keyPath);
+			}
+		});
+
 		it('resolves the configured interval and registers an unref-ed poll timer', () => {
 			localSandbox.stub(env_mgr, 'get').callsFake((param) => {
 				if (param === 'tls_certificateWatchInterval') return 1234;
@@ -1710,14 +1729,6 @@ describe('Test keys module', () => {
 			expect(getCertificateWatchInterval()).to.equal(0);
 		});
 
-		it('registers a poll for a private-key watch (key poll must run on all threads, including workers)', () => {
-			// Private keys are loaded per-thread directly from disk (no hdb_certificate propagation), so
-			// the poll safety net must be wired for 'private key' watches regardless of thread. On the
-			// main thread the poller is registered either way; this asserts the key path stays wired.
-			loadAndWatch(watchPath, () => {}, 'private key');
-			expect(watchPollers.get(watchPath), 'a poller should be registered for the private key').to.exist;
-		});
-
 		it('does not register a poll timer when the interval is configured to 0', () => {
 			localSandbox.stub(env_mgr, 'get').callsFake((param) => {
 				if (param === 'tls_certificateWatchInterval') return 0;
@@ -1730,10 +1741,10 @@ describe('Test keys module', () => {
 		});
 	});
 
-	describe('loadAndWatch mtime latch rollback on failed apply (#2382)', () => {
+	describe('loadAndWatch fingerprint latch rollback on failed apply (#2382)', () => {
 		// The latch must represent the last successfully APPLIED file, not the last attempted one:
 		// a callback that throws (bad read) or rejects (failed hdb_certificate write) used to leave
-		// the mtime latched, so both chokidar and the poll deduplicated the change forever and the
+		// the fingerprint latched, so both chokidar and the poll deduplicated the change forever and the
 		// renewal could never heal without another file write.
 		const loadAndWatch = keys.__get__('loadAndWatch');
 		const watchTimers = keys.__get__('certificateWatchTimers');
