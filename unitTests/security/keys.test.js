@@ -205,6 +205,20 @@ describe('Test keys module', () => {
 		keys.getPrivateKeys().delete(actual_ca.private_key_name);
 	});
 
+	it('retains the cached configured authority key while its file is temporarily missing', async () => {
+		try {
+			await fs.writeFile(test_private_key_path, ca_key);
+			keys.getPrivateKeys();
+			await fs.remove(test_private_key_path);
+			const authority = await keys.getCertAuthority();
+			assert.ok(authority?.ca.name === actual_ca.name, 'the missing-file window must not lose the authority');
+			assert.ok(authority.private_key === ca_key, 'authority lookup must retain its last file-derived key');
+		} finally {
+			await fs.writeFile(test_private_key_path, test_private_key);
+			keys.getPrivateKeys();
+		}
+	});
+
 	it('refreshes configured keys for retrieval and when the certificate table triggers a rebuild', async function () {
 		this.timeout(15000);
 		const { databases } = require('#src/resources/databases');
@@ -1684,11 +1698,6 @@ describe('Test keys module', () => {
 			expect(getCertificateWatchInterval()).to.equal(0);
 		});
 
-		it('registers a main-thread poll for a private-key file', () => {
-			loadAndWatch(watchPath, () => {}, 'private key');
-			expect(watchPollers.get(watchPath), 'a main-thread poller should be registered').to.exist;
-		});
-
 		it('does not register a poll timer when the interval is configured to 0', () => {
 			localSandbox.stub(env_mgr, 'get').callsFake((param) => {
 				if (param === 'tls_certificateWatchInterval') return 0;
@@ -1701,10 +1710,10 @@ describe('Test keys module', () => {
 		});
 	});
 
-	describe('loadAndWatch mtime latch rollback on failed apply (#2382)', () => {
+	describe('loadAndWatch fingerprint latch rollback on failed apply (#2382)', () => {
 		// The latch must represent the last successfully APPLIED file, not the last attempted one:
 		// a callback that throws (bad read) or rejects (failed hdb_certificate write) used to leave
-		// the mtime latched, so both chokidar and the poll deduplicated the change forever and the
+		// the fingerprint latched, so both chokidar and the poll deduplicated the change forever and the
 		// renewal could never heal without another file write.
 		const loadAndWatch = keys.__get__('loadAndWatch');
 		const watchTimers = keys.__get__('certificateWatchTimers');

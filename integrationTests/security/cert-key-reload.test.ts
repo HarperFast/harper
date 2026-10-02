@@ -85,7 +85,7 @@ async function renameInstall(filePath: string, pem: string) {
 for (const readableKeyDirectory of [true, false])
 	suite(
 		`TLS certificate + private-key hot-reload propagates to all workers (${readableKeyDirectory ? 'readable' : 'traverse-only'} key directory)`,
-		{ skip: skipSuite },
+		{ skip: skipSuite || (!readableKeyDirectory && process.getuid?.() === 0) },
 		(ctx: ContextWithHarper) => {
 			let certsDir: string;
 			let certPath: string;
@@ -112,6 +112,11 @@ for (const readableKeyDirectory of [true, false])
 				});
 				equal(await observedWorkerCount(ctx), WORKERS);
 				equal((await servedGeneration(ctx.harper.hostname)).serial, currentSerial);
+				if (!readableKeyDirectory)
+					ok(
+						(await readFile(logPath(), 'utf8')).includes(`Cannot watch TLS directory ${join(certsDir, 'keys')}`),
+						'the restricted-directory suite did not exercise the file polling fallback'
+					);
 			});
 
 			after(async () => {
@@ -180,7 +185,6 @@ for (const readableKeyDirectory of [true, false])
 					currentKeyPair = keyPair;
 				});
 			}
-			if (!readableKeyDirectory) return;
 
 			for (const removed of ['certificate', 'private key']) {
 				test(`renewal survives deleting and recreating the ${removed} with polling disabled`, async () => {
@@ -196,6 +200,7 @@ for (const readableKeyDirectory of [true, false])
 				});
 			}
 
+			if (!readableKeyDirectory) return;
 			test('renewal follows an atomically replaced Secret-volume data symlink', async () => {
 				const firstDir = join(certsDir, 'generation-a');
 				const secondDir = join(certsDir, 'generation-b');

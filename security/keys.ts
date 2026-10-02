@@ -418,7 +418,8 @@ function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) {
 				.on('change', reload)
 				.on('error', (error) => {
 					if (claimLostNativeWatchError(error)) return;
-					if (!watchFiles && liveWatcher === opened && (error.code === 'EACCES' || error.code === 'EPERM')) {
+					const errorCode = (error as NodeJS.ErrnoException).code;
+					if (!watchFiles && liveWatcher === opened && (errorCode === 'EACCES' || errorCode === 'EPERM')) {
 						forComponent('tls').conditional.warn?.(
 							`Cannot watch TLS directory ${directory}; polling its configured files instead`,
 							error
@@ -1544,7 +1545,13 @@ function getPrivateKeyByName(private_key_name) {
 	const private_key = privateKeys.get(private_key_name);
 	const configuredPath = configuredPrivateKeyPaths.get(private_key_name);
 	if (configuredPath && (!private_key || private_key === filePrivateKeys.get(private_key_name))) {
-		return cacheFilePrivateKey(private_key_name, readPEM(configuredPath));
+		try {
+			return cacheFilePrivateKey(private_key_name, readPEM(configuredPath));
+		} catch (error) {
+			if (!private_key) throw error;
+			forComponent('tls').conditional.trace?.('Could not refresh configured private key:', private_key_name, error);
+			return private_key;
+		}
 	}
 	if (!private_key && private_key_name) {
 		return fs.readFileSync(
