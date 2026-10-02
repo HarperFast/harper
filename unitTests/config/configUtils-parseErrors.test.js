@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const commonUtils = require('#src/utility/common_utils');
+const YAML = require('yaml');
 const configUtils = require('#src/config/configUtils');
 
 const CONFIG_FILE_NAME = 'harperdb-config.yaml';
@@ -50,7 +50,6 @@ describe('configUtils initConfig YAML parse errors', function () {
 			.replace(/^rootPath: null$/m, `rootPath: ${JSON.stringify(rootPath)}`);
 		fs.writeFileSync(configFilePath, defaultConfig);
 		process.env.ROOTPATH = rootPath;
-		commonUtils.resetNoBootFileCache();
 	});
 
 	afterEach(function () {
@@ -60,7 +59,6 @@ describe('configUtils initConfig YAML parse errors', function () {
 			if (value === undefined) delete process.env[key];
 			else process.env[key] = value;
 		}
-		commonUtils.resetNoBootFileCache();
 		if (rootPath) fs.rmSync(rootPath, { recursive: true, force: true });
 	});
 
@@ -68,7 +66,7 @@ describe('configUtils initConfig YAML parse errors', function () {
 		const validConfig = fs.readFileSync(configFilePath, 'utf8');
 		fs.writeFileSync(configFilePath, `${validConfig}\ninvalid: ["config-secret-sentinel\n`);
 		const malformedConfig = fs.readFileSync(configFilePath, 'utf8');
-		const configDoc = configUtils.parseYamlDoc(configFilePath);
+		const configDoc = YAML.parseDocument(malformedConfig, { simpleKeys: true });
 
 		assert.ok(configDoc.errors.length > 0, 'the fixture must contain a YAML parse error');
 		for (const keyPath of BACKFILLED_KEY_PATHS) {
@@ -88,7 +86,7 @@ describe('configUtils initConfig YAML parse errors', function () {
 		const duplicatedConfig = crlfConfig.replace(/(^  port: null)\r?\n/m, '$1\r\n$1\r\n');
 		assert.notStrictEqual(duplicatedConfig, crlfConfig, 'the fixture must duplicate a config key');
 		fs.writeFileSync(configFilePath, duplicatedConfig);
-		const configDoc = configUtils.parseYamlDoc(configFilePath);
+		const configDoc = YAML.parseDocument(duplicatedConfig, { simpleKeys: true });
 
 		assert.ok(configDoc.errors.some((error) => error.code === 'DUPLICATE_KEY'));
 		for (const keyPath of BACKFILLED_KEY_PATHS) {

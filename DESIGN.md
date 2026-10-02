@@ -65,20 +65,7 @@ When adding a new commit-handler early-return path: reset `write.skipped = false
 
 Known minor: if the monitor aborts a write transaction whose async `commit()` is already in flight (awaiting `before` hooks), the resumed continuation double-decrements `readTxnsUsed` and double-`abort()`s the underlying transaction (swallowed by the existing try/catch). Data is still correctly rolled back and the request errors; the only artifact is an inert negative counter on a dead transaction object.
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 **Extending the budget for one known-long write:** `DatabaseTransaction.timeoutBudget` is a per-transaction RocksDB floor applied whenever the transaction is re-armed (initial reads, writes, and active multi-store-chain propagation); the effective timeout is `Math.max(txnExpiration, timeoutBudget)`. This makes the budget sticky across a write's pre-commit existing-entry read and later writes, while never shortening a larger global `STORAGE_MAXTRANSACTIONOPENTIME`; RocksDB links added for another store inherit the same floor. Reads after a pending write do not re-arm the transaction: that preserves the idle-limit invariant for orphaned write-holding requests. Also, `resources/transaction.ts`'s `transaction(callback)` (no explicit context) joins whatever transaction is already open on the ambient AsyncLocalStorage context rather than guaranteeing a fresh one. `components/deploymentRecorder.ts`'s `withIsolatedTransaction` builds a new context from only the ambient audit/session/cancellation fields, so every recorder write commits independently without inheriting transaction controls. It uses the sticky budget to give `ingestPayload`'s blob-gated writes a size-appropriate limit instead of the generic default, while coalesced progress flushes are drained and suppressed until ingest settles to avoid same-row transaction conflicts. The ingest helper deliberately floors the shared `deployment_timeout` at ten minutes because `0` means “poll once” for peer waits; consequently an ingest can pin its system-database snapshot for that minimum. Known gap (harper#2057): the extension only reaches RocksDB transactions — on `HARPER_STORAGE_ENGINE=lmdb`, `Table.txnForContext()` chains a separate `LMDBTransaction` (`txn.next`) with its own independently-reset timeout that the LMDB engine's monitor tracks instead.
-=======
-- [Boot adopts only parseable root config (`config/configUtils.ts`)](config/DESIGN.md#boot-adopts-only-parseable-root-config-configconfigutilsts) — `initConfig()` rejects YAML parse errors before backfill or active-config replacement, enforced by `unitTests/config/configUtils-parseErrors.test.js`.
-=======
-- [Root config is adopted only when it parses (`config/configUtils.ts`)](config/DESIGN.md#root-config-is-adopted-only-when-it-parses-configconfigutilsts) — malformed and duplicate-key YAML is rejected before backfill or active-config replacement on boot and forced reload, enforced by `unitTests/config/configUtils-parseErrors.test.js`.
->>>>>>> 87a889a0d (Keep parse-error diagnostics concise and tests isolated)
-- [`set_configuration` replication is opt-in; `replicateOperation` is default-on (`config/configUtils.ts`)](config/DESIGN.md#set_configuration-replication-is-opt-in-replicateoperation-is-default-on-configconfigutilsts) — `replicateOperation` is default-on, so `setConfiguration` keeps an explicit opt-in guard and strips `replicated` on both sides.
-- [Root config watchers must read synchronously (`config/readConfigFileSync.ts`)](config/DESIGN.md#root-config-watchers-must-read-synchronously-configreadconfigfilesyncts) — `atomicWriteFile` blocks on Windows rename retries while any read handle is open, so config watchers must read synchronously.
-- [Config is composed and memoized before any component runs (`config/configUtils.ts`)](config/DESIGN.md#config-is-composed-and-memoized-before-any-component-runs-configconfigutilsts) — `getConfigObj()` memoizes per thread before any component loads; a component `.env` can never shape config.
-- [Boot-path config persistence is best-effort, and its two artifacts commit as a unit (`config/configUtils.ts`, `config/harperConfigEnvVars.ts`)](config/DESIGN.md#boot-path-config-persistence-is-best-effort-and-its-two-artifacts-commit-as-a-unit-configconfigutilsts-configharperconfigenvvarsts) — Derived boot writes swallow ENOSPC/EDQUOT and commit the config and env-var artifacts as a unit; user-requested writes still fail loudly.
-- [Env-config empty objects mean three different things (`config/harperConfigEnvVars.ts`)](config/DESIGN.md#env-config-empty-objects-mean-three-different-things-configharperconfigenvvarsts) — `{}` means no override in an env layer, an empty scope in a file, and a pruned ancestor on removal; `emptyScopeOriginals` markers keep file content intact.
->>>>>>> fca9671cf (Reject malformed YAML before adopting root config)
 
 ## RocksDB range activity and snapshot expiration
 
@@ -491,6 +478,15 @@ mirrors loader behaviors that must stay in sync if the loader changes: config fi
 (`harper-config.yaml` → `harperdb-config.yaml` → `config.yaml`) and `files` pattern validation
 (`..` and absolute patterns rejected). Known limitation: a `componentsRoot` override that itself
 arrives via env var cannot redirect the scan.
+
+## Root config is adopted only when it parses (`config/configUtils.ts`)
+
+`initConfig()` rejects YAML `Document.errors` before legacy-key backfill, environment overlays,
+validation, or active-config replacement. This check must remain unconditional: otherwise a complete
+config with a parse error can be adopted from the parser's partial document. Duplicate keys reported
+by YAML are rejected during upgrades too. The CLI error uses only the parser error code and location,
+so a source frame containing credentials does not appear in the diagnostic. A malformed forced reload
+follows `initSync()`'s existing failure path and can stop a running worker or node.
 
 ## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
 

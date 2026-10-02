@@ -25,18 +25,6 @@ import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as env from '../utility/environment/environmentManager.ts';
 import { applyRuntimeEnvConfig, hasPersistedEnvConfigState } from './harperConfigEnvVars.ts';
 import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-import { ConfigParseError } from './parseConfigFile.ts';
-=======
-import { formatConfigParseErrorDetails } from './parseConfigFile.ts';
->>>>>>> 5dfd0b9bd (Share source-free parse detail formatting)
-import { isStartableThreadHeapMemory } from '../server/threads/threadHeapMemory.ts';
-import { fsyncTolerantSync, isUnsupportedSyncError } from '../utility/fsync.ts';
-
-export { isUnsupportedSyncError } from '../utility/fsync.ts';
->>>>>>> fca9671cf (Reject malformed YAML before adopting root config)
 
 const { DATABASES_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdbTerms;
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
@@ -551,6 +539,12 @@ export function initConfig(force = false) {
  * @param configDoc
  * @param configFilePath
  */
+function formatConfigParseErrorDetails(error) {
+	const { name, code, linePos } = error ?? {};
+	const at = linePos?.[0] ? ` at line ${linePos[0].line}, column ${linePos[0].col}` : '';
+	return `${code ?? name ?? 'parse failure'}${at}`;
+}
+
 function checkForUpdatedConfig(configDoc, configFilePath) {
 	let updateFile = false;
 	if (!configDoc.hasIn(['storage', 'path'])) {
@@ -585,18 +579,7 @@ function checkForUpdatedConfig(configDoc, configFilePath) {
 
 	if (updateFile) {
 		logger.trace('Updating config file with missing config params');
-<<<<<<< HEAD
-		if (configDoc.errors?.length > 0) {
-			throw handleHDBError(
-				new Error(),
-				`Error parsing harperdb-config.yaml ${configDoc.errors}`,
-				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
-			);
-		}
 		atomicWriteFile(configFilePath, String(configDoc));
-=======
-		persistConfigDuringBoot(configFilePath, () => atomicWriteFile(configFilePath, String(configDoc)));
->>>>>>> fca9671cf (Reject malformed YAML before adopting root config)
 	}
 }
 
