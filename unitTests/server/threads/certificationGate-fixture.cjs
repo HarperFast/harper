@@ -31,14 +31,16 @@ if (!workerData.certify) {
 } else {
 	const plan = JSON.parse(readFileSync(planPath, 'utf8'));
 	appendFileSync(`${planPath}.starts`, `${threadId}\n`);
-	// Thread ids follow start order, which boot order need not: two starts released together boot in either order, so
-	// a turn is this worker's place among the ids recorded once a concurrent start has had time to record its own.
-	setTimeout(() => {
+	// Thread ids follow start order, which boot order need not: starts released together boot in either order, so a
+	// turn is this worker's place among the ids once every start the plan releases together has recorded its own.
+	const pickStep = () => {
 		const started = readFileSync(`${planPath}.starts`, 'utf8').trim().split('\n').map(Number);
+		if (started.length < (plan.concurrentStarts ?? 1)) return setTimeout(pickStep, 20);
 		const turn = started.sort((a, b) => a - b).indexOf(threadId);
 		step = plan.sequence[Math.min(turn, plan.sequence.length - 1)];
 		setTimeout(report, step.delayMs ?? 0);
-	}, 250);
+	};
+	pickStep();
 }
 
 function report() {

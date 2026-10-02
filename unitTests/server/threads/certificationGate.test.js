@@ -35,8 +35,8 @@ describe('the release certification gate', function () {
 	let committed;
 	let started;
 
-	function plan(sequence) {
-		writeFileSync(planPath, JSON.stringify({ sequence }));
+	function plan(sequence, { concurrentStarts } = {}) {
+		writeFileSync(planPath, JSON.stringify({ sequence, concurrentStarts }));
 		rmSync(`${planPath}.starts`, { force: true });
 	}
 
@@ -339,7 +339,7 @@ describe('the release certification gate', function () {
 
 	it('admits a held start only on its own load, even once the canary certified the release', async () => {
 		setCertificationHandler(handler({ resolveArmed: async () => 'committed' }));
-		plan([{ outcome: 'loaded' }, { outcome: 'failed' }]);
+		plan([{ outcome: 'loaded' }, { outcome: 'failed' }], { concurrentStarts: 2 });
 		await holdBackTwoStarts();
 		await rolledOut();
 		assert.deepStrictEqual(
@@ -356,7 +356,7 @@ describe('the release certification gate', function () {
 
 	it('stops a held start that never reports, whichever decision it was waiting on', async () => {
 		setCertificationHandler(handler({ resolveArmed: async () => 'committed' }));
-		plan([{ outcome: 'loaded' }, { behavior: 'silent' }]);
+		plan([{ outcome: 'loaded' }, { behavior: 'silent' }], { concurrentStarts: 2 });
 		await holdBackTwoStarts();
 		await rolledOut();
 		assert.deepStrictEqual(
@@ -382,7 +382,7 @@ describe('the release certification gate', function () {
 				},
 			})
 		);
-		plan([{ outcome: 'loaded' }, { behavior: 'silent', shutdownDelayMs: 300 }]);
+		plan([{ outcome: 'loaded' }, { behavior: 'silent', shutdownDelayMs: 300 }], { concurrentStarts: 2 });
 		await holdBackTwoStarts();
 		await rolledOut();
 		assert.deepStrictEqual(
