@@ -473,6 +473,7 @@ export class FullTextQueryIndex {
 					}
 					throw new ServerError('Full-text index returned an incomplete result page', 500);
 				}
+				// An exact total can safely continue from the returned offset; only a short lower-bound page breaks the v3 contract.
 				moreMayExist =
 					result.totalRelation === 'exact' ? offset + result.hits.length < result.total : result.hits.length === limit;
 				if (result.hits.length === 0) break;
