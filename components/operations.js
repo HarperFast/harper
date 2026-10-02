@@ -645,6 +645,7 @@ async function deployComponent(req) {
 	// in the thrown error. SSE callers still stream every line live.
 	const installCapture = createInstallCapture();
 	let stagedOnOrigin = false;
+	let releaseRequester;
 	try {
 		// On the origin, tee the tarball (Buffer or Readable from the multipart parser)
 		// through a hash-and-size tap into the row's payload_blob, then re-source extraction
@@ -746,6 +747,7 @@ async function deployComponent(req) {
 						scope: () => ((nowIsolated ?? initiallyIsolated) ? req.project : undefined),
 					})
 				: undefined;
+		releaseRequester = () => (application.certificationArmed && !isMainThread ? certification.release() : undefined);
 		await prepareApplication(application, {
 			// `.deploy-staging/<artifactId>`. The public deployment id, so the id the caller was handed is
 			// the id a later `deployment_id` request can name; an activation names the artifact's own id,
@@ -1052,8 +1054,6 @@ async function deployComponent(req) {
 		}
 		if (installDrift) response.message = `${response.message} ${installDrift}`;
 		if (mode !== 'stage') response.certification = certificationOutcome;
-		// A worker that asked for its own restart answers before main replaces it.
-		if (application.certificationArmed && !isMainThread) await certification.release();
 		return response;
 	} catch (err) {
 		// Pack phase, install output tail, and deployment_id into http_resp_msg so the
@@ -1101,6 +1101,9 @@ async function deployComponent(req) {
 			}
 		}
 		throw outErr;
+	} finally {
+		// A worker that asked for its own restart answers, or fails, before main replaces it.
+		await releaseRequester?.();
 	}
 }
 
