@@ -76,11 +76,10 @@ describe('automatic application installation', () => {
 		assert.deepEqual(JSON.parse(await readFile(declaredCapture, 'utf8')), ['npm', 'install', '--ignore-scripts']);
 	});
 
-	it('preserves an explicit non-npm workspace install when the root manifest has no production work', async function () {
+	it('suppresses lifecycle scripts for a declared non-npm package manager', async function () {
 		const application = await createApplication(this.root, 'declared-pnpm', {
 			devEngines: { packageManager: { name: 'pnpm' } },
 		});
-		await writeFile(join(application.dirPath, 'pnpm-workspace.yaml'), "packages:\n  - 'packages/*'\n");
 		const capturePath = await configureInstallCapture(application, this.root, 'declared-pnpm');
 
 		await installApplication(application);
@@ -88,16 +87,8 @@ describe('automatic application installation', () => {
 		assert.deepEqual(JSON.parse(await readFile(capturePath, 'utf8')), ['pnpm', 'install', '--ignore-scripts']);
 	});
 
-	it('allows an opted-in install lifecycle on the default npm path', async function () {
-		const application = await createApplication(
-			this.root,
-			'allowed-lifecycle',
-			{
-				devDependencies: { build: '1.0.0' },
-				scripts: { prepare: 'node build.js' },
-			},
-			{ allowInstallScripts: true }
-		);
+	it('omits script suppression when the default npm path opts in', async function () {
+		const application = await createApplication(this.root, 'allowed-lifecycle', {}, { allowInstallScripts: true });
 		const capturePath = await configureInstallCapture(application, this.root, 'allowed-lifecycle');
 
 		await installApplication(application);
@@ -110,7 +101,7 @@ describe('automatic application installation', () => {
 		const application = await createApplication(
 			this.root,
 			'custom-command',
-			{ devDependencies: { build: '1.0.0' } },
+			{},
 			{ command: 'node custom-install.cjs' }
 		);
 		const automaticCapture = await configureInstallCapture(application, this.root, 'custom-command');

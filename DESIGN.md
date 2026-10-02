@@ -305,10 +305,10 @@ because existing custom commands can rely on lifecycle scripts, including `npm r
 This is best-effort enforcement for arbitrary commands: an explicit override in the command or a
 package manager that ignores npm configuration can bypass it.
 
-The deprecated `install_node_modules` operation retains its scripts-enabled default and existing npm
-arguments. `installModules()` consumes Joi's converted `allowInstallScripts` value (also accepted as
-`install_allow_scripts`) and adds `--ignore-scripts` when false. Both spellings together are rejected.
-Its legacy `dryRun` behavior and the automatic component-install paths remain unchanged.
+The deprecated `install_node_modules` operation defaults to scripts enabled for compatibility.
+`installModules()` consumes Joi's converted `allowInstallScripts` value (also accepted as
+`install_allow_scripts`), so a string `'false'` suppresses lifecycle scripts. Both spellings together
+are rejected. Only camelCase `dryRun` controls dry-run invocation.
 
 ## Peer-side deploy_component payload read: retryable blob stalls and `Readable.from()` cancellation
 
