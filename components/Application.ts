@@ -4885,7 +4885,10 @@ async function activateCertifying(
 				await removeCertificationRecord(dirname(application.dirPath), deploymentId).catch((removeError) =>
 					application.logger.warn(`Could not remove the certification record of ${deploymentId}:`, removeError)
 				);
-				await certification!.withdraw();
+				// The caller is owed the activation's failure, not this one, which leaves main's registration armed.
+				await certification!.withdraw().catch((withdrawError) =>
+					application.logger.error(`Could not withdraw the certification of ${deploymentId}:`, withdrawError)
+				);
 			}
 		}
 		throw error;

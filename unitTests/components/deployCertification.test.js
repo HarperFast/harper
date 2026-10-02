@@ -171,6 +171,23 @@ describe('activating a release for certification', () => {
 		assert.equal(existsSync(certificationRecordPath(root, 'd2')), false);
 	});
 
+	it('reports the activation failure, not a withdrawal that failed after it', async function () {
+		this.timeout(30000);
+		await deploy(root, 'd1', 'V1\n');
+		const certification = recordingCertification(root);
+		certification.withdraw = async () => {
+			throw new Error('could not reach main');
+		};
+		await assert.rejects(
+			deploy(root, 'd2', 'V2\n', {
+				certification,
+				describeArtifact: () => ({ rootConfig: { package: 42 }, isolated: false }),
+			}),
+			(error) => !/could not reach main/.test(error.message)
+		);
+		assert.equal(await readLive(root), 'V1\n');
+	});
+
 	it('refuses every other preparation of the component while its release is pending in this process', async function () {
 		this.timeout(30000);
 		await deploy(root, 'd1', 'V1\n', { certification: recordingCertification(root) });
