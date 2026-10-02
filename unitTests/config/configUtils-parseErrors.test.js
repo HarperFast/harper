@@ -61,7 +61,7 @@ describe('configUtils initConfig YAML parse errors', function () {
 			else process.env[key] = value;
 		}
 		commonUtils.resetNoBootFileCache();
-		fs.rmSync(rootPath, { recursive: true, force: true });
+		if (rootPath) fs.rmSync(rootPath, { recursive: true, force: true });
 	});
 
 	it('rejects malformed YAML when no legacy keys need backfilling', function () {
