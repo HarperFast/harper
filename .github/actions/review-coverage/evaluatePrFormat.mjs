@@ -40,7 +40,7 @@ export function evaluatePrFormat(
 	else {
 		const content = prose
 			.slice(verification[0].index + verification[0][0].length)
-			.split(/^(?:##\s+|[ \t]*Complexity:|[ \t]*<sub>(?:Review-Coverage:|Human-Review-Need:))/im)[0]
+			.split(/^(?:##\s+|[ \t]*Complexity:|[ \t]*<sub>(?:Review-Coverage:|Review-Attention:|Human-Review-Need:))/im)[0]
 			.replace(/<[^>]+>/g, '')
 			.trim();
 		if (!content) problems.push('## Verification needs executed evidence or a not-observable rationale');
@@ -48,7 +48,8 @@ export function evaluatePrFormat(
 
 	const links = checkBodyLinks({ body, prFiles, repo, number });
 	problems.push(...links.problems.map(({ message }) => message));
-	const aiMarkers = /^(?:[ \t]*Complexity:|[ \t]*(?:<sub>)?(?:Review-Coverage:|Human-Review-Need:))/im.test(prose);
+	const aiMarkers =
+		/^(?:[ \t]*Complexity:|[ \t]*(?:<sub>)?(?:Review-Coverage:|Review-Attention:|Human-Review-Need:))/im.test(prose);
 	if (aiMarkers) {
 		const reviewer = matches(prose, /^## For the human reviewer\s*$/gim);
 		if (reviewer.length !== 1)
@@ -76,18 +77,18 @@ export function evaluatePrFormat(
 			problems.push(
 				`AI-shaped description needs exactly one valid pinned Review-Coverage footer (found ${coverageFields.length} field(s), ${coverage.length} valid)`
 			);
-		const needFields = matches(prose, /^\s*(?:<sub>)?Human-Review-Need:/gim);
+		// Exactly one footer: Review-Attention, or the legacy Human-Review-Need still on open PRs.
+		const needFields = matches(prose, /^\s*(?:<sub>)?(?:Review-Attention|Human-Review-Need):/gim);
 		const need = matches(
 			prose,
-			/^\s*<sub>Human-Review-Need:\s*[0-4](?:\s+\(decisions?:[^)@\n]*\))?\s*@\s*[0-9a-f]{6,40}<\/sub>\s*$/gim
+			/^\s*<sub>(?:Review-Attention:\s*(?:skim|read|study|deep)\s+~\d+m(?:\s+\([^)\n]*\))?(?:\s*@\s*[0-9a-f]{6,40})?|Human-Review-Need:\s*[0-4](?:\s+\(decisions?:[^)@\n]*\))?\s*@\s*[0-9a-f]{6,40})<\/sub>\s*$/gim
 		);
 		if (needFields.length !== 1 || need.length !== 1)
 			problems.push(
-				`AI-shaped description needs exactly one valid Human-Review-Need footer (found ${needFields.length} field(s), ${need.length} valid)`
+				`AI-shaped description needs exactly one valid Review-Attention footer, or the legacy Human-Review-Need footer (found ${needFields.length} field(s), ${need.length} valid)`
 			);
-		// Only the coverage footer is pinned to the head it was materialized at. The review-need pin
-		// names the commit the grade describes, which lags the head after an amend the helper did not
-		// re-grade.
+		// Only the coverage pin is checked against the head: the legacy Human-Review-Need pin named
+		// the graded commit, which lags the head after an amend, and open PRs still carry it.
 		const head = String(pr?.head?.sha ?? '').toLowerCase();
 		const coveragePin = coverage[0]?.[0].match(/@\s*([0-9a-f]{6,40})<\/sub>/i)?.[1].toLowerCase();
 		if (coveragePin && !head.startsWith(coveragePin))
@@ -103,7 +104,7 @@ export function evaluatePrFormat(
 				coverage[0].index < need[0].index
 			)
 		)
-			problems.push('AI fields must follow Verification in Complexity, Review-Coverage, Human-Review-Need order');
+			problems.push('AI fields must follow Verification in Complexity, Review-Coverage, Review-Attention order');
 	}
 
 	if (links.unverifiable) problems.push('current PR-diff links could not be fully verified');

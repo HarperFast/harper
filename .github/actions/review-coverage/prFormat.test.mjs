@@ -371,6 +371,94 @@ test('a review-need footer carrying decision slugs is a valid footer', () => {
 	assert.strictEqual(result.compliant, true);
 });
 
+test('a Review-Attention footer is accepted, with or without detail and pin', () => {
+	for (const footer of [
+		`<sub>Review-Attention: read ~30m @ ${HEAD.slice(0, 12)}</sub>`,
+		'<sub>Review-Attention: skim ~5m</sub>',
+		'<sub>Review-Attention: deep ~150m (critical: transaction_log.cpp +1; decisions: a, b; raised: degraded review)</sub>',
+		'<sub>Review-Attention: study ~60m (decisions: a) @ abcdef123456</sub>',
+	]) {
+		const replaced = body().replace(/<sub>Human-Review-Need:[^\n]*/, footer);
+		assert.notEqual(replaced, body());
+		const result = evaluatePrFormat(pr({ body: replaced }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		});
+		assert.deepStrictEqual(result.problems, [], footer);
+	}
+});
+
+test('a malformed Review-Attention footer is a format problem', () => {
+	for (const footer of [
+		'<sub>Review-Attention: medium ~30m</sub>',
+		'<sub>Review-Attention: read 30m</sub>',
+		'<sub>Review-Attention: read ~30m (a) (b)</sub>',
+		'Review-Attention: read ~30m',
+	]) {
+		const result = evaluatePrFormat(pr({ body: body().replace(/<sub>Human-Review-Need:[^\n]*/, footer) }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		});
+		assert.match(
+			result.problems.join('\n'),
+			/exactly one valid Review-Attention footer.*1 field\(s\), 0 valid/,
+			footer
+		);
+	}
+});
+
+test('exactly one of Review-Attention or the legacy footer; both, or two of either, is a problem', () => {
+	const attention = '<sub>Review-Attention: read ~30m</sub>';
+	const legacy = `<sub>Human-Review-Need: 2 @ ${HEAD.slice(0, 12)}</sub>`;
+	for (const extra of [attention, legacy]) {
+		const result = evaluatePrFormat(pr({ body: `${body()}\n\n${extra}` }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		});
+		assert.match(result.problems.join('\n'), /exactly one valid Review-Attention footer.*2 field\(s\)/, extra);
+	}
+	const twoAttention = body().replace(/<sub>Human-Review-Need:[^\n]*/, `${attention}\n\n${attention}`);
+	assert.match(
+		evaluatePrFormat(pr({ body: twoAttention }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		}).problems.join('\n'),
+		/2 field\(s\)/
+	);
+});
+
+test('Review-Attention alone marks a description AI-shaped and is the last machine footer', () => {
+	const attentionOnly = `Fix.\n\n## Verification\n\nRan the suite.\n\n<sub>Review-Attention: read ~30m</sub>`;
+	const result = evaluatePrFormat(pr({ body: attentionOnly }), {
+		mode: 'enforce',
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.match(result.problems.join('\n'), /For the human reviewer/);
+	assert.match(result.problems.join('\n'), /valid Complexity/);
+	assert.doesNotMatch(result.problems.join('\n'), /Verification needs executed evidence/);
+	const reordered = body().replace(/(<sub>Review-Coverage:[^\n]*)\n\n(<sub>Human-Review-Need:[^\n]*)/, '$2\n\n$1');
+	assert.notEqual(reordered, body());
+	const swapped = reordered.replace(/<sub>Human-Review-Need:[^\n]*/, '<sub>Review-Attention: read ~30m</sub>');
+	assert.match(
+		evaluatePrFormat(pr({ body: swapped }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		}).problems.join('\n'),
+		/Complexity, Review-Coverage, Review-Attention order/
+	);
+});
+
 test('footer text cannot satisfy an empty Verification section', () => {
 	const broken = body().replace('Focused retention tests passed.\n\n', '');
 	assert.match(

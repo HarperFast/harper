@@ -226,7 +226,29 @@ test('the footer note distinguishes current, stale, and absent', () => {
 		evaluateCiCoverage(pr({ body: `Human-Review-Need: 1 Human-Review-Need: 2 @ ${HEAD.slice(0, 12)}` })).detail,
 		/Need: 2 @ head/
 	);
-	assert.match(evaluateCiCoverage(pr()).detail, /no Human-Review-Need footer/);
+	assert.match(evaluateCiCoverage(pr()).detail, /no Review-Attention footer/);
+});
+
+test('the footer note reads Review-Attention first and names the field it found', () => {
+	const at = (sha, value = 'read ~30m') => pr({ body: `x\n<sub>Review-Attention: ${value} @ ${sha}</sub>` });
+	assert.match(evaluateCiCoverage(at(HEAD.slice(0, 12))).detail, /Review-Attention: read ~30m @ head/);
+	assert.match(
+		evaluateCiCoverage(at(HEAD.slice(0, 12), 'deep ~150m (critical: a.cpp +1; decisions: a, b)')).detail,
+		/Review-Attention: deep ~150m @ head/
+	);
+	assert.match(evaluateCiCoverage(at('999999999999')).detail, /Review-Attention footer is stale/);
+	assert.match(
+		evaluateCiCoverage(pr({ body: '<sub>Review-Attention: skim ~5m</sub>' })).detail,
+		/skim ~5m @ unpinned sha/
+	);
+	assert.match(
+		evaluateCiCoverage(
+			pr({
+				body: `<sub>Human-Review-Need: 3 @ ${HEAD.slice(0, 12)}</sub>\n<sub>Review-Attention: study ~60m @ 999999999999</sub>`,
+			})
+		).detail,
+		/Review-Attention footer is stale/
+	);
 });
 
 test('prose coverage is reported but never enforceable', () => {
@@ -273,6 +295,7 @@ test('enforcement targets AI-authored PRs, detected by field or by generator sig
 		'x\n<sub>Review-Coverage: authored=claude; ran=none; rounds=1 @ abcdef123456</sub>',
 		'x\nComplexity: medium',
 		'x\n<sub>Human-Review-Need: 3 @ abcdef123456</sub>',
+		'x\n<sub>Review-Attention: read ~30m @ abcdef123456</sub>',
 	]) {
 		const r = evaluateCiCoverage(human({ body }), { mode: 'enforce' });
 		assert.strictEqual(r.aiAuthored, true, `should read as AI-authored: ${body}`);

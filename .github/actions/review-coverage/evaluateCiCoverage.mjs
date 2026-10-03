@@ -124,19 +124,24 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	const reported = `${count} cross-model ${plural} reported${families.length ? ` (${families.join(', ')})` : ''}`;
 	const coverage = count >= required ? reported : `${reported} — policy asks for ${required}`;
 
-	const footer = [
-		...prose.matchAll(/Human-Review-Need:\s*(\d+)(?:(?:(?!Human-Review-Need:)[^@\n])*@\s*([0-9a-f]{6,40}))?/gi),
-	].at(-1);
+	const lastFooter = (field, value) =>
+		[
+			...prose.matchAll(new RegExp(`${field}:\\s*(${value})(?:(?:(?!${field}:)[^@\\n])*@\\s*([0-9a-f]{6,40}))?`, 'gi')),
+		].at(-1);
+	// Review-Attention replaces Human-Review-Need; open PRs may carry the legacy footer until refreshed.
+	const attention = lastFooter('Review-Attention', '(?:skim|read|study|deep)(?:\\s*~\\d+m)?');
+	const field = attention ? 'Review-Attention' : 'Human-Review-Need';
+	const footer = attention ?? lastFooter(field, '\\d+');
 	const head = String(pr?.head?.sha ?? '').toLowerCase();
 	// Reported, never enforced: the question is whether two outside models looked at this change,
 	// not whether the footer was re-materialized after the last amend.
 	const footerNote = !footer
-		? 'no Human-Review-Need footer'
+		? 'no Review-Attention footer'
 		: !footer[2]
-			? `Human-Review-Need: ${footer[1]} @ unpinned sha`
+			? `${field}: ${footer[1]} @ unpinned sha`
 			: head.startsWith(footer[2].toLowerCase())
-				? `Human-Review-Need: ${footer[1]} @ head`
-				: `Human-Review-Need footer is stale (reviewed @ ${footer[2].slice(0, 7)}, head is ${head.slice(0, 7)})`;
+				? `${field}: ${footer[1]} @ head`
+				: `${field} footer is stale (reviewed @ ${footer[2].slice(0, 7)}, head is ${head.slice(0, 7)})`;
 
 	const classification = classifyPullRequest(pr);
 	const waiver = easyDiffWaiver(pr, easy);
