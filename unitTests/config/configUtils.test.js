@@ -4,6 +4,7 @@ const sinon = require('sinon');
 const chai = require('chai');
 const expect = chai.expect;
 const assert = require('node:assert/strict');
+const plainAssert = require('node:assert');
 const rewire = require('rewire');
 const path = require('path');
 const fs = require('fs-extra');
@@ -526,6 +527,20 @@ describe('Test configUtils module', () => {
 			process.env.HARPER_BUILTIN_COMPONENTS = 'replication=@/dist/replication/replicator.js';
 			writeConfig('replication: {}\n');
 			assert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), []);
+		});
+
+		it('does not backfill a built-in registered without a package identifier', () => {
+			process.env.HARPER_BUILTIN_COMPONENTS = 'secretCustody';
+			writeConfig('replication: {}\n');
+			const original = fs.readFileSync(BI_CONFIG_PATH, 'utf8');
+			plainAssert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), []);
+			plainAssert.strictEqual(fs.readFileSync(BI_CONFIG_PATH, 'utf8'), original);
+		});
+
+		it('backfills built-ins with spaces around the registration separator', () => {
+			process.env.HARPER_BUILTIN_COMPONENTS = ' secretCustody = @/dist/security/keyCustody.js ';
+			writeConfig('replication: {}\n');
+			plainAssert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), ['secretCustody']);
 		});
 
 		it('is a no-op when secretCustody is already present', () => {

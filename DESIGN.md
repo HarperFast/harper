@@ -163,6 +163,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [Config is composed and memoized before any component runs (`config/configUtils.ts`)](config/DESIGN.md#config-is-composed-and-memoized-before-any-component-runs-configconfigutilsts) — `getConfigObj()` memoizes per thread before any component loads; a component `.env` can never shape config.
 - [Boot-path config persistence is best-effort, and its two artifacts commit as a unit (`config/configUtils.ts`, `config/harperConfigEnvVars.ts`)](config/DESIGN.md#boot-path-config-persistence-is-best-effort-and-its-two-artifacts-commit-as-a-unit-configconfigutilsts-configharperconfigenvvarsts) — Derived boot writes swallow ENOSPC/EDQUOT and commit the config and env-var artifacts as a unit; user-requested writes still fail loudly.
 - [Env-config empty objects mean three different things (`config/harperConfigEnvVars.ts`)](config/DESIGN.md#env-config-empty-objects-mean-three-different-things-configharperconfigenvvarsts) — `{}` means no override in an env layer, an empty scope in a file, and a pruned ancestor on removal; `emptyScopeOriginals` markers keep file content intact.
+- [Built-in environment entries are validated before runtime use (`config/configUtils.ts`)](config/DESIGN.md#built-in-environment-entries-are-validated-before-runtime-use-configconfigutilsts) — Incomplete declarations are skipped before runtime readers or config backfill can use them.
 
 ## dataLayer/ — backup/restore, version gate, system tables
 
