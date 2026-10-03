@@ -128,15 +128,19 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 		[
 			...prose.matchAll(new RegExp(`${field}:\\s*(${value})(?:(?:(?!${field}:)[^@\\n])*@\\s*([0-9a-f]{6,40}))?`, 'gi')),
 		].at(-1);
-	// Review-Attention replaces Human-Review-Need; open PRs may carry the legacy footer until refreshed.
-	const attention = lastFooter('Review-Attention', '(?:skim|read|study|deep)(?:\\s*~\\d+m)?');
+	// The format check's grammar (evaluatePrFormat.mjs): `@` may appear inside the `(detail)`.
+	const attention = [
+		...prose.matchAll(
+			/Review-Attention:\s*((?:skim|read|study|deep)\s+~\d+m)(?:\s+\([^)\n]*\))?(?:\s*@\s*([0-9a-f]{6,40}))?/gi
+		),
+	].at(-1);
 	const field = attention ? 'Review-Attention' : 'Human-Review-Need';
 	const footer = attention ?? lastFooter(field, '\\d+');
 	const head = String(pr?.head?.sha ?? '').toLowerCase();
 	// Reported, never enforced: the question is whether two outside models looked at this change,
 	// not whether the footer was re-materialized after the last amend.
 	const footerNote = !footer
-		? 'no Review-Attention footer'
+		? 'no Review-Attention (or legacy Human-Review-Need) footer'
 		: !footer[2]
 			? `${field}: ${footer[1]} @ unpinned sha`
 			: head.startsWith(footer[2].toLowerCase())

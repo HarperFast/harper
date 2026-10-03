@@ -226,7 +226,13 @@ test('the footer note distinguishes current, stale, and absent', () => {
 		evaluateCiCoverage(pr({ body: `Human-Review-Need: 1 Human-Review-Need: 2 @ ${HEAD.slice(0, 12)}` })).detail,
 		/Need: 2 @ head/
 	);
-	assert.match(evaluateCiCoverage(pr()).detail, /no Review-Attention footer/);
+	assert.match(evaluateCiCoverage(pr()).detail, /no Review-Attention \(or legacy Human-Review-Need\) footer/);
+	// `@` inside the detail is not the pin, and minutes are required, matching the format check.
+	assert.match(
+		evaluateCiCoverage(pr({ body: '<sub>Review-Attention: study ~60m (ping @admin) @ abcdef123456</sub>' })).detail,
+		/Review-Attention: study ~60m (@ head|footer is STALE)/
+	);
+	assert.match(evaluateCiCoverage(pr({ body: '<sub>Review-Attention: skim</sub>' })).detail, /no Review-Attention/);
 });
 
 test('the footer note reads Review-Attention first and names the field it found', () => {

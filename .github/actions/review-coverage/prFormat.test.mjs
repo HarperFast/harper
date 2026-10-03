@@ -455,7 +455,7 @@ test('Review-Attention alone marks a description AI-shaped and is the last machi
 			number: NUMBER,
 			prFiles: PR_FILES,
 		}).problems.join('\n'),
-		/Complexity, Review-Coverage, Review-Attention order/
+		/Complexity, Review-Coverage, Review-Attention \(or legacy Human-Review-Need\) order/
 	);
 });
 

@@ -77,7 +77,6 @@ export function evaluatePrFormat(
 			problems.push(
 				`AI-shaped description needs exactly one valid pinned Review-Coverage footer (found ${coverageFields.length} field(s), ${coverage.length} valid)`
 			);
-		// Exactly one footer: Review-Attention, or the legacy Human-Review-Need still on open PRs.
 		const needFields = matches(prose, /^\s*(?:<sub>)?(?:Review-Attention|Human-Review-Need):/gim);
 		const need = matches(
 			prose,
@@ -104,7 +103,9 @@ export function evaluatePrFormat(
 				coverage[0].index < need[0].index
 			)
 		)
-			problems.push('AI fields must follow Verification in Complexity, Review-Coverage, Review-Attention order');
+			problems.push(
+				'AI fields must follow Verification in Complexity, Review-Coverage, Review-Attention (or legacy Human-Review-Need) order'
+			);
 	}
 
 	if (links.unverifiable) problems.push('current PR-diff links could not be fully verified');

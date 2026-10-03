@@ -10,6 +10,7 @@
 # ordinary  — overrides a default
 
 critical  replication/
+critical  resources/transactionBroadcast.ts
 critical  resources/Table.ts
 critical  resources/RecordEncoder.ts
 critical  resources/tracked.ts
@@ -49,6 +50,10 @@ critical  upgrade/
 critical  utility/lmdb/
 
 sensitive security/
+# The review gate itself: a change here moves what every later PR is held to.
+sensitive .github/review-surfaces
+sensitive .github/actions/review-coverage/
+sensitive .github/workflows/review-coverage.yml
 sensitive resources/login.ts
 sensitive resources/roles.ts
 sensitive resources/secretDecryptor.ts
@@ -63,4 +68,3 @@ hot       server/mqtt.ts
 hot       server/DurableSubscriptionsSession.ts
 hot       resources/Resource.ts
 hot       resources/IterableEventQueue.ts
-hot       resources/transactionBroadcast.ts
