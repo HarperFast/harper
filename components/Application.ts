@@ -1,5 +1,6 @@
 import { type Logger } from '../utility/logging/logger.ts';
-import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.ts';
+import { getConfigObj, getConfigValue, getConfigPath, getEnvBuiltInComponents } from '../config/configUtils.ts';
+export { getEnvBuiltInComponents };
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
@@ -2057,18 +2058,6 @@ export async function terminateProcessTree(childProcess: ChildProcess, closeProm
 		await waitForConfirmedTermination(() => processGroupIsAlive(processGroupId));
 	}
 	await waitForProcessClose(childProcess, closePromise);
-}
-
-export function getEnvBuiltInComponents() {
-	const builtInComponents: { name: string; packageIdentifier: string }[] = [];
-	if (process.env.HARPER_BUILTIN_COMPONENTS) {
-		for (const componentDefinition of process.env.HARPER_BUILTIN_COMPONENTS.split(',')) {
-			const [name, packageIdentifier] = componentDefinition.trim().split('=');
-			if (!componentDefinition) continue;
-			builtInComponents.push({ name, packageIdentifier });
-		}
-	}
-	return builtInComponents;
 }
 
 function printStd(
