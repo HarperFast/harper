@@ -1,8 +1,7 @@
 # Risk surfaces: how much human and agent review attention a change to a path deserves.
-# Read from the BASE branch by the pre-push review (skills-internal cross-model-review), so a PR
-# cannot lower the tier of its own files. Format: `<tier> <glob>`, last match wins; a glob with no
-# `/` matches at any depth. Defaults already cover path words like transaction, replication,
-# storage, schema, migration, rocksdb, lmdb (critical) and auth, security, crypto (sensitive).
+# The pre-push review reads this file from the BASE branch, so a PR cannot lower the tier of its
+# own files. Format: `<tier> <glob>`, last match wins. A glob containing `/` is anchored at the
+# repository root; one without matches at any depth.
 #
 # critical  — correctness or durability of stored data, replication, wire/at-rest encodings
 # sensitive — authentication, authorization, secrets
