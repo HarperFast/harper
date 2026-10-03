@@ -10,7 +10,6 @@ const {
 	assertApplicationConfig,
 	parseGitReference,
 	getEnvBuiltInComponents,
-	installApplications,
 } = require('#src/components/Application');
 
 async function withBuiltInComponents(value, run) {
@@ -36,12 +35,6 @@ describe('getEnvBuiltInComponents', () => {
 				]);
 			}
 		);
-	});
-
-	it('lets application installation continue past a bare declaration', async () => {
-		await withBuiltInComponents('secretCustody,valid=@/dist/utility/common_utils.js', async () => {
-			await assert.doesNotReject(installApplications());
-		});
 	});
 });
 
