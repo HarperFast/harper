@@ -1,0 +1,20 @@
+type Customer @table(audit: false) @export {
+	id: ID! @primaryKey
+	name: String
+	orders: [Order] @relationship(to: customerId)
+}
+
+type Order @table(audit: false) @export {
+	id: ID! @primaryKey
+	customerId: ID @indexed
+	amount: Float
+	customer: Customer @relationship(from: customerId)
+	items: [LineItem] @relationship(to: orderId)
+}
+
+type LineItem @table(audit: false) @export {
+	id: ID! @primaryKey
+	orderId: ID @indexed
+	sku: String
+	order: Order @relationship(from: orderId)
+}
