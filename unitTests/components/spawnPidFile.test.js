@@ -10,6 +10,7 @@ const {
 	readFileSync,
 	rmSync,
 	writeFileSync,
+	renameSync,
 	existsSync,
 	openSync,
 	closeSync,
@@ -21,6 +22,7 @@ const {
 	readProcessIdentity,
 	readProcessIdentityAsync,
 	withSpawnPidLock,
+	tryWithSpawnPidLock,
 	isPreviousBoot,
 	writePidRecord,
 	NamedProcessError,
@@ -97,6 +99,56 @@ describe('named process PID records and locking', function () {
 		);
 		assert.deepStrictEqual(readdirSync(`${pidFile}.locks`), []);
 	});
+	it('skips busy cleanup without waiting or probing foreign claims', () => {
+		withSpawnPidLock(pidFile, () => {
+			const foreign = join(`${pidFile}.locks`, 'foreign.json');
+			writeFileSync(
+				foreign,
+				JSON.stringify({ pid: 2147483648, identity: 'unreadable-foreign', token: 'foreign', ticket: 1 })
+			);
+			try {
+				assert.strictEqual(
+					tryWithSpawnPidLock(pidFile, () => assert.fail('contended cleanup')),
+					false
+				);
+				assert(existsSync(foreign));
+			} finally {
+				rmSync(foreign);
+			}
+		});
+		let cleaned = false;
+		assert.strictEqual(
+			tryWithSpawnPidLock(pidFile, () => {
+				cleaned = true;
+			}),
+			true
+		);
+		assert(cleaned);
+	});
+	for (const failCallback of [false, true]) {
+		it(`preserves the callback outcome when both release paths fail (${failCallback})`, function () {
+			// A file in place of a parent directory reliably produces ENOTDIR on POSIX.
+			if (process.platform === 'win32') return this.skip();
+			const failures = [];
+			const run = () =>
+				withSpawnPidLock(
+					pidFile,
+					() => {
+						const lockDir = `${pidFile}.locks`;
+						renameSync(lockDir, join(directory, 'moved-locks'));
+						writeFileSync(lockDir, 'not a directory');
+						if (failCallback) spawn(null);
+						return 42;
+					},
+					undefined,
+					(error) => failures.push(error)
+				);
+			if (failCallback) assert.throws(run, (error) => error.code === 'ERR_INVALID_ARG_TYPE');
+			else assert.strictEqual(run(), 42);
+			assert.strictEqual(failures.length, 1);
+			assert.strictEqual(failures[0].code, 'ENOTDIR');
+		});
+	}
 	it('honors a release marker before reading its retired claim', () => {
 		const lockDir = `${pidFile}.locks`;
 		mkdirSync(lockDir);
@@ -171,6 +223,56 @@ describe('named process PID records and locking', function () {
 			assert.strictEqual(message.acquired, true, message.error);
 			assert(message.elapsedMs >= 2000);
 		} finally {
+			await worker.terminate();
+		}
+	});
+	it('times out a stalled predecessor while new choosing claims keep arriving', async () => {
+		const lockDir = `${pidFile}.locks`;
+		mkdirSync(lockDir);
+		const identity = readProcessIdentity(process.pid).identity;
+		writeFileSync(
+			join(lockDir, 'holder.json'),
+			JSON.stringify({ pid: process.pid, identity, token: 'holder', ticket: 1 })
+		);
+		const worker = new Worker(join(__dirname, 'fixtures/named-process/spawn-lock-worker.cjs'), {
+			workerData: { pidFile, timeoutMs: 1000, noServerStart: true },
+		});
+		const result = once(worker, 'message', {
+			signal: AbortSignal.timeout(process.platform === 'win32' ? 60_000 : 10_000),
+		});
+		result.catch(() => {});
+		let arrivals;
+		let stopArrivals;
+		let arrivalsStopped = false;
+		let count = 0;
+		try {
+			await waitFor(
+				() =>
+					readdirSync(lockDir).some(
+						(name) =>
+							name.endsWith('.json') &&
+							name !== 'holder.json' &&
+							JSON.parse(readFileSync(join(lockDir, name), 'utf8')).ticket === 2
+					),
+				process.platform === 'win32' ? 45_000 : 5000
+			);
+			arrivals = setInterval(() => {
+				const token = `arrival-${++count}`;
+				const staging = join(lockDir, `${token}.tmp`);
+				writeFileSync(staging, JSON.stringify({ pid: process.pid, identity, token }));
+				renameSync(staging, join(lockDir, `${token}.json`));
+			}, 100);
+			stopArrivals = setTimeout(() => {
+				arrivalsStopped = true;
+				clearInterval(arrivals);
+			}, 3000);
+			const [message] = await result;
+			assert.match(message.error, /Timed out/);
+			assert(count >= 3, 'the waiter observed repeated new arrivals');
+			assert.strictEqual(arrivalsStopped, false, 'the stalled wait must end before arrivals stop');
+		} finally {
+			clearInterval(arrivals);
+			clearTimeout(stopArrivals);
 			await worker.terminate();
 		}
 	});
