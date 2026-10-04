@@ -656,7 +656,7 @@ table-scoped instead of widening to a database purge.
 
 ## Replay limits do not establish data loss
 
-`replayLogs`' time and progress guards cannot prove tail durability or peer completeness from a potentially stale `txn.state`; their diagnostics require preserving a separate database/log copy before recovery and warn that re-cloning can discard local-only writes. `replayCommitBoundaries.test.js` enforces the advice on durable-backlog and unflushed-tail crash/reopen cases, including recovery from the preserved copy; elected replay still rejects without peer recovery advice (harper#2951).
+`replayLogs`' time and progress guards cannot prove tail durability or peer completeness from a potentially stale `txn.state`; their diagnostics require preserving a separate database/log copy before further writes can advance the replay position, checking that position before recovery, and verifying peer completeness before re-cloning. `replayCommitBoundaries.test.js` enforces the advice on durable-backlog and unflushed-tail crash/reopen cases, including recovery from a copy taken after the aborted boot closed without further writes; elected replay still rejects without peer recovery advice (harper#2951).
 
 ## A numeric transaction-log selector is a lookup, never a log name (`RocksTransactionLogStore.getRange`)
 
