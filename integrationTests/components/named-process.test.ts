@@ -1,6 +1,6 @@
 /**
- * A component's constrained fork starts one named child across HTTP workers, recording its
- * lifetime identity. Covers the real application loader for harper#2968.
+ * Verifies that Harper HTTP workers share one constrained child with a persisted lifetime identity.
+ * Regression: https://github.com/HarperFast/harper/issues/2968
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert';

@@ -48,8 +48,10 @@ describe('constrained spawn process identity', function () {
 			await exited;
 		}
 		await Promise.all(workers.splice(0).map((worker) => worker.terminate()));
-		rmSync(pidFile, { force: true });
-		rmSync(`${pidFile}.locks`, { recursive: true, force: true });
+		if (pidFile) {
+			rmSync(pidFile, { force: true });
+			rmSync(`${pidFile}.locks`, { recursive: true, force: true });
+		}
 	});
 
 	function fork(options = {}) {
@@ -58,6 +60,17 @@ describe('constrained spawn process identity', function () {
 		else wrappers.push(child);
 		return child;
 	}
+	it('preserves the native error code for invalid fork arguments', () => {
+		assert.throws(
+			() => api.fork(null, [], { name, stdio: 'ignore' }),
+			(error) => error.code === 'ERR_INVALID_ARG_TYPE'
+		);
+	});
+	it('retires a prior Linux boot before probing an inaccessible PID', function () {
+		if (process.platform !== 'linux') return this.skip();
+		writeFileSync(pidFile, '2147483648\n0\nlinux:previous-boot:2147483648:1');
+		assert(fork().pid);
+	});
 
 	for (const version of [undefined, 2]) {
 		it(`replaces a legacy file without adopting or signaling its live pid (version ${version})`, async () => {

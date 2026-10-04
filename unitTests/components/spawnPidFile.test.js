@@ -1,26 +1,44 @@
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
-const { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, existsSync } = require('node:fs');
+const { Worker } = require('node:worker_threads');
+const { setTimeout: delay } = require('node:timers/promises');
+const {
+	mkdtempSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+	existsSync,
+	openSync,
+	closeSync,
+	constants,
+} = require('node:fs');
 const { join } = require('node:path');
 const {
 	parsePidFile,
 	readProcessIdentity,
 	readProcessIdentityAsync,
 	withSpawnPidLock,
+	isPreviousBoot,
+	writePidRecord,
 	NamedProcessError,
 } = require('#src/security/spawnPidFile');
 const env = require('#src/utility/environment/environmentManager');
+const { waitFor } = require('../waitFor.js');
 
 describe('named process PID records and locking', function () {
-	this.timeout(30_000);
+	this.timeout(process.platform === 'win32' ? 90_000 : 30_000);
 	let directory;
 	let pidFile;
 	beforeEach(() => {
 		directory = mkdtempSync(join(env.getHdbBasePath(), 'spawn-pid-'));
 		pidFile = join(directory, 'child.pid');
 	});
-	afterEach(() => rmSync(directory, { recursive: true, force: true }));
+	afterEach(() => {
+		if (directory) rmSync(directory, { recursive: true, force: true });
+	});
 
 	it('accepts a complete identity and a legacy record with no identity', () => {
 		assert.deepStrictEqual(parsePidFile('42\n3\nlinux:boot:123'), { pid: 42, version: 3, identity: 'linux:boot:123' });
@@ -35,6 +53,23 @@ describe('named process PID records and locking', function () {
 		const identity = readProcessIdentity(process.pid);
 		assert(identity.identity);
 		assert.deepStrictEqual(await readProcessIdentityAsync(process.pid), identity);
+	});
+	it('distinguishes the current Linux boot from a recorded older boot', () => {
+		const identity = readProcessIdentity(process.pid).identity;
+		assert.strictEqual(isPreviousBoot(identity), false);
+		assert.strictEqual(isPreviousBoot('linux:previous-boot:1:1'), process.platform === 'linux');
+	});
+	it('publishes a complete record and removes its staging file', () => {
+		const record = `${process.pid}\n3\n${readProcessIdentity(process.pid).identity}`;
+		writePidRecord(pidFile, record);
+		assert.strictEqual(readFileSync(pidFile, 'utf8'), record);
+		assert.deepStrictEqual(readdirSync(directory), ['child.pid']);
+	});
+	it('cleans up a failed publication without deleting the existing target', () => {
+		mkdirSync(pidFile);
+		assert.throws(() => writePidRecord(pidFile, 'record'));
+		assert.deepStrictEqual(readdirSync(directory), ['child.pid']);
+		assert.deepStrictEqual(readdirSync(pidFile), []);
 	});
 	it('confirms that a reaped child is absent synchronously and asynchronously', async () => {
 		const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
@@ -61,6 +96,83 @@ describe('named process PID records and locking', function () {
 			/callback failed/
 		);
 		assert.deepStrictEqual(readdirSync(`${pidFile}.locks`), []);
+	});
+	it('honors a release marker before reading its retired claim', () => {
+		const lockDir = `${pidFile}.locks`;
+		mkdirSync(lockDir);
+		writeFileSync(join(lockDir, 'retired.json'), 'unreadable claim');
+		writeFileSync(join(lockDir, 'retired.released'), '');
+		assert.strictEqual(
+			withSpawnPidLock(pidFile, () => 42),
+			42
+		);
+		assert.deepStrictEqual(readdirSync(lockDir), []);
+	});
+	it('returns the callback result when a Windows scanner prevents claim removal', function () {
+		if (process.platform !== 'win32') return this.skip();
+		let handle;
+		try {
+			assert.strictEqual(
+				withSpawnPidLock(pidFile, () => {
+					const claim = readdirSync(`${pidFile}.locks`).find((name) => name.endsWith('.json'));
+					handle = openSync(join(`${pidFile}.locks`, claim), constants.O_RDONLY | 0x10000000);
+					return 42;
+				}),
+				42
+			);
+			assert(readdirSync(`${pidFile}.locks`).some((name) => name.endsWith('.released')));
+			assert.strictEqual(
+				withSpawnPidLock(pidFile, () => 43),
+				43
+			);
+		} finally {
+			if (handle !== undefined) closeSync(handle);
+		}
+		withSpawnPidLock(pidFile, () => {});
+		assert.deepStrictEqual(readdirSync(`${pidFile}.locks`), []);
+	});
+	it('renews its wait deadline as preceding holders leave a healthy queue', async () => {
+		const lockDir = `${pidFile}.locks`;
+		mkdirSync(lockDir);
+		for (const ticket of [1, 2]) {
+			writeFileSync(
+				join(lockDir, `holder-${ticket}.json`),
+				JSON.stringify({
+					pid: process.pid,
+					identity: readProcessIdentity(process.pid).identity,
+					token: `holder-${ticket}`,
+					ticket,
+				})
+			);
+		}
+		const worker = new Worker(join(__dirname, 'fixtures/named-process/spawn-lock-worker.cjs'), {
+			workerData: { pidFile, timeoutMs: 2000, noServerStart: true },
+		});
+		const result = once(worker, 'message', {
+			signal: AbortSignal.timeout(process.platform === 'win32' ? 60_000 : 10_000),
+		});
+		result.catch(() => {});
+		try {
+			await waitFor(
+				() =>
+					readdirSync(lockDir).some(
+						(name) =>
+							name.endsWith('.json') &&
+							!name.startsWith('holder-') &&
+							JSON.parse(readFileSync(join(lockDir, name), 'utf8')).ticket === 3
+					),
+				process.platform === 'win32' ? 45_000 : 5000
+			);
+			await delay(1200);
+			rmSync(join(lockDir, 'holder-1.json'));
+			await delay(1200);
+			rmSync(join(lockDir, 'holder-2.json'));
+			const [message] = await result;
+			assert.strictEqual(message.acquired, true, message.error);
+			assert(message.elapsedMs >= 2000);
+		} finally {
+			await worker.terminate();
+		}
 	});
 	it('waits for a live owner without stealing its claim', () => {
 		withSpawnPidLock(pidFile, () => {

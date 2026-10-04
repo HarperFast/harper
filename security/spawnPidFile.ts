@@ -1,18 +1,23 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ticketPrecedes } from '../components/componentPreparationLock.ts';
+import { ServerError } from '../utility/errors/hdbError.ts';
 
-const PROBE_TIMEOUT_MS = 5_000;
-const LOCK_TIMEOUT_MS = 30_000;
+const PROBE_TIMEOUT_MS = 30_000;
+const LOCK_TIMEOUT_MS = 60_000;
 const TRANSIENT_FILE_RETRY_DELAYS_MS = [10, 40, 160];
+const TRANSIENT_FILE_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
 const lockWait = new Int32Array(new SharedArrayBuffer(4));
 let bootId: string;
 let ownerIdentity: string;
 
-export class NamedProcessError extends Error {
-	statusCode = 500;
+export class NamedProcessError extends ServerError {
+	constructor(message: string, options?: ErrorOptions) {
+		super(message);
+		this.cause = options?.cause;
+	}
 }
 
 export interface ProcessIdentity {
@@ -27,6 +32,18 @@ export function parsePidFile(content: string): { pid: number; version: number; i
 	const [pidLine, versionLine, identity] = content.split('\n').map((line) => line.trim());
 	const pid = /^[1-9]\d*$/.test(pidLine) ? Number(pidLine) : 0;
 	return { pid: validPid(pid) ? pid : 0, version: Number.parseInt(versionLine ?? '0', 10), identity };
+}
+
+function linuxBootIdentity(): string {
+	bootId ??= readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+	if (!bootId) throw new Error('Could not read Linux boot identity');
+	return bootId;
+}
+
+export function isPreviousBoot(identity: string): boolean {
+	return (
+		process.platform === 'linux' && identity.startsWith('linux:') && identity.split(':')[1] !== linuxBootIdentity()
+	);
 }
 
 function linuxProcessIdentity(pid: number): ProcessIdentity | null {
@@ -45,9 +62,7 @@ function linuxProcessIdentity(pid: number): ProcessIdentity | null {
 		if (error.code === 'ENOENT' || error.code === 'ESRCH') return confirmProcessAbsent(pid);
 		throw error;
 	}
-	bootId ??= readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
-	if (!bootId) throw new Error('Could not read Linux boot identity');
-	return { identity: `linux:${bootId}:${pid}:${startTime}` };
+	return { identity: `linux:${linuxBootIdentity()}:${pid}:${startTime}` };
 }
 
 function processQuery(pid: number) {
@@ -157,15 +172,29 @@ interface SpawnClaim {
 	ticket?: number;
 }
 
-function withFileRetry<T>(operation: () => T): T {
+export function withFileRetry<T>(operation: () => T): T {
 	for (let attempt = 0; ; attempt++) {
 		try {
 			return operation();
 		} catch (error) {
-			if (process.platform !== 'win32' || error.code !== 'EPERM' || attempt >= TRANSIENT_FILE_RETRY_DELAYS_MS.length)
+			if (
+				process.platform !== 'win32' ||
+				!TRANSIENT_FILE_CODES.has(error.code) ||
+				attempt >= TRANSIENT_FILE_RETRY_DELAYS_MS.length
+			)
 				throw error;
 		}
 		Atomics.wait(lockWait, 0, 0, TRANSIENT_FILE_RETRY_DELAYS_MS[attempt]);
+	}
+}
+
+export function writePidRecord(pidFilePath: string, record: string) {
+	const stagingPath = `${pidFilePath}.${randomUUID()}.tmp`;
+	try {
+		writeFileSync(stagingPath, record, { flag: 'wx', mode: 0o600 });
+		withFileRetry(() => renameSync(stagingPath, pidFilePath));
+	} finally {
+		unlinkIfPresent(stagingPath);
 	}
 }
 
@@ -177,6 +206,14 @@ function unlinkIfPresent(path: string) {
 	}
 }
 
+function releaseClaim(claimPath: string, markerPath: string) {
+	try {
+		unlinkIfPresent(claimPath);
+	} catch {
+		writeFileSync(markerPath, '', { flag: 'wx', mode: 0o600 });
+	}
+}
+
 export function withSpawnPidLock<T>(pidFilePath: string, callback: () => T, timeoutMs = LOCK_TIMEOUT_MS): T {
 	ownerIdentity ??= readProcessIdentity(process.pid)?.identity;
 	if (!ownerIdentity) throw new NamedProcessError('Could not identify the named process lock owner');
@@ -185,21 +222,33 @@ export function withSpawnPidLock<T>(pidFilePath: string, callback: () => T, time
 	const owner: SpawnClaim = { pid: process.pid, identity: ownerIdentity, token: randomUUID() };
 	const claimPath = join(lockDir, `${owner.token}.json`);
 	const stagingPath = join(lockDir, `${owner.token}.tmp`);
-	const deadline = performance.now() + timeoutMs;
+	const markerPath = join(lockDir, `${owner.token}.released`);
+	const verifiedOwners = new Map<string, number>();
+	let deadline = performance.now() + timeoutMs;
 	const publish = () => {
 		writeFileSync(stagingPath, JSON.stringify(owner), { flag: 'wx', mode: 0o600 });
 		withFileRetry(() => renameSync(stagingPath, claimPath));
 	};
 	const scan = (): SpawnClaim[] => {
 		const claims: SpawnClaim[] = [];
-		for (const name of readdirSync(lockDir)) {
+		const names = readdirSync(lockDir);
+		const released = new Set(names.filter((name) => name.endsWith('.released')));
+		for (const name of names) {
 			if (!name.endsWith('.json') || name === `${owner.token}.json`) continue;
 			const path = join(lockDir, name);
+			const markerName = `${name.slice(0, -5)}.released`;
+			if (released.has(markerName)) {
+				try {
+					unlinkIfPresent(path);
+					unlinkIfPresent(join(lockDir, markerName));
+				} catch {}
+				continue;
+			}
 			let claim: SpawnClaim;
 			try {
 				claim = JSON.parse(withFileRetry(() => readFileSync(path, 'utf8')));
 			} catch (error) {
-				if (error.code === 'ENOENT') continue;
+				if (error.code === 'ENOENT' || existsSync(join(lockDir, markerName))) continue;
 				throw error;
 			}
 			if (
@@ -210,7 +259,15 @@ export function withSpawnPidLock<T>(pidFilePath: string, callback: () => T, time
 			) {
 				throw new NamedProcessError(`Invalid named process lock claim ${path}`);
 			}
-			const identity = claim.pid === process.pid ? ownerIdentity : readProcessIdentity(claim.pid)?.identity;
+			let identity = ownerIdentity;
+			if (claim.pid !== process.pid) {
+				const verifiedAt = verifiedOwners.get(claim.identity);
+				if (verifiedAt !== undefined && performance.now() - verifiedAt < 1000) identity = claim.identity;
+				else {
+					identity = isPreviousBoot(claim.identity) ? undefined : readProcessIdentity(claim.pid)?.identity;
+					if (identity === claim.identity) verifiedOwners.set(claim.identity, performance.now());
+				}
+			}
 			if (identity !== claim.identity) unlinkIfPresent(path);
 			else claims.push(claim);
 		}
@@ -220,14 +277,28 @@ export function withSpawnPidLock<T>(pidFilePath: string, callback: () => T, time
 		publish();
 		owner.ticket = scan().reduce((maximum, claim) => Math.max(maximum, claim.ticket ?? 0), 0) + 1;
 		publish();
-		while (scan().some((claim) => claim.ticket === undefined || ticketPrecedes(claim, owner))) {
+		let previousQueue: string;
+		while (true) {
+			const preceding = scan().filter((claim) => claim.ticket === undefined || ticketPrecedes(claim, owner));
+			if (!preceding.length) break;
+			const queue = preceding
+				.map((claim) => `${claim.token}:${claim.ticket ?? 'choosing'}`)
+				.sort()
+				.join(',');
+			if (queue !== previousQueue) {
+				deadline = performance.now() + timeoutMs;
+				previousQueue = queue;
+			}
 			if (performance.now() >= deadline)
 				throw new NamedProcessError(`Timed out acquiring named process lock ${pidFilePath}`);
-			Atomics.wait(lockWait, 0, 0, 5);
+			Atomics.wait(lockWait, 0, 0, 50);
 		}
 		return callback();
 	} finally {
-		unlinkIfPresent(stagingPath);
-		unlinkIfPresent(claimPath);
+		try {
+			unlinkIfPresent(stagingPath);
+		} finally {
+			releaseClaim(claimPath, markerPath);
+		}
 	}
 }
