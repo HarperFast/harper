@@ -145,7 +145,6 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 				path.join(sharedPath, 'replayadvice', 'transaction_logs', 'local', 'txn.state')
 			);
 			const preservedPath = path.join(crashDir, 'preserved');
-			if (unflushedTail) cpSync(sharedPath, preservedPath, { recursive: true });
 			childArgs[0] = path.join(crashDir, 'replayer-root');
 			const replayed = await runCrashChild([...childArgs, 'replay-advice']);
 			assert.strictEqual(replayed.code, 0, replayed.stderr);
@@ -159,8 +158,11 @@ describeUnlessLmdb('replay commits once per native transaction (harper#2161)', (
 			assert.match(replayed.stderr, /Re-cloning discards local-only writes/);
 			assert.match(replayed.stderr, /verify that the recovery source contains all needed data/);
 			assert.match(replayed.stderr, /replication\.replayTimeout/);
+			assert.match(replayed.stderr, /Later writes and flushes can advance txn\.state past unreplayed entries/);
+			assert.match(replayed.stderr, /only after verifying its replay position still covers the needed entries/);
 			assert.doesNotMatch(replayed.stderr, /Re-clone this node|pathologically deep|no recovery needed/);
 			if (unflushedTail) {
+				cpSync(sharedPath, preservedPath, { recursive: true });
 				childArgs[0] = path.join(crashDir, 'recovery-root');
 				childArgs[1] = preservedPath;
 				const recovered = await runCrashChild([...childArgs, 'replay-advice-recover']);

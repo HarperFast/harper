@@ -19,7 +19,7 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 
 let warnedReplayHappening = false;
 const REPLAY_RECOVERY_GUIDANCE =
-	'Unreplayed entries may already be durable in RocksDB if txn.state is stale; a replay limit does not establish data loss. Preserve a copy of this database and its transaction logs before restarting or accepting further writes.';
+	'Unreplayed entries may already be durable in RocksDB if txn.state is stale; a replay limit does not establish data loss. Preserve a copy of this database and its transaction logs before restarting or accepting further writes. Later writes and flushes can advance txn.state past unreplayed entries; do not assume a subsequent restart will recover the remainder.';
 const REPLAY_RECLONE_WARNING =
 	'Re-cloning discards local-only writes and can lose data if this node is ahead of its peers; verify that the recovery source contains all needed data before replacing this database.';
 
@@ -207,7 +207,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					// so a slow-but-progressing replay (deep out-of-order audit chain walk per entry) can
 					// peg the boot thread indefinitely without tripping it. Checked only between native commits.
 					if (shouldAbortSlowReplay(performance.now() - replayStartTime, replayTimeoutMs)) {
-						const slowMessage = `Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). ${REPLAY_RECOVERY_GUIDANCE} Investigate replay cost and consider increasing replication.replayTimeout for a recovery attempt against the preserved copy.${electedReplayer ? '' : ` ${REPLAY_RECLONE_WARNING}`}`;
+						const slowMessage = `Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). ${REPLAY_RECOVERY_GUIDANCE} Investigate replay cost and consider increasing replication.replayTimeout for a recovery attempt against the preserved copy only after verifying its replay position still covers the needed entries.${electedReplayer ? '' : ` ${REPLAY_RECLONE_WARNING}`}`;
 						if (electedReplayer) {
 							strictFailure = new Error(slowMessage);
 							break;
