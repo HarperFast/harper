@@ -74,23 +74,24 @@ export function dropSessionSubscriptions(sessionId: string): void {
 /**
  * Re-establish subscriptions on SSE reconnect from the durable URI list. Each is
  * best-effort: a URI that's no longer subscribable (resource removed) is skipped.
- * Returns the URIs that were successfully restored (the caller prunes the rest
- * from the durable record).
+ * Returns the URIs that should remain durable: successful subscriptions and
+ * retryable failures are retained, while confirmed non-subscribable URIs are omitted.
  */
 export async function restoreResourceSubscriptions(
 	sessionId: string,
 	uris: ReadonlyArray<string>,
 	user: AuthedUser
 ): Promise<string[]> {
-	const restored: string[] = [];
+	const retained: string[] = [];
 	for (const uri of uris) {
 		try {
-			if (await addResourceSubscription(sessionId, uri, user)) restored.push(uri);
+			if (await addResourceSubscription(sessionId, uri, user)) retained.push(uri);
 		} catch (err) {
 			harperLogger.trace(`MCP subscription restore ${uri}: ${(err as Error).message}`);
+			retained.push(uri);
 		}
 	}
-	return restored;
+	return retained;
 }
 
 /** Test seam — count of live subscriptions for a session. */

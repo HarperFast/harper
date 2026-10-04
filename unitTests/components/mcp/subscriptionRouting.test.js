@@ -1,0 +1,407 @@
+const assert = require('node:assert');
+const {
+	claimSubscriptionOwner,
+	routeResourceSubscription,
+	withSessionSubscriptionLock,
+	_setSubscriptionItcForTest,
+	_setSubscriptionThreadIdForTest,
+	_setSubscriptionTimeoutForTest,
+	_resetSubscriptionRoutingForTest,
+	_pendingSubscriptionRouteCount,
+} = require('#src/components/mcp/subscriptionRouting');
+const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
+const { createSession, loadSession, patchSession, _setSessionTableForTest } = require('#src/components/mcp/session');
+const { registerSession, _resetSessionRegistryForTest } = require('#src/components/mcp/sessionRegistry');
+const { _setSubscribeImplForTest } = require('#src/components/mcp/resources');
+const { _resetSubscriptionsForTest } = require('#src/components/mcp/subscriptions');
+
+const USER = { username: 'alice', role: { permission: { super_user: true } } };
+
+function fakeTable() {
+	const store = new Map();
+	const locks = new Set();
+	const waiters = new Map();
+	return {
+		primaryStore: {
+			tryLock(key, callback) {
+				if (!locks.has(key)) {
+					locks.add(key);
+					return true;
+				}
+				const queued = waiters.get(key) ?? [];
+				queued.push(callback);
+				waiters.set(key, queued);
+				return false;
+			},
+			unlock(key) {
+				locks.delete(key);
+				const callback = waiters.get(key)?.shift();
+				if (callback) setImmediate(callback);
+			},
+		},
+		async put(record) {
+			store.set(record.id, { ...record });
+		},
+		async patch(record) {
+			store.set(record.id, { ...store.get(record.id), ...record });
+		},
+		async get(id) {
+			const record = store.get(id);
+			return record && { ...record };
+		},
+		async delete(id) {
+			store.delete(id);
+		},
+	};
+}
+
+function fakeBridge(send) {
+	const listeners = new Map();
+	return {
+		listeners,
+		onMessageByType(type, listener) {
+			listeners.set(type, listener);
+		},
+		sendToThread(target, event) {
+			return send?.(target, event, listeners) ?? true;
+		},
+	};
+}
+
+describe('mcp/subscriptionRouting', () => {
+	beforeEach(() => {
+		_setSessionTableForTest(fakeTable());
+		_setSubscriptionThreadIdForTest(1);
+		_setSubscriptionItcForTest(fakeBridge());
+	});
+
+	afterEach(() => {
+		_resetSubscriptionsForTest();
+		_resetSessionRegistryForTest();
+		_resetSubscriptionRoutingForTest();
+		_setSubscriptionItcForTest(undefined);
+		_setSessionTableForTest(undefined);
+		_setSubscribeImplForTest(undefined);
+	});
+
+	async function remoteSession() {
+		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+		await patchSession(session.id, { streamOwner: { threadId: 7, token: 'owner-token' } });
+		return loadSession(session.id);
+	}
+
+	it('accepts a correlated response only from the expected owner thread', async () => {
+		const bridge = fakeBridge((_target, event, listeners) => {
+			assert.equal(event.message.user.password, undefined, 'credentials must not cross the worker boundary');
+			assert.equal(event.message.user.customClaim, undefined, 'custom principal state must remain local');
+			assert.equal(event.message.user.username, '');
+			assert.equal(event.message.user.authExpiresAt, 12345);
+			assert.equal(event.message.user.role.role, '');
+			const requestId = event.message.requestId;
+			setImmediate(() => {
+				listeners.get(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_RESPONSE)({
+					message: { requestId, originator: 8, result: 'not-subscribable' },
+				});
+				listeners.get(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_RESPONSE)({
+					message: { requestId, originator: 7, result: 'success' },
+				});
+			});
+			return true;
+		});
+		_setSubscriptionItcForTest(bridge);
+		const result = await routeResourceSubscription({
+			session: await remoteSession(),
+			operation: 'subscribe',
+			uri: 'https://app.test/Product/1',
+			user: {
+				...USER,
+				username: '',
+				authExpiresAt: 12345,
+				role: { ...USER.role, role: '' },
+				password: 'do-not-forward',
+				customClaim: 'local-only',
+			},
+		});
+		assert.equal(result, 'success');
+		assert.equal(_pendingSubscriptionRouteCount(), 0);
+	});
+
+	it('fails quickly when the persisted owner thread is unreachable', async () => {
+		_setSubscriptionItcForTest(fakeBridge(() => false));
+		const result = await routeResourceSubscription({
+			session: await remoteSession(),
+			operation: 'subscribe',
+			uri: 'https://app.test/Product/1',
+			user: USER,
+		});
+		assert.equal(result, 'no-live-stream');
+		assert.equal(_pendingSubscriptionRouteCount(), 0);
+	});
+
+	it('retries listener wiring after the thread bridge becomes available', async () => {
+		const bridge = fakeBridge();
+		bridge.available = false;
+		_setSubscriptionItcForTest(bridge);
+		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+		await patchSession(session.id, { streamOwner: { threadId: 7, token: 'stale-owner' } });
+		assert.equal(await claimSubscriptionOwner(session.id, 'first-stream'), false);
+		assert.equal((await loadSession(session.id)).streamOwner, undefined);
+		assert.equal(bridge.listeners.size, 0);
+		bridge.available = true;
+		assert.equal(await claimSubscriptionOwner(session.id, 'second-stream'), true);
+		assert.equal(bridge.listeners.has(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_COMMAND), true);
+		assert.equal(bridge.listeners.has(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_RESPONSE), true);
+	});
+
+	it('routes locally without publishing an owner when the thread bridge is unavailable', async () => {
+		const bridge = fakeBridge();
+		bridge.available = false;
+		_setSubscriptionItcForTest(bridge);
+		_setSubscribeImplForTest(async () => ({
+			end() {},
+			[Symbol.asyncIterator]() {
+				return { next: () => new Promise(() => {}) };
+			},
+		}));
+		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+		const record = registerSession(session.id, 'application', USER);
+		assert.equal(await claimSubscriptionOwner(session.id, record.streamToken), false);
+		assert.equal(
+			await routeResourceSubscription({
+				session: await loadSession(session.id),
+				operation: 'subscribe',
+				uri: 'https://app.test/Product/1',
+				user: USER,
+			}),
+			'success'
+		);
+		assert.deepEqual((await loadSession(session.id)).subscriptions, ['https://app.test/Product/1']);
+	});
+
+	it('does not guess a local owner when worker routing is wired', async () => {
+		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+		registerSession(session.id, 'application', USER);
+		assert.equal(
+			await routeResourceSubscription({
+				session: await loadSession(session.id),
+				operation: 'subscribe',
+				uri: 'https://app.test/Product/1',
+				user: USER,
+			}),
+			'no-live-stream'
+		);
+	});
+
+	it('reports a send exception as an internal error rather than a missing stream', async () => {
+		_setSubscriptionItcForTest(
+			fakeBridge(() => {
+				throw new Error('could not clone command');
+			})
+		);
+		const result = await routeResourceSubscription({
+			session: await remoteSession(),
+			operation: 'subscribe',
+			uri: 'https://app.test/Product/1',
+			user: USER,
+		});
+		assert.equal(result, 'internal-error');
+		assert.equal(_pendingSubscriptionRouteCount(), 0);
+	});
+
+	it('bounds a sent command when the owner never responds', async () => {
+		_setSubscriptionTimeoutForTest(5);
+		_setSubscriptionItcForTest(fakeBridge(() => true));
+		const result = await routeResourceSubscription({
+			session: await remoteSession(),
+			operation: 'subscribe',
+			uri: 'https://app.test/Product/1',
+			user: USER,
+		});
+		assert.equal(result, 'timeout');
+		assert.equal(_pendingSubscriptionRouteCount(), 0);
+	});
+
+	it('rejects a command whose stream token no longer owns the local registry', async () => {
+		let response;
+		const bridge = fakeBridge((_target, event) => {
+			if (event.type === ITC_EVENT_TYPES.MCP_SUBSCRIPTION_RESPONSE) response = event.message;
+			return true;
+		});
+		_setSubscriptionItcForTest(bridge);
+		_setSubscriptionThreadIdForTest(7);
+		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+		const registered = registerSession(session.id, 'application', USER);
+		await claimSubscriptionOwner(session.id, registered.streamToken);
+		await bridge.listeners.get(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_COMMAND)({
+			message: {
+				requestId: 'r1',
+				originator: 1,
+				sessionId: session.id,
+				streamToken: 'stale-token',
+				operation: 'subscribe',
+				uri: 'https://app.test/Product/1',
+				user: USER,
+			},
+		});
+		await new Promise(setImmediate);
+		assert.equal(response.result, 'no-live-stream');
+	});
+
+	it('ignores malformed commands without attempting a response', async () => {
+		let sent = 0;
+		const bridge = fakeBridge(() => {
+			sent++;
+			return true;
+		});
+		_setSubscriptionItcForTest(bridge);
+		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+		await claimSubscriptionOwner(session.id, 'owner-token');
+		const listener = bridge.listeners.get(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_COMMAND);
+		assert.doesNotThrow(() => listener({ message: undefined }));
+		assert.doesNotThrow(() => listener({ message: { requestId: 'r1', originator: 1 } }));
+		await new Promise(setImmediate);
+		assert.equal(sent, 0);
+	});
+
+	it('executes subscribe and unsubscribe on the owner and updates the durable URI list', async () => {
+		let response;
+		const bridge = fakeBridge((_target, event) => {
+			if (event.type === ITC_EVENT_TYPES.MCP_SUBSCRIPTION_RESPONSE) response = event.message;
+			return true;
+		});
+		_setSubscriptionItcForTest(bridge);
+		_setSubscriptionThreadIdForTest(7);
+		_setSubscribeImplForTest(async (_path, user) => {
+			assert.deepEqual(user, USER);
+			return {
+				end() {},
+				[Symbol.asyncIterator]() {
+					return { next: () => new Promise(() => {}) };
+				},
+			};
+		});
+		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+		const registered = registerSession(session.id, 'application', USER);
+		await claimSubscriptionOwner(session.id, registered.streamToken);
+		const uri = 'https://app.test/Product/1';
+		bridge.listeners.get(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_COMMAND)({
+			message: {
+				requestId: 'r2',
+				originator: 1,
+				sessionId: session.id,
+				streamToken: registered.streamToken,
+				operation: 'subscribe',
+				uri,
+				user: USER,
+			},
+		});
+		for (let i = 0; i < 20 && !response; i++) await new Promise(setImmediate);
+		assert.equal(response.result, 'success');
+		assert.deepEqual((await loadSession(session.id)).subscriptions, [uri]);
+
+		response = undefined;
+		bridge.listeners.get(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_COMMAND)({
+			message: {
+				requestId: 'r3',
+				originator: 1,
+				sessionId: session.id,
+				streamToken: registered.streamToken,
+				operation: 'unsubscribe',
+				uri,
+			},
+		});
+		for (let i = 0; i < 20 && !response; i++) await new Promise(setImmediate);
+		assert.equal(response.result, 'success');
+		assert.deepEqual((await loadSession(session.id)).subscriptions, []);
+	});
+
+	it('serializes owner commands behind reconnect restoration for the same session', async () => {
+		_setSubscriptionThreadIdForTest(7);
+		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+		const registered = registerSession(session.id, 'application', USER);
+		await claimSubscriptionOwner(session.id, registered.streamToken);
+		let releaseRestore;
+		const restoreBlocked = new Promise((resolve) => (releaseRestore = resolve));
+		const restoring = withSessionSubscriptionLock(session.id, () => restoreBlocked);
+		let subscribeStarted = false;
+		_setSubscribeImplForTest(async () => {
+			subscribeStarted = true;
+			return {
+				end() {},
+				[Symbol.asyncIterator]() {
+					return { next: () => new Promise(() => {}) };
+				},
+			};
+		});
+		const subscribing = routeResourceSubscription({
+			session: await loadSession(session.id),
+			operation: 'subscribe',
+			uri: 'https://app.test/Product/2',
+			user: USER,
+		});
+		await new Promise(setImmediate);
+		assert.equal(subscribeStarted, false);
+		releaseRestore();
+		await restoring;
+		assert.equal(await subscribing, 'success');
+		assert.equal(subscribeStarted, true);
+	});
+
+	it('rechecks stream ownership after waiting for an earlier session operation', async () => {
+		_setSubscriptionThreadIdForTest(7);
+		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+		const registered = registerSession(session.id, 'application', USER);
+		await claimSubscriptionOwner(session.id, registered.streamToken);
+		let releaseEarlierOperation;
+		const earlierOperation = withSessionSubscriptionLock(
+			session.id,
+			() => new Promise((resolve) => (releaseEarlierOperation = resolve))
+		);
+		let subscribeStarted = false;
+		_setSubscribeImplForTest(async () => {
+			subscribeStarted = true;
+		});
+		const subscribing = routeResourceSubscription({
+			session: await loadSession(session.id),
+			operation: 'subscribe',
+			uri: 'https://app.test/Product/3',
+			user: USER,
+		});
+		await new Promise(setImmediate);
+		registerSession(session.id, 'application', USER);
+		releaseEarlierOperation();
+		await earlierOperation;
+
+		assert.equal(await subscribing, 'no-live-stream');
+		assert.equal(subscribeStarted, false);
+	});
+
+	it('normalizes local owner failures to an internal-error result', async () => {
+		_setSubscriptionThreadIdForTest(7);
+		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+		const registered = registerSession(session.id, 'application', USER);
+		await claimSubscriptionOwner(session.id, registered.streamToken);
+		_setSubscribeImplForTest(async () => ({
+			end() {},
+			[Symbol.asyncIterator]() {
+				return { next: () => new Promise(() => {}) };
+			},
+		}));
+		const table = fakeTable();
+		await table.put(await loadSession(session.id));
+		table.patch = async () => {
+			throw new Error('write failed');
+		};
+		_setSessionTableForTest(table);
+
+		assert.equal(
+			await routeResourceSubscription({
+				session: await loadSession(session.id),
+				operation: 'subscribe',
+				uri: 'https://app.test/Product/4',
+				user: USER,
+			}),
+			'internal-error'
+		);
+	});
+});
