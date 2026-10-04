@@ -1,0 +1,20 @@
+# One database, because a RocksDB transaction log is per-database: all three tables share the one
+# log the suite samples. They are separate tables so the seed that arms the purge, the post-purge
+# write volume, and the rows read back as the survival oracle can never be confused for each other.
+type PurgeVictim @table(audit: true) @export {
+	id: ID @primaryKey
+	seq: Int
+	marker: String
+}
+
+type Healer @table(audit: true) @export {
+	id: ID @primaryKey
+	seq: Int
+	marker: String
+}
+
+type QuietTarget @table(audit: true) @export {
+	id: ID @primaryKey
+	seq: Int
+	marker: String
+}
