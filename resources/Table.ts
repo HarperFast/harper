@@ -83,6 +83,8 @@ import {
 	dropColumnFamily,
 	markDropInProgress,
 	recordRetiredGeneration,
+	promoteTombstoneToDropMarker,
+	tableLifecycleTime,
 	sweepDroppedTableBlobs,
 	storeNameFor,
 	storeNamesFor,
@@ -730,6 +732,8 @@ interface TableResourceClass {
 	name: any;
 	primaryStore: any;
 	storageGeneration: any;
+	/** Undefined for a table that predates the stamps. */
+	createdTime: number | undefined;
 	auditStore: any;
 	primaryKey: any;
 	tableName: any;
@@ -868,7 +872,8 @@ interface TableResourceClass {
 	 * branch owns a schema identity of its own.
 	 */
 	assertSchemaMutable(operation: string): void;
-	dropTable(): Promise<void>;
+	/** `localOnly`: a drop the caller asked not to replicate leaves no drop marker for peers. */
+	dropTable(options?: { droppedTime?: number; localOnly?: boolean }): Promise<void>;
 	/**
 	 * Record the relocation of an entry (when a record is moved to a different node), return true if it is now located locally
 	 */
@@ -1380,6 +1385,7 @@ export function makeTable(options): TableResourceClass {
 		if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
 	}
 	const tableGeneration = options.storageGeneration ?? (primaryKeyAttribute as any)?.generation;
+	const createdTime: number | undefined = options.createdTime ?? (primaryKeyAttribute as any)?.createdTime;
 	let deleteCallbackHandle: { remove: () => void };
 	let prefetchIds = [];
 	let prefetchCallbacks = [];
@@ -1667,6 +1673,7 @@ export function makeTable(options): TableResourceClass {
 		static name = tableName; // for display/debugging purposes
 		static primaryStore = primaryStore;
 		static storageGeneration = tableGeneration;
+		static createdTime = createdTime;
 		static auditStore = auditStore;
 		static primaryKey = primaryKey;
 		static tableName = tableName;
@@ -2816,7 +2823,7 @@ export function makeTable(options): TableResourceClass {
 			throw error;
 		}
 
-		static async dropTable() {
+		static async dropTable(options?: { droppedTime?: number; localOnly?: boolean }) {
 			TableResource.assertSchemaMutable('drop a table');
 			const rootStore = primaryStore.rootStore;
 			if (
@@ -2925,8 +2932,26 @@ export function makeTable(options): TableResourceClass {
 								409
 							);
 					}
-					if (primaryMeta.dropping) return true;
+					if (primaryMeta.dropping) {
+						// A joining drop that replicates stamps a tombstone a local-only drop left bare, or raises it.
+						const joinedTime = options?.localOnly
+							? undefined
+							: Number.isFinite(options?.droppedTime)
+								? options.droppedTime
+								: primaryMeta.droppedTime === undefined
+									? tableLifecycleTime(createdTime)
+									: undefined;
+						if (joinedTime !== undefined && !(primaryMeta.droppedTime >= joinedTime)) {
+							primaryMeta.droppedTime = joinedTime;
+							tombstoneWrite = (dbisDb as any).put(primaryCatalogKey, primaryMeta);
+						}
+						return true;
+					}
 					primaryMeta.dropping = true;
+					if (!options?.localOnly)
+						primaryMeta.droppedTime = Number.isFinite(options?.droppedTime)
+							? options.droppedTime
+							: tableLifecycleTime(createdTime);
 					// Stamps this drop's identity so the interrupted-drop retry budget in
 					// databases.ts can be scoped to THIS drop rather than the table name: a
 					// worker that exhausts the budget for a table can observe the catalog
@@ -3026,6 +3051,14 @@ export function makeTable(options): TableResourceClass {
 					for (const attribute of attributes) {
 						dbisDb.remove(TableResource.tableName + '/' + attribute.name);
 					}
+					promoteTombstoneToDropMarker(
+						rootStore,
+						dbisDb,
+						databaseName,
+						TableResource.tableName,
+						primaryCatalogKey,
+						currentPrimary
+					);
 					dbisDb.remove(primaryCatalogKey);
 					return true;
 				};
@@ -3149,6 +3182,7 @@ export function makeTable(options): TableResourceClass {
 						for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
 							if (key !== primaryCatalogKey) dbisDb.remove(key);
 						}
+						promoteTombstoneToDropMarker(rootStore, dbisDb, databaseName, tableName, primaryCatalogKey, currentPrimary);
 						dbisDb.remove(primaryCatalogKey);
 						return true;
 					});

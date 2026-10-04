@@ -14,7 +14,13 @@ import { handleHDBError, ClientError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 
 import { SchemaEventMsg } from '../server/threads/itc.js';
-import { databaseDropRecoveryPending, getDatabases, dropTableMeta, isBranchIdentity } from '../resources/databases.ts';
+import {
+	databaseDropRecoveryPending,
+	getDatabases,
+	dropTableMeta,
+	isBranchIdentity,
+	recordTableDrop,
+} from '../resources/databases.ts';
 import { transformReq } from '../utility/common_utils.ts';
 import { server } from '../server/Server.ts';
 import { cleanupOrphans } from '../resources/blob.ts';
@@ -220,6 +226,11 @@ export async function dropTable(dropTableObject: any) {
 		dropTableObject.table
 	);
 	if (invalidSchemaTableMsg) {
+		// A peer's forwarded drop of a table already gone here still carries a drop time every node must hold.
+		if (dropTableObject.replicatedFrom && Number.isFinite(dropTableObject.droppedTime)) {
+			recordTableDrop(dropTableObject.schema, dropTableObject.table, dropTableObject.droppedTime);
+			return { message: `table '${dropTableObject.schema}.${dropTableObject.table}' was already dropped` };
+		}
 		throw handleHDBError(
 			new Error(),
 			invalidSchemaTableMsg,
