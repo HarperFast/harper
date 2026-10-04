@@ -25,14 +25,14 @@ Framing-Verdict: chosen-approach-sound
 or a recorded disagreement:
 
 ```text
-## For the human reviewer
+## ⚖️ Alternatives
 
 The planning concern and the author's evidence-backed resolution.
 
 Framing-Verdict: better-alternative-exists
 ```
 
-`option-set-too-narrow` is the other accepted non-clearing value and has the same reviewer-section requirement. A non-clearing field must be accompanied by an explanation in that section; an empty section does not clear the check, while the field itself may be materialized there or with the footer fields. The field may carry the planning review's 12-hex-character nonce or `(round roll-up)` suffix and may be wrapped in `<sub>`, but arbitrary trailing prose is rejected. Fields inside fenced/indented code, block quotes, inline code, or HTML comments do not count. Renames match both the old and new path.
+`option-set-too-narrow` is the other accepted non-clearing value and has the same explanation requirement. A non-clearing field must be accompanied by an explanation in a non-empty `## ⚖️ Alternatives` section, in any `> ❓ **Your call:** …` line, or in the legacy `## For the human reviewer` section; an empty section does not clear the check, while the field itself may be materialized there or with the footer fields. The field may carry the planning review's 12-hex-character nonce or `(round roll-up)` suffix and may be wrapped in `<sub>`, but arbitrary trailing prose is rejected. Fields inside fenced/indented code, block quotes, inline code, or HTML comments do not count. Renames match both the old and new path.
 
 Framing policy is independent of review coverage: it applies even to a one-line governed edit, and does not change `Review-Coverage` or `Review-Attention` evaluation. Drafts, bots, and external contributors are reported but remain green for framing. A complete diff with no configured path also remains green without a verdict. Missing, stale, or incomplete file evidence fails closed only in `framing_mode: enforce`; rerun a failed collection job to distinguish a transient API failure from a persistent configuration problem.
 
@@ -43,12 +43,26 @@ The reusable action defaults `framing_mode` to `report` and `framing_paths` to e
 For a non-bot Harper organization member changing more than two lines, the description must contain:
 
 - summary prose before the sections;
-- exactly one `## Verification` section with executed evidence or a not-observable rationale; and
+- exactly one `## Verification` (or `## ✅ Verification`) section with executed evidence or a not-observable rationale; and
 - at least one line-anchored link into the current PR diff. Every PR-diff link in the body must point to this repository and PR and resolve inside a current diff hunk.
 
-If any AI field is present, the body must also have one `## For the human reviewer` section before Verification, one valid `Complexity: easy|medium|complicated` field, one `<sub>Review-Coverage: … @ <sha></sub>` footer pinned to the current head, and exactly one `<sub>Review-Attention: <skim|read|study|deep> ~<minutes>m[ (<detail>)][ @ <sha>]</sub>` footer, last in the body after `Complexity:` and `Review-Coverage:`. `<detail>` is free text without `)`, such as `critical: transaction_log.cpp +1; decisions: a, b`. The footer is the helper's estimate of human review time, weighted by the risk surfaces the repository declares in `.github/review-surfaces` plus built-in defaults; the tiers are skim (under 15m), read (15m up to 45m), study (45m up to 120m) and deep (120m or more). Its pin names the commit the estimate describes and may lag the head after an amend the helper did not refresh. The legacy `<sub>Human-Review-Need: 0-4 [(decisions: …)] @ <sha></sub>` footer is still accepted during the transition because open PRs carry it until refreshed; a body with both, or two of either, is a format problem.
+If any AI field is present, the body must also have the AI description shape below before Verification, one valid `Complexity: easy|medium|complicated` field, one `<sub>Review-Coverage: … @ <sha></sub>` footer pinned to the current head, and exactly one `<sub>Review-Attention: <skim|read|study|deep> ~<minutes>m[ (<detail>)][ @ <sha>]</sub>` footer, last in the body after `Complexity:` and `Review-Coverage:`. `<detail>` is free text without `)`, such as `critical: transaction_log.cpp +1; decisions: a, b`. The footer is the helper's estimate of human review time, weighted by the risk surfaces the repository declares in `.github/review-surfaces` plus built-in defaults; the tiers are skim (under 15m), read (15m up to 45m), study (45m up to 120m) and deep (120m or more). Its pin names the commit the estimate describes and may lag the head after an amend the helper did not refresh. The legacy `<sub>Human-Review-Need: 0-4 [(decisions: …)] @ <sha></sub>` footer is still accepted during the transition because open PRs carry it until refreshed; a body with both, or two of either, is a format problem.
 
 `.github/review-surfaces` assigns paths a review tier, one `<tier> <glob>` rule per line, with `critical`, `sensitive`, `hot` and `ordinary` as the tiers and the last matching rule winning; a glob with no `/` matches at any depth. The pre-push review (skills-internal `cross-model-review`) reads it from the base branch, so a PR cannot lower the tier of its own files, and the attention estimate and the `Complexity: easy` refusal both draw on it.
+
+### AI description shape
+
+Sections use `##` headings, in this order, and stay brief:
+
+- `## ⊙ Problem` — required, first section: the gap being addressed.
+- `## 💡 Solution` — required.
+- `## ⚖️ Alternatives` — optional; include it only when alternatives were actually weighed.
+- `## 🔧 Changes` — optional.
+- `## ✅ Verification` — required: executed evidence (a plain `## Verification` is also accepted; exactly one of either form).
+
+Judgment calls for the human are inline one-line blockquotes anywhere in the narrative, `> ❓ **Your call:** <question>`. At least one is required, and at least one must sit inside `## ⊙ Problem` (the requirement question). Optional `> ⚠️ **Look hardest:** …` lines flag where to focus; they are not checked. Lines inside code fences or HTML comments do not count.
+
+The previous shape — exactly one `## For the human reviewer` section with content, before Verification — is still accepted during the transition. A body passes if either shape is valid; when neither is, the problems name the new shape.
 
 Drafts are reported but do not fail enforcement. Repair a link by copying a line link from the PR's Files changed page.
 

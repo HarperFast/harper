@@ -67,7 +67,7 @@ test('framing accepts a non-clearing verdict only with the reviewer section', ()
 	for (const verdict of ['better-alternative-exists', 'option-set-too-narrow']) {
 		const missing = evaluateFramingVerdict(human({ body: `Framing-Verdict: ${verdict}` }), framingOptions());
 		assert.strictEqual(missing.pass, false, `${verdict} must not pass alone`);
-		assert.match(missing.detail, /without ## For the human reviewer/);
+		assert.match(missing.detail, /without an explanation in ## For the human reviewer/);
 		const recorded = evaluateFramingVerdict(
 			human({ body: `## For the human reviewer\n\nDecision recorded.\n\nFraming-Verdict: ${verdict}` }),
 			framingOptions()
@@ -89,6 +89,29 @@ test('framing accepts a non-clearing verdict only with the reviewer section', ()
 			framingOptions()
 		);
 		assert.strictEqual(footer.pass, true, `${verdict} may be materialized as a footer`);
+	}
+});
+
+test('framing accepts a non-clearing verdict explained in Alternatives or a Your call line', () => {
+	for (const verdict of ['better-alternative-exists', 'option-set-too-narrow']) {
+		for (const body of [
+			`## ⚖️ Alternatives\n\nWeighed a lock-free queue; kept the mutex.\n\nFraming-Verdict: ${verdict}`,
+			`## ⚖ Alternatives\n\nWeighed a lock-free queue; kept the mutex.\n\n<sub>Framing-Verdict: ${verdict}</sub>`,
+			`## ⊙ Problem\n\n> ❓ **Your call:** Is a queue acceptable here?\n\nFraming-Verdict: ${verdict}`,
+		]) {
+			const result = evaluateFramingVerdict(human({ body }), framingOptions());
+			assert.strictEqual(result.pass, true, body);
+			assert.strictEqual(result.compliant, true, body);
+		}
+		for (const body of [
+			`## ⚖️ Alternatives\n\nFraming-Verdict: ${verdict}`,
+			`## ⚖️ Alternatives\n\n## ✅ Verification\n\nExecuted evidence.\n\nFraming-Verdict: ${verdict}`,
+			`> ❓ **Your call:**\n\nFraming-Verdict: ${verdict}`,
+			`\`\`\`text\n> ❓ **Your call:** hidden in a fence\n\`\`\`\n\nFraming-Verdict: ${verdict}`,
+			`~~~text\n> ❓ **Your call:** hidden in a fence\n~~~\n\nFraming-Verdict: ${verdict}`,
+			`<!--\n> ❓ **Your call:** hidden in a comment\n-->\n\nFraming-Verdict: ${verdict}`,
+		])
+			assert.strictEqual(evaluateFramingVerdict(human({ body }), framingOptions()).pass, false, body);
 	}
 });
 

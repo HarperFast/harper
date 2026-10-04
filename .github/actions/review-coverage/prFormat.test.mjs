@@ -654,3 +654,108 @@ test('Harper framing policy covers every production storage-binding importer', (
 			`${importer} imports a storage binding — add it to framing_paths in .github/workflows/review-coverage.yml`
 		);
 });
+
+const newBody = ({ problemCall = true, verification = '## ✅ Verification', head = HEAD.slice(0, 12) } = {}) =>
+	[
+		`Audit retention now runs continuously in [the cleanup loop](${LINK}).`,
+		'',
+		'## ⊙ Problem',
+		'',
+		'Expired audit rows are never reclaimed.',
+		'',
+		...(problemCall ? ['> ❓ **Your call:** Should retention be per-table or global?', ''] : []),
+		'## 💡 Solution',
+		'',
+		'A continuous cleanup loop.',
+		'',
+		verification,
+		'',
+		'Focused retention tests passed.',
+		'',
+		'Complexity: complicated',
+		'',
+		`<sub>Review-Coverage: authored=codex; ran=claude; rounds=1 @ ${head}</sub>`,
+		'',
+		`<sub>Review-Attention: read ~30m @ ${head}</sub>`,
+	].join('\n');
+const evaluateNew = (text) =>
+	evaluatePrFormat(pr({ body: text }), { mode: 'enforce', repo: REPO, number: NUMBER, prFiles: PR_FILES });
+
+test('the new Problem/Solution/Verification shape passes with either Verification heading', () => {
+	for (const verification of ['## ✅ Verification', '## Verification']) {
+		const result = evaluateNew(newBody({ verification }));
+		assert.deepStrictEqual(result.problems, [], verification);
+		assert.strictEqual(result.compliant, true);
+	}
+});
+
+test('the new shape accepts optional Alternatives, Changes and Look-hardest lines', () => {
+	const extended = newBody().replace(
+		'## ✅ Verification',
+		'## ⚖️ Alternatives\n\nWeighed a timer.\n\n> ⚠️ **Look hardest:** the sweep bound.\n\n## 🔧 Changes\n\n- the loop\n\n## ✅ Verification'
+	);
+	assert.deepStrictEqual(evaluateNew(extended).problems, []);
+});
+
+test('the new shape requires a Problem section', () => {
+	const result = evaluateNew(newBody().replace('## ⊙ Problem', '## Problem'));
+	assert.strictEqual(result.compliant, false);
+	assert.match(result.problems.join('\n'), /needs a ## ⊙ Problem section with a > ❓ \*\*Your call:\*\* line/);
+	assert.match(result.problems.join('\n'), /legacy ## For the human reviewer/);
+	const twice = evaluateNew(newBody().replace('## 💡 Solution', '## ⊙ Problem\n\n## 💡 Solution'));
+	assert.match(twice.problems.join('\n'), /found 2 ## ⊙ Problem/);
+});
+
+test('the new shape requires a Your call line under Problem, not only elsewhere', () => {
+	const none = evaluateNew(newBody({ problemCall: false }));
+	assert.match(none.problems.join('\n'), /no > ❓ \*\*Your call:\*\* line\)/);
+	const elsewhere = evaluateNew(
+		newBody({ problemCall: false }).replace('A continuous cleanup loop.', '> ❓ **Your call:** Is a loop fine?')
+	);
+	assert.match(elsewhere.problems.join('\n'), /no > ❓ \*\*Your call:\*\* line under ## ⊙ Problem/);
+});
+
+test('a Your call line inside a code fence or HTML comment does not count', () => {
+	const fenced = newBody({ problemCall: false }).replace(
+		'Expired audit rows are never reclaimed.',
+		'```text\n> ❓ **Your call:** Should retention be per-table?\n```'
+	);
+	assert.match(evaluateNew(fenced).problems.join('\n'), /no > ❓ \*\*Your call:\*\* line\)/);
+	const commented = newBody({ problemCall: false }).replace(
+		'Expired audit rows are never reclaimed.',
+		'<!--\n> ❓ **Your call:** Should retention be per-table?\n-->'
+	);
+	assert.strictEqual(evaluateNew(commented).compliant, false);
+	const empty = newBody().replace('Should retention be per-table or global?', '');
+	assert.strictEqual(evaluateNew(empty).compliant, false);
+});
+
+test('Problem must precede Verification, and Verification forms are exclusive', () => {
+	const late = newBody().replace(/## ⊙ Problem[\s\S]*?(?=## 💡 Solution)/, '');
+	const moved = late.replace(
+		'Focused retention tests passed.',
+		'Focused retention tests passed.\n\n## ⊙ Problem\n\n> ❓ **Your call:** Late?'
+	);
+	assert.match(evaluateNew(moved).problems.join('\n'), /Problem must precede Verification/);
+	const both = newBody().replace('## 💡 Solution', '## Verification\n\nEarly.\n\n## 💡 Solution');
+	assert.match(
+		evaluateNew(both).problems.join('\n'),
+		/exactly one ## Verification or ## ✅ Verification section \(found 2\)/
+	);
+});
+
+test('an empty emoji Verification section still needs evidence, and AI fields must follow it', () => {
+	const empty = newBody().replace('Focused retention tests passed.\n\n', '');
+	assert.match(evaluateNew(empty).problems.join('\n'), /Verification needs executed evidence/);
+	const early = 'Complexity: complicated\n\n' + newBody().replace('\n\nComplexity: complicated', '');
+	assert.match(evaluateNew(early).problems.join('\n'), /AI fields must follow Verification/);
+});
+
+test('the new shape requires a 💡 Solution between ⊙ Problem and Verification', () => {
+	assert.match(
+		evaluateNew(newBody().replace(/## 💡 Solution[\s\S]*?(?=## )/, '')).problems.join('\n'),
+		/exactly one ## 💡 Solution/
+	);
+	const swapped = newBody().replace(/(## ⊙ Problem[\s\S]*?)(## 💡 Solution[\s\S]*?)(?=## )/, '$2$1');
+	assert.match(evaluateNew(swapped).problems.join('\n'), /Solution must follow ## ⊙ Problem/);
+});
