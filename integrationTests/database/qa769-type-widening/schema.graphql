@@ -1,0 +1,7 @@
+# The pre-widening declared types. qa769-type-widening.test.ts overwrites the INSTALLED copy of
+# this file mid-run to widen `count` to Long and `label` to Any, then restarts Harper.
+type MeteredEvent @table @export {
+	id: Int @primaryKey
+	count: Int @indexed
+	label: String
+}
