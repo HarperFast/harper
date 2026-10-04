@@ -44,6 +44,10 @@ export const OUTPUTS = {
 	STDERR: 'stdErr',
 };
 
+/** Keys whose values inspectForLog and the MCP audit log (components/mcp/audit.ts) mask. */
+export const CREDENTIAL_KEY_PATTERN =
+	/(secret|password|passphrase|token|api[-_]?key|private[-_]?key|credentials?|auth|cookie)/i;
+
 // Location of default config YAML.
 const DEFAULT_CONFIG_FILE = join(PACKAGE_ROOT, 'static', hdbTerms.HDB_DEFAULT_CONFIG_FILE);
 
@@ -437,6 +441,7 @@ module.exports = {
 	setMainLogger,
 	setLogLevel,
 	OUTPUTS,
+	CREDENTIAL_KEY_PATTERN,
 	AuthAuditLog,
 	// for now these functions at least notify us of when the component system is ready so
 	// we can start using the RootConfigWatcher
@@ -1298,9 +1303,17 @@ function loggablePropsSuffix(error: any): string {
 	return suffix;
 }
 
-function renderErrorLine(error: any): string {
+function renderErrorLine(error: any, maxLength = Infinity): string {
 	try {
-		const base = typeof error?.stack === 'string' ? error.stack : errorToString(error);
+		// The stack repeats the message ahead of its frames, so a message longer than maxLength would
+		// leave no frame uncut; it is not materialized then.
+		const message = maxLength === Infinity ? undefined : error?.message;
+		const base =
+			typeof message === 'string' && message.length > maxLength
+				? `${error.constructor?.name ?? 'Error'}: ${message.slice(0, Math.max(0, maxLength))}`
+				: typeof error?.stack === 'string'
+					? error.stack
+					: errorToString(error);
 		return base + loggablePropsSuffix(error);
 	} catch (err) {
 		// error?.stack itself can throw on a hostile object (e.g. a getter on a `cause` chain member
@@ -1321,10 +1334,11 @@ function renderErrorLine(error: any): string {
  * The `cause` chain is not under this module's control (any code that threw the outer error could
  * have attached a hostile `cause` - a revoked Proxy, an object with a throwing getter), so every
  * step of the walk is defensive: this function must never throw regardless of what it's given.
+ * Stops appending causes once the output passes `maxLength`.
  */
-function errorToLogString(error: any) {
+function errorToLogString(error: any, maxLength = Infinity) {
 	if (error == null) return String(error);
-	let output = renderErrorLine(error);
+	let output = renderErrorLine(error, maxLength);
 	const seen = new Set([error]);
 	let cause: any;
 	try {
@@ -1332,9 +1346,9 @@ function errorToLogString(error: any) {
 	} catch {
 		return output;
 	}
-	while (cause != null && !seen.has(cause)) {
+	while (cause != null && !seen.has(cause) && output.length <= maxLength) {
 		seen.add(cause);
-		output += `\ncaused by: ${renderErrorLine(cause)}`;
+		output += `\ncaused by: ${renderErrorLine(cause, maxLength - output.length)}`;
 		try {
 			cause = cause.cause;
 		} catch {
@@ -1368,7 +1382,7 @@ export function errorForLog(error: any) {
 // capped so a pathological/adversarial structure can't blow the stack.
 const MAX_SANITIZE_DEPTH = 20;
 
-// Default per-container breadth cap (used when inspectForLog's caller didn't request a specific
+// Default per-object property cap (used when inspectForLog's caller didn't request a specific
 // maxArrayLength) and an absolute ceiling on total nodes visited across the WHOLE walk. Per-
 // container breadth alone isn't enough: a structure that is merely wide at every one of
 // MAX_SANITIZE_DEPTH levels multiplies out to an astronomical node count, so a global counter is
@@ -1388,24 +1402,156 @@ const MAX_SANITIZE_NODES = 50_000;
 // a real ceiling on total work. The one caller in this codebase passes 250; this only bites a
 // caller that deliberately (or by bug) requests something far larger.
 const HARD_MAX_SANITIZE_ENTRIES = 10_000;
+// Ceiling, in characters, on one inspectForLog render (its UTF-8 form is at most 3x that): the
+// per-container and node limits above multiply rather than add, so they do not bound the total. Well
+// above the largest known legitimate payload, deployComponent's install_output (capped at 16KB).
+const MAX_LOG_RENDER_LENGTH = 256 * 1024;
+// The walk's estimate stops short of the exact cap so the truncation markers and closing brackets it
+// does not charge still fit, and a render the walk truncated normally ends whole instead of being cut
+// by the exact cap.
+const SANITIZE_RENDER_BUDGET = MAX_LOG_RENDER_LENGTH - 16 * 1024;
+// Work on properties an inherited inspect hook's output replaced, which never renders: bounded apart
+// from the render budget so one large such object does not starve the fields after it.
+const MAX_DISCARDED_RENDER = 4 * SANITIZE_RENDER_BUDGET;
+const OMITTED_LABEL = '[omitted (sanitize budget)]';
+const NOT_RENDERED_LABEL = '[below inspect depth]';
+const COLLAPSED_MARKER = Symbol('sanitize: collapsed at inspect depth');
+const NATIVE_BUFFER_INSPECT = Object.getOwnPropertyDescriptor(Buffer.prototype, inspect.custom)?.value;
+const REDACTED_LABEL = '[redacted]';
 
 interface SanitizeBudget {
 	nodes: number;
+	// Array, Map and Set entries walked per container: what util.inspect prints (maxArrayLength).
 	maxEntries: number;
+	// Object properties walked per container (util.inspect prints all of them).
+	maxKeys: number;
+	// Estimated render length still available.
+	chars: number;
+	// Charged for properties an inherited hook's output replaced, then refunded to `chars`.
+	discarded: number;
+	maxStringLength: number;
+	// util.inspect expands a container only at a level at or below this, so nothing below the next
+	// level is ever printed.
+	renderDepth: number;
+	// What util.inspect would hand a custom inspect hook.
+	renderOptions: any;
+	// For rendering a leaf without running a hook it carries, which would bypass the walk.
+	leafOptions: any;
 }
 
-/** A util.inspect-style placeholder rendered without invoking anything, used both for an unread
- *  accessor property and for a budget-truncated container tail. */
+interface SeenEntry {
+	clone: any;
+	// A clone built at this depth holds only what util.inspect prints from there, so it stands in for
+	// the original only at this depth or deeper.
+	depth: number;
+	// Set once the clone is complete, and charged again on a repeat reference, because util.inspect
+	// prints a shared sub-object in full at every occurrence; still unset means a cycle, which it
+	// prints as [Circular].
+	cost?: number;
+}
+
+function isBudgetSpent(budget: SanitizeBudget): boolean {
+	return budget.chars <= 0 || budget.nodes >= MAX_SANITIZE_NODES;
+}
+
+function entryOverhead(depth: number): number {
+	return 2 * depth + 4;
+}
+
+function omittedCharacters(count: number): string {
+	return `... [${count} more characters omitted (sanitize budget)]`;
+}
+
+function chargeText(text: string, budget: SanitizeBudget, renderedLength = text.length): string {
+	budget.chars -= renderedLength;
+	if (budget.chars >= 0) return text;
+	const kept = Math.max(0, Math.min(text.length, renderedLength + budget.chars));
+	if (kept === text.length) return text;
+	return text.slice(0, kept) + omittedCharacters(text.length - kept);
+}
+
+/** A util.inspect-style placeholder rendered without invoking anything. */
 function labelPlaceholder(label: string) {
 	return { [inspect.custom]: () => label, toString: () => label };
 }
 
+/** Text util.inspect prints verbatim (re-indented to where it lands), charged at its exact length:
+ *  how a leaf whose rendered size the walk cannot estimate reaches the render. */
+function renderedLeaf(text: string, budget: SanitizeBudget) {
+	return labelPlaceholder(chargeText(text, budget));
+}
+
+/** The custom inspect hook util.inspect would find on an opaque built-in or function, read through
+ *  descriptors only; a Proxy or accessor level yields none, and the leaf then prints natively. */
+function leafInspectHook(value: object): Function | undefined {
+	for (let level: any = value; level !== null; level = Object.getPrototypeOf(level)) {
+		if (types.isProxy(level)) return undefined;
+		const descriptor = Object.getOwnPropertyDescriptor(level, inspect.custom);
+		if (descriptor) return typeof descriptor.value === 'function' ? descriptor.value : undefined;
+	}
+	return undefined;
+}
+
+/** A container util.inspect prints only as `[ClassName]` at this depth, so none of its entries are
+ *  walked; the marker keeps a non-empty one from printing as empty. */
+function collapsedClone(entry: SeenEntry, hasEntries: boolean) {
+	if (hasEntries) defineOwnProperty(entry.clone, COLLAPSED_MARKER, true);
+	entry.cost = 0;
+	return entry.clone;
+}
+
+function chargedPlaceholder(label: string, budget: SanitizeBudget, depth: number) {
+	budget.nodes++;
+	budget.chars -= entryOverhead(depth) + label.length;
+	return labelPlaceholder(label);
+}
+
 /** A util.inspect-style placeholder for an accessor property, describing it without invoking the
  *  getter — see the getter-invocation note on deepSanitizeErrors below. */
-function accessorPlaceholder(descriptor: PropertyDescriptor) {
-	return labelPlaceholder(
-		descriptor.get && descriptor.set ? '[Getter/Setter]' : descriptor.get ? '[Getter]' : '[Setter]'
+function accessorPlaceholder(descriptor: PropertyDescriptor, budget: SanitizeBudget, depth: number) {
+	return chargedPlaceholder(
+		descriptor.get && descriptor.set ? '[Getter/Setter]' : descriptor.get ? '[Getter]' : '[Setter]',
+		budget,
+		depth
 	);
+}
+
+/** True for a value stored under a credential-shaped key (a symbol key by its description). null,
+ *  undefined and booleans cannot carry a secret, and `token: undefined` is the diagnostic an operator
+ *  needs, so those still render. */
+function isCredentialEntry(key: unknown, value: unknown): boolean {
+	const name = typeof key === 'symbol' ? key.description : key;
+	return typeof name === 'string' && value != null && typeof value !== 'boolean' && CREDENTIAL_KEY_PATTERN.test(name);
+}
+
+/** `value`'s own enumerable custom inspect hook. Reading it runs an accessor-defined hook's getter,
+ *  which util.inspect would equally run to find it. */
+function ownInspectHook(value: object): Function | undefined {
+	try {
+		if (!Object.getOwnPropertyDescriptor(value, inspect.custom)?.enumerable) return undefined;
+		const hook = value[inspect.custom];
+		return typeof hook === 'function' ? hook : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** The custom inspect hook `proto`'s chain defines, read without invoking anything: the chain has
+ *  already passed isSafeToWearPrototype, so it holds no Proxy and no accessor. */
+function inheritedInspectHook(proto: object): Function | undefined {
+	for (let level = proto; level !== null && level !== Object.prototype; level = Object.getPrototypeOf(level)) {
+		const descriptor = Object.getOwnPropertyDescriptor(level, inspect.custom);
+		if (descriptor) return typeof descriptor.value === 'function' ? descriptor.value : undefined;
+	}
+	return undefined;
+}
+
+function callInspectHook(hook: Function, self: object, depth: number, budget: SanitizeBudget): any {
+	try {
+		return hook.call(self, budget.renderDepth - depth, budget.renderOptions, inspect);
+	} catch (err) {
+		return `[Unrenderable value: ${errorToString(err)}]`;
+	}
 }
 
 /**
@@ -1450,8 +1596,8 @@ const SYMBOLS_TRUNCATED_MARKER = Symbol('sanitize: symbol-keyed properties trunc
  * An *expando* own-enumerable property stashed directly on one of these (e.g. `const d = new
  * Date(); d.cause = secretError`) would otherwise leak the same way the Promise case above does -
  * inspect() renders own-enumerable properties on ANY object, opaque built-ins included. Handled by
- * hasEnumerableOwnProps/safeOpaqueBuiltinSummary below: the fast, zero-cost, common path (no
- * expando) returns the value raw and untouched; only a value actually carrying one pays for a safe
+ * hasEnumerableOwnProps/safeOpaqueBuiltinSummary below: the common path (no expando) renders the
+ * value itself in its native format; only a value actually carrying one pays for a safe
  * replacement.
  */
 function isOpaqueBuiltin(value: object): boolean {
@@ -1661,7 +1807,7 @@ function isSafeToWearPrototype(proto: object): boolean {
 
 /**
  * Recursively walks a plain object/array, replacing every Error-like value found at any depth
- * with its errorForLog wrapper (see isErrorLike/errorForLog and #1734). sanitizeErrorArgs is
+ * with its errorForLog text (see isErrorLike/errorForLog and #1734). sanitizeErrorArgs is
  * deliberately shallow because it guards the hot, frequent top-level log-call path — this walk is
  * for inspectForLog's callers instead, which are low-frequency (a caught error's diagnostic
  * detail), so the extra traversal cost doesn't matter and full coverage does: an Error nested
@@ -1673,10 +1819,15 @@ function isSafeToWearPrototype(proto: object): boolean {
  * unsanitized anywhere in the tree would surface its own-enumerable properties (e.g. an axios
  * `config.headers.Authorization`) raw once the raised inspect depth below reaches it. A rebuilt
  * object/class-instance clone has the original's prototype restored (Object.setPrototypeOf) so
- * inspect() still shows its real class name and picks up any inspect.custom hook defined on the
- * class's prototype (not an own property, so the symbol walk below wouldn't otherwise see it) -
- * the clone differs from the original only in which of its OWN enumerable properties got swapped
- * for a sanitized/placeholder value, same as it would for a plain object.
+ * inspect() still shows its real class name - the clone differs from the original only in which of
+ * its OWN enumerable properties got swapped for a sanitized/placeholder value, same as it would for
+ * a plain object.
+ *
+ * Custom inspect hooks, own or inherited, are resolved here rather than by util.inspect: each is
+ * called once, in walk order, where util.inspect would call it (an own hook with the original as
+ * `this`, an inherited one with the clone), and what it returns replaces the value and is walked
+ * like any other. So a hook's output is sanitized, masked and charged in order, and no clone carries
+ * a hook for util.inspect to run at render time.
  *
  * Cycle-safe via a WeakMap from original to its (in-progress) clone, registered before recursing
  * into children, so a cycle resolves to the clone in progress rather than falling back to the raw
@@ -1704,14 +1855,17 @@ function isSafeToWearPrototype(proto: object): boolean {
  * Breadth-bounded via `budget`, shared across the whole walk (not reset per container): each
  * container is capped at `budget.maxEntries` entries (with a placeholder noting what was
  * skipped), and the walk stops sanitizing entirely past `MAX_SANITIZE_NODES` total nodes visited,
- * regardless of per-container caps - see the constants' comment for why both are needed.
+ * regardless of per-container caps - see the constants' comment for why both are needed. The same
+ * budget carries an estimate of the rendered length, charged per entry as the walk goes; once it or
+ * the node count is spent, each open container stops and records what it omitted.
+ *
+ * Only what util.inspect prints is walked and charged: nothing below the level at which it collapses
+ * a container to `[Object]` (budget.renderDepth + 1).
+ *
+ * Masks the value of any data property or Map entry whose key matches CREDENTIAL_KEY_PATTERN, at any
+ * depth the walk reaches (see isCredentialEntry).
  */
-function deepSanitizeErrors(
-	value: any,
-	seen: WeakMap<object, any> = new WeakMap(),
-	depth = 0,
-	budget: SanitizeBudget = { nodes: 0, maxEntries: DEFAULT_MAX_SANITIZE_ENTRIES }
-): any {
+function deepSanitizeErrors(value: any, seen: WeakMap<object, SeenEntry>, depth: number, budget: SanitizeBudget): any {
 	// Functions are `typeof 'function'`, not 'object' - included here (rather than falling through
 	// as if they were a harmless primitive) because a function is just as capable of carrying an
 	// expando own-enumerable property (`fn.cause = secretError`, an ordinary and not-even-unusual
@@ -1723,7 +1877,17 @@ function deepSanitizeErrors(
 	// e.g. 50,000 containers of 250 primitive fields each could still walk ~12.5 million values
 	// before this cap ever engaged.
 	if (++budget.nodes > MAX_SANITIZE_NODES) return labelPlaceholder('[Unrenderable value: sanitize budget exceeded]');
-	if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return value;
+	const isPrimitive = value === null || (typeof value !== 'object' && typeof value !== 'function');
+	if (depth > budget.renderDepth + 1) return isPrimitive ? value : labelPlaceholder(NOT_RENDERED_LABEL);
+	if (budget.chars <= 0) return labelPlaceholder(OMITTED_LABEL);
+	budget.chars -= entryOverhead(depth);
+	if (typeof value === 'string') {
+		return chargeText(value, budget, Math.min(value.length, budget.maxStringLength) + 2);
+	}
+	if (isPrimitive) {
+		budget.chars -= String(value).length;
+		return value;
+	}
 	// Checked before isErrorLike/anything else that reflects on `value`: types.isProxy queries the
 	// exotic object's internal slots directly (safe even on a revoked Proxy - it never throws), but
 	// EVERY reflective operation past this point - `instanceof` inside isErrorLike, Array.isArray,
@@ -1736,8 +1900,18 @@ function deepSanitizeErrors(
 	// the same class of "can't safely introspect this" tradeoff), so a Proxy is never reflected on
 	// at all: always a safe, static placeholder, trap or no trap.
 	if (types.isProxy(value)) return labelPlaceholder('[Proxy]');
-	if (isErrorLike(value)) return errorForLog(value);
-	if (seen.has(value)) return seen.get(value);
+	if (isErrorLike(value)) return renderedLeaf(errorToLogString(value, budget.chars), budget);
+	const seenEntry = seen.get(value);
+	if (seenEntry && seenEntry.depth <= depth) {
+		if (seenEntry.cost !== undefined) {
+			if (seenEntry.cost > budget.chars) {
+				budget.chars = 0;
+				return labelPlaceholder(OMITTED_LABEL);
+			}
+			budget.chars -= seenEntry.cost;
+		}
+		return seenEntry.clone;
+	}
 	// Depth-capped values are never handed back raw: an Error directly AT this depth is already
 	// caught by isErrorLike above, but a plain container here could still hold an Error somewhere
 	// inside it that we're choosing not to recurse into - handing it back unsanitized would let a
@@ -1760,14 +1934,21 @@ function deepSanitizeErrors(
 		// is no supported synchronous way to read it in order to sanitize it - so unlike every other
 		// opaque built-in, a Promise is never handed to inspect() raw, sanitized or not.
 		if (!isArray && !isMap && !isSet && types.isPromise(value)) return labelPlaceholder('[Promise]');
-		if (!isArray && !isMap && !isSet && !isFunction && isOpaqueBuiltin(value)) {
-			// Fast, faithful, zero-cost path for the overwhelming common case: no expando, so the
-			// value is returned exactly as-is and inspect() renders its normal native format. Only a
-			// value that actually carries an expando pays for safeOpaqueBuiltinSummary below.
-			if (!hasEnumerableOwnProps(value)) return value;
-			return safeOpaqueBuiltinSummary(value);
+		const isLeaf = !isArray && !isMap && !isSet && (isFunction || isOpaqueBuiltin(value));
+		if (isLeaf && hasEnumerableOwnProps(value)) {
+			// An expando-carrying function falls through to the object walk below. Only an opaque
+			// built-in that actually carries one pays for safeOpaqueBuiltinSummary.
+			if (!isFunction) return deepSanitizeErrors(safeOpaqueBuiltinSummary(value), seen, depth, budget);
+		} else if (isLeaf) {
+			// A hook other than Node's own Buffer one is resolved like an object's, so its output is walked.
+			const hook = leafInspectHook(value);
+			if (hook === NATIVE_BUFFER_INSPECT) return renderedLeaf(inspect(value, budget.renderOptions), budget);
+			const output = hook ? callInspectHook(hook, value, depth, budget) : value;
+			if (output === value) return renderedLeaf(inspect(value, budget.leafOptions), budget);
+			return typeof output === 'string'
+				? renderedLeaf(output, budget)
+				: deepSanitizeErrors(output, seen, depth, budget);
 		}
-		if (isFunction && !hasEnumerableOwnProps(value)) return value; // same fast path, for functions
 	} catch {
 		// The types.isProxy check above already routes every Proxy (revoked or not) to a placeholder
 		// before this block ever runs, so nothing YET IDENTIFIED reaches this catch on real input -
@@ -1783,18 +1964,23 @@ function deepSanitizeErrors(
 	// but that's a safe, honest trade for a case inspect() would otherwise render with a raw,
 	// unsanitized secret alongside it.
 
+	const charsBefore = budget.chars;
+	// Past util.inspect's depth a container prints as `[ClassName]`, its entries unseen.
+	const expanded = depth <= budget.renderDepth;
 	if (isArray) {
 		const clone: any[] = [];
-		seen.set(value, clone);
+		const entry: SeenEntry = { clone, depth };
+		seen.set(value, entry);
 		const length = value.length;
+		if (!expanded) return collapsedClone(entry, length > 0);
 		// Reserve one slot for the truncation marker when overflowing, so the clone's final size is
 		// exactly budget.maxEntries - matching whatever maxArrayLength the caller will inspect() with
 		// - rather than maxEntries + 1, which util.inspect's OWN truncation would then clip anyway,
 		// silently hiding the marker (and the fact that anything was dropped at all) behind its
 		// generic "... N more items" ellipsis.
-		const overflow = length > budget.maxEntries;
-		const limit = overflow ? budget.maxEntries - 1 : length;
-		for (let i = 0; i < limit; i++) {
+		const limit = length > budget.maxEntries ? budget.maxEntries - 1 : length;
+		let i = 0;
+		for (; i < limit && !isBudgetSpent(budget); i++) {
 			let descriptor;
 			try {
 				descriptor = Object.getOwnPropertyDescriptor(value, i);
@@ -1803,7 +1989,7 @@ function deepSanitizeErrors(
 			}
 			if (!descriptor) continue; // a genuine sparse-array hole - leave it, not `undefined`
 			if (descriptor.get || descriptor.set) {
-				clone[i] = accessorPlaceholder(descriptor);
+				clone[i] = accessorPlaceholder(descriptor, budget, depth + 1);
 				continue;
 			}
 			try {
@@ -1812,24 +1998,27 @@ function deepSanitizeErrors(
 				clone[i] = sanitizeFailurePlaceholder();
 			}
 		}
-		if (overflow) clone[limit] = labelPlaceholder(`[${length - limit} more array entries omitted (sanitize budget)]`);
+		if (i < length) clone[i] = labelPlaceholder(`[${length - i} more array entries omitted (sanitize budget)]`);
+		entry.cost = charsBefore - budget.chars;
 		return clone;
 	}
 
 	if (isMap) {
 		const clone = new Map();
-		seen.set(value, clone);
+		const entry: SeenEntry = { clone, depth };
+		seen.set(value, entry);
 		// Reflect.get with an explicit receiver reads Map.prototype's intrinsic `size` getter bound
 		// to value's internal slot, bypassing an overriding subclass's own `size` the same way the
 		// .call-bound entries() below bypasses an overriding subclass's Symbol.iterator.
 		const size = Reflect.get(Map.prototype, 'size', value);
-		const overflow = size > budget.maxEntries;
-		const limit = overflow ? budget.maxEntries - 1 : size;
+		if (!expanded) return collapsedClone(entry, size > 0);
+		const limit = size > budget.maxEntries ? budget.maxEntries - 1 : size;
 		let count = 0;
 		// Map.prototype.entries bound via .call reads the internal [[MapData]] slot directly,
 		// rather than resolving value's own (or an overriding subclass's) Symbol.iterator.
 		for (const [k, v] of Map.prototype.entries.call(value)) {
-			if (count++ >= limit) break;
+			if (count >= limit || isBudgetSpent(budget)) break;
+			count++;
 			// Sanitized independently (rather than in one combined try) so a throw sanitizing the key
 			// doesn't also discard an already-sanitized value, or vice versa - each side falls back to
 			// its own placeholder, never to the other's raw counterpart.
@@ -1839,43 +2028,64 @@ function deepSanitizeErrors(
 			} catch {
 				sanitizedKey = sanitizeFailurePlaceholder();
 			}
-			try {
-				sanitizedValue = deepSanitizeErrors(v, seen, depth + 1, budget);
-			} catch {
-				sanitizedValue = sanitizeFailurePlaceholder();
+			if (isCredentialEntry(k, v)) {
+				sanitizedValue = chargedPlaceholder(REDACTED_LABEL, budget, depth + 1);
+			} else {
+				try {
+					sanitizedValue = deepSanitizeErrors(v, seen, depth + 1, budget);
+				} catch {
+					sanitizedValue = sanitizeFailurePlaceholder();
+				}
 			}
 			clone.set(sanitizedKey, sanitizedValue);
 		}
-		if (overflow)
+		if (count < size)
 			clone.set(
 				labelPlaceholder('[truncated]'),
-				labelPlaceholder(`[${size - limit} more Map entries omitted (sanitize budget)]`)
+				labelPlaceholder(`[${size - count} more Map entries omitted (sanitize budget)]`)
 			);
+		entry.cost = charsBefore - budget.chars;
 		return clone;
 	}
 
 	if (isSet) {
 		const clone = new Set();
-		seen.set(value, clone);
+		const entry: SeenEntry = { clone, depth };
+		seen.set(value, entry);
 		const size = Reflect.get(Set.prototype, 'size', value);
-		const overflow = size > budget.maxEntries;
-		const limit = overflow ? budget.maxEntries - 1 : size;
+		if (!expanded) return collapsedClone(entry, size > 0);
+		const limit = size > budget.maxEntries ? budget.maxEntries - 1 : size;
 		let count = 0;
 		// Same rationale as the Map branch above: Set.prototype.values via .call, not for...of.
 		for (const item of Set.prototype.values.call(value)) {
-			if (count++ >= limit) break;
+			if (count >= limit || isBudgetSpent(budget)) break;
+			count++;
 			try {
 				clone.add(deepSanitizeErrors(item, seen, depth + 1, budget));
 			} catch {
 				clone.add(sanitizeFailurePlaceholder());
 			}
 		}
-		if (overflow) clone.add(labelPlaceholder(`[${size - limit} more Set entries omitted (sanitize budget)]`));
+		if (count < size) clone.add(labelPlaceholder(`[${size - count} more Set entries omitted (sanitize budget)]`));
+		entry.cost = charsBefore - budget.chars;
 		return clone;
 	}
 
 	const result: Record<string | symbol, any> = {};
-	seen.set(value, result);
+	const entry: SeenEntry = { clone: result, depth };
+	seen.set(value, entry);
+	const ownHook = ownInspectHook(value);
+	if (ownHook) {
+		const output = callInspectHook(ownHook, value, depth, budget);
+		// A hook that returns the value itself leaves util.inspect to format it as usual.
+		if (output !== value) {
+			entry.clone =
+				typeof output === 'string' ? renderedLeaf(output, budget) : deepSanitizeErrors(output, seen, depth, budget);
+			entry.cost = charsBefore - budget.chars;
+			return entry.clone;
+		}
+	}
+	let inheritedHook: Function | undefined;
 	try {
 		const proto = Object.getPrototypeOf(value);
 		// A branded built-in with private internal slots (URL, Headers, Request/Response, or any
@@ -1899,6 +2109,9 @@ function deepSanitizeErrors(
 		// be pure overhead for a class that could never fail it.
 		if (proto !== null && proto !== Object.prototype && isSafeToWearPrototype(proto)) {
 			Object.setPrototypeOf(result, proto);
+			inheritedHook = inheritedInspectHook(proto);
+			// Resolved below; util.inspect must not call it again at render time.
+			if (inheritedHook) Object.defineProperty(result, inspect.custom, { value: undefined });
 		}
 	} catch {
 		// Fall through with the clone's default Object.prototype - inspect() renders it without the
@@ -1908,13 +2121,30 @@ function deepSanitizeErrors(
 	// Object.keys/getOwnPropertySymbols themselves are one unavoidable O(n) pass (a plain object,
 	// unlike Array/Map/Set, has no O(1) size to check before enumerating) - but everything AFTER
 	// that (getOwnPropertyDescriptor + recurse + defineProperty per key) is the expensive part, and
-	// that part IS capped at budget.maxEntries, same as every other container branch, so a
+	// that part IS capped at budget.maxKeys, like every other container branch's breadth, so a
 	// million-key object can't turn a single log call into a million-entry clone.
+	// An inherited hook still reads the clone's properties, so only a hook-less one collapses; whether
+	// the original is empty is not checked, since that is the full key enumeration this avoids.
+	if (!expanded && !inheritedHook) return collapsedClone(entry, true);
+	if (inheritedHook && budget.discarded >= MAX_DISCARDED_RENDER) {
+		budget.chars -= OMITTED_LABEL.length;
+		entry.clone = labelPlaceholder(OMITTED_LABEL);
+		entry.cost = OMITTED_LABEL.length;
+		return entry.clone;
+	}
 	const keys = Object.keys(value);
-	const keysOverflow = keys.length > budget.maxEntries;
-	const keysLimit = keysOverflow ? budget.maxEntries - 1 : keys.length;
-	for (let i = 0; i < keysLimit; i++) {
-		const key = keys[i];
+	const keysLimit = keys.length > budget.maxKeys ? budget.maxKeys - 1 : keys.length;
+	let keyCount = 0;
+	for (; keyCount < keysLimit && !isBudgetSpent(budget); keyCount++) {
+		const key = keys[keyCount];
+		if (expanded) {
+			// util.inspect prints a key whole, without maxStringLength
+			if (key.length > budget.chars) {
+				budget.chars = 0;
+				break;
+			}
+			budget.chars -= key.length;
+		}
 		let descriptor;
 		try {
 			descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -1923,7 +2153,11 @@ function deepSanitizeErrors(
 		}
 		if (!descriptor) continue; // removed mid-walk by another property's getter side effect
 		if (descriptor.get || descriptor.set) {
-			defineOwnProperty(result, key, accessorPlaceholder(descriptor));
+			defineOwnProperty(result, key, accessorPlaceholder(descriptor, budget, depth + 1));
+			continue;
+		}
+		if (isCredentialEntry(key, descriptor.value)) {
+			defineOwnProperty(result, key, chargedPlaceholder(REDACTED_LABEL, budget, depth + 1));
 			continue;
 		}
 		try {
@@ -1932,17 +2166,26 @@ function deepSanitizeErrors(
 			defineOwnProperty(result, key, sanitizeFailurePlaceholder());
 		}
 	}
-	if (keysOverflow)
+	if (keyCount < keys.length)
 		defineOwnProperty(
 			result,
 			KEYS_TRUNCATED_MARKER,
-			labelPlaceholder(`[${keys.length - keysLimit} more properties omitted (sanitize budget)]`)
+			labelPlaceholder(`[${keys.length - keyCount} more properties omitted (sanitize budget)]`)
 		);
 	const symbols = Object.getOwnPropertySymbols(value);
-	const symbolsOverflow = symbols.length > budget.maxEntries;
-	const symbolsLimit = symbolsOverflow ? budget.maxEntries - 1 : symbols.length;
-	for (let i = 0; i < symbolsLimit; i++) {
-		const sym = symbols[i];
+	const symbolsLimit = symbols.length > budget.maxKeys ? budget.maxKeys - 1 : symbols.length;
+	let symbolCount = 0;
+	for (; symbolCount < symbolsLimit && !isBudgetSpent(budget); symbolCount++) {
+		const sym = symbols[symbolCount];
+		if (sym === inspect.custom) continue;
+		if (expanded) {
+			const keyLength = String(sym).length;
+			if (keyLength > budget.chars) {
+				budget.chars = 0;
+				break;
+			}
+			budget.chars -= keyLength;
+		}
 		let descriptor;
 		try {
 			descriptor = Object.getOwnPropertyDescriptor(value, sym);
@@ -1950,40 +2193,12 @@ function deepSanitizeErrors(
 			continue;
 		}
 		if (!descriptor?.enumerable) continue;
-		if (sym === inspect.custom) {
-			// The custom renderer itself, not data - preserve unchanged (even if defined via an
-			// accessor) rather than replace it with an accessor placeholder. util.inspect's own
-			// top-level render finds this hook via the exact same `value[sym]` property access, so
-			// reading it here isn't new arbitrary-code exposure the way an ordinary data getter
-			// would be - it's the documented render-hook contract, just resolved one level earlier.
-			let original;
-			try {
-				original = value[sym];
-			} catch {
-				continue; // leave unset - inspect() will render the rest of the object without a custom hook
-			}
-			if (typeof original !== 'function') continue; // not a valid hook - nothing to wrap or invoke
-			// The hook itself runs at REAL render time, entirely outside this walk - so whatever it
-			// RETURNS has never been through deepSanitizeErrors. Left as-is, a hook that returns a
-			// closure-captured secret-bearing Error (or any value with one nested inside) would have
-			// that Error rendered raw by the outer util.inspect call, bypassing this sanitizer entirely
-			// (#1994 review). This wraps the hook so the CALL is unchanged (still invoked with `this`
-			// bound to the original untrusted `value`, same as inspect would do directly) but its return
-			// value is sanitized with a fresh depth/budget - independent of this walk's own counters,
-			// which by render time are long since exhausted or out of scope.
-			defineOwnProperty(result, sym, (...args: any[]) => {
-				let rendered;
-				try {
-					rendered = original.apply(value, args);
-				} catch (err) {
-					return `[Unrenderable value: ${errorToString(err)}]`;
-				}
-				return deepSanitizeErrors(rendered, new WeakMap(), 0, { nodes: 0, maxEntries: DEFAULT_MAX_SANITIZE_ENTRIES });
-			});
+		if (descriptor.get || descriptor.set) {
+			defineOwnProperty(result, sym, accessorPlaceholder(descriptor, budget, depth + 1));
 			continue;
 		}
-		if (descriptor.get || descriptor.set) {
-			defineOwnProperty(result, sym, accessorPlaceholder(descriptor));
+		if (isCredentialEntry(sym, descriptor.value)) {
+			defineOwnProperty(result, sym, chargedPlaceholder(REDACTED_LABEL, budget, depth + 1));
 			continue;
 		}
 		try {
@@ -1992,13 +2207,23 @@ function deepSanitizeErrors(
 			defineOwnProperty(result, sym, sanitizeFailurePlaceholder());
 		}
 	}
-	if (symbolsOverflow)
+	if (symbolCount < symbols.length)
 		defineOwnProperty(
 			result,
 			SYMBOLS_TRUNCATED_MARKER,
-			labelPlaceholder(`[${symbols.length - symbolsLimit} more symbol properties omitted (sanitize budget)]`)
+			labelPlaceholder(`[${symbols.length - symbolCount} more symbol properties omitted (sanitize budget)]`)
 		);
-	return result;
+	if (inheritedHook) {
+		const output = callInspectHook(inheritedHook, result, depth, budget);
+		if (output !== result) {
+			budget.discarded += charsBefore - budget.chars;
+			budget.chars = charsBefore;
+			entry.clone =
+				typeof output === 'string' ? renderedLeaf(output, budget) : deepSanitizeErrors(output, seen, depth, budget);
+		}
+	}
+	entry.cost = charsBefore - budget.chars;
+	return entry.clone;
 }
 
 /**
@@ -2015,23 +2240,46 @@ function deepSanitizeErrors(
  * `options.maxArrayLength`, if given, also bounds sanitization's own per-container breadth (see
  * deepSanitizeErrors' budget) - a caller raising the render limit is raising how much genuinely
  * needs to be walked, not just how much of an already-cheap walk gets displayed.
+ *
+ * The result is at most MAX_LOG_RENDER_LENGTH characters on every path. The walk's estimate is what
+ * bounds the work; this final cut is what makes the length exact, since util.inspect's layout and
+ * escaping are not predictable from the walk. Values under credential-shaped keys are masked (see
+ * deepSanitizeErrors); a custom inspect hook that itself returns such a value as a primitive
+ * renders what it returns.
  */
 export function inspectForLog(value: any, options?: any) {
 	const render = () => {
+		let rendered: string;
 		try {
-			const maxEntries = Number(options?.maxArrayLength);
+			const requestedEntries = Number(options?.maxArrayLength);
+			const renderOptions = { ...inspect.defaultOptions, ...options, stylize: (text: string) => text };
+			// util.inspect treats null as unlimited for all three
+			const limit = (option: any) => (typeof option === 'number' && option >= 0 ? option : Infinity);
+			renderOptions.maxArrayLength = Math.min(limit(renderOptions.maxArrayLength), HARD_MAX_SANITIZE_ENTRIES);
 			const budget: SanitizeBudget = {
 				nodes: 0,
-				maxEntries: maxEntries > 0 ? Math.min(maxEntries, HARD_MAX_SANITIZE_ENTRIES) : DEFAULT_MAX_SANITIZE_ENTRIES,
+				maxEntries: Math.max(1, renderOptions.maxArrayLength),
+				maxKeys:
+					requestedEntries > 0 ? Math.min(requestedEntries, HARD_MAX_SANITIZE_ENTRIES) : DEFAULT_MAX_SANITIZE_ENTRIES,
+				chars: SANITIZE_RENDER_BUDGET,
+				discarded: 0,
+				maxStringLength: limit(renderOptions.maxStringLength),
+				renderDepth: limit(renderOptions.depth),
+				renderOptions,
+				leafOptions: { ...renderOptions, customInspect: false },
 			};
-			return inspect(deepSanitizeErrors(value, new WeakMap(), 0, budget), options);
+			rendered = inspect(deepSanitizeErrors(value, new WeakMap(), 0, budget), options);
 		} catch (err) {
 			// errorToString is the guaranteed-never-throw stringifier (unlike `err instanceof Error` or
 			// `String(err)` here, both of which can themselves throw on a hostile value - e.g. a revoked
 			// Proxy thrown by a nested custom-inspect hook - which would otherwise escape this catch and
 			// mask the real operation error being logged).
-			return `[Unrenderable value: ${errorToString(err)}]`;
+			rendered = `[Unrenderable value: ${errorToString(err)}]`;
 		}
+		if (rendered.length <= MAX_LOG_RENDER_LENGTH) return rendered;
+		// Room for the longest possible marker, so the result never exceeds the cap.
+		const kept = MAX_LOG_RENDER_LENGTH - omittedCharacters(rendered.length).length;
+		return rendered.slice(0, kept) + omittedCharacters(rendered.length - kept);
 	};
 	return { [inspect.custom]: render, toString: render };
 }
@@ -2090,6 +2338,7 @@ export default {
 	setMainLogger,
 	setLogLevel,
 	OUTPUTS,
+	CREDENTIAL_KEY_PATTERN,
 	disableStdio,
 	isStdioBrokenError,
 	externalLogger,
