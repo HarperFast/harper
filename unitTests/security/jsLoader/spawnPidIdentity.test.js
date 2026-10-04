@@ -43,7 +43,7 @@ describe('constrained spawn process identity', function () {
 		for (const wrapper of wrappers.splice(0)) wrapper.unref();
 		for (const child of children.splice(0)) {
 			if (child.exitCode !== null || child.signalCode !== null) continue;
-			const exited = once(child, 'exit');
+			const exited = once(child, 'exit', { signal: AbortSignal.timeout(5000) });
 			child.kill('SIGKILL');
 			await exited;
 		}
