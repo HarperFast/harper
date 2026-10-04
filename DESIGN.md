@@ -179,6 +179,10 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [Interactive CLI prompts go through `utility/interactivePrompts.ts`](utility/DESIGN.md#interactive-cli-prompts-go-through-utilityinteractivepromptsts) — Every `@inquirer` prompt uses this seam, which lazy-loads packages off the boot path, exits 130 on Ctrl-C and gives tests a stubbable raw layer.
 - [An HdbError's `message` is a string; the structured body is `http_resp_msg` (`utility/errors/hdbError.ts`)](utility/DESIGN.md#an-hdberrors-message-is-a-string-the-structured-body-is-http_resp_msg-utilityerrorshdberrorts) — A report object passed to `handleHDBError` is the response body and the job message; `message` is a string derived from it.
 
+## integrationTests/ — end-to-end suite and fixtures
+
+- [A deployed fixture must not install from the npm registry (`integrationTests/fixtures/`)](integrationTests/DESIGN.md#a-deployed-fixture-must-not-install-from-the-npm-registry-integrationtestsfixtures) — A fixture with production dependencies and no bundled `node_modules` puts the npm registry on the test's critical path; vendor them or neutralize the install.
+
 ## build-tools/ — packaging and published artifacts
 
 - [The published shrinkwrap governs registry installs but not tarball installs (`build-tools/`)](build-tools/DESIGN.md#the-published-shrinkwrap-governs-registry-installs-but-not-tarball-installs-build-tools) — Registry installs honor the shrinkwrap through the packument flag; tarball installs re-resolve from `package.json`.
