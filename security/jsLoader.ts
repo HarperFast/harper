@@ -28,6 +28,7 @@ import {
 	readProcessIdentity,
 	readProcessIdentityAsync,
 	withSpawnPidLock,
+	tryWithSpawnPidLock,
 	isPreviousBoot,
 	withFileRetry,
 	writePidRecord,
@@ -1081,65 +1082,72 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 
 		const pidFilePath = join(pidDir, `${processName}.pid`);
 		let spawnError;
+		const reportReleaseError = (error: unknown) =>
+			logger.warn(`Could not release PID lock for named process ${processName}`, error);
 
 		try {
-			return withSpawnPidLock(pidFilePath, () => {
-				let content: string;
-				try {
-					content = withFileRetry(() => readFileSync(pidFilePath, 'utf8'));
-				} catch (error) {
-					if (error.code !== 'ENOENT') throw error;
-				}
-				if (content !== undefined) {
-					const existing = parsePidFile(content);
-					const current =
-						existing.pid && existing.identity && !isPreviousBoot(existing.identity)
-							? readProcessIdentity(existing.pid)
-							: null;
-					if (current && current.identity === existing.identity) {
-						if (requestedVersion == null || requestedVersion === existing.version) {
-							return new ExistingProcessWrapper(existing.pid, existing.identity);
-						}
-						try {
-							process.kill(existing.pid);
-						} catch (error) {
-							if (error.code !== 'ESRCH') throw error;
-						}
-						Atomics.wait(spawnWait, 0, 0, 5);
-					} else if (existing.pid && !existing.identity) {
-						logger.warn(
-							`Named process ${processName} has a legacy PID record for ${existing.pid}; replacing it without signaling the unverified process`
-						);
+			return withSpawnPidLock(
+				pidFilePath,
+				() => {
+					let content: string;
+					try {
+						content = withFileRetry(() => readFileSync(pidFilePath, 'utf8'));
+					} catch (error) {
+						if (error.code !== 'ENOENT') throw error;
 					}
-					removePidRecord(pidFilePath, content);
-				}
-
-				let childProcess;
-				try {
-					childProcess = spawnFunction(command, args, options, callback);
-				} catch (error) {
-					spawnError = error;
-					throw error;
-				}
-				if (!childProcess.pid) return childProcess;
-				try {
-					const current = readProcessIdentity(childProcess.pid);
-					if (!current) return childProcess;
-					const record = `${childProcess.pid}\n${requestedVersion ?? 0}\n${current.identity}`;
-					writePidRecord(pidFilePath, record);
-					childProcess.once('exit', () => {
-						try {
-							withSpawnPidLock(pidFilePath, () => removePidRecord(pidFilePath, record));
-						} catch (error) {
-							logger.warn(`Could not remove PID record for named process ${processName}`, error);
+					if (content !== undefined) {
+						const existing = parsePidFile(content);
+						const current =
+							existing.pid && existing.identity && !isPreviousBoot(existing.identity)
+								? readProcessIdentity(existing.pid)
+								: null;
+						if (current && current.identity === existing.identity) {
+							if (requestedVersion == null || requestedVersion === existing.version) {
+								return new ExistingProcessWrapper(existing.pid, existing.identity);
+							}
+							try {
+								process.kill(existing.pid);
+							} catch (error) {
+								if (error.code !== 'ESRCH') throw error;
+							}
+							Atomics.wait(spawnWait, 0, 0, 5);
+						} else if (existing.pid && !existing.identity) {
+							logger.warn(
+								`Named process ${processName} has a legacy PID record for ${existing.pid}; replacing it without signaling the unverified process`
+							);
 						}
-					});
-					return childProcess;
-				} catch (error) {
-					childProcess.kill('SIGKILL');
-					throw error;
-				}
-			});
+						removePidRecord(pidFilePath, content);
+					}
+
+					let childProcess;
+					try {
+						childProcess = spawnFunction(command, args, options, callback);
+					} catch (error) {
+						spawnError = error;
+						throw error;
+					}
+					if (!childProcess.pid) return childProcess;
+					try {
+						const current = readProcessIdentity(childProcess.pid);
+						if (!current) return childProcess;
+						const record = `${childProcess.pid}\n${requestedVersion ?? 0}\n${current.identity}`;
+						writePidRecord(pidFilePath, record);
+						childProcess.once('exit', () => {
+							try {
+								tryWithSpawnPidLock(pidFilePath, () => removePidRecord(pidFilePath, record), reportReleaseError);
+							} catch (error) {
+								logger.warn(`Could not remove PID record for named process ${processName}`, error);
+							}
+						});
+						return childProcess;
+					} catch (error) {
+						childProcess.kill('SIGKILL');
+						throw error;
+					}
+				},
+				undefined,
+				reportReleaseError
+			);
 		} catch (error) {
 			if (error === spawnError) throw error;
 			throw new NamedProcessError(`Could not spawn named process ${processName}`, { cause: error });

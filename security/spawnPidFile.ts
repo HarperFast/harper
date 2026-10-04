@@ -214,7 +214,42 @@ function releaseClaim(claimPath: string, markerPath: string) {
 	}
 }
 
-export function withSpawnPidLock<T>(pidFilePath: string, callback: () => T, timeoutMs = LOCK_TIMEOUT_MS): T {
+export function withSpawnPidLock<T>(
+	pidFilePath: string,
+	callback: () => T,
+	timeoutMs = LOCK_TIMEOUT_MS,
+	onReleaseError?: (error: unknown) => void
+): T {
+	return acquireSpawnPidLock(pidFilePath, callback, timeoutMs, false, onReleaseError) as T;
+}
+
+export function tryWithSpawnPidLock(
+	pidFilePath: string,
+	callback: () => void,
+	onReleaseError?: (error: unknown) => void
+): boolean {
+	let acquired = false;
+	acquireSpawnPidLock(
+		pidFilePath,
+		() => {
+			acquired = true;
+			callback();
+		},
+		0,
+		true,
+		onReleaseError
+	);
+	return acquired;
+}
+
+function acquireSpawnPidLock<T>(
+	pidFilePath: string,
+	callback: () => T,
+	timeoutMs: number,
+	nonBlocking: boolean,
+	onReleaseError?: (error: unknown) => void
+): T | undefined {
+	if (nonBlocking && !ownerIdentity) return;
 	ownerIdentity ??= readProcessIdentity(process.pid)?.identity;
 	if (!ownerIdentity) throw new NamedProcessError('Could not identify the named process lock owner');
 	const lockDir = `${pidFilePath}.locks`;
@@ -262,7 +297,8 @@ export function withSpawnPidLock<T>(pidFilePath: string, callback: () => T, time
 			let identity = ownerIdentity;
 			if (claim.pid !== process.pid) {
 				const verifiedAt = verifiedOwners.get(claim.identity);
-				if (verifiedAt !== undefined && performance.now() - verifiedAt < 1000) identity = claim.identity;
+				if (nonBlocking || (verifiedAt !== undefined && performance.now() - verifiedAt < 1000))
+					identity = claim.identity;
 				else {
 					identity = isPreviousBoot(claim.identity) ? undefined : readProcessIdentity(claim.pid)?.identity;
 					if (identity === claim.identity) verifiedOwners.set(claim.identity, performance.now());
@@ -273,32 +309,50 @@ export function withSpawnPidLock<T>(pidFilePath: string, callback: () => T, time
 		}
 		return claims;
 	};
+	let callbackFailed = false;
 	try {
 		publish();
 		owner.ticket = scan().reduce((maximum, claim) => Math.max(maximum, claim.ticket ?? 0), 0) + 1;
 		publish();
-		let previousQueue: string;
+		let trackedPredecessors: Map<string, number | undefined>;
 		while (true) {
 			const preceding = scan().filter((claim) => claim.ticket === undefined || ticketPrecedes(claim, owner));
 			if (!preceding.length) break;
-			const queue = preceding
-				.map((claim) => `${claim.token}:${claim.ticket ?? 'choosing'}`)
-				.sort()
-				.join(',');
-			if (queue !== previousQueue) {
+			if (nonBlocking) return;
+			const current = new Map(preceding.map((claim) => [claim.token, claim.ticket]));
+			let progressed = !trackedPredecessors;
+			if (trackedPredecessors) {
+				for (const [token, ticket] of trackedPredecessors) {
+					if (!current.has(token)) {
+						trackedPredecessors.delete(token);
+						progressed = true;
+					} else if (current.get(token) !== ticket) {
+						trackedPredecessors.set(token, current.get(token));
+						progressed = true;
+					}
+				}
+			} else trackedPredecessors = current;
+			if (progressed) {
 				deadline = performance.now() + timeoutMs;
-				previousQueue = queue;
 			}
 			if (performance.now() >= deadline)
 				throw new NamedProcessError(`Timed out acquiring named process lock ${pidFilePath}`);
 			Atomics.wait(lockWait, 0, 0, 50);
 		}
 		return callback();
+	} catch (error) {
+		callbackFailed = true;
+		throw error;
 	} finally {
 		try {
-			unlinkIfPresent(stagingPath);
-		} finally {
-			releaseClaim(claimPath, markerPath);
+			try {
+				unlinkIfPresent(stagingPath);
+			} finally {
+				releaseClaim(claimPath, markerPath);
+			}
+		} catch (error) {
+			onReleaseError?.(error);
+			if (!callbackFailed && !onReleaseError) throw error;
 		}
 	}
 }
