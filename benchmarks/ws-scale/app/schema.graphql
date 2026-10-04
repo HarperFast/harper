@@ -1,0 +1,7 @@
+# Each record is one topic: MQTT subscribers use Bench/<id>, native WebSocket subscribers /Bench/<id>.
+type Bench @table @export {
+	id: ID @primaryKey
+	t: Float
+	s: Int
+	p: String
+}
