@@ -108,6 +108,8 @@ test('framing accepts a non-clearing verdict explained in Alternatives or a Your
 			`## ⚖️ Alternatives\n\n## ✅ Verification\n\nExecuted evidence.\n\nFraming-Verdict: ${verdict}`,
 			`> ❓ **Your call:**\n\nFraming-Verdict: ${verdict}`,
 			`\`\`\`text\n> ❓ **Your call:** hidden in a fence\n\`\`\`\n\nFraming-Verdict: ${verdict}`,
+			`~~~text\n> ❓ **Your call:** hidden in a fence\n~~~\n\nFraming-Verdict: ${verdict}`,
+			`<!--\n> ❓ **Your call:** hidden in a comment\n-->\n\nFraming-Verdict: ${verdict}`,
 		])
 			assert.strictEqual(evaluateFramingVerdict(human({ body }), framingOptions()).pass, false, body);
 	}
