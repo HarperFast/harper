@@ -1,0 +1,2 @@
+graphqlSchema:
+  files: '*.graphql'
