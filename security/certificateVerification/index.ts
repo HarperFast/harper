@@ -36,10 +36,22 @@ const warnedUnresolvedLeaves = new Set<string>();
 const MAX_WARNED_LEAVES = 10_000;
 
 /**
- * Verify certificate revocation status using OCSP and/or CRL
- * @param peerCertificate - Peer certificate object from TLS connection
- * @param mtlsConfig - The mTLS configuration from the request
- * @returns Promise resolving to verification result
+ * Check a client certificate's revocation status (CRL first, OCSP fallback) under the listener's mTLS
+ * configuration. Core's HTTP and MQTT listeners call it, and a protocol plugin
+ * (`import { verifyCertificate } from 'harper'`) calls it from its `server.socket` listener the same
+ * way.
+ *
+ * Revocation is checked only for a certificate TLS already accepted: call it once `socket.authorized`
+ * is true and `getPeerCertificate(true)` returned a subject, and reject a missing or unauthorized
+ * certificate on an mTLS-required listener yourself, before this. `valid: true` with
+ * `status: 'disabled'` means no revocation method is configured, not that the client was verified;
+ * `valid: false` means refuse the connection. The promise can reject on a certificate that does not
+ * parse or a fault in the check, and nothing catches that for a socket listener: catch it, close the
+ * socket and attach no protocol handlers, so an undecided connection never serves commands.
+ *
+ * @param peerCertificate - `socket.getPeerCertificate(true)` from the TLS connection
+ * @param mtlsConfig - the listener's `mtls` option (`true`, or the object carrying
+ *   `certificateVerification`); parsed once and cached per object
  */
 export async function verifyCertificate(
 	peerCertificate: PeerCertificate,

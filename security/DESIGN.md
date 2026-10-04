@@ -155,9 +155,12 @@ Adding `export { x } from './…'` to `index.ts` publishes `x` on the `harper` *
 make `import { x } from 'harper'` work inside an application. A component loaded into a VM compartment
 resolves `harper` to a synthetic module built from `getHarperExports()` — a hand-maintained object
 literal, not a re-export of `index.ts` — so a value added to only one list fails at component load with
-`The requested module 'harper' does not provide an export named 'x'`. No unit test sees that, because
-unit tests `require('#src/…')` directly; only a fixture that imports from `'harper'` does
-(`integrationTests/security/fixtures/deferred-credential-rejection/resources.js`, harper#2703).
+`The requested module 'harper' does not provide an export named 'x'`. Enforced by
+`unitTests/security/harperModuleExports.test.js`: every package value export must reach a compartment
+unless it is on that test's package-only list, and the helpers a protocol plugin needs for parity with
+the MQTT endpoint (harper#2715) must be the identical function on both paths. The lists stay separate on
+purpose: the compartment binds `server`/`logger`/`resources`/`config`/`secrets` and the branched
+`databases`/`tables`/`defineTable` per scope, and omits what only harper-pro consumes through `core/`.
 
 Export the value from the module that _defines_ it rather than re-exporting it through an intermediate,
 so a component-created value shares that module's private symbols. `markCredentialRejection` depends on
