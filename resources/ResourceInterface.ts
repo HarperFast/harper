@@ -251,6 +251,18 @@ export type Select = (string | SubSelect)[];
 export interface SubscriptionRequest extends RequestTarget {
 	/** The starting time of events to return (defaults to now) */
 	startTime?: number;
+	/**
+	 * Resume from `startTime` as a position in this database generation: the subscription is refused with
+	 * a 409 if the database was replaced (always on LMDB), or a 410 if the history after the position is
+	 * no longer retained or is too long to replay for one record, and exposes `resumeVerified`. Requires a
+	 * finite `startTime`, where `0` is a position, and no `previousCount`.
+	 */
+	databaseGeneration?: string;
+	/**
+	 * Certify delivery progress (RocksDB): the subscription carries `progress()` and `sentCount`, a reload
+	 * marker or a failure to build a live event ends it, and its snapshot keeps every event buffered during the scan.
+	 */
+	reportProgress?: boolean;
 	/** The count of previously recorded events to return */
 	previousCount?: number;
 	/** If the current record state should be omitted as the first event */
@@ -305,6 +317,22 @@ export interface Subscription<Event extends object = any> extends IterableEventQ
 	listener: Listener<Event>;
 	subscriptions: Listener<Event>[];
 	startTime?: number;
+	/** The generation of the database this subscription reads; undefined on LMDB. */
+	databaseGeneration?: string;
+	/**
+	 * Present only when subscribed with `databaseGeneration`. Resolves `true` once the replay after the
+	 * position is complete and checked, or `false` if it was refused, cut short or closed first; never rejects.
+	 * Events delivered before it resolves `true` are not safe to checkpoint. It does not detect a transaction
+	 * that commits after the position was recorded with a key below it.
+	 */
+	resumeVerified?: Promise<boolean>;
+	/**
+	 * Present only when subscribed with `reportProgress`: the newest log key at or below which every history
+	 * event this subscription will deliver has already been sent to it, or undefined if none is certified.
+	 */
+	progress?: () => number | undefined;
+	/** Present only when subscribed with `reportProgress`: how many events have been sent to this subscription. */
+	sentCount?: number;
 
 	end(): void;
 	toJSON(): { name: 'subscription' };

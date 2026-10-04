@@ -70,6 +70,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 				// and still match older version numbers that may commit in the future. But we have to start
 				// immediately so we are at the right position
 				auditLogIterator = auditStore.getRange({});
+				auditStore.subscriptionLogRange = auditLogIterator;
 			}
 			auditStore.hasSubscriptionCommitListener = true;
 			// Coalesce 'committed' bursts: instead of iterating the audit log synchronously inside the
@@ -110,6 +111,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	key = keyArrayToString(key);
 	const subscription = new Subscription(listener);
 	subscription.startTime = startTime;
+	subscription.databaseGeneration = table.auditStore?.databaseGeneration?.id;
 	let subscriptions: any = tableSubscriptions.get(key);
 
 	if (subscriptions) subscriptions.push(subscription);
@@ -122,7 +124,48 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	}
 	subscription.subscriptions = subscriptions;
 	databaseSubscriptions.activeCount = (databaseSubscriptions.activeCount || 0) + 1;
+	if (options?.reportProgress && table.auditStore?.reusableIterable) {
+		if (!databaseSubscriptions.progressConsumers) startProgressTracking(databaseSubscriptions, table.auditStore);
+		databaseSubscriptions.progressConsumers = (databaseSubscriptions.progressConsumers || 0) + 1;
+		subscription.reportsProgress = true;
+		subscription.registeredThrough = databaseSubscriptions.dispatchedThrough;
+	}
 	return subscription;
+}
+
+function rangeFailures(range: any): number {
+	return (range?.failedLogs?.size ?? 0) + (range?.corruptFrameStop?.breaks ?? 0);
+}
+
+function startProgressTracking(databaseSubscriptions: any, auditStore: any) {
+	databaseSubscriptions.pendingProgressKey = undefined;
+	// a key left by an earlier stretch of tracking does not cover what was dispatched untracked since
+	databaseSubscriptions.dispatchedThrough = undefined;
+	// the log store ends a failed log's iteration quietly, and nothing after lost records can be certified
+	if (rangeFailures(auditStore.subscriptionLogRange) > 0) stopProgress(databaseSubscriptions);
+}
+
+function advanceProgress(subscriptions: any, key: number, range: any): boolean {
+	if (rangeFailures(range) > 0) {
+		stopProgress(subscriptions);
+		return false;
+	}
+	if (!(subscriptions.dispatchedThrough >= key)) subscriptions.dispatchedThrough = key;
+	return true;
+}
+
+function stopProgress(databaseSubscriptions: any) {
+	if (databaseSubscriptions.progressStopped) return;
+	databaseSubscriptions.progressStopped = true;
+	warn('The transaction log could not be read in full; durable subscription positions on it stop advancing');
+}
+
+/**
+ * The key of the newest transaction every record of which has been dispatched to every subscriber
+ * registered at the time, or undefined before any has been since progress tracking began.
+ */
+export function dispatchedThrough(subscription: any): number | undefined {
+	return subscription.subscriptions?.tables?.envs?.dispatchedThrough;
 }
 
 /**
@@ -169,6 +212,12 @@ class Subscription extends IterableEventQueue {
 	listener: (recordId: Id, auditEntry: any, txnLogKey: number, beginTxn: boolean) => void;
 	subscriptions: any;
 	startTime?: number;
+	databaseGeneration?: string;
+	resumeVerified?: Promise<boolean>;
+	reportsProgress?: boolean;
+	registeredThrough?: number;
+	sentCount?: number;
+	progress?: () => number | undefined;
 	includeDescendants?: boolean;
 	supportsTransactions?: boolean;
 	onlyChildren?: boolean;
@@ -183,6 +232,10 @@ class Subscription extends IterableEventQueue {
 			this.subscriptions = null;
 			const envSubscriptions = subscriptions.tables?.envs;
 			if (envSubscriptions?.activeCount > 0) envSubscriptions.activeCount--;
+			if (this.reportsProgress) {
+				this.reportsProgress = false;
+				if (envSubscriptions?.progressConsumers > 0) envSubscriptions.progressConsumers--;
+			}
 			// splicing would shift the next subscriber past a loop walking this array, which compacts it when it finishes
 			if (subscriptions.traversals > 0) subscriptions.hasEnded = true;
 			else {
@@ -247,6 +300,9 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 	const iterator = auditLogIterable[Symbol.iterator]?.() ?? auditLogIterable;
 	let processed = 0;
 	let yielded = false;
+	let iteratorFailed = false;
+	let trackProgress = subscriptions.progressConsumers > 0 && !subscriptions.progressStopped;
+	let progressKey = trackProgress ? subscriptions.pendingProgressKey : undefined;
 	try {
 		while (true) {
 			let result;
@@ -260,12 +316,24 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 				// subscription set on every commit). Stop draining this pass; the next
 				// commit reschedules another notify cycle.
 				warn('Audit log iterator failed during broadcast; stopping this pass', error);
+				iteratorFailed = true;
+				if (trackProgress) stopProgress(subscriptions);
 				break;
 			}
 			if (result.done) break;
 			const auditRecord = result.value;
 			const timestamp: number = auditRecord.txnLogKey;
 			subscriptions.lastTxnTime = timestamp;
+			if (trackProgress && timestamp !== progressKey) {
+				// a transaction's records share its key and are appended together, so a new key completes the last one
+				if (progressKey !== undefined) trackProgress = advanceProgress(subscriptions, progressKey, auditLogIterable);
+				progressKey = timestamp;
+			}
+			if (trackProgress && auditRecord.type === undefined) {
+				// the decoder's sentinel for an entry it could not read names no table to rule out
+				stopProgress(subscriptions);
+				trackProgress = false;
+			}
 			// the transaction extent: RocksDB entries committed together share the log key (record
 			// versions may differ); LMDB's transaction-log key is per-entry, so version delimits there
 			const txnKey = auditStore.reusableIterable ? timestamp : auditRecord.version;
@@ -273,6 +341,11 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 				const tableSubscriptions = subscriptions[auditRecord.tableId];
 				if (tableSubscriptions) {
 					const recordId = auditRecord.recordId;
+					if (recordId === undefined && trackProgress) {
+						// a record id that failed to decode cannot be routed, so its subscribers miss it
+						stopProgress(subscriptions);
+						trackProgress = false;
+					}
 					// TODO: How to handle invalidation
 					let matchingKey = keyArrayToString(recordId);
 					let ancestorLevel = 0;
@@ -363,6 +436,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 				// are recreated from the advanced lastTxnTime. The same-thread aftercommit path does not
 				// set allowYield because it holds an inter-thread lock that must not span event-loop turns.
 				subscriptions.pendingTxnSubscribers = subscribersWithTxns;
+				subscriptions.pendingProgressKey = progressKey;
 				yielded = true;
 				setImmediate(() =>
 					notifyFromTransactionData(subscriptions, auditStore.reusableIterable ? auditLogIterable : null, true)
@@ -371,6 +445,10 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 			}
 		}
 		subscriptions.pendingTxnSubscribers = null;
+		if (trackProgress && progressKey !== undefined && !iteratorFailed) {
+			advanceProgress(subscriptions, progressKey, auditLogIterable);
+		}
+		subscriptions.pendingProgressKey = undefined;
 		if (subscribersWithTxns) {
 			// any subscribers with open transactions need to have an event to indicate that their transaction has been ended
 			for (const subscription of subscribersWithTxns) {
