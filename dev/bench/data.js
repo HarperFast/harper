@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791019004584,
+  "lastUpdate": 1791105681385,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -7007,6 +7007,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 960.44,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f3fa8e37239e71747e8050136cdc805d810d80d8",
+          "message": "test: keep the startup-install deadline off the baseline boot of the stalled-reinstall suites (#2993)\n\nThe \"existing component whose reinstall stalls\" suites booted twice under the\nsame 2000 ms deployment.startupInstallTimeout: once to install version 1 and\nonce for the stalled reinstall under test. When the version 1 install was still\nbefore its swap at the deadline, startup went on without the component and, as\ndesigned, only requested a restart once the install finished — so the before\nhook's \"version 1 serves\" wait could never succeed. Seen twice on CI, both on\nthreads.count: 0, where the main thread scans components right after it stops\nwaiting.\n\nThe baseline boot now uses the default startup wait; only the reinstall boot\nsets the short deadline.\n\nDispatch-Task: harper-startup-install-timeout\n\nClaude-Session: https://claude.ai/code/session_014yPFCVvXCwg2ZcfRUHK2VY\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-10-04T03:09:59Z",
+          "url": "https://github.com/HarperFast/harper/commit/f3fa8e37239e71747e8050136cdc805d810d80d8"
+        },
+        "date": 1791105679328,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6106.46,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8124.89,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 8226.19,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6149.98,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4439.07,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 8074.39,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1004.31,
             "unit": "ops/sec"
           }
         ]
