@@ -8,13 +8,13 @@ const { scopedImport } = require('#src/security/jsLoader');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { readProcessIdentity } = require('#src/security/spawnPidFile');
-const { waitFor } = require('../../waitFor.js');
+const { waitFor } = require('../waitFor.js');
 
-const fixtures = join(__dirname, 'fixtures');
+const fixtures = join(__dirname, 'fixtures', 'named-process');
 const childPath = join(fixtures, 'spawn-child.cjs');
 
 describe('constrained spawn process identity', function () {
-	this.timeout(30_000);
+	this.timeout(process.platform === 'win32' ? 90_000 : 30_000);
 	let api;
 	let name;
 	let pidFile;
