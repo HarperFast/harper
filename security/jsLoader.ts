@@ -20,7 +20,7 @@ import { CONFIG_PARAMS, DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
 import { markCredentialRejection, credentialRejectionError } from './credentialRejection.ts';
 import type {} from 'ses';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, realpathSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import {
 	NamedProcessError,
@@ -28,6 +28,9 @@ import {
 	readProcessIdentity,
 	readProcessIdentityAsync,
 	withSpawnPidLock,
+	isPreviousBoot,
+	withFileRetry,
+	writePidRecord,
 } from './spawnPidFile.ts';
 import { whenComponentsLoaded, bootLoadsComponents } from '../server/threads/threadServer.js';
 import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
@@ -992,6 +995,7 @@ const child_processConstrained: any = {
 		throw new Error('execSync is not allowed');
 	},
 };
+const spawnWait = new Int32Array(new SharedArrayBuffer(4));
 child_processConstrained.default = child_processConstrained;
 const REPLACED_BUILTIN_MODULES = {
 	child_process: child_processConstrained,
@@ -1006,23 +1010,26 @@ class ExistingProcessWrapper extends EventEmitter {
 		super();
 		this.pid = pid;
 		this.identity = identity;
-		this.checkInterval = setInterval(async () => {
-			if (this.checking) return;
-			this.checking = true;
-			let current;
-			try {
-				current = await readProcessIdentityAsync(this.pid);
-			} catch {
-				// An unreadable identity does not establish exit.
-				return;
-			} finally {
-				this.checking = false;
-			}
-			if (current?.identity !== this.identity) {
-				clearInterval(this.checkInterval);
-				this.emit('exit', null, null);
-			}
-		}, 1000);
+		this.checkInterval = setInterval(
+			async () => {
+				if (this.checking) return;
+				this.checking = true;
+				let current;
+				try {
+					current = await readProcessIdentityAsync(this.pid);
+				} catch {
+					// An unreadable identity does not establish exit.
+					return;
+				} finally {
+					this.checking = false;
+				}
+				if (current?.identity !== this.identity) {
+					clearInterval(this.checkInterval);
+					this.emit('exit', null, null);
+				}
+			},
+			process.platform === 'win32' ? 5000 : 1000
+		);
 	}
 
 	kill(signal?: NodeJS.Signals | number) {
@@ -1043,7 +1050,8 @@ class ExistingProcessWrapper extends EventEmitter {
 
 function removePidRecord(pidFilePath: string, expected: string) {
 	try {
-		if (readFileSync(pidFilePath, 'utf8') === expected) unlinkSync(pidFilePath);
+		if (withFileRetry(() => readFileSync(pidFilePath, 'utf8')) === expected)
+			withFileRetry(() => unlinkSync(pidFilePath));
 	} catch (error) {
 		if (error.code !== 'ENOENT') throw error;
 	}
@@ -1072,18 +1080,22 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 		mkdirSync(pidDir, { recursive: true });
 
 		const pidFilePath = join(pidDir, `${processName}.pid`);
+		let spawnError;
 
 		try {
 			return withSpawnPidLock(pidFilePath, () => {
 				let content: string;
 				try {
-					content = readFileSync(pidFilePath, 'utf8');
+					content = withFileRetry(() => readFileSync(pidFilePath, 'utf8'));
 				} catch (error) {
 					if (error.code !== 'ENOENT') throw error;
 				}
 				if (content !== undefined) {
 					const existing = parsePidFile(content);
-					const current = existing.pid && existing.identity ? readProcessIdentity(existing.pid) : null;
+					const current =
+						existing.pid && existing.identity && !isPreviousBoot(existing.identity)
+							? readProcessIdentity(existing.pid)
+							: null;
 					if (current && current.identity === existing.identity) {
 						if (requestedVersion == null || requestedVersion === existing.version) {
 							return new ExistingProcessWrapper(existing.pid, existing.identity);
@@ -1093,7 +1105,7 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 						} catch (error) {
 							if (error.code !== 'ESRCH') throw error;
 						}
-						Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+						Atomics.wait(spawnWait, 0, 0, 5);
 					} else if (existing.pid && !existing.identity) {
 						logger.warn(
 							`Named process ${processName} has a legacy PID record for ${existing.pid}; replacing it without signaling the unverified process`
@@ -1102,13 +1114,19 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 					removePidRecord(pidFilePath, content);
 				}
 
-				const childProcess = spawnFunction(command, args, options, callback);
+				let childProcess;
+				try {
+					childProcess = spawnFunction(command, args, options, callback);
+				} catch (error) {
+					spawnError = error;
+					throw error;
+				}
 				if (!childProcess.pid) return childProcess;
 				try {
 					const current = readProcessIdentity(childProcess.pid);
 					if (!current) return childProcess;
 					const record = `${childProcess.pid}\n${requestedVersion ?? 0}\n${current.identity}`;
-					writeFileSync(pidFilePath, record, 'utf8');
+					writePidRecord(pidFilePath, record);
 					childProcess.once('exit', () => {
 						try {
 							withSpawnPidLock(pidFilePath, () => removePidRecord(pidFilePath, record));
@@ -1123,6 +1141,7 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 				}
 			});
 		} catch (error) {
+			if (error === spawnError) throw error;
 			throw new NamedProcessError(`Could not spawn named process ${processName}`, { cause: error });
 		}
 	};
