@@ -21,6 +21,7 @@ import * as envMgr from '../utility/environment/environmentManager.ts';
 import * as path from 'node:path';
 import { getConfigObj, getConfigPath } from '../config/configUtils.ts';
 import { withComponentPreparationLock } from '../components/componentPreparationLock.ts';
+import { awaitRestart } from '../components/awaitRestart.ts';
 import { rmSync } from 'node:fs';
 import { getThisNodeName } from '../server/nodeName.ts';
 import { armRestartExitWatchdog } from './restartExitWatchdog.ts';
@@ -32,7 +33,7 @@ const ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS = 5000;
 
 let calledFromCli;
 
-export { restart, restartService };
+export { restart, restartService, activateDeploymentOnPeers };
 
 // Add ITC event listener to main thread which will be called from child that receives restart request.
 if (isMainThread) {
@@ -60,21 +61,24 @@ if (isMainThread) {
  */
 async function restartThenRemoveBranches(service: string, project: string, scope: string | undefined): Promise<void> {
 	let restarted = false;
-	const restartHttpWorkers = async () => {
+	const restartHttpWorkers = () => {
 		restarted = true;
 		processMan.expectedRestartOfChildren();
 		hdbLogger.notify('Restarting http_workers');
-		return restartWorkers('http', undefined, true, null, decodeRestartScope({ scope }));
+		// Bounded: it queues behind other restarts, and one of them may be reloading a component that waits on this lock.
+		return awaitRestart((onProgress) =>
+			restartWorkers('http', undefined, true, onProgress, decodeRestartScope({ scope }))
+		);
 	};
 	try {
 		const componentPath = path.join(getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT) as string, project);
 		await withComponentPreparationLock(
 			componentPath,
 			async () => {
-				const outcome: any = await restartHttpWorkers();
-				if (!outcome || outcome.declined || outcome.workersKeptOnOldCode) {
+				const outcome = await restartHttpWorkers();
+				if (!outcome.completed || outcome.workersKeptOnOldCode) {
 					hdbLogger.warn(
-						`Branched database storage of ${project} was left in place: the restart did not replace every worker`
+						`Branched database storage of ${project} was left in place: the restart did not finish replacing every worker`
 					);
 					return;
 				}
@@ -183,6 +187,72 @@ async function restart(req: any) {
 	return RESTART_RESPONSE;
 }
 
+const DEPLOYMENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * A certified rolling deploy's second half: the release is staged on every peer, and this activates it on one peer
+ * at a time, each certifying it with its own restart. Every peer is visited — each decides for itself — and the job
+ * fails at the end naming each one that did not take it.
+ */
+async function activateDeploymentOnPeers(activation: any) {
+	const { project, deployment_id: deploymentId, deployment_row: deploymentRow, nodes } = activation ?? {};
+	if (
+		typeof project !== 'string' ||
+		!DEPLOYMENT_ID_PATTERN.test(deploymentId) ||
+		!DEPLOYMENT_ID_PATTERN.test(deploymentRow) ||
+		(nodes !== undefined && (!Array.isArray(nodes) || nodes.some((node) => typeof node !== 'string')))
+	) {
+		throw handleHDBError(
+			new Error(),
+			'Invalid activate_deployment: expected project, deployment_id, deployment_row and an optional list of nodes',
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+	const peers = ((global as any).server.nodes ?? []).filter(
+		(node) => node.name !== getThisNodeName() && (!nodes || nodes.includes(node.name))
+	);
+	const results = [];
+	if (peers.length === 0) return { activated: results };
+	const replication = (global as any).server.replication;
+	replication.monitorNodeCAs();
+	const { peerDeployAnswerTimeoutMs } = await import('../components/operations.js');
+	const timeoutMs = peerDeployAnswerTimeoutMs({ restart: true });
+	for (const node of peers) {
+		try {
+			const response = await replication.sendOperationToNode(
+				node,
+				{
+					operation: 'deploy_component',
+					project,
+					deployment_id: deploymentId,
+					_deploymentId: deploymentRow,
+					restart: true,
+					replicated: false,
+				},
+				{ timeoutMs }
+			);
+			const answer = response?.value ?? response?.body ?? response;
+			results.push({ node: node.name, certification: answer?.certification, message: answer?.message });
+		} catch (error) {
+			results.push({ node: node.name, error: error?.message ?? String(error) });
+		}
+	}
+	const failed = results.filter((result) => result.error);
+	if (failed.length > 0) {
+		const error: any = new Error(
+			`Deployment ${deploymentId} of ${project} was not activated on ${failed.length} of ${results.length} peer ` +
+				`node(s): ${failed.map((result) => `${result.node} (${result.error})`).join('; ')}`
+		);
+		// What a failed job records as its message, so get_job keeps every peer's outcome.
+		error.http_resp_msg = { error: error.message, activated: results };
+		throw error;
+	}
+	return { activated: results };
+}
+
 /**
  * Used to restart a particular service, services includes - httpWorkers
  * @param req
@@ -235,6 +305,19 @@ async function restartService(req: any) {
 				true
 			);
 		}
+	}
+	if (req.activate_deployment !== undefined) {
+		if (isMainThread) {
+			throw handleHDBError(
+				new Error(),
+				'activate_deployment runs as a job',
+				HTTP_STATUS_CODES.BAD_REQUEST,
+				undefined,
+				undefined,
+				true
+			);
+		}
+		return activateDeploymentOnPeers(req.activate_deployment);
 	}
 	processMan.expectedRestartOfChildren();
 	if (!isMainThread) {

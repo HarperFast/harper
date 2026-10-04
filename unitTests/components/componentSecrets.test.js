@@ -876,10 +876,10 @@ export const afterTopLevelAwait = secrets.CS_SCOPED;
 			table.mock.rows.set('CS_SCOPED', row('CS_SCOPED', 'v1', ['app']));
 			await materializeGlobalSecrets();
 			retainComponentSubscriptions('app'); // the running app scope
-			retainComponentSubscriptions('app'); // a throwaway deploy-validation scope, same identity
+			retainComponentSubscriptions('app'); // another of the app's plugin scopes, same identity
 			const iter = getSecretsForComponent('app').subscribe('CS_SCOPED');
 			assert.equal((await iter.next()).value, 'v1');
-			releaseComponentSubscriptions('app'); // validation scope closes → must NOT tear down
+			releaseComponentSubscriptions('app'); // that scope closes → must NOT tear down
 			const stillOpen = iter.next(); // parks; the stream is still live
 			table.mock.emit('CS_SCOPED', row('CS_SCOPED', 'v2', ['app']));
 			assert.equal((await stillOpen).value, 'v2'); // still delivering

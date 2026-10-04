@@ -8,7 +8,6 @@ import * as user from '../../security/user.ts';
 import * as role from '../../security/role.ts';
 import customFunctionOperations from '../../components/operations.js';
 import { setMcpQuotaHandler } from '../../components/mcp/quota.ts';
-import { isDeployValidating } from './deployValidationState.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import readLog from '../../utility/logging/readLog.ts';
 import * as export_ from '../../dataLayer/export.ts';
@@ -207,8 +206,6 @@ const declaredPermissionNames = new Set<string>();
  * @param operationDefinition
  */
 server.registerOperation = (operationDefinition: OperationDefinition) => {
-	// A throwaway deploy-validation load must not register (or announce) operations onto the live worker.
-	if (isDeployValidating()) return;
 	const { name, execute, requiresSuperUser } = operationDefinition;
 	let handler = execute;
 	if (requiresSuperUser === undefined) {
@@ -239,10 +236,8 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 };
 
 // Register the durable MCP quota policy as a function (see components/mcp/quota.ts). Worker-local,
-// like the tool dispatch that consults it, so no cross-thread announcement is needed. Skipped during
-// deploy validation so a throwaway candidate load can't replace the live worker's policy.
+// like the tool dispatch that consults it, so no cross-thread announcement is needed.
 server.setMcpQuotaHandler = (handler) => {
-	if (isDeployValidating()) return;
 	setMcpQuotaHandler(handler);
 };
 
@@ -458,6 +453,33 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 					throw handleHDBError(
 						new Error(),
 						nestedPermsResult,
+						hdbErrors.HTTP_STATUS_CODES.FORBIDDEN,
+						undefined,
+						false,
+						true
+					);
+				}
+			}
+			// A rolling deploy's per-peer activation rides restart_service, but what it does is deploy: a caller
+			// asking for one must be allowed to deploy, not only to restart.
+			if (json.operation === terms.OPERATIONS_ENUM.RESTART_SERVICE && json.activate_deployment !== undefined) {
+				const deployRequest = {
+					...json,
+					operation: terms.OPERATIONS_ENUM.DEPLOY_COMPONENT,
+					project: (json.activate_deployment as { project?: unknown } | undefined)?.project,
+				};
+				const deployPermsResult = opAuth.verifyPerms(
+					deployRequest,
+					getOperationFunction(deployRequest).operation_function,
+					{ apiOperation: terms.OPERATIONS_ENUM.DEPLOY_COMPONENT }
+				);
+				if (deployPermsResult) {
+					operationLog.warn(
+						`User '${json.hdb_user?.username}' is not permitted to activate a deployment through ${json.operation}`
+					);
+					throw handleHDBError(
+						new Error(),
+						deployPermsResult,
 						hdbErrors.HTTP_STATUS_CODES.FORBIDDEN,
 						undefined,
 						false,

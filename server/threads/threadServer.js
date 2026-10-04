@@ -8,8 +8,6 @@ let componentsLoadedResolve;
 exports.whenComponentsLoaded = new Promise((resolve) => {
 	componentsLoadedResolve = resolve;
 });
-let bootLoadStarted = false;
-exports.bootLoadsComponents = () => bootLoadStarted;
 
 const harperLogger = require('../../utility/logging/harper_logger.ts');
 const env = require('../../utility/environment/environmentManager.ts');
@@ -176,7 +174,6 @@ function closeServers() {
 }
 
 function startServers() {
-	bootLoadStarted = true;
 	// A worker that has not yet posted child_started owns no ref'd handle: addPort()
 	// (manageThreads) unrefs parentPort, component watchers are persistent:false, and the
 	// reporting timers are unref'd. An await inside loadRootComponents whose completion
@@ -203,9 +200,18 @@ function startServers() {
 	}
 	reportStartupPhase(startupPhase);
 	let listening;
-	const loaded = require('../loadRootComponents.js')
-		.loadRootComponents(true)
-		.then(() => {
+	const heldFor = workerData?.certify;
+	const heldStart = heldFor ? require('./heldStart.ts') : undefined;
+	const loaded = Promise.resolve(heldStart?.beginHeldStart(heldFor))
+		.then((loadedGenerations) =>
+			require('../loadRootComponents.js')
+				.loadRootComponents(true)
+				.then(() => {
+					require('../../components/deployLifecycle.ts').deployLifecycle._componentsLoaded();
+					return loadedGenerations;
+				})
+		)
+		.then(async (loadedGenerations) => {
 			parentPort
 				?.on('message', (message) => {
 					if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
@@ -258,6 +264,10 @@ function startServers() {
 					}
 				})
 				.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
+			if (heldStart) {
+				reportStartupPhase('awaiting admission');
+				await heldStart.awaitAdmission(heldFor, loadedGenerations);
+			}
 			reportStartupPhase('binding listeners');
 			listening = listenOnPorts();
 		});
