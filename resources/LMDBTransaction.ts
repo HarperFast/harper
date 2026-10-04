@@ -2,6 +2,7 @@ import {
 	DatabaseTransaction,
 	closeWriteInstance,
 	deferForCommitInFlight,
+	describeCommitIdentity,
 	validateWrite,
 	shouldSpareCommitPhase,
 	requestAbortedError,
@@ -553,9 +554,9 @@ function startMonitoringTxns() {
 					// it while the resume cursor advances past it — a permanent divergence (harper-pro#348). For
 					// those, keep the prior force-commit behavior below.
 					harperLogger.error(
-						`Transaction was open too long and has been aborted after exceeding the open-transaction limit, from table: ${
-							(txn.db as any)?.name + (url ? ' path: ' + url : '')
-						}`
+						`Transaction was open too long and has been aborted after exceeding the open-transaction limit, ` +
+							describeCommitIdentity(txn.db, txn.startedFrom, txn.transaction) +
+							(url ? ` path: ${url}` : '')
 					);
 					try {
 						commitChainHead.abortDueToTimeout();
