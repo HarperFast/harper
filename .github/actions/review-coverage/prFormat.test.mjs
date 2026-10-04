@@ -750,3 +750,12 @@ test('an empty emoji Verification section still needs evidence, and AI fields mu
 	const early = 'Complexity: complicated\n\n' + newBody().replace('\n\nComplexity: complicated', '');
 	assert.match(evaluateNew(early).problems.join('\n'), /AI fields must follow Verification/);
 });
+
+test('the new shape requires a 💡 Solution between ⊙ Problem and Verification', () => {
+	assert.match(
+		evaluateNew(newBody().replace(/## 💡 Solution[\s\S]*?(?=## )/, '')).problems.join('\n'),
+		/exactly one ## 💡 Solution/
+	);
+	const swapped = newBody().replace(/(## ⊙ Problem[\s\S]*?)(## 💡 Solution[\s\S]*?)(?=## )/, '$2$1');
+	assert.match(evaluateNew(swapped).problems.join('\n'), /Solution must follow ## ⊙ Problem/);
+});

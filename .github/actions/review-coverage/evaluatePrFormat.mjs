@@ -29,6 +29,11 @@ function problemSectionProblems(prose, verification) {
 	if (problem.length !== 1) return [missing(`found ${problem.length} ## ⊙ Problem`)];
 	if (verification.length === 1 && problem[0].index > verification[0].index)
 		return ['## ⊙ Problem must precede Verification'];
+	const solution = matches(prose, /^##[ \t]+💡[ \t]+Solution\b.*$/gim);
+	if (solution.length !== 1)
+		return [`AI-shaped description needs exactly one ## 💡 Solution section (found ${solution.length})`];
+	if (solution[0].index < problem[0].index || (verification.length === 1 && solution[0].index > verification[0].index))
+		return ['## 💡 Solution must follow ## ⊙ Problem and precede Verification'];
 	if (!YOUR_CALL.test(prose)) return [missing('no > ❓ **Your call:** line')];
 	const section = prose.slice(problem[0].index + problem[0][0].length).split(/^##\s+/m)[0];
 	return YOUR_CALL.test(section) ? [] : [missing('no > ❓ **Your call:** line under ## ⊙ Problem')];
