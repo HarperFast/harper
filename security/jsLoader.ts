@@ -1009,15 +1009,18 @@ class ExistingProcessWrapper extends EventEmitter {
 		this.checkInterval = setInterval(async () => {
 			if (this.checking) return;
 			this.checking = true;
+			let current;
 			try {
-				if ((await readProcessIdentityAsync(this.pid))?.identity !== this.identity) {
-					clearInterval(this.checkInterval);
-					this.emit('exit', null, null);
-				}
+				current = await readProcessIdentityAsync(this.pid);
 			} catch {
 				// An unreadable identity does not establish exit.
+				return;
 			} finally {
 				this.checking = false;
+			}
+			if (current?.identity !== this.identity) {
+				clearInterval(this.checkInterval);
+				this.emit('exit', null, null);
 			}
 		}, 1000);
 	}

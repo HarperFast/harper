@@ -1,4 +1,6 @@
 const assert = require('node:assert');
+const { spawn } = require('node:child_process');
+const { once } = require('node:events');
 const { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, existsSync } = require('node:fs');
 const { join } = require('node:path');
 const {
@@ -33,6 +35,12 @@ describe('named process PID records and locking', function () {
 		const identity = readProcessIdentity(process.pid);
 		assert(identity.identity);
 		assert.deepStrictEqual(await readProcessIdentityAsync(process.pid), identity);
+	});
+	it('confirms that a reaped child is absent synchronously and asynchronously', async () => {
+		const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+		await once(child, 'exit', { signal: AbortSignal.timeout(5000) });
+		assert.strictEqual(readProcessIdentity(child.pid), null);
+		assert.strictEqual(await readProcessIdentityAsync(child.pid), null);
 	});
 	it('rejects unsafe probe pids before any operating-system operation', async () => {
 		for (const pid of [0, -1, NaN, 1.1, Number.MAX_SAFE_INTEGER + 1]) {

@@ -6,6 +6,7 @@ import { ticketPrecedes } from '../components/componentPreparationLock.ts';
 
 const PROBE_TIMEOUT_MS = 5_000;
 const LOCK_TIMEOUT_MS = 30_000;
+const TRANSIENT_FILE_RETRY_DELAYS_MS = [10, 40, 160];
 const lockWait = new Int32Array(new SharedArrayBuffer(4));
 let bootId: string;
 let ownerIdentity: string;
@@ -41,7 +42,7 @@ function linuxProcessIdentity(pid: number): ProcessIdentity | null {
 		if (!/^\d+$/.test(fields[19])) throw new Error(`Invalid process start time for PID ${pid}`);
 		startTime = fields[19];
 	} catch (error) {
-		if (error.code === 'ENOENT' || error.code === 'ESRCH') return null;
+		if (error.code === 'ENOENT' || error.code === 'ESRCH') return confirmProcessAbsent(pid);
 		throw error;
 	}
 	bootId ??= readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
@@ -73,23 +74,33 @@ function processQuery(pid: number) {
 	throw new NamedProcessError(`Process identity is unavailable on ${process.platform}`);
 }
 
+function confirmProcessAbsent(pid: number): null {
+	try {
+		process.kill(pid, 0);
+	} catch (error) {
+		if (error.code === 'ESRCH') return null;
+		throw error;
+	}
+	throw new NamedProcessError(`Could not read identity for live PID ${pid}`);
+}
+
 function parseProcessQuery(pid: number, output: string): ProcessIdentity | null {
 	output = output.trim();
 	if (process.platform === 'win32') {
-		if (output === 'null') return null;
+		if (output === 'null') return confirmProcessAbsent(pid);
 		if (!/^[1-9]\d*$/.test(output)) throw new Error('Invalid Windows process creation time');
 		return { identity: `win32:${pid}:${output}` };
 	}
-	if (!output) return null;
+	if (!output) return confirmProcessAbsent(pid);
 	const match = /^(.*\d{4})\s+(\S+)\s*$/.exec(output);
 	if (!match) throw new Error('Invalid macOS process start time');
 	if (match[2].startsWith('Z') || match[2].startsWith('X')) return null;
 	return { identity: `darwin:${pid}:${match[1].trim().replace(/\s+/g, ' ')}` };
 }
 
-function queryFailure(error: any): null {
+function queryFailure(pid: number, error: any): null {
 	if (process.platform === 'darwin' && (error.status === 1 || error.code === 1) && !String(error.stdout ?? '').trim()) {
-		return null;
+		return confirmProcessAbsent(pid);
 	}
 	throw error;
 }
@@ -109,7 +120,7 @@ export function readProcessIdentity(pid: number): ProcessIdentity | null {
 			})
 		);
 	} catch (error) {
-		return queryFailure(error);
+		return queryFailure(pid, error);
 	}
 }
 
@@ -129,7 +140,7 @@ export async function readProcessIdentityAsync(pid: number): Promise<ProcessIden
 			},
 			(error, stdout) => {
 				try {
-					if (error) resolve(queryFailure(Object.assign(error, { stdout })));
+					if (error) resolve(queryFailure(pid, Object.assign(error, { stdout })));
 					else resolve(parseProcessQuery(pid, stdout));
 				} catch (error) {
 					reject(error);
@@ -146,9 +157,21 @@ interface SpawnClaim {
 	ticket?: number;
 }
 
+function withFileRetry<T>(operation: () => T): T {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return operation();
+		} catch (error) {
+			if (process.platform !== 'win32' || error.code !== 'EPERM' || attempt >= TRANSIENT_FILE_RETRY_DELAYS_MS.length)
+				throw error;
+		}
+		Atomics.wait(lockWait, 0, 0, TRANSIENT_FILE_RETRY_DELAYS_MS[attempt]);
+	}
+}
+
 function unlinkIfPresent(path: string) {
 	try {
-		unlinkSync(path);
+		withFileRetry(() => unlinkSync(path));
 	} catch (error) {
 		if (error.code !== 'ENOENT') throw error;
 	}
@@ -165,7 +188,7 @@ export function withSpawnPidLock<T>(pidFilePath: string, callback: () => T, time
 	const deadline = performance.now() + timeoutMs;
 	const publish = () => {
 		writeFileSync(stagingPath, JSON.stringify(owner), { flag: 'wx', mode: 0o600 });
-		renameSync(stagingPath, claimPath);
+		withFileRetry(() => renameSync(stagingPath, claimPath));
 	};
 	const scan = (): SpawnClaim[] => {
 		const claims: SpawnClaim[] = [];
@@ -174,7 +197,7 @@ export function withSpawnPidLock<T>(pidFilePath: string, callback: () => T, time
 			const path = join(lockDir, name);
 			let claim: SpawnClaim;
 			try {
-				claim = JSON.parse(readFileSync(path, 'utf8'));
+				claim = JSON.parse(withFileRetry(() => readFileSync(path, 'utf8')));
 			} catch (error) {
 				if (error.code === 'ENOENT') continue;
 				throw error;
