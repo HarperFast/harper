@@ -8,6 +8,10 @@ Index of every design note: [DESIGN.md](../DESIGN.md).
 
 ---
 
+## Root config is adopted only when it parses (`config/configUtils.ts`)
+
+`initConfig()` rejects `Document.errors` before upgrade backfill, environment-state writes, validation, or active-config replacement on boot and forced reload. Forced reloads use `initSync()`, whose current failure policy exits the process, so a malformed edit can terminate a running node; this deliberately follows the existing fail-closed validation path. YAML duplicate keys are fatal where they appear in `Document.errors`, including existing files encountered during upgrade. The CLI error uses the source-free code and location formatter shared with `ConfigParseError` while retaining the `Error parsing … YAMLParseError` prefix, because parser source frames can expose credentials. `unitTests/config/configUtils-parseErrors.test.js` pins malformed and duplicate-key files with all legacy backfill keys present.
+
 ## `set_configuration` replication is opt-in; `replicateOperation` is default-on (`config/configUtils.ts`)
 
 `server.replication.replicateOperation` (installed by harper-pro's replicator) fans out whenever

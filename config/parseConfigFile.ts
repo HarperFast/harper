@@ -4,15 +4,19 @@ import { parse } from 'yaml';
 // credentials. Neither the cause nor the original stack is carried for the same reason.
 export class ConfigParseError extends Error {
 	constructor(filePath: string, error: unknown) {
-		const { name, code, linePos } = (error ?? {}) as {
-			name?: string;
-			code?: string;
-			linePos?: { line: number; col: number }[];
-		};
-		const at = linePos?.[0] ? ` at line ${linePos[0].line}, column ${linePos[0].col}` : '';
-		super(`Unable to parse the Harper configuration file at ${filePath}: ${code ?? name ?? 'parse failure'}${at}`);
+		super(`Unable to parse the Harper configuration file at ${filePath}: ${formatConfigParseErrorDetails(error)}`);
 		this.name = 'ConfigParseError';
 	}
+}
+
+export function formatConfigParseErrorDetails(error: unknown): string {
+	const { name, code, linePos } = (error ?? {}) as {
+		name?: string;
+		code?: string;
+		linePos?: { line: number; col: number }[];
+	};
+	const at = linePos?.[0] ? ` at line ${linePos[0].line}, column ${linePos[0].col}` : '';
+	return `${code ?? name ?? 'parse failure'}${at}`;
 }
 
 export function parseConfigFile(contents: string, filePath: string): any {
