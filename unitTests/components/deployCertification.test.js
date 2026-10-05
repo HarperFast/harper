@@ -269,6 +269,24 @@ describe('activating a release for certification', () => {
 		assert.equal((await readCertificationRecord(root, 'd1')).state, 'pending');
 	});
 
+	it('refuses to certify a live release again while its record cannot be read, and leaves the record alone', async function () {
+		this.timeout(30000);
+		await deploy(root, 'd1', 'V1\n');
+		await fs.writeFile(certificationRecordPath(root, 'd1'), 'not a record');
+		const certification = recordingCertification(root);
+
+		await assert.rejects(
+			prepareApplication(applicationAt(root), { mode: 'activate', artifactId: 'd1', certification }),
+			(error) => {
+				assert.equal(error.statusCode, 409);
+				assert.match(error.message, /certification record cannot be read/);
+				return true;
+			}
+		);
+		assert.deepStrictEqual(certification.calls, [], 'nothing is armed');
+		assert.equal(await fs.readFile(certificationRecordPath(root, 'd1'), 'utf8'), 'not a record');
+	});
+
 	it('restores only while the release it replaces is the one live', async function () {
 		this.timeout(30000);
 		await deploy(root, 'd1', 'V1\n');

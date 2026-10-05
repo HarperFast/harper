@@ -5194,10 +5194,15 @@ async function recertifyLiveRelease(
 		return;
 	}
 	if (!rejectionReason(live, processIncarnation)) return;
-	const predecessor =
-		'record' in live
-			? { previous: live.record.previous, wasAbsent: live.record.wasAbsent }
-			: { previous: null, wasAbsent: false };
+	// Certifying it again writes a new record over the one that names the release to put back.
+	if ('unreadable' in live) {
+		throw new ClientError(
+			`Cannot certify ${application.name}'s live release ${deploymentId} again while its certification record cannot ` +
+				`be read (${live.unreadable.message}); deploy another release, or retry once the record can be read`,
+			409
+		);
+	}
+	const predecessor = { previous: live.record.previous, wasAbsent: live.record.wasAbsent };
 	if (await beginCertification(application, deploymentId, certification, predecessor)) await certification.commit();
 }
 

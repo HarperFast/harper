@@ -85,7 +85,9 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    component, `drop_component` included (409 "being certified"); an activation of the same id joins the
    decision instead. A record a dead incarnation left fences nothing. A record that cannot be read fences while
    main's gate holds that release open and is not refusing it, since the restore runs inside the refusal; with
-   nothing open, a deploy or a drop is how the component recovers. Removing a record retries the transient
+   nothing open, a deploy or a drop is how the component recovers. An activation of that release's own id is refused
+   (409) instead of certifying it again, since the new record would overwrite the one naming the release to put
+   back. Removing a record retries the transient
    refusals a Windows scanner causes; one that still cannot be removed keeps fencing until Harper restarts, and
    the log says so.
 3. **Commit, after the swap.** Main starts the rollout, and drops any in-memory refusal of the component (below).
