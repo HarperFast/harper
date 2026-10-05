@@ -344,7 +344,7 @@ Deploys a component using a package reference or a base64-encoded `.tar` payload
 - `package` _(optional)_ — Any valid npm reference (GitHub, npm, tarball, local path, URL)
 - `payload` _(optional)_ — Base64-encoded `.tar` file content
 - `force` _(optional)_ — Allow deploying over protected core components. Defaults to `false`
-- `restart` _(optional)_ — `true` for immediate restart, `'rolling'` for sequential cluster restart. Either one [certifies the release in a canary worker](../operations-api/operations.md#certifying-a-release-in-a-canary-worker) before rolling it out
+- `restart` _(optional)_ — `true` for immediate restart, `'rolling'` for sequential cluster restart. Either one [certifies the release in a canary worker](../operations-api/operations.md#certifying-a-release-in-a-canary-worker) before rolling it out, unless the response's `certification` says it went out unchecked
 - `replicated` _(optional)_ — Replicate to all cluster nodes
 - `install_command` _(optional)_ — Install command override
 - `install_timeout` _(optional)_ — Install timeout override in milliseconds

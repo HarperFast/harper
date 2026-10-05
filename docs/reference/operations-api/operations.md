@@ -893,7 +893,7 @@ Additional parameters:
 `urlPath` and `host` both require `package` and are rejected on a payload-only deploy. To mount a payload-deployed component, add `host`/`urlPath` to its entry in the root `harper-config.yaml` instead.
 
 :::warning
-Only a deploy that restarts workers is checked before it serves. With `"restart": true` or `"restart": "rolling"`, the release is [certified in a canary worker](#certifying-a-release-in-a-canary-worker) first, and a release that fails to load is rejected and the previous one is put back. A deploy without `restart` is not test-loaded: a release that installs but throws when it loads is deployed, and it reports the failure in the `componentStatus` of [`get_status`](#set_status--get_status--clear_status) once workers load it. The rest of the instance keeps serving.
+Only a deploy that restarts workers can be checked before it serves. On a node running v5.3.2 or later, `"restart": true` or `"restart": "rolling"` [certifies the release in a canary worker](#certifying-a-release-in-a-canary-worker) first, unless the response's `certification` is `uncertified` or `unavailable`, which say why it went out unchecked. A release that fails to load is rejected: the release it replaced is put back, or, if there is none, the component is failed closed on that node. A deploy without `restart` is not test-loaded: a release that installs but throws when it loads is deployed, and it reports the failure in the `componentStatus` of [`get_status`](#set_status--get_status--clear_status) once workers load it. The rest of the instance keeps serving.
 :::
 
 #### How a deploy updates the root config
@@ -1094,7 +1094,7 @@ The wait follows the restart's own progress rather than a fixed timeout, so a wi
 
 A deploy with `"restart": true` or `"restart": "rolling"` checks its release before rolling it out. The first worker thread started on the new release, the canary, loads every component as any worker does when it starts, but it is held out of traffic until it reports whether the deployed component loaded. Until then the workers already running keep serving the release being replaced. The rollout goes on only if the release loaded, and each later replacement is checked the same way before it serves.
 
-The response of every deploy that is not staged says how this went, in `certification`:
+A deploy that succeeds, and is not staged, reports how this went as a string in `certification`:
 
 | `certification` | Meaning                                                                                                                                                                                                                                                  |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1103,7 +1103,7 @@ The response of every deploy that is not staged says how this went, in `certific
 | `unavailable`   | The deploy restarted unchecked: no worker on this node loads the component, its `isolated` setting changed with this deploy, it was already live, or it was deployed from a local directory (`package: file:<dir>`), which is linked rather than copied. |
 | `not-requested` | The deploy did not restart.                                                                                                                                                                                                                              |
 
-A release whose canary throws while loading the component, exits, or does not report within a minute is rejected, and the deploy fails with `400`. The release the deploy replaced is made live again first, as in [going back to a previous release](#going-back-to-a-previous-release), so the workers that never stopped serving it continue to do so. Nothing is replicated to other nodes. The error carries the decision:
+A release whose canary throws while loading the component, exits, or does not report within a minute is rejected, and the deploy fails with `400`. The release the deploy replaced, when there is one, is made live again first, as in [going back to a previous release](#going-back-to-a-previous-release), so the workers that never stopped serving it continue to do so. Nothing is replicated to other nodes. The error carries the decision as an object in `certification` instead of a string, with `status` set to `rejected`, or to `interrupted` for a restart that stopped before the canary decided:
 
 ```json
 {
@@ -1124,7 +1124,7 @@ A release whose canary throws while loading the component, exits, or does not re
 - **A restart that stops before the canary decides restores the previous release.** The decision is reported with `status: "interrupted"`. If the process dies first, the next start rejects the undecided release and restores the one it replaced before it loads anything.
 - **It checks what a worker loads when it starts.** The release is on disk before the canary starts. Workers that have not been replaced yet keep running the previous release and do not react to the new files until the rollout ends, but one that first imports one of the component's modules while the canary is held gets the new release's copy of it.
 
-With `"restart": "rolling"`, the node that received the deploy certifies the release itself, the other nodes only stage it, and the job then activates it on each of them in turn with `deployment_id` and `"restart": true`, so every node certifies it with a canary of its own. Each node decides for itself: a node whose canary rejects the release keeps the previous one, nothing is rolled back on the others, and the job fails naming each node that did not activate it. A node running a version before v5.3.2 activates the release without a canary.
+With `"restart": "rolling"`, the node that received the deploy certifies the release itself, the other nodes only stage it, and the job then activates it on each of them in turn with `deployment_id` and `"restart": true`, so every node certifies it with a canary of its own. Each node decides for itself: a node whose canary rejects the release keeps the previous one, or fails closed if it had none, nothing is rolled back on the others, and the job fails naming each node that did not activate it. The deploy responds once it has started the job, and the record [`get_deployment`](#get_deployment) returns is written only by the node that received the deploy, so it reports `success` while the job is still running and after the job fails. Poll the job's `restartJobId` with [`get_job`](#get_job) to learn whether every node took the release: it ends `COMPLETE`, or `ERROR` with a `message` listing each node's outcome under `activated`. A node running a version before v5.3.2 activates the release without a canary.
 
 #### Deploying without a restart
 
