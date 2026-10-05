@@ -1092,7 +1092,7 @@ The wait follows the restart's own progress rather than a fixed timeout, so a wi
 
 <VersionBadge version="v5.3.2" />
 
-A deploy with `"restart": true` or `"restart": "rolling"` checks its release before rolling it out. The first worker thread started on the new release, the canary, loads every component as any worker does when it starts, but it is held out of traffic until it reports whether the deployed component loaded. Until then the workers already running keep serving the release being replaced. The rollout goes on only if the release loaded, and each later replacement is checked the same way before it serves.
+A deploy with `"restart": true` or `"restart": "rolling"` checks its release before rolling it out. The first worker thread started on the new release, the canary, loads every component as any worker does when it starts, but it is held out of traffic until it reports whether the deployed component loaded. It replaces the first worker thread (worker 0), so code a component runs only in that thread is part of what it checks. Until then the workers already running keep serving the release being replaced. The rollout goes on only if the release loaded, and each later replacement is checked the same way before it serves.
 
 A deploy that succeeds, and is not staged, reports how this went as a string in `certification`:
 
