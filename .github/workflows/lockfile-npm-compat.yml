@@ -1,0 +1,41 @@
+name: Lockfile npm Compatibility
+
+# npm 10 (Node 22) and npm 11 (Node 24) validate package-lock.json differently: npm 11 accepts a
+# lock that npm 10's `npm ci` rejects as out of sync (#3006 landed one). Renovate and the Sync Lock
+# File workflow resolve with npm 11, so check both here. No path filter: a required check that a
+# path filter skips stays pending forever.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  npm-ci:
+    name: npm ci (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Validate lock file
+        run: |
+          echo "npm $(npm -v)"
+          npm ci --ignore-scripts --dry-run --no-audit --no-fund
