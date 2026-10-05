@@ -95,4 +95,38 @@ describe('TypeStrip runtime boundaries', () => {
 			await worker.terminate();
 		}
 	});
+
+	it('loads the server graph in evaluated workers without starting HTTP servers', async () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const entry = pathToFileURL(
+				resolve(
+					root,
+					`${mode === 'compiled' ? 'dist/' : ''}server/threads/threadServer.${mode === 'compiled' ? 'js' : 'ts'}`
+				)
+			).href;
+			const worker = new Worker(
+				`const { parentPort } = require('node:worker_threads'); import(${JSON.stringify(entry)}).then(module => parentPort.postMessage({ type: 'import-complete', started: module.bootLoadsComponents() })).catch(error => parentPort.postMessage({ type: 'import-complete', error: error.stack }));`,
+				{
+					eval: true,
+					execArgv: mode === 'typestrip' ? ['--conditions=typestrip'] : [],
+					workerData: { addPorts: [], addThreadIds: [], restartNumber: 1 },
+				}
+			);
+			try {
+				const result = await new Promise((resolve, reject) => {
+					const signal = AbortSignal.timeout(30000);
+					signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+					worker.on('message', (message) => {
+						if (message?.type === 'import-complete') resolve(message);
+					});
+					worker.once('error', reject);
+					worker.once('exit', (code) => reject(new Error(`Worker exited before importing the server (${code})`)));
+				});
+				assert.equal(result.error, undefined, mode);
+				assert.equal(result.started, false, mode);
+			} finally {
+				await worker.terminate();
+			}
+		}
+	});
 });

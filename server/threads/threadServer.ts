@@ -663,6 +663,7 @@ if (
 	!isMainThread &&
 	!workerData?.noServerStart &&
 	process.argv[1] &&
+	existsSync(process.argv[1]) &&
 	realpathSync(process.argv[1]) === join(RUNTIME_SRC_ROOT, `server/threads/threadServer${RUNTIME_FILE_EXT}`)
 ) {
 	// The shared module graph also loads here in job and user workers, which must not bind listeners.
