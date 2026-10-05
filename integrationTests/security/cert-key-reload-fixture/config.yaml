@@ -1,0 +1,3 @@
+jsResource:
+  files: resources.ts
+rest: true

@@ -180,7 +180,7 @@ jobs:
       matrix:
         release: ${{ fromJson(needs.plan.outputs.stale) }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -230,7 +230,7 @@ jobs:
       # present in the working tree. For `pull_request` events the default
       # checkout is the PR head — if the PR branched off before this script
       # landed on main, the script is missing and the workflow fails.
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}

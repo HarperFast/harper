@@ -3,8 +3,10 @@ import {
 	getConfigObj,
 	getConfigValue,
 	getConfigPath,
+	getEnvBuiltInComponents,
 	isUnsupportedSyncError as isUnsupportedSync,
 } from '../config/configUtils.ts';
+export { getEnvBuiltInComponents };
 import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
 import {
 	applyRootConfigEffect,
@@ -5900,18 +5902,6 @@ export async function terminateProcessTree(
 		await waitForConfirmedTermination(() => processGroupIsAlive(processGroupId));
 	}
 	await waitForProcessClose(childProcess, closePromise);
-}
-
-export function getEnvBuiltInComponents() {
-	const builtInComponents: { name: string; packageIdentifier: string }[] = [];
-	if (process.env.HARPER_BUILTIN_COMPONENTS) {
-		for (const componentDefinition of process.env.HARPER_BUILTIN_COMPONENTS.split(',')) {
-			const [name, packageIdentifier] = componentDefinition.trim().split('=');
-			if (!componentDefinition) continue;
-			builtInComponents.push({ name, packageIdentifier });
-		}
-	}
-	return builtInComponents;
 }
 
 function printStd(

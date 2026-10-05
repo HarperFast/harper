@@ -67,7 +67,7 @@ test('framing accepts a non-clearing verdict only with the reviewer section', ()
 	for (const verdict of ['better-alternative-exists', 'option-set-too-narrow']) {
 		const missing = evaluateFramingVerdict(human({ body: `Framing-Verdict: ${verdict}` }), framingOptions());
 		assert.strictEqual(missing.pass, false, `${verdict} must not pass alone`);
-		assert.match(missing.detail, /without ## For the human reviewer/);
+		assert.match(missing.detail, /without an explanation in ## For the human reviewer/);
 		const recorded = evaluateFramingVerdict(
 			human({ body: `## For the human reviewer\n\nDecision recorded.\n\nFraming-Verdict: ${verdict}` }),
 			framingOptions()
@@ -89,6 +89,29 @@ test('framing accepts a non-clearing verdict only with the reviewer section', ()
 			framingOptions()
 		);
 		assert.strictEqual(footer.pass, true, `${verdict} may be materialized as a footer`);
+	}
+});
+
+test('framing accepts a non-clearing verdict explained in Alternatives or a Your call line', () => {
+	for (const verdict of ['better-alternative-exists', 'option-set-too-narrow']) {
+		for (const body of [
+			`## ⚖️ Alternatives\n\nWeighed a lock-free queue; kept the mutex.\n\nFraming-Verdict: ${verdict}`,
+			`## ⚖ Alternatives\n\nWeighed a lock-free queue; kept the mutex.\n\n<sub>Framing-Verdict: ${verdict}</sub>`,
+			`## ⊙ Problem\n\n> ❓ **Your call:** Is a queue acceptable here?\n\nFraming-Verdict: ${verdict}`,
+		]) {
+			const result = evaluateFramingVerdict(human({ body }), framingOptions());
+			assert.strictEqual(result.pass, true, body);
+			assert.strictEqual(result.compliant, true, body);
+		}
+		for (const body of [
+			`## ⚖️ Alternatives\n\nFraming-Verdict: ${verdict}`,
+			`## ⚖️ Alternatives\n\n## ✅ Verification\n\nExecuted evidence.\n\nFraming-Verdict: ${verdict}`,
+			`> ❓ **Your call:**\n\nFraming-Verdict: ${verdict}`,
+			`\`\`\`text\n> ❓ **Your call:** hidden in a fence\n\`\`\`\n\nFraming-Verdict: ${verdict}`,
+			`~~~text\n> ❓ **Your call:** hidden in a fence\n~~~\n\nFraming-Verdict: ${verdict}`,
+			`<!--\n> ❓ **Your call:** hidden in a comment\n-->\n\nFraming-Verdict: ${verdict}`,
+		])
+			assert.strictEqual(evaluateFramingVerdict(human({ body }), framingOptions()).pass, false, body);
 	}
 });
 
@@ -226,7 +249,35 @@ test('the footer note distinguishes current, stale, and absent', () => {
 		evaluateCiCoverage(pr({ body: `Human-Review-Need: 1 Human-Review-Need: 2 @ ${HEAD.slice(0, 12)}` })).detail,
 		/Need: 2 @ head/
 	);
-	assert.match(evaluateCiCoverage(pr()).detail, /no Human-Review-Need footer/);
+	assert.match(evaluateCiCoverage(pr()).detail, /no Review-Attention \(or legacy Human-Review-Need\) footer/);
+	// `@` inside the detail is not the pin, and minutes are required, matching the format check.
+	assert.match(
+		evaluateCiCoverage(pr({ body: '<sub>Review-Attention: study ~60m (ping @admin) @ abcdef123456</sub>' })).detail,
+		/Review-Attention: study ~60m (@ head|footer is STALE)/
+	);
+	assert.match(evaluateCiCoverage(pr({ body: '<sub>Review-Attention: skim</sub>' })).detail, /no Review-Attention/);
+});
+
+test('the footer note reads Review-Attention first and names the field it found', () => {
+	const at = (sha, value = 'read ~30m') => pr({ body: `x\n<sub>Review-Attention: ${value} @ ${sha}</sub>` });
+	assert.match(evaluateCiCoverage(at(HEAD.slice(0, 12))).detail, /Review-Attention: read ~30m @ head/);
+	assert.match(
+		evaluateCiCoverage(at(HEAD.slice(0, 12), 'deep ~150m (critical: a.cpp +1; decisions: a, b)')).detail,
+		/Review-Attention: deep ~150m @ head/
+	);
+	assert.match(evaluateCiCoverage(at('999999999999')).detail, /Review-Attention footer is stale/);
+	assert.match(
+		evaluateCiCoverage(pr({ body: '<sub>Review-Attention: skim ~5m</sub>' })).detail,
+		/skim ~5m @ unpinned sha/
+	);
+	assert.match(
+		evaluateCiCoverage(
+			pr({
+				body: `<sub>Human-Review-Need: 3 @ ${HEAD.slice(0, 12)}</sub>\n<sub>Review-Attention: study ~60m @ 999999999999</sub>`,
+			})
+		).detail,
+		/Review-Attention footer is stale/
+	);
 });
 
 test('prose coverage is reported but never enforceable', () => {
@@ -273,6 +324,7 @@ test('enforcement targets AI-authored PRs, detected by field or by generator sig
 		'x\n<sub>Review-Coverage: authored=claude; ran=none; rounds=1 @ abcdef123456</sub>',
 		'x\nComplexity: medium',
 		'x\n<sub>Human-Review-Need: 3 @ abcdef123456</sub>',
+		'x\n<sub>Review-Attention: read ~30m @ abcdef123456</sub>',
 	]) {
 		const r = evaluateCiCoverage(human({ body }), { mode: 'enforce' });
 		assert.strictEqual(r.aiAuthored, true, `should read as AI-authored: ${body}`);
