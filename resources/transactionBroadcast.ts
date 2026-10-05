@@ -70,10 +70,11 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 			// immediately so we are at the right position.
 			if (auditStore.reusableIterable) databaseSubscriptions.auditLogIterator = auditStore.getRange({});
 		} else if (!databaseSubscriptions.passYielded && !databaseSubscriptions.dispatching) {
-			// unless a pass is part-way through a backlog, what is unread is only recent commits
 			notifyFromTransactionData(
 				databaseSubscriptions,
-				auditStore.reusableIterable ? databaseSubscriptions.auditLogIterator : null
+				auditStore.reusableIterable ? databaseSubscriptions.auditLogIterator : null,
+				false,
+				true
 			);
 		}
 		if (!auditStore.hasSubscriptionCommitListener) {
@@ -282,12 +283,13 @@ const ACTIONS_OF_INTEREST = ['put', 'patch', 'delete', 'message', 'invalidate'];
 // Sized to keep per-batch wall time within a few ms on commodity hardware while keeping the
 // scheduling overhead amortized; tune if profiling shows different shapes.
 const NOTIFY_BATCH_SIZE = 256;
-function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield = false) {
+function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield = false, registrationDrain = false) {
 	if (!subscriptions) return; // if no subscriptions to this env path, don't need to read anything
 	// If no real subscribers are attached, skip the iteration. The reusable iterator preserves its
 	// position and will pick up from where we left it once a subscriber is added.
 	if (!subscriptions.activeCount) {
 		subscriptions.pendingTxnSubscribers = null; // discard any carry-over from a yielded run
+		subscriptions.passYielded = false;
 		if (allowYield) subscriptions.notifyScheduled = false;
 		return;
 	}
@@ -439,7 +441,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 					}
 				}
 			}
-			if (allowYield && ++processed >= NOTIFY_BATCH_SIZE) {
+			if ((allowYield || registrationDrain) && ++processed >= NOTIFY_BATCH_SIZE) {
 				// Yield the event loop. Save in-progress txn state so the next batch can resume.
 				// Reusable iterables (rocksdb) can be passed back in directly; LMDB-style iterables
 				// are recreated from the advanced lastTxnTime. The same-thread aftercommit path does not
@@ -448,6 +450,11 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 				subscriptions.pendingProgressKey = progressKey;
 				yielded = true;
 				subscriptions.passYielded = true;
+				// a registration drain leaves the rest to the pass already scheduled, or schedules one
+				if (registrationDrain) {
+					if (subscriptions.notifyScheduled) return;
+					subscriptions.notifyScheduled = true;
+				}
 				setImmediate(() =>
 					notifyFromTransactionData(
 						subscriptions,

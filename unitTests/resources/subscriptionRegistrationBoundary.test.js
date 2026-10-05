@@ -23,7 +23,6 @@ describe('Subscription registration boundary', () => {
 
 	for (const omitCurrent of [true, false]) {
 		it(`does not deliver a message published before registering (omitCurrent: ${omitCurrent})`, async () => {
-			// not awaited past the commit: its notification is still pending when the subscriber registers
 			await BoundaryTable.publish('topic-before', { name: 'before' });
 			const subscription = await BoundaryTable.subscribe({ isCollection: true, omitCurrent });
 			try {
@@ -53,11 +52,9 @@ describe('Subscription registration boundary', () => {
 	});
 
 	it('delivers a delete only while the record is deleted', async () => {
-		// deleted and re-created just before registering: the delete's notification is stale
 		await BoundaryTable.put('recreated', { name: 'v1' });
 		await BoundaryTable.delete('recreated');
 		await BoundaryTable.put('recreated', { name: 'v2' });
-		// deleted just before registering and still deleted
 		await BoundaryTable.put('gone', { name: 'v1' });
 		await BoundaryTable.delete('gone');
 		const subscription = await BoundaryTable.subscribe({ isCollection: true });

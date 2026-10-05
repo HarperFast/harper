@@ -6926,12 +6926,8 @@ export function makeTable(options): TableResourceClass {
 							);
 						}
 					} else if (!request.omitCurrent) {
-						// Track the latest record-time the cursor saw — including deletion tombstones
-						// (entries with null value). For includeSuperseded subscribers only, it gates out
-						// pre-subscribe 'committed' callbacks that fired during cursor yields; it is not a
-						// delivery boundary for default events. This is in the audit log's
-						// time domain — works on both backends, where a JS-side `getNextMonotonicTime()`
-						// would not be comparable to rocksdb's native transaction timestamps.
+						// The latest record-time the cursor saw, tombstones included; only includeSuperseded
+						// subscribers gate on it (audit-log time domain, unlike `getNextMonotonicTime()`).
 						let cursorMaxTime = 0;
 						// Retained-message semantics: subscriber may legitimately receive a record twice
 						// if a post-subscribe write hits a key the cursor also visits. This is
