@@ -587,6 +587,17 @@ function armCertification({ component, deploymentId, isolated, scope, requesterT
 			worker.name === hdbTerms.THREAD_TYPES.HTTP && !worker.wasShutdown && placesCertification(certification, worker)
 	);
 	if (!placed) return { armed: false, reason: 'unavailable' };
+	// A worker already loading was not held for this release, and its load can still reach the release once it goes
+	// live; it reports before it binds, and a report that comes after the commit is refused.
+	for (const worker of workers) {
+		if (
+			worker.name === hdbTerms.THREAD_TYPES.HTTP &&
+			!worker.loadReported &&
+			placesCertification(certification, worker)
+		) {
+			(worker.loadingAcross ??= new Set()).add(certification);
+		}
+	}
 	Object.assign(certification, {
 		phase: 'armed',
 		unarmed: Promise.withResolvers(),
@@ -813,6 +824,7 @@ function holdStart(worker, gated, startOptions) {
 	const onMessage = (message) => {
 		if (message?.type !== hdbTerms.ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT || held.components) return;
 		held.components = Array.isArray(message.components) ? message.components : [];
+		held.loadedAcross = loadedAcrossRelease(worker);
 		clearTimeout(held.timer);
 		settleHeldStart(held);
 	};
@@ -877,9 +889,10 @@ function settleHeldStart(held) {
 	}
 	if (held.gated.some((certification) => !certification.decision)) return;
 	held.settled = true;
-	const refusal = admissionRefusal(held);
+	const refusal = admissionRefusal(held) ?? held.loadedAcross;
 	if (refusal) {
 		harperLogger.warn(`Not admitting worker ${held.worker.threadId}: ${refusal}`);
+		if (refusal === held.loadedAcross) held.worker.loadedAcrossRelease = true;
 		void stopHeldStart(held);
 		return;
 	}
@@ -893,6 +906,47 @@ function settleHeldStart(held) {
 			}
 		)
 		.catch(() => {});
+}
+
+/**
+ * Why a worker that reports its load now must not bind: it was already loading when a release placed on it was armed,
+ * and that release went live before the load ended, so the load may hold it without any gate having checked it.
+ */
+function loadedAcrossRelease(worker) {
+	worker.loadReported = true;
+	const loadingAcross = worker.loadingAcross;
+	worker.loadingAcross = undefined;
+	for (const certification of loadingAcross ?? []) {
+		if (certification.phase !== 'committed') continue;
+		return (
+			`it was already loading when release ${certification.deploymentId} of ${certification.component} went live, ` +
+			'and may have loaded it unchecked'
+		);
+	}
+	return undefined;
+}
+
+/** A worker held for nothing reports its load too, before it binds, and is admitted unless that load crossed a release. */
+function admitOnReport(worker, startOptions) {
+	const onMessage = (message) => {
+		if (message?.type !== hdbTerms.ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT) return;
+		worker.off('message', onMessage);
+		const refusal = loadedAcrossRelease(worker);
+		if (!refusal) {
+			worker.postMessage({ type: hdbTerms.ITC_EVENT_TYPES.CHILD_ADMITTED });
+			return;
+		}
+		harperLogger.warn(`Not admitting worker ${worker.threadId}: ${refusal}`);
+		worker.loadedAcrossRelease = true;
+		void stopWorker(worker);
+		// A restart replaces its own start; anything else is started again, now held for what went live.
+		if (!startOptions.managed && !processShuttingDown) {
+			const start = () => worker.startCopy();
+			if (!deferStartBehindCertification(worker, start)) start();
+		}
+	};
+	worker.on('message', onMessage);
+	worker.once('exit', () => worker.off('message', onMessage));
 }
 
 /** Rejected, or interrupted before a canary decided: either way the release is put back, and nothing runs it. */
@@ -1404,7 +1458,7 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 							}
 							if (postShutdown(worker)) await whenShutDownWorkerExits(worker, onProgress);
 						};
-				let newWorker = worker.startCopy(held ? { managed: true, check: checks, admission } : undefined);
+				let newWorker = worker.startCopy(held ? { managed: true, check: checks, admission } : { managed: true });
 				// Likewise suppress auto-restart on the replacement *while it boots*: if it fails to come up
 				// we leave the existing worker in place, and a background retry succeeding later would push the
 				// pool over its configured worker count. Re-enabled once it has started.
@@ -1455,13 +1509,15 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 				for (const open of placed) await open.decided.promise;
 				const rejected = Boolean(certification?.decision && refusesRelease(certification.decision));
 				if (!started) {
-					// Stopped for another release's refusal, not for its own load: replace this worker again. That release is
-					// decided now, and a decided release is never placed again, so this repeats at most once for each.
+					// Stopped for another release's refusal, or for a load that release's commit crossed, not for its own
+					// load: replace this worker again. Either release now holds a start made for it, so this repeats at most
+					// once for each.
 					if (
 						!retiredForAdmission &&
 						!rejected &&
 						workers.includes(worker) &&
-						placed.some((open) => open !== certification && open.decision && refusesRelease(open.decision))
+						(newWorker.loadedAcrossRelease ||
+							placed.some((open) => open !== certification && open.decision && refusesRelease(open.decision)))
 					) {
 						worker.wasShutdown = false;
 						onProgress?.();
@@ -1504,7 +1560,7 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 			// well before the replacement finishes booting and binds.
 			let replacementStarting;
 			if (overlapping && startReplacementThreads && !canPreStartReplacement && !processShuttingDown) {
-				replacementStarting = whenWorkerStarted(worker.startCopy()).then((started) => {
+				replacementStarting = startedCopyOf(worker).then((started) => {
 					if (!started) replacementsFailedToStart++;
 					onProgress?.();
 					return started;
@@ -1552,6 +1608,15 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 			: { workersKeptOnOldCode, replacementsNotStarted };
 	}
 }
+/** A copy refused for a load that a release's commit crossed is started again, which that release now holds. */
+async function startedCopyOf(worker) {
+	for (;;) {
+		const copy = worker.startCopy({ managed: true });
+		if (await whenWorkerStarted(copy)) return true;
+		if (!copy.loadedAcrossRelease || processShuttingDown) return false;
+	}
+}
+
 /** Ask a worker being replaced to shut down; false when it has already exited. */
 function postShutdown(worker) {
 	try {

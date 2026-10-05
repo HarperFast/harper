@@ -37,8 +37,8 @@ describe('the release certification gate', function () {
 	let committed;
 	let started;
 
-	function plan(sequence, { concurrentStarts } = {}) {
-		writeFileSync(planPath, JSON.stringify({ sequence, concurrentStarts }));
+	function plan(sequence, { concurrentStarts, unheldLoadMs } = {}) {
+		writeFileSync(planPath, JSON.stringify({ sequence, concurrentStarts, unheldLoadMs }));
 		rmSync(`${planPath}.starts`, { force: true });
 	}
 
@@ -678,6 +678,52 @@ describe('the release certification gate', function () {
 		await waitFor(() => silent.exitedAt, { timeout: 5000, message: 'the silent start was left held' });
 		recording.resolve();
 		await rolledOut();
+	});
+
+	it('refuses a start already loading when a release went live, and starts it again held for that release', async () => {
+		plan([{ outcome: 'loaded' }], { unheldLoadMs: 600 });
+		const loading = Promise.withResolvers();
+		rootLoad = loading.promise;
+		releaseRootLoad = loading.resolve;
+		await pool[1].terminate();
+		await waitFor(() => started.length === 4, { message: 'the crash restart never started' });
+		const crossed = started.at(-1);
+		await arm();
+		await commit();
+		await waitFor(() => crossed.exitedAt, { message: 'the start whose load crossed the commit was admitted' });
+		assert.ok(!crossed.admitted, 'it never bound');
+		const held = await waitFor(() => started.find((worker) => worker !== crossed && !pool.includes(worker)), {
+			message: 'it was not started again',
+		});
+		await waitFor(() => held.certifyRequests.length > 0);
+		assert.deepStrictEqual(held.certifyRequests, [[{ component: COMPONENT, deploymentId: DEPLOYMENT }]]);
+		assert.equal((await decisionOf()).status, 'certified');
+		releaseRootLoad();
+		await rolledOut();
+	});
+
+	it("replaces a rollout's replacement again when another release went live while it was loading", async () => {
+		plan([{ outcome: 'loaded', delayMs: 800 }, { outcome: 'loaded' }]);
+		await arm();
+		await commit();
+		const canary = await waitFor(() => started.find((worker) => !pool.includes(worker)), {
+			message: 'no canary started',
+		});
+		assert.deepStrictEqual(await certificationRequest('arm', { ...OTHER, isolated: false, scope: undefined }), {
+			armed: true,
+		});
+		assert.equal(await certificationRequest('commit', OTHER), true);
+		await waitFor(() => completions.length === 2, { timeout: 45000, message: 'an overlapping rollout never ended' });
+		assert.deepStrictEqual(decisions.map(({ component, status }) => `${component}:${status}`).sort(), [
+			'api:certified',
+			`${COMPONENT}:certified`,
+		]);
+		assert.ok(canary.exitedAt && !canary.admitted, 'the replacement whose load crossed the commit never bound');
+		assert.deepStrictEqual(
+			pool.filter((worker) => httpWorkers().includes(worker)),
+			[],
+			'every worker was replaced, the one whose replacement was refused included'
+		);
 	});
 
 	it('refuses to withdraw a release once it is committed', async () => {

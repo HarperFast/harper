@@ -38,7 +38,12 @@ parentPort.postMessage({
 });
 
 if (!workerData.certify) {
-	parentPort.postMessage({ type: ITC_EVENT_TYPES.CHILD_STARTED });
+	// Held for nothing, it still reports its load and binds only once admitted, after the plan's load time for such a start.
+	const { unheldLoadMs = 0 } = JSON.parse(readFileSync(planPath, 'utf8'));
+	setTimeout(
+		() => parentPort.postMessage({ type: ITC_EVENT_TYPES.CHILD_COMPONENT_VERDICT, components: [] }),
+		unheldLoadMs
+	);
 } else {
 	const plan = JSON.parse(readFileSync(planPath, 'utf8'));
 	appendFileSync(`${planPath}.starts`, `${threadId}\n`);
