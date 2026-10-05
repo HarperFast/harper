@@ -765,9 +765,41 @@ describe('the release certification gate', function () {
 		await waitFor(() => httpWorkers().length === 3, { message: 'the pool did not get its worker back' });
 	});
 
+	it("makes worker 0's replacement the canary, wherever worker 0 is in the pool", async () => {
+		await pool[0].terminate();
+		const restarted = await waitFor(() => started.length === 4 && started.at(-1), {
+			message: 'worker 0 was not restarted',
+		});
+		await waitFor(() => restarted.admitted, { message: 'the restarted worker 0 never bound' });
+		pool = [pool[1], pool[2], restarted];
+		const before = started.length;
+		await arm();
+		await commit();
+		assert.equal((await decisionOf()).status, 'certified');
+		assert.equal(started[before].workerIndex, 0, 'the first replacement, the canary, replaces worker 0');
+		await rolledOut();
+	});
+
+	it('replaces a requesting worker 0 first, so its replacement is still the canary', async () => {
+		const requesterThreadId = pool[0].threadId;
+		await arm({ requesterThreadId });
+		const shutdownOrder = [];
+		for (const worker of pool) {
+			const threadId = worker.threadId;
+			worker.once('shutdown', () => shutdownOrder.push(threadId));
+		}
+		const before = started.length;
+		await commit();
+		await decisionOf();
+		assert.equal(started[before].workerIndex, 0);
+		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
+		await rolledOut();
+		assert.equal(shutdownOrder[0], requesterThreadId);
+	});
+
 	it('replaces the requesting worker last, once it has answered', async () => {
 		// Read now: a Worker's threadId reads back as -1 once it has exited.
-		const requesterThreadId = pool[0].threadId;
+		const requesterThreadId = pool[1].threadId;
 		await arm({ requesterThreadId });
 		const shutdownOrder = [];
 		for (const worker of pool) {

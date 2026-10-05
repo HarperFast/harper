@@ -1266,8 +1266,10 @@ function startWorker(path, options = {}, startOptions = {}) {
 	startMonitoring();
 	if (options.onStarted) options.onStarted(worker); // notify that it is ready
 	worker.name = options.name;
+	worker.workerIndex = options.workerIndex;
 	worker.application = options.application; // the isolated application this worker is dedicated to, if any
 	if (certify) holdStart(worker, gated, startOptions);
+	else if (options.name === hdbTerms.THREAD_TYPES.HTTP) admitOnReport(worker, startOptions);
 	return worker;
 }
 
@@ -1404,10 +1406,18 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 		const platformCanPreStartReplacement = process.platform !== 'win32' && process.platform !== 'darwin' && !isBun;
 		if (startReplacementThreads) await untilNoCertificationArmed();
 		const restarting = workers.slice(0);
-		if (certification?.requesterThreadId !== undefined) {
-			const requesterAt = restarting.findIndex((worker) => worker.threadId === certification.requesterThreadId);
-			if (requesterAt > -1) restarting.push(...restarting.splice(requesterAt, 1));
-		}
+		// Worker 0 is replaced first, so its replacement is the canary, and what an application runs only in worker 0
+		// is part of the load that decides the release. The requester answers before it is replaced, so it goes last,
+		// unless it is worker 0.
+		const workerZero = certification
+			? restarting.find((worker) => worker.workerIndex === 0 && placesCertification(certification, worker))
+			: undefined;
+		if (workerZero) restarting.unshift(...restarting.splice(restarting.indexOf(workerZero), 1));
+		const requester =
+			certification?.requesterThreadId !== undefined
+				? restarting.find((worker) => worker.threadId === certification.requesterThreadId)
+				: undefined;
+		if (requester && requester !== workerZero) restarting.push(...restarting.splice(restarting.indexOf(requester), 1));
 		// a worker that exited on its own mid-restart is spliced out of `workers` and auto-restarted onto the new
 		// code (see the exit handler above); it is not still on the previous code even though this loop never got to it.
 		const untouchedAfter = (index) =>
