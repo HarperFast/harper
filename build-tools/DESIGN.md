@@ -25,7 +25,7 @@ Three consequences worth knowing before touching packaging:
   harper. The shrinkwrap is the only lever that reaches consumers, which is why the react-native
   prune lives in `build-tools/prune-shrinkwrap-react-native.mjs` rather than in `overrides` (#1937).
 - The published shrinkwrap is deliberately _not_ what `npm shrinkwrap` produced — `build.sh`
-  post-processes it (dev prune #1783, react-native prune #1937) to enforce that it describes only the
+  post-processes it (dev prune #1783, optional subtree prune #1937 and the #3006 follow-up) to enforce that it describes only the
   production tree a consumer installs. Anything added there must keep it internally consistent; a
   pruned entry that something still requires would ship a broken tree to every consumer.
 - The Dockerfile extracts the local tarball into a project directory and runs `npm install` there
@@ -51,6 +51,10 @@ install` (unlike a registry install of harper as _someone else's_ dependency) re
   react-native residual two bullets up: that subtree is still re-resolved fresh on every build, so a
   bug specific to it (not that anyone should want one there) actually would clear on a rebuild.
 
+## Optional UTF-8 peers must not retain an unused native addon
+
+Following [#3006](https://github.com/HarperFast/harper/pull/3006), after dev pruning, `prune-shrinkwrap-react-native.mjs` also severs `utf-8-validate` peers explicitly marked optional, unless the same consumer declares a dependency or optional dependency on it. Every supported Node version provides `buffer.isUtf8`, which `ws` uses before considering this addon. npm can hoist a copy produced by the dev framework's Harper peer into a production-reachable location: removing Harper's own declaration alone leaves it in the published shrinkwrap through `ws`'s optional peer. The existing reachability comparison removes only the addon and children exclusive to severed edges. Explicit dependencies, optional dependencies, required peers and shared children remain, including `bufferutil`'s `node-gyp-build`. Every non-severed edge of a surviving reachable package is traversed, so its target survives; severed edges are optional and may remain unresolved. The backstop checks required `dependencies` on leftover entries the root walk never visits. Real subprocess tests in `unitTests/buildTools/pruneShrinkwrapReactNative.test.js` enforce removal and preservation, including nested copies and the real production lock. Each rule reports its own removal count; retire the UTF-8 rule after updating the dev Harper peer to a release without the addon, once the full lock has neither an explicit producer nor an installed addon entry. A stale optional-peer-only entry still needs pruning even after its producer is gone. This guarantee applies to registry installs honoring the published shrinkwrap; tarball installs may re-resolve dependencies as described above.
+
 ## The image's shrinkwrap check must prove it could fail (`build-tools/check-shrinkwrap-pins.mjs`)
 
 `docker-smoke.yml` runs this against the built image. Matching pins prove nothing where an unpinned
@@ -66,8 +70,8 @@ requirement is why the check walks the whole packed tree, not a few named packag
   full refresh, until some pinned package publishes again.
 - **Edges, not locations.** Each packed dependency edge is resolved node_modules-style in the packed
   map and in the installed tree. npm re-hoisting a pinned package to another path is not drift.
-- **The exemption comes only from optional edges to `react-native-fs`**, the edge
-  `prune-shrinkwrap-react-native.mjs` severs from any dependent (today only alasql declares one).
+- **The exemption comes only from optional edges to `react-native-fs`**, the severed edge
+  that the image re-adds (today only alasql declares one).
   The image re-adds that subtree (previous note), and it lifts shared pins such as the `@babel/*`
   packages `@endo/static-module-record` uses. Edges into that subtree, and the packed edges of a
   pinned package it lifted, are not pin-checked; a lifted shared pin prints a `::warning::`. A
