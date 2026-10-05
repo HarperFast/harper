@@ -1,9 +1,7 @@
 name: Lockfile npm Compatibility
 
-# npm 10 (Node 22) and npm 11 (Node 24) validate package-lock.json differently: npm 11 accepts a
-# lock that npm 10's `npm ci` rejects as out of sync (#3006 landed one). Renovate and the Sync Lock
-# File workflow resolve with npm 11, so check both here. No path filter: a required check that a
-# path filter skips stays pending forever.
+# npm 11 writes the lock but accepts some that npm 10's `npm ci` rejects; see .github/DESIGN.md.
+# No path filter: a required check that a path filter skips stays pending forever.
 
 on:
   push:
