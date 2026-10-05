@@ -227,6 +227,7 @@ export function deployCertification(spec: {
 	scope: () => string | undefined;
 }): DeployCertification {
 	let armed = false;
+	let joined = false;
 	let unavailableReason: string | undefined;
 	const identity = () => ({ component: spec.component, deploymentId: spec.deploymentId });
 	return {
@@ -264,9 +265,17 @@ export function deployCertification(spec: {
 			armed = false;
 			await certificationRequest('withdraw', identity());
 		},
+		async join() {
+			joined = true;
+			await certificationRequest('join', identity());
+		},
 		decision: () => certificationRequest('decision', identity()),
 		rollout: (onProgress) =>
 			isMainThread ? certificationRollout(spec.component, spec.deploymentId, onProgress) : Promise.resolve(undefined),
-		release: () => certificationRequest('release', identity()).catch(() => {}),
+		// Only the deploy that armed the release is its requester; one that joined its decision only leaves it.
+		release: () =>
+			armed || joined
+				? certificationRequest(armed ? 'release' : 'leave', identity()).catch(() => {})
+				: Promise.resolve(),
 	};
 }

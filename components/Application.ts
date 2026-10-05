@@ -4828,6 +4828,8 @@ export type ActivationCertification = {
 	arm(previous: string | null, wasAbsent: boolean): Promise<boolean>;
 	commit(): Promise<void>;
 	withdraw(): Promise<void>;
+	/** This activation reads a decision another deploy armed, so main keeps that decision for it too. */
+	join?(): Promise<void>;
 };
 
 /** The id the tree this activation displaces will be kept under, decided from what `retainDisplacedRelease` reads. */
@@ -5183,6 +5185,7 @@ async function recertifyLiveRelease(
 	const live = await liveCertification(dirname(application.dirPath), application.name);
 	if (!live) return;
 	if ('record' in live && live.record.state !== 'rejected' && live.record.incarnation === processIncarnation) {
+		await certification.join?.();
 		application.certificationArmed = true;
 		return;
 	}

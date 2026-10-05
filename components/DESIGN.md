@@ -152,7 +152,10 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    write fails, main refuses it in memory, bound to that deployment id so a later release
    loads, and the record stays `pending` for the next boot to settle. The origin's deploy fails with the
    decision in `certification` (`status`, `reason`, `failures`, `restored`, `failed_closed`), and nothing was
-   replicated. The decision stays answerable after the rollout ends, until its requester releases it or exits: a fast
+   replicated. The decision stays answerable after the rollout ends, until its requester releases it or exits, and until every
+   deploy that joined it has left: an activation of the release already live while its decision is open joins it
+   instead of arming, counts as answering a certifying deploy like the requester, and on finishing leaves rather than
+   releasing the requester: a fast
    refusal can end the rollout before the deploy reads its decision, which would otherwise read nothing and replicate
    the refused release as uncertified. An `interrupted` certification — the process shutting down, a rollout that failed before any
    canary decided, or a `certified` decision whose record could not be written — is restored exactly as a

@@ -605,6 +605,9 @@ function armCertification({ component, deploymentId, isolated, scope, requesterT
 		decided: Promise.withResolvers(),
 		rolledOut: Promise.withResolvers(),
 		released: Promise.withResolvers(),
+		// Other deploys of the release, activating it while its decision is open: each reads that decision too.
+		joiners: new Set(),
+		mainJoiners: 0,
 		deferredStarts: [],
 		progress: new Set(),
 	});
@@ -676,7 +679,7 @@ async function completeCertification(certification, outcome) {
 		);
 	}
 	if (certifications.get(certification.component) === certification) certifications.delete(certification.component);
-	if (!certification.requesterReleased && !certification.requesterExited) {
+	if (stillRead(certification)) {
 		settledCertifications.set(settledKey(certification.component, certification.deploymentId), certification);
 	}
 	if (certification.watchersPaused) resumeWatchersOf(certification.component, certification.watchersPaused);
@@ -1036,7 +1039,36 @@ function releaseCertificationRequester(component, deploymentId) {
 	if (!certification) return;
 	certification.requesterReleased = true;
 	certification.released.resolve();
-	settledCertifications.delete(settledKey(component, deploymentId));
+	forgetIfUnread(certification);
+}
+
+/** A worker's joiner is answering a deploy as its requester is; main's counts only toward keeping the decision. */
+function joinCertification(component, deploymentId, threadId) {
+	const certification = findCertification(component, deploymentId);
+	if (!certification) return;
+	if (threadId === undefined) certification.mainJoiners++;
+	else certification.joiners.add(threadId);
+}
+
+function leaveCertification(component, deploymentId, threadId) {
+	const certification = findCertification(component, deploymentId);
+	if (!certification) return;
+	if (threadId === undefined) certification.mainJoiners = Math.max(0, certification.mainJoiners - 1);
+	else certification.joiners.delete(threadId);
+	forgetIfUnread(certification);
+}
+
+function stillRead(certification) {
+	return (
+		!(certification.requesterReleased || certification.requesterExited) ||
+		certification.joiners.size > 0 ||
+		certification.mainJoiners > 0
+	);
+}
+
+function forgetIfUnread(certification) {
+	const key = settledKey(certification.component, certification.deploymentId);
+	if (settledCertifications.get(key) === certification && !stillRead(certification)) settledCertifications.delete(key);
 }
 
 function failClosedComponentsPlacedBy(options) {
@@ -1053,6 +1085,8 @@ const CERTIFICATION_ACTIONS = {
 	withdraw: ({ component, deploymentId }) => withdrawCertification(component, deploymentId),
 	decision: ({ component, deploymentId }) => certificationDecision(component, deploymentId),
 	release: ({ component, deploymentId }) => releaseCertificationRequester(component, deploymentId),
+	join: ({ component, deploymentId }, threadId) => joinCertification(component, deploymentId, threadId),
+	leave: ({ component, deploymentId }, threadId) => leaveCertification(component, deploymentId, threadId),
 };
 
 let nextCertificationRequestId = 0;
@@ -1102,11 +1136,12 @@ function registerCertificationRequests() {
 			);
 	});
 	onThreadExit((threadId) => {
-		for (const [key, certification] of settledCertifications) {
-			if (certification.requesterThreadId === threadId) settledCertifications.delete(key);
-		}
-		for (const certification of certifications.values()) {
-			if (certification.requesterThreadId === threadId) certification.requesterExited = true;
+		for (const registry of [certifications, settledCertifications]) {
+			for (const certification of [...registry.values()]) {
+				if (certification.requesterThreadId === threadId) certification.requesterExited = true;
+				certification.joiners.delete(threadId);
+				forgetIfUnread(certification);
+			}
 		}
 		for (const certification of certifications.values()) {
 			if (certification.phase !== 'armed' || certification.requesterThreadId !== threadId) continue;
@@ -1658,6 +1693,7 @@ function answersCertifyingDeploy(worker) {
 	for (const registry of [certifications, settledCertifications]) {
 		for (const certification of registry.values()) {
 			if (certification.requesterThreadId === worker.threadId && !certification.requesterReleased) return true;
+			if (certification.joiners.has(worker.threadId)) return true;
 		}
 	}
 	return false;

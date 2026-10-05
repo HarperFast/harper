@@ -22,6 +22,20 @@ parentPort.on('message', (message) => {
 		if (message.requestId) parentPort.postMessage({ type: 'ack', id: message.requestId });
 		return;
 	}
+	// Joins a release's decision, as a deploy activating the release already live does from a worker.
+	if (message?.type === 'fixture-join') {
+		parentPort.postMessage({
+			type: ITC_EVENT_TYPES.CERTIFICATION_REQUEST,
+			requestId: 'fixture-join',
+			action: 'join',
+			payload: message.payload,
+		});
+		return;
+	}
+	if (message?.type === ITC_EVENT_TYPES.CERTIFICATION_RESPONSE && message.requestId === 'fixture-join') {
+		parentPort.postMessage({ type: 'fixture-joined' });
+		return;
+	}
 	if (message?.type === ITC_EVENT_TYPES.SHUTDOWN) {
 		// Read now: a test can set an unheld worker's exit delay after the pool booted.
 		const unheld = step ? {} : JSON.parse(readFileSync(planPath, 'utf8'));

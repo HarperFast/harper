@@ -58,6 +58,7 @@ describe('the release certification gate', function () {
 					worker.on('message', (message) => {
 						if (message?.type === 'fixture-lifecycle') worker.lifecycle.push(message);
 						if (message?.type === 'fixture-admitted') worker.admitted = true;
+						if (message?.type === 'fixture-joined') worker.joined = true;
 						if (message?.type !== 'fixture-booted') return;
 						worker.certifyRequests.push(message.certify);
 						worker.failClosed = message.failClosed;
@@ -276,6 +277,40 @@ describe('the release certification gate', function () {
 		requester.wasShutdown = true;
 		await requester.terminate();
 		await waitFor(async () => (await decisionOf()) === undefined, { message: 'the decision outlived its requester' });
+	});
+
+	it('keeps a decision for a deploy that joined it until that deploy leaves', async () => {
+		plan([{ outcome: 'failed' }]);
+		await arm({ requesterThreadId: pool[0].threadId });
+		await commit();
+		await rolledOut();
+		const identity = { component: COMPONENT, deploymentId: DEPLOYMENT };
+		await certificationRequest('join', identity);
+		await certificationRequest('release', identity);
+		assert.equal((await decisionOf())?.status, 'rejected', 'the deploy that joined still reads the refusal');
+		await certificationRequest('leave', identity);
+		assert.equal(await decisionOf(), undefined, 'once it left, the decision is gone');
+	});
+
+	it("does not release the requester when a deploy that joined its release's decision finishes", async () => {
+		const { deployCertification } = require('#src/components/canaryRollout');
+		setCertificationHandler(handler());
+		plan([{ outcome: 'failed' }]);
+		await arm({ requesterThreadId: pool[0].threadId });
+		await commit();
+		await rolledOut();
+		const joining = deployCertification({
+			component: COMPONENT,
+			deploymentId: DEPLOYMENT,
+			eligible: () => true,
+			isolated: () => false,
+			scope: () => undefined,
+		});
+		await joining.join();
+		await joining.release();
+		assert.equal((await decisionOf())?.status, 'rejected', "the requester's refusal is still there for it to read");
+		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
+		assert.equal(await decisionOf(), undefined);
 	});
 
 	for (const [label, step, pattern] of [
@@ -950,6 +985,32 @@ describe('the release certification gate', function () {
 		assert.ok(lastAskedAt && answering.exitedAt, 'the restart replaced both workers');
 		assert.ok(lastAskedAt < answering.exitedAt, 'it went on past the worker still answering, not after its exit');
 		await certificationRequest('release', isolatedRelease);
+		await waitFor(() => completions.length > 0, { timeout: 45000, message: 'the isolated release never rolled out' });
+	});
+
+	it("does not throttle a restart behind a worker that joined a release's decision", async () => {
+		// The release is isolated, so only its own rollout, queued behind this restart, can decide it.
+		plan([{ outcome: 'loaded' }], { unheldShutdownDelayMs: 3000 });
+		await startFixture(0, { application: 'isolated-app' });
+		const isolatedRelease = { component: 'isolated-app', deploymentId: '55555555-5555-5555-5555-555555555555' };
+		const loading = Promise.withResolvers();
+		rootLoad = loading.promise;
+		releaseRootLoad = loading.resolve;
+		const [, joining, last] = pool;
+		const restart = restartWorkers('http', 1, true, undefined, undefined);
+		assert.deepStrictEqual(
+			await certificationRequest('arm', { ...isolatedRelease, isolated: true, scope: 'isolated-app' }),
+			{ armed: true }
+		);
+		assert.equal(await certificationRequest('commit', isolatedRelease), true);
+		joining.postMessage({ type: 'fixture-join', payload: isolatedRelease });
+		await waitFor(() => joining.joined, { message: 'the worker never joined the decision' });
+		let lastAskedAt;
+		last.once('shutdown', () => (lastAskedAt = Date.now()));
+		releaseRootLoad();
+		await restart;
+		assert.ok(lastAskedAt && joining.exitedAt, 'the restart replaced both workers');
+		assert.ok(lastAskedAt < joining.exitedAt, 'it went on past the worker that joined, not after its exit');
 		await waitFor(() => completions.length > 0, { timeout: 45000, message: 'the isolated release never rolled out' });
 	});
 
