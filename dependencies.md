@@ -83,7 +83,7 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 - Security: Had vulnerabilities, but quickly addressed: https://security.snyk.io/package/npm/ws
 - Environment interaction: None
 - Overlap: None
-- Binary compilation: Has optional dependencies with binary compilation for acceleration
+- Binary compilation: `bufferutil` is an optional native addon for masking acceleration. Harper does not declare `utf-8-validate`: `ws` uses Node's built-in [`buffer.isUtf8`](https://nodejs.org/api/buffer.html#bufferisutf8input) on all supported Node versions (`^22.18.0 || >=24.0.0`). Older transitive dependencies may still declare the addon independently.
 - Eventual removal: Because this is a standard-based API, this will hopefully be rolled into a core JavaScript runtime feature at some point (and already is in Deno).
 
 ## json-bigint (forked as json-bigint-fixes)
