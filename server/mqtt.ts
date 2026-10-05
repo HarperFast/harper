@@ -390,6 +390,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 				} catch {
 					return; // the CONNECT has answered its own failure
 				}
+				if (!session) return; // the client left before its CONNECT finished
 			}
 		} else if (command !== 'connect') {
 			mqttLog.info?.('Received packet before connection was established, closing connection');
@@ -483,6 +484,8 @@ function onSocket(socket, send, request, user, mqttSettings) {
 									});
 									const deadline = Date.now() + takeoverTimeout;
 									if (previous) await beforeDeadline(previous, deadline, packet.protocolVersion);
+									// a client that left while it waited takes nothing over
+									if (disconnected) return;
 									// a durable session has one owner: an older connection for this client on this thread gives
 									// way, to a clean start too, and its last save lands before this one reads or deletes
 									const older = [...(clientSessions.get(clientId) ?? [])];
@@ -493,6 +496,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 											deadline,
 											packet.protocolVersion
 										);
+										if (disconnected) return;
 									}
 								}
 								return getSession({
@@ -501,6 +505,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 								} as any);
 							})() as any;
 							session = await session;
+							if (!session) return;
 							session.closeConnection = closeConnection;
 							// the session is used in the context, and we want to make sure we can access this
 							session.socket = socket;

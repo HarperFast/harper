@@ -614,6 +614,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	/** Only a session that found no record may create one; any other updates only a record it owns. */
 	mayCreate: boolean;
 	discarded = false;
+	/** An ended session saves nothing after its final save, so it cannot overwrite a newer connection's record. */
+	sealed = false;
 	topics = new Map<string, TopicState>();
 	/** Settles once the latest save or deletion has, and never rejects. */
 	writes: Promise<void> = Promise.resolve();
@@ -874,6 +876,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		return { id: this.sessionId, incarnation: this.incarnation, nodeName: getThisNodeName(), subscriptions };
 	}
 	persist(): Promise<void> {
+		if (this.sealed) return this.writes;
 		this.dirty = true;
 		if (this.discarded) return Promise.resolve();
 		if (!this.saving) {
@@ -906,18 +909,16 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		await getDurableSession().put(record, { source: true });
 		this.mayCreate = false;
 	}
-	/** Hands the session to a newer connection on this thread: its positions are saved, then it writes no more, both in `writes`. */
+	/** Hands the session to a newer connection on this thread: its positions are saved, in `writes`, and it saves nothing after. */
 	yieldTo() {
-		if (this.terminated) return;
-		const changed = this.advancePositions();
-		this.terminated = true;
-		clearInterval(this.checkpointTimer);
-		if (changed || this.dirty) this.persist().catch(() => {});
-		// nothing after that save may write: a SUBSCRIBE still in flight could otherwise recreate the record
-		this.writes = this.writes.then(() => {
-			this.discarded = true;
-		});
-		this.closeConnection?.();
+		if (!this.terminated) {
+			const changed = this.advancePositions();
+			this.terminated = true;
+			clearInterval(this.checkpointTimer);
+			if (changed || this.dirty) this.persist().catch(() => {});
+			this.closeConnection?.();
+		}
+		this.sealed = true;
 	}
 	supersede() {
 		if (this.terminated) return;
@@ -971,6 +972,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		this.terminated = true;
 		super.disconnect(clientTerminated);
 		if ((changed || this.dirty) && !this.discarded) this.persist().catch(() => {});
+		// a SUBSCRIBE still in flight would otherwise save after a reconnect has claimed the record
+		this.sealed = true;
 	}
 }
 
