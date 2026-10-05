@@ -11,7 +11,7 @@ import harperLogger from '../utility/logging/harper_logger.ts';
 import { parentPort } from 'node:worker_threads';
 import * as env from '../utility/environment/environmentManager.ts';
 import * as terms from '../utility/hdbTerms.ts';
-import { getConfigPath } from '../config/configUtils.ts';
+import { atomicWriteFile, getConfigPath } from '../config/configUtils.ts';
 import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.js';
 import {
 	applicationSocketName,
@@ -41,7 +41,7 @@ import {
 import { Blob } from '../resources/blob.ts';
 import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import { Readable, Writable, pipeline } from 'node:stream';
-import { mkdirSync, writeFileSync, unlinkSync, readdirSync, statSync } from 'node:fs';
+import { mkdirSync, unlinkSync, readdirSync, statSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, UpgradeListener } from './Server.ts';
 import { setPortServerMap, SERVERS, socketOptionDefaults } from './serverRegistry.ts';
@@ -262,9 +262,31 @@ export function writeUdsMetadata(
 		}
 	}
 	try {
-		writeFileSync(yamlPath, yaml);
+		// Readers (the fronting proxy) must never see a truncated yaml, so publish by rename.
+		atomicWriteFile(yamlPath, yaml, { maxRetries: 0 });
 	} catch (error) {
 		harperLogger.error('Error writing UDS metadata to ' + yamlPath, error);
+	}
+}
+
+/**
+ * Create the UDS mirror directory owner-only, tightening it if it already exists. Returns false
+ * (after logging) when that cannot be done; the caller then skips the mirror and keeps its TLS
+ * listener. Windows has no POSIX modes, so only the creation applies there.
+ */
+export function ensureSocketsDirectory(socketsDir: string): boolean {
+	try {
+		mkdirSync(socketsDir, { recursive: true, mode: 0o700 });
+		if (process.platform === 'win32') return true;
+		const mode = statSync(socketsDir).mode & 0o777;
+		if (mode !== 0o700) {
+			chmodSync(socketsDir, 0o700);
+			harperLogger.warn(`Set UDS sockets directory ${socketsDir} to mode 700 (was ${mode.toString(8)})`);
+		}
+		return true;
+	} catch (error) {
+		harperLogger.error('Unable to secure UDS sockets directory ' + socketsDir + ', skipping UDS mirrors', error);
+		return false;
 	}
 }
 
@@ -924,9 +946,13 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		if (isOperationsServer && String(port).includes('/')) server.bypassLocalAuth = true;
 
 		// Create a corresponding Unix Domain Socket mirror for secure ports, on the threads that bind the port
-		if (secure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) && shouldBindListenerHere(port)) {
-			const socketsDir = join(env.getHdbBasePath(), 'sockets');
-			mkdirSync(socketsDir, { recursive: true });
+		const socketsDir = join(env.getHdbBasePath(), 'sockets');
+		if (
+			secure &&
+			env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) &&
+			shouldBindListenerHere(port) &&
+			ensureSocketsDirectory(socketsDir)
+		) {
 			const isolatedApplication = thisThreadsIsolatedApplication();
 			const socketName = isolatedApplication
 				? applicationSocketName(isolatedApplication, port)

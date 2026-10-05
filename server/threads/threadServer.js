@@ -2,7 +2,7 @@
 
 const { isMainThread, parentPort, threadId, workerData } = require('node:worker_threads');
 const { createServer: createSocketServer } = require('node:net');
-const { unlinkSync, existsSync, mkdirSync, renameSync } = require('node:fs');
+const { unlinkSync, existsSync, renameSync } = require('node:fs');
 const { join, dirname } = require('node:path');
 let componentsLoadedResolve;
 exports.whenComponentsLoaded = new Promise((resolve) => {
@@ -630,9 +630,12 @@ async function listenOnPortsBun() {
 			}
 
 			// Create a corresponding Unix Domain Socket mirror for secure ports
-			if (config.isSecure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
-				const socketsDir = join(env.getHdbBasePath(), 'sockets');
-				mkdirSync(socketsDir, { recursive: true });
+			const socketsDir = join(env.getHdbBasePath(), 'sockets');
+			if (
+				config.isSecure &&
+				env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) &&
+				httpComponent.ensureSocketsDirectory(socketsDir)
+			) {
 				const isolatedApplication = thisThreadsIsolatedApplication();
 				const socketName = isolatedApplication
 					? applicationSocketName(isolatedApplication, port)
@@ -786,9 +789,12 @@ function onSocket(listener, options) {
 		SERVERS[options.securePort] = secureSocketServer;
 
 		// Create a corresponding Unix Domain Socket mirror for the secure socket
-		if (env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) && shouldBindListenerHere(options.securePort)) {
-			const socketsDir = join(env.getHdbBasePath(), 'sockets');
-			mkdirSync(socketsDir, { recursive: true });
+		const socketsDir = join(env.getHdbBasePath(), 'sockets');
+		if (
+			env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) &&
+			shouldBindListenerHere(options.securePort) &&
+			httpComponent.ensureSocketsDirectory(socketsDir)
+		) {
 			const isolatedApplication = thisThreadsIsolatedApplication();
 			const socketName = isolatedApplication
 				? applicationSocketName(isolatedApplication, options.securePort)
