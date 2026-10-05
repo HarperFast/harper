@@ -1,4 +1,4 @@
-// Loaded into every Harper worker via threads.preloadRequire when run.mts is given --profile or runs the churn
+// Loaded into Harper HTTP workers via threads.preloadRequire when run.mts is given --profile or runs the churn
 // scenario. run.mts drives it with files in WS_SCALE_CONTROL_DIR:
 //   start   holds a duration in seconds: CPU-profile this thread that long, then write thread-<id>.cpuprofile
 //   gc-<n>  run a full garbage collection (Harper runs with --expose-gc), then write this thread's
@@ -16,7 +16,8 @@ function profile(seconds) {
 	session.connect();
 	session.post('Profiler.enable', () =>
 		session.post('Profiler.setSamplingInterval', { interval: 250 }, () =>
-			session.post('Profiler.start', () =>
+			session.post('Profiler.start', () => {
+				writeFileSync(`${dir}/thread-${threadId}.started`, '');
 				setTimeout(
 					() =>
 						session.post('Profiler.stop', (error, result) => {
@@ -24,8 +25,8 @@ function profile(seconds) {
 							session.disconnect();
 						}),
 					seconds * 1000
-				)
-			)
+				);
+			})
 		)
 	);
 }
