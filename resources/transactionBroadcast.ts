@@ -63,15 +63,21 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	} else {
 		databaseSubscriptions = allSubscriptions[path] || (allSubscriptions[path] = []);
 		const auditStore = table.auditStore;
+		// A new subscriber receives only what commits after it registers. Idle, the RocksDB iterator restarts at
+		// the end of the log; otherwise everything already committed is dispatched to the existing subscribers
+		// first (not from inside a dispatch, which is already walking the iterator).
+		if (!databaseSubscriptions.activeCount) {
+			// with rocksdb-js iterator we can and should not specify a start time so we just start at the end of the txn log
+			// and still match older version numbers that may commit in the future. But we have to start
+			// immediately so we are at the right position.
+			if (auditStore.reusableIterable) databaseSubscriptions.auditLogIterator = auditStore.getRange({});
+		} else if (!databaseSubscriptions.dispatching) {
+			notifyFromTransactionData(
+				databaseSubscriptions,
+				auditStore.reusableIterable ? databaseSubscriptions.auditLogIterator : null
+			);
+		}
 		if (!auditStore.hasSubscriptionCommitListener) {
-			let auditLogIterator;
-			if (auditStore.reusableIterable) {
-				// with rocksdb-js iterator we can and should not specify a start time so we just start at the end of the txn log
-				// and still match older version numbers that may commit in the future. But we have to start
-				// immediately so we are at the right position
-				auditLogIterator = auditStore.getRange({});
-				auditStore.subscriptionLogRange = auditLogIterator;
-			}
 			auditStore.hasSubscriptionCommitListener = true;
 			// Coalesce 'committed' bursts: instead of iterating the audit log synchronously inside the
 			// commit microtask (which pegs the event loop during replication backlog catch-up), defer
@@ -88,7 +94,9 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 				}
 				if (databaseSubscriptions.notifyScheduled) return;
 				databaseSubscriptions.notifyScheduled = true;
-				setImmediate(() => notifyFromTransactionData(databaseSubscriptions, auditLogIterator, true));
+				setImmediate(() =>
+					notifyFromTransactionData(databaseSubscriptions, databaseSubscriptions.auditLogIterator, true)
+				);
 			});
 		}
 	}
@@ -303,6 +311,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 	let iteratorFailed = false;
 	let trackProgress = subscriptions.progressConsumers > 0 && !subscriptions.progressStopped;
 	let progressKey = trackProgress ? subscriptions.pendingProgressKey : undefined;
+	subscriptions.dispatching = true;
 	try {
 		while (true) {
 			let result;
@@ -439,7 +448,11 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 				subscriptions.pendingProgressKey = progressKey;
 				yielded = true;
 				setImmediate(() =>
-					notifyFromTransactionData(subscriptions, auditStore.reusableIterable ? auditLogIterable : null, true)
+					notifyFromTransactionData(
+						subscriptions,
+						auditStore.reusableIterable ? subscriptions.auditLogIterator : null,
+						true
+					)
 				);
 				return;
 			}
@@ -462,6 +475,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 			}
 		}
 	} finally {
+		subscriptions.dispatching = false;
 		// If we yielded, the continuation owns notifyScheduled; otherwise (drain or any throw) we
 		// must clear it here so a stuck flag doesn't permanently silence future commits.
 		if (allowYield && !yielded) subscriptions.notifyScheduled = false;

@@ -6709,7 +6709,7 @@ export function makeTable(options): TableResourceClass {
 							if (reportingProgress) return void this.close(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
 							return scheduleReloadResnapshot();
 						}
-						const event = eventFromAudit(id, auditRecord, txnLogKey, beginTxn);
+						const event = eventFromAudit(id, auditRecord, txnLogKey, beginTxn, true);
 						if (!event) return;
 						// Queued events are filtered when the queue drains through send() below; events sent
 						// directly (queue already drained) are filtered here. Each event is filtered once.
@@ -6927,12 +6927,11 @@ export function makeTable(options): TableResourceClass {
 						}
 					} else if (!request.omitCurrent) {
 						// Track the latest record-time the cursor saw — including deletion tombstones
-						// (entries with null value). Used after iteration to gate out any pre-subscribe
-						// 'committed' callbacks that fired during cursor yields (e.g., late
-						// notifications for deletes/updates done before subscribing). This is in the
-						// audit log's time domain — works on both backends, where a JS-side
-						// `getNextMonotonicTime()` would not be comparable to rocksdb's native
-						// transaction timestamps.
+						// (entries with null value). For includeSuperseded subscribers only, it gates out
+						// pre-subscribe 'committed' callbacks that fired during cursor yields; it is not a
+						// delivery boundary for default events. This is in the audit log's
+						// time domain — works on both backends, where a JS-side `getNextMonotonicTime()`
+						// would not be comparable to rocksdb's native transaction timestamps.
 						let cursorMaxTime = 0;
 						// Retained-message semantics: subscriber may legitimately receive a record twice
 						// if a post-subscribe write hits a key the cursor also visits. This is
@@ -6962,16 +6961,17 @@ export function makeTable(options): TableResourceClass {
 								if ((await subscription.waitForDrain()) === false) return;
 							}
 						}
-						// Filter the queue to drop in-flight pre-subscribe events the listener queued
-						// while subscription.startTime was still 0. Anything strictly newer than what
-						// the cursor saw is a real post-subscribe commit and is kept. A progress
-						// certificate keeps every buffered event instead: the filter can drop ones the scan
-						// never covered (harper#2933), and duplicate state is safe where lost history is not.
-						if (cursorMaxTime && !reportingProgress) subscription!.startTime = cursorMaxTime;
-						if (pendingRealTimeQueue && cursorMaxTime && !reportingProgress) {
-							pendingRealTimeQueue = pendingRealTimeQueue.filter(
-								(event) => (event.localTime ?? event.version) > cursorMaxTime
-							);
+						if (includeSuperseded && !reportingProgress) {
+							if (cursorMaxTime) {
+								subscription!.startTime = cursorMaxTime;
+								if (pendingRealTimeQueue) {
+									pendingRealTimeQueue = pendingRealTimeQueue.filter(
+										(event) => (event.localTime ?? event.version) > cursorMaxTime
+									);
+								}
+							}
+						} else if (!includeSuperseded && !reportingProgress && pendingRealTimeQueue) {
+							pendingRealTimeQueue = pendingRealTimeQueue.filter((event) => !isStaleRecordEvent(event));
 						}
 					}
 				} else {
@@ -7084,15 +7084,42 @@ export function makeTable(options): TableResourceClass {
 					harperLogger.error?.('Error in real-time subscription listener:', listenerError);
 				}
 			}
-			function eventFromAudit(id: Id, auditRecord: any, localTime: number, beginTxn?: boolean) {
+			// A write folded into a newer version by out-of-order resequencing is listed in the record's
+			// additionalAuditRefs until the next in-order write replaces the record.
+			function wasMergedInto(entry: any, txnLogKey: number, nodeId: number | undefined) {
+				return Boolean(
+					entry.metadataFlags & VERSION_REUSED &&
+					entry.additionalAuditRefs?.some(
+						(ref: { version: number; nodeId?: number }) =>
+							ref.version === txnLogKey && (ref.nodeId ?? 0) === (nodeId ?? 0)
+					)
+				);
+			}
+			// The event for the record's newer version follows this one in the queue.
+			function isStaleRecordEvent(event: any) {
+				const type = event.type;
+				if (
+					event.id === undefined ||
+					!(type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate')
+				)
+					return false;
+				return primaryStore.getEntry(event.id)?.version > event.version;
+			}
+			function eventFromAudit(id: Id, auditRecord: any, localTime: number, beginTxn?: boolean, live?: boolean) {
 				let type = auditRecord.type;
 				let value;
+				let version = auditRecord.version;
 				const isMutation =
 					type === 'put' || type === 'patch' || type === 'delete' || type === 'invalidate' || type === 'relocate';
 				if (isMutation && !includeSuperseded) {
 					if (id === undefined) return;
 					const entry = currentEntryForAudit(primaryStore, id, auditRecord);
-					if (!entry || entry.version !== auditRecord.version) return;
+					if (!entry) return;
+					if (entry.version !== auditRecord.version) {
+						// The newer version's event may have gone out before this write was merged into it.
+						if (!(live && getFullRecord && wasMergedInto(entry, localTime, auditRecord.nodeId))) return;
+						version = entry.version;
+					}
 					if (getFullRecord) {
 						value = entry?.value;
 						type = entry?.metadataFlags & INVALIDATED ? 'invalidate' : value ? 'put' : 'delete';
@@ -7101,7 +7128,7 @@ export function makeTable(options): TableResourceClass {
 					value = auditRecord.getValue?.(primaryStore, getFullRecord, localTime);
 					if (getFullRecord && type === 'patch') type = 'put';
 				}
-				return { id, localTime, value, version: auditRecord.version, type, beginTxn, size: auditRecord.size };
+				return { id, localTime, value, version, type, beginTxn, size: auditRecord.size };
 			}
 			function send(event: any, alreadyFiltered = false) {
 				if (!isActive()) return false;
