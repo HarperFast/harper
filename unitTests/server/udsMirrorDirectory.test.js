@@ -34,7 +34,7 @@ describe('UDS mirror directory and metadata publication', () => {
 	});
 
 	after(() => {
-		testUtils.cleanUpDirectories(workDir);
+		if (workDir) testUtils.cleanUpDirectories(workDir);
 	});
 
 	describe('ensureSocketsDirectory', () => {
@@ -88,7 +88,7 @@ describe('UDS mirror directory and metadata publication', () => {
 		});
 
 		afterEach(() => {
-			testUtils.cleanUpDirectories(socketsDir);
+			if (socketsDir) testUtils.cleanUpDirectories(socketsDir);
 		});
 
 		function tempFilesIn(dir) {
