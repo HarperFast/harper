@@ -94,10 +94,8 @@ jobs:
       # from the Actions step API: a cap-killed sample is right-censored and reads far too low.
       # Derived 2026-09-18 over the 30 `Unit Test` pushes since 2026-09-14, and only `resources`
       # was re-budgeted — capped at 7m off a ~4m30-5m25 estimate nobody re-measured, it reached
-      # 6m58 completed, went red on main, and needed ~7m40 at its worst. `main` was last measured
-      # 2026-10-02 at 3m56 on Node 22; its 4m cap left no margin, so this step uses 6m (~1.5x).
-      # The PR run reached Mocha's epilogue at the 4m cutoff and is right-censored. `lmdb` was
-      # re-derived 2026-09-28 over the pushes since 2026-09-26:
+      # 6m58 completed, went red on main, and needed ~7m40 at its worst. `main` (3m19) sits at ~1.2x
+      # its own worst, not 1.5x. `lmdb` was re-derived 2026-09-28 over the pushes since 2026-09-26:
       # slowest completed 3m38, ~3m20 once `subscriptionSuperseded` stopped replaying the shared
       # `test` database's whole audit log; 1.5x is 5m, and the legs killed at 4m ran longer than any
       # that completed, so 6m. Its LMDB-`resources` phase stretches on a slow runner in tests that
@@ -114,7 +112,7 @@ jobs:
       # core 4m50 -> 8m, indexes 2m50 -> 5m.
       - name: 'Unit tests: main'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
-        timeout-minutes: 6
+        timeout-minutes: 4
         run: npm run test:unit:main
 
       - name: 'Unit tests: apitests'
