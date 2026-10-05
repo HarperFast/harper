@@ -105,7 +105,9 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    is part of the load that decides. The requesting worker is replaced last, once its operation has answered (`release`, bounded at 10 s).
    Past the bound its shutdown still waits for the deploy to answer, through a shutdown drain the deploy holds
    while its release is armed, bounded by the drain ceiling, rather than cut the deploy off mid-replication; a
-   shutdown before the arm closes as it always did. A requester that is worker 0 is retired at its turn without
+   shutdown before the arm closes as it always did. Until the release is decided, the drain holds only as long as
+   a canary may take, the verdict timeout: what decides it may be that release's own rollout, queued behind the
+   restart retiring the worker, as for an isolated release a pool worker requested. A requester that is worker 0 is retired at its turn without
    that wait, and only the rollout's end waits for it to exit. Where replacements start beside their predecessors,
    that spares the rest of the pool its whole deploy; where they cannot, worker 0's canary is admitted only once the
    requester has exited, so there the rollout still waits for that deploy. There, too, the copy of any worker still

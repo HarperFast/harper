@@ -1282,6 +1282,32 @@ describe('a requesting worker the rollout retires before its deploy answers', ()
 		assert.ok(Date.now() - startedAt < 5000, 'the deadline bounds the wait');
 	});
 
+	it('holds a shutdown only as long as a canary may take while its release is undecided', async () => {
+		// What decides the release may be its own rollout, queued behind the restart retiring this worker.
+		end = drainWhileDeploying(
+			() => true,
+			() => false,
+			200
+		);
+		const startedAt = Date.now();
+		await runShutdownDrains(startedAt + 60_000);
+		assert.ok(Date.now() - startedAt < 5000, 'an undecided release does not hold the shutdown for the drain ceiling');
+	});
+
+	it('holds a shutdown until the deploy answers once its release is decided', async () => {
+		end = drainWhileDeploying(
+			() => true,
+			() => true,
+			100
+		);
+		let drained = false;
+		const draining = runShutdownDrains(Date.now() + 60_000).then(() => (drained = true));
+		await sleep(400);
+		assert.equal(drained, false, 'past the bound, a decided release still holds it');
+		end();
+		await draining;
+	});
+
 	it('holds nothing while the deploy has not armed its certification', async () => {
 		end = drainWhileDeploying(() => false);
 		assert.equal(shutdownDrainsHaveWork(), false);

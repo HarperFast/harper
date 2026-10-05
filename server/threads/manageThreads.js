@@ -171,6 +171,7 @@ const processIncarnation = workerData ? workerData.processIncarnation : randomBy
 module.exports = {
 	startWorker,
 	restartWorkers,
+	canaryVerdictTimeoutMs,
 	shutdownWorkers,
 	shutdownWorkersNow,
 	workers,

@@ -747,8 +747,15 @@ async function deployComponent(req) {
 						scope: () => ((nowIsolated ?? initiallyIsolated) ? req.project : undefined),
 					})
 				: undefined;
+		let certificationDecided = false;
 		const endDrain =
-			certification && !isMainThread ? drainWhileDeploying(() => application.certificationArmed) : undefined;
+			certification && !isMainThread
+				? drainWhileDeploying(
+						() => application.certificationArmed,
+						() => certificationDecided,
+						manageThreads.canaryVerdictTimeoutMs()
+					)
+				: undefined;
 		releaseRequester = async () => {
 			try {
 				if (application.certificationArmed) await certification.release();
@@ -814,6 +821,7 @@ async function deployComponent(req) {
 				status: 'uncertified',
 				reason: 'its certification closed before this deploy read it',
 			};
+			certificationDecided = true;
 			emit('phase', { phase: 'load', status: 'done' });
 			certificationOutcome = decision.status;
 			if (decision.status === 'rejected' || decision.status === 'interrupted') {
@@ -1153,9 +1161,11 @@ function assertPeersStaged(component, recorder, response) {
 
 /**
  * The rollout retires the worker that requested it once that worker answers, or after a bound: past the bound, its
- * shutdown waits for the deploy to answer rather than cut it off. Returns what ends the wait.
+ * shutdown waits for the deploy to answer rather than cut it off. Until the release is decided it waits only so long
+ * as a canary may take: what decides it may be a rollout queued behind the restart now retiring this worker. Returns
+ * what ends the wait.
  */
-function drainWhileDeploying(isDeploying) {
+function drainWhileDeploying(isDeploying, isDecided = () => true, undecidedBoundMs = Infinity) {
 	const { registerShutdownDrain } = require('./shutdownDrain.ts');
 	const answered = Promise.withResolvers();
 	const unregister = registerShutdownDrain({
@@ -1163,11 +1173,22 @@ function drainWhileDeploying(isDeploying) {
 		drain: (deadlineMs) => {
 			if (!isDeploying()) return Promise.resolve();
 			let timer;
+			let bound;
 			const deadline = new Promise((resolve) => {
 				timer = setTimeout(resolve, Math.max(0, deadlineMs - Date.now()));
 				timer.unref();
 			});
-			return Promise.race([answered.promise, deadline]).finally(() => clearTimeout(timer));
+			const undecided = new Promise((resolve) => {
+				if (!Number.isFinite(undecidedBoundMs)) return;
+				bound = setTimeout(() => {
+					if (!isDecided()) resolve();
+				}, undecidedBoundMs);
+				bound.unref();
+			});
+			return Promise.race([answered.promise, deadline, undecided]).finally(() => {
+				clearTimeout(timer);
+				clearTimeout(bound);
+			});
 		},
 	});
 	return () => {
