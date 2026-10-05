@@ -123,8 +123,6 @@ export function lastTimeInAuditStore(auditStore: Database) {
 		return timestamp;
 	}
 }
-// getIdMappingRecord() keeps this node's name at id 0; the confirmation is per worker but the record is shared,
-// so it expires (resources/DESIGN.md)
 const THIS_NODE_ID_CONFIRM_MS = 1000;
 const confirmedThisNode = new WeakMap<object, { name: string; confirmedAt: number }>();
 export function getThisNodeId(auditStore: any) {
