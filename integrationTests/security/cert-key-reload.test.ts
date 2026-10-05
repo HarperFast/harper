@@ -201,10 +201,11 @@ for (const readableKeyDirectory of [true, false])
 			}
 
 			if (!readableKeyDirectory) return;
-			test('aborting an unmatched renewal restores the original inode and clears the pending alarm', async () => {
+			test('aborting an unmatched renewal restores the original inode and clears the pending alarm', async (t) => {
 				const logOffset = (await readFile(logPath(), 'utf8')).length;
 				const savedPath = certPath + '.saved';
 				const unmatchedCertPem = await makeServerCertPem(await generateEd25519KeyPair(), currentSerial + 1);
+				const abortStart = performance.now();
 				await rename(certPath, savedPath);
 				await writeFile(certPath, unmatchedCertPem);
 				const noticeDeadline = Date.now() + 10000;
@@ -219,6 +220,11 @@ for (const readableKeyDirectory of [true, false])
 				}
 				ok(pendingNotice, 'the publisher never observed the aborted pair');
 				await unlink(certPath);
+				const abortElapsed = performance.now() - abortStart;
+				if (abortElapsed >= 100)
+					t.diagnostic(
+						`restore ${Math.round(abortElapsed)} ms after the first removal missed chokidar's 100 ms throttle`
+					);
 				await rename(savedPath, certPath);
 				// This asserts a non-event after the publisher's 30-second pending-pair alarm window.
 				await delay(31000);
@@ -227,7 +233,7 @@ for (const readableKeyDirectory of [true, false])
 				ok(!log.includes('still has no matching private key'), 'an aborted renewal left the pending alarm armed');
 				ok(!/key values mismatch|ERR_OSSL_X509_KEY_VALUES_MISMATCH/i.test(log));
 
-				// Key first, so only the certificate's own directory watch can complete the next renewal.
+				// Key first, so the pair completes only once the replaced certificate is read.
 				const nextSerial = currentSerial + 2;
 				const keyPair = await generateEd25519KeyPair();
 				const certPem = await makeServerCertPem(keyPair, nextSerial);
