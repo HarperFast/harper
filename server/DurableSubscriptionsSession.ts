@@ -6,7 +6,6 @@ import { transaction } from '../resources/transaction.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.js';
 import { whenComponentsLoaded } from '../server/threads/threadServer.js';
 import { server } from '../server/Server.ts';
-import { getThisNodeName } from '../server/nodeName.ts';
 import { RequestTarget } from '../resources/RequestTarget';
 import { randomBytes } from 'node:crypto';
 import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../resources/auditStore.ts';
@@ -29,7 +28,6 @@ function getDurableSession() {
 					type: 'array',
 				},
 				{ name: 'incarnation', type: 'string' },
-				{ name: 'nodeName', type: 'string' },
 			],
 		});
 	}
@@ -566,7 +564,8 @@ type TopicState = {
 	consumed: number;
 };
 
-const RESUME_REFUSALS = new Set(['DATABASE_GENERATION_CHANGED', 'RESUME_HISTORY_UNAVAILABLE']);
+/** Only pruned history resets a session: a position from another generation resumes unchecked instead. */
+const RESETTING_REFUSALS = new Set(['RESUME_HISTORY_UNAVAILABLE']);
 
 function logKeysPerEntry(topic: string): boolean {
 	const auditStore = resources.getMatch(topic.split('?')[0], 'mqtt')?.Resource?.auditStore;
@@ -578,33 +577,26 @@ function checkpointInterval(): number {
 }
 
 /**
- * Whether every generation-bound entry can still resume, checked from metadata before CONNACK. A
- * collection is checked against the floor too; a record's own history walk decides the rest after
- * CONNACK, and a resource that is not a table is left to its own subscribe. An entry bound on another
- * node is not checked: it resumes unbound.
+ * Whether every collection entry can still resume from its position, checked from metadata against
+ * the floor before CONNACK. A record's own history walk decides the rest after CONNACK, and a resource
+ * that is not a table is left to its own subscribe.
  */
 function sessionRecordResumable(record: any): boolean {
 	for (const entry of record.subscriptions || []) {
-		if (!boundHere(record, entry)) continue;
+		if (!boundToCurrentGeneration(entry)) continue;
 		const match = resources.getMatch(entry.topic.split('?')[0], 'mqtt');
-		const auditStore = match?.Resource?.auditStore;
-		if (!auditStore) continue;
-		const collection = /[+#]/.test(match.relativeURL ?? '');
-		const resumable = collection
-			? isResumablePosition(auditStore, entry.databaseGeneration, entry.startTime)
-			: getDatabaseGeneration(auditStore)?.id === entry.databaseGeneration;
-		if (!resumable) return false;
+		if (!/[+#]/.test(match.relativeURL ?? '')) continue;
+		if (!isResumablePosition(match.Resource.auditStore, entry.databaseGeneration, entry.startTime)) return false;
 	}
 	return true;
 }
 
 /**
- * A record replicates, but each node mints its own generations, so only this node's bindings can be
- * checked here. A node whose name changed still holds the generation it bound its entries to.
+ * Only a position from the database's current generation can be checked. One from another node's
+ * generation (the record replicates), or from before a restore or copy, resumes unchecked instead.
  */
-function boundHere(record: any, entry: DurableEntry): boolean {
+function boundToCurrentGeneration(entry: DurableEntry): boolean {
 	if (entry.databaseGeneration === undefined) return false;
-	if (record.nodeName === getThisNodeName()) return true;
 	const auditStore = resources.getMatch(entry.topic.split('?')[0], 'mqtt')?.Resource?.auditStore;
 	return Boolean(auditStore) && getDatabaseGeneration(auditStore)?.id === entry.databaseGeneration;
 }
@@ -634,7 +626,12 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				topic,
 				newTopicState(
 					qos > 0
-						? { qos, topic, startTime, databaseGeneration: boundHere(record, entry) ? databaseGeneration : undefined }
+						? {
+								qos,
+								topic,
+								startTime,
+								databaseGeneration: boundToCurrentGeneration(entry) ? databaseGeneration : undefined,
+							}
 						: { qos, topic }
 				)
 			);
@@ -757,7 +754,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				// replacing a subscription must lose nothing, so the new one continues the topic's position
 				this.advancePositions();
 				request.startTime = existing.entry.startTime;
-				request.databaseGeneration = existing.entry.databaseGeneration;
+				if (boundToCurrentGeneration(existing.entry)) request.databaseGeneration = existing.entry.databaseGeneration;
 			}
 		}
 		let started;
@@ -767,7 +764,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (durable || started) await this.persist();
 		} catch (error) {
 			// a continued position that can no longer resume resets the session, as it would at reconnect
-			if (RESUME_REFUSALS.has(error?.code)) this.subscriptionFailed({ topic }, error);
+			if (RESETTING_REFUSALS.has(error?.code)) this.subscriptionFailed({ topic }, error);
 			// the client is told this SUBSCRIBE failed, so it must not keep receiving or come back saved
 			else this.dropFailedSubscription(topic, started, replaced);
 			throw error;
@@ -873,7 +870,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (databaseGeneration !== undefined) saved.databaseGeneration = databaseGeneration;
 			subscriptions.push(saved);
 		}
-		return { id: this.sessionId, incarnation: this.incarnation, nodeName: getThisNodeName(), subscriptions };
+		return { id: this.sessionId, incarnation: this.incarnation, subscriptions };
 	}
 	persist(): Promise<void> {
 		if (this.sealed) return this.writes;
@@ -932,7 +929,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (this.terminated || subscription.failed) return;
 		subscription.failed = true;
 		clearInterval(this.checkpointTimer);
-		if (!RESUME_REFUSALS.has(error?.code)) {
+		if (!RESETTING_REFUSALS.has(error?.code)) {
 			// the client can reconnect and resume from what this session saves now
 			this.advancePositions();
 			this.persist().catch(() => {});

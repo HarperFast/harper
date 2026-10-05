@@ -10,9 +10,8 @@ const { handleApplication, setTakeoverTimeoutForTests } = require('#src/server/m
 const { generate } = require('mqtt-packet');
 const { EventEmitter } = require('node:events');
 const mqttPacket = require('mqtt-packet');
-const { ResumeHistoryUnavailableError } = require('#src/utility/errors/hdbError');
+const { DatabaseGenerationChangedError, ResumeHistoryUnavailableError } = require('#src/utility/errors/hdbError');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { getThisNodeName } = require('#src/server/nodeName');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -223,11 +222,11 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		second.session.disconnect(true);
 	});
 
-	it('resumes a session another node saved from its position, unchecked, and checks one this node saved', async () => {
+	it('resumes a session whose positions name another generation from where they are, and binds them here', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
 		const topic = `${name}/#`;
-		const clientId = `other-node-${name}`;
+		const clientId = `other-generation-${name}`;
 		const first = await connect(clientId);
 		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
 		await T.put('a', { value: 1 });
@@ -236,52 +235,23 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		const entry = await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
 		first.session.disconnect(true);
 		await first.session.writes;
-		assert.strictEqual((await stored(clientId)).nodeName, getThisNodeName());
 		await T.put('missed', { value: 'missed' });
-		const foreignGeneration = 'f'.repeat(entry.databaseGeneration.length);
-		const saveFrom = (nodeName) =>
-			databases.system.hdb_durable_session.put({
-				id: clientId,
-				nodeName,
-				subscriptions: [{ ...entry, databaseGeneration: foreignGeneration }],
-			});
-		await saveFrom('another-node');
+		// another node's generation, or this database's before a restore or copy
+		const otherGeneration = 'f'.repeat(entry.databaseGeneration.length);
+		await databases.system.hdb_durable_session.put({
+			id: clientId,
+			subscriptions: [{ ...entry, databaseGeneration: otherGeneration }],
+		});
 		const second = await connect(clientId);
-		assert.strictEqual(second.session.sessionWasPresent, true, 'another node names its own generation');
+		assert.strictEqual(second.session.sessionWasPresent, true, 'another generation resumes rather than resets');
 		await second.session.resume();
 		await waitFor(() => values(second.received).includes('missed'));
 		// a live write gives the session a certified position to bind
 		await T.put('later', { value: 'later' });
 		await waitFor(() => values(second.received).includes('later'));
 		await ackAll(second.session, second.received);
-		const here = getDatabaseGeneration(T.auditStore).id;
-		await storedEntry(clientId, (saved) => saved.databaseGeneration === here);
-		assert.strictEqual((await stored(clientId)).nodeName, getThisNodeName(), 'bound again here');
-		second.session.disconnect(true);
-		await second.session.writes;
-		await saveFrom(getThisNodeName());
-		const third = await connect(clientId);
-		assert.ok(!third.session.sessionWasPresent, 'a generation this node does not have means its database was replaced');
-		third.session.disconnect(true);
-	});
-
-	it('checks the entries a node bound before its name changed', async () => {
-		const { T, name } = topicTable();
-		await T.put('seed', { value: 0 });
-		const clientId = `renamed-${name}`;
-		const first = await connect(clientId);
-		await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
-		await T.put('a', { value: 1 });
-		await waitFor(() => first.received.length >= 1);
-		await ackAll(first.session, first.received);
-		const entry = await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
-		first.session.disconnect(true);
-		await first.session.writes;
-		await databases.system.hdb_durable_session.put({ id: clientId, nodeName: 'its-old-name', subscriptions: [entry] });
-		await T.put('b', { value: 2 });
-		raiseAuditFloor(T.auditStore, entry.startTime + 0.001);
-		const second = await connect(clientId);
-		assert.ok(!second.session.sessionWasPresent, 'its own generation is still checked against the floor');
+		const current = getDatabaseGeneration(T.auditStore).id;
+		await storedEntry(clientId, (saved) => saved.databaseGeneration === current);
 		second.session.disconnect(true);
 	});
 
@@ -756,9 +726,10 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		await first.session.writes;
 		const open = mqttListener();
 		const reasons = [];
-		// the session survives the first failure, which is not a refusal, and is discarded by the second
+		// the session survives a failure that is not a refusal and a new generation, and is discarded by pruned history
 		for (const failure of [
 			Object.assign(new Error('an internal detail'), { statusCode: 409 }),
+			new DatabaseGenerationChangedError(),
 			new ResumeHistoryUnavailableError(),
 		]) {
 			class Failing extends Resource {
@@ -777,7 +748,11 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 			reasons.push(disconnect.properties?.reasonString);
 			socket.handlers.close();
 		}
-		assert.deepStrictEqual(reasons, [undefined, new ResumeHistoryUnavailableError().message]);
+		assert.deepStrictEqual(reasons, [
+			undefined,
+			new DatabaseGenerationChangedError().message,
+			new ResumeHistoryUnavailableError().message,
+		]);
 	});
 
 	it('stops writing when another connection takes the session over', async () => {
