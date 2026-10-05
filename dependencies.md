@@ -83,7 +83,7 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 - Security: Had vulnerabilities, but quickly addressed: https://security.snyk.io/package/npm/ws
 - Environment interaction: None
 - Overlap: None
-- Binary compilation: `bufferutil` is an optional native addon for masking acceleration. Harper does not declare `utf-8-validate`: `ws` uses Node's built-in [`buffer.isUtf8`](https://nodejs.org/api/buffer.html#bufferisutf8input) on the Node versions declared in `package.json`'s `engines`. The development lock still includes an older addon produced by the integration test framework's Harper peer, also referenced by React Native's optional peers. Production shrinkwrap pruning removes copies reachable only through optional peers, preserving any explicit dependency or required peer; see `build-tools/DESIGN.md` for the registry-install boundary.
+- Binary compilation: `bufferutil` is an optional native addon for masking acceleration. Harper does not declare `utf-8-validate`: `ws` uses Node's built-in [`buffer.isUtf8`](https://nodejs.org/api/buffer.html#bufferisutf8input) (introduced in Node 18.14 and 19.4) on the Node versions declared in `package.json`'s `engines`. The development lock still includes an older addon produced by the integration test framework's Harper peer, also referenced by React Native's optional peers. Production shrinkwrap pruning removes copies reachable only through optional peers, preserving any explicit dependency or required peer; see `build-tools/DESIGN.md` for the registry-install boundary.
 - Eventual removal: Because this is a standard-based API, this will hopefully be rolled into a core JavaScript runtime feature at some point (and already is in Deno).
 
 ## json-bigint (forked as json-bigint-fixes)

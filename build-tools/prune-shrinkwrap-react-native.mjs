@@ -72,8 +72,6 @@ function requiredBy(key) {
 	return Object.keys({ ...entry.dependencies, ...entry.optionalDependencies, ...entry.peerDependencies });
 }
 
-// An optional utf-8-validate peer is dispensable only without any explicit dependency
-// declaration on the same consumer. All required peers and other optional peers survive.
 function isSeverableEdge(key, name) {
 	const entry = lock.packages[key] ?? {};
 	if (name === SEVER) {
@@ -88,7 +86,6 @@ function isSeverableEdge(key, name) {
 	);
 }
 
-// Walk the tree from the root manifest, skipping dispensable edges named in `sever`.
 function reachableFromRoot(sever = new Set()) {
 	const seen = new Set();
 	const queue = [''];
@@ -155,7 +152,7 @@ for (const [target, before, after] of [
 ]) {
 	const count = [...before].filter((key) => !after.has(key)).length;
 	if (count === 0) {
-		console.log(`No unused ${target} tree found in ${file} — nothing to prune (has it been fixed upstream?)`);
+		console.log(`No unused ${target} tree found in ${file} — nothing to prune`);
 	} else {
 		console.log(`Pruned ${count} entries reachable only through ${target} from ${file}`);
 	}

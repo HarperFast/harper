@@ -34,6 +34,7 @@ function runPrune(lock) {
 		const stdout = execFileSync(process.execPath, [SCRIPT, file], {
 			encoding: 'utf8',
 			stdio: ['ignore', 'pipe', 'pipe'],
+			timeout: 30_000,
 		});
 		return { stdout, result: JSON.parse(fs.readFileSync(file, 'utf8')) };
 	} finally {
@@ -41,8 +42,6 @@ function runPrune(lock) {
 	}
 }
 
-// No react-native tree: ws's optional peer alone must not keep the unused addon in
-// a production shrinkwrap. bufferutil still needs the shared native loader.
 function utf8Fixture() {
 	return {
 		lockfileVersion: 3,
@@ -102,7 +101,9 @@ describe('prune-shrinkwrap optional utf-8-validate peers', () => {
 		try {
 			fs.copyFileSync(path.join(__dirname, '..', '..', 'package-lock.json'), file);
 			for (const script of ['prune-shrinkwrap-dev.mjs', 'prune-shrinkwrap-react-native.mjs']) {
-				execFileSync(process.execPath, [path.join(__dirname, '..', '..', 'build-tools', script), file]);
+				execFileSync(process.execPath, [path.join(__dirname, '..', '..', 'build-tools', script), file], {
+					timeout: 30_000,
+				});
 			}
 			const { packages } = JSON.parse(fs.readFileSync(file, 'utf8'));
 			assert.ok(
@@ -200,7 +201,8 @@ describe('prune-shrinkwrap-react-native', () => {
 		delete lock.packages['node_modules/rn-only'];
 		delete lock.packages['node_modules/alasql'].optionalDependencies;
 		const { stdout, result } = runPrune(lock);
-		assert.match(stdout, /nothing to prune/);
+		assert.match(stdout, /No unused react-native-fs tree.*nothing to prune/);
+		assert.doesNotMatch(stdout, /^Pruned /m);
 		assert.deepStrictEqual(Object.keys(result.packages).sort(), ['', 'node_modules/alasql', 'node_modules/shared']);
 	});
 
@@ -220,7 +222,8 @@ describe('prune-shrinkwrap-react-native', () => {
 		const { stdout, result } = runPrune(lock);
 		assert.ok(result.packages['node_modules/react-native-fs'], 'react-native-fs is still required by other-pkg');
 		assert.ok(result.packages['node_modules/react-native'], 'its peer tree stays reachable through it');
-		assert.match(stdout, /nothing to prune/);
+		assert.match(stdout, /No unused react-native-fs tree.*nothing to prune/);
+		assert.doesNotMatch(stdout, /^Pruned /m);
 	});
 
 	it('still prunes when the only other reference is another optional declaration', () => {
