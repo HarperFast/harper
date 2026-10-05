@@ -449,7 +449,7 @@ Some behavior worth knowing:
 - **The metadata block comes first.** Listing a cloud-metadata or link-local address does not make it reachable.
 - **Matching is by host name, not address.** An allowed name whose DNS resolves to an internal address is still reached. List names whose DNS you control.
 - **An empty list removes the tool**, the same as `false`. A value Harper cannot read also removes the tool, and logs an error naming it, while the rest of the agent stays available.
-- **It is read at startup only.** Change it in `harper-config.yaml`, or through `HARPER_CONFIG` / `HARPER_SET_CONFIG`, and restart. [`set_agent_config`](../operations-api/operations.md#set_agent_config) rejects it, and `set_configuration` does not accept it, so the agent cannot use its own operations tools to widen the policy.
+- **It is read at startup only.** Set it in `harper-config.yaml`, with `set_configuration`, through `HARPER_CONFIG`, or as an [environment variable](./overview.md#2-environment-variables) or [CLI argument](./overview.md#3-cli-arguments) (`AGENT_HTTPFETCH=false`, or `AGENT_HTTPFETCH_ALLOW='["localhost:9926"]'` as a JSON array), then restart. A comma-separated string is not a list: it is rejected, and the tool is removed. [`set_agent_config`](../operations-api/operations.md#set_agent_config) rejects it at runtime.
 
 ---
 
