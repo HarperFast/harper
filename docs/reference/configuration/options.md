@@ -398,16 +398,16 @@ agent:
 - `allowDestructive` — Include the tools marked destructive in the agent's toolset: `write_file`, the inspector's code-evaluation tools, and any operations tool carrying MCP's [`destructiveHint`](../mcp/tool-metadata.md) (`drop_table`, `delete`, `restart`, `set_configuration`, ...). When `false` they are removed entirely rather than gated. That hint comes from a curated set in core which does not cover every damaging operation, so this is not a complete safety boundary on its own — see [Agent operations](../operations-api/operations.md#agent); _Default_: `false`
 - `user` — Harper user the agent's **operations** tools run as; the filesystem, HTTP, schedule, and inspector tools always run at process privilege regardless. If it cannot be resolved and it is not the default, the agent fails closed and runs with no operations tools; _Default_: `hdb_agent`, which falls back to a `super_user` bootstrap identity
 - `componentsScope` — Filesystem write scope for component edits, relative to `rootPath`; _Default_: the full `componentsRoot`
-- `httpFetch` <VersionBadge version="v5.3.1" /> — Whether the agent has its `http_fetch` tool, and which hosts it may reach: `true`, `false`, or `{ allow: [...] }`. Read at startup only. See [Restricting `http_fetch`](#restricting-http_fetch); _Default_: `true`
+- `httpFetch` <VersionBadge version="v5.3.2" /> — Whether the agent has its `http_fetch` tool, and which hosts it may reach: `true`, `false`, or `{ allow: [...] }`. Read at startup only. See [Restricting `http_fetch`](#restricting-http_fetch); _Default_: `true`
 - `systemPromptAppend` — Operator text appended to the agent's system prompt
 
 `enabled`, `provider`, `model`, `maxTurns`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend` can also be changed at runtime with [`set_agent_config`](../operations-api/operations.md#set_agent_config), which applies in memory only. `enabled` is the exception worth knowing: it cannot switch the agent on, because with the agent disabled at startup no agent operation is registered at all.
 
 ### Restricting `http_fetch`
 
-<VersionBadge version="v5.3.1" />
+<VersionBadge version="v5.3.2" />
 
-`http_fetch` lets the agent send HTTP requests from the Harper process: to its own REST endpoints while it builds an app, or to pull a reference page. The same agent reads table rows, logs, and component source, and text in any of them can steer it, so an enabled agent has a read path and an egress path in one toolset. `agent.httpFetch` bounds the egress path.
+`http_fetch` lets the agent send HTTP requests from the Harper process: to its own REST endpoints while it builds an app, or to pull a reference page. The same agent reads table rows, logs, and component source, and text in any of them can steer it, so an enabled agent has a read path and an egress path in one toolset. `agent.httpFetch` bounds that tool. It is not a bound on every way the agent can reach the network: with `allowDestructive` on, for example, the agent can write component code, and the Harper process runs that code.
 
 Remove the tool when the agent has no reason to reach the network, for example an investigation or operations-assistant role:
 
@@ -441,15 +441,15 @@ Allow-list entries take these forms:
 - `*.example.com` — any subdomain, at any depth. It does not match `example.com` itself; list that separately.
 - `[::1]` or `[::1]:9926` — an IPv6 address, in brackets
 
-Entries and request URLs are compared in canonical form, so letter case, internationalized names, and shorthand spellings of an IPv4 address all match the same entry. An IPv4 entry does not admit the IPv4-mapped IPv6 form of its address (`[::ffff:…]`); list that separately if you need it.
+Entries and request URLs are compared in canonical form, so letter case, internationalized names, and shorthand spellings of an IPv4 address all match the same entry. An IPv4 entry does not admit the IPv4-mapped IPv6 form of its address (`[::ffff:...]`); list that separately if you need it.
 
 Some behavior worth knowing:
 
-- **Every redirect hop is checked.** A redirect to a host the policy refuses fails the request before that host is contacted. This applies in every mode, so with the default `true`, a redirect into the cloud-metadata range now fails too.
+- **Every redirect hop is checked.** A redirect to a host the policy refuses fails the request before that host is contacted. This applies in every mode, so with the default `true`, a redirect into the cloud-metadata range fails too.
 - **The metadata block comes first.** Listing a cloud-metadata or link-local address does not make it reachable.
 - **Matching is by host name, not address.** An allowed name whose DNS resolves to an internal address is still reached. List names whose DNS you control.
 - **An empty list removes the tool**, the same as `false`. A value Harper cannot read also removes the tool, and logs an error naming it, while the rest of the agent stays available.
-- **It is read at startup only.** Set it in `harper-config.yaml`, with `set_configuration`, through `HARPER_CONFIG`, or as an [environment variable](./overview.md#2-environment-variables) or [CLI argument](./overview.md#3-cli-arguments) (`AGENT_HTTPFETCH=false`, or `AGENT_HTTPFETCH_ALLOW='["localhost:9926"]'` as a JSON array), then restart. A comma-separated string is not a list: it is rejected, and the tool is removed. [`set_agent_config`](../operations-api/operations.md#set_agent_config) rejects it at runtime.
+- **It is read at startup only.** Set it in `harper-config.yaml`, with `set_configuration`, through `HARPER_CONFIG`, or as an [environment variable](./overview.md#2-environment-variables) or [CLI argument](./overview.md#3-cli-arguments) (`AGENT_HTTPFETCH=false`, or `AGENT_HTTPFETCH_ALLOW='["localhost:9926"]'` as a JSON array), then restart. A comma-separated string is not a list: it is rejected, and the tool is removed. [`set_agent_config`](../operations-api/operations.md#set_agent_config) rejects it at runtime. Because `set_configuration` can write it and `restart` applies it, the policy only holds against the agent itself while those two operations stay out of its toolset (they are not in the default operations allow list) or behind [approval](../operations-api/operations.md#approve_agent_action).
 
 ---
 
