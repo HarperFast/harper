@@ -938,8 +938,11 @@ export async function loadComponent(
 					// current data. Cheap (one small system-table scan per env-declaring component).
 					await materializeGlobalSecrets();
 					processComponentEnv(componentStatusName, config.env);
-				} catch (error) {
-					error.message = `Could not load component '${componentStatusName}' due to: ${error.message}`;
+				} catch (thrown) {
+					const error = loadFailure(
+						thrown,
+						(message) => `Could not load component '${componentStatusName}' due to: ${message}`
+					);
 					(getWorkerIndex() === 0 ? console : harperLogger).error(error);
 					componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
 					noteBootFailure(loadingApplication, componentStatusName, error);

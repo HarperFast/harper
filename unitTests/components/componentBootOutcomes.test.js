@@ -137,6 +137,20 @@ describe("a held worker's boot outcomes", function () {
 		}
 	});
 
+	it('reports a component whose env declaration cannot be processed as failed, by why', async () => {
+		await component('boot-env-probe', 'env:\n  - not-a-mapping\n');
+		componentLoader.trackBootOutcomes(['boot-env-probe']);
+
+		await loadAll();
+
+		const verdict = componentLoader.bootVerdictOf('boot-env-probe');
+		assert.equal(verdict.outcome, 'failed');
+		assert.match(
+			verdict.failures[0].message,
+			/Could not load component 'boot-env-probe' due to: the 'env' config block/
+		);
+	});
+
 	it('reports a load still waiting on a preparation as pending, until it runs', async () => {
 		const name = 'boot-deferred-probe';
 		const componentDir = path.join(componentsRoot, name);
