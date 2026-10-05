@@ -128,10 +128,11 @@ const confirmedThisNode = new WeakMap<object, { name: string; confirmedAt: numbe
 export function getThisNodeId(auditStore: any) {
 	const name = server.hostname;
 	const confirmed = confirmedThisNode.get(auditStore);
-	const now = performance.now();
-	if (confirmed?.name === name && now - confirmed.confirmedAt < THIS_NODE_ID_CONFIRM_MS) return 0;
+	if (confirmed?.name === name && performance.now() - confirmed.confirmedAt < THIS_NODE_ID_CONFIRM_MS) return 0;
 	const id = exportIdMapping(auditStore)?.[name];
-	if (id === 0) confirmedThisNode.set(auditStore, { name, confirmedAt: now });
+	// Stamp confirmedAt after the read completes, not before: a slow read must not start its TTL
+	// window already partway expired.
+	if (id === 0) confirmedThisNode.set(auditStore, { name, confirmedAt: performance.now() });
 	return id;
 }
 
