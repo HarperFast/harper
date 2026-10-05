@@ -19,7 +19,7 @@ describe('getThisNodeId', () => {
 		previousHostname = env.get(CONFIG_PARAMS.NODE_HOSTNAME);
 	});
 	after(() => {
-		env.setProperty(CONFIG_PARAMS.NODE_HOSTNAME, previousHostname);
+		if (previousHostname !== undefined) env.setProperty(CONFIG_PARAMS.NODE_HOSTNAME, previousHostname);
 		clearThisNodeName();
 	});
 	function useNodeName(name) {
@@ -27,7 +27,6 @@ describe('getThisNodeId', () => {
 		clearThisNodeName();
 	}
 	function freshTable() {
-		// a database of its own, so each test starts from its own audit store and mapping record
 		return table({
 			database: `thisnodeid${++sequence}`,
 			table: 'Node',
@@ -62,7 +61,6 @@ describe('getThisNodeId', () => {
 		useNodeName('node-a');
 		const Node = freshTable();
 		const { auditStore } = Node;
-		// a frozen clock keeps a slow run from outliving the confirmation mid-loop
 		const now = performance.now;
 		const frozen = now.call(performance);
 		performance.now = () => frozen;
