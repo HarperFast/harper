@@ -116,7 +116,9 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    committed is refused and started again, now held for that release: a rollout replaces its own replacement again,
    and main restarts anything else. A barrier at arm cannot do this instead: that bracket, opened before the arm,
    holds the very load the barrier would wait for. Where a replacement can only start once its predecessor has exited,
-   a copy the gate stops is started again too, once nothing is armed, rather than leave its slot empty.
+   a copy the gate stops is started again too, rather than leave its slot empty. Every such copy starts only once nothing
+   is armed and no decision about a release it would load is under way: a refusal being recorded is restoring its
+   predecessor, which no load may race.
 4. **The canary.** The first held start boots normally with its loader tracking a private boot outcome per
    component (`trackBootOutcomes`): executed, skipped (`dev-only`, `if-installed`, safe mode), failed (every
    failure site of the load), or pending (a load deferred behind a preparation lock, which it waits out).

@@ -1634,16 +1634,30 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 }
 /**
  * Its predecessor is gone, so a copy the gate stopped, or refused for a load a release's commit crossed, is started
- * again, held for whatever is open then. Not while a release is armed: a start booted then could not decide it, and
- * that release's rollout queues behind this one.
+ * again, held for whatever is open then. Each copy starts only once no release it would load is armed, since a start
+ * booted then could not decide it and that release's rollout queues behind this one, and once no decision about one is
+ * under way, since a refusal being recorded is restoring its predecessor, which no load may race.
  */
 async function startedCopyOf(worker) {
 	for (;;) {
+		await untilQuietFor(worker);
+		if (processShuttingDown) return false;
 		const copy = worker.startCopy({ managed: true });
 		if (await whenWorkerStarted(copy)) return true;
 		if (processShuttingDown || !(copy.loadedAcrossRelease || copy.stoppedByGate)) return false;
-		await untilNoCertificationArmed();
-		if (processShuttingDown) return false;
+	}
+}
+
+async function untilQuietFor(worker) {
+	for (;;) {
+		const deciding = openCertificationsPlacedBy(worker).find((open) => open.deciding);
+		if (deciding) {
+			await deciding.decided.promise;
+			continue;
+		}
+		const armed = [...certifications.values()].find((pending) => pending.phase === 'armed');
+		if (!armed) return;
+		await armed.unarmed.promise;
 	}
 }
 

@@ -840,6 +840,17 @@ describe('the release certification gate', function () {
 	it("starts a slot again when the gate stops the copy that replaced it after its predecessor's exit", async () => {
 		// An uncertified rollout replaces the requester unheld; another release commits while it waits on the requester.
 		plan([{ outcome: 'skipped' }, { outcome: 'loaded', outcomes: { api: 'failed' } }]);
+		// The other release's refusal stays in its recording, where its predecessor would be restored, until released.
+		const recording = Promise.withResolvers();
+		setCertificationHandler(
+			handler({
+				decide: async (certification, decision) => {
+					decisions.push({ component: certification.component, at: Date.now(), ...decision });
+					if (certification.component === 'api') await recording.promise;
+					return decision;
+				},
+			})
+		);
 		const requester = pool[1];
 		await arm({ requesterThreadId: requester.threadId });
 		await commit();
@@ -849,7 +860,19 @@ describe('the release certification gate', function () {
 			armed: true,
 		});
 		assert.equal(await certificationRequest('commit', OTHER), true);
+		const startedBefore = started.length;
 		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
+		await waitFor(() => decisions.some(({ component }) => component === 'api'), {
+			timeout: 30000,
+			message: 'the other release was never decided',
+		});
+		await sleep(1000);
+		assert.equal(
+			started.length - startedBefore,
+			1,
+			'only its canary started: nothing else loads while the refusal restores its predecessor'
+		);
+		recording.resolve();
 		await waitFor(() => completions.length === 2, { timeout: 45000, message: 'a rollout never ended' });
 		assert.equal(decisions.find(({ component }) => component === 'api')?.status, 'rejected');
 		await waitFor(() => httpWorkers().length === 3, { timeout: 10000, message: 'the slot was left empty' });
