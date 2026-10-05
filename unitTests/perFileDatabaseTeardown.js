@@ -73,8 +73,8 @@ function isDisposable(databasesModule, configuredDatabases, name) {
 	const storageRoot = databasesModule.resolveDatabaseStorageRoot(name);
 	const ownRoots = [path.join(storageRoot, name), path.join(storageRoot, `${name}.mdb`)];
 	if (!ownRoots.every((rootPath) => isInside(STORAGE_ROOT, rootPath))) return false;
-	// a database with no tables shows its root only here; one opened elsewhere has nothing here to drop
-	if (!ownRoots.some((rootPath) => fs.existsSync(rootPath))) return false;
+	// the root dropDatabase() destroys, which for a database with no tables is the only one it has
+	if (!ownRoots.includes(databasesModule.database({ database: name }).path)) return false;
 	const { databases } = databasesModule;
 	for (const rootPath of tableRoots(databases[name])) {
 		if (!ownRoots.includes(rootPath)) return false;
