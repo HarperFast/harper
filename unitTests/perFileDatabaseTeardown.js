@@ -103,6 +103,14 @@ async function dropCreatedSince(atStart, file) {
 	const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 	const { registryStatus } = require('@harperfast/rocksdb-js');
 	const configuredDatabases = env.get(CONFIG_PARAMS.DATABASES) || {};
+	// a database configured at or inside the storage root scans or nests in the directories dropped
+	// here, so ownership can't be told by name or by root; leave the storage root alone
+	const storageRootIsShared = Object.values(configuredDatabases).some((config) => {
+		if (!config?.path) return false;
+		const configuredPath = path.resolve(config.path);
+		return configuredPath === STORAGE_ROOT || isInside(STORAGE_ROOT, configuredPath);
+	});
+	if (storageRootIsShared) return;
 	const { databases } = databasesModule;
 	const failures = [];
 	for (const name of Object.keys(databases)) {
