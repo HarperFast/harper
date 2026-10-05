@@ -642,6 +642,8 @@ export const CONFIG_PARAMS = {
 	AGENT_ALLOWDESTRUCTIVE: 'agent_allowDestructive',
 	AGENT_USER: 'agent_user',
 	AGENT_COMPONENTSSCOPE: 'agent_componentsScope',
+	AGENT_HTTPFETCH: 'agent_httpFetch',
+	AGENT_HTTPFETCH_ALLOW: 'agent_httpFetch_allow',
 	REPLICATION: 'replication',
 	REPLICATION_HOSTNAME: 'replication_hostname',
 	REPLICATION_URL: 'replication_url',

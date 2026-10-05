@@ -162,6 +162,10 @@ Index of the design notes for the harper core: one line per note, grouped by the
 
 - [MCP protocol surface (`components/mcp/`)](components/mcp/DESIGN.md#mcp-protocol-surface-componentsmcp) — Two profiles (operations, application) share the dispatcher; every method decides which profile it belongs to.
 
+## agent/ — built-in agent
+
+- [`http_fetch` egress is fixed at boot and checked on every hop (`agent/tools/httpFetchTool.ts`)](agent/DESIGN.md#http_fetch-egress-is-fixed-at-boot-and-checked-on-every-hop-agenttoolshttpfetchtoolts) — `agent.httpFetch` is built into the tool once at boot, no runtime path can patch it, and each redirect hop is checked before it is sent.
+
 ## config/
 
 - [`set_configuration` replication is opt-in; `replicateOperation` is default-on (`config/configUtils.ts`)](config/DESIGN.md#set_configuration-replication-is-opt-in-replicateoperation-is-default-on-configconfigutilsts) — `replicateOperation` is default-on, so `setConfiguration` keeps an explicit opt-in guard and strips `replicated` on both sides.
