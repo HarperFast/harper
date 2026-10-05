@@ -58,13 +58,15 @@ import {
 } from './recordLock.ts';
 import { getThisNodeName } from '../server/nodeName.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
-import { addSubscription } from './transactionBroadcast.ts';
+import { addSubscription, dispatchedThrough } from './transactionBroadcast.ts';
 import { databaseDropPrepared } from './databaseDropPreparation.ts';
 import {
 	DerivedIndexLagError,
 	IndexRebuildingError,
 	DatabaseClosingError,
 	DatabaseDrainTimeoutError,
+	DatabaseGenerationChangedError,
+	ResumeHistoryUnavailableError,
 	handleHDBError,
 	ClientError,
 	ServerError,
@@ -131,6 +133,8 @@ import {
 	boundedAuditPruneEnd,
 	isLockControlType,
 	isAuditEntryWrite,
+	isResumablePosition,
+	getDatabaseGeneration,
 } from './auditStore.ts';
 import {
 	acquireFullTextClearFence,
@@ -550,6 +554,11 @@ const MAX_OUT_OF_ORDER_AUDIT_DEPTH = 1000;
 // a full walk of the retained audit log — this bounds that walk regardless of how many
 // records the filter accepts.
 const MAX_PREVIOUS_COUNT_SCAN = 10_000;
+const VERSION_CAP_REFUSAL = `More than ${MAX_PREVIOUS_COUNT_SCAN} versions follow this resume position; resubscribe to resynchronize`;
+const RELOAD_REFUSAL =
+	'A bulk reload after this resume position left rows with no history; resubscribe to resynchronize';
+const UNREADABLE_LOG_REFUSAL =
+	'Part of the transaction log after this resume position could not be read; resubscribe to resynchronize';
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
 const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
@@ -1313,6 +1322,20 @@ function currentEntryForAudit(store: any, id: Id, auditRecord: any): Entry | und
 		memoizedEntryId = id;
 	}
 	return memoizedEntry;
+}
+
+// the log store ends a failed or corrupt log's iteration quietly and records it on the range
+function unreadableLogRefusal(range: any): Error | undefined {
+	if (range.failedLogs?.size || range.corruptFrameStop?.breaks) {
+		return new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL);
+	}
+}
+
+function resumeRefusal(auditStore: any, generationId: string, cursor: number): Error | undefined {
+	if (isResumablePosition(auditStore, generationId, cursor)) return;
+	return getDatabaseGeneration(auditStore)?.id === generationId
+		? new ResumeHistoryUnavailableError()
+		: new DatabaseGenerationChangedError();
 }
 
 export function makeTable(options): TableResourceClass {
@@ -6566,6 +6589,25 @@ export function makeTable(options): TableResourceClass {
 				if (!allowed) throw new AccessViolation(context?.user);
 			}
 			if (!auditStore) throw new Error('Can not subscribe to a table without an audit log');
+			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
+			const resumeGeneration = request.databaseGeneration;
+			const resuming = resumeGeneration !== undefined;
+			if (resuming) {
+				if (typeof request.startTime !== 'number' || !Number.isFinite(request.startTime)) {
+					throw new ClientError('Resuming in a database generation requires a finite startTime');
+				}
+				if (request.previousCount != null) {
+					throw new ClientError('previousCount can not be combined with a resume position');
+				}
+				// a record's own history walk proves its replay complete, so only a collection needs the floor here
+				const refusal =
+					(request.isCollection ?? thisId == null)
+						? resumeRefusal(auditStore, resumeGeneration, request.startTime)
+						: getDatabaseGeneration(auditStore)?.id === resumeGeneration
+							? undefined
+							: new DatabaseGenerationChangedError();
+				if (refusal) throw refusal;
+			}
 			if (!audit) {
 				// Turning auditing on is a schema write, and a branch's Table classes carry the base's
 				// logical name: without this a subscribe through a branched application would enable
@@ -6587,7 +6629,7 @@ export function makeTable(options): TableResourceClass {
 			// Coalescing guards for the reload re-snapshot (harper-pro#495), driven from the listener below.
 			let reloadResnapshotRunning = false;
 			let reloadResnapshotPending = false;
-			const thisId = requestTargetToId(request) ?? null; // treat undefined and null as the root
+			let reportingProgress = false;
 			const subContext = this.getContext() as any;
 			const rowFilter = typeof request.rowFilter === 'function' ? request.rowFilter : undefined;
 			const eventFilter = typeof request.eventFilter === 'function' ? request.eventFilter : undefined;
@@ -6631,6 +6673,8 @@ export function makeTable(options): TableResourceClass {
 					try {
 						if (isLockControlType(auditRecord.type)) return;
 						if (auditRecord.type === 'reload' && !request.rawEvents && databaseName !== 'system') {
+							// back-filled rows have no history, so a progress certificate cannot pass the marker
+							if (reportingProgress) return void this.close(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
 							return scheduleReloadResnapshot();
 						}
 						const event = eventFromAudit(id, auditRecord, txnLogKey, beginTxn);
@@ -6647,12 +6691,65 @@ export function makeTable(options): TableResourceClass {
 						}
 					} catch (error) {
 						logger.error?.(error);
+						// a certificate cannot pass an event it failed to deliver
+						if (reportingProgress) this.close(error);
 					}
 				},
 				request.startTime || 0,
 				request
 			);
 			const isActive = () => !subscription.closed && Boolean(subscription.subscriptions);
+			let progressLive = false;
+			let progressFloor: number | undefined;
+			let goLive: (() => void) | undefined;
+			if (request.reportProgress && subscription.reportsProgress) {
+				reportingProgress = true;
+				subscription.sentCount = 0;
+				const queueSend = subscription.send;
+				subscription.send = function (event) {
+					this.sentCount++;
+					return queueSend.call(this, event);
+				};
+				const collection = request.isCollection ?? thisId == null;
+				const beforeLive = (): number | undefined =>
+					resuming
+						? collection
+							? subscription.startTime
+							: request.startTime
+						: request.startTime === undefined
+							? subscription.registeredThrough
+							: undefined;
+				subscription.progress = () => {
+					if (!isActive()) return;
+					if (!progressLive) return beforeLive();
+					const dispatched = dispatchedThrough(subscription);
+					if (progressFloor === undefined) return dispatched;
+					return dispatched === undefined || dispatched < progressFloor ? progressFloor : dispatched;
+				};
+				goLive = () => {
+					progressFloor = beforeLive();
+					progressLive = true;
+				};
+			}
+			let settleResume: ((verified: boolean) => void) | undefined;
+			if (resuming) subscription.resumeVerified = new Promise<boolean>((resolve) => (settleResume = resolve));
+			// Each check compares the floor with the position the replay had reached at the previous check: a
+			// prune raises the floor before it deletes anything below it, so a pass means nothing unread was deleted.
+			let resumeCheckedThrough = request.startTime;
+			const checkResume = resuming
+				? (refusal?: Error): boolean => {
+						refusal ??= resumeRefusal(auditStore, resumeGeneration, resumeCheckedThrough);
+						if (!refusal) return true;
+						logger.debug?.(`Refused resuming a subscription to ${tableName}: ${refusal.message}`);
+						try {
+							subscription.close(refusal);
+						} finally {
+							// a listener that throws on the refusal must not leave the subscription open
+							if (!subscription.closed) subscription.close();
+						}
+						return false;
+					}
+				: undefined;
 			// Attach the request.listener BEFORE invoking the IIFE so that sync sends from the
 			// IIFE's prologue go directly to the listener via emit('data') instead of accumulating
 			// in subscription.queue. Without this, the IIFE can fill the queue past
@@ -6672,7 +6769,7 @@ export function makeTable(options): TableResourceClass {
 
 				if (isCollection) {
 					// a collection should retrieve all descendant ids
-					if (startTime) {
+					if (startTime || resuming) {
 						if (count)
 							throw new ClientError('startTime and previousCount can not be combined for a table level subscription');
 						// start time specified, get the audit history for this time range. We drop real-time
@@ -6683,28 +6780,53 @@ export function makeTable(options): TableResourceClass {
 						// transaction the same txnLogKey, so it only moves to a key once all of that key's records are
 						// handled; an early return leaves it before a partly delivered transaction.
 						let handledTxnLogKey: number | undefined;
+						const replayRange = auditStore.getRange({
+							start: startTime,
+							exclusiveStart: true,
+							snapshot: false, // no need for a snapshot, audits don't change
+						});
 						try {
-							for (const auditRecord of auditStore.getRange({
-								start: startTime,
-								exclusiveStart: true,
-								snapshot: false, // no need for a snapshot, audits don't change
-							})) {
+							for (const auditRecord of replayRange) {
 								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 									recordsSinceYield = 0;
 									await rest();
 									if (!isActive()) return;
+									if (checkResume) {
+										if (!checkResume(unreadableLogRefusal(replayRange))) return;
+										// every key below the record in hand has been read
+										resumeCheckedThrough = auditRecord.txnLogKey;
+									}
+								}
+								// an entry that failed to decode names no table, so a checked replay cannot rule it out
+								if (checkResume && auditRecord.type === undefined) {
+									checkResume(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
+									return;
 								}
 								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								if (isLockControlType(auditRecord.type)) continue;
+								if (checkResume && auditRecord.type === 'reload') {
+									// the rows a reload back-filled have no history, so no replay can deliver them
+									checkResume(new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
+									return;
+								}
 								if (handledTxnLogKey !== undefined && auditRecord.txnLogKey !== handledTxnLogKey) {
 									subscription!.startTime = handledTxnLogKey;
 								}
 								const id = auditRecord.recordId;
+								if (checkResume && id === undefined) {
+									checkResume(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
+									return;
+								}
 								if (thisId == null || isDescendantId(thisId, id)) {
 									const event = eventFromAudit(id, auditRecord, auditRecord.txnLogKey);
 									if (event) {
 										if (!send(event)) return;
 										if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+											// a prune while the consumer drains may reach what was read before the wait
+											if (checkResume) {
+												if (!checkResume(unreadableLogRefusal(replayRange))) return;
+												resumeCheckedThrough = auditRecord.txnLogKey;
+											}
 											if ((await subscription.waitForDrain()) === false) return;
 										}
 									}
@@ -6712,6 +6834,7 @@ export function makeTable(options): TableResourceClass {
 								handledTxnLogKey = auditRecord.txnLogKey;
 							}
 							if (handledTxnLogKey !== undefined) subscription!.startTime = handledTxnLogKey;
+							if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
 						} finally {
 							// replay is done, we can start sending real-time messages again
 							dropDuringReplay = false;
@@ -6799,17 +6922,21 @@ export function makeTable(options): TableResourceClass {
 							const t = localTime ?? version;
 							if (t > cursorMaxTime) cursorMaxTime = t;
 							if (!value) continue;
-							if (!send({ id, localTime, value, version, type: 'put', size })) return;
+							const scanned: any = { id, localTime, value, version, type: 'put', size };
+							if (reportingProgress) scanned.fromScan = true;
+							if (!send(scanned)) return;
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								// if we have too many messages, we need to pause and let the client catch up
 								if ((await subscription.waitForDrain()) === false) return;
 							}
 						}
-						if (cursorMaxTime) subscription!.startTime = cursorMaxTime;
 						// Filter the queue to drop in-flight pre-subscribe events the listener queued
 						// while subscription.startTime was still 0. Anything strictly newer than what
-						// the cursor saw is a real post-subscribe commit and is kept.
-						if (pendingRealTimeQueue && cursorMaxTime) {
+						// the cursor saw is a real post-subscribe commit and is kept. A progress
+						// certificate keeps every buffered event instead: the filter can drop ones the scan
+						// never covered (harper#2933), and duplicate state is safe where lost history is not.
+						if (cursorMaxTime && !reportingProgress) subscription!.startTime = cursorMaxTime;
+						if (pendingRealTimeQueue && cursorMaxTime && !reportingProgress) {
 							pendingRealTimeQueue = pendingRealTimeQueue.filter(
 								(event) => (event.localTime ?? event.version) > cursorMaxTime
 							);
@@ -6845,6 +6972,7 @@ export function makeTable(options): TableResourceClass {
 						subscription!.startTime = localTime ?? entry?.version;
 						const history = [];
 						let inspected = 0;
+						let missingVersion = false;
 						let nextTime = localTime;
 						do {
 							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
@@ -6854,7 +6982,7 @@ export function makeTable(options): TableResourceClass {
 							}
 							if (++inspected > MAX_PREVIOUS_COUNT_SCAN) break;
 							const auditRecord = auditStore.getSync(nextTime, tableId, thisId, nodeId);
-							if (auditRecord) {
+							if (auditRecord && !(checkResume && auditRecord.type === undefined)) {
 								if (startTime < nextTime) {
 									const event = eventFromAudit(thisId, auditRecord, nextTime);
 									const historyEntry = event && { ...auditRecord, ...event };
@@ -6874,22 +7002,30 @@ export function makeTable(options): TableResourceClass {
 									: { txnLogKey: auditRecord.previousVersion, nodeId: auditRecord.previousNodeId };
 								nextTime = previousHead.txnLogKey;
 								nodeId = previousHead.nodeId;
-							} else break;
+							} else {
+								missingVersion = true;
+								break;
+							}
 						} while (nextTime > startTime && count !== 0);
+						const capped = inspected > MAX_PREVIOUS_COUNT_SCAN;
+						if (checkResume) {
+							if (capped || missingVersion) {
+								checkResume(new ResumeHistoryUnavailableError(capped ? VERSION_CAP_REFUSAL : undefined));
+								return;
+							}
+							// a first version may be a record recreated after retention pruned its tombstone
+							if (!(nextTime > 0) && !checkResume()) return;
+						}
 						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;
 						}
-					}
+						// with no entry, a pruned tombstone may have taken the history with it
+					} else if (checkResume && !entry && !checkResume()) return;
 					if (!request.omitCurrent && entry?.value) {
 						// if retain and it exists, send the current value first
-						if (
-							!send({
-								id: thisId,
-								...entry,
-								type: 'put',
-							})
-						)
-							return;
+						const current: any = { id: thisId, ...entry, type: 'put' };
+						if (reportingProgress) current.fromScan = true;
+						if (!send(current)) return;
 					}
 				}
 				// now send any queued messages
@@ -6899,8 +7035,14 @@ export function makeTable(options): TableResourceClass {
 					}
 					pendingRealTimeQueue = null;
 				}
+				settleResume?.(isActive());
+				goLive?.();
 			})();
 			result.catch(failSubscription);
+			if (settleResume) {
+				const settleUnverified = () => settleResume?.(false);
+				result.then(settleUnverified, settleUnverified);
+			}
 			function failSubscription(error: any) {
 				if (subscription.closed) return;
 				harperLogger.error?.('Error in real-time subscription:', error);
