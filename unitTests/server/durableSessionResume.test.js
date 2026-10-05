@@ -787,7 +787,9 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		await T.put('a', { value: 1 });
 		const delivered = await waitFor(() => sentPackets(older).find((packet) => packet.cmd === 'publish'));
 		const state = olderSession.topics.get(topic);
-		await waitFor(() => state.subscription.progress() >= state.deliveredKey);
+		await waitFor(
+			() => state.subscription.progress() >= state.deliveredKey && state.consumed === state.subscription.sentCount
+		);
 		// the PUBACK's checkpoint waits for a later turn, and the takeover arrives first
 		older.handlers.message(generate({ cmd: 'puback', messageId: delivered.messageId }, { protocolVersion: 5 }));
 		const newer = open();
