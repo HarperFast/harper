@@ -175,7 +175,7 @@ describe('portable production dependency bundle', function () {
 		assert.ok(!manifest.dependencies['uWebSockets.js'] && !manifest.optionalDependencies['uWebSockets.js']);
 	});
 
-	function installedEngineFixture(engine) {
+	function installedEngineFixture(engine, names) {
 		Object.assign(lock.packages[''].dependencies, {
 			[engine]: '2.0.0',
 			'@harperfast/extended-iterable': '1.0.0',
@@ -185,6 +185,9 @@ describe('portable production dependency bundle', function () {
 		for (const [name, version] of Object.entries(lock.packages[''].dependencies)) {
 			lock.packages[`node_modules/${name}`] ??= { version };
 		}
+		lock.packages[`node_modules/${engine}`].dependencies = Object.fromEntries(
+			names.map((name) => [name, lock.packages[''].dependencies[name]])
+		);
 		const stage = prepare();
 		for (const name of Object.keys(bundlePlan(lock).external)) {
 			moduleFixture(join(stage, 'node_modules', name), name);
@@ -204,9 +207,17 @@ describe('portable production dependency bundle', function () {
 		['lmdb', ['@harperfast/extended-iterable', 'ordered-binary']],
 	]) {
 		for (const name of names) {
+			it(`rejects the archive when ${engine} no longer declares ${name}`, () => {
+				installedEngineFixture(engine, names);
+				delete lock.packages[`node_modules/${engine}`].dependencies[name];
+				assert.throws(
+					() => prepare(),
+					(error) => error.message.includes(`${engine} no longer declares ${name}`)
+				);
+			});
 			for (const layout of ['nested', 'linked']) {
 				it(`rejects a ${layout} private ${name} instance in ${engine}`, () => {
-					const stage = installedEngineFixture(engine);
+					const stage = installedEngineFixture(engine, names);
 					const nested = join(stage, 'node_modules', engine, 'node_modules', name);
 					if (layout === 'linked') {
 						const target = join(directory, 'private-encoder');
@@ -222,7 +233,7 @@ describe('portable production dependency bundle', function () {
 			}
 		}
 		it(`checks module resolution from the real path of a linked ${engine}`, () => {
-			const stage = installedEngineFixture(engine);
+			const stage = installedEngineFixture(engine, names);
 			const linked = join(directory, 'linked', 'engine');
 			moduleFixture(linked, engine);
 			for (const name of names) moduleFixture(join(directory, 'linked', 'node_modules', name), name);
