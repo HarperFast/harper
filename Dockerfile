@@ -52,38 +52,11 @@ ENV PATH=/home/harperdb/.npm-global/bin:/home/harperdb/.bun/bin:$PATH
 
 VOLUME /home/harperdb/harper
 
-# Install Harper from the packed tarball, honoring its bundled npm-shrinkwrap.json.
-# `npm install --global harper-*.tgz` only reads a shrinkwrap when the REGISTRY packument
-# says the package has one (`_hasShrinkwrap`); a local tarball has no packument, so npm
-# never learns the shrinkwrap exists and re-resolves every dependency fresh against
-# package.json's ranges instead of the pinned tree. Extracting the tarball into a normal
-# project directory and running `npm install` there makes npm read npm-shrinkwrap.json
-# straight off disk, exactly as it would for any checked-out project, so we replicate
-# npm's own global-install layout (lib/node_modules/<pkg> + a bin symlink) by hand instead
-# of routing back through the global installer, which would hit the same packument gap.
+# The archive carries its locked JavaScript bundle; npm selects native packages for this image.
 RUN <<-EOF
   set -e
-  pkgDir="$NPM_CONFIG_PREFIX/lib/node_modules/harper"
-  mkdir -p "$pkgDir"
-  tar -xzf harper-*.tgz --strip-components=1 -C "$pkgDir"
+  npm install --global --ignore-scripts --no-audit --no-fund ./harper-*.tgz
   rm harper-*.tgz
-  cd "$pkgDir"
-  test -f npm-shrinkwrap.json || { echo "npm-shrinkwrap.json is missing from the packed tarball -- npm install would silently re-resolve everything fresh instead of honoring the pinned tree (see #1960)" >&2; exit 1; }
-  # npm rewrites npm-shrinkwrap.json in place to match whatever it actually installs, so a
-  # post-install comparison against this file would just compare npm's output to itself.
-  # Freeze the packed pins before install so CI can verify against what was actually shipped.
-  cp npm-shrinkwrap.json npm-shrinkwrap.packed.json
-  # The packed package.json still lists devDependencies (only the shrinkwrap is pruned of
-  # them) -- this is fine for registry consumers, who install harper as a dependency and
-  # never touch its devDependencies at all, but it's not fine here: `npm install` treats
-  # this extracted copy as its own project and still resolves dev edges to compute the
-  # ideal tree even under --omit=dev, which can silently lift a *production* package (one
-  # a devDependency also happens to want) above its shrinkwrap pin, and forces a network
-  # fetch of every dev package's manifest (including a devDependency pinned to a GitHub
-  # tarball URL) for packages that never end up installed. Stripping devDependencies here
-  # only affects this ephemeral extracted copy, not the published tarball.
-  node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));delete p.devDependencies;fs.writeFileSync('package.json', JSON.stringify(p, null, 2));"
-  npm install --omit=dev --ignore-scripts --no-audit --no-fund
   # @aws-sdk/client-s3 and @aws-sdk/lib-storage are optional peerDependencies (see
   # dependencies.md) so npm consumers who never touch S3 skip their ~18MB, but the
   # official image should keep S3 export/import working out of the box. Installed
@@ -94,12 +67,9 @@ RUN <<-EOF
   # (e.g. @smithy/*) still re-resolve at build time like any other npm install --
   # .github/workflows/docker-smoke.yml's "S3 SDK resolves from harper's installed
   # path" step is what actually proves this resolves in the built image. `-g` keeps
-  # this independent of harper's own package.json/npm-shrinkwrap.json.
+  # this independent of harper's own package.json.
   npm install -g --ignore-scripts --no-audit --no-fund @aws-sdk/client-s3@3.1116.0 @aws-sdk/lib-storage@3.1116.0
   npm cache clean --force
-  mkdir -p "$NPM_CONFIG_PREFIX/bin"
-  ln -s ../lib/node_modules/harper/dist/bin/harper.js "$NPM_CONFIG_PREFIX/bin/harper"
-  chmod +x "$pkgDir/dist/bin/harper.js"
   mkdir -p /home/harperdb/harper
   chown harperdb:harperdb /home/harperdb/harper
 EOF
