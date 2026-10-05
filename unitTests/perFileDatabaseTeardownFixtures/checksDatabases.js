@@ -19,7 +19,7 @@ function assertGone(name) {
 	assert.strictEqual(name in databases, false, `${name} is still registered`);
 	assert.strictEqual(existsSync(rootOf(name)), false, rootOf(name));
 	assert.strictEqual(
-		registryStatus().some((entry) => entry.path === rootOf(name)),
+		registryStatus().some((entry) => entry.refCount > 0 && path.resolve(entry.path) === rootOf(name)),
 		false,
 		`${name} is still open natively`
 	);

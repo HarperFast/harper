@@ -106,8 +106,9 @@ async function dropCreatedSince(atStart, file) {
 	const { databases } = databasesModule;
 	const failures = [];
 	for (const name of Object.keys(databases)) {
-		if (atStart.names.has(name) || !isDisposable(databasesModule, configuredDatabases, name)) continue;
+		if (atStart.names.has(name)) continue;
 		try {
+			if (!isDisposable(databasesModule, configuredDatabases, name)) continue;
 			await databasesModule.dropDatabase(name);
 		} catch (error) {
 			failures.push(new Error(`could not drop database '${name}'`, { cause: error }));
@@ -120,8 +121,15 @@ async function dropCreatedSince(atStart, file) {
 			.map((entry) => path.resolve(entry.path))
 	);
 	for (const entry of storageEntries()) {
-		const rootPath = path.join(STORAGE_ROOT, entry);
-		if (atStart.entries.has(entry) || databases[entry] || openRoots.has(rootPath) || !isRocksDirectory(rootPath))
+		const rootPath = path.resolve(STORAGE_ROOT, entry);
+		if (
+			atStart.entries.has(entry) ||
+			entry === 'system' ||
+			databases[entry] ||
+			configuredDatabases[entry] ||
+			openRoots.has(rootPath) ||
+			!isRocksDirectory(rootPath)
+		)
 			continue;
 		try {
 			fs.rmSync(rootPath, { recursive: true, force: true });
