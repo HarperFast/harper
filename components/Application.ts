@@ -4830,7 +4830,8 @@ export type ActivationCertification = {
 	commit(): Promise<void>;
 	withdraw(): Promise<void>;
 	/** This activation reads a decision another deploy armed, so main keeps that decision for it too. */
-	join?(): Promise<void>;
+	/** Whether its decision was still open to join. */
+	join?(): Promise<boolean>;
 };
 
 /** The id the tree this activation displaces will be kept under, decided from what `retainDisplacedRelease` reads. */
@@ -5186,12 +5187,23 @@ async function recertifyLiveRelease(
 	certification: ActivationCertification | undefined
 ): Promise<void> {
 	if (!certification) return;
-	const live = await liveCertification(dirname(application.dirPath), application.name);
+	let live = await liveCertification(dirname(application.dirPath), application.name);
 	if (!live) return;
 	if ('record' in live && live.record.state !== 'rejected' && live.record.incarnation === processIncarnation) {
-		await certification.join?.();
-		application.certificationArmed = true;
-		return;
+		if (!certification.join || (await certification.join())) {
+			application.certificationArmed = true;
+			return;
+		}
+		// Its decision closed before this join: read it from the record it left, as a later activation would.
+		live = await liveCertification(dirname(application.dirPath), application.name);
+		if (!live || ('record' in live && live.record.state === 'certified')) return;
+		if ('record' in live && live.record.state === 'pending') {
+			throw new ClientError(
+				`Cannot activate ${application.name}'s live release ${deploymentId}: its certification closed before this ` +
+					`activation joined it, and its record does not say how it was decided; retry once Harper has restarted`,
+				409
+			);
+		}
 	}
 	if (!rejectionReason(live, processIncarnation)) return;
 	// Certifying it again writes a new record over the one that names the release to put back.
@@ -5466,7 +5478,12 @@ async function installConfiguredApplication(
 			name,
 			applicationConfig,
 			(clearEntry) => prepareApplication(application, { beforePrepare: clearEntry, onDeployStart }),
-			(mutate) => updateApplicationLock(harperApplicationLockPath, mutate)
+			(mutate) => updateApplicationLock(harperApplicationLockPath, mutate),
+			() =>
+				readDeploymentProvenance(dirPath, name).then(
+					(deploymentId) => deploymentId ?? null,
+					() => undefined
+				)
 		);
 	} catch (error) {
 		logger.error?.(`Failed to prepare application ${name}:`, errorForLog(error));
@@ -5478,7 +5495,8 @@ async function installConfiguredApplication(
  * Whether startup keeps the tree at `dirPath` rather than installing `applicationConfig` over it. When the live
  * tree's deployment declared an entry, that entry decides, ahead of the application lock: no deploy writes the lock,
  * so after one it still names the entry the deploy replaced, and a root config set back to that entry would keep
- * the deployed tree. The lock decides only for a tree no deployment record describes.
+ * the deployed tree. Otherwise the lock decides, and only for the tree it records installing: one a deploy made live
+ * since, whose record is gone, is installed over. A lock written before it recorded trees decides for any.
  */
 export async function keepsInstalledTree(
 	name: string,
@@ -5486,13 +5504,14 @@ export async function keepsInstalledTree(
 	dirPath: string,
 	harperApplicationLockPath: string
 ): Promise<boolean> {
-	const declared = await liveTreeDeclaredEntry(name, dirPath);
-	if (declared !== undefined) {
-		if (!isDeepStrictEqual(declared, applicationConfig)) return false;
+	const live = await liveTree(name, dirPath);
+	if (live.declared !== undefined) {
+		if (!isDeepStrictEqual(live.declared, applicationConfig)) return false;
 		logger.info?.(`Application ${name} is live from a deployment of this configuration; skipping installation`);
 		return true;
 	}
-	const installedConfig = (await readApplicationLock(harperApplicationLockPath)).applications[name];
+	const lock = await readApplicationLock(harperApplicationLockPath);
+	const installedConfig = lock.applications[name];
 	if (
 		!existsSync(dirPath) ||
 		!installedConfig ||
@@ -5500,20 +5519,24 @@ export async function keepsInstalledTree(
 	) {
 		return false;
 	}
+	const installedTree = lock.trees?.[name];
+	if (installedTree !== undefined && installedTree !== live.deploymentId) return false;
 	logger.info?.(`Application ${name} is already installed with matching configuration; skipping installation`);
 	return true;
 }
 
-/**
- * The root-config entry the live tree's deployment declared: `null` for a payload build, and for a record that exists
- * but cannot be read, since only a deploy writes one and no deploy writes the lock. `undefined` when there is no
- * record to ask: a tree startup installed, a link, a tree made live before deployments kept records, or a marker that
- * cannot be read.
- */
-async function liveTreeDeclaredEntry(
-	name: string,
-	dirPath: string
-): Promise<Record<string, unknown> | null | undefined> {
+type LiveTree = {
+	/** What the live tree's marker names: `null` without one (a link, or no tree), `undefined` when it cannot be read. */
+	deploymentId: string | null | undefined;
+	/**
+	 * The root-config entry its deployment declared: `null` for a payload build, and for a record that exists but
+	 * cannot be read, since only a deploy writes one and no deploy writes the lock. `undefined` with no record to ask:
+	 * a tree startup installed, a link, or a tree made live before deployments kept records.
+	 */
+	declared: Record<string, unknown> | null | undefined;
+};
+
+async function liveTree(name: string, dirPath: string): Promise<LiveTree> {
 	let deploymentId: string | undefined;
 	try {
 		deploymentId = await readDeploymentProvenance(dirPath, name);
@@ -5522,19 +5545,21 @@ async function liveTreeDeclaredEntry(
 			`Could not read which deployment ${name} was activated from; its application lock decides instead:`,
 			error
 		);
-		return undefined;
+		return { deploymentId: undefined, declared: undefined };
 	}
-	if (deploymentId === undefined) return undefined;
+	if (deploymentId === undefined) return { deploymentId: null, declared: undefined };
 	try {
-		return (await readArtifactDescriptor(join(dirname(dirPath), DEPLOY_STAGING_DIR, deploymentId), name))?.rootConfig;
+		const descriptor = await readArtifactDescriptor(join(dirname(dirPath), DEPLOY_STAGING_DIR, deploymentId), name);
+		return { deploymentId, declared: descriptor?.rootConfig };
 	} catch (error) {
 		logger.warn?.(`Could not read the deployment ${name} was activated from; installing it from root config:`, error);
-		return null;
+		return { deploymentId, declared: null };
 	}
 }
 
-type ApplicationLockFile = { applications: Record<string, ApplicationConfig> };
-type ApplicationLockMutation = (applications: ApplicationLockFile['applications']) => void;
+/** The tree identifier the lock records for an entry is what that tree's marker named when startup installed it. */
+type ApplicationLockFile = { applications: Record<string, ApplicationConfig>; trees?: Record<string, string | null> };
+type ApplicationLockMutation = (applications: ApplicationLockFile['applications'], lock: ApplicationLockFile) => void;
 
 // Every read and read-modify-write of one lock file runs in this per-path order. A preparation can finish
 // after a later installApplications() call has read the file, so each transition is applied to what is on
@@ -5569,7 +5594,7 @@ export function updateApplicationLock(
 ): Promise<void> {
 	return enqueueApplicationLockTask(harperApplicationLockPath, async () => {
 		const lock = await readApplicationLockFile(harperApplicationLockPath);
-		mutate(lock.applications);
+		mutate(lock.applications, lock);
 		const tempPath = `${harperApplicationLockPath}.${process.pid}.${randomUUID()}.tmp`;
 		await writeFile(tempPath, JSON.stringify(lock, null, 2), 'utf8');
 		await rename(tempPath, harperApplicationLockPath);
@@ -5586,20 +5611,26 @@ export function updateApplicationLock(
  * left partially written (which would make `installApplications`'s already-installed check skip
  * the required reinstall forever). `prepare` runs `clearEntry` under the component's preparation lock,
  * so the removal cannot land before the success write of an earlier preparation still holding it.
+ * `identifyTree` names the tree the preparation made live, recorded with the success so that a later start trusts
+ * the entry only for that tree; `undefined` records none.
  */
 export async function recordApplicationPreparation(
 	name: string,
 	applicationConfig: ApplicationConfig,
 	prepare: (clearEntry: () => Promise<void>) => Promise<void>,
-	updateLock: (mutate: ApplicationLockMutation) => Promise<void>
+	updateLock: (mutate: ApplicationLockMutation) => Promise<void>,
+	identifyTree?: () => Promise<string | null | undefined>
 ): Promise<void> {
 	await prepare(() =>
-		updateLock((applications) => {
+		updateLock((applications, lock) => {
 			delete applications[name];
+			if (lock?.trees) delete lock.trees[name];
 		})
 	);
-	await updateLock((applications) => {
+	const tree = await identifyTree?.();
+	await updateLock((applications, lock) => {
 		applications[name] = applicationConfig;
+		if (tree !== undefined && lock) (lock.trees ??= {})[name] = tree;
 	});
 }
 

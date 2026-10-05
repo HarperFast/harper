@@ -934,10 +934,12 @@ describe('the release certification gate', function () {
 	it('does not hold the rest of the rollout behind a requesting worker 0 that has not answered', async () => {
 		// Each serving worker takes a while to exit once asked, as a requester its drain holds would.
 		plan([{ outcome: 'loaded' }], { unheldShutdownDelayMs: 3000 });
-		const [requester, next] = pool;
+		const [requester, next, last] = pool;
 		await arm({ requesterThreadId: requester.threadId });
 		let nextAskedAt;
 		next.once('shutdown', () => (nextAskedAt = Date.now()));
+		let requesterAskedAt;
+		requester.once('shutdown', () => (requesterAskedAt = Date.now()));
 		const committedAt = Date.now();
 		await commit();
 		await waitFor(() => nextAskedAt, { timeout: 30000, message: 'the next worker was never replaced' });
@@ -947,6 +949,14 @@ describe('the release certification gate', function () {
 				!requester.exitedAt || nextAskedAt < requester.exitedAt,
 				"and without waiting for the requester's exit"
 			);
+			// Its canary serves beside it, so it keeps serving while its deploy answers, and is retired after the rest.
+			await waitFor(() => last.exitedAt, { timeout: 30000, message: 'the rollout never replaced the rest' });
+			assert.equal(requesterAskedAt, undefined, 'it was not retired before its deploy answered');
+			const releasedAt = Date.now();
+			await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
+			await rolledOut();
+			assert.ok(requesterAskedAt >= releasedAt, 'and was retired once it had');
+			return;
 		}
 		await rolledOut();
 	});
@@ -992,50 +1002,58 @@ describe('the release certification gate', function () {
 		await waitFor(() => httpWorkers().length === 3, { timeout: 10000, message: 'the slot was left empty' });
 	});
 
-	it('starts the copy of a requester still answering past the release bound only once it has exited', async function () {
-		// Where replacements pre-start beside their predecessor, there is no such copy.
-		if (process.platform === 'linux') this.skip();
-		// An uncertified rollout replaces the requester unheld; its drain would keep it, and its ports, for a while.
-		plan([{ outcome: 'skipped' }], { unheldShutdownDelayMs: 2000 });
-		const requester = pool[1];
+	it('replaces the requesting worker only once its deploy has answered, however long past the decision', async () => {
+		// An uncertified release is decided at once; its deploy then runs on, as one answering its peers would.
+		plan([{ outcome: 'skipped' }]);
+		const [, requester, other] = pool;
 		await arm({ requesterThreadId: requester.threadId });
-		let copyAt;
-		requester.once('shutdown', () => (copyAt = started.length));
+		let askedAt;
+		requester.once('shutdown', () => (askedAt = Date.now()));
 		await commit();
 		assert.equal((await decisionOf()).status, 'uncertified');
-		// It never answers, so the rollout retires it once the release bound passes.
-		await rolledOut();
-		const copy = started[copyAt];
-		assert.ok(copy && requester.exitedAt, 'the requester was replaced');
-		assert.ok(copy.startedAt >= requester.exitedAt, 'its copy started only once it had exited');
+		await waitFor(() => other.exitedAt, { timeout: 30000, message: 'the rollout never reached the requester' });
+		// Past the 10 s the rollout used to give it before retiring it anyway.
+		await sleep(11000);
+		assert.equal(askedAt, undefined, 'it keeps serving while its deploy answers');
+		const releasedAt = Date.now();
 		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
+		await rolledOut();
+		assert.ok(askedAt >= releasedAt, 'and is replaced once it has answered');
 	});
 
-	it("waits out the exit of a worker another release's deploy is answering, before starting its copy", async function () {
-		if (process.platform === 'linux') this.skip();
-		// A plain restart is held in its reload while another release, whose deploy a pool worker answers, commits.
-		plan([{ outcome: 'loaded' }], { unheldShutdownDelayMs: 2000 });
+	it("replaces a worker another release's decided deploy is answering once that deploy answers, after the rest", async () => {
+		// A plain restart is held in its reload while another release, whose deploy a pool worker answers, commits; the
+		// restart's first replacement decides that release.
 		const loading = Promise.withResolvers();
 		rootLoad = loading.promise;
 		releaseRootLoad = loading.resolve;
-		const answering = pool[1];
+		const [, answering, other] = pool;
+		const answeringThreadId = answering.threadId;
 		const restart = restartWorkers('http', 1, true, undefined, undefined);
-		await arm({ requesterThreadId: answering.threadId });
+		await arm({ requesterThreadId: answeringThreadId });
 		await commit();
-		let copyAt;
-		answering.once('shutdown', () => (copyAt = started.length));
+		const asked = [];
+		for (const worker of pool) {
+			const threadId = worker.threadId;
+			worker.once('shutdown', () => asked.push(threadId));
+		}
+		let askedAt;
+		answering.once('shutdown', () => (askedAt = Date.now()));
 		releaseRootLoad();
-		await restart;
-		const copy = started.slice(copyAt).find((worker) => worker.workerIndex === answering.workerIndex);
-		assert.ok(copy && answering.exitedAt, 'the restart replaced the worker answering that deploy');
-		assert.ok(copy.startedAt >= answering.exitedAt, 'its copy started only once it had exited');
+		await waitFor(() => other.exitedAt, { timeout: 30000, message: 'the restart never replaced the rest' });
+		assert.equal(askedAt, undefined, 'it keeps serving while that deploy answers');
+		const releasedAt = Date.now();
 		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
+		await restart;
+		assert.ok(askedAt >= releasedAt, 'and is replaced once it has answered');
+		assert.equal(asked.at(-1), answeringThreadId, 'after the rest');
 		await rolledOut();
 	});
 
-	it('does not throttle a restart behind a worker still answering a certifying deploy', async () => {
+	it('throttles a restart behind a worker whose deploy only a queued rollout can decide', async () => {
 		// Its deploy waits on an isolated release, which only that release's own rollout can decide, and that rollout
-		// queues behind this restart. Each serving worker takes a while to exit, as one its drain holds would.
+		// queues behind this restart. Each serving worker takes a while to exit, as one its drain holds would; several
+		// such workers draining at once would leave the pool nothing serving.
 		plan([{ outcome: 'loaded' }], { unheldShutdownDelayMs: 3000 });
 		await startFixture(0, { application: 'isolated-app' });
 		const isolatedRelease = { component: 'isolated-app', deploymentId: '44444444-4444-4444-4444-444444444444' };
@@ -1056,15 +1074,22 @@ describe('the release certification gate', function () {
 		assert.equal(await certificationRequest('commit', isolatedRelease), true);
 		let lastAskedAt;
 		last.once('shutdown', () => (lastAskedAt = Date.now()));
+		let copyAt;
+		answering.once('shutdown', () => (copyAt = started.length));
 		releaseRootLoad();
 		await restart;
 		assert.ok(lastAskedAt && answering.exitedAt, 'the restart replaced both workers');
-		assert.ok(lastAskedAt < answering.exitedAt, 'it went on past the worker still answering, not after its exit');
+		assert.ok(lastAskedAt >= answering.exitedAt, 'it waited for the worker still answering before the next');
+		if (process.platform !== 'linux') {
+			// Its drain keeps its ports bound, so its copy waits for it to exit.
+			const copy = started.slice(copyAt).find((worker) => worker.workerIndex === answering.workerIndex);
+			assert.ok(copy && copy.startedAt >= answering.exitedAt, 'its copy started only once it had exited');
+		}
 		await certificationRequest('release', isolatedRelease);
 		await waitFor(() => completions.length > 0, { timeout: 45000, message: 'the isolated release never rolled out' });
 	});
 
-	it("does not throttle a restart behind a worker that joined a release's decision", async () => {
+	it('throttles a restart behind a worker that joined a decision only a queued rollout makes', async () => {
 		// The release is isolated, so only its own rollout, queued behind this restart, can decide it.
 		plan([{ outcome: 'loaded' }], { unheldShutdownDelayMs: 3000 });
 		await startFixture(0, { application: 'isolated-app' });
@@ -1086,7 +1111,7 @@ describe('the release certification gate', function () {
 		releaseRootLoad();
 		await restart;
 		assert.ok(lastAskedAt && joining.exitedAt, 'the restart replaced both workers');
-		assert.ok(lastAskedAt < joining.exitedAt, 'it went on past the worker that joined, not after its exit');
+		assert.ok(lastAskedAt >= joining.exitedAt, 'it waited for the worker that joined before the next');
 		await waitFor(() => completions.length > 0, { timeout: 45000, message: 'the isolated release never rolled out' });
 	});
 

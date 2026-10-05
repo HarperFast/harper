@@ -106,19 +106,23 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    a replacement while another release is armed, either, before each replacement and not only the first: that
    replacement could not decide the armed release, whose own rollout would queue behind this one for good. Worker 0
    is replaced first, so its replacement is the canary, and what an application runs only where `workerIndex` is 0
-   is part of the load that decides. The requesting worker is replaced last, once its operation has answered (`release`, bounded at 10 s).
-   Past the bound its shutdown still waits for the deploy to answer, through a shutdown drain the deploy holds
-   while its release is armed, bounded by the drain ceiling, rather than cut the deploy off mid-replication; a
-   shutdown before the arm closes as it always did. Until the release is decided, the drain holds only as long as
-   a canary may take, the verdict timeout: what decides it may be that release's own rollout, queued behind the
-   restart retiring the worker, as for an isolated release a pool worker requested. A requester that is worker 0 is retired at its turn without
-   that wait. Any worker retired while it still answers a certifying deploy, that requester included, stays out of
-   the restart's throttle, and only the restart's end waits for it to exit: it serves through its drain, so it is not
-   down, and waiting on it could hold back the start that decides what its deploy waits for. Where replacements start beside their predecessors,
-   that spares the rest of the pool its whole deploy; where they cannot, worker 0's canary is admitted only once the
-   requester has exited, so there the rollout still waits for that deploy. There, too, the copy of any worker still
-   answering a certifying deploy, whichever restart retires it, starts only once that worker has exited, since its
-   drain keeps its ports bound until the deploy answers. A withdraw
+   is part of the load that decides. The requesting worker is replaced last, once its operation has answered.
+   Any restart treats a worker answering a deploy whose release is decided the same way. That deploy waits on no
+   rollout, and its peers' answers can outlast the shutdown drain's ceiling. So the restart moves the worker to the
+   end and replaces it once the deploy has answered, beating its progress meanwhile (`untilDecidedDeploysAnswer`).
+   A requester that is worker 0 is replaced first. Where its canary starts beside it, it is retired the same way, after
+   the rest; elsewhere, at its turn. A worker retired while its deploy still runs, there or with its release still
+   undecided, is held by a shutdown drain the deploy registers while its release is armed. That drain is bounded by the
+   drain ceiling, and a shutdown before the arm closes as it always did. Until the release is decided, the drain holds
+   only as long as a canary may take, the verdict timeout: what decides it may be that release's own rollout, queued
+   behind the restart retiring the worker, as for an isolated release a pool worker requested. Only a worker whose
+   deploy waits on a decision this restart's own replacements make stays out of the restart's throttle
+   (`awaitsDecisionPlacedBy`): waiting on its exit would hold back the start that decides it. One whose release only a
+   queued rollout can decide waits its turn like any other, so a pool of such workers never drains out at once. Where
+   replacements cannot start beside their predecessors, worker 0's canary is admitted only once the requester has
+   exited, so there the rollout still waits for that deploy. There, too, the copy of any worker still answering a
+   certifying deploy, whichever restart retires it, starts only once that worker has exited, since its drain keeps its
+   ports bound until the deploy answers. A withdraw
    after commit is refused: the release is live, and dropping its registration would leave the rollout
    replacing workers unchecked.
    A worker already loading when a release is armed was not held for it, yet its load can still reach that release:
@@ -161,7 +165,10 @@ The protocol, in order (`components/canaryRollout.ts`, `components/releaseCertif
    instead of arming, counts as answering a certifying deploy like the requester, and on finishing leaves rather than
    releasing the requester: a fast
    refusal can end the rollout before the deploy reads its decision, which would otherwise read nothing and replicate
-   the refused release as uncertified. An `interrupted` certification — the process shutting down, a rollout that failed before any
+   the refused release as uncertified. A join that finds its decision already closed reads it from the record that
+   decision left, as a later activation would. No record, or a `certified` one, means the release stands, decided. A
+   `rejected` record is certified again. One still `pending` is refused with 409 until a restart settles it, since its
+   decision may have been a refusal whose record could not be written. An `interrupted` certification — the process shutting down, a rollout that failed before any
    canary decided, or a `certified` decision whose record could not be written — is restored exactly as a
    rejection is, which is also what the next boot does with a record left pending: an undecided release never
    stays live. The `load` progress phase spans the wait for the
@@ -193,8 +200,11 @@ tree's deployment declared an entry, startup now compares that entry with root c
 (`keepsInstalledTree`). It keeps the tree when the two match and installs from root config when they differ. So the
 tree that runs is the tree certified. The lock still names the entry the deploy replaced, so a root config set back to
 that entry would otherwise keep the deployed tree. A record that exists but cannot be read, one of a later version
-included, installs from root config, since the lock cannot describe a deployed tree. The lock decides only for a tree
-no deployment record describes.
+included, installs from root config, since the lock cannot describe a deployed tree. Otherwise the lock decides, but
+only for the tree it records installing. With each entry, startup records what that tree's deployment marker named
+(`trees` in `harper-application-lock.json`, `null` for a link). A live tree whose marker names anything else was
+made live by a deploy whose record is gone, so it is installed over. A lock written before it recorded trees decides
+for any tree, as before, until the next install records one.
 
 **Rolling.** `restart: 'rolling'` certifies on the origin exactly as `true` does, while the peers only stage the
 release. A `restart_service` job then activates it on each peer in turn (`activate_deployment`, `bin/restart.ts`)

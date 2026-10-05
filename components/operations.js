@@ -1160,10 +1160,11 @@ function assertPeersStaged(component, recorder, response) {
 }
 
 /**
- * The rollout retires the worker that requested it once that worker answers, or after a bound: past the bound, its
- * shutdown waits for the deploy to answer rather than cut it off. Until the release is decided it waits only so long
- * as a canary may take: what decides it may be a rollout queued behind the restart now retiring this worker. Returns
- * what ends the wait.
+ * A restart retires a worker answering a decided release's deploy only once that deploy has answered, so this drain
+ * holds only the rest. One is a requesting worker 0 whose canary cannot serve beside it. Another is a deploy whose
+ * release is not decided yet, held only so long as a canary may take, since what decides it may be a rollout queued
+ * behind the restart now retiring this worker. Like every drain, it ends at the shutdown ceiling. Returns what ends
+ * the wait.
  */
 function drainWhileDeploying(isDeploying, isDecided = () => true, undecidedBoundMs = Infinity) {
 	const { registerShutdownDrain } = require('./shutdownDrain.ts');

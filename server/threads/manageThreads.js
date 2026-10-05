@@ -1042,6 +1042,14 @@ function releaseCertificationRequester(component, deploymentId) {
 	certification.requesterReleased = true;
 	certification.released.resolve();
 	forgetIfUnread(certification);
+	noteAnswered();
+}
+
+let answered = Promise.withResolvers();
+/** A deploy stopped answering: it released, left, or its worker exited. */
+function noteAnswered() {
+	answered.resolve();
+	answered = Promise.withResolvers();
 }
 
 /**
@@ -1050,9 +1058,10 @@ function releaseCertificationRequester(component, deploymentId) {
  */
 function joinCertification(component, deploymentId, threadId) {
 	const certification = findCertification(component, deploymentId);
-	if (!certification) return;
+	if (!certification) return false;
 	if (threadId === undefined) certification.mainJoiners++;
 	else certification.joiners.set(threadId, (certification.joiners.get(threadId) ?? 0) + 1);
+	return true;
 }
 
 function leaveCertification(component, deploymentId, threadId) {
@@ -1066,6 +1075,7 @@ function leaveCertification(component, deploymentId, threadId) {
 		else certification.joiners.delete(threadId);
 	}
 	forgetIfUnread(certification);
+	noteAnswered();
 }
 
 function stillRead(certification) {
@@ -1153,11 +1163,15 @@ function registerCertificationRequests() {
 	onThreadExit((threadId) => {
 		for (const registry of [certifications, settledCertifications]) {
 			for (const certification of [...registry.values()]) {
-				if (certification.requesterThreadId === threadId) certification.requesterExited = true;
+				if (certification.requesterThreadId === threadId) {
+					certification.requesterExited = true;
+					certification.released.resolve();
+				}
 				certification.joiners.delete(threadId);
 				forgetIfUnread(certification);
 			}
 		}
+		noteAnswered();
 		for (const certification of certifications.values()) {
 			if (certification.phase !== 'armed' || certification.requesterThreadId !== threadId) continue;
 			Promise.resolve(certificationHandler?.resolveArmed?.(certification))
@@ -1467,8 +1481,8 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 		const restarting = workers.slice(0);
 		// Worker 0 is replaced first, so its replacement is the canary, and what an application runs only in worker 0
 		// is part of the load that decides the release. The requester answers before it is replaced, so it goes last,
-		// unless it is worker 0: then it is retired at its turn, its drain keeps its deploy answering, and only the end
-		// of the rollout waits for it to exit.
+		// unless it is worker 0. Then, where its replacement serves beside it, it is retired once its deploy has
+		// answered, after the rest; elsewhere it is retired at its turn, and its drain keeps its deploy answering.
 		const workerZero = certification
 			? restarting.find((worker) => worker.workerIndex === 0 && placesCertification(certification, worker))
 			: undefined;
@@ -1479,9 +1493,12 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 				: undefined;
 		if (requester && requester !== workerZero) restarting.push(...restarting.splice(restarting.indexOf(requester), 1));
 		const requesterFirst = Boolean(requester) && requester === workerZero;
-		// Workers retired while answering a certifying deploy: each serves through its drain, so it is not down, and
-		// waiting on its exit could hold back the start that decides what its deploy waits for.
+		// Workers retired while their deploy waits on a decision this restart's own replacements make: each serves
+		// through its drain, so it is not down, and waiting on its exit would hold back the start that decides it.
 		const answering = [];
+		// A requesting worker 0 whose replacement already serves beside it, retired once its deploy has answered.
+		let requesterToRetire;
+		const deferredUntilAnswered = new Set();
 		// a worker that exited on its own mid-restart is spliced out of `workers` and auto-restarted onto the new
 		// code (see the exit handler above); it is not still on the previous code even though this loop never got to it.
 		const untouchedAfter = (index) =>
@@ -1502,6 +1519,17 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 			if (!workers.includes(worker)) continue;
 			if (application !== '*' && worker.application !== application) continue; // and by isolated application
 			if (worker.application && freshlyStarted.has(worker.application)) continue;
+			// A deploy whose release is decided waits on no rollout, and a drain would give it only the shutdown ceiling,
+			// which its peers' answers can outlast: retire its worker once it has answered, after the rest.
+			if (worker !== workerZero && answersDecidedDeploy(worker)) {
+				if (!deferredUntilAnswered.has(worker)) {
+					deferredUntilAnswered.add(worker);
+					restarting.push(worker);
+					continue;
+				}
+				await untilDecidedDeploysAnswer(worker, onProgress);
+				if (!workers.includes(worker)) continue;
+			}
 			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
 			const canPreStartReplacement = platformCanPreStartReplacement && !worker.application;
 			const placed = startReplacementThreads ? openCertificationsPlacedBy(worker) : [];
@@ -1622,6 +1650,11 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 				}
 			}
 			if (worker === requester && !requesterFirst) await requesterRelease(certification);
+			// Its replacement serves already, so it can keep serving too until its deploy answers, after the rest.
+			if (worker === requester && requesterFirst && canPreStartReplacement && certification.decision) {
+				requesterToRetire = worker;
+				continue;
+			}
 			if (startReplacementThreads) await untilNoCertificationArmed();
 			harperLogger.trace('sending shutdown request to ', worker.threadId);
 			// the worker exited on its own while we were starting its replacement — nothing left to
@@ -1655,7 +1688,7 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 					const at = waitingToFinish.indexOf(replaced);
 					if (at > -1) waitingToFinish.splice(at, 1);
 				});
-			if ((worker === requester && requesterFirst) || answersCertifyingDeploy(worker)) {
+			if ((worker === requester && requesterFirst) || awaitsDecisionPlacedBy(worker)) {
 				answering.push(replaced);
 			} else {
 				waitingToFinish.push(replaced);
@@ -1675,6 +1708,10 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 				workersKeptOnOldCode += untouched;
 				break;
 			}
+		}
+		if (requesterToRetire) {
+			await untilDecidedDeploysAnswer(requesterToRetire, onProgress);
+			if (postShutdown(requesterToRetire)) answering.push(whenShutDownWorkerExits(requesterToRetire, onProgress));
 		}
 		await Promise.all(waitingToFinish);
 		await Promise.all(answering);
@@ -1710,6 +1747,48 @@ function answersCertifyingDeploy(worker) {
 			if (certification.requesterThreadId === worker.threadId && !certification.requesterReleased) return true;
 			if (certification.joiners.has(worker.threadId)) return true;
 		}
+	}
+	return false;
+}
+
+/** Whether a worker is answering a deploy whose release is decided. */
+function answersDecidedDeploy(worker) {
+	for (const registry of [certifications, settledCertifications]) {
+		for (const certification of registry.values()) {
+			if (!certification.decision) continue;
+			if (
+				certification.requesterThreadId === worker.threadId &&
+				!certification.requesterReleased &&
+				!certification.requesterExited
+			) {
+				return true;
+			}
+			if (certification.joiners.has(worker.threadId)) return true;
+		}
+	}
+	return false;
+}
+
+/** Until a worker answers the decided deploys it is answering, or exits. Each beat says the wait is not a stall. */
+async function untilDecidedDeploysAnswer(worker, onProgress) {
+	const beating = setInterval(() => onProgress?.(), RESTART_PROGRESS_HEARTBEAT_MS).unref();
+	try {
+		while (answersDecidedDeploy(worker) && workers.includes(worker)) await answered.promise;
+	} finally {
+		clearInterval(beating);
+	}
+}
+
+/**
+ * Whether a worker's deploy waits on a decision this restart's replacements can make. One a release this restart
+ * cannot place is decided only by that release's own rollout, which queues behind this one, so retiring that worker
+ * waits its turn like any other.
+ */
+function awaitsDecisionPlacedBy(worker) {
+	for (const certification of certifications.values()) {
+		if (certification.decision || !placesCertification(certification, worker)) continue;
+		if (certification.requesterThreadId === worker.threadId && !certification.requesterReleased) return true;
+		if (certification.joiners.has(worker.threadId)) return true;
 	}
 	return false;
 }

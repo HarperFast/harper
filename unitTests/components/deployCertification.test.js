@@ -269,6 +269,52 @@ describe('activating a release for certification', () => {
 		assert.equal((await readCertificationRecord(root, 'd1')).state, 'pending');
 	});
 
+	it('reads a decision that closed before its activation joined it from the record it left', async function () {
+		this.timeout(30000);
+		await deploy(root, 'd1', 'V1\n');
+		const record = {
+			component: 'web',
+			deploymentId: 'd1',
+			previous: null,
+			wasAbsent: true,
+			incarnation: processIncarnation,
+		};
+		const lateJoin = (left) => ({
+			...recordingCertification(root),
+			async join() {
+				if (left) await writeCertificationRecord(root, { ...record, ...left });
+				return false;
+			},
+		});
+		const activate = (certification) => {
+			const app = applicationAt(root);
+			return prepareApplication(app, { mode: 'activate', artifactId: 'd1', certification }).then(() => app);
+		};
+
+		await writeCertificationRecord(root, { ...record, state: 'certified' });
+		let certification = lateJoin();
+		let app = await activate(certification);
+		assert.equal(app.certificationArmed, false, 'a certified release stands, with nothing to read');
+		assert.deepStrictEqual(certification.calls, []);
+
+		// Pending still: the decision may have been a refusal whose record could not be written.
+		await writeCertificationRecord(root, { ...record, state: 'pending' });
+		await assert.rejects(activate(lateJoin()), (error) => {
+			assert.equal(error.statusCode, 409);
+			assert.match(error.message, /closed before this activation joined it/);
+			return true;
+		});
+
+		// Refused while it joined: certified again, as a later activation of a rejected release is.
+		certification = lateJoin({ state: 'rejected', reason: 'threw at load' });
+		app = await activate(certification);
+		assert.deepStrictEqual(
+			certification.calls.map(({ call }) => call),
+			['arm', 'commit']
+		);
+		assert.equal(app.certificationArmed, true);
+	});
+
 	it('refuses to certify a live release again while its record cannot be read, and leaves the record alone', async function () {
 		this.timeout(30000);
 		await deploy(root, 'd1', 'V1\n');
@@ -580,7 +626,11 @@ describe('whether startup keeps the installed tree', () => {
 
 	const ENTRY = { package: 'npm:web@1.0.0', urlPath: '/web' };
 	const REPLACED = { package: 'npm:web@0.9.0', urlPath: '/web' };
-	const lockNaming = (entry) => fs.writeFile(lockPath, JSON.stringify({ applications: { web: entry } }));
+	const lockNaming = (entry, tree) =>
+		fs.writeFile(
+			lockPath,
+			JSON.stringify({ applications: { web: entry }, ...(tree === undefined ? {} : { trees: { web: tree } }) })
+		);
 
 	it('keeps a deployed tree only for the entry its deployment declared, whatever the lock names', async function () {
 		this.timeout(30000);
@@ -621,7 +671,30 @@ describe('whether startup keeps the installed tree', () => {
 		assert.equal(await keepsInstalledTree('web', ENTRY, dirPath, lockPath), false, 'a record of another version');
 	});
 
-	it('lets the lock decide for a tree no deployment record describes: installed at startup, or its record gone', async function () {
+	it('trusts the lock only for the tree it records installing', async function () {
+		this.timeout(30000);
+		await lockNaming(ENTRY, 'boot');
+		await deploy(root, 'boot', 'V1\n', { describeArtifact: undefined });
+		assert.equal(await keepsInstalledTree('web', ENTRY, dirPath, lockPath), true, 'the tree startup installed');
+		await deploy(root, 'd1', 'V1\n', { describeArtifact: () => ({ rootConfig: REPLACED, isolated: false }) });
+		await fs.rm(path.join(root, DEPLOY_STAGING_DIR, 'd1'), { recursive: true, force: true });
+		assert.equal(
+			await keepsInstalledTree('web', ENTRY, dirPath, lockPath),
+			false,
+			'a tree a deploy made live since, whose record is gone, is installed over'
+		);
+	});
+
+	it('trusts a lock that records a tree without a marker only for such a tree', async function () {
+		this.timeout(30000);
+		await fs.mkdir(dirPath);
+		await lockNaming(ENTRY, null);
+		assert.equal(await keepsInstalledTree('web', ENTRY, dirPath, lockPath), true);
+		await lockNaming(ENTRY, 'boot');
+		assert.equal(await keepsInstalledTree('web', ENTRY, dirPath, lockPath), false);
+	});
+
+	it('lets a lock that records no tree decide for whatever is live, as one written before it recorded trees', async function () {
 		this.timeout(30000);
 		await lockNaming(ENTRY);
 		assert.equal(await keepsInstalledTree('web', ENTRY, dirPath, lockPath), false, 'nothing is installed');

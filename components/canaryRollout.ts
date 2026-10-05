@@ -266,8 +266,8 @@ export function deployCertification(spec: {
 			await certificationRequest('withdraw', identity());
 		},
 		async join() {
-			joined = true;
-			await certificationRequest('join', identity());
+			joined = (await certificationRequest('join', identity())) === true;
+			return joined;
 		},
 		decision: () => certificationRequest('decision', identity()),
 		rollout: (onProgress) =>
