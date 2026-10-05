@@ -603,7 +603,14 @@ function readBody(request) {
 						if (socket.write(data)) scheduleUpload();
 						else socket.once('drain', scheduleUpload);
 					}
-					let timer = setTimeout(() => socket.destroy(new Error('oversized upload did not receive 413')), 5000);
+					let timer = setTimeout(() => {
+						const stalled = !consume && !bufferedBeforeReject;
+						socket.destroy(
+							new Error(
+								stalled ? 'the paused body never buffered the first chunk' : 'oversized upload did not receive 413'
+							)
+						);
+					}, 5000);
 					socket.on('data', (data) => {
 						raw += data.toString('latin1');
 						if (sentAtHeaders !== undefined || !raw.includes('\r\n\r\n')) return;
