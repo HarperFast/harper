@@ -38,7 +38,8 @@
 //
 // Retire the React Native rule when alasql no longer installs the unused subtree.
 // Retire the UTF-8 rule after the dev framework's Harper peer updates to a release without
-// the addon and the full lock has no explicit dependency or required peer producing it.
+// the addon and the full lock has neither a producing declaration nor an addon copy.
+// A stale copy reachable through optional peers still needs pruning even without a producer.
 //
 // Usage: node build-tools/prune-shrinkwrap-react-native.mjs [npm-shrinkwrap.json]
 import { readFileSync, writeFileSync } from 'node:fs';
