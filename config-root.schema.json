@@ -731,6 +731,27 @@
 					"type": "string",
 					"description": "Filesystem scope for component edits, relative to rootPath. Default: ./components"
 				},
+				"httpFetch": {
+					"description": "The agent's http_fetch tool. true: enabled, with cloud-metadata and link-local addresses blocked. false: the tool is removed from the agent's toolset. { allow: [...] }: requests, including every redirect hop, are refused unless the host matches an entry. Read at startup only; set_agent_config cannot change it. Default: true",
+					"oneOf": [
+						{ "type": "boolean" },
+						{
+							"type": "object",
+							"additionalProperties": false,
+							"required": ["allow"],
+							"properties": {
+								"allow": {
+									"type": "array",
+									"description": "Hosts http_fetch may reach: host, host:port, *.domain (any subdomain, not the domain itself), or [ipv6]. An entry without a port matches any port. An empty list removes the tool.",
+									"items": {
+										"type": "string",
+										"pattern": "^(?:\\[[0-9A-Fa-f:.]+\\]|(?:\\*\\.)?[^\\s/?#@\\\\:*\\[\\]]+)(?::[0-9]{1,5})?$"
+									}
+								}
+							}
+						}
+					]
+				},
 				"systemPromptAppend": {
 					"type": "string",
 					"description": "Operator text appended to the agent's system prompt, after the built-in grounding and the Harper best-practices overview. Tunable at runtime via set_agent_config."
