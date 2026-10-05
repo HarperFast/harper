@@ -412,9 +412,7 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 	graphqlSchema: graphqlHandler,
 	roles,
 	jsResource: jsHandler,
-	get fastifyRoutes() {
-		return _fastifyRoutes;
-	},
+	fastifyRoutes: '#src/server/fastifyRoutes',
 	login,
 	// String entry: the loader `await import()`s these lazily when the component is actually
 	// processed, so the gateway's module graph is not pulled into componentLoader's own
@@ -441,9 +439,7 @@ export const TRUSTED_RESOURCE_PLUGINS: any = {
 	login: ...
 	 */
 };
-let _fastifyRoutes: any;
 onStartup(async () => {
-	_fastifyRoutes = await import('../server/fastifyRoutes.ts');
 	if (isMainThread) {
 		TRUSTED_RESOURCE_PLUGINS.operationsApi = await import('../server/operationsServer.ts');
 		TRUSTED_RESOURCE_PLUGINS.agent = await import('../agent/agent.ts');

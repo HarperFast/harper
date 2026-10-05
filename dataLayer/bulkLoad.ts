@@ -10,7 +10,7 @@ const handleHDBError = _handleHDBError;
 import { HTTP_STATUS_CODES, HDB_ERROR_MSGS, CHECK_LOGS_WRAPPER } from '../utility/errors/commonErrors.ts';
 
 import logger from '../utility/logging/harper_logger.ts';
-import * as papaParse from 'papaparse';
+import papaParse from 'papaparse';
 import _fs from 'fs-extra';
 const fs = _fs;
 import * as path from 'node:path';

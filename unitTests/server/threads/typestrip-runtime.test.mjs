@@ -50,7 +50,7 @@ describe('TypeStrip runtime boundaries', () => {
 					[
 						'--preserve-symlinks',
 						'-e',
-						`const { RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT } = require(${JSON.stringify(modulePath)}); console.log(JSON.stringify([RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT]));`,
+						`(async () => { const { RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT, loadRuntimeModule } = require(${JSON.stringify(modulePath)}); const { pathToFileURL } = require('node:url'); const { resolve } = require('node:path'); const imported = await import(pathToFileURL(resolve(${JSON.stringify(link)}, ${JSON.stringify(mode === 'compiled' ? 'dist/dataLayer/search.js' : 'dataLayer/search.ts')}))); if (loadRuntimeModule('dataLayer/search').search !== imported.search) throw new Error('Duplicate module instance'); console.log(JSON.stringify([RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT])); process.exit(0); })().catch(error => { console.error(error); process.exit(1); });`,
 					],
 					{ encoding: 'utf8', timeout: 30000 }
 				);
@@ -61,6 +61,25 @@ describe('TypeStrip runtime boundaries', () => {
 			}
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('keeps SQL cold until first use in both runtime graphs', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const prefix = mode === 'compiled' ? 'dist/' : '';
+			const extension = mode === 'compiled' ? 'js' : 'ts';
+			const entry = pathToFileURL(resolve(root, `${prefix}server/threads/threadServer.${extension}`)).href;
+			const helpers = pathToFileURL(resolve(root, `${prefix}utility/packageUtils.js`)).href;
+			const output = execFileSync(
+				process.execPath,
+				[
+					'--input-type=module',
+					'-e',
+					`const { createRequire } = await import('node:module'); const require = createRequire(${JSON.stringify(helpers)}); await import(${JSON.stringify(entry)}); if (Object.keys(require.cache).map(path => path.split(require('node:path').sep).join('/')).some(path => path.includes('/alasql/') || path.includes('/mathjs/') || path.endsWith('/sqlTranslator/index.${extension}'))) throw new Error('SQL loaded during boot'); const { loadRuntimeModule } = await import(${JSON.stringify(helpers)}); const sql = loadRuntimeModule('sqlTranslator/index'); if (typeof sql.evaluateSQL !== 'function' || typeof sql.convertSQLToAST !== 'function' || typeof loadRuntimeModule('dataLayer/SQLSearch').default !== 'function' || typeof loadRuntimeModule('sqlTranslator/SelectValidator').default !== 'function') throw new Error('Cold module export missing'); console.log('cold SQL loaded'); process.exit(0);`,
+				],
+				{ env: process.env, encoding: 'utf8', timeout: 30000 }
+			);
+			assert.equal(output.trim(), 'cold SQL loaded', mode);
 		}
 	});
 

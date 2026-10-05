@@ -1,4 +1,5 @@
-import * as indexCjsModule from '../../sqlTranslator/index.ts';
+import { loadRuntimeModule } from '../../utility/packageUtils.js';
+import { onStartup } from '../../utility/lifecycle.ts';
 import * as search from '../../dataLayer/search.ts';
 import * as bulkLoad from '../../dataLayer/bulkLoad.ts';
 import * as schema from '../../dataLayer/schema.ts';
@@ -33,7 +34,10 @@ import * as npmUtilities from '../../utility/npmUtilities.ts';
 import { _assignPackageExport } from '../../globals.js';
 import { transformReq } from '../../utility/common_utils.ts';
 import { server } from '../Server.ts';
-const operationLog = harperLogger.loggerWithTag('operation');
+let operationLog = harperLogger.loggerWithTag('operation');
+onStartup(() => {
+	operationLog = harperLogger.loggerWithTag('operation');
+});
 import * as analytics from '../../resources/analytics/read.ts';
 import * as operationFunctionCaller from '../../utility/OperationFunctionCaller.ts';
 import type { OperationRequest, OperationRequestBody } from '../operationsServer.ts';
@@ -55,10 +59,14 @@ import { runWithOperationAuthorizationBypass } from './operationAuthorizationSta
 import { stripSuppliedParsedSqlObject } from './requestSanitization.ts';
 
 const pSearchSearch = util.promisify(search.search);
+let sqlModule;
+function getSqlModule() {
+	return (sqlModule ??= loadRuntimeModule('sqlTranslator/index'));
+}
 let pEvaluateSql: (sql: string) => Promise<any>;
 function evaluateSQL(command) {
 	if (!pEvaluateSql) {
-		const sql = indexCjsModule;
+		const sql = getSqlModule();
 		pEvaluateSql = util.promisify(sql.evaluateSQL);
 	}
 	return pEvaluateSql(command);
@@ -324,7 +332,7 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 
 	try {
 		if (isSqlOperation || hasNestedSqlSearch) {
-			const sql = indexCjsModule;
+			const sql = getSqlModule();
 			const sqlStatement = isSqlOperation ? json.sql : nestedSearch.sql;
 			// Before this dispatch's own parse is assigned, so a body-supplied object cannot survive it.
 			stripSuppliedParsedSqlObject(json);

@@ -124,6 +124,8 @@ Transaction monitoring and token lifetimes can be imported before configuration 
 
 Runtime detection compares canonical module and package paths so `--preserve-symlinks` cannot select source workers for a compiled entry point. `threadServer.ts` automatically starts HTTP only when its own file is the worker entry; loading it from a job or evaluated worker must remain an import. Evaluated workers have a pseudo entry name rather than a real file. Both boundaries are pinned by `unitTests/server/threads/typestrip-runtime.test.mjs`.
 
+Cold SQL dependencies retain synchronous first-use loading through `loadRuntimeModule()` in the intentional CommonJS `packageUtils.js` helper. Its own `__dirname` preserves the caller's path family under `--preserve-symlinks`, avoiding a second module instance. Cached call-site bindings avoid repeated resolution. Hoisting these loads pulls the legacy SQL math library into every worker's boot and exceeds the accepted 64 MB heap minimum. The legacy Fastify plugin uses the existing lazy trusted-plugin loader. `serverUtilities.ts` refreshes its tagged operation logger at startup because an in-process install replaces the initial main logger. Both-mode heap, cold SQL/export and denial-log integration tests enforce these boundaries.
+
 ## `http.ts` — symbol map
 
 Every entry is a top-level function or named const. Jump via go-to-symbol or `grep -n 'function <name>' server/http.ts`.

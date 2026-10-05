@@ -1,5 +1,4 @@
-import * as indexCjsModule from '../../sqlTranslator/index.ts';
-('use strict');
+import { loadRuntimeModule } from '../../utility/packageUtils.js';
 
 /**
  * The jobs class is used to enable operations on the jobs system table.  The jobHandler function is the only
@@ -259,7 +258,7 @@ export async function getJobsInDateRange(jsonBody: any) {
 
 	try {
 		if (!pSqlEvaluate) {
-			const hdbSql = indexCjsModule;
+			const hdbSql = loadRuntimeModule('sqlTranslator/index');
 			pSqlEvaluate = promisify(hdbSql.evaluateSQL);
 		}
 		// Harper's own statement, not the caller's. A carrier is not equivalent here — see DESIGN.md.
