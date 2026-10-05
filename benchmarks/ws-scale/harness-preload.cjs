@@ -16,7 +16,11 @@ function profile(seconds) {
 	session.connect();
 	session.post('Profiler.enable', () =>
 		session.post('Profiler.setSamplingInterval', { interval: 250 }, () =>
-			session.post('Profiler.start', () => {
+			session.post('Profiler.start', (error) => {
+				if (error) {
+					session.disconnect();
+					return;
+				}
 				writeFileSync(`${dir}/thread-${threadId}.started`, '');
 				setTimeout(
 					() =>
@@ -40,12 +44,15 @@ if (workerData?.name === 'http') {
 			profile(Number(readFileSync(`${dir}/start`, 'utf8')));
 		}
 		while (existsSync(`${dir}/gc-${collections + 1}`)) {
-			collections++;
+			const collection = ++collections;
 			globalThis.gc?.();
-			// renamed into place so run.mts never parses a half-written acknowledgement
-			const ack = `${dir}/gc-${collections}-${threadId}`;
-			writeFileSync(`${ack}.tmp`, JSON.stringify(globalThis.gc ? process.memoryUsage() : { error: 'no gc()' }));
-			renameSync(`${ack}.tmp`, ack);
+			setImmediate(() => {
+				globalThis.gc?.();
+				// renamed into place so run.mts never parses a half-written acknowledgement
+				const ack = `${dir}/gc-${collection}-${threadId}`;
+				writeFileSync(`${ack}.tmp`, JSON.stringify(globalThis.gc ? process.memoryUsage() : { error: 'no gc()' }));
+				renameSync(`${ack}.tmp`, ack);
+			});
 		}
 	}, 100);
 	poll.unref();

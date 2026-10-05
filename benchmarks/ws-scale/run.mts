@@ -85,7 +85,7 @@ const { values: args } = parseArgs({
 		// subscribers connect over Harper's per-worker Unix socket mirrors, as a TLS-terminating proxy would
 		'uds': { type: 'boolean', default: false },
 		'log-level': { type: 'string', default: 'warn' },
-		// CPU-profile every worker for this many seconds, starting 5s into the first fanout rate or at
+		// CPU-profile every HTTP worker for this many seconds, starting 5s into the first fanout rate or at
 		// the start of the last conns step's settle window; profiles land in --profile-dir
 		'profile': { type: 'string' },
 		'profile-dir': { type: 'string' },
@@ -150,6 +150,12 @@ if (subs > topics) throw new Error(`--subs=${subs} needs at least as many --topi
 if (args.insert && args.publish !== 'put') throw new Error('--insert applies only to --publish=put');
 if (!['graceful', 'abrupt'].includes(args.close!)) throw new Error('--close must be graceful or abrupt');
 if (args.scenario === 'churn' && args.profile) throw new Error('--profile applies to conns and fanout, not churn');
+if (args.scenario === 'churn') {
+	if (!Number.isInteger(Number(args.cycles)) || Number(args.cycles) < 1)
+		throw new Error('--cycles must be a positive integer for churn');
+	if (!Number.isInteger(Number(args.conns)) || Number(args.conns) < 1)
+		throw new Error('--conns must be a positive integer for churn');
+}
 if (args.uds) {
 	// Linux caps a Unix socket path at 107 bytes, and Harper skips (Node) or fails to start (uWS) a longer mirror
 	const longestPath = join(installParent, 'harper-integration-test-XXXXXX', 'sockets', `${threads - 1}-9927-h2.sock`);
@@ -329,7 +335,7 @@ async function main() {
 	let profileTimer: NodeJS.Timeout | undefined;
 	let collections = 0;
 	let workerIds: Set<string> | undefined;
-	// Every worker runs a full GC and reports its memory right after it, so retained memory is not confused with
+	// Every HTTP worker runs a full GC and reports its memory right after it, so retained memory is not confused with
 	// uncollected garbage (system_information's per-thread heap comes from a periodic report, so it can be stale).
 	// The first collection fixes the set of workers: a restarted worker would replay every request with a fresh
 	// heap and make a leak look released, so a change in the set fails the run.
@@ -526,6 +532,8 @@ async function main() {
 					scenario: 'churn',
 					protocol,
 					uws: args.uws,
+					uds: args.uds,
+					threads,
 					close: args.close,
 					subs,
 					cycle,
@@ -694,7 +702,7 @@ async function main() {
 		if (args.profile && !profileFinished())
 			console.warn(
 				profileStartedAt < Infinity
-					? `not every worker wrote its profile to ${profileDir}`
+					? `not every HTTP worker wrote its profile to ${profileDir}`
 					: 'the run ended before profiling began'
 			);
 	} finally {
