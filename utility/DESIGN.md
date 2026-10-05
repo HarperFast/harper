@@ -2,7 +2,7 @@
 
 Cross-cutting helpers.
 
-**Read this when:** touching `watchPath.ts` or anything that arms a native file watch, adding an interactive CLI prompt (`interactivePrompts.ts`), or passing an object to `handleHDBError` (`errors/hdbError.ts`).
+**Read this when:** touching `watchPath.ts` or anything that arms a native file watch, adding an interactive CLI prompt (`interactivePrompts.ts`), passing an object to `handleHDBError` (`errors/hdbError.ts`), or changing `inspectForLog`'s sanitize walk (`logging/harper_logger.ts`).
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -61,3 +61,19 @@ Every `@inquirer`-based one-shot prompt in the codebase (`bin/login.ts`, `bin/de
 ## An HdbError's `message` is a string; the structured body is `http_resp_msg` (`utility/errors/hdbError.ts`)
 
 `handleHDBError(new Error(), <object>, status)` is how a permission report or validation report becomes an error: the object is the response body. `serverErrorHandler` sends an object `http_resp_msg` verbatim, and the job worker (`server/jobs/jobProcess.ts`) records it as the job's `message`, which is what `get_job` answers a refused bulk load with. The constructor derives `message` from it — the `error` summary followed by the reasons the object lists, anything else through `inspectForLog`, which cannot throw and does not expose a nested Error's properties — because the logger, `String(error)` and `errorToString` (HTTP error bodies, replication replies) all need a string. A non-string `message` rendered as `Error: [object Object]`. Read the structure from `http_resp_msg`, never from `message`.
+
+## `inspectForLog` bounds its whole render and masks credential-shaped keys (`utility/logging/harper_logger.ts`)
+
+One render is at most `MAX_LOG_RENDER_LENGTH` characters. Per-container and node limits multiply rather than add — 50k string leaves at the operation caller's `maxStringLength: 20000` rendered ~134M characters into one log entry — so the bound is cumulative, in two parts. The sanitize walk charges an estimated rendered length per entry and stops each open container with one "omitted" marker once it is spent: that is what bounds the work, because it runs before `util.inspect` builds anything. A final cut of the rendered string makes the length exact, because `util.inspect`'s layout and escaping are not predictable from the walk.
+
+For the estimate to bound work, the walk must see exactly what `util.inspect` will print, in the order it prints it:
+
+- A leaf whose size the walk cannot estimate (an Error's stack, an opaque built-in, a function) is rendered to text in the walk and charged exactly; a hook the leaf carries (Node's own Buffer hook aside) is resolved like an object's, below. An Error whose message alone exceeds what is left is rendered from its message, without materializing its stack.
+- Custom inspect hooks, own or inherited, are called in the walk, where `util.inspect` would call them; their output replaces the value and is walked like any other. No clone carries a hook for `util.inspect` to run at render time. An inherited hook gets the sanitized clone as `this`, so its properties are walked first; when the output replaces them they are refunded to the render budget but counted against a separate cap (`MAX_DISCARDED_RENDER`); past it, a further such object prints as an omission while other fields keep rendering.
+- A container at the level where `util.inspect` collapses it to `[ClassName]` (the caller's `depth` + 1) is not enumerated, unless an inherited hook reads it; it prints `[ClassName]` even when empty. Nothing below that level is walked. A clone built at one depth stands in for its original only at that depth or deeper.
+- Arrays, Maps and Sets are walked to the `maxArrayLength` `util.inspect` prints.
+- A repeat reference to a walked container is charged again, since `util.inspect` prints a shared sub-object at every occurrence.
+
+The walk masks the value of a data property or Map entry whose key (a symbol by its description) matches `CREDENTIAL_KEY_PATTERN`, the one list shared with the MCP audit log (`components/mcp/audit.ts`) — a new credential key shape goes there. It is a substring match, so `author` is masked too. Masking is structural: a custom inspect hook that returns a secret as a primitive renders it. `HdbError`'s report flattening (`messageText`) runs before `inspectForLog` and is not masked, because its values are validation reasons, often listed under a field named `password`.
+
+Tests: the `inspectForLog` block in `unitTests/utility/logging/harper_logger.test.js`.

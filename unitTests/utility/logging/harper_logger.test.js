@@ -1990,6 +1990,362 @@ describe('Test harper_logger module', () => {
 			assert.ok(!result.includes('super-secret-token'));
 			assert.ok(!result.includes('Authorization'));
 		});
+
+		// Mirrors MAX_LOG_RENDER_LENGTH in harper_logger.ts.
+		const MAX_LOG_RENDER_LENGTH = 256 * 1024;
+
+		it('bounds the total rendered length across the whole structure, not only per container', () => {
+			// Every per-container limit allows this: 199 objects x 249 fields x one shared 20KB string.
+			const long_string = 'x'.repeat(20_000);
+			const payload = {};
+			for (let i = 0; i < 199; i++) {
+				const child = {};
+				for (let j = 0; j < 249; j++) child[`f${j}`] = long_string;
+				payload[`child_${i}`] = child;
+			}
+			const result = render(payload, { depth: 8, maxArrayLength: 250, maxStringLength: 20_000 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.includes('more properties omitted (sanitize budget)'));
+			// The sanitize walk stopped on its own estimate, so the output is still a whole structure.
+			assert.ok(result.endsWith('}'), result.slice(-200));
+		});
+
+		it('caps the rendered length exactly even when escaping makes the output larger than estimated', () => {
+			// util.inspect renders each control character as a 4-character escape.
+			const escaped_string = '\x01'.repeat(5_000);
+			const payload = Array.from({ length: 100 }, () => escaped_string);
+			const result = render(payload, { depth: 8, maxArrayLength: 250, maxStringLength: 20_000 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.match(result, /more characters omitted \(sanitize budget\)\]$/);
+		});
+
+		it('shares the render budget with custom inspect hooks instead of giving each hook a fresh one', () => {
+			// Each hook alone fits the budget; together they would not.
+			const hook_output = () => ({ lines: Array.from({ length: 200 }, (_, i) => `${i}:${'y'.repeat(1_000)}`) });
+			const payload = Array.from({ length: 200 }, () => ({ [util.inspect.custom]: hook_output }));
+			const result = render(payload, { depth: 8, maxArrayLength: 250 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.includes('more array entries omitted (sanitize budget)'));
+		});
+
+		it("shares the render budget with hooks nested in a hook's output", () => {
+			const inner_output = 'y'.repeat(100_000);
+			const outer_hook = () => ({ inner: { [util.inspect.custom]: () => inner_output } });
+			const payload = Array.from({ length: 50 }, () => ({ [util.inspect.custom]: outer_hook }));
+			const result = render(payload, { depth: 8, maxArrayLength: 250 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.includes('more array entries omitted (sanitize budget)'));
+			assert.ok(result.endsWith(']'), result.slice(-200));
+		});
+
+		it('resolves custom inspect hooks in walk order, so an early diagnostic is not starved by later fields', () => {
+			const payload = [{ [util.inspect.custom]: () => 'phase=install' }, ...Array(300).fill('x'.repeat(1_000))];
+			const result = render(payload, { depth: 8, maxArrayLength: 1000 });
+			assert.ok(result.includes('phase=install'), result.slice(0, 200));
+			assert.ok(result.includes('more array entries omitted (sanitize budget)'));
+		});
+
+		it('sanitizes, masks and charges what an inherited custom inspect hook returns, and calls it once', () => {
+			let calls = 0;
+			class Report {
+				[util.inspect.custom]() {
+					calls++;
+					return {
+						password: 'prototype-hook-secret',
+						region: 'us-east-1',
+						lines: Array.from({ length: 200 }, (_, i) => `${i}:${'y'.repeat(1_000)}`),
+					};
+				}
+			}
+			const reports = Array.from({ length: 50 }, () => new Report());
+			const result = render(reports, { depth: 8, maxArrayLength: 250 });
+			assert.ok(!result.includes('prototype-hook-secret'));
+			assert.ok(result.includes('us-east-1'));
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.endsWith(']'), result.slice(-200));
+			assert.ok(calls < reports.length, `called ${calls} hooks after the budget was spent`);
+		});
+
+		it('does not spend the budget on, or render, what lies below the requested inspect depth', () => {
+			let stack_reads = 0;
+			const deep_error = new Error('deep');
+			Object.defineProperty(deep_error, 'stack', {
+				get() {
+					stack_reads++;
+					return 'Error: deep';
+				},
+			});
+			let deep = { lines: Array(300).fill('x'.repeat(1_000)), deep_error };
+			for (let i = 0; i < 9; i++) deep = { deep };
+			const result = render({ detail: deep, deployment_id: 'deployment-123' }, { depth: 8, maxArrayLength: 1000 });
+			assert.strictEqual(stack_reads, 0);
+			assert.ok(result.includes('[Object]'));
+			assert.ok(result.includes('deployment-123'));
+			assert.ok(!result.includes('sanitize budget'), result);
+		});
+
+		it('walks and masks what a hook carried by a built-in or function leaf returns', () => {
+			const date = new Date(0);
+			Object.defineProperty(date, util.inspect.custom, { value: () => ({ password: 'date-hook-secret' }) });
+			class Client {
+				static [util.inspect.custom]() {
+					return { apiKey: 'static-hook-secret' };
+				}
+			}
+			const result = render({ date, Client, buffer: Buffer.from('hi') }, { depth: 8 });
+			assert.ok(!result.includes('date-hook-secret'), result);
+			assert.ok(!result.includes('static-hook-secret'), result);
+			assert.ok(result.includes('[redacted]'));
+			assert.ok(result.includes('<Buffer 68 69>'));
+		});
+
+		it('keeps what a hook on a built-in leaf hides hidden', () => {
+			class SecretKey extends Uint8Array {
+				[util.inspect.custom]() {
+					return 'SecretKey(***)';
+				}
+			}
+			const result = render({ key: new SecretKey([11, 22, 33]) }, { depth: 8 });
+			assert.ok(result.includes('SecretKey(***)'), result);
+			assert.ok(!result.includes('22'), result);
+		});
+
+		it('bounds the properties walked for inherited hooks whose output replaces them, across all siblings', () => {
+			let stack_reads = 0;
+			class Report {
+				constructor() {
+					this.detail = new Error('short message');
+					Object.defineProperty(this.detail, 'stack', {
+						get() {
+							stack_reads++;
+							return 'Error: short message\n' + '    at frame\n'.repeat(20_000);
+						},
+					});
+				}
+				[util.inspect.custom]() {
+					return 'Report';
+				}
+			}
+			const result = render(
+				Array.from({ length: 250 }, () => new Report()),
+				{ depth: 8, maxArrayLength: 250 }
+			);
+			// Four budgets of replaced properties, each Error's stack read twice; 500 reads unbounded.
+			assert.ok(stack_reads <= 10, `formatted ${stack_reads} stacks`);
+			assert.ok(result.includes('[omitted (sanitize budget)]'));
+		});
+
+		it("prints an inherited hook's short summary, and the fields after it, even when the properties it replaces are large", () => {
+			class Report {
+				constructor() {
+					this.lines = Array(300).fill('x'.repeat(1_000));
+				}
+				[util.inspect.custom]() {
+					return 'phase=install';
+				}
+			}
+			const result = render(
+				{ report: new Report(), deployment_id: 'deployment-123' },
+				{ depth: 8, maxArrayLength: 1000 }
+			);
+			assert.ok(result.includes('phase=install'), result);
+			assert.ok(result.includes('deployment-123'), result);
+		});
+
+		it('keeps rendering plain fields after the work cap for inherited-hook properties is reached', () => {
+			class Report {
+				constructor() {
+					this.lines = Array(4).fill('x'.repeat(1_000));
+				}
+				[util.inspect.custom]() {
+					return 'Report';
+				}
+			}
+			const reports = Array.from({ length: 250 }, () => new Report());
+			const result = render({ reports, deployment_id: 'deployment-123' }, { depth: 8, maxArrayLength: 250 });
+			assert.ok(result.includes('deployment-123'), result.slice(-300));
+		});
+
+		it('walks the output of a replaced Buffer inspect hook', () => {
+			const native_hook = Buffer.prototype[util.inspect.custom];
+			Buffer.prototype[util.inspect.custom] = () => ({ password: 'patched-buffer-secret' });
+			try {
+				const result = render({ buffer: Buffer.from('hi') }, { depth: 8 });
+				assert.ok(!result.includes('patched-buffer-secret'), result);
+			} finally {
+				Buffer.prototype[util.inspect.custom] = native_hook;
+			}
+		});
+
+		it('does not walk the entries of a container util.inspect collapses at its depth', () => {
+			let deep = Array.from({ length: 200 }, () =>
+				Object.fromEntries(Array.from({ length: 250 }, (_, i) => [`f${i}`, i]))
+			);
+			// The array lands at depth 8, so each of its 200 objects is collapsed at depth 9.
+			for (let i = 0; i < 7; i++) deep = { deep };
+			const result = render({ detail: deep, deployment_id: 'deployment-123' }, { depth: 8, maxArrayLength: 250 });
+			assert.strictEqual(result.split('[Object]').length - 1, 200);
+			assert.ok(result.includes('deployment-123'), result.slice(-300));
+			assert.ok(!result.includes('sanitize budget'));
+		});
+
+		it('walks only as many array entries as util.inspect prints when the caller sets no maxArrayLength', () => {
+			const value = { rows: Array(1000).fill('x'.repeat(300)), deployment_id: 'deployment-123' };
+			const result = render(value, { breakLength: Infinity, depth: 4 });
+			assert.ok(result.includes('deployment-123'));
+			assert.ok(result.includes('901 more array entries omitted (sanitize budget)'));
+		});
+
+		it('never materializes the stack of an Error whose message alone exceeds the remaining budget', () => {
+			let stack_reads = 0;
+			const errors = Array.from({ length: 250 }, () => {
+				const error = new Error('m'.repeat(1_000_000));
+				Object.defineProperty(error, 'stack', {
+					get() {
+						stack_reads++;
+						return `Error: ${this.message}`;
+					},
+				});
+				return error;
+			});
+			const result = render(errors, { depth: 8, maxArrayLength: 250 });
+			assert.strictEqual(stack_reads, 0);
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.includes('249 more array entries omitted (sanitize budget)'));
+		});
+
+		it('renders a shared sub-object in full where it is shallower than where it was first reached', () => {
+			const shared = { inner: { note: 'shared-content' } };
+			const result = render({ a: { b: { c: shared } }, d: shared }, { depth: 2 });
+			assert.ok(result.includes('shared-content'), result);
+		});
+
+		it('stops before a property name longer than the remaining budget, since inspect prints keys whole', () => {
+			const long_key = 'k'.repeat(10_000_000);
+			const result = render({ [long_key]: 'ok', after: 1 }, { depth: 8 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(!result.includes('k'.repeat(1_000)));
+			assert.ok(result.includes('2 more properties omitted (sanitize budget)'));
+		});
+
+		it('charges a sub-object again at each repeat reference, since inspect prints it at every occurrence', () => {
+			const shared = { lines: Array.from({ length: 200 }, (_, i) => `${i}:${'y'.repeat(1_000)}`) };
+			const result = render(Array(250).fill(shared), { depth: 8, maxArrayLength: 250 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.includes('more array entries omitted (sanitize budget)'));
+			assert.ok(result.endsWith(']'), result.slice(-200));
+		});
+
+		it('charges Errors and opaque built-ins at their rendered length', () => {
+			const secret_error = new Error('x'.repeat(1_000_000));
+			secret_error.config = { headers: { Authorization: 'Bearer super-secret-token' } };
+			const floats = new Float64Array(250).fill(Math.PI);
+			for (const payload of [Array(250).fill(secret_error), Array(250).fill(floats)]) {
+				const result = render(payload, { depth: 8, maxArrayLength: 250 });
+				assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+				assert.ok(result.includes('more array entries omitted (sanitize budget)'));
+				assert.ok(result.endsWith(']'), result.slice(-200));
+				assert.ok(!result.includes('super-secret-token'));
+			}
+		});
+
+		it('charges Map keys against the render budget', () => {
+			const long_key = 'k'.repeat(4_000_000);
+			const huge_keys = new Map(Array.from({ length: 250 }, (_, i) => [`${i}:${long_key}`, i]));
+			const result = render([huge_keys], { depth: 8, maxArrayLength: 250 });
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.includes('more Map entries omitted (sanitize budget)'));
+			assert.ok(result.endsWith(']'), result.slice(-200));
+		});
+
+		it('caps the failure text of a custom inspect hook that throws a huge error', () => {
+			const hostile = {
+				[util.inspect.custom]() {
+					throw new Error('z'.repeat(1_000_000));
+				},
+			};
+			const result = render(hostile);
+			assert.ok(result.length <= MAX_LOG_RENDER_LENGTH, `rendered ${result.length} characters`);
+			assert.ok(result.startsWith('[Unrenderable value: Error: zzz'));
+			assert.match(result, /more characters omitted \(sanitize budget\)\]$/);
+		});
+
+		it('masks credential-shaped keys in the structure a custom inspect hook returns', () => {
+			const value = {
+				[util.inspect.custom]() {
+					return { password: 'hook-returned-secret', region: 'us-east-1' };
+				},
+			};
+			const result = render({ value }, { depth: 8 });
+			assert.ok(!result.includes('hook-returned-secret'), result);
+			assert.ok(result.includes('[redacted]'));
+			assert.ok(result.includes('us-east-1'));
+		});
+
+		it('masks values under credential-shaped keys at any depth, in plain objects, class instances, and Maps', () => {
+			class ClientConfig {
+				constructor() {
+					this.client_secret = 'class-instance-secret';
+					this.region = 'us-east-1';
+				}
+			}
+			const value = {
+				phase: 'prepare',
+				deployment_id: 'deployment-123',
+				level_1: {
+					level_2: {
+						level_3: {
+							level_4: {
+								level_5: {
+									password: 'hunter2',
+									Authorization: 'Bearer nested-bearer-token',
+									aws_secret_access_key: 'aws-secret-value',
+									refresh_token: 'refresh-token-value',
+									apiKey: 'api-key-value',
+									credentials: { username: 'admin', pass: 'nested-credential-object' },
+									otp_token: 424242,
+									client: new ClientConfig(),
+									headers: new Map([
+										['authorization', 'Bearer map-bearer-token'],
+										['accept', 'application/json'],
+									]),
+									[Symbol('session_token')]: 'symbol-keyed-secret',
+									cookie: 'hdb-session=cookie-secret',
+									private_key: '-----BEGIN PRIVATE KEY-----key-material',
+									token: undefined,
+									authorized: false,
+								},
+							},
+						},
+					},
+				},
+			};
+			const result = render(value, { depth: 8, maxArrayLength: 250, maxStringLength: 20_000 });
+			for (const secret of [
+				'hunter2',
+				'nested-bearer-token',
+				'aws-secret-value',
+				'refresh-token-value',
+				'api-key-value',
+				'nested-credential-object',
+				'424242',
+				'class-instance-secret',
+				'map-bearer-token',
+				'symbol-keyed-secret',
+				'cookie-secret',
+				'key-material',
+			]) {
+				assert.ok(!result.includes(secret), `leaked ${secret}: ${result}`);
+			}
+			assert.ok(result.includes('[redacted]'));
+			assert.ok(result.includes('ClientConfig'));
+			assert.ok(result.includes('us-east-1'));
+			assert.ok(result.includes('application/json'));
+			assert.ok(result.includes('deployment-123'));
+			assert.ok(result.includes('prepare'));
+			assert.ok(result.includes('token: undefined'));
+			assert.ok(result.includes('authorized: false'));
+		});
 	});
 
 	describe('Property-style hostile-input fuzzing for inspectForLog/errorForLog (harper#1994 follow-up)', () => {

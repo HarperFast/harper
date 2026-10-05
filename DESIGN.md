@@ -184,6 +184,7 @@ Index of the design notes for the harper core: one line per note, grouped by the
 - [Every path handed to a native file watch must be canonicalized (`utility/watchPath.ts`)](utility/DESIGN.md#every-path-handed-to-a-native-file-watch-must-be-canonicalized-utilitywatchpathts) — Every native file-watch path is canonicalized first: libuv aborts the process on a Windows 8.3 short-path mismatch.
 - [Interactive CLI prompts go through `utility/interactivePrompts.ts`](utility/DESIGN.md#interactive-cli-prompts-go-through-utilityinteractivepromptsts) — Every `@inquirer` prompt uses this seam, which lazy-loads packages off the boot path, exits 130 on Ctrl-C and gives tests a stubbable raw layer.
 - [An HdbError's `message` is a string; the structured body is `http_resp_msg` (`utility/errors/hdbError.ts`)](utility/DESIGN.md#an-hdberrors-message-is-a-string-the-structured-body-is-http_resp_msg-utilityerrorshdberrorts) — A report object passed to `handleHDBError` is the response body and the job message; `message` is a string derived from it.
+- [`inspectForLog` bounds its whole render and masks credential-shaped keys (`utility/logging/harper_logger.ts`)](utility/DESIGN.md#inspectforlog-bounds-its-whole-render-and-masks-credential-shaped-keys-utilityloggingharper_loggerts) — The walk charges what util.inspect will print, in order, hooks included; a final cut makes the cap exact; one credential-key list shared with the MCP audit log.
 
 ## build-tools/ — packaging and published artifacts
 
