@@ -1,6 +1,6 @@
 'use strict';
 
-// First of the two files perFileDatabaseTeardown.test.js runs in one mocha process.
+// Fixture for perFileDatabaseTeardown.test.js, which runs it before checksDatabases.js.
 
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');

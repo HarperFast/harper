@@ -34,7 +34,12 @@ function loadedDatabasesModule() {
 
 function isInside(parentPath, childPath) {
 	const relativePath = path.relative(parentPath, childPath);
-	return relativePath !== '' && !relativePath.startsWith('..') && !path.isAbsolute(relativePath);
+	return (
+		relativePath !== '' &&
+		relativePath !== '..' &&
+		!relativePath.startsWith('..' + path.sep) &&
+		!path.isAbsolute(relativePath)
+	);
 }
 
 function isRocksDirectory(directoryPath) {
@@ -68,6 +73,8 @@ function isDisposable(databasesModule, configuredDatabases, name) {
 	const storageRoot = databasesModule.resolveDatabaseStorageRoot(name);
 	const ownRoots = [path.join(storageRoot, name), path.join(storageRoot, `${name}.mdb`)];
 	if (!ownRoots.every((rootPath) => isInside(STORAGE_ROOT, rootPath))) return false;
+	// a database with no tables shows its root only here; one opened elsewhere has nothing here to drop
+	if (!ownRoots.some((rootPath) => fs.existsSync(rootPath))) return false;
 	const { databases } = databasesModule;
 	for (const rootPath of tableRoots(databases[name])) {
 		if (!ownRoots.includes(rootPath)) return false;
@@ -107,7 +114,11 @@ async function dropCreatedSince(atStart, file) {
 		}
 	}
 	// closed by the file but still on disk, where the next storage scan would reopen it
-	const openRoots = new Set(registryStatus().map((entry) => entry.path));
+	const openRoots = new Set(
+		registryStatus()
+			.filter((entry) => entry.refCount > 0)
+			.map((entry) => path.resolve(entry.path))
+	);
 	for (const entry of storageEntries()) {
 		const rootPath = path.join(STORAGE_ROOT, entry);
 		if (atStart.entries.has(entry) || databases[entry] || openRoots.has(rootPath) || !isRocksDirectory(rootPath))
@@ -118,7 +129,13 @@ async function dropCreatedSince(atStart, file) {
 			failures.push(new Error(`could not remove closed database directory '${rootPath}'`, { cause: error }));
 		}
 	}
-	if (failures.length > 0) throw new AggregateError(failures, `per-file database teardown failed after ${file}`);
+	if (failures.length > 0) {
+		// mocha's reporter prints the message and the cause chain, not AggregateError.errors
+		const details = failures.map((failure) => `${failure.message}: ${failure.cause?.message}`).join('; ');
+		throw new AggregateError(failures, `per-file database teardown failed after ${file} — ${details}`, {
+			cause: failures[0].cause,
+		});
+	}
 }
 
 /**
@@ -126,7 +143,9 @@ async function dropCreatedSince(atStart, file) {
  * run its hooks — mocha runs no hooks for a pending suite or one with no tests — so it follows the
  * file's own after hooks. Call from a root before-all hook, before any file has run. Where that
  * suite still does not run (a --grep that excludes it, an earlier after hook that failed), what the
- * file created is dropped by the next file's teardown instead.
+ * file created is dropped by the next file's teardown instead. Root-level hooks and tests (outside
+ * any describe) belong to no file, so a database one creates is dropped after whichever file's
+ * teardown runs next.
  */
 function installPerFileDatabaseTeardown(rootSuite) {
 	const lastSuiteOfFile = new Map();
@@ -139,7 +158,7 @@ function installPerFileDatabaseTeardown(rootSuite) {
 			try {
 				await dropCreatedSince(atStart, path.relative(process.cwd(), file));
 			} finally {
-				// whatever could not be dropped is reported once, not again after every later file
+				// report a database that could not be dropped once, not again after every later file
 				atStart = census();
 			}
 		});

@@ -1,8 +1,7 @@
 'use strict';
 
-// Second of the two files perFileDatabaseTeardown.test.js runs in one mocha process.
-// Assert on booleans and strings only: an AssertionError inspects its operands, and a database
-// object inspects into gigabytes.
+// Fixture for perFileDatabaseTeardown.test.js. Assert on booleans and strings only: an
+// AssertionError inspects its operands, and a database object inspects into gigabytes.
 
 const assert = require('node:assert');
 const { existsSync } = require('node:fs');
