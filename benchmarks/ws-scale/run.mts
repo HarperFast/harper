@@ -98,7 +98,7 @@ const { values: args } = parseArgs({
 
 if (process.platform !== 'linux') throw new Error('ws-scale needs Linux: it reads /proc and pins CPUs with taskset');
 const threads = Number(args.threads);
-if (!(threads >= 1)) throw new Error('--threads must be at least 1');
+if (!Number.isInteger(threads) || threads < 1) throw new Error('--threads must be a positive integer');
 function parseCpuList(list: string) {
 	return list.split(',').flatMap((range) => {
 		const [from, to = from] = range.split('-').map(Number);
@@ -194,6 +194,20 @@ async function heapMB() {
 		total += thread.heapTotal ?? 0;
 	}
 	return { used: used / 2 ** 20, total: total / 2 ** 20 };
+}
+
+async function liveHttpWorkerIds() {
+	const response = await fetch(ctx.harper.operationsAPIURL, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ operation: 'system_information', attributes: ['threads'] }),
+		signal: AbortSignal.timeout(30_000),
+	});
+	const info = await response.json();
+	if (!response.ok) throw new Error(`system_information returned HTTP ${response.status}: ${JSON.stringify(info)}`);
+	return new Set(
+		(info.threads ?? []).filter((thread: any) => thread.name === 'http').map((thread: any) => String(thread.threadId))
+	);
 }
 
 class Client {
@@ -347,27 +361,24 @@ async function main() {
 			.filter((file) => file.startsWith(`${request}-`) && !file.endsWith('.tmp'))
 			.map((file) => file.slice(request.length + 1));
 	const collectGarbage = async () => {
+		if (!workerIds) {
+			workerIds = await liveHttpWorkerIds();
+			if (workerIds.size !== threads)
+				throw new Error(`expected ${threads} live HTTP workers before GC, found ${workerIds.size}`);
+		}
 		const request = `gc-${++collections}`;
 		writeFileSync(join(profileDir, request), '');
 		for (let waited = 0; ; waited += 100) {
 			const acked = ackedIds(request);
-			if (workerIds) {
-				const stranger = acked.find((id) => !workerIds!.has(id));
-				if (stranger) throw new Error(`thread ${stranger} joined after the first GC; a Harper worker restarted`);
-				if (acked.length === workerIds.size) return collectGarbageResult(request, workerIds);
-			} else if (acked.length === threads) {
-				workerIds = new Set(acked);
-				return collectGarbageResult(request, workerIds);
-			}
+			const stranger = acked.find((id) => !workerIds!.has(id));
+			if (stranger) throw new Error(`thread ${stranger} joined after the first GC; a Harper worker restarted`);
+			if (acked.length === workerIds.size) return collectGarbageResult(request, workerIds);
 			if (waited > 30_000) throw new Error(`only ${acked.length} Harper workers ran ${request}`);
 			await delay(100);
 		}
 	};
 	const collectGarbageResult = async (request: string, ids: Set<string>) => {
-		const info = await sendOperation(ctx.harper, { operation: 'system_information', attributes: ['threads'] });
-		const liveHttpWorkers = new Set(
-			(info.threads ?? []).filter((thread: any) => thread.name === 'http').map((thread: any) => String(thread.threadId))
-		);
+		const liveHttpWorkers = await liveHttpWorkerIds();
 		if (liveHttpWorkers.size !== ids.size || [...ids].some((id) => !liveHttpWorkers.has(id)))
 			throw new Error('HTTP worker set changed while collecting memory');
 		const usage = [...ids].map((id) => JSON.parse(readFileSync(join(profileDir, `${request}-${id}`), 'utf8')));
@@ -543,7 +554,6 @@ async function main() {
 				const closeCodes = Object.fromEntries(
 					Object.entries(stats.closeCodes ?? {}).map(([code, count]) => [code, count - (closeCodesBefore[code] ?? 0)])
 				);
-				// heap plus external (Buffers and ArrayBuffers a connection holds live outside the JavaScript heap)
 				const held = memory.used + memory.external;
 				if (firstHeld === undefined) firstHeld = held;
 				else openedSinceFirst += connected.open;
