@@ -1,7 +1,7 @@
 'use strict';
 
 import Joi from 'joi';
-import * as path from 'path';
+import * as path from 'node:path';
 
 import { handleHDBError, hdbErrors } from './errors/hdbError.ts';
 

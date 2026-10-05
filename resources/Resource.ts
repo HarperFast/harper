@@ -1,3 +1,4 @@
+import * as userRuntimeModule from '../security/user.ts';
 import type { User } from '../security/user.ts';
 import type { RecordObject } from './RecordEncoder.ts';
 import {
@@ -9,7 +10,7 @@ import {
 	type SourceContext,
 	type RequestTargetOrId,
 } from './ResourceInterface.ts';
-import { randomUUID } from 'crypto';
+import { randomUUID } from 'node:crypto';
 import {
 	DatabaseTransaction,
 	isJoinableScope,

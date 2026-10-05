@@ -1,7 +1,7 @@
 'use strict';
 
 import minimist from 'minimist';
-import { isMainThread, parentPort } from 'worker_threads';
+import { isMainThread, parentPort } from 'node:worker_threads';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import * as processMan from '../utility/processManagement/processManagement.ts';

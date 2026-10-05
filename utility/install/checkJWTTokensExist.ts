@@ -1,8 +1,8 @@
 import * as env from '../../utility/environment/environmentManager.ts';
 import fs from 'fs-extra';
-import path from 'path';
+import path from 'node:path';
 import * as terms from '../../utility/hdbTerms.ts';
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import { v4 as uuid } from 'uuid';
 
 export default checkJWTTokenExist;

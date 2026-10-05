@@ -8,7 +8,15 @@ import * as path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { execFile, fork } from 'node:child_process';
 
-const INIT_PROCESS_NAMES = new Set(['catatonit', 'docker-init', 'dumb-init', 'init', 's6-svscan', 'systemd', 'tini']);
+const INIT_PROCESS_NAMES: any = new Set([
+	'catatonit',
+	'docker-init',
+	'dumb-init',
+	'init',
+	's6-svscan',
+	'systemd',
+	'tini',
+]);
 
 export {
 	start,
@@ -25,7 +33,7 @@ onMessageFromWorkers((message) => {
 	if (message.type === 'restart') envMangr.initSync(true);
 });
 
-let childProcesses = [];
+let childProcesses: any = [];
 const MAX_RESTARTS = 10;
 let shuttingDown;
 /**
@@ -33,7 +41,7 @@ let shuttingDown;
  * @param procConfig
  * @returns void
  */
-function start(procConfig, noKill = false) {
+function start(procConfig?: any, noKill: any = false) {
 	const args = typeof procConfig.args === 'string' ? procConfig.args.split(' ') : procConfig.args;
 	procConfig.silent = true;
 	procConfig.detached = true;
@@ -76,7 +84,7 @@ function start(procConfig, noKill = false) {
 	}
 	childProcesses.push(subprocess);
 }
-function cleanupChildrenProcesses(exit = true) {
+function cleanupChildrenProcesses(exit: any = true) {
 	if (shuttingDown) return;
 	shuttingDown = true;
 	if (childProcesses.length === 0) return;
@@ -91,7 +99,7 @@ function cleanupChildrenProcesses(exit = true) {
  * @param serviceName
  * @returns {Promise<unknown>}
  */
-function restart(serviceName) {
+function restart(serviceName?: any) {
 	expectedRestartOfChildren();
 	for (let childProcess of childProcesses) {
 		// kill the child process and let it (auto) restart
@@ -126,7 +134,7 @@ function getHdbPid() {
 	// return undefined
 }
 
-function isInitProcess(pid) {
+function isInitProcess(pid?: any) {
 	try {
 		const executable = path.basename(fs.readlinkSync(`/proc/${pid}/exe`)).replace(/ \(deleted\)$/, '');
 		if (INIT_PROCESS_NAMES.has(executable)) return true;
@@ -153,7 +161,7 @@ function kill() {
  * @param serviceName
  * @returns {Promise<void>}
  */
-async function startService(serviceName, noKill = false) {
+async function startService(serviceName?: any, noKill: any = false) {
 	let startConfig;
 	serviceName = serviceName.toLowerCase();
 	switch (serviceName) {
@@ -171,7 +179,7 @@ async function startService(serviceName, noKill = false) {
  * @param {string} pidFile - The path to the Harper PID file
  * @returns {number|null} - The PID as a number, or null if the file is not found or cannot be read
  */
-function readPidFile(pidFile) {
+function readPidFile(pidFile?: any) {
 	try {
 		return Number.parseInt(fs.readFileSync(pidFile, 'utf8'), 10);
 	} catch {
@@ -184,7 +192,7 @@ function readPidFile(pidFile) {
  * @param {number} pid - The process ID to check
  * @returns {boolean} - True if the process is running, false otherwise
  */
-function isProcessRunning(pid) {
+function isProcessRunning(pid?: any) {
 	try {
 		// process.kill with signal 0 tests if process exists
 		// throws error if process doesn't exist

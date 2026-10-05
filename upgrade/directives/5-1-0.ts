@@ -1,4 +1,5 @@
-'use strict';
+import * as CreateTableObjectCjsModule from '../../dataLayer/CreateTableObject.ts';
+('use strict');
 
 // 5.1.0 — introduces system.hdb_deployment for deployment tracking.
 //
@@ -15,9 +16,12 @@
 // failing on peer nodes.
 
 import { databases } from '../../resources/databases.ts';
-import systemSchema from '../../json/systemSchema.json';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
+const systemSchema = JSON.parse(readFileSync(join(PACKAGE_ROOT, 'json/systemSchema.json'), 'utf8'));
 import * as terms from '../../utility/hdbTerms.ts';
-import * as initPaths from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
+import * as initPaths from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.ts';
 import bridge from '../../dataLayer/harperBridge/harperBridge.ts';
 import hdbLogger from '../../utility/logging/harper_logger.ts';
 
@@ -36,8 +40,7 @@ async function createHdbDeploymentIfMissing() {
 
 	hdbLogger.info(`Creating system.${DEPLOYMENT_TABLE} table for deployment tracking.`);
 
-	const CreateTableObject =
-		require('../../dataLayer/CreateTableObject').default || require('../../dataLayer/CreateTableObject');
+	const CreateTableObject = CreateTableObjectCjsModule.default || CreateTableObjectCjsModule;
 	const schema = (systemSchema as any)[DEPLOYMENT_TABLE];
 	if (!schema) {
 		throw new Error(`systemSchema.${DEPLOYMENT_TABLE} is missing; cannot run 5.1.0 directive.`);

@@ -9,7 +9,7 @@
 import difference from 'lodash/difference.js';
 import pullAt from 'lodash/pullAt.js';
 import uniqBy from 'lodash/uniqBy.js';
-import * as alasql from 'alasql';
+import alasql from 'alasql';
 alasql.options.cache = false;
 import alasqlFunctionImporter from '../sqlTranslator/alasqlFunctionImporter.ts';
 import clone from 'clone';

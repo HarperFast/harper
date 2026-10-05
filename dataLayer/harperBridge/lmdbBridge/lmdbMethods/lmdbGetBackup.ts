@@ -1,6 +1,6 @@
-import { Readable } from 'stream';
+import { Readable } from 'node:stream';
 import { getDatabases } from '../../../../resources/databases.ts';
-import { readSync, openSync, createReadStream } from 'fs';
+import { readSync, openSync, createReadStream } from 'node:fs';
 import { OpenDBIObject } from '../../../../utility/lmdb/OpenDBIObject.ts';
 import OpenEnvironmentObject from '../../../../utility/lmdb/OpenEnvironmentObject.ts';
 import { AUDIT_STORE_OPTIONS } from '../../../../resources/auditStore.ts';

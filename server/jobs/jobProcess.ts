@@ -18,7 +18,7 @@ import cloneDeep from 'lodash/cloneDeep.js';
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 import { parentPort } from 'node:worker_threads';
-import { notifyJobCleanupComplete } from '../threads/manageThreads.js';
+import { notifyJobCleanupComplete } from '../threads/manageThreads.ts';
 import { getEnvBuiltInComponents } from './../../components/Application.ts';
 import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 const JOB_NAME = process.env[(hdbTerms as any).PROCESS_NAME_ENV_PROP] as string;

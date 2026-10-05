@@ -1,3 +1,4 @@
+import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 /**
  * uWebSockets.js HTTP server adapter (#914, github.com/HarperFast/harper, default-off backend).
  *
@@ -85,7 +86,7 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 	if ((process.config?.variables as any)?.v8_enable_pointer_compression === 1) {
 		let pcBuild = false;
 		try {
-			const uwsDir = dirname(createRequire(__filename).resolve('uWebSockets.js'));
+			const uwsDir = dirname(createRequire(join(PACKAGE_ROOT, 'package.json')).resolve('uWebSockets.js'));
 			pcBuild = existsSync(join(uwsDir, '.pointer-compression-build'));
 		} catch {
 			// resolution failure falls through to the guard error below

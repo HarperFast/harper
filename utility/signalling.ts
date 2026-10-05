@@ -1,5 +1,5 @@
 import * as serverItcHandlersModule from '../server/itc/serverHandlers.ts';
-'use strict';
+('use strict');
 
 import * as hdbTerms from './hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';

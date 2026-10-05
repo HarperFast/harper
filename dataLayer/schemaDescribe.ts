@@ -11,6 +11,7 @@ import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonError
 import { getDatabases as _getDatabases } from '../resources/databases.ts';
 const getDatabases = _getDatabases;
 import fs from 'fs-extra';
+import * as envMngr from '../utility/environment/environmentManager.ts';
 import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
 
 try {

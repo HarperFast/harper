@@ -2,7 +2,7 @@
 
 import fsExtra from 'fs-extra';
 const { mkdirpSync, copySync } = fsExtra;
-import * as path from 'path';
+import * as path from 'node:path';
 import * as terms from '../utility/hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import bridge from '../dataLayer/harperBridge/harperBridge.ts';

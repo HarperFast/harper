@@ -1,3 +1,4 @@
+import * as serverUtilitiesRuntimeModule from '../../../server/serverHelpers/serverUtilities.ts';
 /**
  * Operations-profile tool generation. Exposes one MCP tool per Harper
  * operation that survives the `mcp.operations.allow` / `deny` filter, computed
@@ -92,7 +93,7 @@ function loadServerUtilities():
 		// (RocksDB lock acquisition, schema preload). Loading it from a unit
 		// test that hasn't booted Harper throws; treat that as "we're not in
 		// a Harper process" and let callers gracefully no-op.
-		return require('../../../server/serverHelpers/serverUtilities');
+		return serverUtilitiesRuntimeModule as any;
 	} catch (err) {
 		harperLogger.trace(`MCP operations tools: serverUtilities unavailable (${(err as Error).message})`);
 		return undefined;

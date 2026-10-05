@@ -1,4 +1,6 @@
-'use strict';
+import * as sql_statement_bucketCjsModule from '../sqlTranslator/sql_statement_bucket.ts';
+import alasql from 'alasql';
+('use strict');
 /**
  * This module is used before a SQL or NoSQL operation is performed in order to ensure the user's assigned role
  * has the permissions and lack of restrictions needed to process the operation.  Only verifyPerms and verifyPermsAST
@@ -563,9 +565,8 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 	if (scopeDenial) return scopeDenial;
 
 	try {
-		const bucketModule = require('../sqlTranslator/sql_statement_bucket');
-		const bucket = bucketModule.default || bucketModule;
-		const alasql = require('alasql');
+		const bucketModule = sql_statement_bucketCjsModule;
+		const bucket = bucketModule.default;
 
 		const permsResponse = new PermissionResponseObject();
 		let parsedAst = new bucket(ast);
@@ -611,7 +612,7 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 
 		//If the AST is for a SELECT, we need to check for wildcards and, if they exist, update the AST to include the
 		// attributes that the user has READ perms for - we can skip this step for super users
-		if (!isSuperUser && ast instanceof alasql.yy.Select) {
+		if (!isSuperUser && ast instanceof (alasql.yy as any).Select) {
 			ast = parsedAst.updateAttributeWildcardsForRolePerms(fullRolePerms);
 		}
 

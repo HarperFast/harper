@@ -1,7 +1,7 @@
 import { setupTestDBPath, ensureSystemTables } from '../testUtils.js';
-import { fileURLToPath } from 'url';
+import { fileURLToPath } from 'node:url';
 import hdbTerms from '#src/utility/hdbTerms';
-import { join } from 'path';
+import { join } from 'node:path';
 import axios from 'axios';
 import { encode } from 'cbor-x';
 import analytics from '#src/resources/analytics/write';

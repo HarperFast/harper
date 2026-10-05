@@ -2,19 +2,23 @@ import * as hdbTerms from '../../utility/hdbTerms.ts';
 // Inline isEmpty to break the common_utils→databases→itc→common_utils circular dep.
 const isEmpty = (value: unknown) => value === undefined || value === null;
 import { ITC_ERRORS } from '../../utility/errors/commonErrors.ts';
-import { threadId } from 'node:worker_threads';
+import { threadId as _threadId } from 'node:worker_threads';
+const threadId = _threadId;
 import {
 	onMessageFromWorkers,
 	broadcastWithAcknowledgement as _broadcastWithAcknowledgement,
-	broadcastWithStrictAcknowledgement,
+	broadcastWithStrictAcknowledgement as _broadcastWithStrictAcknowledgement,
 } from './manageThreads.ts';
 let broadcastWithAcknowledgement = _broadcastWithAcknowledgement;
+const broadcastWithStrictAcknowledgement = _broadcastWithStrictAcknowledgement;
 
 export { sendItcEvent, sendItcEventStrict, validateEvent, SchemaEventMsg };
+import * as serverItcHandlersModule from '../itc/serverHandlers.ts';
+import hdbLogger from '../../utility/logging/harper_logger.ts';
 let serverItcHandlers;
 const RESTORE_CLOSE_ACK_TIMEOUT_MS = 30000;
 onMessageFromWorkers(async (event, sender) => {
-	serverItcHandlers = serverItcHandlers || require('../itc/serverHandlers.js');
+	serverItcHandlers = serverItcHandlers || serverItcHandlersModule.default;
 	let error;
 	try {
 		validateEvent(event);
@@ -22,7 +26,6 @@ onMessageFromWorkers(async (event, sender) => {
 			await serverItcHandlers[event.type](event);
 		}
 	} catch (caught) {
-		const hdbLogger = require('../../utility/logging/harper_logger.ts');
 		hdbLogger.error('ITC event handler failed', caught);
 		error = {
 			name: caught?.name,
@@ -45,7 +48,7 @@ onMessageFromWorkers(async (event, sender) => {
  * @param event
  * @param {boolean|'active'} includeJobWorkers
  */
-function sendItcEvent(event, includeJobWorkers = false) {
+function sendItcEvent(event, includeJobWorkers: boolean | 'active' = false) {
 	// Always stamp originator so handlers can send direct responses back.
 	// The main thread's threadId is 0 (worker_threads convention); parentPort.threadId
 	// is set to 0 in workers, so sendToThread(0, ...) routes back to main.
@@ -74,7 +77,7 @@ function sendItcEvent(event, includeJobWorkers = false) {
 }
 
 /** @param {boolean|'active'} includeJobWorkers */
-function sendItcEventStrict(event, timeout, includeJobWorkers = false) {
+function sendItcEventStrict(event, timeout, includeJobWorkers: boolean | 'active' = false) {
 	if (event.message) event.message.originator = threadId;
 	return broadcastWithStrictAcknowledgement(event, timeout, includeJobWorkers);
 }

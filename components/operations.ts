@@ -1,3 +1,12 @@
+import * as jsLoaderRuntimeModule from '../security/jsLoader.ts';
+import * as scopeShutdownRuntimeModule from './scopeShutdown.ts';
+import * as isolatedApplicationsRuntimeModule from '../server/threads/isolatedApplications.ts';
+import * as secretOperationsRuntimeModule from './secretOperations.ts';
+import * as serverUtilitiesRuntimeModule from '../server/serverHelpers/serverUtilities.ts';
+import * as requestRestartRuntimeModule from './requestRestart.ts';
+import * as componentSecretsRuntimeModule from './componentSecrets.ts';
+import * as indexRuntimeModule from './status/index.ts';
+import * as branchDatabaseRuntimeModule from '../resources/branchDatabase.ts';
 import * as path from 'node:path';
 import { isMainThread, parentPort } from 'node:worker_threads';
 import fs from 'fs-extra';
@@ -55,7 +64,7 @@ import { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
 const DROP_COMPONENT_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
 const ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS = 5000;
 
-function componentDropLockOptions(project) {
+function componentDropLockOptions(project?: any) {
 	return {
 		timeoutMs: DROP_COMPONENT_LOCK_TIMEOUT_MS,
 		onWait: (owner) =>
@@ -75,7 +84,7 @@ function componentDropLockOptions(project) {
  */
 function customFunctionsStatus() {
 	log.trace(`getting custom api status`);
-	let response = {};
+	let response: any = {};
 
 	try {
 		response = {
@@ -102,7 +111,7 @@ function customFunctionsStatus() {
  */
 function getCustomFunctions() {
 	log.trace(`getting custom api endpoints`);
-	let response = {};
+	let response: any = {};
 	const dir = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 
 	try {
@@ -137,7 +146,7 @@ function getCustomFunctions() {
  * @param {NodeObject} req
  * @returns {string}
  */
-function getCustomFunction(req) {
+function getCustomFunction(req?: any) {
 	if (req.project) {
 		req.project = canonicalProjectName(req.project);
 	}
@@ -175,7 +184,7 @@ function getCustomFunction(req) {
  * @param {NodeObject} req
  * @returns {{message:string}}
  */
-async function setCustomFunction(req) {
+async function setCustomFunction(req?: any) {
 	if (req.project) {
 		req.project = canonicalProjectName(req.project);
 	}
@@ -195,7 +204,7 @@ async function setCustomFunction(req) {
 
 	try {
 		fs.outputFileSync(path.join(cfDir, project, type, file + '.js'), function_content);
-		let response = await server.replication.replicateOperation(req);
+		let response: any = await server.replication.replicateOperation(req);
 		response.message = `Successfully updated custom function: ${file}.js`;
 		return response;
 	} catch (err) {
@@ -215,7 +224,7 @@ async function setCustomFunction(req) {
  * @param {NodeObject} req
  * @returns {{message:string}}
  */
-async function dropCustomFunction(req) {
+async function dropCustomFunction(req?: any) {
 	if (req.project) {
 		req.project = canonicalProjectName(req.project);
 	}
@@ -235,7 +244,7 @@ async function dropCustomFunction(req) {
 
 	try {
 		fs.unlinkSync(path.join(cfDir, project, type, file + '.js'));
-		let response = await server.replication.replicateOperation(req);
+		let response: any = await server.replication.replicateOperation(req);
 		response.message = `Successfully deleted custom function: ${file}.js`;
 		return response;
 	} catch (err) {
@@ -254,7 +263,7 @@ async function dropCustomFunction(req) {
  * @param {NodeObject} req
  * @returns {{message:string}}
  */
-async function addComponent(req) {
+async function addComponent(req?: any) {
 	if (req.project) {
 		req.project = canonicalProjectName(req.project);
 	}
@@ -271,7 +280,7 @@ async function addComponent(req) {
 
 	try {
 		await fs.mkdir(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), { recursive: true });
-		const application = new Application({
+		const application: any = new Application({
 			name: project,
 			packageIdentifier: template,
 			install: {
@@ -281,7 +290,7 @@ async function addComponent(req) {
 			},
 		});
 		await prepareApplication(application);
-		let response = await server.replication.replicateOperation(req);
+		let response: any = await server.replication.replicateOperation(req);
 		response.message = `Successfully added project: ${project}`;
 		return response;
 	} catch (err) {
@@ -301,7 +310,7 @@ async function addComponent(req) {
  * @param {NodeObject} req
  * @returns {string}
  */
-async function dropCustomFunctionProject(req) {
+async function dropCustomFunctionProject(req?: any) {
 	if (req.project) {
 		req.project = canonicalProjectName(req.project);
 	}
@@ -327,7 +336,9 @@ async function dropCustomFunctionProject(req) {
 		}
 
 		if (appFound) {
-			await withRootConfigPublicationLock(async () => configUtils.updateConfigValue(hdbTerms.CONFIG_PARAMS.APPS, apps));
+			await withRootConfigPublicationLock(async () =>
+				configUtils.updateConfigValue((hdbTerms.CONFIG_PARAMS as any).APPS, apps)
+			);
 
 			return `Successfully deleted project: ${project}`;
 		}
@@ -344,7 +355,7 @@ async function dropCustomFunctionProject(req) {
 			},
 			componentDropLockOptions(project)
 		);
-		const response = await server.replication.replicateOperation(req);
+		const response: any = await server.replication.replicateOperation(req);
 		response.message = `Successfully deleted project: ${project}`;
 		return response;
 	} catch (err) {
@@ -385,7 +396,7 @@ async function dropCustomFunctionProject(req) {
  * @returns {Promise<{payload: string, project: string}|{project: string, total_size: number,
  *   dangling_symlinks: string[]}|Readable>}
  */
-async function packageComponent(req) {
+async function packageComponent(req?: any) {
 	if (req.project) {
 		req.project = canonicalProjectName(req.project);
 	}
@@ -425,8 +436,8 @@ async function packageComponent(req) {
 	}
 
 	if (req.stream) {
-		const stream = streamPackagedDirectory(pathToProject, req);
-		const headers = new Map();
+		const stream: any = streamPackagedDirectory(pathToProject, req);
+		const headers: any = new Map();
 		headers.set('content-type', 'application/gzip');
 		// `project` is narrowed to a bare filename by path.parse().name above and validated
 		// against PROJECT_FILE_NAME_REGEX, so it cannot inject header content.
@@ -447,8 +458,8 @@ const BRANCH_STORAGE_RETAINED =
 	'. Any branched database storage this application owns was left in place; drop it again with restart: true to discard that data';
 
 /** Report a restart outcome the operation's own success message cannot convey. */
-function logRestartOutcome(restart, what) {
-	const { RESTART_IDLE_TIMEOUT_MS, RESTART_WAIT_CEILING_MS } = require('./awaitRestart.ts');
+function logRestartOutcome(restart?: any, what?: any) {
+	const { RESTART_IDLE_TIMEOUT_MS, RESTART_WAIT_CEILING_MS } = awaitRestartRuntimeModule;
 	if (restart.replacementsNotStarted)
 		log.warn(
 			`${restart.replacementsNotStarted} replacement worker thread(s) did not report starting after ${what}; the pool is short until they are restarted`
@@ -482,8 +493,8 @@ const PEER_DEPLOY_ACTIVATION_MARGIN_MS = 10 * 60 * 1000;
  * preparation, or behind several, can take longer; so can one validating plugins whose configured timeouts outlast
  * the margin. Such a peer is reported as not answering, which says nothing of its outcome.
  */
-function peerDeployAnswerTimeoutMs(req) {
-	const { RESTART_WAIT_CEILING_MS } = require('./awaitRestart.ts');
+function peerDeployAnswerTimeoutMs(req?: any) {
+	const { RESTART_WAIT_CEILING_MS } = awaitRestartRuntimeModule;
 	const payloadWaitMs = coerceTimeoutMs(req.deployment_timeout, DEFAULT_AWAIT_ROW_TIMEOUT_MS);
 	const installTimeoutMs = coerceTimeoutMs(req.install_timeout, undefined);
 	return Math.min(
@@ -503,7 +514,7 @@ function peerDeployAnswerTimeoutMs(req) {
  * @param req
  * @returns {Promise<string>}
  */
-async function deployComponent(req) {
+async function deployComponent(req?: any) {
 	if (req.project) {
 		req.project = canonicalProjectName(req.project);
 	} else if (req.package) {
@@ -519,7 +530,7 @@ async function deployComponent(req) {
 	// replicated ciphertext (reference, not embed); already-reference entries pass through, and with
 	// no custody a literal token stays as a transient, this-node-only fallback (#1158). Peers
 	// re-running a replicated deploy already carry references and never re-ingest.
-	const { isIsolatedApplication } = require('../server/threads/isolatedApplications.ts');
+	const { isIsolatedApplication } = isolatedApplicationsRuntimeModule;
 	const requestedIsolation = req.isolated;
 	const isReplicatedExecution = typeof req._deploymentId === 'string';
 	const mode = req.deployment_id ? 'activate' : req.activate === false ? 'stage' : 'deploy';
@@ -545,11 +556,8 @@ async function deployComponent(req) {
 	// then report any node-local inability to run it through component lifecycle status.
 	const assertIsolationAdmission = async (isolated) => {
 		if (!isolated || isReplicatedExecution) return;
-		const {
-			isolatedApplicationRefusal,
-			isolatedApplicationCapacityRefusal,
-			presentIsolatedApplicationNames,
-		} = require('../server/threads/isolatedApplications.ts');
+		const { isolatedApplicationRefusal, isolatedApplicationCapacityRefusal, presentIsolatedApplicationNames } =
+			isolatedApplicationsRuntimeModule;
 		let runningApplications;
 		try {
 			runningApplications = await manageThreads.getRunningIsolatedApplications(ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS);
@@ -579,7 +587,7 @@ async function deployComponent(req) {
 	// refuse an activation whose artifact turns isolation OFF for a component whose present isolated state is
 	// itself the refusal — a 409 for the request that would fix it.
 	if (!isActivation) await assertIsolationAdmission(requestedIsolation ?? initiallyIsolated);
-	const { ingestCredentials, resolveCredentials } = require('./secretOperations.ts');
+	const { ingestCredentials, resolveCredentials } = secretOperationsRuntimeModule;
 	// An activation resolves, fetches and installs nothing, so there is no credential for it to carry.
 	// The validator rejects one; this keeps the ingest itself off the path rather than relying on that.
 	if (!isActivation) req.credentials = await ingestCredentials(req, req.credentials, req.project);
@@ -702,7 +710,7 @@ async function deployComponent(req) {
 					waitMs: credentialsWaitMs,
 				});
 
-		const application = new Application({
+		const application: any = new Application({
 			name: req.project,
 			payload: extractionPayload,
 			packageIdentifier: req.package,
@@ -791,7 +799,7 @@ async function deployComponent(req) {
 				await assertIsolationAdmission(nowIsolated);
 				if (!isReplicatedExecution && req.package) req.isolated = nowIsolated;
 				if (!req.package) return;
-				const applicationConfig = { package: req.package };
+				const applicationConfig: any = { package: req.package };
 				if (req.install_command || req.install_timeout || req.install_allow_scripts !== undefined) {
 					applicationConfig.install = {
 						command: req.install_command,
@@ -878,7 +886,7 @@ async function deployComponent(req) {
 		recorder?.seal();
 		emit('phase', { phase: 'replicate', status: 'start' });
 		// A rolling activation's peers already hold the artifact; the job activates it on each.
-		let response =
+		let response: any =
 			rollingActivation && mode === 'activate'
 				? { message: '' }
 				: await server.replication.replicateOperation(req, {
@@ -955,7 +963,7 @@ async function deployComponent(req) {
 			logRestartOutcome(restart, `deploying ${application.name}`);
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 		} else if (rollingRestart) {
-			const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
+			const serverUtilities = serverUtilitiesRuntimeModule;
 			emit('phase', { phase: 'restart', status: 'start' });
 			const jobResponse: any = await serverUtilities.executeJob({
 				operation: 'restart_service',
@@ -982,7 +990,7 @@ async function deployComponent(req) {
 			// An existing component's watched files are handled by Scope/EntryHandler. Package
 			// metadata is deliberately outside most plugin globs, so compare it across the atomic
 			// swap as well: a dependency or module-entry change also invalidates loaded code.
-			const { requestRestartAfterDeploy } = require('./requestRestart.ts');
+			const { requestRestartAfterDeploy } = requestRestartRuntimeModule;
 			requestRestartAfterDeploy(
 				application.isNewComponent,
 				application.packageMetadataChanged,
@@ -1002,9 +1010,9 @@ async function deployComponent(req) {
 			const failedPeers = recorder.getFailedPeers();
 			if (failedPeers.length > 0) {
 				const detail = failedPeers
-					.map((peer) => `${peer.node ?? 'unknown'} (${peer.error?.message ?? 'unknown error'})`)
+					.map((peer) => `${peer.node ?? 'unknown'} (${(peer.error as any)?.message ?? 'unknown error'})`)
 					.join(', ');
-				const replicationError = new ServerError(
+				const replicationError: any = new ServerError(
 					`Component '${application.name}' was ${mode === 'stage' ? 'staged' : 'deployed'} on the origin node ` +
 						`but failed to replicate to ${failedPeers.length} of ${recorder.row.peer_results.length} peer ` +
 						`node(s): ${detail}. See deployment ${recorder.deploymentId} (get_deployment) for details, or ` +
@@ -1026,7 +1034,7 @@ async function deployComponent(req) {
 				const unconfirmed = unconfirmedStagingPeers(response?.replicated);
 				if (unconfirmed.length > 0) {
 					const detail = unconfirmed.map((peer) => peer.node ?? 'unknown').join(', ');
-					const unconfirmedError = new ServerError(
+					const unconfirmedError: any = new ServerError(
 						`Component '${application.name}' was staged on the origin node, but ${unconfirmed.length} peer ` +
 							`node(s) did not confirm staging: ${detail}. Either they are unreachable, or they run a build ` +
 							`that predates staged deploys — which treats this request as an ordinary deploy, so the ` +
@@ -1082,7 +1090,7 @@ async function deployComponent(req) {
 		const capture = installCapture.snapshot();
 		const phase = recorder?.row.phase;
 		const baseMessage = err?.message ?? String(err);
-		const structured = { error: baseMessage };
+		const structured: any = { error: baseMessage };
 		if (phase) structured.phase = phase;
 		if (capture.lines.length > 0) structured.install_output = capture;
 		if (recorder?.deploymentId) structured.deployment_id = recorder.deploymentId;
@@ -1097,7 +1105,7 @@ async function deployComponent(req) {
 
 		// Wrap as a ServerError so the Fastify error handler picks a 500 by default; preserve
 		// an upstream statusCode (e.g. a ClientError from payload validation) if present.
-		const outErr = new ServerError(baseMessage, err?.statusCode);
+		const outErr: any = new ServerError(baseMessage, err?.statusCode);
 		outErr.http_resp_msg = structured;
 
 		emit('error', {
@@ -1140,7 +1148,7 @@ function isConfirmedStaging(peer) {
 	return peer?.staged === true || peer?.value?.staged === true || peer?.body?.staged === true;
 }
 
-function unconfirmedStagingPeers(replicated) {
+function unconfirmedStagingPeers(replicated?: any) {
 	if (!Array.isArray(replicated)) return [];
 	return replicated.filter((peer) => peer && !isConfirmedStaging(peer));
 }
@@ -1249,9 +1257,9 @@ function certificationFailure(component, deploymentId, decision, { onOrigin }) {
 }
 
 /** The fingerprint is read flat or from a wrapped body, as `unconfirmedStagingPeers` reads its marker. */
-function markInstallComparisons(ownFingerprint, replicated) {
+function markInstallComparisons(ownFingerprint?: any, replicated?: any) {
 	if (!ownFingerprint || !Array.isArray(replicated)) return undefined;
-	const peers = [];
+	const peers: any = [];
 	for (const peer of replicated) {
 		if (!peer || typeof peer !== 'object') continue;
 		const comparison = compareInstallFingerprints(
@@ -1268,13 +1276,13 @@ function markInstallComparisons(ownFingerprint, replicated) {
 // Ring buffer of install stdout/stderr lines, capped by both line count and bytes so
 // a chatty install can't unbounded-grow the error response. snapshot() reports whether
 // the head was dropped so callers can flag truncation.
-function createInstallCapture(maxLines = 200, maxBytes = 16 * 1024) {
-	const lines = [];
+function createInstallCapture(maxLines: any = 200, maxBytes: any = 16 * 1024) {
+	const lines: any = [];
 	let bytes = 0;
 	let dropped = 0;
 	return {
 		push(manager, stream, line) {
-			const entry = { manager, stream, line };
+			const entry: any = { manager, stream, line };
 			const size = (line?.length ?? 0) + (stream?.length ?? 0) + (manager?.length ?? 0);
 			lines.push(entry);
 			bytes += size;
@@ -1348,7 +1356,7 @@ async function getComponents() {
 					continue;
 				const itemPath = path.join(dir, itemName);
 				if (item.isDirectory() || item.isSymbolicLink()) {
-					let res = {
+					let res: any = {
 						name: itemName,
 						entries: [],
 					};
@@ -1356,7 +1364,7 @@ async function getComponents() {
 					await walkDir(itemPath, res);
 				} else {
 					const stats = await fs.stat(itemPath);
-					const res = {
+					const res: any = {
 						name: path.basename(itemName),
 						mtime: stats.mtime,
 						size: stats.size,
@@ -1379,7 +1387,7 @@ async function getComponents() {
 		name: componentsRoot.split(path.sep).slice(-1).pop(),
 		entries: [],
 	});
-	const { getUnsatisfiedEnv } = require('./componentSecrets.ts');
+	const { getUnsatisfiedEnv } = componentSecretsRuntimeModule;
 	for (let entry of results.entries) {
 		// Declared-but-unsatisfied `env:` expectations (#1550) — metadata only (name, description,
 		// required, reason, tier), never values — so Studio/deploy output can render configure-me.
@@ -1393,7 +1401,7 @@ async function getComponents() {
 		if (componentConfig.loadComponent) entry.loadComponent = componentConfig.loadComponent;
 	}
 
-	const { internal: statusInternal } = require('./status/index.ts');
+	const { internal: statusInternal } = indexRuntimeModule;
 	let consolidatedStatuses;
 
 	try {
@@ -1446,7 +1454,7 @@ function getPayloadRetentionMaxSize() {
 	return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_PAYLOAD_RETENTION_MAX_SIZE;
 }
 
-async function getComponentFile(req) {
+async function getComponentFile(req?: any) {
 	const validation = validator.getComponentFileValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
@@ -1500,7 +1508,7 @@ async function getComponentFile(req) {
  * @param req
  * @returns {Promise<{message:string}>}
  */
-async function setComponentFile(req) {
+async function setComponentFile(req?: any) {
 	const validation = validator.setComponentFileValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
@@ -1514,7 +1522,7 @@ async function setComponentFile(req) {
 	} else {
 		await fs.ensureDir(pathToComp);
 	}
-	let response = await server.replication.replicateOperation(req);
+	let response: any = await server.replication.replicateOperation(req);
 	response.message = `Successfully set component: ` + req.file;
 	return response;
 }
@@ -1524,7 +1532,7 @@ async function setComponentFile(req) {
  * @param req
  * @returns {{file:string, filePath:string}}
  */
-function resolveEnvFilePath(req) {
+function resolveEnvFilePath(req?: any) {
 	const file = req.file || '.env';
 	if (!isEnvFile(file)) {
 		const msg = `'${file}' is not a .env file`;
@@ -1539,7 +1547,7 @@ function resolveEnvFilePath(req) {
  * @param req
  * @returns {Promise<{file:string, keys:string[], size:number, mtime:Date}>}
  */
-async function getEnvKeys(req) {
+async function getEnvKeys(req?: any) {
 	const validation = validator.getEnvKeysValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
@@ -1563,7 +1571,7 @@ async function getEnvKeys(req) {
  * @param req
  * @returns {Promise<{message:string, keys:string[]}>}
  */
-async function setEnvValue(req) {
+async function setEnvValue(req?: any) {
 	const validation = validator.setEnvValueValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
@@ -1587,7 +1595,7 @@ async function setEnvValue(req) {
 	}
 	await fs.outputFile(filePath, updated, 'utf8');
 
-	const response = await server.replication.replicateOperation(req);
+	const response: any = await server.replication.replicateOperation(req);
 	response.message = `Successfully set env value(s) in ${file}`;
 	response.keys = parseEnvKeys(updated);
 	return response;
@@ -1598,7 +1606,7 @@ async function setEnvValue(req) {
  * @param req
  * @returns {Promise<{message:string, keys:string[]}>}
  */
-async function deleteEnvValue(req) {
+async function deleteEnvValue(req?: any) {
 	const validation = validator.deleteEnvValueValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
@@ -1620,7 +1628,7 @@ async function deleteEnvValue(req) {
 	const updated = removeEnvKeys(existing, keysToRemove);
 	await fs.outputFile(filePath, updated, 'utf8');
 
-	const response = await server.replication.replicateOperation(req);
+	const response: any = await server.replication.replicateOperation(req);
 	response.message = `Successfully deleted env value(s) from ${file}`;
 	response.keys = parseEnvKeys(updated);
 	return response;
@@ -1631,7 +1639,7 @@ async function deleteEnvValue(req) {
  * @param req
  * @returns {Promise<{message:string}>}
  */
-async function dropComponent(req) {
+async function dropComponent(req?: any) {
 	const validation = validator.dropComponentFileValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
@@ -1696,7 +1704,7 @@ async function dropComponent(req) {
 			}
 
 			response = await server.replication.replicateOperation(req);
-			const { applicationHasBranchStorage, removeBranchesForApplication } = require('../resources/branchDatabase.ts');
+			const { applicationHasBranchStorage, removeBranchesForApplication } = branchDatabaseRuntimeModule;
 			const branched = !file && applicationHasBranchStorage(project);
 			if (req.restart !== true) {
 				response.message = `Successfully dropped: ${projectPath}`;
@@ -1719,7 +1727,7 @@ async function dropComponent(req) {
 				}
 				return;
 			}
-			const { awaitRestart } = require('./awaitRestart.ts');
+			const { awaitRestart } = awaitRestartRuntimeModule;
 			const restart = await awaitRestart((onProgress) =>
 				manageThreads.restartWorkers('http', undefined, undefined, onProgress, restartScope)
 			);

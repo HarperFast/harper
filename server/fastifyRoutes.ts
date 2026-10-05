@@ -1,5 +1,5 @@
-import { dirname, basename } from 'path';
-import { existsSync } from 'fs';
+import { dirname, basename } from 'node:path';
+import { existsSync } from 'node:fs';
 import { deriveRoutePrefix } from './fastifyRoutes/helpers/deriveRoutePrefix.ts';
 import { resolveBaseURLPath } from '../components/resolveBaseURLPath.ts';
 import fastify from 'fastify';
@@ -15,7 +15,7 @@ import * as hdbCore from './fastifyRoutes/plugins/hdbCore.ts';
 import '../security/user.ts';
 import getServerOptions from './fastifyRoutes/helpers/getServerOptions.ts';
 import getCORSOptions from './fastifyRoutes/helpers/getCORSOptions.ts';
-import getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig.js';
+import getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig.ts';
 import { serverErrorHandler } from '../server/serverHelpers/serverHandlers.ts';
 import { registerContentHandlers } from '../server/serverHelpers/contentTypes.ts';
 import { server } from './Server.ts';

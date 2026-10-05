@@ -13,8 +13,8 @@ import * as auth from '../../security/fastifyAuth.ts';
 
 // this is a hack to suppress a deprecation warning and can be removed once `auth.authorize`
 // is converted to an async function
-function pAuthorize(req, resp) {
-	return new Promise((resolve, reject) => {
+function pAuthorize(req?: any, resp?: any) {
+	return new Promise<any>((resolve, reject) => {
 		auth.authorize(req, resp, (err, user) => (err ? reject(err) : resolve(user)));
 	});
 }
@@ -30,13 +30,13 @@ import { ProgressEmitter, createSSEResponseStream } from './progressEmitter.ts';
 // single-response shape because progress is undefined on that path. deploy_component /
 // get_deployment stream a bounded run and end; read_log tails the log and stays open until
 // the client disconnects (the emitter's abort signal), so subscribers see new lines live.
-const SSE_PROGRESS_OPERATIONS = new Set([
+const SSE_PROGRESS_OPERATIONS: any = new Set([
 	terms.OPERATIONS_ENUM.DEPLOY_COMPONENT,
 	terms.OPERATIONS_ENUM.GET_DEPLOYMENT,
 	terms.OPERATIONS_ENUM.READ_LOG,
 ]);
 
-const NO_AUTH_OPERATIONS = [
+const NO_AUTH_OPERATIONS: any = [
 	terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS,
 	terms.OPERATIONS_ENUM.LOGIN,
 	terms.OPERATIONS_ENUM.LOGOUT,
@@ -45,9 +45,9 @@ const NO_AUTH_OPERATIONS = [
 	terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN,
 ];
 
-const UNSAFE_REQUEST_BODY_PROPERTIES = ['__proto__', 'constructor', 'prototype'];
+const UNSAFE_REQUEST_BODY_PROPERTIES: any = ['__proto__', 'constructor', 'prototype'];
 
-function validateRequestBodyProperties(body) {
+function validateRequestBodyProperties(body?: any) {
 	if (!body || typeof body !== 'object') {
 		throw new ClientError('Invalid request body', 400);
 	}
@@ -58,7 +58,7 @@ function validateRequestBodyProperties(body) {
 	}
 }
 
-function handleServerUncaughtException(err) {
+function handleServerUncaughtException(err?: any) {
 	let message = `Found an uncaught exception with message: ${err.message}. ${os.EOL}Stack: ${err.stack} ${
 		os.EOL
 	}Terminating ${isMainThread ? 'HDB' : 'thread'}.`;
@@ -70,16 +70,16 @@ function handleServerUncaughtException(err) {
 }
 
 // The errors handlePostRequest logged, per request; see server/DESIGN.md.
-const errorsLoggedByRequest = new WeakMap();
-const LEVELS_ABOVE_ERROR = new Set([terms.LOG_LEVELS.FATAL, terms.LOG_LEVELS.NOTIFY]);
+const errorsLoggedByRequest: any = new WeakMap();
+const LEVELS_ABOVE_ERROR: any = new Set([terms.LOG_LEVELS.FATAL, terms.LOG_LEVELS.NOTIFY]);
 
-function serverErrorHandler(error, req, resp) {
+function serverErrorHandler(error?: any, req?: any, resp?: any) {
 	// Fastify passes a handler's reason through as-is, so a rejection with none arrives here as nullish.
 	error ??= handleHDBError(new Error('The request failed without an error'), undefined, 500);
 	if (!errorsLoggedByRequest.get(req)?.has(error)) harperLogger[error.logLevel || 'info'](error);
 	if (error.statusCode) {
 		if (typeof error.http_resp_msg !== 'object') {
-			const body = { error: error.http_resp_msg || error.message };
+			const body: any = { error: error.http_resp_msg || error.message };
 			// surface the machine-readable signal for errors that declare retryability (e.g. a
 			// still-building index, IndexRebuildingError) so API callers can distinguish and retry
 			if (error.retryable !== undefined) {
@@ -97,7 +97,7 @@ function serverErrorHandler(error, req, resp) {
 	return resp.code(statusCode).send(error.message ? { error: error.message } : error);
 }
 
-function reqBodyValidationHandler(req, resp, done) {
+function reqBodyValidationHandler(req?: any, resp?: any, done?: any) {
 	if (!req.body || Object.keys(req.body).length === 0 || typeof req.body !== 'object') {
 		const validationErr = handleHDBError(new Error(), 'Invalid JSON.', hdbErrors.HTTP_STATUS_CODES.BAD_REQUEST);
 		done(validationErr, null);
@@ -113,7 +113,7 @@ function reqBodyValidationHandler(req, resp, done) {
 	done();
 }
 
-function authHandler(req, resp, done) {
+function authHandler(req?: any, resp?: any, done?: any) {
 	let user;
 
 	const isAuthOperation = !NO_AUTH_OPERATIONS.includes(req.body.operation);
@@ -148,7 +148,7 @@ function authHandler(req, resp, done) {
 	}
 }
 
-function authAndEnsureUserOnRequest(req, resp, done) {
+function authAndEnsureUserOnRequest(req?: any, resp?: any, done?: any) {
 	pAuthorize(req, resp)
 		.then((userData) => {
 			req.hdb_user = userData;
@@ -162,7 +162,7 @@ function authAndEnsureUserOnRequest(req, resp, done) {
 		});
 }
 
-async function handlePostRequest(req, res, _bypassAuth = false) {
+async function handlePostRequest(req?: any, res?: any, _bypassAuth: any = false) {
 	let operation_function;
 
 	try {
@@ -185,7 +185,7 @@ async function handlePostRequest(req, res, _bypassAuth = false) {
 		// `Accept` parsing only checks for the text/event-stream token; allow comma-separated
 		// values like `text/event-stream, application/json` and quality params per RFC 7231.
 		if (req.headers?.accept?.includes('text/event-stream') && SSE_PROGRESS_OPERATIONS.has(req.body.operation)) {
-			const emitter = new ProgressEmitter();
+			const emitter: any = new ProgressEmitter();
 			req.body.progress = emitter;
 			res.header('Content-Type', 'text/event-stream');
 			res.header('Cache-Control', 'no-cache');
@@ -204,7 +204,11 @@ async function handlePostRequest(req, res, _bypassAuth = false) {
 			// mislabel a gzip:false tar or double-compress a gzip:true one). Streams marked
 			// `preCompressed` (e.g. a stored .tar.gz payload) are passed through as-is —
 			// recompressing them wastes CPU for zero gain.
-			if (req.headers['accept-encoding']?.includes('gzip') && !result.noCompression && !result.preCompressed) {
+			if (
+				req.headers['accept-encoding']?.includes('gzip') &&
+				!(result as any).noCompression &&
+				!(result as any).preCompressed
+			) {
 				res.header('content-encoding', 'gzip');
 				const gzip = createGzip({ level: constants.Z_BEST_SPEED }); // go fast
 				// .pipe() does not tear down across the pipe in either direction, so wire both:

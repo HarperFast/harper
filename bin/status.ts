@@ -1,7 +1,7 @@
 'use strict';
 
 import fs from 'fs-extra';
-import * as path from 'path';
+import * as path from 'node:path';
 import * as YAML from 'yaml';
 
 import * as hdbTerms from '../utility/hdbTerms.ts';

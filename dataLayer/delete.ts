@@ -4,7 +4,7 @@ import bulkDeleteValidator from '../validation/bulkDeleteValidator.ts';
 import deleteValidator from '../validation/deleteValidator.ts';
 import * as commonUtils from '../utility/common_utils.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
-import { promisify, callbackify } from 'util';
+import { promisify, callbackify } from 'node:util';
 import * as terms from '../utility/hdbTerms.ts';
 import * as globalSchema from '../utility/globalSchema.ts';
 const pGlobalSchema = promisify(globalSchema.getTableSchema);

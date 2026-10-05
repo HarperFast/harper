@@ -64,4 +64,8 @@ const RUNTIME_SRC_ROOT = __dirname.startsWith(join(PACKAGE_ROOT, 'dist')) ? join
  */
 const RUNTIME_FILE_EXT = RUNTIME_SRC_ROOT === PACKAGE_ROOT ? '.ts' : '.js';
 
-module.exports = { packageJson, PACKAGE_ROOT, RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT };
+function loadNativePackage(name) {
+	return require(name);
+}
+
+module.exports = { packageJson, PACKAGE_ROOT, RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT, loadNativePackage };

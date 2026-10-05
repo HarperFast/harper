@@ -15,7 +15,7 @@ import * as installation from '../utility/installation.ts';
 import * as hdbInfoController from '../dataLayer/hdbInfoController.ts';
 import * as globalSchema from '../utility/globalSchema.ts';
 import { packageJson } from '../utility/packageUtils.js';
-import { promisify as promisify } from 'node:util';
+import { promisify } from 'node:util';
 const pSchemaToGlobal = promisify(globalSchema.setSchemaDataToGlobal);
 let pm2Utils;
 

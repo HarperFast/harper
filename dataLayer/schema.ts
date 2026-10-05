@@ -9,7 +9,7 @@ import logger from '../utility/logging/harper_logger.ts';
 import { v4 as uuidV4 } from 'uuid';
 import * as signalling from '../utility/signalling.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
-import * as util from 'util';
+import * as util from 'node:util';
 import harperBridge from './harperBridge/harperBridge.ts';
 import { handleHDBError, ClientError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';

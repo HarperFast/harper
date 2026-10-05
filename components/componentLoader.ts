@@ -72,7 +72,7 @@ import {
 import { ComponentPreparationLockTimeoutError } from './componentPreparationLock.ts';
 import { pathToFileURL } from 'node:url';
 
-const CF_ROUTES_DIR = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+const getComponentsRoot = () => getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 
 let loadedComponents = new Map<any, any>();
 
@@ -308,7 +308,7 @@ export async function loadComponentDirectories(
 		// startup sequencing does not protect a worker that restarts later. Safe to run on any thread: each deployment is settled under
 		// the component preparation lock, which is cross-thread and cross-process, and the pass is idempotent.
 		try {
-			for (const [component, error] of await recoverInterruptedActivations(CF_ROUTES_DIR)) {
+			for (const [component, error] of await recoverInterruptedActivations(getComponentsRoot())) {
 				if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
 			}
 		} catch (error) {
@@ -319,7 +319,7 @@ export async function loadComponentDirectories(
 		}
 		// Plus anything a previous pass recorded as unsettleable, which settlement above leaves in place.
 		try {
-			for (const [component, error] of await unsettleableComponentsFromDisk(CF_ROUTES_DIR)) {
+			for (const [component, error] of await unsettleableComponentsFromDisk(getComponentsRoot())) {
 				if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
 			}
 		} catch (error) {
@@ -330,7 +330,7 @@ export async function loadComponentDirectories(
 		}
 	}
 	try {
-		for (const [component, error] of await recoverInterruptedComponentExtractions(CF_ROUTES_DIR)) {
+		for (const [component, error] of await recoverInterruptedComponentExtractions(getComponentsRoot())) {
 			if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
 		}
 	} catch (error) {
@@ -353,13 +353,13 @@ export async function loadComponentDirectories(
 		[...failedRecoveries].filter(([, error]) => !(error instanceof ComponentPreparationLockTimeoutError))
 	);
 	const deferComponentLoad = (appName: string) => {
-		const appFolder = join(CF_ROUTES_DIR, appName);
+		const appFolder = join(getComponentsRoot(), appName);
 		const appWasVisible = existsSync(appFolder);
 		if (appWasVisible) {
 			componentLifecycle.loading(appName, `Component '${appName}' is waiting for in-progress preparation to finish`);
 		}
 		const deferredLoad = serializeComponentLoad(appName, () =>
-			recoverInterruptedComponentExtraction(CF_ROUTES_DIR, appName)
+			recoverInterruptedComponentExtraction(getComponentsRoot(), appName)
 				.then(async () => {
 					if (!existsSync(appFolder)) {
 						if (appWasVisible) {
@@ -395,8 +395,8 @@ export async function loadComponentDirectories(
 		);
 		trackDeferredBootLoad(appName, deferredLoad);
 	};
-	if (existsSync(CF_ROUTES_DIR)) {
-		const cfFolders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
+	if (existsSync(getComponentsRoot())) {
+		const cfFolders = readdirSync(getComponentsRoot(), { withFileTypes: true });
 		for (const appEntry of cfFolders) {
 			if (!appEntry.isDirectory() && !appEntry.isSymbolicLink()) continue;
 			// Skip hidden entries: component names are never dot-prefixed, and this keeps
@@ -426,7 +426,7 @@ export async function loadComponentDirectories(
 				continue;
 			}
 			if (!placedOnThisThread(appName)) continue;
-			const appFolder = join(CF_ROUTES_DIR, appName);
+			const appFolder = join(getComponentsRoot(), appName);
 			const mountResult = tryRootConfigMount(appName);
 			if (!mountResult.ok) continue;
 			cfsLoaded.push(

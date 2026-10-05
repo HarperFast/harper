@@ -203,22 +203,24 @@ export declare const threads: ThreadsImport;
 export declare const transaction: typeof TransactionImport;
 
 // Actual define the values on the `exports` for CJS static analysis
-exports.contentTypes = null;
-exports.createBlob = undefined;
-exports.databases = {};
-exports.logger = {};
-exports.models = undefined;
-exports.operation = undefined;
-exports.Resource = undefined;
-exports.secrets = undefined;
-exports.server = {};
-exports.tables = {};
-exports.threads = [];
-exports.transaction = undefined;
+if (typeof exports !== 'undefined') {
+	exports.contentTypes = null;
+	exports.createBlob = undefined;
+	exports.databases = {};
+	exports.logger = {};
+	exports.models = undefined;
+	exports.operation = undefined;
+	exports.Resource = undefined;
+	exports.secrets = undefined;
+	exports.server = {};
+	exports.tables = {};
+	exports.threads = [];
+	exports.transaction = undefined;
+}
 
 // And finally assign globals to exports.
 // These values are populated at runtime by `_assignPackageExport()` in their respective modules
 // (e.g. Resource.ts, databases.ts, Server.ts, etc.)
 import { globals } from './server/threads/threadServer.ts';
 
-Object.assign(exports, globals);
+if (typeof exports !== 'undefined') Object.assign(exports, globals);

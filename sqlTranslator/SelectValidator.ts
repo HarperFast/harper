@@ -1,7 +1,7 @@
 'use strict';
 
 import RecursiveIterator from 'recursive-iterator';
-import * as alasql from 'alasql';
+import alasql from 'alasql';
 import clone from 'clone';
 import * as commonUtils from '../utility/common_utils.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';

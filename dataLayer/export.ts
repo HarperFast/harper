@@ -1,14 +1,15 @@
-'use strict';
+import * as indexCjsModule from '../sqlTranslator/index.ts';
+('use strict');
 
 import * as search from './search.ts';
 import * as AWSConnector from '../utility/AWS/AWSConnector.js';
 import * as awsSdkLoader from '../utility/AWS/awsSdkLoader.ts';
-import * as stream from 'stream';
+import * as stream from 'node:stream';
 import * as hdbUtils from '../utility/common_utils.ts';
 import fs from 'fs-extra';
-import * as path from 'path';
+import * as path from 'node:path';
 import hdbLogger from '../utility/logging/harper_logger.ts';
-import { promisify } from 'util';
+import { promisify } from 'node:util';
 import * as hdbCommon from '../utility/common_utils.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
@@ -356,7 +357,7 @@ async function getRecords(exportObject: any) {
 			break;
 		case 'sql': {
 			if (!pSql) {
-				const sql = require('../sqlTranslator/index');
+				const sql = indexCjsModule;
 				pSql = promisify(sql.evaluateSQL);
 			}
 			operation = pSql;

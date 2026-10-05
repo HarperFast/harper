@@ -1,3 +1,4 @@
+import * as userRuntimeModule from '../security/user.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import { coalesceRefresh } from '../utility/coalesceRefresh.ts';
 import type { UserChange } from '../security/user.ts';

@@ -3,13 +3,13 @@
 import * as hdbTerms from '../hdbTerms.ts';
 import hdbLogger from './harper_logger.ts';
 import validator from '../../validation/readLogValidator.ts';
-import * as path from 'path';
+import * as path from 'node:path';
 import fs from 'fs-extra';
-import { once } from 'events';
+import { once } from 'node:events';
 import { getConfigPath } from '../../config/configUtils.ts';
 import { handleHDBError, hdbErrors } from '../errors/hdbError.ts';
 import { server } from '../../server/Server.ts';
-import { StringDecoder } from 'string_decoder';
+import { StringDecoder } from 'node:string_decoder';
 
 const DEFAULT_READ_LOG_LIMIT = 1000;
 const ESTIMATED_AVERAGE_ENTRY_SIZE = 200;
