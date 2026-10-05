@@ -100,7 +100,7 @@ export function registerUdsCleanupPaths(socketPath: string, yamlPath: string) {
 }
 
 export function hasUdsMirror(): boolean {
-	return udsCleanupPaths.length > 0;
+	return udsCleanupPaths.some((entry) => !failedUdsPaths.has(entry.socketPath));
 }
 
 /**
