@@ -747,7 +747,15 @@ async function deployComponent(req) {
 						scope: () => ((nowIsolated ?? initiallyIsolated) ? req.project : undefined),
 					})
 				: undefined;
-		releaseRequester = () => (application.certificationArmed && !isMainThread ? certification.release() : undefined);
+		const endDrain =
+			certification && !isMainThread ? drainWhileDeploying(() => application.certificationArmed) : undefined;
+		releaseRequester = async () => {
+			try {
+				if (application.certificationArmed) await certification.release();
+			} finally {
+				endDrain?.();
+			}
+		};
 		await prepareApplication(application, {
 			// `.deploy-staging/<artifactId>`. The public deployment id, so the id the caller was handed is
 			// the id a later `deployment_id` request can name; an activation names the artifact's own id,
@@ -1141,6 +1149,30 @@ function assertPeersStaged(component, recorder, response) {
 			`deployment_id once they are reachable, or pass ignore_replication_errors: true to activate only the peers ` +
 			`that staged it.`
 	);
+}
+
+/**
+ * The rollout retires the worker that requested it once that worker answers, or after a bound: past the bound, its
+ * shutdown waits for the deploy to answer rather than cut it off. Returns what ends the wait.
+ */
+function drainWhileDeploying(isDeploying) {
+	const { registerShutdownDrain } = require('./shutdownDrain.ts');
+	const answered = Promise.withResolvers();
+	const unregister = registerShutdownDrain({
+		hasWork: () => Boolean(isDeploying()),
+		drain: (deadlineMs) => {
+			let timer;
+			const deadline = new Promise((resolve) => {
+				timer = setTimeout(resolve, Math.max(0, deadlineMs - Date.now()));
+				timer.unref();
+			});
+			return Promise.race([answered.promise, deadline]).finally(() => clearTimeout(timer));
+		},
+	});
+	return () => {
+		answered.resolve();
+		unregister();
+	};
 }
 
 /** A release its canary refused, as the deploy reports it; the fields ride the error to every transport. */
@@ -1680,6 +1712,7 @@ exports.deployComponent = deployComponent;
 exports.unconfirmedStagingPeers = unconfirmedStagingPeers;
 exports.confirmedStagingPeers = confirmedStagingPeers;
 exports.certificationFailure = certificationFailure;
+exports.drainWhileDeploying = drainWhileDeploying;
 exports.markInstallComparisons = markInstallComparisons;
 exports.peerDeployAnswerTimeoutMs = peerDeployAnswerTimeoutMs;
 exports.getComponents = getComponents;

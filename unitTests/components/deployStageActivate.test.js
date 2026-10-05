@@ -1253,3 +1253,32 @@ describe('a deploy whose canary refused its release', () => {
 		assert.equal(error.certification.failed_closed, false);
 	});
 });
+
+describe('a requesting worker the rollout retires before its deploy answers', () => {
+	const { drainWhileDeploying } = require('#src/components/operations');
+	const { shutdownDrainsHaveWork, runShutdownDrains } = require('#src/components/shutdownDrain');
+	let end;
+
+	afterEach(() => end?.());
+
+	it('holds its shutdown open until the deploy answers', async () => {
+		let deploying = true;
+		end = drainWhileDeploying(() => deploying);
+		assert.equal(shutdownDrainsHaveWork(), true, 'a deploy in flight is work worth draining');
+		let drained = false;
+		const draining = runShutdownDrains(Date.now() + 60_000).then(() => (drained = true));
+		await sleep(50);
+		assert.equal(drained, false, 'the shutdown waits on the deploy');
+		deploying = false;
+		end();
+		await draining;
+		assert.equal(shutdownDrainsHaveWork(), false, 'and holds nothing once it answered');
+	});
+
+	it('stops waiting at the drain deadline', async () => {
+		end = drainWhileDeploying(() => true);
+		const startedAt = Date.now();
+		await runShutdownDrains(startedAt + 100);
+		assert.ok(Date.now() - startedAt < 5000, 'the deadline bounds the wait');
+	});
+});
