@@ -97,9 +97,8 @@ jobs:
       # 6m58 completed, went red on main, and needed ~7m40 at its worst. `main` was re-derived
       # 2026-10-05 over ten pushes: slowest successful step 3m59; the new named-child suites add ~12s.
       # All three Node legs reached their epilogues in 4m03 to 4m13, past the old 4m cap;
-      # 1.5x the slowest epilogue is 6m20, rounded up to 7m. harper#2981's certification gate
-      # suites then took its legs to 4m57-5m16, about 5m28 with those named-child suites; 1.5x
-      # is 8m12, rounded up to 9m.
+      # 1.5x the slowest epilogue is 6m20, rounded up to 7m. harper#2981's legs, certification
+      # gate suites included, then took 4m56-5m16; 1.5x is 7m54, rounded up to 8m.
       # `lmdb` was re-derived 2026-09-28 over the pushes since 2026-09-26:
       # slowest completed 3m38, ~3m20 once `subscriptionSuperseded` stopped replaying the shared
       # `test` database's whole audit log; 1.5x is 5m, and the legs killed at 4m ran longer than any
@@ -117,7 +116,7 @@ jobs:
       # core 4m50 -> 8m, indexes 2m50 -> 5m.
       - name: 'Unit tests: main'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
-        timeout-minutes: 9
+        timeout-minutes: 8
         run: npm run test:unit:main
 
       - name: 'Unit tests: apitests'
