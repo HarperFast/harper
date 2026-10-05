@@ -19,7 +19,7 @@ describe('getThisNodeId', () => {
 		previousHostname = env.get(CONFIG_PARAMS.NODE_HOSTNAME);
 	});
 	after(() => {
-		if (previousHostname !== undefined) env.setProperty(CONFIG_PARAMS.NODE_HOSTNAME, previousHostname);
+		env.setProperty(CONFIG_PARAMS.NODE_HOSTNAME, previousHostname);
 		clearThisNodeName();
 	});
 	function useNodeName(name) {
