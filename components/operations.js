@@ -753,7 +753,8 @@ async function deployComponent(req) {
 				? drainWhileDeploying(
 						() => application.certificationArmed,
 						() => certificationDecided,
-						manageThreads.canaryVerdictTimeoutMs()
+						manageThreads.canaryVerdictTimeoutMs(),
+						() => certification.interrupt()
 					)
 				: undefined;
 		releaseRequester = async () => {
@@ -1161,12 +1162,17 @@ function assertPeersStaged(component, recorder, response) {
 
 /**
  * A restart retires a worker answering a decided release's deploy only once that deploy has answered, so this drain
- * holds only the rest. One is a requesting worker 0 whose canary cannot serve beside it. Another is a deploy whose
- * release is not decided yet, held only so long as a canary may take, since what decides it may be a rollout queued
- * behind the restart now retiring this worker. Like every drain, it ends at the shutdown ceiling. Returns what ends
- * the wait.
+ * holds a deploy whose release is not decided yet. It waits so long as a canary may take, since what decides the
+ * release may be a rollout queued behind the restart retiring this worker. Then it has main decide the release
+ * interrupted, and the deploy answers that. Like every drain, it ends at the shutdown ceiling. Returns what ends the
+ * wait.
  */
-function drainWhileDeploying(isDeploying, isDecided = () => true, undecidedBoundMs = Infinity) {
+function drainWhileDeploying(
+	isDeploying,
+	isDecided = () => true,
+	undecidedBoundMs = Infinity,
+	interruptUndecided = async () => false
+) {
 	const { registerShutdownDrain } = require('./shutdownDrain.ts');
 	const answered = Promise.withResolvers();
 	const unregister = registerShutdownDrain({
@@ -1181,7 +1187,16 @@ function drainWhileDeploying(isDeploying, isDecided = () => true, undecidedBound
 			});
 			const undecided = new Promise((resolve) => {
 				if (!Number.isFinite(undecidedBoundMs)) return;
-				bound = setTimeout(() => {
+				bound = setTimeout(async () => {
+					if (isDecided()) return;
+					// Decided as interrupted, the release is restored and the deploy answers that, which ends this wait.
+					if (await interruptUndecided()) {
+						log.warn(
+							`Interrupted the certification of this worker's deploy: its release was not decided within ` +
+								`${undecidedBoundMs}ms of this worker's retirement`
+						);
+						return;
+					}
 					if (isDecided()) return;
 					log.warn(
 						`Not holding this worker's shutdown any longer: its deploy's release was not decided within ` +

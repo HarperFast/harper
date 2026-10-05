@@ -214,6 +214,8 @@ export type DeployCertification = ActivationCertification & {
 	readonly armed: boolean;
 	readonly unavailableReason: string | undefined;
 	decision(): Promise<CertificationDecision | undefined>;
+	/** Have main decide the release interrupted: this worker is being retired before it could be decided. */
+	interrupt(): Promise<boolean>;
 	rollout(onProgress?: (untilMs?: number) => void): Promise<any>;
 	release(): Promise<void>;
 };
@@ -270,6 +272,13 @@ export function deployCertification(spec: {
 			return joined;
 		},
 		decision: () => certificationRequest('decision', identity()),
+		interrupt: () =>
+			armed
+				? certificationRequest('interrupt', identity()).then(
+						(done) => done === true,
+						() => false
+					)
+				: Promise.resolve(false),
 		rollout: (onProgress) =>
 			isMainThread ? certificationRollout(spec.component, spec.deploymentId, onProgress) : Promise.resolve(undefined),
 		// Only the deploy that armed the release is its requester; one that joined its decision only leaves it.

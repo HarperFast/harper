@@ -1078,6 +1078,22 @@ function leaveCertification(component, deploymentId, threadId) {
 	noteAnswered();
 }
 
+/**
+ * Its requesting worker is being retired before the release could be decided, as when that release's own rollout
+ * queues behind the restart retiring it. Deciding it interrupted restores as a refusal does, so the deploy answers with
+ * that rather than being cut off.
+ */
+function interruptCertification(component, deploymentId, threadId) {
+	const certification = certifications.get(component);
+	if (certification?.deploymentId !== deploymentId || certification.phase !== 'committed') return false;
+	if (certification.decision || certification.deciding || certification.requesterThreadId !== threadId) return false;
+	void decideCertification(certification, {
+		status: 'interrupted',
+		reason: 'its requesting worker was retired before its canary could decide',
+	});
+	return true;
+}
+
 function stillRead(certification) {
 	return (
 		!(certification.requesterReleased || certification.requesterExited) ||
@@ -1107,6 +1123,7 @@ const CERTIFICATION_ACTIONS = {
 	release: ({ component, deploymentId }) => releaseCertificationRequester(component, deploymentId),
 	join: ({ component, deploymentId }, threadId) => joinCertification(component, deploymentId, threadId),
 	leave: ({ component, deploymentId }, threadId) => leaveCertification(component, deploymentId, threadId),
+	interrupt: ({ component, deploymentId }, threadId) => interruptCertification(component, deploymentId, threadId),
 	// Whether a preparation must wait for this release where its record cannot say: its refusal's restore must not.
 	open: ({ component, deploymentId }) => {
 		const certification = certifications.get(component);
@@ -1484,7 +1501,12 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 		// unless it is worker 0. Then, where its replacement serves beside it, it is retired once its deploy has
 		// answered, after the rest; elsewhere it is retired at its turn, and its drain keeps its deploy answering.
 		const workerZero = certification
-			? restarting.find((worker) => worker.workerIndex === 0 && placesCertification(certification, worker))
+			? restarting.find(
+					(worker) =>
+						worker.name === hdbTerms.THREAD_TYPES.HTTP &&
+						worker.workerIndex === 0 &&
+						placesCertification(certification, worker)
+				)
 			: undefined;
 		if (workerZero) restarting.unshift(...restarting.splice(restarting.indexOf(workerZero), 1));
 		const requester =
@@ -1556,6 +1578,9 @@ async function replaceWorkers(name, maxWorkersDown, startReplacementThreads, onP
 					: async () => {
 							retiredForAdmission = true;
 							if (worker === requester && !requesterFirst) await requesterRelease(certification);
+							// Its replacement takes its ports, so it cannot keep serving after the rest: it is retired here, once
+							// any decided deploy it is answering has answered.
+							await untilDecidedDeploysAnswer(worker, onProgress);
 							if (postShutdown(worker)) await whenShutDownWorkerExits(worker, onProgress);
 						};
 				let newWorker = worker.startCopy(held ? { managed: true, check: checks, admission } : { managed: true });

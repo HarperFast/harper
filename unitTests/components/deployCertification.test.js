@@ -692,6 +692,21 @@ describe('whether startup keeps the installed tree', () => {
 		);
 	});
 
+	it('tells two linked trees apart by their targets', async function () {
+		// A link needs privileges to create on Windows.
+		if (process.platform === 'win32') this.skip();
+		const sourceA = path.join(root, 'source-a');
+		const sourceB = path.join(root, 'source-b');
+		await fs.mkdir(sourceA);
+		await fs.mkdir(sourceB);
+		await fs.symlink(sourceA, dirPath, 'dir');
+		await lockNaming(ENTRY, `link:${sourceA}`);
+		assert.equal(await keepsInstalledTree('web', ENTRY, dirPath, lockPath), true, 'the link startup installed');
+		await fs.unlink(dirPath);
+		await fs.symlink(sourceB, dirPath, 'dir');
+		assert.equal(await keepsInstalledTree('web', ENTRY, dirPath, lockPath), false, 'a link a deploy made live since');
+	});
+
 	it('trusts a lock that records a tree without a marker only for such a tree', async function () {
 		this.timeout(30000);
 		await fs.mkdir(dirPath);

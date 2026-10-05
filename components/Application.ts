@@ -4625,7 +4625,7 @@ export class Application {
 	alreadyActive: boolean = false;
 	/** This preparation registered its release for certification, or joined one already in flight. */
 	certificationArmed: boolean = false;
-	/** What the tree this preparation made live is marked as, read under its lock: `null` for a link. */
+	/** What identifies the tree this preparation made live, read under its lock (see `LiveTree.deploymentId`). */
 	installedTree: string | null | undefined;
 	sourceIdentity?: string;
 	installFingerprint?: InstallFingerprint;
@@ -5044,6 +5044,7 @@ export async function prepareApplication(application: Application, options: Prep
 						// The directory outlives the swap as the record a later displacement puts this release back into;
 						// a link has no bytes of its own to put back.
 						const linked = (await lstat(candidateDirPath)).isSymbolicLink();
+						const linkedTo = linked ? await readlink(candidateDirPath) : undefined;
 						const described = declared && !linked ? declared : undefined;
 						if (described) {
 							await writeArtifactDescriptor(application.dirPath, artifactId, {
@@ -5063,7 +5064,7 @@ export async function prepareApplication(application: Application, options: Prep
 							declared ? rootConfigEffectFromDeclaration(declared.rootConfig) : { kind: 'keep' },
 							described ? options.certification : undefined
 						);
-						application.installedTree = linked ? null : artifactId;
+						application.installedTree = linked ? `link:${linkedTo}` : artifactId;
 					} catch (error) {
 						// The builder's own cleanup only covers a failed BUILD. A rejected validation, or an
 						// activation that was cleanly compensated, would otherwise leave a whole installed
@@ -5526,7 +5527,10 @@ export async function keepsInstalledTree(
 }
 
 type LiveTree = {
-	/** What the live tree's marker names: `null` without one (a link, or no tree), `undefined` when it cannot be read. */
+	/**
+	 * What identifies the live tree: the deployment its marker names, `link:` and the target for a link, which carries no
+	 * marker, `null` for a tree with neither, and `undefined` when it cannot be read.
+	 */
 	deploymentId: string | null | undefined;
 	/**
 	 * The root-config entry its deployment declared: `null` for a payload build, and for a record that exists but
@@ -5539,6 +5543,9 @@ type LiveTree = {
 async function liveTree(name: string, dirPath: string): Promise<LiveTree> {
 	let deploymentId: string | undefined;
 	try {
+		if ((await presentOrAbsent(dirPath))?.isSymbolicLink()) {
+			return { deploymentId: `link:${await readlink(dirPath)}`, declared: undefined };
+		}
 		deploymentId = await readDeploymentProvenance(dirPath, name);
 	} catch (error) {
 		logger.warn?.(

@@ -1282,12 +1282,33 @@ describe('a requesting worker the rollout retires before its deploy answers', ()
 		assert.ok(Date.now() - startedAt < 5000, 'the deadline bounds the wait');
 	});
 
-	it('holds a shutdown only as long as a canary may take while its release is undecided', async () => {
+	it('has main interrupt a release still undecided at its bound, and holds the shutdown until the deploy answers', async () => {
 		// What decides the release may be its own rollout, queued behind the restart retiring this worker.
+		let interrupts = 0;
 		end = drainWhileDeploying(
 			() => true,
 			() => false,
-			200
+			200,
+			async () => {
+				interrupts++;
+				return true;
+			}
+		);
+		let drained = false;
+		const draining = runShutdownDrains(Date.now() + 60_000).then(() => (drained = true));
+		await sleep(600);
+		assert.equal(interrupts, 1);
+		assert.equal(drained, false, 'its deploy answers the interruption before the worker exits');
+		end();
+		await draining;
+	});
+
+	it('holds a shutdown only as long as a canary may take when its release cannot be interrupted', async () => {
+		end = drainWhileDeploying(
+			() => true,
+			() => false,
+			200,
+			async () => false
 		);
 		const startedAt = Date.now();
 		await runShutdownDrains(startedAt + 60_000);

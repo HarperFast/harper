@@ -32,6 +32,20 @@ parentPort.on('message', (message) => {
 		});
 		return;
 	}
+	// Asks main to decide its release interrupted, as a requester retired before its release was decided does.
+	if (message?.type === 'fixture-interrupt') {
+		parentPort.postMessage({
+			type: ITC_EVENT_TYPES.CERTIFICATION_REQUEST,
+			requestId: 'fixture-interrupt',
+			action: 'interrupt',
+			payload: message.payload,
+		});
+		return;
+	}
+	if (message?.type === ITC_EVENT_TYPES.CERTIFICATION_RESPONSE && message.requestId === 'fixture-interrupt') {
+		parentPort.postMessage({ type: 'fixture-interrupted', result: message.result });
+		return;
+	}
 	if (message?.type === 'fixture-leave') {
 		parentPort.postMessage({
 			type: ITC_EVENT_TYPES.CERTIFICATION_REQUEST,

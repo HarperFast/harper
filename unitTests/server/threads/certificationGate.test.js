@@ -73,6 +73,7 @@ describe('the release certification gate', function () {
 						if (message?.type === 'fixture-admitted') worker.admitted = true;
 						if (message?.type === 'fixture-joined') worker.joined = (worker.joined ?? 0) + 1;
 						if (message?.type === 'fixture-left') worker.left = (worker.left ?? 0) + 1;
+						if (message?.type === 'fixture-interrupted') worker.interrupted = message.result;
 						if (message?.type !== 'fixture-booted') return;
 						worker.certifyRequests.push(message.certify);
 						worker.failClosed = message.failClosed;
@@ -949,6 +950,33 @@ describe('the release certification gate', function () {
 		assert.equal(besideIt ? shutdownOrder.at(-1) : shutdownOrder[0], requesterThreadId);
 	});
 
+	it('decides a release interrupted when its requesting worker asks before the release could be decided', async () => {
+		// A plain restart, held in its reload, keeps the release's own rollout queued behind it.
+		const loading = Promise.withResolvers();
+		rootLoad = loading.promise;
+		releaseRootLoad = loading.resolve;
+		const requester = pool[1];
+		const restart = restartWorkers('http', 1, true, undefined, undefined);
+		await arm({ requesterThreadId: requester.threadId });
+		await commit();
+		const release = { component: COMPONENT, deploymentId: DEPLOYMENT };
+		assert.equal(await certificationRequest('interrupt', release), false, 'only its requester can');
+		requester.postMessage({ type: 'fixture-interrupt', payload: release });
+		const decision = await decisionOf();
+		assert.equal(decision.status, 'interrupted');
+		assert.match(decision.reason, /retired before its canary could decide/);
+		await waitFor(() => requester.interrupted !== undefined, { message: 'the requester never heard back' });
+		assert.equal(requester.interrupted, true);
+		await certificationRequest('release', release);
+		releaseRootLoad();
+		await restart;
+		await rolledOut();
+		assert.deepStrictEqual(
+			decisions.map(({ status }) => status),
+			['interrupted']
+		);
+	});
+
 	it('finishes a restart whose deferred worker exits before its deploy answers', async () => {
 		const loading = Promise.withResolvers();
 		rootLoad = loading.promise;
@@ -1008,7 +1036,52 @@ describe('the release certification gate', function () {
 		await rolledOut();
 	});
 
-	it('does not hold the rest of the rollout behind a requesting worker 0 that has not answered', async () => {
+	it('takes worker 0 from the HTTP workers only, whatever other thread holds index 0', async () => {
+		for (const worker of httpWorkers()) {
+			worker.wasShutdown = true;
+			await worker.terminate();
+		}
+		pool = [await startFixture(1), await startFixture(2)];
+		const other = await new Promise((resolve) =>
+			startWorker(FIXTURE, { name: 'job', workerIndex: 0, threadCount: 3, onStarted: resolve })
+		);
+		pool.push(await startFixture(0));
+		try {
+			const before = started.length;
+			await arm();
+			await commit();
+			await decisionOf();
+			assert.equal(started[before].workerIndex, 0, "the HTTP worker 0's replacement is the canary");
+			await rolledOut();
+		} finally {
+			other.wasShutdown = true;
+			await other.terminate();
+		}
+	});
+
+	it('retires a requesting worker 0 whose canary needs its ports only once its deploy has answered', async function () {
+		// Where the canary serves beside it, the next test covers it.
+		if (process.platform === 'linux') this.skip();
+		const [requester, next] = pool;
+		await arm({ requesterThreadId: requester.threadId });
+		let requesterAskedAt;
+		requester.once('shutdown', () => (requesterAskedAt = Date.now()));
+		let nextAskedAt;
+		next.once('shutdown', () => (nextAskedAt = Date.now()));
+		await commit();
+		assert.equal((await decisionOf()).status, 'certified');
+		await sleep(500);
+		assert.equal(requesterAskedAt, undefined, 'it keeps serving while its deploy answers');
+		assert.equal(nextAskedAt, undefined, 'and the rollout waits for it there');
+		const releasedAt = Date.now();
+		await certificationRequest('release', { component: COMPONENT, deploymentId: DEPLOYMENT });
+		await rolledOut();
+		assert.ok(requesterAskedAt >= releasedAt, 'it is retired once its deploy has answered');
+		assert.ok(nextAskedAt >= requesterAskedAt);
+	});
+
+	it('does not hold the rest of the rollout behind a requesting worker 0 that has not answered', async function () {
+		if (process.platform !== 'linux') this.skip();
 		// Each serving worker takes a while to exit once asked, as a requester its drain holds would.
 		plan([{ outcome: 'loaded' }], { unheldShutdownDelayMs: 3000 });
 		const [requester, next, last] = pool;
