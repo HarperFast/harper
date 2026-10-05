@@ -103,6 +103,7 @@ describe('constrained spawn process identity', function () {
 		const replacement = fork({ version: 2 });
 		assert.notStrictEqual(replacement.pid, child.pid);
 		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.strictEqual(child.exitCode, null);
 		assert.strictEqual(child.signalCode, null);
 	});
 
