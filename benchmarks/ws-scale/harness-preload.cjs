@@ -1,5 +1,5 @@
-// Loaded into Harper HTTP workers via threads.preloadRequire when run.mts is given --profile or runs the churn
-// scenario. run.mts drives it with files in WS_SCALE_CONTROL_DIR:
+// Loaded into Harper workers via threads.preloadRequire when run.mts is given --profile or runs the churn scenario.
+// Only HTTP workers respond to run.mts control files in WS_SCALE_CONTROL_DIR:
 //   start   holds a duration in seconds: CPU-profile this thread that long, then write thread-<id>.cpuprofile
 //   gc-<n>  run a full garbage collection (Harper runs with --expose-gc), then write this thread's
 //           process.memoryUsage() as JSON to gc-<n>-<threadId>
