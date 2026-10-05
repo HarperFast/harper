@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { once } from 'node:events';
 import { resolve } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, rmSync } from 'node:fs';
 
 const require = createRequire(import.meta.url);
 const root = resolve(import.meta.dirname, '../../..');
@@ -34,6 +34,33 @@ describe('TypeStrip runtime boundaries', () => {
 			assert.ok(config.script.startsWith(resolve(root, 'dist') + '/'));
 			assert.ok(config.script.endsWith('.js'));
 			assert.ok(existsSync(config.script));
+		}
+	});
+
+	it('chooses runtime paths from canonical module locations', () => {
+		mkdirSync(resolve(root, 'cache'), { recursive: true });
+		const directory = mkdtempSync(resolve(root, 'cache/typestrip-links-'));
+		const link = resolve(directory, 'harper');
+		try {
+			symlinkSync(root, link, process.platform === 'win32' ? 'junction' : 'dir');
+			for (const mode of ['compiled', 'typestrip']) {
+				const modulePath = resolve(link, `${mode === 'compiled' ? 'dist/' : ''}utility/packageUtils.js`);
+				const output = execFileSync(
+					process.execPath,
+					[
+						'--preserve-symlinks',
+						'-e',
+						`const { RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT } = require(${JSON.stringify(modulePath)}); console.log(JSON.stringify([RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT]));`,
+					],
+					{ encoding: 'utf8', timeout: 30000 }
+				);
+				assert.deepEqual(JSON.parse(output), [
+					mode === 'compiled' ? resolve(root, 'dist') : root,
+					mode === 'compiled' ? '.js' : '.ts',
+				]);
+			}
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
 		}
 	});
 

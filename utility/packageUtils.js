@@ -51,11 +51,13 @@ const PACKAGE_ROOT = realpathSync(dirname(packageJsonPath));
  * type-strip mode (where `node bin/harper.ts` runs the .ts sources directly)
  * and `PACKAGE_ROOT/dist` in dist mode (where transpiled .js files live).
  *
- * `__dirname` of this CJS file resolves to either `<PACKAGE_ROOT>/utility`
- * (source) or `<PACKAGE_ROOT>/dist/utility` (dist), so we can detect the mode
- * just by looking at this file's own location.
+ * This CJS file's canonical location is either `<PACKAGE_ROOT>/utility`
+ * (source) or `<PACKAGE_ROOT>/dist/utility` (dist), including when Node
+ * preserves symlinks. Compare canonical paths to detect the mode.
  */
-const RUNTIME_SRC_ROOT = __dirname.startsWith(join(PACKAGE_ROOT, 'dist')) ? join(PACKAGE_ROOT, 'dist') : PACKAGE_ROOT;
+const RUNTIME_SRC_ROOT = realpathSync(__dirname).startsWith(join(PACKAGE_ROOT, 'dist'))
+	? join(PACKAGE_ROOT, 'dist')
+	: PACKAGE_ROOT;
 
 /**
  * File extension of the running modules: `.ts` in type-strip mode, `.js` in
