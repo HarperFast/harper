@@ -1090,7 +1090,7 @@ The wait follows the restart's own progress rather than a fixed timeout, so a wi
 
 #### Certifying a release in a canary worker
 
-<VersionBadge version="v5.3.1" />
+<VersionBadge version="v5.3.2" />
 
 A deploy with `"restart": true` or `"restart": "rolling"` checks its release before rolling it out. The first worker thread started on the new release, the canary, loads every component as any worker does when it starts, but it is held out of traffic until it reports whether the deployed component loaded. Until then the workers already running keep serving the release being replaced. The rollout goes on only if the release loaded, and each later replacement is checked the same way before it serves.
 
@@ -1124,7 +1124,7 @@ A release whose canary throws while loading the component, exits, or does not re
 - **A restart that stops before the canary decides restores the previous release.** The decision is reported with `status: "interrupted"`. If the process dies first, the next start rejects the undecided release and restores the one it replaced before it loads anything.
 - **It checks what a worker loads when it starts.** The release is on disk before the canary starts. Workers that have not been replaced yet keep running the previous release and do not react to the new files until the rollout ends, but one that first imports one of the component's modules while the canary is held gets the new release's copy of it.
 
-With `"restart": "rolling"`, the node that received the deploy certifies the release itself, the other nodes only stage it, and the job then activates it on each of them in turn with `deployment_id` and `"restart": true`, so every node certifies it with a canary of its own. Each node decides for itself: a node whose canary rejects the release keeps the previous one, nothing is rolled back on the others, and the job fails naming each node that did not activate it. A node running a version before v5.3.1 activates the release without a canary.
+With `"restart": "rolling"`, the node that received the deploy certifies the release itself, the other nodes only stage it, and the job then activates it on each of them in turn with `deployment_id` and `"restart": true`, so every node certifies it with a canary of its own. Each node decides for itself: a node whose canary rejects the release keeps the previous one, nothing is rolled back on the others, and the job fails naming each node that did not activate it. A node running a version before v5.3.2 activates the release without a canary.
 
 #### Deploying without a restart
 
