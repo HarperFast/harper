@@ -561,6 +561,7 @@ const RELOAD_REFUSAL =
 const UNREADABLE_LOG_REFUSAL =
 	'Part of the transaction log after this resume position could not be read; resubscribe to resynchronize';
 const ID_ALLOCATION_KEY = Symbol.for('id_allocation');
+const ID_ALLOCATION_TRANSACTION_OPTIONS = { retryOnBusy: true };
 function isSameIdAllocation(a: any, b: any): boolean {
 	return a?.start === b?.start && a?.end === b?.end && a?.nodeName === b?.nodeName && a?.pid === b?.pid;
 }
@@ -2596,12 +2597,13 @@ export function makeTable(options): TableResourceClass {
 							return;
 						}
 						logger.info?.('New id allocation', nextId, idIncrementer.maxSafeId);
-						replaceIdAllocation(updatedIdAllocation, {
+						// a sibling's allocation may have won, and its range, not this proposal, bounds the shared counter
+						idIncrementer.maxSafeId = replaceIdAllocation(updatedIdAllocation, {
 							start: updatedIdAllocation.start,
 							end: idIncrementer.maxSafeId,
 							nodeName: server.hostname,
 							pid: process.pid,
-						});
+						}).end;
 					} else {
 						// indicate that we have run out of ids in the allocated range, so we need to allocate a new range
 						logger.warn?.(
@@ -2683,21 +2685,22 @@ export function makeTable(options): TableResourceClass {
 				logger.debug?.('Looks like ids were already allocated');
 				return { alreadyUpdated: true, ...committedAllocation };
 			}
-			// Compare-and-replace of the stored allocation; returns whichever allocation is stored afterwards.
 			// The value is the comparison token because RocksDB stores this record without a version. On RocksDB
 			// the read and write must join the transaction so a sibling thread's commit in between is a conflict;
 			// the retry then reads the sibling's allocation.
 			function replaceIdAllocation(expectedAllocation, nextAllocation) {
-				return primaryStore.transactionSync(
+				const storedAllocation = primaryStore.transactionSync(
 					(transaction) => {
 						const options = transaction && { transaction };
 						const storedAllocation = primaryStore.getEntry(ID_ALLOCATION_KEY, options)?.value;
-						if (!isSameIdAllocation(storedAllocation, expectedAllocation)) return storedAllocation;
+						if (storedAllocation && !isSameIdAllocation(storedAllocation, expectedAllocation)) return storedAllocation;
 						primaryStore.put(ID_ALLOCATION_KEY, nextAllocation, options ?? Date.now());
 						return nextAllocation;
 					},
-					isRocksDB ? { retryOnBusy: true } : undefined
+					isRocksDB ? ID_ALLOCATION_TRANSACTION_OPTIONS : undefined
 				);
+				if (!storedAllocation) throw new Error(`Id range allocation for table ${tableName} was aborted`);
+				return storedAllocation;
 			}
 		}
 
