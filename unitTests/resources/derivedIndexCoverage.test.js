@@ -2,7 +2,8 @@ require('../testUtils');
 const assert = require('node:assert');
 const { existsSync } = require('node:fs');
 const { setupTestDBPath } = require('../testUtils');
-const { table, closeDatabase } = require('#src/resources/databases');
+const { table, closeDatabase, resetDatabases } = require('#src/resources/databases');
+const { suspendDerivedIndexActivation } = require('#src/resources/derivedIndexes');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 const { DatabaseTransaction, setTxnExpiration } = require('#src/resources/DatabaseTransaction');
@@ -67,6 +68,16 @@ describe('native derived-index query coverage', function () {
 		return (releaseHeldBarrier = release);
 	};
 	afterEach(() => releaseHeldBarrier());
+	// Tests running their own runtime need the runner lock; any resetDatabases() (the analytics timers
+	// declare their tables) re-attaches the table's runtime as a rival runner unless activation is suspended.
+	let releaseTableActivation;
+	const detachTableRuntime = async () => {
+		releaseTableActivation ??= suspendDerivedIndexActivation(Product.primaryStore.rootStore);
+		const attachment = Product.derivedIndexRuntime;
+		await attachment?.close();
+		if (Product.derivedIndexRuntime === attachment) Product.derivedIndexRuntime = undefined;
+		assert.equal(Product.derivedIndexRuntime, undefined);
+	};
 	before(async () => {
 		setupTestDBPath();
 		setMainIsWorker(true);
@@ -90,7 +101,13 @@ describe('native derived-index query coverage', function () {
 		await Product.put('initial', { vector });
 		await current();
 	});
-	after(() => closeDatabase('native-query-coverage'));
+	after(async () => {
+		try {
+			await closeDatabase('native-query-coverage');
+		} finally {
+			releaseTableActivation?.();
+		}
+	});
 	it('rejects a committed write before its native barrier without invalidating the plane', async () => {
 		const plane = index.getPlane();
 		await Product.put('new', { vector });
@@ -624,11 +641,18 @@ describe('native derived-index query coverage', function () {
 		releaseBarrier();
 		await current();
 	});
+	it('keeps the table runtime detached when the catalog reloads while it closes', async () => {
+		await current();
+		const detaching = detachTableRuntime();
+		resetDatabases();
+		await detaching;
+		resetDatabases();
+		assert.equal(Product.derivedIndexRuntime, undefined);
+	});
 	it('refreshes owned idle coverage, fences old owners, and certifies without a registered reader', async () => {
 		await current();
 		const oldEpoch = index.derivedHost.readiness().ownerEpoch;
-		await Product.derivedIndexRuntime.close();
-		Product.derivedIndexRuntime = undefined;
+		await detachTableRuntime();
 		const id = `hnsw:${Product.indices.vector.name}`;
 		const backend = new HnswDerivedIndexBackend(id, index);
 		const runtime = new DerivedIndexRuntime(
@@ -666,7 +690,7 @@ describe('native derived-index query coverage', function () {
 		}
 	});
 	it('refreshes a completed nonempty drain while new unrelated commits keep arriving', async () => {
-		await Product.derivedIndexRuntime?.close();
+		await detachTableRuntime();
 		const id = `hnsw:${Product.indices.vector.name}`;
 		const root = Product.auditStore.rootStore;
 		const log = root.useLog('continuous-coverage');
@@ -727,7 +751,7 @@ describe('native derived-index query coverage', function () {
 		}
 	});
 	it('does not refresh coverage for unrelated writes while an earlier mutation awaits its barrier', async () => {
-		await Product.derivedIndexRuntime?.close();
+		await detachTableRuntime();
 		const id = `hnsw:${Product.indices.vector.name}`;
 		const backend = new HnswDerivedIndexBackend(id, index);
 		const runtime = new DerivedIndexRuntime(

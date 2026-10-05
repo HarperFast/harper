@@ -29,8 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
     # on a required check. Every step below is capped in its own right and this sits above their
-    # sum (52 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
-    timeout-minutes: 55
+    # sum (55 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
+    timeout-minutes: 56
     strategy:
       fail-fast: false
       matrix:
@@ -95,8 +95,11 @@ jobs:
       # Derived 2026-09-18 over the 30 `Unit Test` pushes since 2026-09-14, and only `resources`
       # was re-budgeted — capped at 7m off a ~4m30-5m25 estimate nobody re-measured, it reached
       # 6m58 completed, went red on main, and needed ~7m40 at its worst. `main` was re-derived
-      # 2026-10-02: the eight pushes since 2026-10-01 took 3m12-3m59 against its 4m cap, and
-      # harper#2981's legs reached mocha's epilogue at 4m02-4m12 before the cap killed them, so 6m.
+      # 2026-10-05 over ten pushes: slowest successful step 3m59; the new named-child suites add ~12s.
+      # All three Node legs reached their epilogues in 4m03 to 4m13, past the old 4m cap;
+      # 1.5x the slowest epilogue is 6m20, rounded up to 7m. harper#2981's certification gate
+      # suites then took its legs to 4m57-5m16, about 5m28 with those named-child suites; 1.5x
+      # is 8m12, rounded up to 9m.
       # `lmdb` was re-derived 2026-09-28 over the pushes since 2026-09-26:
       # slowest completed 3m38, ~3m20 once `subscriptionSuperseded` stopped replaying the shared
       # `test` database's whole audit log; 1.5x is 5m, and the legs killed at 4m ran longer than any
@@ -114,7 +117,7 @@ jobs:
       # core 4m50 -> 8m, indexes 2m50 -> 5m.
       - name: 'Unit tests: main'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
-        timeout-minutes: 6
+        timeout-minutes: 9
         run: npm run test:unit:main
 
       - name: 'Unit tests: apitests'
