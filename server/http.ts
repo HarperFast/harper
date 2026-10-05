@@ -270,23 +270,25 @@ export function writeUdsMetadata(
 }
 
 /**
- * Create the UDS mirror directory owner-only, tightening it if it already exists. Returns false
- * (after logging) when that cannot be done; the caller then skips the mirror and keeps its TLS
- * listener. Windows has no POSIX modes, so only the creation applies there.
+ * Returns the sockets directory, created and tightened to owner-only. Undefined (after logging) means
+ * the mirror is skipped. An isolated application's worker is served only through its mirror, so
+ * there the failure is thrown instead.
  */
-export function ensureSocketsDirectory(socketsDir: string): boolean {
+export function ensureSocketsDirectory(): string | undefined {
+	const socketsDir = join(env.getHdbBasePath(), 'sockets');
 	try {
 		mkdirSync(socketsDir, { recursive: true, mode: 0o700 });
-		if (process.platform === 'win32') return true;
+		if (process.platform === 'win32') return socketsDir;
 		const mode = statSync(socketsDir).mode & 0o777;
 		if (mode !== 0o700) {
 			chmodSync(socketsDir, 0o700);
 			harperLogger.warn(`Set UDS sockets directory ${socketsDir} to mode 700 (was ${mode.toString(8)})`);
 		}
-		return true;
+		return socketsDir;
 	} catch (error) {
+		if (thisThreadsIsolatedApplication()) throw error;
 		harperLogger.error('Unable to secure UDS sockets directory ' + socketsDir + ', skipping UDS mirrors', error);
-		return false;
+		return undefined;
 	}
 }
 
@@ -946,13 +948,11 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		if (isOperationsServer && String(port).includes('/')) server.bypassLocalAuth = true;
 
 		// Create a corresponding Unix Domain Socket mirror for secure ports, on the threads that bind the port
-		const socketsDir = join(env.getHdbBasePath(), 'sockets');
-		if (
-			secure &&
-			env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) &&
-			shouldBindListenerHere(port) &&
-			ensureSocketsDirectory(socketsDir)
-		) {
+		const socketsDir =
+			secure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) && shouldBindListenerHere(port)
+				? ensureSocketsDirectory()
+				: undefined;
+		if (socketsDir) {
 			const isolatedApplication = thisThreadsIsolatedApplication();
 			const socketName = isolatedApplication
 				? applicationSocketName(isolatedApplication, port)

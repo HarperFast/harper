@@ -7,6 +7,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
+const env = require('#src/utility/environment/environmentManager');
 const { ensureSocketsDirectory, writeUdsMetadata } = require('#src/server/http');
 
 // Portable suite on purpose: udsMirror.test.js is excluded from the Windows gate, so the directory
@@ -14,6 +15,8 @@ const { ensureSocketsDirectory, writeUdsMetadata } = require('#src/server/http')
 const POSIX = process.platform !== 'win32';
 const posixIt = POSIX ? it : it.skip;
 const posixNonRootIt = POSIX && process.getuid?.() !== 0 ? it : it.skip;
+
+const SOCKETS_DIR = path.join(env.getHdbBasePath(), 'sockets');
 
 function modeOf(filePath) {
 	return fs.statSync(filePath).mode & 0o777;
@@ -36,40 +39,43 @@ describe('UDS mirror directory and metadata publication', () => {
 	});
 
 	describe('ensureSocketsDirectory', () => {
+		beforeEach(() => {
+			fs.rmSync(SOCKETS_DIR, { recursive: true, force: true });
+		});
+
+		afterEach(() => {
+			fs.rmSync(SOCKETS_DIR, { recursive: true, force: true });
+		});
+
 		posixIt('creates a missing directory with mode 0700', () => {
-			const socketsDir = path.join(workDir, 'create', 'sockets');
-			assert.strictEqual(ensureSocketsDirectory(socketsDir), true);
-			assert.strictEqual(modeOf(socketsDir), 0o700);
+			assert.strictEqual(ensureSocketsDirectory(), SOCKETS_DIR);
+			assert.strictEqual(modeOf(SOCKETS_DIR), 0o700);
 		});
 
 		posixIt('tightens a pre-created 0755 directory to 0700', () => {
-			const socketsDir = path.join(workDir, 'tighten');
-			fs.mkdirSync(socketsDir);
-			fs.chmodSync(socketsDir, 0o755);
-			assert.strictEqual(ensureSocketsDirectory(socketsDir), true);
-			assert.strictEqual(modeOf(socketsDir), 0o700);
+			fs.mkdirSync(SOCKETS_DIR);
+			fs.chmodSync(SOCKETS_DIR, 0o755);
+			assert.strictEqual(ensureSocketsDirectory(), SOCKETS_DIR);
+			assert.strictEqual(modeOf(SOCKETS_DIR), 0o700);
 		});
 
 		posixIt('restores owner access to an owner-unusable directory', () => {
-			const socketsDir = path.join(workDir, 'owner-unusable');
-			fs.mkdirSync(socketsDir);
-			fs.chmodSync(socketsDir, 0o500);
-			assert.strictEqual(ensureSocketsDirectory(socketsDir), true);
-			assert.strictEqual(modeOf(socketsDir), 0o700);
+			fs.mkdirSync(SOCKETS_DIR);
+			fs.chmodSync(SOCKETS_DIR, 0o500);
+			assert.strictEqual(ensureSocketsDirectory(), SOCKETS_DIR);
+			assert.strictEqual(modeOf(SOCKETS_DIR), 0o700);
 		});
 
 		it('is idempotent on an existing directory', () => {
-			const socketsDir = path.join(workDir, 'idempotent');
-			assert.strictEqual(ensureSocketsDirectory(socketsDir), true);
-			assert.strictEqual(ensureSocketsDirectory(socketsDir), true);
-			assert.ok(fs.statSync(socketsDir).isDirectory());
+			assert.strictEqual(ensureSocketsDirectory(), SOCKETS_DIR);
+			assert.strictEqual(ensureSocketsDirectory(), SOCKETS_DIR);
+			assert.ok(fs.statSync(SOCKETS_DIR).isDirectory());
 		});
 
-		it('returns false and leaves the path alone when a regular file occupies it', () => {
-			const socketsDir = path.join(workDir, 'occupied');
-			fs.writeFileSync(socketsDir, 'not a directory');
-			assert.strictEqual(ensureSocketsDirectory(socketsDir), false);
-			assert.strictEqual(fs.readFileSync(socketsDir, 'utf8'), 'not a directory');
+		it('returns undefined and leaves the path alone when a regular file occupies it', () => {
+			fs.writeFileSync(SOCKETS_DIR, 'not a directory');
+			assert.strictEqual(ensureSocketsDirectory(), undefined);
+			assert.strictEqual(fs.readFileSync(SOCKETS_DIR, 'utf8'), 'not a directory');
 		});
 	});
 
@@ -79,7 +85,6 @@ describe('UDS mirror directory and metadata publication', () => {
 
 		beforeEach(() => {
 			socketsDir = fs.mkdtempSync(path.join(workDir, 'publish-'));
-			assert.strictEqual(ensureSocketsDirectory(socketsDir), true);
 			yamlPath = path.join(socketsDir, '0-9926.yaml');
 		});
 
