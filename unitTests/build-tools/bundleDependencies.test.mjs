@@ -151,6 +151,22 @@ describe('portable production dependency bundle', function () {
 		});
 	}
 
+	it('prunes the real production graph while retaining native roots and required type packages', () => {
+		const realLock = JSON.parse(readFileSync(new URL('../../package-lock.json', import.meta.url)));
+		const plan = bundlePlan(realLock);
+		for (const name of ['@harperfast/rocksdb-js', 'lmdb', 'argon2']) {
+			assert.ok(!plan.packages.has(`node_modules/${name}`));
+			assert.strictEqual(plan.external[name], realLock.packages[`node_modules/${name}`].version);
+		}
+		for (const key of plan.packages) {
+			assert.ok(!/node_modules\/(react-native-fs|react-native|utf-8-validate)(?:$|\/)/.test(key));
+		}
+		assert.ok(plan.packages.has('node_modules/@types/node'));
+		const optionalOnly = structuredClone(realLock);
+		delete optionalOnly.packages['node_modules/@types/readable-stream'].dependencies['@types/node'];
+		assert.ok(!bundlePlan(optionalOnly).packages.has('node_modules/@types/node'));
+	});
+
 	it('keeps uWebSockets.js as a dev dependency and optional peer in the real manifest', () => {
 		const manifest = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url)));
 		assert.ok(manifest.devDependencies['uWebSockets.js']);
@@ -159,43 +175,63 @@ describe('portable production dependency bundle', function () {
 		assert.ok(!manifest.dependencies['uWebSockets.js'] && !manifest.optionalDependencies['uWebSockets.js']);
 	});
 
-	for (const layout of ['nested', 'linked']) {
-		it(`rejects a ${layout} same-version private encoder instance in an installed engine`, () => {
-			Object.assign(lock.packages[''].dependencies, {
-				'@harperfast/rocksdb-js': '2.0.0',
-				'@harperfast/extended-iterable': '1.0.0',
-				'ordered-binary': '1.6.2',
-				'msgpackr': '2.0.0',
-			});
-			for (const [name, version] of Object.entries(lock.packages[''].dependencies)) {
-				lock.packages[`node_modules/${name}`] ??= { version };
+	function installedEngineFixture(engine) {
+		Object.assign(lock.packages[''].dependencies, {
+			[engine]: '2.0.0',
+			'@harperfast/extended-iterable': '1.0.0',
+			'ordered-binary': '1.6.2',
+			'msgpackr': '2.0.0',
+		});
+		for (const [name, version] of Object.entries(lock.packages[''].dependencies)) {
+			lock.packages[`node_modules/${name}`] ??= { version };
+		}
+		const stage = prepare();
+		for (const name of Object.keys(bundlePlan(lock).external)) {
+			moduleFixture(join(stage, 'node_modules', name), name);
+		}
+		return stage;
+	}
+	function moduleFixture(path, name) {
+		mkdirSync(path, { recursive: true });
+		writeFileSync(
+			join(path, 'package.json'),
+			JSON.stringify({ name, version: lock.packages[`node_modules/${name}`].version, main: 'index.js' })
+		);
+		writeFileSync(join(path, 'index.js'), 'module.exports = {};');
+	}
+	for (const [engine, names] of [
+		['@harperfast/rocksdb-js', ['@harperfast/extended-iterable', 'ordered-binary', 'msgpackr']],
+		['lmdb', ['@harperfast/extended-iterable', 'ordered-binary']],
+	]) {
+		for (const name of names) {
+			for (const layout of ['nested', 'linked']) {
+				it(`rejects a ${layout} private ${name} instance in ${engine}`, () => {
+					const stage = installedEngineFixture(engine);
+					const nested = join(stage, 'node_modules', engine, 'node_modules', name);
+					if (layout === 'linked') {
+						const target = join(directory, 'private-encoder');
+						moduleFixture(target, name);
+						mkdirSync(dirname(nested), { recursive: true });
+						symlinkSync(target, nested, 'junction');
+					} else moduleFixture(nested, name);
+					assert.throws(
+						() => checkBundle(stage, join(source, 'package-lock.json'), true),
+						(error) => error.message.includes(`separate ${name} instances`)
+					);
+				});
 			}
-			const stage = prepare();
-			for (const name of Object.keys(bundlePlan(lock).external)) {
-				const file = join(stage, 'node_modules', name, 'package.json');
-				mkdirSync(dirname(file), { recursive: true });
-				writeFileSync(
-					file,
-					JSON.stringify({ name, version: lock.packages[`node_modules/${name}`].version, main: 'index.js' })
-				);
-				writeFileSync(join(dirname(file), 'index.js'), 'module.exports = {};');
-			}
-			const nested = join(stage, 'node_modules/@harperfast/rocksdb-js/node_modules/ordered-binary');
-			mkdirSync(dirname(nested), { recursive: true });
-			if (layout === 'linked') {
-				const target = join(directory, 'private-encoder');
-				mkdirSync(target);
-				writeFileSync(join(target, 'package.json'), '{"name":"ordered-binary","version":"1.6.2","main":"index.js"}');
-				writeFileSync(join(target, 'index.js'), 'module.exports = {};');
-				symlinkSync(target, nested, 'junction');
-			} else {
-				mkdirSync(nested);
-				writeFileSync(join(nested, 'package.json'), '{"name":"ordered-binary","version":"1.6.2","main":"index.js"}');
-				writeFileSync(join(nested, 'index.js'), 'module.exports = {};');
-			}
+		}
+		it(`checks module resolution from the real path of a linked ${engine}`, () => {
+			const stage = installedEngineFixture(engine);
+			const linked = join(directory, 'linked', 'engine');
+			moduleFixture(linked, engine);
+			for (const name of names) moduleFixture(join(directory, 'linked', 'node_modules', name), name);
+			const installed = join(stage, 'node_modules', engine);
+			rmSync(installed, { recursive: true });
+			symlinkSync(linked, installed, 'junction');
 			assert.throws(
 				() => checkBundle(stage, join(source, 'package-lock.json'), true),
-				/separate ordered-binary instances/
+				/separate @harperfast\/extended-iterable instances/
 			);
 		});
 	}
