@@ -11,6 +11,8 @@
  *           RSS / heap per connection, connect rate and CPU per connect, and idle CPU (keepalives).
  *   fanout  Hold --conns connections × --subs subscriptions over --topics topics, then publish at
  *           each --rates rate. Reports deliveries/s, CPU µs per delivery, and end-to-end latency.
+ *   churn   Open --conns connections, disconnect them all (--close=graceful|abrupt), and repeat for --cycles
+ *           cycles. Reports memory released per connection and memory still held after each disconnect.
  *
  * Usage (see README.md; after `npm run build` from the repo root):
  *   node benchmarks/ws-scale/run.mts --scenario=conns --steps=10000,50000,100000 --subs=0
@@ -86,7 +88,6 @@ const { values: args } = parseArgs({
 		// CPU-profile every worker for this many seconds, starting 5s into the first fanout rate or at
 		// the start of the last conns step's settle window; profiles land in --profile-dir
 		'profile': { type: 'string' },
-		// profiles and the preload's control files; a fresh directory per run when not given
 		'profile-dir': { type: 'string' },
 		'harper-env': { type: 'string', multiple: true, default: [] },
 		'engine': { type: 'string', default: 'rocksdb' },
@@ -97,6 +98,7 @@ const { values: args } = parseArgs({
 
 if (process.platform !== 'linux') throw new Error('ws-scale needs Linux: it reads /proc and pins CPUs with taskset');
 const threads = Number(args.threads);
+if (!(threads >= 1)) throw new Error('--threads must be at least 1');
 function parseCpuList(list: string) {
 	return list.split(',').flatMap((range) => {
 		const [from, to = from] = range.split('-').map(Number);
@@ -147,6 +149,7 @@ const topics = Number(args.topics);
 if (subs > topics) throw new Error(`--subs=${subs} needs at least as many --topics, or a connection repeats a topic`);
 if (args.insert && args.publish !== 'put') throw new Error('--insert applies only to --publish=put');
 if (!['graceful', 'abrupt'].includes(args.close!)) throw new Error('--close must be graceful or abrupt');
+if (args.scenario === 'churn' && args.profile) throw new Error('--profile applies to conns and fanout, not churn');
 if (args.uds) {
 	// Linux caps a Unix socket path at 107 bytes, and Harper skips (Node) or fails to start (uWS) a longer mirror
 	const longestPath = join(installParent, 'harper-integration-test-XXXXXX', 'sockets', `${threads - 1}-9927-h2.sock`);
@@ -311,36 +314,54 @@ async function main() {
 		(harperConfig as any).tls = { unixDomainSockets: true };
 		if (args.uws) env.HARPER_UWS_UDS = '1';
 	}
-	const profileDir = args['profile-dir'] ?? mkdtempSync(join(tmpdir(), 'ws-scale-'));
-	if (args.profile || args.scenario === 'churn') {
+	const usesPreload = args.profile || args.scenario === 'churn';
+	const profileDir = args['profile-dir'] ?? (usesPreload ? mkdtempSync(join(tmpdir(), 'ws-scale-')) : '');
+	if (usesPreload) {
 		mkdirSync(profileDir, { recursive: true });
 		for (const file of readdirSync(profileDir)) {
 			if (/^(start|gc-[\d-]+(\.tmp)?|thread-\d+\.(cpuprofile|started))$/.test(file)) rmSync(join(profileDir, file));
 		}
 		env.WS_SCALE_CONTROL_DIR = profileDir;
-		if (args.profile) console.log(`profiles: ${profileDir}`);
+		console.log(`control directory: ${profileDir}`);
 		(harperConfig.threads as any).preloadRequire = join(import.meta.dirname, 'harness-preload.cjs');
 	}
 	let profileStartedAt = Infinity;
 	let profileTimer: NodeJS.Timeout | undefined;
-	if (args.scenario === 'churn') env.NODE_OPTIONS = [process.env.NODE_OPTIONS, '--expose-gc'].filter(Boolean).join(' ');
 	let collections = 0;
-	// Every worker runs a full GC and reports its heap right after it, so retained memory is not confused with
+	let workerIds: Set<string> | undefined;
+	// Every worker runs a full GC and reports its memory right after it, so retained memory is not confused with
 	// uncollected garbage (system_information's per-thread heap comes from a periodic report, so it can be stale).
+	// The first collection fixes the set of workers: a restarted worker would replay every request with a fresh
+	// heap and make a leak look released, so a change in the set fails the run.
+	const ackedIds = (request: string) =>
+		readdirSync(profileDir)
+			.filter((file) => file.startsWith(`${request}-`) && !file.endsWith('.tmp'))
+			.map((file) => file.slice(request.length + 1));
 	const collectGarbage = async () => {
 		const request = `gc-${++collections}`;
 		writeFileSync(join(profileDir, request), '');
 		for (let waited = 0; ; waited += 100) {
-			const acks = readdirSync(profileDir).filter((file) => file.startsWith(`${request}-`) && !file.endsWith('.tmp'));
-			if (acks.length >= threads) {
-				const usage = acks.map((file) => JSON.parse(readFileSync(join(profileDir, file), 'utf8')));
-				if (usage.some((thread) => thread.error))
-					throw new Error('Harper workers have no gc(); --expose-gc did not reach them');
-				return { used: usage.reduce((sum, thread) => sum + thread.heapUsed, 0) / 2 ** 20 };
+			const acked = ackedIds(request);
+			if (workerIds) {
+				const stranger = acked.find((id) => !workerIds!.has(id));
+				if (stranger) throw new Error(`thread ${stranger} joined after the first GC; a Harper worker restarted`);
+				if (acked.length === workerIds.size) return collectGarbageResult(request, workerIds);
+			} else if (acked.length >= threads) {
+				// let any extra worker that loads the preload (such as a job worker) acknowledge too
+				await delay(500);
+				workerIds = new Set(ackedIds(request));
+				return collectGarbageResult(request, workerIds);
 			}
-			if (waited > 30_000) throw new Error(`only ${acks.length} of ${threads} workers ran ${request}`);
+			if (waited > 30_000) throw new Error(`only ${acked.length} Harper workers ran ${request}`);
 			await delay(100);
 		}
+	};
+	const collectGarbageResult = (request: string, ids: Set<string>) => {
+		const usage = [...ids].map((id) => JSON.parse(readFileSync(join(profileDir, `${request}-${id}`), 'utf8')));
+		if (usage.some((thread) => thread.error))
+			throw new Error('Harper workers have no gc(); --expose-gc did not reach them');
+		const sum = (field: string) => usage.reduce((total, thread) => total + thread[field], 0) / 2 ** 20;
+		return { used: sum('heapUsed'), external: sum('external') };
 	};
 	// renamed into place so a worker polling for it never reads it half-written
 	const startProfile = () => {
@@ -362,6 +383,8 @@ async function main() {
 		const eq = pair.indexOf('=');
 		env[pair.slice(0, eq)] = pair.slice(eq + 1);
 	}
+	if (args.scenario === 'churn')
+		env.NODE_OPTIONS = [env.NODE_OPTIONS ?? process.env.NODE_OPTIONS, '--expose-gc'].filter(Boolean).join(' ');
 	await setupHarperWithFixture(ctx, APP_DIR, {
 		harperBinPath: args['harper-bin'],
 		config: harperConfig,
@@ -482,21 +505,23 @@ async function main() {
 		} else if (args.scenario === 'churn') {
 			const conns = Number(args.conns);
 			const settleMs = Number(args.settle) * 1000;
-			let firstHeap: number | undefined;
+			let firstHeld: number | undefined;
 			let openedSinceFirst = 0;
 			let subscribedBefore = 0;
 			for (let cycle = 1; cycle <= Number(args.cycles); cycle++) {
 				await openTo(opened + conns);
 				await delay(settleMs);
 				const connected = await clientStats();
-				const connectedHeap = await collectGarbage();
+				const connectedMemory = await collectGarbage();
 				const connectedRss = rssMB(harperPid);
 				await Promise.all(clients.map((client) => client.request({ cmd: 'disconnect', mode: args.close })));
 				await delay(settleMs);
-				const heap = await collectGarbage();
+				const memory = await collectGarbage();
 				const stats = await clientStats();
 				const rss = rssMB(harperPid);
-				if (firstHeap === undefined) firstHeap = heap.used;
+				// heap plus external (Buffers and ArrayBuffers a connection holds live outside the JavaScript heap)
+				const held = memory.used + memory.external;
+				if (firstHeld === undefined) firstHeld = held;
 				else openedSinceFirst += connected.open;
 				report({
 					label: args.label,
@@ -511,14 +536,15 @@ async function main() {
 					failed: stats.failed,
 					stillOpen: stats.open,
 					connectedRssMB: connectedRss,
-					connectedHeapMB: connectedHeap.used,
-					...(connected.open > 0 && { heapKBPerConn: ((connectedHeap.used - heap.used) * 1024) / connected.open }),
-					rssMB: rss,
-					heapUsedMB: heap.used,
-					// memory still held after disconnecting, per connection opened since the first cycle's disconnect
-					...(openedSinceFirst > 0 && {
-						retainedHeapBytesPerConn: ((heap.used - firstHeap) * 2 ** 20) / openedSinceFirst,
+					connectedHeapMB: connectedMemory.used,
+					connectedExternalMB: connectedMemory.external,
+					...(connected.open > 0 && {
+						releasedKBPerConn: ((connectedMemory.used + connectedMemory.external - held) * 1024) / connected.open,
 					}),
+					rssMB: rss,
+					heapUsedMB: memory.used,
+					externalMB: memory.external,
+					...(openedSinceFirst > 0 && { retainedBytesPerConn: ((held - firstHeld!) * 2 ** 20) / openedSinceFirst }),
 				});
 				subscribedBefore = connected.subscribed;
 			}
