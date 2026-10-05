@@ -95,6 +95,54 @@ describe('@fullText derived-index activation', () => {
 		setFullTextNativeBindingForTests(undefined);
 	});
 
+	rocksOnly('keeps Harper payloads within the native v3 compatibility boundary', async () => {
+		const options = {
+			path: path.join(setupTestDBPath(), `fulltext-boundary-${Date.now()}`),
+			indexId: 'products-title',
+			generation: 'generation-1',
+			fields: [{ name: 'title', weight: 1 }],
+			analyzer: 'english@2',
+			stopWords: true,
+			positions: true,
+			surfaceTerms: true,
+			synonyms: [],
+			limits: {
+				indexingThreads: 1,
+				searchThreads: 2,
+				writerMemoryBytes: 64 * 1024 * 1024,
+				maxQueuedCommands: 16,
+				maxQueuedBytes: 64 * 1024 * 1024,
+				maxBatchBytes: 8 * 1024 * 1024,
+			},
+		};
+		const filteredOptions = { ...options, filterFields: ['category'] };
+		assert.throws(() => binding.validateNativeFullTextIndexOptions(filteredOptions), /filterFields/);
+		const filteredInspectionOptions = { ...filteredOptions };
+		delete filteredInspectionOptions.limits;
+		assert.throws(() => binding.inspectNativeFullTextIndex(filteredInspectionOptions), /filterFields/);
+		await assert.rejects(binding.openNativeFullTextIndex(filteredOptions), /filterFields/);
+		await assert.rejects(binding.openNativeFullTextReader(filteredOptions), /filterFields/);
+
+		binding.validateNativeFullTextIndexOptions(options);
+		const inspectionOptions = { ...options };
+		delete inspectionOptions.limits;
+		assert.deepStrictEqual(binding.inspectNativeFullTextIndex(inspectionOptions), { state: 'missing' });
+		const index = await binding.openNativeFullTextIndex(options);
+		await assert.rejects(
+			index.applyMutationBatch({ upserts: [{ id: 'one', fields: { title: 'shoe' }, filters: {} }], deletes: [] }),
+			/filters/
+		);
+		await index.applyMutationBatch({ upserts: [{ id: 'one', version: '1', fields: { title: 'shoe' } }], deletes: [] });
+		const reader = await binding.openNativeFullTextReader(options);
+		await assert.rejects(reader.search({ text: 'shoe', limit: 1, filter: {} }), /filter/);
+		await assert.rejects(reader.search({ text: 'shoe', limit: 1, candidateIds: ['one'] }), /candidateIds/);
+		assert.deepStrictEqual(await reader.search({ text: 'shoe', limit: 1 }), {
+			total: 1,
+			totalRelation: 'exact',
+			hits: [{ id: 'one', version: '1', score: 1 }],
+		});
+	});
+
 	lmdbOnly('rejects activation before persisting an LMDB declaration', () => {
 		const database = `fulltext-lmdb-${Date.now()}`;
 		assert.throws(
@@ -347,7 +395,7 @@ describe('@fullText derived-index activation', () => {
 				filtered.map(({ id }) => id),
 				['exact']
 			);
-			assert.strictEqual(primaryReads, 2);
+			assert.strictEqual(primaryReads, 1, 'the companion index must reject non-matches before source loading');
 		} finally {
 			Product.primaryStore.getEntry = originalGetEntry;
 		}

@@ -1259,6 +1259,18 @@ function scopeViolation(
 	);
 }
 
+function rescope(resolved: ResolvedRecordLockOptions, tableReplicates: boolean): ResolvedRecordLockOptions {
+	if (resolved.scopeRequested) return resolved;
+	const scope = tableReplicates ? 'cluster' : 'node';
+	return scope === resolved.scope ? resolved : { ...resolved, scope };
+}
+
+function transportUnavailable(databaseName: string): LockUnavailableError {
+	return new LockUnavailableError(
+		`Cluster-scoped record locks are not available on ${databaseName}: no record lock transport is registered`
+	);
+}
+
 /** Distinguishes bare lock options from a record target (id, URL, {id:...}). */
 function isPlainOptions(value: unknown): boolean {
 	return (
@@ -1600,12 +1612,25 @@ export function makeTable(options): TableResourceClass {
 			return;
 		return { key, descriptor };
 	}
+	const COMMIT_BASE_METHODS = new Set(['put', 'patch', 'delete']);
+	function entryBeforeWrite(loadedEntry: Entry | undefined, id: Id, transaction: any, reloadsCommitBase: boolean) {
+		if (loadedEntry != null) return loadedEntry;
+		if (isRocksDB && reloadsCommitBase) {
+			// save() reads this write's base from the staging snapshot (harper#2259); the read handle is still opened
+			// here because it is what gives the staged write coordinated conflict retries
+			transaction.getReadTxn();
+			return undefined;
+		}
+		return primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
+	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
 		#version?: number; // version of the record
 		#entry?: Entry; // the entry from the database
 		#savingOperation?: any; // operation for the record is currently being saved
+		#baseReadTxn?: any; // staging handle this instance's uncached pre-load read through
+		#baseReadEntry?: Entry; // what that read returned, reusable as the commit base only while it is still #entry
 		#lockHandle?: RecordLockHandle; // the record lock acquired by lock() — scoped or hold
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
 		#writeGeneration?: WriteGeneration;
@@ -2381,15 +2406,29 @@ export function makeTable(options): TableResourceClass {
 				if (readTxn?.isDone) {
 					throw new Error('You can not read from a transaction that has already been committed/aborted');
 				}
+				const readsCommitBase =
+					isRocksDB &&
+					COMMIT_BASE_METHODS.has(resourceOptions?.method) &&
+					!resourceOptions?.ensureLoaded &&
+					readTxn &&
+					!(readTxn as any).snapshotDisabled;
 				return loadLocalRecord(
 					id,
 					request,
-					{ transaction: readTxn, ensureLoaded: resourceOptions?.ensureLoaded },
+					{
+						transaction: readTxn,
+						ensureLoaded: resourceOptions?.ensureLoaded,
+						uncachedRead: readsCommitBase || undefined,
+					},
 					sync,
 					(entry) => {
 						if (entry) {
 							TableResource._updateResource(this, entry);
 						} else this.#record = null;
+						if (readsCommitBase) {
+							this.#baseReadTxn = readTxn;
+							this.#baseReadEntry = entry;
+						}
 						if (request.onlyIfCached) {
 							// don't go into the loading from source condition, but HTTP spec says to
 							// return 504 (rather than 404) if there is no content and the cache-control header
@@ -2421,6 +2460,14 @@ export function makeTable(options): TableResourceClass {
 				throw error;
 			}
 		}
+		// Reusable only for the key this instance read and while #entry is the entry that read returned: a source fill
+		// or retry replaces #entry, and ensureLoaded() can evict it in place, so ensureLoaded() drops the receipt.
+		#commitBaseTxn(id: Id) {
+			const baseReadTxn = this.#baseReadTxn;
+			if (!baseReadTxn || this.#baseReadEntry !== this.#entry) return;
+			const receiverId = this.getId();
+			if (Object.is(id, receiverId) || writeKeyId(id) === writeKeyId(receiverId)) return baseReadTxn;
+		}
 		static _updateResource(resource, entry) {
 			resource.#entry = entry;
 			resource.#record = entry?.value ?? null;
@@ -2432,6 +2479,7 @@ export function makeTable(options): TableResourceClass {
 		 * @returns
 		 */
 		ensureLoaded() {
+			this.#baseReadTxn = undefined;
 			const loadedFromSource = ensureLoadedFromSource(
 				(this.constructor as any).source,
 				this.getId(),
@@ -3675,6 +3723,7 @@ export function makeTable(options): TableResourceClass {
 								isRocksDB && audit && txnLogKey !== txnTime
 									? [{ version: txnLogKey, nodeId: options?.nodeId }]
 									: undefined,
+							localOnly: options?.localOnly,
 						},
 						'invalidate'
 					);
@@ -3743,6 +3792,7 @@ export function makeTable(options): TableResourceClass {
 								isRocksDB && audit && txnLogKey !== txnTime
 									? [{ version: txnLogKey, nodeId: options?.nodeId }]
 									: undefined,
+							localOnly: options?.localOnly,
 						},
 						'relocate',
 						false,
@@ -3920,7 +3970,7 @@ export function makeTable(options): TableResourceClass {
 			const id = target != null ? requestTargetToId(target as RequestTargetOrId) : this.getId();
 			checkValidId(id);
 			this.#assertLiveHandle(id);
-			const resolved = resolveLockOptions(options);
+			const resolved = resolveLockOptions(options, TableResource.replicate !== false);
 			const context = this.getContext();
 			const link = txnForContext(context);
 			const keyId = writeKeyId(id);
@@ -3932,11 +3982,7 @@ export function makeTable(options): TableResourceClass {
 				(resolved.scopeRequested || isClusterLockRequired(databaseName)) &&
 				!getClusterLockTransport(databaseName)
 			)
-				return Promise.reject(
-					new LockUnavailableError(
-						`Cluster-scoped record locks are not available on ${databaseName}: no record lock transport is registered`
-					)
-				);
+				return Promise.reject(transportUnavailable(databaseName));
 			const held = this.#lockHandle;
 			if (held && !held.isExpired() && held.keyId === keyId) {
 				// Re-entrant: upgrade to hold if requested, then preserve staged changes.
@@ -4027,7 +4073,11 @@ export function makeTable(options): TableResourceClass {
 						clearTimeout(followerTimer);
 						const acquired = link.recordLockFor(primaryStore, keyId);
 						if (acquired && !acquired.isExpired()) {
-							const violation = scopeViolation(acquired, resolved, databaseName);
+							const violation = scopeViolation(
+								acquired,
+								rescope(resolved, TableResource.replicate !== false),
+								databaseName
+							);
 							if (violation) throw violation;
 							if (resolved.hold && !acquired.hold) {
 								detachScopedUpgradeWrite(link, keyId, acquired);
@@ -4076,8 +4126,9 @@ export function makeTable(options): TableResourceClass {
 				// caller's whole timeout, long enough for harper-pro to register the transport on this
 				// worker. Using the snapshot would take the native key alone and hand back a node-scoped
 				// handle while a peer that already had the transport is granted the same key.
+				const current = rescope(resolved, TableResource.replicate !== false);
 				try {
-					if (resolved.scope !== 'node') coordinator = TableResource.lockCoordinator ?? coordinator;
+					coordinator = current.scope === 'cluster' ? (TableResource.lockCoordinator ?? coordinator) : undefined;
 				} catch (error) {
 					// The getter fails closed on an unusable node identity, and that has to reach the caller
 					// the same way it does before the wait. Swallowing it let an implicit cluster lock fall
@@ -4085,6 +4136,15 @@ export function makeTable(options): TableResourceClass {
 					// because `coordinator` is still whatever it was, including undefined.
 					handle.release();
 					throw error as Error;
+				}
+				// The entry check cannot cover this: the wait is where the call became cluster-scoped.
+				if (
+					current.scope === 'cluster' &&
+					!coordinator &&
+					(current.scopeRequested || isClusterLockRequired(databaseName))
+				) {
+					handle.release();
+					throw transportUnavailable(databaseName);
 				}
 				if (coordinator) {
 					try {
@@ -4403,7 +4463,9 @@ export function makeTable(options): TableResourceClass {
 					}
 				};
 			}
-			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
+			const reloadsCommitBase = options?.isCopyApply !== true;
+			const entry = entryBeforeWrite(this.#entry, id, transaction, reloadsCommitBase);
+			const baseReadTxn = this.#commitBaseTxn(id);
 			const writeToSource = () => {
 				if (!(this.constructor as any).source || (context as any)?.source) return;
 				if (fullUpdate) {
@@ -4431,11 +4493,12 @@ export function makeTable(options): TableResourceClass {
 				key: id,
 				store: primaryStore,
 				entry,
+				baseReadTxn,
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
 				chainsStagedState: true,
 				// copy-apply rows keep their pre-read base: one read per row, healed by the post-copy replay
-				reloadCommitBase: options?.isCopyApply !== true,
+				reloadCommitBase: reloadsCommitBase,
 				deferSave: true,
 				// the origin's record version on an applied write; absent for a locally-originated one
 				recordVersion: options?.version,
@@ -5323,12 +5386,14 @@ export function makeTable(options): TableResourceClass {
 			const transaction = txnForContext(context);
 			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
-			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
+			const entry = entryBeforeWrite(this.#entry, id, transaction, true);
+			const baseReadTxn = this.#commitBaseTxn(id);
 
 			const write: any = {
 				key: id,
 				store: primaryStore,
 				entry,
+				baseReadTxn,
 				chainsStagedState: true,
 				reloadCommitBase: true,
 				nodeName: (context as any)?.nodeName,
@@ -5391,6 +5456,7 @@ export function makeTable(options): TableResourceClass {
 									isRocksDB && audit && txnLogKey !== txnTime
 										? [{ version: txnLogKey, nodeId: options?.nodeId }]
 										: undefined,
+								localOnly: options?.localOnly,
 							},
 							'delete'
 						);
@@ -6836,7 +6902,11 @@ export function makeTable(options): TableResourceClass {
 			function failSubscription(error: any) {
 				if (subscription.closed) return;
 				harperLogger.error?.('Error in real-time subscription:', error);
-				subscription.close(error);
+				try {
+					subscription.close(error);
+				} catch (listenerError) {
+					harperLogger.error?.('Error in real-time subscription listener:', listenerError);
+				}
 			}
 			function eventFromAudit(id: Id, auditRecord: any, localTime: number, beginTxn?: boolean) {
 				let type = auditRecord.type;
@@ -7031,7 +7101,7 @@ export function makeTable(options): TableResourceClass {
 						existingEntry?.value ?? null,
 						existingEntry,
 						txnTime,
-						0,
+						(existingEntry?.metadataFlags ?? 0) & LOCAL_ONLY,
 						true,
 						{
 							user: (context as any)?.user,
@@ -7041,6 +7111,7 @@ export function makeTable(options): TableResourceClass {
 							viaNodeId: options?.viaNodeId,
 							transaction,
 							tableToTrack: tableName,
+							auditLocalOnly: options?.localOnly,
 						},
 						'message',
 						false,

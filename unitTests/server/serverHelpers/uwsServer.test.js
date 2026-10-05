@@ -118,7 +118,6 @@ function udsRequest(socketPath, { method = 'GET', pathName = '/', headers = {}, 
 					}
 					return;
 				}
-				if (err.code === 'EPIPE' || err.code === 'ECONNRESET') return;
 				settleReject(err);
 			});
 		});
@@ -528,6 +527,154 @@ function readBody(request) {
 		assert.strictEqual(res.status, 429);
 		assert.strictEqual(res.statusMessage, 'Too Many Requests');
 	});
+});
+
+(uwsAvailable ? describe : describe.skip)('uWS oversized TCP uploads', function () {
+	for (const {
+		name,
+		chunked = false,
+		connection = 'close',
+		finish = false,
+		disconnect = false,
+		duplicateConnection = false,
+		continueUpload = false,
+		consume = true,
+	} of [
+		{ name: 'completes a 413 after a fixed-length uploader stops at its headers' },
+		{ name: 'completes a 413 after a chunked uploader stops at its headers', chunked: true },
+		{ name: 'finishes draining when the remaining upload arrives', finish: true, connection: 'Close' },
+		{ name: 'preserves an immediate complete 413 on keep-alive', connection: 'keep-alive' },
+		{ name: 'cancels the drain deadline when the peer disconnects', disconnect: true },
+		{ name: 'delivers 413 with repeated Connection headers', duplicateConnection: true },
+		{ name: 'delivers 413 before bounding an uploader that ignores it', chunked: true, continueUpload: true },
+		{ name: 'releases a paused body before draining the upload', consume: false },
+	]) {
+		it(name, async function () {
+			const port = 36000 + (process.pid % 1500);
+			let request;
+			let bufferedBeforeReject = 0;
+			let delivered = 0;
+			const server = await createUwsServer({
+				host: '127.0.0.1',
+				port,
+				maxBodyBytes: consume ? 1024 : 128 * 1024,
+				handler: async (incoming) => {
+					if (incoming.method === 'GET') return { status: 200, body: 'alive' };
+					request = incoming;
+					if (!consume) {
+						incoming.body.on('data', () => delivered++);
+						incoming.body.pause();
+						await new Promise((resolve) => incoming.signal.addEventListener('abort', resolve, { once: true }));
+						return { status: 200 };
+					}
+					return { status: 200, body: await readBody(incoming) };
+				},
+			});
+			try {
+				const response = await new Promise((resolve, reject) => {
+					const chunk = Buffer.alloc(64 * 1024);
+					const length = (continueUpload ? 16 : 1) * 1024 * 1024;
+					let sent = 0;
+					let sentAtHeaders;
+					let raw = '';
+					let nextWrite;
+					const socket = net.connect({ host: '127.0.0.1', port }, () => {
+						const framing = chunked ? 'Transfer-Encoding: chunked' : `Content-Length: ${length}`;
+						const connectionHeaders = `Connection: ${connection}\r\n${duplicateConnection ? 'Connection: close\r\n' : ''}`;
+						socket.write(`POST / HTTP/1.1\r\nHost: localhost\r\n${connectionHeaders}${framing}\r\n\r\n`);
+						upload();
+					});
+					function upload() {
+						bufferedBeforeReject = Math.max(bufferedBeforeReject, request?.body.readableLength ?? 0);
+						if (socket.destroyed || (!continueUpload && raw.includes('\r\n\r\n'))) return;
+						if (sent === length) {
+							if (chunked) socket.write('0\r\n\r\n');
+							return;
+						}
+						// Hold until the paused body has buffered the first chunk, so the over-limit read
+						// cannot be the server's first.
+						if (!consume && sent && !bufferedBeforeReject) {
+							nextWrite = setImmediate(upload);
+							return;
+						}
+						sent += chunk.length;
+						const data = chunked ? Buffer.concat([Buffer.from('10000\r\n'), chunk, Buffer.from('\r\n')]) : chunk;
+						const scheduleUpload = () => (nextWrite = continueUpload ? setTimeout(upload, 10) : setImmediate(upload));
+						if (socket.write(data)) scheduleUpload();
+						else socket.once('drain', scheduleUpload);
+					}
+					let timer = setTimeout(() => {
+						const stalled = !consume && !bufferedBeforeReject;
+						socket.destroy(
+							new Error(
+								stalled ? 'the paused body never buffered the first chunk' : 'oversized upload did not receive 413'
+							)
+						);
+					}, 5000);
+					socket.on('data', (data) => {
+						raw += data.toString('latin1');
+						if (sentAtHeaders !== undefined || !raw.includes('\r\n\r\n')) return;
+						sentAtHeaders = sent;
+						if (disconnect) socket.destroy();
+						else if (connection === 'keep-alive') {
+							socket.write(Buffer.alloc(length - sent));
+							sent = length;
+							socket.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n');
+						} else if (finish) {
+							clearTimeout(timer);
+							timer = setTimeout(() => socket.destroy(new Error('finished upload waited for the drain deadline')), 500);
+							socket.write(Buffer.alloc(length - sent));
+							sent = length;
+						}
+					});
+					socket.on('error', (error) => {
+						if (!continueUpload || !raw.includes('\r\n\r\n')) reject(error);
+					});
+					socket.on('close', () => {
+						clearTimeout(timer);
+						if (continueUpload) clearTimeout(nextWrite);
+						else clearImmediate(nextWrite);
+						resolve({ raw, sentAtHeaders, length });
+					});
+				});
+				assert.match(response.raw, /^HTTP\/1\.1 413 Payload Too Large\r\n/);
+				assert.match(response.raw, /\r\n\r\n/);
+				if (!disconnect && !continueUpload) {
+					assert.ok(
+						/\r\ncontent-length: 0\r\n/i.test(response.raw) || response.raw.endsWith('\r\n0\r\n\r\n'),
+						'the 413 response body must be complete'
+					);
+				}
+				if (continueUpload) assert.match(response.raw, /ClientError: Request body exceeds 1024 bytes/);
+				if (connection === 'keep-alive') {
+					assert.match(response.raw, /HTTP\/1\.1 200 OK\r\n/);
+					assert.ok(response.raw.endsWith('alive'), 'the fully drained keep-alive connection serves another request');
+				}
+				assert.ok(response.sentAtHeaders < response.length, '413 headers must arrive before the upload finishes');
+				assert.ok(request.signal.aborted, 'the rejected handler is cancelled');
+				assert.ok(request.body.destroyed, 'the rejected body is destroyed');
+				assert.strictEqual(request.body.readableLength, 0, 'rejected body buffers are released');
+				if (!consume) {
+					assert.ok(bufferedBeforeReject > 0, 'the paused body buffered upload bytes before rejection');
+					assert.strictEqual(delivered, 0, 'teardown never delivers buffered bytes to the paused consumer');
+				}
+				if (disconnect || finish) {
+					await new Promise((resolve) => setTimeout(resolve, 1100));
+					const status = await new Promise((resolve, reject) => {
+						http
+							.get({ host: '127.0.0.1', port, agent: false }, (res) => {
+								res.resume();
+								res.on('end', () => resolve(res.statusCode));
+							})
+							.on('error', reject);
+					});
+					assert.strictEqual(status, 200, 'the server survives past the cancelled drain deadline');
+				}
+			} finally {
+				server.close();
+			}
+		});
+	}
 });
 
 let WebSocket;

@@ -2348,6 +2348,328 @@ describe('Test harper_logger module', () => {
 		});
 	});
 
+	describe('Property-style hostile-input fuzzing for inspectForLog/errorForLog (harper#1994 follow-up)', () => {
+		const util = require('node:util');
+		const vm = require('node:vm');
+		const { inspectForLog, errorForLog } = harperLoggerModule;
+		const inspectRender = (value, options) => util.inspect(inspectForLog(value, options));
+		const errorRender = (error) => util.inspect(errorForLog(error));
+
+		// A post-hoc elapsed-time check can't catch a genuine hang; vm's `timeout` can, since it
+		// preempts even a tight synchronous loop via a V8 execution interrupt. `fn` still runs in
+		// this file's own realm - only the call is routed through a vm context for that preemption.
+		// One context/script is reused across every call (cheap `fn` swap instead of a fresh V8
+		// context per iteration) - verified a reused context still enforces the timeout correctly.
+		const DEADLINE_CONTEXT = vm.createContext({ fn: undefined });
+		const DEADLINE_SCRIPT = new vm.Script('fn()');
+		function withDeadline(fn, timeoutMs) {
+			DEADLINE_CONTEXT.fn = fn;
+			return DEADLINE_SCRIPT.runInContext(DEADLINE_CONTEXT, { timeout: timeoutMs });
+		}
+
+		// Deterministic PRNG; SEED makes a failing iteration reproducible.
+		function mulberry32(seed) {
+			let a = seed >>> 0;
+			return function () {
+				a |= 0;
+				a = (a + 0x6d2b79f5) | 0;
+				let t = Math.imul(a ^ (a >>> 15), 1 | a);
+				t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+				return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+			};
+		}
+		const SEED = 0xc0ffee;
+
+		function pick(rng, options) {
+			return options[Math.floor(rng() * options.length)];
+		}
+
+		function randomString(rng, length) {
+			const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFG0123456789 \t\n"\'\\<>{}[]';
+			const out = new Array(length);
+			for (let i = 0; i < length; i++) out[i] = chars[Math.floor(rng() * chars.length)];
+			return out.join('');
+		}
+
+		// One hostile shape per call; `ancestors` lets a `cycle` shape target a real ancestor, not
+		// just its immediate parent.
+		function hostileValue(rng, depth, ancestors) {
+			if (depth <= 0) {
+				return pick(rng, [randomString(rng, 8), rng() * 1e9, null, undefined, true, Symbol('leaf')]);
+			}
+			const kind = pick(rng, [
+				'throwing-getter',
+				'throwing-proxy',
+				'null-proto',
+				'foreign-proto',
+				'cycle',
+				'symbol-keys',
+				'deep-chain',
+				'wide-object',
+				'wide-array',
+				'huge-string',
+				'plain',
+			]);
+			switch (kind) {
+				case 'throwing-getter': {
+					// Never actually invoked - the sanitizer always substitutes an accessor placeholder
+					// instead of calling a getter; this exercises that substitution.
+					const obj = {};
+					Object.defineProperty(obj, 'poison', {
+						enumerable: true,
+						get() {
+							throw new Error('getter boom');
+						},
+					});
+					obj.fine = hostileValue(rng, depth - 1, [...ancestors, obj]);
+					return obj;
+				}
+				case 'throwing-proxy': {
+					// inspectForLog's sanitizer gates on types.isProxy before touching the target, so this
+					// trap never actually runs - this exercises that gate on an arbitrary trap-bearing Proxy.
+					const target = { real: hostileValue(rng, depth - 1, ancestors) };
+					const trap = pick(rng, ['get', 'ownKeys', 'getOwnPropertyDescriptor', 'has']);
+					return new Proxy(target, {
+						[trap]() {
+							throw new Error('proxy trap boom');
+						},
+					});
+				}
+				case 'null-proto': {
+					const obj = Object.create(null);
+					obj.a = hostileValue(rng, depth - 1, [...ancestors, obj]);
+					obj[Symbol('null-proto-tag')] = 'marker';
+					return obj;
+				}
+				case 'foreign-proto': {
+					const weird_proto = Object.create(null);
+					Object.defineProperty(weird_proto, 'weird', {
+						get() {
+							throw new Error('proto getter boom');
+						},
+					});
+					const obj = Object.create(weird_proto);
+					obj.inner = hostileValue(rng, depth - 1, [...ancestors, obj]);
+					return obj;
+				}
+				case 'cycle': {
+					const obj = {};
+					obj.self = ancestors.length > 0 ? pick(rng, ancestors) : obj;
+					obj.data = hostileValue(rng, depth - 1, [...ancestors, obj]);
+					return obj;
+				}
+				case 'symbol-keys': {
+					const obj = {};
+					for (let i = 0; i < 3; i++) {
+						obj[Symbol(`sym-${i}-${randomString(rng, 4)}`)] = hostileValue(rng, depth - 1, [...ancestors, obj]);
+					}
+					obj.normal = 'fine';
+					return obj;
+				}
+				case 'deep-chain': {
+					let head = { bottom: 'reached' };
+					for (let i = 0; i < 30; i++) head = { nested: head };
+					return head;
+				}
+				case 'wide-object': {
+					const obj = {};
+					const width = 500 + Math.floor(rng() * 1000);
+					for (let i = 0; i < width; i++) obj[`k${i}`] = i;
+					return obj;
+				}
+				case 'wide-array': {
+					const width = 500 + Math.floor(rng() * 1000);
+					return Array.from({ length: width }, (_, i) => i);
+				}
+				case 'huge-string':
+					return randomString(rng, 20_000 + Math.floor(rng() * 20_000));
+				case 'plain':
+				default: {
+					const obj = {};
+					const n = 1 + Math.floor(rng() * 2);
+					for (let i = 0; i < n; i++) obj[`field${i}`] = hostileValue(rng, depth - 1, [...ancestors, obj]);
+					return obj;
+				}
+			}
+		}
+
+		// Exercises errorToLogString's walk independent of deepSanitizeErrors, which errorForLog
+		// never calls.
+		// Kinds whose render can legitimately include renderErrorLine's own `[Unrenderable Error:
+		// ...]` fallback (accessing `.stack` throws by construction); every other kind should never
+		// produce that marker, so the caller can assert its absence when none of these were used.
+		const CAN_DEGRADE_KINDS = new Set(['throwing-stack', 'revoked-proxy', 'throwing-proxy']);
+
+		function hostileErrorChain(rng, length) {
+			const reachable = [];
+			const kinds = [];
+			let root;
+			let tip; // current end of the live chain; null once a cycle/refusal has closed it
+			for (let i = 0; i < length; i++) {
+				const kind = pick(rng, [
+					'plain',
+					'throwing-stack',
+					'throwing-message',
+					'throwing-constructor',
+					'revoked-proxy',
+					'throwing-proxy',
+				]);
+				let link;
+				switch (kind) {
+					case 'throwing-stack':
+						link = new Error(`link ${i}`);
+						Object.defineProperty(link, 'stack', {
+							get() {
+								throw new Error('stack boom');
+							},
+						});
+						break;
+					case 'throwing-message':
+						// No usable stack, so errorToLogString falls through to errorToString, which reads
+						// `.message` directly - this is what actually exercises the throwing getter.
+						link = Object.create(Error.prototype);
+						Object.defineProperty(link, 'message', {
+							get() {
+								throw new Error('message boom');
+							},
+						});
+						break;
+					case 'throwing-constructor':
+						// Also no stack, with a real string `message` - errorToString's `${error.constructor
+						// .name}` branch is the only place in this file that reads `.constructor`.
+						link = { message: `link ${i}` };
+						Object.defineProperty(link, 'constructor', {
+							get() {
+								throw new Error('constructor boom');
+							},
+						});
+						break;
+					case 'revoked-proxy': {
+						const { proxy, revoke } = Proxy.revocable({}, {});
+						revoke();
+						link = proxy;
+						break;
+					}
+					case 'throwing-proxy':
+						// errorForLog only ever reads properties (stack/cause/message/constructor/
+						// allowlist) - a 'get' trap is the only one it can ever reach.
+						link = new Proxy(
+							{},
+							{
+								get() {
+									throw new Error('cause proxy boom');
+								},
+							}
+						);
+						break;
+					case 'plain':
+					default:
+						link = new Error(`link ${i}`);
+						link.code = pick(rng, ['ECONNRESET', 'ENOENT', undefined]);
+				}
+
+				if (i === 0) {
+					root = link;
+					tip = link;
+					reachable.push(link);
+					kinds.push(kind);
+					continue;
+				}
+				if (tip === null) break; // chain already closed (cycle or refused assignment)
+
+				try {
+					if (rng() < 0.15 && reachable.length > 1) {
+						tip.cause = pick(rng, reachable); // close a cycle instead of extending
+						tip = null;
+					} else {
+						tip.cause = link;
+						tip = link;
+						reachable.push(link);
+						kinds.push(kind);
+					}
+				} catch {
+					tip = null; // a hostile tip (e.g. a revoked proxy) refused the assignment
+				}
+			}
+			return { error: root, kinds };
+		}
+
+		const ITERATIONS = 60;
+		const MAX_VALUE_DEPTH = 6;
+		const HANG_BUDGET_MS = 2000;
+
+		// inspectForLog's outer catch turns any escaping exception into this same wrapper, so
+		// without this, doesNotThrow alone could never catch a sanitizer regression.
+		const KNOWN_SANITIZE_LIMIT = /\[Unrenderable value: sanitize (?:budget|depth) exceeded\]/g;
+		function assertNoUnexpectedUnrenderable(result, message) {
+			assert.ok(!result.replace(KNOWN_SANITIZE_LIMIT, '').includes('[Unrenderable value:'), message);
+		}
+
+		it(`inspectForLog never throws or hangs past ${HANG_BUDGET_MS}ms across ${ITERATIONS} randomized hostile shapes (seed 0x${SEED.toString(16)})`, () => {
+			const rng = mulberry32(SEED);
+			for (let i = 0; i < ITERATIONS; i++) {
+				const value = hostileValue(rng, MAX_VALUE_DEPTH, []);
+				let result;
+				assert.doesNotThrow(
+					() => {
+						result = withDeadline(
+							() => inspectRender(value, { depth: 8, maxArrayLength: 250, maxStringLength: 20000 }),
+							HANG_BUDGET_MS
+						);
+					},
+					undefined,
+					`iteration ${i} (seed 0x${SEED.toString(16)})`
+				);
+				assert.strictEqual(typeof result, 'string');
+				assertNoUnexpectedUnrenderable(result, `iteration ${i} (seed 0x${SEED.toString(16)}) degraded to: ${result}`);
+			}
+		});
+
+		it(`errorForLog never throws or hangs past ${HANG_BUDGET_MS}ms across ${ITERATIONS} randomized hostile error chains (seed 0x${(SEED + 1).toString(16)})`, () => {
+			const rng = mulberry32(SEED + 1);
+			for (let i = 0; i < ITERATIONS; i++) {
+				const chain_length = 1 + Math.floor(rng() * 5);
+				const { error, kinds } = hostileErrorChain(rng, chain_length);
+				let result;
+				assert.doesNotThrow(
+					() => {
+						result = withDeadline(() => errorRender(error), HANG_BUDGET_MS);
+					},
+					undefined,
+					`iteration ${i} (seed 0x${(SEED + 1).toString(16)})`
+				);
+				assert.strictEqual(typeof result, 'string');
+				// renderErrorLine has its own `[Unrenderable Error: ...]` fallback; outside the kinds
+				// that legitimately trigger it, its presence would mean something else broke silently.
+				if (!kinds.some((k) => CAN_DEGRADE_KINDS.has(k))) {
+					assert.ok(!result.includes('[Unrenderable Error:'), `iteration ${i} unexpectedly degraded: ${result}`);
+				}
+			}
+		});
+
+		it('inspectForLog stays bounded on a 5000-key object, matching the sanitizer’s own breadth cap', () => {
+			const huge = {};
+			for (let i = 0; i < 5000; i++) huge[`k${i}`] = i;
+			const result = withDeadline(() => inspectRender({ huge }, { depth: 8, maxArrayLength: 250 }), HANG_BUDGET_MS);
+			assert.ok(result.includes('sanitize budget'));
+			assertNoUnexpectedUnrenderable(result, `degraded to: ${result}`);
+		});
+
+		it('inspectForLog never throws or hangs on a cyclic, null-prototype, Symbol-keyed object that also holds a revoked Proxy', () => {
+			const { proxy, revoke } = Proxy.revocable({}, {});
+			revoke();
+			const cyclic = Object.create(null);
+			cyclic.self = cyclic;
+			cyclic.revoked = proxy;
+			cyclic[Symbol('tag')] = 'mixed-hostile';
+			let result;
+			assert.doesNotThrow(() => {
+				result = withDeadline(() => inspectRender({ cyclic }, { depth: 8, maxArrayLength: 250 }), HANG_BUDGET_MS);
+			});
+			assertNoUnexpectedUnrenderable(result, `degraded to: ${result}`);
+		});
+	});
+
 	describe('Test isErrorLike function (harper#1982)', () => {
 		const { isErrorLike } = harperLoggerModule;
 

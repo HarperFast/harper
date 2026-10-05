@@ -7,7 +7,8 @@
  * deploy produces a row with status=failed and a populated error field.
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -142,6 +143,42 @@ suite('Deployment tracking', (ctx: ContextWithHarper) => {
 			typeof row.completed_at === 'number' && row.completed_at >= row.started_at,
 			'completed_at should be >= started_at'
 		);
+	});
+
+	test('the response and the row carry the install fingerprint this node took', async () => {
+		const project = 'tracking-fingerprint-application';
+		const lockfile = '{"name":"tracking-fingerprint-application","lockfileVersion":3,"packages":{}}\n';
+		const sourceDir = mkdtempSync(join(tmpdir(), 'deploy-tracking-fingerprint-'));
+		try {
+			writeFileSync(join(sourceDir, 'config.yaml'), 'rest: true\n');
+			writeFileSync(join(sourceDir, 'package.json'), JSON.stringify({ name: project, version: '1.0.0' }));
+			writeFileSync(join(sourceDir, 'package-lock.json'), lockfile);
+			const multipart = buildMultipartBody(
+				{ operation: 'deploy_component', project, restart: false },
+				{
+					name: 'payload',
+					filename: 'package.tar.gz',
+					contentType: 'application/gzip',
+					stream: streamPackagedDirectory(sourceDir, { skip_node_modules: true }),
+				}
+			);
+			const response = await postMultipart(
+				new URL(ctx.harper.operationsAPIURL),
+				multipart.contentType,
+				multipart.stream,
+				ctx.harper.admin
+			);
+			strictEqual(response.status, 200, `expected 200, got ${response.status}: ${response.body}`);
+			const result = JSON.parse(response.body);
+			const expected = { lockfiles: { 'package-lock.json': createHash('sha256').update(lockfile).digest('hex') } };
+			deepStrictEqual(result.install, expected);
+
+			const got = await callOperation(ctx, { operation: 'get_deployment', deployment_id: result.deployment_id });
+			strictEqual(got.status, 200, `get_deployment should return 200, got ${got.status}: ${JSON.stringify(got.body)}`);
+			deepStrictEqual(got.body.install_fingerprint, expected);
+		} finally {
+			rmSync(sourceDir, { recursive: true, force: true });
+		}
 	});
 
 	test('list_deployments surfaces the row, supports project filter', async () => {

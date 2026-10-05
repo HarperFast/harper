@@ -38,6 +38,7 @@ const path = require('path');
 const fs = require('fs-extra');
 const { isMainThread } = require('worker_threads');
 const { materializePerPidRoot, removePerPidRoot, ENV_DIR_PATH, PID_DIR_PATH } = require('./perPidRoot.js');
+const { installPerFileDatabaseTeardown } = require('./perFileDatabaseTeardown.js');
 
 /**
  * Fail a mocha run that dies mid-flight instead of letting it look like a pass.
@@ -57,6 +58,7 @@ let runFinished = false;
 module.exports.mochaHooks = {
 	beforeAll() {
 		runStarted = true;
+		installPerFileDatabaseTeardown(this.test.parent);
 	},
 	afterAll() {
 		runFinished = true;

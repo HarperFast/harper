@@ -3,6 +3,7 @@
 const assert = require('node:assert');
 const {
 	appendFileSync,
+	chmodSync,
 	existsSync,
 	mkdtempSync,
 	mkdirSync,
@@ -156,6 +157,40 @@ describe('restoreMarker', function () {
 	});
 
 	describe('beginRestore', function () {
+		it('runs the claim callback under the lock before publishing a fresh marker', function () {
+			let called = false;
+			const lock = beginRestore(dbPath, () => {
+				called = true;
+				assert.ok(!restoreMarkerPresent(dbPath));
+				assert.throws(
+					() => acquireRestoreLock(dbPath),
+					(error) => error.statusCode === 409
+				);
+			});
+			try {
+				assert.ok(called);
+				assert.ok(restoreMarkerPresent(dbPath));
+			} finally {
+				completeRestore(lock);
+			}
+		});
+
+		for (const preexisting of [false, true]) {
+			it(`releases the lock and preserves marker state after a failed claim (preexisting=${preexisting})`, function () {
+				if (preexisting) abandonRestore(beginRestore(dbPath));
+				const failure = new Error('claim failed');
+				assert.throws(
+					() =>
+						beginRestore(dbPath, () => {
+							throw failure;
+						}),
+					(error) => error === failure
+				);
+				assert.strictEqual(restoreMarkerPresent(dbPath), preexisting);
+				completeRestore(beginRestore(dbPath));
+			});
+		}
+
 		it('writes the marker while holding the lock', function () {
 			const lock = beginRestore(dbPath);
 			try {
@@ -278,6 +313,31 @@ describe('restoreMarker', function () {
 			} finally {
 				completeRestore(lock);
 			}
+		});
+	});
+
+	describe('restoreMarkerPresent', function () {
+		it('propagates an undetermined answer instead of reporting the marker absent', function () {
+			// A caller that reads a permission failure as "no marker" drops a database mid-restore and
+			// expires a backup pin whose restore still needs its source.
+			if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+			const dbPath = join(tempDir, 'somedb');
+			const lock = beginRestore(dbPath);
+			const metaDir = restoreMetaDir(dbPath);
+			chmodSync(metaDir, 0o000);
+			try {
+				assert.throws(
+					() => restoreMarkerPresent(dbPath),
+					(error) => error.code === 'EACCES'
+				);
+			} finally {
+				chmodSync(metaDir, 0o700);
+				abandonRestore(lock);
+			}
+		});
+
+		it('reports a genuinely absent marker as absent', function () {
+			assert.ok(!restoreMarkerPresent(join(tempDir, 'never-restored')));
 		});
 	});
 

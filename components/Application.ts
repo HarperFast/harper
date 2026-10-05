@@ -3,8 +3,10 @@ import {
 	getConfigObj,
 	getConfigValue,
 	getConfigPath,
+	getEnvBuiltInComponents,
 	isUnsupportedSyncError as isUnsupportedSync,
 } from '../config/configUtils.ts';
+export { getEnvBuiltInComponents };
 import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
 import {
 	applyRootConfigEffect,
@@ -37,6 +39,14 @@ import {
 	formatDeploymentProvenance,
 	parseDeploymentProvenance,
 } from './deploymentProvenance.ts';
+import {
+	fingerprintInstall,
+	gitSourceIdentity,
+	packedSourceIdentity,
+	PACKAGE_LOCK_FILES,
+	UNIDENTIFIED_SOURCE,
+	type InstallFingerprint,
+} from './installFingerprint.ts';
 
 import { basename, dirname, extname, isAbsolute, join, relative, sep, win32 } from 'node:path';
 import {
@@ -490,8 +500,9 @@ async function resolveCommittish(application: Application, committish: string, c
 async function packGitReferenceWithoutScripts(
 	application: Application,
 	gitRef: GitReference,
-	parentDirPath: string
-): Promise<string> {
+	parentDirPath: string,
+	identifySource: boolean
+): Promise<{ path: string; commit?: string }> {
 	const cloneDir = await mkdtemp(join(tmpdir(), 'harper-git-clone-'));
 	try {
 		const { code: cloneCode, stderr: cloneStderr } = await nonInteractiveSpawn(
@@ -537,22 +548,37 @@ async function packGitReferenceWithoutScripts(
 			await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
 		}
 
-		return await runNpmPack(application, ['pack', '--json', '--ignore-scripts', cloneDir], parentDirPath);
+		const commit = identifySource ? await checkedOutCommit(application, cloneDir) : undefined;
+		const packed = await runNpmPack(application, ['pack', '--json', '--ignore-scripts', cloneDir], parentDirPath);
+		return { path: packed.path, commit };
 	} finally {
 		await rm(cloneDir, { recursive: true, force: true });
 	}
 }
 
+/** Naming the source is only a report, so git failing to answer never fails the deploy. */
+async function checkedOutCommit(application: Application, cloneDir: string): Promise<string | undefined> {
+	try {
+		const { code, stdout } = await nonInteractiveSpawn(application.name, 'git', ['rev-parse', 'HEAD'], cloneDir);
+		return code === 0 ? stdout : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+type PackedTarball = { path: string; name?: string; version?: string; integrity?: string };
+
 /**
- * Runs `npm pack` with the given args and returns the resulting tarball's path under `cwd`. Shared
- * between the git-reference reclone path above and the plain identifier path in extractApplication.
+ * Runs `npm pack` with the given args and returns the resulting tarball's path under `cwd`, with the name, version
+ * and integrity npm reported for it. Shared between the git-reference reclone path above and the plain identifier
+ * path in extractApplication.
  */
 async function runNpmPack(
 	application: Application,
 	packArgs: string[],
 	cwd: string,
 	gitCredentialEnv?: Record<string, string>
-): Promise<string> {
+): Promise<PackedTarball> {
 	const { stdout, code, stderr } = await nonInteractiveSpawn(
 		application.name,
 		'npm',
@@ -573,7 +599,7 @@ async function runNpmPack(
 		throw new Error(`Failed to download package ${application.packageIdentifier}: ${stderr}`);
 	}
 
-	let packResult: Array<{ filename: string }>;
+	let packResult: Array<{ filename: string; name?: unknown; version?: unknown; integrity?: unknown }>;
 	try {
 		packResult = JSON.parse(stdout.slice(stdout.indexOf('[')));
 	} catch (err) {
@@ -585,7 +611,14 @@ async function runNpmPack(
 		throw new Error(`Unexpected npm pack output for ${application.packageIdentifier}:\n${stdout}`);
 	}
 
-	return join(cwd, packResult[0].filename);
+	const [packed] = packResult;
+	const text = (value: unknown) => (typeof value === 'string' ? value : undefined);
+	return {
+		path: join(cwd, packed.filename),
+		name: text(packed.name),
+		version: text(packed.version),
+		integrity: text(packed.integrity),
+	};
 }
 
 // Hidden directory under the components root holding component versions renamed aside
@@ -655,15 +688,6 @@ type ExtractionContext = Pick<Application, 'name' | 'dirPath' | 'logger'>;
 // The credential helper git executes for a private git-reference deploy. It ships alongside this
 // module (both in source and in dist), holds no secret, and is inert without a live session.
 export const GIT_CREDENTIAL_HELPER_PATH = join(__dirname, 'gitCredentialHelper.js');
-
-const PACKAGE_LOCK_FILES = [
-	'package-lock.json',
-	'npm-shrinkwrap.json',
-	'pnpm-lock.yaml',
-	'yarn.lock',
-	'bun.lock',
-	'bun.lockb',
-];
 
 type InstalledPackageMetadata = {
 	files: Map<string, Buffer>;
@@ -783,7 +807,10 @@ type ResolvedTarball =
 	| { kind: 'link'; sourceDirPath: string };
 
 /** Resolve `payload` or `package` into a tarball stream. Touches neither the live tree nor staging. */
-async function resolveApplicationTarball(application: Application): Promise<ResolvedTarball> {
+async function resolveApplicationTarball(
+	application: Application,
+	{ identifySource = false }: { identifySource?: boolean } = {}
+): Promise<ResolvedTarball> {
 	let tarballPath: string | undefined;
 	let tarball: Readable;
 	let shouldDeleteTarball = false;
@@ -809,6 +836,8 @@ async function resolveApplicationTarball(application: Application): Promise<Reso
 		// If the package identifier is a file path we need to check if its a tarball or a directory
 		if (application.packageIdentifier.startsWith('file:')) {
 			const packagePath = application.packageIdentifier.slice(5);
+			// Each node reads its own copy of a local path, so nothing here names what it holds.
+			if (identifySource) application.sourceIdentity = UNIDENTIFIED_SOURCE;
 			try {
 				// Have to remove the 'file:' prefix in order to use fs methods
 				const stats = await stat(packagePath);
@@ -880,7 +909,9 @@ async function resolveApplicationTarball(application: Application): Promise<Reso
 			}
 
 			if (gitRef) {
-				tarballPath = await packGitReferenceWithoutScripts(application, gitRef, parentDirPath);
+				const packed = await packGitReferenceWithoutScripts(application, gitRef, parentDirPath, identifySource);
+				tarballPath = packed.path;
+				if (identifySource) application.sourceIdentity = gitSourceIdentity(packed.commit);
 			} else {
 				const packArgs = ['pack', '--json', packageIdentifierForPack];
 				if (!allowScripts) {
@@ -892,7 +923,15 @@ async function resolveApplicationTarball(application: Application): Promise<Reso
 							`can read the git credential. Unset install_allow_scripts to keep the credential out of their reach.`
 					);
 				}
-				tarballPath = await runNpmPack(application, packArgs, parentDirPath, application.gitCredentialEnv);
+				const packed = await runNpmPack(application, packArgs, parentDirPath, application.gitCredentialEnv);
+				tarballPath = packed.path;
+				if (identifySource) {
+					const fromRegistry =
+						packageIdentifierForPack === application.packageIdentifier &&
+						!looksLikeGitReference(packageIdentifierForPack) &&
+						!/^https?:\/\//i.test(packageIdentifierForPack);
+					application.sourceIdentity = packedSourceIdentity(fromRegistry, packed);
+				}
 			}
 			shouldDeleteTarball = true;
 			tarball = createReadStream(tarballPath);
@@ -3534,7 +3573,7 @@ async function discardCandidate(application: Application, deploymentId: string):
 export async function buildCandidateApplication(
 	application: Application,
 	deploymentId: string,
-	options: { rejectLinkSource?: boolean } = {}
+	options: { rejectLinkSource?: boolean; fingerprint?: boolean } = {}
 ): Promise<string> {
 	const deploymentDirPath = candidateDeploymentDirPath(application.dirPath, deploymentId);
 	const candidateDirPath = candidateApplicationPath(application.dirPath, deploymentId);
@@ -3543,7 +3582,7 @@ export async function buildCandidateApplication(
 	try {
 		// Replaced, not extracted into: a prior attempt on this id may have left a partial tree.
 		await rm(candidateDirPath, { recursive: true, force: true });
-		const resolved = await resolveApplicationTarball(application);
+		const resolved = await resolveApplicationTarball(application, { identifySource: options.fingerprint });
 		if (resolved.kind === 'link' && options.rejectLinkSource) {
 			// What the operator asked for, not a server fault: the same component deploys immediately.
 			throw new ClientError(
@@ -3577,6 +3616,9 @@ export async function buildCandidateApplication(
 		// After the install, which can rewrite the tree; never through a link, whose target is not the deploy's to write.
 		if (resolved.kind !== 'link') {
 			await writeDeploymentProvenance(candidateDirPath, application.name, deploymentId);
+		}
+		if (options.fingerprint) {
+			application.installFingerprint = await fingerprintInstall(candidateDirPath, application.sourceIdentity);
 		}
 		return candidateDirPath;
 	} catch (error) {
@@ -4534,6 +4576,8 @@ export class Application {
 	packageMetadataChanged: boolean = false;
 	installationIsOpaque: boolean = false;
 	alreadyActive: boolean = false;
+	sourceIdentity?: string;
+	installFingerprint?: InstallFingerprint;
 
 	constructor({ name, payload, packageIdentifier, install, onInstallLine, credentials }: ApplicationOptions) {
 		this.name = name;
@@ -4721,6 +4765,7 @@ export type PrepareApplicationOptions = {
 	describeArtifact?: () => { rootConfig: Record<string, unknown> | null; isolated: boolean };
 	/** `activate` only: admit the artifact's isolation intent under the preparation lock, before the swap. */
 	admitIsolation?: (descriptor: ArtifactDescriptor) => Promise<void>;
+	fingerprintInstall?: boolean;
 };
 
 export async function prepareApplication(application: Application, options: PrepareApplicationOptions = {}) {
@@ -4789,6 +4834,7 @@ export async function prepareApplication(application: Application, options: Prep
 						await application.startGitCredentialSession();
 						candidateDirPath = await buildCandidateApplication(application, artifactId, {
 							rejectLinkSource: mode === 'stage',
+							fingerprint: options.fingerprintInstall,
 						});
 					} finally {
 						await application.cleanupGitCredentialSession();
@@ -5856,18 +5902,6 @@ export async function terminateProcessTree(
 		await waitForConfirmedTermination(() => processGroupIsAlive(processGroupId));
 	}
 	await waitForProcessClose(childProcess, closePromise);
-}
-
-export function getEnvBuiltInComponents() {
-	const builtInComponents: { name: string; packageIdentifier: string }[] = [];
-	if (process.env.HARPER_BUILTIN_COMPONENTS) {
-		for (const componentDefinition of process.env.HARPER_BUILTIN_COMPONENTS.split(',')) {
-			const [name, packageIdentifier] = componentDefinition.trim().split('=');
-			if (!componentDefinition) continue;
-			builtInComponents.push({ name, packageIdentifier });
-		}
-	}
-	return builtInComponents;
 }
 
 function printStd(

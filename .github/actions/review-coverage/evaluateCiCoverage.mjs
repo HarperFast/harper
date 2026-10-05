@@ -51,19 +51,20 @@ const SEGMENTS = new Map([
 const ORDER = [...SEGMENTS.keys()];
 const FIELD = 'Review-Coverage: ';
 
-export function coverageFooterProblem(line) {
+function readCoverageFooter(line) {
+	const fail = (problem) => ({ problem, segments: new Map() });
 	let field = line.replace(/^[ \t]+/, '').replace(/[ \t]+$/, '');
 	const opened = field.startsWith('<sub>');
 	const closed = field.endsWith('</sub>');
-	if (opened !== closed) return `has an unpaired \`${opened ? '<sub>' : '</sub>'}\``;
+	if (opened !== closed) return fail(`has an unpaired \`${opened ? '<sub>' : '</sub>'}\``);
 	if (opened) field = field.slice('<sub>'.length, -'</sub>'.length);
-	if (!field.startsWith(FIELD)) return `does not begin \`${FIELD.trim()}\` followed by one space`;
+	if (!field.startsWith(FIELD)) return fail(`does not begin \`${FIELD.trim()}\` followed by one space`);
 	const pins = field.split('@').length - 1;
-	if (pins === 0) return 'has no trailing ` @ <sha>` pin';
-	if (pins > 1) return `carries ${pins} \`@\` pins where the helper writes one, at the end`;
+	if (pins === 0) return fail('has no trailing ` @ <sha>` pin');
+	if (pins > 1) return fail(`carries ${pins} \`@\` pins where the helper writes one, at the end`);
 	const [segmentText, sha] = field.slice(FIELD.length).split(' @ ');
-	if (sha === undefined) return 'does not separate its pin as ` @ <sha>`';
-	if (!/^[0-9a-f]{12}$/.test(sha)) return `is pinned to \`${sha}\`, not a 12-character lowercase hex sha`;
+	if (sha === undefined) return fail('does not separate its pin as ` @ <sha>`');
+	if (!/^[0-9a-f]{12}$/.test(sha)) return fail(`is pinned to \`${sha}\`, not a 12-character lowercase hex sha`);
 	const segments = segmentText.split('; ').map((segment) => {
 		const split = segment.indexOf('=');
 		return split < 0 ? [segment, undefined] : [segment.slice(0, split), segment.slice(split + 1)];
@@ -71,20 +72,22 @@ export function coverageFooterProblem(line) {
 	let previous = -1;
 	for (const [key, value] of segments) {
 		const position = ORDER.indexOf(key);
-		if (position < 0 || value === undefined) return `has segment \`${key}\` the helper does not write`;
-		if (position === previous) return `repeats \`${key}=\``;
+		if (position < 0 || value === undefined) return fail(`has segment \`${key}\` the helper does not write`);
+		if (position === previous) return fail(`repeats \`${key}=\``);
 		if (position < previous)
-			return `has \`${key}=\` after \`${ORDER[previous]}=\`; the helper writes ${ORDER.join(', ')} in that order`;
+			return fail(`has \`${key}=\` after \`${ORDER[previous]}=\`; the helper writes ${ORDER.join(', ')} in that order`);
 		previous = position;
 	}
 	for (const required of ['authored', 'ran', 'rounds'])
-		if (!segments.some(([key]) => key === required)) return `has no \`${required}=\` segment`;
+		if (!segments.some(([key]) => key === required)) return fail(`has no \`${required}=\` segment`);
 	for (const [key, value] of segments) {
 		const problem = SEGMENTS.get(key)(value);
-		if (problem) return problem;
+		if (problem) return fail(problem);
 	}
-	return '';
+	return { problem: '', segments: new Map(segments) };
 }
+
+export const coverageFooterProblem = (line) => readCoverageFooter(line).problem;
 
 /** `pass` in the return value already accounts for report versus enforce mode. */
 export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_REQUIRED, easy = {} } = {}) {
@@ -99,7 +102,10 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	// unmasked line: masking blanks a trailing `<!-- -->` or inline code the helper never writes.
 	const hasFooter = footerIndex >= 0;
 	const structured = hasFooter ? structuredCoverage(proseLines[footerIndex]) : null;
-	const grammarProblem = hasFooter ? coverageFooterProblem(body.replace(/\r\n?/g, '\n').split('\n')[footerIndex]) : '';
+	const footerRead = hasFooter
+		? readCoverageFooter(body.replace(/\r\n?/g, '\n').split('\n')[footerIndex])
+		: { problem: '', segments: new Map() };
+	const grammarProblem = footerRead.problem;
 	// Report what is enforced: the summary and the gate must not read different lines, so a footer
 	// too broken to parse reports nothing rather than falling back to an earlier one.
 	const { count, families } = hasFooter ? (structured ?? { count: 0, families: [] }) : reportedCrossModelReviews(prose);
@@ -109,35 +115,49 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 	// A footer with no recognized `authored=` cannot exclude that family either, so `ran=claude,codex`
 	// would score two on a Claude-authored PR. Materialized footers always carry it.
 	const enforceable = structured?.generator && !grammarProblem ? structured.count : 0;
+	// The helper lists a leg under `blocked=` only when it delivered in no round of the branch, so no
+	// outside finding was ever ruled on. `declined=` is a policy choice and does not fail.
+	const adjudicatorBlocked = footerRead.segments.get('adjudicated')?.split(',').includes('domain')
+		? ''
+		: (/(?:^|,)domain\(([^)]+)\)/.exec(footerRead.segments.get('blocked') ?? '')?.[1] ?? '');
 	const plural = count === 1 ? 'review' : 'reviews';
 	const reported = `${count} cross-model ${plural} reported${families.length ? ` (${families.join(', ')})` : ''}`;
 	const coverage = count >= required ? reported : `${reported} — policy asks for ${required}`;
 
-	const footer = [
-		...prose.matchAll(/Human-Review-Need:\s*(\d+)(?:(?:(?!Human-Review-Need:)[^@\n])*@\s*([0-9a-f]{6,40}))?/gi),
+	const lastFooter = (field, value) =>
+		[
+			...prose.matchAll(new RegExp(`${field}:\\s*(${value})(?:(?:(?!${field}:)[^@\\n])*@\\s*([0-9a-f]{6,40}))?`, 'gi')),
+		].at(-1);
+	// The format check's grammar (evaluatePrFormat.mjs): `@` may appear inside the `(detail)`.
+	const attention = [
+		...prose.matchAll(
+			/Review-Attention:\s*((?:skim|read|study|deep)\s+~\d+m)(?:\s+\([^)\n]*\))?(?:\s*@\s*([0-9a-f]{6,40}))?/gi
+		),
 	].at(-1);
+	const field = attention ? 'Review-Attention' : 'Human-Review-Need';
+	const footer = attention ?? lastFooter(field, '\\d+');
 	const head = String(pr?.head?.sha ?? '').toLowerCase();
 	// Reported, never enforced: the question is whether two outside models looked at this change,
 	// not whether the footer was re-materialized after the last amend.
 	const footerNote = !footer
-		? 'no Human-Review-Need footer'
+		? 'no Review-Attention (or legacy Human-Review-Need) footer'
 		: !footer[2]
-			? `Human-Review-Need: ${footer[1]} @ unpinned sha`
+			? `${field}: ${footer[1]} @ unpinned sha`
 			: head.startsWith(footer[2].toLowerCase())
-				? `Human-Review-Need: ${footer[1]} @ head`
-				: `Human-Review-Need footer is stale (reviewed @ ${footer[2].slice(0, 7)}, head is ${head.slice(0, 7)})`;
+				? `${field}: ${footer[1]} @ head`
+				: `${field} footer is stale (reviewed @ ${footer[2].slice(0, 7)}, head is ${head.slice(0, 7)})`;
 
 	const classification = classifyPullRequest(pr);
 	const waiver = easyDiffWaiver(pr, easy);
 	const aiAuthored = isAiAuthored(prose);
 	// Waives ONE leg, not "all but one": a consumer asking for three still gets two.
-	const easyWaived = waiver.waived && enforceable >= Math.max(1, required - 1);
+	const easyWaived = waiver.waived && !adjudicatorBlocked && enforceable >= Math.max(1, required - 1);
 	const exempt =
 		classification.exempt ||
 		(classification.draft ? 'draft — checked again at ready-for-review' : '') ||
 		(!aiAuthored ? 'not AI-authored — coverage is reported, not required' : '') ||
 		(easyWaived ? `Complexity: easy on a ${waiver.lines}-line diff — one outside review is enough` : '');
-	const compliant = enforceable >= required;
+	const compliant = enforceable >= required && !adjudicatorBlocked;
 	const pass = mode !== 'enforce' || Boolean(exempt) || compliant;
 	const proseNote = !hasFooter
 		? count > 0
@@ -150,7 +170,10 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 				: '';
 	const easyNote =
 		waiver.claimed && !waiver.waived ? `; \`Complexity: easy\` does not waive here — ${waiver.reason}` : '';
-	const summary = exempt ? `exempt: ${exempt}` : coverage;
+	const adjudicationNote = adjudicatorBlocked
+		? `; the Harper adjudicator (\`domain\`) is blocked (${adjudicatorBlocked}) in every round, so no outside finding was adjudicated — rerun the pre-push review until \`domain\` completes and re-materialize the footer`
+		: '';
+	const summary = exempt ? `exempt: ${exempt}` : adjudicatorBlocked ? `${coverage}; adjudication blocked` : coverage;
 	return {
 		pass,
 		exempt,
@@ -158,7 +181,8 @@ export function evaluateCiCoverage(pr, { mode = 'report', required = COVERAGE_RE
 		count,
 		families,
 		aiAuthored,
+		adjudicatorBlocked,
 		summary,
-		detail: `${coverage}; ${footerNote}${easyNote}${proseNote}`,
+		detail: `${coverage}; ${footerNote}${easyNote}${proseNote}${adjudicationNote}`,
 	};
 }

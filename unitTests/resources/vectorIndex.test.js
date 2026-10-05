@@ -3323,6 +3323,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 				{ name: 'tenant', indexed: true },
 				{ name: 'rank', indexed: true, type: 'Int' },
 				{ name: 'shard', indexed: true },
+				{ name: 'mixedNumber', indexed: true, type: 'Any' },
 				{ name: 'note' },
 				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
 			],
@@ -3331,6 +3332,7 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			const record = {
 				tenant: i % 3 === 0 ? 'a' : 'b',
 				shard: i < 290 ? 'wide' : 'narrow',
+				mixedNumber: i === 0 ? 1n : i === 1 ? 1 : i,
 				note: i % 2 === 0 ? 'keep' : 'drop',
 				vector: [i, 0],
 			};
@@ -3392,6 +3394,112 @@ describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
 			results.map((record) => record.id),
 			[0, 3, 6, 9, 12]
 		);
+	});
+
+	it('keeps strict equality behind an Any numeric candidate set', async () => {
+		const { results, probed, stats } = await searchWithSpy(
+			[0, 0],
+			[{ attribute: 'mixedNumber', comparator: 'equals', value: 1 }],
+			{ limit: 5 }
+		);
+		assert.strictEqual(probed.complete, false);
+		assert(probed.keys.has(0), 'the storage range includes the BigInt value');
+		assert(probed.keys.has(1), 'the storage range includes the Number value');
+		assert(stats.filterEvaluations > 0, 'the strict record predicate decides admission');
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[1]
+		);
+	});
+
+	it('does not inspect point-probe capabilities unless the lead index opts in', async () => {
+		const tenantIndex = A.indices.tenant;
+		const ownDescriptor = Object.getOwnPropertyDescriptor(tenantIndex, 'hasIndexEntry');
+		Object.defineProperty(tenantIndex, 'hasIndexEntry', {
+			configurable: true,
+			get() {
+				throw new Error('the HNSW planner must not inspect point-probe capabilities');
+			},
+		});
+		try {
+			const { results, options } = await searchWithSpy(
+				[0, 0],
+				[{ attribute: 'tenant', comparator: 'equals', value: 'a' }],
+				{ limit: 1 }
+			);
+			assert.strictEqual(options.candidateKeys.probe, undefined);
+			assert.strictEqual(results[0].id, 0);
+		} finally {
+			if (ownDescriptor) Object.defineProperty(tenantIndex, 'hasIndexEntry', ownDescriptor);
+			else delete tenantIndex.hasIndexEntry;
+		}
+	});
+
+	it('composes equality point probes across AND, OR, and residual conditions', async () => {
+		const customIndex = A.indices.vector.customIndex;
+		customIndex.candidateKeyProbe = true;
+		const inspect = (keys) => (plan) => ({
+			complete: plan.probe?.complete,
+			estimatedCount: plan.probe?.estimatedCount,
+			maxReadsPerCandidate: plan.probe?.maxReadsPerCandidate,
+			matches: keys.map((key) => plan.probe?.has(key)),
+		});
+		try {
+			const and = await searchWithSpy(
+				[0, 0],
+				[
+					{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+					{ attribute: 'shard', comparator: 'equals', value: 'wide' },
+				],
+				{ limit: 1 },
+				inspect([0, 1, 291])
+			);
+			assert.deepStrictEqual(and.probed, {
+				complete: true,
+				estimatedCount: 100,
+				maxReadsPerCandidate: 2,
+				matches: [true, false, false],
+			});
+
+			const or = await searchWithSpy(
+				[0, 0],
+				[
+					{
+						operator: 'or',
+						conditions: [
+							{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+							{ attribute: 'rank', comparator: 'equals', value: 7 },
+						],
+					},
+				],
+				{ limit: 1 },
+				inspect([3, 7, 8])
+			);
+			assert.deepStrictEqual(or.probed, {
+				complete: true,
+				estimatedCount: 101,
+				maxReadsPerCandidate: 2,
+				matches: [true, true, false],
+			});
+
+			const residual = await searchWithSpy(
+				[0, 0],
+				[
+					{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+					{ attribute: 'note', comparator: 'equals', value: 'keep' },
+				],
+				{ limit: 1 },
+				inspect([0, 1])
+			);
+			assert.deepStrictEqual(residual.probed, {
+				complete: false,
+				estimatedCount: 100,
+				maxReadsPerCandidate: 1,
+				matches: [true, false],
+			});
+		} finally {
+			delete customIndex.candidateKeyProbe;
+		}
 	});
 
 	it('builds the allow-set from each range comparator a missing value cannot satisfy', async () => {

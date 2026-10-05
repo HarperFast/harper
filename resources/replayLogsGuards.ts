@@ -67,8 +67,8 @@ export function isUndecodableValidatedWrite(type: string | undefined, record: un
 // divergence), corrupt headers, or entries for a dropped table — every iteration makes no forward
 // progress. A large enough backlog then grinds the main thread for minutes with zero progress,
 // blocking startup entirely (harper#1266). These bounds let replay give up on a run that is making
-// no progress so boot can proceed; the operator then sheds/relocates the offending peer log (or
-// re-clones). They are deliberately conservative: a healthy replay produces writes, which reset
+// no progress so boot can proceed; they establish neither data loss nor peer completeness.
+// They are deliberately conservative: a healthy replay produces writes, which reset
 // the progress tracking, so neither bound can trip on it.
 
 // Max consecutive no-progress entries (since the last successful write) before the replay is
@@ -114,8 +114,7 @@ export function shouldAbortStalledReplay(
 // for an unbounded time without tripping shouldAbortStalledReplay, which resets its counters on
 // every successful write. This bound fires regardless of progress once the total elapsed time is
 // hit. Ten minutes is deliberately generous — a healthy replay of a large backlog completes in
-// seconds to low minutes; anything exceeding this is a pathological replay that the operator must
-// resolve by re-cloning the node.
+// seconds to low minutes. Exceeding this bound establishes slow replay, not its cause or data loss.
 export const REPLAY_WALL_CLOCK_LIMIT_MS = 10 * 60 * 1000;
 
 /**

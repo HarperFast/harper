@@ -29,8 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
     # on a required check. Every step below is capped in its own right and this sits above their
-    # sum (52 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
-    timeout-minutes: 55
+    # sum (55 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
+    timeout-minutes: 56
     strategy:
       fail-fast: false
       matrix:
@@ -39,11 +39,11 @@ jobs:
     steps:
       - name: Checkout code
         timeout-minutes: 3
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js ${{ matrix.node-version }}
         timeout-minutes: 5
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
@@ -94,8 +94,11 @@ jobs:
       # from the Actions step API: a cap-killed sample is right-censored and reads far too low.
       # Derived 2026-09-18 over the 30 `Unit Test` pushes since 2026-09-14, and only `resources`
       # was re-budgeted — capped at 7m off a ~4m30-5m25 estimate nobody re-measured, it reached
-      # 6m58 completed, went red on main, and needed ~7m40 at its worst. `main` (3m19) sits at ~1.2x
-      # its own worst, not 1.5x. `lmdb` was re-derived 2026-09-28 over the pushes since 2026-09-26:
+      # 6m58 completed, went red on main, and needed ~7m40 at its worst. `main` was re-derived
+      # 2026-10-05 over ten pushes: slowest successful step 3m59; the new named-child suites add ~12s.
+      # All three Node legs reached their epilogues in 4m03 to 4m13, past the old 4m cap;
+      # 1.5x the slowest epilogue is 6m20, rounded up to 7m.
+      # `lmdb` was re-derived 2026-09-28 over the pushes since 2026-09-26:
       # slowest completed 3m38, ~3m20 once `subscriptionSuperseded` stopped replaying the shared
       # `test` database's whole audit log; 1.5x is 5m, and the legs killed at 4m ran longer than any
       # that completed, so 6m. Its LMDB-`resources` phase stretches on a slow runner in tests that
@@ -112,7 +115,7 @@ jobs:
       # core 4m50 -> 8m, indexes 2m50 -> 5m.
       - name: 'Unit tests: main'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
-        timeout-minutes: 4
+        timeout-minutes: 7
         run: npm run test:unit:main
 
       - name: 'Unit tests: apitests'
@@ -158,10 +161,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js 24
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           package-manager-cache: false
@@ -190,10 +193,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout code
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js 24
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           package-manager-cache: false
@@ -222,6 +225,32 @@ jobs:
           HNSW_NATIVE_REBUILD_BENCHMARK: '1'
         run: npx mocha unitTests/resources/vectorIndexPlane.test.js
 
+  uws-tcp-macos:
+    name: uWS TCP uploads (macOS, Node.js v24)
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify the uWS native binding loads
+        run: node -e "require('uWebSockets.js')"
+
+      - name: Oversized TCP upload regressions
+        run: npx mocha unitTests/server/serverHelpers/uwsServer.test.js --grep 'uWS oversized TCP uploads' --forbid-pending --fail-zero
+
   fulltext-plane:
     name: Full-text native plane (${{ matrix.os }}, Node.js v24)
     runs-on: ${{ matrix.os }}
@@ -232,10 +261,10 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-14]
     steps:
       - name: Checkout code
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js 24
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           package-manager-cache: false

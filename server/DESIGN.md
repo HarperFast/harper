@@ -16,7 +16,7 @@ This layer accepts inbound traffic on every supported protocol (HTTP/1.1, HTTP/2
 | **Operations API**            | `operationsServer.ts` | Fastify-based JSON operations API (`{operation: 'create_table', ...}`). Internal/admin surface — not on the hot path for application data.                                                      |
 | **Custom Functions (legacy)** | `fastifyRoutes.ts`    | Legacy custom functions only. Wraps Fastify with autoload. Don't add new code here.                                                                                                             |
 
-A request entering `http.ts` does **not** go through Fastify. The two `handleApplication(scope)` functions (one in each Fastify file) load independently from component config.
+A request entering `http.ts` does **not** go through Fastify unless no Harper handler answers it (status `-1` cascades to a registered Fastify instance). Of the two Fastify files only `fastifyRoutes.ts` has a `handleApplication(scope)`; `operationsServer.ts` is the `operationsApi` component, started once on the main thread through `startOnMainThread`.
 
 ---
 
@@ -57,7 +57,7 @@ A request entering `http.ts` does **not** go through Fastify. The two `handleApp
 | `throttle.ts`                              | Event-loop backpressure: runs a caller's calls one per `setImmediate` cycle and hands a call to the caller's limit handler (HTTP request queues, cache-source resolution) once queue depth × average cycle time passes the limit.                                                                                                                                                                                                                      |
 | `storageReclamation.ts`                    | Disk-pressure signals to downstream consumers; `getStorageSpaceStats()` is the shared quota-aware (falls back to `statfs`) source of available/free/size storage numbers — used by `Table.getStorageStats()` (#1976). NOT used for blob storage path weighting (`resources/blob.ts`): quota-status.json is a single instance-wide figure, so it can't distinguish between multiple `STORAGE_BLOBPATHS` disks — that still needs raw per-path `statfs`. |
 | `serverRegistry.ts`                        | Trivial registry export.                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `status/`                                  | Server status reporting (cluster status, per-port info).                                                                                                                                                                                                                                                                                                                                                                                               |
+| `status/`                                  | `get_status`/`set_status`/`clear_status` over `system.hdb_status`, aggregated with component status and (opt-in) the resolved middleware chains (#1573).                                                                                                                                                                                                                                                                                               |
 
 > **Subscription message identity contract.** `sharedMessageEncoding.ts` encodes a message once and
 > reuses the bytes for every subscriber of the topic, keyed on the message object's identity. That is
@@ -75,13 +75,13 @@ A request entering `http.ts` does **not** go through Fastify. The two `handleApp
 
 ### Threads
 
-| File                       | Purpose                                                  |
-| -------------------------- | -------------------------------------------------------- |
-| `threads/socketRouter.ts`  | Routes accepted sockets to worker threads based on port. |
-| `threads/manageThreads.js` | Thread pool lifecycle.                                   |
-| `threads/threadServer.js`  | Worker entry point — receives sockets via IPC.           |
-| `threads/itc.js`           | Inter-thread comms primitives.                           |
-| `transactionLogCooling.ts` | Main-thread timer that cools transaction-log mmaps.      |
+| File                       | Purpose                                                                                                                                                                           |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `threads/socketRouter.ts`  | Starts the HTTP worker pool (`startHTTPThreads`) and isolated applications' dedicated workers (`reconcileIsolatedWorkers`); workers bind their own ports, so no socket is routed. |
+| `threads/manageThreads.js` | Thread pool lifecycle.                                                                                                                                                            |
+| `threads/threadServer.js`  | Worker entry point — loads components (`startServers`) and binds each registered server itself (`listenOnPorts`, `reusePort` where the OS has it).                                |
+| `threads/itc.js`           | Inter-thread comms primitives.                                                                                                                                                    |
+| `transactionLogCooling.ts` | Main-thread timer that cools transaction-log mmaps.                                                                                                                               |
 
 Process-wide shutdown begins by calling `beginProcessShutdown()` in `threads/manageThreads.js`.
 Once set, this terminal state prevents every worker replacement path and makes new `startWorker()`
@@ -100,7 +100,7 @@ replacement without being awaited. Each wait is bounded by a per-worker startup 
 resolution means "the restart finished", not "every worker is new". A caller that treats its own success as
 "the component is live" must await it (see `deployComponent` in `components/operations.js`).
 
-> Workers receive `workerData.noServerStart = true` — never start the server inside a worker.
+> `index.ts` sets `workerData.noServerStart = true` when Harper is imported from a thread it did not spawn, so `threadServer.js` skips `startServers()` there; Harper's own HTTP workers start their servers.
 >
 > `threadServer.listenOnDomainSocket()` skips a listener only when its path exceeds the platform's
 > `sockaddr_un.sun_path` byte limit (some Node versions reject it; others silently truncate it).
@@ -111,7 +111,7 @@ resolution means "the restart finished", not "every worker is new". A caller tha
 
 Single-instance background tasks pick their thread by what state they touch:
 
-- **Last worker** (`getWorkerIndex() === getWorkerCount() - 1`) — for tasks that operate on **worker-resident JS state**: audit cleanup (`resources/auditStore.ts`) and disk reclamation (`storageReclamation.ts`) walk per-store objects that only exist in a worker.
+- **Last worker** (`ownsStoreMaintenance(storePath)` in `threads/manageThreads.js`: the last pool worker for shared stores; a dedicated isolated-application worker maintains only its own branch stores) — for tasks that operate on **worker-resident JS state**: audit cleanup (`resources/auditStore.ts`), TTL scans (`resources/Table.ts`) and disk reclamation (`storageReclamation.ts`) walk per-store objects that only exist in a worker.
 - **Main thread** (`isMainThread`) — for tasks that drive a **process-global native singleton** and need no JS state. `transactionLogCooling.ts` is the example: rocksdb-js's transaction-log registry is one C++ static shared across all worker threads, so any thread cools every log. The main thread is chosen because it is the only thread that lives for the whole process — a worker-driven timer would stall whenever that worker is recycled.
 
 ---
@@ -125,8 +125,8 @@ Every entry is a top-level function or named const. Jump via go-to-symbol or `gr
 | `registerUdsCleanupPaths`, `recordUdsBindSuccess`, `cleanupUdsFiles`, `markUdsBindFailed`, `writeUdsMetadata`, `cleanupSocketsDirectory` | UDS socket / metadata file lifecycle. Ownership-aware: `recordUdsBindSuccess` captures the inode a worker's own bind confirmed; `cleanupUdsFiles`/`markUdsBindFailed` only unlink a path when the inode on disk still matches, so an overlapping restart's outgoing worker can never delete the replacement that already rebound the same path (see restartWorkers() in manageThreads.js). `cleanupSocketsDirectory` is the separate crash-path sweep, run once from `socketRouter.ts`'s `startHTTPThreads` on main-thread startup, before any worker can bind.                                                                                                                                                                                                                                     |
 | `handleApplication(scope)`                                                                                                               | Component entry point — captures `httpOptions` for the scope.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `getHttpOptions()`                                                                                                                       | Returns the current scope's `HttpOptions`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `deliverSocket()`                                                                                                                        | IPC-delivered socket handoff from `socketRouter`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `proxyRequest()`                                                                                                                         | Cross-port request routing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `deliverSocket()`                                                                                                                        | Exported but called nowhere in core or harper-pro (`proxyRequest` is its only caller); workers bind their own ports.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `proxyRequest()`                                                                                                                         | Exported but called nowhere in core or harper-pro.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `registerServer()`                                                                                                                       | Records a server for a port in the `SERVERS` map.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `getPorts()`                                                                                                                             | Resolves listener options → list of `{port, secure}`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `httpServer()`                                                                                                                           | Main listener registration entry point.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -185,7 +185,7 @@ Consequences worth knowing:
 
 ## Operations authorization boundary
 
-Operations request bodies are untrusted data. `serverHandlers.js → handlePostRequest()` rejects
+Operations request bodies are untrusted data. `serverHelpers/serverHandlers.js → handlePostRequest()` rejects
 prototype-mutating property names and strips the legacy `bypass_auth` property before dispatch.
 `serverUtilities.ts → chooseOperation()` never reads authorization control from the body: trusted
 internal callers pass bypass state as a separate argument and expose it to operation handlers only
@@ -250,12 +250,13 @@ user resolution touches system-table searches (`listUsers()`) that raise a defau
 storage outage as an unknown credential and hand it to application authorization. The tag is set at
 exactly these points:
 
-| Tagged rejection                                                   | Where                                      |
-| ------------------------------------------------------------------ | ------------------------------------------ |
-| unknown user, inactive user, bad password                          | `security/user.ts → findAndValidateUser()` |
-| JWT syntax, signature, expiry, not-before, subject/claim rejection | `tokenAuthentication.ts → validateToken()` |
-| refresh-token hash mismatch, malformed scoped-token claims         | `tokenAuthentication.ts`                   |
-| an `Authorization` scheme Harper does not implement                | `security/auth.ts`                         |
+| Tagged rejection                                                   | Where                                                                                        |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| unknown user, inactive user, bad password                          | `security/user.ts → findAndValidateUser()`                                                   |
+| JWT syntax, signature, expiry, not-before, subject/claim rejection | `security/tokenAuthentication.ts → validateToken()`                                          |
+| refresh-token hash mismatch, malformed scoped-token claims         | `security/tokenAuthentication.ts`                                                            |
+| an `Authorization` scheme Harper does not implement                | `security/auth.ts`                                                                           |
+| a component's `server.getUser` override that tags its own error    | `markCredentialRejection` / `credentialRejectionError`, exported from `harper` (harper#2703) |
 
 `validateToken()` separates the two in the same catch: `jsonwebtoken` reports unusable key material
 through the very same `JsonWebTokenError` type it uses for a forged token, so the public key is
@@ -271,14 +272,14 @@ internal detail never reaches an unauthenticated client.
 
 Any layer that establishes Harper owns the route then settles the deferred state before doing work:
 
-| Layer                                   | Where                                                              |
-| --------------------------------------- | ------------------------------------------------------------------ |
-| `REST.ts → http()`                      | after `resources.getMatch` succeeds (and for the OpenAPI document) |
-| `REST.ts` WebSocket handler             | after `resources.getMatch(url, 'ws')` succeeds                     |
-| `graphqlQuerying.ts`                    | after the `/graphql` prefix match, ahead of its error mapping      |
-| `static.ts`                             | after a static file entry matches                                  |
-| `mqtt.ts` WebSocket handler             | once the pending HTTP chain settles, before the first packet       |
-| `components/mcp/adapters/harperHttp.ts` | after the WebSocket hand-off, before the body is read              |
+| Layer                                   | Where                                                                                                                                                                      |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `REST.ts → http()`                      | after `resources.getMatch` succeeds (and for the OpenAPI document)                                                                                                         |
+| `REST.ts` WebSocket handler             | once the HTTP chain settles, _before_ `resources.getMatch(url, 'ws')` (`assertNoDeferredCredentialRejection`), so the close code cannot reveal whether the resource exists |
+| `graphqlQuerying.ts`                    | after the `/graphql` prefix match, ahead of its error mapping                                                                                                              |
+| `static.ts`                             | after a static file entry matches                                                                                                                                          |
+| `mqtt.ts` WebSocket handler             | once the pending HTTP chain settles, before the first packet                                                                                                               |
+| `components/mcp/adapters/harperHttp.ts` | after the WebSocket hand-off, before the body is read                                                                                                                      |
 
 **Every Harper-owned handler registered `after: 'authentication'` owes this settlement**, because
 declining to call `nextHandler` is precisely the moment ownership is settled. A handler that skips
@@ -363,7 +364,7 @@ The `@table(cacheControl:)` value is persisted on the primary-key attribute (lik
 | How are content types (de)serialized?                                      | `serverHelpers/contentTypes.ts`                                                                                                                                                                                                                                                                                                                                                                                        |
 | Why doesn't every MQTT subscriber re-serialize the message it receives?    | `serverHelpers/sharedMessageEncoding.ts` (memoized on the message object the fan-out shares); consumed by the outbound listener in `mqtt.ts`                                                                                                                                                                                                                                                                           |
 | Where do durable subscriptions live?                                       | `DurableSubscriptionsSession.ts`                                                                                                                                                                                                                                                                                                                                                                                       |
-| How are sockets dispatched to worker threads?                              | `threads/socketRouter.ts`                                                                                                                                                                                                                                                                                                                                                                                              |
+| How do worker threads get their connections?                               | Each binds its ports itself after the main thread's first bind (`threads/threadServer.js → listenOnPorts`, `reusePort` where the OS has it); `threads/socketRouter.ts → startHTTPThreads` starts them                                                                                                                                                                                                                  |
 | Where is the Operations API wired into Fastify?                            | `operationsServer.ts → buildServer`                                                                                                                                                                                                                                                                                                                                                                                    |
 
 ---
@@ -371,7 +372,7 @@ The `@table(cacheControl:)` value is persisted on the primary-key attribute (lik
 ## Conventions
 
 - Don't add new code to `fastifyRoutes.ts` — it's the legacy custom-functions path.
-- New protocol plugins implement the `Server` interface (in `Server.ts`) and register via `onRequest`/`onUpgrade`/`onWebSocket`.
+- New protocol plugins register through the `Server` interface (`Server.ts`): `server.http()`/`request()`/`ws()`/`upgrade()` (bound to `http.ts`'s `httpServer`/`onRequest`/`onWebSocket`/`onUpgrade`) and `server.socket()` (`threadServer.js → onSocket`).
 - Always pass `name` when registering a listener with `before`/`after` — anonymous entries can't be ordered against.
 - Tests live in `../unitTests/server/`.
 
@@ -384,13 +385,13 @@ invoked, because the scope is written in that namespace (`sql`, `export_local`, 
 make that awkward:
 
 1. On the **direct-SQL** path, the object handed to `checkASTPermissions` _is_ the client's request
-   body, and this check is the only gate there (`chooseOperation`'s `sql` branch is mutually
-   exclusive with its `verifyPerms` call). Any field read off that object is therefore a way to
+   body, and this check is the only table and token-scope gate there (`chooseOperation`'s `sql` branch
+   is mutually exclusive with its `verifyPerms` call; only `verifyOperationsAllowlist` also runs). Any field read off that object is therefore a way to
    name whichever operation the caller's scope happens to allow and run arbitrary SQL under it.
    `jsonMessage.operation` is safe only because dispatch already routed on that same field, so it
    cannot disagree with the operation running. Never add another.
 2. A **job** re-parses its SQL from the nested `search_operation` in a _different_ async context —
-   `executeJob` persists the request and hands off to the job runner, and `jobProcess.ts` re-enters
+   `executeJob` persists the request and hands off to the job runner, and `jobs/jobProcess.ts` re-enters
    from the `hdb_job` record. So a store established around the originating request cannot reach
    it, and the re-parse would be judged as `sql` rather than as the job's own operation.
 
@@ -485,7 +486,7 @@ on `scope.options.on('change', ...)`. Three invariants to preserve:
   response. CI first caught this on the uWS shard (the integration suite's only unauthenticated
   404 case landed there); the same bug existed unnoticed on Bun's parallel `status === -1`
   branches (`getBunHTTPServer`'s bare-404 return and `bunDelegateToNodeServer`'s two `Response`s)
-  and is fixed alongside it in `harper-1568-fix2`.
+  and is fixed alongside it in #1568.
 
 **Why the operations API doesn't get these headers in normal mode**: ops requests _do_ flow
 through the Harper-native `requestHandler` (`httpServer()` calls `getServer()` for every
@@ -525,7 +526,7 @@ without asking to close at all, since 1.0 persistence needs both an explicit `ke
 to read to — so a 1.0 response that got no `Content-Length` is close-delimited, the same line Node
 draws (Node closes it at ~7ms; Bun never does). An explicit `close` token wins over `keep-alive` on
 both versions. A 1.0 `keep-alive` request whose response _did_ get a
-`Content-Length` (`body.size` on a blob, `server/http.ts:698-709`) is left open, which is again what
+`Content-Length` (`body.size` on a blob — the `body instanceof Blob` branch of `getHTTPServer`'s request handler) is left open, which is again what
 Node does and what Bun then handles correctly.
 
 `pipeBodyToResponse()` therefore ends `request.socket` itself for those shapes
@@ -571,6 +572,35 @@ matching Node's upgrade-then-authorize order). No core component registers custo
 middleware; `onUpgrade()`/`installUwsWsHandler()` warn when one is registered for a uWS-served
 port so the gap is visible instead of silent.
 
+## A per-thread UDS mirror is bound at a temp name and renamed over its published path (`server/threads/threadServer.js`)
+
+libuv unlinks a pipe server's bound path when the handle closes (`uv__pipe_close` → `unlink`), with
+no check of who owns the path now. On Linux `restartWorkers()` pre-starts the replacement worker
+while the outgoing one still runs (#1417), and both publish the same `<worker>-<port>.sock`. Bound
+directly at that path, the replacement rebinds it and the outgoing worker's `closeServers()` then
+deletes the replacement's socket — Harper's own `cleanupUdsFiles()` is inode-ownership-aware
+(#2035) and skips it, but libuv's unlink ran after that and removed every mirror on every rolling
+restart (#2961). So `listenOnDomainSocket()` binds a mirror (`server.isPerThreadSocket`) at
+`.<threadId>.<seq>` in the sockets directory and `renameSync()`s it over the published path:
+`rename()` keeps the listening inode, so the close-time unlink only ever targets a temp name that
+no longer exists, and the published path is never absent between an unlink and a bind.
+
+- `recordUdsBindSuccess(publishedPath)` runs after the rename, so the identity it records is the
+  inode that is listening; `cleanupUdsFiles()`'s ownership guard is unchanged and is now the only
+  thing that removes a mirror's published file. The regression and the shutdown sequence are
+  covered by `unitTests/server/threads/threadServerListenOnPorts.test.js`; the real rolling restart
+  by `integrationTests/server/uds-mirror-overlapping-restart.test.ts`.
+- The temp name is unique per process (`threadId` never repeats; `seq` is per thread); both it and
+  the published path are checked with `isDomainSocketPathTooLong`, and an overlong one takes the
+  existing fail-soft branch rather than falling back to a direct bind; it never matches a proxy's
+  `*-<port>.yaml`/`.sock` discovery; a leftover from a crash is swept by `cleanupSocketsDirectory()`
+  before any worker binds.
+- The operations API's primary domain socket keeps the direct bind on purpose: `bin/cliOperations.ts`
+  reads that file's presence as "Harper is running", so its unlink on close is load-bearing.
+- The uWS mirror (`HARPER_UWS_UDS`) keeps its direct bind: measured on uWebSockets.js 20.68.0,
+  `app.close()` never unlinks a `listen_unix` path, so it is not exposed. Bun restarts are
+  non-overlapping, so the Bun mirror is not exposed either.
+
 ## A worker that misses an ITC ack gets its OS thread state logged (`server/threads/manageThreads.js`)
 
 `broadcastWithAcknowledgement` already times out (30 s) on a worker whose port stays open but never acks, and that shape is almost always a blocked event loop — a native lock, a runaway synchronous call — which nothing inside the worker can report (harper-pro#788: a restarted node's single http worker went byte-silent while main kept serving `cluster_status`, and the app log only said "not acknowledged by worker thread(s) 2"). So each worker posts its Linux thread id (`readlink /proc/thread-self`) to main once at startup, before anything else runs on it, and the timeout branch reads that thread's kernel state from `/proc/self/task/<tid>`: state, `wchan`, the syscall number (the first token only — the rest of that file is argument registers and stack/instruction pointers), CPU ticks, and context-switch counts, plus two cross-platform signals main already has, `worker.performance.eventLoopUtilization()` and the age of the last 1 s resource report. It samples again a second later and logs the deltas: no CPU ticks, no context switches and `event loop active +1000ms` is "parked on a lock"; ticks climbing with state `R` is "spinning". It is deliberately main-thread-only and best-effort: `workers` and the tid live on the main thread's `Worker` objects, every `/proc` field is reported individually (a hardened container may deny `wchan`/`syscall` while `stat` stays readable), a follow-up sample whose `starttime` differs from the first is discarded (the tid may have been recycled), one diagnostic runs per worker with a 30 s cooldown so concurrent timeouts on the same worker don't multiply reads, and nothing here runs when acks arrive on time. It does not name the lock owner; that still needs a native stack from the next occurrence.
@@ -599,7 +629,7 @@ The SQL and job paths are additive rather than exclusive: `verifyPermsAST` valid
 
 ## `withNodeAdapter()`'s response is the body `PassThrough` it resolves with (`server/serverHelpers/NodeAdapterResponse.ts`)
 
-`Request.withNodeAdapter(handler)` gives third-party Node middleware an `IncomingMessage`/`ServerResponse` pair and resolves `{ status, headers, body }` once headers are committed. The response is `NodeAdapterResponse extends PassThrough`, and that same stream is the resolved `body`: `write()`'s return value, `'drain'`, `'finish'`, `'close'`, `writableEnded`/`writableFinished` and destroy propagation are Node's own rather than events forwarded from a second stream, which is what `Readable.pipe`, `compression`'s buffered `res.on('drain')` and Next.js's response writer depend on past the high-water mark (#2527). Invariants that middleware exercises and the unit test `unitTests/server/serverHelpers/nodeAdapterMiddleware.test.js` pins against the real `compression` (1.8 and the 1.7.4 Next.js vendors), `send`, `on-finished` and `on-headers`:
+`Request.withNodeAdapter(handler)` gives third-party Node middleware an `IncomingMessage`/`ServerResponse` pair and resolves `{ status, headers, body }` once headers are committed. The response is `NodeAdapterResponse extends PassThrough`, and that same stream is the resolved `body`: `write()`'s return value, `'drain'`, `'finish'`, `'close'`, `writableEnded`/`writableFinished` and destroy propagation are Node's own rather than events forwarded from a second stream, which is what `Readable.pipe`, `compression`'s buffered `res.on('drain')` and Next.js's response writer depend on past the high-water mark (#2527). Invariants that middleware exercises and the unit test `unitTests/server/serverHelpers/nodeAdapterMiddleware.test.js` pins against the real `compression` 1.8 (its `compression-1.7` arm, meant for the 1.7.4 that Next.js vendors, has resolved to 1.8.2 since #2877, so 1.7.4 is currently untested), `send`, `on-finished` and `on-headers`:
 
 - **Headers commit exactly once, through `this.writeHead`.** `write()`, `end()`, `flushHeaders()` and `_implicitHeader()` all reach `this.writeHead(this.statusCode)` by property lookup, so a `writeHead` that `on-headers` replaced on the instance runs its listeners (the ones that set `Content-Encoding` and remove `Content-Length`) before the promise resolves. After commit, `setHeader`/`appendHeader`/`removeHeader` and a second `writeHead` throw `ERR_HTTP_HEADERS_SENT` as Node's do; `_header` (which `compression` ≤ 1.7 tests instead of `headersSent`) and `finished` (which `on-finished` tests) derive from that state.
 - **The adapter owns the `'error'` listener.** A `destroy(err)` right after `writeHead()` emits before the awaiting caller can attach one; the error stays in the stream's `errored` state for `pipeline()`, `finished()` or async iteration. Client disconnect (`Request.signal`) destroys the response without an error after headers (a plain premature close, which `pipeBodyToResponse` treats as routine) and rejects the promise with the abort reason before them; a handler that throws or rejects before ending the response destroys it, and one that fails after `end()` is logged at warn.
@@ -680,3 +710,7 @@ A response stream that fails after its first byte has no status left to report t
 Node gets this from `stream.pipeline` in `pipeBodyToResponse`. uWS has no Writable to pipe into, so `streamResponse` wires the events itself and calls `res.close()`, which also runs `onAborted` and aborts the request signal. It also checks `source.destroyed`: the uWS handler resolves asynchronously, so a source can be destroyed, and its `'close'` already emitted, before the sink listens for it — the response would stay open forever. The `'error'` listener goes on before that check, because `destroy(error)` emits on a later tick and an `'error'` with no listener is thrown. Under Bun the main port is a `node:http` server and takes the `pipeBodyToResponse` path; the `Bun.serve` fetch handler buffers a stream body before it responds, so a failed source there is an ordinary error response.
 
 This is the transport's fallback, not the error contract. SSE and NDJSON GETs hold their first step so an immediate failure is still an HTTP status, and they report later failures in-band ([Streaming startup errors](#streaming-startup-errors)). Every other format commits when the handler returns the stream, so a failure before its first chunk aborts the connection too. Pinned by `unitTests/server/serverHelpers/uwsServer.test.js` ("a response stream that does not end cleanly") and, end to end on every runtime leg, by `integrationTests/server/response-compression.test.ts`.
+
+## A coarse uWS 413 drains a closing upload before ending the response
+
+uWS force-closes a completed `Connection: close` response while an upload is still arriving, which can lose its status to EPIPE. `uwsServer.ts` flushes a non-empty coarse-limit 413 chunk before discarding bytes until body end or a one-second deadline; that absolute resource bound guarantees early status, not complete framing for a sender that ignores it. Destroying a paused Readable does not clear its queue, so teardown removes data listeners and reads out queued bytes in bounded chunks before retaining the response. Native abort disarms the finisher independently of handler cancellation. "uWS oversized TCP uploads" in `unitTests/server/serverHelpers/uwsServer.test.js` pins these paths and unchanged immediate keep-alive rejection. Other rejection sites, including downstream responses from `contentTypes.ts`'s default 10 MB limit, still end immediately and remain outside this coarse-cap correction.

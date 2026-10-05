@@ -13,11 +13,15 @@ import {
 	shouldAbortSlowReplay,
 	REPLAY_WALL_CLOCK_LIMIT_MS,
 } from './replayLogsGuards.ts';
-import { purgeAgedLogs } from './auditStore.ts';
+import { LOCAL_ONLY, purgeAgedLogs } from './auditStore.ts';
 import { get as envGet } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 
 let warnedReplayHappening = false;
+const REPLAY_RECOVERY_GUIDANCE =
+	'Unreplayed entries may already be durable in RocksDB if txn.state is stale; a replay limit does not establish data loss. Preserve a copy of this database and its transaction logs before restarting or accepting further writes. Later writes and flushes can advance txn.state past unreplayed entries; do not assume a subsequent restart will recover the remainder.';
+const REPLAY_RECLONE_WARNING =
+	'Re-cloning discards local-only writes and can lose data if this node is ahead of its peers; verify that the recovery source contains all needed data before replacing this database.';
 
 // True when `updated` would DROP shared structures relative to `existing` — for either the classic
 // array form or the {named, typed} Map form, and for a form change between the two. Shared
@@ -165,14 +169,12 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 		for (const auditRecord of entries as any) {
 			if (noProgressRun > 0 && shouldAbortStalledReplay(noProgressRun, performance.now() - lastProgressTime)) {
 				if (transaction && !electedReplayer) endTransaction(true);
-				const stallDiagnostic = `Aborting transaction-log replay in ${(rootStore as any).databaseName} database: ${noProgressRun} consecutive audit entries with no successful write (${skipped} skipped as unrecoverable, ${writes} replayed so far). This backlog is making no forward progress and was blocking startup (harper#1266) — typically a peer transaction log whose values reference unresolvable shared structures (harper#1163), or a backlog for a dropped table.`;
+				const stallDiagnostic = `Aborting transaction-log replay in ${(rootStore as any).databaseName} database: ${noProgressRun} consecutive audit entries with no successful write (${skipped} skipped as unrecoverable, ${writes} replayed so far). This backlog is making no forward progress and was blocking startup (harper#1266) — typically a peer transaction log whose values reference unresolvable shared structures (harper#1163), or a backlog for a dropped table. ${REPLAY_RECOVERY_GUIDANCE}`;
 				if (electedReplayer) {
 					strictAbort(new Error(stallDiagnostic), transaction);
 					break;
 				}
-				logger.fatal(
-					`${stallDiagnostic} Continuing boot without replaying the remainder; shed or relocate the oversized/undecodable peer transaction log(s), or re-clone this node, to recover the unreplayed data.`
-				);
+				logger.fatal(`${stallDiagnostic} Continuing boot without replaying the remainder. ${REPLAY_RECLONE_WARNING}`);
 				break;
 			}
 			const {
@@ -204,9 +206,8 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					// (harper#1316, facet a). shouldAbortStalledReplay resets its counters on every write,
 					// so a slow-but-progressing replay (deep out-of-order audit chain walk per entry) can
 					// peg the boot thread indefinitely without tripping it. Checked only between native commits.
-					// Re-clone to recover the unreplayed remainder.
 					if (shouldAbortSlowReplay(performance.now() - replayStartTime, replayTimeoutMs)) {
-						const slowMessage = `Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). The transaction log contains a pathologically deep out-of-order write history that is too expensive to reconcile during boot (harper#1316). Re-clone this node from a healthy leader to recover the unreplayed data.`;
+						const slowMessage = `Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). ${REPLAY_RECOVERY_GUIDANCE} Investigate replay cost and consider increasing replication.replayTimeout for a recovery attempt against the preserved copy only after verifying its replay position still covers the needed entries.${electedReplayer ? '' : ` ${REPLAY_RECLONE_WARNING}`}`;
 						if (electedReplayer) {
 							strictFailure = new Error(slowMessage);
 							break;
@@ -291,7 +292,14 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					transaction.isReplay = true;
 				}
 				context.transaction = transaction;
-				const options = { context, residencyId, nodeId, originatingOperation, version };
+				const options = {
+					context,
+					residencyId,
+					nodeId,
+					originatingOperation,
+					version,
+					localOnly: (extendedType & LOCAL_ONLY) !== 0,
+				};
 				writes++;
 				stagedWrites++;
 				switch (type) {

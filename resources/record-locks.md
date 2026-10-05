@@ -50,14 +50,15 @@ Consequences that shape the code:
   `unregisterRecordLock` manage it. `lock()` consults it before calling `tryLock`; a re-entrant call
   returns the existing live handle. A handle expired by its lease timer is pruned on next re-lock lookup
   so a stale holder's write gets 409.
-- **Release.** A transaction-scoped handle (the default) is in `link.recordLocks`; every commit or abort
-  calls `releaseRecordLocks()` which iterates and calls `handle.release()` on each non-hold handle.
-  `{ hold: true }` attaches the handle to the returned instance as `#lockHandle`; `unlock()` calls
-  `handle.release()` directly (synchronous, returns false if already released). `unlock()` also accepts
-  scoped handles: it calls `release()` early and unregisters the handle so the transaction commit does
+- **Release.** Every handle — scoped or hold — is registered in `link.recordLocks` and kept on the
+  locked instance as `#lockHandle`; every commit or abort calls `releaseRecordLocks()`, which calls
+  `handle.release()` on each non-hold handle, so a `{ hold: true }` handle outlives the transaction.
+  `unlock()` calls `handle.release()` directly (synchronous, returns false if already released).
+  `unlock()` also accepts scoped handles: it calls `release()` early and unregisters the handle so the transaction commit does
   not release it again. After any `unlock()` call `#lockWritable` is cleared so writes through the
-  instance are no longer accepted. When no iterators are open (`readTxnsUsed <= 1`) the read snapshot
-  is released and `snapshotFree` is set so subsequent reads see current state.
+  instance are no longer accepted. In an explicit transaction with no staged writes and no open
+  iterators (`readTxnsUsed <= 1`), a scoped `lock()` releases the read snapshot and sets `snapshotFree`
+  so the scope reads what it locked.
 - **Staging model: scoped stages like `update()`; hold stays deferred.** `#reloadLocked` eagerly
   calls `_writeUpdate(id, this.#changes, false)` for a fresh scoped acquisition, exactly as the
   instance `update()` does, so a `TransactionWrite` exists on the transaction immediately and `save()`
@@ -83,7 +84,7 @@ Consequences that shape the code:
   holder write wins over any pre-lock concurrent write. When prior staged writes already exist,
   ordering is best-effort — no 409 is thrown. In an `ImmediateTransaction` context (no explicit
   scope), a scoped lock's writes go through the same `update()`-style staging as above; each explicit
-  `update()`+`save()` cycle is stamped with `nextHolderVersion()` independently. A scoped lock acquired
+  `update()`+`save()` cycle is stamped with `holderVersionCandidate()` independently. A scoped lock acquired
   outside any explicit `transaction()` scope persists until `unlock()` or the lease expires
   (ImmediateTransaction's `releaseRecordLocks()` is a no-op for record locks).
 - **Scoped → hold upgrade.** Calling `lock(id, { hold: true })` while the same transaction already
@@ -93,7 +94,7 @@ Consequences that shape the code:
   different resource instance sharing the key) stays valid; retiring and replacing would invalidate
   those other references (their `save()` would then throw 409 against a released handle). The upgrade
   also detaches the scoped phase's eagerly-staged `TransactionWrite` (see the staging-model bullet
-  below) via `detachScopedUpgradeWrite`: hold staging is deferred and explicit-save-only, so a dangling
+  above) via `detachScopedUpgradeWrite`: hold staging is deferred and explicit-save-only, so a dangling
   scoped write left in place would otherwise auto-commit at the transaction's sweep and clobber
   whatever the hold write lands. The detached write is marked `.dropped` so a later explicit `save()`
   on the instance that owns it falls through to the hold branch instead of resolving a dead reference.
@@ -127,22 +128,25 @@ Consequences that shape the code:
   `lockReleaseByOwner(this)` on env teardown, releasing every key the terminated thread's handle held.
   The lease timer is a soft bound in case the holder's event loop is blocked.
 - **Not supported on LMDB.** `lock()` throws 501.
-- **`lock()` is an in-process verb only.** `Resource.lock` is a static verb registered through
-  `transactional()` but no protocol reaches it: REST answers 501, `KNOWN_METHODS` does not include it,
+- **`lock()` is an in-process verb only.** `Table.lock` is a `static async` method on the table class,
+  not a `transactional()` verb on `Resource`, and no protocol reaches it: REST answers 501,
+  `KNOWN_METHODS` does not include it,
   and neither OpenAPI nor MCP enumerate it. Exposing lock/unlock over a protocol is a Phase 1 decision.
   Acquisition itself has no authorization hook — lock() is not protocol-dispatched, so no
   allowUpdate/allowCreate check runs when a caller acquires a lock.
-- **`lock()` and `allowUpdate`:** writes through a held lock bypass per-table `allowUpdate`/`allowWrite`
-  hooks by the same trust model as any in-process `Table.update(id)` + set/save sequence.
+- **`lock()` and `allowUpdate`:** writes through a held lock bypass per-table
+  `allowUpdate`/`allowCreate`/`allowDelete` hooks by the same trust model as any in-process `Table.update(id)` + set/save sequence.
 
 Not in Phase 0, by design: replication of lock transitions, distributed grant, lease renewal,
 subscription events for lock/unlock, and lock() on LMDB. Phase 1 adds the distributed grant — see
-"Phase 1: cluster-wide `lock()` over replicated control entries" below. Lease renewal, subscription
+"Phase 1: cluster-wide `lock()` over amortized per-record ownership" below. Lease renewal, subscription
 events for lock/unlock, and lock() on LMDB remain out of scope.
 
 **Acquisition timestamp and mixed transactions.** In an `ImmediateTransaction` context (no explicit
-`transaction()` scope) every save — hold or scoped — is stamped by `handle.nextHolderVersion()` so
-sequential saves each get a distinct, monotonically-increasing version. That stamp lives on the write
+`transaction()` scope) every save — hold or scoped — is stamped by `handle.holderVersionCandidate()`, and
+the handle's version floor advances only once that write commits (`noteCommittedLockVersions()` →
+`noteHolderVersion()`) or a scoped → hold upgrade primes it (`upgradeToHold`), so sequential saves each get a distinct, monotonically-increasing version.
+That stamp lives on the write
 (`TransactionWrite.lockStamp`) and is
 never assigned to the link clock: pinning `link.timestamp` would stamp every OTHER write staged on the
 same context before the commit resets it — a concurrent write in the caller's own `Promise.all`, an
@@ -166,12 +170,9 @@ the acquiring transaction committed is fine (each write auto-commits as an Immed
 Taking the lock again in a second `transaction()` scope issues a fresh `lock()` call rather than
 relying on the first hold still being re-entrant in that scope.
 
-**Untested scenarios (single-threaded unit tests).** One scenario cannot be exercised with a single
-JS thread:
-
-- _Abort during the `acquireRecordKey` await window._ The async gap between `tryLock` failing and the
-  `onUnlocked` callback is short in practice, and injecting an abort during that window requires two
-  concurrent threads.
+An abort during the `acquireRecordKey` wait is covered single-threaded by "a transaction aborted while
+lock() waiters are parked leaves the key unlocked" (`unitTests/resources/recordLock.test.js`), which
+parks a leader there and a coalesced follower behind it.
 
 ### Phase 1: cluster-wide `lock()` over amortized per-record ownership (`recordLockCoordinator`)
 
@@ -243,9 +244,10 @@ barrier (the recovery fence below) is on it because its log position is the whol
 
 The release entry is written in its own transaction, with no primary-store write, and — unlike the `reload`
 marker it is otherwise modeled on — **not** `LOCAL_ONLY`, because replicating it IS the send. Its
-payload is `[key, requesterName, generation, homeIncarnation, counter]`, validated on exact tuple
-length: a future version that grows it must bump the type rather than widen this one, since a
-partially-understood release would clear a delegation on terms the sender did not intend.
+payload is `[1, key, requester, generation, homeIncarnation, counter, dependencies]`; the decoder also
+accepts the historical five-field `[key, requester, generation, homeIncarnation, counter]` as unknown
+lineage, no other length, and drops an unknown leading version, since a partially-understood release
+would clear a delegation on terms the sender did not intend.
 
 **`recordId` is null and the key rides in the payload.** A control entry carrying the locked key as
 its record id answers `_writeUpdate`'s keyed dedup lookup at exactly the holder's stamp, and
@@ -301,9 +303,10 @@ operator-sequenced, and harper-pro's to hold, not core's.
 own: a caller that staged a write and then called `unlock()` leaves nothing for a drain to wait on,
 but its write is still uncommitted and would land after the successor was admitted. So a delegation
 retains a revoker for every handle it admitted (`registerAdmission`), and surrender, expiry and
-`close()` all call them. The admission carries its delegation's **token**, and `release()` and
-`registerAdmission()` both take it back: a key's delegation can be replaced while a handle is still
-open, and an untokened release from a superseded handle would decrement the successor's admission
+`close()` all call them. Each admission carries an `admissionId`, and `release(key, admissionId)` and
+`registerAdmission(admissionId, revoke)` both take it back — an id rather than the delegation's token,
+because a renewal changes the token while the admission survives it: a key's delegation can be replaced
+while a handle is still open, and a release addressed by key from a superseded handle would decrement the successor's admission
 count and let it be surrendered while its own callers were still inside — `handle.revokeLease()` expires the handle ahead of its lease, and the
 commit-time fence in `DatabaseTransaction` then rejects the staged write immediately before the native
 commit submits. That fence runs only when the transaction actually holds a lease-protected write
@@ -330,7 +333,8 @@ grant on all three components: a home that restarts begins counting again, so a 
 would let a delayed release from a previous incarnation clear a live grant while its delegate is
 still admitting.
 
-**Bounded state.** Delegations are capped per database and per requester, expiry work is bounded per
+**Bounded state.** Delegations are capped per table coordinator and per requester (a process-wide bound
+is harper#2581), expiry work is bounded per
 tick, and clean-handoff dependency sets have a separate, larger LRU cap. A fixed add-only Bloom
 filter distinguishes a truly virgin key from an evicted dependency set while this coordinator has
 observed the whole generation; after a cold start, ownership gap, or generation change, every
@@ -356,10 +360,22 @@ construction the one most likely to be truncated, so that rule reports a contend
 coordination failure at random.
 
 **`{ scope: 'node' }`** opts out of the cluster step and keeps exact Phase 0 semantics, which by
-design permits simultaneous holders on different nodes. An **explicit** `{ scope: 'cluster' }` with no
-transport rejects 503 rather than silently returning the weaker lock, and a transaction that already
-holds a key node-scoped cannot take a cluster lock on it (409) — including through the concurrent-lock
-coalescing path, where a follower would otherwise inherit the leader's weaker handle.
+design permits simultaneous holders on different nodes. A defaulted scope is `'node'` on a table
+declared `replicate: false` — it has no cluster to lock across, and the transport an operator registers
+for the database must not re-scope it (harper#2716) — and `'cluster'` otherwise, which includes a table
+whose declaration omits `replicate`, since that is the replicating default. The default is read from
+`Table.replicate` by `resolveLockOptions` at the one call in `Table.lock()` and again after the native
+wait by `rescope()`, so a call follows the declaration current when it acquires — a redeclaration
+mid-wait re-scopes it ("re-reads the declaration after the native wait" tests) — while registering a
+transport never does. For that, `Table.replicate` is refreshed on redeclaration and catalog reload, and a
+redeclaration is persisted against the durable primary row, not the possibly stale static. A hold already granted keeps the scope it was
+granted at: a `replicate` change re-scopes later calls, not live handles — **not enforced**, so drain holds
+before changing a live table's `replicate` from `false` to `true`. Pinned by "a table that does not
+replicate" in `unitTests/resources/recordLockCluster.test.js`. An **explicit**
+`{ scope: 'cluster' }` with no transport rejects 503 rather than silently returning the weaker lock,
+and a transaction that already holds a key node-scoped cannot take a cluster lock on it (409) —
+including through the concurrent-lock coalescing path, where a follower would otherwise inherit the
+leader's weaker handle.
 
 **Routing and exclusion from record surfaces.** The replicated-event consumer in `Table.ts` dispatches
 the release entry to the table's `LockCoordinator` before it resolves a resource, so it never reaches
@@ -387,10 +403,10 @@ the delegation path assigns a record version.
 set. The home merges the trusted release origin at the release entry's own log position, retains the
 result after clearing the grant, and sends it with the successor grant. The successor remains pending
 and recallable until `ClusterLockTransport.establishLockFreshness()` has made every dependency applied
-and visible. Missing lineage selects that transport's weaker reachable-member recovery barrier;
-failure or timeout returns 503 and hands the grant back without discarding retained lineage. The
-cached-delegation branch does none of this work. Harper-pro's operator-agreed home map and transport
-implementation remain the enablement boundary (harper-pro#825 / companion work on #822).
+and visible. Missing lineage selects the recovery barrier, which harper-pro's transport
+(`replication/recordLockFreshness.ts`) answers by draining every other home-map member; failure or
+timeout returns 503 and hands the grant back without discarding retained lineage. The cached-delegation
+branch does none of this work. harper-pro#822 supplies the operator-agreed home map and the transport.
 
 **Recovery fence.** The recovery barrier's position is a `lockBarrier` control entry (nibble 13,
 payload `[1, nonce]`, harper#2625): a replicated no-op the probed member commits after the probe, so
@@ -401,8 +417,8 @@ this node's own commit through `Table.writeLockControlEntry`, never the transpor
 hook, since the caller is the transport and the fence must be a position in this origin's log — and
 resolves to the entry's log position; the transport supplies the nonce it will match the entry on.
 The coordinator ignores the entry on receipt, and every `isLockControlType` exclusion above covers it. `establishLockFreshness()` receives the wait remaining
-on the lock deadline. The harper-pro operation and drain are harper-pro#822's; a recovery marker with
-no barrier fails closed.
+on the lock deadline. The harper-pro operation and drain are harper-pro `replication/recordLockFreshness.ts`
+(harper-pro#822); a recovery marker with no barrier fails closed.
 
 ## Phase 1 design: amortized per-record ownership
 
@@ -412,11 +428,10 @@ unchanged and remains the local primitive everything here builds on.
 
 Planning review cleared this design over ten rounds; the rounds that changed it are recorded in the PRs harper#2498, harper#2613, harper#2627 and harper#2667.
 
-### 1. The problem with what is on the branch
+### 1. The problem with what was on the branch
 
-`table.lock(id)` on the branch runs Ricart–Agrawala: the requester writes `LOCK_REQUEST` and waits
-for a `LOCK_GRANT` from **every** participant (`resources/recordLockCoordinator.ts:619`). Core sets
-`agreedDown` for nobody, so nothing is ever excluded from that set, and harper-pro#822 states the
+`table.lock(id)` on the branch ran Ricart–Agrawala (removed by harper#2498): the requester wrote
+`LOCK_REQUEST` and waited for a `LOCK_GRANT` from **every** participant. Core set `agreedDown` for nobody, so nothing is ever excluded from that set, and harper-pro#822 states the
 consequence in its own limitations list: a crashed peer blocks new cluster locks for its databases
 until it leaves `hdb_nodes`. Unanimity is not a high-availability protocol.
 
@@ -458,7 +473,7 @@ quorum-confirmed mode, they are describing that issue's scope, not this one's.
 
 They are separate, and expiry establishes neither on its own. Phase 0 enforces part of the first:
 expiry is checked synchronously on every staged write and again immediately before the native commit
-submits (`resources/DatabaseTransaction.ts:1213`). That fence is reused unchanged — only the thing
+submits (the `hasLeaseProtectedWrite` fence in `DatabaseTransaction.performCommit()`). That fence is reused unchanged — only the thing
 that issues the lease changes — but it neither settles an already-submitted commit nor makes an
 asynchronous replica fresh, which is what §6 and §7 are for.
 
@@ -704,7 +719,7 @@ clock at receipt overlaps the next delegate.
 - **Every local handle is bounded by `min(requested lease, delegation deadline)`** — including
   re-entrant acquisition and the `{hold: true}` upgrade. The branch's
   `upgradeToHold` already clamps to the granted round's deadline rather than extending it
-  (`resources/recordLock.ts:305`); that clamp is retargeted, and must not be dropped along with the
+  (`KeyLockHandle.upgradeToHold` in `resources/recordLock.ts`); that clamp is retargeted, and must not be dropped along with the
   round it currently reads.
 - **Clock assumptions, stated rather than implied:** every deadline is compared only against readings
   of the _same_ node's `performance.now()`; no remote instant is ever compared against a local one,
@@ -721,7 +736,7 @@ Two ways a "drained" delegate keeps usable authority, both found in review:
   reports zero while staged writes can still commit inside the lease.
 - It holds a valid `{hold: true}` handle and has staged _nothing_; a recall that only closes new
   admission finds nothing to settle, emits the release, and the holder then writes through its
-  still-unexpired handle (`resources/recordLock.ts:32`, `resources/Table.ts:2996`).
+  still-unexpired handle (`RecordLockOptions.hold` in `resources/recordLock.ts`, the hold branch of `Table.save()`).
 
 So recall is defined as four steps, in order:
 
@@ -729,8 +744,8 @@ So recall is defined as four steps, in order:
    `hold` upgrade.
 2. **Revoke** every outstanding handle's write capability synchronously — the same state an expired
    lease produces, so a subsequent write through it fails 409 at staging _and_ at commit submission.
-   Calling `release()` is _not_ revocation: `resources/recordLock.ts:145` deliberately distinguishes a
-   handle handed back from a lapsed lease, and `resources/DatabaseTransaction.ts:1213` consults that
+   Calling `release()` is _not_ revocation: `isLeaseExpired()` vs `isExpired()` in `resources/recordLock.ts` deliberately distinguishes a
+   handle handed back from a lapsed lease, and the `hasLeaseProtectedWrite` fence in `DatabaseTransaction.performCommit()` consults that
    predicate immediately before native submission — so revocation must set the lapsed state, and must
    also reach handles a staged write still holds after `unlock()` removed them from the transaction's
    lock registry. A grace window (`min(remaining delegation, recallGraceMs)`) before revocation is a
@@ -738,7 +753,7 @@ So recall is defined as four steps, in order:
 3. **Settle** every transaction that staged a write to `K` under this delegation — committed or
    aborted — including a native commit already submitted, whose completion the pre-submission fence
    does not prove. Settlement follows the **logical** transaction through retry and replay
-   (`DatabaseTransaction.ts:1138`, `:1380`); one native attempt completing is not settlement. The
+   (`performCommit()`'s conflict-retry re-save and the open-iterator `replayTransaction` in `DatabaseTransaction.ts`); one native attempt completing is not settlement. The
    delegation therefore tracks _staged writes on K_, not live handles, and the release hook hangs off
    transaction settlement.
 4. **Then** write the release (§7.1).
@@ -770,7 +785,7 @@ position:
 - `A` writes `K`; `B` acquires, never writes, releases; `C` has applied `B` but not `A`. A
   `B`-position check passes and `C` reads stale — so the set is **inherited**. B releases `{A:R_A}`;
   the home retains `{A:R_A, B:R_B}`, and C must satisfy both.
-- Core breaks equal-`version` conflicts by node name (`resources/Table.ts:6785`), so `C` can hold a
+- Core breaks equal-`version` conflicts by node name (`precedesExistingVersion` in `resources/Table.ts`), so `C` can hold a
   _losing_ value at the same timestamp as the winner and pass a `version ≥ V` test. A version scalar
   therefore cannot be the fence even for the simple case.
 - Receiving `B`'s later patch does not prove receipt of `A`'s earlier change to other fields, which
@@ -860,10 +875,10 @@ coherent options:
   - It changes `_writeUpdate`'s resolution rule for _all_ writes and adds a field to the record
     contract, so it is a stored-format and older-binary compatibility decision, not just a protocol
     one — including what happens if the feature is disabled after fenced records exist.
-  - It **reverses the documented Phase 0 relationship with ordinary writes** (`DESIGN.md:169`): an
+  - It **reverses the documented Phase 0 relationship with ordinary writes** (the "Phase 0 contract" above): an
     ordinary update landing after a fenced value would permanently lose, regardless of age.
-  - Older writes currently enter resequencing and merge logic (`Table.ts:3131`), and deletes take a
-    separate path (`Table.ts:3753`), so a generation must be honored by patches and deletes too.
+  - Older writes currently enter resequencing and merge logic (the out-of-order branch of `_writeUpdate`), and deletes take a
+    separate path (`_writeDelete`), so a generation must be honored by patches and deletes too.
   - A generation alone has no **rejection floor** that survives tombstone cleanup: generation 1 puts,
     generation 2 deletes, the tombstone is reclaimed, and a delayed generation-1 put resurrects the
     record on that replica. Fenced mode therefore also owes a retained floor across tombstone
@@ -876,7 +891,7 @@ coherent options:
   a majority. Write confirmation alone is not sufficient — intersection needs the read side too, and
   §7.2's barrier has no quorum floor — so this arm is **two** changes: confirm the write to a
   majority, _and_ make the barrier require a majority and fail closed below it.
-  `X-Replicate-To;confirm=M` (`server/REST.ts:265`) is the nearest existing mechanism, but it is
+  `X-Replicate-To;confirm=M` (`server/REST.ts`) is the nearest existing mechanism, but it is
   super-user-gated and entangled with residency (§10), so this arm cannot just expose it. It costs
   latency on
   every locked write. Even with both halves it does **not** restore §2 as written: the late-settling
@@ -933,7 +948,7 @@ lease` means carrying the revoker on the Phase 0 handle that already exists inst
   accumulate state. A request from a node the current generation does not name is refused before any
   grant, waiter or timer is allocated. Dependency-set and key payload sizes are bounded before
   allocation. Trusted origin identity stays the transport's responsibility, as it already is
-  (`resources/recordLockCoordinator.ts:79`). There are no configuration certificates to validate,
+  (`DelegationRequest.requester` in `resources/recordLockCoordinator.ts`). There are no configuration certificates to validate,
   because there is no election — the map's digest is agreed once, out of band, before the feature is
   enabled (§4.1).
 
@@ -943,7 +958,7 @@ lease` means carrying the revoker on the Phase 0 handle that already exists inst
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Different layer** | Put arbitration entirely in harper-pro's replication layer, or behind an embedded/external Raft group that owns the lock table.                                                                                                                                                                                                                        | The disqualifier for a full replicated lock table is specific, not "bigger": **replicating per-key ownership puts durable, majority-acknowledged work on every acquisition**, which is exactly what volatile delegations remove and what §10's amortization depends on. It would also still need §7's fence, because it is off-stream. The consensus objection is now clean rather than hypocritical: this design runs no election of its own, at any rate, so "adds consensus" is an argument it is entitled to make. If Harper later wants consensus for membership, shard maps and schema changes, §4's map is the piece to replace with it — and the replacement would be invisible to §§5–8.                                                                                                                                                                                                                                                                                                                                                           |
 | **Deeper cause**    | Do not hand out locks at all: make the conflicting operation a conditional/compare-and-swap write evaluated by one authority (the residency owner).                                                                                                                                                                                                    | Covers only retryable single-record read-modify-write. `lock()` exists in harper#483 for a caller holding the lock across arbitrary application work, including calls to other systems, which no CAS expresses. It also does not remove the authority problem: an independent local CAS against asynchronously replicated copies is not cluster-wide exclusion. Worth having _as well_.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| **Do less**         | Keep Ricart–Agrawala and accept the availability limit: it is implemented, tested, and gated off by `replication.recordLocks`.                                                                                                                                                                                                                         | The limit is the feature's value, not a rollout caveat: a lock any single unreachable peer disables is not usable for the correctness-critical work `lock()` exists for. Cost points the same way — 13 durable commits and 143 frame deliveries per lock at `P=12`, per key, with no amortization for a node locking the same record repeatedly.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Do less**         | Keep Ricart–Agrawala and accept the availability limit: it was implemented, tested, and gated off by `replication.recordLocks`.                                                                                                                                                                                                                        | The limit is the feature's value, not a rollout caveat: a lock any single unreachable peer disables is not usable for the correctness-critical work `lock()` exists for. Cost points the same way — 13 durable commits and 143 frame deliveries per lock at `P=12`, per key, with no amortization for a node locking the same record repeatedly.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | **Do more**         | Durable membership epochs: agree `members[]` by single-decree consensus over a majority, with acceptor state persisted before acknowledgement, so an unreachable node is rehomed automatically. **This note's own design through round 6.**                                                                                                            | Rejected 2026-09-13. What it buys over the chosen map is exactly one thing: **unattended rehoming**. What it costs is a durable consensus subsystem in harper-pro — persisted promises and accepted values, ballots, renewal leases as the liveness signal, acceptor-side retirement reservations, transitive activation protection, and a conservative restart quarantine to reconstruct reservations a crash lost. All of that exists to _infer_ whether an unreachable node is briefly down or permanently gone. An operator already knows, and can say so in one published generation. The judgement is not that consensus is too hard; it is that **this particular decision has an authority who can simply state it**, so inferring it is unpaid complexity.                                                                                                                                                                                                                                                                                         |
 | **Do more (2)**     | A centrally **leased** operator map: the same published generations, but nodes hold short-lived authenticated capabilities for the current one and must renew them from the control plane. The operator stops renewing `g`, waits capability expiry plus the maximum delegation interval, then activates `g+1`. Raised by the round-8 planning review. | **Overruled, with a concrete disqualifier: it makes every node's ability to lock depend on continuously reaching the control plane.** A control-plane outage longer than the capability lease stops record locking on every node in the cluster, including nodes that are healthy and agree with each other — a strictly larger availability dependency than the transition it replaces, and one that is paid continuously rather than at reconfiguration time. It also reintroduces the renewal lease and the clock-rate bound this revision exists to delete, and it does not remove the operator from the loop: the capability issuer must still decide to stop renewing. What it does buy is real: it fences a partitioned old generation mechanically. **Round 10 showed that half can be had without the dependency** — §4.3's one-shot durable activation record, which is issued once per reconfiguration rather than renewed, so steady-state locking never contacts the control plane. That was adopted; only the continuous renewal is rejected. |
 | **Adjacent**        | Derive the map from `server.shards`, which already maps shard id → node list and already routes residency reads.                                                                                                                                                                                                                                       | A shard map is a **residency** directive — it says where records live. Making it the lock-home map couples arbitration to data placement and requires sharding configuration, which one customer uses. The chosen map is a separate, purpose-built `recordLockHomes` generation, so a cluster adopts record locks without adopting sharding. Where sharding _is_ configured a shard map may be published as the home set, but only if it already names every node that locks: §4.1's rule binds, so a shard map covering a subset of the cluster would leave the omitted nodes unable to lock at all.                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
@@ -966,7 +981,7 @@ Per uncontended acquisition, `P` participants, `d` = locks served under one dele
 
 |                                                                                           | durable commits | frame deliveries                         | latency                              | one node down                                                      |
 | ----------------------------------------------------------------------------------------- | --------------- | ---------------------------------------- | ------------------------------------ | ------------------------------------------------------------------ |
-| Ricart–Agrawala (branch today)                                                            | `P+1`           | `P²−1`                                   | slowest participant                  | **all** cluster locks block                                        |
+| Ricart–Agrawala (removed)                                                                 | `P+1`           | `P²−1`                                   | slowest participant                  | **all** cluster locks block                                        |
 | This design, first lock on a key                                                          | 0               | 2 unicast                                | 1 RTT to the home, 0 if local        | that node's ring share only, until an operator republishes the map |
 | This design, handoff to another node                                                      | 1 (release)     | `P−1` + 3 unicast                        | 2 RTT                                | —                                                                  |
 | This design, steady state                                                                 | 0               | 0                                        | local key lock                       | —                                                                  |
@@ -979,7 +994,8 @@ bounded below by **re-acquisition when a delegation lapses without contention**,
 the re-acquisition rate are as load-bearing as the handoff rate.
 
 **No measurement exists yet on a real cluster** — not a round's latency, not audit growth, not the
-current `lock()` rate. harper-pro#822 already carries an enablement gate; producing these numbers is
+current `lock()` rate; harper-pro's loopback three-node bench (`replication/RECORD_LOCK_COST_BASELINE.md`,
+`RECORD_LOCK_COST_DELEGATIONS.md`) is the only data. harper-pro#822 already carries an enablement gate; producing these numbers is
 this design's first deliverable, before the protocol change lands. Everything above is a message
 count, not a benchmark. The gate needs: acquisition latency distribution; delegation re-acquisition
 rate at candidate `durationMs`; the §4.3 restart quarantine's observed effect on lock availability;
@@ -990,11 +1006,11 @@ untouched.
 
 **The guarantee decision — §7.3.** What `lock()` promises, on two independent axes:
 
-|                       | conflict ordering                 | recovery-mode freshness                                                                                 | cost                                                                                                         |
-| --------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| **Exclusion-only** ✅ | LWW unchanged                     | narrowed: §2's freshness is not promised on the recovery path                                           | none beyond the protocol                                                                                     |
-| **Fenced**            | `(generation, timestamp, origin)` | still narrowed                                                                                          | record-contract + stored-format change, reverses `DESIGN.md:169`, owes a tombstone-surviving rejection floor |
-| **Quorum-confirmed**  | either of the above               | closes the crashed/unreachable routes, not the late-settling one; §2 as written needs this _and_ fenced | latency on every locked write                                                                                |
+|                       | conflict ordering                 | recovery-mode freshness                                                                                 | cost                                                                                                              |
+| --------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **Exclusion-only** ✅ | LWW unchanged                     | narrowed: §2's freshness is not promised on the recovery path                                           | none beyond the protocol                                                                                          |
+| **Fenced**            | `(generation, timestamp, origin)` | still narrowed                                                                                          | record-contract + stored-format change, reverses the Phase 0 contract, owes a tombstone-surviving rejection floor |
+| **Quorum-confirmed**  | either of the above               | closes the crashed/unreachable routes, not the late-settling one; §2 as written needs this _and_ fenced | latency on every locked write                                                                                     |
 
 **Exclusion-only is chosen.** The other two arms are deferred to harper#2540, which carries the
 limitations, the costs, and what closing them would take.
@@ -1015,7 +1031,7 @@ feature that has not yet been measured.
 > needs a crash:
 >
 > 1. **A predecessor's write can outrank its successor's under last-write-wins.** LWW compares the
->    transaction timestamp assigned when the write was _staged_ (`resources/Table.ts:3113`), and lease
+>    transaction timestamp assigned when the write was _staged_ (`_writeUpdate`'s `precedesExistingVersion(txnTime, …)`), and lease
 >    expiry orders admissions, not timestamps. **`lock()` changes nothing about conflict resolution**
 >    — a locked write and an unlocked write resolve identically, by timestamp, per field, with CRDT
 >    ops folded and the surviving shape depending on both writes' shapes and on whether auditing is
@@ -1027,7 +1043,7 @@ feature that has not yet been measured.
 >      still in flight when the successor writes.
 >    - **(1b) a timestamp pushed ahead on purpose, on a completely clean handoff.** A caller-supplied
 >      future `context.timestamp`, or a mixed explicit transaction whose later timestamp becomes the
->      handle's floor — both documented as deliberate Phase 0 behavior (`DESIGN.md:305-309`). The
+>      handle's floor — both documented as deliberate Phase 0 behavior ("Acquisition timestamp and mixed transactions" above). The
 >      predecessor commits, replicates, drains and releases cleanly; the successor is admitted with
 >      correct freshness, reads the current value, and writes at real wall-clock time — and its write
 >      is the older one, silently, because the stored version is stamped in the future. What the
@@ -1051,18 +1067,18 @@ feature that has not yet been measured.
 > **§2's exclusion invariant is wider than what (1) and (2) leave.** It requires a successor to
 > exclude every predecessor capability that can still admit _or commit_; what ships excludes
 > admission, and the commit half holds only up to the pre-submission expiry fence
-> (`resources/DatabaseTransaction.ts:1213`) — a native commit that clears that fence and settles
+> (the `hasLeaseProtectedWrite` fence in `DatabaseTransaction.performCommit()`) — a native commit that clears that fence and settles
 > afterwards is limitation (2)'s third route.
 >
 > **There is no caller-side mitigation for (2) — the obvious candidate is unreachable and, where it
 > is reachable, makes things worse.** `X-Replicate-To` / `confirm=` is meant to be super-user only —
-> `checkContextPermissions` (`resources/Table.ts:7258`) raises 403 otherwise, though its truthiness
+> `checkContextPermissions` (`resources/Table.ts`) raises 403 otherwise, though its truthiness
 > gate lets `X-Replicate-To: 0` through, which is harper#2546 and not a mitigation anyone should
 > build on. And where it is legitimately available it is a **residency** directive before it is a
 > confirmation knob: absent a `getResidencyById` function, which short-circuits ahead of it
-> (`resources/Table.ts:1575`), a numeric value sets residency to `[self, ...N nodes]` and truncates
-> existing residency on update (`:1574`), while `*` leaves `replicateTo` undefined and falls back to
-> the database's configured `replication.replicateTo` count (`:1578`, `:642`) — neither of which is
+> (`getResidency` in `resources/Table.ts`), a numeric value sets residency to `[self, ...N nodes]` and truncates
+> existing residency on update, while `*` leaves `replicateTo` undefined and falls back to
+> the database's configured `replication.replicateTo` count (`replicateToCount`) — neither of which is
 > guaranteed to be the whole cluster. In a twelve-node cluster configured `replicateTo: 3`, either
 > form leaves the record on four nodes, and a successor's barrier over the other eight reachable
 > members satisfies without any of them ever having held the locked write. That is the opposite of
@@ -1083,7 +1099,7 @@ feature that has not yet been measured.
 caller whose locked write loses gets a 200, no log line and no counter, so nothing distinguishes it
 from correct behavior. Making it observable is cheap and confined to the lock path — the handle
 already carries its floor and the commit path already fences per write on `write.lockHandle`
-(`resources/DatabaseTransaction.ts:1211`), so a lock-path-only check that a staged version exceeds
+(the `hasLeaseProtectedWrite` fence in `DatabaseTransaction.performCommit()`), so a lock-path-only check that a staged version exceeds
 wall-clock, and a counter when a barrier admits with no dependency set, cost nothing on ungated
 writes. It is not in scope here because it is detection rather than guarantee, but it belongs in
 harper#2541 rather than nowhere.
@@ -1119,7 +1135,7 @@ found them in code this note keeps rather than in the arbitration rule it delete
 away on their own. **All three are fixed on this branch** as part of landing the replacement; they are
 recorded here because the reasoning is the design's, not the fix's:
 
-- **Transport replacement does not fence live authority** (`resources/Table.ts:5474`). Re-registering
+- **Transport replacement does not fence live authority** (`registerClusterLockTransport`, now fenced). Re-registering
   a transport — a component reload is enough — closes the current coordinator and installs an empty
   one. `close()` clears coordinator state but does not invalidate handles already handed out, and a
   handle checks only its own release and lease fields. The successor coordinator can then grant the
@@ -1127,13 +1143,13 @@ recorded here because the reasoning is the design's, not the fix's:
   restart, and §5's answer applies here too: the replacement must either carry live authority across
   the swap or fence and settle every outstanding handle before it may grant. Unregister/re-register
   and transport-object replacement both need coverage.
-- **The direct receive callback has no containment** (`resources/recordLockCoordinator.ts:908`). The
+- **The direct receive callback has no containment** (`deliverLockControlEntry`, now contained). The
   resolver calls `Table.lockCoordinator`, which throws `LockUnavailableError` when the node name is
   unusable, and that throw happens before `applyEntry()`'s own containment can catch it, so it
   escapes `deliverLockControlEntry()`. The source-subscription sink already handles this
-  (`resources/Table.ts:884`); the direct callback must too. This is §8's rule — a receive boundary
+  (in `resources/Table.ts`); the direct callback must too. This is §8's rule — a receive boundary
   settles its callers and keeps admission closed — applied to a path that exists today.
-- **The commit fence scans every write on every commit** (`resources/DatabaseTransaction.ts:1213`).
+- **The commit fence scanned every write on every commit** (now gated on `hasLeaseProtectedWrite`).
   The loop runs on ordinary transactions in core-only deployments that never register a transport, so
   a bulk transaction with 100,000 plain writes pays 100,000 property checks before submission. §8
   requires ordinary writes to keep their existing ungated path, so the transaction must track whether
@@ -1165,17 +1181,34 @@ Added — **harper-pro's delegation server, on harper-pro#822**:
   node principal of the connection, never a payload field, so a `super_user` human cannot mint or
   clear a delegation. An operation accepted on a non-owner thread relays through main to the owner
   worker under a bound, and a relay that times out answers `not-home`, never a grant.
-- The `ClusterLockTransport` implementation, capability level 2 and the enablement gate, in
+- The `ClusterLockTransport` implementation, capability level 4 (`RECORD_LOCKS_CAPABILITY`) and the enablement gate, in
   `replication/recordLockTransport.ts` and `replication/protocolCapabilities.ts`.
 
-Still owed by harper-pro — **the one thing that blocks enablement**:
+Shipped in harper-pro#822 and harper-pro#865:
 
-- The operator-agreed home map (§4) behind `transport.homeMap(database)` (harper-pro#825). #822
-  already carries a **static** map as scaffolding, and under this design static is the right shape —
-  what it lacks is the two properties §4.1 requires: an operator-published `recordLockHomes`
-  generation rather than one each node derives for itself, and a digest agreed across peers before
-  grants are enabled — plus §4.3's one-shot activation record, which is what makes a generation change
-  safe rather than merely announced.
+- **The operator-agreed home map (§4)** behind `transport.homeMap(database)`: an operator-staged,
+  explicitly activated `recordLockHomes` generation with a peer digest check
+  (`replication/recordLockHomes.ts`, `RECORD_LOCK_HOMES_DESIGN.md`). harper-pro#825 still carries its
+  earlier "durable membership epoch" title, though this is the scope that shipped.
+- **`homeIncarnation` advanced per coordination incarnation, not per process** (§5.1), durable and
+  monotonic in this node's `hdb_nodes` row (`recordLockIncarnation`,
+  `replication/recordLockTransport.ts`). It matters because coordinator state is per-thread: a
+  replacement coordinating worker restarts the delegation counter at zero, so an incarnation that
+  only advanced per process would let it re-mint tokens its predecessor issued, and a delayed
+  release carrying one of those tokens would clear a live grant.
+- **The transport registered on every worker thread that can serve a `lock()`** (harper-pro#865, for
+  harper-pro#852). The transport registers from the replication built-in's `start()`, and a built-in
+  is a trusted plugin that `placedOnThisThread` loads on **every** http worker, dedicated
+  application workers (harper#2524) included — so every serving thread latches
+  `clusterRequiredDatabases` and fails closed rather than taking the Phase 0 lock alone. The
+  `ownsCoordination()` 503 is no longer the path a non-owner takes: instead of answering 503 it
+  **relays** the acquire (and the matching release) to the coordinating worker over the worker port
+  mesh, installing the granted admission locally as a remote admission whose handle a recall on the
+  owner fences before the delegation release is written. A `lock()` therefore succeeds uniformly on
+  every http worker at `threads.count > 1`.
+
+Still owed by harper-pro:
+
 - **A received `lockRelease` routed to the thread that owns coordination.** Core's log-delivery sink
   runs wherever `subscribeOnThisThread(applicationWorkerIndex())` is true, which since harper#2524's
   dedicated application workers is _routinely_ a different thread from the coordinating one — so this
@@ -1183,30 +1216,6 @@ Still owed by harper-pro — **the one thing that blocks enablement**:
   thread (it counts and warns, it cannot forward), and the home then holds its grant until
   `DELEGATION_LEASE_MS + skew` even though the delegate stopped admitting cleanly. Relaying it is the
   same obligation the delegation RPC already carries.
-- **The transport registered on every worker thread that can serve a `lock()`**, not only the
-  coordinating one, and including a dedicated application worker (harper#2524). Core cannot check
-  it: the "this database is clustered" latch is per-thread module state, so a worker that never
-  registers never fails closed, and a default-scoped `lock()` there takes the Phase 0 node lock alone
-  while a peer runs the cluster protocol — two nodes admitting one key. Registering everywhere is also
-  what makes the `ownsCoordination()` 503 reachable, which is the path a non-owner worker is supposed
-  to take.
-  - _Addressed in harper-pro#852._ The transport registers from the replication built-in's `start()`,
-    and a built-in is a trusted plugin that `placedOnThisThread` loads on **every** http worker,
-    dedicated application workers (harper#2524) included — so every serving thread latches
-    `clusterRequiredDatabases` and fails closed rather than taking the Phase 0 lock alone. The
-    `ownsCoordination()` 503 is no longer the path a non-owner takes: instead of answering 503 it
-    **relays** the acquire (and the matching release) to the coordinating worker over the worker port
-    mesh, installing the granted admission locally as a remote admission whose handle a recall on the
-    owner fences before the delegation release is written. A `lock()` therefore succeeds uniformly on
-    every http worker at `threads.count > 1`.
-- **`homeIncarnation` advanced per coordination incarnation, not per process** (§5.1). Core cannot mint
-  it — it must be durable and monotonic — and cannot check it, which puts it in the same class as
-  §4.3's activation record. It matters because coordinator state is per-thread: a replacement
-  coordinating worker restarts the delegation counter at zero, so an incarnation that only advanced
-  per process would let it re-mint tokens its predecessor issued, and a delayed release carrying one
-  of those tokens would clear a live grant. Derived-per-node is why the transport ships gated off: two nodes that disagree
-  derive different rings and can both grant one key. #825 is now a config generation, a digest check
-  and the §4.3 change runbook — not a consensus protocol.
 
 #### Protocol version and mixed deployments
 
@@ -1217,21 +1226,20 @@ shipped enabled, nibbles 9/10 are retired rather than migrated, and the `LOCK_RE
 historically a fixed five-field tuple `[key, requester, generation, homeIncarnation, counter]` — is
 now `[1, key, requester, generation, homeIncarnation, counter, dependencies]`. The decoder accepts
 the historical tuple as unknown lineage (therefore recovery), ignores unknown future versions, and
-still requires an exact fencing-token match before any release can clear a live grant. Harper-pro
-must advertise a new mutually exclusive capability level for this wire/API contract. The barrier
+still requires an exact fencing-token match before any release can clear a live grant. harper-pro
+advertises a new mutually exclusive capability level for this wire/API contract
+(`RECORD_LOCKS_CAPABILITY` = 4). The barrier
 entry (§7.2; nibble 13, payload `[1, nonce]`) rides the same capability: a receiver that predates it
 resolves the nibble to no entry type at all and the replication sink treats it as an unknown
 operation, so such a peer must not be sent one — and a recovery drain that reaches a member which
 cannot produce a barrier has no fence and fails closed.
 
-**Merging the substrate is itself gated:** nothing that still wires RA arbitration may be reachable
-as the new protocol.
+**Merging the substrate was gated on removing RA:** harper#2498 merged with no RA arbitration reachable.
 
 ### 12. Verification route
 
 - **Unit**, coordinator as a pure state machine with **independent per-node clocks** rather than one
-  shared fake clock (`unitTests/resources/recordLockCoordinator.test.js:24` uses a shared one, which
-  cannot express §5.2): delayed grant reply rejected; renewal/restart overlap; recall against a live
+  shared fake clock, which cannot express §5.2 (`recordLockCoordinator.test.js` "independent clocks"): delayed grant reply rejected; renewal/restart overlap; recall against a live
   handle that staged nothing (§6); recall against an unlocked-but-staged write; transitive freshness
   including the equal-timestamp and dependent-patch cases (§7.1); fencing-token ordering across a home
   restart (§5.1); and the negative cases — grant inside the §4.3 restart quarantine, a request naming
@@ -1248,7 +1256,7 @@ as the new protocol.
   refuse to interoperate; feature disabled
   is byte-for-byte the current write path. Counter tests assert observed read/write histories, not
   only final totals, and snapshot-free reload must still work after the applied-history fence
-  (`Table.ts:2759`). Under exclusion-only there is no fenced-mode suite to add here; the stale
+  (`#reloadLocked`). Under exclusion-only there is no fenced-mode suite to add here; the stale
   writes, patches and deletes against successor records and reclaimed tombstones belong to
   harper#2540 if that arm is ever taken. What this suite **must** assert instead is the documented
   narrowing itself, as expected outcomes rather than test failures. Two schedules, and both must
@@ -1273,13 +1281,12 @@ as the new protocol.
 
 ### 13. Rollout
 
-harper#2498 stays a draft and does not ship Ricart–Agrawala as the arbitration rule. The substrate in
-§11 lands (reusable under every option considered, and already reviewed); the arbitration **is
-replaced on the branch**. harper-pro#822 keeps its capability, participant-set, ownership and switch
-work, and its transport implementation is replaced — the delegation wire is in place there. Neither
-is enabled by default at any point, and with harper-pro's freshness transport plus harper-pro#825
-outstanding the branch cannot be enabled even deliberately: core fails closed without either
-`establishLockFreshness()` or an agreed home map, and no core build supplies them.
+harper#2498 merged without Ricart–Agrawala: the §11 substrate landed with the arbitration replaced.
+harper-pro#822 kept its capability, participant-set, ownership and switch work and replaced its
+transport with the delegation wire, the operator-agreed home map and `establishLockFreshness()`.
+Neither is enabled by default: cluster record locks need `replication.recordLocks: true` on RocksDB,
+and core still fails closed without `establishLockFreshness()` or an agreed home map, which no core
+build supplies.
 
 ### 14. Decomposition and implementation status
 
@@ -1291,23 +1298,25 @@ Two things had to be settled before implementation, and one still is:
    harper-pro#824.
 
 The work is decomposed as harper-pro#825 (the operator-agreed home map, §4 — a `recordLockHomes`
-generation, a peer digest check and the §4.3 change runbook), harper#2541 (home ring, delegations,
+generation, a peer digest check and the §4.3 change runbook; shipped in harper-pro#822), harper#2541 (home ring, delegations,
 drain and caps, §§5/6/8, plus the three inherited substrate defects in §11) and harper#2542
 (successor freshness, §7).
 
-**Status.** harper#2541 and harper#2542's core halves are implemented: the Ricart–Agrawala state machine
-is gone, and the home ring, the delegation table, recall with §6 steps 1, 2 and 4, ordered fencing
-tokens, the caps, the §4.3 restart quarantine, the generation monotonicity floor and the
-transport-swap grant fence are in place, with all three inherited defects fixed. **§6 step 3 — settlement — is not implemented**: a recall revokes capability and then writes
-the release without waiting for a native commit already submitted to complete. That is exactly
-limitation (2)'s third route in §10, which the contract already states, so the gap is disclosed
-rather than hidden — but §6 must not be read as fully implemented. Closing it means hanging the
-release hook off logical-transaction settlement rather than off the last admission unlocking. What is not here, and is what keeps the feature unusable rather than merely disabled:
-harper-pro#825's operator-agreed home map — core fails closed without one and no core build supplies
-one — and harper-pro's `establishLockFreshness()` implementation and positioned release relay. **The
-measurement gate (harper-pro#824) still has not run**, and the decision to
-implement ahead of it was the human's, recorded here so the sequence is not mistaken for the one this
-note recommends.
+**Status.** harper#2541 and harper#2542's core halves are implemented: the Ricart–Agrawala state
+machine is gone, and the home ring, the delegation table, recall with §6 steps 1, 2 and 4, ordered
+fencing tokens, the caps, the §4.3 restart quarantine, the generation monotonicity floor and the
+transport-swap grant fence are in place, with all three inherited defects fixed. **§6 step 3 —
+settlement — is not implemented**: a recall revokes capability and then writes the release without
+waiting for a native commit already submitted to complete. That is exactly limitation (2)'s third
+route in §10, which the contract already states, so the gap is disclosed rather than hidden — but §6
+must not be read as fully implemented. Closing it means hanging the release hook off
+logical-transaction settlement rather than off the last admission unlocking. harper-pro#822 supplies
+the operator-agreed home map and `establishLockFreshness()`; the feature is opt-in
+(`replication.recordLocks: true`). Still missing: relaying a `lockRelease` that reaches a
+non-coordinating thread (`applyEntry` counts, warns and drops it). **The measurement gate
+(harper-pro#824) has loopback results only** (`replication/RECORD_LOCK_COST_DELEGATIONS.md`) and
+remains open, and the decision to implement ahead of it was the human's, recorded here so the
+sequence is not mistaken for the one this note recommends.
 
 One behavior surfaced by implementing §6 is still an open decision, tracked as harper#2580: a
 `{hold: true}` write that was staged and then unlocked is **revoked** rather than waited for when a
@@ -1350,10 +1359,15 @@ add-only Bloom filter records every key delegated in the current generation. Abs
 only when the coordinator has observed the entire generation continuously; cold construction,
 coordination loss, and generation change saturate that assumption so every unremembered key takes
 recovery. A continuously observed key absent from the filter needs no barrier; a key present with no
-retained set (expiry or LRU eviction) receives the recovery marker. The transport resolves that
-marker by preferring a retained durable release when available, otherwise draining every reachable
-member to captured positions. It must coalesce concurrent recovery snapshots across keys, and it
-returns the established positions so the delegation can carry them onward. Bloom false positives
+retained set (expiry or LRU eviction) receives the recovery marker. This design asks the transport to
+resolve that marker by preferring a retained durable release when available, otherwise draining every
+reachable member to captured positions, and to coalesce concurrent recovery snapshots across keys.
+harper-pro's transport (`replication/recordLockFreshness.ts`) does neither yet: it drains every other
+home-map member to a `lockBarrier`, one barrier per wait, and a member that cannot produce one fails the
+lock closed with 503. So while any home-map member is down, every recovery-path `lock()` in that
+database returns 503 (the first access after a home restart or a generation change, or a key whose
+lineage the LRU evicted) — stricter than the reachable-member barrier §10 limitation (2) describes.
+Either way it returns the established positions so the delegation can carry them onward. Bloom false positives
 only select the slower safe path; there are no false negatives while absence is trusted.
 
 The recovery drain's fence is the `lockBarrier` control entry (harper#2625). Each reachable member
@@ -1366,8 +1380,8 @@ like the release, and the coordinator ignores it. `establishLockFreshness` also 
 remaining on the lock deadline so the transport can bound the drain to it. A member or transport
 that cannot produce a barrier leaves the recovery marker with no fence, and the lock fails closed
 with the same 503 — the transport's rejection is what fails it: core does not second-guess a
-positioned recovery reply, and installs the grant on whatever set the transport returns, empty
-included.
+positioned recovery reply beyond normalizing it: `#establishFreshness` refuses a set it cannot use,
+keeps only origins in the current home map, and installs the grant on the rest, empty included.
 
 The release wire format becomes a versioned tuple with a leading version and trailing dependency
 set. The decoder still accepts the exact historical five-tuple as a release with unknown lineage;
