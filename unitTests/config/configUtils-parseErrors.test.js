@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const commonUtils = require('#src/utility/common_utils');
 const configUtils = require('#src/config/configUtils');
+const { ServerError } = require('#src/utility/errors/hdbError');
 
 const CONFIG_FILE_NAME = 'harperdb-config.yaml';
 const CONFIG_ENV_VARS = ['HARPER_DEFAULT_CONFIG', 'HARPER_CONFIG', 'HARPER_SET_CONFIG'];
@@ -13,16 +14,14 @@ const BACKFILLED_KEY_PATHS = [['storage', 'path'], ['logging', 'rotation', 'path
 
 function safeParseError(configFilePath) {
 	return (error) => {
+		assert.ok(error instanceof ServerError, 'uses a typed server error');
 		assert.strictEqual(error.statusCode, 500);
 		assert.match(error.message, /Error parsing .*: YAMLParseError [A-Z_]+ at line \d+, column \d+/);
 		assert.ok(error.message.includes(configFilePath), 'names the config file');
 		assert.match(error.message, /line \d+, column \d+/, 'locates the parse error');
 		assert.ok(!error.message.includes('config-secret-sentinel'), 'does not include config source text');
 		assert.ok(!error.stack.includes('config-secret-sentinel'), 'does not include config source text in the stack');
-		assert.ok(
-			!error.http_resp_msg.includes('config-secret-sentinel'),
-			'does not include config source text in the HTTP response'
-		);
+		assert.strictEqual(error.cause, undefined, 'does not retain the source-bearing parser error');
 		return true;
 	};
 }
