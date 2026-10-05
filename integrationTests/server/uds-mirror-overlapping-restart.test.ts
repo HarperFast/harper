@@ -10,7 +10,7 @@
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual, deepStrictEqual } from 'node:assert';
 import { request } from 'node:http';
-import { readdir, stat } from 'node:fs/promises';
+import { chmod, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -19,6 +19,8 @@ const WORKERS = 4;
 // The overlapping (pre-start) restart only exists where SO_REUSEPORT is reliable: not on
 // Windows or macOS, and not under Bun (see restartWorkers()'s platformCanPreStartReplacement).
 const skipSuite = process.platform !== 'linux' || process.env.HARPER_RUNTIME === 'bun';
+
+const socketsDirMode = async (dir: string) => (await stat(dir)).mode & 0o777;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -105,6 +107,7 @@ suite(
 				}
 			}
 			ok(mirrorPort, `no fully mirrored port answers HTTP: ${JSON.stringify([...byPort])}`);
+			strictEqual(await socketsDirMode(socketsDir), 0o700, 'sockets directory is owner-only after startup');
 		});
 
 		after(async () => {
@@ -124,6 +127,8 @@ suite(
 					ok(await requestOverMirror(join(socketsDir, name), ctx), `${name} does not answer HTTP before the restart`);
 				}
 
+				// Replacement workers must tighten a directory that was widened since startup.
+				await chmod(socketsDir, 0o755);
 				// The operations request is served by a worker that is itself restarted, so its response is
 				// best-effort; the pool's thread ids are the authoritative completion signal.
 				sendOperation(ctx.harper, { operation: 'restart_service', service: 'http_workers' }).catch(() => {});
@@ -148,6 +153,7 @@ suite(
 					expectedMirrors().sort(),
 					`mirror sockets missing after the restart: ${present}`
 				);
+				strictEqual(await socketsDirMode(socketsDir), 0o700, 'replacement workers re-tighten the sockets directory');
 				for (const name of expectedMirrors()) {
 					const socketPath = join(socketsDir, name);
 					const info = await stat(socketPath, { bigint: true });
