@@ -13,6 +13,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { parseDocument } from 'yaml';
 
 import {
 	startHarper,
@@ -172,8 +173,12 @@ async function within<T>(promise: Promise<T>, ms: number, what: string): Promise
 	]).finally(() => clearTimeout(timer));
 }
 
-async function restartHarper(ctx: ContextWithHarper) {
+async function restartHarper(ctx: ContextWithHarper, rootConfigEntries: Record<string, unknown> = {}) {
 	await killHarper(ctx);
+	const configPath = join(ctx.harper.dataRootDir, 'harper-config.yaml');
+	const config = parseDocument(await readFile(configPath, 'utf8'));
+	for (const [name, entry] of Object.entries(rootConfigEntries)) config.setIn([name], entry);
+	await writeFile(configPath, String(config));
 	await startHarper(ctx, { config: HARPER_CONFIG, env: {} });
 }
 
@@ -381,6 +386,25 @@ suite('a package deploy that restarts workers', { skip: skipSuite }, (ctx: Conte
 			'kept',
 			'the live tree is the one the canary certified'
 		);
+	});
+
+	test('a root config set back to the entry a deploy replaced installs that entry at the next start', async () => {
+		const reverted = 'canary-package-reverted';
+		const installed = { package: `file:${await packageTarball(reverted, { version: 1 })}` };
+		await restartHarper(ctx, { [reverted]: installed });
+		await waitForServedVersion(ctx, reverted, 1);
+		const { status, body } = await rawOperation(ctx, {
+			operation: 'deploy_component',
+			project: reverted,
+			package: `file:${await packageTarball(reverted, { version: 2 })}`,
+			restart: true,
+		});
+		strictEqual(status, 200, JSON.stringify(body));
+		await waitForServedVersion(ctx, reverted, 2);
+
+		// The application lock still names the entry startup installed, since no deploy writes it.
+		await restartHarper(ctx, { [reverted]: installed });
+		await waitForServedVersion(ctx, reverted, 1);
 	});
 
 	test('a rejected first package deploy fails closed: the next start neither installs nor loads it', async () => {

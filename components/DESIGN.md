@@ -184,9 +184,12 @@ permission to run, and neither is one a dead process left pending that boot coul
 component closed. Retention pins every predecessor a record names, and prunes nothing
 of a component one of whose records cannot be read. And a package deploy's tree is no longer reinstalled by the
 restart that follows it, or at a later start: a deploy never writes the application lock, so the root reload used to
-resolve the package again and swap a fresh install over the release the deploy had just activated. It now recognizes
-a live tree whose deployment declared the current root-config entry (`liveTreeInstallsEntry`) and keeps it, so the
-tree that runs is the tree certified.
+resolve the package again and swap a fresh install over the release the deploy had just activated. When the live
+tree's deployment declared an entry, startup now compares that entry with root config, ahead of the lock
+(`keepsInstalledTree`). It keeps the tree when the two match and installs from root config when they differ. So the
+tree that runs is the tree certified. The lock still names the entry the deploy replaced, so a root config set back to
+that entry would otherwise keep the deployed tree. The lock decides only for a tree no deployment declared an entry
+for.
 
 **Rolling.** `restart: 'rolling'` certifies on the origin exactly as `true` does, while the peers only stage the
 release. A `restart_service` job then activates it on each peer in turn (`activate_deployment`, `bin/restart.ts`)
@@ -457,12 +460,10 @@ those two cannot predict, such as `HARPER_DEFAULT_CONFIG` filling a removed key 
 during recovery is not enough on its own: `applyRootConfigEffect` re-inits THIS thread's config, and boot
 recovery runs on main before `installApplications()` reads `getConfigObj()`.
 
-Not covered, and pre-existing: other threads' memoized config stays stale until a restart re-inits it; the
-boot-time config writers and out-of-process editors are not serialized with the lock; and
-`installApplications()` still reinstalls a package-deployed component from its source at the next start
-whenever `harper-application-lock.json` does not match its entry — which, since no deploy writes that file, is
-the first start after every package deploy. Validation of a package deploy now runs under the entry in force
-rather than the one being deployed, since the latter is no longer published until the commit.
+Not covered, and pre-existing: other threads' memoized config stays stale until a restart re-inits it, and the
+boot-time config writers and out-of-process editors are not serialized with the lock. Validation of a package deploy
+now runs under the entry in force rather than the one being deployed, since the latter is no longer published until
+the commit.
 
 ### Retention of dormant staged builds
 
@@ -572,8 +573,9 @@ can activate; the marker is an ignored file to it. The journal format is unchang
 answers 404 to a consumed id, as before. `deployment_stagingRetention_maxCount` (default 5) now bounds kept
 releases with staged builds, and each is a whole installed tree, so at the default a component holds up to five
 extra copies of itself; `0` keeps no previous release, and the rest of this section still applies. A package
-component reinstalls from its source on the first start after each package deploy (#2315 step 7 shipped as
-reporting only, #2929); that reinstall keeps no record, but the certified tree it displaces is kept, which is the one worth keeping.
+deploy's tree survives later starts while root config names the entry its deployment declared. Once root config
+names another entry, startup installs that one from its source; that install keeps no record, but the deployed tree it
+displaces is kept, which is the one worth keeping.
 
 ## Component preparation is serialized across worker threads
 

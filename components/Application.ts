@@ -5425,20 +5425,7 @@ async function installConfiguredApplication(
 			logger.info?.(`Not reinstalling application ${name} while its release ${live.deploymentId} is being certified`);
 			return;
 		}
-		// Lock check: only install if not already installed with matching configuration
-		const installedConfig = (await readApplicationLock(harperApplicationLockPath)).applications[name];
-		if (
-			existsSync(dirPath) &&
-			installedConfig &&
-			JSON.stringify(installedConfig) === JSON.stringify(applicationConfig)
-		) {
-			logger.info?.(`Application ${name} is already installed with matching configuration; skipping installation`);
-			return;
-		}
-		if (await liveTreeInstallsEntry(name, dirPath, applicationConfig)) {
-			logger.info?.(`Application ${name} is live from a deployment of this configuration; skipping installation`);
-			return;
-		}
+		if (await keepsInstalledTree(name, applicationConfig, dirPath, harperApplicationLockPath)) return;
 
 		// Resolve any credential references from the store so a cold install (fresh node, wiped
 		// components dir, new peer that never installed) can authenticate without the token being
@@ -5479,20 +5466,54 @@ async function installConfiguredApplication(
 }
 
 /**
- * Whether the live tree is an installation of exactly this entry: its marker names a deployment that declared it. A
- * deploy never writes the application lock, so without this the root reload of the restart that follows a package
- * deploy resolved the package again and reinstalled over the release the deploy activated. Missing or unreadable
- * evidence answers no.
+ * Whether startup keeps the tree at `dirPath` rather than installing `applicationConfig` over it. When the live
+ * tree's deployment declared an entry, that entry decides, ahead of the application lock: no deploy writes the lock,
+ * so after one it still names the entry the deploy replaced, and a root config set back to that entry would keep
+ * the deployed tree. The lock decides only for a tree no deployment declared an entry for.
  */
-export async function liveTreeInstallsEntry(name: string, dirPath: string, applicationConfig: ApplicationConfig) {
+export async function keepsInstalledTree(
+	name: string,
+	applicationConfig: ApplicationConfig,
+	dirPath: string,
+	harperApplicationLockPath: string
+): Promise<boolean> {
+	const declared = await liveTreeDeclaredEntry(name, dirPath);
+	if (declared !== undefined) {
+		if (!isDeepStrictEqual(declared, applicationConfig)) return false;
+		logger.info?.(`Application ${name} is live from a deployment of this configuration; skipping installation`);
+		return true;
+	}
+	const installedConfig = (await readApplicationLock(harperApplicationLockPath)).applications[name];
+	if (
+		!existsSync(dirPath) ||
+		!installedConfig ||
+		JSON.stringify(installedConfig) !== JSON.stringify(applicationConfig)
+	) {
+		return false;
+	}
+	logger.info?.(`Application ${name} is already installed with matching configuration; skipping installation`);
+	return true;
+}
+
+/**
+ * The root-config entry the live tree's deployment declared, `null` for a payload build, or `undefined` when there is
+ * no record to ask: a tree startup installed, a link, a tree made live before deployments kept records, or a record
+ * that cannot be read.
+ */
+async function liveTreeDeclaredEntry(
+	name: string,
+	dirPath: string
+): Promise<Record<string, unknown> | null | undefined> {
 	try {
 		const deploymentId = await readDeploymentProvenance(dirPath, name);
-		if (deploymentId === undefined) return false;
-		const descriptor = await readArtifactDescriptor(join(dirname(dirPath), DEPLOY_STAGING_DIR, deploymentId), name);
-		return Boolean(descriptor?.rootConfig) && isDeepStrictEqual(descriptor.rootConfig, applicationConfig);
+		if (deploymentId === undefined) return undefined;
+		return (await readArtifactDescriptor(join(dirname(dirPath), DEPLOY_STAGING_DIR, deploymentId), name))?.rootConfig;
 	} catch (error) {
-		logger.warn?.(`Could not read the deployment ${name} was activated from; installing it from its source:`, error);
-		return false;
+		logger.warn?.(
+			`Could not read the deployment ${name} was activated from; its application lock decides instead:`,
+			error
+		);
+		return undefined;
 	}
 }
 

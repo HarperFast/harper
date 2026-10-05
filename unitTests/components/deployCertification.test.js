@@ -14,7 +14,7 @@ testUtils.preTestPrep();
 const {
 	prepareApplication,
 	assertNotCertifying,
-	liveTreeInstallsEntry,
+	keepsInstalledTree,
 	DEPLOY_STAGING_DIR,
 	Application,
 } = require('#src/components/Application');
@@ -539,35 +539,61 @@ describe('deciding a release', () => {
 	});
 });
 
-describe('whether the live tree installs an entry', () => {
+describe('whether startup keeps the installed tree', () => {
 	preserveRootConfig();
-	let root;
+	let root, dirPath, lockPath;
 	beforeEach(async () => {
 		root = await fs.mkdtemp(path.join(os.tmpdir(), 'deploy-certification-install-'));
+		dirPath = path.join(root, 'web');
+		lockPath = path.join(root, 'harper-application-lock.json');
 	});
 	afterEach(async () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
 	const ENTRY = { package: 'npm:web@1.0.0', urlPath: '/web' };
+	const REPLACED = { package: 'npm:web@0.9.0', urlPath: '/web' };
+	const lockNaming = (entry) => fs.writeFile(lockPath, JSON.stringify({ applications: { web: entry } }));
 
-	it('answers yes only for the entry the live deployment declared', async function () {
+	it('keeps a deployed tree only for the entry its deployment declared, whatever the lock names', async function () {
 		this.timeout(30000);
+		await lockNaming(REPLACED);
 		await deploy(root, 'd1', 'V1\n', { describeArtifact: () => ({ rootConfig: ENTRY, isolated: false }) });
-		const dirPath = path.join(root, 'web');
-		assert.equal(await liveTreeInstallsEntry('web', dirPath, { urlPath: '/web', package: 'npm:web@1.0.0' }), true);
-		assert.equal(await liveTreeInstallsEntry('web', dirPath, { ...ENTRY, isolated: true }), false);
-		assert.equal(await liveTreeInstallsEntry('web', dirPath, { package: 'npm:web@1.0.1', urlPath: '/web' }), false);
+		assert.equal(
+			await keepsInstalledTree('web', { urlPath: '/web', package: 'npm:web@1.0.0' }, dirPath, lockPath),
+			true
+		);
+		assert.equal(await keepsInstalledTree('web', { ...ENTRY, isolated: true }, dirPath, lockPath), false);
+		assert.equal(
+			await keepsInstalledTree('web', { package: 'npm:web@1.0.1', urlPath: '/web' }, dirPath, lockPath),
+			false
+		);
+		assert.equal(
+			await keepsInstalledTree('web', REPLACED, dirPath, lockPath),
+			false,
+			'a root config set back to the entry the deploy replaced installs that entry'
+		);
 	});
 
-	it('answers no without evidence: no marker, no record, or an unreadable one', async function () {
+	it('installs over a payload build whatever the lock names', async function () {
 		this.timeout(30000);
-		const dirPath = path.join(root, 'web');
-		assert.equal(await liveTreeInstallsEntry('web', dirPath, ENTRY), false, 'nothing is live');
-		await deploy(root, 'd1', 'V1\n', { describeArtifact: () => ({ rootConfig: ENTRY, isolated: false }) });
+		await lockNaming(ENTRY);
+		await deploy(root, 'd1', 'V1\n');
+		assert.equal(await keepsInstalledTree('web', ENTRY, dirPath, lockPath), false);
+	});
+
+	it('lets the lock decide for a tree with no declared entry: installed at startup, or a record gone or unreadable', async function () {
+		this.timeout(30000);
+		await lockNaming(ENTRY);
+		assert.equal(await keepsInstalledTree('web', ENTRY, dirPath, lockPath), false, 'nothing is installed');
+		await deploy(root, 'boot', 'V1\n', { describeArtifact: undefined });
+		assert.equal(await keepsInstalledTree('web', ENTRY, dirPath, lockPath), true);
+		assert.equal(await keepsInstalledTree('web', REPLACED, dirPath, lockPath), false);
+		await deploy(root, 'd1', 'V1\n', { describeArtifact: () => ({ rootConfig: REPLACED, isolated: false }) });
 		await fs.writeFile(path.join(root, DEPLOY_STAGING_DIR, 'd1', '.artifact.json'), 'garbage');
-		assert.equal(await liveTreeInstallsEntry('web', dirPath, ENTRY), false);
+		assert.equal(await keepsInstalledTree('web', ENTRY, dirPath, lockPath), true, 'an unreadable record');
 		await fs.rm(path.join(root, DEPLOY_STAGING_DIR, 'd1'), { recursive: true, force: true });
-		assert.equal(await liveTreeInstallsEntry('web', dirPath, ENTRY), false);
+		assert.equal(await keepsInstalledTree('web', ENTRY, dirPath, lockPath), true, 'a record that is gone');
+		assert.equal(await keepsInstalledTree('web', REPLACED, dirPath, lockPath), false);
 	});
 });
