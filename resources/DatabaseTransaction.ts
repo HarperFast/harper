@@ -1303,7 +1303,7 @@ export class DatabaseTransaction implements Transaction {
 						`and writes applied from a canonical source, e.g. replication or a caching source, bypass this check).`
 				);
 			}
-			throw new ServerError('Outstanding write transactions have too long of queue, please try again later', 503);
+			throw new ServerError('Outstanding write transactions have too long a queue, please try again later', 503);
 		}
 		this.overloadChecked = true; // only check this once, don't interrupt ongoing transactions that have already made writes
 	}
@@ -2011,7 +2011,7 @@ export class DatabaseTransaction implements Transaction {
 							// Record how long this commit stays outstanding (submit → settle) as a distribution
 							// metric. This is the same clock the overload check uses (trackOutstandingCommit
 							// stamps each attempt at submit), so a rising p99/p999 is the leading indicator for the
-							// "Outstanding write transactions have too long of queue" (503) rejection. A transient-
+							// "Outstanding write transactions have too long a queue" (503) rejection. A transient-
 							// conflict retry rejects this promise and issues a fresh commit(), which is tracked as
 							// its own attempt, so recording per attempt matches the overload semantics.
 							// commitResolution's declared type (Promise<number | void> | void) doesn't narrow to
