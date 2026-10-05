@@ -18,19 +18,9 @@ import { Blob } from '../../resources/blob.ts';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
 import { parseMultipartRequest } from './multipartParser.ts';
-// Resolve lazily: reading config at module-load time would TDZ under ESM
-// because configUtils.ts is mid-evaluation when this module is imported.
-let _serializationBigint: boolean | undefined;
-function getSerializationBigint(): boolean {
-	if (_serializationBigint === undefined) {
-		_serializationBigint = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
-	}
-	return _serializationBigint;
-}
-const JSONStringify = ((value: any, ...rest: any[]) =>
-	(getSerializationBigint() ? stringify : JSON.stringify)(value, ...rest)) as typeof JSON.stringify;
-const JSONParse = ((text: string, ...rest: any[]) =>
-	(getSerializationBigint() ? parse : JSON.parse)(text, ...rest)) as typeof JSON.parse;
+import { onStartup } from '../../utility/lifecycle.ts';
+let JSONStringify: typeof JSON.stringify = stringify;
+let JSONParse: typeof JSON.parse = parse;
 const streamStartup = Symbol('streamStartup');
 const serializedStreamError = Symbol('serializedStreamError');
 
@@ -254,6 +244,21 @@ const genericHandler = {
 };
 mediaTypes.set('*/*', genericHandler);
 mediaTypes.set('', genericHandler);
+function initializeJSONCodecs() {
+	const previousStringify = JSONStringify;
+	const useBigInt = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
+	JSONStringify = useBigInt ? stringify : JSON.stringify;
+	JSONParse = useBigInt ? parse : JSON.parse;
+	for (const codec of mediaTypes.values()) {
+		if (codec.serialize === previousStringify) codec.serialize = JSONStringify;
+	}
+}
+try {
+	initializeJSONCodecs();
+} catch (error) {
+	if (!(error instanceof ReferenceError)) throw error;
+}
+onStartup(initializeJSONCodecs);
 // try to JSON parse, but since we don't know for sure, this will return the body
 // otherwise
 function tryJSONParse(input) {

@@ -1137,25 +1137,27 @@ describe('Caching', () => {
 					if (i % 16 == 1)
 						reads.push(Promise.resolve(CachingTable.invalidate(23)).catch((error) => failures.push(error)));
 					else {
+						let evictedEntry;
 						if (i % 4 == 0) {
 							const store = CachingTable.primaryStore;
 							const cached = store.getEntry(23);
 							if (cached?.value && !store.hasLock(23)) {
 								// Without its memoized Entry, the private value cache cannot vouch for this record.
 								assert.equal(entryMap.delete(cached.value), true);
-								const fresh = store.getEntry(23);
-								if (fresh?.value && fresh.version === cached.version) {
-									assert.notEqual(fresh.value, cached.value);
-									cacheMisses++;
-								}
+								evictedEntry = cached;
 							}
 						}
 						let raw_result = CachingTable.get(23);
 						reads.push(
-							Promise.resolve(raw_result).then(
-								(result) => results.push(result),
-								(error) => failures.push(error)
-							)
+							Promise.resolve(raw_result)
+								.then((result) => {
+									if (evictedEntry) {
+										assert.notStrictEqual(result, evictedEntry.value);
+										if (entryMap.get(result)?.version === evictedEntry.version) cacheMisses++;
+									}
+									results.push(result);
+								})
+								.catch((error) => failures.push(error))
 						);
 					}
 				} catch (error) {

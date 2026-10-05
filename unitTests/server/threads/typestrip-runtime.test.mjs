@@ -41,6 +41,144 @@ function runWithIsolatedRoot(mode, code) {
 }
 
 describe('TypeStrip runtime boundaries', () => {
+	it('selects direct JSON codecs before serving REST and subscription messages', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			for (const bigint of [false, true]) {
+				const prefix = mode === 'compiled' ? 'dist/' : '';
+				const extension = mode === 'compiled' ? 'js' : 'ts';
+				const runtimeUrl = (path) => pathToFileURL(resolve(root, `${prefix}${path}.${extension}`)).href;
+				const output = runWithIsolatedRoot(
+					mode,
+					`
+					const assert = (await import('node:assert/strict')).default;
+					const { readFileSync, writeFileSync } = await import('node:fs');
+					const configPath = process.env.ROOTPATH + '/harper-config.yaml';
+					const YAML = require('yaml');
+					const config = YAML.parseDocument(readFileSync(configPath, 'utf8'));
+					config.setIn(['serialization', 'bigInt'], ${bigint});
+					writeFileSync(configPath, config.toString());
+					await import(${JSON.stringify(runtimeUrl('server/threads/threadServer'))});
+					const env = await import(${JSON.stringify(runtimeUrl('utility/environment/environmentManager'))});
+					env.initSync(); assert.equal(env.get('serialization_bigInt'), ${bigint});
+					const codecs = await import(${JSON.stringify(runtimeUrl('server/serverHelpers/contentTypes'))});
+					const jsonStream = await import(${JSON.stringify(runtimeUrl('server/serverHelpers/JSONStream'))});
+					const custom = value => 'custom:' + value;
+					codecs.contentTypes.set('test/custom-json', { serialize: custom });
+					const { runStartup } = await import(${JSON.stringify(runtimeUrl('utility/lifecycle'))});
+					await runStartup();
+					const expected = ${bigint} ? jsonStream.stringify : JSON.stringify;
+					assert.equal(codecs.getMessageSerializer(), expected);
+					for (const type of ['application/json', '*/*', '']) assert.equal(codecs.contentTypes.get(type).serialize, expected);
+					assert.equal(codecs.contentTypes.get('test/custom-json').serialize, custom);
+					const request = { headers: { get: () => 'application/json' } };
+					const response = { headers: new Map() };
+					assert.equal(codecs.serialize({ value: 42 }, request, response), '{"value":42}');
+					assert.equal(codecs.serializeMessage({ value: 42 }, request), '{"value":42}');
+					assert.equal(request.serialize, expected);
+					const bigValue = { value: 9007199254740993n };
+					if (${bigint}) {
+						assert.equal(codecs.serialize(bigValue, request, response), '{"value":9007199254740993}');
+						assert.equal(codecs.getDeserializer('application/json')(Buffer.from('{"value":9007199254740993}')).value, bigValue.value);
+					} else {
+						assert.throws(() => codecs.serializeMessage(bigValue, request), error => error.message === 'Cannot serialize BigInt to JSON');
+						assert.equal(codecs.getMessageSerializer()({ value: 42, extra: true }, ['value'], 2), JSON.stringify({ value: 42 }, null, 2));
+						assert.equal(codecs.getDeserializer('application/json')(Buffer.from('{"value":9007199254740993}')).value, 9007199254740992);
+					}
+					const ndjson = codecs.contentTypes.get('application/x-ndjson').serializeStream([{ value: 42 }]);
+					let streamed = ''; for await (const chunk of ndjson) streamed += chunk;
+					assert.equal(streamed, '{"value":42}\\n');
+					console.log('direct configured codecs served');
+				`
+				);
+				assert.equal(output, 'direct configured codecs served', mode + ':' + bigint);
+			}
+		}
+	});
+
+	it('keeps rotation disabled after rapid cold reconfiguration', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const runtimeUrl = pathToFileURL(
+				resolve(
+					root,
+					`${mode === 'compiled' ? 'dist/' : ''}utility/logging/harper_logger.${mode === 'compiled' ? 'js' : 'ts'}`
+				)
+			).href;
+			const output = runWithIsolatedRoot(
+				mode,
+				`
+				const assert = (await import('node:assert/strict')).default;
+				const { readFileSync, writeFileSync, existsSync, readdirSync } = await import('node:fs');
+				const { setTimeout: delay } = await import('node:timers/promises');
+				const { waitFor } = require(${JSON.stringify(resolve(root, 'unitTests/waitFor.js'))});
+				const configPath = process.env.ROOTPATH + '/harper-config.yaml';
+				const YAML = require('yaml');
+				const config = YAML.parseDocument(readFileSync(configPath, 'utf8'));
+				config.deleteIn(['logging', 'rotation']);
+				writeFileSync(configPath, config.toString());
+				const { createLogger, updateLogger } = await import(${JSON.stringify(runtimeUrl)});
+				const path = process.env.ROOTPATH + '/rapid.log';
+				const archives = process.env.ROOTPATH + '/rapid-archives';
+				const logger = createLogger({ path, level: 'info', stdStreams: false });
+				const rotation = { interval: '0.001s', auditInterval: 10, compress: false, path: archives };
+				updateLogger(logger, { path, rotation }, undefined, logger);
+				updateLogger(logger, { path, rotation: { ...rotation, retention: '1d' } }, undefined, logger);
+				updateLogger(logger, { path }, undefined, logger);
+				logger.info('rotation must stay disabled');
+				await delay(600);
+				assert.deepEqual(existsSync(archives) ? readdirSync(archives) : [], []);
+				assert.match(readFileSync(path, 'utf8'), /rotation must stay disabled/);
+				assert.doesNotMatch(readFileSync(path, 'utf8'), /Error initializing log rotator/);
+				updateLogger(logger, { path, rotation }, undefined, logger);
+				await waitFor(() => existsSync(archives) && readdirSync(archives).length > 0, { timeout: 3000 });
+				updateLogger(logger, { path }, undefined, logger);
+				await delay(200);
+				const ended = readdirSync(archives);
+				await delay(200);
+				assert.deepEqual(readdirSync(archives), ended);
+				logger.closeLogFile();
+				console.log('rotation remained disabled');
+			`
+			);
+			assert.equal(output, 'rotation remained disabled', mode);
+		}
+	});
+
+	it('drains scopes without binding when shutdown interrupts HTTP startup', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const workerPath = resolve(
+				root,
+				`${mode === 'compiled' ? 'dist/' : ''}server/threads/threadServer.${mode === 'compiled' ? 'js' : 'ts'}`
+			);
+			const execArgv = [
+				...(mode === 'typestrip' ? ['--conditions=typestrip'] : []),
+				'--require',
+				resolve(import.meta.dirname, 'fixtures/startup-shutdown.cjs'),
+			];
+			const output = runWithIsolatedRoot(
+				mode,
+				`
+				const assert = (await import('node:assert/strict')).default;
+				const { Worker } = await import('node:worker_threads');
+				const { once } = await import('node:events');
+				const worker = new Worker(${JSON.stringify(workerPath)}, { execArgv: ${JSON.stringify(execArgv)}, workerData: { addPorts: [], addThreadIds: [] } });
+				const messages = []; worker.on('message', message => messages.push(message));
+				try {
+					while (!messages.some(message => message.type === 'startup-held')) await once(worker, 'message', { signal: AbortSignal.timeout(3000) });
+					worker.postMessage({ type: 'shutdown', restartNumber: 2 });
+					worker.postMessage({ type: 'release-startup' });
+					const [code] = await once(worker, 'exit', { signal: AbortSignal.timeout(3000) });
+					assert.equal(code, 0);
+					assert.ok(messages.some(message => message.type === 'scope-disposed'));
+					assert.ok(messages.some(message => message.type === 'startup-drained'));
+					assert.equal(messages.some(message => message.type === 'child_started' || message.type === 'child_startup_phase'), false);
+				} finally { if (worker.threadId !== -1) await worker.terminate(); }
+				console.log('startup shutdown drained');
+			`
+			);
+			assert.equal(output, 'startup shutdown drained', mode);
+		}
+	});
+
 	it('preserves environment-selected built-ins through startup', () => {
 		for (const mode of ['compiled', 'typestrip']) {
 			const prefix = mode === 'compiled' ? 'dist/' : '';

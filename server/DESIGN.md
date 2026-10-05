@@ -85,7 +85,7 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 
 Process-wide shutdown begins by calling `beginProcessShutdown()` in `threads/manageThreads.ts`.
 Once set, this terminal state prevents every worker replacement path and makes new `startWorker()`
-calls fail with `ERR_HARPER_PROCESS_SHUTTING_DOWN`; scoped worker-type restarts do not set it.
+calls fail with `ERR_HARPER_PROCESS_SHUTTING_DOWN`; scoped worker-type restarts do not set it on main. In an outgoing worker, any SHUTDOWN makes that worker terminal. HTTP startup checks the flag after startup/component awaits and before binding or reporting ready. Its idempotent shutdown chain waits for component loading, registered drains, scope disposal and branch-database closure before exit; the existing termination backstops still bound cleanup. Main startup and rolling reloads also check resumed awaits before starting replacements.
 `shutdownWorkersNow()` remains an immediate teardown: its worker shutdown messages are best-effort,
 and it force-terminates the remaining worker set rather than waiting for application drain hooks.
 
@@ -730,3 +730,9 @@ This is the transport's fallback, not the error contract. SSE and NDJSON GETs ho
 ## A coarse uWS 413 drains a closing upload before ending the response
 
 uWS force-closes a completed `Connection: close` response while an upload is still arriving, which can lose its status to EPIPE. `uwsServer.ts` flushes a non-empty coarse-limit 413 chunk before discarding bytes until body end or a one-second deadline; that absolute resource bound guarantees early status, not complete framing for a sender that ignores it. Destroying a paused Readable does not clear its queue, so teardown removes data listeners and reads out queued bytes in bounded chunks before retaining the response. Native abort disarms the finisher independently of handler cancellation. "uWS oversized TCP uploads" in `unitTests/server/serverHelpers/uwsServer.test.js` pins these paths and unchanged immediate keep-alive rejection. Other rejection sites, including downstream responses from `contentTypes.ts`'s default 10 MB limit, still end immediately and remain outside this coarse-cap correction.
+
+### Configured JSON codec identity
+
+`serverHelpers/contentTypes.ts` starts with the direct default BigInt codec functions, selects from available configuration at module end, and refreshes once through `onStartup` before listeners bind. This preserves direct serializer identity for shared-message encoding and removes codec-selection wrappers from each REST response and subscription message. The refresh only replaces media entries that still use the prior default; component-provided serializers remain intact. Native cycles can postpone configuration availability until startup. JSONStream's existing streaming and BigInt behavior is preserved.
+
+Log rotation's deferred reconfiguration callback loads its runtime module synchronously through `loadRuntimeModule`, so teardown and installation cannot interleave across a cold import. Disabling rotation cannot be undone by an older callback resuming later.

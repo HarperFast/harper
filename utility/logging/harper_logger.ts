@@ -11,7 +11,7 @@ const PropertiesReader = _PropertiesReader;
 import * as hdbTerms from '../hdbTerms.ts';
 import assignCMDENVVariables from '../assignCmdEnvVariables.ts';
 import * as os from 'node:os';
-import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
+import { PACKAGE_ROOT, loadRuntimeModule } from '../../utility/packageUtils.js';
 import { _assignPackageExport } from '../../globals.js';
 import { Console } from 'node:console';
 import { inspect, types } from 'node:util';
@@ -919,7 +919,7 @@ function getFileLogger(path, rotation, isExternalInstance, rotationPolicy) {
 		reconfigured = true;
 	}
 	if (isMainThread && reconfigured) {
-		setTimeout(async () => {
+		setTimeout(() => {
 			// Everything inside the try: a throw from a timer callback is unhandled, and neither
 			// loading logRotator.ts (which reaches environmentManager's synchronous init) nor a
 			// rotator teardown may take the process down over log rotation (#847).
@@ -928,7 +928,7 @@ function getFileLogger(path, rotation, isExternalInstance, rotationPolicy) {
 				logger.rotator = undefined;
 				previousRotator?.end();
 				if (!rotation) return;
-				const { logRotator } = await import('./logRotator.ts');
+				const { logRotator } = loadRuntimeModule('utility/logging/logRotator');
 				logger.rotator = logRotator({
 					logger,
 					...rotation,

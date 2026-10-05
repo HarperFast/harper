@@ -6,6 +6,12 @@ export class Runtime extends Resource {
 	}
 }
 
+export class BigNumber extends Resource {
+	get() {
+		return { value: 9007199254740993n };
+	}
+}
+
 export class BuiltinCheck extends Resource {
 	async get() {
 		const fs = await import('node:fs');
