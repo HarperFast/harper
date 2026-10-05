@@ -165,7 +165,7 @@ const configuredPrivateKeyPaths = new Map<string, string>();
 const filePrivateKeys = new Map<string, string>();
 
 const TLS_REBUILD_DEBOUNCE_MS = 1500;
-// Also bounds re-attempts of a still-unmatched pair while unrelated files in its directory keep changing.
+// Bounds the fingerprint re-checks that unrelated changes in a watched directory can cause.
 const TLS_WATCH_RECHECK_DELAY_MS = 1000;
 
 // Self-retry backoff cap: a permanently bad record must not cost every selector on every
@@ -344,7 +344,7 @@ const certificateWatchPollers = new Map<string, () => void>();
 export function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) {
 	let lastModified;
 	let lastAttempted;
-	const loadFile = (path, stats?) => {
+	const loadFile = (path, stats?, retryUnapplied = true) => {
 		// The latch dedupes chokidar/poll but must mean "last successfully APPLIED", or a failed
 		// apply is deduplicated forever (#2382). Rollbacks are equality-guarded so an old failure
 		// can't unlatch a newer successful reload.
@@ -355,7 +355,7 @@ export function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) 
 			const fingerprints = [fileStats, ...relatedPaths.map((relatedPath) => statSync(relatedPath))];
 			modified = JSON.stringify(fingerprints.map(({ mtimeMs, ino, size }) => [mtimeMs, ino, size]));
 			// Restoring an applied fingerprint after a failed attempt must clear the loader's pending state.
-			if (modified !== lastModified || modified !== lastAttempted) {
+			if (modified !== lastAttempted || (retryUnapplied && modified !== lastModified)) {
 				if (lastModified && modified !== lastAttempted && isMainThread) logger.warn?.(`Reloading ${type}:`, path);
 				lastAttempted = modified;
 				lastModified = modified;
@@ -383,25 +383,24 @@ export function loadAndWatch(path, loadCert, type, relatedPaths: string[] = []) 
 	};
 	if (fs.existsSync(path)) loadFile(path, statSync(path));
 	else logger.error?.(`${type} file not found:`, path);
-	const poll = () => {
+	const poll = (retryUnapplied = true) => {
 		let stats;
 		try {
 			stats = statSync(path);
 		} catch (error) {
-			// File may be transiently absent (e.g. atomic-rename renewal in flight); the chokidar
-			// watcher and the next poll will pick up the replacement.
+			// File may be transiently absent (e.g. atomic-rename renewal in flight); the next watcher
+			// event or poll will pick up the replacement.
 			logger.trace?.(`Watch poll could not stat ${type}:`, path, error);
 			return;
 		}
-		loadFile(path, stats);
+		loadFile(path, stats, retryUnapplied);
 	};
-	// chokidar can stop emitting add/change for a path removed twice inside its 100 ms removal throttle
-	// (it keeps tracking the deleted inode), but its raw events still arrive.
+	// chokidar's add/change can stop for good after a fast cancelled renewal; raw events still arrive (security/DESIGN.md).
 	let recheckTimer: NodeJS.Timeout | undefined;
 	const scheduleRecheck = () => {
 		recheckTimer ??= setTimeout(() => {
 			recheckTimer = undefined;
-			poll();
+			poll(false);
 		}, TLS_WATCH_RECHECK_DELAY_MS).unref();
 	};
 	const watchedDirectories = new Map<string, { mustPoll: boolean; files: Set<string> }>();
