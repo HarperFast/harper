@@ -261,18 +261,12 @@ export function writeUdsMetadata(
 		}
 	}
 	try {
-		// Readers (the fronting proxy) must never see a truncated yaml, so publish by rename.
 		atomicWriteFile(yamlPath, yaml, { maxRetries: 0 });
 	} catch (error) {
 		harperLogger.error('Error writing UDS metadata to ' + yamlPath, error);
 	}
 }
 
-/**
- * Returns the sockets directory, created and tightened to owner-only. Undefined (after logging) means
- * the mirror is skipped. An isolated application's worker is served only through its mirror, so
- * there the failure is thrown instead.
- */
 export function ensureSocketsDirectory(): string | undefined {
 	const socketsDir = join(env.getHdbBasePath(), 'sockets');
 	try {
@@ -285,6 +279,7 @@ export function ensureSocketsDirectory(): string | undefined {
 		}
 		return socketsDir;
 	} catch (error) {
+		// An isolated worker is served only through its mirror, so its failure must not be swallowed.
 		if (thisThreadsIsolatedApplication()) throw error;
 		harperLogger.error('Unable to secure UDS sockets directory ' + socketsDir + ', skipping UDS mirrors', error);
 		return undefined;
@@ -884,6 +879,11 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			env.get(serverPrefix + '_requestQueueLimit'),
 			`HTTP request queue on port ${port}`
 		);
+		// Before the cache assignment: a throw here must not leave a cached server without its mirror.
+		const socketsDir =
+			secure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) && shouldBindListenerHere(port)
+				? ensureSocketsDirectory()
+				: undefined;
 		const server = (httpServers[port] = (
 			secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer
 		)(options, (nodeRequest: IncomingMessage, nodeResponse: any) => {
@@ -927,6 +927,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		if (isOperationsServer && String(port).includes('/')) server.bypassLocalAuth = true;
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 		// Create a corresponding Unix Domain Socket mirror for secure ports
 		if (secure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
 			const socketsDir = join(env.getHdbBasePath(), 'sockets');
@@ -947,6 +948,9 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			secure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) && shouldBindListenerHere(port)
 				? ensureSocketsDirectory()
 				: undefined;
+=======
+		// Create a corresponding Unix Domain Socket mirror for secure ports
+>>>>>>> 5970700ab (Check the UDS mirror directory before registering the secure listener)
 		if (socketsDir) {
 >>>>>>> 7b26d4c87 (Resolve the UDS mirror directory from the helper and fail isolated workers loudly)
 			const isolatedApplication = thisThreadsIsolatedApplication();

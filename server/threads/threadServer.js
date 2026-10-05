@@ -675,6 +675,11 @@ function onSocket(listener, options) {
 	let getComponentName = require('../../components/componentLoader.ts').getComponentName;
 	let socketServer;
 	if (options.securePort) {
+		// Before any registration: a throw here must not leave a listener without its mirror.
+		const socketsDir =
+			env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) && shouldBindListenerHere(options.securePort)
+				? httpComponent.ensureSocketsDirectory()
+				: undefined;
 		setPortServerMap(options.securePort, { protocol_name: 'TLS', name: getComponentName() });
 		// usageType lets a caller's certificates (tagged via hdb_certificate.uses) win the quality
 		// bonus in createTLSSelector for this listener, the same way http.ts's usageType does for
@@ -724,6 +729,7 @@ function onSocket(listener, options) {
 		// Create a corresponding Unix Domain Socket mirror for the secure socket
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 		if (env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
 			const socketsDir = join(env.getHdbBasePath(), 'sockets');
 			mkdirSync(socketsDir, { recursive: true });
@@ -740,6 +746,8 @@ function onSocket(listener, options) {
 			env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) && shouldBindListenerHere(options.securePort)
 				? httpComponent.ensureSocketsDirectory()
 				: undefined;
+=======
+>>>>>>> 5970700ab (Check the UDS mirror directory before registering the secure listener)
 		if (socketsDir) {
 >>>>>>> 7b26d4c87 (Resolve the UDS mirror directory from the helper and fail isolated workers loudly)
 			const isolatedApplication = thisThreadsIsolatedApplication();

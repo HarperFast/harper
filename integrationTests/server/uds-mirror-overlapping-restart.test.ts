@@ -127,7 +127,6 @@ suite(
 					ok(await requestOverMirror(join(socketsDir, name), ctx), `${name} does not answer HTTP before the restart`);
 				}
 
-				// Replacement workers must tighten a directory that was widened since startup.
 				await chmod(socketsDir, 0o755);
 				// The operations request is served by a worker that is itself restarted, so its response is
 				// best-effort; the pool's thread ids are the authoritative completion signal.
