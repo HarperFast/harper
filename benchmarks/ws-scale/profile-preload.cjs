@@ -1,6 +1,6 @@
-// Only HTTP workers hold this benchmark's WebSocket connections.
 //   start   holds a duration in seconds: CPU-profile this thread that long, then write thread-<id>.cpuprofile;
 //           after consuming start, the worker stops polling
+//   thread-<id>.started marks a worker that began profiling so run.mts can track profile completion
 const { Session } = require('node:inspector');
 const { threadId, workerData } = require('node:worker_threads');
 const { existsSync, readFileSync, renameSync, writeFileSync } = require('node:fs');
@@ -35,6 +35,7 @@ function profile(seconds) {
 	);
 }
 
+// HTTP workers hold this benchmark's connections; profiling other workers would not measure per-connection cost
 if (workerData?.name === 'http') {
 	const poll = setInterval(() => {
 		if (!existsSync(`${dir}/start`)) return;

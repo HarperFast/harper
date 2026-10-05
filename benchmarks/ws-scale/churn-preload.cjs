@@ -1,3 +1,4 @@
+// GC requests:
 //   gc-<n>  run a full garbage collection (Harper runs with --expose-gc), then write this thread's
 //           process.memoryUsage() as JSON to gc-<n>-<threadId>
 const { threadId, workerData } = require('node:worker_threads');

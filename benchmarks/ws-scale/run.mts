@@ -399,7 +399,12 @@ async function main() {
 				throw new Error(
 					`Harper exited (${exitCode !== null ? `code ${exitCode}` : `signal ${signalCode}`}) while waiting for ${request}`
 				);
-			if (waited > 30_000) throw new Error(`only ${acked.length} Harper workers ran ${request}`);
+			if (waited > 30_000) {
+				const missing = [...workerIds].filter((id) => !acked.includes(id));
+				throw new Error(
+					`only ${acked.length} of ${workerIds.size} HTTP workers acknowledged ${request} (missing ${missing.join(', ')}); check Harper's log for an uncaughtException from churn-preload.cjs`
+				);
+			}
 			await delay(100);
 		}
 	};

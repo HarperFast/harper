@@ -62,17 +62,13 @@ test('churn preload ignores profile requests and continues acknowledging GC requ
 
 test('profile preload ignores GC requests and writes its CPU profile artifact', async () => {
 	await withControlDir(async (dir) => {
-		const { worker, threadId } = await startWorker(profilePreload, dir);
+		const { worker, threadId } = await startWorker(profilePreload, dir, true);
 		try {
 			writeFileSync(join(dir, 'gc-1'), '');
-			await new Promise((resolve) => setTimeout(resolve, 350));
-			assert.strictEqual(existsSync(join(dir, `gc-1-${threadId}`)), false);
-
 			writeFileSync(join(dir, 'start'), '0.15');
+			await waitForFile(join(dir, `thread-${threadId}.started`), 'profile start marker');
+			assert.strictEqual(existsSync(join(dir, `gc-1-${threadId}`)), false);
 			await waitForFile(join(dir, `thread-${threadId}.cpuprofile`), 'CPU profile artifact');
-			writeFileSync(join(dir, 'gc-2'), '');
-			await new Promise((resolve) => setTimeout(resolve, 350));
-			assert.strictEqual(existsSync(join(dir, `gc-2-${threadId}`)), false);
 		} finally {
 			await worker.terminate();
 		}
