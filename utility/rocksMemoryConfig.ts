@@ -1,6 +1,6 @@
-// Resolves the RocksDB memory configuration (block cache + WriteBufferManager) from raw
-// config values. Kept as a pure function so the defaulting logic can be unit tested without
-// opening a database or touching the process-global RocksDatabase.config side effect.
+// Resolves the process-global RocksDB configuration (block cache, WriteBufferManager, optimistic
+// validation policy) from raw config values. Kept as a pure function so the defaulting logic can
+// be unit tested without opening a database or touching the process-global RocksDatabase.config side effect.
 //
 // Values flow in from configUtils.castConfigValue (via envGet), which produces proper
 // numbers/booleans/null — so we enforce types rather than coerce, and anything that isn't the
@@ -11,12 +11,16 @@ export interface RocksMemoryConfigInput {
 	configuredWriteBufferManagerSize: unknown;
 	configuredCostToCache: unknown;
 	configuredAllowStall: unknown;
+	configuredOccValidation: unknown;
 	// min(process.constrainedMemory() ?? Infinity, totalmem()) — the cgroup-aware memory base.
 	availableMemory: number;
 }
 
+type OccValidation = 'serial' | 'parallel';
+
 export interface RocksMemoryConfig {
 	blockCacheSize: number;
+	occValidation: OccValidation;
 	writeBufferManagerSize?: number;
 	writeBufferManagerCostToCache?: boolean;
 	writeBufferManagerAllowStall?: boolean;
@@ -28,6 +32,7 @@ export function resolveRocksMemoryConfig(input: RocksMemoryConfigInput): RocksMe
 		configuredWriteBufferManagerSize,
 		configuredCostToCache,
 		configuredAllowStall,
+		configuredOccValidation,
 		availableMemory,
 	} = input;
 	// Block cache: an explicit positive number wins, otherwise 25% of available memory. Floored
@@ -42,7 +47,9 @@ export function resolveRocksMemoryConfig(input: RocksMemoryConfigInput): RocksMe
 	const writeBufferManagerSize = Math.floor(
 		typeof configuredWriteBufferManagerSize === 'number' ? configuredWriteBufferManagerSize : blockCacheSize / 3
 	);
-	const config: RocksMemoryConfig = { blockCacheSize };
+	// Serial unless explicitly parallel; see resources/DESIGN.md for why serial is the default.
+	const occValidation: OccValidation = configuredOccValidation === 'parallel' ? 'parallel' : 'serial';
+	const config: RocksMemoryConfig = { blockCacheSize, occValidation };
 	// costToCache and allowStall only matter when the WBM is enabled. allowStall defaults to false
 	// so the budget is a soft cap: a stalling manager parks every writer in the process inside
 	// DBImpl::WriteBufferManagerStallWrites(), and once the budget is held across enough column

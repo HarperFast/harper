@@ -451,24 +451,7 @@ export function openRocksDatabase(path: string, options: RocksDatabaseOptions & 
 	if (isReadOnlyMode()) {
 		options.readOnly = true;
 	}
-	// Read RocksDB memory config lazily so env/CLI overrides applied after module load are
-	// respected. The block cache falls back to 25% of constrained (cgroup) memory when not
-	// configured; the WriteBufferManager defaults to 1/3 of the block cache size (set its size
-	// to 0 to disable). See resolveRocksMemoryConfig for the defaulting rules.
-	//
-	// Note: writeBufferManagerCostToCache and writeBufferManagerAllowStall are fixed at WBM
-	// creation time inside rocksdb-js (the underlying RocksDB API doesn't support changing
-	// costToCache on a live manager, and allowStall is only re-applied when explicitly changed).
-	// In practice that's fine — these come from process-level config that doesn't change.
-	RocksDatabase.config(
-		resolveRocksMemoryConfig({
-			configuredBlockCacheSize: envGet(CONFIG_PARAMS.STORAGE_ROCKS_BLOCKCACHESIZE),
-			configuredWriteBufferManagerSize: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE),
-			configuredCostToCache: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERCOSTTOCACHE),
-			configuredAllowStall: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL),
-			availableMemory: Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()),
-		})
-	);
+	configureRocksDatabase();
 	if (!existsSync(path)) {
 		// Don't create directories in read-only mode
 		if (isReadOnlyMode()) {
@@ -493,6 +476,32 @@ export function openRocksDatabase(path: string, options: RocksDatabaseOptions & 
 	}
 	db.env = {};
 	return db;
+}
+
+/**
+ * The validation policy is read when a database opens, so every path that opens a RocksDB database
+ * in a process must call this first.
+ */
+export function configureRocksDatabase() {
+	// Read RocksDB memory config lazily so env/CLI overrides applied after module load are
+	// respected. The block cache falls back to 25% of constrained (cgroup) memory when not
+	// configured; the WriteBufferManager defaults to 1/3 of the block cache size (set its size
+	// to 0 to disable). See resolveRocksMemoryConfig for the defaulting rules.
+	//
+	// Note: writeBufferManagerCostToCache and writeBufferManagerAllowStall are fixed at WBM
+	// creation time inside rocksdb-js (the underlying RocksDB API doesn't support changing
+	// costToCache on a live manager, and allowStall is only re-applied when explicitly changed).
+	// In practice that's fine — these come from process-level config that doesn't change.
+	RocksDatabase.config(
+		resolveRocksMemoryConfig({
+			configuredBlockCacheSize: envGet(CONFIG_PARAMS.STORAGE_ROCKS_BLOCKCACHESIZE),
+			configuredWriteBufferManagerSize: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE),
+			configuredCostToCache: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERCOSTTOCACHE),
+			configuredAllowStall: envGet(CONFIG_PARAMS.STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL),
+			configuredOccValidation: envGet(CONFIG_PARAMS.STORAGE_ROCKS_OCCVALIDATION),
+			availableMemory: Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()),
+		})
+	);
 }
 
 const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();

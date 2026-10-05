@@ -4,6 +4,7 @@ import {
 	resetDatabases,
 	getRocksCompression,
 	toRocksCompression,
+	configureRocksDatabase,
 } from '../resources/databases.ts';
 import { open, asBinary } from 'lmdb';
 import { isAbsolute, join, relative, sep } from 'node:path';
@@ -558,6 +559,7 @@ export function shapeForStructure(value: any): any {
 }
 
 function openRocksDb(path: string, options: RocksDatabaseOptions & { dupSort?: boolean } = {}) {
+	configureRocksDatabase();
 	options.disableWAL ??= false;
 	// Migration creates a complete replacement database, so use the deployment codec for the files
 	// it writes; runtime opens additionally reconcile pre-existing sibling column families.
@@ -683,6 +685,7 @@ export function verifyMigratedDatabase(databasePath: string): Record<string, { r
 	// diagnostic path operators use after a broken migration.
 	const handles: RocksDatabase[] = [];
 	const report: Record<string, { records: number; unversioned: number }> = {};
+	configureRocksDatabase();
 	try {
 		handles.push(RocksDatabase.open(databasePath, {}));
 		const dbisDb = RocksDatabase.open(databasePath, {

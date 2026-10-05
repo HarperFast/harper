@@ -11,6 +11,7 @@ function resolve(overrides) {
 		configuredWriteBufferManagerSize: undefined,
 		configuredCostToCache: undefined,
 		configuredAllowStall: undefined,
+		configuredOccValidation: undefined,
 		availableMemory: 8 * GB,
 		...overrides,
 	});
@@ -110,6 +111,22 @@ describe('resolveRocksMemoryConfig', function () {
 			assert.strictEqual(config.writeBufferManagerCostToCache, true);
 			assert.strictEqual(config.writeBufferManagerAllowStall, false);
 			assert.strictEqual(resolve({ configuredAllowStall: 'true' }).writeBufferManagerAllowStall, false);
+		});
+	});
+
+	describe('occValidation', function () {
+		it('defaults to serial', function () {
+			assert.strictEqual(resolve({}).occValidation, 'serial');
+		});
+
+		it('honors parallel', function () {
+			assert.strictEqual(resolve({ configuredOccValidation: 'parallel' }).occValidation, 'parallel');
+		});
+
+		it('falls back to serial for any other value', function () {
+			assert.strictEqual(resolve({ configuredOccValidation: 'serial' }).occValidation, 'serial');
+			assert.strictEqual(resolve({ configuredOccValidation: 'PARALLEL' }).occValidation, 'serial');
+			assert.strictEqual(resolve({ configuredOccValidation: true }).occValidation, 'serial');
 		});
 	});
 });

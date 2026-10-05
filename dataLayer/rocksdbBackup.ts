@@ -11,7 +11,7 @@ import { createGzip } from 'node:zlib';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pack as tarPack, type Pack } from 'tar-stream';
 import { RocksDatabase, backups, registryStatus, type BackupInfo } from '@harperfast/rocksdb-js';
-import { getDatabases, resolveDatabasePath } from '../resources/databases.ts';
+import { configureRocksDatabase, getDatabases, resolveDatabasePath } from '../resources/databases.ts';
 import { stampDatabaseDirectory } from '../resources/auditStore.ts';
 import {
 	type BlobCaptureDisposition,
@@ -1088,6 +1088,7 @@ export async function createBackupOffline(databaseName: string, excludeBlobs = f
 			`Database '${databaseName}' has an ${restoreState === 'in-progress' ? 'active' : 'incomplete'} restore; rerun restore_backup before backing up`
 		);
 	}
+	configureRocksDatabase();
 	const database = RocksDatabase.open(databaseDir);
 	try {
 		const backupDir = backupDirForDatabase(databaseName);
@@ -1169,6 +1170,7 @@ export async function restoreBackupOffline(
 		);
 	});
 	try {
+		configureRocksDatabase();
 		// The offline path is entered only when the CLI sees no running server (getHdbPid), but that is
 		// a heuristic: the PID file is briefly absent mid-`harper restart`, and backups.restore's
 		// purgeAllFiles never takes RocksDB's own lock. Probe that lock by opening the database — a live

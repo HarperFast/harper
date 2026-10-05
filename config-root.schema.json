@@ -511,6 +511,10 @@
 						"compression": {
 							"type": ["string", "null"],
 							"description": "RocksDB block and blob compression codec for every column family. Default: null (derive from storage.compression)."
+						},
+						"occValidation": {
+							"enum": ["serial", "parallel"],
+							"description": "How RocksDB validates optimistic transaction conflicts at commit. 'serial' validates inside the RocksDB write group, so no other write can land between a commit's conflict check and its write, and allocates no lock buckets; 'parallel' validates before the write group using a per-database lock-bucket pool, which only helps several threads committing synchronously to the same database at once. Applies to databases opened after the setting changes (restart to apply). Default: 'serial'"
 						}
 					}
 				},

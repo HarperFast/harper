@@ -729,6 +729,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE: 'storage_rocks_writeBufferManagerSize',
 	STORAGE_ROCKS_WRITEBUFFERMANAGERCOSTTOCACHE: 'storage_rocks_writeBufferManagerCostToCache',
 	STORAGE_ROCKS_WRITEBUFFERMANAGERALLOWSTALL: 'storage_rocks_writeBufferManagerAllowStall',
+	STORAGE_ROCKS_OCCVALIDATION: 'storage_rocks_occValidation',
 	DATABASES: 'databases',
 	IGNORE_SCRIPTS: 'ignoreScripts',
 	MQTT_NETWORK_PORT: 'mqtt_network_port',
