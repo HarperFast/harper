@@ -3174,6 +3174,32 @@ describe('relayed admissions across worker threads (harper-pro#852)', () => {
 		assert.strictEqual(staleFenced, 1, 'the stale handle was fenced a second time');
 	});
 
+	it("passes the owner's 423 through, and turns any other relay failure into a retryable 503", async () => {
+		let failure;
+		const caller = makeCoordinator('relay-verdict', {
+			homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+			ownsCoordination: () => false,
+			establishLockFreshness: async (_d, _t, _k, dep) => dep ?? [],
+			requestDelegation: () => {
+				throw new Error('unused');
+			},
+			recallDelegation: () => {
+				throw new Error('unused');
+			},
+			acquireOnOwner: async () => {
+				throw failure;
+			},
+			releaseOnOwner: () => {},
+		});
+		failure = Object.assign(new Error('Record is locked and was not released in time'), { statusCode: 423 });
+		await assert.rejects(caller.acquire('k', LEASE, WAIT), (error) => error.statusCode === 423);
+		failure = new Error('the owner worker is not reachable');
+		await assert.rejects(
+			caller.acquire('k', LEASE, WAIT),
+			(error) => error.statusCode === 503 && error.code === 'LOCK_UNAVAILABLE'
+		);
+	});
+
 	it('carries a remote admission to a successor across a transport swap', async () => {
 		const { caller } = relaySetup('r9');
 		const round = await caller.acquire('k', LEASE, WAIT);

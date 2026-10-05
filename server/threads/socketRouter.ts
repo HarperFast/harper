@@ -19,6 +19,8 @@ import * as harperLogger from '../../utility/logging/harper_logger.ts';
 import { recordHostname } from '../../resources/analytics/write.ts';
 import { startTransactionLogCooling } from '../transactionLogCooling.ts';
 import { startLongLivedTransactionReporting } from '../../resources/longLivedTransactions.ts';
+import { setActiveWorkerPools } from './workerPools.ts';
+import * as env from '../../utility/environment/environmentManager.ts';
 import { isMainThread } from 'node:worker_threads';
 import { join } from 'node:path';
 
@@ -75,12 +77,16 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 			// does not bind ports in this mode, so on platforms without SO_REUSEPORT (macOS/Windows)
 			// worker 0's exclusive HTTP bind would silently swallow an external EADDRINUSE — the
 			// external-conflict detection in listenOnPorts() assumes the main thread binds first.
-			const slot = startHTTPWorker(0, 1);
+			const slot = startWorkerSlot(0, 1);
 			workerSlots.push(slot);
 			poolSlots.push(slot);
 		} else {
 			const { loadRootComponents } = require('../loadRootComponents.js');
 			if (threadCount === 0) {
+				if (configuredReplicationThreads() > 0)
+					harperLogger.warn(
+						'replication.threads is ignored because threads.count is 0: replication runs on the main thread'
+					);
 				setMainIsWorker(true);
 				const threadServer = require('./threadServer.js');
 				await threadServer.startServers();
@@ -89,6 +95,7 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 				await threadServer.listenOnPorts();
 				return Promise.resolve([]);
 			}
+			if (!dedicatedPoolsStarted) setActiveWorkerPools(admittedWorkerPools().map((pool) => pool.type));
 			await loadRootComponents();
 			const { listenOnPorts } = require('./threadServer.js');
 			await listenOnPorts();
@@ -98,17 +105,28 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 		poolSize = threadCount;
 		nextIsolatedIndex = Math.max(nextIsolatedIndex, threadCount);
 		const isolated = admittedIsolatedApplications([...isolatedSlots.keys()]);
-		const heapShareCount = threadCount + isolated.length;
+		const dedicatedPools = dedicatedPoolsStarted || dynamicThreads ? [] : admittedWorkerPools();
+		dedicatedPoolsStarted = true;
+		for (const pool of dedicatedPools) dedicatedWorkerCount += pool.count;
+		const heapShareCount = threadCount + dedicatedWorkerCount + isolated.length;
 		for (let i = 0; i < threadCount; i++) {
-			const slot = startHTTPWorker(i, threadCount, undefined, heapShareCount);
+			const slot = startWorkerSlot(i, threadCount, undefined, heapShareCount);
 			workerSlots.push(slot);
 			poolSlots.push(slot);
+		}
+		// Dedicated pools are numbered past the HTTP pool for the same reason isolated workers are.
+		for (const pool of dedicatedPools) {
+			for (let poolIndex = 0; poolIndex < pool.count; poolIndex++) {
+				const slot = startWorkerSlot(nextIsolatedIndex++, threadCount, undefined, heapShareCount, pool.type, poolIndex);
+				workerSlots.push(slot);
+				poolSlots.push(slot);
+			}
 		}
 		// One dedicated worker per isolated application, numbered past the pool so no pool-only duty
 		// (worker 0's startup log, the last worker's cleanup) ever lands on it.
 		for (const application of isolated) {
 			if (isolatedSlots.has(application)) continue;
-			const slot = startHTTPWorker(nextIsolatedIndex++, threadCount, application, heapShareCount);
+			const slot = startWorkerSlot(nextIsolatedIndex++, threadCount, application, heapShareCount);
 			isolatedSlots.set(application, slot);
 			workerSlots.push(slot);
 			void watchDedicatedStart(application, slot);
@@ -121,6 +139,8 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 }
 
 let poolSize = 0;
+let dedicatedPoolsStarted = false;
+let dedicatedWorkerCount = 0;
 const refusedIsolated = new Set<string>(); // reported once, not on every reconcile
 const ISOLATED_WORKER_READY_TIMEOUT_MS = 60_000; // the pool replacement path's backstop
 let nextIsolatedIndex = 0;
@@ -236,12 +256,12 @@ async function reconcileIsolatedWorkersNow(): Promise<string[]> {
 		for (const application of stoppedApplications) cleanupApplicationSockets(application);
 	}
 	const started: string[] = [];
-	const heapShareCount = poolSize + wanted.size;
+	const heapShareCount = poolSize + dedicatedWorkerCount + wanted.size;
 	for (const slot of poolSlots) slot.setHeapShareCount(heapShareCount);
 	for (const slot of isolatedSlots.values()) slot.setHeapShareCount(heapShareCount);
 	for (const application of wanted) {
 		if (isolatedSlots.has(application)) continue;
-		const slot = startHTTPWorker(nextIsolatedIndex++, poolSize, application, heapShareCount);
+		const slot = startWorkerSlot(nextIsolatedIndex++, poolSize, application, heapShareCount);
 		isolatedSlots.set(application, slot);
 		started.push(application);
 		void watchDedicatedStart(application, slot);
@@ -253,7 +273,58 @@ if (isMainThread) {
 	setRunningIsolatedApplicationsGetter(() => [...isolatedSlots.keys()]);
 }
 
-function startHTTPWorker(index, threadCount = 1, application?: string, heapShareCount?: number) {
+function configuredReplicationThreads(): number {
+	return Number(env.get(hdbTerms.CONFIG_PARAMS.REPLICATION_THREADS) ?? 0);
+}
+
+function portNumberOf(port: unknown): number | undefined {
+	if (port == null || port === '') return undefined;
+	const text = String(port);
+	const number = Number(text.slice(text.lastIndexOf(':') + 1));
+	return Number.isInteger(number) && number > 0 ? number : undefined;
+}
+
+/**
+ * The dedicated pools to start, refusing a configuration the pool cannot serve. A replication pool
+ * needs a replication port of its own: without one, replication falls back to the operations API
+ * ports, which only the main thread binds, and a port shared with HTTP or the operations API cannot
+ * be owned by one worker type.
+ */
+export function admittedWorkerPools(): { type: string; count: number }[] {
+	const count = configuredReplicationThreads();
+	if (!Number.isInteger(count) || count < 0)
+		throw new Error(`replication.threads must be a non-negative integer, got ${count}`);
+	if (count === 0) return [];
+	const replicationPorts = [
+		portNumberOf(env.get(hdbTerms.CONFIG_PARAMS.REPLICATION_PORT)),
+		portNumberOf(env.get(hdbTerms.CONFIG_PARAMS.REPLICATION_SECUREPORT)),
+	].filter((port) => port !== undefined);
+	if (replicationPorts.length === 0)
+		throw new Error(
+			'replication.threads requires replication.port or replication.securePort: without a dedicated replication port, replication shares the operations API port, which only the main thread binds'
+		);
+	const sharedPorts = [
+		['http.port', hdbTerms.CONFIG_PARAMS.HTTP_PORT],
+		['http.securePort', hdbTerms.CONFIG_PARAMS.HTTP_SECUREPORT],
+		['operationsApi.network.port', hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT],
+		['operationsApi.network.securePort', hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT],
+	];
+	for (const [label, param] of sharedPorts) {
+		const port = portNumberOf(env.get(param));
+		if (port !== undefined && replicationPorts.includes(port))
+			throw new Error(`replication.threads requires a replication port of its own, but port ${port} is also ${label}`);
+	}
+	return [{ type: hdbTerms.THREAD_TYPES.REPLICATION, count }];
+}
+
+function startWorkerSlot(
+	index,
+	threadCount = 1,
+	application?: string,
+	heapShareCount?: number,
+	type: string = hdbTerms.THREAD_TYPES.HTTP,
+	poolIndex?: number
+) {
 	const { promise: ready, resolve: resolveReady, reject: rejectReady } = Promise.withResolvers<void>();
 	let waitingForInitialReady = true;
 	let finishCurrentStartup = () => {};
@@ -273,8 +344,9 @@ function startHTTPWorker(index, threadCount = 1, application?: string, heapShare
 		rejectReady(error);
 	};
 	const workerOptions = {
-		name: hdbTerms.THREAD_TYPES.HTTP,
+		name: type,
 		workerIndex: index,
+		poolIndex,
 		threadCount,
 		application,
 		heapShareCount,
@@ -296,7 +368,7 @@ function startHTTPWorker(index, threadCount = 1, application?: string, heapShare
 				worker.off('message', onMessage);
 			};
 			const describeStartup = (event) =>
-				`HTTP worker slot ${index}${application ? ` (isolated application '${application}')` : ''} ${event} before ready (thread ${threadId}, attempt ${attempt}, phase ${startupPhase})`;
+				`${type} worker slot ${index}${application ? ` (isolated application '${application}')` : ''} ${event} before ready (thread ${threadId}, attempt ${attempt}, phase ${startupPhase})`;
 			const onMessage = (message) => {
 				if (message.type === hdbTerms.ITC_EVENT_TYPES.CHILD_STARTUP_PHASE) {
 					startupPhase = message.phase;
@@ -331,7 +403,7 @@ function startHTTPWorker(index, threadCount = 1, application?: string, heapShare
 			}
 		},
 		onRestartExhausted() {
-			const error = new Error(`HTTP worker slot ${index} exhausted restarts (thread ${lastThreadId})`);
+			const error = new Error(`${type} worker slot ${index} exhausted restarts (thread ${lastThreadId})`);
 			if (waitingForInitialReady) failStartup(error);
 			else if (application && isolatedSlot && isolatedSlots.get(application) === isolatedSlot) {
 				isolatedSlots.delete(application);
