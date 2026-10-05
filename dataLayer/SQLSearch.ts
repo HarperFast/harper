@@ -7,7 +7,7 @@
  */
 
 import _ from 'lodash';
-import * as alasql from 'alasql';
+import alasql from 'alasql';
 alasql.options.cache = false;
 import alasqlFunctionImporter from '../sqlTranslator/alasqlFunctionImporter.ts';
 import clone from 'clone';

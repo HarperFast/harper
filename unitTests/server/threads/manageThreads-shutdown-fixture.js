@@ -9,6 +9,9 @@
 const { parentPort } = require('node:worker_threads');
 const manageThreads = require('#src/server/threads/manageThreads');
 
+// SHUTDOWN unrefs parentPort; keep this fixture alive to answer the subsequent query.
+setInterval(() => {}, 1000);
+
 parentPort.on('message', (message) => {
 	if (message?.type === 'query-restart-number') {
 		parentPort.postMessage({ type: 'restart-number', value: manageThreads.restartNumber });

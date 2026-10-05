@@ -1,3 +1,4 @@
+import { RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT } from '../../utility/packageUtils.js';
 import {
 	startWorker,
 	setMonitorListener,
@@ -353,7 +354,7 @@ function startHTTPWorker(index, threadCount = 1, application?: string, heapShare
 			}
 		},
 	};
-	startWorker(join(__dirname, './threadServer.js'), workerOptions);
+	startWorker(join(RUNTIME_SRC_ROOT, `server/threads/threadServer${RUNTIME_FILE_EXT}`), workerOptions);
 	// Stop of a dedicated worker whose application is gone: every worker carrying the application,
 	// a crashed one's replacement still booting included, so none is left running the removed app.
 	let shutdownPromise: Promise<void> | undefined;

@@ -18,7 +18,7 @@ import * as readline from 'node:readline';
 import { loadCredentials, normalizeTarget, extractTargetCredentials } from './cliCredentials.ts';
 import { refreshExpiredOperationToken } from './cliOperations.ts';
 import { httpRequest } from '../utility/common_utils.ts';
-import { getHdbPid } from '../utility/processManagement/processManagement.js';
+import { getHdbPid } from '../utility/processManagement/processManagement.ts';
 import { initConfig, getConfigPath } from '../config/configUtils.ts';
 import * as terms from '../utility/hdbTerms.ts';
 

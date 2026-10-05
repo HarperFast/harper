@@ -4,7 +4,7 @@
  * AST SQL values such as attributes, tables, etc.
  **/
 
-import * as alasql from 'alasql';
+import alasql from 'alasql';
 import RecursiveIterator from 'recursive-iterator';
 import _harperLogger from '../utility/logging/harper_logger.ts';
 const harperLogger = _harperLogger;

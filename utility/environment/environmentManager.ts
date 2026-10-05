@@ -1,8 +1,9 @@
-'use strict';
+import { PACKAGE_ROOT } from '../packageUtils.js';
+('use strict');
 
 import fs from 'fs-extra';
-import * as path from 'path';
-import * as os from 'os';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import PropertiesReader from 'properties-reader';
 import log from '../logging/harper_logger.ts';
 import * as commonUtils from '../common_utils.ts';
@@ -11,18 +12,18 @@ import * as configUtils from '../../config/configUtils.ts';
 import { mkdirSync } from 'node:fs';
 import { workerData } from 'node:worker_threads';
 
-var INIT_ERR = 'Error initializing environment manager';
-var BOOT_PROPS_FILE_PATH = 'BOOT_PROPS_FILE_PATH';
+const INIT_ERR = 'Error initializing environment manager';
+const BOOT_PROPS_FILE_PATH = 'BOOT_PROPS_FILE_PATH';
 
-var propFileExists = false;
+let propFileExists = false;
 
-var installPropsToSave = {
+const installPropsToSave = {
 	[hdbTerms.HDB_SETTINGS_NAMES.INSTALL_USER]: true,
 	[hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY]: true,
 	[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY]: true,
 	BOOT_PROPS_FILE_PATH: true,
 };
-var installProps: any = {};
+let installProps: any = {};
 export { BOOT_PROPS_FILE_PATH };
 
 // Every param passed to setProperty() on this thread, keyed by its canonical config param so
@@ -307,8 +308,7 @@ export function initTestEnvironment(testConfigObj: any = {}) {
 			cors_accesslist,
 			local_studio_on,
 		} = testConfigObj;
-		// __dirname is dist/utility/environment when running tests, so go up 3 levels to reach project root
-		const propsPath = path.join(__dirname, '../../../', 'unitTests');
+		const propsPath = path.join(PACKAGE_ROOT, 'unitTests');
 		installProps[BOOT_PROPS_FILE_PATH] = path.join(propsPath, 'hdb_boot_properties.file');
 		const TEST_HDB_PATH = path.join(propsPath, 'envDir', process.pid.toString());
 		try {

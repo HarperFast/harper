@@ -20,6 +20,8 @@ import { ApplicationScope } from '../components/ApplicationScope.ts';
 import { getSecretsForComponent, runWithComponentBinding } from '../components/componentSecrets.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { createRequire } from 'node:module';
+import { PACKAGE_ROOT } from '../utility/packageUtils.js';
+const nativeRequire = createRequire(join(PACKAGE_ROOT, 'package.json'));
 import * as env from '../utility/environment/environmentManager.ts';
 import * as child_process from 'node:child_process';
 import { CONFIG_PARAMS, DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
@@ -72,7 +74,7 @@ export async function scopedImport(filePath: string | URL, scope?: ApplicationSc
 	if (!lockedDown && APPLICATIONS_LOCKDOWN && APPLICATIONS_LOCKDOWN !== 'none') {
 		lockedDown = true;
 		if (APPLICATIONS_LOCKDOWN === 'ses') {
-			require('ses'); // load the lockdown function
+			nativeRequire('ses'); // load the lockdown function
 			lockdown({
 				domainTaming: 'unsafe',
 				consoleTaming: 'unsafe',
@@ -150,7 +152,7 @@ let amaro: typeof import('amaro') | undefined;
 function stripTypeScriptTypes(source: string): string {
 	// Use amaro - the library that Node.js uses internally for type stripping
 	if (!amaro) {
-		amaro = require('amaro');
+		amaro = nativeRequire('amaro');
 	}
 	return amaro.transformSync(source, { mode: 'strip-only' }).code;
 }
@@ -450,7 +452,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 		return cjsModule;
 	}
 	function loadCJSModule(url: string, source: string, usePrivateGlobal: boolean): SyntheticModule {
-		const cjsModule = usePrivateGlobal ? loadCJS(url, source) : { exports: require(url) };
+		const cjsModule = usePrivateGlobal ? loadCJS(url, source) : { exports: nativeRequire(url) };
 		let exports = cjsModule.exports;
 		if (exports.default === undefined) {
 			// provide the default export for compatibility
@@ -730,7 +732,7 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 
 async function getCompartment(scope: ApplicationScope, globals) {
 	const { StaticModuleRecord } = await import('@endo/static-module-record');
-	require('ses');
+	nativeRequire('ses');
 	const compartment: any = new (Compartment as any)(
 		globals,
 		{

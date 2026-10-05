@@ -5,7 +5,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import logger from '../utility/logging/harper_logger.ts';
 import { help } from './help.ts';
-import { packageJson } from '../utility/packageUtils.js';
+import { packageJson, RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT } from '../utility/packageUtils.js';
 import checkNode from '../launchServiceScripts/utility/checkNodeVersion.js';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 const { SERVICE_ACTIONS_ENUM, OPERATIONS_ENUM } = hdbTerms as any;
@@ -38,21 +38,10 @@ export function wantsTopLevelHelp(argv: readonly string[], service: string | und
 	return !delegatesHelp && (argv.includes('-h') || argv.includes('--help'));
 }
 
-/**
- * Initialize the environment manager. Call before dynamically importing the
- * subcommand module so any module-load reads of `env.get(…)` see a populated
- * configuration. Side-effectful initialization is deferred to `onStartup(…)`
- * hooks; call `runServerStartup()` once the subcommand module has finished
- * loading to drain them.
- */
+// Load configuration before a subcommand's module-level config reads.
 async function initEnv() {
 	const env = await import('../utility/environment/environmentManager.ts');
 	env.initSync();
-}
-
-async function runServerStartup() {
-	const lifecycle = await import('../utility/lifecycle.ts');
-	await lifecycle.runStartup();
 }
 
 /**
@@ -113,14 +102,17 @@ async function harper() {
 			});
 		}
 		case SERVICE_ACTIONS_ENUM.RESTART:
+			await initEnv();
 			return (await import('./restart.ts')).restart({});
 		case SERVICE_ACTIONS_ENUM.VERSION:
 			return packageJson.version;
 		case SERVICE_ACTIONS_ENUM.UPGRADE:
+			await initEnv();
 			logger.setLogLevel(hdbTerms.LOG_LEVELS.INFO);
 			// The require is here to better control the flow of imports when this module is called.
 			return (await import('./upgrade.ts')).upgrade(null).then(() => 'Your instance of Harper is up to date!');
 		case SERVICE_ACTIONS_ENUM.STATUS: {
+			await initEnv();
 			return getDefaultExport(await import('./status.ts'))();
 		}
 		case SERVICE_ACTIONS_ENUM.LOGIN: {
@@ -138,22 +130,26 @@ async function harper() {
 			return logout(target);
 		}
 		case SERVICE_ACTIONS_ENUM.MCP: {
+			await initEnv();
 			const { runMcpCli } = await import('./mcp/index.ts');
 			const code = await runMcpCli(process.argv.slice(3));
 			process.exit(code);
 		}
 		case SERVICE_ACTIONS_ENUM.CHAT:
 		case SERVICE_ACTIONS_ENUM.AGENT: {
+			await initEnv();
 			const { runAgentCli } = await import('./agentCli.ts');
 			const code = await runAgentCli(process.argv.slice(3));
 			process.exit(code);
 		}
 		// eslint-disable-next-line no-fallthrough
 		case SERVICE_ACTIONS_ENUM.RENEWCERTS:
+			await initEnv();
 			return (await import('../security/keys.ts'))
 				.renewSelfSigned()
 				.then(() => 'Successfully renewed self-signed certificates');
 		case SERVICE_ACTIONS_ENUM.COPYDB: {
+			await initEnv();
 			let sourceDb = process.argv[3];
 			let targetDbPath = process.argv[4];
 			return (await import('./copyDb.ts')).copyDb(sourceDb, targetDbPath, { blobs: 'copy' });
@@ -165,6 +161,7 @@ async function harper() {
 		case OPERATIONS_ENUM.PURGE_BACKUPS:
 		case OPERATIONS_ENUM.GET_BACKUP:
 		case OPERATIONS_ENUM.RESTORE_BACKUP:
+			await initEnv();
 			return (await import('./backup.ts')).runBackupCommand(service);
 		case SERVICE_ACTIONS_ENUM.DEV:
 			process.env.DEV_MODE = 'true';
@@ -211,6 +208,7 @@ async function harper() {
 			return mod.main();
 		}
 		default: {
+			await initEnv();
 			const cliOperations = await import('./cliOperations.ts');
 			const cliApiOp = cliOperations.buildRequest();
 			// `harper deploy setup=true` provisions an encrypted deploy credential (client-side sealed
@@ -240,9 +238,8 @@ async function harper() {
 	}
 }
 export { harper };
-// In CJS (dist), `module` is defined and we check the entry. In ESM (typestrip),
-// `module` is undefined; this file is only run directly as a CLI, so treat as main.
-const isEntry = typeof module === 'undefined' || require.main === module;
+const isEntry =
+	process.argv[1] && fs.realpathSync(process.argv[1]) === path.join(RUNTIME_SRC_ROOT, `bin/harper${RUNTIME_FILE_EXT}`);
 if (isEntry) {
 	harper()
 		.then((message) => {

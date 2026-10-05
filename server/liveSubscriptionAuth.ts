@@ -1,3 +1,4 @@
+import * as userRuntimeModule from '../security/user.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import { coalesceRefresh } from '../utility/coalesceRefresh.ts';
 
@@ -68,7 +69,7 @@ function ensureStarted(): void {
 	}
 	if (!userChangeListenerInstalled) {
 		try {
-			require('../security/user').onUserChange(triggerSweep);
+			userRuntimeModule.onUserChange(triggerSweep);
 			userChangeListenerInstalled = true;
 		} catch (error) {
 			hdbLogger.trace?.(`liveSubscriptionAuth: user change notifications unavailable: ${(error as Error).message}`);

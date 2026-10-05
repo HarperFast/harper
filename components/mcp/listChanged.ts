@@ -1,3 +1,5 @@
+import * as serverHandlersRuntimeModule from '../../server/itc/serverHandlers.ts';
+import * as userRuntimeModule from '../../security/user.ts';
 /**
  * MCP server-push notification dispatcher (#619). Subscribes to Harper's
  * existing role-cache-invalidation + schema-reload event channels and
@@ -57,8 +59,8 @@ export function _resetListChangedForTest(): void {
 function loadItcHandlers(): ItcHandlers | undefined {
 	if (_itcHandlersOverride) return _itcHandlersOverride;
 	try {
-		const { schemaHandler, resourceHandler } = require('../../server/itc/serverHandlers');
-		const { onUserChange } = require('../../security/user');
+		const { schemaHandler, resourceHandler } = serverHandlersRuntimeModule;
+		const { onUserChange } = userRuntimeModule;
 		return { schemaHandler, resourceHandler, userHandler: { addListener: onUserChange } };
 	} catch (err) {
 		harperLogger.trace(`MCP listChanged: ITC handlers unavailable (${(err as Error).message})`);
@@ -78,7 +80,7 @@ async function resolveUser(username: string | undefined): Promise<AuthedUser | u
 	if (!username) return undefined;
 	if (_userResolverOverride) return _userResolverOverride(username);
 	try {
-		const { findAndValidateUser } = require('../../security/user');
+		const { findAndValidateUser } = userRuntimeModule;
 		const fresh = await findAndValidateUser(username, null, false);
 		return fresh as AuthedUser;
 	} catch (err) {

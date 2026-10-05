@@ -95,7 +95,7 @@ import _validate from 'validate.js';
 // validate.js is a CJS module; in ESM (typestrip) the default export IS the library object.
 const validate: any = (_validate as any).default ?? _validate;
 import * as logger from '../utility/logging/harper_logger.ts';
-import { promisify } from 'util';
+import { promisify } from 'node:util';
 import * as env from '../utility/environment/environmentManager.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -120,7 +120,6 @@ import { databases, getDatabases, onUpdatedTable } from '../resources/databases.
 import { VERSION_REUSED } from '../resources/RecordEncoder.ts';
 import { contextStorage } from '../resources/transaction.ts';
 import { writeKey } from 'ordered-binary';
-import { onStartup } from '../utility/lifecycle.ts';
 
 function getUserImpl(username: string, password?: string | null): Promise<User> {
 	return findAndValidateUser(username, password, password != null);
@@ -727,10 +726,7 @@ function onInvalidatedUserImpl(callback) {
 	invalidateCallbacks.push(callback);
 }
 
-// Wire server singletons during the startup phase
-onStartup(() => {
-	server.getUser = getUserImpl;
-	server.authenticateUser = authenticateUserImpl;
-	server.onInvalidatedUser = onInvalidatedUserImpl;
-	(server as any).invalidateUser = invalidateUserImpl;
-});
+server.getUser = getUserImpl;
+server.authenticateUser = authenticateUserImpl;
+server.onInvalidatedUser = onInvalidatedUserImpl;
+(server as any).invalidateUser = invalidateUserImpl;

@@ -1,4 +1,5 @@
-'use strict';
+import * as CreateTableObjectCjsModule from '../../dataLayer/CreateTableObject.ts';
+('use strict');
 
 // 5.3.0 — introduces system.hdb_oidc_trust and system.hdb_oidc_token_use for OIDC trusted
 // publishing (#2171), system.hdb_model_decisions and system.hdb_model_outcomes for durable
@@ -11,9 +12,12 @@
 // happens when it does not, and DESIGN.md "System table bootstrap" for the three touchpoints.
 
 import { databases } from '../../resources/databases.ts';
-import systemSchema from '../../json/systemSchema.json';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
+const systemSchema = JSON.parse(readFileSync(join(PACKAGE_ROOT, 'json/systemSchema.json'), 'utf8'));
 import * as terms from '../../utility/hdbTerms.ts';
-import * as initPaths from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
+import * as initPaths from '../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.ts';
 import bridge from '../../dataLayer/harperBridge/harperBridge.ts';
 import hdbLogger from '../../utility/logging/harper_logger.ts';
 import { declareTokenUseTable } from '../../security/authn/oidc/tokenUseTable.ts';
@@ -47,8 +51,7 @@ async function createHdbOidcTrustIfMissing() {
 
 	hdbLogger.info(`Creating system.${OIDC_TRUST_TABLE} table for OIDC trusted publishing.`);
 
-	const CreateTableObject =
-		require('../../dataLayer/CreateTableObject').default || require('../../dataLayer/CreateTableObject');
+	const CreateTableObject = CreateTableObjectCjsModule.default || CreateTableObjectCjsModule;
 	const schema = (systemSchema as any)[OIDC_TRUST_TABLE];
 	if (!schema) {
 		throw new Error(`systemSchema.${OIDC_TRUST_TABLE} is missing; cannot run 5.3.0 directive.`);
@@ -99,8 +102,7 @@ async function createSystemTableIfMissing(tableName: string, purpose: string) {
 
 	hdbLogger.info(`Creating system.${tableName} table for ${purpose}.`);
 
-	const CreateTableObject =
-		require('../../dataLayer/CreateTableObject').default || require('../../dataLayer/CreateTableObject');
+	const CreateTableObject = CreateTableObjectCjsModule.default || CreateTableObjectCjsModule;
 	const schema = (systemSchema as any)[tableName];
 	if (!schema) {
 		throw new Error(`systemSchema.${tableName} is missing; cannot run 5.3.0 directive.`);

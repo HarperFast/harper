@@ -9,13 +9,18 @@ import logger from '../utility/logging/harper_logger.ts';
 import { v4 as uuidV4 } from 'uuid';
 import * as signalling from '../utility/signalling.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
-import * as util from 'util';
+import * as util from 'node:util';
 import harperBridge from './harperBridge/harperBridge.ts';
 import { handleHDBError, ClientError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 
 import { SchemaEventMsg } from '../server/threads/itc.ts';
-import { databaseDropRecoveryPending, getDatabases as _getDatabases, dropTableMeta, isBranchIdentity } from '../resources/databases.ts';
+import {
+	databaseDropRecoveryPending,
+	getDatabases as _getDatabases,
+	dropTableMeta,
+	isBranchIdentity,
+} from '../resources/databases.ts';
 const getDatabases = _getDatabases;
 import { transformReq } from '../utility/common_utils.ts';
 import { server } from '../server/Server.ts';

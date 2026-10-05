@@ -12,7 +12,7 @@ import * as rocksdbBackup from '../../dataLayer/rocksdbBackup.ts';
 import * as threadsStart from '../threads/manageThreads.ts';
 import * as transactionLog from '../../utility/logging/transactionLog.ts';
 import * as restart from '../../bin/restart.ts';
-import { parentPort, isMainThread } from 'worker_threads';
+import { parentPort, isMainThread } from 'node:worker_threads';
 import { onMessageByType } from '../threads/manageThreads.ts';
 
 class RunnerMessage {

@@ -1,5 +1,5 @@
 // @ts-nocheck
-import cluster from 'cluster';
+import cluster from 'node:cluster';
 import zlib from 'node:zlib';
 import * as env from '../utility/environment/environmentManager.ts';
 try {
@@ -20,7 +20,7 @@ import fastifyCors, { type FastifyCorsOptions } from '@fastify/cors';
 import fastifyCompress from '@fastify/compress';
 import fastifyStatic from '@fastify/static';
 import requestTimePlugin from './serverHelpers/requestTimePlugin.ts';
-import guidePath from 'path';
+import guidePath from 'node:path';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as globalSchema from '../utility/globalSchema.ts';
 import * as commonUtils from '../utility/common_utils.ts';

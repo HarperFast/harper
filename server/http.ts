@@ -48,7 +48,6 @@ import { getComponentName } from '../components/componentLoader.ts';
 import { throttle } from './throttle.ts';
 import { makeCallbackChain as buildCallbackChain, describeChains, type HttpEntry } from './middlewareChain.ts';
 import { WebSocketServer } from 'ws';
-import { onStartup } from '../utility/lifecycle.ts';
 
 const { errorToString, errorForLog } = harperLogger;
 const websocketServers = {};
@@ -2053,10 +2052,7 @@ export function getRequestId() {
 	return Number(Atomics.add(nextRequestId, 0, 1n));
 }
 
-// Wire server singletons during the startup phase
-onStartup(() => {
-	server.http = httpServer;
-	server.request = onRequest;
-	server.ws = onWebSocket;
-	server.upgrade = onUpgrade;
-});
+server.http = httpServer;
+server.request = onRequest;
+server.ws = onWebSocket;
+server.upgrade = onUpgrade;

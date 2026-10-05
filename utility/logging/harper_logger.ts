@@ -1,18 +1,19 @@
-'use strict';
+const segfaultHandlerPackage = 'segfault-handler';
+('use strict');
 
 // Note - do not import/use commonUtils.js in this module, it will cause circular dependencies.
 import fs from 'fs-extra';
-import { workerData, threadId, isMainThread } from 'worker_threads';
-import * as pathModule from 'path';
+import { workerData, threadId, isMainThread } from 'node:worker_threads';
+import * as pathModule from 'node:path';
 import * as YAML from 'yaml';
 import _PropertiesReader from 'properties-reader';
 const PropertiesReader = _PropertiesReader;
 import * as hdbTerms from '../hdbTerms.ts';
 import assignCMDENVVariables from '../assignCmdEnvVariables.ts';
-import * as os from 'os';
+import * as os from 'node:os';
 import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 import { _assignPackageExport } from '../../globals.js';
-import { Console } from 'console';
+import { Console } from 'node:console';
 import { inspect, types } from 'node:util';
 import { createRotationGuard, INVALID_MAX_SIZE_MSG, parseMaxSize, resolveRotatedLogDir } from './logRotation.ts';
 import { registerLogSink } from './logGenerationCoordinator.ts';
@@ -571,11 +572,13 @@ export function initLogSettings(forceInit = false) {
 				// Bun will crash with the segfault handler, ironically.
 				// Dynamic import works in both CJS and ESM (type-strip); require() is not
 				// available as a global in ESM so we can't use it here.
-				import('segfault-handler').then((mod) => {
-					(mod.default ?? mod).registerHandler(join(logRoot, 'crash.log'));
-				}).catch(() => {
-					// optional dependency, ok if unavailable
-				});
+				import(segfaultHandlerPackage)
+					.then((mod) => {
+						(mod.default ?? mod).registerHandler(join(logRoot, 'crash.log'));
+					})
+					.catch(() => {
+						// optional dependency, ok if unavailable
+					});
 			}
 		}
 	} catch (err) {
@@ -916,7 +919,7 @@ function getFileLogger(path, rotation, isExternalInstance, rotationPolicy) {
 	if (isMainThread && reconfigured) {
 		setTimeout(async () => {
 			// Everything inside the try: a throw from a timer callback is unhandled, and neither
-			// require('./logRotator') (which reaches environmentManager's synchronous init) nor a
+			// loading logRotator.ts (which reaches environmentManager's synchronous init) nor a
 			// rotator teardown may take the process down over log rotation (#847).
 			try {
 				const previousRotator = logger.rotator;
@@ -1200,7 +1203,7 @@ function getLogConfig(hdbConfigPath) {
 			const oldHdbSettings = PropertiesReader(hdbConfigPath);
 			return {
 				level: oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY),
-				configLogPath: pathModule.dirname(oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY)),
+				configLogPath: pathModule.dirname(oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY) as string),
 				toFile: oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_TO_FILE),
 				toStream: oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS),
 			};

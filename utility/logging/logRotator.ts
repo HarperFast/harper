@@ -1,7 +1,7 @@
 'use strict';
 
-import { existsSync, mkdirSync, statSync, promises as fsProm } from 'fs';
-import * as path from 'path';
+import { existsSync, mkdirSync, statSync, promises as fsProm } from 'node:fs';
+import * as path from 'node:path';
 import * as envMgr from '../environment/environmentManager.ts';
 try {
 	envMgr.initSync();

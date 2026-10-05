@@ -1,10 +1,15 @@
+declare const Bun: any;
+import * as loadRootComponentsRuntimeModule from '../loadRootComponents.ts';
+import * as databasesRuntimeModule from '../../resources/databases.ts';
+import * as uwsServerRuntimeModule from '../serverHelpers/uwsServer.ts';
 import * as inspector from 'node:inspector';
 import { isMainThread, parentPort, threadId, workerData } from 'node:worker_threads';
 import { createServer as createSocketServer } from 'node:net';
-import { unlinkSync, existsSync, mkdirSync, renameSync } from 'node:fs';
+import { unlinkSync, existsSync, mkdirSync, renameSync, realpathSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT } from '../../utility/packageUtils.js';
 let componentsLoadedResolve;
-export const whenComponentsLoaded = new Promise((resolve) => {
+export const whenComponentsLoaded: any = new Promise<any>((resolve) => {
 	componentsLoadedResolve = resolve;
 });
 let bootLoadStarted = false;
@@ -37,7 +42,6 @@ import * as httpComponent from '../http.ts';
 import { withProxyProtocol } from '../serverHelpers/proxyProtocol.ts';
 import * as globals from '../../globals.js';
 import { whenScopesClosed } from '../../components/scopeShutdown.ts';
-import { onStartup } from '../../utility/lifecycle.ts';
 import { getComponentName } from '../../components/componentLoader.ts';
 
 const debugThreads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
@@ -116,9 +120,9 @@ function closeServers() {
 			}
 		}
 		// Give pending requests time to finish, then exit
-		return new Promise((resolve) => setTimeout(resolve, 5000).unref());
+		return new Promise<any>((resolve) => setTimeout(resolve, 5000).unref());
 	}
-	const promises = [];
+	const promises: any = [];
 	for (let port in SERVERS) {
 		const server = SERVERS[port];
 		if (server.closeIdleConnections) {
@@ -199,64 +203,62 @@ function startServers() {
 	}
 	reportStartupPhase(startupPhase);
 	let listening;
-	const loaded = require('../loadRootComponents.js')
-		.loadRootComponents(true)
-		.then(() => {
-			parentPort
-				?.on('message', (message) => {
-					if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
-						harperLogger.trace('received shutdown request', threadId);
-						// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
-						// close connections as possible, then let the event loop complete.
-						// First, gracefully drain any in-flight work registered by components — notably a
-						// replication blob *send* streaming to a peer, which is cheaper to finish than to interrupt
-						// (interrupting leaves the peer's copy diverged until it re-requests). The drain waits only
-						// on work still making progress, bounded by an absolute deadline. When there is real work to
-						// drain we push the termination backstops out to that deadline first so the drain isn't cut
-						// short, then restore the normal short backstop once draining is done — so any later hang
-						// (closeServers / scope disposal) is still force-killed on the normal timeout, and a worker
-						// with no such work is never affected.
-						const drainDeadline = Date.now() + getShutdownDrainCeilingMs();
-						const extendedForDrain = shutdownDrainsHaveWork();
-						if (extendedForDrain) extendShutdownDeadline(drainDeadline);
-						// Wait for application scopes to finish closing before exiting — some dispose a native
-						// runtime asynchronously (e.g. @harperfast/vite's rolldown dev server), and exiting the
-						// worker while that runtime is still live crashes the process. The manageThreads backstop
-						// timers still bound this if a scope's disposal hangs.
-						runShutdownDrains(drainDeadline)
-							.then(() => {
-								if (extendedForDrain) restoreShutdownDeadline();
-							})
-							.then(() => closeServers())
-							.then(() => whenScopesClosed())
-							.then(async () => {
-								const { branchDatabasesHaveWork, closeBranchDatabases } = require('../../resources/databases.ts');
-								if (!branchDatabasesHaveWork()) return closeBranchDatabases();
-								extendShutdownDeadline(Date.now() + getShutdownDrainCeilingMs());
-								try {
-									await closeBranchDatabases();
-								} finally {
-									restoreShutdownDeadline();
-								}
-							})
-							.then(() => {
-								realExit(0);
-							});
-						// Clean up per-thread UDS socket and metadata files
-						httpComponent.cleanupUdsFiles();
-						if (!isBun && (debugThreads || process.env.DEV_MODE)) {
+	const loaded = loadRootComponentsRuntimeModule.loadRootComponents(true).then(() => {
+		parentPort
+			?.on('message', (message) => {
+				if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
+					harperLogger.trace('received shutdown request', threadId);
+					// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
+					// close connections as possible, then let the event loop complete.
+					// First, gracefully drain any in-flight work registered by components — notably a
+					// replication blob *send* streaming to a peer, which is cheaper to finish than to interrupt
+					// (interrupting leaves the peer's copy diverged until it re-requests). The drain waits only
+					// on work still making progress, bounded by an absolute deadline. When there is real work to
+					// drain we push the termination backstops out to that deadline first so the drain isn't cut
+					// short, then restore the normal short backstop once draining is done — so any later hang
+					// (closeServers / scope disposal) is still force-killed on the normal timeout, and a worker
+					// with no such work is never affected.
+					const drainDeadline = Date.now() + getShutdownDrainCeilingMs();
+					const extendedForDrain = shutdownDrainsHaveWork();
+					if (extendedForDrain) extendShutdownDeadline(drainDeadline);
+					// Wait for application scopes to finish closing before exiting — some dispose a native
+					// runtime asynchronously (e.g. @harperfast/vite's rolldown dev server), and exiting the
+					// worker while that runtime is still live crashes the process. The manageThreads backstop
+					// timers still bound this if a scope's disposal hangs.
+					runShutdownDrains(drainDeadline)
+						.then(() => {
+							if (extendedForDrain) restoreShutdownDeadline();
+						})
+						.then(() => closeServers())
+						.then(() => whenScopesClosed())
+						.then(async () => {
+							const { branchDatabasesHaveWork, closeBranchDatabases } = databasesRuntimeModule;
+							if (!branchDatabasesHaveWork()) return closeBranchDatabases();
+							extendShutdownDeadline(Date.now() + getShutdownDrainCeilingMs());
 							try {
-								inspector.close();
-							} catch (error) {
-								harperLogger.info('Could not close debugger', error);
+								await closeBranchDatabases();
+							} finally {
+								restoreShutdownDeadline();
 							}
+						})
+						.then(() => {
+							realExit(0);
+						});
+					// Clean up per-thread UDS socket and metadata files
+					httpComponent.cleanupUdsFiles();
+					if (!isBun && (debugThreads || process.env.DEV_MODE)) {
+						try {
+							inspector.close();
+						} catch (error) {
+							harperLogger.info('Could not close debugger', error);
 						}
 					}
-				})
-				.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
-			reportStartupPhase('binding listeners');
-			listening = listenOnPorts();
-		});
+				}
+			})
+			.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
+		reportStartupPhase('binding listeners');
+		listening = listenOnPorts();
+	});
 	componentsLoadedResolve(loaded);
 	const started = loaded
 		.then(() => listening)
@@ -304,7 +306,7 @@ function startServers() {
  * A per-thread mirror binds at a temp name and is renamed over its published path: libuv unlinks a
  * pipe server's bound path on close whoever owns it by then (server/DESIGN.md).
  */
-function listenOnDomainSocket(port, server) {
+function listenOnDomainSocket(port?: any, server?: any) {
 	const bindPath = server.isPerThreadSocket && !isWindows ? mirrorBindPath(port) : port;
 	const overlong = [port, bindPath].find((path) => isDomainSocketPathTooLong(path));
 	if (overlong) {
@@ -315,8 +317,8 @@ function listenOnDomainSocket(port, server) {
 		return Promise.resolve({ port, failed: true });
 	}
 	if (bindPath === port && existsSync(port)) unlinkSync(port);
-	return new Promise((resolve, reject) => {
-		function onError(error) {
+	return new Promise<any>((resolve, reject) => {
+		function onError(error?: any) {
 			reject(error);
 		}
 		function onListening() {
@@ -348,7 +350,7 @@ function listenOnDomainSocket(port, server) {
 }
 
 let mirrorBindSequence = 0;
-function mirrorBindPath(socketPath) {
+function mirrorBindPath(socketPath?: any) {
 	return join(dirname(socketPath), `.${threadId}.${++mirrorBindSequence}`);
 }
 
@@ -406,7 +408,7 @@ function listenOnPorts() {
 		if (server.dedicatedListener && !listen_on.reusePort && !isMainThread && getWorkerIndex() !== ownerWorkerIndex)
 			continue;
 		listening.push(
-			new Promise((resolve, reject) => {
+			new Promise<any>((resolve, reject) => {
 				server
 					.listen(listen_on, () => {
 						resolve({ port, name: server.name, protocol_name: server.protocol_name });
@@ -444,7 +446,7 @@ function listenOnPorts() {
 			const cfg = uwsServeConfigs[key];
 			if (!shouldStartUwsListenerHere(cfg)) continue; // dedicated worker: its own mirrors only
 			if (cfg.socketPath && existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath);
-			const { createUwsServer } = require('../serverHelpers/uwsServer.ts');
+			const { createUwsServer } = uwsServerRuntimeModule;
 			listening.push(
 				createUwsServer(cfg).then(({ close }) => {
 					// Register a minimal server-like entry so closeServers() can tear it down. uWS's
@@ -475,7 +477,7 @@ function listenOnPorts() {
  * collisions have been ruled out (reusePort sharing, or the main thread's first-bind ordering),
  * so this is unambiguously external.
  */
-function logExternalBindConflict(port, err) {
+function logExternalBindConflict(port?: any, err?: any) {
 	// `port` is a string key from `for..in SERVERS`, but portServer may be keyed by the numeric
 	// port setPortServerMap() was called with, so fall back to a numeric lookup.
 	const registered = portServer.get(port) ?? portServer.get(Number(port));
@@ -591,7 +593,6 @@ async function listenOnPortsBun() {
 				if (existsSync(udsPath)) unlinkSync(udsPath);
 
 				// Create a plain HTTP Bun server on the UDS (no TLS)
-				// @ts-expect-error - Bun is a runtime global only available in Bun environment
 				const udsServer = Bun.serve({
 					unix: udsPath,
 					fetch: config.fetch,
@@ -614,7 +615,7 @@ async function listenOnPortsBun() {
 		}
 	}
 	// Also start any non-HTTP servers (raw socket servers) that were registered in SERVERS
-	const listening = [];
+	const listening: any = [];
 	for (let port in SERVERS) {
 		const server = SERVERS[port];
 		// Skip Bun servers (they're already listening) and config objects
@@ -635,7 +636,7 @@ async function listenOnPortsBun() {
 					continue;
 				}
 				listening.push(
-					new Promise((resolve, reject) => {
+					new Promise<any>((resolve, reject) => {
 						server
 							.listen({ port: portNum, host: rawHostname || (isMac ? '0.0.0.0' : '::') }, () => {
 								resolve({ port });
@@ -658,18 +659,18 @@ async function listenOnPortsBun() {
 	}
 	return Promise.all(listening);
 }
-if (!isMainThread && !workerData?.noServerStart) {
-	// Workers start with an empty environment manager. Run the same init+startup
-	// sequence as the main entry (bin/harper.ts) before bringing up servers.
-	// startServers schedules its loadRootComponents().then(...) chain internally
-	// and notifies the parent via parentPort.postMessage(CHILD_STARTED) once the
-	// HTTP port is bound — don't await it here, otherwise the worker IIFE blocks
-	// on the same chain that main is waiting on, deadlocking the startup.
+if (
+	!isMainThread &&
+	!workerData?.noServerStart &&
+	process.argv[1] &&
+	realpathSync(process.argv[1]) === join(RUNTIME_SRC_ROOT, `server/threads/threadServer${RUNTIME_FILE_EXT}`)
+) {
+	// The shared module graph also loads here in job and user workers, which must not bind listeners.
 	(async () => {
 		env.initSync();
 		const { runStartup } = await import('../../utility/lifecycle.ts');
 		await runStartup();
-		startServers();
+		await startServers();
 	})().catch((err) => {
 		harperLogger.fatal('Worker failed to start', err);
 		realExit(1);
@@ -681,8 +682,8 @@ if (!isMainThread && !workerData?.noServerStart) {
  * @param listener
  * @param options
  */
-function onSocket(listener, options) {
-	let socketServer;
+function onSocket(listener?: any, options?: any) {
+	let socketServer: any;
 	if (options.securePort) {
 		setPortServerMap(options.securePort, { protocol_name: 'TLS', name: getComponentName() });
 		// usageType lets a caller's certificates (tagged via hdb_certificate.uses) win the quality
@@ -702,7 +703,7 @@ function onSocket(listener, options) {
 		// mutable binding made every secure-port metadata write read `secureContexts` off the plain
 		// TCP server (undefined) and publish an empty `certificates:` list — the #1998 bug that let
 		// an SNI-routing proxy (Symphony) fall back to the node certificate on 8883.
-		const secureSocketServer = createSecureSocketServer(
+		const secureSocketServer: any = createSecureSocketServer(
 			{
 				rejectUnauthorized: Boolean(options.mtls?.required),
 				requestCert: Boolean(options.mtls),
@@ -746,7 +747,7 @@ function onSocket(listener, options) {
 			// socket.authorized/remoteAddress at connection time, so the data-interception
 			// approach the HTTP UDS mirror uses (enableProxyProtocol) would apply the
 			// forwarded mTLS identity too late.
-			const udsServer = createSocketServer({ ...socketOptionDefaults }, withProxyProtocol(listener));
+			const udsServer: any = createSocketServer({ ...socketOptionDefaults }, withProxyProtocol(listener));
 
 			udsServer.isPerThreadSocket = true;
 			SERVERS[udsPath] = udsServer;

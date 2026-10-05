@@ -1,3 +1,4 @@
+import * as jobOwnershipRuntimeModule from './jobs/jobOwnership.ts';
 import { isMainThread } from 'node:worker_threads';
 import { getTables } from '../resources/databases.ts';
 import {
@@ -14,17 +15,17 @@ import { installApplications, recoverInterruptedActivations } from '../component
 import { errorForLog } from '../utility/logging/harper_logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 
-let loadedComponents = new Map();
+let loadedComponents: any = new Map();
 
 /**
  * Map every component directory to the reason activation recovery could not run. Used only when the scan
  * fails globally, where the safe answer is "none of these are known-good" rather than "all of these are".
  */
-async function failEveryComponentClosed(cause) {
-	const failures = new Map();
+async function failEveryComponentClosed(cause?: any) {
+	const failures: any = new Map();
 	const reason = cause instanceof Error ? cause : new Error(`Activation recovery could not run: ${String(cause)}`);
 	try {
-		const { readdir } = require('node:fs/promises');
+		const { readdir } = await import('node:fs/promises');
 		const componentsRoot = configUtils.getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 		for (const entry of await readdir(componentsRoot, { withFileTypes: true })) {
 			if (!entry.name.startsWith('.') && (entry.isDirectory() || entry.isSymbolicLink())) {
@@ -40,7 +41,7 @@ async function failEveryComponentClosed(cause) {
  * This is main entry point for loading the main set of global server modules that power Harper.
  * @returns {Promise<void>}
  */
-async function loadRootComponents(isWorkerThread = false) {
+async function loadRootComponents(isWorkerThread: any = false) {
 	// Interrupted activations are settled FIRST, before installApplications() — not merely before the
 	// component scan. installApplications() installs whatever the root config names, so a candidate left
 	// half-swapped by a crash has to be resolved before that runs, or boot reinstalls over it. Failures are
@@ -81,9 +82,7 @@ async function loadRootComponents(isWorkerThread = false) {
 	// An unreconciled job row is misleading, but it is no reason to refuse to start. This function re-runs
 	// on every root component reload; the sweep itself holds the once-per-process guard.
 	if (isMainThread) {
-		require('./jobs/jobOwnership.ts')
-			.reconcileInterruptedJobsOnce()
-			.catch((error) => console.error(errorForLog(error)));
+		jobOwnershipRuntimeModule.reconcileInterruptedJobsOnce().catch((error) => console.error(errorForLog(error)));
 	}
 
 	await loadCertificates();
@@ -95,7 +94,7 @@ async function loadRootComponents(isWorkerThread = false) {
 	});
 	if (!process.env.HARPER_SAFE_MODE) {
 		// once the global plugins are loaded, we now load all the CF and run applications (and their components)
-		const readyComponentPromises = new WeakMap();
+		const readyComponentPromises: any = new WeakMap();
 		await loadComponentDirectories(loadedComponents, resources, readyComponentPromises, interruptedActivationFailures);
 		await readyComponentModules(loadedComponents.keys(), readyComponentPromises);
 		return;

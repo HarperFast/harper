@@ -11,10 +11,13 @@ function spawnFixture() {
 	const worker = new Worker(FIXTURE, { workerData: { addPorts: [], addThreadIds: [], restartNumber: 1 } });
 	const ready = new Promise((resolve, reject) => {
 		worker.once('error', reject);
-		worker.once('message', (msg) => {
-			if (msg.type === 'ready') resolve();
-			else reject(new Error(`unexpected first message: ${JSON.stringify(msg)}`));
-		});
+		worker.once('exit', (code) => reject(new Error(`Worker exited before reporting ready (${code})`)));
+		const onMessage = (msg) => {
+			if (msg.type !== 'ready') return;
+			worker.off('message', onMessage);
+			resolve();
+		};
+		worker.on('message', onMessage);
 	});
 	return { worker, ready };
 }
@@ -22,7 +25,13 @@ function spawnFixture() {
 async function sendAndAwait(worker, message) {
 	return new Promise((resolve, reject) => {
 		worker.once('error', reject);
-		worker.once('message', resolve);
+		worker.once('exit', (code) => reject(new Error(`Worker exited before answering (${code})`)));
+		const onMessage = (response) => {
+			if (response.type !== 'restart-number') return;
+			worker.off('message', onMessage);
+			resolve(response);
+		};
+		worker.on('message', onMessage);
 		worker.postMessage(message);
 	});
 }

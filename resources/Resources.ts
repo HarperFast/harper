@@ -1,3 +1,4 @@
+import * as ErrorResourceRuntimeModule from './ErrorResource.ts';
 import { transaction } from './transaction.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
@@ -221,7 +222,7 @@ export class Resources extends Map<string, ResourceEntry> {
 				// conflicting registrations for the same parameterised path; surface it like the static-path conflict
 				const error = new ServerError(`Conflicting paths for ${path}`);
 				logger.error(error);
-				const { ErrorResource } = require('./ErrorResource');
+				const { ErrorResource } = ErrorResourceRuntimeModule;
 				compiled.entry.Resource = new ErrorResource(error);
 			}
 			this.paramRoutes[existingIndex] = compiled;

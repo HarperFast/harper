@@ -1,4 +1,5 @@
-'use strict';
+import * as CreateTableObjectCjsModule from '../../dataLayer/CreateTableObject.ts';
+('use strict');
 
 // 5.2.0 — introduces system.hdb_secret for the encrypted secrets store (#715).
 //
@@ -37,8 +38,7 @@ async function createHdbSecretIfMissing() {
 
 	hdbLogger.info(`Creating system.${SECRET_TABLE} table for the secrets store.`);
 
-	const CreateTableObject =
-		require('../../dataLayer/CreateTableObject').default || require('../../dataLayer/CreateTableObject');
+	const CreateTableObject = CreateTableObjectCjsModule.default || CreateTableObjectCjsModule;
 	const schema = (systemSchema as any)[SECRET_TABLE];
 	if (!schema) {
 		throw new Error(`systemSchema.${SECRET_TABLE} is missing; cannot run 5.2.0 directive.`);

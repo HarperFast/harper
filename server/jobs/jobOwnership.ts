@@ -3,7 +3,7 @@
 import { getDatabases } from '../../resources/databases.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import log from '../../utility/logging/harper_logger.ts';
-import * as manageThreads from '../threads/manageThreads.js';
+import { processIncarnation } from '../threads/processIncarnation.ts';
 import { updateJob } from './jobs.ts';
 
 /**
@@ -11,7 +11,7 @@ import { updateJob } from './jobs.ts';
  * dead job look alive. Every thread of one Harper process carries the same value, and any restart
  * produces a new one. `undefined` on a thread started without one.
  */
-export const JOB_OWNER_INSTANCE_ID: string | undefined = manageThreads.processIncarnation;
+export const JOB_OWNER_INSTANCE_ID: string | undefined = processIncarnation;
 
 /** Stripped from `get_job` responses. */
 export const JOB_OWNER_ATTRIBUTES = ['owner_instance', 'owner_pid'] as const;

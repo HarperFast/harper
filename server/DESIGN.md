@@ -78,12 +78,12 @@ A request entering `http.ts` does **not** go through Fastify unless no Harper ha
 | File                       | Purpose                                                                                                                                                                           |
 | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `threads/socketRouter.ts`  | Starts the HTTP worker pool (`startHTTPThreads`) and isolated applications' dedicated workers (`reconcileIsolatedWorkers`); workers bind their own ports, so no socket is routed. |
-| `threads/manageThreads.js` | Thread pool lifecycle.                                                                                                                                                            |
-| `threads/threadServer.js`  | Worker entry point — loads components (`startServers`) and binds each registered server itself (`listenOnPorts`, `reusePort` where the OS has it).                                |
-| `threads/itc.js`           | Inter-thread comms primitives.                                                                                                                                                    |
+| `threads/manageThreads.ts` | Thread pool lifecycle.                                                                                                                                                            |
+| `threads/threadServer.ts`  | Worker entry point — loads components (`startServers`) and binds each registered server itself (`listenOnPorts`, `reusePort` where the OS has it).                                |
+| `threads/itc.ts`           | Inter-thread comms primitives.                                                                                                                                                    |
 | `transactionLogCooling.ts` | Main-thread timer that cools transaction-log mmaps.                                                                                                                               |
 
-Process-wide shutdown begins by calling `beginProcessShutdown()` in `threads/manageThreads.js`.
+Process-wide shutdown begins by calling `beginProcessShutdown()` in `threads/manageThreads.ts`.
 Once set, this terminal state prevents every worker replacement path and makes new `startWorker()`
 calls fail with `ERR_HARPER_PROCESS_SHUTTING_DOWN`; scoped worker-type restarts do not set it.
 `shutdownWorkersNow()` remains an immediate teardown: its worker shutdown messages are best-effort,
@@ -98,20 +98,24 @@ many workers it left on the old code because a replacement never came up, versus
 replacements never started after their predecessor was already gone. Other thread types start their
 replacement without being awaited. Each wait is bounded by a per-worker startup backstop, so
 resolution means "the restart finished", not "every worker is new". A caller that treats its own success as
-"the component is live" must await it (see `deployComponent` in `components/operations.js`).
+"the component is live" must await it (see `deployComponent` in `components/operations.ts`).
 
-> `index.ts` sets `workerData.noServerStart = true` when Harper is imported from a thread it did not spawn, so `threadServer.js` skips `startServers()` there; Harper's own HTTP workers start their servers.
+> `index.ts` sets `workerData.noServerStart = true` when Harper is imported from a thread it did not spawn, so `threadServer.ts` skips `startServers()` there; Harper's own HTTP workers start their servers.
 >
 > `threadServer.listenOnDomainSocket()` skips a listener only when its path exceeds the platform's
 > `sockaddr_un.sun_path` byte limit (some Node versions reject it; others silently truncate it).
 > Every actual `listen()` error rejects startup, and the temporary bind-error listener is removed
 > once the socket is listening.
 
+### Native and compiled runtime startup
+
+Native TypeStrip execution loads the runtime as ESM; compiled distribution files remain CommonJS. Worker paths use `RUNTIME_SRC_ROOT` and `RUNTIME_FILE_EXT` from `utility/packageUtils.js`, which stays CommonJS to resolve its own directory in both modes. `threadMessageState.ts` and `processIncarnation.ts` hold dependency-free worker state: cyclic imports may register callbacks before `manageThreads.ts` evaluates, so that registration must remain synchronous and must not be overwritten by a later initializer. Configuration-dependent wiring and built-in plugin preloads run through `utility/lifecycle.ts` after configuration initialization, before worker listeners bind. The compiled and source routes are exercised by `integrationTests/server/typestrip.test.ts`.
+
 ### Where periodic maintenance runs (main thread vs last worker)
 
 Single-instance background tasks pick their thread by what state they touch:
 
-- **Last worker** (`ownsStoreMaintenance(storePath)` in `threads/manageThreads.js`: the last pool worker for shared stores; a dedicated isolated-application worker maintains only its own branch stores) — for tasks that operate on **worker-resident JS state**: audit cleanup (`resources/auditStore.ts`), TTL scans (`resources/Table.ts`) and disk reclamation (`storageReclamation.ts`) walk per-store objects that only exist in a worker.
+- **Last worker** (`ownsStoreMaintenance(storePath)` in `threads/manageThreads.ts`: the last pool worker for shared stores; a dedicated isolated-application worker maintains only its own branch stores) — for tasks that operate on **worker-resident JS state**: audit cleanup (`resources/auditStore.ts`), TTL scans (`resources/Table.ts`) and disk reclamation (`storageReclamation.ts`) walk per-store objects that only exist in a worker.
 - **Main thread** (`isMainThread`) — for tasks that drive a **process-global native singleton** and need no JS state. `transactionLogCooling.ts` is the example: rocksdb-js's transaction-log registry is one C++ static shared across all worker threads, so any thread cools every log. The main thread is chosen because it is the only thread that lives for the whole process — a worker-driven timer would stall whenever that worker is recycled.
 
 ---
@@ -364,7 +368,7 @@ The `@table(cacheControl:)` value is persisted on the primary-key attribute (lik
 | How are content types (de)serialized?                                      | `serverHelpers/contentTypes.ts`                                                                                                                                                                                                                                                                                                                                                                                        |
 | Why doesn't every MQTT subscriber re-serialize the message it receives?    | `serverHelpers/sharedMessageEncoding.ts` (memoized on the message object the fan-out shares); consumed by the outbound listener in `mqtt.ts`                                                                                                                                                                                                                                                                           |
 | Where do durable subscriptions live?                                       | `DurableSubscriptionsSession.ts`                                                                                                                                                                                                                                                                                                                                                                                       |
-| How do worker threads get their connections?                               | Each binds its ports itself after the main thread's first bind (`threads/threadServer.js → listenOnPorts`, `reusePort` where the OS has it); `threads/socketRouter.ts → startHTTPThreads` starts them                                                                                                                                                                                                                  |
+| How do worker threads get their connections?                               | Each binds its ports itself after the main thread's first bind (`threads/threadServer.ts → listenOnPorts`, `reusePort` where the OS has it); `threads/socketRouter.ts → startHTTPThreads` starts them                                                                                                                                                                                                                  |
 | Where is the Operations API wired into Fastify?                            | `operationsServer.ts → buildServer`                                                                                                                                                                                                                                                                                                                                                                                    |
 
 ---
@@ -372,7 +376,7 @@ The `@table(cacheControl:)` value is persisted on the primary-key attribute (lik
 ## Conventions
 
 - Don't add new code to `fastifyRoutes.ts` — it's the legacy custom-functions path.
-- New protocol plugins register through the `Server` interface (`Server.ts`): `server.http()`/`request()`/`ws()`/`upgrade()` (bound to `http.ts`'s `httpServer`/`onRequest`/`onWebSocket`/`onUpgrade`) and `server.socket()` (`threadServer.js → onSocket`).
+- New protocol plugins register through the `Server` interface (`Server.ts`): `server.http()`/`request()`/`ws()`/`upgrade()` (bound to `http.ts`'s `httpServer`/`onRequest`/`onWebSocket`/`onUpgrade`) and `server.socket()` (`threadServer.ts → onSocket`).
 - Always pass `name` when registering a listener with `before`/`after` — anonymous entries can't be ordered against.
 - Tests live in `../unitTests/server/`.
 
@@ -572,7 +576,7 @@ matching Node's upgrade-then-authorize order). No core component registers custo
 middleware; `onUpgrade()`/`installUwsWsHandler()` warn when one is registered for a uWS-served
 port so the gap is visible instead of silent.
 
-## A per-thread UDS mirror is bound at a temp name and renamed over its published path (`server/threads/threadServer.js`)
+## A per-thread UDS mirror is bound at a temp name and renamed over its published path (`server/threads/threadServer.ts`)
 
 libuv unlinks a pipe server's bound path when the handle closes (`uv__pipe_close` → `unlink`), with
 no check of who owns the path now. On Linux `restartWorkers()` pre-starts the replacement worker
@@ -601,13 +605,13 @@ no longer exists, and the published path is never absent between an unlink and a
   `app.close()` never unlinks a `listen_unix` path, so it is not exposed. Bun restarts are
   non-overlapping, so the Bun mirror is not exposed either.
 
-## A worker that misses an ITC ack gets its OS thread state logged (`server/threads/manageThreads.js`)
+## A worker that misses an ITC ack gets its OS thread state logged (`server/threads/manageThreads.ts`)
 
 `broadcastWithAcknowledgement` already times out (30 s) on a worker whose port stays open but never acks, and that shape is almost always a blocked event loop — a native lock, a runaway synchronous call — which nothing inside the worker can report (harper-pro#788: a restarted node's single http worker went byte-silent while main kept serving `cluster_status`, and the app log only said "not acknowledged by worker thread(s) 2"). So each worker posts its Linux thread id (`readlink /proc/thread-self`) to main once at startup, before anything else runs on it, and the timeout branch reads that thread's kernel state from `/proc/self/task/<tid>`: state, `wchan`, the syscall number (the first token only — the rest of that file is argument registers and stack/instruction pointers), CPU ticks, and context-switch counts, plus two cross-platform signals main already has, `worker.performance.eventLoopUtilization()` and the age of the last 1 s resource report. It samples again a second later and logs the deltas: no CPU ticks, no context switches and `event loop active +1000ms` is "parked on a lock"; ticks climbing with state `R` is "spinning". It is deliberately main-thread-only and best-effort: `workers` and the tid live on the main thread's `Worker` objects, every `/proc` field is reported individually (a hardened container may deny `wchan`/`syscall` while `stat` stays readable), a follow-up sample whose `starttime` differs from the first is discarded (the tid may have been recycled), one diagnostic runs per worker with a 30 s cooldown so concurrent timeouts on the same worker don't multiply reads, and nothing here runs when acks arrive on time. It does not name the lock owner; that still needs a native stack from the next occurrence.
 
 That diagnostic is reactive — it only fires once something else (an ITC ack) has already timed out. `sampleWorkerELU`, run from the same 1 s monitoring tick that already computes `recentELU`, is the proactive counterpart: it warns as soon as a worker's `eventLoopUtilization()` stays `>= 0.99` for `PINNED_ELU_SUSTAINED_TICKS` (30) consecutive ticks, and warns once more on recovery. State (`pinnedELUTicks`, `pinnedELUWarned`) lives on the `Worker` object, so a replaced worker starts a clean streak, and a single tick below threshold resets it — no partial credit across a dip. The very first sample after a worker (re)starts is skipped: `worker.performance.eventLoopUtilization()` called with no prior baseline returns the worker's whole-lifetime total, not a 1 s delta, so counting it could misattribute pre-tick startup work as a pinned tick. That baseline check requires a nonzero `idle` or `active` on the prior sample, not just a prior sample existing: before a worker's loop is online, `eventLoopUtilization()` returns a truthy-but-empty `{ idle: 0, active: 0 }`, and treating that as a real baseline would let the following tick's delta span the same whole-lifetime window. Bun has no `eventLoopUtilization()` and reports a placeholder `{ utilization: 0 }` instead (see `sampleWorkerELU`'s Bun branch), so this warning is Node-only. A worker tearing down can briefly report `idle < 0`, putting `utilization` outside `[0, 1]`; that tick is treated as unmeasured — neither counted nor a streak reset — rather than logging an absurd percentage or ending an episode early. Both log lines name the worker by thread id plus `name`/`application` (e.g. a job or isolated-application worker), since a legitimately saturated worker looks identical to a wedged one from ELU alone; this warns on saturation regardless of cause; distinguishing "busy" from "stuck" is left to the operator.
 
-## A worker's `parentPort` close is not the main thread's exit (`server/threads/manageThreads.js`)
+## A worker's `parentPort` close is not the main thread's exit (`server/threads/manageThreads.ts`)
 
 `REMOVE_PORT {threadId}` and the `onThreadExit` listeners (database-drop owner release, deploy lifecycle, registered operations, log rotation) act on a thread's death. A sibling port's `close` is taken as the far thread's exit. A worker's `parentPort` carries `threadId = 0` so lookups can route to main, but its `close` means this worker is leaving: main's exit ends the process. `addPort`'s close listener therefore passes no dead thread id for `parentPort`. Announcing one would make every sibling fail its pending acks to main, drop its own `parentPort`, and fire exit listeners for main. Regression cover: `unitTests/server/threads/stuckWorkerDiagnostics.test.js`, "does not report the main thread as exited to a sibling of a worker that closes its parentPort".
 
@@ -636,7 +640,7 @@ The SQL and job paths are additive rather than exclusive: `verifyPermsAST` valid
 - **Header names are case-insensitive on removal too.** `Headers.delete` lowercases like `set`/`get`/`has`; the inherited `Map.delete` silently left `send`'s `Content-Length` on a gzip body (truncated transfers).
 - **Express is not a target.** `express`'s `app.handle()` replaces the response's prototype with one rooted at `http.ServerResponse.prototype`, which no Writable-derived response survives, and would do the same to the request `Proxy`'s target, Harper's real `IncomingMessage`. Middleware that duck-types the response (Next.js, `compression`, `send`, `serve-static`, `finalhandler`, h3, fastify) is the supported surface.
 
-## `manageThreads` has two different `workerCount`s (`server/threads/manageThreads.js`)
+## `manageThreads` has two different `workerCount`s (`server/threads/manageThreads.ts`)
 
 The module-global `let workerCount` and the per-worker `workerData.workerCount` share a name and
 nothing else. `getWorkerCount()` (and therefore the `server.workerCount` a component reads) resolves

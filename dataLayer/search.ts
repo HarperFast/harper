@@ -1,4 +1,6 @@
-'use strict';
+import * as SelectValidatorCjsModule from '../sqlTranslator/SelectValidator.ts';
+import * as SQLSearchCjsModule from './SQLSearch.ts';
+('use strict');
 
 import harperBridge from './harperBridge/harperBridge.ts';
 import { transformReq } from '../utility/common_utils.ts';
@@ -32,9 +34,8 @@ export async function searchByValue(searchObject: any) {
 
 export function search(statement: any, callback: any) {
 	try {
-		const SelectValidator =
-			require('../sqlTranslator/SelectValidator').default || require('../sqlTranslator/SelectValidator');
-		const SQLSearch = require('./SQLSearch').default || require('./SQLSearch');
+		const SelectValidator = SelectValidatorCjsModule.default;
+		const SQLSearch = SQLSearchCjsModule.default;
 		let validator = new SelectValidator(statement);
 		validator.validate();
 

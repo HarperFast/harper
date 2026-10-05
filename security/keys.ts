@@ -1,14 +1,14 @@
 'use strict';
 
-import * as path from 'path';
+import * as path from 'node:path';
 import fs from 'fs-extra';
 import _forge from 'node-forge';
 // node-forge is CJS; in ESM typestrip the default export IS the library object.
 const forge: any = (_forge as any).default ?? _forge;
-import * as net from 'net';
+import * as net from 'node:net';
 import { generateKeyPair as generateKeyPairOrig, X509Certificate, createPrivateKey, randomBytes } from 'node:crypto';
 
-import * as util from 'util';
+import * as util from 'node:util';
 const generateKeyPair = util.promisify(generateKeyPairOrig);
 
 const pki = forge.pki;
@@ -18,7 +18,7 @@ import * as envManager from '../utility/environment/environmentManager.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 
 import * as certificatesTerms from '../utility/terms/certificates.js';
-const tls = require('node:tls');
+import tls from 'node:tls';
 import { relative, join, dirname, resolve } from 'node:path';
 
 import assignCmdenvVars from '../utility/assignCmdEnvVariables.ts';
@@ -43,7 +43,7 @@ export const getPrivateKeys = () => {
 
 import { readFileSync, statSync, watchFile } from 'node:fs';
 import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.ts';
-import { isMainThread } from 'worker_threads';
+import { isMainThread } from 'node:worker_threads';
 import {
 	POLLING_FALLBACK_OPTIONS,
 	claimLostNativeWatchError,
@@ -85,15 +85,12 @@ export function generateSerialNumber() {
 	return bytes.toString('hex');
 }
 
-// Defer registration to setImmediate so manageThreads internal state is initialized
-setImmediate(() => {
-	onMessageFromWorkers(async (message) => {
-		if (message.type === hdbTerms.ITC_EVENT_TYPES.RESTART) {
-			envManager.initSync(true);
-			// This will also call loadCertificates
-			await reviewSelfSignedCert();
-		}
-	});
+onMessageFromWorkers(async (message) => {
+	if (message.type === hdbTerms.ITC_EVENT_TYPES.RESTART) {
+		envManager.initSync(true);
+		// This will also call loadCertificates
+		await reviewSelfSignedCert();
+	}
 });
 
 let certificateTable;

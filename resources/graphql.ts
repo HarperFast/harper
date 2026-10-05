@@ -1,4 +1,4 @@
-import { dirname } from 'path';
+import { dirname } from 'node:path';
 import { Script } from 'node:vm';
 import { scopedTableFactory, table } from './databases.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.ts';

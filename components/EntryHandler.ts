@@ -80,8 +80,7 @@ export type EntryHandlerEventMap = {
 };
 
 type EntrySnapshot =
-	| { entryType: 'file'; urlPath: string; digest: Buffer }
-	| { entryType: 'directory'; urlPath: string };
+	{ entryType: 'file'; urlPath: string; digest: Buffer } | { entryType: 'directory'; urlPath: string };
 
 type RedeployScan = {
 	generation: number;

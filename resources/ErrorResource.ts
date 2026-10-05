@@ -6,11 +6,7 @@ import type { Context } from './ResourceInterface.ts';
  * to access endpoints/resources that had an internal error in their configuration or setup. This helps ensure that
  * if there is a problem with a resource, it is immediately apparent and can be fixed.
  *
- * The class is constructed lazily on first use, not at module load. ErrorResource
- * sits inside Resource.ts's own static-graph SCC, so a class-extends declaration
- * at module-top would TDZ on `Resource`. The Proxy here lets `new ErrorResource(x)`
- * and `ErrorResource.staticMember` work whenever they're called, even when this
- * module is loaded directly (unit tests, scripts) without the lifecycle hooks running.
+ * Construct lazily because Resource is uninitialized while its ESM cycle evaluates.
  */
 let _ErrorResource: any;
 function getErrorResource(): any {
@@ -71,8 +67,8 @@ function getErrorResource(): any {
 }
 
 export const ErrorResource: any = new Proxy(function () {} as any, {
-	construct(_target, args) {
-		return Reflect.construct(getErrorResource(), args);
+	construct(_target, args, newTarget) {
+		return Reflect.construct(getErrorResource(), args, newTarget);
 	},
 	get(_target, prop) {
 		return getErrorResource()[prop];
@@ -81,6 +77,6 @@ export const ErrorResource: any = new Proxy(function () {} as any, {
 		return prop in getErrorResource();
 	},
 	getPrototypeOf() {
-		return getErrorResource().prototype;
+		return Object.getPrototypeOf(getErrorResource());
 	},
 });

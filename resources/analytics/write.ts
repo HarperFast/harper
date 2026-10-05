@@ -1,14 +1,14 @@
-import { parentPort, threadId } from 'worker_threads';
+import { parentPort, threadId } from 'node:worker_threads';
 import { onMessageByType } from '../../server/threads/manageThreads.ts';
 import { getDatabases, table, isReadOnlyMode } from '../databases.ts';
 import type { Databases, Table, Tables } from '../databases.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { stat, opendir } from 'node:fs/promises';
 const { getLogFilePath, forComponent } = harperLogger;
-import { dirname, join } from 'path';
-import { open } from 'fs/promises';
+import { dirname, join } from 'node:path';
+import { open } from 'node:fs/promises';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.ts';
-import { get as envGet, getHdbBasePath, initSync } from '../../utility/environment/environmentManager.ts';
+import { get as envGet, getHdbBasePath } from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../../utility/hdbTerms.ts';
 import { server } from '../../server/Server.ts';
 import * as fs from 'node:fs';
@@ -1221,7 +1221,7 @@ function getAnalyticsTable() {
 	);
 }
 
-if (!parentPort) setImmediate(() => onMessageByType(ANALYTICS_REPORT_TYPE, recordAnalytics));
+if (!parentPort) onMessageByType(ANALYTICS_REPORT_TYPE, recordAnalytics);
 let scheduledTasksRunning;
 function startScheduledTasks() {
 	scheduledTasksRunning = true;
@@ -1381,7 +1381,4 @@ function rebalance({ counts, values, totalCount }, resetCounts: boolean) {
 }
 */
 
-// Wire server singletons during the startup phase
-onStartup(() => {
-	server.recordAnalytics = recordAction;
-});
+server.recordAnalytics = recordAction;

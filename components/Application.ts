@@ -1,3 +1,4 @@
+import { RUNTIME_SRC_ROOT } from '../utility/packageUtils.js';
 import { type Logger } from '../utility/logging/logger.ts';
 import {
 	getConfigObj,
@@ -687,7 +688,7 @@ type ExtractionContext = Pick<Application, 'name' | 'dirPath' | 'logger'>;
 
 // The credential helper git executes for a private git-reference deploy. It ships alongside this
 // module (both in source and in dist), holds no secret, and is inert without a live session.
-export const GIT_CREDENTIAL_HELPER_PATH = join(__dirname, 'gitCredentialHelper.js');
+export const GIT_CREDENTIAL_HELPER_PATH = join(RUNTIME_SRC_ROOT, 'components/gitCredentialHelper.js');
 
 type InstalledPackageMetadata = {
 	files: Map<string, Buffer>;

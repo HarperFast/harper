@@ -10,7 +10,7 @@
  * metadata names the application and its hosts for the fronting proxy to route by.
  */
 import { isMainThread, workerData } from 'node:worker_threads';
-import { getWorkerIndex } from './manageThreads.js';
+import { getWorkerIndex } from './manageThreads.ts';
 import { getConfigObj, getConfigPath } from '../../config/configUtils.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';

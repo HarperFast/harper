@@ -1,7 +1,14 @@
-// Must run before any component code is loaded so that process.exit() called
-// from component code (e.g. Next.js's `unhandledRejection` handler) is
-// intercepted in workers.
+import {
+	listenersByType,
+	messagesQueuedByType,
+	messageListeners,
+	threadExitListeners,
+	workerHooks,
+} from './threadMessageState.ts';
+// Install the exit guard before component dependencies evaluate.
 import { realExit } from './workerProcessGuard.ts';
+import * as shutdownDrainRuntimeModule from '../../components/shutdownDrain.ts';
+import { onStartup } from '../../utility/lifecycle.ts';
 
 import { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } from 'node:worker_threads';
 import { spawnSync } from 'node:child_process';
@@ -19,7 +26,7 @@ import * as envMgr from '../../utility/environment/environmentManager.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { randomBytes } from 'node:crypto';
 import { _assignPackageExport } from '../../globals.js';
-import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
+import { RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT } from '../../utility/packageUtils.js';
 import { resolvePreloadModules } from './resolvePreload.ts';
 import { resolveThreadHeapMemoryMb } from './threadHeapMemory.ts';
 import { getConfigPath } from '../../config/configUtils.ts';
@@ -57,9 +64,9 @@ function getRequireModules() {
 }
 const isBun = typeof globalThis.Bun !== 'undefined';
 const MB = 1024 * 1024;
-const workers = []; // these are our child workers that we are managing
+const workers: any = []; // these are our child workers that we are managing
 let processShuttingDown = false;
-const connectedPorts = []; // these are all known connected worker ports (siblings, children, parents)
+const connectedPorts: any = []; // these are all known connected worker ports (siblings, children, parents)
 const MAX_UNEXPECTED_RESTARTS = 50;
 // Threads get 10s to die before they're forced. In dev (`harper dev`) we widen this: a reload's old
 // worker may be disposing a native runtime (e.g. @harperfast/vite's rolldown dev server) and forcing it
@@ -103,12 +110,12 @@ _assignPackageExport('threads', connectedPorts);
 // Worker-side: (re)arm the self-exit backstop `delay` ms out, but never earlier than a drain deadline
 // already requested via extendShutdownDeadline (so ordering between the SHUTDOWN handler and the drain
 // extension doesn't matter).
-function armSelfExit(delay) {
+function armSelfExit(delay?: any) {
 	if (selfExitDrainDeadline) {
 		// selfExitDrainDeadline is already clamped to the configured ceiling (see boundedTerminateDelay),
 		// but adding threadTerminationTimeout headroom on top can push the sum back over the max timer
 		// value at the extreme end of that ceiling, silently defeating the overflow guard.
-		const { MAX_TIMER_MS } = require('../../components/shutdownDrain.ts');
+		const { MAX_TIMER_MS } = shutdownDrainRuntimeModule;
 		delay = Math.max(
 			delay,
 			Math.min(Math.max(0, selfExitDrainDeadline - Date.now()) + threadTerminationTimeout, MAX_TIMER_MS)
@@ -128,7 +135,7 @@ function armSelfExit(delay) {
 // the main thread to extend its external force-terminate timer to match. Called from the shutdown path
 // only when there is real work to drain (see threadServer / shutdownDrain), so an unrelated hang is
 // still force-killed on the normal short timeout.
-function extendShutdownDeadline(deadlineMs) {
+function extendShutdownDeadline(deadlineMs?: any) {
 	selfExitDrainDeadline = Math.max(selfExitDrainDeadline, deadlineMs);
 	if (selfExitTimer) armSelfExit(0); // re-arm honoring the (now recorded) drain deadline
 	try {
@@ -155,15 +162,13 @@ function notifyJobCleanupComplete() {
 	}
 }
 
-const listenersByType = new Map();
-const messagesQueuedByType = new Map();
 const { promise: whenThreadsStarted, resolve: threadsHaveStarted } = Promise.withResolvers();
 export let restartNumber = workerData?.restartNumber || 1;
 // Identifies this process incarnation, where the PID cannot: a container reuses PID 1. Minted once
 // on the main thread and carried to workers, so live siblings agree on it — one derived per thread
 // would not. `undefined` on a worker started without it; consumers must fall back, not treat that
 // as a mismatch.
-const processIncarnation = workerData ? workerData.processIncarnation : randomBytes(8).toString('hex');
+import { processIncarnation } from './processIncarnation.ts';
 
 // Every value in this literal is a bare identifier: Node's CommonJS export scan, which supplies the
 // named bindings an ES module import can use, stops reading the literal at the first value that is not.
@@ -222,7 +227,7 @@ export {
 };
 
 (connectedPorts as any).onMessageByType = onMessageByType;
-(connectedPorts as any).sendToThread = function (threadId, message) {
+(connectedPorts as any).sendToThread = function (threadId?: any, message?: any) {
 	if (!message?.type) throw new Error('A message with a type must be provided');
 	const port = connectedPorts.find((port) => port.threadId === threadId);
 	if (!port) return false;
@@ -246,7 +251,7 @@ export const sendToThread = connectedPorts.sendToThread;
 if (envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT)) setHeapSnapshotNearHeapLimit(1);
 
 let isMainWorker;
-function setTerminateTimeout(newTimeout) {
+function setTerminateTimeout(newTimeout?: any) {
 	threadTerminationTimeout = newTimeout;
 }
 function getWorkerIndex() {
@@ -258,7 +263,7 @@ function getWorkerIndex() {
  * dedicated worker for an isolated one -- never index 0, so node-wide duties stay on the pool, and
  * never a dedicated worker for anything but its own application.
  */
-function isApplicationPrimaryWorker(applicationName) {
+function isApplicationPrimaryWorker(applicationName?: any) {
 	if (workerData?.isolatedApplication !== undefined) return applicationName === workerData.isolatedApplication;
 	return getWorkerIndex() === 0;
 }
@@ -267,8 +272,8 @@ function isApplicationPrimaryWorker(applicationName) {
  * dedicated worker. Registered by openBranchDatabase, so the ownership predicates below can tell them
  * from the shared stores every thread has open.
  */
-const branchStorePaths = new Set();
-function markBranchStorePath(path, isBranch = true) {
+const branchStorePaths: any = new Set();
+function markBranchStorePath(path?: any, isBranch: any = true) {
 	if (isBranch) branchStorePaths.add(path);
 	else branchStorePaths.delete(path);
 }
@@ -277,12 +282,12 @@ function markBranchStorePath(path, isBranch = true) {
  * reclamation, audit cleanup). Shared stores belong to the last pool worker; a dedicated worker
  * maintains only its own branch stores, which no other thread has open.
  */
-function ownsStoreMaintenance(storePath) {
+function ownsStoreMaintenance(storePath?: any) {
 	if (workerData?.isolatedApplication !== undefined) return branchStorePaths.has(storePath);
 	return getWorkerIndex() === getWorkerCount() - 1;
 }
 /** The "worker 0" counterpart: expiration eviction for `storePath`. */
-function ownsStoreExpiration(storePath) {
+function ownsStoreExpiration(storePath?: any) {
 	if (workerData?.isolatedApplication !== undefined) return branchStorePaths.has(storePath);
 	return getWorkerIndex() === 0;
 }
@@ -304,7 +309,7 @@ function applicationWorkerIndex() {
 	return workerData?.isolatedApplication !== undefined ? 0 : getWorkerIndex();
 }
 /** Every started worker dedicated to `application`, including a replacement still booting. */
-function workersForApplication(application) {
+function workersForApplication(application?: any) {
 	return workers.filter((worker) => worker.application === application);
 }
 /**
@@ -312,9 +317,9 @@ function workersForApplication(application) {
  * the same backstop the rolling restart uses (FORCE_EXIT on Bun, where terminate() segfaults), and
  * resolve once it has exited. Marked as shut down first so its exit does not start a replacement.
  */
-function stopWorker(worker) {
+function stopWorker(worker?: any) {
 	worker.wasShutdown = true;
-	return new Promise((resolve) => {
+	return new Promise<any>((resolve) => {
 		const armTerminate = (delay) =>
 			setTimeout(() => {
 				harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
@@ -329,7 +334,7 @@ function stopWorker(worker) {
 		let timeout = armTerminate(threadTerminationTimeout * 2);
 		worker.extendTerminateDeadline = (deadlineMs) => {
 			clearTimeout(timeout);
-			const { boundedTerminateDelay, getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
+			const { boundedTerminateDelay, getShutdownDrainCeilingMs } = shutdownDrainRuntimeModule;
 			timeout = armTerminate(
 				boundedTerminateDelay(deadlineMs, Date.now(), threadTerminationTimeout * 2, getShutdownDrainCeilingMs())
 			);
@@ -337,24 +342,24 @@ function stopWorker(worker) {
 		worker.on('exit', () => {
 			clearTimeout(timeout);
 			worker.extendTerminateDeadline = undefined;
-			resolve();
+			resolve(undefined);
 		});
 		try {
 			worker.postMessage({ restartNumber: restartNumber, type: hdbTerms.ITC_EVENT_TYPES.SHUTDOWN });
 		} catch {
 			clearTimeout(timeout);
-			resolve(); // already gone
+			resolve(undefined); // already gone
 		}
 	});
 }
 function getWorkerCount() {
 	return workerData ? workerData.workerCount : isMainWorker ? 1 : undefined;
 }
-function isEligibleBroadcastRecipient(port) {
+function isEligibleBroadcastRecipient(port?: any) {
 	return !port.isJobWorker;
 }
 function getEligibleBroadcastRecipientThreadIds() {
-	const recipientThreadIds = new Set();
+	const recipientThreadIds: any = new Set();
 	for (const port of connectedPorts) {
 		if (isEligibleBroadcastRecipient(port) && port.threadId !== undefined) {
 			recipientThreadIds.add(port.threadId);
@@ -362,9 +367,9 @@ function getEligibleBroadcastRecipientThreadIds() {
 	}
 	return recipientThreadIds;
 }
-function setMainIsWorker(isWorker) {
+function setMainIsWorker(isWorker?: any) {
 	isMainWorker = isWorker;
-	threadsHaveStarted();
+	threadsHaveStarted(undefined);
 }
 let workerCount = 1; // should be assigned when workers are created
 
@@ -372,7 +377,7 @@ let workerCount = 1; // should be assigned when workers are created
 // Covers the keys startWorker spreads below plus keys read elsewhere: `noServerStart` is set by
 // the embedding entry point (index.ts) and read by threadServer.js to skip startServers(); a
 // provider shadowing it would wedge HTTP worker startup.
-const RESERVED_WORKER_DATA_KEYS = [
+const RESERVED_WORKER_DATA_KEYS: any = [
 	'addPorts',
 	'addThreadIds',
 	'addPortIsJobWorkers',
@@ -387,7 +392,7 @@ const RESERVED_WORKER_DATA_KEYS = [
 	'isolatedApplication',
 	'__proto__', // never a legitimate payload name; spread would define it as an own property
 ];
-const workerDataProviders = new Map();
+const workerDataProviders: any = new Map();
 /**
  * Register a provider that contributes an extra `workerData` property to every worker spawned
  * from this thread. `provider(options)` receives the startWorker options (`options.name` is the
@@ -396,7 +401,7 @@ const workerDataProviders = new Map();
  * returns a non-cloneable value is logged and skipped so it can never break a spawn.
  * Returns a function that unregisters the provider.
  */
-function registerWorkerDataProvider(name, provider) {
+function registerWorkerDataProvider(name?: any, provider?: any) {
 	if (RESERVED_WORKER_DATA_KEYS.includes(name) || workerDataProviders.has(name)) {
 		throw new Error(`workerData provider name '${name}' is already in use`);
 	}
@@ -414,7 +419,7 @@ function registerWorkerDataProvider(name, provider) {
 // setProperty() clones each value as it records it, so this provider cannot hit the log-and-skip
 // path below — which for this one would mean spawning the worker on the on-disk config.
 registerWorkerDataProvider('configOverrides', () => envMgr.getConfigOverrides());
-function collectProvidedWorkerData(options) {
+function collectProvidedWorkerData(options?: any) {
 	if (workerDataProviders.size === 0) return undefined;
 	let provided;
 	for (const [name, provider] of workerDataProviders) {
@@ -460,7 +465,7 @@ if (!parentPort) {
 			worker.postMessage({
 				type: RUNNING_ISOLATED_APPLICATIONS,
 				requestId: message.requestId,
-				applications: runningIsolatedApplicationsGetter(),
+				applications: workerHooks.runningApplications(),
 			});
 	});
 	onMessageByType(RESOURCE_REPORT, (message, worker) => {
@@ -484,18 +489,22 @@ if (!parentPort) {
 		worker?.extendTerminateDeadline?.(message.deadlineMs);
 	});
 }
-// postMessage type listeners that are registered in other ways or can be registered later
-listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED, null);
-listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CHILD_STARTUP_PHASE, null);
-listenersByType.set(hdbTerms.ITC_EVENT_TYPES.SCHEMA, null);
-listenersByType.set(hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST, null);
-listenersByType.set(hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_REQUEST, null);
-listenersByType.set(hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_RESPONSE, null);
-listenersByType.set(hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_REQUEST, null);
-listenersByType.set(hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_RESPONSE, null);
-listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_REGISTERED, null);
-listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_REQUEST, null);
-listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE, null);
+// Queue messages for late listeners without replacing registrations made during cyclic imports.
+for (const type of [
+	hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED,
+	hdbTerms.ITC_EVENT_TYPES.CHILD_STARTUP_PHASE,
+	hdbTerms.ITC_EVENT_TYPES.SCHEMA,
+	hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST,
+	hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_REQUEST,
+	hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_RESPONSE,
+	hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_REQUEST,
+	hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_RESPONSE,
+	hdbTerms.ITC_EVENT_TYPES.OPERATION_REGISTERED,
+	hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_REQUEST,
+	hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE,
+]) {
+	if (!listenersByType.has(type)) listenersByType.set(type, null);
+}
 // These request/response functions register their own one-shot parentPort listener per
 // call rather than going through onMessageByType, so without this, every reply would also reach
 // addPort's permanent dispatcher as an "unregistered" type: notifyMessageListeners would warn and
@@ -504,9 +513,9 @@ listenersByType.set(THREAD_INFO, null);
 listenersByType.set(RUNNING_ISOLATED_APPLICATIONS, null);
 listenersByType.set(PROCESS_GROUP_TERMINATION_CONFIRMED, null);
 
-function startWorker(path, options = {}) {
+function startWorker(path?: any, options: any = {}) {
 	if (processShuttingDown) {
-		const error = new Error('Cannot start a worker while the Harper process is shutting down');
+		const error: any = new Error('Cannot start a worker while the Harper process is shutting down');
 		error.code = 'ERR_HARPER_PROCESS_SHUTTING_DOWN';
 		throw error;
 	}
@@ -533,8 +542,8 @@ function startWorker(path, options = {}) {
 	// https://plaid.com/blog/how-we-parallelized-our-node-service-by-30x/
 	const maxYoungMemory = Math.min(Math.max(maxOldMemory >> 6, 16), 64);
 
-	const channelsToConnect = [];
-	const portsToSend = [];
+	const channelsToConnect: any = [];
+	const portsToSend: any = [];
 	for (let existingPort of connectedPorts) {
 		const channel: any = new MessageChannel();
 		channel.existingPort = existingPort;
@@ -542,7 +551,7 @@ function startWorker(path, options = {}) {
 		portsToSend.push(channel.port2);
 	}
 
-	if (!extname(path)) path += '.js';
+	if (!extname(path)) path += RUNTIME_FILE_EXT;
 
 	const isBun = typeof globalThis.Bun !== 'undefined';
 	const execArgv = isBun
@@ -574,7 +583,7 @@ function startWorker(path, options = {}) {
 	// Only a start that declares the serving topology may write it; see DESIGN.md on the two workerCounts.
 	if (typeof options.threadCount === 'number') workerCount = options.threadCount;
 
-	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
+	const worker: any = new Worker(isAbsolute(path) ? path : join(RUNTIME_SRC_ROOT, path), {
 		resourceLimits: {
 			maxOldGenerationSizeMb: maxOldMemory,
 			maxYoungGenerationSizeMb: maxYoungMemory,
@@ -651,7 +660,7 @@ function startWorker(path, options = {}) {
 	return worker;
 }
 
-const OVERLAPPING_RESTART_TYPES = [hdbTerms.THREAD_TYPES.HTTP];
+const OVERLAPPING_RESTART_TYPES: any = [hdbTerms.THREAD_TYPES.HTTP];
 
 /**
  * Restart all the worker threads
@@ -675,11 +684,11 @@ const OVERLAPPING_RESTART_TYPES = [hdbTerms.THREAD_TYPES.HTTP];
  * dedicated worker, and '*' restarts all.
  */
 async function restartWorkers(
-	name = null,
-	maxWorkersDown = Math.max(Math.floor(workerCount / 8), 1), // restart 1/8 of the threads at a time, but at least 1
-	startReplacementThreads = true,
-	onProgress = null,
-	application = undefined
+	name: any = null,
+	maxWorkersDown: any = Math.max(Math.floor(workerCount / 8), 1), // restart 1/8 of the threads at a time, but at least 1
+	startReplacementThreads: any = true,
+	onProgress: any = null,
+	application: any = undefined
 ) {
 	if (arguments.length < 5) application = '*';
 	if (isMainThread) {
@@ -694,9 +703,7 @@ async function restartWorkers(
 		} catch (e) {
 			harperLogger.error('Unable to reestablish current working directory', e);
 		}
-		const freshlyStarted = new Set(); // dedicated workers the reconcile just started: already on the new code
-		// problematic cyclic dependency, bind late
-		const { resetRestartNeeded } = require('../../components/requestRestart.ts');
+		const freshlyStarted: any = new Set(); // dedicated workers the reconcile just started: already on the new code
 		// One process-wide bit cannot say WHICH application is pending, so it may only be cleared by a
 		// restart that demonstrably covers every worker the bit could stand for. A restart scoped to one
 		// application leaves the whole pool on its old code; a pool restart replaces every pool worker and
@@ -706,10 +713,11 @@ async function restartWorkers(
 		// which is every node that uses no isolated application, i.e. the historic behavior unchanged.
 		const coversEveryWorker =
 			application === '*' || (application === undefined && !workers.some((worker) => worker.application));
-		if (coversEveryWorker) resetRestartNeeded();
+		// An unregistered restart module cannot have set the flag. Keep shutdown marking synchronous.
+		if (coversEveryWorker) workerHooks.resetRestartNeeded?.();
 		// This is here to prevent circular dependencies
 		if (startReplacementThreads) {
-			const { loadRootComponents } = require('../loadRootComponents.js');
+			const { loadRootComponents } = await import('../loadRootComponents.ts');
 			// Installing and loading every root component reports nothing and can outlast a caller's idle
 			// window on its own (a cold npm cache, a large dependency graph), so beat while it runs. The
 			// caller's absolute ceiling is what bounds a load that never finishes.
@@ -719,7 +727,7 @@ async function restartWorkers(
 				// isolated applications added or removed by the reload get their dedicated worker started or
 				// stopped; a crash-looping newcomer can take a while, so the heartbeat runs through this too
 				try {
-					for (const application of (await isolatedWorkerReconciler?.()) ?? []) freshlyStarted.add(application);
+					for (const application of (await workerHooks.reconcile?.()) ?? []) freshlyStarted.add(application);
 				} catch (error) {
 					harperLogger.error('Could not reconcile isolated application workers', error);
 				}
@@ -739,10 +747,10 @@ async function restartWorkers(
 			maxWorkersDown = maxWorkersDown * workers.length;
 		}
 		// make a copy of the workers before iterating them, as the workers array mutates a lot during this
-		let waitingToFinish = []; // promises for workers we are replacing, spliced as each is replaced
+		let waitingToFinish: any = []; // promises for workers we are replacing, spliced as each is replaced
 		// Every replacement that was started without being awaited first, so this function can still
 		// resolve only once each one is accepting connections.
-		let replacementsStarting = [];
+		let replacementsStarting: any = [];
 		// A replacement that never came up leaves the pool in one of two very different states, and a
 		// caller waiting on this restart needs them apart: the pre-start path keeps the *old* worker
 		// serving old code, while a replacement that exits after its predecessor is already gone only
@@ -786,7 +794,7 @@ async function restartWorkers(
 				// we leave the existing worker in place, and a background retry succeeding later would push the
 				// pool over its configured worker count. Re-enabled once it has started.
 				newWorker.wasShutdown = true;
-				let started = await new Promise((resolve) => {
+				let started = await new Promise<any>((resolve) => {
 					// Generous backstop so a replacement that deadlocks during init can't wedge the whole
 					// restart forever. Far longer than any legitimate startup, so it never fires in practice.
 					let timeout = setTimeout(
@@ -865,7 +873,7 @@ async function restartWorkers(
 				replacementsStarting.push(replacementStarting);
 			}
 
-			let whenDone = new Promise((resolve) => {
+			let whenDone: any = new Promise<any>((resolve) => {
 				// in case the exit inside the thread doesn't timeout, force it from the outside
 				const armTerminate = (delay) =>
 					setTimeout(() => {
@@ -890,7 +898,7 @@ async function restartWorkers(
 					// Clamp the worker-requested deadline to the configured ceiling (and to a finite value) so a
 					// buggy/rogue message can't defer the force-kill unboundedly; a shrink (drain-done reset)
 					// passes through untouched. See boundedTerminateDelay for the arithmetic + its unit tests.
-					const { boundedTerminateDelay, getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
+					const { boundedTerminateDelay, getShutdownDrainCeilingMs } = shutdownDrainRuntimeModule;
 					const delay = boundedTerminateDelay(
 						deadlineMs,
 						Date.now(),
@@ -908,7 +916,7 @@ async function restartWorkers(
 					worker.extendTerminateDeadline = undefined;
 					// non-overlapping types have no advance replacement, so start it once the old one is gone
 					if (!overlapping && startReplacementThreads && !processShuttingDown) worker.startCopy();
-					resolve();
+					resolve(undefined);
 				});
 			});
 			// A worker counts as replaced only once its replacement is accepting connections, not merely
@@ -962,8 +970,8 @@ async function restartWorkers(
  * @param newWorker The replacement worker
  * @returns {Promise<boolean>} whether the worker reported that it started
  */
-function whenWorkerStarted(newWorker) {
-	return new Promise((resolve) => {
+function whenWorkerStarted(newWorker?: any) {
+	return new Promise<any>((resolve) => {
 		const cleanup = () => {
 			clearTimeout(timeout);
 			newWorker.off('message', startListener);
@@ -1000,13 +1008,13 @@ function whenWorkerStarted(newWorker) {
 		newWorker.on('exit', exitListener);
 	});
 }
-function shutdownWorkers(name) {
+function shutdownWorkers(name?: any) {
 	return restartWorkers(name, Infinity, false, null, '*');
 }
 function beginProcessShutdown() {
 	processShuttingDown = true;
 }
-async function shutdownWorkersNow(name) {
+async function shutdownWorkersNow(name?: any) {
 	if (name == null) beginProcessShutdown();
 	shutdownWorkers(name); // set the state of all the workers to shut down. this should finish the important stuff synchronously
 	if (isBun) {
@@ -1025,29 +1033,26 @@ async function shutdownWorkersNow(name) {
  * The restart scope on the wire: a worker cannot post `undefined` and have it mean "the pool" (a
  * message with no scope at all means "everything", as every pre-existing sender intends).
  */
-function encodeRestartScope(application) {
+function encodeRestartScope(application?: any) {
 	return application === undefined ? '' : application; // '' is not a legal application name
 }
-function decodeRestartScope(message) {
+function decodeRestartScope(message?: any) {
 	if (message.scope === undefined) return '*';
 	return message.scope === '' ? undefined : message.scope;
 }
 
-let isolatedWorkerReconciler = null;
-let runningIsolatedApplicationsGetter = () => [];
 /** Registered by socketRouter: starts and stops dedicated workers to match the root config's isolated applications. */
-function setIsolatedWorkerReconciler(reconcile) {
-	isolatedWorkerReconciler = reconcile;
+function setIsolatedWorkerReconciler(reconcile?: any) {
+	workerHooks.reconcile = reconcile;
 }
-function setRunningIsolatedApplicationsGetter(getter) {
-	runningIsolatedApplicationsGetter = getter;
+function setRunningIsolatedApplicationsGetter(getter?: any) {
+	workerHooks.runningApplications = getter;
 }
 
-const messageListeners = [];
-function onMessageFromWorkers(listener) {
+function onMessageFromWorkers(listener?: any) {
 	messageListeners.push(listener);
 }
-function onMessageByType(type, listener) {
+function onMessageByType(type?: any, listener?: any) {
 	let listeners = listenersByType.get(type);
 	if (!listeners) listenersByType.set(type, (listeners = []));
 	listeners.push(listener);
@@ -1062,7 +1067,7 @@ function onMessageByType(type, listener) {
 }
 
 const MAX_SYNC_BROADCAST = 10;
-async function broadcast(message, includeSelf) {
+async function broadcast(message?: any, includeSelf?: any) {
 	let count = 0;
 	for (let port of connectedPorts) {
 		try {
@@ -1070,7 +1075,7 @@ async function broadcast(message, includeSelf) {
 			if (count++ > MAX_SYNC_BROADCAST) {
 				// posting messages can be somewhat expensive, so we yield the event turn occassionally to not cause any delays.
 				count = 0;
-				await new Promise(setImmediate);
+				await new Promise<any>(setImmediate);
 			}
 		} catch (error) {
 			harperLogger.error(`Unable to send message to worker`, error);
@@ -1081,13 +1086,13 @@ async function broadcast(message, includeSelf) {
 	}
 }
 
-const awaitingResponses = new Map();
+const awaitingResponses: any = new Map();
 let nextId = 1;
 // Backstop so a wedged-but-alive worker (one whose event loop is blocked and never acks, yet
 // whose port hasn't closed) can't hang a mutating admin/DDL op forever. Ordinary broadcasts happen
 // after the durable write and proceed best-effort; strict preparation broadcasts reject on timeout.
 const DEFAULT_ACK_TIMEOUT_MS = 30000;
-function settleAcknowledgementsForClosedWorker(matches, jobCleanupComplete, exitConfirmed) {
+function settleAcknowledgementsForClosedWorker(matches?: any, jobCleanupComplete?: any, exitConfirmed?: any) {
 	for (const [, ackHandler] of awaitingResponses) {
 		if (!matches(ackHandler.port)) continue;
 		if (ackHandler.allowNormalJobExit && !jobCleanupComplete && !exitConfirmed) continue;
@@ -1095,11 +1100,15 @@ function settleAcknowledgementsForClosedWorker(matches, jobCleanupComplete, exit
 	}
 }
 
-function settleAcknowledgementsForClosedPort(port, jobCleanupComplete = false, exitConfirmed = false) {
+function settleAcknowledgementsForClosedPort(port?: any, jobCleanupComplete: any = false, exitConfirmed: any = false) {
 	settleAcknowledgementsForClosedWorker((candidate) => candidate === port, jobCleanupComplete, exitConfirmed);
 }
 
-function settleAcknowledgementsForClosedThread(threadId, jobCleanupComplete = false, exitConfirmed = false) {
+function settleAcknowledgementsForClosedThread(
+	threadId?: any,
+	jobCleanupComplete: any = false,
+	exitConfirmed: any = false
+) {
 	settleAcknowledgementsForClosedWorker(
 		(candidate) => candidate.threadId === threadId,
 		jobCleanupComplete,
@@ -1109,20 +1118,20 @@ function settleAcknowledgementsForClosedThread(threadId, jobCleanupComplete = fa
 
 /** @param {boolean|'active'} includeJobWorkers */
 function broadcastWithAcknowledgement(
-	message,
-	timeout = DEFAULT_ACK_TIMEOUT_MS,
-	strict = false,
-	includeJobWorkers = false
+	message?: any,
+	timeout: any = DEFAULT_ACK_TIMEOUT_MS,
+	strict: any = false,
+	includeJobWorkers: any = false
 ) {
-	return new Promise((resolve, reject) => {
+	return new Promise<any>((resolve, reject) => {
 		let waitingCount = 0;
 		let timer;
 		let initializing = true;
-		const failures = [];
+		const failures: any = [];
 		// Tracks the handlers still awaiting an ack for THIS broadcast. Doubles as an
 		// idempotency guard: a port's handler runs at most once whether it's driven by an ack,
 		// the close listener, or the timeout below.
-		const pending = new Set();
+		const pending: any = new Set();
 		const finish = () => {
 			if (timer) {
 				clearTimeout(timer);
@@ -1136,14 +1145,14 @@ function broadcastWithAcknowledgement(
 					reject(failures[0]);
 					return;
 				}
-				const error = new AggregateError(failures, 'A worker could not prepare for the schema change');
+				const error: any = new AggregateError(failures, 'A worker could not prepare for the schema change');
 				for (const property of ['name', 'code', 'statusCode', 'retryable']) {
 					const value = failures[0][property];
 					if (property === 'name' && value === 'Error') continue;
 					if (value != null && failures.every((failure) => failure[property] === value)) error[property] = value;
 				}
 				reject(error);
-			} else resolve();
+			} else resolve(undefined);
 		};
 		for (let port of connectedPorts) {
 			// Ordinary schema gossip excludes job workers to avoid re-entrant waits. Destructive
@@ -1160,7 +1169,7 @@ function broadcastWithAcknowledgement(
 				ackHandler = (response) => {
 					if (!pending.delete(ackHandler)) return; // already settled for this port
 					if (response?.error) {
-						const error = new Error(
+						const error: any = new Error(
 							`Worker ${port.threadId} could not prepare for the schema change: ${response.error.message ?? response.error}`
 						);
 						error.cause = response.error;
@@ -1217,7 +1226,7 @@ function broadcastWithAcknowledgement(
 		if (timeout > 0) {
 			timer = setTimeout(() => {
 				timer = undefined;
-				const stuck = [];
+				const stuck: any = [];
 				for (let ackHandler of [...pending]) {
 					stuck.push(ackHandler.port);
 					ackHandler(
@@ -1248,7 +1257,11 @@ function broadcastWithAcknowledgement(
 }
 
 /** @param {boolean|'active'} includeJobWorkers */
-function broadcastWithStrictAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS, includeJobWorkers = false) {
+function broadcastWithStrictAcknowledgement(
+	message?: any,
+	timeout: any = DEFAULT_ACK_TIMEOUT_MS,
+	includeJobWorkers: any = false
+) {
 	return broadcastWithAcknowledgement(message, timeout, true, includeJobWorkers);
 }
 
@@ -1262,7 +1275,7 @@ function getOsThreadId() {
 	}
 }
 
-function readTaskFile(tid, name) {
+function readTaskFile(tid?: any, name?: any) {
 	try {
 		return readFileSync(`/proc/self/task/${tid}/${name}`, 'utf8').trim();
 	} catch {
@@ -1272,13 +1285,13 @@ function readTaskFile(tid, name) {
 
 // Kernel-side view of one thread. Every field is best-effort and reported individually, since
 // wchan/syscall need ptrace read access that a hardened container may deny while stat is open.
-function finiteOrUndefined(value) {
+function finiteOrUndefined(value?: any) {
 	const number = Number(value);
 	return Number.isFinite(number) ? number : undefined;
 }
 
-function readOsThreadState(tid) {
-	const thread = { tid };
+function readOsThreadState(tid?: any) {
+	const thread: any = { tid };
 	const stat = readTaskFile(tid, 'stat');
 	if (stat !== undefined) {
 		// Fields after the parenthesized comm, so state is [0], utime/stime [11]/[12], starttime [19].
@@ -1303,8 +1316,8 @@ function readOsThreadState(tid) {
 	return thread;
 }
 
-function snapshotWorkerThread(worker) {
-	const snapshot = { at: Date.now() };
+function snapshotWorkerThread(worker?: any) {
+	const snapshot: any = { at: Date.now() };
 	if (worker.resources?.updated) snapshot.sinceResourceReport = snapshot.at - worker.resources.updated;
 	const eventLoop = worker.performance?.eventLoopUtilization?.();
 	if (eventLoop) snapshot.eventLoop = { idle: eventLoop.idle, active: eventLoop.active };
@@ -1312,12 +1325,12 @@ function snapshotWorkerThread(worker) {
 	return snapshot;
 }
 
-function describeThreadState(thread) {
+function describeThreadState(thread?: any) {
 	return `state=${thread.state ?? '?'} wchan=${thread.wchan ?? '?'} syscall=${thread.syscall ?? '?'}`;
 }
 
-function describeSnapshot(snapshot) {
-	const parts = [
+function describeSnapshot(snapshot?: any) {
+	const parts: any = [
 		snapshot.sinceResourceReport === undefined
 			? 'no resource report received'
 			: `last resource report ${snapshot.sinceResourceReport}ms ago`,
@@ -1335,12 +1348,12 @@ function describeSnapshot(snapshot) {
 	return parts.join('; ');
 }
 
-function describeDelta(before, after) {
+function describeDelta(before?: any, after?: any) {
 	return Number.isFinite(before) && Number.isFinite(after) ? `+${after - before}` : '?';
 }
 
-function describeProgress(first, second) {
-	const parts = [];
+function describeProgress(first?: any, second?: any) {
+	const parts: any = [];
 	if (first.eventLoop && second.eventLoop)
 		parts.push(
 			`event loop active +${Math.round(second.eventLoop.active - first.eventLoop.active)}ms idle +${Math.round(second.eventLoop.idle - first.eventLoop.idle)}ms`
@@ -1358,7 +1371,7 @@ function describeProgress(first, second) {
 // "parked on a lock" (no CPU ticks, no context switches) from "spinning".
 const STUCK_WORKER_SAMPLE_INTERVAL_MS = 1000;
 const STUCK_WORKER_DIAGNOSTIC_COOLDOWN_MS = 30000;
-function logStuckWorkerDiagnostics(worker) {
+function logStuckWorkerDiagnostics(worker?: any) {
 	if (!worker || !workers.includes(worker)) return;
 	const now = Date.now();
 	if (worker.stuckDiagnosticAt !== undefined && now - worker.stuckDiagnosticAt < STUCK_WORKER_DIAGNOSTIC_COOLDOWN_MS)
@@ -1382,7 +1395,7 @@ function logStuckWorkerDiagnostics(worker) {
 	}, STUCK_WORKER_SAMPLE_INTERVAL_MS).unref();
 }
 
-function sendThreadInfo(targetWorker) {
+function sendThreadInfo(targetWorker?: any) {
 	targetWorker.postMessage({
 		type: THREAD_INFO,
 		workers: getChildWorkerInfo(),
@@ -1409,15 +1422,14 @@ function getChildWorkerInfo() {
  * @param worker
  * @param message
  */
-function recordResourceReport(worker, message) {
+function recordResourceReport(worker?: any, message?: any) {
 	worker.resources = message;
 	// we want to record when this happens so we know if it has reported recently
 	worker.resources.updated = Date.now();
 }
 
-let monitorListener;
-function setMonitorListener(listener) {
-	monitorListener = listener;
+function setMonitorListener(listener?: any) {
+	workerHooks.monitorListener = listener;
 }
 
 const MONITORING_INTERVAL = 1000;
@@ -1429,12 +1441,12 @@ const PINNED_ELU_SUSTAINED_TICKS = Math.ceil(PINNED_ELU_SUSTAINED_MS / MONITORIN
 export { PINNED_ELU_UTILIZATION_THRESHOLD };
 export { PINNED_ELU_SUSTAINED_TICKS };
 
-function describePinnedWorker(worker) {
+function describePinnedWorker(worker?: any) {
 	const identity = [worker.name, worker.application].filter(Boolean).join('/');
 	return `Worker thread ${worker.threadId}${identity ? ` (${identity})` : ''}`;
 }
 
-function checkPinnedWorkerELU(worker, recentELU) {
+function checkPinnedWorkerELU(worker?: any, recentELU?: any) {
 	const { utilization } = recentELU;
 	// idle can briefly read negative while a worker tears down, producing a nonsense ratio
 	// outside [0, 1]; treat that tick as unmeasured rather than counting or resetting on it.
@@ -1457,7 +1469,7 @@ function checkPinnedWorkerELU(worker, recentELU) {
 	}
 }
 
-function sampleWorkerELU(worker) {
+function sampleWorkerELU(worker?: any) {
 	if (!isBun && worker.performance?.eventLoopUtilization) {
 		let current_ELU = worker.performance.eventLoopUtilization();
 		let recent_ELU;
@@ -1487,7 +1499,7 @@ function startMonitoring() {
 	// utilization levels (last second) and so we don't have to make these calls to frequently
 	setInterval(() => {
 		for (let worker of workers) sampleWorkerELU(worker);
-		if (monitorListener) monitorListener();
+		if (workerHooks.monitorListener) workerHooks.monitorListener();
 	}, MONITORING_INTERVAL).unref();
 }
 const REPORTING_INTERVAL = 1000;
@@ -1517,7 +1529,7 @@ if (parentPort && workerData?.addPorts) {
 		});
 	}, REPORTING_INTERVAL).unref();
 	getThreadInfo = (timeoutMs) =>
-		new Promise((resolve, reject) => {
+		new Promise<any>((resolve, reject) => {
 			// Request thread info from the parent thread and wait for it to respond with info on all threads.
 			let timeout;
 			parentPort.on('message', receiveThreadInfo);
@@ -1528,7 +1540,7 @@ if (parentPort && workerData?.addPorts) {
 				reject(error);
 				return;
 			}
-			function receiveThreadInfo(message) {
+			function receiveThreadInfo(message?: any) {
 				if (message.type === THREAD_INFO) {
 					cleanup();
 					resolve(message.workers);
@@ -1541,7 +1553,7 @@ if (parentPort && workerData?.addPorts) {
 			if (timeoutMs != null) {
 				timeout = setTimeout(() => {
 					cleanup();
-					const error = new Error(`Timed out waiting for thread information after ${timeoutMs}ms`);
+					const error: any = new Error(`Timed out waiting for thread information after ${timeoutMs}ms`);
 					error.code = 'ERR_THREAD_INFO_TIMEOUT';
 					reject(error);
 				}, timeoutMs);
@@ -1549,7 +1561,7 @@ if (parentPort && workerData?.addPorts) {
 		});
 	let nextRunningIsolatedApplicationsRequestId = 0;
 	getRunningIsolatedApplications = (timeoutMs) =>
-		new Promise((resolve, reject) => {
+		new Promise<any>((resolve, reject) => {
 			const requestId = ++nextRunningIsolatedApplicationsRequestId;
 			let timeout;
 			parentPort.on('message', receiveApplications);
@@ -1560,7 +1572,7 @@ if (parentPort && workerData?.addPorts) {
 				reject(error);
 				return;
 			}
-			function receiveApplications(message) {
+			function receiveApplications(message?: any) {
 				if (message.type === RUNNING_ISOLATED_APPLICATIONS && message.requestId === requestId) {
 					cleanup();
 					resolve(message.applications);
@@ -1573,7 +1585,7 @@ if (parentPort && workerData?.addPorts) {
 			if (timeoutMs != null) {
 				timeout = setTimeout(() => {
 					cleanup();
-					const error = new Error(`Timed out waiting for isolated application topology after ${timeoutMs}ms`);
+					const error: any = new Error(`Timed out waiting for isolated application topology after ${timeoutMs}ms`);
 					error.code = 'ERR_ISOLATED_APPLICATIONS_TIMEOUT';
 					reject(error);
 				}, timeoutMs);
@@ -1581,7 +1593,7 @@ if (parentPort && workerData?.addPorts) {
 		});
 	let awaitTerminationRequestId = 0;
 	awaitProcessGroupTermination = (ownerThreadId, signal) =>
-		new Promise((resolve) => {
+		new Promise<any>((resolve) => {
 			// Deliberately no timeout: a contender must not reclaim a dead owner's lock while its
 			// process group might still be alive and mutating files, so this mirrors the unbounded
 			// wait Application.ts's waitForConfirmedTermination uses for the same reason. A caller
@@ -1594,24 +1606,24 @@ if (parentPort && workerData?.addPorts) {
 			function cleanup() {
 				parentPort.off('message', receiveConfirmation);
 			}
-			function receiveConfirmation(message) {
+			function receiveConfirmation(message?: any) {
 				if (message.type === PROCESS_GROUP_TERMINATION_CONFIRMED && message.requestId === requestId) {
 					cleanup();
-					resolve();
+					resolve(undefined);
 				}
 			}
 		});
 } else {
 	getThreadInfo = getChildWorkerInfo;
 	getRunningIsolatedApplications = isMainThread
-		? () => runningIsolatedApplicationsGetter()
+		? () => workerHooks.runningApplications()
 		: () => {
-				const error = new Error('No channel to the main thread for isolated application topology');
+				const error: any = new Error('No channel to the main thread for isolated application topology');
 				error.code = 'ERR_ISOLATED_APPLICATIONS_UNAVAILABLE';
 				return Promise.reject(error);
 			};
 	awaitProcessGroupTermination = (ownerThreadId) =>
-		pendingProcessGroupTerminations.get(ownerThreadId) ?? Promise.resolve();
+		pendingProcessGroupTerminations.get(ownerThreadId) ?? Promise.resolve(undefined);
 }
 export { getThreadInfo };
 export { getRunningIsolatedApplications };
@@ -1619,8 +1631,7 @@ export { getRunningIsolatedApplications };
 // Listeners notified when a connected thread's port closes (worker exit/restart), so
 // modules holding per-thread state (e.g. registeredOperations' registry and in-flight
 // forwards) can clean up.
-const threadExitListeners = [];
-function onThreadExit(listener) {
+function onThreadExit(listener?: any) {
 	threadExitListeners.push(listener);
 }
 
@@ -1628,28 +1639,28 @@ function onThreadExit(listener) {
 // regardless of which of the two removal paths below observes it first. Node worker_threads
 // ids are monotonically increasing and never reused within a process, so this never needs
 // pruning (unbounded growth is one entry per worker restart over the process lifetime).
-const notifiedDeadThreadIds = new Set();
-const processGroupsByThread = new Map();
+const notifiedDeadThreadIds: any = new Set();
+const processGroupsByThread: any = new Map();
 // A dead thread's process groups are killed asynchronously (SIGKILL/taskkill only queue the
 // request). While that termination is in flight, isThreadRunning must keep reporting the owner
 // as alive — otherwise a contender can delete the dead worker's lock claim and start a new
 // preparation before its old process tree is confirmed gone, reopening the concurrent-writer
 // window component-preparation locking exists to close.
-const pendingProcessGroupTerminations = new Map();
+const pendingProcessGroupTerminations: any = new Map();
 const PROCESS_GROUP_TERMINATION_POLL_MS = 25;
 const ZOMBIE_GROUP_MEMBER_SCAN_INTERVAL_MS = 1000;
 const PROCESS_GROUP_LIVENESS_WARNING_MS = 30000;
 // Bounds isThreadRunning's own wait (below); Application.ts's waitForConfirmedTermination stays
 // deliberately unbounded.
 const THREAD_RUNNING_TERMINATION_BACKSTOP_MS = PROCESS_GROUP_LIVENESS_WARNING_MS;
-const zombieGroupScanTimes = new Map();
-const processGroupLivenessStates = new Map();
+const zombieGroupScanTimes: any = new Map();
+const processGroupLivenessStates: any = new Map();
 // When each group's root was registered — by then it was already running, which is what lets the
 // Windows scan tell our root from a later process that recycled its PID.
-const processGroupSpawnedAt = new Map();
+const processGroupSpawnedAt: any = new Map();
 let processGroupRegistrationGeneration = 0;
 
-function processGroupExists(processGroupId) {
+function processGroupExists(processGroupId?: any) {
 	try {
 		process.kill(-processGroupId, 0);
 		return true;
@@ -1658,11 +1669,11 @@ function processGroupExists(processGroupId) {
 	}
 }
 
-function processProbeError(error) {
+function processProbeError(error?: any) {
 	return error?.code ?? error?.message ?? String(error ?? 'unknown error');
 }
 
-function processGroupLeaderState(processGroupId, platform, readStat) {
+function processGroupLeaderState(processGroupId?: any, platform?: any, readStat?: any) {
 	if (platform !== 'linux') {
 		return { state: 'unknown', reason: `zombie-process detection is unavailable on ${platform}` };
 	}
@@ -1681,7 +1692,7 @@ function processGroupLeaderState(processGroupId, platform, readStat) {
 	return { state: fields[0] === 'Z' ? 'zombie' : 'alive' };
 }
 
-function scanLinuxProcessGroup(processGroupId, readDirectory, readStat) {
+function scanLinuxProcessGroup(processGroupId?: any, readDirectory?: any, readStat?: any) {
 	let processIds;
 	try {
 		processIds = readDirectory('/proc');
@@ -1718,7 +1729,7 @@ function scanLinuxProcessGroup(processGroupId, readDirectory, readStat) {
 	return { isAlive: false };
 }
 
-function keepProcessGroupAlive(processGroupId, reason, observationTime, warn) {
+function keepProcessGroupAlive(processGroupId?: any, reason?: any, observationTime?: any, warn?: any) {
 	let livenessState = processGroupLivenessStates.get(processGroupId);
 	if (!livenessState) {
 		livenessState = { observedAt: observationTime, reason, warned: false };
@@ -1735,12 +1746,12 @@ function keepProcessGroupAlive(processGroupId, reason, observationTime, warn) {
 	return true;
 }
 
-function clearProcessGroupLivenessState(processGroupId) {
+function clearProcessGroupLivenessState(processGroupId?: any) {
 	zombieGroupScanTimes.delete(processGroupId);
 	processGroupLivenessStates.delete(processGroupId);
 }
 
-function isProcessGroupAlive(processGroupId, options) {
+function isProcessGroupAlive(processGroupId?: any, options?: any) {
 	const platform = options?.platform ?? process.platform;
 	const groupExists = options?.processGroupExists ?? processGroupExists;
 	const readDirectory = options?.readDirectory ?? readdirSync;
@@ -1775,11 +1786,11 @@ function isProcessGroupAlive(processGroupId, options) {
 	return false;
 }
 
-function processGroupIsAlive(processGroupId) {
+function processGroupIsAlive(processGroupId?: any) {
 	return isProcessGroupAlive(processGroupId);
 }
 
-async function waitForProcessGroupExit(processGroupId, registration) {
+async function waitForProcessGroupExit(processGroupId?: any, registration?: any) {
 	while (true) {
 		const currentRegistration = processGroupSpawnedAt.get(processGroupId);
 		if (currentRegistration !== undefined && currentRegistration !== registration) return;
@@ -1796,7 +1807,7 @@ async function waitForProcessGroupExit(processGroupId, registration) {
 // way the wait confirms via the process table — reclamation must not proceed on a guess. The
 // root was created inside the spawner's spawn() call, whose start and return times travel with the
 // registration so the cross-thread hop adds nothing to the window before it.
-function waitForWindowsGroupExit(processGroupId, spawn, killedAt) {
+function waitForWindowsGroupExit(processGroupId?: any, spawn?: any, killedAt?: any) {
 	return confirmWindowsProcessTreeGone(
 		{
 			rootPid: processGroupId,
@@ -1809,7 +1820,13 @@ function waitForWindowsGroupExit(processGroupId, spawn, killedAt) {
 	);
 }
 
-function addProcessGroup(ownerThreadId, processGroupId, spawnedAt, spawnStartedAt, registrationGeneration) {
+function addProcessGroup(
+	ownerThreadId?: any,
+	processGroupId?: any,
+	spawnedAt?: any,
+	spawnStartedAt?: any,
+	registrationGeneration?: any
+) {
 	if (!Number.isInteger(processGroupId) || processGroupId <= 0) return;
 	const previousRegistration = processGroupSpawnedAt.get(processGroupId);
 	if (
@@ -1832,7 +1849,7 @@ function addProcessGroup(ownerThreadId, processGroupId, spawnedAt, spawnStartedA
 	});
 }
 
-function removeProcessGroup(ownerThreadId, processGroupId, registrationGeneration) {
+function removeProcessGroup(ownerThreadId?: any, processGroupId?: any, registrationGeneration?: any) {
 	const currentRegistration = processGroupSpawnedAt.get(processGroupId);
 	const sameOwnerNewerGeneration =
 		currentRegistration?.ownerThreadId === ownerThreadId &&
@@ -1866,9 +1883,9 @@ function removeProcessGroup(ownerThreadId, processGroupId, registrationGeneratio
 // path has no guarantee the async loop gets even one scan in before `process.exit()` runs, and by
 // then this function has already dropped the registration the exit handler would otherwise have
 // caught, so the blind kill has to fire here instead.
-function terminateProcessGroupsForThread(ownerThreadId, { fromExitHandler = false } = {}) {
+function terminateProcessGroupsForThread(ownerThreadId?: any, { fromExitHandler = false } = {}) {
 	const processGroups = processGroupsByThread.get(ownerThreadId);
-	if (!processGroups) return pendingProcessGroupTerminations.get(ownerThreadId) ?? Promise.resolve();
+	if (!processGroups) return pendingProcessGroupTerminations.get(ownerThreadId) ?? Promise.resolve(undefined);
 	processGroupsByThread.delete(ownerThreadId);
 	// Membership is not ownership: a PID is reusable the moment its process exits.
 	const groupIds = [...processGroups].filter((processGroupId) => {
@@ -1878,7 +1895,7 @@ function terminateProcessGroupsForThread(ownerThreadId, { fromExitHandler = fals
 		);
 		return false;
 	});
-	const killedAt = new Map();
+	const killedAt: any = new Map();
 	for (const processGroupId of groupIds) {
 		try {
 			if (process.platform === 'win32') {
@@ -1919,7 +1936,7 @@ function terminateProcessGroupsForThread(ownerThreadId, { fromExitHandler = fals
 
 // `spawnedAt` / `spawnStartedAt`: the caller's clock as its spawn() of the group's root returned and
 // as it was called — the root was created between the two.
-function registerProcessGroup(processGroupId, spawnedAt = Date.now(), spawnStartedAt) {
+function registerProcessGroup(processGroupId?: any, spawnedAt: any = Date.now(), spawnStartedAt?: any) {
 	const registrationGeneration = ++processGroupRegistrationGeneration;
 	if (isMainThread) addProcessGroup(threadId, processGroupId, spawnedAt, spawnStartedAt, registrationGeneration);
 	else {
@@ -1934,7 +1951,7 @@ function registerProcessGroup(processGroupId, spawnedAt = Date.now(), spawnStart
 	return registrationGeneration;
 }
 
-function unregisterProcessGroup(processGroupId, registrationGeneration) {
+function unregisterProcessGroup(processGroupId?: any, registrationGeneration?: any) {
 	if (isMainThread) removeProcessGroup(threadId, processGroupId, registrationGeneration);
 	else parentPort?.postMessage({ type: UNREGISTER_PROCESS_GROUP, processGroupId, registrationGeneration });
 }
@@ -1951,8 +1968,8 @@ class ProcessGroupTerminationUnconfirmedError extends Error {
 // "not running": componentPreparationLock's ownerIsAlive/ownerLivenessConfirmed already treat a
 // throwing isOwnerAlive as "can't confirm — don't steal the claim, don't renew the deadline", so
 // the lock's own bounded wait is what eventually fails the waiter.
-async function awaitConfirmedProcessGroupTermination(ownerThreadId) {
-	const abortController = new AbortController();
+async function awaitConfirmedProcessGroupTermination(ownerThreadId?: any) {
+	const abortController: any = new AbortController();
 	let timedOut = false;
 	const timer = setTimeout(() => {
 		timedOut = true;
@@ -1962,7 +1979,7 @@ async function awaitConfirmedProcessGroupTermination(ownerThreadId) {
 	try {
 		await Promise.race([
 			awaitProcessGroupTermination(ownerThreadId, abortController.signal),
-			new Promise((resolve) => abortController.signal.addEventListener('abort', resolve, { once: true })),
+			new Promise<any>((resolve) => abortController.signal.addEventListener('abort', resolve, { once: true })),
 		]);
 	} finally {
 		clearTimeout(timer);
@@ -1975,7 +1992,7 @@ async function awaitConfirmedProcessGroupTermination(ownerThreadId) {
 	}
 }
 
-async function isThreadRunning(ownerThreadId, timeoutMs = THREAD_INFO_REQUEST_TIMEOUT_MS) {
+async function isThreadRunning(ownerThreadId?: any, timeoutMs: any = THREAD_INFO_REQUEST_TIMEOUT_MS) {
 	if (ownerThreadId === threadId || ownerThreadId === 0) return true;
 	if ((await getThreadInfo(timeoutMs)).some((worker) => worker.threadId === ownerThreadId)) return true;
 	// The thread itself is gone, but it may still own process groups whose forced termination is
@@ -1996,11 +2013,11 @@ if (isMainThread) {
  * reads the tombstone `notifyThreadExit` records below — callers on the exit path need an answer
  * without awaiting process-group confirmation.
  */
-function hasThreadExited(threadId) {
+function hasThreadExited(threadId?: any) {
 	return notifiedDeadThreadIds.has(threadId);
 }
 
-function notifyThreadExit(deadThreadId) {
+function notifyThreadExit(deadThreadId?: any) {
 	if (deadThreadId == null || notifiedDeadThreadIds.has(deadThreadId)) return;
 	notifiedDeadThreadIds.add(deadThreadId);
 	handleDatabaseDropPreparationOwnerExit(deadThreadId);
@@ -2013,7 +2030,7 @@ function notifyThreadExit(deadThreadId) {
 	}
 }
 
-function removePort(port, deadThreadId) {
+function removePort(port?: any, deadThreadId?: any) {
 	// A sibling may already have announced this dead thread and removed its port. Process-group
 	// cleanup must still run when the authoritative close/exit event reaches this thread.
 	if (deadThreadId != null) terminateProcessGroupsForThread(deadThreadId);
@@ -2044,7 +2061,7 @@ function removePort(port, deadThreadId) {
 	}
 }
 
-function addPort(port, keepRef, isJobWorker) {
+function addPort(port?: any, keepRef?: any, isJobWorker?: any) {
 	if (isJobWorker) port.isJobWorker = true;
 	connectedPorts.push(port);
 	// Capture threadId now — Bun resets port.threadId to -1 by the time 'exit' fires.
@@ -2107,7 +2124,7 @@ function addPort(port, keepRef, isJobWorker) {
 	if (keepRef) port.refCount = 100;
 	else port.unref();
 }
-function notifyMessageListeners(message, port) {
+function notifyMessageListeners(message?: any, port?: any) {
 	for (let listener of messageListeners) {
 		listener(message, port);
 	}
@@ -2135,8 +2152,8 @@ function notifyMessageListeners(message, port) {
 export let watchDir;
 if (isMainThread) {
 	let beforeRestart, queuedRestart;
-	let changedFiles = new Set();
-	const ignoredPaths = ['node_modules', '.git'];
+	let changedFiles: any = new Set();
+	const ignoredPaths: any = ['node_modules', '.git'];
 	watchDir = async (dir, beforeRestartCallback) => {
 		if (beforeRestartCallback) beforeRestart = beforeRestartCallback;
 		const watchTarget = resolveWatchTarget(dir);
@@ -2199,4 +2216,6 @@ if (isMainThread) {
 
 // Required here, not from logging, which must never import this module; last in the file because it
 // calls onThreadExit.
-require('./logRotationTransport.ts');
+onStartup(async () => {
+	await import('./logRotationTransport.ts');
+});

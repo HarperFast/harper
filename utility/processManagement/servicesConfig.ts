@@ -1,9 +1,9 @@
 import * as hdbTerms from '../hdbTerms.ts';
-import path from 'path';
-import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
+import path from 'node:path';
+import { PACKAGE_ROOT, RUNTIME_SRC_ROOT, RUNTIME_FILE_EXT } from '../../utility/packageUtils.js';
 import * as hdbUtils from '../common_utils.ts';
-const SCRIPTS_DIR = path.join(PACKAGE_ROOT, 'utility/scripts');
-const RESTART_SCRIPT = path.join(SCRIPTS_DIR, hdbTerms.HDB_RESTART_SCRIPT);
+const SCRIPTS_DIR = path.join(RUNTIME_SRC_ROOT, 'utility/scripts');
+const RESTART_SCRIPT = path.join(SCRIPTS_DIR, `restartHdb${RUNTIME_FILE_EXT}`);
 
 function generateMainServerConfig() {
 	const envVars = {
@@ -15,7 +15,7 @@ function generateMainServerConfig() {
 
 	return {
 		name: hdbTerms.PROCESS_DESCRIPTORS.HDB,
-		script: hdbTerms.LAUNCH_SERVICE_SCRIPTS.MAIN,
+		script: path.join(RUNTIME_SRC_ROOT, `bin/harper${RUNTIME_FILE_EXT}`),
 		exec_mode: 'fork',
 		env: envVars,
 		execArgv: process.execArgv,

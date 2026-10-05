@@ -5,7 +5,7 @@ import DeleteBeforeObject from '../../../DeleteBeforeObject.ts';
 import * as lmdbTerms from '../../../../utility/lmdb/terms.ts';
 import * as hdbUtils from '../../../../utility/common_utils.ts';
 import DeleteAuditLogsBeforeResults from './DeleteAuditLogsBeforeResults.js';
-import { promisify } from 'util';
+import { promisify } from 'node:util';
 const pSettimeout = promisify(setTimeout);
 
 const BATCH_SIZE = 10000;

@@ -19,7 +19,7 @@ import * as configUtils from '../config/configUtils.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { ClientError, handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 import logger from '../utility/logging/harper_logger.ts';
-import * as validator from './operationsValidation.js';
+import * as validator from './operationsValidation.ts';
 import { getSecretCustody } from '../resources/secretDecryptor.ts';
 import { encryptEnvelope, parseEnvelopeFields } from '../utility/secretEnvelope.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';

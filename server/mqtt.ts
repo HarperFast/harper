@@ -17,7 +17,7 @@ import { get } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
 import { forComponent as loggerForComponent } from '../utility/logging/harper_logger.ts';
-import { EventEmitter } from 'events';
+import { EventEmitter } from 'node:events';
 import { verifyCertificate } from '../security/certificateVerification/index.ts';
 import { registerShutdownDrain } from '../components/shutdownDrain.ts';
 import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';

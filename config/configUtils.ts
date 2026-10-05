@@ -3,17 +3,16 @@ import * as hdbUtils from '../utility/common_utils.ts';
 import _logger from '../utility/logging/harper_logger.ts';
 const logger = _logger;
 import {
-	configValidator as _configValidator,
+	configValidator,
 	getDomainSocketPathLengthWarning,
 	isLegacySqlApplicationEntry,
 } from '../validation/configValidator.ts';
-const configValidator = _configValidator;
 import { isReservedComponentName } from '../utility/componentNames.ts';
 import _fs from 'fs-extra';
 const fs = _fs;
 import _YAML from 'yaml';
 const YAML = _YAML;
-import path from 'path';
+import path from 'node:path';
 import { constants as osConstants } from 'node:os';
 import { isMainThread, threadId } from 'node:worker_threads';
 import { randomBytes } from 'node:crypto';

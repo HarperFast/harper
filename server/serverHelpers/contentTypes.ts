@@ -1,7 +1,7 @@
 import { streamAsJSON, stringify, parse } from './JSONStream.ts';
 import { pack, unpack, encodeIter } from 'msgpackr';
 import { decode, Encoder, EncoderStream } from 'cbor-x';
-import { createBrotliCompress, brotliCompress, constants } from 'zlib';
+import { createBrotliCompress, brotliCompress, constants } from 'node:zlib';
 import { ClientError } from '../../utility/errors/hdbError.ts';
 import stream, { Readable, Transform } from 'node:stream';
 import { server } from '../Server.ts';
@@ -81,11 +81,7 @@ const mediaTypes = new Map<
 >();
 
 export const contentTypes = mediaTypes;
-// Defer attachment to `server` because under ESM cycles Server.ts may still
-// be mid-evaluation when this module is loaded.
-setImmediate(() => {
-	server.contentTypes = contentTypes as any;
-});
+server.contentTypes = contentTypes as any;
 _assignPackageExport('contentTypes', contentTypes);
 // TODO: Make these monomorphic for faster access. And use a Map
 mediaTypes.set('application/json', {
@@ -258,28 +254,6 @@ const genericHandler = {
 };
 mediaTypes.set('*/*', genericHandler);
 mediaTypes.set('', genericHandler);
-const ndjsonHandler = {
-	serializeStream(data: any) {
-		if (data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) {
-			return Readable.from(transformIterable(data, (msg: any) => JSONStringify(msg) + '\n'));
-		}
-		return JSONStringify(data) + '\n';
-	},
-	serialize(data: any) {
-		return JSONStringify(data) + '\n';
-	},
-	deserialize(data: Buffer) {
-		return data
-			.toString()
-			.split('\n')
-			.map((line) => line.trim())
-			.filter(Boolean)
-			.map(JSONParse);
-	},
-	q: 0.7,
-};
-mediaTypes.set('application/x-ndjson', ndjsonHandler);
-mediaTypes.set('application/ndjson', ndjsonHandler);
 // try to JSON parse, but since we don't know for sure, this will return the body
 // otherwise
 function tryJSONParse(input) {

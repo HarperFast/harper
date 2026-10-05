@@ -1,4 +1,5 @@
-'use strict';
+import dotenv from 'dotenv';
+('use strict');
 
 import { createWriteStream } from 'node:fs';
 import { rename, unlink } from 'node:fs/promises';
@@ -12,7 +13,7 @@ import { buildRequest, cliOperations, resolveRequestOptions } from './cliOperati
 import { loadCredentials } from './cliCredentials.ts';
 import { httpRequest } from '../utility/common_utils.ts';
 import { initConfig } from '../config/configUtils.ts';
-import { getHdbPid } from '../utility/processManagement/processManagement.js';
+import { getHdbPid } from '../utility/processManagement/processManagement.ts';
 import {
 	createBackupOffline,
 	deleteBackupOffline,
@@ -37,7 +38,7 @@ export async function runBackupCommand(command: string): Promise<void> {
 	// the local-vs-remote routing off HARPER_CLI_TARGET/CLI_TARGET, and without this a `.env`-
 	// configured remote target would be invisible, silently running a destructive op locally
 	// (cliOperations does the same on its first line).
-	require('dotenv').config();
+	dotenv.config();
 	const request = buildRequest();
 	const databaseName = request.database || 'data';
 

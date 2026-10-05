@@ -1,7 +1,14 @@
+import * as registeredOperationsRuntimeModule from '../serverHelpers/registeredOperations.ts';
+import * as fullTextQueryIndexRuntimeModule from '../../resources/indexes/fullTextQueryIndex.ts';
+import * as indexRuntimeModule from '../../components/status/index.ts';
+import * as manageThreadsRuntimeModule from '../threads/manageThreads.ts';
+import * as ResourcesRuntimeModule from '../../resources/Resources.ts';
+import * as openApiRuntimeModule from '../../resources/openApi.ts';
+import * as httpRuntimeModule from '../http.ts';
 /* global threads */
 import hdbLogger from '../../utility/logging/harper_logger.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
-import cleanLmdbMap from '../../utility/lmdb/cleanLMDBMap.ts';
+import _cleanLmdbMap from '../../utility/lmdb/cleanLMDBMap.ts';
 import { validateEvent } from '../threads/itc.ts';
 import {
 	FULL_TEXT_QUERY_PAUSE_OPERATION,
@@ -11,29 +18,35 @@ import { isMainThread, threadId, workerData } from 'node:worker_threads';
 import {
 	databases,
 	resetDatabases,
-	closeDatabase,
+	closeDatabase as _closeDatabase,
 	prepareDatabaseDrop,
 	completeDatabaseDropPreparation,
 	reloadBranchAt,
 	markDropInProgress,
 } from '../../resources/databases.ts';
-import { blockBlobSavesForRestore, resumeBlobSavesAfterRestore } from '../../resources/blob.ts';
+import {
+	blockBlobSavesForRestore as _blockBlobSavesForRestore,
+	resumeBlobSavesAfterRestore as _resumeBlobSavesAfterRestore,
+} from '../../resources/blob.ts';
 
+const cleanLmdbMap = _cleanLmdbMap;
+const closeDatabase = _closeDatabase;
+const blockBlobSavesForRestore = _blockBlobSavesForRestore;
+const resumeBlobSavesAfterRestore = _resumeBlobSavesAfterRestore;
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
  * @type {{schema: ((function(*): Promise<void>)|*), job: ((function(*): Promise<void>)|*)}}
  */
-const serverItcHandlers = {
+const serverItcHandlers: any = {
 	[hdbTerms.ITC_EVENT_TYPES.SCHEMA]: schemaHandler,
 	[hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST]: componentStatusRequestHandler,
 	[hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_REQUEST]: resourceOpenApiRequestHandler,
 	[hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_REQUEST]: middlewareChainsRequestHandler,
-	// #1736 cross-thread registered-operation bridge. Lazy require: this module loads on every
-	// thread via itc.js, and registeredOperations pulls in the serverUtilities module graph.
+	// Read the dispatch binding at delivery because the operation bridge is cyclic.
 	[hdbTerms.ITC_EVENT_TYPES.OPERATION_REGISTERED]: (event) =>
-		require('../serverHelpers/registeredOperations.ts').operationRegisteredHandler(event),
+		registeredOperationsRuntimeModule.operationRegisteredHandler(event),
 	[hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_REQUEST]: (event) =>
-		require('../serverHelpers/registeredOperations.ts').operationExecuteRequestHandler(event),
+		registeredOperationsRuntimeModule.operationExecuteRequestHandler(event),
 };
 
 /**
@@ -41,8 +54,8 @@ const serverItcHandlers = {
  * @param event
  * @returns {Promise<void>}
  */
-const schemaListeners = [];
-async function schemaHandler(event) {
+const schemaListeners: any = [];
+async function schemaHandler(event?: any) {
 	const validate = validateEvent(event);
 	if (validate) {
 		hdbLogger.error(validate);
@@ -63,7 +76,7 @@ async function schemaHandler(event) {
 			typeof event.message.allowUnregisteredReadiness !== 'boolean'
 		)
 			throw new Error('Full-text query reader coordination requires a boolean unregistered-readiness flag');
-		const fullTextQueries = require('../../resources/indexes/fullTextQueryIndex.ts');
+		const fullTextQueries = fullTextQueryIndexRuntimeModule;
 		const ownerEpoch = BigInt(event.message.ownerEpoch);
 		if (event.message.operation === FULL_TEXT_QUERY_PAUSE_OPERATION)
 			await fullTextQueries.pauseNativeFullTextQueryReaders(
@@ -141,7 +154,7 @@ async function schemaHandler(event) {
 	}
 }
 
-schemaHandler.addListener = function (listener) {
+schemaHandler.addListener = function (listener?: any) {
 	schemaListeners.push(listener);
 	return () => {
 		const index = schemaListeners.indexOf(listener);
@@ -156,7 +169,7 @@ schemaHandler.addListener = function (listener) {
  * @param msg
  * @returns {Promise<void>}
  */
-async function syncSchemaMetadata(msg) {
+async function syncSchemaMetadata(msg?: any) {
 	try {
 		// A change to a scope-private branch is not a change to any database in the global map, so the
 		// rescan below has nothing to find; a thread holding that branch open reloads it instead.
@@ -194,13 +207,13 @@ async function syncSchemaMetadata(msg) {
 		const rescanned = resetDatabases();
 		if (msg.table && msg.database)
 			// wait for a write to finish to ensure all writes have been written
-			await rescanned[msg.database][msg.table].put(Symbol.for('write-verify'), null);
+			await rescanned[msg.database][msg.table].put(Symbol.for('write-verify') as any, null);
 	} catch (e) {
 		hdbLogger.error(e);
 	}
 }
 
-const resourceListeners = [];
+const resourceListeners: any = [];
 /**
  * Local-only fan-out for "JS resources just registered" (resources.js loaded via the jsResource
  * plugin). Unlike schema/user changes this is NOT an ITC event: each worker loads and registers
@@ -217,7 +230,7 @@ function resourceHandler() {
 		}
 	}
 }
-resourceHandler.addListener = function (listener) {
+resourceHandler.addListener = function (listener?: any) {
 	resourceListeners.push(listener);
 };
 // Test seam: drop registered listeners so a unit suite doesn't leak fakes into later suites.
@@ -238,7 +251,7 @@ resourceHandler._resetListenersForTest = function () {
  * @param {string} event.message.requestId - The unique identifier for the request.
  * @returns {Promise<void>} Sends a response back to the originator thread or logs an error if validation fails.
  */
-async function componentStatusRequestHandler(event) {
+async function componentStatusRequestHandler(event?: any) {
 	try {
 		const validate = validateEvent(event);
 		if (validate) {
@@ -249,8 +262,8 @@ async function componentStatusRequestHandler(event) {
 		hdbLogger.trace(`ITC componentStatusRequestHandler received request:`, event);
 
 		// Get current thread's component status
-		const { internal } = require('../../components/status/index.ts');
-		const { getWorkerIndex } = require('../threads/manageThreads.js');
+		const { internal } = indexRuntimeModule;
+		const { getWorkerIndex } = manageThreadsRuntimeModule;
 		const componentStatuses = internal.componentStatusRegistry.getAllStatuses();
 
 		// Convert Map to array for serialization
@@ -263,7 +276,7 @@ async function componentStatusRequestHandler(event) {
 		// Send response directly back to the originating thread. validateEvent already
 		// ensures originator is present.
 		const originatorThreadId = event.message.originator;
-		const responseMessage = {
+		const responseMessage: any = {
 			type: hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_RESPONSE,
 			message: {
 				requestId: event.message.requestId,
@@ -294,7 +307,7 @@ async function componentStatusRequestHandler(event) {
  * Generates the spec from the local resources (which are only registered on worker threads)
  * and sends it back to the requesting thread.
  */
-async function resourceOpenApiRequestHandler(event) {
+async function resourceOpenApiRequestHandler(event?: any) {
 	try {
 		const validate = validateEvent(event);
 		if (validate) {
@@ -304,17 +317,17 @@ async function resourceOpenApiRequestHandler(event) {
 
 		hdbLogger.trace(`ITC resourceOpenApiRequestHandler received request:`, event);
 
-		const { resources } = require('../../resources/Resources.ts');
+		const { resources } = ResourcesRuntimeModule;
 		// Only respond if this thread has registered resources. Job-type workers with an empty
 		// resources map must stay silent so that an app worker with real resources replies first.
 		// If no worker has resources the main thread gets a 503 after the timeout, which is a
 		// more honest response than silently returning an empty spec.
 		if (!resources || resources.size === 0) return;
-		const { generateJsonApi } = require('../../resources/openApi.ts');
+		const { generateJsonApi } = openApiRuntimeModule;
 		const openapi = generateJsonApi(resources, event.message.serverHttpURL);
 
 		const originatorThreadId = event.message.originator;
-		const responseMessage = {
+		const responseMessage: any = {
 			type: hdbTerms.ITC_EVENT_TYPES.RESOURCE_OPENAPI_RESPONSE,
 			message: {
 				requestId: event.message.requestId,
@@ -339,7 +352,7 @@ async function resourceOpenApiRequestHandler(event) {
  * they have no middleware (empty chains) so get_status doesn't wait out the request timeout. First
  * worker to answer wins — all HTTP workers register identically, so any one is representative.
  */
-async function middlewareChainsRequestHandler(event) {
+async function middlewareChainsRequestHandler(event?: any) {
 	try {
 		const validate = validateEvent(event);
 		if (validate) {
@@ -348,9 +361,9 @@ async function middlewareChainsRequestHandler(event) {
 		}
 
 		if (isMainThread || workerData?.name !== hdbTerms.THREAD_TYPES.HTTP) return;
-		const { describeMiddlewareChains } = require('../http.ts');
+		const { describeMiddlewareChains } = httpRuntimeModule;
 
-		const responseMessage = {
+		const responseMessage: any = {
 			type: hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_RESPONSE,
 			message: {
 				requestId: event.message.requestId,
@@ -372,3 +385,6 @@ export default serverItcHandlers;
 // Named exports so consumers (e.g., MCP listChanged) can subscribe via `schemaHandler.addListener(fn)`.
 export { schemaHandler };
 export { resourceHandler };
+
+// Compiled consumers dispatch directly by event type, including `.schema`.
+if (typeof module !== 'undefined') Object.assign(module.exports, serverItcHandlers);

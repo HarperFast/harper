@@ -1,12 +1,12 @@
 'use strict';
 
-import * as os from 'os';
+import * as os from 'node:os';
 import { prompts } from '../interactivePrompts.ts';
 import fs from 'fs-extra';
 import _PropertiesReader from 'properties-reader';
 const PropertiesReader = _PropertiesReader;
 import chalk from 'chalk';
-import * as path from 'path';
+import * as path from 'node:path';
 let ora; // Will be loaded dynamically as it's an ES module
 import * as YAML from 'yaml';
 
@@ -29,7 +29,7 @@ import * as roleOps from '../../security/role.ts';
 import _checkJwtTokens from './checkJWTTokensExist.ts';
 const checkJwtTokens = _checkJwtTokens;
 import * as globalSchema from '../globalSchema.ts';
-import { promisify } from 'util';
+import { promisify } from 'node:util';
 const pSchemaToGlobal = promisify(globalSchema.setSchemaDataToGlobal);
 import * as keys from '../../security/keys.ts';
 import { resolveConfiguredPath } from '../../config/componentEnvPrepass.ts';

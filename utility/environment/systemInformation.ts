@@ -696,7 +696,7 @@ const attributeMap: Record<string, () => Promise<any> | any> = {
 	harperdb_processes: getHDBProcessInfo,
 	table_size: getTableSize,
 	metrics: getMetrics,
-	threads: getThreadInfo,
+	threads: (...args) => getThreadInfo(...args),
 };
 
 /**

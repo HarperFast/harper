@@ -170,7 +170,7 @@ import {
 	removeEntry,
 	PENDING_LOCAL_TIME,
 	VERSION_REUSED,
-	type RecordObject,
+	RecordObject,
 	type Entry,
 	type StructureCounts,
 	entryMap,
@@ -6760,7 +6760,7 @@ export function makeTable(options): TableResourceClass {
 								logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
 							}
 						}
-						for (let i = history.length; i > 0; ) {
+						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;
 						}
 						if (cursorMaxTime) subscription!.startTime = cursorMaxTime;
@@ -6877,7 +6877,7 @@ export function makeTable(options): TableResourceClass {
 								nodeId = previousHead.nodeId;
 							} else break;
 						} while (nextTime > startTime && count !== 0);
-						for (let i = history.length; i > 0; ) {
+						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;
 						}
 					}
@@ -7346,12 +7346,10 @@ export function makeTable(options): TableResourceClass {
 									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a number`);
 								break;
 							case 'ID':
-								if (
-									!(
-										typeof value === 'string' ||
-										(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
-									)
-								)
+								if (!(
+									typeof value === 'string' ||
+									(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
+								))
 									addError(
 										name,
 										'type',

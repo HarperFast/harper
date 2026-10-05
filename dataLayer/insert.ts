@@ -9,7 +9,7 @@
 import insertValidator from '../validation/insertValidator.ts';
 import * as _hdbUtils from '../utility/common_utils.ts';
 const hdbUtils = _hdbUtils;
-import * as util from 'util';
+import * as util from 'node:util';
 // Leave this unused signalling import here. Due to circular dependencies we bring it in early to load it before the bridge
 import _harperBridge from './harperBridge/harperBridge.ts';
 // Lazy access to handle import cycle (insert.ts and harperBridge.ts both import each other transitively).

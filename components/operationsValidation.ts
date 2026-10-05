@@ -1,7 +1,7 @@
 import Joi from 'joi';
 import fs from 'fs-extra';
 import * as path from 'node:path';
-import validator from '../validation/validationWrapper.ts';
+import * as validator from '../validation/validationWrapper.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import * as configUtils from '../config/configUtils.ts';

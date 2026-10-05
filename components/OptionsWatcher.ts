@@ -1,9 +1,9 @@
 import { type Logger } from '../utility/logging/logger.ts';
 import { loggerWithTag } from '../utility/logging/harper_logger.ts';
-import { EventEmitter, once } from 'events';
+import { EventEmitter, once } from 'node:events';
 import { type FSWatcher } from 'chokidar';
 import { readFile } from 'node:fs/promises';
-import { isDeepStrictEqual } from 'util';
+import { isDeepStrictEqual } from 'node:util';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import _typestrip_lodash from 'lodash';
 const { cloneDeep } = _typestrip_lodash;

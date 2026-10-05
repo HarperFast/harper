@@ -7,14 +7,10 @@ import { logger } from '../utility/logging/logger.ts';
 import { bareHostViolation } from '../utility/nodeIdentity.ts';
 import { server } from './Server.ts';
 
-// Defer to next tick so `server` (from Server.ts) is fully evaluated
-// even when modules are loaded via an ESM cycle.
-setImmediate(() => {
-	Object.defineProperty(server, 'hostname', {
-		get() {
-			return getThisNodeName();
-		},
-	});
+Object.defineProperty(server, 'hostname', {
+	get() {
+		return getThisNodeName();
+	},
 });
 
 let commonNameFromCert: string | undefined;

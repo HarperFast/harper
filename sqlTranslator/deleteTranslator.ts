@@ -1,8 +1,8 @@
-import * as alasql from 'alasql';
+import alasql from 'alasql';
 import * as search from '../dataLayer/search.ts';
 import log from '../utility/logging/harper_logger.ts';
 import harperBridge from '../dataLayer/harperBridge/harperBridge.ts';
-import * as util from 'util';
+import * as util from 'node:util';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import * as globalSchema from '../utility/globalSchema.ts';
