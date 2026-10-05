@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { bundlePlan, checkBundle, prepareBundle } from '../../build-tools/bundleDependencies.ts';
 
 describe('portable production dependency bundle', function () {
@@ -48,6 +49,37 @@ describe('portable production dependency bundle', function () {
 		writeSource();
 		return prepareBundle(source, join(directory, 'stage'));
 	}
+
+	for (const flags of [[], ['--preserve-symlinks-main']]) {
+		it(`checks a corrupt archive through a linked CLI path ${flags.join(' ')}`, () => {
+			const stage = prepare();
+			const linked = join(directory, 'linked-tools');
+			symlinkSync(fileURLToPath(new URL('../../build-tools/', import.meta.url)), linked, 'junction');
+			const file = join(stage, 'node_modules/parent/package.json');
+			const manifest = JSON.parse(readFileSync(file));
+			manifest.version = '9.9.9';
+			writeFileSync(file, JSON.stringify(manifest));
+			assert.throws(
+				() =>
+					execFileSync(
+						process.execPath,
+						[...flags, join(linked, 'bundleDependencies.ts'), 'check', stage, join(source, 'package-lock.json')],
+						{ encoding: 'utf8', stdio: 'pipe' }
+					),
+				(error) =>
+					error.status !== 0 && error.stderr.includes('Bundled node_modules/parent differs from package-lock.json')
+			);
+		});
+	}
+	it('can be imported by a Node program reading stdin', () => {
+		const helper = new URL('../../build-tools/bundleDependencies.ts', import.meta.url);
+		const output = execFileSync(process.execPath, ['--input-type=module', '-'], {
+			input: `import { bundlePlan } from ${JSON.stringify(helper.href)}; console.log(typeof bundlePlan);`,
+			encoding: 'utf8',
+			stdio: 'pipe',
+		});
+		assert.strictEqual(output.trim(), 'function');
+	});
 
 	it('preserves locked versions through a real pack, consumer install and offline npm ci', () => {
 		const stage = prepare();
