@@ -1,4 +1,4 @@
 # Reviewer assignment is handled by the assign-reviewers workflow
-# (.github/workflows/assign-reviewers.yml), which requests the default reviewer
-# listed there when a PR is opened or marked ready for review with no reviewers
-# already set.
+# (.github/workflows/assign-reviewers.yml). When a PR is opened or marked ready
+# for review with no reviewers or teams already requested, it requests the
+# default reviewer listed there, unless that reviewer authored the PR.
