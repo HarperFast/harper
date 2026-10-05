@@ -70,12 +70,14 @@ describe('Test log rotation on the write path (#1877)', () => {
 	}
 
 	function waitForContent(logPath, rotatedDir, ...expected) {
+		let missing = expected;
 		return waitFor(
 			() => {
 				const all = readGenerations(logPath, rotatedDir);
-				return expected.every((marker) => all.includes(marker)) ? all : false;
+				missing = expected.filter((marker) => !all.includes(marker));
+				return missing.length === 0 ? all : false;
 			},
-			{ timeout: 10000, message: `the log never contained ${expected.join(', ')}` }
+			{ timeout: 10000, message: () => `the log never contained ${missing.join(', ')}` }
 		);
 	}
 
@@ -328,11 +330,14 @@ describe('Test log rotation on the write path (#1877)', () => {
 		logger.error('one line so the rotated directory exists');
 		fs.removeSync(rotatedDir);
 		for (let i = 0; i < 400; i++) logger.error(`removed target line ${i} ${'z'.repeat(60)}`);
+		await waitForContent(logPath, rotatedDir, 'removed target line 0 ', 'removed target line 399 ');
+		// The in-file notice rides the next append after the failed rotation. When the sink buffered the
+		// burst, that rotation ran in the flush that wrote line 399, so only a later append can carry it.
+		logger.error('first append after the failed rotation');
 		const contents = await waitForContent(
 			logPath,
 			rotatedDir,
-			'removed target line 0 ',
-			'removed target line 399 ',
+			'first append after the failed rotation',
 			'Harper log rotation problem'
 		);
 		assert.match(contents, /removed target line 0 /);

@@ -12,6 +12,7 @@ const {
 const { loadFullTextNativeBinding } = require('#src/resources/indexes/fullTextNativeBinding');
 const { DERIVED_INDEX_ACCEPTED, DERIVED_INDEX_DEFERRED } = require('#src/resources/derivedIndexRuntime');
 const { waitFor } = require('../waitFor');
+const fullTextPackageVersion = require('../../package.json').optionalDependencies['@harperfast/fulltext'];
 
 const limits = {
 	indexingThreads: 2,
@@ -64,13 +65,18 @@ class FakeNativeModule {
 			nativeAbiVersion: 5,
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 1,
-			mutationBatchApiVersion: 4,
-			queryApiVersion: 2,
+			mutationBatchApiVersion: 5,
+			queryApiVersion: 3,
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: this.maxCommitPayloadBytes,
+				maxRecordIdBytes: 4_096,
+				maxRecordVersionBytes: 4_096,
+				maxCandidateIds: 1_024,
+				maxCandidateBytes: 1024 * 1024,
 				maxSearchWindow: 10_000,
 				maxAutocompleteResults: 100,
+				maxSearchResponseBytes: 8 * 1024 * 1024,
 				maxSearchBudgetMilliseconds: 30_000,
 				maxTraceRecords: 128,
 				maxTraceSourceBytes: 1024 * 1024,
@@ -144,7 +150,12 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 
 		const binding = await loadFullTextNativeBinding();
 		const runtime = await binding.runtimeInfo();
-		assert.strictEqual(runtime.packageVersion, '0.3.0');
+		assert.strictEqual(runtime.packageVersion, fullTextPackageVersion);
+		assert.strictEqual(runtime.tantivyVersion, '0.26.2');
+		assert.strictEqual(runtime.nativeAbiVersion, 8);
+		assert.strictEqual(runtime.lifecycleApiVersion, 1);
+		assert.strictEqual(runtime.mutationBatchApiVersion, 5);
+		assert.strictEqual(runtime.queryApiVersion, 3);
 		assert.strictEqual(runtime.queryClassIsolationMinimumSearchThreads, 2);
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding, { surfaceTerms: true }));
 		await lifecycle.initialize();
@@ -474,13 +485,18 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			nativeAbiVersion: 5,
 			queryClassIsolationMinimumSearchThreads: 2,
 			lifecycleApiVersion: 2,
-			mutationBatchApiVersion: 4,
-			queryApiVersion: 2,
+			mutationBatchApiVersion: 5,
+			queryApiVersion: 3,
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: 64 * 1024,
+				maxRecordIdBytes: 4_096,
+				maxRecordVersionBytes: 4_096,
+				maxCandidateIds: 1_024,
+				maxCandidateBytes: 1024 * 1024,
 				maxSearchWindow: 10_000,
 				maxAutocompleteResults: 100,
+				maxSearchResponseBytes: 8 * 1024 * 1024,
 				maxSearchBudgetMilliseconds: 30_000,
 				maxTraceRecords: 128,
 				maxTraceSourceBytes: 1024 * 1024,
@@ -501,8 +517,11 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			storageBackends: ['native'],
 			limits: {
 				maxCommitPayloadBytes: 64 * 1024,
+				maxRecordIdBytes: 4_096,
+				maxRecordVersionBytes: 4_096,
 				maxSearchWindow: 10_000,
 				maxAutocompleteResults: 100,
+				maxSearchResponseBytes: 8 * 1024 * 1024,
 				maxSearchBudgetMilliseconds: 30_000,
 				maxTraceRecords: 128,
 				maxTraceSourceBytes: 1024 * 1024,
@@ -515,7 +534,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 	it('rejects an unknown mutation-batch API version', async () => {
 		const binding = new FakeNativeModule();
 		const runtimeInfo = binding.runtimeInfo.bind(binding);
-		binding.runtimeInfo = async () => ({ ...(await runtimeInfo()), mutationBatchApiVersion: 5 });
+		binding.runtimeInfo = async () => ({ ...(await runtimeInfo()), mutationBatchApiVersion: 6 });
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
 	});
