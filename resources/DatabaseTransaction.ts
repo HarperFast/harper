@@ -12,6 +12,7 @@ import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context, Id } from './ResourceInterface.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { onStartup } from '../utility/lifecycle.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { settleBeforeDeadline, when } from '../utility/when.ts';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -41,7 +42,7 @@ const ONCE = Object.freeze({ once: true });
 // chain root — so a chain child can never become its own timeout root (issue #2231).
 const supervisedWriteRoots = new Set<DatabaseTransaction>();
 let MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 45 seconds before we start rejecting them
-const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
+let DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
 export const TRANSACTION_STATE = {
 	CLOSED: 0, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
 	OPEN: 1, // the transaction is open and can be used for reads and writes
@@ -3154,6 +3155,14 @@ function startMonitoringTxns() {
 }
 
 startMonitoringTxns();
+
+// The ESM graph can load this module before configuration. Refresh the cached
+// limits and re-arm the monitor before startup begins serving requests.
+onStartup(() => {
+	MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000;
+	DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
+	setTxnExpiration(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONOPENTIME) ?? 30000);
+});
 
 /**
  * Test seam: re-arms the once-per-process replay warning. The whole unit suite shares one process,

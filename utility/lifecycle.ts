@@ -1,19 +1,13 @@
 // Startup-phase lifecycle: lets modules declare side-effectful initialization
-// (server-singleton wiring, config-derived constants, listener registration)
+// (config-derived constants, authentication initialization, plugin preloads)
 // without running it at module-load time. The entry point invokes
 // `runStartup()` after `env.initSync()` and before the server starts handling
 // requests, so all hooks see a fully-linked module graph and an initialized
 // environment.
 //
-// Usage:
-//   import { onStartup } from '.../utility/lifecycle.ts';
-//   onStartup(() => {
-//     server.recordAnalytics = recordAction;
-//   });
-//
 // Unit tests: any test that exercises code paths depending on these hooks must
-// either call `runStartup()` itself in a `before`/`beforeEach`, or import the
-// real CLI entry point. `runStartup()` is idempotent — calling it a second
+// initialize configuration and call `runStartup()` in a `before`/`beforeEach`.
+// Importing the CLI does not run startup. `runStartup()` is idempotent — calling it a second
 // time is a no-op until `resetStartupForTests()` is called.
 
 type StartupCallback = () => void | Promise<void>;

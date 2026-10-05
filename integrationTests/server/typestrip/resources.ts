@@ -5,3 +5,10 @@ export class Runtime extends Resource {
 		return { isMainThread, threadId, workerIndex: workerData?.workerIndex, noServerStart: !!workerData?.noServerStart };
 	}
 }
+
+export class BuiltinCheck extends Resource {
+	async get() {
+		const fs = await import('node:fs');
+		return typeof fs.readFile;
+	}
+}
