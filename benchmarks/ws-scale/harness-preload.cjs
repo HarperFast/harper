@@ -1,6 +1,7 @@
 // Loaded into Harper workers via threads.preloadRequire when run.mts is given --profile or runs the churn scenario.
 // Only HTTP workers respond to run.mts control files in WS_SCALE_CONTROL_DIR:
-//   start   holds a duration in seconds: CPU-profile this thread that long, then write thread-<id>.cpuprofile
+//   start   holds a duration in seconds: CPU-profile this thread that long, then write thread-<id>.cpuprofile;
+//           after consuming start, the worker stops polling
 //   gc-<n>  run a full garbage collection (Harper runs with --expose-gc), then write this thread's
 //           process.memoryUsage() as JSON to gc-<n>-<threadId>
 const { Session } = require('node:inspector');
@@ -8,7 +9,6 @@ const { threadId, workerData } = require('node:worker_threads');
 const { existsSync, readFileSync, renameSync, writeFileSync } = require('node:fs');
 
 const dir = process.env.WS_SCALE_CONTROL_DIR;
-let profiling = false;
 let collections = 0;
 
 function profile(seconds) {
@@ -43,8 +43,8 @@ function profile(seconds) {
 // would change the set of workers run.mts expects
 if (workerData?.name === 'http') {
 	const poll = setInterval(() => {
-		if (!profiling && existsSync(`${dir}/start`)) {
-			profiling = true;
+		if (existsSync(`${dir}/start`)) {
+			clearInterval(poll);
 			profile(Number(readFileSync(`${dir}/start`, 'utf8')));
 		}
 		while (existsSync(`${dir}/gc-${collections + 1}`)) {

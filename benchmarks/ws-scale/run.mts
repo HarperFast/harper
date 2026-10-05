@@ -337,8 +337,25 @@ async function main() {
 		if (args.uws) env.HARPER_UWS_UDS = '1';
 	}
 	const usesPreload = args.profile || args.scenario === 'churn';
+	for (const pair of args['harper-env']!) {
+		const eq = pair.indexOf('=');
+		const key = pair.slice(0, eq);
+		if (usesPreload && key === 'WS_SCALE_CONTROL_DIR')
+			throw new Error(
+				'--harper-env cannot override WS_SCALE_CONTROL_DIR; use --profile-dir to choose the control directory'
+			);
+		env[key] = pair.slice(eq + 1);
+	}
 	const profileDir = args['profile-dir'] ?? (usesPreload ? mkdtempSync(join(tmpdir(), 'ws-scale-')) : '');
 	const removeControlDirAfterRun = args.scenario === 'churn' && !args['profile-dir'];
+	const removeControlDir = () => {
+		if (!removeControlDirAfterRun) return;
+		try {
+			rmSync(profileDir, { recursive: true, force: true });
+		} catch (error) {
+			console.warn(`could not remove temporary ws-scale control directory ${profileDir}`, error);
+		}
+	};
 	if (usesPreload) {
 		mkdirSync(profileDir, { recursive: true });
 		for (const file of readdirSync(profileDir)) {
@@ -404,15 +421,6 @@ async function main() {
 	// a row whose window overlaps the profile carries the profiler's own CPU and memory
 	const profiled = (finishedAtRowStart: boolean, rowEnd: number) =>
 		args.profile ? { profiled: !finishedAtRowStart && profileStartedAt < rowEnd } : {};
-	for (const pair of args['harper-env']!) {
-		const eq = pair.indexOf('=');
-		const key = pair.slice(0, eq);
-		if (usesPreload && key === 'WS_SCALE_CONTROL_DIR')
-			throw new Error(
-				'--harper-env cannot override WS_SCALE_CONTROL_DIR; use --profile-dir to choose the control directory'
-			);
-		env[key] = pair.slice(eq + 1);
-	}
 	if (args.scenario === 'churn')
 		env.NODE_OPTIONS = [env.NODE_OPTIONS ?? process.env.NODE_OPTIONS, '--expose-gc'].filter(Boolean).join(' ');
 	try {
@@ -423,7 +431,7 @@ async function main() {
 			startupTimeoutMs: 120_000,
 		});
 	} catch (error) {
-		if (removeControlDirAfterRun) rmSync(profileDir, { recursive: true, force: true });
+		removeControlDir();
 		throw error;
 	}
 	const clients: Client[] = [];
@@ -754,7 +762,7 @@ async function main() {
 			try {
 				await teardownHarper(ctx);
 			} finally {
-				if (removeControlDirAfterRun) rmSync(profileDir, { recursive: true, force: true });
+				removeControlDir();
 			}
 		}
 	}
