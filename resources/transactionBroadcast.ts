@@ -63,15 +63,14 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 	} else {
 		databaseSubscriptions = allSubscriptions[path] || (allSubscriptions[path] = []);
 		const auditStore = table.auditStore;
-		// A new subscriber receives only what commits after it registers. Idle, the RocksDB iterator restarts at
-		// the end of the log; otherwise everything already committed is dispatched to the existing subscribers
-		// first (not from inside a dispatch, which is already walking the iterator).
+		// A new subscriber receives only what commits after it registers (resources/DESIGN.md).
 		if (!databaseSubscriptions.activeCount) {
 			// with rocksdb-js iterator we can and should not specify a start time so we just start at the end of the txn log
 			// and still match older version numbers that may commit in the future. But we have to start
 			// immediately so we are at the right position.
 			if (auditStore.reusableIterable) databaseSubscriptions.auditLogIterator = auditStore.getRange({});
-		} else if (!databaseSubscriptions.dispatching) {
+		} else if (!databaseSubscriptions.passYielded && !databaseSubscriptions.dispatching) {
+			// unless a pass is part-way through a backlog, what is unread is only recent commits
 			notifyFromTransactionData(
 				databaseSubscriptions,
 				auditStore.reusableIterable ? databaseSubscriptions.auditLogIterator : null
@@ -312,6 +311,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 	let trackProgress = subscriptions.progressConsumers > 0 && !subscriptions.progressStopped;
 	let progressKey = trackProgress ? subscriptions.pendingProgressKey : undefined;
 	subscriptions.dispatching = true;
+	subscriptions.passYielded = false;
 	try {
 		while (true) {
 			let result;
@@ -447,6 +447,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 				subscriptions.pendingTxnSubscribers = subscribersWithTxns;
 				subscriptions.pendingProgressKey = progressKey;
 				yielded = true;
+				subscriptions.passYielded = true;
 				setImmediate(() =>
 					notifyFromTransactionData(
 						subscriptions,
