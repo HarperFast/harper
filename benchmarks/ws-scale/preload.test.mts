@@ -67,8 +67,8 @@ test('profile preload ignores GC requests and writes its CPU profile artifact', 
 			writeFileSync(join(dir, 'gc-1'), '');
 			writeFileSync(join(dir, 'start'), '0.15');
 			await waitForFile(join(dir, `thread-${threadId}.started`), 'profile start marker');
-			assert.strictEqual(existsSync(join(dir, `gc-1-${threadId}`)), false);
 			await waitForFile(join(dir, `thread-${threadId}.cpuprofile`), 'CPU profile artifact');
+			assert.strictEqual(existsSync(join(dir, `gc-1-${threadId}`)), false);
 		} finally {
 			await worker.terminate();
 		}

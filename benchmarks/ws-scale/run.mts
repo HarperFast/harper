@@ -402,7 +402,7 @@ async function main() {
 			if (waited > 30_000) {
 				const missing = [...workerIds].filter((id) => !acked.includes(id));
 				throw new Error(
-					`only ${acked.length} of ${workerIds.size} HTTP workers acknowledged ${request} (missing ${missing.join(', ')}); check Harper's log for an uncaughtException from churn-preload.cjs`
+					`only ${acked.length} of ${workerIds.size} HTTP workers acknowledged ${request} (missing ${missing.join(', ')})`
 				);
 			}
 			await delay(100);

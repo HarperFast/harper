@@ -1,6 +1,7 @@
-//   start   holds a duration in seconds: CPU-profile this thread that long, then write thread-<id>.cpuprofile;
-//           after consuming start, the worker stops polling
-//   thread-<id>.started marks a worker that began profiling so run.mts can track profile completion
+// Profile requests:
+//   start                   holds a duration in seconds: CPU-profile this thread that long, then write thread-<id>.cpuprofile;
+//                           after consuming start, the worker stops polling
+//   thread-<id>.started     marks a worker that began profiling so run.mts can track profile completion
 const { Session } = require('node:inspector');
 const { threadId, workerData } = require('node:worker_threads');
 const { existsSync, readFileSync, renameSync, writeFileSync } = require('node:fs');
