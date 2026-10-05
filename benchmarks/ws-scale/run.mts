@@ -338,6 +338,7 @@ async function main() {
 	}
 	const usesPreload = args.profile || args.scenario === 'churn';
 	const profileDir = args['profile-dir'] ?? (usesPreload ? mkdtempSync(join(tmpdir(), 'ws-scale-')) : '');
+	const removeControlDirAfterRun = args.scenario === 'churn' && !args['profile-dir'];
 	if (usesPreload) {
 		mkdirSync(profileDir, { recursive: true });
 		for (const file of readdirSync(profileDir)) {
@@ -414,12 +415,17 @@ async function main() {
 	}
 	if (args.scenario === 'churn')
 		env.NODE_OPTIONS = [env.NODE_OPTIONS ?? process.env.NODE_OPTIONS, '--expose-gc'].filter(Boolean).join(' ');
-	await setupHarperWithFixture(ctx, APP_DIR, {
-		harperBinPath: args['harper-bin'],
-		config: harperConfig,
-		env,
-		startupTimeoutMs: 120_000,
-	});
+	try {
+		await setupHarperWithFixture(ctx, APP_DIR, {
+			harperBinPath: args['harper-bin'],
+			config: harperConfig,
+			env,
+			startupTimeoutMs: 120_000,
+		});
+	} catch (error) {
+		if (removeControlDirAfterRun) rmSync(profileDir, { recursive: true, force: true });
+		throw error;
+	}
 	const clients: Client[] = [];
 	const publishers: Client[] = [];
 	try {
@@ -745,7 +751,11 @@ async function main() {
 		try {
 			if (args.out) writeFileSync(args.out, JSON.stringify(results, null, 2));
 		} finally {
-			await teardownHarper(ctx);
+			try {
+				await teardownHarper(ctx);
+			} finally {
+				if (removeControlDirAfterRun) rmSync(profileDir, { recursive: true, force: true });
+			}
 		}
 	}
 }
