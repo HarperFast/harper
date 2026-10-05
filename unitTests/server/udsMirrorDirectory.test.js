@@ -45,7 +45,7 @@ describe('UDS mirror directory and metadata publication', () => {
 		});
 
 		afterEach(() => {
-			fs.rmSync(SOCKETS_DIR, { recursive: true, force: true });
+			if (SOCKETS_DIR) fs.rmSync(SOCKETS_DIR, { recursive: true, force: true });
 		});
 
 		posixIt('creates a missing directory with mode 0700', () => {
