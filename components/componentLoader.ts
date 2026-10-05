@@ -460,8 +460,6 @@ for (const { name, packageIdentifier } of getEnvBuiltInComponents()) {
 	TRUSTED_RESOURCE_PLUGINS[name] = packageIdentifier;
 }
 
-const BUILT_INS = Object.keys(TRUSTED_RESOURCE_PLUGINS);
-
 export const loadedPaths = new Map();
 
 // Tracks which components have already had `startOnMainThread` invoked, so it runs at most once
@@ -843,19 +841,9 @@ export async function loadComponent(
 		} else {
 			config = DEFAULT_CONFIG;
 		}
-		// getConfigObj() can return undefined when the harper config has not yet been
-		// initialised (e.g. test paths that touch the loader without going through
-		// bin/harper.ts). Treat that the same as a missing config rather than crashing
-		// on `config.extensionModule` below. For non-root components, an empty/null
-		// parse result means an intentionally-empty config file — do NOT fall back to
-		// DEFAULT_CONFIG, otherwise OptionsWatcher waits forever for plugins that the
-		// file doesn't actually declare and the worker hangs on scope.ready.
 		if (isRoot) config ??= DEFAULT_CONFIG;
 		applicationScope.config ??= config;
-		if (!config) {
-			// Empty/comment-only config file on a non-root component: nothing to load.
-			return undefined;
-		}
+		if (!config) throw new Error('Component configuration is empty');
 
 		// Before any of the application's modules are imported: a branch has to exist by the time its
 		// code first reaches `databases`, and a declared branch that cannot be created must fail this
@@ -885,16 +873,6 @@ export async function loadComponent(
 				options.branchedDatabases,
 				applicationScope.mode
 			);
-		}
-
-		// For non-root components with empty/null config (e.g., comment-only YAML),
-		// don't synthesize DEFAULT_CONFIG. Empty config means the component has nothing
-		// to load; falling back to DEFAULT_CONFIG would cause OptionsWatcher to wait
-		// forever for plugins that the file doesn't actually declare.
-		if (isRoot) config ??= DEFAULT_CONFIG;
-		if (!config) {
-			// Empty/comment-only config file on a non-root component: nothing to load.
-			return undefined;
 		}
 
 		// #629 (Phase 2 of #510): populate the model-backend registry from the root
@@ -1125,7 +1103,7 @@ export async function loadComponent(
 
 				// Old Extension API (`start` or `startOnMainThread`)
 				if (
-					!BUILT_INS.includes(componentName) &&
+					!Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, componentName) &&
 					('startOnMainThread' in extensionModule ||
 						'start' in extensionModule ||
 						'handleFile' in extensionModule ||

@@ -671,23 +671,25 @@ function stdioLogging() {
 	installStdioGuard(process.stderr);
 }
 
-export function loggerWithTag(tag: string, conditional?: boolean, logger: any = mainLogger) {
+export function loggerWithTag(tag: string, conditional?: boolean, logger?: any) {
+	const initialLogger = logger === undefined ? mainLogger : logger;
 	tag = tag.replace(/ /g, '-'); // tag can't have spaces
 	return {
-		notify: logWithTag(logger.notify, 'notify'),
-		fatal: logWithTag(logger.fatal, 'fatal'),
-		error: logWithTag(logger.error, 'error'),
-		warn: logWithTag(logger.warn, 'warn'),
-		info: logWithTag(logger.info, 'info'),
-		debug: logWithTag(logger.debug, 'debug'),
-		trace: logWithTag(logger.trace, 'trace'),
+		notify: logWithTag(initialLogger.notify, 'notify'),
+		fatal: logWithTag(initialLogger.fatal, 'fatal'),
+		error: logWithTag(initialLogger.error, 'error'),
+		warn: logWithTag(initialLogger.warn, 'warn'),
+		info: logWithTag(initialLogger.info, 'info'),
+		debug: logWithTag(initialLogger.debug, 'debug'),
+		trace: logWithTag(initialLogger.trace, 'trace'),
 	};
 	function logWithTag(loggerMethod, level) {
-		return !conditional || logger.level <= LOG_LEVEL_HIERARCHY[level]
+		return !conditional || initialLogger.level <= LOG_LEVEL_HIERARCHY[level]
 			? function (...args) {
+					const target = logger === undefined ? mainLogger : logger;
 					currentTag = tag;
 					try {
-						return loggerMethod.call(logger, ...args);
+						return (logger === undefined ? target[level] : loggerMethod).call(target, ...args);
 					} finally {
 						currentTag = undefined;
 					}

@@ -562,6 +562,7 @@ function startWorker(path?: any, options: any = {}) {
 				'--disable-warning=ExperimentalWarning', // yeah, yeah, we know it is experimental
 				'--expose-internals', // expose Node.js internal utils so jsLoader can use `decorateErrorStack()`
 			];
+	if (!isBun && RUNTIME_FILE_EXT === '.ts') execArgv.push('--conditions=typestrip');
 	if (!isBun && envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT))
 		execArgv.push('--heapsnapshot-near-heap-limit=1');
 	// Preload configured modules (e.g. an APM agent like dd-trace) before the worker's entry

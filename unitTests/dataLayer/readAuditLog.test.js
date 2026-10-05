@@ -69,8 +69,10 @@ describe.skip('test readAuditLog module', () => {
 
 	it('test happy path', async () => {
 		let stub = sandbox.stub().resolves([]);
-		let rw_stub = rw_read_audit_log.__set__('harperBridge', {
-			readAuditLog: stub,
+		let rw_stub = rw_read_audit_log.__set__('harperBridge_ts_1', {
+			default: {
+				readAuditLog: stub,
+			},
 		});
 
 		let obj = new ReadAuditLogObject('dev', 'test', 'timestamp');

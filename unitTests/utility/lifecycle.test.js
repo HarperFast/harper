@@ -15,6 +15,7 @@ function run(mode, code) {
 	const output = execFileSync(
 		process.execPath,
 		[
+			...(mode === 'typestrip' ? ['--conditions=typestrip'] : []),
 			'-e',
 			`const assert = require('node:assert/strict');
 			const { onStartup, runStartup, resetStartupForTests, hasStarted } = require(${JSON.stringify(modulePath)});
@@ -104,6 +105,75 @@ for (const mode of ['compiled', 'typestrip']) {
 				await assert.rejects(startup, actual => actual === error);
 				assert.equal(runStartup(), startup);
 				assert.equal(subsequent, false);
+			`
+			);
+		});
+
+		it('awaits nested hooks in FIFO order and preserves reentrant promise identity', () => {
+			run(
+				mode,
+				`
+				const calls = [];
+				let release, entered, reentrant;
+				const barrier = new Promise(resolve => { release = resolve; });
+				const nestedEntered = new Promise(resolve => { entered = resolve; });
+				onStartup(() => {
+					calls.push('first');
+					reentrant = runStartup();
+					onStartup(async () => { calls.push('nested'); entered(); await barrier; calls.push('finished'); });
+				});
+				onStartup(() => calls.push('second'));
+				const startup = runStartup();
+				assert.equal(reentrant, startup);
+				let settled = false;
+				startup.then(() => { settled = true; });
+				await nestedEntered;
+				assert.equal(settled, false);
+				assert.deepEqual(calls, ['first', 'second', 'nested']);
+				release(); await startup;
+				assert.deepEqual(calls, ['first', 'second', 'nested', 'finished']);
+			`
+			);
+		});
+
+		it('propagates nested failures and schedules post-failure hooks independently', () => {
+			run(
+				mode,
+				`
+				const error = new Error('nested startup failed');
+				let subsequent = false;
+				onStartup(() => {
+					onStartup(() => { throw error; });
+					onStartup(() => { subsequent = true; });
+				});
+				const startup = runStartup();
+				await assert.rejects(startup, actual => actual === error);
+				assert.equal(runStartup(), startup);
+				assert.equal(subsequent, false);
+				let complete;
+				const late = new Promise(resolve => { complete = resolve; });
+				onStartup(complete); await late;
+			`
+			);
+		});
+
+		it('keeps a reset during an active drain separate from its next generation', () => {
+			run(
+				mode,
+				`
+				let release;
+				const barrier = new Promise(resolve => { release = resolve; });
+				const calls = [];
+				onStartup(async () => { calls.push('old'); await barrier; });
+				onStartup(() => calls.push('discarded'));
+				const old = runStartup();
+				resetStartupForTests();
+				onStartup(() => calls.push('new'));
+				const current = runStartup();
+				await current;
+				release(); await old;
+				assert.equal(runStartup(), current);
+				assert.deepEqual(calls, ['old', 'new']);
 			`
 			);
 		});

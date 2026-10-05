@@ -6,7 +6,7 @@ const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
-const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
+const { VERSION_REUSED, entryMap } = require('#src/resources/RecordEncoder');
 const { INVALIDATED } = require('#src/resources/Table');
 const { exportIdMapping } = require('#src/resources/nodeIdMapping');
 const { transaction } = require('#src/resources/transaction');
@@ -1121,25 +1121,52 @@ describe('Caching', () => {
 
 	it('Bigger stampede is handled', async function () {
 		this.timeout(5000);
+		let interval;
 		try {
 			timer = 2;
 			CachingTable.setTTLExpiration(100); // don't evict during this test since it will clear the history
 			let i = 0;
 			sourceRequests = 0;
 			let results = [];
-			let interval = setInterval(async () => {
-				i++;
-				if (i % 16 == 1) CachingTable.invalidate(23);
-				else {
-					// clearing the cache kind of emulates what another thread would see
-					if (i % 4 == 0) CachingTable.primaryStore.cache?.clear();
-					let raw_result = CachingTable.get(23);
-					let result = await raw_result;
-					results.push(result);
+			let cacheMisses = 0;
+			const failures = [];
+			const reads = [];
+			interval = setInterval(() => {
+				try {
+					i++;
+					if (i % 16 == 1)
+						reads.push(Promise.resolve(CachingTable.invalidate(23)).catch((error) => failures.push(error)));
+					else {
+						if (i % 4 == 0) {
+							const store = CachingTable.primaryStore;
+							const cached = store.getEntry(23);
+							if (cached?.value && !store.hasLock(23)) {
+								// Without its memoized Entry, the private value cache cannot vouch for this record.
+								assert.equal(entryMap.delete(cached.value), true);
+								const fresh = store.getEntry(23);
+								if (fresh?.value && fresh.version === cached.version) {
+									assert.notEqual(fresh.value, cached.value);
+									cacheMisses++;
+								}
+							}
+						}
+						let raw_result = CachingTable.get(23);
+						reads.push(
+							Promise.resolve(raw_result).then(
+								(result) => results.push(result),
+								(error) => failures.push(error)
+							)
+						);
+					}
+				} catch (error) {
+					failures.push(error);
 				}
 			}, 1);
 			await new Promise((resolve) => setTimeout(resolve, 3000));
 			clearInterval(interval);
+			await Promise.all(reads);
+			assert.deepEqual(failures, []);
+			assert(cacheMisses > 40, `Only ${cacheMisses} actual cache misses`);
 			for (let result of results) {
 				assert.equal(result.name, 'name 23');
 			}
@@ -1155,6 +1182,7 @@ describe('Caching', () => {
 				assert(entry.localTime > 1);
 			}
 		} finally {
+			clearInterval(interval);
 			timer = 0;
 		}
 	});

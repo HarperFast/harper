@@ -4,14 +4,255 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import { once } from 'node:events';
+import { once, on } from 'node:events';
 import { resolve } from 'node:path';
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, rmSync } from 'node:fs';
 
 const require = createRequire(import.meta.url);
 const root = resolve(import.meta.dirname, '../../..');
 
+function runWithIsolatedRoot(mode, code) {
+	let output = '';
+	try {
+		output = execFileSync(
+			process.execPath,
+			[
+				...(mode === 'typestrip' ? ['--conditions=typestrip'] : []),
+				'--input-type=module',
+				'-e',
+				`const { createRequire } = await import('node:module');
+			const require = createRequire(${JSON.stringify(pathToFileURL(resolve(root, 'package.json')).href)});
+			const { materializePerPidRoot } = require(${JSON.stringify(resolve(root, 'unitTests/perPidRoot.js'))});
+			process.env.ROOTPATH = materializePerPidRoot();
+			console.log('fixture-root ' + process.pid);
+			${code}
+			process.exit(0);`,
+			],
+			{ env: process.env, encoding: 'utf8', timeout: 30000 }
+		);
+		return output.replace(/^fixture-root \d+\r?\n/, '').trim();
+	} catch (error) {
+		output = error.stdout?.toString() ?? '';
+		throw error;
+	} finally {
+		const pid = /^fixture-root (\d+)\r?\n/.exec(output)?.[1];
+		if (pid) rmSync(resolve(root, 'unitTests/envDir', pid), { recursive: true, force: true });
+	}
+}
+
 describe('TypeStrip runtime boundaries', () => {
+	it('reports empty component configuration through the existing load error path', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const prefix = mode === 'compiled' ? 'dist/' : '';
+			const extension = mode === 'compiled' ? 'js' : 'ts';
+			const runtimeUrl = (path) => pathToFileURL(resolve(root, `${prefix}${path}.${extension}`)).href;
+			const output = runWithIsolatedRoot(
+				mode,
+				`
+				const assert = (await import('node:assert/strict')).default;
+				const { mkdirSync, writeFileSync } = await import('node:fs');
+				const { join } = await import('node:path');
+				const componentDirectory = join(process.env.ROOTPATH, 'empty-component');
+				mkdirSync(componentDirectory); writeFileSync(join(componentDirectory,'config.yaml'),'# empty configuration\\n');
+				const { loadComponent, setErrorReporter } = await import(${JSON.stringify(runtimeUrl('components/componentLoader'))});
+				const { Resources } = await import(${JSON.stringify(runtimeUrl('resources/Resources'))});
+				const { ErrorResource } = await import(${JSON.stringify(runtimeUrl('resources/ErrorResource'))});
+				const errors = []; setErrorReporter(error => errors.push(error));
+				const resources = new Resources();
+				await loadComponent(componentDirectory,resources,'test-origin');
+				assert.equal(errors.length, 1);
+				assert.match(errors[0].message, /Component configuration is empty/);
+				assert.ok(resources.get('').Resource instanceof ErrorResource);
+				console.log('empty configuration reported');
+			`
+			);
+			assert.equal(output, 'empty configuration reported', mode);
+		}
+	});
+
+	it('records configured analytics after the real cold server graph starts', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const prefix = mode === 'compiled' ? 'dist/' : '';
+			const extension = mode === 'compiled' ? 'js' : 'ts';
+			const runtimeUrl = (path) => pathToFileURL(resolve(root, `${prefix}${path}.${extension}`)).href;
+			const output = runWithIsolatedRoot(
+				mode,
+				`
+				const assert = (await import('node:assert/strict')).default;
+				await import(${JSON.stringify(runtimeUrl('server/threads/threadServer'))});
+				const env = await import(${JSON.stringify(runtimeUrl('utility/environment/environmentManager'))});
+				env.initSync(); assert.ok(env.get('analytics_aggregatePeriod') > -1);
+				const { runStartup } = await import(${JSON.stringify(runtimeUrl('utility/lifecycle'))});
+				await runStartup();
+				const { recordAction, addAnalyticsListener, setAnalyticsEnabled } = await import(${JSON.stringify(runtimeUrl('resources/analytics/write'))});
+				const reports = new Promise((resolve,reject) => {
+					const timeout = setTimeout(() => reject(new Error('configured analytics did not record a cold-start sample')),5000);
+					addAnalyticsListener(metrics => {
+						const metric = metrics.find(metric => metric.metric === 'typestrip-configured-sample');
+						if (metric) { clearTimeout(timeout); resolve(metric); }
+					});
+				});
+				recordAction(7,'typestrip-configured-sample');
+				assert.equal((await reports).mean,7);
+				setAnalyticsEnabled(false);
+				const { closeLoadedDatabases } = await import(${JSON.stringify(runtimeUrl('resources/databases'))});
+				await closeLoadedDatabases();
+				console.log('configured analytics recorded');
+			`
+			);
+			assert.equal(output, 'configured analytics recorded', mode);
+		}
+	});
+
+	it('exposes the declared public globals in source and compiled facades and user workers', async () => {
+		const names = [
+			'contentTypes',
+			'createBlob',
+			'databases',
+			'logger',
+			'models',
+			'operation',
+			'Resource',
+			'secrets',
+			'server',
+			'tables',
+			'threads',
+			'transaction',
+		];
+		for (const mode of ['compiled', 'typestrip']) {
+			const modulePath = pathToFileURL(resolve(root, mode === 'compiled' ? 'dist/index.js' : 'index.ts')).href;
+			const output = execFileSync(
+				process.execPath,
+				[
+					...(mode === 'typestrip' ? ['--conditions=typestrip'] : []),
+					'--input-type=module',
+					'-e',
+					`const assert = (await import('node:assert/strict')).default;
+				const facade = await import(${JSON.stringify(modulePath)});
+				const names = ${JSON.stringify(names)};
+				assert.deepEqual(Object.keys(facade).filter(name => names.includes(name)).sort(), names.sort());
+				for (const name of names) assert.equal(facade[name], globalThis[name], name);
+				assert.equal(typeof facade.Resource, 'function');
+				assert.equal(typeof facade.operation, 'function');
+				assert.equal(typeof facade.server.http, 'function');
+				assert.ok(new facade.Resource('public-facade') instanceof facade.Resource);
+				console.log('public values preserved'); process.exit(0);`,
+				],
+				{ env: process.env, encoding: 'utf8', timeout: 30000 }
+			);
+			assert.equal(output.trim(), 'public values preserved', mode);
+			const worker = new Worker(resolve(root, 'unitTests/bin/user-thread.js'), {
+				execArgv: mode === 'typestrip' ? ['--conditions=typestrip'] : [],
+				workerData: { noServerStart: true, addPorts: [], addThreadIds: [] },
+			});
+			try {
+				for await (const [message] of on(worker, 'message', { signal: AbortSignal.timeout(30000) })) {
+					if (!Object.hasOwn(message, 'hasResource')) continue;
+					assert.deepEqual(message, { hasResource: true, hasServer: true }, mode);
+					break;
+				}
+			} finally {
+				await worker.terminate();
+			}
+		}
+	});
+
+	it('passes the source condition to actual managed workers without NODE_OPTIONS', () => {
+		const manager = pathToFileURL(resolve(root, 'server/threads/manageThreads.ts')).href;
+		const fixture = resolve(import.meta.dirname, 'fixtures/runtime-condition.cjs');
+		const output = execFileSync(
+			process.execPath,
+			[
+				'--conditions=typestrip',
+				'--input-type=module',
+				'-e',
+				`const { once } = await import('node:events');
+				const { startWorker } = await import(${JSON.stringify(manager)});
+				const worker = startWorker(${JSON.stringify(fixture)}, { name: 'runtime-condition', autoRestart: false });
+				try {
+					const [message] = await once(worker, 'message', { signal: AbortSignal.timeout(10000) });
+					console.log(JSON.stringify(message));
+				} finally { await worker.terminate(); }
+				process.exit(0);`,
+			],
+			{ env: { ...process.env, NODE_OPTIONS: '' }, encoding: 'utf8', timeout: 30000 }
+		);
+		const message = JSON.parse(output.trim());
+		assert.equal(message.modulePath, resolve(root, 'server/Server.ts'));
+		assert.ok(message.execArgv.includes('--conditions=typestrip'));
+	});
+
+	it('keeps default tagged logs on the current main sink and explicit loggers on their own sink', () => {
+		mkdirSync(resolve(root, 'cache'), { recursive: true });
+		const directory = mkdtempSync(resolve(root, 'cache/tagged-logger-'));
+		try {
+			for (const mode of ['compiled', 'typestrip']) {
+				const modulePath = pathToFileURL(
+					resolve(
+						root,
+						`${mode === 'compiled' ? 'dist/' : ''}utility/logging/harper_logger.${mode === 'compiled' ? 'js' : 'ts'}`
+					)
+				).href;
+				const output = execFileSync(
+					process.execPath,
+					[
+						...(mode === 'typestrip' ? ['--conditions=typestrip'] : []),
+						'--input-type=module',
+						'-e',
+						`const assert = (await import('node:assert/strict')).default;
+						const { readFileSync, existsSync } = await import('node:fs');
+						const { createLogger, setMainLogger, loggerWithTag } = await import(${JSON.stringify(modulePath)});
+						const firstPath = ${JSON.stringify(resolve(directory, mode + '-first.log'))};
+						const secondPath = ${JSON.stringify(resolve(directory, mode + '-second.log'))};
+						const first = createLogger({path:firstPath,level:'info',stdStreams:false});
+						setMainLogger(first);
+						const implicit = loggerWithTag('implicit');
+						const explicit = loggerWithTag('explicit', false, first);
+						const conditional = loggerWithTag('conditional', true);
+						assert.equal(conditional.debug, null);
+						implicit.notify('before replacement');
+						setMainLogger(createLogger({path:secondPath,level:'trace',stdStreams:false}));
+						implicit.notify('after replacement');
+						explicit.notify('explicit remains');
+						assert.equal(conditional.debug, null);
+						assert.ok(existsSync(secondPath), 'implicit tag did not follow new main sink');
+						assert.match(readFileSync(secondPath,'utf8'), /\\[implicit\\].*after replacement/);
+						const firstText = readFileSync(firstPath,'utf8');
+						assert.match(firstText, /\\[explicit\\].*explicit remains/);
+						assert.doesNotMatch(firstText, /after replacement/);
+						console.log('tagged logs preserved'); process.exit(0);`,
+					],
+					{ env: process.env, encoding: 'utf8', timeout: 30000 }
+				);
+				assert.equal(output.trim(), 'tagged logs preserved', mode);
+			}
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('initializes the legacy launcher before authenticating a session cookie', () => {
+		for (const mode of ['compiled', 'typestrip']) {
+			const prefix = mode === 'compiled' ? 'dist/' : '';
+			const extension = mode === 'compiled' ? 'js' : 'ts';
+			const output = runWithIsolatedRoot(
+				mode,
+				`const assert = (await import('node:assert/strict')).default;
+					await import(${JSON.stringify(pathToFileURL(resolve(root, `${prefix}launchServiceScripts/launchHarperDB.${extension}`)).href)});
+					const { hasStarted, runStartup } = await import(${JSON.stringify(pathToFileURL(resolve(root, `${prefix}utility/lifecycle.${extension}`)).href)});
+					assert.equal(hasStarted(), true);
+					await runStartup();
+					const { authentication } = await import(${JSON.stringify(pathToFileURL(resolve(root, `${prefix}security/auth.${extension}`)).href)});
+					const result = await authentication({headers:{asObject:{host:'example.test',cookie:'example_test-hdb-session=missing'}},ip:'203.0.113.1',method:'GET',pathname:'/',protocol:'http'}, async () => ({status:200,headers:new Headers(),body:{ok:true}}));
+					assert.equal(result.status, 200);
+					const { closeLoadedDatabases } = await import(${JSON.stringify(pathToFileURL(resolve(root, `${prefix}resources/databases.${extension}`)).href)});
+					await closeLoadedDatabases();
+					console.log('launcher initialized');`
+			);
+			assert.equal(output.trim(), 'launcher initialized', mode);
+		}
+	});
+
 	it('imports the CLI without running a command', () => {
 		const cli = pathToFileURL(resolve(root, 'bin/harper.ts')).href;
 		const services = pathToFileURL(resolve(root, 'utility/processManagement/servicesConfig.ts')).href;
@@ -73,9 +314,19 @@ describe('TypeStrip runtime boundaries', () => {
 			const output = execFileSync(
 				process.execPath,
 				[
+					...(mode === 'typestrip' ? ['--conditions=typestrip'] : []),
 					'--input-type=module',
 					'-e',
-					`const { createRequire } = await import('node:module'); const require = createRequire(${JSON.stringify(helpers)}); await import(${JSON.stringify(entry)}); if (Object.keys(require.cache).map(path => path.split(require('node:path').sep).join('/')).some(path => path.includes('/alasql/') || path.includes('/mathjs/') || path.endsWith('/sqlTranslator/index.${extension}'))) throw new Error('SQL loaded during boot'); const { loadRuntimeModule } = await import(${JSON.stringify(helpers)}); const sql = loadRuntimeModule('sqlTranslator/index'); if (typeof sql.evaluateSQL !== 'function' || typeof sql.convertSQLToAST !== 'function' || typeof loadRuntimeModule('dataLayer/SQLSearch').default !== 'function' || typeof loadRuntimeModule('sqlTranslator/SelectValidator').default !== 'function') throw new Error('Cold module export missing'); console.log('cold SQL loaded'); process.exit(0);`,
+					`const { registerHooks } = await import('node:module');
+					const resolutions = [];
+					registerHooks({ resolve(specifier, context, next) { const result = next(specifier, context); resolutions.push(result.url); return result; } });
+					await import(${JSON.stringify(entry)});
+					if (resolutions.some(url => url.includes('/alasql/') || url.includes('/mathjs/') || url.endsWith('/sqlTranslator/index.${extension}'))) throw new Error('SQL loaded during boot');
+					const { loadRuntimeModule } = await import(${JSON.stringify(helpers)});
+					const sql = loadRuntimeModule('sqlTranslator/index');
+					if (typeof sql.evaluateSQL !== 'function' || typeof sql.convertSQLToAST !== 'function' || typeof loadRuntimeModule('dataLayer/SQLSearch').default !== 'function' || typeof loadRuntimeModule('sqlTranslator/SelectValidator').default !== 'function') throw new Error('Cold module export missing');
+					if (!resolutions.some(url => url.includes('/alasql/'))) throw new Error('Cold dependency observation missing');
+					console.log('cold SQL loaded'); process.exit(0);`,
 				],
 				{ env: process.env, encoding: 'utf8', timeout: 30000 }
 			);

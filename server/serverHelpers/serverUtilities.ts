@@ -1,5 +1,4 @@
 import { loadRuntimeModule } from '../../utility/packageUtils.js';
-import { onStartup } from '../../utility/lifecycle.ts';
 import * as search from '../../dataLayer/search.ts';
 import * as bulkLoad from '../../dataLayer/bulkLoad.ts';
 import * as schema from '../../dataLayer/schema.ts';
@@ -34,10 +33,7 @@ import * as npmUtilities from '../../utility/npmUtilities.ts';
 import { _assignPackageExport } from '../../globals.js';
 import { transformReq } from '../../utility/common_utils.ts';
 import { server } from '../Server.ts';
-let operationLog = harperLogger.loggerWithTag('operation');
-onStartup(() => {
-	operationLog = harperLogger.loggerWithTag('operation');
-});
+const operationLog = harperLogger.loggerWithTag('operation');
 import * as analytics from '../../resources/analytics/read.ts';
 import * as operationFunctionCaller from '../../utility/OperationFunctionCaller.ts';
 import type { OperationRequest, OperationRequestBody } from '../operationsServer.ts';

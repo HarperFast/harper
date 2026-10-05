@@ -22,9 +22,9 @@ import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
 import { hdbErrors } from '../utility/errors/hdbError.ts';
 const { AUTHENTICATION_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 import { onStartup } from '../utility/lifecycle.ts';
-const authLogger = forComponent('authentication');
-const { debug } = authLogger;
-const authEventLog = authLogger.withTag('auth-event');
+let authLogger = forComponent('authentication');
+let { debug } = authLogger;
+let authEventLog = authLogger.withTag('auth-event');
 try {
 	env.initSync();
 } catch {
@@ -57,6 +57,9 @@ const DEFAULT_COOKIE_EXPIRES = 'Tue, 01 Oct 8307 19:33:20 GMT';
 let authorizationCache = new Map();
 
 onStartup(() => {
+	authLogger = forComponent('authentication');
+	({ debug } = authLogger);
+	authEventLog = authLogger.withTag('auth-event');
 	appsCorsAccesslist = env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST);
 	appsCors = env.get(CONFIG_PARAMS.HTTP_CORS);
 	operationsCorsAccesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);

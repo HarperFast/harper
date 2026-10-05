@@ -106,6 +106,56 @@ for (const mode of ['compiled', 'typestrip']) {
 			);
 			strictEqual(denied.status, 403, JSON.stringify(denied.body));
 			ok(JSON.stringify(denied.body).includes("Operation 'sql' is not permitted"));
+
+			const row = { id: 'sql-permissions', value: 'protected' };
+			const inserted = await operation({ operation: 'insert', database: 'data', table: 'Probe', records: [row] });
+			strictEqual(inserted.status, 200, JSON.stringify(inserted.body));
+			for (const [role, tables] of [
+				['cold_sql_table_denied', {}],
+				[
+					'cold_sql_attribute_reader',
+					{
+						Probe: {
+							read: true,
+							insert: false,
+							update: false,
+							delete: false,
+							attribute_permissions: [
+								{ attribute_name: 'id', read: true, insert: false, update: false },
+								{ attribute_name: 'value', read: false, insert: false, update: false },
+							],
+						},
+					},
+				],
+			] as const) {
+				const addedRole = await operation({
+					operation: 'add_role',
+					role,
+					permission: { super_user: false, operations: ['sql'], data: { tables } },
+				});
+				strictEqual(addedRole.status, 200, JSON.stringify(addedRole.body));
+				const addedUser = await operation({
+					operation: 'add_user',
+					role,
+					username: role,
+					password: 'Cold-sql-pw-1!',
+					active: true,
+				});
+				strictEqual(addedUser.status, 200, JSON.stringify(addedUser.body));
+			}
+			const probeSql = "SELECT * FROM data.Probe WHERE id = 'sql-permissions'";
+			const tableDenied = await operation(
+				{ operation: 'sql', sql: probeSql },
+				`Basic ${Buffer.from('cold_sql_table_denied:Cold-sql-pw-1!').toString('base64')}`
+			);
+			strictEqual(tableDenied.status, 403, JSON.stringify(tableDenied.body));
+			ok(!JSON.stringify(tableDenied.body).includes("Operation 'sql' is not permitted"));
+			const filtered = await operation(
+				{ operation: 'sql', sql: probeSql },
+				`Basic ${Buffer.from('cold_sql_attribute_reader:Cold-sql-pw-1!').toString('base64')}`
+			);
+			strictEqual(filtered.status, 200, JSON.stringify(filtered.body));
+			deepStrictEqual(filtered.body, [{ id: row.id }]);
 		});
 
 		test('serves requests in workers and persists a REST record', async () => {
