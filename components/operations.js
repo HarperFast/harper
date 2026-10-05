@@ -1161,6 +1161,7 @@ function drainWhileDeploying(isDeploying) {
 	const unregister = registerShutdownDrain({
 		hasWork: () => Boolean(isDeploying()),
 		drain: (deadlineMs) => {
+			if (!isDeploying()) return Promise.resolve();
 			let timer;
 			const deadline = new Promise((resolve) => {
 				timer = setTimeout(resolve, Math.max(0, deadlineMs - Date.now()));

@@ -1281,4 +1281,12 @@ describe('a requesting worker the rollout retires before its deploy answers', ()
 		await runShutdownDrains(startedAt + 100);
 		assert.ok(Date.now() - startedAt < 5000, 'the deadline bounds the wait');
 	});
+
+	it('holds nothing while the deploy has not armed its certification', async () => {
+		end = drainWhileDeploying(() => false);
+		assert.equal(shutdownDrainsHaveWork(), false);
+		const startedAt = Date.now();
+		await runShutdownDrains(startedAt + 60_000);
+		assert.ok(Date.now() - startedAt < 5000, 'a shutdown mid-prepare closes as it always did');
+	});
 });
