@@ -62,9 +62,8 @@ RUN <<-EOF
   # official image should keep S3 export/import working out of the box. Installed
   # globally (siblings of harper under lib/node_modules), which is on Node's require
   # walk from harper's own files the same as any other global sibling package. The
-  # top-level versions are pinned to match what the lockfile already resolves for
-  # them; this isn't a full shrinkwrap-style install, so their ranged transitives
-  # (e.g. @smithy/*) still re-resolve at build time like any other npm install --
+  # separate exact root pins keep their entry-point versions fixed; their ranged
+  # transitives (e.g. @smithy/*) still re-resolve at build time --
   # .github/workflows/docker-smoke.yml's "S3 SDK resolves from harper's installed
   # path" step is what actually proves this resolves in the built image. `-g` keeps
   # this independent of harper's own package.json.
