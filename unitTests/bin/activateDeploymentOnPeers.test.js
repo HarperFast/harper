@@ -105,6 +105,29 @@ describe('activating a staged release on each peer in turn', () => {
 		);
 	});
 
+	it('fails naming a peer that staged the release but left the cluster before its turn', async () => {
+		await assert.rejects(activateDeploymentOnPeers(activation({ nodes: ['peer-b', 'peer-gone'] })), (error) => {
+			assert.match(error.message, /was not activated on 1 of 2 peer node\(s\): peer-gone \(it is no longer one/);
+			assert.deepStrictEqual(
+				error.http_resp_msg.activated.map(({ node, error: failure }) => ({ node, failed: !!failure })),
+				[
+					{ node: 'peer-b', failed: false },
+					{ node: 'peer-gone', failed: true },
+				]
+			);
+			return true;
+		});
+		assert.deepStrictEqual(
+			sent.map(({ node }) => node),
+			['peer-b']
+		);
+	});
+
+	it('fails, rather than succeed with nothing, when none of the peers it was given remain', async () => {
+		await assert.rejects(activateDeploymentOnPeers(activation({ nodes: ['peer-gone'] })), /peer-gone/);
+		assert.deepStrictEqual(sent, []);
+	});
+
 	it('visits every peer when one refuses, and fails naming each that did not take it', async () => {
 		answers['peer-a'] = new Error('web was not deployed on this node: release failed to load in its canary worker');
 		answers['peer-b'] = { value: { message: 'Successfully deployed: web', certification: 'certified' } };

@@ -211,11 +211,31 @@ async function activateDeploymentOnPeers(activation: any) {
 			true
 		);
 	}
-	const peers = ((global as any).server.nodes ?? []).filter(
-		(node) => node.name !== getThisNodeName() && (!nodes || nodes.includes(node.name))
-	);
+	const thisNode = getThisNodeName();
+	const otherNodes = ((global as any).server.nodes ?? []).filter((node) => node.name !== thisNode);
+	const peers = otherNodes.filter((node) => !nodes || nodes.includes(node.name));
 	const results = [];
-	if (peers.length === 0) return { activated: results };
+	if (peers.length > 0) await activateEachPeer(peers, { project, deploymentId, deploymentRow }, results);
+	// A peer that staged the release and left the topology before its turn was not activated, which is a failure too.
+	for (const name of nodes ?? []) {
+		if (name !== thisNode && !otherNodes.some((node) => node.name === name)) {
+			results.push({ node: name, error: 'it is no longer one of the nodes in this cluster' });
+		}
+	}
+	const failed = results.filter((result) => result.error);
+	if (failed.length > 0) {
+		const error: any = new Error(
+			`Deployment ${deploymentId} of ${project} was not activated on ${failed.length} of ${results.length} peer ` +
+				`node(s): ${failed.map((result) => `${result.node} (${result.error})`).join('; ')}`
+		);
+		// What a failed job records as its message, so get_job keeps every peer's outcome.
+		error.http_resp_msg = { error: error.message, activated: results };
+		throw error;
+	}
+	return { activated: results };
+}
+
+async function activateEachPeer(peers: any[], { project, deploymentId, deploymentRow }, results: any[]) {
 	const replication = (global as any).server.replication;
 	replication.monitorNodeCAs();
 	const { peerDeployAnswerTimeoutMs } = await import('../components/operations.js');
@@ -240,17 +260,6 @@ async function activateDeploymentOnPeers(activation: any) {
 			results.push({ node: node.name, error: error?.message ?? String(error) });
 		}
 	}
-	const failed = results.filter((result) => result.error);
-	if (failed.length > 0) {
-		const error: any = new Error(
-			`Deployment ${deploymentId} of ${project} was not activated on ${failed.length} of ${results.length} peer ` +
-				`node(s): ${failed.map((result) => `${result.node} (${result.error})`).join('; ')}`
-		);
-		// What a failed job records as its message, so get_job keeps every peer's outcome.
-		error.http_resp_msg = { error: error.message, activated: results };
-		throw error;
-	}
-	return { activated: results };
 }
 
 /**
